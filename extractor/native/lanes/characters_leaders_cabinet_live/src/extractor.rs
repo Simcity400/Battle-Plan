@@ -282,10 +282,42 @@ impl LaneFrame {
         self.compact_rows_over(None)
     }
 
+    /// The row sequence, materialised.
+    ///
+    /// LANE SB (2026-08-24): this is now `compact_row_iter_over().collect()`,
+    /// so there is ONE definition of the order and the encoder no longer
+    /// needs the `Vec`. Production encodes straight off the iterator
+    /// (`encode_frame_payload_over`); this name stays for the offline
+    /// callers that want the rows in hand and as the reference the
+    /// equivalence test compares the iterator against.
     pub fn compact_rows_over<'a>(
         &'a self,
         cached: Option<&'a crate::adapter::CachedWalk>,
     ) -> Vec<compact::CharacterLaneRow<'a>> {
+        self.compact_row_iter_over(cached).collect()
+    }
+
+    /// The rows in payload order, WITHOUT materialising them.
+    ///
+    /// WHY. `captures/rc_vanilla` runs 44,454 rows per frame through this
+    /// sequence, and the `Vec` it used to build is ~3.9 MiB allocated,
+    /// written and read once per frame for an encoder that walks it exactly
+    /// once (`runs/sb_characters_worker/MEASUREMENT.md`). The order here IS
+    /// the order the `Vec` held -- the same eight selections chained in the
+    /// same sequence -- so the payload is unchanged.
+    ///
+    /// Pinned, on the UNCACHED selection, by
+    /// `the_production_encode_path_produces_the_same_golden_payload`
+    /// (`domain47_compact.rs`), which drives `encode_frame_payload_over` over
+    /// the golden fixture and requires the payload hex already on disk, and
+    /// separately requires `compact_rows_over` to equal a hand-written row
+    /// list; and on the CACHED selection by `reused_walk_matches_full_walk`
+    /// (`scheduled.rs`), which requires a frame encoded with a cached walk to
+    /// produce the same payload as the full walk it was adopted from.
+    pub fn compact_row_iter_over<'a>(
+        &'a self,
+        cached: Option<&'a crate::adapter::CachedWalk>,
+    ) -> impl Iterator<Item = compact::CharacterLaneRow<'a>> + 'a {
         let characters: &[CharacterRecord] = match cached {
             Some(c) if c.serves(compact::FAMILY_CHARACTER) => &c.characters,
             _ => &self.characters,
@@ -311,104 +343,96 @@ impl LaneFrame {
         } else {
             &[]
         };
-        let mut rows = Vec::with_capacity(
-            characters.len()
-                + unit_leaders.len()
-                + unit_leader_traits.len()
-                + country_leader_roles.len()
-                + self.active_rulers.len()
-                + advisor_roster.len()
-                + self.appointed_advisors.len()
-                + cached_portraits.len()
-                + self.character_portraits.len(),
-        );
-        rows.extend(characters.iter().map(|row| {
-            compact::CharacterLaneRow::Character(compact::CharacterRow {
-                country_tag_db_id: row.country_tag_db_id,
-                char_id: row.char_id,
-                name: row.name.as_deref(),
-                token: row.token.as_deref(),
+        characters
+            .iter()
+            .map(|row| {
+                compact::CharacterLaneRow::Character(compact::CharacterRow {
+                    country_tag_db_id: row.country_tag_db_id,
+                    char_id: row.char_id,
+                    name: row.name.as_deref(),
+                    token: row.token.as_deref(),
+                })
             })
-        }));
-        rows.extend(unit_leaders.iter().map(|row| {
-            compact::CharacterLaneRow::UnitLeader(compact::UnitLeaderRow {
-                country_tag_db_id: row.country_tag_db_id,
-                unit_leader_id: row.unit_leader_id,
-                char_id: row.char_id,
-                leader_kind: row.leader_kind,
-                skill: row.skill,
-                experience_raw: row.experience_raw,
-                attack: row.attack,
-                defense: row.defense,
-                planning: row.planning,
-                logistics: row.logistics,
-                maneuvering: row.maneuvering,
-                coordination: row.coordination,
-                token: row.token.as_deref(),
-                name: row.name.as_deref(),
-                trait_count: row.trait_count,
-            })
-        }));
-        rows.extend(unit_leader_traits.iter().map(|row| {
-            compact::CharacterLaneRow::UnitLeaderTrait(compact::UnitLeaderTraitRow {
-                unit_leader_id: row.unit_leader_id,
-                ordinal: row.ordinal,
-                trait_token: row.trait_token.as_str(),
-            })
-        }));
-        rows.extend(country_leader_roles.iter().map(|row| {
-            compact::CharacterLaneRow::CountryLeaderRole(compact::CountryLeaderRoleRow {
-                country_tag_db_id: row.country_tag_db_id,
-                char_id: row.char_id,
-                name: row.name.as_deref(),
-                token: row.token.as_deref(),
-            })
-        }));
-        rows.extend(self.active_rulers.iter().map(|row| {
-            compact::CharacterLaneRow::ActiveRuler(compact::ActiveRulerRow {
-                country_tag_db_id: row.country_tag_db_id,
-                char_id: row.char_id,
-                ruling_party: row.ruling_party.as_deref(),
-                name: row.name.as_deref(),
-                token: row.token.as_deref(),
-                leader_vec_size: row.leader_vec_size,
-                ambiguous: row.ambiguous,
-            })
-        }));
-        rows.extend(advisor_roster.iter().map(|row| {
-            compact::CharacterLaneRow::AdvisorRoster(compact::AdvisorRow {
-                country_tag_db_id: row.country_tag_db_id,
-                char_id: row.char_id,
-                slot: row.slot.as_deref(),
-                ledger: row.ledger.as_deref(),
-                idea_token: row.idea_token.as_str(),
-            })
-        }));
-        rows.extend(self.appointed_advisors.iter().map(|row| {
-            compact::CharacterLaneRow::AppointedAdvisor(compact::AdvisorRow {
-                country_tag_db_id: row.country_tag_db_id,
-                char_id: row.char_id,
-                slot: row.slot.as_deref(),
-                ledger: row.ledger.as_deref(),
-                idea_token: row.idea_token.as_str(),
-            })
-        }));
-        rows.extend(
-            cached_portraits
-                .iter()
-                .chain(self.character_portraits.iter())
-                .map(|row| {
-                    compact::CharacterLaneRow::CharacterPortrait(compact::CharacterPortraitRow {
-                        country_tag_db_id: row.country_tag_db_id,
-                        char_id: row.char_id,
-                        role: row.role.as_str(),
-                        size: row.size.as_str(),
-                        gfx: row.gfx.as_str(),
-                        gfx_encoding: row.gfx_encoding,
-                    })
-                }),
-        );
-        rows
+            .chain(unit_leaders.iter().map(|row| {
+                compact::CharacterLaneRow::UnitLeader(compact::UnitLeaderRow {
+                    country_tag_db_id: row.country_tag_db_id,
+                    unit_leader_id: row.unit_leader_id,
+                    char_id: row.char_id,
+                    leader_kind: row.leader_kind,
+                    skill: row.skill,
+                    experience_raw: row.experience_raw,
+                    attack: row.attack,
+                    defense: row.defense,
+                    planning: row.planning,
+                    logistics: row.logistics,
+                    maneuvering: row.maneuvering,
+                    coordination: row.coordination,
+                    token: row.token.as_deref(),
+                    name: row.name.as_deref(),
+                    trait_count: row.trait_count,
+                })
+            }))
+            .chain(unit_leader_traits.iter().map(|row| {
+                compact::CharacterLaneRow::UnitLeaderTrait(compact::UnitLeaderTraitRow {
+                    unit_leader_id: row.unit_leader_id,
+                    ordinal: row.ordinal,
+                    trait_token: row.trait_token.as_str(),
+                })
+            }))
+            .chain(country_leader_roles.iter().map(|row| {
+                compact::CharacterLaneRow::CountryLeaderRole(compact::CountryLeaderRoleRow {
+                    country_tag_db_id: row.country_tag_db_id,
+                    char_id: row.char_id,
+                    name: row.name.as_deref(),
+                    token: row.token.as_deref(),
+                })
+            }))
+            .chain(self.active_rulers.iter().map(|row| {
+                compact::CharacterLaneRow::ActiveRuler(compact::ActiveRulerRow {
+                    country_tag_db_id: row.country_tag_db_id,
+                    char_id: row.char_id,
+                    ruling_party: row.ruling_party.as_deref(),
+                    name: row.name.as_deref(),
+                    token: row.token.as_deref(),
+                    leader_vec_size: row.leader_vec_size,
+                    ambiguous: row.ambiguous,
+                })
+            }))
+            .chain(advisor_roster.iter().map(|row| {
+                compact::CharacterLaneRow::AdvisorRoster(compact::AdvisorRow {
+                    country_tag_db_id: row.country_tag_db_id,
+                    char_id: row.char_id,
+                    slot: row.slot.as_deref(),
+                    ledger: row.ledger.as_deref(),
+                    idea_token: row.idea_token.as_str(),
+                })
+            }))
+            .chain(self.appointed_advisors.iter().map(|row| {
+                compact::CharacterLaneRow::AppointedAdvisor(compact::AdvisorRow {
+                    country_tag_db_id: row.country_tag_db_id,
+                    char_id: row.char_id,
+                    slot: row.slot.as_deref(),
+                    ledger: row.ledger.as_deref(),
+                    idea_token: row.idea_token.as_str(),
+                })
+            }))
+            .chain(
+                cached_portraits
+                    .iter()
+                    .chain(self.character_portraits.iter())
+                    .map(|row| {
+                        compact::CharacterLaneRow::CharacterPortrait(
+                            compact::CharacterPortraitRow {
+                                country_tag_db_id: row.country_tag_db_id,
+                                char_id: row.char_id,
+                                role: row.role.as_str(),
+                                size: row.size.as_str(),
+                                gfx: row.gfx.as_str(),
+                                gfx_encoding: row.gfx_encoding,
+                            },
+                        )
+                    }),
+            )
     }
 }
 
@@ -497,13 +521,15 @@ pub fn encode_frame_payload_over(
     frame: &LaneFrame,
     cached: Option<&crate::adapter::CachedWalk>,
 ) -> Vec<u8> {
-    let rows = frame.compact_rows_over(cached);
-    compact::encode_payload_with_families(
+    // Straight off the iterator (lane SB): the encoder walks the sequence
+    // once, so the ~4 MiB `Vec` `compact_rows_over` used to build here was
+    // allocated, filled and dropped for a single pass.
+    compact::encode_payload_with_families_iter(
         frame.elapsed_wall_ms,
         frame.status_flags,
         frame.schema_flags,
         frame.known_families,
-        &rows,
+        frame.compact_row_iter_over(cached),
     )
 }
 

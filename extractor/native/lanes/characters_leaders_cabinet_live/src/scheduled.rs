@@ -254,9 +254,70 @@ fn duration_us(span: Duration) -> u64 {
     span.as_micros().min(u64::MAX as u128) as u64
 }
 
+/// The payload encode and the payload's own self-decode, timed apart (lane
+/// SB, 2026-08-24).
+///
+/// WHY THIS EXISTS. `lw_d47_post_us` measures the WHOLE post-bracket half —
+/// 16.82 ms/frame on `captures/rc_vanilla`, against 28.80 ms/frame for the
+/// in-bracket half, of which measured discovery alone is 17.51. So it is NOT
+/// the worker's largest item; an earlier draft of this comment said it was
+/// (Codex round 10, finding 5). It is the half this lane cuts, because it is
+/// the half that is compute. Inside it sit `encode_frame_payload_over`,
+/// `compact::decode_payload`, and the work around them (the walk's
+/// `LaneFrame` being destroyed, the tolerance classification, the read's
+/// construction). No counter separated ANY of those, so how the 16.82 splits
+/// could only be modelled from row counts
+/// (`runs/sb_characters_worker/MEASUREMENT.md` §1.3).
+///
+/// These two words are the encode and the decode. They are SUBSPANS of the
+/// post-bracket half, not a partition of it: `lw_d47_post_us - (enc + dec)`
+/// is the rest, and this lane has no measurement of it (Codex round 2,
+/// finding 2). At PU's instrument law (§2.2): program order, bounded, and
+/// they survive the change because both statements do. The sampling, exactly
+/// as written below, is one `Instant::now()` and TWO `elapsed()` reads.
+///
+/// The ADDED cost differs by arm (Codex round 15, finding 2). This finish
+/// already took two clock reads of its own (`compute_started` plus one
+/// `elapsed`), so three where there were two is ONE added
+/// `QueryPerformanceCounter` per pair. The EMPTY helper below had no local
+/// timer at all, so its timed form is THREE added reads on the rowless,
+/// refused and replacement-frame arms -- the frames with the least work in
+/// them, which is why they were untimed and why they must not stay that way
+/// (Codex round 1, finding 4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ComputeSplit {
+    pub encode_us: u64,
+    pub decode_us: u64,
+}
+
+impl ComputeSplit {
+    /// Two compute spans inside the SAME post-bracket half, summed.
+    ///
+    /// A frame that fails its own self-decode encodes twice: once for the
+    /// payload it built and once for the rowless replacement that goes out
+    /// instead. Both are inside `lw_d47_post_us`, so both are in the split
+    /// (Codex round 1, finding 4).
+    pub fn plus(self, other: ComputeSplit) -> ComputeSplit {
+        ComputeSplit {
+            encode_us: self.encode_us.saturating_add(other.encode_us),
+            decode_us: self.decode_us.saturating_add(other.decode_us),
+        }
+    }
+}
+
 pub fn finish_native_scheduled_read(
     observation: NativeScheduledObservation,
 ) -> NativeScheduledRead {
+    finish_native_scheduled_read_timed(observation).0
+}
+
+/// [`finish_native_scheduled_read`], also reporting how the compute half
+/// split between the encode and the self-decode. The untimed name above
+/// delegates here, so there is ONE compute path and the split cannot
+/// describe a different one.
+pub fn finish_native_scheduled_read_timed(
+    observation: NativeScheduledObservation,
+) -> (NativeScheduledRead, ComputeSplit) {
     let NativeScheduledObservation {
         frame,
         stats,
@@ -265,9 +326,22 @@ pub fn finish_native_scheduled_read(
     } = observation;
     let compute_started = Instant::now();
     let payload = encode_frame_payload_over(&frame, cached.as_deref());
+    let encode_elapsed = compute_started.elapsed();
     let gate = compact::decode_payload(0, &payload);
-    let read_time_us = duration_us(observe.saturating_add(compute_started.elapsed()));
-    NativeScheduledRead {
+    let compute_elapsed = compute_started.elapsed();
+    let split = ComputeSplit {
+        encode_us: duration_us(encode_elapsed),
+        // The decode is the remainder of the same span rather than its own
+        // clock read, so the two PHYSICAL spans are adjacent and leave no
+        // third, unnamed gap between them. Their RECORDED integers can still
+        // trail the recorded total by one microsecond, because `duration_us`
+        // truncates each of the three independently (Codex round 18, finding
+        // 3). The predicate reads them as subspans of `lw_d47_post_us`, never
+        // as a partition of it.
+        decode_us: duration_us(compute_elapsed.saturating_sub(encode_elapsed)),
+    };
+    let read_time_us = duration_us(observe.saturating_add(compute_elapsed));
+    let read = NativeScheduledRead {
         domain_id: DOMAIN_ID,
         domain_name: DOMAIN_NAME,
         payload,
@@ -283,7 +357,8 @@ pub fn finish_native_scheduled_read(
         schema_flags: gate.schema_flags_or,
         adapter_stats: stats,
         parse_errors: gate.parse_errors,
-    }
+    };
+    (read, split)
 }
 
 pub fn read_native_scheduled_frame<M: LaneMemory>(
@@ -342,11 +417,33 @@ fn observe_native_scheduled_parts<M: LaneMemory>(
 }
 
 pub fn empty_native_scheduled_read(elapsed_wall_ms: u64, status_flags: u32) -> NativeScheduledRead {
+    empty_native_scheduled_read_timed(elapsed_wall_ms, status_flags).0
+}
+
+/// [`empty_native_scheduled_read`], also reporting what the rowless frame's
+/// own encode and self-decode cost.
+///
+/// A rowless frame is cheap, but it is not free, and it is an encode and a
+/// self-decode in the post-bracket half — exactly what `lw_d47_enc_us` and
+/// `lw_d47_dec_us` name. Leaving it out would make those two words miss an
+/// encode they claim to cover (Codex round 1, finding 4). The untimed name
+/// above delegates, so there is one path.
+pub fn empty_native_scheduled_read_timed(
+    elapsed_wall_ms: u64,
+    status_flags: u32,
+) -> (NativeScheduledRead, ComputeSplit) {
     let mut frame = LaneFrame::new(elapsed_wall_ms);
     frame.status_flags = status_flags;
+    let compute_started = Instant::now();
     let payload = encode_frame_payload(&frame);
+    let encode_elapsed = compute_started.elapsed();
     let gate = compact::decode_payload(0, &payload);
-    NativeScheduledRead {
+    let compute_elapsed = compute_started.elapsed();
+    let split = ComputeSplit {
+        encode_us: duration_us(encode_elapsed),
+        decode_us: duration_us(compute_elapsed.saturating_sub(encode_elapsed)),
+    };
+    let read = NativeScheduledRead {
         domain_id: DOMAIN_ID,
         domain_name: DOMAIN_NAME,
         payload,
@@ -357,7 +454,8 @@ pub fn empty_native_scheduled_read(elapsed_wall_ms: u64, status_flags: u32) -> N
         schema_flags: gate.schema_flags_or,
         adapter_stats: AdapterBuildStats::default(),
         parse_errors: gate.parse_errors,
-    }
+    };
+    (read, split)
 }
 
 pub fn adapter_input_from_cache(
@@ -1021,6 +1119,180 @@ mod tests {
         assert!(!borrowed.advisors.is_empty());
         assert!(!borrowed.portraits.is_empty());
         assert_eq!(borrowed.skipped_input_rows, 3);
+    }
+
+    /// This file, for the two structural pins below. `include_str!` resolves
+    /// against this file's own directory, so it is this module's source.
+    const SCHEDULED_SOURCE: &str = include_str!("scheduled.rs");
+
+    #[test]
+    fn the_timed_finish_carries_the_frame_the_walk_built() {
+        // Lane SB, rewritten after Codex round 2 finding 4. Comparing the
+        // timed read against the UNTIMED one is tautological now that the
+        // untimed name is a delegation, so the expectations here are taken
+        // from the OBSERVATION instead: the frame the walk built knows how
+        // many rows of each family it holds, and the read has to report that
+        // many, decode clean, and carry the frame's own status word.
+        //
+        // kills: an encode that drops or duplicates a family (the row
+        // count moves away from the frame's own, and so does the count the
+        // payload decodes to); a split larger than the read it was taken
+        // inside.
+        //
+        // It does NOT kill a self-decode whose parse errors are discarded
+        // (Codex round 4, finding 5): this fixture is clean, so that arm is
+        // empty either way. The payload/`parse_errors` seam is covered where
+        // a malformed payload exists to drive it -- `domain47_compact.rs`'s
+        // decode tests, which build one.
+        // THE FIXTURE MUST HAVE ITS SKIPPED-ROW COUNT CLEARED, and the first
+        // version of this test did not clear it (landing gate, 2026-08-24).
+        // `borrowed_input_fixture` carries `skipped_input_rows: 3` because
+        // its other user, `adapter_input_ref_matches_owned_projection`, is
+        // about exactly that projection. Production reads a non-zero skipped
+        // count as "the outcome is already decided" and returns a rowless
+        // PARTIAL frame WITHOUT walking (`rowless_outcome_is_already_decided`
+        // -> `rowless_partial_frame`), which is the pre-existing
+        // partial-data rule and not anything lane SB touched -- the predicate
+        // is byte-identical at the merge-base `3f7e91ae`. So the walk
+        // correctly built nothing and this test's own precondition caught it.
+        //
+        // Clearing the count is the established spelling in this file:
+        // `reused_walk_matches_full_walk` and
+        // `borrowed_scheduled_read_matches_owned_build` both do it, and the
+        // first of them asserts `!cached.characters.is_empty()` on the
+        // result, so this fixture with the count cleared is already known to
+        // walk clean and produce rows.
+        let (mem, cache, frame_input) = borrowed_input_fixture();
+        let mut input = frame_input;
+        input.skipped_input_rows = 0;
+        let observation = observe_native_scheduled_frame(&mem, &cache, input.clone());
+        let expected_rows = observation.frame.characters.len()
+            + observation.frame.unit_leaders.len()
+            + observation.frame.unit_leader_traits.len()
+            + observation.frame.country_leader_roles.len()
+            + observation.frame.active_rulers.len()
+            + observation.frame.advisor_roster.len()
+            + observation.frame.appointed_advisors.len()
+            + observation.frame.character_portraits.len();
+        assert!(expected_rows > 0, "the fixture must carry rows");
+        let expected_status = observation.frame.status_flags;
+        let (timed, split) = finish_native_scheduled_read_timed(observation);
+        assert_eq!(
+            timed.row_count as usize, expected_rows,
+            "the read must report every row the walk built and no other"
+        );
+        assert!(
+            timed.parse_errors.is_empty(),
+            "the self-decode refused its own encoder's payload: {:?}",
+            timed.parse_errors
+        );
+        assert_eq!(
+            timed.status_flags & expected_status,
+            expected_status,
+            "the frame's own status word must survive into the read"
+        );
+        assert_eq!(
+            compact::decode_payload(0, &timed.payload).row_count_total as usize,
+            expected_rows,
+            "the payload the read carries must decode to the same rows"
+        );
+        assert!(
+            split.encode_us.saturating_add(split.decode_us) <= timed.read_time_us,
+            "the split cannot exceed the read it was taken inside: {split:?} vs {}",
+            timed.read_time_us
+        );
+
+        // The status assertion above is a ZERO mask on the clean input, since
+        // this fixture's `status_flags` is 0 -- so it is repeated here on an
+        // input that carries one. Nothing in this file branches on
+        // `status_flags`: `observe_native_scheduled_parts` decides on stable
+        // roots, the skipped counts and `has_rejections`, and
+        // `finish_native_scheduled_read_timed` only ORs the word through
+        // (`gate.status_flags_or | frame.status_flags`). So this changes the
+        // word and not the walk, and the rows must come out the same.
+        //
+        // kills: dropping `frame.status_flags` from the read's `status_flags`
+        // -- an excluded upstream row would then be reported as a clean hour.
+        let mut flagged = input;
+        flagged.status_flags = compact::STATUS_PARTIAL_DATA;
+        let flagged_observation = observe_native_scheduled_frame(&mem, &cache, flagged);
+        let (flagged_read, _) = finish_native_scheduled_read_timed(flagged_observation);
+        assert_ne!(
+            flagged_read.status_flags & compact::STATUS_PARTIAL_DATA,
+            0,
+            "the frame's own status word must survive into the read"
+        );
+        assert_eq!(
+            flagged_read.row_count as usize, expected_rows,
+            "a status flag must not change what the walk built"
+        );
+    }
+
+    #[test]
+    fn a_frame_that_encodes_twice_reports_both_spans() {
+        // The aggregation R1-4 introduced, tested where it lives: a frame
+        // whose own payload fails classification encodes a replacement, and
+        // the split it reports is the SUM. Timing at microsecond resolution
+        // is not something a test can assert on, so the arithmetic is
+        // asserted directly and the wiring that feeds it structurally, by
+        // `every_post_bracket_encode_reaches_the_timed_helpers`
+        // in the collector's tests (Codex round 2, finding 4).
+        //
+        // kills: `plus` returning either operand, or dropping one field.
+        let built = ComputeSplit {
+            encode_us: 7,
+            decode_us: 11,
+        };
+        let replacement = ComputeSplit {
+            encode_us: 3,
+            decode_us: 5,
+        };
+        assert_eq!(
+            built.plus(replacement),
+            ComputeSplit {
+                encode_us: 10,
+                decode_us: 16
+            }
+        );
+        assert_eq!(built.plus(ComputeSplit::default()), built);
+        assert_eq!(ComputeSplit::default().plus(built), built);
+        // And it saturates rather than wrapping a frame's cost to nothing.
+        let huge = ComputeSplit {
+            encode_us: u64::MAX,
+            decode_us: u64::MAX,
+        };
+        assert_eq!(huge.plus(built), huge);
+    }
+
+    #[test]
+    fn the_untimed_finish_names_are_one_line_delegations() {
+        // The claim `lw_d47_enc_us` / `lw_d47_dec_us` rest on is that the
+        // span they partition is the span production runs -- i.e. that the
+        // untimed entry points ARE the timed ones. That is a fact about the
+        // source, not about any one fixture's output, so it is asserted about
+        // the source (Codex round 1, finding 5).
+        //
+        // kills: giving either untimed name its own `encode_frame_payload*` +
+        // `decode_payload` pair again. The two would agree on every output a
+        // test could compare while the collector timed a compute that is not
+        // the one it publishes.
+        let source = SCHEDULED_SOURCE.replace("\r\n", "\n");
+        for (name, body) in [
+            (
+                "finish_native_scheduled_read",
+                "pub fn finish_native_scheduled_read(\n    observation: NativeScheduledObservation,\n) -> NativeScheduledRead {\n    finish_native_scheduled_read_timed(observation).0\n}\n",
+            ),
+            (
+                "empty_native_scheduled_read",
+                "pub fn empty_native_scheduled_read(elapsed_wall_ms: u64, status_flags: u32) -> NativeScheduledRead {\n    empty_native_scheduled_read_timed(elapsed_wall_ms, status_flags).0\n}\n",
+            ),
+        ] {
+            assert!(
+                source.contains(body),
+                "`{name}` is no longer a one-line delegation to its timed sibling, so the \
+                 phase words may be timing a compute production does not run"
+            );
+        }
     }
 
     #[test]
