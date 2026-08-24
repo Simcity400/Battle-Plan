@@ -181,3 +181,8 @@ extractor/native/runs/re_theatre_read_law/** text eol=lf
 
 # lane RP: hash-pinned evidence (source-inventory v3 is digest-referenced by the audit reports)
 extractor/native/runs/rp_rc_predicate_tools/** text eol=lf
+
+# lane RV: text evidence normalised, but the byte-exact Ghidra decompiles keep
+# their raw export bytes (their headers carry the exact-build hashes).
+extractor/native/runs/rv_d43_oil_current/** text eol=lf
+extractor/native/runs/rv_d43_oil_current/*.decompile.c -text

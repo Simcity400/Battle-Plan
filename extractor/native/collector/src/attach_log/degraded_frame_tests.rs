@@ -267,12 +267,15 @@ fn d18_d65_d66_and_d91_emit_sites_route_their_status_word_through_the_ledger() {
             "COMPACT_DOMAIN_AIR_SUPERIORITY_INPUTS",
             "COMPACT_DOMAIN_AIR_VARIANT_RESERVES",
             "COMPACT_DOMAIN_COUNTRY_IDENTITY",
+            "COMPACT_DOMAIN_MARKET_TRADE_LIVE",
             "COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE",
             "COMPACT_DOMAIN_RAID_INSTANCES_LIVE",
             "COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE",
         ],
         "every emit site that publishes a reader-computed status word must substantiate it; \
-         D36 and D38 joined D18/D65/D66/D91 when lane LC closed the silent-PERF class"
+         D36 and D38 joined D18/D65/D66/D91 when lane LC closed the silent-PERF class, and \
+         D43 joined them when the release-candidate capture showed all 324 of its frames \
+         substantiated from the record instead of by their producer"
     );
 }
 
