@@ -9304,6 +9304,10 @@ fn decode_compact_convoy_transport_attack_live_data_payload(
             "convoy_transport_attack_dropped_receipt_lag_beyond",
             telemetry.dropped_receipt_lag_beyond,
         ),
+        (
+            "convoy_transport_attack_dropped_pre_hour_address_overflow",
+            telemetry.dropped_pre_hour_address_overflow,
+        ),
     ] {
         add_compact_domain_cumulative_unit(
             summary,
@@ -9315,6 +9319,20 @@ fn decode_compact_convoy_transport_attack_live_data_payload(
     for (name, value) in naval4950::ConvoyTransportAttackCandidateSubsites::FIELDS
         .iter()
         .zip(witness.candidate_subsites.as_array())
+    {
+        add_compact_domain_cumulative_unit(
+            summary,
+            COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE,
+            name,
+            value,
+        );
+    }
+    // The `CaptureError` leaves of `..._dropped_candidate_capture_error`. In
+    // rc_vanilla that aggregate held every lost event in the window (56 of 56)
+    // and named none of them.
+    for (name, value) in naval4950::ConvoyTransportAttackCaptureErrorSubsites::FIELDS
+        .iter()
+        .zip(witness.capture_error_subsites.as_array())
     {
         add_compact_domain_cumulative_unit(
             summary,
@@ -19302,6 +19320,8 @@ mod tests {
             events_emitted_this_drain: 1,
             drops_this_drain: u64::from(!exact),
             candidate_subsites: naval4950::ConvoyTransportAttackCandidateSubsites::default(),
+            capture_error_subsites:
+                naval4950::ConvoyTransportAttackCaptureErrorSubsites::default(),
             telemetry: naval4950::ConvoyTransportAttackTelemetry {
                 callbacks_seen: if exact { 1 } else { 2 },
                 original_calls: if exact { 1 } else { 2 },
@@ -19450,6 +19470,7 @@ mod tests {
 
         assert_eq!(authority.emitted_rows, 1);
         assert_eq!(authority.data_units["convoy_transport_attack_rows"], 1);
+        // The coverage gap is still counted and still a named problem...
         assert_eq!(
             authority.data_units["convoy_transport_attack_resolver_unbound_convoy_clients"],
             7
@@ -19458,12 +19479,24 @@ mod tests {
             authority.problems["convoy_transport_attack_resolver_unbound_convoy_clients"],
             7
         );
-        assert_eq!(
-            authority.data_units["convoy_transport_attack_incomplete_batches"],
-            1
+        // ...but it is no longer a claim about THIS drain's event set. The
+        // batch saw every event it saw and lost none, so it is exhaustive and
+        // says so (rc_vanilla: this conflation degraded 319 of 323 frames,
+        // 267+ of which saw no sink traffic at all).
+        assert!(
+            !authority
+                .data_units
+                .contains_key("convoy_transport_attack_incomplete_batches"),
+            "a lossless drain is not an incomplete batch"
+        );
+        assert!(
+            !authority
+                .problems
+                .contains_key("convoy_transport_attack_incomplete_witness"),
+            "an unbound client is a coverage gap, not an unproven event set"
         );
         assert_eq!(
-            authority.problems["convoy_transport_attack_incomplete_witness"],
+            authority.data_units["convoy_transport_attack_exact_complete_batches"],
             1
         );
     }

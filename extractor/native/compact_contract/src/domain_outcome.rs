@@ -427,6 +427,34 @@ impl DomainOutcomeLedger {
         }
     }
 
+    /// Replace one domain's entry unconditionally -- including a success over
+    /// an existing failure, which `record` deliberately refuses.
+    ///
+    /// `record`'s rule is right for READS: several sites can speak for one
+    /// domain in a frame, and a later success must not erase an earlier
+    /// failure. A terminal hook-custody merge is not another read of the same
+    /// thing. It rolls the hourly reservation back, re-seals the lane over an
+    /// interval that CONTAINS the hourly one, and REPLACES the domain's DATA
+    /// and PERF records in the frame with that drain -- so the hourly outcome
+    /// no longer describes anything the frame carries. Leaving it in place
+    /// ships a clean PERF word beside a failing diagnosis, which is the
+    /// disagreement `audit_published_status` exists to catch and which nothing
+    /// catches in that direction.
+    ///
+    /// Callers must own the record they are superseding. The one caller is the
+    /// D90 terminal custody merge, after `replace_terminal_hook_domain_records`
+    /// has actually succeeded.
+    pub fn record_superseding(&mut self, outcome: DomainOutcome) {
+        match self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.domain_id == outcome.domain_id)
+        {
+            Some(slot) => *slot = outcome,
+            None => self.entries.push(outcome),
+        }
+    }
+
     pub fn get(&self, domain_id: u16) -> Option<&DomainOutcome> {
         self.entries
             .iter()
@@ -493,6 +521,80 @@ pub const READ_PREDICATE_MIGRATED_SITE_PUBLISHED_OUTCOME_NAME: &str =
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Law: `record_superseding` REPLACES, including a success over a failure,
+    /// and `record` still refuses that direction.
+    ///
+    /// The two rules are opposites on purpose. Within one frame's reads a later
+    /// success must not erase an earlier failure for the same domain, which is
+    /// `record`. A terminal hook-custody merge is not another read: it replaces
+    /// the domain's DATA and PERF records in the frame with a drain that
+    /// supersedes the hourly one, so its entry has to move with them or the
+    /// frame ships a clean status word beside a failing diagnosis.
+    ///
+    /// What production change makes this fail: `record_superseding` delegating
+    /// to `record`, which would silently keep the obsolete failure -- the exact
+    /// regression a source pin on the CALLER cannot see.
+    #[test]
+    fn a_superseding_success_replaces_a_failure_and_an_ordinary_one_does_not() {
+        let predicate = read_predicate(READ_PREDICATE_PAYLOAD_DECODED_EXACT)
+            .expect("the D90 exactness predicate is declared");
+        // `Predicate` is Clone, not Copy: every use below takes its own.
+        let failure = || {
+            DomainOutcome::failed(
+                90,
+                predicate.clone(),
+                ReadCompletion::DidNotComplete,
+                AnswerExtent::Unprovable,
+                "the hourly peek could not prove its interval",
+            )
+        };
+        let success = || DomainOutcome::succeeded(90, predicate.clone());
+
+        // `record`: a later success leaves the failure standing.
+        let mut ledger = DomainOutcomeLedger::new();
+        ledger.record(failure());
+        assert!(ledger.get(90).expect("recorded").is_failure());
+        ledger.record(success());
+        assert!(
+            ledger.get(90).expect("still recorded").is_failure(),
+            "an ordinary success must not erase an earlier failure for the same              domain in the same frame"
+        );
+
+        // `record_superseding`: the entry moves with the records it describes.
+        ledger.record_superseding(success());
+        let superseded = ledger.get(90).expect("still recorded");
+        assert!(
+            !superseded.is_failure(),
+            "the terminal drain replaced the frame's D90 records, so its entry              must replace theirs"
+        );
+        assert_eq!(superseded.completion, ReadCompletion::Completed);
+        assert_eq!(superseded.extent, AnswerExtent::Whole);
+        assert_eq!(
+            ledger.len(),
+            1,
+            "superseding must replace the domain's entry, not add a second one"
+        );
+
+        // And it inserts when there is nothing to supersede.
+        let mut empty = DomainOutcomeLedger::new();
+        empty.record_superseding(success());
+        assert_eq!(empty.len(), 1);
+        assert!(!empty.get(90).expect("inserted").is_failure());
+
+        // It speaks for ONE domain: a neighbour's failure is untouched.
+        let mut two = DomainOutcomeLedger::new();
+        two.record(failure());
+        let mut other = failure();
+        other.domain_id = 86;
+        two.record(other);
+        two.record_superseding(success());
+        assert!(!two.get(90).expect("superseded").is_failure());
+        assert!(
+            two.get(86).expect("neighbour").is_failure(),
+            "superseding one domain must not touch another's entry"
+        );
+    }
 
     #[test]
     fn every_read_predicate_code_is_non_zero_and_unique() {

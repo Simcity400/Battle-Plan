@@ -411,6 +411,33 @@ pub enum CaptureError {
     RouteKeyMismatch,
 }
 
+impl CaptureError {
+    /// Index of this variant's counter in
+    /// `ConvoyTransportAttackCaptureErrorSubsites`. Exhaustive on purpose and
+    /// with no wildcard arm: a new `CaptureError` that would otherwise be
+    /// counted as some existing cause fails to compile instead.
+    pub fn subsite_index(&self) -> usize {
+        match self {
+            Self::NullCallRegister(_) => 0,
+            Self::CallAbiMismatch(_) => 1,
+            Self::AddressOverflow => 2,
+            Self::MemberUnreadable(_) => 3,
+            Self::MemberVtableMismatch => 4,
+            Self::InvalidHandle { .. } => 5,
+            Self::InvalidOwnerTag(_) => 6,
+            Self::InvalidKillerTag(_) => 7,
+            Self::InvalidProducerSequence => 8,
+            Self::InvalidMemberState(_) => 9,
+            Self::InvalidCombatEpoch => 10,
+            Self::InvalidEndpoint(_) => 11,
+            Self::CombatJoin(_) => 12,
+            Self::CombatSlotMismatch => 13,
+            Self::RouteJoin(_) => 14,
+            Self::RouteKeyMismatch => 15,
+        }
+    }
+}
+
 pub fn capture_candidate<M, C, R>(
     memory: &M,
     module_base: usize,

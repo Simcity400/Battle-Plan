@@ -6,8 +6,29 @@ pub const DOMAIN_CONVOY_TRANSPORT_ATTACK: u16 = 90;
 pub const DOMAIN_CONVOY_TRANSPORT_ATTACK_NAME: &str = "convoy_transport_attack_live";
 
 pub const BATCH_MAGIC: u32 = u32::from_le_bytes(*b"CTA2");
-pub const BATCH_VERSION: u16 = 5;
-pub const BATCH_HEADER_LEN: usize = 384;
+/// v7. Header 512 bytes; reserved tail 496..512; v6 and v5 refused by name.
+///
+/// Three things changed since v5, and the first changes what a reader may
+/// conclude from a batch:
+///
+/// * `exact_events_complete` no longer conjoins
+///   `resolver_unbound_convoy_clients == 0` (see the method's own comment). A
+///   v5 batch and a v7 batch with identical bytes can disagree about the
+///   complete flag, which is exactly the case a version exists to separate.
+/// * the header carries the 16 `CaptureError` leaves of the `capture_error`
+///   candidate subsite (360..488), so a refused sink event names the proof
+///   that refused it instead of the place it was refused at.
+/// * the header carries `dropped_pre_hour_address_overflow` (488..496), the
+///   leaf for the hook's last uncounted exit.
+///
+/// The middle version number is spent rather than reused. This lane's first
+/// pass declared a v6 whose reserved tail ran 488..512, and the second pass put
+/// the overflow leaf inside it. Nothing has ever produced or consumed either
+/// (both land unreleased, and old captures are disposable pre-production), but
+/// one version number naming two layouts is a trap for the next reader, and a
+/// `u16` is not scarce. So the layout above is v7 and 6 is refused like 5.
+pub const BATCH_VERSION: u16 = 7;
+pub const BATCH_HEADER_LEN: usize = 512;
 const V2_TELEMETRY_WORDS_OFF: usize = 32;
 const V3_TELEMETRY_WORDS_OFF: usize = 192;
 const V3_TELEMETRY_WORDS: usize = 8;
@@ -19,7 +40,20 @@ const V5_SUBSITE_OFF: usize = 280;
 const V5_SUBSITE_WORDS: usize = 8;
 const V5_RECEIPT_AHEAD_OFF: usize = 344;
 const V5_LAG_BEYOND_OFF: usize = 352;
-const V5_RESERVED_OFF: usize = 360;
+// v7 appends the CaptureError leaves. rc_vanilla spent all 56 of its sink
+// events on `capture_error` and the variant had already been thrown away by
+// `Err(_)` at the call site, so the capture could not say which of sixteen
+// proofs refused.
+const V7_CAPTURE_ERROR_OFF: usize = 360;
+const V7_CAPTURE_ERROR_WORDS: usize = 16;
+// The last silent exit out of the hook. `prepare_observation` computed the
+// engine-hour address with `checked_add(..)?`, so an overflow returned from the
+// hook after `CALLBACKS_SEEN` had already counted the entry and before any drop
+// counter moved -- one event lost at no named site, the same shape as the
+// context-address overflow QY closed one line further down the same function
+// (Codex review 01a0310c-cd88-7f51-b09b-7ca49723b01a, BLOCKING).
+const V7_PRE_HOUR_ADDRESS_OVERFLOW_OFF: usize = 488;
+const V7_RESERVED_OFF: usize = 496;
 pub const BATCH_ROW_LEN: usize = 120;
 pub const BATCH_FLAG_COMPLETE_EXACT_EVENTS: u32 = 1 << 0;
 pub const BATCH_FLAG_HOOK_INSTALLED: u32 = 1 << 1;
@@ -93,9 +127,117 @@ pub struct ConvoyTransportAttackTelemetry {
     /// observed inter-publication interval (combat-epoch join too stale to
     /// attribute). The bound is the collector's own cadence, never a constant.
     pub dropped_receipt_lag_beyond: u64,
+    /// Events refused because `game_state + GS_CURRENT_HOUR_OFF` overflowed, so
+    /// the engine hour could not even be addressed. A leaf OF
+    /// `dropped_hour_or_epoch`, like the two above it; before it existed this
+    /// path returned from the hook with nothing counted at all.
+    pub dropped_pre_hour_address_overflow: u64,
 }
 
 impl ConvoyTransportAttackTelemetry {
+    /// Every drop counter, aggregate and leaf, under the name the manifest
+    /// publishes it as, so a message and a manifest can be joined.
+    ///
+    /// These are SESSION-LIFETIME totals, which is what the drain carries by
+    /// construction (`candidate_subsites` is validated against lifetime
+    /// `dropped_candidate`); the per-drain number is `drops_this_drain`. Any
+    /// caller printing these must say `lifetime_` or it will read as this
+    /// interval's cause -- an earlier committed drop plus a fresh
+    /// queue-full drop would otherwise name the old cause and never the new
+    /// one.
+    ///
+    /// Exhaustive: `every_drop_counter_is_named` builds this from a literal
+    /// with no `..Default`, so a new drop field cannot be added without
+    /// appearing here.
+    pub fn named_drops(&self) -> [(&'static str, u64); 21] {
+        [
+            (
+                "convoy_transport_attack_dropped_no_original",
+                self.dropped_no_original,
+            ),
+            (
+                "convoy_transport_attack_dropped_teardown",
+                self.dropped_teardown,
+            ),
+            (
+                "convoy_transport_attack_dropped_nested",
+                self.dropped_nested,
+            ),
+            (
+                "convoy_transport_attack_dropped_capture_busy",
+                self.dropped_capture_busy,
+            ),
+            (
+                "convoy_transport_attack_dropped_hour_or_epoch",
+                self.dropped_hour_or_epoch,
+            ),
+            (
+                "convoy_transport_attack_dropped_resolver",
+                self.dropped_resolver,
+            ),
+            (
+                "convoy_transport_attack_dropped_candidate",
+                self.dropped_candidate,
+            ),
+            (
+                "convoy_transport_attack_dropped_pre_hour_unreadable",
+                self.dropped_pre_hour_unreadable,
+            ),
+            (
+                "convoy_transport_attack_dropped_pre_hour_address_overflow",
+                self.dropped_pre_hour_address_overflow,
+            ),
+            (
+                "convoy_transport_attack_dropped_receipt_hour_mismatch",
+                self.dropped_receipt_hour_mismatch,
+            ),
+            (
+                "convoy_transport_attack_dropped_receipt_hour_ahead",
+                self.dropped_receipt_hour_ahead,
+            ),
+            (
+                "convoy_transport_attack_dropped_receipt_lag_beyond",
+                self.dropped_receipt_lag_beyond,
+            ),
+            (
+                "convoy_transport_attack_dropped_post_hour_unreadable",
+                self.dropped_post_hour_unreadable,
+            ),
+            (
+                "convoy_transport_attack_dropped_post_hour_changed",
+                self.dropped_post_hour_changed,
+            ),
+            (
+                "convoy_transport_attack_dropped_resolver_snapshot_absent",
+                self.dropped_resolver_snapshot_absent,
+            ),
+            (
+                "convoy_transport_attack_dropped_resolver_unpublished",
+                self.dropped_resolver_unpublished,
+            ),
+            (
+                "convoy_transport_attack_dropped_d70_pre",
+                self.dropped_d70_pre,
+            ),
+            (
+                "convoy_transport_attack_dropped_d70_post",
+                self.dropped_d70_post,
+            ),
+            (
+                "convoy_transport_attack_dropped_d70_mutation",
+                self.dropped_d70_mutation,
+            ),
+            (
+                "convoy_transport_attack_dropped_queue_busy",
+                self.dropped_queue_busy,
+            ),
+            (
+                "convoy_transport_attack_dropped_queue_full",
+                self.dropped_queue_full,
+            ),
+        ]
+    }
+
     pub fn has_drop(&self) -> bool {
         [
             self.dropped_no_original,
@@ -174,6 +316,109 @@ impl ConvoyTransportAttackCandidateSubsites {
     }
 }
 
+/// Which `CaptureError` a `capture_error` candidate drop came from.
+///
+/// `prepare_observation` matched `capture_candidate(..)` with `Err(_)` and
+/// threw the variant away, so `capture_error` named the CALL, not the cause.
+/// In captures/rc_vanilla every one of the window's 56 sink events died there
+/// -- 56 of 56 hook entries, `dropped_candidate=56`,
+/// `dropped_candidate_capture_error=56`, every other leaf 0 -- and which of
+/// the sixteen proofs inside `capture_candidate` refused was unrecoverable
+/// from the capture. These are LIFETIME counters like the candidate subsites
+/// they refine, and their sum must equal `candidate_subsites.capture_error`
+/// exactly (validated at decode).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConvoyTransportAttackCaptureErrorSubsites {
+    pub null_call_register: u64,
+    pub call_abi_mismatch: u64,
+    pub address_overflow: u64,
+    pub member_unreadable: u64,
+    pub member_vtable_mismatch: u64,
+    pub invalid_handle: u64,
+    pub invalid_owner_tag: u64,
+    pub invalid_killer_tag: u64,
+    pub invalid_producer_sequence: u64,
+    pub invalid_member_state: u64,
+    pub invalid_combat_epoch: u64,
+    pub invalid_endpoint: u64,
+    pub combat_join: u64,
+    pub combat_slot_mismatch: u64,
+    pub route_join: u64,
+    pub route_key_mismatch: u64,
+}
+
+impl ConvoyTransportAttackCaptureErrorSubsites {
+    pub fn total(&self) -> u64 {
+        self.as_array()
+            .into_iter()
+            .fold(0u64, |total, value| total.wrapping_add(value))
+    }
+
+    /// Wire order. Index `i` is `CaptureError::subsite_index() == i`; the two
+    /// are pinned together by
+    /// `capture_error_subsite_indices_cover_every_variant_exactly_once`.
+    pub const FIELDS: [&'static str; V7_CAPTURE_ERROR_WORDS] = [
+        "convoy_transport_attack_dropped_capture_error_null_call_register",
+        "convoy_transport_attack_dropped_capture_error_call_abi_mismatch",
+        "convoy_transport_attack_dropped_capture_error_address_overflow",
+        "convoy_transport_attack_dropped_capture_error_member_unreadable",
+        "convoy_transport_attack_dropped_capture_error_member_vtable_mismatch",
+        "convoy_transport_attack_dropped_capture_error_invalid_handle",
+        "convoy_transport_attack_dropped_capture_error_invalid_owner_tag",
+        "convoy_transport_attack_dropped_capture_error_invalid_killer_tag",
+        "convoy_transport_attack_dropped_capture_error_invalid_producer_sequence",
+        "convoy_transport_attack_dropped_capture_error_invalid_member_state",
+        "convoy_transport_attack_dropped_capture_error_invalid_combat_epoch",
+        "convoy_transport_attack_dropped_capture_error_invalid_endpoint",
+        "convoy_transport_attack_dropped_capture_error_combat_join",
+        "convoy_transport_attack_dropped_capture_error_combat_slot_mismatch",
+        "convoy_transport_attack_dropped_capture_error_route_join",
+        "convoy_transport_attack_dropped_capture_error_route_key_mismatch",
+    ];
+
+    pub fn as_array(&self) -> [u64; V7_CAPTURE_ERROR_WORDS] {
+        [
+            self.null_call_register,
+            self.call_abi_mismatch,
+            self.address_overflow,
+            self.member_unreadable,
+            self.member_vtable_mismatch,
+            self.invalid_handle,
+            self.invalid_owner_tag,
+            self.invalid_killer_tag,
+            self.invalid_producer_sequence,
+            self.invalid_member_state,
+            self.invalid_combat_epoch,
+            self.invalid_endpoint,
+            self.combat_join,
+            self.combat_slot_mismatch,
+            self.route_join,
+            self.route_key_mismatch,
+        ]
+    }
+
+    pub fn from_array(values: [u64; V7_CAPTURE_ERROR_WORDS]) -> Self {
+        Self {
+            null_call_register: values[0],
+            call_abi_mismatch: values[1],
+            address_overflow: values[2],
+            member_unreadable: values[3],
+            member_vtable_mismatch: values[4],
+            invalid_handle: values[5],
+            invalid_owner_tag: values[6],
+            invalid_killer_tag: values[7],
+            invalid_producer_sequence: values[8],
+            invalid_member_state: values[9],
+            invalid_combat_epoch: values[10],
+            invalid_endpoint: values[11],
+            combat_join: values[12],
+            combat_slot_mismatch: values[13],
+            route_join: values[14],
+            route_key_mismatch: values[15],
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ConvoyTransportAttackWitness {
     pub hook_installed: bool,
@@ -204,6 +449,7 @@ pub struct ConvoyTransportAttackWitness {
     /// an enqueue, so seen == emitted + drops must hold and is validated.
     pub drops_this_drain: u64,
     pub candidate_subsites: ConvoyTransportAttackCandidateSubsites,
+    pub capture_error_subsites: ConvoyTransportAttackCaptureErrorSubsites,
     pub telemetry: ConvoyTransportAttackTelemetry,
 }
 
@@ -213,12 +459,35 @@ impl ConvoyTransportAttackWitness {
     /// the drain's own correlation guard -- nothing session-cumulative
     /// decides it (pw_gate_final: 392/393 batches failed on lifetime scars
     /// from incidents their own intervals never contained).
+    /// `resolver_unbound_convoy_clients` is deliberately NOT a conjunct.
+    ///
+    /// It is the last publication-level fact that was still deciding a
+    /// per-drain claim -- the same defect class as the v3/v4 lifetime scars,
+    /// one level up -- and in captures/rc_vanilla it alone cost 319 of 323
+    /// frames their exactness while 267+ of those frames saw no sink traffic
+    /// at all (window totals: `events_seen_this_drain=56`,
+    /// `drops_this_drain=56`, `remaining_events=0`, `active_callbacks=0`,
+    /// `hook_installed_batches=323`, `queue_drain_complete_batches=323`, so
+    /// no other conjunct could have failed 319 times).
+    ///
+    /// Dropping it cannot hide a lost event. `convoy_terminal_hook`
+    /// increments `CALLBACKS_SEEN` on ENTRY, before the resolver is consulted
+    /// at all, and every path out of the hook ends at exactly one named drop
+    /// counter or in an enqueue. An event whose convoy client has no route
+    /// binding therefore reaches `capture_candidate`, fails `RouteJoin`, and
+    /// lands on `capture_error` -- inside `drops_this_drain`, which IS a
+    /// conjunct. Unbound clients can only ever produce COUNTED drops, never
+    /// silent ones, and they can never produce a row (a row needs a resolved
+    /// route). What they express is coverage -- "had an event fired, could we
+    /// have captured it" -- which is a real gap and stays named on the wire
+    /// (`resolver_unbound_convoy_clients`, its own manifest `problems` row,
+    /// and the `h_convoy_route_refused_*` leaves that say why), but it is not
+    /// the claim this predicate makes about THIS interval's event set.
     pub fn exact_events_complete(&self) -> bool {
         self.hook_installed
             && self.queue_drain_complete
             && self.remaining_events == 0
             && self.active_callbacks == 0
-            && self.resolver_unbound_convoy_clients == 0
             && self.events_seen_this_drain == self.events_emitted_this_drain
             && self.drops_this_drain == 0
     }
@@ -351,6 +620,19 @@ pub fn encode_convoy_transport_attack_batch(
         V5_LAG_BEYOND_OFF,
         witness.telemetry.dropped_receipt_lag_beyond,
     );
+    write_u64(
+        &mut out,
+        V7_PRE_HOUR_ADDRESS_OVERFLOW_OFF,
+        witness.telemetry.dropped_pre_hour_address_overflow,
+    );
+    for (index, value) in witness
+        .capture_error_subsites
+        .as_array()
+        .into_iter()
+        .enumerate()
+    {
+        write_u64(&mut out, V7_CAPTURE_ERROR_OFF + index * 8, value);
+    }
 
     for (index, row) in rows.iter().enumerate() {
         validate_row(row)?;
@@ -386,7 +668,7 @@ pub fn decode_convoy_transport_attack_batch(
     if read_u16(bytes, 10)? != 0 || read_u32(bytes, 20)? != 0 {
         return Err(BatchDecodeError::Reserved);
     }
-    if bytes[V5_RESERVED_OFF..BATCH_HEADER_LEN]
+    if bytes[V7_RESERVED_OFF..BATCH_HEADER_LEN]
         .iter()
         .any(|byte| *byte != 0)
     {
@@ -434,6 +716,12 @@ pub fn decode_convoy_transport_attack_batch(
         route_reread_mismatch: subsite_values[6],
         slot_busy: subsite_values[7],
     };
+    let mut capture_error_values = [0u64; V7_CAPTURE_ERROR_WORDS];
+    for (index, value) in capture_error_values.iter_mut().enumerate() {
+        *value = read_u64_at(V7_CAPTURE_ERROR_OFF + index * 8)?;
+    }
+    let capture_error_subsites =
+        ConvoyTransportAttackCaptureErrorSubsites::from_array(capture_error_values);
     let witness = ConvoyTransportAttackWitness {
         hook_installed: flags & BATCH_FLAG_HOOK_INSTALLED != 0,
         resolver_ever_partial: flags & BATCH_FLAG_RESOLVER_EVER_PARTIAL != 0,
@@ -455,6 +743,7 @@ pub fn decode_convoy_transport_attack_batch(
         events_emitted_this_drain: read_u64_at(V5_PER_DRAIN_OFF + 8)?,
         drops_this_drain: read_u64_at(V5_PER_DRAIN_OFF + 16)?,
         candidate_subsites,
+        capture_error_subsites,
         telemetry: ConvoyTransportAttackTelemetry {
             callbacks_seen: telemetry_values[0],
             original_calls: telemetry_values[1],
@@ -481,6 +770,9 @@ pub fn decode_convoy_transport_attack_batch(
             dropped_queue_full: telemetry_values[14],
             dropped_receipt_hour_ahead: read_u64_at(V5_RECEIPT_AHEAD_OFF)?,
             dropped_receipt_lag_beyond: read_u64_at(V5_LAG_BEYOND_OFF)?,
+            dropped_pre_hour_address_overflow: read_u64_at(
+                V7_PRE_HOUR_ADDRESS_OVERFLOW_OFF,
+            )?,
         },
     };
 
@@ -577,6 +869,13 @@ fn validate_witness(
     }
     if witness.candidate_subsites.total() != witness.telemetry.dropped_candidate {
         return Err(BatchDecodeError::InvalidWitness("candidate_subsites"));
+    }
+    // Every `capture_error` drop came from exactly one `CaptureError` variant,
+    // so the leaves partition the aggregate they refine. A batch whose leaves
+    // do not add up is claiming a cause it cannot name -- which is the state
+    // rc_vanilla was in for all 56 of its lost events.
+    if witness.capture_error_subsites.total() != witness.candidate_subsites.capture_error {
+        return Err(BatchDecodeError::InvalidWitness("capture_error_subsites"));
     }
     Ok(())
 }
@@ -807,6 +1106,56 @@ mod tests {
         assert_eq!(decoded.rows, rows);
     }
 
+    /// kills rc_vanilla d90 (319 of 323 frames degraded): an unbound convoy
+    /// client is a COVERAGE gap, and a drain that saw no event and lost none
+    /// is exhaustive whether or not the resolver could have bound one.
+    ///
+    /// What production change makes this fail: putting
+    /// `resolver_unbound_convoy_clients == 0` back into
+    /// `exact_events_complete`.
+    #[test]
+    fn cta2_a_quiet_drain_is_exhaustive_even_while_clients_are_unbound() {
+        let mut quiet = witness(&[]);
+        quiet.resolver_unbound_convoy_clients = 22;
+        let encoded = encode_convoy_transport_attack_batch(&[], quiet).unwrap();
+        let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
+        assert_eq!(
+            decoded.witness.resolver_unbound_convoy_clients, 22,
+            "the coverage gap stays on the wire and stays named"
+        );
+        assert!(
+            decoded.exact_events_complete,
+            "nothing entered the hook this interval, so the empty event set IS all of them"
+        );
+    }
+
+    /// The other half of the same law: unbound clients never HIDE a loss,
+    /// because an event that arrives while its client is unbound is refused
+    /// inside `capture_candidate` and counted, and the count is a conjunct.
+    #[test]
+    fn cta2_an_event_lost_to_an_unbound_client_still_disqualifies_the_batch() {
+        let mut lost = witness(&[]);
+        lost.resolver_unbound_convoy_clients = 22;
+        lost.events_seen_this_drain = 1;
+        lost.events_emitted_this_drain = 0;
+        lost.drops_this_drain = 1;
+        lost.telemetry.callbacks_seen = 1;
+        lost.telemetry.original_calls = 1;
+        lost.telemetry.dropped_candidate = 1;
+        lost.candidate_subsites.capture_error = 1;
+        lost.capture_error_subsites.route_join = 1;
+        let encoded = encode_convoy_transport_attack_batch(&[], lost).unwrap();
+        let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
+        assert!(
+            !decoded.exact_events_complete,
+            "a counted drop is what refuses the batch, and it is still counted"
+        );
+        assert_eq!(
+            decoded.witness.capture_error_subsites.route_join, 1,
+            "and the wire names WHICH proof refused it"
+        );
+    }
+
     #[test]
     fn cta2_publishes_rows_captured_under_a_partial_resolver() {
         let expected = vec![
@@ -818,7 +1167,10 @@ mod tests {
         let encoded = encode_convoy_transport_attack_batch(&expected, witness).unwrap();
         let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
         assert_eq!(decoded.rows, expected);
-        assert!(!decoded.exact_events_complete);
+        assert!(
+            decoded.exact_events_complete,
+            "the rows that DID bind are exhaustive for their own interval; the unbound client is a named coverage gap beside them, not a loss"
+        );
     }
 
     #[test]
@@ -833,16 +1185,18 @@ mod tests {
                 decoded.witness.resolver_unbound_convoy_clients, unbound,
                 "unbound count must round-trip exactly"
             );
-            assert_eq!(
+            assert!(
                 decoded.exact_events_complete,
-                unbound == 0,
-                "a partial resolver must disqualify the exhaustive claim"
+                "the coverage gap is carried, not conflated with exhaustiveness"
             );
         }
     }
 
+    /// The complete flag is not a free-standing byte: it must be exactly what
+    /// the witness derives. Tampering with a conjunct without moving the flag
+    /// is refused.
     #[test]
-    fn cta2_rejects_a_complete_flag_over_a_partial_resolver() {
+    fn cta2_rejects_a_complete_flag_that_the_witness_does_not_derive() {
         let rows = vec![row(7, ConvoyD70MutationKind::IncrementExisting)];
         let mut encoded = encode_convoy_transport_attack_batch(&rows, witness(&rows)).unwrap();
         assert!(
@@ -850,11 +1204,160 @@ mod tests {
                 .unwrap()
                 .exact_events_complete
         );
-        encoded[188..192].copy_from_slice(&1u32.to_le_bytes());
+        // `active_callbacks` (offset 160) IS a conjunct; raising it without
+        // clearing the flag is the forgery this check exists for.
+        encoded[160..164].copy_from_slice(&1u32.to_le_bytes());
         assert_eq!(
             decode_convoy_transport_attack_batch(&encoded),
             Err(BatchDecodeError::InvalidWitness("complete_flag"))
         );
+    }
+
+    /// The `capture_error` leaves must partition the aggregate they refine, or
+    /// a batch could claim a cause it cannot name -- which is the state
+    /// rc_vanilla was in for all 56 of its lost events.
+    #[test]
+    fn cta2_rejects_capture_error_leaves_that_do_not_sum_to_their_aggregate() {
+        let mut bad = witness(&[]);
+        bad.telemetry.dropped_candidate = 3;
+        bad.candidate_subsites.capture_error = 3;
+        bad.events_seen_this_drain = 3;
+        bad.drops_this_drain = 3;
+        bad.telemetry.callbacks_seen = 3;
+        bad.telemetry.original_calls = 3;
+        bad.capture_error_subsites.route_join = 2;
+        assert_eq!(
+            encode_convoy_transport_attack_batch(&[], bad),
+            Err(BatchDecodeError::InvalidWitness("capture_error_subsites"))
+        );
+        bad.capture_error_subsites.combat_slot_mismatch = 1;
+        let encoded = encode_convoy_transport_attack_batch(&[], bad).unwrap();
+        let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
+        assert_eq!(decoded.witness.capture_error_subsites.route_join, 2);
+        assert_eq!(
+            decoded.witness.capture_error_subsites.combat_slot_mismatch,
+            1
+        );
+    }
+
+    /// Law: every drop counter is in `named_drops`, so a message built from it
+    /// cannot omit the cause that took the events.
+    ///
+    /// The literal below has no `..Default::default()` on purpose: a new
+    /// `dropped_*` field fails to compile here until it is added, which is the
+    /// only thing that keeps the taxonomy from silently going stale.
+    #[test]
+    fn every_drop_counter_is_named() {
+        let telemetry = ConvoyTransportAttackTelemetry {
+            callbacks_seen: 900,
+            original_calls: 901,
+            events_emitted: 902,
+            receipt_hour_lag_max: 903,
+            receipt_hour_lead_max: 904,
+            dropped_no_original: 1,
+            dropped_teardown: 2,
+            dropped_nested: 3,
+            dropped_capture_busy: 4,
+            dropped_hour_or_epoch: 5,
+            dropped_resolver: 6,
+            dropped_candidate: 7,
+            dropped_pre_hour_unreadable: 8,
+            dropped_pre_hour_address_overflow: 9,
+            dropped_receipt_hour_mismatch: 10,
+            dropped_receipt_hour_ahead: 11,
+            dropped_receipt_lag_beyond: 12,
+            dropped_post_hour_unreadable: 13,
+            dropped_post_hour_changed: 14,
+            dropped_resolver_snapshot_absent: 15,
+            dropped_resolver_unpublished: 16,
+            dropped_d70_pre: 17,
+            dropped_d70_post: 18,
+            dropped_d70_mutation: 19,
+            dropped_queue_busy: 20,
+            dropped_queue_full: 21,
+        };
+        let named = telemetry.named_drops();
+        let mut values: Vec<u64> = named.iter().map(|(_, value)| *value).collect();
+        values.sort_unstable();
+        assert_eq!(
+            values,
+            (1..=21).collect::<Vec<u64>>(),
+            "every drop field must appear exactly once, and no non-drop field may"
+        );
+        let mut names: Vec<&str> = named.iter().map(|(name, _)| *name).collect();
+        names.sort_unstable();
+        let unique = names.len();
+        names.dedup();
+        assert_eq!(names.len(), unique, "two drop counters share a unit name");
+        assert!(
+            named
+                .iter()
+                .all(|(name, _)| name.starts_with("convoy_transport_attack_dropped_")),
+            "the names must be the ones the manifest publishes, or a message \
+             built from them cannot be joined to a capture"
+        );
+        assert!(
+            ConvoyTransportAttackTelemetry::default()
+                .named_drops()
+                .iter()
+                .all(|(_, value)| *value == 0),
+            "a clean session names nothing"
+        );
+    }
+
+    /// Every `CaptureError` variant owns exactly one wire slot. A new variant
+    /// that reused an existing index would report itself as a different cause.
+    #[test]
+    fn capture_error_subsite_indices_cover_every_variant_exactly_once() {
+        use crate::convoy_terminal_attribution::{CaptureError, EntityHandle};
+        let every = [
+            CaptureError::NullCallRegister("x"),
+            CaptureError::CallAbiMismatch("x"),
+            CaptureError::AddressOverflow,
+            CaptureError::MemberUnreadable("x"),
+            CaptureError::MemberVtableMismatch,
+            CaptureError::InvalidHandle {
+                label: "x",
+                handle: EntityHandle { id: 1, type_tag: 2 },
+            },
+            CaptureError::InvalidOwnerTag(1),
+            CaptureError::InvalidKillerTag(1),
+            CaptureError::InvalidProducerSequence,
+            CaptureError::InvalidMemberState(1),
+            CaptureError::InvalidCombatEpoch,
+            CaptureError::InvalidEndpoint("x"),
+            CaptureError::CombatJoin(String::new()),
+            CaptureError::CombatSlotMismatch,
+            CaptureError::RouteJoin(String::new()),
+            CaptureError::RouteKeyMismatch,
+        ];
+        assert_eq!(
+            every.len(),
+            ConvoyTransportAttackCaptureErrorSubsites::FIELDS.len(),
+            "a CaptureError variant has no wire slot, or a slot has no variant"
+        );
+        let mut seen = vec![false; every.len()];
+        for error in &every {
+            let index = error.subsite_index();
+            assert!(index < seen.len(), "{error:?} indexes past the wire");
+            assert!(!seen[index], "{error:?} shares a slot with another variant");
+            seen[index] = true;
+        }
+        // And each index really writes its own field.
+        for (index, name) in ConvoyTransportAttackCaptureErrorSubsites::FIELDS
+            .iter()
+            .enumerate()
+        {
+            let mut values = [0u64; 16];
+            values[index] = 1;
+            let subsites = ConvoyTransportAttackCaptureErrorSubsites::from_array(values);
+            assert_eq!(subsites.total(), 1, "{name} must be summed exactly once");
+            assert_eq!(
+                subsites.as_array()[index],
+                1,
+                "{name} must round-trip through its own slot"
+            );
+        }
     }
 
     #[test]
@@ -865,9 +1368,20 @@ mod tests {
         // incomplete). The latch is now diagnostic only.
         let rows = vec![row(7, ConvoyD70MutationKind::IncrementExisting)];
 
+        // The first interval is inexact because it LOST an event -- since v7
+        // that is the only thing that can make an interval inexact, and it is
+        // what "partial" has to mean here for the test to say anything. The
+        // unbound count and the latch ride along as the diagnostics they are.
         let mut partial = witness(&rows);
         partial.resolver_unbound_convoy_clients = 2;
         partial.resolver_ever_partial = true;
+        partial.events_seen_this_drain += 1;
+        partial.drops_this_drain += 1;
+        partial.telemetry.callbacks_seen += 1;
+        partial.telemetry.original_calls += 1;
+        partial.telemetry.dropped_candidate += 1;
+        partial.candidate_subsites.capture_error += 1;
+        partial.capture_error_subsites.route_join += 1;
         let encoded = encode_convoy_transport_attack_batch(&rows, partial).unwrap();
         assert!(
             !decode_convoy_transport_attack_batch(&encoded)
@@ -921,6 +1435,9 @@ mod tests {
         dropped.drops_this_drain = 1;
         dropped.telemetry.dropped_candidate = 1;
         dropped.candidate_subsites.capture_error = 1;
+        // The leaves partition the aggregate, so naming the aggregate without
+        // naming which proof refused does not encode at all.
+        dropped.capture_error_subsites.route_join = 1;
         let encoded = encode_convoy_transport_attack_batch(&[], dropped).unwrap();
         assert!(
             !decode_convoy_transport_attack_batch(&encoded)
@@ -958,9 +1475,23 @@ mod tests {
     }
 
     #[test]
-    fn cta2_refuses_pre_v5_batches_by_version() {
+    fn cta2_refuses_pre_v7_batches_by_version() {
         let rows = [row(7, ConvoyD70MutationKind::IncrementExisting)];
         let mut encoded = encode_convoy_transport_attack_batch(&rows, witness(&rows)).unwrap();
+        // v5 and v7 can carry identical bytes and disagree about the complete
+        // flag, so a v5 batch must be refused rather than reinterpreted; v6 is
+        // refused because this lane spent that number on a superseded header
+        // layout rather than reuse it.
+        write_u16(&mut encoded, 4, 6);
+        assert_eq!(
+            decode_convoy_transport_attack_batch(&encoded),
+            Err(BatchDecodeError::VersionOrLayout)
+        );
+        write_u16(&mut encoded, 4, 5);
+        assert_eq!(
+            decode_convoy_transport_attack_batch(&encoded),
+            Err(BatchDecodeError::VersionOrLayout)
+        );
         write_u16(&mut encoded, 4, 4);
         assert_eq!(
             decode_convoy_transport_attack_batch(&encoded),
@@ -1013,6 +1544,27 @@ mod tests {
         let mut encoded = encode_convoy_transport_attack_batch(&rows, witness(&rows)).unwrap();
         encoded[BATCH_HEADER_LEN + 97] = 1;
         assert_eq!(
+            decode_convoy_transport_attack_batch(&encoded),
+            Err(BatchDecodeError::Reserved)
+        );
+        // The HEADER tail, which the row case above cannot reach. Both ends of
+        // the v7 window, so moving the boundary in either direction fails here.
+        for offset in [V7_RESERVED_OFF, BATCH_HEADER_LEN - 1] {
+            let mut encoded = encode_convoy_transport_attack_batch(&rows, witness(&rows)).unwrap();
+            encoded[offset] = 1;
+            assert_eq!(
+                decode_convoy_transport_attack_batch(&encoded),
+                Err(BatchDecodeError::Reserved),
+                "header byte {offset} is reserved in v7"
+            );
+        }
+        // And the word immediately below it is a FIELD, not reserved: v7 spends
+        // 488..496 on `dropped_pre_hour_address_overflow`. A decoder that
+        // reserved it would refuse that word with `Reserved` instead of reading
+        // it -- whatever it then makes of the accounting is a different verdict.
+        let mut encoded = encode_convoy_transport_attack_batch(&rows, witness(&rows)).unwrap();
+        encoded[V7_PRE_HOUR_ADDRESS_OVERFLOW_OFF] = 1;
+        assert_ne!(
             decode_convoy_transport_attack_batch(&encoded),
             Err(BatchDecodeError::Reserved)
         );

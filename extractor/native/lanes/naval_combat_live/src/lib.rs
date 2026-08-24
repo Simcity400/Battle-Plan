@@ -50,13 +50,16 @@ pub use convoy_route_source::{
     A729_REFERENCE_REGISTRY_SMALL_TABLE_RVA, A729_REFERENCE_RESOLVER_RVA,
     CLEND_LEASE_EXCHANGE_DESTINATION_STATE_PTR_OFF, CLEND_LEASE_EXCHANGE_ORIGIN_STATE_PTR_OFF,
     CNAVAL_UNIT_TRANSFER_SOURCE_PROVINCE_OFF, CNAVAL_UNIT_TRANSFER_TARGET_PROVINCE_OFF,
+    CONVOY_ROUTE_REFUSAL_AUTHENTICATION_INDEX, CONVOY_ROUTE_REFUSAL_UNCLASSIFIED_INDEX,
+    CONVOY_ROUTE_REFUSAL_UNIT_NAMES,
     CSTATE_DATABASE_ID_OFF,
 };
 
 pub use convoy_transport_attack::{
     decode_convoy_transport_attack_batch, encode_convoy_transport_attack_batch,
     BatchDecodeError as ConvoyTransportAttackBatchError, ConvoyD70MutationKind,
-    ConvoyD70MutationProof, ConvoyTransportAttackCandidateSubsites, ConvoyTransportAttackRow,
+    ConvoyD70MutationProof, ConvoyTransportAttackCandidateSubsites,
+    ConvoyTransportAttackCaptureErrorSubsites, ConvoyTransportAttackRow,
     ConvoyTransportAttackTelemetry, ConvoyTransportAttackWitness,
     DecodedConvoyTransportAttackBatch,
     BATCH_FLAG_COMPLETE_EXACT_EVENTS, BATCH_FLAG_HOOK_INSTALLED,

@@ -4639,7 +4639,23 @@ impl HConvoyFixtureOwner {
         } else {
             None
         };
-        let batches = seal_a729_convoy_transport_attack_evidence()?;
+        let sealed = seal_a729_convoy_transport_attack_evidence();
+        // BEFORE `self` drops and its `Drop` attempts the uninstall, which
+        // refuses outright while a reservation is active. The seal above parks a
+        // refused release on both of its failure arms and in its own pre-seal
+        // retry, and there is no `PendingHookReservations` and no registry
+        // teardown in evidence mode to come back for it.
+        //
+        // Deliberately NOT fatal, and D90 only. By this point the D90 events are
+        // committed and the evidence queue is drained, so `sealed` holds the
+        // only copy of the batches; returning early over an unrelated parked
+        // release would destroy the capture it just took. The primitive re-parks
+        // a refusal, so the ABI's own check finds it and fails the command by
+        // name -- 125 if the reservation was still active when the owner dropped
+        // and the uninstall refused, 123 otherwise. Either way it is a named
+        // nonzero status, never silence.
+        let _reparked_and_reported_by_the_abi = attach_log::release_parked_terminal_d90();
+        let batches = sealed?;
         if batches.is_empty() {
             return Err("H-CONVOY seal returned no CTA2 custody batch".into());
         }
@@ -4831,10 +4847,32 @@ impl HConvoyFixtureOwner {
     }
 }
 
+/// Set when the fixture owner's `Drop` could not uninstall the evidence hook.
+///
+/// The uninstall refuses outright while a D90 reservation is ACTIVE, and an
+/// empty custody slot does not prove no reservation is active: the release
+/// primitive takes an id OUT of the slot before it attempts the rollback, so a
+/// fixture command can see an empty slot while the attach worker is mid-release
+/// on the other thread (Codex review `01a032af-e060-7db1-9222-5f99cfb3c2f9`,
+/// BLOCKING). The uninstall result is the honest predicate -- it asks the lane,
+/// not the slot -- so it is recorded here instead of being dropped, and the ABI
+/// reports it as its own status code rather than returning success over it.
+#[cfg(windows)]
+static H_CONVOY_UNINSTALL_REFUSED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Serializes the evidence fixture ABI so that the flag above is read by the
+/// same command that cleared it. See the comment at the ABI's entry.
+#[cfg(windows)]
+static H_CONVOY_FIXTURE_COMMAND: std::sync::OnceLock<std::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
+
 #[cfg(windows)]
 impl Drop for HConvoyFixtureOwner {
     fn drop(&mut self) {
-        let _ = naval4950::uninstall_convoy_terminal_hook();
+        if naval4950::uninstall_convoy_terminal_hook().is_err() {
+            H_CONVOY_UNINSTALL_REFUSED.store(true, std::sync::atomic::Ordering::Release);
+        }
     }
 }
 
@@ -4890,6 +4928,34 @@ pub unsafe extern "system" fn battle-plan_h_convoy_fixture_command_json(
     let Some(operation) = object.get("operation").and_then(|value| value.as_str()) else {
         return 104;
     };
+    // ONE FIXTURE COMMAND AT A TIME, for the whole command.
+    //
+    // `H_CONVOY_UNINSTALL_REFUSED` is process-global -- it has to be, because
+    // the owner's `Drop` is the only place that learns the uninstall refused --
+    // so two commands running at once could have one clear the flag between the
+    // other's `Drop` and its own read, and the second command would report
+    // success over a reservation that is still active (Codex review
+    // `01a032bc-fd4a-74a1-88ec-8c1f564fc598`, BLOCKING). Holding this for the
+    // whole command makes the flag operation-local in effect. There is no
+    // engine thread here to make wait: this ABI is an evidence-only remote-
+    // thread entry point and its commands are seconds apart by construction.
+    let Ok(_command) = H_CONVOY_FIXTURE_COMMAND
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+    else {
+        return 107;
+    };
+    // CUSTODY OWNERSHIP ACROSS THREADS. This ABI runs on a remote thread the
+    // collector does not own, concurrently with the attach worker that
+    // `DllMain` always spawns -- so the worker's final retry is NOT behind it,
+    // and a seal that parks a refused release after that retry has gone would
+    // have no driver left (Codex review
+    // `01a0320d-3d7c-78c3-8926-f31cae6d6d32`, BLOCKING). There is no single last
+    // statement in a process with two independent drivers, so ownership is per
+    // operation instead: every command below that can park retries at its own
+    // end and returns a residual as its own status code. Only a REFUSED release
+    // is ever parked, so neither driver can take a reservation the other still
+    // holds active.
     match operation {
         "install" => {
             let Some(output_root) = object.get("output_root").and_then(|value| value.as_str())
@@ -4954,18 +5020,51 @@ pub unsafe extern "system" fn battle-plan_h_convoy_fixture_command_json(
             else {
                 return 121;
             };
-            match owner.seal_and_write(utc_end) {
-                Ok(_) => 0,
-                Err(_) => 122,
+            H_CONVOY_UNINSTALL_REFUSED.store(false, std::sync::atomic::Ordering::Release);
+            let sealed = owner.seal_and_write(utc_end);
+            // `seal_and_write` consumes the owner: it retries parked custody
+            // itself, then drops, and the drop's uninstall records a refusal
+            // instead of swallowing it. Retry once more for anything the drop
+            // path parked, and report the LANE's verdict ahead of our own --
+            // an empty custody slot does not prove no reservation is active.
+            let custody = attach_log::release_parked_terminal_custody();
+            if H_CONVOY_UNINSTALL_REFUSED.load(std::sync::atomic::Ordering::Acquire) {
+                125
+            } else if !custody.is_empty() {
+                123
+            } else if sealed.is_err() {
+                122
+            } else {
+                0
             }
         }
         "abort" => {
-            let _ = H_CONVOY_FIXTURE_OWNER
+            H_CONVOY_UNINSTALL_REFUSED.store(false, std::sync::atomic::Ordering::Release);
+            // BEFORE dropping the owner, whose `Drop` uninstalls the hook and
+            // whose uninstall refuses outright while a reservation is active.
+            let custody = attach_log::release_parked_terminal_custody();
+            let owner = H_CONVOY_FIXTURE_OWNER
                 .get()
                 .and_then(|slot| slot.lock().ok())
                 .and_then(|mut slot| slot.take());
-            let _ = naval4950::uninstall_convoy_terminal_hook();
-            0
+            let had_owner = owner.is_some();
+            drop(owner);
+            // With no owner there was no `Drop` to attempt it, so ask directly.
+            // Either way the refusal decides the verdict: the lane is the only
+            // thing that can say whether a reservation is still active, and a
+            // hook left installed with its owner gone has no driver at all.
+            let refused = if had_owner {
+                H_CONVOY_UNINSTALL_REFUSED.load(std::sync::atomic::Ordering::Acquire)
+            } else {
+                naval4950::uninstall_convoy_terminal_hook().is_err()
+            };
+            if refused {
+                125
+            } else if custody.is_empty() {
+                0
+            } else {
+                124
+            }
         }
         _ => 105,
     }

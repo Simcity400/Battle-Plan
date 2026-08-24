@@ -135,6 +135,7 @@ pub struct ConvoyTerminalHookTelemetry {
     pub dropped_resolver: u64,
     pub dropped_candidate: u64,
     pub dropped_pre_hour_unreadable: u64,
+    pub dropped_pre_hour_address_overflow: u64,
     pub dropped_receipt_hour_mismatch: u64,
     pub dropped_receipt_hour_ahead: u64,
     pub dropped_receipt_lag_beyond: u64,
@@ -178,6 +179,17 @@ fn subsite_counters() -> crate::convoy_transport_attack::ConvoyTransportAttackCa
         route_reread_mismatch: load(&CAND_ROUTE_REREAD_MISMATCH),
         slot_busy: load(&CAND_SLOT_BUSY),
     }
+}
+
+fn capture_error_subsite_counters(
+) -> crate::convoy_transport_attack::ConvoyTransportAttackCaptureErrorSubsites {
+    let mut values = [0u64; crate::convoy_transport_attack::
+        ConvoyTransportAttackCaptureErrorSubsites::FIELDS
+        .len()];
+    for (slot, counter) in values.iter_mut().zip(CAPTURE_ERROR_SUBSITES.iter()) {
+        *slot = counter.load(Ordering::Acquire);
+    }
+    crate::convoy_transport_attack::ConvoyTransportAttackCaptureErrorSubsites::from_array(values)
 }
 
 /// Pure delta fold between two counter observations. `drops_total` sums the
@@ -231,6 +243,10 @@ pub struct ConvoyTerminalDrain {
     /// against the aggregate.
     pub candidate_subsites:
         crate::convoy_transport_attack::ConvoyTransportAttackCandidateSubsites,
+    /// LIFETIME `CaptureError` leaves of `candidate_subsites.capture_error`,
+    /// captured in the same guarded window for the same reason.
+    pub capture_error_subsites:
+        crate::convoy_transport_attack::ConvoyTransportAttackCaptureErrorSubsites,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -624,6 +640,7 @@ counters!(
     DROP_QUEUE_BUSY,
     DROP_QUEUE_FULL,
     DROP_PRE_HOUR_UNREADABLE,
+    DROP_PRE_HOUR_ADDRESS_OVERFLOW,
     DROP_RECEIPT_HOUR_MISMATCH,
     DROP_RECEIPT_HOUR_AHEAD,
     DROP_RECEIPT_LAG_BEYOND,
@@ -642,6 +659,15 @@ counters!(
     CAND_ROUTE_REREAD_MISMATCH,
     CAND_SLOT_BUSY,
 );
+
+/// The sixteen `CaptureError` leaves of `CAND_CAPTURE_ERROR`, in
+/// `CaptureError::subsite_index()` order. Indexed rather than named
+/// individually so the increment site cannot pick the wrong one: the variant
+/// chooses its own slot.
+static CAPTURE_ERROR_SUBSITES: [AtomicU64; crate::convoy_transport_attack::
+    ConvoyTransportAttackCaptureErrorSubsites::FIELDS
+    .len()] = [const { AtomicU64::new(0) };
+    crate::convoy_transport_attack::ConvoyTransportAttackCaptureErrorSubsites::FIELDS.len()];
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static TEARDOWN: AtomicBool = AtomicBool::new(false);
@@ -873,6 +899,7 @@ fn peek_convoy_terminal_events_inner(
 
     let telemetry_before = telemetry();
     let subsites_before = subsite_counters();
+    let capture_error_before = capture_error_subsite_counters();
     let active_before = ACTIVE_CALLBACKS.load(Ordering::Acquire);
     let producer_before = PRODUCER_SEQUENCE.load(Ordering::Acquire);
     let resolver_before = current_convoy_terminal_publication_receipt();
@@ -886,6 +913,7 @@ fn peek_convoy_terminal_events_inner(
     let queue_mutation_generation = QUEUE_MUTATION_GENERATION.load(Ordering::Acquire);
     let telemetry_after = telemetry();
     let subsites_after = subsite_counters();
+    let capture_error_after = capture_error_subsite_counters();
     let active_after = ACTIVE_CALLBACKS.load(Ordering::Acquire);
     let producer_after = PRODUCER_SEQUENCE.load(Ordering::Acquire);
     let resolver_after = current_convoy_terminal_publication_receipt();
@@ -893,6 +921,7 @@ fn peek_convoy_terminal_events_inner(
 
     let correlation_poisoned = telemetry_before != telemetry_after
         || subsites_before != subsites_after
+        || capture_error_before != capture_error_after
         || active_before != active_after
         || producer_before != producer_after
         || resolver_before.is_err()
@@ -917,6 +946,7 @@ fn peek_convoy_terminal_events_inner(
         events_emitted_this_drain: deltas.events_emitted,
         drops_this_drain: deltas.drops_total,
         candidate_subsites: subsites_after,
+        capture_error_subsites: capture_error_after,
     };
     let reservation_id = reservation.next_reservation_id;
     reservation.next_reservation_id = reservation
@@ -1094,6 +1124,7 @@ fn encode_convoy_transport_attack_drain(
         events_emitted_this_drain: drain.events_emitted_this_drain,
         drops_this_drain: drain.drops_this_drain,
         candidate_subsites: drain.candidate_subsites,
+        capture_error_subsites: drain.capture_error_subsites,
         telemetry: ConvoyTransportAttackTelemetry {
             callbacks_seen: telemetry.callbacks_seen,
             original_calls: telemetry.original_calls,
@@ -1106,6 +1137,7 @@ fn encode_convoy_transport_attack_drain(
             dropped_resolver: telemetry.dropped_resolver,
             dropped_candidate: telemetry.dropped_candidate,
             dropped_pre_hour_unreadable: telemetry.dropped_pre_hour_unreadable,
+            dropped_pre_hour_address_overflow: telemetry.dropped_pre_hour_address_overflow,
             dropped_receipt_hour_mismatch: telemetry.dropped_receipt_hour_mismatch,
             dropped_receipt_hour_ahead: telemetry.dropped_receipt_hour_ahead,
             dropped_receipt_lag_beyond: telemetry.dropped_receipt_lag_beyond,
@@ -1139,6 +1171,7 @@ fn telemetry() -> ConvoyTerminalHookTelemetry {
         dropped_resolver: load(&DROP_RESOLVER),
         dropped_candidate: load(&DROP_CANDIDATE),
         dropped_pre_hour_unreadable: load(&DROP_PRE_HOUR_UNREADABLE),
+        dropped_pre_hour_address_overflow: load(&DROP_PRE_HOUR_ADDRESS_OVERFLOW),
         dropped_receipt_hour_mismatch: load(&DROP_RECEIPT_HOUR_MISMATCH),
         dropped_receipt_hour_ahead: load(&DROP_RECEIPT_HOUR_AHEAD),
         dropped_receipt_lag_beyond: load(&DROP_RECEIPT_LAG_BEYOND),
@@ -1194,6 +1227,7 @@ fn reset_observer_state_with(held: &mut HeldObserverState<'_>) {
         &DROP_QUEUE_BUSY,
         &DROP_QUEUE_FULL,
         &DROP_PRE_HOUR_UNREADABLE,
+        &DROP_PRE_HOUR_ADDRESS_OVERFLOW,
         &DROP_RECEIPT_HOUR_MISMATCH,
         &DROP_RECEIPT_HOUR_AHEAD,
         &DROP_RECEIPT_LAG_BEYOND,
@@ -1211,7 +1245,10 @@ fn reset_observer_state_with(held: &mut HeldObserverState<'_>) {
         &CAND_MEMBER_BYTES_UNREADABLE,
         &CAND_ROUTE_REREAD_MISMATCH,
         &CAND_SLOT_BUSY,
-    ] {
+    ]
+    .into_iter()
+    .chain(CAPTURE_ERROR_SUBSITES.iter())
+    {
         counter.store(0, Ordering::Release);
     }
     PRODUCER_SEQUENCE.store(1, Ordering::Release);
@@ -1362,7 +1399,15 @@ fn prepare_observation(
         return None;
     }
     let memory = ProcessMemory;
-    let Some(hour) = read_stable_i32(&memory, game_state.checked_add(GS_CURRENT_HOUR_OFF)?) else {
+    // NOT `checked_add(..)?`. That `?` returned from the hook with nothing
+    // counted -- `CALLBACKS_SEEN` had already taken the entry -- so an
+    // unaddressable engine hour was the one loss the wire could not see.
+    let Some(hour_address) = game_state.checked_add(GS_CURRENT_HOUR_OFF) else {
+        DROP_HOUR_OR_EPOCH.fetch_add(1, Ordering::Relaxed);
+        DROP_PRE_HOUR_ADDRESS_OVERFLOW.fetch_add(1, Ordering::Relaxed);
+        return None;
+    };
+    let Some(hour) = read_stable_i32(&memory, hour_address) else {
         DROP_HOUR_OR_EPOCH.fetch_add(1, Ordering::Relaxed);
         DROP_PRE_HOUR_UNREADABLE.fetch_add(1, Ordering::Relaxed);
         return None;
@@ -1429,9 +1474,12 @@ fn prepare_observation(
         resolver.as_ref(),
     ) {
         Ok(carrier) => carrier,
-        Err(_) => {
+        Err(error) => {
             DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
             CAND_CAPTURE_ERROR.fetch_add(1, Ordering::Relaxed);
+            // The variant, not just the call site. `Err(_)` here is what made
+            // rc_vanilla's 56 lost events unattributable.
+            CAPTURE_ERROR_SUBSITES[error.subsite_index()].fetch_add(1, Ordering::Relaxed);
             return None;
         }
     };
@@ -2667,6 +2715,7 @@ mod resolver_refusal_tests {
                 "DROP_HOUR_OR_EPOCH",
                 &[
                     "DROP_PRE_HOUR_UNREADABLE",
+                    "DROP_PRE_HOUR_ADDRESS_OVERFLOW",
                     "DROP_RECEIPT_HOUR_AHEAD",
                     "DROP_RECEIPT_LAG_BEYOND",
                     "DROP_POST_HOUR_UNREADABLE",
@@ -2722,6 +2771,151 @@ mod resolver_refusal_tests {
                  anonymous"
             );
         }
+    }
+
+    /// Law: EVERY exit from `prepare_observation` passes a named counter.
+    ///
+    /// `convoy_terminal_hook` counts the entry in `CALLBACKS_SEEN` before it
+    /// calls this, and the wire's identity `seen == emitted + drops` is what
+    /// makes a batch's exhaustiveness claim mean anything -- so an exit that
+    /// counts nothing is an event the capture cannot see it lost. The engine
+    /// hour was addressed with `checked_add(..)?` and that `?` was exactly such
+    /// an exit (Codex review 01a0310c-cd88-7f51-b09b-7ca49723b01a, BLOCKING);
+    /// QY had closed the same shape one line further down for the A729 context
+    /// address and this one survived.
+    ///
+    /// What production change makes this fail: a `?` anywhere in the function,
+    /// or a `return None;` whose arm increments nothing.
+    #[test]
+    fn every_exit_from_prepare_observation_is_counted() {
+        let production = super::freeze_call_site_tests::production_code();
+        let body = production
+            .split_once("fn prepare_observation(")
+            .expect("prepare_observation is declared in production")
+            .1
+            .split_once("\nfn ")
+            .expect("prepare_observation is terminated by the next item")
+            .0;
+        // Comments are stripped: the `?` under test is an operator, and the
+        // comment above the fix names the operator it replaced.
+        let code = body
+            .lines()
+            .map(|line| line.split_once("//").map(|(head, _)| head).unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains('?'),
+            "`?` is an exit that counts nothing; every refusal in this function \
+             must reach a named counter first"
+        );
+
+        let mut cursor = 0usize;
+        let mut exits = 0usize;
+        while let Some(at) = code[cursor..].find("return None;") {
+            let end = cursor + at;
+            let arm = &code[cursor..end];
+            assert!(
+                arm.contains(".fetch_add(1, Ordering::Relaxed);"),
+                "a refusal returns without counting: ...{}",
+                &arm[arm.len().saturating_sub(240)..]
+            );
+            exits += 1;
+            cursor = end + "return None;".len();
+        }
+        assert!(
+            exits >= 14,
+            "prepare_observation has {exits} counted refusals; it had 14 when \
+             this law was written, and losing one means a refusal became an \
+             unguarded exit rather than a fixed one"
+        );
+    }
+
+    /// Law: a candidate drop is INSIDE the per-drain number that decides
+    /// exactness.
+    ///
+    /// The last link of the chain the unbound-client law rests on. An event
+    /// whose client has no route binding reaches `capture_candidate`, fails
+    /// `RouteJoin` and lands on the arm pinned below, which increments
+    /// `DROP_CANDIDATE` and its own leaf. This is what makes that increment
+    /// reach `drops_this_drain`: `telemetry_deltas` sums the DISJOINT
+    /// aggregates, `dropped_candidate` among them, and `exact_events_complete`
+    /// conjoins `drops_this_drain == 0`. Drop `dropped_candidate` from that sum
+    /// and an unbound client's loss stops disqualifying its batch -- which is
+    /// exactly the hole that removing the `resolver_unbound_convoy_clients`
+    /// conjunct would open if this link were not here.
+    #[test]
+    fn a_candidate_drop_is_inside_the_per_drain_drop_total() {
+        let production = super::freeze_call_site_tests::production_code();
+        let fold = production
+            .split_once("fn telemetry_deltas(")
+            .expect("the per-drain delta fold is declared in production")
+            .1
+            .split_once("\n}\n")
+            .expect("the fold is terminated")
+            .0;
+        for aggregate in [
+            "dropped_no_original",
+            "dropped_teardown",
+            "dropped_nested",
+            "dropped_capture_busy",
+            "dropped_hour_or_epoch",
+            "dropped_resolver",
+            "dropped_candidate",
+            "dropped_d70_pre",
+            "dropped_d70_post",
+            "dropped_d70_mutation",
+            "dropped_queue_busy",
+            "dropped_queue_full",
+        ] {
+            assert!(
+                fold.contains(&format!(
+                    "delta(current.{aggregate}, previous.{aggregate})"
+                )),
+                "{aggregate} must be inside `drops_total`, or a refusal counted \
+                 there never reaches `drops_this_drain` and its batch still \
+                 claims the interval exhaustive"
+            );
+        }
+        assert!(
+            production.contains("drops_this_drain: deltas.drops_total,"),
+            "the wire's per-drain drop count must BE that sum"
+        );
+    }
+
+    /// Law: the one remaining conflated leaf, `CAND_CAPTURE_ERROR`, names the
+    /// PROOF that refused and not only the call that refused.
+    ///
+    /// kills rc_vanilla d90: 56 of 56 sink events in the window died at
+    /// `capture_error` (`dropped_candidate=56`,
+    /// `dropped_candidate_capture_error=56`, every other leaf 0) and the arm
+    /// was `Err(_)`, so which of sixteen proofs inside `capture_candidate`
+    /// refused could not be recovered from the capture at all.
+    ///
+    /// What production change makes this fail: putting `Err(_)` back, dropping
+    /// the indexed increment, or hardcoding an index instead of letting the
+    /// variant choose its own slot.
+    #[test]
+    fn the_capture_error_leaf_names_which_proof_refused() {
+        let production = super::freeze_call_site_tests::production_code();
+        let indexed = "CAPTURE_ERROR_SUBSITES[error.subsite_index()].fetch_add(1, Ordering::Relaxed);";
+        assert_eq!(
+            production.matches(indexed).count(),
+            1,
+            "the CaptureError variant must be counted at exactly one site"
+        );
+        let arm = production
+            .split_once("        Err(error) => {\n            DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);\n            CAND_CAPTURE_ERROR.fetch_add(1, Ordering::Relaxed);")
+            .expect(
+                "the capture_candidate refusal must BIND its error -- `Err(_)` is \
+                 the defect this test exists to keep closed",
+            )
+            .1;
+        let end = arm.find("return None;").expect("the arm must refuse");
+        assert!(
+            arm[..end].contains(indexed),
+            "the aggregate and its variant leaf must be incremented in the same \
+             arm, or a capture error is counted once and named never"
+        );
     }
 }
 

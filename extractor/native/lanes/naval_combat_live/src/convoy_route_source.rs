@@ -86,6 +86,92 @@ pub enum RouteSourceError {
     ZeroEndpoint,
 }
 
+/// The named leaves of "this convoy client has no route binding".
+///
+/// Before these existed the only evidence a capture carried about a refused
+/// client was `h_convoy_resolver_error_hash_sample`, an FNV-1a of a message
+/// that embeds the unbound MEMBER COUNT and the client handle's `Debug`. That
+/// makes the hash a different value on every frame and unresolvable against
+/// any closed candidate set -- captures/rc_vanilla published
+/// 8018115730417974978 on the sampled frame and 8265184984225921010 as the
+/// window fold, and an offline sweep of the payload-free half of that message
+/// shape -- 1,792,000,000 candidates over `{count} x {client id} x {variant}`,
+/// bounds recorded in `runs/rx_d90_witness/error_hash_sweep.out` -- matched
+/// neither. The domain refused 22
+/// of ~25 clients on essentially every frame of that capture and could not say
+/// why. One counter per cause fixes that; index 15 is the authentication half
+/// of the same call, which is not a `RouteSourceError` but is the same
+/// question for a reader.
+pub const CONVOY_ROUTE_REFUSAL_UNIT_NAMES: [&str; 17] = [
+    "h_convoy_route_refused_null_module_base",
+    "h_convoy_route_refused_address_overflow",
+    "h_convoy_route_refused_invalid_client_handle",
+    "h_convoy_route_refused_reference_registry_unreadable",
+    "h_convoy_route_refused_reference_registry_implausible",
+    "h_convoy_route_refused_reference_resolution_failed",
+    "h_convoy_route_refused_reference_resolution_unstable",
+    "h_convoy_route_refused_object_vtable_unreadable",
+    "h_convoy_route_refused_object_vtable_unstable",
+    // NOT `..._unsupported_producer_vtable`: `_vtable` is a RAW_WORD_SUFFIXES
+    // entry, so that spelling would be folded as a last-value raw word instead
+    // of summed as the member COUNT it is. The vtable itself travels beside it
+    // as `h_convoy_route_refused_producer_vtable_sample`, where the raw-word
+    // fold is correct.
+    "h_convoy_route_refused_unsupported_producer",
+    "h_convoy_route_refused_endpoint_pointer_unreadable",
+    "h_convoy_route_refused_endpoint_pointer_unstable",
+    "h_convoy_route_refused_endpoint_unreadable",
+    "h_convoy_route_refused_endpoint_unstable",
+    "h_convoy_route_refused_zero_endpoint",
+    "h_convoy_route_refused_authentication",
+    // Unreachable while `refusal_index()` stays exhaustive and the
+    // authentication index stays in range; it exists so that an index the
+    // accumulator cannot place lands in a NAMED slot instead of vanishing and
+    // breaking the partition law silently.
+    "h_convoy_route_refused_unclassified",
+];
+
+/// Index of the catch-all slot. Nothing in the tree writes it on purpose.
+pub const CONVOY_ROUTE_REFUSAL_UNCLASSIFIED_INDEX: usize = 16;
+
+/// Index of the authentication leaf, which no `RouteSourceError` produces.
+pub const CONVOY_ROUTE_REFUSAL_AUTHENTICATION_INDEX: usize = 15;
+
+impl RouteSourceError {
+    /// Index of this variant's counter in `CONVOY_ROUTE_REFUSAL_UNIT_NAMES`.
+    /// Exhaustive with no wildcard arm: a new variant fails to compile rather
+    /// than being silently folded into an existing cause.
+    pub fn refusal_index(&self) -> usize {
+        match self {
+            Self::NullModuleBase => 0,
+            Self::AddressOverflow => 1,
+            Self::InvalidClientHandle => 2,
+            Self::ReferenceRegistryUnreadable => 3,
+            Self::ReferenceRegistryImplausible => 4,
+            Self::ReferenceResolutionFailed => 5,
+            Self::ReferenceResolutionUnstable => 6,
+            Self::ObjectVtableUnreadable => 7,
+            Self::ObjectVtableUnstable => 8,
+            Self::UnsupportedProducerVtable(_) => 9,
+            Self::EndpointPointerUnreadable => 10,
+            Self::EndpointPointerUnstable => 11,
+            Self::EndpointUnreadable => 12,
+            Self::EndpointUnstable => 13,
+            Self::ZeroEndpoint => 14,
+        }
+    }
+
+    /// The unmodelled producer vtable, when that is what refused. It is the
+    /// one refusal whose cause is a VALUE rather than a state, and the value
+    /// is what an RE follow-up needs.
+    pub fn unsupported_producer_vtable(&self) -> Option<u64> {
+        match self {
+            Self::UnsupportedProducerVtable(vtable) => Some(*vtable),
+            _ => None,
+        }
+    }
+}
+
 pub fn read_exact_a729_client_route<M: ExactMemory>(
     memory: &M,
     module_base: usize,
