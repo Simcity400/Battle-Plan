@@ -26,8 +26,9 @@ use crate::convoy_route_source::{
 };
 use crate::convoy_terminal_attribution::{
     a729_call_window_is_exact, activation_blockers, capture_candidate, prepare_a729_hook,
-    A729PreCollapseRegisters, ActivationBlocker, ConvoyTerminalAttributionCarrier, ExactMemory,
-    A729_CALL_BYTES, A729_EXE_SHA256, A729_HOOK_RVA, MAX_COUNTRY_TAG_DB_ID,
+    A729PreCollapseRegisters, ActivationBlocker, ConvoyRouteRefusalIndex,
+    ConvoyTerminalAttributionCarrier, ConvoyTerminalRoute, ExactMemory, A729_CALL_BYTES,
+    A729_EXE_SHA256, A729_HOOK_RVA, MAX_COUNTRY_TAG_DB_ID,
 };
 use crate::convoy_terminal_runtime::{
     clear_convoy_terminal_resolver_snapshot, convoy_terminal_resolver_ever_partial,
@@ -176,8 +177,6 @@ fn subsite_counters() -> crate::convoy_transport_attack::ConvoyTransportAttackCa
         context_mismatch: load(&CAND_CONTEXT_MISMATCH),
         context_address_overflow: load(&CAND_CONTEXT_ADDRESS_OVERFLOW),
         member_bytes_unreadable: load(&CAND_MEMBER_BYTES_UNREADABLE),
-        route_reread_mismatch: load(&CAND_ROUTE_REREAD_MISMATCH),
-        slot_busy: load(&CAND_SLOT_BUSY),
     }
 }
 
@@ -414,7 +413,10 @@ pub struct HConvoyD70Row {
 struct PreObservation {
     carrier: ConvoyTerminalAttributionCarrier,
     d70: Vec<HConvoyD70Row>,
-    raw: HConvoyPositiveRawObservation,
+    /// `None` in production. The raw observation is the evidence fixture's
+    /// artefact and production builds none, so nothing there can contend for
+    /// the single slot it lives in.
+    raw: Option<HConvoyPositiveRawObservation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -452,7 +454,12 @@ pub struct HConvoyPositiveRawObservation {
     pub member_bytes: Vec<u8>,
     pub combat_id: u32,
     pub combat_generation: u64,
-    pub route: HConvoyRouteRawObservation,
+    /// `None` when the carrier's route was REFUSED: there is no binding to
+    /// re-read, so there is no raw observation of one to record. Absent rather
+    /// than zeroed, because a zeroed route observation in an evidence artifact
+    /// reads as "we observed a route with id 0".
+    pub route: Option<HConvoyRouteRawObservation>,
+    /// Empty in production, which builds no raw observation at all.
     pub d70_before: Vec<HConvoyD70Row>,
     pub d70_after: Vec<HConvoyD70Row>,
 }
@@ -504,6 +511,30 @@ pub fn read_live_a729_client_route(
 fn read_exact_bytes(memory: &ProcessMemory, address: usize, len: usize) -> Option<Vec<u8>> {
     let mut bytes = vec![0u8; len];
     memory.read_exact(address, &mut bytes).then_some(bytes)
+}
+
+/// Does the live route still read back the way the authenticated publication
+/// says it does?
+///
+/// This is the whole tear check, and it exists as a named function so that its
+/// single call site can be pinned as lexically INSIDE the branch that proves
+/// the carrier claims a route at all. A refused carrier has nothing to
+/// re-read, and this walks the reference registry and re-reads both endpoints
+/// on the game's thread (Codex round 7: an assertion that some branch opens
+/// before the call cannot tell "inside the branch" from "after it closed").
+fn published_route_still_agrees(
+    memory: &ProcessMemory,
+    module_base: usize,
+    client: crate::convoy_terminal_attribution::EntityHandle,
+    bound: &crate::convoy_terminal_attribution::LiveRouteResolution,
+) -> bool {
+    read_exact_a729_client_route(memory, module_base, client).is_ok_and(|read| {
+        read.resolution.producer_kind == bound.producer_kind
+            && read.resolution.source.kind == bound.source.kind
+            && read.resolution.destination.kind == bound.destination.kind
+            && read.resolution.source.id == bound.source.id
+            && read.resolution.destination.id == bound.destination.id
+    })
 }
 
 fn capture_route_raw(
@@ -656,11 +687,9 @@ counters!(
     CAND_CONTEXT_MISMATCH,
     CAND_CONTEXT_ADDRESS_OVERFLOW,
     CAND_MEMBER_BYTES_UNREADABLE,
-    CAND_ROUTE_REREAD_MISMATCH,
-    CAND_SLOT_BUSY,
 );
 
-/// The sixteen `CaptureError` leaves of `CAND_CAPTURE_ERROR`, in
+/// The `CaptureError` leaves of `CAND_CAPTURE_ERROR`, in
 /// `CaptureError::subsite_index()` order. Indexed rather than named
 /// individually so the increment site cannot pick the wrong one: the variant
 /// chooses its own slot.
@@ -674,6 +703,16 @@ static TEARDOWN: AtomicBool = AtomicBool::new(false);
 static SEALED_PUBLICATION_PENDING: AtomicBool = AtomicBool::new(false);
 static ACTIVE_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
 static CAPTURE_BUSY: AtomicBool = AtomicBool::new(false);
+/// True while the installed hook is the EVIDENCE fixture's rather than the
+/// product's.
+///
+/// The hot path needs this without taking `INSTALL_STATE`'s mutex, because the
+/// only thing it decides is whether to do the fixture's extra work, and doing
+/// that work in production cost every sink after the first one -- the raw
+/// observation slot holds exactly one and refused the rest (Codex review
+/// `01a033dd-4b44-7b01-ba38-04b6a854f574`, BLOCKING). Set under the lifecycle
+/// lock at install, cleared on every uninstall path with `INSTALLED`.
+static EVIDENCE_CAPTURE: AtomicBool = AtomicBool::new(false);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_TARGET: AtomicUsize = AtomicUsize::new(0);
 static PRODUCER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -1243,8 +1282,6 @@ fn reset_observer_state_with(held: &mut HeldObserverState<'_>) {
         &CAND_CONTEXT_MISMATCH,
         &CAND_CONTEXT_ADDRESS_OVERFLOW,
         &CAND_MEMBER_BYTES_UNREADABLE,
-        &CAND_ROUTE_REREAD_MISMATCH,
-        &CAND_SLOT_BUSY,
     ]
     .into_iter()
     .chain(CAPTURE_ERROR_SUBSITES.iter())
@@ -1464,7 +1501,7 @@ fn prepare_observation(
         r15_killer_country_ref: killer_ref,
     };
     let module_base = MODULE_BASE.load(Ordering::Acquire);
-    let carrier = match capture_candidate(
+    let mut carrier = match capture_candidate(
         &memory,
         module_base,
         registers,
@@ -1498,29 +1535,81 @@ fn prepare_observation(
         CAND_CONTEXT_MISMATCH.fetch_add(1, Ordering::Relaxed);
         return None;
     }
-    let member_bytes = match read_exact_bytes(&memory, member, 0x124) {
-        Some(bytes) => bytes,
-        None => {
-            DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
-            CAND_MEMBER_BYTES_UNREADABLE.fetch_add(1, Ordering::Relaxed);
-            return None;
+    // THE RAW OBSERVATION IS THE EVIDENCE FIXTURE'S ARTEFACT, so production does
+    // not build one: the member window and the route window below exist to be
+    // written into an arm's JSON, and in production nothing ever reads them.
+    // Skipping them keeps two page-touching reads off the hot path AND, far
+    // more importantly, keeps production away from the single-slot store in
+    // `complete_observation` that used to refuse every sink after the first.
+    let evidence = EVIDENCE_CAPTURE.load(Ordering::Acquire);
+    let member_bytes = if evidence {
+        match read_exact_bytes(&memory, member, 0x124) {
+            Some(bytes) => bytes,
+            None => {
+                DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+                CAND_MEMBER_BYTES_UNREADABLE.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
         }
+    } else {
+        Vec::new()
     };
-    let route = match capture_route_raw(&memory, module_base, carrier.client) {
-        Some(route)
-            if route.producer_kind == carrier.route.producer_kind as u8
-                && route.source_kind == carrier.route.source.kind as u8
-                && route.destination_kind == carrier.route.destination.kind as u8
-                && route.source_id == carrier.route.source.id
-                && route.destination_id == carrier.route.destination.id =>
-        {
-            route
+    // The live re-read is a TEAR CHECK on a route the carrier claims, so it
+    // only applies when the carrier claims one. A sink whose client had no
+    // binding carries `Refused` and there is nothing to re-read; running the
+    // comparison anyway would fail every one of them here instead, moving the
+    // loss rather than ending it (rc_vanilla4: 11,130 unbound member-instances
+    // over 627 frames, of which some are unbindable by anyone -- the split is a
+    // measurement the next capture makes).
+    // THE TEAR CHECK IS A CHECK ON THE ROUTE, NOT ON THE SINK. The publication
+    // that bound this client happened before the sink, and the world moves in
+    // between -- the receipt's own lag bound exists because it does. When the
+    // live read no longer agrees with the published binding, the published
+    // route is contradicted and the live bytes are not authenticated, so
+    // neither may go on the wire as this convoy's route. What must NOT happen
+    // is what used to: dropping the whole sink, which is the same absent-route
+    // loss fix C exists to end (Codex round 4, finding 2).
+    //
+    // A client the sweep REFUSED is left refused, with the sweep's own cause. A
+    // raw read succeeding for it would not make a binding -- the authenticated
+    // publication is the only thing that can -- and the receipt hour and lag
+    // travel on the batch, so a reader can see exactly how old that answer is.
+    // THE CHECK IS ON THE RESOLUTION. `read_exact_a729_client_route` is the
+    // whole tear check: it re-walks the reference registry and re-reads the
+    // endpoints, and what it returns is what the published binding is compared
+    // against. `capture_route_raw` wraps it and then copies the reference slot,
+    // the entire route object and both endpoint objects -- byte windows that
+    // exist to be written into an evidence arm's JSON. Comparing through THAT
+    // made an ancillary window's copy failure look like a lapsed binding, and
+    // put four more page-touching reads on the game's thread for nothing
+    // (Codex round 5, finding 2).
+    //
+    // INSIDE the bound branch, so a refused carrier does not pay for a registry
+    // walk whose result is thrown away. There is nothing to re-read for it, and
+    // this runs on the game's thread (Codex round 6). The check lives in
+    // `published_route_still_agrees` so that this call site -- the only one --
+    // can be pinned against the line above it, which no rearrangement that
+    // hoists the walk back out of the branch can survive (Codex round 7).
+    if let Some(bound) = carrier.route.bound() {
+        if !published_route_still_agrees(&memory, module_base, carrier.client, bound) {
+            carrier.route = ConvoyTerminalRoute::Refused {
+                cause_index: ConvoyRouteRefusalIndex::new(
+                    u8::try_from(
+                        crate::convoy_route_source::CONVOY_ROUTE_REFUSAL_BINDING_LAPSED_INDEX,
+                    )
+                    .unwrap_or(u8::MAX),
+                )
+                .expect("the binding-lapsed cause is inside the named set"),
+            };
         }
-        _ => {
-            DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
-            CAND_ROUTE_REREAD_MISMATCH.fetch_add(1, Ordering::Relaxed);
-            return None;
-        }
+    }
+    // The byte windows come second, and only for the arm that wants them. A
+    // window that will not copy costs the fixture its observation and costs the
+    // sink nothing.
+    let route = if evidence && carrier.route.bound().is_some() {
+        capture_route_raw(&memory, module_base, carrier.client)
+    } else {
+        None
     };
     let d70 = match read_d70(&memory, module_base, game_state) {
         Some(rows) => rows,
@@ -1529,7 +1618,7 @@ fn prepare_observation(
             return None;
         }
     };
-    let raw = HConvoyPositiveRawObservation {
+    let raw = evidence.then(|| HConvoyPositiveRawObservation {
         module_base,
         context_bytes,
         game_hour_raw: hour,
@@ -1546,7 +1635,7 @@ fn prepare_observation(
         route,
         d70_before: d70.clone(),
         d70_after: Vec::new(),
-    };
+    });
     Some(PreObservation { carrier, d70, raw })
 }
 
@@ -1579,44 +1668,70 @@ fn complete_observation(game_state: usize, pre: PreObservation) {
         DROP_D70_MUTATION.fetch_add(1, Ordering::Relaxed);
         return;
     };
-    let mut raw = pre.raw;
+    // ENQUEUE FIRST. The validated event is the product; the raw observation is
+    // an evidence artefact and must never be able to cost one. Until lane RX2
+    // this ran the other way round, and because the slot holds exactly ONE
+    // observation for the whole installation, the second sink of any session
+    // was refused as `dropped_candidate_slot_busy` before it ever reached the
+    // queue -- latent only because the state check upstream meant no sink ever
+    // got this far (Codex review `01a033dd-4b44-7b01-ba38-04b6a854f574`).
+    let emitted = enqueue(ConvoyTerminalValidatedEvent {
+        carrier: pre.carrier,
+        d70,
+    });
+    let Some(mut raw) = pre.raw else {
+        // Production. There is no artefact to keep and no slot to contend for.
+        return;
+    };
+    // NOTHING BELOW THIS POINT MAY COUNT A DROP. The event's fate was decided
+    // by `enqueue`, which counted it either way; a second counter here would
+    // make one hook entry both emitted and dropped, and
+    // `events_seen == emitted + drops` would stop holding (Codex round 4,
+    // finding 4).
+    if !emitted || raw.route.is_none() {
+        // An artefact must describe an event the capture contains, and the
+        // positive arm exists to prove the ROUTE read -- a refused sink cannot
+        // be that arm, and keeping it would block every later sink that could.
+        return;
+    }
     raw.d70_after = after;
     let Ok(mut slot) = POSITIVE_RAW_OBSERVATION
         .get_or_init(|| Mutex::new(None))
         .try_lock()
     else {
-        DROP_QUEUE_BUSY.fetch_add(1, Ordering::Relaxed);
         return;
     };
-    if slot.is_some() {
-        DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
-        CAND_SLOT_BUSY.fetch_add(1, Ordering::Relaxed);
-        return;
+    if slot.is_none() {
+        // The fixture wants ONE positive arm and all of its artefacts must
+        // describe the same sink, so the first suitable observation is the one
+        // it keeps.
+        *slot = Some(raw);
     }
-    *slot = Some(raw);
-    drop(slot);
-    enqueue(ConvoyTerminalValidatedEvent {
-        carrier: pre.carrier,
-        d70,
-    });
 }
 
-fn enqueue(event: ConvoyTerminalValidatedEvent) {
+/// `true` when the event reached the queue and `EVENTS_EMITTED` counted it.
+///
+/// The caller needs the answer: the evidence artefact it may keep afterwards
+/// must describe an event that was actually recorded, or an arm's JSON would
+/// document a sink the capture does not contain.
+#[must_use]
+fn enqueue(event: ConvoyTerminalValidatedEvent) -> bool {
     let queue = EVENT_QUEUE.get_or_init(|| Mutex::new(VecDeque::new()));
     let Ok(mut queue) = queue.try_lock() else {
         DROP_QUEUE_BUSY.fetch_add(1, Ordering::Relaxed);
-        return;
+        return false;
     };
     if queue.len() >= EVENT_QUEUE_CAPACITY {
         DROP_QUEUE_FULL.fetch_add(1, Ordering::Relaxed);
-        return;
+        return false;
     }
     if advance_queue_mutation_generation().is_err() {
         DROP_QUEUE_FULL.fetch_add(1, Ordering::Relaxed);
-        return;
+        return false;
     }
     queue.push_back(event);
     EVENTS_EMITTED.fetch_add(1, Ordering::Relaxed);
+    true
 }
 
 fn advance_queue_mutation_generation() -> Result<u64, String> {
@@ -1970,6 +2085,7 @@ fn install_convoy_terminal_hook_inner(
         installed_receipt,
         released_receipt: None,
     });
+    EVIDENCE_CAPTURE.store(!mode.is_production(), Ordering::Release);
     INSTALLED.store(true, Ordering::Release);
     drop(suspended);
     Ok(())
@@ -2044,6 +2160,9 @@ fn rollback_failed_install(
             EVIDENCE_GAME_HOUR.store(0, Ordering::Release);
             TEARDOWN.store(false, Ordering::Release);
             INSTALLED.store(false, Ordering::Release);
+        EVIDENCE_CAPTURE.store(false, Ordering::Release);
+    EVIDENCE_CAPTURE.store(false, Ordering::Release);
+            EVIDENCE_CAPTURE.store(false, Ordering::Release);
             *state = None;
             return RollbackOutcome::Restored;
         }
@@ -2068,6 +2187,7 @@ fn rollback_failed_install(
         released_receipt: None,
     });
     INSTALLED.store(false, Ordering::Release);
+    EVIDENCE_CAPTURE.store(false, Ordering::Release);
     TEARDOWN.store(true, Ordering::Release);
     RollbackOutcome::Retained(rollback_error)
 }
@@ -2161,6 +2281,9 @@ fn restore_and_quiesce_convoy_terminal_hook(
             installed.recovery_pending = true;
             *state = Some(installed);
             INSTALLED.store(false, Ordering::Release);
+        EVIDENCE_CAPTURE.store(false, Ordering::Release);
+    EVIDENCE_CAPTURE.store(false, Ordering::Release);
+            EVIDENCE_CAPTURE.store(false, Ordering::Release);
             drop(suspended);
             return Err(ConvoyTerminalInstallError::InstallRollbackFailed {
                 install_error: "D90 teardown restoration failed".into(),
@@ -2175,6 +2298,9 @@ fn restore_and_quiesce_convoy_terminal_hook(
             installed.recovery_pending = true;
             *state = Some(installed);
             INSTALLED.store(false, Ordering::Release);
+        EVIDENCE_CAPTURE.store(false, Ordering::Release);
+    EVIDENCE_CAPTURE.store(false, Ordering::Release);
+            EVIDENCE_CAPTURE.store(false, Ordering::Release);
             drop(suspended);
             return Err(ConvoyTerminalInstallError::InstallRollbackFailed {
                 install_error: "D90 teardown restoration was not exact".into(),
@@ -2187,6 +2313,8 @@ fn restore_and_quiesce_convoy_terminal_hook(
         installed.recovery_pending = false;
         *state = Some(installed);
         INSTALLED.store(false, Ordering::Release);
+        EVIDENCE_CAPTURE.store(false, Ordering::Release);
+    EVIDENCE_CAPTURE.store(false, Ordering::Release);
         drop(suspended);
     }
     if unsafe {
@@ -2735,8 +2863,6 @@ mod resolver_refusal_tests {
                     "CAND_CONTEXT_MISMATCH",
                     "CAND_CONTEXT_ADDRESS_OVERFLOW",
                     "CAND_MEMBER_BYTES_UNREADABLE",
-                    "CAND_ROUTE_REREAD_MISMATCH",
-                    "CAND_SLOT_BUSY",
                 ][..],
             ),
         ] {
@@ -2822,27 +2948,55 @@ mod resolver_refusal_tests {
             exits += 1;
             cursor = end + "return None;".len();
         }
-        assert!(
-            exits >= 14,
-            "prepare_observation has {exits} counted refusals; it had 14 when \
-             this law was written, and losing one means a refusal became an \
-             unguarded exit rather than a fixed one"
+        // THIRTEEN, and the fourteenth was REMOVED AS A FALSE REFUSAL, not
+        // lost. The census stood at 14 when this law was written; lane RX2
+        // deleted `CaptureError::InvalidMemberState`, whose arm was one of the
+        // counted exits above. That refusal asked whether the member's state
+        // field already held `TERMINAL_SUNK_STATE`, and it cannot: the hook is
+        // while `MOV dword ptr [R12+0xe0], 0x20` -- the write it was testing
+        // for -- is at RVA 0x196253A, the last instruction of that same
+        // function's body, after the hook and before its only RET. The check
+        // asked whether a write we are standing in front of had already
+        // happened, so it refused every real sink: `captures/rc_vanilla4` lost
+        // 119 of 119 capture-error events to it. Its sinks now flow to the
+        // enqueue and are counted as emitted, and the member state travels as
+        // `member_state_at_entry` evidence. Instruction-level proof:
+        // `runs/rx2_d90_close/RE_member_state.md`.
+        //
+        // The teeth are unchanged. This is the count of exits that COUNT, so
+        // 13 -> 12 still fails, which is the silent loss this law exists to
+        // catch. Equality rather than `>=` because the number is a census: a
+        // fourteenth counted refusal is a real change to how this function can
+        // decline an event, and it must be added here deliberately, with what
+        // it guards written down, exactly as this removal was.
+        assert_eq!(
+            exits, 13,
+            "prepare_observation has {exits} counted refusals; the census is \
+             13. Fewer means a refusal became an unguarded exit rather than a \
+             fixed one -- find it and count it. More means a new way to \
+             decline an event arrived without being written down here."
         );
     }
 
     /// Law: a candidate drop is INSIDE the per-drain number that decides
     /// exactness.
     ///
-    /// The last link of the chain the unbound-client law rests on. An event
-    /// whose client has no route binding reaches `capture_candidate`, fails
-    /// `RouteJoin` and lands on the arm pinned below, which increments
-    /// `DROP_CANDIDATE` and its own leaf. This is what makes that increment
-    /// reach `drops_this_drain`: `telemetry_deltas` sums the DISJOINT
+    /// The last link of the chain the counted-drop law rests on. An event that
+    /// `capture_candidate` refuses lands on the arm pinned below, which
+    /// increments `DROP_CANDIDATE` and its own leaf. This is what makes that
+    /// increment reach `drops_this_drain`: `telemetry_deltas` sums the DISJOINT
     /// aggregates, `dropped_candidate` among them, and `exact_events_complete`
     /// conjoins `drops_this_drain == 0`. Drop `dropped_candidate` from that sum
-    /// and an unbound client's loss stops disqualifying its batch -- which is
-    /// exactly the hole that removing the `resolver_unbound_convoy_clients`
-    /// conjunct would open if this link were not here.
+    /// and a candidate loss stops disqualifying its batch -- which is exactly
+    /// the hole that removing the `resolver_unbound_convoy_clients` conjunct
+    /// would open if this link were not here.
+    ///
+    /// It used to be the unbound client that reached this arm, by failing
+    /// `RouteJoin`. Since fix C an unbound client produces a recorded row whose
+    /// route is `Refused` with a named cause, so what this link now protects is
+    /// the generic counted drop -- the same correction as the renamed
+    /// `cta2_a_counted_candidate_drop_still_disqualifies_the_batch` (Codex
+    /// round 8).
     #[test]
     fn a_candidate_drop_is_inside_the_per_drain_drop_total() {
         let production = super::freeze_call_site_tests::production_code();
@@ -2888,12 +3042,136 @@ mod resolver_refusal_tests {
     /// kills rc_vanilla d90: 56 of 56 sink events in the window died at
     /// `capture_error` (`dropped_candidate=56`,
     /// `dropped_candidate_capture_error=56`, every other leaf 0) and the arm
-    /// was `Err(_)`, so which of sixteen proofs inside `capture_candidate`
+    /// was `Err(_)`, so which proof inside `capture_candidate`
     /// refused could not be recovered from the capture at all.
     ///
     /// What production change makes this fail: putting `Err(_)` back, dropping
     /// the indexed increment, or hardcoding an index instead of letting the
     /// variant choose its own slot.
+    /// Law: the validated event reaches the queue BEFORE anything the evidence
+    /// fixture wants, and production builds nothing the fixture wants at all.
+    ///
+    /// `POSITIVE_RAW_OBSERVATION` holds exactly ONE observation for the whole
+    /// installation, and it used to be filled before `enqueue`. So the second
+    /// sink of any session found the slot occupied and was refused as
+    /// `dropped_candidate_slot_busy` before it ever reached the queue -- and a
+    /// queue that was momentarily busy could lose the FIRST event while the
+    /// slot it had already filled went on refusing every one after it. Nothing
+    /// caught this because the state predicate upstream meant no sink had ever
+    /// got this far (Codex review `01a033dd-4b44-7b01-ba38-04b6a854f574`,
+    /// BLOCKING).
+    ///
+    /// Two separate guarantees, so two halves. The ORDER makes the artefact
+    /// unable to cost an event. `EVIDENCE_CAPTURE` makes production not build
+    /// one, which also keeps the member window and the route window off the
+    /// hot path.
+    ///
+    /// What production change makes this fail: moving the slot store back above
+    /// `enqueue`, making the raw observation unconditional again, or counting a
+    /// drop when the slot is contended -- the event is already queued by then,
+    /// so a drop counter there would be counting an event that was not lost.
+    #[test]
+    fn the_event_is_queued_before_the_evidence_artefact_and_production_builds_none() {
+        let production = super::freeze_call_site_tests::production_code();
+        let complete = production
+            .split_once("fn complete_observation(game_state: usize, pre: PreObservation) {")
+            .expect("the post-call half of the hook")
+            .1
+            .split_once("\nfn ")
+            .expect("the function is terminated")
+            .0;
+
+        let enqueued = complete
+            .find("enqueue(ConvoyTerminalValidatedEvent {")
+            .expect("the validated event must be enqueued");
+        let stored = complete
+            .find("*slot = Some(raw);")
+            .expect("the evidence artefact must be stored");
+        assert!(
+            enqueued < stored,
+            "the event is the product and the raw observation is an evidence \
+             artefact; an artefact that is stored first can refuse the event \
+             behind it"
+        );
+        assert!(
+            complete[..enqueued].find("POSITIVE_RAW_OBSERVATION").is_none(),
+            "and nothing about that slot may be consulted before the enqueue"
+        );
+        assert!(
+            complete[enqueued..].contains("let Some(mut raw) = pre.raw else {"),
+            "production has no raw observation and returns before the slot"
+        );
+        for counter in ["DROP_CANDIDATE", "CAND_", "DROP_QUEUE"] {
+            assert!(
+                !complete[enqueued..].contains(counter),
+                "nothing after the enqueue may count a drop: the event's fate                  was already decided and counted, so a second counter would                  make one hook entry both emitted and dropped ({counter})"
+            );
+        }
+        assert!(
+            complete[enqueued..].contains("if !emitted || raw.route.is_none() {"),
+            "and the artefact is kept only for an event that was actually              recorded and whose route is the bound one the arm exists to prove"
+        );
+
+        let prepare = production
+            .split_once("fn prepare_observation(")
+            .expect("the pre-call half of the hook")
+            .1;
+        let gate = prepare
+            .find("let evidence = EVIDENCE_CAPTURE.load(Ordering::Acquire);")
+            .expect("production must not build the fixture's raw observation");
+        let member_window = prepare
+            .find("read_exact_bytes(&memory, member, 0x124)")
+            .expect("the member window is the fixture's");
+        assert!(
+            gate < member_window,
+            "the mode is decided before the fixture-only reads, or production \
+             pays for a window nothing reads"
+        );
+        assert!(
+            prepare.contains("let raw = evidence.then(|| HConvoyPositiveRawObservation {"),
+            "and the observation itself is built only in evidence mode"
+        );
+
+        // AND THE RE-RESOLUTION IS INSIDE THE BOUND BRANCH. A refused carrier
+        // has nothing to re-read, so walking the reference registry for it
+        // would be a wasted registry walk and endpoint resolution on the game's
+        // thread -- which is what the first version of this fix did, hoisted
+        // above the branch (Codex round 6).
+        //
+        // ORDER IS NOT CONTAINMENT. Round 6's pin asserted only that a branch
+        // opened somewhere before the call, which a rearrangement that closed
+        // the branch and then walked the registry unconditionally would also
+        // satisfy (Codex round 7). What is pinned now is ADJACENCY: the call
+        // and the `if let` that guards it are one text, so the guard cannot be
+        // closed in between, and the tear check exists at exactly one call
+        // site so there is no second, unguarded one.
+        assert_eq!(
+            production
+                .matches("fn published_route_still_agrees(")
+                .count(),
+            1,
+            "the tear check is one named function"
+        );
+        assert_eq!(
+            production.matches("published_route_still_agrees(").count(),
+            2,
+            "which is defined once and called from exactly one site"
+        );
+        assert!(
+            production.contains(
+                "if let Some(bound) = carrier.route.bound() {\n        if !published_route_still_agrees(&memory, module_base, carrier.client, bound) {"
+            ),
+            "and that call site is the line immediately inside the bound branch"
+        );
+        assert!(
+            !prepare[..prepare
+                .find("published_route_still_agrees(&memory, module_base, carrier.client, bound)")
+                .expect("the tear check is called from prepare_observation")]
+                .contains("read_exact_a729_client_route("),
+            "nothing re-resolves the route ahead of that branch"
+        );
+    }
+
     #[test]
     fn the_capture_error_leaf_names_which_proof_refused() {
         let production = super::freeze_call_site_tests::production_code();

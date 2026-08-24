@@ -9195,6 +9195,45 @@ fn decode_compact_convoy_transport_attack_live_data_payload(
         };
         add_batch_unit("convoy_transport_attack_batches", 1);
         add_batch_unit("convoy_transport_attack_rows", decoded.rows.len() as u64);
+        // ROWS WITH A NAMED ROUTE GAP, counted from the rows themselves rather
+        // than carried in the header. The cause already rides in every row's
+        // carrier, so a header field would be a second copy that can disagree
+        // with the first; counting here is exact and costs the wire nothing.
+        //
+        // These are RECORDED sinks, not losses. Before lane RX2 a client with
+        // no route binding cost the whole sink event, and rc_vanilla4 shows
+        // what that came to: 11,130 unbound member-instances over 627 frames,
+        // some share of which the engine's own resolver cannot bind either.
+        // `..._rows_route_refused` is how many sinks are on the wire WITH their
+        // route gap named, and the per-cause leaves say which proof declined
+        // each one, so the two always sum.
+        let mut refused_by_cause = [0u64; naval4950::CONVOY_ROUTE_REFUSAL_CAUSE_COUNT];
+        let mut refused_rows = 0u64;
+        for row in &decoded.rows {
+            if let Some(cause_index) = row.carrier.route.refusal_cause_index() {
+                refused_rows = refused_rows.saturating_add(1);
+                // The decoder already bounds this, so the fallback is
+                // unreachable; it exists so a widened cause set cannot silently
+                // drop rows out of the per-cause partition.
+                let slot = usize::from(cause_index)
+                    .min(naval4950::CONVOY_ROUTE_REFUSAL_CAUSE_COUNT - 1);
+                refused_by_cause[slot] = refused_by_cause[slot].saturating_add(1);
+            }
+        }
+        add_batch_unit("convoy_transport_attack_rows_route_refused", refused_rows);
+        for (cause_index, count) in refused_by_cause.iter().enumerate() {
+            if *count == 0 {
+                continue;
+            }
+            let leaf = naval4950::CONVOY_ROUTE_REFUSAL_UNIT_NAMES[cause_index];
+            add_batch_unit(
+                &format!(
+                    "convoy_transport_attack_row_route_refused{}",
+                    &leaf["h_convoy_route_refused".len()..]
+                ),
+                *count,
+            );
+        }
         add_batch_unit(
             "convoy_transport_attack_exact_complete_batches",
             u64::from(decoded.exact_events_complete),
@@ -19344,9 +19383,9 @@ mod tests {
                 killer_tag_db_id: 9,
                 client,
                 convoy_index: 5,
-                member_state: naval4950::TERMINAL_SUNK_STATE,
+                member_state_at_entry: naval4950::TERMINAL_SUNK_STATE - 1,
                 battle_slot: 2,
-                route: naval4950::LiveRouteResolution {
+                route: naval4950::ConvoyTerminalRoute::Bound(naval4950::LiveRouteResolution {
                     route_key: client,
                     producer_kind: naval4950::RouteProducerKind::NavalTransport,
                     source: naval4950::RouteEndpoint {
@@ -19357,7 +19396,7 @@ mod tests {
                         kind: naval4950::RouteEndpointKind::Province,
                         id: 9_950,
                     },
-                },
+                }),
             },
             d70: naval4950::ConvoyD70MutationProof {
                 kind: naval4950::ConvoyD70MutationKind::AppendFirstSeen,
@@ -19406,6 +19445,33 @@ mod tests {
                 dropped_queue_full: u64::from(!exact),
                 ..naval4950::ConvoyTransportAttackTelemetry::default()
             },
+        }
+    }
+
+    /// A witness sized to an arbitrary run of rows, for the tests that need
+    /// more than one. The single-row helper above cannot express three.
+    fn convoy_transport_attack_test_witness_for(
+        rows: &[naval4950::ConvoyTransportAttackRow],
+        exact: bool,
+    ) -> naval4950::ConvoyTransportAttackWitness {
+        // Two widths, both checked: `drained_rows` is a u32 on the wire and
+        // the sequence and telemetry counters are u64, and Rust narrows
+        // neither for you.
+        let drained = u32::try_from(rows.len()).expect("a test fixture never has 4G rows");
+        let count = rows.len() as u64;
+        naval4950::ConvoyTransportAttackWitness {
+            producer_sequence_next: count + 1,
+            drained_rows: drained,
+            events_seen_this_drain: count,
+            events_emitted_this_drain: count,
+            drops_this_drain: 0,
+            telemetry: naval4950::ConvoyTransportAttackTelemetry {
+                callbacks_seen: count,
+                original_calls: count,
+                events_emitted: count,
+                ..naval4950::ConvoyTransportAttackTelemetry::default()
+            },
+            ..convoy_transport_attack_test_witness(exact)
         }
     }
 
@@ -19527,6 +19593,116 @@ mod tests {
         assert_eq!(
             authority.problems["convoy_transport_attack_dropped_events"],
             1
+        );
+    }
+
+    /// Law: a recorded sink whose route was refused is COUNTED, by cause, and
+    /// the total and the per-cause leaves partition each other exactly.
+    ///
+    /// These units are derived from the decoded rows rather than carried in the
+    /// header, precisely so they cannot disagree with the causes the rows
+    /// carry -- but that also means nothing else in the build checks the
+    /// derivation. This is the test that does.
+    ///
+    /// What production change makes this fail: deleting the row loop,
+    /// misspelling a generated unit name, counting the total separately from
+    /// the leaves so they can drift, or classing any of the names outside the
+    /// per-frame family (the `convoy_transport_attack_` prefix is stateful, so
+    /// an undeclared name is REFUSED rather than summed and the lookups below
+    /// panic).
+    #[test]
+    fn convoy_transport_attack_summary_counts_a_refused_route_row_by_its_cause() {
+        // THE ROWS MUST CHAIN. `validate_mutation_chain` requires each row's
+        // `before_rows` to equal the previous row's `after_rows`, and -- since
+        // all three share an hour, an owner, a killer and the ordinal -- each
+        // `before_count` to equal the previous `after_count`. Three copies of
+        // the one-row fixture do not chain: row two would claim the D70 table
+        // held no rows when row one had just appended one, and the batch is
+        // refused before a single unit is counted. So the first row appends the
+        // convoy's D70 entry and the two after it increment that same entry.
+        let mut bound = convoy_transport_attack_test_row();
+        bound.carrier.producer_sequence = 1;
+        let mut refused = convoy_transport_attack_test_row();
+        refused.carrier.producer_sequence = 2;
+        refused.d70 = naval4950::ConvoyD70MutationProof {
+            kind: naval4950::ConvoyD70MutationKind::IncrementExisting,
+            ordinal: 0,
+            before_rows: 1,
+            after_rows: 1,
+            before_count: 1,
+            after_count: 2,
+        };
+        // DERIVED, not retyped: these indices moved when a dead cause was
+        // deleted, and hardcoded ones compiled while asserting the wrong names.
+        let resolution_failed = u8::try_from(
+            naval4950::ConvoyRouteSourceError::ReferenceResolutionFailed.refusal_index(),
+        )
+        .unwrap();
+        let unsupported_producer = u8::try_from(
+            naval4950::ConvoyRouteSourceError::UnsupportedProducerVtable(0).refusal_index(),
+        )
+        .unwrap();
+        refused.carrier.route = naval4950::ConvoyTerminalRoute::Refused {
+            cause_index: naval4950::ConvoyRouteRefusalIndex::new(resolution_failed).unwrap(),
+        };
+        let mut also_refused = convoy_transport_attack_test_row();
+        also_refused.carrier.producer_sequence = 3;
+        also_refused.d70 = naval4950::ConvoyD70MutationProof {
+            kind: naval4950::ConvoyD70MutationKind::IncrementExisting,
+            ordinal: 0,
+            before_rows: 1,
+            after_rows: 1,
+            before_count: 2,
+            after_count: 3,
+        };
+        also_refused.carrier.route = naval4950::ConvoyTerminalRoute::Refused {
+            cause_index: naval4950::ConvoyRouteRefusalIndex::new(unsupported_producer).unwrap(),
+        };
+
+        let rows = [bound, refused, also_refused];
+        let payload = naval4950::encode_convoy_transport_attack_batch(
+            &rows,
+            convoy_transport_attack_test_witness_for(&rows, true),
+        )
+        .expect("a batch mixing bound and refused routes is structurally valid");
+        let authority = summarize_domain_data_payload(
+            COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE,
+            &payload,
+            DomainDataContext::default(),
+        )
+        .expect("and is decoded, not refused");
+
+        assert_eq!(
+            authority.data_units["convoy_transport_attack_rows"], 3,
+            "all three sinks are on the wire; the route is an attribute, not a gate"
+        );
+        assert_eq!(
+            authority.data_units["convoy_transport_attack_rows_route_refused"], 2
+        );
+        assert_eq!(
+            authority.data_units
+                ["convoy_transport_attack_row_route_refused_reference_resolution_failed"],
+            1
+        );
+        assert_eq!(
+            authority.data_units["convoy_transport_attack_row_route_refused_unsupported_producer"],
+            1
+        );
+        let by_cause: u64 = authority
+            .data_units
+            .iter()
+            .filter(|(name, _)| name.starts_with("convoy_transport_attack_row_route_refused_"))
+            .map(|(_, count)| *count)
+            .sum();
+        assert_eq!(
+            by_cause, authority.data_units["convoy_transport_attack_rows_route_refused"],
+            "the per-cause leaves partition the total, with nothing left over"
+        );
+        assert!(
+            !authority
+                .data_units
+                .contains_key("convoy_transport_attack_row_route_refused_null_module_base"),
+            "and a cause that did not happen is absent rather than a zero row"
         );
     }
 

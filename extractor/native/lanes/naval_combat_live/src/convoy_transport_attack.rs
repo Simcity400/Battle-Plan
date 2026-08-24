@@ -6,7 +6,7 @@ pub const DOMAIN_CONVOY_TRANSPORT_ATTACK: u16 = 90;
 pub const DOMAIN_CONVOY_TRANSPORT_ATTACK_NAME: &str = "convoy_transport_attack_live";
 
 pub const BATCH_MAGIC: u32 = u32::from_le_bytes(*b"CTA2");
-/// v7. Header 512 bytes; reserved tail 496..512; v6 and v5 refused by name.
+/// v8. Header 512 bytes; reserved tail 472..512; v7 and below refused by name.
 ///
 /// Three things changed since v5, and the first changes what a reader may
 /// conclude from a batch:
@@ -15,10 +15,14 @@ pub const BATCH_MAGIC: u32 = u32::from_le_bytes(*b"CTA2");
 ///   `resolver_unbound_convoy_clients == 0` (see the method's own comment). A
 ///   v5 batch and a v7 batch with identical bytes can disagree about the
 ///   complete flag, which is exactly the case a version exists to separate.
-/// * the header carries the 16 `CaptureError` leaves of the `capture_error`
-///   candidate subsite (360..488), so a refused sink event names the proof
-///   that refused it instead of the place it was refused at.
-/// * the header carries `dropped_pre_hour_address_overflow` (488..496), the
+/// * the header carries the `CaptureError` leaves of the `capture_error`
+///   candidate subsite, so a refused sink event names the proof that refused
+///   it instead of the place it was refused at. v8 carries FIFTEEN of them at
+///   344..464: lane RX2 deleted `InvalidMemberState`, whose predicate could
+///   never pass at this callsite, rather than reserve a leaf that would always
+///   read zero. The candidate subsites above them went from eight words to six
+///   in the same wave, for the same reason, which is why the whole tail moved.
+/// * the header carries `dropped_pre_hour_address_overflow` (464..472), the
 ///   leaf for the hook's last uncounted exit.
 ///
 /// The middle version number is spent rather than reused. This lane's first
@@ -27,7 +31,15 @@ pub const BATCH_MAGIC: u32 = u32::from_le_bytes(*b"CTA2");
 /// (both land unreleased, and old captures are disposable pre-production), but
 /// one version number naming two layouts is a trap for the next reader, and a
 /// `u16` is not scarce. So the layout above is v7 and 6 is refused like 5.
-pub const BATCH_VERSION: u16 = 7;
+///
+/// v8 keeps that header byte for byte and changes the ROW: the carrier inside
+/// it went to CTA1 v2, where the route is an outcome rather than a
+/// precondition and the member state field changed sense. A v7 reader handed a
+/// v8 row would apply both invariants backwards -- it would expect endpoints
+/// where a refusal cause now sits, and reject every member state a v8 producer
+/// writes -- so the batch version moves with the row it carries even though
+/// the header did not change.
+pub const BATCH_VERSION: u16 = 8;
 pub const BATCH_HEADER_LEN: usize = 512;
 const V2_TELEMETRY_WORDS_OFF: usize = 32;
 const V3_TELEMETRY_WORDS_OFF: usize = 192;
@@ -37,23 +49,23 @@ const V3_TELEMETRY_WORDS: usize = 8;
 // decide anything (pw_gate_final: one early incident poisoned all 392 batches).
 const V5_PER_DRAIN_OFF: usize = 256;
 const V5_SUBSITE_OFF: usize = 280;
-const V5_SUBSITE_WORDS: usize = 8;
-const V5_RECEIPT_AHEAD_OFF: usize = 344;
-const V5_LAG_BEYOND_OFF: usize = 352;
+const V5_SUBSITE_WORDS: usize = 6;
+const V5_RECEIPT_AHEAD_OFF: usize = 328;
+const V5_LAG_BEYOND_OFF: usize = 336;
 // v7 appends the CaptureError leaves. rc_vanilla spent all 56 of its sink
 // events on `capture_error` and the variant had already been thrown away by
-// `Err(_)` at the call site, so the capture could not say which of sixteen
+// `Err(_)` at the call site, so the capture could not say which of the
 // proofs refused.
-const V7_CAPTURE_ERROR_OFF: usize = 360;
-const V7_CAPTURE_ERROR_WORDS: usize = 16;
+const V7_CAPTURE_ERROR_OFF: usize = 344;
+const V7_CAPTURE_ERROR_WORDS: usize = 15;
 // The last silent exit out of the hook. `prepare_observation` computed the
 // engine-hour address with `checked_add(..)?`, so an overflow returned from the
 // hook after `CALLBACKS_SEEN` had already counted the entry and before any drop
 // counter moved -- one event lost at no named site, the same shape as the
 // context-address overflow QY closed one line further down the same function
 // (Codex review 01a0310c-cd88-7f51-b09b-7ca49723b01a, BLOCKING).
-const V7_PRE_HOUR_ADDRESS_OVERFLOW_OFF: usize = 488;
-const V7_RESERVED_OFF: usize = 496;
+const V7_PRE_HOUR_ADDRESS_OVERFLOW_OFF: usize = 464;
+const V7_RESERVED_OFF: usize = 472;
 pub const BATCH_ROW_LEN: usize = 120;
 pub const BATCH_FLAG_COMPLETE_EXACT_EVENTS: u32 = 1 << 0;
 pub const BATCH_FLAG_HOOK_INSTALLED: u32 = 1 << 1;
@@ -275,8 +287,6 @@ pub struct ConvoyTransportAttackCandidateSubsites {
     /// loss path).
     pub context_address_overflow: u64,
     pub member_bytes_unreadable: u64,
-    pub route_reread_mismatch: u64,
-    pub slot_busy: u64,
 }
 
 impl ConvoyTransportAttackCandidateSubsites {
@@ -287,22 +297,23 @@ impl ConvoyTransportAttackCandidateSubsites {
             .wrapping_add(self.context_mismatch)
             .wrapping_add(self.context_address_overflow)
             .wrapping_add(self.member_bytes_unreadable)
-            .wrapping_add(self.route_reread_mismatch)
-            .wrapping_add(self.slot_busy)
     }
 
-    pub const FIELDS: [&'static str; 8] = [
+    /// v8 dropped two of these, because neither could be a lost event any more:
+    /// a live route read that no longer matches the published binding is a
+    /// NAMED route refusal on a recorded sink, and the evidence fixture's raw
+    /// observation slot is filled after the enqueue and so cannot cost one.
+    /// Reserving them would have left two leaves permanently reading zero.
+    pub const FIELDS: [&'static str; 6] = [
         "convoy_transport_attack_dropped_candidate_initial_gate",
         "convoy_transport_attack_dropped_candidate_producer_sequence_exhausted",
         "convoy_transport_attack_dropped_candidate_capture_error",
         "convoy_transport_attack_dropped_candidate_context_mismatch",
         "convoy_transport_attack_dropped_candidate_context_address_overflow",
         "convoy_transport_attack_dropped_candidate_member_bytes_unreadable",
-        "convoy_transport_attack_dropped_candidate_route_reread_mismatch",
-        "convoy_transport_attack_dropped_candidate_slot_busy",
     ];
 
-    pub fn as_array(&self) -> [u64; 8] {
+    pub fn as_array(&self) -> [u64; 6] {
         [
             self.initial_gate,
             self.producer_sequence_exhausted,
@@ -310,20 +321,20 @@ impl ConvoyTransportAttackCandidateSubsites {
             self.context_mismatch,
             self.context_address_overflow,
             self.member_bytes_unreadable,
-            self.route_reread_mismatch,
-            self.slot_busy,
         ]
     }
 }
 
-/// Which `CaptureError` a `capture_error` candidate drop came from.
+/// Which `CaptureError` a `capture_error` candidate drop came from. FIFTEEN of
+/// them in v8; `InvalidMemberState` was deleted with the predicate that was the
+/// only thing producing it.
 ///
 /// `prepare_observation` matched `capture_candidate(..)` with `Err(_)` and
 /// threw the variant away, so `capture_error` named the CALL, not the cause.
 /// In captures/rc_vanilla every one of the window's 56 sink events died there
 /// -- 56 of 56 hook entries, `dropped_candidate=56`,
 /// `dropped_candidate_capture_error=56`, every other leaf 0 -- and which of
-/// the sixteen proofs inside `capture_candidate` refused was unrecoverable
+/// which proof inside `capture_candidate` refused was unrecoverable
 /// from the capture. These are LIFETIME counters like the candidate subsites
 /// they refine, and their sum must equal `candidate_subsites.capture_error`
 /// exactly (validated at decode).
@@ -338,7 +349,6 @@ pub struct ConvoyTransportAttackCaptureErrorSubsites {
     pub invalid_owner_tag: u64,
     pub invalid_killer_tag: u64,
     pub invalid_producer_sequence: u64,
-    pub invalid_member_state: u64,
     pub invalid_combat_epoch: u64,
     pub invalid_endpoint: u64,
     pub combat_join: u64,
@@ -367,7 +377,6 @@ impl ConvoyTransportAttackCaptureErrorSubsites {
         "convoy_transport_attack_dropped_capture_error_invalid_owner_tag",
         "convoy_transport_attack_dropped_capture_error_invalid_killer_tag",
         "convoy_transport_attack_dropped_capture_error_invalid_producer_sequence",
-        "convoy_transport_attack_dropped_capture_error_invalid_member_state",
         "convoy_transport_attack_dropped_capture_error_invalid_combat_epoch",
         "convoy_transport_attack_dropped_capture_error_invalid_endpoint",
         "convoy_transport_attack_dropped_capture_error_combat_join",
@@ -387,7 +396,6 @@ impl ConvoyTransportAttackCaptureErrorSubsites {
             self.invalid_owner_tag,
             self.invalid_killer_tag,
             self.invalid_producer_sequence,
-            self.invalid_member_state,
             self.invalid_combat_epoch,
             self.invalid_endpoint,
             self.combat_join,
@@ -408,13 +416,12 @@ impl ConvoyTransportAttackCaptureErrorSubsites {
             invalid_owner_tag: values[6],
             invalid_killer_tag: values[7],
             invalid_producer_sequence: values[8],
-            invalid_member_state: values[9],
-            invalid_combat_epoch: values[10],
-            invalid_endpoint: values[11],
-            combat_join: values[12],
-            combat_slot_mismatch: values[13],
-            route_join: values[14],
-            route_key_mismatch: values[15],
+            invalid_combat_epoch: values[9],
+            invalid_endpoint: values[10],
+            combat_join: values[11],
+            combat_slot_mismatch: values[12],
+            route_join: values[13],
+            route_key_mismatch: values[14],
         }
     }
 }
@@ -474,12 +481,15 @@ impl ConvoyTransportAttackWitness {
     /// increments `CALLBACKS_SEEN` on ENTRY, before the resolver is consulted
     /// at all, and every path out of the hook ends at exactly one named drop
     /// counter or in an enqueue. An event whose convoy client has no route
-    /// binding therefore reaches `capture_candidate`, fails `RouteJoin`, and
-    /// lands on `capture_error` -- inside `drops_this_drain`, which IS a
-    /// conjunct. Unbound clients can only ever produce COUNTED drops, never
-    /// silent ones, and they can never produce a row (a row needs a resolved
-    /// route). What they express is coverage -- "had an event fired, could we
-    /// have captured it" -- which is a real gap and stays named on the wire
+    /// binding no longer ends at a drop at ALL: since fix C the refusal is an
+    /// OUTCOME, so the sink is recorded as a row whose route is `Refused` with
+    /// the sweep's own cause, and the drain stays exact instead of losing the
+    /// sink to hide a route it never had. A drop that does happen, for this or
+    /// any other reason, lands on a named `capture_error` subsite inside
+    /// `drops_this_drain`, which IS a conjunct -- so nothing hides behind an
+    /// unbound client either way. What `resolver_unbound_convoy_clients`
+    /// expresses is coverage -- "the route side of these clients is unknown"
+    /// -- which is a real gap and stays named on the wire
     /// (`resolver_unbound_convoy_clients`, its own manifest `problems` row,
     /// and the `h_convoy_route_refused_*` leaves that say why), but it is not
     /// the claim this predicate makes about THIS interval's event set.
@@ -713,8 +723,6 @@ pub fn decode_convoy_transport_attack_batch(
         context_mismatch: subsite_values[3],
         context_address_overflow: subsite_values[4],
         member_bytes_unreadable: subsite_values[5],
-        route_reread_mismatch: subsite_values[6],
-        slot_busy: subsite_values[7],
     };
     let mut capture_error_values = [0u64; V7_CAPTURE_ERROR_WORDS];
     for (index, value) in capture_error_values.iter_mut().enumerate() {
@@ -966,7 +974,8 @@ fn write_u64(bytes: &mut [u8], offset: usize, value: u64) {
 mod tests {
     use super::*;
     use crate::convoy_terminal_attribution::{
-        CombatEpoch, EntityHandle, LiveRouteResolution, RouteEndpoint, RouteEndpointKind,
+        CombatEpoch, ConvoyTerminalRoute, EntityHandle, LiveRouteResolution, RouteEndpoint,
+        RouteEndpointKind,
         RouteProducerKind, TERMINAL_SUNK_STATE,
     };
 
@@ -990,9 +999,11 @@ mod tests {
                     type_tag: 4_713,
                 },
                 convoy_index: 8,
-                member_state: TERMINAL_SUNK_STATE,
+                // A PRE-terminal state: the hook reads this field before the
+                // routine it stands inside writes the terminal value into it.
+                member_state_at_entry: TERMINAL_SUNK_STATE - 1,
                 battle_slot: 8,
-                route: LiveRouteResolution {
+                route: ConvoyTerminalRoute::Bound(LiveRouteResolution {
                     route_key: EntityHandle {
                         id: 106_381,
                         type_tag: 4_713,
@@ -1006,7 +1017,7 @@ mod tests {
                         kind: RouteEndpointKind::State,
                         id: 64,
                     },
-                },
+                }),
             },
             d70: match kind {
                 ConvoyD70MutationKind::IncrementExisting => ConvoyD70MutationProof {
@@ -1129,13 +1140,22 @@ mod tests {
         );
     }
 
-    /// The other half of the same law: unbound clients never HIDE a loss,
-    /// because an event that arrives while its client is unbound is refused
-    /// inside `capture_candidate` and counted, and the count is a conjunct.
+    /// The other half of the same law: a drop never HIDES, because every drop
+    /// out of `capture_candidate` is counted on a named subsite and the count
+    /// is a conjunct.
+    ///
+    /// This used to be the unbound-client case. Since fix C an unbound client
+    /// produces a recorded row with a named refusal cause rather than a drop,
+    /// so what this fixture drives is the generic counted-drop path;
+    /// `RouteJoin` is one surviving example of a proof that can still refuse a
+    /// candidate, and the subsite is what says which.
+    ///
+    /// What production change makes this fail: taking `drops_this_drain` out
+    /// of `exact_events_complete`, or dropping a candidate without counting a
+    /// subsite.
     #[test]
-    fn cta2_an_event_lost_to_an_unbound_client_still_disqualifies_the_batch() {
+    fn cta2_a_counted_candidate_drop_still_disqualifies_the_batch() {
         let mut lost = witness(&[]);
-        lost.resolver_unbound_convoy_clients = 22;
         lost.events_seen_this_drain = 1;
         lost.events_emitted_this_drain = 0;
         lost.drops_this_drain = 1;
@@ -1323,7 +1343,6 @@ mod tests {
             CaptureError::InvalidOwnerTag(1),
             CaptureError::InvalidKillerTag(1),
             CaptureError::InvalidProducerSequence,
-            CaptureError::InvalidMemberState(1),
             CaptureError::InvalidCombatEpoch,
             CaptureError::InvalidEndpoint("x"),
             CaptureError::CombatJoin(String::new()),
@@ -1348,7 +1367,7 @@ mod tests {
             .iter()
             .enumerate()
         {
-            let mut values = [0u64; 16];
+            let mut values = [0u64; V7_CAPTURE_ERROR_WORDS];
             values[index] = 1;
             let subsites = ConvoyTransportAttackCaptureErrorSubsites::from_array(values);
             assert_eq!(subsites.total(), 1, "{name} must be summed exactly once");
@@ -1418,7 +1437,7 @@ mod tests {
         scarred.telemetry.dropped_candidate = 46;
         scarred.telemetry.dropped_receipt_hour_mismatch = 25;
         scarred.candidate_subsites.initial_gate = 21;
-        scarred.candidate_subsites.route_reread_mismatch = 25;
+        scarred.candidate_subsites.context_mismatch = 25;
         let encoded = encode_convoy_transport_attack_batch(&[], scarred).unwrap();
         let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
         assert_eq!(decoded.witness.telemetry.dropped_candidate, 46);
@@ -1475,13 +1494,21 @@ mod tests {
     }
 
     #[test]
-    fn cta2_refuses_pre_v7_batches_by_version() {
+    fn cta2_refuses_pre_v8_batches_by_version() {
         let rows = [row(7, ConvoyD70MutationKind::IncrementExisting)];
         let mut encoded = encode_convoy_transport_attack_batch(&rows, witness(&rows)).unwrap();
-        // v5 and v7 can carry identical bytes and disagree about the complete
-        // flag, so a v5 batch must be refused rather than reinterpreted; v6 is
-        // refused because this lane spent that number on a superseded header
+        // Every earlier version disagrees with v8 about something a reader
+        // acts on. v7 shares this header byte for byte but its ROWS carry a
+        // carrier whose route is a precondition and whose member state has the
+        // opposite sense, so a v7 batch must be refused rather than
+        // reinterpreted; v5 disagrees about the complete flag as well; v6 is
+        // refused because lane RX spent that number on a superseded header
         // layout rather than reuse it.
+        write_u16(&mut encoded, 4, 7);
+        assert_eq!(
+            decode_convoy_transport_attack_batch(&encoded),
+            Err(BatchDecodeError::VersionOrLayout)
+        );
         write_u16(&mut encoded, 4, 6);
         assert_eq!(
             decode_convoy_transport_attack_batch(&encoded),

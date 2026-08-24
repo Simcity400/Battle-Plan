@@ -4610,20 +4610,27 @@ impl HConvoyFixtureOwner {
                 &self.utc_start,
                 &mut raw_files,
             )?;
+            // The positive arm exists to prove the ROUTE read, so a sink whose
+            // client had no binding is not the arm it was asked for. Refuse by
+            // name rather than write a route artifact with no route in it.
+            let route = raw
+                .route
+                .as_ref()
+                .ok_or("H-CONVOY positive arm captured a sink whose convoy client had no route binding")?;
             self.write_json_role(
                 "route_registry",
                 &serde_json::json!({
                     "schema": "h-convoy-route-registry-slot-v1",
-                    "registry_root": raw.route.reference_registry,
-                    "slot_address": raw.route.reference_slot,
-                    "bytes_hex": h_convoy_hex(&raw.route.route_slot_bytes),
+                    "registry_root": route.reference_registry,
+                    "slot_address": route.reference_slot,
+                    "bytes_hex": h_convoy_hex(&route.route_slot_bytes),
                 }),
                 &self.utc_start,
                 &mut raw_files,
             )?;
             self.write_json_role(
                 "route_object",
-                &Self::route_object(&raw.route),
+                &Self::route_object(route),
                 &self.utc_start,
                 &mut raw_files,
             )?;

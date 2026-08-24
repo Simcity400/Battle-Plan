@@ -1110,9 +1110,7 @@ pub const CUMULATIVE_UNITS: &[&str] = &[
     "convoy_transport_attack_dropped_candidate_context_mismatch",
     "convoy_transport_attack_dropped_candidate_context_address_overflow",
     "convoy_transport_attack_dropped_candidate_member_bytes_unreadable",
-    "convoy_transport_attack_dropped_candidate_route_reread_mismatch",
-    "convoy_transport_attack_dropped_candidate_slot_busy",
-    // The sixteen `CaptureError` leaves of `..._dropped_candidate_capture_error`,
+    // The `CaptureError` leaves of `..._dropped_candidate_capture_error`,
     // lifetime counters like the aggregate they partition.
     "convoy_transport_attack_dropped_capture_error_null_call_register",
     "convoy_transport_attack_dropped_capture_error_call_abi_mismatch",
@@ -1123,7 +1121,6 @@ pub const CUMULATIVE_UNITS: &[&str] = &[
     "convoy_transport_attack_dropped_capture_error_invalid_owner_tag",
     "convoy_transport_attack_dropped_capture_error_invalid_killer_tag",
     "convoy_transport_attack_dropped_capture_error_invalid_producer_sequence",
-    "convoy_transport_attack_dropped_capture_error_invalid_member_state",
     "convoy_transport_attack_dropped_capture_error_invalid_combat_epoch",
     "convoy_transport_attack_dropped_capture_error_invalid_endpoint",
     "convoy_transport_attack_dropped_capture_error_combat_join",
@@ -1374,6 +1371,28 @@ pub fn poll_gap_bucket_of_unit(name: &str) -> Option<usize> {
 pub const STATEFUL_FAMILY_PER_FRAME_UNITS: &[&str] = &[
     "convoy_transport_attack_batches",
     "convoy_transport_attack_rows",
+    // Sinks RECORDED with their route gap named (lane RX2). Per frame and
+    // summed, like every other row count here: each is a count of rows in this
+    // frame's batch, not a running state, and `..._rows_route_refused` is the
+    // total the per-cause leaves below partition.
+    "convoy_transport_attack_rows_route_refused",
+    "convoy_transport_attack_row_route_refused_null_module_base",
+    "convoy_transport_attack_row_route_refused_address_overflow",
+    "convoy_transport_attack_row_route_refused_invalid_client_handle",
+    "convoy_transport_attack_row_route_refused_reference_registry_unreadable",
+    "convoy_transport_attack_row_route_refused_reference_resolution_failed",
+    "convoy_transport_attack_row_route_refused_reference_resolution_unstable",
+    "convoy_transport_attack_row_route_refused_object_vtable_unreadable",
+    "convoy_transport_attack_row_route_refused_object_vtable_unstable",
+    "convoy_transport_attack_row_route_refused_unsupported_producer",
+    "convoy_transport_attack_row_route_refused_endpoint_pointer_unreadable",
+    "convoy_transport_attack_row_route_refused_endpoint_pointer_unstable",
+    "convoy_transport_attack_row_route_refused_endpoint_unreadable",
+    "convoy_transport_attack_row_route_refused_endpoint_unstable",
+    "convoy_transport_attack_row_route_refused_zero_endpoint",
+    "convoy_transport_attack_row_route_refused_authentication",
+    "convoy_transport_attack_row_route_refused_binding_lapsed",
+    "convoy_transport_attack_row_route_refused_unclassified",
     "convoy_transport_attack_exact_complete_batches",
     "convoy_transport_attack_incomplete_batches",
     "convoy_transport_attack_hook_installed_batches",
