@@ -557,7 +557,6 @@ pub struct RawA729CameraCarrier {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawParticleSubmit {
     pub submit_index: u64,
-    pub camera_carrier_ordinal: u8,
     pub camera_carrier: Option<RawA729CameraCarrier>,
     pub packets: Vec<RawParticlePacket>,
     pub entity_submissions: Vec<RawEntitySubmission>,
@@ -3822,7 +3821,6 @@ mod tests {
         RawRenderSubmitCapture {
             submit: RawParticleSubmit {
                 submit_index: 1,
-                camera_carrier_ordinal: 0,
                 camera_carrier: None,
                 packets: vec![packet],
                 entity_submissions: vec![],
@@ -3918,7 +3916,6 @@ mod tests {
     fn pointer_is_zero_and_single_gpu_blob_promotes() {
         let raw = RawParticleSubmit {
             submit_index: 1,
-            camera_carrier_ordinal: 0,
             camera_carrier: None,
             packets: vec![packet()],
             entity_submissions: vec![],
@@ -3979,7 +3976,6 @@ mod tests {
         };
         let raw = RawParticleSubmit {
             submit_index: 3,
-            camera_carrier_ordinal: 0,
             camera_carrier: None,
             packets: vec![particle],
             entity_submissions: vec![entity],

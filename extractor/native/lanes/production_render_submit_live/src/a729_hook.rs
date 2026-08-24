@@ -6921,7 +6921,6 @@ unsafe extern "system" fn hook_envelope(renderer: usize, camera: usize, carrier_
             }
             let submit = RawParticleSubmit {
                 submit_index: completed.submit_index,
-                camera_carrier_ordinal: completed.camera_carrier_ordinal,
                 camera_carrier: completed.camera_carrier,
                 packets: completed.packets,
                 entity_submissions: completed.entity_submissions,
@@ -14613,7 +14612,6 @@ mod tests {
     fn enqueue_empty_runtime(state: &mut HookState, submit_index: u64) {
         state.completed.push_back(RawParticleSubmit {
             submit_index,
-            camera_carrier_ordinal: 0,
             camera_carrier: None,
             packets: Vec::new(),
             entity_submissions: Vec::new(),

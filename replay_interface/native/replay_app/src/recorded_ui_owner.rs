@@ -69,9 +69,8 @@ pub fn recorded_ui_owner(
 fn recorded_text_scope(pass: &AuthenticatedUiPass) -> Result<String, String> {
     let mut scopes = BTreeSet::new();
     for operation in &pass.ui_pass_operations {
-        let UiPassOperation::HudCommand { command } = operation else {
-            continue;
-        };
+        // HUD-command-only operation set; see UiPassOperation.
+        let UiPassOperation::HudCommand { command } = operation;
         let replay_core::HudCommandExecution::InterpretedPaint {
             paint:
                 HudPaintCommand::Text {

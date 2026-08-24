@@ -1,6 +1,6 @@
 use super::{
     check_sha256, collect_static_draw_used_content, decimal_u64, validate_static_map_draw,
-    validate_static_target, M02CombatDrawRef, RenderTargetDesc, StaticMapDraw, UsedContentKey,
+    validate_static_target, RenderTargetDesc, StaticMapDraw, UsedContentKey,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -35,10 +35,6 @@ pub struct AuthenticatedUiPass {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UiPassOperation {
-    M02 {
-        ui_pass_ordinal: u32,
-        output: M02CombatDrawRef,
-    },
     HudCommand {
         command: HudCommand,
     },
@@ -223,9 +219,6 @@ pub struct UiPassRect {
 impl UiPassOperation {
     pub fn ui_pass_ordinal(&self) -> u32 {
         match self {
-            Self::M02 {
-                ui_pass_ordinal, ..
-            } => *ui_pass_ordinal,
             Self::HudCommand { command } => command.ordinal,
         }
     }
@@ -301,14 +294,6 @@ impl AuthenticatedUiPass {
                 return Err("UI-pass operation ordinals are not exact 0..N-1 order".into());
             }
             match operation {
-                UiPassOperation::M02 {
-                    ui_pass_ordinal,
-                    output,
-                } => {
-                    if output.draw_ordinal != *ui_pass_ordinal {
-                        return Err("UI-pass M02 reference ordinal mismatch".into());
-                    }
-                }
                 UiPassOperation::HudCommand { command } => {
                     command.validate(&self.target)?;
                     if !hashes.insert(command.command_identity_sha256.clone())

@@ -352,7 +352,6 @@ pub struct PreparedProductionD3dFrame {
     pub tree_materialized_execution_sha256: Option<String>,
     pub s1_shadow: Option<PreparedS1ShadowExecution>,
     pub ordered_runtime_draws: Vec<PreparedRuntimeDraw>,
-    pub m02_combat: Option<replay_core::M02CombatFrame>,
     pub authenticated_ui_pass: Option<replay_core::AuthenticatedUiPass>,
     pub m03_arrows: Option<M03ArrowFrame>,
     pub rail_supply_arrows: Option<RailSupplyArrowFrame>,
@@ -473,12 +472,6 @@ pub fn prepare_production_d3d_frame(
     let mut ordered_static_programs = Vec::new();
     let mut omissions = Vec::new();
     let mut mapname_d80_state = MapnameD80State::Missing;
-    if frame.m02_combat.is_some() && frame.authenticated_ui_pass.is_none() {
-        omissions.push(ProductionD3dOmission {
-            pass: "m02_combat_indicators".into(),
-            reason: "exact M02 swapchain draws are carried, but the complete authenticated selected-Present UI-pass operation stream is absent; the entire M02 pixel route is omitted".into(),
-        });
-    }
     if frame.s1_shadow.is_none() {
         omissions.push(ProductionD3dOmission {
             pass: "c07_s1_shadow".into(),
@@ -755,7 +748,6 @@ pub fn prepare_production_d3d_frame(
                 }
                 RenderExecutionRef::Runtime { .. } => true,
                 RenderExecutionRef::M03 { .. } => !omit_m03,
-                RenderExecutionRef::M02 { .. } => false,
             })
             .cloned()
             .collect(),
@@ -770,7 +762,6 @@ pub fn prepare_production_d3d_frame(
         tree_materialized_execution_sha256: None,
         s1_shadow: None,
         ordered_runtime_draws: frame.ordered_runtime_draws.clone(),
-        m02_combat: frame.m02_combat.clone(),
         authenticated_ui_pass: frame.authenticated_ui_pass.clone(),
         m03_arrows,
         rail_supply_arrows,
@@ -1036,12 +1027,6 @@ pub fn execute_production_d3d_frame(
                         pass: pass.into(),
                         draw_token: runtime_draw_token(draw),
                     });
-                }
-                RenderExecutionRef::M02 { .. } => {
-                    return Err(
-                        "M02 overlay reached map/runtime execution without complete UI-pass interleave"
-                            .into(),
-                    );
                 }
                 RenderExecutionRef::M03 { output } => {
                     if !seen_m03.insert(output.clone()) {
@@ -1691,8 +1676,6 @@ fn runtime_draw_pass(draw: &PreparedRuntimeDraw) -> &'static str {
 }
 
 #[cfg(windows)]
-mod m02_overlay;
-#[cfg(windows)]
 mod native;
 #[cfg(windows)]
 mod native_draw;
@@ -1702,11 +1685,6 @@ pub use s1_shadow::{
     prepare_s1_shadow_execution, validate_s1_shadow_execution, PreparedS1ShadowExecution,
 };
 
-#[cfg(windows)]
-pub use m02_overlay::{
-    M02OverlayExecutedDraw, M02OverlayExecutionReceipt, NativeM02OverlayExecutor,
-    PreparedM02OverlayPlan,
-};
 #[cfg(windows)]
 pub use native::{NativeProductionD3dBackend, NativeProductionD3dExecutor, ProductionD3dReadback};
 

@@ -1350,7 +1350,6 @@ mod tests {
         RawRenderSubmitCapture {
             submit: RawParticleSubmit {
                 submit_index: 1,
-                camera_carrier_ordinal: 0,
                 camera_carrier: None,
                 packets: Vec::new(),
                 entity_submissions: vec![crate::RawEntitySubmission {

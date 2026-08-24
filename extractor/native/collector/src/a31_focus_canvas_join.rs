@@ -159,9 +159,6 @@ pub fn bind_national_focus_canvas(
             UiPassOperation::HudCommand { command } => {
                 (command.identity.engine_instance_token, &command.placement)
             }
-            UiPassOperation::M02 { .. } => {
-                return Err("A31 common-GUI draw resolved to an M02 operation".into())
-            }
         };
         if identity_token != draw.operation.engine_instance_token
             || placement.surface_paint_ordinal != ordinal

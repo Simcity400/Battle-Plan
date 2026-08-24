@@ -1167,6 +1167,17 @@ fn owner_proven_fixture_table() -> BTreeMap<&'static str, NamedSnapshotFixture> 
             },
         ),
         (
+            "country.current_capital_state",
+            NamedSnapshotFixture {
+                name: "D14-folded measured capital-state leaf for one country",
+                rest: json!({
+                    "countries": {
+                        "GER": {"politics": {"capital_state": 161}}
+                    }
+                }),
+            },
+        ),
+        (
             "mapmode.supply_state",
             NamedSnapshotFixture {
                 name: "measured D62 hub-motorization census",
@@ -1369,6 +1380,25 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
                 .as_object_mut()
                 .expect("naval_air is an object in the measured fixture")
                 .insert("_r2_air_combat_losses_live".into(), json!([]));
+            true
+        }
+        "country.current_capital_state" => {
+            // The D14 fold ran (the politics object is on every country) but no
+            // country carries a measured capital leaf: the producer's presence
+            // alone must not admit the row.
+            let countries = object
+                .get_mut("countries")
+                .and_then(Value::as_object_mut)
+                .expect("the measured fixture carries a countries map");
+            for (_, country) in countries.iter_mut() {
+                if let Some(politics) = country
+                    .as_object_mut()
+                    .and_then(|country| country.get_mut("politics"))
+                    .and_then(Value::as_object_mut)
+                {
+                    politics.remove("capital_state");
+                }
+            }
             true
         }
         "country.d18_complete_roster" => {
@@ -1591,6 +1621,7 @@ fn ledger_accessor_status(frame: &WorldFrame, input_id: &str) -> ViewStatus {
         "combat.land_active_epoch" => frame.combats_status(),
         "combat.land_terminal_detail" => frame.ended_combats_status(),
         "combat.naval_air_epoch" => frame.naval_air_combat_status(),
+        "country.current_capital_state" => frame.countries_status(),
         "country.d18_complete_roster" => frame.d18_country_roster().complete_status(),
         "diplomacy.faction_roster" => match frame.diplomacy().faction_roster_status() {
             replay_core::world::FactionRosterStatus::Unavailable => ViewStatus::DomainUnavailable,
@@ -2889,7 +2920,7 @@ fn a_proven_input_refuses_when_its_own_payload_is_unmeasured() {
             .is_admitted(proven.input_id));
     }
     assert_eq!(
-        composites_covered, 9,
+        composites_covered, 10,
         "the composite-accessor cases are the ones this test exists for"
     );
 }
@@ -3161,10 +3192,78 @@ fn a_faction_roster_without_a_country_census_is_a_gap_not_a_rejected_projection(
     assert!(!admission.is_admitted("diplomacy.faction_roster"));
 }
 
+/// The XMAP21 capital row is a PER-COUNTRY contract, and both edges of that
+/// contract are pinned here because the default fixture exercises neither
+/// deliberately (codex round 3).
+///
+/// kills, edge 1: tightening the predicate to "every country measured". One
+/// unreadable country would then discard every other country's measured
+/// capital for that hour, which is exactly what the partial-data rule forbids.
+/// The mixed frontier below would refuse.
+///
+/// kills, edge 2: an admission predicate that does not count the engine's own
+/// reset marker as measured. This test builds the reset leaves directly and
+/// never runs the fold, so it does NOT pin the fold's spelling - that is
+/// `d14_measured_capital_state_zero_folds_the_engine_marker_zero`'s job. What
+/// it pins is the consequence: with `Leaf::Measured(0)` on every country, an
+/// entirely (and lawfully) capital-less frontier must ADMIT. Before round 3 the
+/// fold spelled that state as JSON null, which replay_core reads as a word that
+/// was never obtained, and such a frontier carried no measured leaf at all - a
+/// recording refused for faithfully recording the engine.
+#[test]
+fn the_capital_state_row_admits_a_mixed_frontier_and_an_all_reset_one() {
+    let manifest = fixture_manifest();
+
+    // Mixed: GER's word measured, ENG's not read this hour.
+    let mut mixed = fully_measured_snapshot();
+    mixed["countries"]["ENG"]["politics"] = json!({"capital_state": Value::Null});
+    let frame = world_frame_with(mixed);
+    let countries = &frame.diplomacy().countries;
+    assert_eq!(
+        countries["GER"].capital_state.measured().copied(),
+        Some(161),
+        "the fixture's measured country must stay measured, or this proves nothing"
+    );
+    assert!(
+        !countries["ENG"].capital_state.is_measured(),
+        "ENG's capital word was not read this hour"
+    );
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "country.current_capital_state").disposition,
+        MapAuthorityRequirementDisposition::Admitted,
+        "a country that could not be read must not cost every other country its capital"
+    );
+    assert!(admit_map_authority_projection(&projection)
+        .unwrap()
+        .is_admitted("country.current_capital_state"));
+
+    // Every capital lawfully reset: the engine's own marker zero, measured.
+    let mut all_reset = fully_measured_snapshot();
+    all_reset["countries"]["GER"]["politics"]["capital_state"] = json!(0);
+    all_reset["countries"]["ENG"]["politics"] = json!({"capital_state": 0});
+    let frame = world_frame_with(all_reset);
+    let countries = &frame.diplomacy().countries;
+    assert_eq!(
+        countries["GER"].capital_state.measured().copied(),
+        Some(0),
+        "the engine's reset marker is a MEASURED word, not an absent one"
+    );
+    assert_eq!(countries["ENG"].capital_state.measured().copied(), Some(0));
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "country.current_capital_state").disposition,
+        MapAuthorityRequirementDisposition::Admitted,
+        "an all-reset frontier is fully measured and must admit"
+    );
+}
+
 #[test]
 fn lane_hw_rows_with_an_open_producer_defect_stay_unproven() {
     for input_id in [
-        "country.current_capital_state",
+        // `country.current_capital_state` LEFT this list on 2026-08-23 (lane
+        // RJ): the D14 fold now emits the exact E28 current-capital leaf from
+        // HW named is closed and the row is owner-proven (XMAP21).
         "fog.province_visibility_by_pov",
         "fog.spotted_land_by_pov",
         "fog.spotted_taskforces_by_pov",

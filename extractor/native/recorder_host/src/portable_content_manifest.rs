@@ -30,7 +30,6 @@ pub const TRACE_SCHEMA: &str = "extractor.portable-content-use-trace.v1";
 pub const DEFAULT_TRACE_FILE: &str = "portable_content_use_trace.json";
 pub const MAX_TRACE_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_OBSERVATIONS: usize = 2_000_000;
-const M02_CONTENT_CONSUMER: &str = "replay_app.production_ui.m02_combat_indicator";
 const PRODUCTION_RENDER_COMPACT_DOMAIN_ID: u16 = 77;
 const LEGACY_FIXED_ROLE_MAP_SNAPSHOT_DOMAIN_ID: u16 = 80;
 
@@ -788,7 +787,6 @@ pub fn build_from_finalized_static_bundle(
         None,
         &[],
         &[],
-        &[],
     )
 }
 
@@ -857,7 +855,6 @@ pub fn build_from_finalized_static_bundle_with_hud_snapshot(
         launch,
         product_modset_sha256,
         Some(hud_snapshot),
-        &[],
         &[],
         &[],
     )
@@ -929,7 +926,6 @@ fn build_from_finalized_static_bundle_with_runtime_stream_admission(
         launch,
         product_modset_sha256,
         None,
-        &[],
         &[],
         &[],
     )?;
@@ -1047,7 +1043,6 @@ fn build_from_finalized_static_bundle_with_runtime_stream_admission(
         hud_snapshot.as_ref(),
         &static_program_content,
         &runtime_ui_content,
-        &runtime.m02_used_content,
     )
 }
 
@@ -1055,7 +1050,6 @@ fn build_from_finalized_static_bundle_with_runtime_stream_admission(
 struct RuntimeContentSnapshots {
     hud_activations: Vec<HudSurfaceActivationFrame>,
     static_program_frames: Vec<ProductionRenderFrame>,
-    m02_used_content: Vec<UsedContentKey>,
 }
 
 pub(crate) fn descriptor_replace_paths(text: &str) -> Vec<String> {
@@ -1208,7 +1202,6 @@ fn scan_runtime_content_snapshots(
     let mut hud_partitions = BTreeSet::<Vec<(HudSurface, String)>>::new();
     let mut static_program_frames = Vec::new();
     let mut last_static_program_update_index = None;
-    let mut m02_used_content = BTreeMap::<String, UsedContentKey>::new();
     let mut stream_offset = 0usize;
     loop {
         let mut header_bytes = [0u8; compact_contract::COMPACT_RECORD_HEADER_LEN];
@@ -1316,23 +1309,6 @@ fn scan_runtime_content_snapshots(
                     early_launch_manifest,
                     early_capture_receipt,
                 )?;
-                if let Some(m02) = &frame.m02_combat {
-                    for indicator in &m02.indicators {
-                        for content in &indicator.used_content {
-                            let path = content.normalized_game_relative_path.clone();
-                            match m02_used_content.get(&path) {
-                                Some(existing) if existing != content => {
-                                    return Err(format!(
-                                        "M02 used-content winner changed within recording for {path}"
-                                    ));
-                                }
-                                _ => {
-                                    m02_used_content.insert(path, content.clone());
-                                }
-                            }
-                        }
-                    }
-                }
                 let has_static_programs = frame
                     .display_submit_index
                     .as_deref()
@@ -1360,7 +1336,6 @@ fn scan_runtime_content_snapshots(
     Ok(RuntimeContentSnapshots {
         hud_activations,
         static_program_frames,
-        m02_used_content: m02_used_content.into_values().collect(),
     })
 }
 
@@ -1384,7 +1359,6 @@ fn build_from_finalized_static_bundle_inner(
     hud_snapshot: Option<&HudRoleSnapshot>,
     static_program_content: &[StaticProgramContentObservation],
     runtime_ui_content: &[StaticProgramContentObservation],
-    m02_used_content: &[UsedContentKey],
 ) -> Result<ContentManifest, String> {
     let inventory = read_stable_json(source_inventory_path, "live source inventory")?;
     if inventory.get("schema").and_then(serde_json::Value::as_str)
@@ -1694,13 +1668,6 @@ fn build_from_finalized_static_bundle_inner(
         &effective_vfs_manifest_sha256,
         &ordered_layers,
     )?;
-    append_m02_content_observations(
-        &mut observations,
-        m02_used_content,
-        &effective_vfs_manifest_sha256,
-        &inventory_winners,
-    )?;
-
     let live_report = read_stable_json(live_resolution_report_path, "live resolution report")?;
     let runtime_version = live_report
         .pointer("/runtime/version")
@@ -2109,50 +2076,6 @@ fn append_runtime_ui_content_observations(
             kind: required_kind_for_path(&normalized),
             content: row.content.clone(),
             consumer: row.consumer.clone(),
-        });
-    }
-    Ok(())
-}
-
-fn append_m02_content_observations(
-    observations: &mut Vec<ContentUseObservation>,
-    used_content: &[UsedContentKey],
-    effective_vfs_manifest_sha256: &str,
-    inventory_winners: &BTreeMap<String, UsedContentKey>,
-) -> Result<(), String> {
-    if observations.len().saturating_add(used_content.len()) > MAX_OBSERVATIONS {
-        return Err(format!(
-            "portable content trace would exceed the {MAX_OBSERVATIONS} observation bound"
-        ));
-    }
-    let mut seen = BTreeSet::new();
-    for content in used_content {
-        content
-            .validate()
-            .map_err(|error| format!("invalid M02 UsedContentKey: {error}"))?;
-        if content.effective_vfs_manifest_sha256 != effective_vfs_manifest_sha256 {
-            return Err(format!(
-                "M02 content {} names a different effective VFS",
-                content.normalized_game_relative_path
-            ));
-        }
-        let normalized = normalize_game_relative_path(&content.normalized_game_relative_path)?;
-        if normalized != content.normalized_game_relative_path || !seen.insert(normalized.clone()) {
-            return Err("M02 used-content paths are non-canonical or duplicated".into());
-        }
-        let expected = inventory_winners.get(&normalized).ok_or_else(|| {
-            format!("M02 path {normalized} is not an effective source-inventory winner")
-        })?;
-        if expected != content {
-            return Err(format!(
-                "M02 UsedContentKey for {normalized} differs from the effective source-inventory winner"
-            ));
-        }
-        observations.push(ContentUseObservation {
-            content_key: normalized.clone(),
-            kind: required_kind_for_path(&normalized),
-            content: content.clone(),
-            consumer: M02_CONTENT_CONSUMER.into(),
         });
     }
     Ok(())
@@ -3414,45 +3337,6 @@ mod tests {
         )
         .unwrap_err()
         .contains("different effective VFS"));
-    }
-
-    #[test]
-    fn m02_used_content_is_admitted_from_the_exact_inventory_winner() {
-        let (mut trace, launch) = base_trace();
-        let mut content = trace.observations[0].content.clone();
-        content.normalized_game_relative_path = "gfx/models/m02.mesh".into();
-        let winners = BTreeMap::from([(
-            content.normalized_game_relative_path.clone(),
-            content.clone(),
-        )]);
-        append_m02_content_observations(
-            &mut trace.observations,
-            std::slice::from_ref(&content),
-            &trace.effective_vfs_manifest_sha256,
-            &winners,
-        )
-        .unwrap();
-        let manifest = build(trace, &launch, &sha('9')).unwrap();
-        let row = manifest
-            .required_content
-            .iter()
-            .find(|row| row.content == content)
-            .unwrap();
-        assert!(row
-            .consumers
-            .iter()
-            .any(|consumer| consumer == M02_CONTENT_CONSUMER));
-
-        let mut drifted = content.clone();
-        drifted.payload_sha256 = sha('9');
-        assert!(append_m02_content_observations(
-            &mut Vec::new(),
-            &[drifted],
-            &content.effective_vfs_manifest_sha256,
-            &winners,
-        )
-        .unwrap_err()
-        .contains("differs from the effective source-inventory winner"));
     }
 
     #[test]

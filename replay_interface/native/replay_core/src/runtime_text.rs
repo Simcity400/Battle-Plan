@@ -209,9 +209,8 @@ pub(crate) fn validate_ui_pass_runtime_text_bindings(
 ) -> Result<(), String> {
     let mut bindings = Vec::new();
     for operation in &pass.ui_pass_operations {
-        let UiPassOperation::HudCommand { command } = operation else {
-            continue;
-        };
+        // HUD-command-only operation set; see UiPassOperation.
+        let UiPassOperation::HudCommand { command } = operation;
         let HudCommandExecution::InterpretedPaint {
             paint:
                 HudPaintCommand::Text {

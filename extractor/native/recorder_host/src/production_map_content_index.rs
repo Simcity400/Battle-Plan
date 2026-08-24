@@ -99,9 +99,7 @@ pub fn resolve_authenticated_ui_pass_content<'a>(
             continue;
         };
         for operation in &pass.ui_pass_operations {
-            let portable_render_stream::UiPassOperation::HudCommand { command } = operation else {
-                continue;
-            };
+            let portable_render_stream::UiPassOperation::HudCommand { command } = operation;
             let consumer = format!(
                 "{RUNTIME_UI_CONSUMER_PREFIX}{}",
                 command.command_identity_sha256
@@ -809,7 +807,6 @@ mod tests {
 
         let submit = RenderSubmit {
             global_order: 0,
-            camera_carrier_ordinal: 0,
             camera_carrier: None,
             // kills: carrier.render_submit.ordered_scene_constant_buffers — the submit-level
             // scene constant-buffer carrier is retired (no producer edge ever filled it);
@@ -872,7 +869,6 @@ mod tests {
             ),
             snow_mud_texture: None,
             submits: vec![submit],
-            m02_combat: None,
             m03_arrows: None,
             rail_supply_arrows: None,
             o04_cities: None,

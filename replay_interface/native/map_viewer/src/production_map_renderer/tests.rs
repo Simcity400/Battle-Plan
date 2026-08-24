@@ -11,7 +11,7 @@ use replay_core::{
     ConstantBufferBinding, ContentLayerKind, CullMode, DepthDesc, DlcSelection, DrawCommand,
     EntityContentIdentity, EntityNativeSelection, EntitySubmission, FillMode, GeometryBinding,
     IndexFormat, InputElementDesc, InterpreterIndexBufferDesc, InterpreterVertexBufferDesc,
-    LayerStorageKind, M02CombatFrame, M02LawState, O04CityFrame, O04CitySemantic,
+    LayerStorageKind, O04CityFrame, O04CitySemantic,
     O04CitylightState, ParticleRuntimeMode, PipelineDesc, PreparedRenderTarget, PrimitiveTopology,
     ProductionRenderFrame, RasterizerDesc, RecordedContentLayer, RenderAuthority, RenderCheckpoint,
     RenderExecutionRef, RenderOutputRef, RenderOutputState, RenderSubmit, RenderTargetDesc,
@@ -143,7 +143,6 @@ fn unsupported_static_producer_transitively_omits_dependent_pass_chain() {
         s1_shadow: None,
         political_textures: Vec::new(),
         ordered_runtime_draws: Vec::new(),
-        m02_combat: None,
         authenticated_ui_pass: None,
         m03_arrows: None,
         rail_supply_arrows: None,
@@ -542,7 +541,6 @@ fn frame_with_static_program(
         snow_mud_texture: None,
         submits: vec![RenderSubmit {
             global_order: 2,
-            camera_carrier_ordinal: 0,
             camera_carrier: None,
             // kills: carrier.render_submit.ordered_scene_constant_buffers — the submit-level
             // scene constant-buffer carrier is retired (no producer edge ever filled it).
@@ -557,7 +555,6 @@ fn frame_with_static_program(
             weather_membership: Vec::new(),
             political_textures: Vec::new(),
         }],
-        m02_combat: None,
         m03_arrows: None,
         rail_supply_arrows: None,
         o04_cities: None,
@@ -870,10 +867,6 @@ fn mod_override_replace_path_and_optional_dlc_are_vfs_driven() {
     assert!(plan
         .omitted_data_needs
         .iter()
-        .any(|need| need.packet == "M02"));
-    assert!(plan
-        .omitted_data_needs
-        .iter()
         .any(|need| need.packet == "M03"));
     assert!(plan
         .omitted_data_needs
@@ -1060,7 +1053,6 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
         snow_mud_texture: None,
         submits: vec![RenderSubmit {
             global_order: 2,
-            camera_carrier_ordinal: 0,
             camera_carrier: None,
             ordered_static_map_programs: Vec::new(),
             authenticated_texture_snapshots: Vec::new(),
@@ -1073,22 +1065,6 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
             weather_membership: Vec::new(),
             political_textures: Vec::new(),
         }],
-        m02_combat: Some(M02CombatFrame {
-            schema: "hoi4.production-m02-combat-indicators.v1".into(),
-            update_index: 16_959_360,
-            first_sequence: 10,
-            last_sequence: 20,
-            ui_pass_draw_count: 1167,
-            validated_laws: vec![
-                M02LawState::AActiveBaseline,
-                M02LawState::BZoomBoundary,
-                M02LawState::CResultLifecycle,
-                M02LawState::DPortStrikeDiscriminator,
-                M02LawState::EVisibilityControl,
-            ],
-            indicators: Vec::new(),
-            ordered_draws: Vec::new(),
-        }),
         m03_arrows: None,
         rail_supply_arrows: None,
         o04_cities: None,
@@ -1128,11 +1104,6 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
     assert!(prepared.ordered_static_map_programs.is_empty());
     assert!(prepared.ordered_render_operations.is_empty());
     assert!(prepared.political_textures.is_empty());
-    assert!(prepared.m02_combat.is_some());
-    assert!(!prepared
-        .omitted_data_needs
-        .iter()
-        .any(|need| need.packet == "M02"));
     let _ = fs::remove_dir_all(root);
 }
 
@@ -1252,7 +1223,6 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
         snow_mud_texture: None,
         submits: vec![RenderSubmit {
             global_order: 2,
-            camera_carrier_ordinal: 0,
             camera_carrier: None,
             ordered_static_map_programs: vec![program.clone()],
             authenticated_texture_snapshots: Vec::new(),
@@ -1267,7 +1237,6 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
             weather_membership: Vec::new(),
             political_textures: Vec::new(),
         }],
-        m02_combat: None,
         m03_arrows: None,
         rail_supply_arrows: None,
         o04_cities: None,

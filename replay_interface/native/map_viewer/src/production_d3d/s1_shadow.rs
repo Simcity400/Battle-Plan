@@ -365,7 +365,7 @@ fn materialized_execution_sha256(
                 }
                 MaterializedExecutionPayload::Runtime(draw)
             }
-            RenderExecutionRef::M02 { .. } | RenderExecutionRef::M03 { .. } => {
+            RenderExecutionRef::M03 { .. } => {
                 return Err("S1 chain contains a UI or map-arrow execution family".into())
             }
         };

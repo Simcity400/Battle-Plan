@@ -2,7 +2,7 @@
 use crate::{bind_exact_rail_d80_draws, ExactRailD80Binding, GameFileResolver, Result};
 use replay_core::{
     AuthenticatedCameraCarrier, AuthenticatedUiPass, BufferSource, C07TreeRuntimeCarrier,
-    ConstantBufferBinding, ContentManifest, EntitySubmission, HudCommandExecution, M02CombatFrame,
+    ConstantBufferBinding, ContentManifest, EntitySubmission, HudCommandExecution,
     M03ArrowFrame, O04CityFrame, O05BuildingFrame, ParticlePacket, PoliticalTexturePacket,
     ProductionRenderFrame, RailSupplyArrowFrame, RenderExecutionRef, RenderOutputRef, RenderSubmit,
     RequiredContentKind, S1ShadowCarrier, StaticGeometrySource, StaticMapCommand,
@@ -66,6 +66,9 @@ pub struct C03CameraReplayBinding {
     pub schema: String,
     pub submit_index: u64,
     pub submit_global_order: u32,
+    /// Derived from the sealed carrier via
+    /// `xmap03::derive_camera_carrier_ordinal`, never carried.
+    pub carrier_ordinal: u8,
     pub carrier_payload_sha256: String,
     pub event_batch_count: u32,
     pub raw_input_event_count: u32,
@@ -88,6 +91,7 @@ fn c03_binding_from_submit(
     if carrier.payload_sha256 != carrier.computed_payload_sha256() {
         return Err("C03 camera replay binding blocked: carrier payload digest mismatch".into());
     }
+    let carrier_ordinal = crate::production_features::xmap03::derive_camera_carrier_ordinal(carrier)?;
     let mut raw_input_event_count = 0usize;
     let mut map_pick_count = 0usize;
     for batch in &carrier.camera_event_batches {
@@ -104,6 +108,7 @@ fn c03_binding_from_submit(
         // the sealed selected_present.selected_candidate_id receipt, not a carried counter.
         submit_index: submit_identity,
         submit_global_order: submit.global_order,
+        carrier_ordinal,
         carrier_payload_sha256: carrier.payload_sha256.clone(),
         event_batch_count: u32::try_from(carrier.camera_event_batches.len())
             .map_err(|_| "C03 camera event-batch count exceeds u32")?,
@@ -144,6 +149,11 @@ pub fn validate_c03_camera_consumer(
     binding: &C03CameraReplayBinding,
 ) -> Result<()> {
     validate_c03_camera_replay_binding(binding)?;
+    if binding.carrier_ordinal
+        != crate::production_features::xmap03::derive_camera_carrier_ordinal(carrier)?
+    {
+        return Err("C03 camera binding ordinal disagrees with the sealed carrier".into());
+    }
     let raw_input_event_count = carrier
         .camera_event_batches
         .iter()
@@ -177,6 +187,7 @@ pub fn validate_c03_camera_consumer(
 
 pub fn validate_c03_camera_replay_binding(binding: &C03CameraReplayBinding) -> Result<()> {
     if binding.schema != C03_CAMERA_REPLAY_BINDING_SCHEMA
+        || binding.carrier_ordinal > 2
         || binding.carrier_payload_sha256.len() != 64
         || !binding
             .carrier_payload_sha256
@@ -209,7 +220,6 @@ pub struct PreparedProductionMapFrame {
     pub ordered_render_operations: Vec<RenderExecutionRef>,
     pub political_textures: Vec<PoliticalTexturePacket>,
     pub ordered_runtime_draws: Vec<PreparedRuntimeDraw>,
-    pub m02_combat: Option<M02CombatFrame>,
     pub authenticated_ui_pass: Option<AuthenticatedUiPass>,
     pub m03_arrows: Option<M03ArrowFrame>,
     pub rail_supply_arrows: Option<RailSupplyArrowFrame>,
@@ -325,7 +335,6 @@ impl ProductionMapRenderer {
             ordered_render_operations,
             political_textures,
             ordered_runtime_draws,
-            m02_combat,
             authenticated_ui_pass,
             m03_arrows,
             rail_supply_arrows,
@@ -356,7 +365,6 @@ impl ProductionMapRenderer {
                     None,
                     None,
                     None,
-                    None,
                 )
             }
             Some(frame) => {
@@ -367,9 +375,6 @@ impl ProductionMapRenderer {
                     != self.effective_vfs_manifest_sha256
                 {
                     return Err("production-render authority effective-VFS digest does not match playback admission".into());
-                }
-                if let Some(m02) = &frame.m02_combat {
-                    self.validate_m02_content(m02)?;
                 }
                 if let Some(ui_pass) = &frame.authenticated_ui_pass {
                     self.validate_ui_pass_content(ui_pass)?;
@@ -400,7 +405,6 @@ impl ProductionMapRenderer {
                         Vec::new(),
                         Vec::new(),
                         Vec::new(),
-                        frame.m02_combat.clone(),
                         frame.authenticated_ui_pass.clone(),
                         frame.m03_arrows.clone(),
                         frame.rail_supply_arrows.clone(),
@@ -471,7 +475,6 @@ impl ProductionMapRenderer {
                             submit.ordered_render_operations.clone(),
                             submit.political_textures.clone(),
                             draws,
-                            frame.m02_combat.clone(),
                             frame.authenticated_ui_pass.clone(),
                             frame.m03_arrows.clone(),
                             frame.rail_supply_arrows.clone(),
@@ -512,15 +515,6 @@ impl ProductionMapRenderer {
             });
         }
 
-        if m02_combat.is_none() {
-            omitted_data_needs.push(ProductionMapDataNeed {
-                packet: "M02".into(),
-                feature: "combat indicators".into(),
-                reason:
-                    "portable production frame has no authenticated M02 carrier; feature omitted"
-                        .into(),
-            });
-        }
         if tree_runtime.is_none() {
             // Name the gap only where a selected submit exists to lack tree
             // operations; without a production frame or selected submit there
@@ -593,7 +587,6 @@ impl ProductionMapRenderer {
             ordered_render_operations,
             political_textures,
             ordered_runtime_draws,
-            m02_combat,
             authenticated_ui_pass,
             m03_arrows,
             rail_supply_arrows,
@@ -641,58 +634,13 @@ impl ProductionMapRenderer {
         Ok(())
     }
 
-    fn validate_m02_content(&self, frame: &M02CombatFrame) -> Result<()> {
-        frame
-            .validate()
-            .map_err(|error| format!("invalid M02 carrier: {error}"))?;
-        for indicator in &frame.indicators {
-            let allowed = indicator.used_content.iter().collect::<BTreeSet<_>>();
-            for content in &indicator.used_content {
-                self.resolver.read_admitted_used_content(content)?;
-            }
-            let mut used = Vec::new();
-            for packet in &indicator.draws {
-                let draw = &packet.draw;
-                used.push(&draw.shader_program.source);
-                for binding in &draw.ordered_shader_resources {
-                    if let StaticShaderResourceSource::UsedContent {
-                        content, resource, ..
-                    } = &binding.source
-                    {
-                        used.push(content);
-                        for subresource in &resource.ordered_subresources {
-                            collect_buffer_content(&subresource.source, &mut used);
-                        }
-                    }
-                }
-                let StaticGeometrySource::Exact { geometry } = &draw.geometry else {
-                    return Err("M02 draw contains unauthenticated interpreter geometry".into());
-                };
-                collect_geometry_content(geometry, &mut used);
-                collect_output_content(&draw.output_state, &mut used);
-            }
-            let used = used.into_iter().collect::<BTreeSet<_>>();
-            for content in &used {
-                if !allowed.contains(content) {
-                    return Err(format!(
-                        "M02 draw references content outside its indicator admission list: {}",
-                        content.normalized_game_relative_path
-                    )
-                    .into());
-                }
-                self.resolver.read_admitted_used_content(content)?;
-            }
-        }
-        Ok(())
-    }
-
     fn validate_ui_pass_content(&self, pass: &AuthenticatedUiPass) -> Result<()> {
         pass.validate()
             .map_err(|error| format!("invalid authenticated UI-pass carrier: {error}"))?;
         for operation in &pass.ui_pass_operations {
-            let UiPassOperation::HudCommand { command } = operation else {
-                continue;
-            };
+            // The operation set is HUD-command-only since the M02 UI carrier
+            // retired; the enum variant is the whole vocabulary.
+            let UiPassOperation::HudCommand { command } = operation;
             let allowed = command
                 .ordered_effective_vfs_used_content
                 .iter()

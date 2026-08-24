@@ -29,6 +29,13 @@ pub const A729_CAMERA_TEMPORAL_SCHEMA: &str = "hoi4.camera-temporal.a729.v1";
 pub const A729_CAMERA_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 pub const A729_CAMERA_ENVELOPE_RVA: u32 = 0x0222_8df0;
+
+/// The A729 camera carrier slot table: ordinal -> carrier pointer offset from
+/// the canonical C00 root, as observed on hoi4.exe 1.19.2.0.a729 (the envelope
+/// hook receives a per-slot carrier pointer whose root is carrier - offset).
+/// The sealed carrier's own `carrier_offset` must name its slot here, which is
+/// how a viewer re-derives the ordinal without a capture-side scalar.
+pub const A729_CAMERA_CARRIER_OFFSETS: [u32; 3] = [0x10, 0x230, 0x450];
 pub const A729_CAMERA_UPDATE_RVA: u32 = 0x0124_e290;
 pub const A729_CAMERA_VERTICAL_EVENT_PRODUCER_RVA: u32 = 0x00db_a7c0;
 pub const A729_CAMERA_MAP_PICK_RVA: u32 = 0x00b4_4760;
@@ -57,14 +64,6 @@ pub const SNOW_MUD_TEXTURE_BYTE_LENGTH: usize =
 fn compact_update_index_from_raw(raw: i32) -> Option<u64> {
     portable_admission::hour_index_from_raw(raw).and_then(|hour| u64::try_from(hour).ok())
 }
-
-mod m02_combat;
-pub use m02_combat::{
-    ExactM02Field, ExactM02FieldStatus, M02CombatDraw, M02CombatDrawRef, M02CombatFrame,
-    M02CombatIndicator, M02CombatKind, M02Direction, M02FogState, M02LawState, M02ObserverRelation,
-    M02OverlapState, M02Participants, M02ResultPresentation, M02ResultState, M02WidgetState,
-    M02_COMBAT_SCHEMA,
-};
 
 mod foundation;
 pub use foundation::{
@@ -312,8 +311,6 @@ pub struct ProductionRenderFrame {
     pub selected_present: SelectedPresentReceipt,
     pub snow_mud_texture: Option<SnowMudTexturePacket>,
     pub submits: Vec<RenderSubmit>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub m02_combat: Option<M02CombatFrame>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub m03_arrows: Option<M03ArrowFrame>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -818,7 +815,6 @@ pub fn compute_render_launch_epoch_sha256(
 #[serde(deny_unknown_fields)]
 pub struct RenderSubmit {
     pub global_order: u32,
-    pub camera_carrier_ordinal: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera_carrier: Option<AuthenticatedCameraCarrier>,
     #[serde(default)]
@@ -848,7 +844,25 @@ pub enum A729CameraOwnerKind {
 }
 
 impl A729CameraOwnerKind {
-    fn expected_vtable_rva(self) -> u32 {
+    /// The a729 vtable RVA this owner kind must carry.
+    ///
+    /// `pub` because it is the LAW binding two public things - the public
+    /// `owner_kind` and the public `owner_vtable_rva` field that
+    /// `AuthenticatedCameraCarrier::validate` requires to equal it (see the
+    /// two `owner_vtable_rva != owner_kind.expected_vtable_rva()` arms below).
+    /// A consumer that builds or checks a lawful carrier has to read the value
+    /// somewhere, and the alternative to reading it here is a fresh copy of an
+    /// a729 constant in another crate, which the no-hardcoded-game-content rule
+    /// forbids.
+    ///
+    /// This is the one place the LAW is stated, which is not the same as being
+    /// the only place the numbers appear: this file's own fixtures write the
+    /// InGame RVA as a literal, and the capture producer's hook carries all
+    /// three in its owner-dispatch table (`a729_hook.rs`), because it resolves
+    /// the kind FROM the observed vtable rather than checking one it was given.
+    /// Those are separate readings of the same RE evidence, not consumers of
+    /// this law - and new consumers should call this instead of adding to them.
+    pub fn expected_vtable_rva(self) -> u32 {
         match self {
             Self::FrontEnd => 0x0293_3710,
             Self::InGame => 0x0295_2510,
@@ -1103,7 +1117,7 @@ impl AuthenticatedCameraCarrier {
         {
             return Err("camera carrier authority/identity mismatch".into());
         }
-        let expected_offset = [0x10, 0x230, 0x450]
+        let expected_offset = A729_CAMERA_CARRIER_OFFSETS
             .get(usize::from(self.carrier_ordinal))
             .copied()
             .ok_or_else(|| "camera carrier ordinal is outside 0..=2".to_string())?;
@@ -1189,7 +1203,6 @@ pub struct StaticMapPassProgram {
 pub enum RenderExecutionRef {
     Static { operation_ordinal: u32 },
     Runtime { output: RenderOutputRef },
-    M02 { output: M02CombatDrawRef },
     M03 { output: M03ArrowDrawRef },
 }
 
@@ -3194,7 +3207,6 @@ struct SideCarrierDraw<'a> {
 }
 
 struct FrameCarriers<'a> {
-    m02: Option<&'a M02CombatFrame>,
     m03: Option<&'a M03ArrowFrame>,
     snow_mud: Option<&'a SnowMudTexturePacket>,
 }
@@ -3202,24 +3214,6 @@ struct FrameCarriers<'a> {
 impl ProductionRenderFrame {
     fn side_carrier_static_draws(&self) -> Vec<SideCarrierDraw<'_>> {
         let mut draws = Vec::new();
-        if let Some(m02) = &self.m02_combat {
-            for indicator in &m02.indicators {
-                for draw in &indicator.draws {
-                    draws.push(SideCarrierDraw {
-                        owner: "M02",
-                        draw: &draw.draw,
-                        execution: Some(RenderExecutionRef::M02 {
-                            output: M02CombatDrawRef {
-                                stable_combat_handle_le_hex: indicator
-                                    .stable_combat_handle_le_hex
-                                    .clone(),
-                                draw_ordinal: draw.draw_ordinal,
-                            },
-                        }),
-                    });
-                }
-            }
-        }
         if let Some(m03) = &self.m03_arrows {
             for draw in &m03.draws {
                 draws.push(SideCarrierDraw {
@@ -3235,14 +3229,13 @@ impl ProductionRenderFrame {
         }
         if let Some(ui_pass) = &self.authenticated_ui_pass {
             for operation in &ui_pass.ui_pass_operations {
-                if let UiPassOperation::HudCommand { command } = operation {
-                    if let HudCommandExecution::ExactPipeline { draw } = &command.execution {
-                        draws.push(SideCarrierDraw {
-                            owner: "UI-pass HUD",
-                            draw: &draw.exact_draw,
-                            execution: None,
-                        });
-                    }
+                let UiPassOperation::HudCommand { command } = operation;
+                if let HudCommandExecution::ExactPipeline { draw } = &command.execution {
+                    draws.push(SideCarrierDraw {
+                        owner: "UI-pass HUD",
+                        draw: &draw.exact_draw,
+                        execution: None,
+                    });
                 }
             }
         }
@@ -3457,7 +3450,6 @@ impl ProductionRenderFrame {
             }
         }
         let carriers = FrameCarriers {
-            m02: self.m02_combat.as_ref(),
             m03: self.m03_arrows.as_ref(),
             snow_mud: self.snow_mud_texture.as_ref(),
         };
@@ -3531,67 +3523,6 @@ impl ProductionRenderFrame {
                 (_, _, None) => {}
             }
         }
-        if let Some(m02) = &self.m02_combat {
-            m02.validate()?;
-            if m02.update_index != self.update_index
-                || m02.first_sequence != self.first_sequence
-                || m02.last_sequence != self.last_sequence
-            {
-                return Err("M02 update/sequence frontier does not match production frame".into());
-            }
-            for indicator in &m02.indicators {
-                for content in &indicator.used_content {
-                    if content.effective_vfs_manifest_sha256
-                        != self.authority.effective_vfs_manifest_sha256
-                    {
-                        return Err("M02 content authority differs from production frame".into());
-                    }
-                }
-                for draw in &indicator.draws {
-                    validate_static_draw_vfs_authority(
-                        &draw.draw,
-                        &self.authority.effective_vfs_manifest_sha256,
-                        "M02",
-                    )?;
-                }
-            }
-            let display_submit = self
-                .display_submit_index
-                .as_deref()
-                .and_then(|value| value.parse::<u64>().ok())
-                .and_then(|submit_index| self.submit(submit_index))
-                .ok_or("M02 carrier has no authenticated display submit")?;
-            let expected = m02.ordered_draws.iter().cloned().collect::<Vec<_>>();
-            let actual = display_submit
-                .ordered_render_operations
-                .iter()
-                .filter_map(|operation| match operation {
-                    RenderExecutionRef::M02 { output } => Some(output.clone()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            if actual != expected {
-                return Err(
-                    "display submit M02 operations do not exactly cover carrier order".into(),
-                );
-            }
-            if self.submits.iter().any(|submit| {
-                !std::ptr::eq(submit, display_submit)
-                    && submit
-                        .ordered_render_operations
-                        .iter()
-                        .any(|operation| matches!(operation, RenderExecutionRef::M02 { .. }))
-            }) {
-                return Err("non-display submit contains an M02 overlay operation".into());
-            }
-        } else if self.submits.iter().any(|submit| {
-            submit
-                .ordered_render_operations
-                .iter()
-                .any(|operation| matches!(operation, RenderExecutionRef::M02 { .. }))
-        }) {
-            return Err("unified render order references absent M02 carrier".into());
-        }
         if let Some(ui_pass) = &self.authenticated_ui_pass {
             if self.authority.recorded_input_variant.is_none()
                 || self.authority.recorded_input_receipt_sha256.is_none()
@@ -3636,51 +3567,6 @@ impl ProductionRenderFrame {
                 &self.authority.effective_vfs_manifest_sha256,
                 "selected-Present UI pass",
             )?;
-            let m02_operations = ui_pass
-                .ui_pass_operations
-                .iter()
-                .filter_map(|operation| match operation {
-                    UiPassOperation::M02 { output, .. } => Some(output.clone()),
-                    UiPassOperation::HudCommand { .. } => None,
-                })
-                .collect::<Vec<_>>();
-            match &self.m02_combat {
-                Some(m02) => {
-                    if ui_pass.ui_pass_draw_count != m02.ui_pass_draw_count
-                        || m02.ordered_draws.len() != 1
-                        || m02_operations.len() != 1
-                        || m02_operations != m02.ordered_draws
-                    {
-                        return Err(
-                            "selected-Present UI pass does not exactly interleave the M02 carrier"
-                                .into(),
-                        );
-                    }
-                    let expected = &m02.ordered_draws[0];
-                    let Some(operation) = ui_pass
-                        .ui_pass_operations
-                        .get(expected.draw_ordinal as usize)
-                    else {
-                        return Err(
-                            "selected-Present UI pass M02 ordinal exceeds dynamic frontier".into(),
-                        );
-                    };
-                    if !matches!(
-                        operation,
-                        UiPassOperation::M02 { ui_pass_ordinal, output }
-                            if *ui_pass_ordinal == expected.draw_ordinal && output == expected
-                    ) {
-                        return Err(
-                            "selected-Present UI pass lacks exact dynamically recorded M02 ordinal"
-                                .into(),
-                        );
-                    }
-                }
-                None if !m02_operations.is_empty() => {
-                    return Err("selected-Present UI pass references absent M02 carrier".into())
-                }
-                None => {}
-            }
             if let Some(ActiveMapmodeState {
                 provenance: MapmodeProvenance::EffectiveVfs { content },
                 ..
@@ -3694,21 +3580,6 @@ impl ProductionRenderFrame {
             }
             for operation in &ui_pass.ui_pass_operations {
                 match operation {
-                    UiPassOperation::M02 { output, .. } => {
-                        let draw = self
-                            .m02_combat
-                            .as_ref()
-                            .and_then(|m02| m02.draw(output))
-                            .ok_or("selected-Present UI pass has a dangling M02 draw reference")?;
-                        if draw.draw.output_state.ordered_color_targets.as_slice()
-                            != [ui_pass.target.clone()]
-                            || draw.draw.output_state.depth_target.is_some()
-                        {
-                            return Err(
-                                "M02 UI draw does not join selected-Present pass target".into()
-                            );
-                        }
-                    }
                     UiPassOperation::HudCommand { command } => {
                         if command
                             .ordered_effective_vfs_used_content
@@ -4183,14 +4054,8 @@ impl RenderSubmit {
         authority_manifest_sha256: &str,
         carriers: &FrameCarriers<'_>,
     ) -> Result<(), String> {
-        if self.camera_carrier_ordinal > 2 {
-            return Err("render submit camera carrier ordinal is outside 0..=2".into());
-        }
         if let Some(camera) = &self.camera_carrier {
             camera.validate()?;
-            if camera.carrier_ordinal != self.camera_carrier_ordinal {
-                return Err("render submit camera carrier ordinal disagrees with payload".into());
-            }
         }
         check_sha256(&self.particle_packet_set_sha256, None)?;
         let mut authenticated_texture_snapshots = BTreeMap::new();
@@ -5252,11 +5117,6 @@ fn validate_unified_render_operations(
     if submit.ordered_render_operations.is_empty() {
         return Ok(());
     }
-    let m02_count = submit
-        .ordered_render_operations
-        .iter()
-        .filter(|operation| matches!(operation, RenderExecutionRef::M02 { .. }))
-        .count();
     let m03_count = submit
         .ordered_render_operations
         .iter()
@@ -5264,7 +5124,7 @@ fn validate_unified_render_operations(
         .count();
     let ordered_draws = submit.derive_ordered_draws()?;
     if submit.ordered_render_operations.len()
-        != static_operations.len() + ordered_draws.len() + m02_count + m03_count
+        != static_operations.len() + ordered_draws.len() + m03_count
     {
         return Err(
             "unified render-operation order does not cover every static/runtime operation".into(),
@@ -5274,7 +5134,6 @@ fn validate_unified_render_operations(
     let mut seen = BTreeSet::new();
     let mut previous_static_ordinal = None;
     let mut runtime_index = 0usize;
-    let mut m02_suffix = false;
     let mut last_writer = BTreeMap::<PreparedRenderTarget, RenderExecutionRef>::new();
     for execution in &submit.ordered_render_operations {
         if !seen.insert(execution.clone()) {
@@ -5282,9 +5141,6 @@ fn validate_unified_render_operations(
         }
         match execution {
             RenderExecutionRef::Static { operation_ordinal } => {
-                if m02_suffix {
-                    return Err("M02 UI-overlay operations are not a render-order suffix".into());
-                }
                 if previous_static_ordinal.is_some_and(|previous| *operation_ordinal <= previous) {
                     return Err("unified render order changes static operation order".into());
                 }
@@ -5311,9 +5167,6 @@ fn validate_unified_render_operations(
                 }
             }
             RenderExecutionRef::Runtime { output } => {
-                if m02_suffix {
-                    return Err("M02 UI-overlay operations are not a render-order suffix".into());
-                }
                 if ordered_draws.get(runtime_index) != Some(output) {
                     return Err(
                         "unified render order changes authenticated runtime draw order".into(),
@@ -5324,32 +5177,7 @@ fn validate_unified_render_operations(
                     .ok_or("unified render order references an unknown runtime draw")?;
                 record_output_state_writer(&mut last_writer, output_state, execution);
             }
-            RenderExecutionRef::M02 { output } => {
-                m02_suffix = true;
-                if let Some(draw) = carriers.m02.and_then(|m02| m02.draw(output)) {
-                    validate_static_draw_named_payloads(
-                        &draw.draw,
-                        &NamedPayloadScope {
-                            submit,
-                            order: PreparedTargetOrder::Ordered {
-                                current: execution,
-                                last_writer: &last_writer,
-                            },
-                            snow_mud: SnowMudResolution::RequirePacket(carriers.snow_mud),
-                            owner: "M02",
-                        },
-                    )?;
-                    record_output_state_writer(
-                        &mut last_writer,
-                        &draw.draw.output_state,
-                        execution,
-                    );
-                }
-            }
             RenderExecutionRef::M03 { output } => {
-                if m02_suffix {
-                    return Err("M03 map-arrow operation occurs after M02 UI-overlay suffix".into());
-                }
                 if let Some(draw) = carriers.m03.and_then(|m03| m03.draw(output)) {
                     validate_static_draw_named_payloads(
                         &draw.draw,
@@ -7175,13 +7003,13 @@ mod tests {
         }
     }
 
-    fn exact_m02_carrier() -> (M02CombatFrame, M02CombatDrawRef) {
+    fn exact_hud_pipeline_draw() -> StaticMapDraw {
         let shader = shader();
         let texture = texture();
         let mut output = output_state();
         output.ordered_color_targets[0].prepared_target = PreparedRenderTarget::SwapchainBackBuffer;
         let mut draw = StaticMapDraw {
-            draw_token: "m02.nav_battle_progress_small".into(),
+            draw_token: "hud.exact_pipeline_probe".into(),
             shader_program: shader.clone(),
             ordered_shader_resources: vec![StaticShaderResourceBinding {
                 stage: texture.stage,
@@ -7202,72 +7030,10 @@ mod tests {
             payload_sha256: String::new(),
         };
         draw.payload_sha256 = draw.computed_payload_sha256().unwrap();
-        let widget = vec![1, 2, 3, 4];
-        let reference = M02CombatDrawRef {
-            stable_combat_handle_le_hex: "69120000be500200".into(),
-            draw_ordinal: 859,
-        };
-        (
-            M02CombatFrame {
-                schema: M02_COMBAT_SCHEMA.into(),
-                update_index: 16_959_360,
-                first_sequence: 40,
-                last_sequence: 42,
-                ui_pass_draw_count: 1167,
-                validated_laws: vec![
-                    M02LawState::AActiveBaseline,
-                    M02LawState::BZoomBoundary,
-                    M02LawState::CResultLifecycle,
-                    M02LawState::DPortStrikeDiscriminator,
-                    M02LawState::EVisibilityControl,
-                ],
-                indicators: vec![M02CombatIndicator {
-                    stable_combat_handle_le_hex: reference.stable_combat_handle_le_hex.clone(),
-                    kind: M02CombatKind::LandActive,
-                    lifecycle_sequence: 42,
-                    location_province_id: ExactM02Field::recorded(8819),
-                    participants: ExactM02Field::recorded(M02Participants {
-                        attacker_country_id: 1,
-                        defender_country_id: 2,
-                        attacker_source_id: "army:1".into(),
-                        defender_source_id: "army:2".into(),
-                        attacker_selector_byte_0xba: 0,
-                        defender_selector_byte_0xba: 1,
-                    }),
-                    progress_percent: ExactM02Field::recorded(92),
-                    direction: ExactM02Field::recorded(M02Direction::AttackerToDefender),
-                    result: ExactM02Field::not_applicable(),
-                    observer_country_id: ExactM02Field::recorded(1),
-                    fog_of_war: ExactM02Field::recorded(M02FogState::Visible),
-                    visible: ExactM02Field::recorded(true),
-                    overlap: ExactM02Field::recorded(M02OverlapState {
-                        group_id: "land:8819".into(),
-                        depth_ordinal: 0,
-                        anchor_world_xyz_f32_bits: [0; 3],
-                    }),
-                    scale_f32_bits: ExactM02Field::not_applicable(),
-                    small_scale: ExactM02Field::not_applicable(),
-                    raw_widget_states: vec![M02WidgetState {
-                        semantic_role: "progress_small".into(),
-                        owner_offset: 0x120,
-                        canonical_sha256: hash(&widget),
-                        canonical_bytes: widget,
-                    }],
-                    used_content: vec![shader.source, texture.content],
-                    draws: vec![M02CombatDraw {
-                        draw_ordinal: reference.draw_ordinal,
-                        semantic_role: "progress_small".into(),
-                        draw,
-                    }],
-                }],
-                ordered_draws: vec![reference.clone()],
-            },
-            reference,
-        )
+        draw
     }
 
-    fn production_frame_with_m02() -> ProductionRenderFrame {
-        let (m02, reference) = exact_m02_carrier();
+    fn production_frame_with_selected_present() -> ProductionRenderFrame {
         ProductionRenderFrame {
             schema: SCHEMA.into(),
             authority: RenderAuthority {
@@ -7314,7 +7080,6 @@ mod tests {
             snow_mud_texture: None,
             submits: vec![RenderSubmit {
                 global_order: 1,
-                camera_carrier_ordinal: 0,
                 camera_carrier: None,
                 ordered_static_map_programs: vec![],
                 authenticated_texture_snapshots: vec![],
@@ -7323,11 +7088,10 @@ mod tests {
                 particle_packet_set_sha256: "5".repeat(64),
                 entities: vec![],
                 rail_construction_arrows: vec![],
-                ordered_render_operations: vec![RenderExecutionRef::M02 { output: reference }],
+                ordered_render_operations: vec![],
                 weather_membership: vec![],
                 political_textures: vec![],
             }],
-            m02_combat: Some(m02),
             m03_arrows: None,
             rail_supply_arrows: None,
             o04_cities: None,
@@ -7338,87 +7102,29 @@ mod tests {
     }
 
     #[test]
-    fn m02_unified_overlay_ref_is_exact_display_submit_suffix() {
-        let frame = production_frame_with_m02();
-        let encoded = frame.encode_json().unwrap();
-        assert_eq!(ProductionRenderFrame::decode_json(&encoded).unwrap(), frame);
-
-        let mut wrong = production_frame_with_m02();
-        if let RenderExecutionRef::M02 { output } =
-            &mut wrong.submits[0].ordered_render_operations[0]
-        {
-            output.stable_combat_handle_le_hex = "1111111111111111".into();
-        }
-        assert!(wrong.validate().unwrap_err().contains("exactly cover"));
-
-        let mut non_display = production_frame_with_m02();
-        let duplicate = non_display.submits[0].ordered_render_operations[0].clone();
-        non_display.submits.push(RenderSubmit {
-            global_order: 2,
-            camera_carrier_ordinal: 0,
-            camera_carrier: None,
-            ordered_static_map_programs: vec![],
-            authenticated_texture_snapshots: vec![],
-            s1_shadow: None,
-            particles: vec![],
-            particle_packet_set_sha256: "6".repeat(64),
-            entities: vec![],
-            rail_construction_arrows: vec![],
-            ordered_render_operations: vec![duplicate],
-            weather_membership: vec![],
-            political_textures: vec![],
-        });
-        non_display.checkpoint.last_submit_index = Some("12".into());
-        assert!(non_display
-            .validate()
-            .unwrap_err()
-            .contains("exactly one selected Present"));
-
-        let mut non_suffix = production_frame_with_m02();
-        let mut program = StaticMapPassProgram {
-            program_ordinal: 0,
-            pass_token: format!("opaque-pass:{}", "a".repeat(64)),
-            ordered_content_keys: vec![],
-            ordered_operations: vec![StaticMapOperation {
-                operation_ordinal: 7,
-                payload_sha256: String::new(),
-                command: StaticMapCommand::ClearColor {
-                    target: output_state().ordered_color_targets[0].clone(),
-                    rgba_f32_bits: [0; 4],
-                },
-            }],
-            payload_sha256: String::new(),
-        };
-        program.seal_payload_hashes().unwrap();
-        // kills: carrier.render_submit.ordered_scene_constant_buffers — the submit-level
-        // carrier is retired; program frames validate on content alone.
-        non_suffix.submits[0].ordered_static_map_programs = vec![program];
-        non_suffix.submits[0]
-            .ordered_render_operations
-            .push(RenderExecutionRef::Static {
-                operation_ordinal: 7,
-            });
-        let error = non_suffix.validate().unwrap_err();
-        assert!(error.contains("not a render-order suffix"), "{error}");
-    }
-
-    #[test]
     fn submit_identity_and_presentation_ticks_are_derived_from_selected_present_receipt() {
-        // kills: carrier.render_submit.submit_index — the sealed fixture previously carried
+        // kills: carrier.render_submit.submit_index - the sealed fixture previously carried
         // submit_index=11 on the RenderSubmit; the derived identity equals that carried value
         // because the former wire law enforced selected_candidate_id == submit.submit_index.
-        // kills: carrier.render_submit.presentation_qpc_ticks — the sealed fixture previously
+        // kills: carrier.render_submit.presentation_qpc_ticks - the sealed fixture previously
         // carried presentation_qpc_ticks=500 on the RenderSubmit; the derived ticks equal that
         // carried value because the former wire law enforced
         // selected_qpc_ticks == submit.presentation_qpc_ticks.
-        let frame = production_frame_with_m02();
+        //
+        // Lane RJ merge note: the fixture this test was written against was
+        // `production_frame_with_m02()`, which went with the retired M02
+        // carrier. `production_frame_with_selected_present()` is the same frame
+        // without that carrier - same sealed receipt (candidate 11, 500 ticks),
+        // same display submit index - so every assertion below still means what
+        // master wrote it to mean.
+        let frame = production_frame_with_selected_present();
         assert_eq!(frame.selected_present.selected_candidate_id, 11);
         assert_eq!(frame.selected_present.selected_qpc_ticks, 500);
         assert_eq!(frame.retained_submit_identity(), Some(11));
         assert_eq!(frame.selected_presentation_qpc_ticks(), Some(500));
         frame.validate().unwrap();
 
-        let mut foreign_identity = production_frame_with_m02();
+        let mut foreign_identity = production_frame_with_selected_present();
         foreign_identity.display_submit_index = Some("12".into());
         foreign_identity.checkpoint.last_submit_index = Some("12".into());
         let error = foreign_identity.validate().unwrap_err();
@@ -7427,7 +7133,7 @@ mod tests {
             "{error}"
         );
 
-        let mismatched = production_frame_with_m02();
+        let mismatched = production_frame_with_selected_present();
         assert_eq!(mismatched.submit(12), None);
         assert_eq!(
             mismatched
@@ -7442,7 +7148,7 @@ mod tests {
 
     #[test]
     fn political_texture_packet_requires_same_submit_static_consumer() {
-        let mut frame = production_frame_with_m02();
+        let mut frame = production_frame_with_selected_present();
         frame.submits[0]
             .political_textures
             .push(PoliticalTexturePacket {
@@ -7519,7 +7225,7 @@ mod tests {
             state_flags: 3 | (4 << 8) | (7 << 16) | (6 << 24),
             skinning: Skinning::NotSkinned,
         };
-        let mut frame = production_frame_with_m02();
+        let mut frame = production_frame_with_selected_present();
         let submit = &mut frame.submits[0];
         submit.particles.push(particle(2));
         submit.entities.push(entity(0));
@@ -7548,7 +7254,7 @@ mod tests {
             carried_order_that_used_to_ride_the_wire
         );
 
-        let mut gapped = production_frame_with_m02();
+        let mut gapped = production_frame_with_selected_present();
         let submit = &mut gapped.submits[0];
         submit.entities.push(entity(1));
         assert!(submit
@@ -7558,7 +7264,7 @@ mod tests {
     }
 
     fn snow_mud_fade_submit(bits: u32) -> RenderSubmit {
-        let mut frame = production_frame_with_m02();
+        let mut frame = production_frame_with_selected_present();
         let mut submit = frame.submits.remove(0);
         let mut raw_bytes = vec![0u8; 256];
         raw_bytes[248..252].copy_from_slice(&bits.to_le_bytes());
@@ -7653,7 +7359,7 @@ mod tests {
 
     #[test]
     fn selected_present_receipt_is_required_exact_and_tamper_evident() {
-        let frame = production_frame_with_m02();
+        let frame = production_frame_with_selected_present();
         frame.validate().unwrap();
 
         let mut zero_candidates = frame.clone();
@@ -7669,7 +7375,7 @@ mod tests {
         // an on-submit twin to disagree with (submit_index retired), so a retarget first
         // refuses at the display/checkpoint identity join, the surviving law binding the
         // receipt; remove that check and this assert catches the drift because validate()
-        // then fails later with a different message (the M02 submit(11) lookup at :3582).
+        // then fails later with a different message from the display-submit lookup.
         assert!(retargeted
             .validate()
             .unwrap_err()
@@ -7723,7 +7429,7 @@ mod tests {
 
     #[test]
     fn older_v3_without_optional_input_or_ui_pass_remains_compatible() {
-        let frame = production_frame_with_m02();
+        let frame = production_frame_with_selected_present();
         let encoded = frame.encode_json().unwrap();
 
         let value = serde_json::to_value(&frame).unwrap();
@@ -8098,8 +7804,7 @@ mod tests {
     }
 
     fn production_frame_with_o04() -> ProductionRenderFrame {
-        let mut frame = production_frame_with_m02();
-        frame.m02_combat = None;
+        let mut frame = production_frame_with_selected_present();
         frame.submits[0].ordered_render_operations.clear();
         let output = RenderOutputRef::Entity {
             pass_ordinal: 1,
@@ -8150,8 +7855,10 @@ mod tests {
         frame
     }
 
+    const EXACT_UI_PASS_DRAW_COUNT: u32 = 1167;
+
     fn production_frame_with_exact_ui_pass() -> ProductionRenderFrame {
-        let mut frame = production_frame_with_m02();
+        let mut frame = production_frame_with_selected_present();
         frame.authority.recorded_input_variant = Some(RecordedInputVariant::MouseKeyboard);
         let mut input_observation = RecordedInputObservationReceipt {
             executable_sha256: UI_A729_EXECUTABLE_SHA256.into(),
@@ -8176,25 +7883,12 @@ mod tests {
         frame.authority.recorded_input_receipt_sha256 =
             Some(input_observation.observation_receipt_sha256.clone());
         frame.authority.recorded_input_observation = Some(input_observation);
-        let m02 = frame.m02_combat.as_ref().unwrap();
-        let m02_ref = m02.ordered_draws[0].clone();
-        let target = m02
-            .draw(&m02_ref)
-            .unwrap()
-            .draw
-            .output_state
-            .ordered_color_targets[0]
-            .clone();
+        let pipeline_draw = exact_hud_pipeline_draw();
+        let target = pipeline_draw.output_state.ordered_color_targets[0].clone();
         let mut ui_pass_operations = Vec::new();
         let gui_definition = content("interface/modded_selected_hud.gui");
-        for ui_pass_ordinal in 0..m02.ui_pass_draw_count {
-            if ui_pass_ordinal == 859 {
-                ui_pass_operations.push(UiPassOperation::M02 {
-                    ui_pass_ordinal,
-                    output: m02_ref.clone(),
-                });
-            } else {
-                let identity = HudCommandIdentity {
+        for ui_pass_ordinal in 0..EXACT_UI_PASS_DRAW_COUNT {
+            let identity = HudCommandIdentity {
                     authored_surface_identity: "modded_selected_present_hud".into(),
                     runtime_root: "modded_selected_present_root".into(),
                     selected_gui_definition: gui_definition.clone(),
@@ -8227,7 +7921,7 @@ mod tests {
                 let execution = if ui_pass_ordinal == 0 {
                     HudCommandExecution::ExactPipeline {
                         draw: UiExactPipelineDraw {
-                            exact_draw: m02.draw(&m02_ref).unwrap().draw.clone(),
+                            exact_draw: pipeline_draw.clone(),
                         },
                     }
                 } else {
@@ -8363,14 +8057,13 @@ mod tests {
                 command.command_identity_sha256 =
                     command.computed_identity_sha256(&target).unwrap();
                 ui_pass_operations.push(UiPassOperation::HudCommand { command });
-            }
         }
         let mut authenticated_ui_pass = AuthenticatedUiPass {
             schema: UI_PASS_SCHEMA.into(),
             update_index: frame.update_index,
             first_sequence: frame.first_sequence,
             last_sequence: frame.last_sequence,
-            ui_pass_draw_count: m02.ui_pass_draw_count,
+            ui_pass_draw_count: EXACT_UI_PASS_DRAW_COUNT,
             target,
             selected_present_receipt_sha256: frame.selected_present.computed_sha256().unwrap(),
             producer_selection_receipt_sha256: "7".repeat(64),
@@ -8398,33 +8091,6 @@ mod tests {
         frame
     }
 
-    fn reshape_exact_ui_m02_interleave(
-        frame: &mut ProductionRenderFrame,
-        ui_pass_draw_count: u32,
-        m02_draw_ordinal: u32,
-    ) {
-        assert!(ui_pass_draw_count > 0);
-        assert!(m02_draw_ordinal < ui_pass_draw_count);
-        let m02 = frame.m02_combat.as_mut().unwrap();
-        m02.ui_pass_draw_count = ui_pass_draw_count;
-        m02.indicators[0].draws[0].draw_ordinal = m02_draw_ordinal;
-        m02.ordered_draws[0].draw_ordinal = m02_draw_ordinal;
-        let m02_ref = m02.ordered_draws[0].clone();
-        frame.submits[0].ordered_render_operations = vec![RenderExecutionRef::M02 {
-            output: m02_ref.clone(),
-        }];
-
-        let pass = frame.authenticated_ui_pass.as_mut().unwrap();
-        pass.ui_pass_draw_count = ui_pass_draw_count;
-        pass.ui_pass_operations
-            .truncate(ui_pass_draw_count as usize);
-        pass.ui_pass_operations[m02_draw_ordinal as usize] = UiPassOperation::M02 {
-            ui_pass_ordinal: m02_draw_ordinal,
-            output: m02_ref,
-        };
-        pass.pass_identity_sha256 = pass.computed_identity_sha256().unwrap();
-    }
-
     fn exact_ui_command_mut(frame: &mut ProductionRenderFrame, ordinal: usize) -> &mut HudCommand {
         match &mut frame
             .authenticated_ui_pass
@@ -8433,7 +8099,6 @@ mod tests {
             .ui_pass_operations[ordinal]
         {
             UiPassOperation::HudCommand { command } => command,
-            UiPassOperation::M02 { .. } => panic!("expected HUD command at ordinal {ordinal}"),
         }
     }
 
@@ -8446,9 +8111,8 @@ mod tests {
     }
 
     fn production_frame_with_m03_a48_row() -> ProductionRenderFrame {
-        let mut frame = production_frame_with_m02();
-        frame.m02_combat = None;
-        let mut draw = exact_m02_carrier().0.indicators[0].draws[0].draw.clone();
+        let mut frame = production_frame_with_selected_present();
+        let mut draw = exact_hud_pipeline_draw();
         draw.draw_token = "m03.exact-a48-movement".into();
         draw.payload_sha256 = draw.computed_payload_sha256().unwrap();
         let mut used_content = collect_static_draw_used_content(&draw);
@@ -8575,26 +8239,28 @@ mod tests {
         assert!(gap.validate().unwrap_err().contains("draw frontier"));
 
         let mut wrong_ref = frame.clone();
-        if let UiPassOperation::M02 { output, .. } = &mut wrong_ref
-            .authenticated_ui_pass
-            .as_mut()
-            .unwrap()
-            .ui_pass_operations[859]
         {
-            output.draw_ordinal = 858;
+            // HUD-command-only operation set; see UiPassOperation. The block
+            // keeps the mutable borrow scoped exactly as the `if let` did.
+            let UiPassOperation::HudCommand { command } = &mut wrong_ref
+                .authenticated_ui_pass
+                .as_mut()
+                .unwrap()
+                .ui_pass_operations[859];
+            command.ordinal = 858;
         }
         assert!(wrong_ref
             .validate()
             .unwrap_err()
-            .contains("ordinal mismatch"));
+            .contains("not exact 0..N-1 order"));
 
         let mut wrong_target = frame.clone();
-        if let UiPassOperation::HudCommand { command } = &mut wrong_target
-            .authenticated_ui_pass
-            .as_mut()
-            .unwrap()
-            .ui_pass_operations[0]
         {
+            let UiPassOperation::HudCommand { command } = &mut wrong_target
+                .authenticated_ui_pass
+                .as_mut()
+                .unwrap()
+                .ui_pass_operations[0];
             command.placement.destination_rect.right_i32 = 31;
         }
         assert!(wrong_target
@@ -8610,7 +8276,6 @@ mod tests {
             .ui_pass_operations[1]
         {
             UiPassOperation::HudCommand { command } => command.clone(),
-            UiPassOperation::M02 { .. } => unreachable!(),
         };
         let duplicate_target = duplicate_ref
             .authenticated_ui_pass
@@ -8643,7 +8308,8 @@ mod tests {
             .authenticated_ui_pass
             .as_mut()
             .unwrap();
-        if let UiPassOperation::HudCommand { command } = &mut ui_pass.ui_pass_operations[1] {
+        {
+            let UiPassOperation::HudCommand { command } = &mut ui_pass.ui_pass_operations[1];
             command.ordered_effective_vfs_used_content.pop();
             command.command_identity_sha256 = command.computed_identity_sha256(&target).unwrap();
         }
@@ -8661,7 +8327,8 @@ mod tests {
             .target
             .clone();
         let ui_pass = missing_minmax_back.authenticated_ui_pass.as_mut().unwrap();
-        if let UiPassOperation::HudCommand { command } = &mut ui_pass.ui_pass_operations[9] {
+        {
+            let UiPassOperation::HudCommand { command } = &mut ui_pass.ui_pass_operations[9];
             if let HudCommandExecution::InterpretedPaint {
                 paint:
                     HudPaintCommand::Sprite {
@@ -8691,7 +8358,8 @@ mod tests {
             .authenticated_ui_pass
             .as_mut()
             .unwrap();
-        if let UiPassOperation::HudCommand { command } = &mut ui_pass.ui_pass_operations[9] {
+        {
+            let UiPassOperation::HudCommand { command } = &mut ui_pass.ui_pass_operations[9];
             if let HudCommandExecution::InterpretedPaint {
                 paint:
                     HudPaintCommand::Sprite {
@@ -8719,7 +8387,8 @@ mod tests {
             .target
             .clone();
         let ui_pass = unproven_back.authenticated_ui_pass.as_mut().unwrap();
-        if let UiPassOperation::HudCommand { command } = &mut ui_pass.ui_pass_operations[3] {
+        {
+            let UiPassOperation::HudCommand { command } = &mut ui_pass.ui_pass_operations[3];
             if let HudCommandExecution::InterpretedPaint {
                 paint:
                     HudPaintCommand::Sprite {
@@ -8833,23 +8502,37 @@ mod tests {
     }
 
     #[test]
-    fn exact_ui_pass_accepts_modded_dynamic_frontier_and_m02_ordinal() {
+    fn exact_ui_pass_accepts_modded_dynamic_frontier_and_rejects_reordering() {
+        // A MODDED frontier is a different draw count, not the fixture's own.
+        // Master proved that through `reshape_exact_ui_m02_interleave`, which
+        // truncated the pass to 23 operations and rehashed it while injecting an
+        // M02 operation; the injection went with the retired carrier, the
+        // reshape did not, so it is done directly here (codex round 7).
+        const MODDED_FRONTIER: u32 = 23;
         let mut frame = production_frame_with_exact_ui_pass();
-        reshape_exact_ui_m02_interleave(&mut frame, 23, 17);
+        assert_ne!(
+            EXACT_UI_PASS_DRAW_COUNT, MODDED_FRONTIER,
+            "the modded frontier must differ from the fixture's own or this proves nothing"
+        );
+        let pass = frame.authenticated_ui_pass.as_mut().unwrap();
+        pass.ui_pass_draw_count = MODDED_FRONTIER;
+        pass.ui_pass_operations.truncate(MODDED_FRONTIER as usize);
+        pass.pass_identity_sha256 = pass.computed_identity_sha256().unwrap();
         frame.validate().unwrap();
         let encoded = frame.encode_json().unwrap();
         assert_eq!(ProductionRenderFrame::decode_json(&encoded).unwrap(), frame);
 
+        // kills: accepting a draw count that disagrees with the operations that
+        // cover it. Master reached this through the M02 carrier's own
+        // `ui_pass_draw_count`; the pass-level law is the one that survives.
         let mut wrong_frontier = frame.clone();
-        wrong_frontier
-            .m02_combat
-            .as_mut()
-            .unwrap()
-            .ui_pass_draw_count = 24;
+        let pass = wrong_frontier.authenticated_ui_pass.as_mut().unwrap();
+        pass.ui_pass_draw_count = MODDED_FRONTIER + 1;
+        pass.pass_identity_sha256 = pass.computed_identity_sha256().unwrap();
         assert!(wrong_frontier
             .validate()
             .unwrap_err()
-            .contains("exactly interleave"));
+            .contains("do not exactly cover the draw frontier"));
 
         let mut wrong_dynamic_ordinal = frame;
         let pass = wrong_dynamic_ordinal
@@ -8874,7 +8557,6 @@ mod tests {
             .ui_pass_operations[1]
         {
             UiPassOperation::HudCommand { command } => command,
-            UiPassOperation::M02 { .. } => unreachable!(),
         };
         let HudCommandExecution::InterpretedPaint {
             paint:
@@ -9181,7 +8863,6 @@ mod tests {
             snow_mud_texture: None,
             submits: vec![RenderSubmit {
                 global_order: 1,
-                camera_carrier_ordinal: 0,
                 camera_carrier: None,
                 ordered_static_map_programs: vec![],
                 authenticated_texture_snapshots: vec![],
@@ -9243,7 +8924,6 @@ mod tests {
                 weather_membership: vec![],
                 political_textures: vec![],
             }],
-            m02_combat: None,
             m03_arrows: None,
             rail_supply_arrows: None,
             o04_cities: None,
@@ -9635,7 +9315,7 @@ mod tests {
 
     #[test]
     fn decode_value_equals_decode_json_and_rejects_wrong_schemas() {
-        let frame = production_frame_with_m02();
+        let frame = production_frame_with_selected_present();
         let encoded = frame.encode_json().unwrap();
 
         let bare = serde_json::to_value(&frame).unwrap();
@@ -9831,7 +9511,6 @@ mod tests {
             snow_mud_texture: None,
             submits: vec![RenderSubmit {
                 global_order: 1,
-                camera_carrier_ordinal: 0,
                 camera_carrier: None,
                 ordered_static_map_programs: vec![],
                 authenticated_texture_snapshots: vec![],
@@ -9875,7 +9554,6 @@ mod tests {
                 weather_membership: vec![],
                 political_textures: vec![],
             }],
-            m02_combat: None,
             m03_arrows: None,
             rail_supply_arrows: None,
             o04_cities: None,
@@ -10057,14 +9735,6 @@ mod tests {
         source: StaticShaderResourceSource,
     ) -> ProductionRenderFrame {
         match carrier {
-            "M02" => {
-                let mut frame = production_frame_with_m02();
-                rebind_first_shader_resource(
-                    &mut frame.m02_combat.as_mut().unwrap().indicators[0].draws[0].draw,
-                    source,
-                );
-                frame
-            }
             "M03" => {
                 let mut frame = production_frame_with_m03_a48_row();
                 let m03 = frame.m03_arrows.as_mut().unwrap();
@@ -10094,7 +9764,7 @@ mod tests {
 
     #[test]
     fn side_carrier_draws_refuse_unresolvable_named_payloads() {
-        for carrier in ["M02", "M03", "UI-pass HUD"] {
+        for carrier in ["M03", "UI-pass HUD"] {
             let frame = frame_with_side_carrier_source(carrier, dangling_snapshot_source());
             assert!(frame
                 .submits
@@ -10332,7 +10002,7 @@ mod tests {
 
     #[test]
     fn side_carrier_snow_mud_source_requires_the_h_packet() {
-        for carrier in ["M02", "M03", "UI-pass HUD"] {
+        for carrier in ["M03", "UI-pass HUD"] {
             let frame = frame_with_side_carrier_source(carrier, snow_mud_source());
             assert!(frame.snow_mud_texture.is_none());
             let error = frame.validate().unwrap_err();
@@ -10345,9 +10015,8 @@ mod tests {
 
     #[test]
     fn side_carrier_controls_still_pass_and_still_refuse_a_foreign_manifest() {
-        for carrier in ["M02", "M03", "UI-pass HUD"] {
+        for carrier in ["M03", "UI-pass HUD"] {
             let mut frame = match carrier {
-                "M02" => production_frame_with_m02(),
                 "M03" => production_frame_with_m03_a48_row(),
                 _ => production_frame_with_exact_ui_pass(),
             };
@@ -10373,28 +10042,21 @@ mod tests {
                 }
                 rehash_exact_ui_command_and_pass(&mut frame, 0);
             } else {
-                if carrier == "M02" {
-                    let foreign =
-                        &mut frame.m02_combat.as_mut().unwrap().indicators[0].draws[0].draw;
-                    foreign.shader_program.source.effective_vfs_manifest_sha256 = "9".repeat(64);
-                    foreign.payload_sha256 = foreign.computed_payload_sha256().unwrap();
-                } else {
-                    let m03 = frame.m03_arrows.as_mut().unwrap();
-                    let original = m03.draws[0].draw.shader_program.source.clone();
-                    m03.draws[0]
-                        .draw
-                        .shader_program
-                        .source
-                        .effective_vfs_manifest_sha256 = "9".repeat(64);
-                    m03.draws[0].draw.payload_sha256 =
-                        m03.draws[0].draw.computed_payload_sha256().unwrap();
-                    for content in &mut m03.used_content {
-                        if *content == original {
-                            content.effective_vfs_manifest_sha256 = "9".repeat(64);
-                        }
+                let m03 = frame.m03_arrows.as_mut().unwrap();
+                let original = m03.draws[0].draw.shader_program.source.clone();
+                m03.draws[0]
+                    .draw
+                    .shader_program
+                    .source
+                    .effective_vfs_manifest_sha256 = "9".repeat(64);
+                m03.draws[0].draw.payload_sha256 =
+                    m03.draws[0].draw.computed_payload_sha256().unwrap();
+                for content in &mut m03.used_content {
+                    if *content == original {
+                        content.effective_vfs_manifest_sha256 = "9".repeat(64);
                     }
-                    m03.used_content.sort();
                 }
+                m03.used_content.sort();
             }
             let error = frame.validate().unwrap_err();
             assert!(error.contains("content authority"), "{carrier}: {error}");

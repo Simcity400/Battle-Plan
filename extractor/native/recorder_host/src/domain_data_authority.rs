@@ -3395,7 +3395,12 @@ fn decode_compact_politics_data_payload(
     let mut cursor = 40usize;
     let mut seen_countries = BTreeSet::new();
     for row_index in 0..country_count {
-        if let Err(err) = require_compact_remaining(payload, cursor, 28, "politics country row") {
+        if let Err(err) = require_compact_remaining(
+            payload,
+            cursor,
+            POLITICS_COUNTRY_ROW_BYTES,
+            "politics country row",
+        ) {
             summary.parse_errors.push(format!("offset {offset}: {err}"));
             return;
         }
@@ -3406,7 +3411,8 @@ fn decode_compact_politics_data_payload(
         let party_count = read_u32_le(payload, cursor + 16);
         let low_confidence = read_u32_le(payload, cursor + 20);
         let _leader_char_id = read_u32_le(payload, cursor + 24);
-        cursor += 28;
+        let capital_state_raw = read_i32_le(payload, cursor + 28);
+        cursor += POLITICS_COUNTRY_ROW_BYTES;
         if tag_db_id == 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: politics country row {row_index} has zero tag_db_id"
@@ -3416,9 +3422,14 @@ fn decode_compact_politics_data_payload(
                 "offset {offset}: politics country row {row_index} duplicates tag_db_id {tag_db_id}"
             ));
         }
-        if flags & !0b11_1111_1111 != 0 {
+        if flags & !0b111_1111_1111 != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: politics country row {row_index} has unknown flags {flags}"
+            ));
+        }
+        if flags & (1 << 10) != 0 && capital_state_raw < 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: politics country row {row_index} has a negative measured capital_state"
             ));
         }
         if idea_count != u32::MAX && idea_count > 4096 {
@@ -17471,6 +17482,18 @@ fn collect_country_preferred_tactic_weight_tokens(
         .collect())
 }
 
+/// The D14 politics country row's fixed block, in bytes.
+///
+/// THREE readers walk this row and every one of them must move together when it
+/// grows: `decode_compact_politics_data_payload` earlier in this file, the
+/// static-join walker `collect_politics_advisor_tokens` just below, and
+/// `world_fold::fold_politics` in the fold module.
+/// The last widening (the E28 capital word, 28 -> 32) updated the first and the
+/// third and missed the second, which walked four bytes short and then read the
+/// advisor tag as a string length. The two readers in THIS file now share this
+/// constant so they cannot drift apart again.
+const POLITICS_COUNTRY_ROW_BYTES: usize = 32;
+
 fn collect_politics_advisor_tokens(payload: &[u8]) -> Result<Vec<StaticJoinToken>, String> {
     let country_count = read_u32_le(payload, 8) as usize;
     let popularity_count = read_u32_le(payload, 24) as usize;
@@ -17479,7 +17502,7 @@ fn collect_politics_advisor_tokens(payload: &[u8]) -> Result<Vec<StaticJoinToken
     let spirit_count = read_u32_le(payload, 36) as usize;
     let mut cursor = 40usize;
     for _ in 0..country_count {
-        cursor = cursor.saturating_add(28);
+        cursor = cursor.saturating_add(POLITICS_COUNTRY_ROW_BYTES);
         for _ in 0..4 {
             let _ = read_compact_string(payload, &mut cursor, "politics country token")?;
         }
@@ -18872,7 +18895,13 @@ mod tests {
         for value in [1, 1, 0, COMPACT_FIXED_SCALE_RAW, 0, 0, 1, 0] {
             push_u32(&mut politics, value);
         }
-        for value in [47, 0, 1, u32::MAX, 0, 0, 0] {
+        // tag_db_id, flags, idea_count, election_frequency, party_count,
+        // low_confidence, leader.char_id, capital_state. The last word is the
+        // E28 current capital: the fixed block is 32 bytes, and with flag bit 10
+        // clear the word is unmeasured filler. Without it the four strings that
+        // follow start four bytes early and the leader token reads its length
+        // out of the wrong place.
+        for value in [47, 0, 1, u32::MAX, 0, 0, 0, 0] {
             push_u32(&mut politics, value);
         }
         for _ in 0..4 {

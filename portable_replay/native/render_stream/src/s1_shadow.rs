@@ -541,7 +541,7 @@ fn execution_constant_buffers<'a>(
             .ok_or_else(|| format!("S1 {role} runtime entity draw is absent"))?;
             Ok(&entity.ordered_constant_buffers)
         }
-        RenderExecutionRef::M02 { .. } | RenderExecutionRef::M03 { .. } => {
+        RenderExecutionRef::M03 { .. } => {
             Err(format!("S1 {role} uses an unsupported execution family"))
         }
     }

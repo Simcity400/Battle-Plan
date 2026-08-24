@@ -2659,7 +2659,6 @@ mod tests {
         });
         RenderSubmit {
             global_order: 1,
-            camera_carrier_ordinal: 0,
             camera_carrier: None,
             ordered_static_map_programs: vec![crate::StaticMapPassProgram {
                 program_ordinal: 0,
@@ -2838,7 +2837,6 @@ mod tests {
         // with the same named refusal as before.
         let submit = RenderSubmit {
             global_order: 1,
-            camera_carrier_ordinal: 0,
             camera_carrier: None,
             ordered_static_map_programs: vec![crate::StaticMapPassProgram {
                 program_ordinal: 0,

@@ -6,10 +6,13 @@ use snapshot::sha256::Sha256;
 
 /// The map-authority inputs XMAP21 needs before it can prepare furniture.
 ///
-/// `map_furniture.current_victory_points` is owner-proven since lane OV built
-/// its producer (compact domain 101, `map_furniture_victory_points_live`).
-/// `country.current_capital_state` is not, and the family needs BOTH, so it
-/// still refuses — see [`XMAP21_UNPROVEN_AUTHORITY_INPUTS`].
+/// Both are owner-proven now: `map_furniture.current_victory_points` since lane
+/// OV built its producer (compact domain 101,
+/// `map_furniture_victory_points_live`), and `country.current_capital_state`
+/// since lane RJ landed the D14 producer for the exact E28 carrier. The family
+/// still refuses, but on its own missing furniture CONTENT rather than on an
+/// unproven input — [`xmap21_unproven_authority_inputs`] is what the refusal
+/// text asks, and it is empty.
 pub const XMAP21_REQUIRED_AUTHORITY_INPUTS: [&str; 2] = [
     "country.current_capital_state",
     "map_furniture.current_victory_points",
@@ -66,16 +69,21 @@ impl Xmap21MapFurnitureAdapter {
 
     pub(crate) fn authority_absent_output(hour: i64) -> FoundationFeatureOutput {
         let unproven = xmap21_unproven_authority_inputs();
-        let reason = format!(
-            "no admitted map-furniture authority for this hour: {} are required and {} is not \
-             owner-proven",
-            XMAP21_REQUIRED_AUTHORITY_INPUTS.join(", "),
-            if unproven.is_empty() {
-                "none of them".to_string()
-            } else {
+        let reason = if unproven.is_empty() {
+            format!(
+                "no admitted map-furniture authority for this hour: {} are required and all are \
+                 owner-proven; the family refuses because this recording built no prepared \
+                 furniture packet",
+                XMAP21_REQUIRED_AUTHORITY_INPUTS.join(", ")
+            )
+        } else {
+            format!(
+                "no admitted map-furniture authority for this hour: {} are required and {} is not \
+                 owner-proven",
+                XMAP21_REQUIRED_AUTHORITY_INPUTS.join(", "),
                 unproven.join(", ")
-            }
-        );
+            )
+        };
         let witness_sha256 = Sha256::hex(
             format!("{XMAP21_FURNITURE_ABSENT_GAP_ID}\n{hour}\n{hour}\n{reason}").as_bytes(),
         );
@@ -151,24 +159,28 @@ mod tests {
         for input in XMAP21_REQUIRED_AUTHORITY_INPUTS {
             assert!(gap.reason.contains(input), "reason omitted {input}");
         }
-        // kills: a refusal that goes on calling a proven input unproven. Row
-        // #20's producer landed; row #7's has not, and the reason has to say
-        // which one is actually missing.
-        assert_eq!(
-            xmap21_unproven_authority_inputs(),
-            vec!["country.current_capital_state"],
-            "row #20 is owner-proven and row #7 is not"
+        // kills: a refusal that goes on calling a proven input unproven. Both
+        // required inputs are owner-proven now (row #20's producer landed in
+        // lane OV, row #7's D14 capital-state producer landed in lane RJ), so
+        // the refusal must say the family waits on furniture CONTENT, and no
+        // input may be named unproven.
+        assert!(
+            xmap21_unproven_authority_inputs().is_empty(),
+            "every required XMAP21 authority input is owner-proven now"
         );
         assert!(
-            !gap.reason.contains("neither is owner-proven"),
+            gap.reason.contains("all are owner-proven"),
             "{}",
             gap.reason
         );
         assert!(
-            gap.reason.contains("country.current_capital_state is not owner-proven"),
+            !gap.reason.contains("is not owner-proven"),
             "{}",
             gap.reason
         );
+        for input in XMAP21_REQUIRED_AUTHORITY_INPUTS {
+            assert!(gap.reason.contains(input), "reason omitted {input}");
+        }
         assert_eq!(gap.first_unavailable_hour, 7);
         assert_eq!(gap.last_unavailable_hour, 7);
         assert!(output.prepared_map_furniture.is_none());

@@ -522,9 +522,8 @@ pub use production_d3d::{
 };
 #[cfg(windows)]
 pub use production_d3d::{
-    execute_foundation_content_operation, M02OverlayExecutedDraw, M02OverlayExecutionReceipt,
-    NativeM02OverlayExecutor, NativeProductionD3dBackend, NativeProductionD3dExecutor,
-    PreparedM02OverlayPlan, ProductionD3dReadback,
+    execute_foundation_content_operation, NativeProductionD3dBackend,
+    NativeProductionD3dExecutor, ProductionD3dReadback,
 };
 pub use production_features::xmap13::{
     prepare_xmap13_effect_identity, PreparedXmap13CounterGroup, PreparedXmap13CounterItem,

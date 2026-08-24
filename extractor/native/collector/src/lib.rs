@@ -835,7 +835,6 @@ fn portable_submit_with_pending_s1_from_a729_runtime(
     let s1_shadow = promoted.s1_shadow.clone();
     let submit = portable_render_stream::RenderSubmit {
         global_order,
-        camera_carrier_ordinal: promoted.camera_carrier_ordinal,
         camera_carrier: promoted.camera_carrier,
         ordered_static_map_programs: Vec::new(),
         authenticated_texture_snapshots: Vec::new(),
@@ -1211,7 +1210,6 @@ pub fn assemble_production_render_frame(
         selected_present,
         snow_mud_texture,
         submits,
-        m02_combat: None,
         m03_arrows: None,
         rail_supply_arrows,
         o04_cities: None,
@@ -1524,7 +1522,6 @@ fn finalize_a729_runtime_captures_in_process(
         output.push(FinalizedA729RuntimeCapture {
             promoted: PromotedA729ProductionRenderSubmit {
                 submit_index,
-                camera_carrier_ordinal: capture.submit.camera_carrier_ordinal,
                 camera_carrier: promote_a729_camera_carrier(
                     capture.submit.camera_carrier.as_ref(),
                 )?,
@@ -3010,7 +3007,6 @@ pub fn install_a729_production_render_bootstrap_hooks(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PromotedA729ProductionRenderSubmit {
     pub submit_index: u64,
-    pub camera_carrier_ordinal: u8,
     pub camera_carrier: Option<portable_render_stream::AuthenticatedCameraCarrier>,
     pub particles: Vec<portable_render_stream::ParticlePacket>,
     pub entities: Vec<portable_render_stream::EntitySubmission>,
@@ -3365,7 +3361,6 @@ mod fold_carrier_guard_tests {
     fn empty_submit(global_order: u32) -> portable_render_stream::RenderSubmit {
         portable_render_stream::RenderSubmit {
             global_order,
-            camera_carrier_ordinal: 0,
             camera_carrier: None,
             ordered_static_map_programs: Vec::new(),
             authenticated_texture_snapshots: Vec::new(),
@@ -3816,7 +3811,6 @@ pub fn drain_a729_production_render_submits<
             }
             Ok(PromotedA729ProductionRenderSubmit {
                 submit_index: submit.submit_index,
-                camera_carrier_ordinal: submit.camera_carrier_ordinal,
                 camera_carrier: promote_a729_camera_carrier(submit.camera_carrier.as_ref())?,
                 particles,
                 entities,

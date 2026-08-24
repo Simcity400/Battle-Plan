@@ -3350,7 +3350,12 @@ mod tests {
         assert_eq!(stats.data_records, 1, "domain {domain}");
     }
 
-    fn expect_domain_boundary_acceptance(domain: u16, payload: &[u8]) {
+    /// Accepting the STREAM is not the same as decoding the PAYLOAD: a malformed
+    /// body degrades its domain and the fold keeps going, so these assertions
+    /// alone pass on a payload the decoder rejected. Callers that mean "this
+    /// body is well formed" must also check `malformed_payload_records`, which
+    /// is why the stats come back.
+    fn expect_domain_boundary_acceptance(domain: u16, payload: &[u8]) -> FoldStreamStats {
         let hour = raw_for(HOUR_A);
         let mut stream = Vec::new();
         push_record(
@@ -3375,6 +3380,7 @@ mod tests {
         assert_eq!(stats.data_records, 1, "domain {domain}");
         assert_eq!(stats.bytes_folded, stream.len() as u64, "domain {domain}");
         assert!(stats.stop_reason.is_none(), "domain {domain}");
+        stats
     }
 
     const HOUR_A: i64 = 16_959_360;
@@ -4516,9 +4522,26 @@ mod tests {
     fn d14_full_popularity_row_remains_boundary_valid() {
         let mut payload = vec![0u8; 40];
         payload[8..12].copy_from_slice(&1u32.to_le_bytes());
+        // The header's fixed-point scale, which the decoder requires to equal
+        // the contract's. A zero here is a parse error on its own.
+        payload[20..24]
+            .copy_from_slice(&crate::domain_data_authority::COMPACT_FIXED_SCALE_RAW.to_le_bytes());
         payload[24..28].copy_from_slice(&1u32.to_le_bytes());
-        payload.extend_from_slice(&1u32.to_le_bytes());
-        payload.extend_from_slice(&[0u8; 24]);
+        // The 32-byte fixed block, spelled word by word: tag_db_id, flags,
+        // idea_count, election_frequency, party_count, low_confidence,
+        // leader.char_id, capital_state. It was 4 + a 24-byte filler when the
+        // D14 row was 28 bytes wide; the E28 capital word made it 32 and this
+        // fixture kept the old width. The stream still accepted, because a
+        // malformed body degrades its own domain rather than stopping the fold -
+        // which is why this test now asserts the body DECODED, the assertion
+        // that catches both the stale width and the two zero words below.
+        //
+        // `election_frequency` is `u32::MAX` because zero is not a legal
+        // measured value: the decoder admits either the unmeasured marker or
+        // 1..=600, and a zero-filled block quietly fails that.
+        for value in [1u32, 0, 0, u32::MAX, 0, 0, 0, 0] {
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
         for _ in 0..4 {
             payload.extend_from_slice(&0u16.to_le_bytes());
         }
@@ -4526,7 +4549,11 @@ mod tests {
         payload.extend_from_slice(&1u16.to_le_bytes());
         payload.push(b'd');
         payload.extend_from_slice(&50_000i32.to_le_bytes());
-        expect_domain_boundary_acceptance(14, &payload);
+        let stats = expect_domain_boundary_acceptance(14, &payload);
+        assert_eq!(
+            stats.malformed_payload_records, 0,
+            "the boundary-valid D14 body must DECODE, not merely ride an accepted stream"
+        );
     }
 
     #[test]

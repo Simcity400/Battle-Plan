@@ -73,7 +73,6 @@ fn empty_frame() -> PreparedProductionMapFrame {
         ordered_scene_constant_buffers: Vec::new(),
         ordered_render_operations: Vec::new(),
         ordered_runtime_draws: Vec::new(),
-        m02_combat: None,
         authenticated_ui_pass: None,
         m03_arrows: None,
         rail_supply_arrows: None,
@@ -138,7 +137,6 @@ fn prepared_static_frame(operations: Vec<StaticMapOperation>) -> PreparedProduct
         snow_mud_texture: None,
         ordered_runtime_draws: Vec::new(),
         political_textures: Vec::new(),
-        m02_combat: None,
         authenticated_ui_pass: None,
         m03_arrows: None,
         rail_supply_arrows: None,
@@ -168,6 +166,7 @@ fn c03_binding() -> C03CameraReplayBinding {
         schema: crate::C03_CAMERA_REPLAY_BINDING_SCHEMA.into(),
         submit_index: 7,
         submit_global_order: 3,
+        carrier_ordinal: 0,
         carrier_payload_sha256: "ab".repeat(32),
         event_batch_count: 2,
         raw_input_event_count: 4,
@@ -396,40 +395,6 @@ fn authenticated_mapname_executes_but_a_legacy_claim_cannot_bypass_the_guard() {
         .to_string()
         .contains("state/omission disagrees"));
     assert!(bridge.calls.is_empty());
-}
-
-#[test]
-fn m02_carrier_without_authenticated_ui_pass_omits_entire_pixel_route() {
-    let mut frame = empty_frame();
-    frame.m02_combat = Some(replay_core::M02CombatFrame {
-        schema: "hoi4.production-m02-combat-indicators.v1".into(),
-        update_index: 7,
-        first_sequence: 10,
-        last_sequence: 20,
-        ui_pass_draw_count: 1167,
-        validated_laws: vec![
-            replay_core::M02LawState::AActiveBaseline,
-            replay_core::M02LawState::BZoomBoundary,
-            replay_core::M02LawState::CResultLifecycle,
-            replay_core::M02LawState::DPortStrikeDiscriminator,
-            replay_core::M02LawState::EVisibilityControl,
-        ],
-        indicators: Vec::new(),
-        ordered_draws: Vec::new(),
-    });
-
-    let prepared = prepare_production_d3d_frame(&frame, &BTreeMap::new()).unwrap();
-    assert!(prepared.m02_combat.is_some());
-    assert!(prepared.ordered_render_operations.is_empty());
-    assert!(prepared.omissions.iter().any(|omission| {
-        omission.pass == "m02_combat_indicators"
-            && omission
-                .reason
-                .contains("authenticated selected-Present UI-pass operation stream is absent")
-            && omission
-                .reason
-                .contains("entire M02 pixel route is omitted")
-    }));
 }
 
 #[test]
@@ -1168,7 +1133,6 @@ float4 ps_main() : SV_Target { return float4(1.0, 0.0, 0.0, 1.0); }
         snow_mud_texture: None,
         ordered_runtime_draws: Vec::new(),
         political_textures: Vec::new(),
-        m02_combat: None,
         authenticated_ui_pass: None,
         m03_arrows: None,
         rail_supply_arrows: None,
