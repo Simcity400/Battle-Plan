@@ -19,6 +19,11 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 const RC_PROBE_DOMAIN_ID: u16 = 250;
+/// Cap on `--units-domain` rows held in memory. Generous next to any capture
+/// this tool is pointed at (a 313-frame capture asking for one domain produces
+/// 313 rows), and never silent: what does not fit is counted in
+/// `rows_suppressed`.
+const UNIT_SERIES_LIMIT: usize = 100_000;
 const TARGET_FRAME_LABEL: i32 = 60_832_037;
 const GAP_EXAMPLE_LIMIT: usize = 50;
 const NOTABLE_FRAME_LIMIT: usize = 200;
@@ -72,6 +77,7 @@ struct AuditReport {
     section_d_classification: ClassificationSection,
     section_e_target_label: TargetLabelSection,
     section_f_repeat_census: RepeatCensusSection,
+    section_g_domain_units: DomainUnitSection,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -314,6 +320,56 @@ struct RecordDetail {
     decode_error: Option<String>,
 }
 
+/// One decoded DOMAIN_PERF diagnostic unit, flattened for the report.
+#[derive(Clone, Debug, Serialize)]
+struct UnitDetail {
+    name: String,
+    value: u64,
+    role: &'static str,
+    presence: &'static str,
+    /// The unit as `render()` writes it, so a reader sees `absent` and
+    /// `sentinel(0x..)` rather than a bare number that means neither.
+    rendered: String,
+}
+
+/// One DOMAIN_PERF record of a requested domain.
+///
+/// A row is emitted for EVERY matching record, including the ones that carried
+/// no trailer, because a consumer building a per-frame series has to be able to
+/// tell "this frame reported zero" from "this frame is not in the series".
+#[derive(Clone, Debug, Serialize)]
+struct UnitSeriesRow {
+    offset: u64,
+    sequence: u64,
+    game_hour_raw: i32,
+    domain_id: u16,
+    record_flags: u32,
+    /// `None` == the record carried no diagnostic trailer at all. An empty Vec
+    /// == it carried one and it named nothing.
+    units: Option<Vec<UnitDetail>>,
+    decode_error: Option<String>,
+}
+
+/// `--units-domain`: the per-record read-out this tool could not previously
+/// give for any domain but 250.
+///
+/// The manifest aggregates DOMAIN_PERF units into capture totals, so a
+/// per-frame series of a named unit had no producer anywhere in the repo. This
+/// section is that producer.
+#[derive(Default, Serialize)]
+struct DomainUnitSection {
+    requested_domain_ids: Vec<u16>,
+    perf_records_matched: u64,
+    perf_records_without_trailer: u64,
+    perf_records_with_decode_error: u64,
+    /// Matching records skipped because the record failed semantic validation,
+    /// whose payload offsets are therefore not trustworthy. Counted rather
+    /// than dropped silently.
+    perf_records_skipped_semantic_error: u64,
+    rows: Vec<UnitSeriesRow>,
+    rows_suppressed: u64,
+}
+
 #[derive(Clone, Serialize)]
 struct GapRecordDetail {
     part: &'static str,
@@ -374,6 +430,16 @@ const MAX_ENUMERATED_RANGE_HOURS: u64 = 1_000_000;
 
 #[derive(Default)]
 struct AuditState {
+    /// Domains whose DOMAIN_PERF units are to be read out per record. Empty
+    /// unless `--units-domain` was given, and empty means the scan does no
+    /// extra work at all.
+    units_domains: BTreeSet<u16>,
+    unit_series: Vec<UnitSeriesRow>,
+    unit_series_suppressed: u64,
+    unit_records_matched: u64,
+    unit_records_without_trailer: u64,
+    unit_records_decode_error: u64,
+    unit_records_skipped_semantic_error: u64,
     bytes_consumed: u64,
     records_seen: u64,
     previous_sequence: Option<u64>,
@@ -438,11 +504,14 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let (input, json_output) = parse_args()?;
+    let (input, json_output, units_domains) = parse_args()?;
     let file =
         File::open(&input).map_err(|error| format!("open input {}: {error}", input.display()))?;
     let mut reader = BufReader::new(file);
-    let mut state = AuditState::default();
+    let mut state = AuditState {
+        units_domains,
+        ..AuditState::default()
+    };
     scan_stream(&mut reader, &mut state)?;
     let report = finish_report(&input, state);
     print_report(&report).map_err(|error| format!("write report: {error}"))?;
@@ -461,28 +530,67 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn parse_args() -> Result<(PathBuf, Option<PathBuf>), String> {
+fn parse_args() -> Result<(PathBuf, Option<PathBuf>, BTreeSet<u16>), String> {
     let mut args = env::args_os().skip(1);
     let input = args.next().map(PathBuf::from).ok_or_else(usage)?;
     let mut json = None;
+    let mut units_domains: BTreeSet<u16> = BTreeSet::new();
     while let Some(arg) = args.next() {
-        if arg != "--json" {
-            return Err(format!("unknown argument {:?}\n{}", arg, usage()));
+        if arg == "--json" {
+            if json.is_some() {
+                return Err(format!("--json may be specified only once\n{}", usage()));
+            }
+            json = Some(
+                args.next()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| format!("--json requires an output path\n{}", usage()))?,
+            );
+            continue;
         }
-        if json.is_some() {
-            return Err(format!("--json may be specified only once\n{}", usage()));
+        if arg == "--units-domain" {
+            let value = args
+                .next()
+                .ok_or_else(|| format!("--units-domain requires a domain id\n{}", usage()))?;
+            let value = value
+                .into_string()
+                .map_err(|_| format!("--units-domain value is not UTF-8\n{}", usage()))?;
+            for field in value.split(',') {
+                let field = field.trim();
+                if field.is_empty() {
+                    return Err(format!(
+                        "--units-domain carries an empty domain id in {value:?}\n{}",
+                        usage()
+                    ));
+                }
+                let id: u16 = field.parse().map_err(|error| {
+                    format!(
+                        "--units-domain {field:?} is not a domain id: {error}\n{}",
+                        usage()
+                    )
+                })?;
+                units_domains.insert(id);
+            }
+            continue;
         }
-        json = Some(
-            args.next()
-                .map(PathBuf::from)
-                .ok_or_else(|| format!("--json requires an output path\n{}", usage()))?,
-        );
+        return Err(format!("unknown argument {:?}\n{}", arg, usage()));
     }
-    Ok((input, json))
+    Ok((input, json, units_domains))
 }
 
 fn usage() -> String {
-    "usage: hour_label_audit <collector_stream.bin> [--json out.json]".to_string()
+    "usage: hour_label_audit <collector_stream.bin> [--json out.json] \
+     [--units-domain <id>[,<id>...]]"
+        .to_string()
+}
+
+fn unit_detail(unit: &DiagUnit) -> UnitDetail {
+    UnitDetail {
+        name: unit.name.clone(),
+        value: unit.value,
+        role: unit.role.label(),
+        presence: unit.presence.label(),
+        rendered: unit.render(),
+    }
 }
 
 fn scan_stream(reader: &mut impl Read, state: &mut AuditState) -> Result<(), String> {
@@ -762,6 +870,56 @@ fn process_record(
                 let message = format!("domain-250 diagnostic decode failed: {error}");
                 detail.decode_error = Some(message.clone());
                 record_error(state, offset, message);
+            }
+        }
+    }
+
+    // The same decode, for any domain the caller asked for. Deliberately a
+    // SEPARATE arm rather than a widened gate on the block above: that block
+    // owns the lane-wall probe, which is domain 250's and only 250's, and
+    // folding the two would make a requested domain 250 either lose its probe
+    // or take it twice.
+    //
+    // A decode failure here is recorded in this section and NOT pushed into
+    // the global parse-error census: `--units-domain` is a read-out a caller
+    // opts into, and a malformed trailer on some domain must not change the
+    // error count other consumers compare between runs. It is still named,
+    // per row and as a total.
+    if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_PERF
+        && state.units_domains.contains(&header.domain_id)
+    {
+        if semantic_error.is_some() {
+            // The record's own framing is in doubt, so its payload offsets
+            // are too. Counted, not dropped.
+            state.unit_records_skipped_semantic_error =
+                state.unit_records_skipped_semantic_error.saturating_add(1);
+        } else {
+            state.unit_records_matched = state.unit_records_matched.saturating_add(1);
+            let (units, decode_error) = match decode_probe_units(header.record_flags, payload) {
+                Ok(Some(units)) => (Some(units.iter().map(unit_detail).collect()), None),
+                Ok(None) => {
+                    state.unit_records_without_trailer =
+                        state.unit_records_without_trailer.saturating_add(1);
+                    (None, None)
+                }
+                Err(error) => {
+                    state.unit_records_decode_error =
+                        state.unit_records_decode_error.saturating_add(1);
+                    (None, Some(error))
+                }
+            };
+            if state.unit_series.len() < UNIT_SERIES_LIMIT {
+                state.unit_series.push(UnitSeriesRow {
+                    offset,
+                    sequence: header.sequence,
+                    game_hour_raw: header.game_hour_raw,
+                    domain_id: header.domain_id,
+                    record_flags: header.record_flags,
+                    units,
+                    decode_error,
+                });
+            } else {
+                state.unit_series_suppressed = state.unit_series_suppressed.saturating_add(1);
             }
         }
     }
@@ -1351,6 +1509,15 @@ fn finish_report(input: &Path, mut state: AuditState) -> AuditReport {
             baseline_errors_total: state.repeat_baseline_errors_total,
             baseline_error_examples: state.repeat_baseline_error_examples,
         },
+        section_g_domain_units: DomainUnitSection {
+            requested_domain_ids: state.units_domains.iter().copied().collect(),
+            perf_records_matched: state.unit_records_matched,
+            perf_records_without_trailer: state.unit_records_without_trailer,
+            perf_records_with_decode_error: state.unit_records_decode_error,
+            perf_records_skipped_semantic_error: state.unit_records_skipped_semantic_error,
+            rows: state.unit_series,
+            rows_suppressed: state.unit_series_suppressed,
+        },
     }
 }
 
@@ -1868,7 +2035,67 @@ fn print_report(report: &AuditReport) -> io::Result<()> {
     for error in &f.baseline_error_examples {
         writeln!(out, "  offset {}: {}", error.offset, error.error)?;
     }
+
+    let g = &report.section_g_domain_units;
+    write_domain_unit_section(&mut out, g)?;
     out.flush()
+}
+
+/// Section G, rendered for a human.
+///
+/// SPLIT OUT of `print_report` so it can be tested: `print_report` writes
+/// straight to a locked stdout, so nothing could assert on what a caller
+/// actually SEES, and the read-out silently printed less than this lane
+/// promised for it (Codex r5). Every field the JSON carries is now printed:
+/// the record's flags on every row shape, and each unit's name, value, role,
+/// presence and rendered form.
+///
+/// The rendered form is kept ALONGSIDE the parts rather than instead of them.
+/// It is the only field that distinguishes `absent` and `sentinel(0x..)` from
+/// a bare number that means neither, and the parts are what a reader greps.
+fn write_domain_unit_section(out: &mut impl Write, g: &DomainUnitSection) -> io::Result<()> {
+    if g.requested_domain_ids.is_empty() {
+        return Ok(());
+    }
+    writeln!(out, "\nG. Per-record DOMAIN_PERF units")?;
+    writeln!(out, "requested domains: {:?}", g.requested_domain_ids)?;
+    writeln!(
+        out,
+        "PERF records matched: {} (no trailer: {}, decode errors: {}, skipped for a semantic error: {})",
+        g.perf_records_matched,
+        g.perf_records_without_trailer,
+        g.perf_records_with_decode_error,
+        g.perf_records_skipped_semantic_error
+    )?;
+    if g.rows_suppressed != 0 {
+        writeln!(
+            out,
+            "rows beyond the {UNIT_SERIES_LIMIT}-row cap, not listed: {}",
+            g.rows_suppressed
+        )?;
+    }
+    for row in &g.rows {
+        write!(
+            out,
+            "  hour={} domain={} seq={} offset={} flags={:#010x}",
+            row.game_hour_raw, row.domain_id, row.sequence, row.offset, row.record_flags
+        )?;
+        match (&row.units, &row.decode_error) {
+            (_, Some(error)) => writeln!(out, " decode_error={error}")?,
+            (None, None) => writeln!(out, " no diagnostic trailer")?,
+            (Some(units), None) => {
+                writeln!(out, " units={}", units.len())?;
+                for unit in units {
+                    writeln!(
+                        out,
+                        "      name={} value={} role={} presence={} rendered={}",
+                        unit.name, unit.value, unit.role, unit.presence, unit.rendered
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn print_stats(out: &mut impl Write, name: &str, stats: &Stats) -> io::Result<()> {
@@ -2114,6 +2341,108 @@ mod tests {
         let mut state = AuditState::default();
         scan_stream(&mut &stream[..], &mut state).expect("scan");
         finish_report(Path::new("synthetic"), state)
+    }
+
+    fn audit_with_units(stream: &[u8], domains: &[u16]) -> AuditReport {
+        let mut state = AuditState {
+            units_domains: domains.iter().copied().collect(),
+            ..AuditState::default()
+        };
+        scan_stream(&mut &stream[..], &mut state).expect("scan");
+        finish_report(Path::new("synthetic"), state)
+    }
+
+    /// A DOMAIN_PERF record carrying a diagnostic trailer, for any domain.
+    fn perf_with_units(sequence: &mut u64, hour: i32, domain: u16, units: &[DiagUnit]) -> Vec<u8> {
+        let out = record(
+            *sequence,
+            hour,
+            domain,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &lane_wall_payload(units),
+        );
+        *sequence += 1;
+        out
+    }
+
+    /// A DOMAIN_PERF record carrying a WELL-FORMED trailer behind a base whose
+    /// reserved word is nonzero, which `validate_domain_perf` rejects.
+    ///
+    /// The point of the shape: the units behind it decode perfectly, so a
+    /// reader that ignored the semantic error would happily publish them.
+    fn perf_with_broken_reserved_word(
+        sequence: &mut u64,
+        hour: i32,
+        domain: u16,
+        units: &[DiagUnit],
+    ) -> Vec<u8> {
+        let mut payload = lane_wall_payload(units);
+        // The reserved base word DOMAIN_PERF requires to be zero.
+        payload[36..40].copy_from_slice(&1u32.to_le_bytes());
+        let out = record(
+            *sequence,
+            hour,
+            domain,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+            &payload,
+        );
+        *sequence += 1;
+        out
+    }
+
+    /// A DOMAIN_PERF record with no trailer at all - a real shape, and the one
+    /// a per-frame series must be able to tell from "reported zero".
+    fn perf_without_units(sequence: &mut u64, hour: i32, domain: u16) -> Vec<u8> {
+        let out = record(
+            *sequence,
+            hour,
+            domain,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &vec![0u8; COMPACT_DOMAIN_PERF_BASE_LEN],
+        );
+        *sequence += 1;
+        out
+    }
+
+    fn frame_end_record(sequence: &mut u64, hour: i32) -> Vec<u8> {
+        let out = record(
+            *sequence,
+            hour,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &[0u8; 32],
+        );
+        *sequence += 1;
+        out
+    }
+
+    /// One frame carrying the lane-wall probe on domain 250, a d53 PERF record
+    /// with named units, a domain-300 record with units, and a domain-300
+    /// record with no trailer.
+    fn mixed_units_frame(sequence: &mut u64, hour: i32) -> Vec<u8> {
+        let mut out = perf_with_units(sequence, hour, RC_PROBE_DOMAIN_ID, &probe_units(None, 0));
+        out.extend_from_slice(&perf_with_units(
+            sequence,
+            hour,
+            53,
+            &[
+                DiagUnit::counter("domain53_relation_uncommitted_candidate_base", 3),
+                DiagUnit::counter("domain53_operative_skipped", 71),
+            ],
+        ));
+        out.extend_from_slice(&perf_with_units(
+            sequence,
+            hour,
+            300,
+            &[DiagUnit::counter("d300_rows", 9)],
+        ));
+        out.extend_from_slice(&perf_without_units(sequence, hour, 300));
+        out.extend_from_slice(&frame_end_record(sequence, hour));
+        out
     }
 
     fn frame_with_d81_source_unavailable_gap(
@@ -2568,6 +2897,303 @@ mod tests {
         assert_eq!(table.mismatch_and_label_skew, 1);
         assert_eq!(table.mismatch_with_no_other_witness, 0);
         assert_eq!(table.neither, 0);
+    }
+
+    #[test]
+    fn units_domain_reads_records_above_and_below_the_lane_wall_probe_domain() {
+        // kills: the `header.domain_id == RC_PROBE_DOMAIN_ID` gate that made
+        // this tool able to decode DOMAIN_PERF units for domain 250 and
+        // nothing else. The manifest only ever aggregates those units into
+        // capture totals, so before this option no artefact in the repo could
+        // produce a PER-FRAME series of a named unit for any other domain -
+        // which is the measurement lane RW's FIX.md 5b had to leave open.
+        //
+        // Two domains on purpose: 53, BELOW the probe domain, and 300, ABOVE
+        // it. A gate written as `<= 250`, `>= 250` or `== 250` fails on one of
+        // them, and reverting the widening fails on both.
+        let mut sequence = 1u64;
+        let stream = mixed_units_frame(&mut sequence, HOUR_A);
+        let report = audit_with_units(&stream, &[53, 300]);
+
+        let g = &report.section_g_domain_units;
+        assert_eq!(g.requested_domain_ids, vec![53, 300]);
+        assert_eq!(
+            g.perf_records_matched, 3,
+            "two domain-300 records and one domain-53 record match; domain 250 \
+             was not requested"
+        );
+        assert_eq!(g.perf_records_with_decode_error, 0);
+        assert_eq!(g.perf_records_skipped_semantic_error, 0);
+        assert_eq!(g.rows_suppressed, 0);
+        assert_eq!(g.rows.len(), 3);
+        assert!(
+            g.rows.iter().all(|row| row.domain_id != RC_PROBE_DOMAIN_ID),
+            "an unrequested domain must not appear in the series"
+        );
+
+        let d53 = g
+            .rows
+            .iter()
+            .find(|row| row.domain_id == 53)
+            .expect("the domain-53 record is in the series");
+        assert_eq!(d53.game_hour_raw, HOUR_A, "the row carries its own hour");
+        let units = d53
+            .units
+            .as_ref()
+            .expect("the domain-53 record carried a trailer");
+        assert_eq!(units.len(), 2);
+        assert_eq!(
+            units[0].name,
+            "domain53_relation_uncommitted_candidate_base"
+        );
+        assert_eq!(units[0].value, 3);
+        assert_eq!(units[0].presence, "observed");
+        assert_eq!(
+            units[0].rendered,
+            "domain53_relation_uncommitted_candidate_base=3"
+        );
+        assert_eq!(units[1].name, "domain53_operative_skipped");
+        assert_eq!(units[1].value, 71);
+
+        // The domain-300 pair is the whole point of emitting a row per RECORD
+        // rather than per record-with-a-trailer: one reported a value, one
+        // carried no trailer, and a series that showed only the first would
+        // read as "domain 300 was absent that frame".
+        let d300: Vec<&UnitSeriesRow> = g.rows.iter().filter(|row| row.domain_id == 300).collect();
+        assert_eq!(d300.len(), 2);
+        assert_eq!(
+            d300[0]
+                .units
+                .as_ref()
+                .expect("the first domain-300 record carried a trailer")[0]
+                .value,
+            9
+        );
+        assert!(
+            d300[1].units.is_none(),
+            "the trailerless record is present as a row with no units, not absent"
+        );
+        assert_eq!(g.perf_records_without_trailer, 1);
+
+        // And the lane-wall probe, which is domain 250's alone, is untouched.
+        assert_eq!(report.section_a_frame_census.frames_with_lane_wall_probe, 1);
+    }
+
+    #[test]
+    fn units_domain_250_keeps_its_lane_wall_probe_and_still_reports() {
+        // kills: failing to emit a section-G row for domain 250 when it is
+        // REQUESTED, while still delivering its lane-wall probe and adding no
+        // parse error. Those are the two things that can go wrong when the one
+        // domain that already had a decoder is also asked for by the new
+        // option: the probe gets handed out twice (a second probe record, which
+        // is a parse error here), or the requested row is dropped because 250
+        // was already spoken for.
+        //
+        // It does NOT enforce a particular source arrangement (Codex r4 finding
+        // 2). A single combined block that decodes once, handles the probe under
+        // `domain_id == 250` and emits section G under `units_domains` would
+        // pass every assertion below. The separate arm is a design choice
+        // FIX.md argues for; this test pins the behaviour, not the shape.
+        let mut sequence = 1u64;
+        let stream = mixed_units_frame(&mut sequence, HOUR_A);
+        let report = audit_with_units(&stream, &[RC_PROBE_DOMAIN_ID]);
+
+        assert_eq!(
+            report.section_a_frame_census.frames_with_lane_wall_probe, 1,
+            "requesting the probe domain must not disturb the probe"
+        );
+        assert!(
+            report.parse_errors.is_empty(),
+            "and must not look like a second probe record: {:?}",
+            report.parse_errors
+        );
+        let g = &report.section_g_domain_units;
+        assert_eq!(g.perf_records_matched, 1);
+        assert_eq!(g.rows.len(), 1);
+        assert_eq!(g.rows[0].domain_id, RC_PROBE_DOMAIN_ID);
+        assert!(g.rows[0]
+            .units
+            .as_ref()
+            .expect("the probe record carried a trailer")
+            .iter()
+            .any(|unit| unit.name == "lw_frames"));
+    }
+
+    #[test]
+    fn the_printed_read_out_carries_every_field_the_json_carries() {
+        // kills: printing a SUBSET of the per-record read-out this lane
+        // documented. Section G promises "offset, sequence, hour, flags, and
+        // every decoded unit (name, value, role, presence, rendered form)", and
+        // the console formatter printed neither the record flags nor any unit's
+        // role or presence - only the rendered shorthand (Codex r5). Nothing
+        // could catch it, because every other test in this file asserts on the
+        // report STRUCT and `print_report` wrote straight to a locked stdout.
+        //
+        // The fixture carries a non-default presence on purpose: an ABSENT unit
+        // renders as `absent` with no number, so a formatter that dropped
+        // `presence` and kept only `rendered` would still look right on a
+        // counter and wrong on this one.
+        use compact_contract::diagnostic_channel::{UnitPresence, UnitRole};
+
+        let mut sequence = 1u64;
+        let mut stream = perf_with_units(
+            &mut sequence,
+            HOUR_A,
+            53,
+            &[
+                DiagUnit::counter("domain53_operative_skipped", 71),
+                DiagUnit::new(
+                    "domain53_agency_roster_members",
+                    0,
+                    UnitRole::Counter,
+                    UnitPresence::Absent,
+                ),
+            ],
+        );
+        stream.extend_from_slice(&perf_without_units(&mut sequence, HOUR_A, 53));
+        stream.extend_from_slice(&frame_end_record(&mut sequence, HOUR_A));
+        let report = audit_with_units(&stream, &[53]);
+
+        let mut printed = Vec::new();
+        write_domain_unit_section(&mut printed, &report.section_g_domain_units)
+            .expect("the section renders");
+        let printed = String::from_utf8(printed).expect("the section is utf-8");
+
+        let trailer_flags = format!("flags={COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER:#010x}");
+        assert!(
+            printed.contains(&trailer_flags),
+            "the record's flag word must be on the row, as {trailer_flags}: {printed}"
+        );
+        assert!(
+            printed.contains("flags=0x00000000"),
+            "including the trailerless record's zero, which is not the \
+             same thing as the row being absent: {printed}"
+        );
+        let observed = printed
+            .lines()
+            .find(|line| line.contains("name=domain53_operative_skipped"))
+            .expect("the observed unit has a line of its own");
+        for field in [
+            "value=71",
+            "role=counter",
+            "presence=observed",
+            "rendered=domain53_operative_skipped=71",
+        ] {
+            assert!(
+                observed.contains(field),
+                "the observed unit's line is missing {field}: {observed}"
+            );
+        }
+        let absent = printed
+            .lines()
+            .find(|line| line.contains("name=domain53_agency_roster_members"))
+            .expect("the absent unit has a line of its own");
+        assert!(
+            absent.contains("presence=absent"),
+            "a non-default presence must be printed as such: {absent}"
+        );
+        assert!(
+            absent.contains("rendered=domain53_agency_roster_members=absent"),
+            "and its rendered form still says absent rather than 0: {absent}"
+        );
+        assert!(
+            printed.contains("no diagnostic trailer"),
+            "the trailerless row is still distinguishable from a zero: {printed}"
+        );
+        assert_eq!(
+            printed.matches("flags=").count(),
+            2,
+            "BOTH rows carry flags, not just the one with units: {printed}"
+        );
+    }
+
+    #[test]
+    fn a_requested_domains_record_whose_framing_is_in_doubt_is_counted_not_decoded() {
+        // kills: decoding a requested domain's units out of a record whose own
+        // framing failed validation - and, with it, the claim that
+        // `perf_records_skipped_semantic_error` is a live counter at all. Every
+        // other assertion on it requires it to stay ZERO, so nothing in this
+        // suite reached the arm that increments it and the documented decision
+        // ("the record's own framing is in doubt, so its payload offsets are
+        // too - counted, not dropped") had no test that could fail (Codex r2
+        // finding 6).
+        //
+        // The break is the DOMAIN_PERF reserved base word, which
+        // `validate_domain_perf` requires to be zero. The trailer behind it is
+        // perfectly well-formed and carries two named units, so a reader that
+        // ignored the semantic error would publish them - which is exactly the
+        // behaviour the assertions below pin shut.
+        let mut sequence = 1u64;
+        let mut stream = perf_with_units(
+            &mut sequence,
+            HOUR_A,
+            RC_PROBE_DOMAIN_ID,
+            &probe_units(None, 0),
+        );
+        stream.extend_from_slice(&perf_with_broken_reserved_word(
+            &mut sequence,
+            HOUR_A,
+            53,
+            &[
+                DiagUnit::counter("domain53_relation_uncommitted_candidate_base", 3),
+                DiagUnit::counter("domain53_operative_skipped", 71),
+            ],
+        ));
+        stream.extend_from_slice(&frame_end_record(&mut sequence, HOUR_A));
+        let report = audit_with_units(&stream, &[53]);
+
+        let g = &report.section_g_domain_units;
+        assert_eq!(
+            g.perf_records_skipped_semantic_error, 1,
+            "the requested record reached the semantic-error arm"
+        );
+        assert_eq!(
+            g.perf_records_matched, 0,
+            "and was not counted among the records this section read"
+        );
+        assert!(
+            g.rows.is_empty(),
+            "no units may be published from a record whose payload offsets are \
+             in doubt: {:?}",
+            g.rows
+        );
+        assert_eq!(g.perf_records_with_decode_error, 0);
+        assert_eq!(g.perf_records_without_trailer, 0);
+        // And it is still NAMED where every malformed record is named. The
+        // read-out declines to decode it; it does not hide it.
+        assert!(
+            report.parse_errors.iter().any(|error| {
+                error.error.contains("invalid H4CR record semantics")
+                    && error.error.contains("reserved base word")
+            }),
+            "the malformed record must still reach the global census: {:?}",
+            report.parse_errors
+        );
+    }
+
+    #[test]
+    fn units_domain_reads_nothing_unless_it_is_asked_to() {
+        // MUTATION GUARD, not a strict revert kill: it also passes if section G
+        // is removed entirely, because the base produces no section G either
+        // (Codex r1 finding 7, restated by r3 finding 5). It still catches the
+        // change that would matter.
+        //
+        // guards: making the per-record read-out unconditional. Every caller of
+        // this tool would then pay to build and hold a row per DOMAIN_PERF
+        // record, and the JSON every existing consumer parses would grow a
+        // section it never asked for.
+        let mut sequence = 1u64;
+        let stream = mixed_units_frame(&mut sequence, HOUR_A);
+        let report = audit(&stream);
+
+        let g = &report.section_g_domain_units;
+        assert!(g.requested_domain_ids.is_empty());
+        assert!(g.rows.is_empty());
+        assert_eq!(g.perf_records_matched, 0);
+        assert_eq!(
+            report.section_a_frame_census.frames_with_lane_wall_probe, 1,
+            "the default path is otherwise exactly what it was"
+        );
     }
 }
 
