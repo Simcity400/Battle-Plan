@@ -1,11 +1,20 @@
 use super::*;
 
-/// Lane DS's six FIRST, then lane RZ's five. The order is the contract, not
-/// an accident: `compact_projects_diagnostic_units` fills the
-/// `MAX_FLOOR_UNITS_PER_OFFENDER` (8) floor in emission order, so a truncated
-/// record must lose the RZ sub-split before it loses the DS split. This array
-/// is what pins that.
-const D41_PHASE_UNITS: [&str; 11] = [
+/// Lane DS's six FIRST, then lane RZ's five, then lane TB's six.
+///
+/// The order is the contract, not an accident, but it buys exactly ONE thing:
+/// `allocate_unit_budget` guarantees the first `MAX_FLOOR_UNITS_PER_OFFENDER`
+/// (8) units of this list a place on a budget-constrained record, so nothing a
+/// later lane appends can push an earlier lane's split out of the floor.
+///
+/// IT DOES NOT ORDER THE DISCARD. Past the floor the allocator walks the
+/// discretionary units and keeps trying later, SMALLER ones after a bigger one
+/// does not fit, so a short late name can outlive a long early one — the doc
+/// here used to say a truncated record loses the newest sub-split first, and
+/// that is false (Codex review 01a033e9-b478-7141-96c8-880dd283e66c,
+/// SHOULD-FIX 2). This array pins the builder's emission order, which is what
+/// the floor is computed from; it pins nothing about retention beyond it.
+const D41_PHASE_UNITS: [&str; 17] = [
     "d41_phase_d18_reread_us",
     "d41_phase_lifecycle_us",
     "d41_phase_cache_rows_us",
@@ -17,6 +26,12 @@ const D41_PHASE_UNITS: [&str; 11] = [
     "d41_phase_breakthrough_records_us",
     "d41_phase_breakthrough_classify_us",
     "d41_lifecycle_bulk_fallback_countries",
+    "d41_phase_lifecycle_pool_copy_us",
+    "d41_specialization_scan_gap_restarts",
+    "d41_specialization_scan_completions",
+    "d41_specialization_scan_state_sample",
+    "d41_specialization_scan_handle_restarts",
+    "d41_phase_specialization_sweep_us",
 ];
 
 fn read_with_phase(status_flags: u32) -> CompactProjectsRead {
@@ -46,6 +61,12 @@ fn read_with_phase_and_shortfall(
             breakthrough_records_us: 99,
             breakthrough_classify_us: 110,
             lifecycle_bulk_fallback_countries: 121,
+            lifecycle_pool_copy_us: 132,
+            specialization_scan_gap_restarts: 143,
+            specialization_scan_completions: 154,
+            specialization_scan_state_sample: 165,
+            specialization_scan_handle_restarts: 176,
+            specialization_sweep_us: 187,
         },
         d18_authority: None,
         read_time_us: 0,
@@ -95,7 +116,7 @@ fn d41_phase_units_are_emitted_on_a_clean_status() {
     let values: Vec<u64> = units.iter().map(|unit| unit.value).collect();
     assert_eq!(
         values,
-        vec![11, 22, 33, 44, 55, 66, 77, 88, 99, 110, 121],
+        vec![11, 22, 33, 44, 55, 66, 77, 88, 99, 110, 121, 132, 143, 154, 165, 176, 187],
         "phase unit wiring"
     );
 }

@@ -350,7 +350,10 @@ fn the_row_accessors_compose_to_exactly_what_rows_returned() {
 // 3. Source pins for the properties no returned value can carry
 // ------------------------------------------------------------------
 
-fn attach_log_source() -> String {
+// `pub(super)` so lane TB's source pin uses THESE and does not become a third
+// copy of the same two helpers (there is already one in
+// `attach_log/domain_scoped_reset_tests.rs`).
+pub(super) fn attach_log_source() -> String {
     // Normalised to LF: the working copy is CRLF, and the multi-line signature
     // one of the pins below searches for would never match otherwise.
     std::fs::read_to_string(concat!(
@@ -362,7 +365,7 @@ fn attach_log_source() -> String {
 }
 
 /// The text between the braces of the first item whose header is `signature`.
-fn function_body<'a>(source: &'a str, signature: &'a str) -> &'a str {
+pub(super) fn function_body<'a>(source: &'a str, signature: &'a str) -> &'a str {
     let start = source
         .find(signature)
         .unwrap_or_else(|| panic!("{signature} must exist in attach_log.rs"));
