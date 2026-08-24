@@ -247,9 +247,28 @@ fn d18_d65_d66_and_d91_emit_sites_route_their_status_word_through_the_ledger() {
 
     let mut routed: Vec<&str> = Vec::new();
     for (offset, line) in lines[start..end].iter().enumerate() {
-        if !line
-            .trim()
-            .starts_with("read.status_flags = record_reader_status_outcome(")
+        // TWO BINDING FORMS, and the second is not a loophole.
+        //
+        // Most sites write the published word straight back onto the read
+        // (`read.status_flags = ...`), which makes "the word the record
+        // publishes" and "the word the outcome derived" the same storage by
+        // construction. The seven domains whose DATA payload a worker built
+        // destructure it IMMUTABLY -- `let (read, published_payload) =
+        // published.split();`, the shape
+        // `the_seven_converted_domains_are_wired_through_the_publishing_helper`
+        // pins -- so they take the word into a LOCAL instead. Accepting only
+        // the assignment form would push those domains to choose between two
+        // laws.
+        //
+        // The `let` form is checked harder BELOW rather than trusted: the
+        // local it binds must be the one the PERF record's `status_flags`
+        // field reads, so a site cannot derive one word and publish another.
+        let trimmed = line.trim();
+        let local = trimmed
+            .strip_prefix("let ")
+            .and_then(|rest| rest.strip_suffix(" = record_reader_status_outcome("));
+        if !trimmed.starts_with("read.status_flags = record_reader_status_outcome(")
+            && local.is_none()
         {
             continue;
         }
@@ -258,24 +277,48 @@ fn d18_d65_d66_and_d91_emit_sites_route_their_status_word_through_the_ledger() {
             .map(|line| line.trim().trim_end_matches(','))
             .find(|line| line.starts_with("COMPACT_DOMAIN_"))
             .expect("the call names the domain it speaks for");
+        if let Some(local) = local {
+            // Bounded to THIS domain's block: from the call to the start of
+            // the next `if let Some(..)` arm, so a neighbour's field cannot
+            // satisfy it.
+            let block_end = lines[start + offset + 1..end]
+                .iter()
+                .position(|line| line.starts_with("    if let Some("))
+                .map(|at| start + offset + 1 + at)
+                .unwrap_or(end);
+            let published = format!("status_flags: {local},");
+            assert!(
+                lines[start + offset..block_end]
+                    .iter()
+                    .any(|line| line.trim() == published),
+                "{domain} takes the derived word into `{local}` and must publish THAT \
+                 local; deriving one word and publishing another is exactly the \
+                 contradiction this pass exists to remove"
+            );
+        }
         routed.push(domain);
     }
     routed.sort_unstable();
     assert_eq!(
         routed,
         vec![
+            "COMPACT_DOMAIN_AIR_COMBAT_LOSSES_LIVE",
             "COMPACT_DOMAIN_AIR_SUPERIORITY_INPUTS",
             "COMPACT_DOMAIN_AIR_VARIANT_RESERVES",
+            "COMPACT_DOMAIN_COUNTRY_ARMY_UPGRADE_REQUESTS_LIVE",
             "COMPACT_DOMAIN_COUNTRY_IDENTITY",
+            "COMPACT_DOMAIN_DELAYED_EVENTS_LIVE",
             "COMPACT_DOMAIN_MARKET_TRADE_LIVE",
             "COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE",
             "COMPACT_DOMAIN_RAID_INSTANCES_LIVE",
+            "COMPACT_DOMAIN_SHIPS",
             "COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE",
         ],
         "every emit site that publishes a reader-computed status word must substantiate it; \
-         D36 and D38 joined D18/D65/D66/D91 when lane LC closed the silent-PERF class, and \
-         D43 joined them when the release-candidate capture showed all 324 of its frames \
-         substantiated from the record instead of by their producer"
+         D36 and D38 joined D18/D65/D66/D91 when lane LC closed the silent-PERF class, D43 \
+         joined them when the release-candidate capture showed all 324 of its frames \
+         substantiated from the record instead of by their producer, and D29/D42/D64/D93 \
+         joined on rc_vanilla4, which carried the stand-in on 719, 74, 53 and 4 frames"
     );
 }
 
