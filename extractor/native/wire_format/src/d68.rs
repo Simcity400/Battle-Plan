@@ -1,8 +1,8 @@
 //! d68 `session_header_live` — the campaign's top-level save/session header.
 //!
-//! Derived from `world_fold.rs:14420`-`:14554`
+//! Derived from `world_fold.rs:14436`-`:14570`
 //! (`fold_session_header`), its payload constants at `:224`-`:253`, the carried
-// @world-fold-authority domain=68 functions=fold_session_header lines=14420-14554 sha256=435065b56b7b527e05c2a15aac7c47b014814e64bbfc73faa3609a259a23b98b closure=3628ba0251ca1a550cb6eeb79f9c2f0cb64a7fe424be44b8af53ec637892a0fc
+// @world-fold-authority domain=68 functions=fold_session_header lines=14436-14570 sha256=435065b56b7b527e05c2a15aac7c47b014814e64bbfc73faa3609a259a23b98b closure=3628ba0251ca1a550cb6eeb79f9c2f0cb64a7fe424be44b8af53ec637892a0fc
 //! accumulator at `:1744` / `:2258`-`:2267`, the value it publishes at
 //! `world_fold.rs::build_session_header_value`, and the collector read that produces the presence flags
 //! (`extractor/native/collector/src/attach_log.rs:61784`-`:61969`).
