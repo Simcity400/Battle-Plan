@@ -320,6 +320,11 @@ fn the_one_pass_delta_emits_what_the_two_pass_shape_emitted() {
             read_time_us: 0,
             status_flags: 0,
             country_roster_failure: None,
+            // Lane SE2 widened this struct. These fixtures drive the emit-mode
+            // step over rows that were already materialised; no scope was read,
+            // so the RTTI gate was never entered and the honest census is the
+            // one every un-exercised read carries.
+            rtti_census: Domain51RttiColdArmCensus::default(),
         },
         D51EmitMode::Delta,
         &mut tracker,
@@ -355,6 +360,8 @@ fn the_first_delta_frame_still_publishes_the_whole_table_and_seeds_the_baseline(
             read_time_us: 0,
             status_flags: 0,
             country_roster_failure: None,
+            // As above: this fixture reads no scope.
+            rtti_census: Domain51RttiColdArmCensus::default(),
         },
         D51EmitMode::Delta,
         &mut tracker,

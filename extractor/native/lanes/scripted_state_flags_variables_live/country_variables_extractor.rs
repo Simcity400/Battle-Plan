@@ -115,6 +115,43 @@ pub fn read_country_variables<R: MemoryRead>(
     read_variables_container(mem, country_obj, container)
 }
 
+/// Whether a re-witness **whose interval is the row walk** is owed, given how
+/// many rows the read just walked.
+///
+/// A re-witness re-reads something and requires it unchanged. It is worth its
+/// reads exactly when something else was read in between - that interval is
+/// the whole point, because what it rules out is a structure moving under a
+/// read that has already happened. An interval with no read in it cannot
+/// contain such a read, so closing it proves nothing the opening sample did
+/// not already prove.
+///
+/// This predicate answers ONE question: *did the walk happen?* It therefore
+/// gates exactly the re-witnesses whose interval IS the walk - the container
+/// head re-sample that stands immediately after the row loop and immediately
+/// after the head sample when there is no loop. When the container declared
+/// zero entries, those two points are the same point, and the head pair has
+/// already sampled it twice.
+///
+/// **It does NOT gate a re-witness whose interval opened earlier.** d51's
+/// scope readers re-read the OWNER'S ROOT POINTER at the end, and that
+/// interval opens when the root is first read - before the RTTI type-name
+/// walk, before the container head, and before any row. Those reads sit inside
+/// it whether or not a single row was walked, so the root re-witness is owed
+/// unconditionally and this predicate must never be asked about it. Codex
+/// round 1 caught exactly that mis-scoping: the first cut of this lane gated
+/// both root re-reads on `rewitness_owed` and turned "the owner's pointer
+/// moved while we were reading its container" from a refusal into an accepted
+/// empty scope.
+///
+/// **The predicate is the guard, and the list of call sites is not.** A scope
+/// that walked ANYTHING still owes its head re-witness, however few rows it
+/// found. Both d51 scope readers and this container reader ask this function
+/// in production rather than testing their own emptiness inline, so there is
+/// one place to be right and one place to test.
+pub fn rewitness_owed(rows_walked: usize) -> bool {
+    rows_walked != 0
+}
+
 pub fn read_variables_container<R: MemoryRead>(
     mem: &R,
     country_obj: u64,
@@ -127,14 +164,15 @@ pub fn read_variables_container<R: MemoryRead>(
             "country_variables_header_unstable",
         );
     };
-    if size == 0 {
-        if stable_header(mem, container) != Some(header_before) {
-            return unmeasured_with_container(
-                country_obj,
-                container,
-                "country_variables_header_changed_after_empty_read",
-            );
-        }
+    if !rewitness_owed(size as usize) {
+        // The predicate decides in RELEASE, not in a debug assertion: a
+        // container that declared zero entries is never walked, so the second
+        // `stable_header` that used to stand here re-read the very bytes
+        // `header_before` was sampled from with nothing in between. The
+        // non-empty paths below still re-witness, because they walked.
+        //
+        // Nothing above this point re-reads anything either: the caller's RTTI
+        // check and root read are the caller's to re-witness, and it does.
         return CountryVariableRead {
             status: VariableReadStatus::MeasuredEmpty,
             country_obj,
@@ -178,6 +216,9 @@ pub fn read_variables_container<R: MemoryRead>(
                 "country_variables_rows_changed_between_snapshots",
             );
         }
+        // OWED: two snapshots of the bucket span were read between
+        // `header_before` and here. See `rewitness_owed`.
+        debug_assert!(rewitness_owed(first.len()));
         if stable_header(mem, container) != Some(header_before) {
             return unmeasured_with_container(
                 country_obj,
@@ -248,6 +289,9 @@ pub fn read_variables_container<R: MemoryRead>(
         );
     }
     let entries = scans.pop().expect("two completed phase scans");
+    // OWED: the phase scan read the bucket span between `header_before` and
+    // here. See `rewitness_owed`.
+    debug_assert!(rewitness_owed(entries.len()));
     if stable_header(mem, container) != Some(header_before) {
         return unmeasured_with_container(
             country_obj,
@@ -883,6 +927,383 @@ mod tests {
             scan_variables_snapshot(&mem, &bytes, 1),
             scan_variables_snapshot_unfiltered(&mem, &bytes, 1),
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Lane SE2, owner ruling: the post-read re-witness is removed where it
+    // has nothing to witness, and `rewitness_owed` - not a list of call
+    // sites - is what decides. These pin both halves of that.
+    // ---------------------------------------------------------------
+
+    /// A memory whose view of ONE address changes after a budget of reads,
+    /// so a test can move a header underneath a reader mid-read.
+    struct MovingHeaderFixture {
+        before: FixtureMemory,
+        after: FixtureMemory,
+        moving: u64,
+        budget: std::cell::Cell<usize>,
+    }
+
+    impl MovingHeaderFixture {
+        fn read_from(&self, addr: u64, len: usize) -> Option<Vec<u8>> {
+            if addr != self.moving {
+                return self.before.read_exact(addr, len);
+            }
+            let budget = self.budget.get();
+            if budget == 0 {
+                return self.after.read_exact(addr, len);
+            }
+            self.budget.set(budget - 1);
+            self.before.read_exact(addr, len)
+        }
+    }
+
+    impl MemoryRead for MovingHeaderFixture {
+        fn read_exact(&self, addr: u64, len: usize) -> Option<Vec<u8>> {
+            self.read_from(addr, len)
+        }
+    }
+
+    /// The complete fixture, plus a second view of the container whose
+    /// size/mask word differs, swapped in after `budget` reads of the
+    /// container head.
+    fn container_head_moves_after(
+        container: u64,
+        vtable: u64,
+        node_base: u64,
+        moved_size_mask: u64,
+        budget: usize,
+        before: FixtureMemory,
+    ) -> MovingHeaderFixture {
+        let mut after = FixtureMemory::default();
+        let mut container_bytes = vec![0u8; 0x40];
+        put_u64(&mut container_bytes, 0, vtable);
+        put_u64(&mut container_bytes, CV_BASE as usize, node_base);
+        put_u64(&mut container_bytes, CV_SIZE_MASK as usize, moved_size_mask);
+        after.add(container, container_bytes);
+        MovingHeaderFixture {
+            before,
+            after,
+            // The head is not read AT `container`. These fixtures serve no
+            // object window, so `stable_header_pair` falls through to its
+            // `read_into` arm and reads ONE 16-byte window at
+            // `container + CV_BASE`, covering the base pointer and the packed
+            // size/mask word together. Pointing `moving` at `container` made
+            // the "after" image unreachable, so nothing ever moved and the
+            // moved-header tests passed by never testing anything (landing
+            // gate, first execution).
+            moving: container.saturating_add(CV_BASE),
+            budget: std::cell::Cell::new(budget),
+        }
+    }
+
+    #[test]
+    fn the_rewitness_is_owed_exactly_when_the_read_walked_something() {
+        // The guard itself. Zero rows means no walk happened between the head
+        // pair and the re-witness, so there is no window to close; anything
+        // above zero means there is.
+        assert!(!rewitness_owed(0));
+        assert!(rewitness_owed(1));
+        assert!(rewitness_owed(2));
+        assert!(rewitness_owed(100_000));
+    }
+
+    /// The same text with its comment LINES dropped.
+    fn without_comments(text: &str) -> String {
+        text.lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The brace depth at which `needle` sits inside a function's text, counting
+    /// from the function's own opening brace. **Depth 1 is the function's own
+    /// statement level**; an enclosing `if`, `match`, `for` or closure raises it.
+    ///
+    /// This, and not indentation, is what "unconditional" means: Rust ignores
+    /// whitespace, so a wrapper written without re-indenting its contents leaves
+    /// a pinned line byte-for-byte intact (Codex round 5). And only braces that
+    /// are CODE count, because `if mask <= 3 { // }` closes nothing in Rust and
+    /// closes the block in a naive counter - a wrapper no pinned line and no
+    /// naive depth would see (Codex round 6).
+    ///
+    /// It refuses to guess at what it does not lex: an apostrophe is either a
+    /// char literal or a lifetime and this does not tell them apart, so it
+    /// asserts there is none rather than mis-count one. Callers pass text that
+    /// has already been through `without_comments`, which is what keeps ordinary
+    /// English prose out; what is left for this scanner is the inline comment
+    /// that shares a line with code, which is exactly the evasion above.
+    ///
+    /// The twin of this helper lives in the collector's `d51_rewitness_tests`.
+    /// Two copies, because they are test scaffolding in two different crates and
+    /// neither belongs in a production API.
+    ///
+    /// KNOWN LIMIT, recorded rather than closed: a raw string (`r#".."#`) is
+    /// lexed as an ordinary one, so one containing an internal quote and a
+    /// closing brace would mis-count. No scanned function contains a raw string,
+    /// and writing one there is not an accidental edit (Codex round 8).
+    fn statement_depth(body: &str, needle: &str) -> usize {
+        assert!(
+            !body.contains('\''),
+            "this scanner does not lex char literals or lifetimes; this function \
+             contains neither, and one appearing means the helper needs widening \
+             rather than trusting"
+        );
+        let at = body
+            .find(needle)
+            .unwrap_or_else(|| panic!("not in this function:\n{needle}"));
+        let bytes = body.as_bytes();
+        let mut depth = 0usize;
+        let mut index = 0usize;
+        while index < at {
+            match (bytes[index], bytes.get(index + 1).copied()) {
+                (b'/', Some(b'/')) => {
+                    while index < at && bytes[index] != b'\n' {
+                        index += 1;
+                    }
+                }
+                (b'/', Some(b'*')) => {
+                    // NESTED, because Rust's block comments nest: stopping at the
+                    // first `*/` reads `/* outer /* inner */ } */` as closing early
+                    // and hands the brace after it back to the counter (Codex
+                    // round 7, finding 3).
+                    let mut nesting = 1usize;
+                    index += 2;
+                    while index + 1 < at && nesting > 0 {
+                        match (bytes[index], bytes[index + 1]) {
+                            (b'/', b'*') => {
+                                nesting += 1;
+                                index += 2;
+                            }
+                            (b'*', b'/') => {
+                                nesting -= 1;
+                                index += 2;
+                            }
+                            _ => index += 1,
+                        }
+                    }
+                }
+                (b'"', _) => {
+                    index += 1;
+                    while index < at && bytes[index] != b'"' {
+                        index += if bytes[index] == b'\\' { 2 } else { 1 };
+                    }
+                    index += 1;
+                }
+                (b'{', _) => {
+                    depth = depth.saturating_add(1);
+                    index += 1;
+                }
+                (b'}', _) => {
+                    depth = depth.saturating_sub(1);
+                    index += 1;
+                }
+                _ => index += 1,
+            }
+        }
+        depth
+    }
+
+    #[test]
+    fn the_empty_arm_branches_on_the_shared_predicate_in_release() {
+        // Codex round 4, finding 2. Every other test here holds the predicate
+        // and the resulting behaviour, and neither notices if the production
+        // branch stops asking:
+        //
+        //     if size == 0 {
+        //         debug_assert!(!rewitness_owed(size as usize));
+        //
+        // passes all of them while the shipped build decides emptiness with an
+        // inline test and the shared guard compiled out. Then there are two
+        // definitions of "nothing to witness" and only one is under test -
+        // which is the round-1 defect, at the site round 1 did not reach.
+        const PREDICATE: &str = "    if !rewitness_owed(size as usize) {";
+        let source = include_str!("country_variables_extractor.rs").replace("\r\n", "\n");
+        let start = source
+            .find("pub fn read_variables_container<R: MemoryRead>(")
+            .expect("the container reader");
+        let body = &source[start..];
+        let body = without_comments(&body[..body.find("\n}\n").expect("it closes at column zero")]);
+
+        assert_eq!(
+            body.matches(PREDICATE).count(),
+            1,
+            "the empty arm must branch on the predicate itself, in release"
+        );
+        // ...and nothing may enclose that branch. `if mask <= 3 {` wrapped
+        // around the arm would leave the pinned line untouched while sending a
+        // valid emptied container with a larger bucket mask down the measured
+        // path instead (Codex round 5, finding 2).
+        assert_eq!(
+            statement_depth(&body, PREDICATE),
+            1,
+            "the empty arm must stand at the function's own level, with nothing \
+             around it"
+        );
+        assert_eq!(
+            body.matches("debug_assert!(!rewitness_owed").count(),
+            0,
+            "a debug assertion is not a guard; it disappears from the shipped \
+             build. The POSITIVE `debug_assert!(rewitness_owed(..))` calls on \
+             the walked paths are a different thing and are fine: those paths \
+             re-witness unconditionally, and the assertion only records why."
+        );
+        assert_eq!(
+            body.matches("size == 0").count(),
+            0,
+            "and the inline emptiness test it replaced must not come back beside it"
+        );
+    }
+
+    #[test]
+    fn a_header_that_moves_after_the_bucket_walk_is_still_refused() {
+        // THE KILL. This re-witness DOES have an intervening read - two
+        // snapshots of the bucket span - so it is owed and must still fire.
+        // Deleting it, or widening the removal from "no walk happened" to
+        // "this site", makes this container measure clean with rows that no
+        // longer belong to the header that described them.
+        let (_module_base, country, mem) = complete_country_variable_fixture();
+        let container = mem.read_u64(country + OBJ_VARIABLES).unwrap();
+        let vtable = mem.read_u64(container).unwrap();
+        let node_base = mem.read_u64(container + CV_BASE).unwrap();
+        let settled = mem.read_u64(container + CV_SIZE_MASK).unwrap();
+        assert_ne!(
+            settled & 0xFFFF_FFFF,
+            0,
+            "the fixture must have rows to walk"
+        );
+
+        // Two head reads for the initial `stable_header`, then the span, then
+        // the re-witness - which sees the moved word.
+        let moved = container_head_moves_after(
+            container,
+            vtable,
+            node_base,
+            2 | (7u64 << 32),
+            2,
+            mem.clone(),
+        );
+        let read = read_variables_container(&moved, country, container);
+        assert_eq!(read.status, VariableReadStatus::Unmeasured);
+        assert_eq!(
+            read.failure_reason,
+            Some("country_variables_header_changed_after_snapshot")
+        );
+
+        // Positive control: the same budget with a header that did NOT move
+        // measures clean, so the refusal above is the movement and not the
+        // fixture running out of reads.
+        let still = container_head_moves_after(container, vtable, node_base, settled, 2, mem);
+        assert_eq!(
+            read_variables_container(&still, country, container).status,
+            VariableReadStatus::Measured
+        );
+    }
+
+    #[test]
+    fn an_empty_container_no_longer_re_reads_a_header_it_already_double_sampled() {
+        // The removal itself, counted. An empty container's head is sampled
+        // by `stable_header` and by nothing else; the second `stable_header`
+        // that used to follow it is gone. kills: putting it back (the count
+        // goes to four) or removing the FIRST pair too (it goes to zero, and
+        // the double sample that is the tear check goes with it).
+        let (_module_base, country, mem) = complete_country_variable_fixture();
+        let container = mem.read_u64(country + OBJ_VARIABLES).unwrap();
+        let vtable = mem.read_u64(container).unwrap();
+        let node_base = mem.read_u64(container + CV_BASE).unwrap();
+
+        let mut empty = FixtureMemory::default();
+        let mut container_bytes = vec![0u8; 0x40];
+        put_u64(&mut container_bytes, 0, vtable);
+        put_u64(&mut container_bytes, CV_BASE as usize, node_base);
+        put_u64(
+            &mut container_bytes,
+            CV_SIZE_MASK as usize,
+            0 | (3u64 << 32),
+        );
+        empty.add(container, container_bytes);
+
+        let recording = ReadCountingFixture::new(empty);
+        let read = read_variables_container(&recording, country, container);
+        assert_eq!(read.status, VariableReadStatus::MeasuredEmpty);
+        assert_eq!(read.declared_size, 0);
+        // Counted at `container + CV_BASE`, which is where the head window is
+        // actually read: these fixtures serve no object window, so
+        // `stable_header_pair` falls through to its `read_into` arm and takes
+        // ONE 16-byte read covering the base pointer and the packed size/mask
+        // word. Counting at `container` counted zero of them (landing gate,
+        // first execution) and would have gone on reading zero however many
+        // times the head was sampled.
+        assert_eq!(
+            recording.reads_at(container.saturating_add(CV_BASE)),
+            2,
+            "an empty container's head is sampled twice - the tear check - and \
+             not four times: {:?}",
+            recording.log.borrow()
+        );
+        assert_eq!(
+            recording.log.borrow().len(),
+            2,
+            "and it reads nothing else at all: {:?}",
+            recording.log.borrow()
+        );
+    }
+
+    #[test]
+    fn an_empty_container_whose_head_moves_after_its_double_sample_now_measures_empty() {
+        // The behaviour the ruling deliberately changes, recorded so it is a
+        // decision and not a surprise: the head pair agreed, so the container
+        // is empty; what the bytes did microseconds later is not evidence
+        // about a read that never happened.
+        let (_module_base, country, mem) = complete_country_variable_fixture();
+        let container = mem.read_u64(country + OBJ_VARIABLES).unwrap();
+        let vtable = mem.read_u64(container).unwrap();
+        let node_base = mem.read_u64(container + CV_BASE).unwrap();
+
+        let mut empty = FixtureMemory::default();
+        let mut container_bytes = vec![0u8; 0x40];
+        put_u64(&mut container_bytes, 0, vtable);
+        put_u64(&mut container_bytes, CV_BASE as usize, node_base);
+        put_u64(
+            &mut container_bytes,
+            CV_SIZE_MASK as usize,
+            0 | (3u64 << 32),
+        );
+        empty.add(container, container_bytes);
+
+        let moved =
+            container_head_moves_after(container, vtable, node_base, 5 | (7u64 << 32), 2, empty);
+        assert_eq!(
+            read_variables_container(&moved, country, container).status,
+            VariableReadStatus::MeasuredEmpty
+        );
+    }
+
+    /// Counts reads per address so a test can say how many times an object
+    /// head was sampled.
+    struct ReadCountingFixture {
+        inner: FixtureMemory,
+        log: std::cell::RefCell<Vec<(u64, usize)>>,
+    }
+
+    impl ReadCountingFixture {
+        fn new(inner: FixtureMemory) -> Self {
+            Self {
+                inner,
+                log: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+
+        fn reads_at(&self, addr: u64) -> usize {
+            self.log.borrow().iter().filter(|(a, _)| *a == addr).count()
+        }
+    }
+
+    impl MemoryRead for ReadCountingFixture {
+        fn read_exact(&self, addr: u64, len: usize) -> Option<Vec<u8>> {
+            self.log.borrow_mut().push((addr, len));
+            self.inner.read_exact(addr, len)
+        }
     }
 
     fn put_u64(buf: &mut [u8], offset: usize, value: u64) {
