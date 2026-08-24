@@ -651,6 +651,10 @@ pub struct D81PlanCounters {
     pub custody_held_bytes: u64,
     pub plan_us: u64,
     pub misses: D81ViewMisses,
+    /// HEADROOM FOR A WIDER COPY-WINDOW MERGE (lane RY3), over the families
+    /// that have no `MergePolicy`. See `D81VectorCapture::adjacent_pairs`.
+    pub mergeable_adjacent_pairs: u32,
+    pub mergeable_near_pairs: u32,
 }
 
 pub fn d81_plan_refusal_ordinal(refusal: &crate::snapshot_recipes::Refusal) -> u32 {

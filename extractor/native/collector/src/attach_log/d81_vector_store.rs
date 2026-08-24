@@ -672,6 +672,44 @@ pub struct D81VectorCapture {
     pub pointers_rejected: u32,
     pub voids: u32,
     pub aliases_retired: u32,
+    /// HOW MUCH A WIDER MERGE COULD STILL REACH, over the families that do NOT
+    /// have a [`MergePolicy`] (lane RY3).
+    ///
+    /// Those eight are the whole of what the VECTOR PIPELINE still issues --
+    /// `d81_plan_copies_issued` counts the substrate's bulk `observe` calls
+    /// beside them, about 35 a frame -- and whether extending the merge to them
+    /// is worth anything is a question
+    /// about the ENGINE'S HEAP LAYOUT that no fixture can answer -- their
+    /// windows are small offsets inside separately allocated province objects.
+    /// So it is measured instead of argued.
+    ///
+    ///  * `adjacent_pairs` -- consecutive windows with NO hole between them.
+    ///    This is what a merge needs when it may not cross a hole, which is the
+    ///    only kind these families could ever have: `merge_domain` certifies a
+    ///    gap allowance against a span the frozen snapshot holds whole, and no
+    ///    bulk span holds a set of scattered heap objects. A hull over exactly
+    ///    adjacent windows reads no byte a member did not already ask for, so
+    ///    it needs no certificate at all.
+    ///  * `near_pairs` -- consecutive windows within [`MERGE_MAX_GAP`]. Not
+    ///    reachable under today's law; recorded so the size of the prize is
+    ///    known if a domain for these families is ever established.
+    ///
+    /// THEY ARE GEOMETRY, NOT A PROMISE (Codex r2 finding 3). A merge also
+    /// imports `copy_run`'s failure semantics -- a declined hull costs its
+    /// WHOLE RUN that image -- and that trade is not the same for these
+    /// families as for the three already merged. Those three read slots of an
+    /// array the frame has already read whole and certified, so an individual
+    /// window of one cannot be unreadable on its own. These eight read offsets
+    /// inside separately allocated province objects, where exactly that CAN
+    /// happen: one unreadable object costs one window's image today, and under
+    /// a merge would cost every window sharing its run. A large count here is
+    /// an argument to look, not an argument to merge.
+    ///
+    /// Both are WORK-DONE style counters, not content: they are a pure function
+    /// of `starts` and `lens`, which `feed_content` already feeds, so the gate
+    /// gains nothing by seeing them and is not shown them.
+    pub adjacent_pairs: u32,
+    pub near_pairs: u32,
     pub closing_tail_start: u64,
     merged: std::sync::OnceLock<MergedWindowIndex>,
     /// THE GEOMETRY CACHE. It remembers where a span's windows ARE, never what
@@ -1202,6 +1240,61 @@ pub struct D81VectorMemory<'a> {
     pub admit: &'a dyn Fn(u64) -> bool,
 }
 
+/// HOW MANY OF `store`'S WINDOWS WOULD JOIN A RUN ALREADY IN PROGRESS, at a
+/// hole allowance of zero and at [`MERGE_MAX_GAP`], as `(adjacent, near)`.
+///
+/// Each count is the number of guarded calls a merge at that allowance would
+/// remove PER IMAGE when every read succeeds, which is what makes it a prize
+/// rather than a shape statistic: the first window of every run still costs its
+/// call, and every later member of that run does not.
+///
+/// IT OBEYS THE HULL CAP, and that is the whole reason it is a function rather
+/// than a hole test (Codex r1 finding 5). Counting holes alone reports 512
+/// joins for 513 consecutive 8-byte windows, when [`MERGE_MAX_HULL_BYTES`]
+/// forces `run_end` to break after 4,096 bytes and only 511 calls actually
+/// disappear. The run bookkeeping below is `run_end`'s, so the two agree.
+///
+/// BOTH ALLOWANCES IN ONE TRAVERSAL. Two calls would touch `starts` and `lens`
+/// twice for a diagnostic that runs inside the clock bracket (Codex r2 finding
+/// 4); the allowances differ only in the hole test, so they share the walk and
+/// carry a hull base each.
+///
+/// WHAT THE COUNTS ARE NOT: a promise that those calls could be removed with
+/// the recording unchanged. They are geometry. Merging a family also imports
+/// the failure semantics `copy_run` documents -- a declined hull costs its
+/// whole run that image -- and for these families that is a real exposure; see
+/// [`D81VectorCapture::adjacent_pairs`].
+fn windows_joining_a_run(store: &FamilyStore) -> (u32, u32) {
+    const ALLOWANCES: [u64; 2] = [0, MERGE_MAX_GAP];
+    let mut joins = [0u32; 2];
+    let mut hull_start = [None::<u64>; 2];
+    for index in 0..store.starts.len() {
+        let start = store.starts[index];
+        let end = start.saturating_add(u64::from(store.lens[index]));
+        let previous_end = if index == 0 {
+            start
+        } else {
+            store.starts[index - 1].saturating_add(u64::from(store.lens[index - 1]))
+        };
+        for slot in 0..ALLOWANCES.len() {
+            let Some(base) = hull_start[slot] else {
+                hull_start[slot] = Some(start);
+                continue;
+            };
+            let joins_the_run = index > 0
+                && start >= previous_end
+                && start.saturating_sub(previous_end) <= ALLOWANCES[slot]
+                && end.saturating_sub(base) <= MERGE_MAX_HULL_BYTES as u64;
+            if joins_the_run {
+                joins[slot] = joins[slot].saturating_add(1);
+            } else {
+                hull_start[slot] = Some(start);
+            }
+        }
+    }
+    (joins[0], joins[1])
+}
+
 /// MAY THIS FAMILY HULL ACROSS THE HOLES IN `span`?
 ///
 /// Only when the frame ALREADY reads all of `span`. A hull that crosses a hole
@@ -1273,6 +1366,8 @@ pub fn d81_vector_observe(
         pointers_rejected: 0,
         voids: 0,
         aliases_retired: 0,
+        adjacent_pairs: 0,
+        near_pairs: 0,
         closing_tail_start: 0,
         merged: std::sync::OnceLock::new(),
         memo: Default::default(),
@@ -1653,6 +1748,33 @@ pub fn d81_vector_observe(
     }
     capture.voids = voids;
 
+    // WHAT A WIDER MERGE COULD STILL REACH (lane RY3). One pass over the
+    // windows of the families that have no `MergePolicy` -- the eight whose
+    // windows are offsets inside separately allocated heap objects, and which
+    // are the whole of what `d81_plan_copies_issued` still counts. See the
+    // fields for why this is measured rather than argued. `starts` is sorted by
+    // `seal`, so consecutive entries are the only pairs that can be adjacent.
+    let (mut adjacent, mut near) = (0u32, 0u32);
+    let mut measure = |store: &FamilyStore| {
+        let (store_adjacent, store_near) = windows_joining_a_run(store);
+        adjacent = adjacent.saturating_add(store_adjacent);
+        near = near.saturating_add(store_near);
+    };
+    for (index, store) in capture.opening.iter().enumerate() {
+        // The three merged families already collapse; only the rest are open.
+        if index == D81Family::SourceSlotClose as usize
+            || index == D81Family::MapSlotClose as usize
+            || index == D81Family::ActiveClose as usize
+        {
+            continue;
+        }
+        measure(store);
+    }
+    measure(&capture.header_close);
+    measure(&capture.record_ptr_close);
+    capture.adjacent_pairs = adjacent;
+    capture.near_pairs = near;
+
     capture
 }
 
@@ -1798,6 +1920,8 @@ mod shape_tests {
             pointers_rejected: 0,
             voids: 0,
             aliases_retired: 0,
+            adjacent_pairs: 0,
+            near_pairs: 0,
             closing_tail_start: 0,
             merged: std::sync::OnceLock::new(),
             memo: Default::default(),

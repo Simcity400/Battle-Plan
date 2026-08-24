@@ -56,9 +56,16 @@ fn ek_reference_emission(
             (1u8, 1u8, &plan.subtype1_routes),
         ] {
             for &(route, fallback_record) in selected_routes {
-                let &(controller_raw_handle, controller_country_id) = plan
+                // A LINEAR SCAN, DELIBERATELY (lane RY3). Production binary
+                // searches this vector; scanning here keeps the reference an
+                // INDEPENDENT check of that search instead of a copy of it. A
+                // plan that reached the emission unsorted would still be found
+                // by this scan and missed by the search, and the row comparison
+                // this function feeds would fail — which is the outcome wanted.
+                let &(_, (controller_raw_handle, controller_country_id)) = plan
                     .controller_by_province
-                    .get(&route.province_id)
+                    .iter()
+                    .find(|&&(province_id, _)| province_id == route.province_id)
                     .ok_or_else(|| {
                         failure(D81FailureReason::IdentityMismatch).subject(route.province_id)
                     })?;
@@ -71,8 +78,11 @@ fn ek_reference_emission(
                         failure(D81FailureReason::IdentityMismatch).subject(route.province_id)
                     );
                 };
-                let &(node_kind, node_flag, available_raw, consumed_raw) =
-                    plan.node_states.get(&route.node_index).ok_or_else(|| {
+                let &(_, (node_kind, node_flag, available_raw, consumed_raw)) = plan
+                    .node_states
+                    .iter()
+                    .find(|&&(node_index, _)| node_index == route.node_index)
+                    .ok_or_else(|| {
                         failure(D81FailureReason::OutOfBounds).index(route.node_index as usize)
                     })?;
                 rows.push(RailHubSimulationState {
@@ -204,7 +214,9 @@ fn a_read_refusal_is_published_after_the_povs_that_completed_before_it() {
     let mut earlier = ek_observation();
     earlier.read_failure = Some(refusal);
     earlier.reread_refused = None;
-    earlier.povs[0].node_states.remove(&1);
+    earlier.povs[0]
+        .node_states
+        .retain(|&(node_index, _)| node_index != 1);
     let outcome = d81_compute_rail_hub_rows(&earlier, &phases)
         .expect_err("a POV that cannot resolve a node refuses the hour");
     assert_eq!(
@@ -1459,8 +1471,10 @@ fn the_d81_deferred_copy_carries_the_hour_it_was_observed_in() {
          observation with nothing left to say which hour it belongs to"
     );
     assert!(
-        source.contains("fn d81_finish_rail_replay_state(
-    outcome: D81ObserveOutcome,"),
+        source.contains(
+            "fn d81_finish_rail_replay_state(
+    outcome: D81ObserveOutcome,"
+        ),
         "the post-bracket half must take the outcome BY VALUE; a borrow leaves \
          the copy alive in the caller after the hour it belongs to"
     );
@@ -1546,15 +1560,15 @@ fn d81_bracket_split_cost_model() {
     }
     let mut povs = Vec::with_capacity(frame.related.len());
     for pov in 0..frame.related.len() {
-        let mut controller_by_province = BTreeMap::new();
+        let mut controller_by_province: Vec<(u32, (u32, u32))> = Vec::new();
         let mut subtype0_routes = Vec::new();
-        let mut node_states = BTreeMap::new();
-        node_states.insert(0u32, (1u32, 0u8, 5i64, 6i64));
+        let mut node_states: Vec<(u32, (u32, u8, i64, i64))> = Vec::new();
+        node_states.push((0u32, (1u32, 0u8, 5i64, 6i64)));
         for &province_id in &frame.queries[pov] {
             let (raw_handle, equivalence_id) = T31Frame::controller(province_id);
             let raw_handle = raw_handle.max(1);
             let equivalence_id = equivalence_id.max(1);
-            controller_by_province.insert(province_id, (raw_handle, equivalence_id));
+            controller_by_province.push((province_id, (raw_handle, equivalence_id)));
             subtype0_routes.push((
                 D81RoutePair {
                     province_id,
@@ -1563,6 +1577,13 @@ fn d81_bracket_split_cost_model() {
                 false,
             ));
         }
+        // THE PLAN'S INVARIANT IS THE CONSTRUCTOR'S JOB (lane RY3). This
+        // fixture builds a `D81HubPovPlan` directly rather than through the
+        // hub's builder, so it owes the same sorted-by-key ordering the builder
+        // establishes; `frame.queries[pov]` is not ordered by construction.
+        // A `BTreeMap` used to supply this for free.
+        controller_by_province.sort_unstable_by_key(|&(province_id, _)| province_id);
+        controller_by_province.dedup_by_key(|&mut (province_id, _)| province_id);
         povs.push(D81HubPovPlan {
             pov_country_id: pov as u32,
             subtype0_routes,
@@ -1956,20 +1977,20 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
     let computed = d81_stamp_bracket_observation(
         d81_finish_rail_replay_state(
             D81ObserveOutcome::Complete(CompactRailReplayRead {
-            plan: crate::attach_log::d81_copy_bracket::D81PlanCounters::default(),
-            equality: crate::attach_log::d81_copy_bracket::D81EqualityCounters::default(),
-            provinces: Vec::new(),
-            hub_simulation: None,
-            observed_neighbors: 0,
-            read_time_us: 7,
-            status_flags: 0,
-            first_failure: None,
-            map_reciprocity_record_is_province: 0,
-            map_reciprocity_key_is_province_id: 0,
-            phase_times: D81PhaseTimes::default(),
-            bracket_observed_hour_raw: None,
-            diagnostics_provenance: D81DiagnosticsProvenance::Measured,
-        }),
+                plan: crate::attach_log::d81_copy_bracket::D81PlanCounters::default(),
+                equality: crate::attach_log::d81_copy_bracket::D81EqualityCounters::default(),
+                provinces: Vec::new(),
+                hub_simulation: None,
+                observed_neighbors: 0,
+                read_time_us: 7,
+                status_flags: 0,
+                first_failure: None,
+                map_reciprocity_record_is_province: 0,
+                map_reciprocity_key_is_province_id: 0,
+                phase_times: D81PhaseTimes::default(),
+                bracket_observed_hour_raw: None,
+                diagnostics_provenance: D81DiagnosticsProvenance::Measured,
+            }),
             &mut crate::attach_log::d81_geometry_gate::D81GeometryGate::default(),
         ),
         Some(observed),
@@ -2114,5 +2135,91 @@ fn the_d81_emit_site_has_no_witness_source_but_its_bracket() {
          mismatch witness's `!=` check -- and never as a witness VALUE; the \
          defect this lane closes was `let tick = u64::try_from(game_hour_raw)` \
          feeding every reason's tick pair"
+    );
+}
+
+/// THE CONSTRUCTOR ESTABLISHES THE LOOKUP INVARIANT (lane RY3).
+///
+/// `D81HubPovPlan::controller_by_province` and `node_states` were `BTreeMap`s
+/// and are now sorted vectors that the emission BINARY SEARCHES. Sortedness is
+/// load-bearing in a quiet way: an unsorted plan does not fail loudly, it fails
+/// to FIND an entry that is present and refuses the frame with
+/// `IdentityMismatch` for a province the plan holds.
+///
+/// THIS TEST DRIVES `D81HubPovPlan::new` WITH UNSORTED INPUT, which is the only
+/// form that can kill the production sort. An earlier version asserted
+/// sortedness on `ek_observation_with_overlap`, whose plans are sorted literals
+/// that never reach the constructor, so deleting the sort left it passing
+/// (Codex r1 finding 3). The sort now lives in `new`, production builds through
+/// `new`, and this asks `new` the question directly.
+///
+/// kills: deleting either `sort_unstable_by_key` in `D81HubPovPlan::new`.
+#[test]
+fn the_plan_constructor_sorts_its_lookup_vectors() {
+    let plan = D81HubPovPlan::new(
+        7,
+        Vec::new(),
+        Vec::new(),
+        vec![(30u32, (3u32, 3u32)), (10, (1, 1)), (20, (2, 2))],
+        vec![(5u32, (5u32, 1u8, 5i64, 5i64)), (1, (1, 0, 1, 1))],
+        Vec::new(),
+    );
+    assert_eq!(
+        plan.controller_by_province,
+        vec![(10u32, (1u32, 1u32)), (20, (2, 2)), (30, (3, 3))],
+        "the constructor must sort controller_by_province by province id",
+    );
+    assert_eq!(
+        plan.node_states,
+        vec![(1u32, (1u32, 0u8, 1i64, 1i64)), (5, (5, 1, 5, 5))],
+        "the constructor must sort node_states by node index",
+    );
+}
+
+/// AND THE EMISSION REALLY DOES DEPEND ON IT (lane RY3).
+///
+/// The invariant only earns the sort if breaking it changes an answer. This
+/// reverses a plan's key order and shows the two emission forms then DISAGREE,
+/// which is at once the proof that sortedness is load-bearing and the proof
+/// that `ek_reference_emission`'s linear scan is a genuinely independent check
+/// of the binary search rather than a copy of it.
+///
+/// kills: "simplifying" the reference back to the same lookup production uses,
+/// which would make the byte-identity test above compare a thing with itself.
+#[test]
+fn the_emission_depends_on_the_plans_key_order() {
+    let observation = ek_observation_with_overlap(true);
+    for plan in &observation.povs {
+        assert!(
+            plan.controller_by_province.len() > 1 && plan.node_states.len() > 1,
+            "a single-entry plan is sorted trivially and would not exercise this",
+        );
+        assert!(
+            plan.controller_by_province
+                .windows(2)
+                .all(|pair| pair[0].0 < pair[1].0),
+            "the fixture's plans must start sorted and unique by province id",
+        );
+        assert!(
+            plan.node_states
+                .windows(2)
+                .all(|pair| pair[0].0 < pair[1].0),
+            "the fixture's plans must start sorted and unique by node index",
+        );
+    }
+
+    let mut broken = ek_observation_with_overlap(true);
+    for plan in &mut broken.povs {
+        plan.controller_by_province.reverse();
+    }
+    let reference = ek_reference_emission(&broken, &D81PhaseAccum::default())
+        .expect("a linear scan finds every entry whatever order they are in");
+    let searched = d81_compute_rail_hub_rows(&broken, &D81PhaseAccum::default());
+    assert_ne!(
+        searched.ok(),
+        Some(reference),
+        "reversing the plan's key order must change what the binary search \
+         finds; if it does not, neither the sort nor this test is doing \
+         anything",
     );
 }
