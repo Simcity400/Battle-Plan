@@ -966,7 +966,6 @@
       "world_fold.rs:967-969": 1
     },
     "extractor/native/wire_format/src/d28.rs": {
-      "attach_log.rs:11380-11385": 1,
       "attach_log.rs:19349-19351": 1,
       "attach_log.rs:22236": 1,
       "attach_log.rs:22246-22272": 3,
