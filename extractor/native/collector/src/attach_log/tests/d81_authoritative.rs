@@ -231,7 +231,6 @@ pub(super) struct WorldShape {
 pub(super) struct StagedWorld {
     pub(super) memory: SyntheticMemory,
     pub(super) topology: CompactMapControlTopology,
-    pub(super) valid_ids: BTreeSet<u32>,
     pub(super) container: D81MapProvinceContainer,
     pub(super) roots: Domain81PlanRoots,
 }
@@ -443,7 +442,6 @@ pub(super) fn stage_world_in(shape: WorldShape, layout: Layout) -> StagedWorld {
             state_id: 1,
         })
         .collect();
-    let valid_ids = provinces.iter().map(|root| root.province_id).collect();
     let topology = CompactMapControlTopology {
         province_array: source_array as usize,
         province_count: province_slots,
@@ -471,7 +469,6 @@ pub(super) fn stage_world_in(shape: WorldShape, layout: Layout) -> StagedWorld {
     StagedWorld {
         memory,
         topology,
-        valid_ids,
         container,
         roots,
     }
@@ -487,7 +484,6 @@ pub(super) fn staged_deferred() -> D81DeferredCompute {
     plan.copies_issued = memory.calls();
     let StagedWorld {
         topology,
-        valid_ids,
         container,
         ..
     } = world;
@@ -512,7 +508,6 @@ pub(super) fn staged_deferred() -> D81DeferredCompute {
         equality: crate::attach_log::d81_copy_bracket::D81EqualityCounters::default(),
         live_walk: None,
         topology,
-        valid_ids,
         container_snapshot: container,
         chain_snapshot: crate::attach_log::D81MapProvinceChain {
             idler: IDLER as usize,
@@ -768,7 +763,6 @@ fn copied_walk_with_mutation_at(
     let StagedWorld {
         memory,
         topology,
-        valid_ids,
         container,
         roots,
     } = world;
@@ -793,7 +787,6 @@ fn copied_walk_with_mutation_at(
     let world = StagedWorld {
         memory: crate::snapshot_recipes::synthetic::SyntheticMemory::new(),
         topology,
-        valid_ids,
         container,
         roots,
     };
@@ -828,7 +821,6 @@ pub(super) fn walk_with_layout(
         source,
         0,
         &world.topology,
-        &world.valid_ids,
         &world.container,
         layout.rail_table as usize,
         layout.active_table as usize,
@@ -1838,7 +1830,6 @@ fn the_third_closing_observation_is_its_own_image_and_not_a_repeat() {
     let StagedWorld {
         memory,
         topology,
-        valid_ids,
         container,
         roots,
     } = stage_world(WorldShape::default());
@@ -1853,7 +1844,6 @@ fn the_third_closing_observation_is_its_own_image_and_not_a_repeat() {
     let world = StagedWorld {
         memory: SyntheticMemory::new(),
         topology,
-        valid_ids,
         container,
         roots,
     };
@@ -2127,6 +2117,141 @@ fn the_plan_price_and_the_plan_phase_timer_measure_the_same_window() {
             "across {PASSES} passes a `plan_us` wrapping only the {name} would \
              read a median {share} of the observation, which the four-fifths \
              bound must refuse but does not",
+        );
+    }
+}
+
+/// The two folded trees lane RY deleted, restated and compared against the
+/// accessors that replaced them, over a province list with holes in it.
+///
+/// kills: `province_ptr` returning the WRONG entry's pointer (swap
+/// `self.provinces[at].province_ptr` for `at`, or for `provinces[at +/- 1]`);
+/// `holds_province` answering `is_err()`; either accessor using
+/// `partition_point` semantics (>= instead of ==) and so admitting an id the
+/// set refused. It is not a tautology: the reference side is the literal
+/// `BTreeMap`/`BTreeSet` fold the production code used to build, kept here as
+/// the only remaining statement of the answer the accessors owe.
+#[test]
+fn the_topology_index_answers_exactly_what_the_two_folded_trees_answered() {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    // Holes on purpose: the builder `continue`s over a null province slot, so
+    // the ids it pushes are a strictly increasing SUBSEQUENCE of
+    // `1..province_count` and not a dense range. An accessor that assumed
+    // `provinces[i].province_id == i + 1` passes a dense fixture and fails
+    // here.
+    let ids: Vec<u32> = (1u32..=64)
+        .filter(|id| id % 3 != 0 && *id != 17 && *id != 18)
+        .collect();
+    let provinces: Vec<CompactMapProvinceRoot> = ids
+        .iter()
+        .map(|&province_id| CompactMapProvinceRoot {
+            province_id,
+            // Deliberately not monotonic in the id, so a search that returned a
+            // neighbouring entry's pointer cannot coincide with the right one.
+            province_ptr: 0x1_0000 + (usize::try_from(province_id).expect("small") * 977) % 4096,
+            state_id: 1,
+        })
+        .collect();
+    assert!(
+        provinces.windows(2).all(|pair| pair[0].province_id < pair[1].province_id),
+        "the fixture must hold the ordering the accessors' proof rests on",
+    );
+
+    let by_id: BTreeMap<u32, usize> = provinces
+        .iter()
+        .map(|province| (province.province_id, province.province_ptr))
+        .collect();
+    let valid_ids: BTreeSet<u32> = provinces.iter().map(|root| root.province_id).collect();
+
+    let topology = CompactMapControlTopology {
+        province_array: 0x2_0000,
+        province_count: 65,
+        states: Vec::new(),
+        provinces,
+    };
+
+    // Every id the walk could ever present, including 0 (never pushed), the
+    // holes, and one past the declared count.
+    for candidate in 0u32..=66 {
+        assert_eq!(
+            topology.province_ptr(candidate),
+            by_id.get(&candidate).copied(),
+            "province {candidate}: the accessor and the retired map disagree",
+        );
+        assert_eq!(
+            topology.holds_province(candidate),
+            valid_ids.contains(&candidate),
+            "province {candidate}: the accessor and the retired set disagree",
+        );
+    }
+    assert!(
+        !topology.holds_province(3) && !topology.holds_province(17),
+        "the fixture's holes must be holes, or the loop above proves nothing",
+    );
+    assert!(
+        topology.holds_province(64) && topology.province_ptr(64).is_some(),
+        "the last entry must be reachable: an off-by-one high bound would hide here",
+    );
+
+    // BOTH ARMS OF THE LOOKUP ARE EXERCISED ABOVE, and this says which is
+    // which, so a change that broke one of them could not pass by the other
+    // silently answering everything.
+    //
+    // Province 1 is the first entry, so slot arithmetic lands on it: the guess
+    // hits. Province 64 sits behind 22 skipped slots in a 42-entry list, so the
+    // guess indexes past the end, `get` answers `None`, and the binary search
+    // is what resolves it. Between them the two assertions below cover both
+    // arms; a guess that accepted whatever entry it landed on without comparing
+    // the id would answer the interior holes with a neighbour's pointer and the
+    // loop above would already have caught it.
+    assert_eq!(
+        topology.provinces[0].province_id, 1,
+        "the guess arm needs an entry whose index is its id minus one",
+    );
+    let last = topology.provinces.len() - 1;
+    assert!(
+        topology.provinces[last].province_id as usize > last + 1,
+        "the search arm needs an entry the slot guess cannot reach",
+    );
+    assert_eq!(
+        topology.province_ptr(topology.provinces[last].province_id),
+        Some(topology.provinces[last].province_ptr),
+        "the entry the guess cannot reach must still resolve to its own pointer",
+    );
+}
+
+/// A DENSE topology -- no holes at all -- is the shape the guess arm is for,
+/// and it must answer exactly what a search over the same list answers.
+///
+/// kills: a guess that indexes with `province_id` instead of `province_id - 1`
+/// (every answer would be off by one entry); a guess that accepts the entry it
+/// lands on without comparing the id.
+#[test]
+fn a_dense_topology_resolves_every_province_through_the_slot_guess() {
+    let provinces: Vec<CompactMapProvinceRoot> = (1u32..=200)
+        .map(|province_id| CompactMapProvinceRoot {
+            province_id,
+            province_ptr: 0x40_0000 + (usize::try_from(province_id).expect("small") * 613) % 8192,
+            state_id: 2,
+        })
+        .collect();
+    let topology = CompactMapControlTopology {
+        province_array: 0x3_0000,
+        province_count: 201,
+        states: Vec::new(),
+        provinces,
+    };
+    for candidate in 0u32..=202 {
+        let expected = topology
+            .provinces
+            .iter()
+            .find(|root| root.province_id == candidate)
+            .map(|root| root.province_ptr);
+        assert_eq!(
+            topology.province_ptr(candidate),
+            expected,
+            "province {candidate}: the slot guess must agree with a linear scan",
         );
     }
 }

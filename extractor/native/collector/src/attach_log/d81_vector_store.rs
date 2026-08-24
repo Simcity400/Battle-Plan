@@ -574,7 +574,26 @@ impl D81VectorCapture {
     }
 
     pub fn owned_window_count(&self) -> usize {
-        let mut owned: Vec<(u64, u32)> = Vec::new();
+        // PRE-SIZED (lane RY, 2026-08-24). This runs inside d81's clock bracket
+        // and exists to produce ONE wire counter, and on `captures/rc_vanilla`
+        // it collects ~21,000 windows: an unreserved `Vec` pays a dozen
+        // reallocations and ~336 KB of memcpy for them before the sort below
+        // even begins. The capacity is an exact upper bound -- the number of
+        // windows the six opening stores hold -- and the live filter can only
+        // take fewer, so nothing here grows.
+        //
+        // THE SORT IS STILL THE PHASE'S COST and this does not touch it. Every
+        // `FamilyStore` was already sorted and deduplicated by `seal`, so the
+        // union's cardinality is a k-way merge over six ordered lists rather
+        // than a sort of their concatenation; that is a larger change than a
+        // capacity and is named in `runs/ry_d81_worker/MEASUREMENT.md` section 5.
+        let capacity: usize = self
+            .opening
+            .iter()
+            .filter(|store| store.images.opening != 0)
+            .map(|store| store.starts.len())
+            .sum();
+        let mut owned: Vec<(u64, u32)> = Vec::with_capacity(capacity);
         for store in &self.opening {
             if store.images.opening == 0 {
                 continue;

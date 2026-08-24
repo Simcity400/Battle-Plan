@@ -178,6 +178,16 @@ fn reader_call_spans(body: &str) -> Vec<ReaderCallSpan> {
         // (`scope, gate, lanes, tag, ...`), which is what makes one index right
         // for both.
         ("spawn_gated_split(", 3usize),
+        // THE PUBLISHING READER IS A READER CALL TOO (lane RY, 2026-08-24), and
+        // for the same reason the split one is: seven domains now spawn through
+        // `spawn_gated_publishing`, each handing its own domain-scoped tracker
+        // to the read half, and a spelling this scanner does not know makes
+        // those borrows read as `OUTSIDE-EVERY-READER-CALL`. `"spawn_gated("`
+        // does not cover it -- the pattern requires the parenthesis
+        // immediately after the name -- so the entry is not redundant.
+        //
+        // Same argument index again: `scope, gate, lanes, tag, read, encode`.
+        ("spawn_gated_publishing(", 3usize),
         ("spawn_gated_lane_only(", 3usize),
         ("lane_time_main(", 1usize),
     ] {

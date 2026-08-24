@@ -56,7 +56,9 @@
 //!    would have refused a field as torn;
 //!  * the scalar walk inputs that do not live in the copy at all
 //!    ([`D81GeometryScalars`]), including the topology's province list, since
-//!    the walk drives from it and `valid_ids` is derived from it.
+//!    the walk drives from it -- both for the rows it visits and, since lane
+//!    RY deleted the folded set, for the neighbour-validity test it used to
+//!    ask a `BTreeSet` derived from the same list.
 //!
 //! # The four windows that are NOT compared by their bytes, and why that is
 //! still sound
@@ -158,9 +160,13 @@ use super::{CompactMapControlTopology, D81MapProvinceContainer, D81PhaseAccum, D
 /// are small and comparing them is free, so they are compared exactly rather
 /// than digested.
 ///
-/// `valid_ids` is deliberately absent: it is `topology_province_ids` folded into
-/// a set, so equal province lists imply equal `valid_ids`, and carrying it twice
-/// would be two places to keep in step.
+/// THE NEIGHBOUR-VALIDITY TEST NEEDS NOTHING FURTHER. It used to be a
+/// `BTreeSet<u32>` folded out of the same province list and handed to the walk
+/// beside the topology; lane RY deleted the fold and the walk now asks
+/// `CompactMapControlTopology::holds_province`, which reads
+/// `topology_province_ids` directly. Equal province lists therefore still imply
+/// an equal validity test, and there is now only one place for that to be true
+/// rather than two to keep in step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct D81GeometryScalars {
     pub(super) module_base: usize,
