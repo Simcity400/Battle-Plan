@@ -189,7 +189,7 @@
 //!   (`:46888`, `:47000`): those kinds are roots, the concept does not apply, and
 //!   that is absent. Task-force rows always carry `Some(fleet_id)` with status
 //!   `"exact"` (`:46967`).
-//! * **`owner_tag_db_id`.** `compact_oob_owner_consensus` (`attach_log.rs:47036`)
+//! * **`owner_tag_db_id`.** `CompactOobOwnerConsensus::resolve` (`attach_log.rs:47036`)
 //!   returns `(None, "unknown")` when no member division yielded a readable owner
 //!   and `(None, "mixed")` when the members disagree. `"mixed"` is a *measured*
 //!   fact: the single-owner relation genuinely resolves to nothing, which is record-state contract's
@@ -267,7 +267,7 @@
 //!   stricter than the fold in exactly one
 //!   place: a non-`EXACT` status carrying a non-zero count is rejected rather
 //!   than silently reduced to an empty state, because that combination is
-//!   unproducible by the collector (`read_unit_leader_traits` returns
+//!   unproducible by the collector (`read_unit_leader_traits_counted` returns
 //!   `(Some(_), "exact")` or `(None, "validation_failed")`, nothing else) and
 //!   dropping the word quietly would be the one way this mapping could lose data.
 //!   Measured: 0 of 1,519 rows on deepwar_t1 carry it.
@@ -282,7 +282,7 @@
 //! (`UNSUPPORTED`/`OVERFLOW`/`VALIDATION_FAILED`). Only `{0, 1, 2}` occur on
 //! deepwar_t1, but `3`, `4` and `5` are all reachable
 //! (`compact_oob_member_ids` `:47022`, `read_compact_oob_army_group_parent`
-//! `:47060`, `compact_oob_owner_consensus` `:47044`), so the cardinality is the
+//! `:47060`, `CompactOobOwnerConsensus::resolve` `:47044`), so the cardinality is the
 //! producer's codomain and not the capture's histogram.
 //!
 //! **`logical_member_count`, the serialized member rows, `member_count_engine`
