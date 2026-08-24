@@ -12,8 +12,8 @@ pub mod scripted_state_domain51_collector;
 pub mod scripted_state_domain51_gate;
 
 pub use country_variables_extractor::{
-    read_variables_container, rewitness_owed, rtti_type_name, MemoryRead, VariableReadStatus,
-    RTTI_VARIABLES,
+    read_variables_container, read_variables_container_vtable_pinned, rewitness_owed,
+    rtti_type_name, MemoryRead, VariableReadStatus, RTTI_VARIABLES,
 };
 pub use scripted_gui_runtime_carrier::{
     collect_and_validate_scripted_gui_runtime, validate_scripted_gui_runtime_frame, EngineResult,

@@ -103,6 +103,12 @@ const READ_SPELLINGS: &[&str] = &[
     "domain51_flag_row_vtables",
     "rtti_type_name",
     "mem.",
+    // Lane SE3's windowed spellings. A re-witness put back through one of
+    // these would reach memory just as surely as through the scalar pairs, so
+    // they belong in the list the empty arm is counted against.
+    "domain51_stable_flag_manager_head",
+    "domain51_flag_manager_head_still",
+    "ObjectSnapshot",
 ];
 
 /// The same text with its comment lines dropped. The comments around these
@@ -221,9 +227,17 @@ pub(super) fn statement_depth(body: &str, needle: &str) -> usize {
 /// is; `statement_depth` says that nothing encloses it. Neither alone is
 /// enough: a counted substring survives being wrapped, and so does a pinned
 /// literal if the wrapper does not re-indent.
+///
+/// Lane SE3 changed the header half's SPELLING and nothing else about it.
+/// `domain51_stable_flag_header` was two interleaved double reads of the row
+/// base and the packed word; `domain51_flag_manager_head_still` is one
+/// doubly-sampled window over the same two fields, compared field by field,
+/// falling back to `domain51_stable_flag_header` itself when the window will
+/// not gate. Same two samples, same two fields, same refusal - which is why
+/// this pin moves rather than the test it guards.
 const POST_WALK_REWITNESS: &str =
     "    if read_u64_stable(root_addr).map(|value| value as usize) != Some(manager)
-        || domain51_stable_flag_header(manager) != Some((base, slot_count, entry_count))
+        || !domain51_flag_manager_head_still(manager, base, slot_count, entry_count)
     {
         return domain51_unmeasured_flag_scope(scope_kind, owner_id);
     }
@@ -350,11 +364,21 @@ fn the_flag_manager_header_re_witness_after_the_row_loop_survives() {
         "and it must stand at the function's own level, with nothing enclosing it"
     );
     // And it must come AFTER the loop it closes over, not before it.
+    //
+    // Located by POST_WALK_REWITNESS, the same pin the two assertions above
+    // use, rather than by a second hand-written spelling of the read inside
+    // it. Lane SE3 merged that read into a window - the statement now calls
+    // `domain51_flag_manager_head_still(manager, base, slot_count,
+    // entry_count)` where it called `domain51_stable_flag_header(manager)` -
+    // and the restamp updated the pin but left this needle on the old
+    // spelling, so this probe went looking for text that had moved into
+    // another function. One pin, used three times, cannot drift out of step
+    // with itself that way.
     let loop_start = measured_path
         .find("for idx in 0..entry_count {")
         .expect("the row loop");
     let rewitness = measured_path
-        .find("domain51_stable_flag_header(manager)")
+        .find(POST_WALK_REWITNESS)
         .expect("the re-witness");
     assert!(
         loop_start < rewitness,

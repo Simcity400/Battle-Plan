@@ -157,7 +157,45 @@ pub fn read_variables_container<R: MemoryRead>(
     country_obj: u64,
     container: u64,
 ) -> CountryVariableRead {
-    let Some(header_before @ (base, size, mask)) = stable_header(mem, container) else {
+    read_variables_container_inner(mem, country_obj, container, None)
+}
+
+/// [`read_variables_container`] with the container's vtable authenticated out
+/// of the SAME header window this read already samples twice.
+///
+/// The caller's cached-RTTI gate, once the frame's vtable is known, is
+/// `read_u64_stable(container).is_some_and(|v| v == expected)` - true exactly
+/// when two samples of the vtable agreed AND equalled the cache, which is the
+/// same proposition as EACH of two samples equalling the cache. The vtable
+/// lives at container+0x00, already inside the 0x28-byte window
+/// [`stable_header`] reads twice, so the caller's separate pair of guarded
+/// reads is free to delete: 2 reads x every WARM variable scope x every hour.
+/// The frame's first container is not warm and does not come through here.
+///
+/// A caller that has no cached vtable yet must NOT use this - it has to walk
+/// the RTTI type name first - so this takes the expected value rather than an
+/// `Option`. Refusal is reported as `country_variables_header_unstable` rather
+/// than as an RTTI mismatch; the collector keeps only the `status` from this
+/// read and never the reason, so both spellings reach the caller as the same
+/// `Unmeasured` scope.
+pub fn read_variables_container_vtable_pinned<R: MemoryRead>(
+    mem: &R,
+    country_obj: u64,
+    container: u64,
+    expected_vtable: u64,
+) -> CountryVariableRead {
+    read_variables_container_inner(mem, country_obj, container, Some(expected_vtable))
+}
+
+fn read_variables_container_inner<R: MemoryRead>(
+    mem: &R,
+    country_obj: u64,
+    container: u64,
+    expected_vtable: Option<u64>,
+) -> CountryVariableRead {
+    let Some(header_before @ (base, size, mask)) =
+        stable_header_vtable_pinned(mem, container, expected_vtable)
+    else {
         return unmeasured_with_container(
             country_obj,
             container,
@@ -171,8 +209,11 @@ pub fn read_variables_container<R: MemoryRead>(
         // `header_before` was sampled from with nothing in between. The
         // non-empty paths below still re-witness, because they walked.
         //
-        // Nothing above this point re-reads anything either: the caller's RTTI
-        // check and root read are the caller's to re-witness, and it does.
+        // The vtable pin above does not reopen that window. On the window
+        // path it rides the same two reads the header pair already took, and
+        // on the fallback path its two reads come AFTER both header samples,
+        // so the interval between them is untouched either way. The caller's
+        // root read is still the caller's to re-witness, and it does.
         return CountryVariableRead {
             status: VariableReadStatus::MeasuredEmpty,
             country_obj,
@@ -342,6 +383,93 @@ pub fn read_msvc_string<R: MemoryRead>(mem: &R, addr: u64) -> Option<String> {
     read_msvc_string_bytes(mem, chars, size)
 }
 
+/// [`stable_header`] with the vtable of `container` required, in BOTH samples,
+/// to equal `expected_vtable`. With `None` it IS [`stable_header`], call for
+/// call. See [`read_variables_container_vtable_pinned`] for why requiring the
+/// value in each sample is the caller's old predicate and not a stricter one.
+///
+/// Only the FIRST header read of the container is pinned. The post-read
+/// re-witness keeps calling plain [`stable_header`], because the pre-lane-SE
+/// re-witness compared `(base, size, mask)` and never looked at the vtable;
+/// pinning it too would refuse containers the old code admitted.
+fn stable_header_vtable_pinned<R: MemoryRead>(
+    mem: &R,
+    container: u64,
+    expected_vtable: Option<u64>,
+) -> Option<(u64, u32, u32)> {
+    let Some(expected) = expected_vtable else {
+        return stable_header(mem, container);
+    };
+    // The header pair is sampled EXACTLY the way `stable_header` samples it:
+    // one `stable_header_pair` per sample, window first and per-field
+    // otherwise, INDEPENDENTLY for each of the two.
+    //
+    // That per-SAMPLE fallback is load-bearing twice over, and both times
+    // because lane SE got it wrong first:
+    //
+    //  * a per-CALL fallback interleaved the reads as `vtable1, header1,
+    //    vtable2, header2` where the old path read `vtable1, vtable2, header1,
+    //    header2`, widening the header pair's interval by a vtable read, so a
+    //    header moving during that extra read refused a frame the old code
+    //    accepted (Codex round 4, finding 1);
+    //  * an ALL-OR-NOTHING fallback discarded a successful first window sample
+    //    when the second window was refused and then compared two fresh
+    //    windowless samples, so a header that moved from A to B was accepted
+    //    as B/B where the old code refused it (Codex round 5, finding 1).
+    //
+    // Sampling independently is what makes a window sample get compared
+    // against a per-field sample. All this call adds is the vtable, when the
+    // window path is the one that ran and hands it over for free.
+    let (vtable1, base1, word1) = stable_header_pair_with_vtable(mem, container)?;
+    let (vtable2, base2, word2) = stable_header_pair_with_vtable(mem, container)?;
+    if base1 != base2 || word1 != word2 {
+        return None;
+    }
+    // The vtable is an ABSOLUTE test - it equalled `expected` at two instants -
+    // so which two instants they are changes nothing about what is asserted.
+    // Free when both header samples came out of a window; otherwise the
+    // pre-lane-SE scalar pair, spelled out rather than short-circuited so the
+    // rejecting path reads what it always read. Those two reads come AFTER
+    // both header samples, never between them.
+    match (vtable1, vtable2) {
+        (Some(first), Some(second)) => {
+            if first != expected || second != expected {
+                return None;
+            }
+        }
+        _ => {
+            let first = mem.read_u64(container)?;
+            let second = mem.read_u64(container)?;
+            if first != expected || second != expected {
+                return None;
+            }
+        }
+    }
+    Some((base1, (word1 & 0xFFFF_FFFF) as u32, (word1 >> 32) as u32))
+}
+
+/// One sample of the CVariables header: the same read [`stable_header_pair`]
+/// makes, reporting the vtable at container+0x00 as well WHEN the window path
+/// is the one that ran.
+///
+/// `None` for the vtable means "this sample did not come from a window", never
+/// "the vtable is wrong": the per-field fallback starts at container+CV_BASE
+/// and never covers offset 0.
+fn stable_header_pair_with_vtable<R: MemoryRead>(
+    mem: &R,
+    container: u64,
+) -> Option<(Option<u64>, u64, u64)> {
+    if let Some(window) = mem.read_object_window::<CVARIABLES_HEADER_WINDOW_LEN>(container) {
+        return Some((
+            Some(read_u64_le(&window, 0)?),
+            read_u64_le(&window, CV_BASE as usize)?,
+            read_u64_le(&window, CV_SIZE_MASK as usize)?,
+        ));
+    }
+    let (base, word) = stable_header_pair_windowless(mem, container)?;
+    Some((None, base, word))
+}
+
 fn stable_header<R: MemoryRead>(mem: &R, container: u64) -> Option<(u64, u32, u32)> {
     let (b1, w1) = stable_header_pair(mem, container)?;
     let (b2, w2) = stable_header_pair(mem, container)?;
@@ -351,13 +479,18 @@ fn stable_header<R: MemoryRead>(mem: &R, container: u64) -> Option<(u64, u32, u3
     Some((b1, (w1 & 0xFFFF_FFFF) as u32, (w1 >> 32) as u32))
 }
 
+/// Unchanged in reads and in order: the window branch and the per-field
+/// fallback both live in [`stable_header_pair_with_vtable`] now, and this
+/// drops the vtable that branch reports.
 fn stable_header_pair<R: MemoryRead>(mem: &R, container: u64) -> Option<(u64, u64)> {
-    if let Some(window) = mem.read_object_window::<CVARIABLES_HEADER_WINDOW_LEN>(container) {
-        return Some((
-            read_u64_le(&window, CV_BASE as usize)?,
-            read_u64_le(&window, CV_SIZE_MASK as usize)?,
-        ));
-    }
+    let (_vtable, base, word) = stable_header_pair_with_vtable(mem, container)?;
+    Some((base, word))
+}
+
+/// The tail of [`stable_header_pair`] - the two per-field paths it falls to
+/// when the object window is unavailable - split out so a caller that has
+/// ALREADY had the window refused can reach it without asking again.
+fn stable_header_pair_windowless<R: MemoryRead>(mem: &R, container: u64) -> Option<(u64, u64)> {
     let addr = container.saturating_add(CV_BASE);
     let mut bytes = [0u8; 16];
     if mem.read_into(addr, &mut bytes).is_some() {
@@ -807,6 +940,265 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
+    // Lane SE: the vtable-pinned container read.
+    //
+    // The collector's cached-RTTI gate used to spend its own pair of guarded
+    // reads on container+0x00 before every container read. That address is
+    // inside the header window this read samples twice anyway, so the pin
+    // moved in here. These pin that it is the SAME predicate and that a
+    // container failing it never gets its bucket span walked.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn the_vtable_pinned_read_is_the_unpinned_read_when_the_vtable_matches() {
+        let (module_base, country, mem) = complete_country_variable_fixture();
+        let container = mem.read_u64(country + OBJ_VARIABLES).unwrap();
+        let vtable = mem.read_u64(container).unwrap();
+        assert_eq!(vtable, module_base + 0x5000);
+
+        let unpinned = read_variables_container(&mem, country, container);
+        let pinned = read_variables_container_vtable_pinned(&mem, country, container, vtable);
+        assert_eq!(pinned.status, VariableReadStatus::Measured);
+        assert_eq!(pinned, unpinned);
+    }
+
+    /// Every read that reaches the fixture, recorded, so a test can say what
+    /// was NOT read as well as what the answer was.
+    struct RecordingFixtureMemory {
+        inner: FixtureMemory,
+        reads: std::cell::RefCell<Vec<(u64, usize)>>,
+    }
+
+    impl RecordingFixtureMemory {
+        fn new(inner: FixtureMemory) -> Self {
+            Self {
+                inner,
+                reads: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+
+        fn touched(&self, start: u64, len: u64) -> bool {
+            self.reads
+                .borrow()
+                .iter()
+                .any(|(addr, read_len)| *addr < start + len && start < *addr + *read_len as u64)
+        }
+    }
+
+    impl MemoryRead for RecordingFixtureMemory {
+        fn read_exact(&self, addr: u64, len: usize) -> Option<Vec<u8>> {
+            self.reads.borrow_mut().push((addr, len));
+            self.inner.read_exact(addr, len)
+        }
+    }
+
+    #[test]
+    fn a_container_whose_vtable_is_not_the_pinned_one_is_unmeasured_and_unwalked() {
+        // kills: a pin that is never applied, applied to only one of the two
+        // header samples, or applied AFTER the bucket walk. The collector
+        // turns this into the same `Unmeasured` scope the pre-lane-SE RTTI
+        // mismatch produced, and it must reach that verdict without reading a
+        // byte of the node array - the recorded read log is what proves the
+        // second half, which the refusal alone does not (Codex round 3,
+        // finding 4).
+        let (_module_base, country, mem) = complete_country_variable_fixture();
+        let container = mem.read_u64(country + OBJ_VARIABLES).unwrap();
+        let vtable = mem.read_u64(container).unwrap();
+        let node_base = mem.read_u64(container + CV_BASE).unwrap();
+        let mask = (mem.read_u64(container + CV_SIZE_MASK).unwrap() >> 32) as u64;
+        let span = (mask + 1 + 4) * NODE_STRIDE;
+
+        let recording = RecordingFixtureMemory::new(mem);
+        let wrong =
+            read_variables_container_vtable_pinned(&recording, country, container, vtable ^ 1);
+        assert_eq!(wrong.status, VariableReadStatus::Unmeasured);
+        assert_eq!(
+            wrong.failure_reason,
+            Some("country_variables_header_unstable")
+        );
+        assert!(wrong.entries.is_empty());
+        assert_eq!(wrong.declared_size, 0);
+        assert!(
+            !recording.touched(node_base, span),
+            "the bucket span [{node_base:#x}, +{span:#x}) was read before the pin refused: {:?}",
+            recording.reads.borrow()
+        );
+
+        // The same fixture with the RIGHT vtable does read the span, so the
+        // assertion above is not passing because the span is unreachable.
+        let recording = RecordingFixtureMemory::new(complete_country_variable_fixture().2);
+        let right = read_variables_container_vtable_pinned(&recording, country, container, vtable);
+        assert_eq!(right.status, VariableReadStatus::Measured);
+        assert!(recording.touched(node_base, span));
+    }
+
+    /// A memory whose WINDOW view and whose PER-FIELD view can disagree, with
+    /// a budget of window reads. It reproduces the one shape a single fixture
+    /// cannot: a header sampled once through the window and once through the
+    /// per-field fallback, with the value moving in between.
+    struct SplitViewFixtureMemory {
+        window: FixtureMemory,
+        per_field: FixtureMemory,
+        window_budget: std::cell::Cell<usize>,
+    }
+
+    impl MemoryRead for SplitViewFixtureMemory {
+        fn read_exact(&self, addr: u64, len: usize) -> Option<Vec<u8>> {
+            self.per_field.read_exact(addr, len)
+        }
+
+        fn read_object_window<const N: usize>(&self, addr: u64) -> Option<[u8; N]> {
+            let budget = self.window_budget.get();
+            if budget == 0 {
+                return None;
+            }
+            self.window_budget.set(budget - 1);
+            self.window.read_exact(addr, N)?.try_into().ok()
+        }
+    }
+
+    /// One window read available, showing `window_size_mask` at `container`,
+    /// over a complete per-field fixture that shows its own.
+    fn one_window_then_per_field(
+        container: u64,
+        vtable: u64,
+        node_base: u64,
+        window_size_mask: u64,
+        per_field: FixtureMemory,
+    ) -> SplitViewFixtureMemory {
+        let mut window = FixtureMemory::default();
+        let mut container_bytes = vec![0u8; 0x40];
+        put_u64(&mut container_bytes, 0, vtable);
+        put_u64(&mut container_bytes, CV_BASE as usize, node_base);
+        put_u64(
+            &mut container_bytes,
+            CV_SIZE_MASK as usize,
+            window_size_mask,
+        );
+        window.add(container, container_bytes);
+        SplitViewFixtureMemory {
+            window,
+            per_field,
+            window_budget: std::cell::Cell::new(1),
+        }
+    }
+
+    #[test]
+    fn a_header_that_moves_between_a_window_sample_and_a_per_field_sample_is_refused() {
+        // kills: an ALL-OR-NOTHING window fallback. `stable_header` samples the
+        // header twice and each sample independently takes the window or the
+        // per-field path, so when only the first window reads it compares that
+        // window sample against a per-field one and refuses a header that
+        // moved. Discarding a successful first sample and re-reading both
+        // per-field accepts B/B and never sees A -> B (Codex round 5,
+        // finding 1).
+        let (_module_base, country, mem) = complete_country_variable_fixture();
+        let container = mem.read_u64(country + OBJ_VARIABLES).unwrap();
+        let vtable = mem.read_u64(container).unwrap();
+        let node_base = mem.read_u64(container + CV_BASE).unwrap();
+        let settled = mem.read_u64(container + CV_SIZE_MASK).unwrap();
+
+        let moved =
+            one_window_then_per_field(container, vtable, node_base, 5 | (7u64 << 32), mem.clone());
+        assert_ne!(5 | (7u64 << 32), settled, "the fixture must actually move");
+        assert_eq!(
+            read_variables_container_vtable_pinned(&moved, country, container, vtable).status,
+            VariableReadStatus::Unmeasured
+        );
+
+        // Positive control: the same one-window budget over a header that did
+        // NOT move reads clean, so the refusal above is the movement and not
+        // the budget.
+        let still = one_window_then_per_field(container, vtable, node_base, settled, mem);
+        assert_eq!(
+            read_variables_container_vtable_pinned(&still, country, container, vtable).status,
+            VariableReadStatus::Measured
+        );
+    }
+
+    #[test]
+    fn the_vtable_pinned_samplers_reach_their_fallback_only_when_the_window_fails() {
+        // Codex round 4, the collector-side twin of the same finding. A
+        // window-then-fallback function is only worth its saving if the
+        // fallback is LAZY: `window.or(windowless(mem, container))` keeps the
+        // same call graph and evaluates its argument eagerly, so every
+        // SUCCESSFUL window would also take the per-field read it replaced -
+        // doubling the reads, invalidating the price, and widening the interval
+        // the pair is meant to close. `or_else`, `let .. else`, `match` and an
+        // early `return` all keep the fallback behind the failure.
+        //
+        // The ban is WHOLE-FILE over the production half, not a set of
+        // functions picked out of it. Two narrower shapes were tried and both
+        // leaked:
+        //
+        //  * a LIST of names went stale twice. Round 4 wrote it; Codex round 5
+        //    found it already missing `stable_header_pair_windowless`, which
+        //    carries a two-level fallback of its own - a 16-byte `read_into`,
+        //    then two scalar reads - so `.or(Some((mem.read_u64(..)?,
+        //    mem.read_u64(..)?)))` there would take both scalar reads after a
+        //    SUCCESSFUL bulk read, inside the interval between this sample and
+        //    its pair.
+        //  * selecting by SHAPE - "every function that takes a bulk read" -
+        //    is not call-graph closed, as Codex round 6 showed: leave the bulk
+        //    read where it is and move the CHOICE between it and the fallback
+        //    into a new function, and the new function takes no bulk read, is
+        //    not selected, and is where the eager combinator lives. It also
+        //    has to enumerate bulk-read spellings, and `read_exact` was
+        //    already a spelling it did not know.
+        //
+        // This file's production half is 695 lines and uses none of the four
+        // today, so the rule costs nothing and cannot be walked around: there
+        // is no function in it to extract a chooser INTO that the scan does
+        // not see. `or_else`, `unwrap_or_else`, `let .. else`, `match` and an
+        // early `return` are all still available, and all keep the fallback
+        // behind the failure.
+        let source = include_str!("country_variables_extractor.rs").replace("\r\n", "\n");
+        let production = match source.find("\n#[cfg(test)]") {
+            Some(end) => &source[..end],
+            None => panic!("the test module is at the end of this file"),
+        };
+        // Comments stripped first: the prose above quotes `.or(` while
+        // explaining it, and prose is not code.
+        let code = production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            code.contains("fn read_variables_container_vtable_pinned"),
+            "the production slice must hold this lane's readers; the test \
+             module marker moved and the scan is looking at nothing"
+        );
+        for eager in [".or(", ".unwrap_or(", ".map_or(", ".and("] {
+            assert_eq!(
+                code.matches(eager).count(),
+                0,
+                "the production half of this file uses the EAGER combinator \
+                 {eager}. On a window-then-fallback read that takes the \
+                 per-field read even when the bulk read succeeded, which \
+                 doubles the reads, invalidates the price, and widens the \
+                 interval between a field's two samples. Use `or_else`, \
+                 `let .. else` or `match`."
+            );
+        }
+    }
+
+    #[test]
+    fn the_vtable_pin_survives_a_refused_header_window() {
+        // The window is where the vtable rides for free; when it is refused
+        // the pin costs its own read instead of being silently dropped.
+        let (_module_base, country, mem) = complete_country_variable_fixture();
+        let container = mem.read_u64(country + OBJ_VARIABLES).unwrap();
+        let vtable = mem.read_u64(container).unwrap();
+        let refusing = ContiguousFixtureMemory::new(mem).refusing(container);
+
+        let pinned = read_variables_container_vtable_pinned(&refusing, country, container, vtable);
+        assert_eq!(pinned.status, VariableReadStatus::Measured);
+        let wrong =
+            read_variables_container_vtable_pinned(&refusing, country, container, vtable ^ 1);
+        assert_eq!(wrong.status, VariableReadStatus::Unmeasured);
+    }
+    // ---------------------------------------------------------------
     // Lane SE: the phase-loop candidate pre-count.
     //
     // `scan_variables_snapshot` now sweeps each phase for nodes whose header
@@ -1119,8 +1511,13 @@ mod tests {
         // which is the round-1 defect, at the site round 1 did not reach.
         const PREDICATE: &str = "    if !rewitness_owed(size as usize) {";
         let source = include_str!("country_variables_extractor.rs").replace("\r\n", "\n");
+        // Lane SE3 moved this body into `read_variables_container_inner`, the
+        // shared tail of the plain and vtable-pinned entry points, so the
+        // predicate is scoped there. Following it is the point: if the arm ever
+        // moves again this `.expect` fails loudly, rather than the test quietly
+        // scanning a two-line delegation and finding nothing to object to.
         let start = source
-            .find("pub fn read_variables_container<R: MemoryRead>(")
+            .find("fn read_variables_container_inner<R: MemoryRead>(")
             .expect("the container reader");
         let body = &source[start..];
         let body = without_comments(&body[..body.find("\n}\n").expect("it closes at column zero")]);
