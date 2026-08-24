@@ -67,6 +67,44 @@ const fn family_images(family: D81Family) -> FamilyImages {
     }
 }
 
+/// THE LARGEST SPAN ONE GUARDED CALL MAY ASK FOR when windows are merged.
+///
+/// This is the TEAR BOUND, not a memory bound. `d81_copy_bracket`'s
+/// `u64_stable_at` reads an address at image 0 and again at image 1 and refuses
+/// the value when the two disagree; the interval it judges is the wall time
+/// between those two observations. Today that interval is one guarded call of
+/// the window, and under a merged run it is still one guarded call — of the
+/// hull. Capping the hull at a page keeps that call's payload at ~400 ns of
+/// copy against a guarded call's ~122 ns of fixed cost, so the judged interval
+/// grows by a few hundred nanoseconds while the number of calls it spans stays
+/// at one. Raising this cap widens the tear detector's window; it is not a
+/// tuning knob.
+const MERGE_MAX_HULL_BYTES: usize = 4096;
+
+/// THE LARGEST HOLE a run may swallow between two consecutive windows.
+///
+/// Bounds the wasted bytes independently of [`MERGE_MAX_HULL_BYTES`], so a
+/// sparse stretch of a family's array breaks the run instead of reading a whole
+/// page to collect a handful of slots. At the shapes this applies to — 8-byte
+/// slots at stride 8, and 7-byte windows at stride 0x20 — 128 bytes spans a
+/// skip of sixteen source slots or four active entries.
+const MERGE_MAX_GAP: u64 = 128;
+
+/// WHETHER A FAMILY'S COPY PROGRAM MAY MERGE ITS WINDOWS, and over what.
+///
+/// `None` is today's program exactly: one guarded call per window per image.
+///
+/// `Some(span)` permits [`FamilyStore::copy_side`] to collect a run of sorted,
+/// non-overlapping windows into ONE hull read. The span is the memory the
+/// caller has certified the frame ALREADY reads in full, and a hull may never
+/// leave it — which is what makes reading the gaps between windows sound. Only
+/// [`merge_domain`] constructs a non-empty one, and only after checking the
+/// span against `roots.bulk_spans`.
+#[derive(Clone, Copy, Debug, Default)]
+struct MergePolicy {
+    domain: Option<(u64, u64)>,
+}
+
 const ST_O: u8 = 1 << 0;
 const ST_S1: u8 = 1 << 1;
 const ST_C: u8 = 1 << 2;
@@ -180,26 +218,192 @@ impl FamilyStore {
         }
     }
 
+    /// ONE WINDOW, EVERY IMAGE — the whole of what `copy_side` used to be.
+    ///
+    /// Kept as its own function because it is now reached from three places:
+    /// the unmerged program, the singleton run, and the fallback for a run
+    /// whose hull declined. All three must set `status` identically, and the
+    /// only way to make that a fact rather than a claim is for there to be one
+    /// copy of the code that sets it.
+    ///
+    /// Note the asymmetry, which is load-bearing and predates this lane: an
+    /// image-0 failure ends the window, while a later image's failure leaves
+    /// the bit clear and lets the next image proceed.
+    fn copy_window(
+        &mut self,
+        index: usize,
+        image_count: usize,
+        first_bit: u8,
+        copy: &mut dyn FnMut(u64, &mut [u8]) -> bool,
+        calls: &Cell<u64>,
+    ) {
+        let start = self.starts[index];
+        let from = self.offsets[index] as usize;
+        let to = from + self.lens[index] as usize;
+        for image in 0..image_count {
+            let slab = &mut self.slabs[image];
+            calls.set(calls.get().saturating_add(1));
+            if copy(start, &mut slab[from..to]) {
+                self.status[index] |= first_bit << image;
+            } else if image == 0 {
+                break;
+            }
+        }
+    }
+
+    /// HOW FAR A RUN STARTING AT `first` REACHES, as an exclusive end index.
+    ///
+    /// A run is a maximal stretch of sorted, strictly non-overlapping windows
+    /// whose hull stays inside `domain`, whose holes are each at most
+    /// [`MERGE_MAX_GAP`], and whose total span is at most
+    /// [`MERGE_MAX_HULL_BYTES`]. `first + 1` means "no run": the caller copies
+    /// that window by itself, on today's path.
+    ///
+    /// OVERLAPPING AND DUPLICATE-START WINDOWS BREAK THE RUN. `seal`
+    /// deduplicates exact `(start, len)` pairs but two windows may still share
+    /// a start with different lengths, or overlap. The scatter below would in
+    /// fact place them correctly, but refusing them keeps the run a partition
+    /// of the packed slab and keeps this function's contract to one sentence.
+    fn run_end(&self, first: usize, domain: (u64, u64)) -> usize {
+        let hull_start = self.starts[first];
+        let mut hull_end = hull_start.saturating_add(u64::from(self.lens[first]));
+        if hull_start < domain.0 || hull_end > domain.1 {
+            return first + 1;
+        }
+        let mut end = first + 1;
+        while end < self.starts.len() {
+            let start = self.starts[end];
+            if start < hull_end || start.saturating_sub(hull_end) > MERGE_MAX_GAP {
+                break;
+            }
+            let next_end = start.saturating_add(u64::from(self.lens[end]));
+            if next_end > domain.1
+                || next_end.saturating_sub(hull_start) > MERGE_MAX_HULL_BYTES as u64
+            {
+                break;
+            }
+            hull_end = next_end;
+            end += 1;
+        }
+        end
+    }
+
+    /// ONE RUN, EVERY IMAGE, ONE GUARDED CALL PER IMAGE.
+    ///
+    /// A RUN BEHAVES EXACTLY AS ONE OVERSIZED WINDOW DOES. The loop below is
+    /// `copy_window`'s, with the hull in place of the window and a scatter
+    /// after each successful image: an image-0 decline ends the run with no bit
+    /// set, a later image's decline leaves that image's bit clear and takes the
+    /// next image. That is the whole failure contract, and it is the same
+    /// sentence `copy_window` already obeys.
+    ///
+    /// THERE IS NO FALLBACK, and its absence is the point (Codex r1 finding 1,
+    /// r2 findings 1 and 2). Two earlier forms re-read the members after a hull
+    /// declined — first on any image, then on image 0 only — and BOTH heal a
+    /// one-shot refusal: the engine declines one read, the re-read succeeds,
+    /// and a window the unmerged program would have left unreadable comes back
+    /// present. That direction manufactures data, and no accounting of which
+    /// span was asked makes it safe, because a transient fault is indexed by
+    /// WHEN a call happens and not by WHAT it asks for.
+    ///
+    /// What makes the absence affordable is [`merge_domain`]'s second
+    /// condition: a run only exists inside a span the frozen snapshot already
+    /// holds contiguously and void-free, which is a span this frame has already
+    /// read in full and whose region `range_confirmed_good` has already cached.
+    /// A hull inside it fails only if the mapping changes mid-frame — the same
+    /// event that would fail a member's own read.
+    ///
+    /// The residual divergence is stated rather than hidden: when that does
+    /// happen the whole run loses the image, where the unmerged program would
+    /// have lost only the member that faulted. That is strictly MORE
+    /// conservative, never less, and it is the direction the recorder's
+    /// fail-closed law asks for.
+    ///
+    /// THE GAP BYTES GO NOWHERE. The hull lands in `scratch` and only member
+    /// spans are scattered out of it, so nothing between two windows reaches a
+    /// slab, `feed_content`, the geometry gate or the wire.
+    fn copy_run(
+        &mut self,
+        first: usize,
+        end: usize,
+        image_count: usize,
+        first_bit: u8,
+        copy: &mut dyn FnMut(u64, &mut [u8]) -> bool,
+        calls: &Cell<u64>,
+        scratch: &mut Vec<u8>,
+    ) {
+        let Self {
+            starts,
+            lens,
+            offsets,
+            status,
+            slabs,
+            ..
+        } = self;
+        let hull_start = starts[first];
+        let hull_end = starts[end - 1].saturating_add(u64::from(lens[end - 1]));
+        let hull_len = (hull_end - hull_start) as usize;
+        if scratch.len() < hull_len {
+            scratch.resize(hull_len, 0);
+        }
+        for image in 0..image_count {
+            calls.set(calls.get().saturating_add(1));
+            if !copy(hull_start, &mut scratch[..hull_len]) {
+                if image == 0 {
+                    // `copy_window`'s `break`: the run ends, no bit set.
+                    return;
+                }
+                // `copy_window`'s fall-through: this image's bit stays clear
+                // and the next image is taken. No re-read, ever.
+                continue;
+            }
+            let slab = &mut slabs[image];
+            for member in first..end {
+                let at = (starts[member] - hull_start) as usize;
+                let len = lens[member] as usize;
+                let to = offsets[member] as usize;
+                slab[to..to + len].copy_from_slice(&scratch[at..at + len]);
+                status[member] |= first_bit << image;
+            }
+        }
+    }
+
     fn copy_side(
         &mut self,
         image_count: usize,
         first_bit: u8,
         copy: &mut dyn FnMut(u64, &mut [u8]) -> bool,
         calls: &Cell<u64>,
+        policy: MergePolicy,
     ) {
-        for index in 0..self.starts.len() {
-            let start = self.starts[index];
-            let from = self.offsets[index] as usize;
-            let to = from + self.lens[index] as usize;
-            for image in 0..image_count {
-                let slab = &mut self.slabs[image];
-                calls.set(calls.get().saturating_add(1));
-                if copy(start, &mut slab[from..to]) {
-                    self.status[index] |= first_bit << image;
-                } else if image == 0 {
-                    break;
-                }
+        let Some(domain) = policy.domain else {
+            for index in 0..self.starts.len() {
+                self.copy_window(index, image_count, first_bit, copy, calls);
             }
+            return;
+        };
+        // Grows to at most `MERGE_MAX_HULL_BYTES` and is reused by every run of
+        // this store, so a family costs at most one 4 KiB allocation for the
+        // whole side -- and none at all when no run forms.
+        let mut scratch: Vec<u8> = Vec::new();
+        let mut index = 0usize;
+        while index < self.starts.len() {
+            let end = self.run_end(index, domain);
+            if end - index < 2 {
+                self.copy_window(index, image_count, first_bit, copy, calls);
+                index = end;
+                continue;
+            }
+            self.copy_run(
+                index,
+                end,
+                image_count,
+                first_bit,
+                copy,
+                calls,
+                &mut scratch,
+            );
+            index = end;
         }
     }
 
@@ -613,6 +817,25 @@ impl D81VectorCapture {
         self.opening[family as usize].window_count()
     }
 
+    /// How many LIVE windows of `family` are missing the image at `ordinal`.
+    ///
+    /// THE DIRECT FORM OF "every closing window was observed at every image".
+    /// `tests/d81_authoritative.rs` used to infer that from the closing tail's
+    /// CALL COUNT — `tail >= 2 * slot_windows + active_windows` — which was
+    /// sound only while the copy program was one call per window per image.
+    /// Lane RY2 merges adjacent windows into hull reads, so a run of 512 slots
+    /// is two calls rather than 1,024, and the inference no longer holds. The
+    /// property it was after is this one: it is about `status`, not about how
+    /// many calls set it, and asserting it directly is strictly stronger than
+    /// the inequality (which a family of FAILED calls could also satisfy).
+    pub fn windows_missing_image(&self, family: D81Family, ordinal: usize) -> usize {
+        self.opening[family as usize]
+            .status
+            .iter()
+            .filter(|&&status| status & ST_DEAD == 0 && status & (ST_O << ordinal) == 0)
+            .count()
+    }
+
     pub fn closing_window_counts(&self) -> (usize, usize) {
         (
             self.header_close.window_count(),
@@ -936,6 +1159,25 @@ pub trait BulkOpeningRead {
     fn u64_at(&self, addr: u64) -> Option<u64>;
     fn u32_at(&self, addr: u64) -> Option<u32>;
     fn u8_at(&self, addr: u64) -> Option<u8>;
+
+    /// Does the FROZEN BULK SNAPSHOT already hold every byte of
+    /// `[addr, addr + len)` — contiguously, with no void over it, owned by this
+    /// consumer?
+    ///
+    /// The production implementation is `SnapshotView::bytes(..).is_ok()`,
+    /// which copies nothing (it hands back a borrowed slice) and refuses on
+    /// exactly the three conditions that matter here: a void intersecting the
+    /// span, the span not lying inside ONE captured interval, and the interval
+    /// not reaching this consumer.
+    ///
+    /// WHY THE MERGE NEEDS IT, and why the span list alone was not enough
+    /// (Codex r2 finding 3): `roots.bulk_spans` is what the recipe ASKED FOR,
+    /// built unconditionally from the roots. It says nothing about whether
+    /// those bytes were obtained. A span the recipe requested and then narrowed
+    /// to a scoped void is still in that list, and certifying a merge domain
+    /// against it would let a hull read across a hole the frame never proved
+    /// readable. This asks the copy instead of the request.
+    fn covers(&self, addr: u64, len: usize) -> bool;
 }
 
 pub struct D81VectorOffsets {
@@ -958,6 +1200,45 @@ pub struct D81VectorOffsets {
 pub struct D81VectorMemory<'a> {
     pub copy: &'a mut dyn FnMut(u64, &mut [u8]) -> bool,
     pub admit: &'a dyn Fn(u64) -> bool,
+}
+
+/// MAY THIS FAMILY HULL ACROSS THE HOLES IN `span`?
+///
+/// Only when the frame ALREADY reads all of `span`. A hull that crosses a hole
+/// reads bytes no window asked for, and a read of an unmapped page is a fault
+/// this recorder must not take; `bulk_spans` is the list of extents the same
+/// frame's bulk recipe copies wholesale, so a span contained in one of them is
+/// memory this frame has already proved readable.
+///
+/// THE CHECK IS THE GUARANTEE, not the derivation. The three call sites derive
+/// their span from `roots` and the engine offsets, and the derivation could be
+/// wrong -- a stride could change, a count could be the wrong one. Testing the
+/// derived span here means a wrong derivation DISABLES the merge instead of
+/// widening a read.
+///
+/// TWO CONDITIONS, and they answer different questions:
+///
+///  * `bulk_spans` contains the span -- the span is one the RECIPE OWNS, so a
+///    hull over it is reading bytes inside the plan's own territory rather
+///    than somewhere the plan never reasoned about.
+///  * `bulk.covers` -- the frozen snapshot ACTUALLY HOLDS those bytes: no
+///    void, one contiguous captured interval, owned by this consumer. This is
+///    the readability proof, and the first condition cannot supply it because
+///    `bulk_spans` is built from the roots unconditionally and lists what was
+///    requested (Codex r2 finding 3).
+fn merge_domain(
+    span: (u64, u64),
+    bulk_spans: &[(u64, u64)],
+    bulk: &dyn BulkOpeningRead,
+) -> MergePolicy {
+    let owned = span.0 < span.1
+        && bulk_spans
+            .iter()
+            .any(|&(start, end)| start <= span.0 && span.1 <= end);
+    let held = owned && usize::try_from(span.1 - span.0).is_ok_and(|len| bulk.covers(span.0, len));
+    MergePolicy {
+        domain: held.then_some(span),
+    }
 }
 
 pub fn d81_vector_observe(
@@ -1022,7 +1303,13 @@ pub fn d81_vector_observe(
             );
         }
         store.seal();
-        store.copy_side(2, ST_O, memory.copy, &capture.copies);
+        store.copy_side(
+            2,
+            ST_O,
+            memory.copy,
+            &capture.copies,
+            MergePolicy::default(),
+        );
     }
 
     let mut blobs: Vec<(u64, u32)> = Vec::new();
@@ -1068,9 +1355,13 @@ pub fn d81_vector_observe(
                 .push(opening.starts[index], opening.lens[index]);
         }
         capture.header_close.seal();
-        capture
-            .header_close
-            .copy_side(2, ST_O, memory.copy, &capture.copies);
+        capture.header_close.copy_side(
+            2,
+            ST_O,
+            memory.copy,
+            &capture.copies,
+            MergePolicy::default(),
+        );
     }
 
     {
@@ -1079,7 +1370,13 @@ pub fn d81_vector_observe(
             store.push(ptr, len);
         }
         store.seal();
-        store.copy_side(2, ST_O, memory.copy, &capture.copies);
+        store.copy_side(
+            2,
+            ST_O,
+            memory.copy,
+            &capture.copies,
+            MergePolicy::default(),
+        );
     }
 
     let mut map_provinces: Vec<(u32, u64)> = Vec::new();
@@ -1107,7 +1404,13 @@ pub fn d81_vector_observe(
             record.push(map_province + offsets.map_record_ptr_off, 8);
         }
         record.seal();
-        record.copy_side(2, ST_O, memory.copy, &capture.copies);
+        record.copy_side(
+            2,
+            ST_O,
+            memory.copy,
+            &capture.copies,
+            MergePolicy::default(),
+        );
     }
     {
         let anchors = &mut capture.opening[D81Family::MapAnchors as usize];
@@ -1118,7 +1421,13 @@ pub fn d81_vector_observe(
             );
         }
         anchors.seal();
-        anchors.copy_side(2, ST_O, memory.copy, &capture.copies);
+        anchors.copy_side(
+            2,
+            ST_O,
+            memory.copy,
+            &capture.copies,
+            MergePolicy::default(),
+        );
     }
 
     let mut records: Vec<u64> = Vec::new();
@@ -1147,7 +1456,13 @@ pub fn d81_vector_observe(
             store.push(record + offsets.record_key_off, 4);
         }
         store.seal();
-        store.copy_side(2, ST_O, memory.copy, &capture.copies);
+        store.copy_side(
+            2,
+            ST_O,
+            memory.copy,
+            &capture.copies,
+            MergePolicy::default(),
+        );
     }
 
     {
@@ -1158,9 +1473,13 @@ pub fn d81_vector_observe(
                 .push(opening.starts[index], opening.lens[index]);
         }
         capture.record_ptr_close.seal();
-        capture
-            .record_ptr_close
-            .copy_side(2, ST_O, memory.copy, &capture.copies);
+        capture.record_ptr_close.copy_side(
+            2,
+            ST_O,
+            memory.copy,
+            &capture.copies,
+            MergePolicy::default(),
+        );
     }
 
     let mut cprovinces: Vec<u64> = Vec::new();
@@ -1212,10 +1531,66 @@ pub fn d81_vector_observe(
             store.push(pointer, offsets.cprovince_window_len);
         }
         store.seal();
-        store.copy_side(2, ST_O, memory.copy, &capture.copies);
+        store.copy_side(
+            2,
+            ST_O,
+            memory.copy,
+            &capture.copies,
+            MergePolicy::default(),
+        );
     }
 
     capture.closing_tail_start = capture.copies.get();
+
+    // THE THREE MERGING FAMILIES, and the only three.
+    //
+    // Each of these closes against SLOTS OF ONE CONTIGUOUS ENGINE ARRAY --
+    // `source_array[id]`, `map_array[id]`, `active_table[id]` -- rather than
+    // against an offset inside a separately allocated heap object, which is
+    // what the other eight families read. That is the whole difference: 3,508
+    // windows of one array can be one guarded call, 3,508 windows of 3,508
+    // objects cannot.
+    //
+    // Each span is checked against `roots.bulk_spans` by `merge_domain`, so a
+    // wrong derivation here disables the merge rather than widening a read.
+    // `attach_log.rs` puts all three in that list: `span(source_array,
+    // source_count * 8)`, `span(map_array, map_count * 8)` and
+    // `span(active_table, province_slots * D81_ACTIVE_ENTRY_STRIDE)`.
+    let source_slot_merge = merge_domain(
+        (
+            roots.source_array,
+            roots
+                .source_array
+                .saturating_add(u64::from(roots.source_count).saturating_mul(8)),
+        ),
+        &roots.bulk_spans,
+        bulk,
+    );
+    let map_slot_merge = merge_domain(
+        (
+            roots.map_array,
+            roots
+                .map_array
+                .saturating_add(u64::from(roots.map_count).saturating_mul(8)),
+        ),
+        &roots.bulk_spans,
+        bulk,
+    );
+    // The active windows sit at `active_window_off` inside a `active_entry_stride`
+    // entry, and `D81_ACTIVE_WINDOW_OFFSET + D81_ACTIVE_WINDOW_LEN` (0x12 + 7) is
+    // inside `D81_ACTIVE_ENTRY_STRIDE` (0x20), so every window this family pushes
+    // is inside the table extent below.
+    let active_merge = merge_domain(
+        (
+            roots.active_table,
+            roots.active_table.saturating_add(
+                u64::from(roots.rail_slots).saturating_mul(offsets.active_entry_stride),
+            ),
+        ),
+        &roots.bulk_spans,
+        bulk,
+    );
+
     {
         let store = &mut capture.opening[D81Family::SourceSlotClose as usize];
         for &(id, _) in &railed {
@@ -1227,7 +1602,7 @@ pub fn d81_vector_observe(
             store.push(roots.source_array + u64::from(key) * 8, 8);
         }
         store.seal();
-        store.copy_side(2, ST_O, memory.copy, &capture.copies);
+        store.copy_side(2, ST_O, memory.copy, &capture.copies, source_slot_merge);
     }
     {
         let store = &mut capture.opening[D81Family::MapSlotClose as usize];
@@ -1235,7 +1610,7 @@ pub fn d81_vector_observe(
             store.push(roots.map_array + u64::from(id) * 8, 8);
         }
         store.seal();
-        store.copy_side(2, ST_O, memory.copy, &capture.copies);
+        store.copy_side(2, ST_O, memory.copy, &capture.copies, map_slot_merge);
     }
     {
         let store = &mut capture.opening[D81Family::ActiveClose as usize];
@@ -1244,7 +1619,7 @@ pub fn d81_vector_observe(
             store.push(entry + offsets.active_window_off, offsets.active_window_len);
         }
         store.seal();
-        store.copy_side(3, ST_O, memory.copy, &capture.copies);
+        store.copy_side(3, ST_O, memory.copy, &capture.copies, active_merge);
     }
 
     for store in capture
@@ -1333,7 +1708,7 @@ mod shape_tests {
             out.fill(0xAB);
             true
         };
-        store.copy_side(2, ST_O, &mut copy, &calls);
+        store.copy_side(2, ST_O, &mut copy, &calls, MergePolicy::default());
         assert_eq!(order, vec![0x1000, 0x1000, 0x2000, 0x2000]);
         assert_eq!(calls.get(), 4);
     }
@@ -1348,7 +1723,7 @@ mod shape_tests {
         store.seal();
         let calls = Cell::new(0);
         let mut copy = |_addr: u64, _out: &mut [u8]| false;
-        store.copy_side(2, ST_O, &mut copy, &calls);
+        store.copy_side(2, ST_O, &mut copy, &calls, MergePolicy::default());
         assert_eq!(calls.get(), 1);
         assert_eq!(store.status[0], 0);
     }
@@ -1371,7 +1746,7 @@ mod shape_tests {
             }
             ok
         };
-        store.copy_side(2, ST_O, &mut copy, &calls);
+        store.copy_side(2, ST_O, &mut copy, &calls, MergePolicy::default());
         assert_eq!(calls.get(), 2);
         assert_eq!(store.status[0], ST_O);
         let capture = capture_with_store(store);
@@ -1439,7 +1814,7 @@ mod shape_tests {
             out.fill(1);
             true
         };
-        blob.copy_side(2, ST_O, &mut copy, &calls);
+        blob.copy_side(2, ST_O, &mut copy, &calls, MergePolicy::default());
         let mut capture = empty_capture();
         capture.opening[D81Family::PairBlob as usize] = blob;
         assert!(matches!(
@@ -1458,7 +1833,7 @@ mod shape_tests {
             out.fill(2);
             true
         };
-        slots.copy_side(2, ST_O, &mut copy, &calls);
+        slots.copy_side(2, ST_O, &mut copy, &calls, MergePolicy::default());
         let mut capture = empty_capture();
         capture.opening[D81Family::SourceSlotClose as usize] = slots;
         assert_eq!(
@@ -1486,12 +1861,12 @@ mod shape_tests {
         let mut header = FamilyStore::new(family_images(D81Family::RailHeader));
         header.push(0x1000, 16);
         header.seal();
-        header.copy_side(2, ST_O, &mut copy, &calls);
+        header.copy_side(2, ST_O, &mut copy, &calls, MergePolicy::default());
         capture.opening[D81Family::RailHeader as usize] = header;
         let mut record = FamilyStore::new(family_images(D81Family::MapRecordPtr));
         record.push(0x1004, 8);
         record.seal();
-        record.copy_side(2, ST_O, &mut copy, &calls);
+        record.copy_side(2, ST_O, &mut copy, &calls, MergePolicy::default());
         capture.opening[D81Family::MapRecordPtr as usize] = record;
         assert_eq!(
             capture.read(0x1004, 8, VectorImage::Opening),
@@ -1518,7 +1893,7 @@ mod shape_tests {
         let mut record = FamilyStore::new(family_images(D81Family::MapRecordPtr));
         record.push(0x2000, 8);
         record.seal();
-        record.copy_side(2, ST_O, &mut copy, &calls);
+        record.copy_side(2, ST_O, &mut copy, &calls, MergePolicy::default());
         assert_eq!(record.retire_intersecting(&[(0x1FFC, 0x2010)]), 1);
         capture.opening[D81Family::MapRecordPtr as usize] = record;
         let mut slots = FamilyStore::new(family_images(D81Family::SourceSlotClose));
@@ -1528,7 +1903,7 @@ mod shape_tests {
             out.fill(3);
             true
         };
-        slots.copy_side(2, ST_O, &mut copy2, &calls);
+        slots.copy_side(2, ST_O, &mut copy2, &calls, MergePolicy::default());
         capture.opening[D81Family::SourceSlotClose as usize] = slots;
         for image in [
             VectorImage::Opening,
@@ -1571,12 +1946,12 @@ mod shape_tests {
         let mut record = FamilyStore::new(family_images(D81Family::MapRecordPtr));
         record.push(0x2000, 8);
         record.seal();
-        record.copy_side(2, ST_O, &mut fill, &calls);
+        record.copy_side(2, ST_O, &mut fill, &calls, MergePolicy::default());
         aliased.opening[D81Family::MapRecordPtr as usize] = record;
         let mut anchors = FamilyStore::new(family_images(D81Family::MapAnchors));
         anchors.push(0x2000, 8);
         anchors.seal();
-        anchors.copy_side(2, ST_O, &mut fill, &calls);
+        anchors.copy_side(2, ST_O, &mut fill, &calls, MergePolicy::default());
         aliased.opening[D81Family::MapAnchors as usize] = anchors;
 
         // ONE family over one span, with its closing store at the same
@@ -1585,7 +1960,7 @@ mod shape_tests {
         let mut header = FamilyStore::new(family_images(D81Family::RailHeader));
         header.push(0x3000, 16);
         header.seal();
-        header.copy_side(2, ST_O, &mut fill, &calls);
+        header.copy_side(2, ST_O, &mut fill, &calls, MergePolicy::default());
         paired.opening[D81Family::RailHeader as usize] = header;
         let mut header_close = FamilyStore::new(FamilyImages {
             opening: 2,
@@ -1593,7 +1968,7 @@ mod shape_tests {
         });
         header_close.push(0x3000, 16);
         header_close.seal();
-        header_close.copy_side(2, ST_O, &mut fill, &calls);
+        header_close.copy_side(2, ST_O, &mut fill, &calls, MergePolicy::default());
         paired.header_close = header_close;
 
         let probes = [
@@ -1699,7 +2074,7 @@ mod shape_tests {
         let mut record = FamilyStore::new(family_images(D81Family::MapRecordPtr));
         record.push(0x2000, 8);
         record.seal();
-        record.copy_side(2, ST_O, &mut copy, &calls);
+        record.copy_side(2, ST_O, &mut copy, &calls, MergePolicy::default());
         capture.opening[D81Family::MapRecordPtr as usize] = record;
         assert!(matches!(
             capture.read(0x2000, 8, VectorImage::Opening),
@@ -1730,7 +2105,7 @@ mod shape_tests {
             blob.push(0x1010 + k * 8, 8);
         }
         blob.seal();
-        blob.copy_side(2, ST_O, &mut copy, &calls);
+        blob.copy_side(2, ST_O, &mut copy, &calls, MergePolicy::default());
         capture.opening[D81Family::PairBlob as usize] = blob;
         assert!(matches!(
             capture.read(0x1100, 8, VectorImage::Opening),
@@ -1739,7 +2114,7 @@ mod shape_tests {
         let mut anchors = FamilyStore::new(family_images(D81Family::MapAnchors));
         anchors.push(0x1100, 24);
         anchors.seal();
-        anchors.copy_side(2, ST_O, &mut copy, &calls);
+        anchors.copy_side(2, ST_O, &mut copy, &calls, MergePolicy::default());
         let mut capture2 = empty_capture();
         capture2.opening[D81Family::PairBlob as usize] = std::mem::replace(
             &mut capture.opening[D81Family::PairBlob as usize],
@@ -1796,7 +2171,13 @@ mod shape_tests {
                 }
                 true
             };
-            store.copy_side(images[store_id], ST_O, &mut copy, &calls);
+            store.copy_side(
+                images[store_id],
+                ST_O,
+                &mut copy,
+                &calls,
+                MergePolicy::default(),
+            );
             let mut spans = Vec::new();
             for index in (0..store.starts.len()).step_by(17) {
                 spans.push((store.starts[index], store.starts[index] + 1));
@@ -2007,6 +2388,12 @@ mod shape_tests {
                 let offset = addr.checked_sub(self.base)? as usize;
                 self.world.get(offset).copied()
             }
+            fn covers(&self, addr: u64, len: usize) -> bool {
+                addr.checked_sub(self.base)
+                    .and_then(|offset| usize::try_from(offset).ok())
+                    .and_then(|offset| offset.checked_add(len))
+                    .is_some_and(|end| end <= self.world.len())
+            }
         }
 
         let mut log: Vec<u64> = Vec::new();
@@ -2055,5 +2442,621 @@ mod shape_tests {
             capture.read(blob_a, 8, VectorImage::Closing),
             VectorAnswer::NeverObserved
         ));
+    }
+    // ==============================================================
+    // THE COPY-WINDOW MERGE (lane RY2)
+    //
+    // Every test below compares the merged copy program against the
+    // UNMERGED one on the same fixture and the same closure. That is the
+    // shape the proof needs: the merge is only allowed to change how many
+    // guarded calls are issued, never a byte of a slab and never a bit of
+    // `status`.
+    // ==============================================================
+
+    const SLOT_BASE: u64 = 0x40_0000;
+    const WORLD_LEN: usize = 0x4000;
+
+    /// A world whose every byte is derived from its own ADDRESS, so a byte
+    /// that came from the wrong place is identifiable rather than merely
+    /// wrong. A constant fill would let a scatter that copied the hull into
+    /// the slab pass.
+    fn addressed_world() -> Vec<u8> {
+        (0..WORLD_LEN)
+            .map(|off| (off as u64).wrapping_mul(31).wrapping_add(7) as u8)
+            .collect()
+    }
+
+    /// Ids carrying all three run shapes in one fixture:
+    ///  * `0..300` -- one long consecutive run, the case the lane exists for
+    ///  * `308..311` -- a 64-byte hole, inside [`MERGE_MAX_GAP`], so the run
+    ///    continues across it
+    ///  * `900..902` -- a 4,712-byte hole, far outside the allowance, so the
+    ///    run breaks and a second one starts
+    fn slot_ids() -> Vec<u32> {
+        let mut ids: Vec<u32> = (0..300).collect();
+        ids.extend([308, 309, 310]);
+        ids.extend([900, 901]);
+        ids
+    }
+
+    fn slot_store(ids: &[u32]) -> FamilyStore {
+        let mut store = FamilyStore::new(family_images(D81Family::SourceSlotClose));
+        for &id in ids {
+            store.push(SLOT_BASE + u64::from(id) * 8, 8);
+        }
+        store.seal();
+        store
+    }
+
+    /// A bulk reader that certifies `[SLOT_BASE, SLOT_BASE + held)` and
+    /// nothing else -- the fixture's stand-in for the frozen snapshot.
+    struct HeldBulk {
+        held: usize,
+    }
+
+    impl BulkOpeningRead for HeldBulk {
+        fn u64_at(&self, _addr: u64) -> Option<u64> {
+            None
+        }
+        fn u32_at(&self, _addr: u64) -> Option<u32> {
+            None
+        }
+        fn u8_at(&self, _addr: u64) -> Option<u8> {
+            None
+        }
+        fn covers(&self, addr: u64, len: usize) -> bool {
+            addr.checked_sub(SLOT_BASE)
+                .and_then(|offset| usize::try_from(offset).ok())
+                .and_then(|offset| offset.checked_add(len))
+                .is_some_and(|end| end <= self.held)
+        }
+    }
+
+    /// The policy the three production families get: a span the recipe owns
+    /// AND that the frozen snapshot actually holds -- exactly the two
+    /// conditions `d81_vector_observe` puts on it.
+    fn slot_policy() -> MergePolicy {
+        merge_domain(
+            (SLOT_BASE, SLOT_BASE + 1000 * 8),
+            &[(SLOT_BASE, SLOT_BASE + WORLD_LEN as u64)],
+            &HeldBulk { held: WORLD_LEN },
+        )
+    }
+
+    /// Run one store's side and return the guarded calls it issued, as
+    /// `(addr, len)` in order.
+    fn run_side(
+        store: &mut FamilyStore,
+        images: usize,
+        policy: MergePolicy,
+        world: &[u8],
+        mut refuse: impl FnMut(u64, usize) -> bool,
+    ) -> Vec<(u64, usize)> {
+        let mut log: Vec<(u64, usize)> = Vec::new();
+        let calls = Cell::new(0);
+        {
+            let mut inner = copy_from(world, SLOT_BASE);
+            let mut copy = |addr: u64, out: &mut [u8]| {
+                log.push((addr, out.len()));
+                if refuse(addr, out.len()) {
+                    return false;
+                }
+                inner(addr, out)
+            };
+            store.copy_side(images, ST_O, &mut copy, &calls, policy);
+        }
+        assert_eq!(
+            calls.get() as usize,
+            log.len(),
+            "every guarded call must be counted exactly once",
+        );
+        log
+    }
+
+    fn assert_same_capture_state(merged: &FamilyStore, plain: &FamilyStore, what: &str) {
+        assert_eq!(merged.starts, plain.starts, "{what}: starts moved");
+        assert_eq!(merged.lens, plain.lens, "{what}: lens moved");
+        assert_eq!(merged.offsets, plain.offsets, "{what}: offsets moved");
+        assert_eq!(merged.status, plain.status, "{what}: status differs");
+        for image in 0..3 {
+            assert_eq!(
+                merged.slabs[image], plain.slabs[image],
+                "{what}: slab {image} differs",
+            );
+        }
+    }
+
+    /// THE BYTE-IDENTITY PROOF. Same fixture, same closure, policy on and off.
+    ///
+    /// kills: any error in the scatter's source or destination offset, any
+    /// status bit the hull path sets or misses, any slab byte it places
+    /// wrongly. All four of `seal`'s outputs are compared too, because the
+    /// whole safety argument for `Aliased` and `retire_intersecting` is that
+    /// they do not move.
+    #[test]
+    fn merged_and_unmerged_copy_programs_agree_byte_for_byte() {
+        let world = addressed_world();
+        let ids = slot_ids();
+
+        let mut plain = slot_store(&ids);
+        let plain_log = run_side(&mut plain, 2, MergePolicy::default(), &world, |_, _| false);
+
+        let mut merged = slot_store(&ids);
+        let merged_log = run_side(&mut merged, 2, slot_policy(), &world, |_, _| false);
+
+        assert_same_capture_state(&merged, &plain, "clean merge");
+
+        // NOT VACUOUS: the fixture must actually merge, or this test proves
+        // only that two identical programs agree.
+        assert_eq!(
+            plain_log.len(),
+            ids.len() * 2,
+            "the unmerged program is one call per window per image",
+        );
+        assert_eq!(
+            merged_log.len(),
+            4,
+            "two runs at two images: ids 0..300 and 308..311 hull into one run \
+             across their 64-byte hole, ids 900..902 into a second, so the \
+             610-call program becomes four calls",
+        );
+
+        // And the served bytes are the world's, at every window.
+        let capture = capture_with_slots(merged);
+        for &id in &ids {
+            let addr = SLOT_BASE + u64::from(id) * 8;
+            let at = (addr - SLOT_BASE) as usize;
+            for image in [VectorImage::Closing, VectorImage::ClosingSample(1)] {
+                assert_eq!(
+                    capture.read(addr, 8, image),
+                    VectorAnswer::Served(&world[at..at + 8]),
+                    "slot {id} at {image:?} must serve the world's own bytes",
+                );
+            }
+        }
+    }
+
+    fn capture_with_slots(store: FamilyStore) -> D81VectorCapture {
+        let mut capture = empty_capture();
+        capture.opening[D81Family::SourceSlotClose as usize] = store;
+        capture
+    }
+
+    /// HAZARD 1 -- failure semantics, and THE ABSENCE OF A FALLBACK.
+    ///
+    /// A declining hull ends its run exactly as a declining window ends itself
+    /// in `copy_window`: image 0 sets no bit and stops, and no narrower read is
+    /// attempted. The run is one oversized window and nothing more.
+    ///
+    /// kills: any re-read after a guarded decline. Both earlier forms of this
+    /// lane had one -- on every image, then on image 0 only -- and both HEAL a
+    /// one-shot refusal into data the unmerged program would have refused
+    /// (Codex r1 finding 1, r2 finding 1).
+    #[test]
+    fn a_declining_hull_ends_its_run_and_no_narrower_read_is_attempted() {
+        let world = addressed_world();
+        let ids = slot_ids();
+
+        // Every hull declines; every individual window would have succeeded.
+        let mut merged = slot_store(&ids);
+        let merged_log = run_side(&mut merged, 2, slot_policy(), &world, |_, len| len > 8);
+
+        assert_eq!(
+            merged_log.len(),
+            2,
+            "two runs, one declined image-0 hull each, and NOTHING else: any \
+             further call is the re-read that manufactures data",
+        );
+        for &(_, len) in &merged_log {
+            assert!(len > 8, "only hulls were attempted");
+        }
+        assert!(
+            merged.status.iter().all(|&status| status == 0),
+            "a run whose image 0 declined carries no image at all",
+        );
+        assert!(
+            merged.slabs[0].iter().all(|&byte| byte == 0),
+            "and wrote no slab byte",
+        );
+
+        // NOT VACUOUS: the same windows read individually all succeed, so the
+        // zeroes above are the hull declining and not an unreadable fixture.
+        let mut plain = slot_store(&ids);
+        run_side(&mut plain, 2, MergePolicy::default(), &world, |_, _| false);
+        assert!(
+            plain.status.iter().all(|&status| status == (ST_O | ST_S1)),
+            "every window of this fixture IS individually readable",
+        );
+    }
+
+    /// HAZARD 1, the later-image case, and the finding that shaped it.
+    ///
+    /// Codex r1 finding 1: an earlier form of the fallback cleared the run and
+    /// redid it from image 0 whenever ANY hull image declined. Against a
+    /// one-shot refusal -- the engine declining a single read, which is what
+    /// `tests/d81_authoritative.rs`'s `RefusingAtMemory` stages and what a
+    /// decommitted page does in production -- that re-read SUCCEEDS and the
+    /// refusal is healed. An absent image becomes a present one, and the frame
+    /// seals data the unmerged program would have refused.
+    ///
+    /// kills: any fallback that re-reads a span the guarded read declined.
+    #[test]
+    fn a_one_shot_refusal_of_a_later_hull_image_is_not_healed_by_a_retry() {
+        let world = addressed_world();
+        let ids: Vec<u32> = (0..8).collect();
+
+        let mut refusals = 0usize;
+        let mut merged = slot_store(&ids);
+        let log = run_side(&mut merged, 2, slot_policy(), &world, |_, len| {
+            // Refuse exactly ONCE, at the second hull call -- the run's image 1.
+            if len > 8 {
+                refusals += 1;
+                return refusals == 2;
+            }
+            false
+        });
+
+        assert_eq!(refusals, 2, "the fixture must reach the second hull image");
+        assert_eq!(
+            log.len(),
+            2,
+            "two hull calls and NOTHING else: a third call is the retry that \
+             would heal the refusal",
+        );
+        for (index, &status) in merged.status.iter().enumerate() {
+            assert_eq!(
+                status, ST_O,
+                "window {index} must carry image 0 and NOT image 1: the engine \
+                 refused image 1 and a refusal is not re-asked",
+            );
+        }
+        // Image 0's bytes are the world's; image 1's slab was never written.
+        assert_eq!(merged.slabs[0], world[..ids.len() * 8]);
+        assert_eq!(merged.slabs[1], vec![0u8; ids.len() * 8]);
+
+        // And the refusal is visible to a reader as an ABSENT SAMPLE, which is
+        // exactly what the unmerged program produces for a window whose later
+        // image the engine declined.
+        let capture = capture_with_slots(merged);
+        assert_eq!(
+            capture.read(SLOT_BASE, 8, VectorImage::ClosingSample(1)),
+            VectorAnswer::SampleAbsent,
+        );
+        assert!(matches!(
+            capture.read(SLOT_BASE, 8, VectorImage::Closing),
+            VectorAnswer::Served(_)
+        ));
+    }
+
+    /// The image-0 half of the same contract, against a ONE-SHOT refusal --
+    /// the shape a re-read would silently repair.
+    ///
+    /// kills: a `copy_run` that retries after image 0 declines. Under a
+    /// transient fault the retry succeeds and the run comes back fully
+    /// present, where the unmerged program would have left the faulting window
+    /// unreadable. A fault is indexed by WHEN a call happens, not by WHAT it
+    /// asks for, so no argument about which span was asked makes the retry
+    /// safe.
+    #[test]
+    fn a_one_shot_refusal_of_the_image_0_hull_is_not_repaired_by_a_retry() {
+        let world = addressed_world();
+        let ids: Vec<u32> = (0..8).collect();
+
+        let mut refusals = 0usize;
+        let mut merged = slot_store(&ids);
+        let log = run_side(&mut merged, 2, slot_policy(), &world, |_, len| {
+            if len > 8 {
+                refusals += 1;
+                return refusals == 1;
+            }
+            false
+        });
+
+        assert_eq!(refusals, 1, "exactly one hull call was refused");
+        assert_eq!(
+            log.len(),
+            1,
+            "one declined image-0 hull and NOTHING else: a second call is the \
+             retry, and it would succeed",
+        );
+        assert!(
+            merged.status.iter().all(|&status| status == 0),
+            "the run carries no image",
+        );
+    }
+
+    /// kills: a scatter that copies the hull into the slab, or that reads the
+    /// hull at the member's PACKED offset instead of its address offset. Both
+    /// would put a gap byte where a member byte belongs.
+    #[test]
+    fn gap_bytes_never_reach_a_slab() {
+        let world = addressed_world();
+        // Two windows with a 56-byte hole between them, inside the allowance.
+        let ids = vec![0u32, 8];
+        let mut store = slot_store(&ids);
+        let log = run_side(&mut store, 2, slot_policy(), &world, |_, _| false);
+
+        assert_eq!(log, vec![(SLOT_BASE, 72), (SLOT_BASE, 72)]);
+        // The slab is 16 bytes for two 8-byte windows -- the hole is not in it.
+        assert_eq!(store.slabs[0].len(), 16);
+        let mut want = Vec::new();
+        want.extend_from_slice(&world[0..8]);
+        want.extend_from_slice(&world[64..72]);
+        assert_eq!(store.slabs[0], want, "slab 0 holds the two members only");
+        assert_eq!(store.slabs[1], want, "slab 1 holds the two members only");
+        assert!(
+            world[8..64].iter().any(|&byte| !want.contains(&byte)),
+            "the fixture's hole must carry bytes the members do not, or this \
+             test cannot tell a gap byte from a member byte",
+        );
+    }
+
+    /// HAZARD 3's sibling -- the read-widening guard.
+    ///
+    /// kills: a run that hulls past the end of the array it was certified
+    /// against, which is a read of memory the frame never proved readable.
+    #[test]
+    fn no_copy_call_leaves_the_certified_domain() {
+        let world = addressed_world();
+        // Ids that reach the domain's last slot, so a run ending exactly at
+        // the boundary is exercised rather than avoided.
+        let ids: Vec<u32> = (995..1000).collect();
+        let policy = slot_policy();
+        let (domain_start, domain_end) = policy.domain.expect("the fixture certifies a domain");
+        let mut store = slot_store(&ids);
+        let log = run_side(&mut store, 2, policy, &world, |_, _| false);
+
+        assert!(!log.is_empty());
+        for &(addr, len) in &log {
+            assert!(
+                addr >= domain_start && addr.saturating_add(len as u64) <= domain_end,
+                "a guarded call for {addr:#x}+{len} left the certified domain \
+                 {domain_start:#x}..{domain_end:#x}",
+            );
+        }
+        assert_eq!(
+            log.len(),
+            2,
+            "the five slots must still have merged, or the boundary check is \
+             passing by refusing to merge at all",
+        );
+    }
+
+    /// HAZARD 3 -- the tear bound.
+    ///
+    /// kills: a run allowed to grow without limit, which widens the interval
+    /// `u64_stable_at` judges between a window's two images.
+    #[test]
+    fn no_copy_call_exceeds_the_hull_cap() {
+        let world = addressed_world();
+        let ids: Vec<u32> = (0..1000).collect();
+        let mut store = slot_store(&ids);
+        let log = run_side(&mut store, 2, slot_policy(), &world, |_, _| false);
+
+        for &(_, len) in &log {
+            assert!(
+                len <= MERGE_MAX_HULL_BYTES,
+                "a guarded call asked for {len} bytes against a cap of \
+                 {MERGE_MAX_HULL_BYTES}",
+            );
+        }
+        // 1,000 slots of 8 bytes is 8,000 bytes, so the cap must have split
+        // them into more than one run per image.
+        assert_eq!(
+            log.len(),
+            2 * 2,
+            "8,000 bytes at a 4,096-byte cap is two runs, taken at two images",
+        );
+
+        let mut plain = slot_store(&ids);
+        run_side(&mut plain, 2, MergePolicy::default(), &world, |_, _| false);
+        assert_same_capture_state(&store, &plain, "capped runs");
+    }
+
+    /// kills: a gap allowance that swallows an arbitrarily sparse stretch,
+    /// which would read a page to collect two slots.
+    #[test]
+    fn a_hole_wider_than_the_allowance_breaks_the_run() {
+        let world = addressed_world();
+        // MERGE_MAX_GAP is 128 bytes: id 17 is 128 bytes past id 0's end and
+        // merges; id 18 is 136 and does not.
+        for (id, runs) in [(17u32, 1usize), (18, 2)] {
+            let ids = vec![0u32, id];
+            let mut store = slot_store(&ids);
+            let log = run_side(&mut store, 2, slot_policy(), &world, |_, _| false);
+            assert_eq!(
+                log.len(),
+                runs * 2,
+                "slots 0 and {id} must form {runs} run(s) at a {MERGE_MAX_GAP}-byte allowance",
+            );
+            let mut plain = slot_store(&ids);
+            run_side(&mut plain, 2, MergePolicy::default(), &world, |_, _| false);
+            assert_same_capture_state(&store, &plain, "gap allowance");
+        }
+    }
+
+    /// THE OPT-IN. kills: a merge that leaks onto the eight heap-scattered
+    /// families, whose windows are offsets inside separately allocated
+    /// objects and whose adjacency is not a fact this lane can prove.
+    #[test]
+    fn a_family_without_a_certified_domain_is_not_merged() {
+        let world = addressed_world();
+        let ids = slot_ids();
+
+        // The same span, certified against a bulk list that does not contain
+        // it, is no policy at all.
+        let uncertified = merge_domain(
+            (SLOT_BASE, SLOT_BASE + 1000 * 8),
+            &[(SLOT_BASE + 0x1000, SLOT_BASE + 0x2000)],
+            &HeldBulk { held: WORLD_LEN },
+        );
+        assert_eq!(uncertified.domain, None);
+
+        let mut store = slot_store(&ids);
+        let log = run_side(&mut store, 2, uncertified, &world, |_, _| false);
+        assert_eq!(
+            log.len(),
+            ids.len() * 2,
+            "an uncertified family must issue today's program exactly",
+        );
+        for &(_, len) in &log {
+            assert_eq!(len, 8, "and every call must be one window wide");
+        }
+    }
+
+    /// kills: the section-3 guard being dropped, which is the one check
+    /// standing between a gap-spanning hull and a read of memory the frame
+    /// never proved readable.
+    #[test]
+    fn the_merge_domain_must_be_contained_by_a_span_the_frame_already_copies() {
+        let span = (SLOT_BASE + 0x1000, SLOT_BASE + 0x2000);
+        let holding = HeldBulk { held: 0x4000 };
+        let cases: [(&str, Vec<(u64, u64)>, bool); 6] = [
+            ("exactly the span", vec![span], true),
+            (
+                "a strictly larger span",
+                vec![(SLOT_BASE + 0x800, SLOT_BASE + 0x2800)],
+                true,
+            ),
+            ("no spans at all", vec![], false),
+            (
+                "overlapping the head only",
+                vec![(SLOT_BASE + 0x800, SLOT_BASE + 0x1800)],
+                false,
+            ),
+            (
+                "overlapping the tail only",
+                vec![(SLOT_BASE + 0x1800, SLOT_BASE + 0x2800)],
+                false,
+            ),
+            (
+                "two spans that cover it only together",
+                vec![
+                    (SLOT_BASE + 0x1000, SLOT_BASE + 0x1800),
+                    (SLOT_BASE + 0x1800, SLOT_BASE + 0x2000),
+                ],
+                false,
+            ),
+        ];
+        for (what, spans, want) in cases {
+            assert_eq!(
+                merge_domain(span, &spans, &holding).domain.is_some(),
+                want,
+                "{what}",
+            );
+        }
+        assert_eq!(
+            merge_domain(
+                (SLOT_BASE + 0x1000, SLOT_BASE + 0x1000),
+                &[(0, u64::MAX)],
+                &holding
+            )
+            .domain,
+            None,
+            "an empty span certifies nothing",
+        );
+    }
+
+    /// THE SECOND CONDITION ALONE (Codex r2 finding 3).
+    ///
+    /// `roots.bulk_spans` is what the recipe ASKED FOR, built unconditionally
+    /// from the roots. A span it lists but the snapshot does not hold -- one
+    /// narrowed to a scoped void, or never captured -- must not certify a
+    /// merge, because a hull over it would read across a hole the frame never
+    /// proved readable.
+    ///
+    /// kills: dropping the `bulk.covers` half of `merge_domain` and trusting
+    /// the span list, which no geometry test can catch.
+    #[test]
+    fn a_span_the_recipe_asked_for_but_did_not_get_certifies_nothing() {
+        let span = (SLOT_BASE, SLOT_BASE + 0x2000);
+        // The recipe owns it either way; only the snapshot's answer differs.
+        let owned = [(SLOT_BASE, SLOT_BASE + 0x4000)];
+
+        assert!(
+            merge_domain(span, &owned, &HeldBulk { held: 0x2000 })
+                .domain
+                .is_some(),
+            "the snapshot holds the whole span, so it certifies",
+        );
+        assert_eq!(
+            merge_domain(span, &owned, &HeldBulk { held: 0x1FFF }).domain,
+            None,
+            "one byte short is not held, and a partially held span must not \
+             certify a merge",
+        );
+        assert_eq!(
+            merge_domain(span, &owned, &HeldBulk { held: 0 }).domain,
+            None,
+            "a span the snapshot does not hold at all certifies nothing",
+        );
+    }
+
+    /// The active family's windows sit INSIDE a strided entry rather than
+    /// filling it, so its runs cross a hole on every step. kills: a run
+    /// builder that only ever merges exactly-adjacent windows, which would
+    /// leave d81's largest closing family on today's program.
+    #[test]
+    fn the_strided_active_family_merges_across_its_intra_entry_holes() {
+        let world = addressed_world();
+        let stride = 0x20u64;
+        let window_off = 0x12u64;
+        let window_len = 7u32;
+        let table = SLOT_BASE;
+        let mut store = FamilyStore::new(family_images(D81Family::ActiveClose));
+        for id in 0..64u64 {
+            store.push(table + id * stride + window_off, window_len);
+        }
+        store.seal();
+        let policy = merge_domain(
+            (table, table + 64 * stride),
+            &[(table, table + WORLD_LEN as u64)],
+            &HeldBulk { held: WORLD_LEN },
+        );
+        let log = run_side(&mut store, 3, policy, &world, |_, _| false);
+        assert_eq!(
+            log.len(),
+            3,
+            "64 entries at stride 0x20 span 2,048 bytes, inside the hull cap, \
+             and each 25-byte hole is inside the gap allowance: one run at \
+             three images",
+        );
+
+        let mut plain = FamilyStore::new(family_images(D81Family::ActiveClose));
+        for id in 0..64u64 {
+            plain.push(table + id * stride + window_off, window_len);
+        }
+        plain.seal();
+        run_side(&mut plain, 3, MergePolicy::default(), &world, |_, _| false);
+        assert_same_capture_state(&store, &plain, "strided family");
+    }
+
+    /// kills: a run builder that merges windows sharing a start, or
+    /// overlapping ones, either of which would stop the run being a partition
+    /// of the packed slab.
+    #[test]
+    fn duplicate_starts_and_overlaps_break_the_run() {
+        let world = addressed_world();
+        let mut store = FamilyStore::new(family_images(D81Family::SourceSlotClose));
+        store.push(SLOT_BASE, 8);
+        store.push(SLOT_BASE, 16); // same start, longer -- not adjacent
+        store.push(SLOT_BASE + 8, 8); // overlaps the 16-byte window
+        store.seal();
+        assert_eq!(store.starts.len(), 3, "seal keeps all three");
+
+        let log = run_side(&mut store, 2, slot_policy(), &world, |_, _| false);
+        assert_eq!(
+            log.len(),
+            6,
+            "three windows at two images, none of them merged",
+        );
+
+        let mut plain = FamilyStore::new(family_images(D81Family::SourceSlotClose));
+        plain.push(SLOT_BASE, 8);
+        plain.push(SLOT_BASE, 16);
+        plain.push(SLOT_BASE + 8, 8);
+        plain.seal();
+        run_side(&mut plain, 2, MergePolicy::default(), &world, |_, _| false);
+        assert_same_capture_state(&store, &plain, "duplicate and overlap");
     }
 }

@@ -1594,19 +1594,78 @@ fn the_rail_header_closes_against_its_own_closing_image() {
     {
         use crate::attach_log::d81_vector_store::D81Family;
         let vector = closed.vector.as_ref().expect("the pipeline ran");
+        // EVERY CLOSING WINDOW AT EVERY IMAGE.
+        //
+        // This used to be inferred from the closing tail's CALL COUNT --
+        // `tail >= 2 * slot_windows + active_windows` -- which held only while
+        // the copy program was one call per window per image. Lane RY2 merges a
+        // family's adjacent windows into hull reads, so a run of 512 slots is
+        // two calls rather than 1,024 and the arithmetic no longer describes
+        // the program. The property the inequality was after is asserted
+        // directly instead, off `status`, which is strictly stronger: a family
+        // of FAILED calls could satisfy the old count and cannot satisfy this.
+        for (family, images) in [
+            (D81Family::SourceSlotClose, 2usize),
+            (D81Family::MapSlotClose, 2),
+            (D81Family::ActiveClose, 3),
+        ] {
+            assert!(
+                vector.family_window_count(family) > 0,
+                "{family:?} staged no windows, so the image check is vacuous",
+            );
+            for ordinal in 0..images {
+                assert_eq!(
+                    vector.windows_missing_image(family, ordinal),
+                    0,
+                    "{family:?} has windows without image {ordinal}: a closing \
+                     pair has gone back to a single image",
+                );
+            }
+        }
         let tail = vector
             .copies
             .get()
             .saturating_sub(vector.closing_tail_start);
-        let slot_windows = (vector.family_window_count(D81Family::SourceSlotClose)
-            + vector.family_window_count(D81Family::MapSlotClose))
-            as u64;
-        let active_windows = vector.family_window_count(D81Family::ActiveClose) as u64;
+        assert!(tail > 0, "the closing tail issued no copies at all");
+
+        // WHERE THE STAMP SITS, and why this is worth an assertion of its own
+        // (Codex r4, non-blocking).
+        //
+        // `closing_tail_start` is a COPY-CALL ORDINAL and it is FED into
+        // `D81VectorCapture::feed_content`, so it is part of what the
+        // unchanged-geometry gate digests. Lane RY2's byte-identity argument
+        // rests on it not moving: the stamp is taken BEFORE the three families
+        // whose copy program the lane changed, so merging cannot shift it and
+        // the gate compares equal across the change. Nothing above tests that
+        // -- the image checks would pass just as well with the stamp moved
+        // between the merged families, while the digest changed underneath.
+        //
+        // Stated as an equality on the EIGHT families the lane does not touch.
+        // Each takes two images at one call per window, so in a capture with
+        // no defect the ordinal at the stamp is exactly twice their windows.
         assert!(
-            tail >= 2 * slot_windows + active_windows,
-            "the closing tail issued {tail} copies against {slot_windows} slot \
-             windows and {active_windows} active windows: a closing pair has \
-             gone back to a single image",
+            vector.is_defect_free(),
+            "the equality below counts one call per window per image, which \
+             only holds when nothing was rejected, void or retired",
+        );
+        let unmerged_windows: usize = [
+            D81Family::RailHeader,
+            D81Family::PairBlob,
+            D81Family::MapRecordPtr,
+            D81Family::MapAnchors,
+            D81Family::RecordKey,
+            D81Family::SourceProvince,
+        ]
+        .into_iter()
+        .map(|family| vector.family_window_count(family))
+        .sum();
+        let (header_close, record_ptr_close) = vector.closing_window_counts();
+        assert_eq!(
+            vector.closing_tail_start,
+            2 * (unmerged_windows + header_close + record_ptr_close) as u64,
+            "closing_tail_start must be stamped after the eight families whose \
+             copy program is unchanged and BEFORE the three merged ones, or a \
+             fed value moves and the geometry gate stops comparing equal",
         );
     }
     drop(closed);
@@ -2154,7 +2213,9 @@ fn the_topology_index_answers_exactly_what_the_two_folded_trees_answered() {
         })
         .collect();
     assert!(
-        provinces.windows(2).all(|pair| pair[0].province_id < pair[1].province_id),
+        provinces
+            .windows(2)
+            .all(|pair| pair[0].province_id < pair[1].province_id),
         "the fixture must hold the ordering the accessors' proof rests on",
     );
 

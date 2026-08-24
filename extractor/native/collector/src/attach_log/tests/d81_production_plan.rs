@@ -647,11 +647,89 @@ fn the_shipped_plans_province_tables_are_a_fixed_number_of_transactions() {
         .iter()
         .filter(|province| voided(**province))
         .count();
+
+    // EVERY DEMANDED IMAGE WAS ATTEMPTED — asserted on `status`, not on a call
+    // count (lane RY2).
+    //
+    // This replaces `copies >= window_images - 2 * voided_railed`, which said
+    // the same thing by counting guarded calls. That inference held only while
+    // the copy program WAS one call per window per image. `FamilyStore` now
+    // merges the three families whose windows are slots of one contiguous
+    // engine array, and in THIS world the two slot families are 170 windows at
+    // stride 24 spanning 4,088 bytes — inside the 128-byte gap allowance and
+    // inside one 4,096-byte hull — so each collapses to ONE run: 680 guarded
+    // calls become 4, and the old floor stopped describing the program.
+    //
+    // The property it was after is this one, and asserting it directly is
+    // strictly STRONGER: a family whose calls were all issued and all FAILED
+    // satisfied the old count, and cannot satisfy this.
+    //
+    // WHAT WOULD MAKE THIS FAIL: a scatter that skips a member, a `run_end`
+    // that walks past a window without covering it, a family losing an image,
+    // or a run abandoning an image it did obtain — every real form of the skip
+    // the old assertion was watching for.
+    for (family, images) in [
+        (D81Family::RailHeader, 2usize),
+        (D81Family::PairBlob, 2),
+        (D81Family::MapRecordPtr, 2),
+        (D81Family::MapAnchors, 2),
+        (D81Family::RecordKey, 2),
+        (D81Family::SourceProvince, 2),
+        (D81Family::SourceSlotClose, 2),
+        (D81Family::MapSlotClose, 2),
+        (D81Family::ActiveClose, 3),
+    ] {
+        // The voided page is in the ACTIVE table, so its entries are the only
+        // windows a void curtails here; the rail, source and map arrays are
+        // asserted spanned-whole below.
+        let curtailed = if family == D81Family::ActiveClose {
+            voided_railed
+        } else {
+            0
+        };
+        for ordinal in 0..images {
+            assert_eq!(
+                vector.windows_missing_image(family, ordinal),
+                curtailed,
+                "family {family:?} must have attempted image {ordinal} for \
+                 every window it holds, bar the {curtailed} the voided page \
+                 curtails",
+            );
+        }
+    }
+
+    // AND THE COUNTER IS STILL LIVE, on the six families no merge can touch.
+    // None of them is given a `MergePolicy` — their windows are offsets inside
+    // separately allocated heap objects, not slots of an array — so each still
+    // issues exactly one guarded call per window per image, and that product is
+    // a floor no lawful merge can move.
+    let unmergeable_images = 4 * expected_scattered
+        + 2 * expected_scattered
+        + 4 * expected_scattered
+        + 2 * expected_scattered
+        + 2 * expected_scattered
+        + 2 * cprovinces.len();
     assert!(
-        copies >= window_images - 2 * voided_railed,
-        "sanity: the counter is live and every demanded image was attempted \
-         ({copies} against {window_images} demanded minus the voided active \
-         entries' {voided_railed} curtailed windows)",
+        copies >= unmergeable_images,
+        "sanity: the counter is live — {copies} copies against {unmergeable_images} \
+         demanded by the families that cannot merge",
+    );
+
+    // AND THE MERGE ACTUALLY HAPPENED. This is the OLD FLOOR, inverted: a
+    // program still issuing one call per demanded image reads at least
+    // `window_images - 2 * voided_railed` here (it read 3,859 against a floor
+    // of 3,824 before the merge landed), so coming in UNDER that number is the
+    // observable that the slot families collapsed into runs.
+    //
+    // WHAT WOULD MAKE THIS FAIL: `merge_domain` refusing a domain it should
+    // certify, or `run_end` never forming a run — the merge silently turning
+    // itself off while every other assertion here stayed green.
+    assert!(
+        copies < window_images - 2 * voided_railed,
+        "the two slot families are 170 windows at stride 24 inside one 4 KiB \
+         hull, so they must have MERGED: {copies} copies against the \
+         {} a one-call-per-image program issues",
+        window_images - 2 * voided_railed,
     );
 
     let spans_whole = |base: u64, bytes: u64| {
