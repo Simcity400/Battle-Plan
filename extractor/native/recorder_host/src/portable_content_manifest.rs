@@ -1150,7 +1150,6 @@ pub(crate) fn validate_render_frame_early_admission(
     manifest.validate()?;
     receipt.validate()?;
     let manifest_sha256 = manifest.sha256()?;
-    let receipt_sha256 = receipt.sha256()?;
     if receipt.launch_manifest_sha256 != manifest_sha256
         || receipt.effective_vfs_manifest_sha256 != manifest.effective_vfs_manifest_sha256
         || receipt.executable_sha256 != manifest.executable_sha256
@@ -1159,22 +1158,43 @@ pub(crate) fn validate_render_frame_early_admission(
         return Err("early capture receipt differs from the selected launch manifest".into());
     }
     frame
-        .validate()
+        .validate(&receipt.effective_vfs_manifest_sha256)
         .map_err(|error| format!("production-render frame authority is invalid: {error}"))?;
-    let authority = &frame.authority;
-    if authority.process_id != receipt.process_id
-        || authority.process_start_nonce != receipt.process_start_nonce
-        || authority.hook_epoch_nonce != receipt.hook_epoch_nonce
-        || authority.hook_set_receipt_sha256 != receipt.hook_set_sha256
-        || authority.capture_receipt_sha256 != receipt_sha256
-        || authority.effective_vfs_manifest_sha256 != receipt.effective_vfs_manifest_sha256
-        || authority.observer_installed_qpc != receipt.hook_ready_qpc
-        || authority.d3d_device_created_qpc != receipt.first_game_d3d_creation_qpc
-        || authority.first_creation_sequence != receipt.first_creation_sequence
-    {
-        return Err(
-            "production-render frame is foreign to the authenticated early-capture receipt".into(),
-        );
+    // The capture-process identity no longer rides in RenderAuthority; the
+    // nested carriers that still embed it (observation preimage, SnowMud
+    // upload) are bound to the sealed receipt here so they cannot disagree
+    // with it while passing frame-local validation.
+    if let Some(observation) = &frame.selected_present.recorded_input_observation {
+        if observation.process_id != receipt.process_id
+            || observation.process_start_nonce != receipt.process_start_nonce
+            || observation.hook_epoch_nonce != receipt.hook_epoch_nonce
+        {
+            return Err(
+                "production-render recorded-input observation is foreign to the authenticated early-capture receipt".into(),
+            );
+        }
+    }
+    if let Some(snow_mud) = &frame.snow_mud_texture {
+        if snow_mud.process_start_nonce != receipt.process_start_nonce
+            || snow_mud.hook_epoch_nonce != receipt.hook_epoch_nonce
+        {
+            return Err(
+                "production-render SnowMud packet is foreign to the authenticated early-capture receipt".into(),
+            );
+        }
+    }
+    for submit in &frame.submits {
+        for packet in &submit.political_textures {
+            if let Some(occupation) = &packet.occupation_observation {
+                if occupation.process_start_nonce != receipt.process_start_nonce
+                    || occupation.hook_epoch_nonce != receipt.hook_epoch_nonce
+                {
+                    return Err(
+                        "production-render occupation upload receipt is foreign to the authenticated early-capture receipt".into(),
+                    );
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1298,22 +1318,24 @@ fn scan_runtime_content_snapshots(
                     "legacy fixed-role map snapshot at {stream_offset} is not admitted by the opaque production finalizer"
                 ));
             } else if header.domain_id == PRODUCTION_RENDER_COMPACT_DOMAIN_ID {
-                let frame = ProductionRenderFrame::decode_json(&payload).map_err(|error| {
-                    format!("d77 production render at {stream_offset} invalid: {error}")
-                })?;
                 let (early_launch_manifest, early_capture_receipt) = early_admission.ok_or(
                     "production-render carrier has no authenticated suspended-launch receipt",
                 )?;
+                let frame = ProductionRenderFrame::decode_json(
+                    &payload,
+                    &early_capture_receipt.effective_vfs_manifest_sha256,
+                )
+                .map_err(|error| {
+                    format!("d77 production render at {stream_offset} invalid: {error}")
+                })?;
                 validate_render_frame_early_admission(
                     &frame,
                     early_launch_manifest,
                     early_capture_receipt,
                 )?;
                 let has_static_programs = frame
-                    .display_submit_index
-                    .as_deref()
-                    .and_then(|index| index.parse::<u64>().ok())
-                    .and_then(|index| frame.submit(index))
+                    .submits
+                    .first()
                     .is_some_and(|submit| !submit.ordered_static_map_programs.is_empty());
                 if has_static_programs {
                     if last_static_program_update_index

@@ -127,9 +127,10 @@ fn c03_binding_from_submit(
 
 pub fn selected_c03_camera_replay_binding(
     frame: &ProductionRenderFrame,
+    admitted_effective_vfs_manifest_sha256: &str,
 ) -> Result<Option<C03CameraReplayBinding>> {
     frame
-        .validate()
+        .validate(admitted_effective_vfs_manifest_sha256)
         .map_err(|error| format!("invalid portable production-render frame: {error}"))?;
     match selected_submit(frame)? {
         // kills: carrier.render_submit.submit_index — derived from the frame's sealed
@@ -369,13 +370,8 @@ impl ProductionMapRenderer {
             }
             Some(frame) => {
                 frame
-                    .validate()
+                    .validate(&self.effective_vfs_manifest_sha256)
                     .map_err(|err| format!("invalid portable production-render frame: {err}"))?;
-                if frame.authority.effective_vfs_manifest_sha256
-                    != self.effective_vfs_manifest_sha256
-                {
-                    return Err("production-render authority effective-VFS digest does not match playback admission".into());
-                }
                 if let Some(ui_pass) = &frame.authenticated_ui_pass {
                     self.validate_ui_pass_content(ui_pass)?;
                 }
@@ -1060,19 +1056,18 @@ impl ProductionMapRenderer {
     }
 }
 
+/// Derives the displayed submit from authoritative recorded state alone: the
+/// wire law pins a production frame to at most one retained Present, so the
+/// sole retained submit IS the displayed one. The retired
+/// `display_submit_index` hint was an enforced copy of that submit's index
+/// text and is neither read nor needed here.
+/// kills: carrier.production_frame.display_submit_index
 fn selected_submit(frame: &ProductionRenderFrame) -> Result<Option<&RenderSubmit>> {
-    let Some(text) = frame.display_submit_index.as_deref() else {
-        return Ok(None);
-    };
-    let identity = text
-        .parse::<u64>()
-        .ok()
-        .filter(|identity| identity.to_string() == text)
-        .ok_or("display_submit_index is not canonical u64 text")?;
-    frame
-        .submit(identity)
-        .map(Some)
-        .ok_or_else(|| "display_submit_index does not name the retained submit".into())
+    match frame.submits.as_slice() {
+        [] => Ok(None),
+        [submit] => Ok(Some(submit)),
+        [_, _, ..] => Err("production frame retains more than one submit".into()),
+    }
 }
 
 fn ordered_draws(

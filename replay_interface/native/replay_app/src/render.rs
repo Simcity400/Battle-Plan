@@ -531,6 +531,7 @@ pub struct CapturedPassStats {
 
 struct CapturedPassLayer {
     session_dir: PathBuf,
+    effective_vfs_manifest_sha256: String,
     renderer: NativeD3d11TerrainRenderer,
     prepared: NativeD3d11PreparedProductionMap,
     camera_projection: ProductionMapCameraProjection,
@@ -593,25 +594,18 @@ fn required_recorded_snow_mud_texture<'a>(
     })
 }
 
+/// Derives the displayed submit without any carried hint: the wire law pins
+/// a production frame to at most one retained Present, so the sole retained
+/// submit IS the displayed one.
+/// kills: carrier.production_frame.display_submit_index
 fn production_display_submit(frame: &ProductionRenderFrame) -> Result<Option<&RenderSubmit>> {
-    let Some(text) = frame.display_submit_index.as_deref() else {
-        if frame.submits.is_empty() {
-            return Ok(None);
-        }
-        return Err(
-            "production render frame blocked: nonempty submit set has no display_submit_index"
-                .into(),
-        );
-    };
-    let submit_index = text.parse::<u64>().map_err(|_| {
-        format!("production render frame blocked: invalid display_submit_index {text:?}")
-    })?;
-    frame.submit(submit_index).map(Some).ok_or_else(|| {
-        format!(
-            "production render frame blocked: display_submit_index {submit_index} is not retained"
-        )
-        .into()
-    })
+    match frame.submits.as_slice() {
+        [] => Ok(None),
+        [submit] => Ok(Some(submit)),
+        [_, _, ..] => Err(
+            "production render frame blocked: more than one submit is retained".into(),
+        ),
+    }
 }
 
 fn require_secondary_political_texture(submit: Option<&RenderSubmit>) -> Result<&RenderSubmit> {
@@ -675,6 +669,7 @@ impl CapturedPassLayer {
         postfx_enabled: bool,
         restore_postfx: RestoreFullPostfx,
         water_full: bool,
+        effective_vfs_manifest_sha256: &str,
     ) -> Result<Self> {
         let resolver = game_resolver.ok_or(
             "production map rendering requires a launcher-equivalent effective-VFS resolver selected by --game plus the replay mod/DLC profile; captured assets are never used against an unverified default install",
@@ -847,6 +842,7 @@ impl CapturedPassLayer {
 
         Ok(Self {
             session_dir: session_dir.to_path_buf(),
+            effective_vfs_manifest_sha256: effective_vfs_manifest_sha256.to_string(),
             renderer,
             prepared,
             camera_projection,
@@ -1013,7 +1009,11 @@ impl CapturedPassLayer {
         render_frame: &ProductionRenderFrame,
     ) -> Result<()> {
         let next = production_display_submit(render_frame)?.cloned();
-        let next_camera_binding = map_viewer::selected_c03_camera_replay_binding(render_frame)?;
+        let next_camera_binding =
+            map_viewer::selected_c03_camera_replay_binding(
+                render_frame,
+                &self.effective_vfs_manifest_sha256,
+            )?;
         if let (Some(submit), Some(binding)) = (&next, &next_camera_binding) {
             // kills: carrier.render_submit.submit_index — the binding identity is checked
             // against the receipt-derived submit identity, not a carried counter.
@@ -1671,6 +1671,7 @@ impl MapRenderer {
         max_state_id: u32,
         capture_dir: Option<&Path>,
         game_resolver: Option<&GameFileResolver>,
+        admitted_effective_vfs_manifest_sha256: &str,
         postfx_enabled: bool,
         postfx_restore_full: bool,
         water_full: bool,
@@ -1697,6 +1698,7 @@ impl MapRenderer {
                 postfx_enabled,
                 restore_postfx.clone(),
                 water_full,
+                admitted_effective_vfs_manifest_sha256,
             )?;
             Ok(MapRenderer {
                 captured,
@@ -2881,7 +2883,6 @@ fn production_camera_from_recorded_carrier(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay_core::{ParticleRuntimeMode, RenderAuthority, RenderCheckpoint};
 
     fn c03_recorded_camera_fixture() -> (
         replay_core::AuthenticatedCameraCarrier,
@@ -3410,42 +3411,12 @@ POSTEFFECT_FEATHER_AT_MAX = 0.80,
     }
     #[test]
     fn production_render_uses_explicit_display_submit_without_first_last_guess() {
-        use replay_core::{ParticleRuntimeMode, RenderAuthority, RenderCheckpoint};
-
         let frame = ProductionRenderFrame {
             schema: replay_core::PRODUCTION_RENDER_SCHEMA.to_string(),
-            authority: RenderAuthority {
-                process_id: 7,
-                process_start_nonce: 8,
-                observer_installed_qpc: 9,
-                d3d_device_created_qpc: 10,
-                first_creation_sequence: 1,
-                hook_epoch_nonce: 11,
-                hook_set_receipt_sha256: "a".repeat(64),
-                capture_receipt_sha256: "b".repeat(64),
-                launch_epoch_sha256: replay_core::compute_render_launch_epoch_sha256(
-                    7,
-                    8,
-                    9,
-                    10,
-                    1,
-                    11,
-                    &"a".repeat(64),
-                    &"b".repeat(64),
-                ),
-                effective_vfs_manifest_sha256: "2".repeat(64),
-                effect_catalog_sha256: "3".repeat(64),
-                entity_animation_catalog_sha256: "4".repeat(64),
-                recorded_input_variant: None,
-                recorded_input_receipt_sha256: None,
-                recorded_input_observation: None,
-                particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
-            },
             update_index: 16_959_360,
             first_sequence: 10,
             last_sequence: 20,
             presentation_qpc_frequency_hz: 10_000_000,
-            display_submit_index: Some("12".to_string()),
             selected_present: replay_core::SelectedPresentReceipt::sealed(
                 2,
                 "c".repeat(64),
@@ -3462,7 +3433,6 @@ POSTEFFECT_FEATHER_AT_MAX = 0.80,
             o04_cities: None,
             o05_buildings: None,
             authenticated_ui_pass: None,
-            checkpoint: empty_render_checkpoint(20, 16_959_360),
         };
         assert_eq!(
             // kills: carrier.render_submit.submit_index — display selection resolves through
@@ -3475,39 +3445,14 @@ POSTEFFECT_FEATHER_AT_MAX = 0.80,
         assert_eq!(frame.retained_submit_identity(), Some(12));
         assert_eq!(frame.selected_presentation_qpc_ticks(), Some(200));
 
-        let mut ambiguous = frame;
-        ambiguous.display_submit_index = None;
-        assert!(production_display_submit(&ambiguous)
-            .expect_err("nonempty submit set without a selected display submit must fail")
+        // kills: carrier.production_frame.display_submit_index -- the derived
+        // displayed submit is the sole retained submit even though no hint
+        // exists anywhere on the wire; two retained submits fail closed.
+        let mut two_submits = frame.clone();
+        two_submits.submits.push(empty_submit(3));
+        assert!(production_display_submit(&two_submits)
+            .expect_err("two retained submits must fail closed")
             .to_string()
-            .contains("display_submit_index"));
-    }
-
-    fn empty_render_checkpoint(last_sequence: u64, update_index: u64) -> RenderCheckpoint {
-        RenderCheckpoint {
-            last_sequence,
-            last_update_index: update_index,
-            last_submit_index: Some("12".to_string()),
-            next_stable_ids: BTreeMap::new(),
-            active_effect_lifecycle: Vec::new(),
-            active_light_lifecycle: Vec::new(),
-            weather_state_and_ordered_membership: Vec::new(),
-            active_effect_set_sha256: "6".repeat(64),
-            ordered_particle_packets_sha256: "7".repeat(64),
-            ordered_entity_submissions_sha256: "8".repeat(64),
-            ordered_light_submissions_sha256: "a".repeat(64),
-            weather_state_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_membership_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_lifecycle_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_visibility_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            ordered_weather_packets_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_composition_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-        }
+            .contains("more than one submit"));
     }
 }

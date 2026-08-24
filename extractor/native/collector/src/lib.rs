@@ -259,10 +259,6 @@ impl InProcessRenderAdmission {
         self.process_start_nonce
     }
 
-    pub fn catalog_authority_sha256(&self) -> &str {
-        &self.winners.ordered_rows_sha256
-    }
-
     fn winner_index(
         &self,
     ) -> &production_render_submit_live_lane::RawEffectiveVfsWinnerIndexBinding {
@@ -1130,6 +1126,7 @@ fn promote_a729_rail_supply_arrow_frame(
 }
 
 pub fn assemble_production_render_frame(
+    admitted_effective_vfs_manifest_sha256: &str,
     authority: portable_render_stream::RenderAuthority,
     selected_present: portable_render_stream::SelectedPresentReceipt,
     snow_mud_texture: Option<portable_render_stream::SnowMudTexturePacket>,
@@ -1144,69 +1141,12 @@ pub fn assemble_production_render_frame(
     if submits.is_empty() {
         return Err("d77 frame has no fully promoted submit".into());
     }
-    let display_submit_index = Some(selected_present.selected_candidate_id.to_string());
-    let empty_effects: Vec<portable_render_stream::EffectLifecycleEvent> = Vec::new();
-    let empty_lights: Vec<portable_render_stream::LightLifecycleEvent> = Vec::new();
-    let particles = submits
-        .iter()
-        .flat_map(|submit| submit.particles.iter())
-        .collect::<Vec<_>>();
-    let entities = submits
-        .iter()
-        .flat_map(|submit| submit.entities.iter())
-        .collect::<Vec<_>>();
-    let mut weather_by_region = BTreeMap::new();
-    for membership in submits
-        .iter()
-        .flat_map(|submit| submit.weather_membership.iter())
-    {
-        if weather_by_region
-            .get(&membership.strategic_region_id)
-            .is_some_and(|prior: &portable_render_stream::WeatherMembership| {
-                membership.sequence <= prior.sequence
-            })
-        {
-            return Err("weather checkpoint fold is repeated or non-monotonic by region".into());
-        }
-        weather_by_region.insert(membership.strategic_region_id, membership.clone());
-    }
-    let weather_checkpoint = weather_by_region.into_values().collect::<Vec<_>>();
-    let checkpoint =
-        portable_render_stream::RenderCheckpoint {
-            last_sequence,
-            last_update_index: update_index,
-            last_submit_index: display_submit_index.clone(),
-            next_stable_ids: BTreeMap::new(),
-            active_effect_lifecycle: empty_effects.clone(),
-            active_light_lifecycle: empty_lights.clone(),
-            weather_state_and_ordered_membership: weather_checkpoint.clone(),
-            active_effect_set_sha256: canonical_json_sha256(&empty_effects)?,
-            ordered_particle_packets_sha256: canonical_json_sha256(&particles)?,
-            ordered_entity_submissions_sha256: canonical_json_sha256(&entities)?,
-            ordered_light_submissions_sha256: canonical_json_sha256(&empty_lights)?,
-            weather_state_sha256: portable_render_stream::weather_state_checkpoint_sha256(
-                &weather_checkpoint,
-            )?,
-            weather_membership_sha256: canonical_json_sha256(&weather_checkpoint)?,
-            weather_lifecycle_sha256: portable_render_stream::weather_lifecycle_checkpoint_sha256(
-                &weather_checkpoint,
-                &empty_effects,
-            )?,
-            weather_visibility_sha256:
-                portable_render_stream::weather_visibility_checkpoint_sha256(&weather_checkpoint)?,
-            ordered_weather_packets_sha256:
-                portable_render_stream::ordered_weather_packets_checkpoint_sha256(&submits)?,
-            weather_composition_sha256:
-                portable_render_stream::weather_composition_checkpoint_sha256(&submits)?,
-        };
     let frame = portable_render_stream::ProductionRenderFrame {
         schema: portable_render_stream::SCHEMA.into(),
-        authority,
         update_index,
         first_sequence,
         last_sequence,
         presentation_qpc_frequency_hz,
-        display_submit_index,
         selected_present,
         snow_mud_texture,
         submits,
@@ -1215,41 +1155,40 @@ pub fn assemble_production_render_frame(
         o04_cities: None,
         o05_buildings: None,
         authenticated_ui_pass,
-        checkpoint,
     };
-    frame.validate()?;
+    // The recorded-input observation rides on the selected Present; session
+    // identity and catalog/VFS roots stay out of the per-frame wire.
+    let mut frame = frame;
+    frame.selected_present.recorded_input_observation =
+        authority.recorded_input_observation;
+    frame.validate(admitted_effective_vfs_manifest_sha256)?;
     Ok(frame)
 }
 
 pub fn attach_o05_building_frame(
     frame: &mut portable_render_stream::ProductionRenderFrame,
     raw: &production_render_submit_live_lane::RawO05BuildingFrame,
+    admitted_effective_vfs_manifest_sha256: &str,
 ) -> Result<(), production_render_submit_live_lane::PromotionError> {
     if frame.o05_buildings.is_some()
         || raw.update_index != frame.update_index
         || raw.first_sequence != frame.first_sequence
         || raw.last_sequence != frame.last_sequence
         || raw.map_buildings_source.effective_vfs_manifest_sha256
-            != frame.authority.effective_vfs_manifest_sha256
+            != admitted_effective_vfs_manifest_sha256
     {
         return Err(production_render_submit_live_lane::PromotionError::Invalid(
             "O05 observation is duplicated or differs from the selected production frame".into(),
         ));
     }
-    let submit_index = frame
-        .display_submit_index
-        .as_deref()
-        .ok_or_else(|| {
-            production_render_submit_live_lane::PromotionError::Invalid(
-                "O05 observation has no authenticated display submit".into(),
-            )
-        })?
-        .parse::<u64>()
-        .map_err(|_| {
-            production_render_submit_live_lane::PromotionError::Invalid(
-                "O05 display submit index is not canonical u64".into(),
-            )
-        })?;
+    // kills: carrier.render_submit.submit_index -- the retained submit no longer carries
+    // its own index; the display identity is the selected-Present receipt's candidate id,
+    // which frame.submit() below answers for and only for.
+    let submit_index = frame.retained_submit_identity().ok_or_else(|| {
+        production_render_submit_live_lane::PromotionError::Invalid(
+            "O05 observation has no authenticated display submit".into(),
+        )
+    })?;
     let display_submit = frame.submit(submit_index).ok_or_else(|| {
         production_render_submit_live_lane::PromotionError::Invalid(
             "O05 authenticated display submit is absent".into(),
@@ -1258,13 +1197,14 @@ pub fn attach_o05_building_frame(
     let o05 = production_render_submit_live_lane::promote_o05_building_frame(raw, display_submit)?;
     frame.o05_buildings = Some(o05);
     frame
-        .validate()
+        .validate(admitted_effective_vfs_manifest_sha256)
         .map_err(production_render_submit_live_lane::PromotionError::Invalid)
 }
 
 #[cfg(windows)]
 fn write_c07_o05_acquisition_receipt_if_requested(
     frame: &portable_render_stream::ProductionRenderFrame,
+    admitted_effective_vfs_manifest_sha256: &str,
     scope: &production_render_submit_live_lane::a729_hook::RawO05RuntimeScopeObservation,
 ) -> Result<(), String> {
     let Some(output_root) = std::env::var_os("BATTLE_PLAN_C07_O05_EVIDENCE_OUT_DIR").or_else(|| std::env::var_os("HOI4_C07_O05_EVIDENCE_OUT_DIR")) else {
@@ -1296,7 +1236,7 @@ fn write_c07_o05_acquisition_receipt_if_requested(
     }
     let write_result = (|| {
         let frame_bytes = frame
-            .encode_json()
+            .encode_json(admitted_effective_vfs_manifest_sha256)
             .map_err(|error| format!("C07 O05 production frame encoding failed: {error}"))?;
         let mut raw_hasher = Sha256::new();
         raw_hasher.update(b"hoi4-c07-o05-raw-selected-scope-v1\0");
@@ -1509,9 +1449,6 @@ fn finalize_a729_runtime_captures_in_process(
         }
         let authority = production_render_catalog_live::portable_render_authority_with_input(
             &capture.catalog,
-            admission.manifest().effective_vfs_manifest_sha256.clone(),
-            admission.catalog_authority_sha256().to_owned(),
-            admission.catalog_authority_sha256().to_owned(),
             recorded_input,
         )
         .map_err(|error| {
@@ -1694,7 +1631,6 @@ where
             || frame.process_start_nonce != admission.process_start_nonce()
             || runtime_row.raw.catalog.process.process_start_nonce
                 != admission.process_start_nonce()
-            || frame.hook_epoch_nonce != runtime_row.authority.hook_epoch_nonce
             || frame.presentation_qpc_ticks == 0
             || frame.presentation_qpc_frequency_hz == 0
         {
@@ -1958,12 +1894,7 @@ where
         let missing_static = admission.missing_observed_payloads([&catalog])?;
         payload_loader(admission, missing_static)?;
         production_render_submit_live_lane::commit_static_program_capture(sink, catalog)?;
-        let promoted = drain_a729_static_program_captures(
-            &strict_static_manifest,
-            admission,
-            admission.catalog_authority_sha256(),
-            admission.catalog_authority_sha256(),
-        )
+        let promoted = drain_a729_static_program_captures(&strict_static_manifest, admission)
         .map_err(|error| format!("d80 strict finalization: {error:?}"))?;
         if promoted.len() != 1
             || promoted[0].submit_index != frame.submit_index
@@ -2219,6 +2150,7 @@ where
     let first_sequence = first_sequence.expect("nonempty pending");
     let last_sequence = last_sequence.expect("nonempty pending");
     let mut frame = assemble_production_render_frame(
+        &admission.manifest().effective_vfs_manifest_sha256.clone(),
         authority,
         selected_present,
         snow_mud_texture,
@@ -2266,9 +2198,17 @@ where
             complete_selected_present_scope: true,
             records,
         };
-        attach_o05_building_frame(&mut frame, &raw)
+        attach_o05_building_frame(
+            &mut frame,
+            &raw,
+            &admission.manifest().effective_vfs_manifest_sha256.clone(),
+        )
             .map_err(|error| format!("O05 selected frame attachment: {error:?}"))?;
-        write_c07_o05_acquisition_receipt_if_requested(&frame, &scope)?;
+        write_c07_o05_acquisition_receipt_if_requested(
+            &frame,
+            &admission.manifest().effective_vfs_manifest_sha256.clone(),
+            &scope,
+        )?;
     }
     Ok(A729ProductionRenderDrain::Ready(vec![frame]))
 }
@@ -3030,8 +2970,6 @@ pub fn promote_a729_static_program_capture<
     manifest: &portable_content_manifest::ContentManifest,
     admitted_vfs: &V,
     capture: &production_render_submit_live_lane::RawStaticProgramCapture,
-    effect_catalog_sha256: String,
-    entity_animation_catalog_sha256: String,
 ) -> Result<PromotedA729StaticProgramCapture, production_render_submit_live_lane::PromotionError> {
     let programs = production_render_catalog_live::build_authenticated_static_programs(
         manifest,
@@ -3048,12 +2986,8 @@ pub fn promote_a729_static_program_capture<
             "live d80 canonical partition: {error}"
         ))
     })?;
-    let authority = production_render_catalog_live::portable_render_authority(
-        &capture.catalog,
-        manifest.effective_vfs_manifest_sha256.clone(),
-        effect_catalog_sha256,
-        entity_animation_catalog_sha256,
-    )
+    let authority =
+        production_render_catalog_live::portable_render_authority(&capture.catalog)
     .map_err(|error| {
         production_render_submit_live_lane::PromotionError::Invalid(format!(
             "live d80 authority: {error}"
@@ -3075,8 +3009,6 @@ pub fn drain_a729_static_program_captures<
 >(
     manifest: &portable_content_manifest::ContentManifest,
     admitted_vfs: &V,
-    effect_catalog_sha256: &str,
-    entity_animation_catalog_sha256: &str,
 ) -> Result<Vec<PromotedA729StaticProgramCapture>, production_render_submit_live_lane::PromotionError>
 {
     let captures = production_render_submit_live_lane::drain_complete_static_program_captures()
@@ -3084,13 +3016,7 @@ pub fn drain_a729_static_program_captures<
     captures
         .iter()
         .map(|capture| {
-            promote_a729_static_program_capture(
-                manifest,
-                admitted_vfs,
-                capture,
-                effect_catalog_sha256.to_owned(),
-                entity_animation_catalog_sha256.to_owned(),
-            )
+            promote_a729_static_program_capture(manifest, admitted_vfs, capture)
         })
         .collect()
 }
@@ -3338,23 +3264,7 @@ mod fold_carrier_guard_tests {
 
     fn authority() -> portable_render_stream::RenderAuthority {
         portable_render_stream::RenderAuthority {
-            process_id: 1,
-            process_start_nonce: 1,
-            observer_installed_qpc: 1,
-            d3d_device_created_qpc: 1,
-            first_creation_sequence: 1,
-            hook_epoch_nonce: 1,
-            hook_set_receipt_sha256: "5".repeat(64),
-            capture_receipt_sha256: "6".repeat(64),
-            launch_epoch_sha256: "7".repeat(64),
-            effective_vfs_manifest_sha256: "1".repeat(64),
-            effect_catalog_sha256: "8".repeat(64),
-            entity_animation_catalog_sha256: "9".repeat(64),
-            recorded_input_variant: None,
-            recorded_input_receipt_sha256: None,
             recorded_input_observation: None,
-            particle_runtime_mode:
-                portable_render_stream::ParticleRuntimeMode::SubmittedPacketReplay,
         }
     }
 

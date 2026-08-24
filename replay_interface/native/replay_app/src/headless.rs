@@ -472,6 +472,11 @@ fn dump_debug_frame(
         bundle.max_state_id(),
         capture_dir,
         Some(&game_resolver),
+        provider
+            .content_manifest()
+            .ok_or("portable playback has no admitted content manifest")?
+            .effective_vfs_manifest_sha256
+            .as_str(),
         postfx_enabled,
         postfx_restore_full,
         water_full,

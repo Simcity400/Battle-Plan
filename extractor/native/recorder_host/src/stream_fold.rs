@@ -221,6 +221,7 @@ pub fn fold_compact_stream_file_with_identity_mode(
         snapshot_dir,
         identity_mode,
         None,
+        None,
     )
 }
 
@@ -230,6 +231,7 @@ pub fn fold_compact_stream_file_with_identity_mode_and_content_manifest(
     snapshot_dir: &Path,
     identity_mode: StreamIdentityMode,
     effective_content_manifest_sha256: Option<&str>,
+    effective_vfs_manifest_sha256: Option<&str>,
 ) -> io::Result<(Vec<FoldedSnapshotFile>, IdentityAwareFoldStats)> {
     let reader = compact_stream::open(stream_path)?;
     let compressed = reader.compression() == compact_stream::StreamCompression::Zstd;
@@ -238,6 +240,9 @@ pub fn fold_compact_stream_file_with_identity_mode_and_content_manifest(
     if let Some(digest) = effective_content_manifest_sha256 {
         fold.set_effective_content_manifest_sha256(digest)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    }
+    if let Some(digest) = effective_vfs_manifest_sha256 {
+        fold.set_effective_vfs_manifest_sha256(digest);
     }
     let outcome = drive_fold_compressed_with_identity_mode(
         reader,
@@ -1943,6 +1948,7 @@ pub fn fold_compact_stream_file_parallel_with_identity_mode(
         workers,
         identity_mode,
         None,
+        None,
     )
 }
 
@@ -1953,6 +1959,7 @@ pub fn fold_compact_stream_file_parallel_with_identity_mode_and_content_manifest
     workers: usize,
     identity_mode: StreamIdentityMode,
     effective_content_manifest_sha256: Option<&str>,
+    effective_vfs_manifest_sha256: Option<&str>,
 ) -> io::Result<(Vec<FoldedSnapshotFile>, IdentityAwareFoldStats)> {
     if workers <= 1 {
         return fold_compact_stream_file_with_identity_mode_and_content_manifest(
@@ -1961,6 +1968,7 @@ pub fn fold_compact_stream_file_parallel_with_identity_mode_and_content_manifest
             snapshot_dir,
             identity_mode,
             effective_content_manifest_sha256,
+            effective_vfs_manifest_sha256,
         );
     }
     let results: Vec<io::Result<(Vec<FoldedSnapshotFile>, IdentityAwareFoldStats)>> =
@@ -1979,6 +1987,9 @@ pub fn fold_compact_stream_file_parallel_with_identity_mode_and_content_manifest
                                 workers as u64,
                                 k as u64,
                             )?;
+                            if let Some(digest) = effective_vfs_manifest_sha256 {
+                                fold.set_effective_vfs_manifest_sha256(digest);
+                            }
                             if let Some(digest) = effective_content_manifest_sha256 {
                                 fold.set_effective_content_manifest_sha256(digest).map_err(
                                     |error| io::Error::new(io::ErrorKind::InvalidInput, error),

@@ -4,7 +4,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-pub const SCHEMA: &str = "hoi4.production-render-submit.v16";
+pub const SCHEMA: &str = "hoi4.production-render-submit.v17";
+pub const INCOMPATIBLE_PRODUCTION_FRAME_CENSUS_SCHEMA: &str = "hoi4.production-render-submit.v16";
 pub const INCOMPATIBLE_TILED_LIGHT_PAYLOAD_SCHEMA: &str = "hoi4.production-render-submit.v15";
 pub const INCOMPATIBLE_DERIVED_RUNTIME_CARRIER_SCHEMA: &str = "hoi4.production-render-submit.v14";
 pub const INCOMPATIBLE_PRESENTATION_CARRIER_SCHEMA: &str = "hoi4.production-render-submit.v13";
@@ -298,7 +299,6 @@ pub(crate) mod base64_bytes {
 #[serde(deny_unknown_fields)]
 pub struct ProductionRenderFrame {
     pub schema: String,
-    pub authority: RenderAuthority,
     #[serde(with = "decimal_u64")]
     pub update_index: u64,
     #[serde(with = "decimal_u64")]
@@ -307,7 +307,6 @@ pub struct ProductionRenderFrame {
     pub last_sequence: u64,
     #[serde(with = "decimal_u64")]
     pub presentation_qpc_frequency_hz: u64,
-    pub display_submit_index: Option<String>,
     pub selected_present: SelectedPresentReceipt,
     pub snow_mud_texture: Option<SnowMudTexturePacket>,
     pub submits: Vec<RenderSubmit>,
@@ -321,7 +320,6 @@ pub struct ProductionRenderFrame {
     pub o05_buildings: Option<O05BuildingFrame>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authenticated_ui_pass: Option<AuthenticatedUiPass>,
-    pub checkpoint: RenderCheckpoint,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -380,9 +378,7 @@ impl SnowMudTexturePacket {
             return Err("SnowMudData producer binary/static identity mismatch".into());
         }
         if self.process_start_nonce == 0
-            || self.process_start_nonce != frame.authority.process_start_nonce
             || self.hook_epoch_nonce == 0
-            || self.hook_epoch_nonce != frame.authority.hook_epoch_nonce
             || self.producer_ordinal == 0
             || self.producer_qpc_ticks == 0
             || self.producer_qpc_frequency_hz != frame.presentation_qpc_frequency_hz
@@ -441,6 +437,16 @@ pub struct SelectedPresentReceipt {
     pub selected_qpc_ticks: u64,
     #[serde(with = "decimal_u64")]
     pub selection_cutoff_qpc_ticks: u64,
+    /// Optional authenticated mouse/keyboard sampling receipt bound to this
+    /// selected Present. Session identity (process id, start nonce, hook
+    /// epoch), catalog digests, and the effective-VFS manifest root are NOT
+    /// carried per frame: they are session-sealed once in the embedded
+    /// `EarlyRenderCaptureReceipt` of the recorder manifest (packaging
+    /// admission proves byte-equality and binds nested identity copies), and
+    /// content joins are validated against the ADMITTED root passed explicitly
+    /// to `validate`/`decode`/`encode`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_input_observation: Option<RecordedInputObservationReceipt>,
 }
 
 impl SelectedPresentReceipt {
@@ -461,11 +467,18 @@ impl SelectedPresentReceipt {
             selected_game_hour_raw,
             selected_qpc_ticks,
             selection_cutoff_qpc_ticks,
+            recorded_input_observation: None,
         }
     }
 
     pub fn computed_sha256(&self) -> Result<String, String> {
-        canonical_json_sha256(self)
+        // The optional recorded-input observation is excluded from the
+        // receipt preimage: the observation itself names this receipt's hash,
+        // so hashing it would be circular. The receipt hash covers the
+        // selected-Present facts only.
+        let mut canonical = self.clone();
+        canonical.recorded_input_observation = None;
+        canonical_json_sha256(&canonical)
     }
 }
 
@@ -634,35 +647,6 @@ impl OccupationSecondaryReplayReadbackReceipt {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RenderAuthority {
-    pub process_id: u32,
-    #[serde(with = "decimal_u64")]
-    pub process_start_nonce: u64,
-    #[serde(with = "decimal_u64")]
-    pub observer_installed_qpc: u64,
-    #[serde(with = "decimal_u64")]
-    pub d3d_device_created_qpc: u64,
-    #[serde(with = "decimal_u64")]
-    pub first_creation_sequence: u64,
-    #[serde(with = "decimal_u64")]
-    pub hook_epoch_nonce: u64,
-    pub hook_set_receipt_sha256: String,
-    pub capture_receipt_sha256: String,
-    pub launch_epoch_sha256: String,
-    pub effective_vfs_manifest_sha256: String,
-    pub effect_catalog_sha256: String,
-    pub entity_animation_catalog_sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recorded_input_variant: Option<RecordedInputVariant>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recorded_input_receipt_sha256: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recorded_input_observation: Option<RecordedInputObservationReceipt>,
-    pub particle_runtime_mode: ParticleRuntimeMode,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecordedInputVariant {
@@ -733,7 +717,7 @@ impl RecordedInputObservationReceipt {
         Ok(format!("{:x}", hasher.finalize()))
     }
 
-    fn validate(&self, authority: &RenderAuthority) -> Result<(), String> {
+    fn validate(&self) -> Result<(), String> {
         for value in [
             &self.executable_sha256,
             &self.selected_present_receipt_sha256,
@@ -751,9 +735,8 @@ impl RecordedInputObservationReceipt {
         if self.executable_sha256 != UI_A729_EXECUTABLE_SHA256
             || self.authority_manifest_sha256 != RECORDED_INPUT_VARIANT_AUTHORITY_MANIFEST_SHA256
             || self.process_id == 0
-            || self.process_id != authority.process_id
-            || self.process_start_nonce != authority.process_start_nonce
-            || self.hook_epoch_nonce != authority.hook_epoch_nonce
+            || self.process_start_nonce == 0
+            || self.hook_epoch_nonce == 0
             || self.observation_sequence == 0
             || self.prior_observation_qpc_ticks == 0
             || self.prior_observation_qpc_ticks >= self.selected_present_qpc_ticks
@@ -764,9 +747,6 @@ impl RecordedInputObservationReceipt {
             || self.prior_client_position == self.current_client_position
             || !inside(self.prior_client_position, self.client_extent)
             || !inside(self.current_client_position, self.client_extent)
-            || authority.recorded_input_variant != Some(self.variant)
-            || authority.recorded_input_receipt_sha256.as_deref()
-                != Some(self.observation_receipt_sha256.as_str())
             || self.computed_receipt_sha256()? != self.observation_receipt_sha256
         {
             return Err(
@@ -778,37 +758,16 @@ impl RecordedInputObservationReceipt {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ParticleRuntimeMode {
-    SubmittedPacketReplay,
-}
-
-pub fn compute_render_launch_epoch_sha256(
-    process_id: u32,
-    process_start_nonce: u64,
-    observer_installed_qpc: u64,
-    d3d_device_created_qpc: u64,
-    first_creation_sequence: u64,
-    hook_epoch_nonce: u64,
-    hook_set_receipt_sha256: &str,
-    capture_receipt_sha256: &str,
-) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"hoi4.production-render-launch-epoch.v1\0");
-    hasher.update(process_id.to_le_bytes());
-    for value in [
-        process_start_nonce,
-        observer_installed_qpc,
-        d3d_device_created_qpc,
-        first_creation_sequence,
-        hook_epoch_nonce,
-    ] {
-        hasher.update(value.to_le_bytes());
-    }
-    hasher.update(hook_set_receipt_sha256.as_bytes());
-    hasher.update(capture_receipt_sha256.as_bytes());
-    format!("{:x}", hasher.finalize())
+/// Producer-side attestation envelope retained by capture plumbing (static
+/// program promotion, runtime drain tuples). The per-frame wire no longer
+/// carries it: the observation rides on `SelectedPresentReceipt` and session
+/// identity is sealed once in the recorder manifest's
+/// `EarlyRenderCaptureReceipt`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RenderAuthority {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_input_observation: Option<RecordedInputObservationReceipt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2372,28 +2331,6 @@ pub struct ScissorDesc {
     pub bottom_i32: i32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EffectLifecycleEvent {
-    #[serde(with = "decimal_u64")]
-    pub sequence: u64,
-    #[serde(with = "decimal_u64")]
-    pub update_index: u64,
-    #[serde(with = "decimal_u64")]
-    pub effect_instance_id: u64,
-    pub operation: EffectOperation,
-    pub registration_token: String,
-    pub registration_hash_u32: u32,
-    pub resolved_definition_sha256: String,
-    pub producer_kind: String,
-    pub producer_instance_id: String,
-    pub authored_event_index: u32,
-    pub parent_anchor: ParentAnchor,
-    pub elapsed_f32_bits: u32,
-    pub time_scale_f32_bits: u32,
-    pub active_flags_u32: u32,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectOperation {
@@ -2511,47 +2448,6 @@ pub enum Skinning {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LightLifecycleEvent {
-    #[serde(with = "decimal_u64")]
-    pub sequence: u64,
-    #[serde(with = "decimal_u64")]
-    pub update_index: u64,
-    #[serde(with = "decimal_u64")]
-    pub light_instance_id: u64,
-    pub operation: LightOperation,
-    pub producer_instance_id: String,
-    pub authored_state_index_u32: u32,
-    pub authored_event_index_u32: u32,
-    pub authored_payload_sha256: String,
-    pub light_resolution: LightResolution,
-    pub light_token: Option<String>,
-    pub resolved_definition_sha256: Option<String>,
-    pub parent_anchor: ParentAnchor,
-    #[serde(with = "decimal_u64")]
-    pub actual_trigger_tick: u64,
-    pub animation_phase_f32_bits: u32,
-    pub active_flags_u32: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LightOperation {
-    Spawn,
-    Activate,
-    Deactivate,
-    Destroy,
-    Reparent,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LightResolution {
-    ResolvedDefinition,
-    ExplicitNull,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WeatherMembership {
     #[serde(with = "decimal_u64")]
     pub sequence: u64,
@@ -2650,30 +2546,6 @@ pub enum WeatherCameraBranch {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RenderCheckpoint {
-    #[serde(with = "decimal_u64")]
-    pub last_sequence: u64,
-    #[serde(with = "decimal_u64")]
-    pub last_update_index: u64,
-    pub last_submit_index: Option<String>,
-    pub next_stable_ids: BTreeMap<String, String>,
-    pub active_effect_lifecycle: Vec<EffectLifecycleEvent>,
-    pub active_light_lifecycle: Vec<LightLifecycleEvent>,
-    pub weather_state_and_ordered_membership: Vec<WeatherMembership>,
-    pub active_effect_set_sha256: String,
-    pub ordered_particle_packets_sha256: String,
-    pub ordered_entity_submissions_sha256: String,
-    pub ordered_light_submissions_sha256: String,
-    pub weather_state_sha256: String,
-    pub weather_membership_sha256: String,
-    pub weather_lifecycle_sha256: String,
-    pub weather_visibility_sha256: String,
-    pub ordered_weather_packets_sha256: String,
-    pub weather_composition_sha256: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WeatherInstance {
     #[serde(with = "decimal_u64")]
     pub effect_instance_id: u64,
@@ -2755,111 +2627,27 @@ impl WeatherMembership {
     }
 }
 
-#[derive(Serialize)]
-struct WeatherStateHashRow<'a> {
-    sequence: String,
-    update_index: String,
-    strategic_region_id: u32,
-    rain_light_active: bool,
-    rain_heavy_active: bool,
-    snow_active: bool,
-    blizzard_active: bool,
-    sandstorm_active: bool,
-    arctic_water_active: bool,
-    region_value_i64_fixed_1e5: i64,
-    transition_expiry_game_hour_i32: i32,
-    airborne_runtime_code: u8,
-    weather_effect_token: &'a Option<String>,
-}
-
-pub fn weather_state_checkpoint_sha256(
-    memberships: &[WeatherMembership],
-) -> Result<String, String> {
-    canonical_json_sha256(
-        &memberships
-            .iter()
-            .map(|weather| WeatherStateHashRow {
-                sequence: weather.sequence.to_string(),
-                update_index: weather.update_index.to_string(),
-                strategic_region_id: weather.strategic_region_id,
-                rain_light_active: weather.rain_light_active,
-                rain_heavy_active: weather.rain_heavy_active,
-                snow_active: weather.snow_active,
-                blizzard_active: weather.blizzard_active,
-                sandstorm_active: weather.sandstorm_active,
-                arctic_water_active: weather.arctic_water_active,
-                region_value_i64_fixed_1e5: weather.region_value_i64_fixed_1e5,
-                transition_expiry_game_hour_i32: weather.transition_expiry_game_hour_i32,
-                airborne_runtime_code: weather.airborne_runtime_code,
-                weather_effect_token: &weather.weather_effect_token,
-            })
-            .collect::<Vec<_>>(),
-    )
-}
-
-pub fn weather_visibility_checkpoint_sha256(
-    memberships: &[WeatherMembership],
-) -> Result<String, String> {
-    canonical_json_sha256(
-        &memberships
-            .iter()
-            .flat_map(|weather| weather.visibility_updates.iter())
-            .collect::<Vec<_>>(),
-    )
-}
-
-pub fn weather_lifecycle_checkpoint_sha256(
-    memberships: &[WeatherMembership],
-    active_effect_lifecycle: &[EffectLifecycleEvent],
-) -> Result<String, String> {
-    let weather_effects = memberships
-        .iter()
-        .flat_map(|weather| weather.ordered_weather_instances.iter())
-        .map(|instance| instance.effect_instance_id)
-        .collect::<BTreeSet<_>>();
-    canonical_json_sha256(
-        &active_effect_lifecycle
-            .iter()
-            .filter(|event| weather_effects.contains(&event.effect_instance_id))
-            .collect::<Vec<_>>(),
-    )
-}
-
-pub fn ordered_weather_packets_checkpoint_sha256(
+/// Derives the per-region weather census the retired `RenderCheckpoint`
+/// carried: the latest `WeatherMembership` row per strategic region across
+/// every retained submit, in region order. This is the exact fold the
+/// producer performed when sealing the old checkpoint field and the exact
+/// fold the wire validator re-computed, so the derived census equals what
+/// the carrier used to say on every sealed frame.
+/// kills: carrier.production_frame.checkpoint
+pub fn derive_weather_checkpoint_census(
     submits: &[RenderSubmit],
-) -> Result<String, String> {
-    let weather_effects = submits
-        .iter()
-        .flat_map(|submit| submit.weather_membership.iter())
-        .flat_map(|weather| weather.ordered_weather_instances.iter())
-        .map(|instance| instance.effect_instance_id)
-        .collect::<BTreeSet<_>>();
-    canonical_json_sha256(
-        &submits
-            .iter()
-            .flat_map(|submit| submit.particles.iter())
-            .filter(|packet| weather_effects.contains(&packet.effect_instance_id))
-            .collect::<Vec<_>>(),
-    )
-}
-
-pub fn weather_composition_checkpoint_sha256(submits: &[RenderSubmit]) -> Result<String, String> {
-    let weather_outputs = submits
-        .iter()
-        .flat_map(|submit| submit.weather_membership.iter())
-        .flat_map(|weather| weather.ordered_weather_instances.iter())
-        .flat_map(|instance| instance.submitted_outputs.iter().cloned())
-        .collect::<BTreeSet<_>>();
-    let mut ordered = Vec::new();
-    for submit in submits {
-        ordered.extend(submit.derive_ordered_draws()?);
+) -> Result<Vec<WeatherMembership>, String> {
+    let mut weather_by_region = BTreeMap::new();
+    for membership in submits.iter().flat_map(|submit| submit.weather_membership.iter()) {
+        if weather_by_region
+            .get(&membership.strategic_region_id)
+            .is_some_and(|prior: &WeatherMembership| membership.sequence <= prior.sequence)
+        {
+            return Err("weather checkpoint source is repeated or non-monotonic by region".into());
+        }
+        weather_by_region.insert(membership.strategic_region_id, membership.clone());
     }
-    canonical_json_sha256(
-        &ordered
-            .into_iter()
-            .filter(|output| weather_outputs.contains(output))
-            .collect::<Vec<_>>(),
-    )
+    Ok(weather_by_region.into_values().collect())
 }
 
 /// ownership or diplomatic state is never accepted as a substitute.
@@ -3008,6 +2796,11 @@ struct InlineBlobWire {
 }
 
 fn check_schema(schema: &str) -> Result<(), String> {
+    if schema == INCOMPATIBLE_PRODUCTION_FRAME_CENSUS_SCHEMA {
+        return Err(format!(
+            "production render schema {schema} is incompatible with {SCHEMA}: it still carries the retired per-frame RenderCheckpoint census, the display_submit_index hint that the retained submits already determine, and the per-frame RenderAuthority block whose session identity is sealed once in the recorder manifest instead"
+        ));
+    }
     if schema == INCOMPATIBLE_TILED_LIGHT_PAYLOAD_SCHEMA {
         return Err(format!(
             "production render schema {schema} is incompatible with {SCHEMA}: its selected submits still carry the retired tiled point-light payload carrier and live texture digests, which are forbidden product authority"
@@ -3242,7 +3035,10 @@ impl ProductionRenderFrame {
         draws
     }
 
-    pub fn decode_json(bytes: &[u8]) -> Result<Self, String> {
+    pub fn decode_json(
+        bytes: &[u8],
+        admitted_effective_vfs_manifest_sha256: &str,
+    ) -> Result<Self, String> {
         let probe: SchemaProbe = serde_json::from_slice(bytes)
             .map_err(|error| format!("production render JSON: {error}"))?;
         check_schema(&probe.schema)?;
@@ -3270,15 +3066,18 @@ impl ProductionRenderFrame {
             if used.len() != blobs.len() {
                 return Err("production render wire contains an unreferenced inline blob".into());
             }
-            return Self::decode_value(&frame);
+            return Self::decode_value(&frame, admitted_effective_vfs_manifest_sha256);
         }
         let frame: Self = serde_json::from_slice(bytes)
             .map_err(|error| format!("production render JSON: {error}"))?;
-        frame.validate()?;
+        frame.validate(admitted_effective_vfs_manifest_sha256)?;
         Ok(frame)
     }
 
-    pub fn decode_value(value: &serde_json::Value) -> Result<Self, String> {
+    pub fn decode_value(
+        value: &serde_json::Value,
+        admitted_effective_vfs_manifest_sha256: &str,
+    ) -> Result<Self, String> {
         let schema = value
             .get("schema")
             .and_then(serde_json::Value::as_str)
@@ -3286,12 +3085,15 @@ impl ProductionRenderFrame {
         check_schema(schema)?;
         let frame: Self =
             Self::deserialize(value).map_err(|error| format!("production render JSON: {error}"))?;
-        frame.validate()?;
+        frame.validate(admitted_effective_vfs_manifest_sha256)?;
         Ok(frame)
     }
 
-    pub fn encode_json(&self) -> Result<Vec<u8>, String> {
-        self.validate()?;
+    pub fn encode_json(
+        &self,
+        admitted_effective_vfs_manifest_sha256: &str,
+    ) -> Result<Vec<u8>, String> {
+        self.validate(admitted_effective_vfs_manifest_sha256)?;
         let mut frame = serde_json::to_value(self).map_err(|error| error.to_string())?;
         let mut blobs = BTreeMap::new();
         deduplicate_inline_blob_references(&mut frame, &mut blobs)?;
@@ -3328,71 +3130,27 @@ impl ProductionRenderFrame {
         Some(self.selected_present.selected_qpc_ticks)
     }
 
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self, admitted_effective_vfs_manifest_sha256: &str) -> Result<(), String> {
         if self.schema != SCHEMA {
             return Err(format!(
                 "unsupported production render schema {}",
                 self.schema
             ));
         }
-        check_sha256(&self.authority.effective_vfs_manifest_sha256, None)?;
-        check_sha256(&self.authority.effect_catalog_sha256, None)?;
-        check_sha256(&self.authority.entity_animation_catalog_sha256, None)?;
-        check_sha256(&self.authority.hook_set_receipt_sha256, None)?;
-        check_sha256(&self.authority.capture_receipt_sha256, None)?;
-        check_sha256(&self.authority.launch_epoch_sha256, None)?;
-        match (
-            self.authority.recorded_input_variant,
-            self.authority.recorded_input_receipt_sha256.as_deref(),
-            self.authority.recorded_input_observation.as_ref(),
-        ) {
-            (Some(_), Some(receipt), Some(observation)) => {
-                check_sha256(receipt, None)?;
-                observation.validate(&self.authority)?;
-                if observation.selected_present_qpc_ticks
-                    != self.selected_present.selected_qpc_ticks
-                    || observation.present_sample_completed_qpc_ticks
-                        > self.selected_present.selection_cutoff_qpc_ticks
-                    || observation.selected_present_receipt_sha256
-                        != self.selected_present.computed_sha256()?
-                {
-                    return Err(
-                        "production render recorded-input observation crosses selected-Present cutoff"
-                            .into(),
-                    );
-                }
+        check_sha256(admitted_effective_vfs_manifest_sha256, None)?;
+        if let Some(observation) = &self.selected_present.recorded_input_observation {
+            observation.validate()?;
+            if observation.selected_present_qpc_ticks != self.selected_present.selected_qpc_ticks
+                || observation.present_sample_completed_qpc_ticks
+                    > self.selected_present.selection_cutoff_qpc_ticks
+                || observation.selected_present_receipt_sha256
+                    != self.selected_present.computed_sha256()?
+            {
+                return Err(
+                    "production render recorded-input observation crosses selected-Present cutoff"
+                        .into(),
+                );
             }
-            (None, None, None) => {}
-            _ => return Err(
-                "production render recorded-input variant/receipt/observation set is incomplete"
-                    .into(),
-            ),
-        }
-        if self.authority.process_id == 0
-            || self.authority.process_start_nonce == 0
-            || self.authority.observer_installed_qpc == 0
-            || self.authority.d3d_device_created_qpc == 0
-            || self.authority.observer_installed_qpc > self.authority.d3d_device_created_qpc
-            || self.authority.first_creation_sequence == 0
-            || self.authority.hook_epoch_nonce == 0
-        {
-            return Err(
-                "production render authority lacks an authenticated pre-device capture epoch"
-                    .into(),
-            );
-        }
-        let expected_launch_epoch_sha256 = compute_render_launch_epoch_sha256(
-            self.authority.process_id,
-            self.authority.process_start_nonce,
-            self.authority.observer_installed_qpc,
-            self.authority.d3d_device_created_qpc,
-            self.authority.first_creation_sequence,
-            self.authority.hook_epoch_nonce,
-            &self.authority.hook_set_receipt_sha256,
-            &self.authority.capture_receipt_sha256,
-        );
-        if self.authority.launch_epoch_sha256 != expected_launch_epoch_sha256 {
-            return Err("production render launch-epoch SHA-256 mismatch".into());
         }
         if self.first_sequence > self.last_sequence {
             return Err("production render sequence range is inverted".into());
@@ -3413,12 +3171,6 @@ impl ProductionRenderFrame {
             );
         }
         check_sha256(&selected.candidate_set_sha256, None)?;
-        let selected_candidate_id = selected.selected_candidate_id.to_string();
-        if self.display_submit_index.as_deref() != Some(&selected_candidate_id)
-            || self.checkpoint.last_submit_index.as_deref() != Some(&selected_candidate_id)
-        {
-            return Err("display/checkpoint submit identity differs from selected Present".into());
-        }
         let mut last_global = None;
         if self.presentation_qpc_frequency_hz == 0 {
             return Err("presentation QPC frequency is zero".into());
@@ -3461,7 +3213,7 @@ impl ProductionRenderFrame {
             submit.validate(
                 self.first_sequence,
                 self.last_sequence,
-                &self.authority.effective_vfs_manifest_sha256,
+                admitted_effective_vfs_manifest_sha256,
                 &carriers,
             )?;
         }
@@ -3524,38 +3276,22 @@ impl ProductionRenderFrame {
             }
         }
         if let Some(ui_pass) = &self.authenticated_ui_pass {
-            if self.authority.recorded_input_variant.is_none()
-                || self.authority.recorded_input_receipt_sha256.is_none()
-                || self.authority.recorded_input_observation.is_none()
-            {
-                return Err(
-                    "selected-Present UI pass lacks authenticated recorded input variant receipt"
-                        .into(),
-                );
-            }
-            check_sha256(
-                self.authority
-                    .recorded_input_receipt_sha256
-                    .as_deref()
-                    .expect("presence checked above"),
-                None,
-            )?;
+            let observation = self
+                .selected_present
+                .recorded_input_observation
+                .as_ref()
+                .ok_or(
+                    "selected-Present UI pass lacks authenticated recorded input variant receipt",
+                )?;
             ui_pass.validate()?;
             if ui_pass.update_index != self.update_index
                 || ui_pass.first_sequence != self.first_sequence
                 || ui_pass.last_sequence != self.last_sequence
                 || ui_pass.selected_present_receipt_sha256
                     != self.selected_present.computed_sha256()?
-                || Some(ui_pass.recorded_input_receipt_sha256.as_str())
-                    != self.authority.recorded_input_receipt_sha256.as_deref()
-                || self
-                    .authority
-                    .recorded_input_observation
-                    .as_ref()
-                    .map_or(true, |observation| {
-                        observation.selected_present_receipt_sha256
-                            != ui_pass.selected_present_receipt_sha256
-                    })
+                || ui_pass.recorded_input_receipt_sha256 != observation.observation_receipt_sha256
+                || observation.selected_present_receipt_sha256
+                    != ui_pass.selected_present_receipt_sha256
             {
                 return Err(
                     "selected-Present UI-pass frontier/selector/input receipt does not match production frame"
@@ -3564,7 +3300,7 @@ impl ProductionRenderFrame {
             }
             validate_render_target_vfs_authority(
                 &ui_pass.target,
-                &self.authority.effective_vfs_manifest_sha256,
+                admitted_effective_vfs_manifest_sha256,
                 "selected-Present UI pass",
             )?;
             if let Some(ActiveMapmodeState {
@@ -3573,7 +3309,7 @@ impl ProductionRenderFrame {
             }) = &ui_pass.active_mapmode_state
             {
                 if content.effective_vfs_manifest_sha256
-                    != self.authority.effective_vfs_manifest_sha256
+                    != admitted_effective_vfs_manifest_sha256
                 {
                     return Err("active mapmode VFS authority differs from production frame".into());
                 }
@@ -3587,7 +3323,7 @@ impl ProductionRenderFrame {
                             .chain(std::iter::once(&command.identity.selected_gui_definition))
                             .any(|content| {
                                 content.effective_vfs_manifest_sha256
-                                    != self.authority.effective_vfs_manifest_sha256
+                                    != admitted_effective_vfs_manifest_sha256
                             })
                         {
                             return Err(
@@ -3598,7 +3334,7 @@ impl ProductionRenderFrame {
                         if let HudCommandExecution::ExactPipeline { draw } = &command.execution {
                             validate_static_draw_vfs_authority(
                                 &draw.exact_draw,
-                                &self.authority.effective_vfs_manifest_sha256,
+                                admitted_effective_vfs_manifest_sha256,
                                 "UI-pass HUD",
                             )?;
                         }
@@ -3609,7 +3345,7 @@ impl ProductionRenderFrame {
         if let Some(m03) = &self.m03_arrows {
             for content in &m03.used_content {
                 if content.effective_vfs_manifest_sha256
-                    != self.authority.effective_vfs_manifest_sha256
+                    != admitted_effective_vfs_manifest_sha256
                 {
                     return Err("M03 content authority differs from production frame".into());
                 }
@@ -3624,15 +3360,13 @@ impl ProductionRenderFrame {
             for draw in &m03.draws {
                 validate_static_draw_vfs_authority(
                     &draw.draw,
-                    &self.authority.effective_vfs_manifest_sha256,
+                    admitted_effective_vfs_manifest_sha256,
                     "M03",
                 )?;
             }
             let display_submit = self
-                .display_submit_index
-                .as_deref()
-                .and_then(|value| value.parse::<u64>().ok())
-                .and_then(|submit_index| self.submit(submit_index))
+                .submits
+                .first()
                 .ok_or("M03 carrier has no authenticated display submit")?;
             let expected = m03.ordered_draws.iter().cloned().collect::<Vec<_>>();
             let actual = display_submit
@@ -3669,7 +3403,7 @@ impl ProductionRenderFrame {
             }
             for content in rail.used_content.iter().chain(&rail.draw_used_content) {
                 if content.effective_vfs_manifest_sha256
-                    != self.authority.effective_vfs_manifest_sha256
+                    != admitted_effective_vfs_manifest_sha256
                 {
                     return Err(
                         "rail supply-arrow content authority differs from production frame".into(),
@@ -3677,10 +3411,8 @@ impl ProductionRenderFrame {
                 }
             }
             let display_submit = self
-                .display_submit_index
-                .as_deref()
-                .and_then(|value| value.parse::<u64>().ok())
-                .and_then(|submit_index| self.submit(submit_index))
+                .submits
+                .first()
                 .ok_or("rail supply-arrow carrier has no authenticated display submit")?;
             rail.validate_against_static_programs(&display_submit.ordered_static_map_programs)?;
             let ordered_static = display_submit
@@ -3717,10 +3449,8 @@ impl ProductionRenderFrame {
                 return Err("O04 update/sequence frontier does not match production frame".into());
             }
             let display_submit = self
-                .display_submit_index
-                .as_deref()
-                .and_then(|value| value.parse::<u64>().ok())
-                .and_then(|submit_index| self.submit(submit_index))
+                .submits
+                .first()
                 .ok_or("O04 carrier has no authenticated display submit")?;
             let referenced = o04.ordered_outputs.iter().cloned().collect::<BTreeSet<_>>();
             let actual_order = display_submit
@@ -3734,9 +3464,9 @@ impl ProductionRenderFrame {
             }
             for city in &o04.cities {
                 if city.entity_asset.effective_vfs_manifest_sha256
-                    != self.authority.effective_vfs_manifest_sha256
+                    != admitted_effective_vfs_manifest_sha256
                     || city.mesh.effective_vfs_manifest_sha256
-                        != self.authority.effective_vfs_manifest_sha256
+                        != admitted_effective_vfs_manifest_sha256
                 {
                     return Err("O04 content authority differs from production frame".into());
                 }
@@ -3797,17 +3527,15 @@ impl ProductionRenderFrame {
                 || o05.first_sequence != self.first_sequence
                 || o05.last_sequence != self.last_sequence
                 || o05.map_buildings_source.effective_vfs_manifest_sha256
-                    != self.authority.effective_vfs_manifest_sha256
+                    != admitted_effective_vfs_manifest_sha256
             {
                 return Err(
                     "O05 update/sequence/content authority differs from production frame".into(),
                 );
             }
             let display_submit = self
-                .display_submit_index
-                .as_deref()
-                .and_then(|value| value.parse::<u64>().ok())
-                .and_then(|submit_index| self.submit(submit_index))
+                .submits
+                .first()
                 .ok_or("O05 carrier has no authenticated display submit")?;
             let referenced = o05.ordered_outputs.iter().cloned().collect::<BTreeSet<_>>();
             let actual_order = display_submit
@@ -3851,9 +3579,9 @@ impl ProductionRenderFrame {
                 let entity_asset = building.entity_asset.as_ref().expect("validated O05 asset");
                 let mesh = building.mesh.as_ref().expect("validated O05 mesh");
                 if entity_asset.effective_vfs_manifest_sha256
-                    != self.authority.effective_vfs_manifest_sha256
+                    != admitted_effective_vfs_manifest_sha256
                     || mesh.effective_vfs_manifest_sha256
-                        != self.authority.effective_vfs_manifest_sha256
+                        != admitted_effective_vfs_manifest_sha256
                 {
                     return Err(
                         "O05 building content authority differs from production frame".into(),
@@ -3887,116 +3615,6 @@ impl ProductionRenderFrame {
                     }
                 }
             }
-        }
-        match (&self.display_submit_index, self.submits.is_empty()) {
-            (None, true) => {}
-            (Some(text), false) => {
-                if text.is_empty() || (text.len() > 1 && text.starts_with('0')) {
-                    return Err("display_submit_index is not canonical decimal".into());
-                }
-                let id = text
-                    .parse::<u64>()
-                    .map_err(|_| "display_submit_index is invalid")?;
-                if self.submit(id).is_none() {
-                    return Err("display_submit_index does not name a retained submit".into());
-                }
-            }
-            _ => return Err("display submit presence does not match submit population".into()),
-        }
-        if self.checkpoint.last_sequence != self.last_sequence
-            || self.checkpoint.last_update_index != self.update_index
-        {
-            return Err("checkpoint sequence/update frontier does not match frame".into());
-        }
-        match (
-            &self.checkpoint.last_submit_index,
-            self.retained_submit_identity(),
-        ) {
-            (None, None) => {}
-            (Some(text), Some(identity)) => {
-                check_decimal_u64(text, "checkpoint last_submit_index")?;
-                if text.parse::<u64>().ok() != Some(identity) {
-                    return Err("checkpoint last_submit_index does not match final submit".into());
-                }
-            }
-            _ => return Err("checkpoint submit frontier does not match frame".into()),
-        }
-        let mut expected_weather_by_region = BTreeMap::new();
-        for weather in self
-            .submits
-            .iter()
-            .flat_map(|submit| submit.weather_membership.iter())
-        {
-            if expected_weather_by_region
-                .get(&weather.strategic_region_id)
-                .is_some_and(|prior: &&WeatherMembership| weather.sequence <= prior.sequence)
-            {
-                return Err("weather checkpoint source is non-monotonic by region".into());
-            }
-            expected_weather_by_region.insert(weather.strategic_region_id, weather);
-        }
-        let expected_weather = expected_weather_by_region
-            .into_values()
-            .cloned()
-            .collect::<Vec<_>>();
-        let expected_weather_effects = expected_weather
-            .iter()
-            .flat_map(|weather| weather.ordered_weather_instances.iter())
-            .map(|instance| instance.effect_instance_id)
-            .collect::<BTreeSet<_>>();
-        let checkpoint_weather_effects = self
-            .checkpoint
-            .active_effect_lifecycle
-            .iter()
-            .filter(|event| expected_weather_effects.contains(&event.effect_instance_id))
-            .map(|event| event.effect_instance_id)
-            .collect::<BTreeSet<_>>();
-        if self.checkpoint.weather_state_and_ordered_membership != expected_weather
-            || checkpoint_weather_effects != expected_weather_effects
-            || self.checkpoint.weather_state_sha256
-                != weather_state_checkpoint_sha256(&expected_weather)?
-            || self.checkpoint.weather_membership_sha256
-                != canonical_json_sha256(&expected_weather)?
-            || self.checkpoint.weather_lifecycle_sha256
-                != weather_lifecycle_checkpoint_sha256(
-                    &expected_weather,
-                    &self.checkpoint.active_effect_lifecycle,
-                )?
-            || self.checkpoint.weather_visibility_sha256
-                != weather_visibility_checkpoint_sha256(&expected_weather)?
-            || self.checkpoint.ordered_weather_packets_sha256
-                != ordered_weather_packets_checkpoint_sha256(&self.submits)?
-            || self.checkpoint.weather_composition_sha256
-                != weather_composition_checkpoint_sha256(&self.submits)?
-        {
-            return Err(
-                "weather checkpoint state/membership/visibility/packet/composition fold differs from submits"
-                    .into(),
-            );
-        }
-        for hash in [
-            &self.checkpoint.active_effect_set_sha256,
-            &self.checkpoint.ordered_particle_packets_sha256,
-            &self.checkpoint.ordered_entity_submissions_sha256,
-            &self.checkpoint.ordered_light_submissions_sha256,
-            &self.checkpoint.weather_membership_sha256,
-        ] {
-            check_sha256(hash, None)?;
-        }
-        for hash in [
-            &self.checkpoint.weather_state_sha256,
-            &self.checkpoint.weather_lifecycle_sha256,
-            &self.checkpoint.weather_visibility_sha256,
-            &self.checkpoint.ordered_weather_packets_sha256,
-            &self.checkpoint.weather_composition_sha256,
-        ] {
-            check_sha256(hash, None)?;
-        }
-        for (kind, id) in &self.checkpoint.next_stable_ids {
-            if kind.trim().is_empty() {
-                return Err("checkpoint stable-id kind is empty".into());
-            }
-            check_decimal_u64(id, "checkpoint next stable id")?;
         }
         Ok(())
     }
@@ -6932,6 +6550,15 @@ mod tests {
     use super::*;
     use portable_content_manifest::ContentLayerKind;
 
+    /// The admitted effective-VFS manifest root every fixture in this module is
+    /// sealed against. It is not a free constant: `content()` below stamps this
+    /// exact digest into every `UsedContentKey` it mints, and
+    /// `ProductionRenderFrame::validate` refuses any content join whose root
+    /// differs from the admitted one it is handed. Changing either without the
+    /// other turns every fixture in the module into a content-authority refusal.
+    const TEST_EFFECTIVE_VFS_MANIFEST_SHA256: &str =
+        "2222222222222222222222222222222222222222222222222222222222222222";
+
     #[test]
     fn weather_big_positions_fall_back_only_when_big_vector_is_empty() {
         assert_eq!(
@@ -7036,38 +6663,10 @@ mod tests {
     fn production_frame_with_selected_present() -> ProductionRenderFrame {
         ProductionRenderFrame {
             schema: SCHEMA.into(),
-            authority: RenderAuthority {
-                process_id: 7,
-                process_start_nonce: 8,
-                observer_installed_qpc: 9,
-                d3d_device_created_qpc: 10,
-                first_creation_sequence: 1,
-                hook_epoch_nonce: 11,
-                hook_set_receipt_sha256: "a".repeat(64),
-                capture_receipt_sha256: "b".repeat(64),
-                launch_epoch_sha256: compute_render_launch_epoch_sha256(
-                    7,
-                    8,
-                    9,
-                    10,
-                    1,
-                    11,
-                    &"a".repeat(64),
-                    &"b".repeat(64),
-                ),
-                effective_vfs_manifest_sha256: "2".repeat(64),
-                effect_catalog_sha256: "3".repeat(64),
-                entity_animation_catalog_sha256: "4".repeat(64),
-                recorded_input_variant: None,
-                recorded_input_receipt_sha256: None,
-                recorded_input_observation: None,
-                particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
-            },
             update_index: 16_959_360,
             first_sequence: 40,
             last_sequence: 42,
             presentation_qpc_frequency_hz: 10_000_000,
-            display_submit_index: Some("11".into()),
             selected_present: SelectedPresentReceipt::sealed(
                 1,
                 "c".repeat(64),
@@ -7097,7 +6696,166 @@ mod tests {
             o04_cities: None,
             o05_buildings: None,
             authenticated_ui_pass: None,
-            checkpoint: empty_checkpoint(42, 16_959_360, Some("11")),
+        }
+    }
+
+    fn census_membership_row(
+        sequence: u64,
+        update_index: u64,
+        strategic_region_id: u32,
+        snow_active: bool,
+    ) -> WeatherMembership {
+        WeatherMembership {
+            sequence,
+            update_index,
+            strategic_region_id,
+            rain_light_active: false,
+            rain_heavy_active: false,
+            snow_active,
+            blizzard_active: false,
+            sandstorm_active: false,
+            arctic_water_active: false,
+            region_value_i64_fixed_1e5: 123_456,
+            transition_expiry_game_hour_i32: 60_759_400,
+            airborne_runtime_code: if snow_active { 4 } else { 0 },
+            selection_seed_words: None,
+            visual_epoch: None,
+            weather_effect_token: None,
+            weather_position_source_content: content("terrain/weather/baseline.txt"),
+            ordered_variant_content: vec![],
+            ordered_positions: vec![],
+            ordered_weather_instances: vec![],
+            visibility_updates: vec![],
+            membership_sha256: "d".repeat(64),
+        }
+    }
+
+    /// kills: carrier.production_frame.checkpoint -- the derived per-region
+    /// census equals exactly what the retired RenderCheckpoint
+    /// weather_state_and_ordered_membership field carried for these sealed
+    /// submit rows (latest row per strategic region, region order).
+    #[test]
+    fn derived_weather_census_equals_the_retired_checkpoint_carrier() {
+        let submits = vec![
+            RenderSubmit {
+                global_order: 1,
+                camera_carrier: None,
+                ordered_static_map_programs: vec![],
+                authenticated_texture_snapshots: vec![],
+                s1_shadow: None,
+                particles: vec![],
+                particle_packet_set_sha256: "5".repeat(64),
+                entities: vec![],
+                rail_construction_arrows: vec![],
+                ordered_render_operations: vec![],
+                weather_membership: vec![
+                    census_membership_row(41, 16_959_360, 7, false),
+                    census_membership_row(42, 16_959_360, 3, true),
+                ],
+                political_textures: vec![],
+            },
+            RenderSubmit {
+                global_order: 2,
+                camera_carrier: None,
+                ordered_static_map_programs: vec![],
+                authenticated_texture_snapshots: vec![],
+                s1_shadow: None,
+                particles: vec![],
+                particle_packet_set_sha256: "6".repeat(64),
+                entities: vec![],
+                rail_construction_arrows: vec![],
+                ordered_render_operations: vec![],
+                weather_membership: vec![
+                    census_membership_row(43, 16_959_360, 7, true),
+                    census_membership_row(44, 16_959_360, 5, false),
+                ],
+                political_textures: vec![],
+            },
+        ];
+        // The retired carrier said exactly this: latest row per region
+        // (region 3 seq 42, region 5 seq 44, region 7 seq 43), in region
+        // order -- not the first rows, not submission order.
+        let retired_checkpoint_rows = vec![
+            census_membership_row(42, 16_959_360, 3, true),
+            census_membership_row(44, 16_959_360, 5, false),
+            census_membership_row(43, 16_959_360, 7, true),
+        ];
+        assert_eq!(
+            derive_weather_checkpoint_census(&submits).unwrap(),
+            retired_checkpoint_rows
+        );
+        let mut non_monotonic = submits.clone();
+        non_monotonic[1].weather_membership[0].sequence = 41;
+        assert!(derive_weather_checkpoint_census(&non_monotonic)
+            .unwrap_err()
+            .contains("non-monotonic"));
+    }
+
+    /// kills: carrier.production_frame.checkpoint,
+    /// carrier.production_frame.display_submit_index,
+    /// carrier.production_frame.authority, carrier.production_frame.m02_combat
+    /// -- the wire type no longer serialises
+    /// any of the four, and a frame that still carries one refuses to decode
+    /// instead of having it silently dropped.
+    ///
+    /// The envelope half looks INSIDE `"frame"`: encode_json wraps the frame in a
+    /// ProductionRenderWire ({schema, wire_schema, inline_blobs, frame}), so a
+    /// retired member would ride there and a check at the envelope root would pass
+    /// no matter what the type declares.
+    ///
+    /// The reader half runs against the undeduplicated `to_value` projection, not
+    /// the encoded envelope: encode_json replaces inline byte payloads with blob
+    /// references, so that form would fail to decode for a reason of its own and
+    /// the refusal would prove nothing. The positive control below is what makes
+    /// the refusals load-bearing.
+    #[test]
+    fn retired_production_frame_members_are_absent_from_the_wire() {
+        let frame = production_frame_with_selected_present();
+        let encoded = frame
+            .encode_json(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
+            .unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        let wire_frame = envelope
+            .get("frame")
+            .and_then(serde_json::Value::as_object)
+            .expect("the wire envelope carries the frame object");
+
+        let direct = serde_json::to_value(&frame).unwrap();
+        let direct_object = direct
+            .as_object()
+            .expect("a production frame serialises as a JSON object")
+            .clone();
+        assert!(
+            serde_json::from_value::<ProductionRenderFrame>(direct).is_ok(),
+            "the projection must decode on its own, or the refusals below prove nothing"
+        );
+
+        // m02_combat is lane RJ's XMAP14 retirement. It sits here for the same
+        // reason as the other three, but it is the THIRD assertion below - the
+        // injected-key decode refusal - that catches it, not either absence
+        // check: the field was an Option with skip_serializing_if, so
+        // re-declaring it would leave a None frame serialising byte-for-byte as
+        // it does now and both absence assertions would still pass. What breaks
+        // is that `"m02_combat": null` would then decode as None instead of
+        // being refused by deny_unknown_fields.
+        for retired in ["checkpoint", "display_submit_index", "authority", "m02_combat"] {
+            assert!(
+                !wire_frame.contains_key(retired),
+                "retired production-frame member {retired} is back on the wire"
+            );
+            assert!(
+                !direct_object.contains_key(retired),
+                "retired production-frame member {retired} is back on the frame type"
+            );
+            let mut readmitted = direct_object.clone();
+            readmitted.insert(retired.to_string(), serde_json::Value::Null);
+            assert!(
+                serde_json::from_value::<ProductionRenderFrame>(serde_json::Value::Object(
+                    readmitted
+                ))
+                .is_err(),
+                "a frame still carrying {retired} decoded instead of refusing"
+            );
         }
     }
 
@@ -7110,40 +6868,84 @@ mod tests {
         // carried presentation_qpc_ticks=500 on the RenderSubmit; the derived ticks equal that
         // carried value because the former wire law enforced
         // selected_qpc_ticks == submit.presentation_qpc_ticks.
+        // This test owns the DERIVATION-EQUALITY half of both claims (the derived value equals
+        // what the retired field carried). The re-admission half - putting either field back on
+        // the wire - is owned by `retired_submit_carriers_cannot_ride_the_wire` below, because
+        // these helpers keep answering whether or not the carrier returns.
         //
         // Lane RJ merge note: the fixture this test was written against was
         // `production_frame_with_m02()`, which went with the retired M02
         // carrier. `production_frame_with_selected_present()` is the same frame
-        // without that carrier - same sealed receipt (candidate 11, 500 ticks),
-        // same display submit index - so every assertion below still means what
-        // master wrote it to mean.
+        // without that carrier - same sealed receipt (candidate 11, 500 ticks) -
+        // so every assertion below still means what it was written to mean.
         let frame = production_frame_with_selected_present();
         assert_eq!(frame.selected_present.selected_candidate_id, 11);
         assert_eq!(frame.selected_present.selected_qpc_ticks, 500);
         assert_eq!(frame.retained_submit_identity(), Some(11));
         assert_eq!(frame.selected_presentation_qpc_ticks(), Some(500));
-        frame.validate().unwrap();
+        frame.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap();
 
-        let mut foreign_identity = production_frame_with_selected_present();
-        foreign_identity.display_submit_index = Some("12".into());
-        foreign_identity.checkpoint.last_submit_index = Some("12".into());
-        let error = foreign_identity.validate().unwrap_err();
+        // The derived identity is not a free-standing string any more: submit(id) answers only
+        // for the receipt's own candidate id, so the retained submit is reachable under 11 and
+        // under nothing else. A foreign id has no submit to name.
+        assert!(frame.submit(11).is_some());
+        assert_eq!(frame.submit(12), None);
+    }
+
+    /// kills: carrier.render_submit.submit_index, carrier.render_submit.presentation_qpc_ticks,
+    /// carrier.render_submit.ordered_scene_constant_buffers, carrier.render_submit.tree_runtime,
+    /// carrier.render_submit.entity_presentations, carrier.render_submit.ordered_draws,
+    /// carrier.render_submit.direct_visuals, carrier.render_submit.tiled_lights,
+    /// carrier.render_submit.camera_carrier_ordinal -- putting any
+    /// of these fields back on `RenderSubmit` puts it back on the wire, which is exactly the
+    /// re-admission the schema ladder exists to prevent. Declaring the field again makes the
+    /// serialized submit carry its key, and the derivation helpers next door would go on
+    /// answering, so this test - not those helpers - is what fails. The second half pins the
+    /// reader end: `RenderSubmit` is `deny_unknown_fields`, so a frame minted by an older or
+    /// patched writer that still carries one of these keys must refuse to decode rather than
+    /// drop it silently.
+    #[test]
+    fn retired_submit_carriers_cannot_ride_the_wire() {
+        let frame = production_frame_with_selected_present();
+        let value = serde_json::to_value(&frame.submits[0]).unwrap();
+        let object = value
+            .as_object()
+            .expect("a submit serializes as a JSON object")
+            .clone();
         assert!(
-            error.contains("display/checkpoint submit identity differs"),
-            "{error}"
+            serde_json::from_value::<RenderSubmit>(value).is_ok(),
+            "the projection must decode on its own, or the refusals below prove nothing"
         );
-
-        let mismatched = production_frame_with_selected_present();
-        assert_eq!(mismatched.submit(12), None);
-        assert_eq!(
-            mismatched
-                .display_submit_index
-                .as_deref()
-                .and_then(|value| value.parse::<u64>().ok())
-                .and_then(|id| mismatched.submit(id))
-                .map(|_| ()),
-            Some(())
-        );
+        for retired in [
+            "submit_index",
+            "presentation_qpc_ticks",
+            "ordered_scene_constant_buffers",
+            "tree_runtime",
+            "entity_presentations",
+            "ordered_draws",
+            "direct_visuals",
+            "tiled_lights",
+            // Lane RJ's XMAP03 retirement, added by the same law that put the
+            // eight above here: the carrier ordinal is derived from the sealed
+            // AuthenticatedCameraCarrier now and must not return to the wire.
+            // For this one the SERIALIZED-KEY assertion is the discriminating
+            // half: re-declaring it as u8 makes the key appear. Its injected-null
+            // arm is not independently load-bearing, because a u8 field rejects
+            // null whether or not it is declared.
+            "camera_carrier_ordinal",
+        ] {
+            assert!(
+                !object.contains_key(retired),
+                "retired carrier {retired} is back on the serialized submit"
+            );
+            let mut readmitted = object.clone();
+            readmitted.insert(retired.to_string(), serde_json::Value::Null);
+            assert!(
+                serde_json::from_value::<RenderSubmit>(serde_json::Value::Object(readmitted))
+                    .is_err(),
+                "a submit still carrying {retired} decoded instead of refusing"
+            );
+        }
     }
 
     #[test]
@@ -7163,7 +6965,7 @@ mod tests {
                 sha256: "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a".into(),
                 occupation_observation: None,
             });
-        let error = frame.validate().unwrap_err();
+        let error = frame.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
         assert!(
             error.contains("no exact selected-submit static shader-resource consumer"),
             "{error}"
@@ -7360,42 +7162,48 @@ mod tests {
     #[test]
     fn selected_present_receipt_is_required_exact_and_tamper_evident() {
         let frame = production_frame_with_selected_present();
-        frame.validate().unwrap();
+        frame.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap();
 
         let mut zero_candidates = frame.clone();
         zero_candidates.selected_present.candidate_count = 0;
         assert!(zero_candidates
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("differs from the sole retained submit/hour/cutoff"));
 
+        // The retarget case states the truth after BOTH retirements rather than a refusal that
+        // no longer exists. RenderSubmit::submit_index (retired on master) was the only value
+        // that could disagree with the receipt here, and the display/checkpoint identity join
+        // that stood in for it went out with the retired per-frame census, so the candidate id
+        // now simply IS the retained submit's identity: renaming it is a coherent frame, not a
+        // tamper the wire can see. What the wire still owes is that the rename is followed
+        // everywhere - the retained submit answers under the receipt's id and under no other.
+        // Re-admission of the retired carried twin is caught by
+        // `retired_submit_carriers_cannot_ride_the_wire`, not here.
         let mut retargeted = frame.clone();
         retargeted.selected_present.selected_candidate_id = 12;
-        // kills: carrier.render_submit.submit_index — the receipt's candidate id no longer has
-        // an on-submit twin to disagree with (submit_index retired), so a retarget first
-        // refuses at the display/checkpoint identity join, the surviving law binding the
-        // receipt; remove that check and this assert catches the drift because validate()
-        // then fails later with a different message from the display-submit lookup.
-        assert!(retargeted
-            .validate()
-            .unwrap_err()
-            .contains("display/checkpoint submit identity differs from selected Present"));
+        retargeted
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
+            .expect("a retarget renames the identity; nothing left on the wire disagrees with it");
+        assert_eq!(retargeted.retained_submit_identity(), Some(12));
+        assert!(retargeted.submit(12).is_some());
+        assert_eq!(retargeted.submit(11), None);
 
         let mut multi = frame.clone();
         multi.selected_present.candidate_count = 2;
         multi.selected_present.selected_ordinal = 1;
         multi.selected_present.candidate_set_sha256 = "d".repeat(64);
-        multi.validate().unwrap();
+        multi.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap();
         multi.selected_present.selected_ordinal = 0;
         assert!(multi
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("differs from the sole retained submit/hour/cutoff"));
 
         let mut wrong_raw = frame.clone();
         wrong_raw.selected_present.selected_game_hour_raw += 1;
         assert!(wrong_raw
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("differs from the sole retained submit/hour/cutoff"));
 
@@ -7424,19 +7232,18 @@ mod tests {
 
         let mut bad_receipt = frame;
         bad_receipt.selected_present.candidate_set_sha256 = "z".repeat(64);
-        assert!(bad_receipt.validate().unwrap_err().contains("SHA-256"));
+        assert!(bad_receipt.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err().contains("SHA-256"));
     }
 
     #[test]
     fn older_v3_without_optional_input_or_ui_pass_remains_compatible() {
         let frame = production_frame_with_selected_present();
-        let encoded = frame.encode_json().unwrap();
+        let encoded = frame.encode_json(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap();
 
         let value = serde_json::to_value(&frame).unwrap();
-        assert!(value.get("authority").is_some());
-        assert!(value["authority"].get("recorded_input_variant").is_none());
+        assert!(value["selected_present"].get("recorded_input_observation").is_none());
         assert!(value.get("authenticated_ui_pass").is_none());
-        assert_eq!(ProductionRenderFrame::decode_json(&encoded).unwrap(), frame);
+        assert_eq!(ProductionRenderFrame::decode_json(&encoded, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap(), frame);
     }
 
     fn shader() -> ShaderProgram {
@@ -7859,12 +7666,11 @@ mod tests {
 
     fn production_frame_with_exact_ui_pass() -> ProductionRenderFrame {
         let mut frame = production_frame_with_selected_present();
-        frame.authority.recorded_input_variant = Some(RecordedInputVariant::MouseKeyboard);
         let mut input_observation = RecordedInputObservationReceipt {
             executable_sha256: UI_A729_EXECUTABLE_SHA256.into(),
-            process_id: frame.authority.process_id,
-            process_start_nonce: frame.authority.process_start_nonce,
-            hook_epoch_nonce: frame.authority.hook_epoch_nonce,
+            process_id: 7,
+            process_start_nonce: 8,
+            hook_epoch_nonce: 11,
             observation_sequence: 1,
             prior_observation_qpc_ticks: frame.selected_present.selected_qpc_ticks - 3,
             selected_present_qpc_ticks: frame.selected_present.selected_qpc_ticks,
@@ -7880,9 +7686,7 @@ mod tests {
         };
         input_observation.observation_receipt_sha256 =
             input_observation.computed_receipt_sha256().unwrap();
-        frame.authority.recorded_input_receipt_sha256 =
-            Some(input_observation.observation_receipt_sha256.clone());
-        frame.authority.recorded_input_observation = Some(input_observation);
+        frame.selected_present.recorded_input_observation = Some(input_observation);
         let pipeline_draw = exact_hud_pipeline_draw();
         let target = pipeline_draw.output_state.ordered_color_targets[0].clone();
         let mut ui_pass_operations = Vec::new();
@@ -8069,10 +7873,12 @@ mod tests {
             producer_selection_receipt_sha256: "7".repeat(64),
             source_frontier_sha256: "8".repeat(64),
             recorded_input_receipt_sha256: frame
-                .authority
-                .recorded_input_receipt_sha256
-                .clone()
-                .unwrap(),
+                .selected_present
+                .recorded_input_observation
+                .as_ref()
+                .unwrap()
+                .observation_receipt_sha256
+                .clone(),
             active_mapmode_state: Some(ActiveMapmodeState {
                 mode_token: "modded_weather_mapmode".into(),
                 button_ordinal: 7,
@@ -8182,8 +7988,8 @@ mod tests {
     #[test]
     fn o04_semantic_carrier_round_trips_and_rejects_join_vfs_and_evidence_tamper() {
         let frame = production_frame_with_o04();
-        let encoded = frame.encode_json().unwrap();
-        assert_eq!(ProductionRenderFrame::decode_json(&encoded).unwrap(), frame);
+        let encoded = frame.encode_json(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap();
+        assert_eq!(ProductionRenderFrame::decode_json(&encoded, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap(), frame);
 
         let mut dangling = frame.clone();
         if let Some(RenderOutputRef::Entity { draw_order, .. }) =
@@ -8193,13 +7999,13 @@ mod tests {
         {
             *draw_order = 99;
         }
-        assert!(dangling.validate().unwrap_err().contains("ordered outputs"));
+        assert!(dangling.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err().contains("ordered outputs"));
 
         let mut mismatched_transform = frame.clone();
         mismatched_transform.o04_cities.as_mut().unwrap().cities[0].world_transform_4x4_f32_bits
             [12] = 11.0f32.to_bits();
         assert!(mismatched_transform
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("differs from entity submission"));
 
@@ -8208,7 +8014,7 @@ mod tests {
             .entity_asset
             .effective_vfs_manifest_sha256 = "f".repeat(64);
         assert!(wrong_vfs
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("content authority"));
 
@@ -8219,7 +8025,7 @@ mod tests {
             .unwrap()
             .evidence_manifest_sha256 = "e".repeat(64);
         assert!(wrong_evidence
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("evidence authority"));
     }
@@ -8227,8 +8033,8 @@ mod tests {
     #[test]
     fn exact_ui_pass_round_trips_and_rejects_gap_ref_ordinal_and_target_tamper() {
         let frame = production_frame_with_exact_ui_pass();
-        let encoded = frame.encode_json().unwrap();
-        assert_eq!(ProductionRenderFrame::decode_json(&encoded).unwrap(), frame);
+        let encoded = frame.encode_json(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap();
+        assert_eq!(ProductionRenderFrame::decode_json(&encoded, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap(), frame);
 
         let mut gap = frame.clone();
         gap.authenticated_ui_pass
@@ -8236,7 +8042,7 @@ mod tests {
             .unwrap()
             .ui_pass_operations
             .pop();
-        assert!(gap.validate().unwrap_err().contains("draw frontier"));
+        assert!(gap.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err().contains("draw frontier"));
 
         let mut wrong_ref = frame.clone();
         {
@@ -8250,7 +8056,7 @@ mod tests {
             command.ordinal = 858;
         }
         assert!(wrong_ref
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("not exact 0..N-1 order"));
 
@@ -8264,7 +8070,7 @@ mod tests {
             command.placement.destination_rect.right_i32 = 31;
         }
         assert!(wrong_target
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("identity SHA-256 mismatch"));
 
@@ -8293,7 +8099,7 @@ mod tests {
             .unwrap()
             .ui_pass_operations[0] = UiPassOperation::HudCommand { command: duplicate };
         assert!(duplicate_ref
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("identity is duplicated"));
 
@@ -8315,7 +8121,7 @@ mod tests {
         }
         ui_pass.pass_identity_sha256 = ui_pass.computed_identity_sha256().unwrap();
         assert!(incomplete_content_join
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("content index is invalid"));
 
@@ -8343,7 +8149,7 @@ mod tests {
         }
         ui_pass.pass_identity_sha256 = ui_pass.computed_identity_sha256().unwrap();
         assert!(missing_minmax_back
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("lacks exact back-texture"));
 
@@ -8375,7 +8181,7 @@ mod tests {
         }
         ui_pass.pass_identity_sha256 = ui_pass.computed_identity_sha256().unwrap();
         assert!(duplicate_minmax_index
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("indices are not distinct"));
 
@@ -8403,32 +8209,28 @@ mod tests {
         }
         ui_pass.pass_identity_sha256 = ui_pass.computed_identity_sha256().unwrap();
         assert!(unproven_back
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("unproven back texture"));
 
         let mut absent_input = production_frame_with_exact_ui_pass();
-        absent_input.authority.recorded_input_variant = None;
-        absent_input.authority.recorded_input_receipt_sha256 = None;
-        absent_input.authority.recorded_input_observation = None;
+        absent_input.selected_present.recorded_input_observation = None;
         assert!(absent_input
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("recorded input variant"));
 
         let mut backdated_input = production_frame_with_exact_ui_pass();
         let observation = backdated_input
-            .authority
+            .selected_present
             .recorded_input_observation
             .as_mut()
             .unwrap();
         observation.present_sample_started_qpc_ticks =
             observation.selected_present_qpc_ticks.saturating_sub(1);
         observation.observation_receipt_sha256 = observation.computed_receipt_sha256().unwrap();
-        backdated_input.authority.recorded_input_receipt_sha256 =
-            Some(observation.observation_receipt_sha256.clone());
         assert!(backdated_input
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("non-chronological"));
 
@@ -8439,9 +8241,18 @@ mod tests {
         // still completes before this frame's cutoff (fixture: selected 500, cutoff
         // 600; the foreign hour's sample ends at 402) — so the refusal can only come
         // from the equality clause, not the cutoff clause.
+        //
+        // The observation rides on SelectedPresentReceipt now, and it is the FIRST
+        // gate in validate() - ahead of every UI-pass join - so the clause named
+        // below is the one that refuses and the joins the mutation disturbs
+        // downstream are unreachable. The control on the line after the fixture is
+        // what makes that ordering argument load-bearing rather than assumed.
         let mut foreign_present_hour = production_frame_with_exact_ui_pass();
+        foreign_present_hour
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
+            .expect("the fixture is lawful before its observation is moved to another hour");
         let observation = foreign_present_hour
-            .authority
+            .selected_present
             .recorded_input_observation
             .as_mut()
             .unwrap();
@@ -8452,10 +8263,8 @@ mod tests {
         observation.present_sample_started_qpc_ticks = 401;
         observation.present_sample_completed_qpc_ticks = 402;
         observation.observation_receipt_sha256 = observation.computed_receipt_sha256().unwrap();
-        foreign_present_hour.authority.recorded_input_receipt_sha256 =
-            Some(observation.observation_receipt_sha256.clone());
         assert!(foreign_present_hour
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("crosses selected-Present cutoff"));
 
@@ -8464,8 +8273,11 @@ mod tests {
         // SHA-256, this join demands the portable canonical-JSON construction, and the
         // two agree only by collision.
         let mut wrong_construction = production_frame_with_exact_ui_pass();
+        wrong_construction
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
+            .expect("the fixture is lawful before the receipt construction is forged");
         let observation = wrong_construction
-            .authority
+            .selected_present
             .recorded_input_observation
             .as_mut()
             .unwrap();
@@ -8474,10 +8286,8 @@ mod tests {
             .replace_range(..1, if forged.starts_with('0') { "1" } else { "0" });
         observation.selected_present_receipt_sha256 = forged;
         observation.observation_receipt_sha256 = observation.computed_receipt_sha256().unwrap();
-        wrong_construction.authority.recorded_input_receipt_sha256 =
-            Some(observation.observation_receipt_sha256.clone());
         assert!(wrong_construction
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("crosses selected-Present cutoff"));
 
@@ -8496,7 +8306,7 @@ mod tests {
         let ui_pass = wrong_mapmode_vfs.authenticated_ui_pass.as_mut().unwrap();
         ui_pass.pass_identity_sha256 = ui_pass.computed_identity_sha256().unwrap();
         assert!(wrong_mapmode_vfs
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("mapmode VFS authority"));
     }
@@ -8518,9 +8328,13 @@ mod tests {
         pass.ui_pass_draw_count = MODDED_FRONTIER;
         pass.ui_pass_operations.truncate(MODDED_FRONTIER as usize);
         pass.pass_identity_sha256 = pass.computed_identity_sha256().unwrap();
-        frame.validate().unwrap();
-        let encoded = frame.encode_json().unwrap();
-        assert_eq!(ProductionRenderFrame::decode_json(&encoded).unwrap(), frame);
+        frame.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap();
+        let encoded = frame.encode_json(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap();
+        assert_eq!(
+            ProductionRenderFrame::decode_json(&encoded, TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
+                .unwrap(),
+            frame
+        );
 
         // kills: accepting a draw count that disagrees with the operations that
         // cover it. Master reached this through the M02 carrier's own
@@ -8530,7 +8344,7 @@ mod tests {
         pass.ui_pass_draw_count = MODDED_FRONTIER + 1;
         pass.pass_identity_sha256 = pass.computed_identity_sha256().unwrap();
         assert!(wrong_frontier
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("do not exactly cover the draw frontier"));
 
@@ -8542,7 +8356,7 @@ mod tests {
         pass.ui_pass_operations.swap(16, 17);
         pass.pass_identity_sha256 = pass.computed_identity_sha256().unwrap();
         assert!(wrong_dynamic_ordinal
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("0..N-1"));
     }
@@ -8573,8 +8387,8 @@ mod tests {
         assert_eq!(font_bindings[1].atlas_texture_content_indices, vec![4, 5]);
         assert_eq!(inline_icon_bindings.len(), 1);
         assert_eq!(inline_icon_bindings[0].texture_content_indices, vec![7]);
-        let encoded = frame.encode_json().unwrap();
-        assert_eq!(ProductionRenderFrame::decode_json(&encoded).unwrap(), frame);
+        let encoded = frame.encode_json(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap();
+        assert_eq!(ProductionRenderFrame::decode_json(&encoded, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap(), frame);
 
         let mut captured = production_frame_with_exact_ui_pass();
         let command = exact_ui_command_mut(&mut captured, 1);
@@ -8586,10 +8400,10 @@ mod tests {
         };
         *layout_inputs = TextLayoutInputs::CapturedRuntime;
         rehash_exact_ui_command_and_pass(&mut captured, 1);
-        captured.validate().unwrap();
-        let encoded = captured.encode_json().unwrap();
+        captured.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap();
+        let encoded = captured.encode_json(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap();
         assert_eq!(
-            ProductionRenderFrame::decode_json(&encoded).unwrap(),
+            ProductionRenderFrame::decode_json(&encoded, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap(),
             captured
         );
     }
@@ -8620,7 +8434,7 @@ mod tests {
                 _ => unreachable!(),
             }
             assert!(tampered
-                .validate()
+                .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
                 .unwrap_err()
                 .contains("command identity SHA-256 mismatch"));
         }
@@ -8635,7 +8449,7 @@ mod tests {
         };
         rgba[0] ^= 1;
         assert!(rgba_tamper
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("command identity SHA-256 mismatch"));
 
@@ -8652,7 +8466,7 @@ mod tests {
         };
         *wrap = !*wrap;
         assert!(layout_tamper
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("command identity SHA-256 mismatch"));
 
@@ -8673,7 +8487,7 @@ mod tests {
         font_bindings[0].font_identity.push_str("-tampered");
         command.command_identity_sha256 = command.computed_identity_sha256(&target).unwrap();
         assert!(pass_hash_tamper
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("UI-pass identity SHA-256 mismatch"));
 
@@ -8688,7 +8502,7 @@ mod tests {
         font_bindings[1].font_identity = font_bindings[0].font_identity.clone();
         rehash_exact_ui_command_and_pass(&mut duplicate_font, 1);
         assert!(duplicate_font
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("font binding identity/atlas list is invalid"));
 
@@ -8703,7 +8517,7 @@ mod tests {
         font_bindings[1].definition_content_index = 2;
         rehash_exact_ui_command_and_pass(&mut duplicate_index, 1);
         assert!(duplicate_index
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("content indices are not distinct"));
 
@@ -8718,7 +8532,7 @@ mod tests {
         font_bindings.clear();
         rehash_exact_ui_command_and_pass(&mut missing_font, 1);
         assert!(missing_font
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("no exact font binding"));
 
@@ -8737,7 +8551,7 @@ mod tests {
         inline_icon_bindings.clear();
         rehash_exact_ui_command_and_pass(&mut missing_icon, 1);
         assert!(missing_icon
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("content order/cover is not exact"));
     }
@@ -8745,13 +8559,13 @@ mod tests {
     #[test]
     fn m03_a48_portable_row_round_trips_and_rejects_join_proof_and_vfs_tamper() {
         let frame = production_frame_with_m03_a48_row();
-        let encoded = frame.encode_json().unwrap();
-        assert_eq!(ProductionRenderFrame::decode_json(&encoded).unwrap(), frame);
+        let encoded = frame.encode_json(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap();
+        assert_eq!(ProductionRenderFrame::decode_json(&encoded, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap(), frame);
 
         let mut wrong_join = frame.clone();
         wrong_join.m03_arrows.as_mut().unwrap().draws[0].members[0].member_ordinal = 1;
         assert!(wrong_join
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("draw-member order/range/key"));
 
@@ -8762,7 +8576,7 @@ mod tests {
             .unwrap()
             .static_semantic_proof_sha256 = "e".repeat(64);
         assert!(wrong_proof
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("promoted a729 static proof"));
 
@@ -8770,7 +8584,7 @@ mod tests {
         wrong_vfs.m03_arrows.as_mut().unwrap().used_content[0].effective_vfs_manifest_sha256 =
             "f".repeat(64);
         assert!(wrong_vfs
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("content authority"));
 
@@ -8779,7 +8593,7 @@ mod tests {
         draw.shader_program.source.effective_vfs_manifest_sha256 = "f".repeat(64);
         draw.payload_sha256 = draw.computed_payload_sha256().unwrap();
         assert!(nested_wrong_vfs
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("exact cover"));
     }
@@ -8808,8 +8622,8 @@ mod tests {
     #[test]
     fn exact_packet_and_palette_round_trip() {
         let frame = production_frame_with_static_entities_and_particles();
-        let encoded = frame.encode_json().unwrap();
-        let decoded = ProductionRenderFrame::decode_json(&encoded).unwrap();
+        let encoded = frame.encode_json(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap();
+        let decoded = ProductionRenderFrame::decode_json(&encoded, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap();
         assert_eq!(decoded, frame);
         exact_packet_and_palette_round_trip_tail(decoded, encoded);
     }
@@ -8819,38 +8633,10 @@ mod tests {
         let canonical_packet = canonical_particle_packet([0; 16], 2, 4, 0, 0, 4);
         let mut frame = ProductionRenderFrame {
             schema: SCHEMA.into(),
-            authority: RenderAuthority {
-                process_id: 7,
-                process_start_nonce: 8,
-                observer_installed_qpc: 9,
-                d3d_device_created_qpc: 10,
-                first_creation_sequence: 1,
-                hook_epoch_nonce: 11,
-                hook_set_receipt_sha256: "a".repeat(64),
-                capture_receipt_sha256: "b".repeat(64),
-                launch_epoch_sha256: compute_render_launch_epoch_sha256(
-                    7,
-                    8,
-                    9,
-                    10,
-                    1,
-                    11,
-                    &"a".repeat(64),
-                    &"b".repeat(64),
-                ),
-                effective_vfs_manifest_sha256: "2".repeat(64),
-                effect_catalog_sha256: "3".repeat(64),
-                entity_animation_catalog_sha256: "4".repeat(64),
-                recorded_input_variant: None,
-                recorded_input_receipt_sha256: None,
-                recorded_input_observation: None,
-                particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
-            },
             update_index: 16_959_360,
             first_sequence: 40,
             last_sequence: 42,
             presentation_qpc_frequency_hz: 10_000_000,
-            display_submit_index: Some("11".into()),
             selected_present: SelectedPresentReceipt::sealed(
                 1,
                 "c".repeat(64),
@@ -8929,7 +8715,6 @@ mod tests {
             o04_cities: None,
             o05_buildings: None,
             authenticated_ui_pass: None,
-            checkpoint: empty_checkpoint(42, 16_959_360, Some("11")),
         };
         let gs = vec![9, 10, 11, 12];
         frame.submits[0].particles[0].shader_program.geometry_shader =
@@ -9038,7 +8823,9 @@ mod tests {
             .seal_payload_hashes()
             .unwrap();
         let legacy_encoded = serde_json::to_vec(&legacy_mapname).unwrap();
-        let legacy_decoded = ProductionRenderFrame::decode_json(&legacy_encoded).unwrap();
+        let legacy_decoded =
+            ProductionRenderFrame::decode_json(&legacy_encoded, TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
+                .unwrap();
         assert_eq!(
             legacy_decoded.submits[0].ordered_static_map_programs[0]
                 .mapname_d80_state()
@@ -9059,8 +8846,11 @@ mod tests {
             .seal_payload_hashes()
             .unwrap();
         let authenticated_encoded = serde_json::to_vec(&authenticated_mapname).unwrap();
-        let authenticated_decoded =
-            ProductionRenderFrame::decode_json(&authenticated_encoded).unwrap();
+        let authenticated_decoded = ProductionRenderFrame::decode_json(
+            &authenticated_encoded,
+            TEST_EFFECTIVE_VFS_MANIFEST_SHA256,
+        )
+        .unwrap();
         assert_eq!(
             authenticated_decoded.submits[0].ordered_static_map_programs[0]
                 .mapname_d80_state()
@@ -9080,7 +8870,7 @@ mod tests {
             .seal_payload_hashes()
             .unwrap();
         let forged_encoded = serde_json::to_vec(&forged_non_mapname).unwrap();
-        assert!(ProductionRenderFrame::decode_json(&forged_encoded)
+        assert!(ProductionRenderFrame::decode_json(&forged_encoded, TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("semantic is bound to a non-mapname static draw"));
 
@@ -9096,8 +8886,11 @@ mod tests {
             .seal_payload_hashes()
             .unwrap();
         let incomplete_encoded = serde_json::to_vec(&incomplete_stage).unwrap();
-        assert!(ProductionRenderFrame::decode_json(&incomplete_encoded)
-            .unwrap_err()
+        assert!(ProductionRenderFrame::decode_json(
+            &incomplete_encoded,
+            TEST_EFFECTIVE_VFS_MANIFEST_SHA256
+        )
+        .unwrap_err()
             .contains("lacks complete VS+PS coverage"));
 
         assert_eq!(
@@ -9117,17 +8910,15 @@ mod tests {
                 .byte_offset,
             u32::MAX
         );
-        let mut authority_tampered = decoded.clone();
-        authority_tampered.authority.process_start_nonce += 1;
-        assert!(authority_tampered
-            .validate()
+        assert!(decoded
+            .validate("not-a-digest")
             .unwrap_err()
-            .contains("launch-epoch SHA-256 mismatch"));
+            .contains("SHA-256 is not 64 lowercase hexadecimal"));
         let mut identity_tampered = decoded.clone();
         identity_tampered.submits[0].ordered_static_map_programs[0].pass_token =
             "opaque-pass:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".into();
         assert!(identity_tampered
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("program payload SHA-256 mismatch"));
         let mut selector_tampered = decoded.clone();
@@ -9136,19 +8927,19 @@ mod tests {
             .native_selection
             .mesh_draw_list_index += 1;
         assert!(selector_tampered
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("selector-native identity SHA-256 mismatch"));
         let mut asset_substituted = decoded.clone();
         asset_substituted.submits[0].entities[0].resolved_entity_sha256 = "1".repeat(64);
         assert!(asset_substituted
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("does not match admitted asset payload hash"));
         let mut flags_substituted = decoded.clone();
         flags_substituted.submits[0].entities[0].state_flags ^= 1 << 16;
         assert!(flags_substituted
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("do not equal the selector-native packed tuple"));
         let mut particle_identity_tampered = decoded.clone();
@@ -9156,7 +8947,7 @@ mod tests {
             .content_identity
             .subsystem_selector_u32 += 1;
         assert!(particle_identity_tampered
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("particle content identity SHA-256 mismatch"));
         let mut texture_substituted = decoded.clone();
@@ -9169,7 +8960,7 @@ mod tests {
                 .computed_sha256()
                 .unwrap();
         assert!(texture_substituted
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("selected texture winner is absent"));
         let mut half_pixel_substituted = decoded.clone();
@@ -9182,7 +8973,7 @@ mod tests {
                 .computed_sha256()
                 .unwrap();
         assert!(half_pixel_substituted
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("half-pixel bits do not match"));
         // kills: carrier.render_submit.submit_index — the submit no longer carries its
@@ -9202,7 +8993,7 @@ mod tests {
             .computed_payload_sha256()
             .unwrap();
         assert!(tampered
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .unwrap_err()
             .contains("operation payload SHA-256 mismatch"));
     }
@@ -9210,7 +9001,7 @@ mod tests {
     #[test]
     fn v2_carrier_fails_with_explicit_no_exact_conversion_error() {
         let error =
-            ProductionRenderFrame::decode_json(br#"{"schema":"hoi4.production-render-submit.v2"}"#)
+            ProductionRenderFrame::decode_json(br#"{"schema":"hoi4.production-render-submit.v2"}"#, TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
                 .unwrap_err();
         assert!(error.contains("incompatible"));
         assert!(error.contains("exact conversion is unavailable"));
@@ -9220,7 +9011,7 @@ mod tests {
     #[test]
     fn v3_carrier_fails_instead_of_reinterpreting_ordinal_as_f32_bits() {
         let error =
-            ProductionRenderFrame::decode_json(br#"{"schema":"hoi4.production-render-submit.v3"}"#)
+            ProductionRenderFrame::decode_json(br#"{"schema":"hoi4.production-render-submit.v3"}"#, TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
                 .unwrap_err();
         assert!(error.contains("incompatible"));
         assert!(error.contains("mislabelled as interpolation f32 bits"));
@@ -9316,68 +9107,79 @@ mod tests {
     #[test]
     fn decode_value_equals_decode_json_and_rejects_wrong_schemas() {
         let frame = production_frame_with_selected_present();
-        let encoded = frame.encode_json().unwrap();
+        let encoded = frame.encode_json(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap();
 
         let bare = serde_json::to_value(&frame).unwrap();
         assert_eq!(
-            ProductionRenderFrame::decode_value(&bare).unwrap(),
-            ProductionRenderFrame::decode_json(&encoded).unwrap()
+            ProductionRenderFrame::decode_value(&bare, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap(),
+            ProductionRenderFrame::decode_json(&encoded, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap()
         );
 
         let envelope: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         assert!(envelope.get("wire_schema").is_some());
-        let error = ProductionRenderFrame::decode_value(&envelope).unwrap_err();
+        let error = ProductionRenderFrame::decode_value(&envelope, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
         assert!(
             error.contains("unknown field `frame`"),
             "unexpected: {error}"
         );
 
         let v2 = serde_json::json!({"schema": INCOMPATIBLE_ENTITY_SELECTOR_SCHEMA});
-        let error = ProductionRenderFrame::decode_value(&v2).unwrap_err();
+        let error = ProductionRenderFrame::decode_value(&v2, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
         assert!(error.contains("incompatible"));
         let v3 = serde_json::json!({"schema": INCOMPATIBLE_CAMERA_CARRIER_SCHEMA});
-        let error = ProductionRenderFrame::decode_value(&v3).unwrap_err();
+        let error = ProductionRenderFrame::decode_value(&v3, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
         assert!(error.contains("camera carrier"));
         let v4 = serde_json::json!({"schema": INCOMPATIBLE_SNOW_MUD_CARRIER_SCHEMA});
-        let error = ProductionRenderFrame::decode_value(&v4).unwrap_err();
+        let error = ProductionRenderFrame::decode_value(&v4, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
         assert!(error.contains("SnowMudData"));
         let v5 = serde_json::json!({"schema": INCOMPATIBLE_TREE_RUNTIME_SCHEMA});
-        let error = ProductionRenderFrame::decode_value(&v5).unwrap_err();
+        let error = ProductionRenderFrame::decode_value(&v5, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
         assert!(error.contains("C07 tree visibility/model/LOD"));
         let v6 = serde_json::json!({"schema": INCOMPATIBLE_S1_SHADOW_SCHEMA});
-        let error = ProductionRenderFrame::decode_value(&v6).unwrap_err();
+        let error = ProductionRenderFrame::decode_value(&v6, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
         assert!(error.contains("L02/L03 shadow projection"));
         let v7 = serde_json::json!({"schema": INCOMPATIBLE_CAMERA_EVENT_SCHEMA});
-        let error = ProductionRenderFrame::decode_value(&v7).unwrap_err();
+        let error = ProductionRenderFrame::decode_value(&v7, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
         assert!(error.contains("raw C03 camera-event producer batches"));
         let v8 = serde_json::json!({"schema": INCOMPATIBLE_SNOW_MUD_PRESENT_LINK_SCHEMA});
-        let error = ProductionRenderFrame::decode_value(&v8).unwrap_err();
+        let error = ProductionRenderFrame::decode_value(&v8, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
         assert!(error.contains("selected-Present candidate-set/cutoff receipt"));
         let v9 = serde_json::json!({"schema": INCOMPATIBLE_WEATHER_CARRIER_SCHEMA});
-        let error = ProductionRenderFrame::decode_value(&v9).unwrap_err();
+        let error = ProductionRenderFrame::decode_value(&v9, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
         assert!(error.contains("weather placement/content/visibility"));
         let v10 = serde_json::json!({"schema": INCOMPATIBLE_SNOW_MUD_FADE_SCHEMA});
-        let error = ProductionRenderFrame::decode_value(&v10).unwrap_err();
+        let error = ProductionRenderFrame::decode_value(&v10, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
         assert!(error.contains("reflected SnowMudFade consumers"));
         let v11 = serde_json::json!({"schema": INCOMPATIBLE_RECORDED_INPUT_OBSERVATION_SCHEMA});
-        let error = ProductionRenderFrame::decode_value(&v11).unwrap_err();
+        let error = ProductionRenderFrame::decode_value(&v11, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
         assert!(error.contains("recorded-input variant"));
+        let v16 = serde_json::json!({"schema": INCOMPATIBLE_PRODUCTION_FRAME_CENSUS_SCHEMA});
+        let error = ProductionRenderFrame::decode_value(&v16, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
+        // Every member the bump retires has to be NAMED by the refusal, or an
+        // operator reading it cannot tell which carrier made their recording stale.
+        assert!(error.contains("retired per-frame RenderCheckpoint census"), "{error}");
+        assert!(error.contains("display_submit_index"), "{error}");
+        assert!(error.contains("per-frame RenderAuthority block"), "{error}");
         let v12 = serde_json::json!({"schema": INCOMPATIBLE_AUTHENTICATED_TEXTURE_SNAPSHOT_SCHEMA});
-        let error = ProductionRenderFrame::decode_value(&v12).unwrap_err();
+        let error = ProductionRenderFrame::decode_value(&v12, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
         assert!(error.contains("engine-generated textures"));
 
-        // kills: dropping the v13 refusal would let retired tiled point-light
+        // kills: dropping the v15 refusal would let retired tiled point-light
         // payload carriers and live texture digests back through decode as if
         // they were current-schema frames.
-        let v13_tiled = serde_json::json!({"schema": INCOMPATIBLE_TILED_LIGHT_PAYLOAD_SCHEMA});
-        let error = ProductionRenderFrame::decode_value(&v13_tiled).unwrap_err();
+        let v15_tiled = serde_json::json!({"schema": INCOMPATIBLE_TILED_LIGHT_PAYLOAD_SCHEMA});
+        let error =
+            ProductionRenderFrame::decode_value(&v15_tiled, TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
+                .unwrap_err();
         assert!(error.contains("retired tiled point-light payload carrier"), "{error}");
         // kills: silent re-admission of the retired always-empty
         // entity-presentation / direct-visual producer carriers - a v13 frame
         // must refuse with the NAMED incompatibility (exact message below),
         // never parse and never fall out as a generic unsupported-schema error.
         let v13 = serde_json::json!({"schema": INCOMPATIBLE_PRESENTATION_CARRIER_SCHEMA});
-        let error = ProductionRenderFrame::decode_value(&v13).unwrap_err();
+        let error =
+            ProductionRenderFrame::decode_value(&v13, TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
+                .unwrap_err();
         assert!(error.contains(INCOMPATIBLE_PRESENTATION_CARRIER_SCHEMA), "{error}");
         assert!(error.contains("always-empty entity-presentation"), "{error}");
         assert!(
@@ -9391,13 +9193,15 @@ mod tests {
         // runtime draw list below), never parse and never fall out as a
         // generic unsupported-schema error.
         let v14 = serde_json::json!({"schema": INCOMPATIBLE_DERIVED_RUNTIME_CARRIER_SCHEMA});
-        let error = ProductionRenderFrame::decode_value(&v14).unwrap_err();
+        let error =
+            ProductionRenderFrame::decode_value(&v14, TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
+                .unwrap_err();
         assert!(error.contains("ordered runtime draw list"), "{error}");
         let unknown = serde_json::json!({"schema": "hoi4.production-render-submit.v99"});
-        let error = ProductionRenderFrame::decode_value(&unknown).unwrap_err();
+        let error = ProductionRenderFrame::decode_value(&unknown, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
         assert!(error.contains("unsupported production render schema"));
         let missing = serde_json::json!({"not_schema": true});
-        let error = ProductionRenderFrame::decode_value(&missing).unwrap_err();
+        let error = ProductionRenderFrame::decode_value(&missing, TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
         assert!(error.contains("no string schema"));
     }
 
@@ -9467,38 +9271,10 @@ mod tests {
         truncated_packet.pop();
         let frame = ProductionRenderFrame {
             schema: SCHEMA.into(),
-            authority: RenderAuthority {
-                process_id: 7,
-                process_start_nonce: 8,
-                observer_installed_qpc: 9,
-                d3d_device_created_qpc: 10,
-                first_creation_sequence: 1,
-                hook_epoch_nonce: 11,
-                hook_set_receipt_sha256: "a".repeat(64),
-                capture_receipt_sha256: "b".repeat(64),
-                launch_epoch_sha256: compute_render_launch_epoch_sha256(
-                    7,
-                    8,
-                    9,
-                    10,
-                    1,
-                    11,
-                    &"a".repeat(64),
-                    &"b".repeat(64),
-                ),
-                effective_vfs_manifest_sha256: "2".repeat(64),
-                effect_catalog_sha256: "3".repeat(64),
-                entity_animation_catalog_sha256: "4".repeat(64),
-                recorded_input_variant: None,
-                recorded_input_receipt_sha256: None,
-                recorded_input_observation: None,
-                particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
-            },
             update_index: 16_959_360,
             first_sequence: 0,
             last_sequence: 0,
             presentation_qpc_frequency_hz: 10_000_000,
-            display_submit_index: Some("1".into()),
             selected_present: SelectedPresentReceipt::sealed(
                 1,
                 "c".repeat(64),
@@ -9559,9 +9335,8 @@ mod tests {
             o04_cities: None,
             o05_buildings: None,
             authenticated_ui_pass: None,
-            checkpoint: empty_checkpoint(0, 16_959_360, Some("1")),
         };
-        assert!(frame.validate().unwrap_err().contains("112"));
+        assert!(frame.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err().contains("112"));
     }
 
     #[test]
@@ -9653,38 +9428,6 @@ mod tests {
             .contains("selected render-target format/mip"));
     }
 
-    fn empty_checkpoint(
-        last_sequence: u64,
-        last_update: u64,
-        last_submit: Option<&str>,
-    ) -> RenderCheckpoint {
-        RenderCheckpoint {
-            last_sequence,
-            last_update_index: last_update,
-            last_submit_index: last_submit.map(str::to_string),
-            next_stable_ids: BTreeMap::new(),
-            active_effect_lifecycle: vec![],
-            active_light_lifecycle: vec![],
-            weather_state_and_ordered_membership: vec![],
-            active_effect_set_sha256: "6".repeat(64),
-            ordered_particle_packets_sha256: "7".repeat(64),
-            ordered_entity_submissions_sha256: "8".repeat(64),
-            ordered_light_submissions_sha256: "a".repeat(64),
-            weather_state_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_membership_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_lifecycle_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_visibility_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            ordered_weather_packets_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_composition_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-        }
-    }
-
     fn rebind_first_shader_resource(draw: &mut StaticMapDraw, source: StaticShaderResourceSource) {
         draw.ordered_shader_resources[0].source = source;
         draw.payload_sha256 = draw.computed_payload_sha256().unwrap();
@@ -9770,7 +9513,7 @@ mod tests {
                 .submits
                 .iter()
                 .all(|submit| submit.authenticated_texture_snapshots.is_empty()));
-            let error = frame.validate().unwrap_err();
+            let error = frame.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
             assert_eq!(
                 error,
                 format!(
@@ -9790,7 +9533,7 @@ mod tests {
                     view: texture().view,
                 },
             );
-            let error = frame.validate().unwrap_err();
+            let error = frame.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
             assert_eq!(
                 error,
                 format!("{carrier} draw references an absent political texture packet"),
@@ -9807,7 +9550,7 @@ mod tests {
                     view: texture().view,
                 },
             );
-            let error = frame.validate().unwrap_err();
+            let error = frame.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
             assert_eq!(
                 format!(
                     "{carrier} draw binds a tiled point-light index texture, but no lawful payload exists until the owner proves the semantic point-light census"
@@ -9829,7 +9572,7 @@ mod tests {
                     },
                 },
             );
-            let error = frame.validate().unwrap_err();
+            let error = frame.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
             let expected = if carrier == "UI-pass HUD" {
                 format!("{carrier} draw binds a prepared-target SRV with no authenticated producer position in the render-operation order")
             } else {
@@ -9913,7 +9656,7 @@ mod tests {
             .into_iter()
             .collect();
         frame
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .expect("an M03 draw may sample the target its exact preceding static draw wrote");
 
         let mut wrong = frame;
@@ -9929,7 +9672,7 @@ mod tests {
             },
         );
         assert_eq!(
-            wrong.validate().unwrap_err(),
+            wrong.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err(),
             "prepared-target SRV does not name its exact preceding last writer"
         );
     }
@@ -9977,7 +9720,7 @@ mod tests {
             });
 
         assert_eq!(
-            frame.validate().unwrap_err(),
+            frame.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err(),
             "prepared-target SRV does not name its exact preceding last writer"
         );
 
@@ -9996,7 +9739,7 @@ mod tests {
             },
         );
         frame
-            .validate()
+            .validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256)
             .expect("an M03 draw may sample the target the preceding M03 draw wrote");
     }
 
@@ -10005,7 +9748,7 @@ mod tests {
         for carrier in ["M03", "UI-pass HUD"] {
             let frame = frame_with_side_carrier_source(carrier, snow_mud_source());
             assert!(frame.snow_mud_texture.is_none());
-            let error = frame.validate().unwrap_err();
+            let error = frame.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
             assert_eq!(
                 error, "selected-submit SnowMudTexture source has no H packet",
                 "{carrier}"
@@ -10020,7 +9763,7 @@ mod tests {
                 "M03" => production_frame_with_m03_a48_row(),
                 _ => production_frame_with_exact_ui_pass(),
             };
-            frame.validate().unwrap_or_else(|error| {
+            frame.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_or_else(|error| {
                 panic!("{carrier} control frame must remain valid: {error}")
             });
 
@@ -10058,7 +9801,7 @@ mod tests {
                 }
                 m03.used_content.sort();
             }
-            let error = frame.validate().unwrap_err();
+            let error = frame.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err();
             assert!(error.contains("content authority"), "{carrier}: {error}");
         }
     }
@@ -10066,7 +9809,7 @@ mod tests {
     #[test]
     fn submitted_draw_content_authority_is_bound_to_the_frame_manifest() {
         let base = production_frame_with_static_entities_and_particles();
-        base.validate().expect("baseline frame is valid");
+        base.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).expect("baseline frame is valid");
 
         let mut foreign = base.clone();
         let StaticMapCommand::Draw { draw } =
@@ -10079,7 +9822,7 @@ mod tests {
             .seal_payload_hashes()
             .unwrap();
         assert_eq!(
-            foreign.validate().unwrap_err(),
+            foreign.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err(),
             "static map draw content authority differs from production frame"
         );
 
@@ -10088,7 +9831,7 @@ mod tests {
             .content
             .effective_vfs_manifest_sha256 = "9".repeat(64);
         assert_eq!(
-            foreign.validate().unwrap_err(),
+            foreign.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err(),
             "entity content authority differs from production frame"
         );
 
@@ -10098,7 +9841,7 @@ mod tests {
             .mesh
             .effective_vfs_manifest_sha256 = "9".repeat(64);
         assert_eq!(
-            foreign.validate().unwrap_err(),
+            foreign.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err(),
             "entity content authority differs from production frame"
         );
 
@@ -10108,7 +9851,7 @@ mod tests {
             .source
             .effective_vfs_manifest_sha256 = "9".repeat(64);
         assert_eq!(
-            foreign.validate().unwrap_err(),
+            foreign.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err(),
             "particle content authority differs from production frame"
         );
 
@@ -10123,7 +9866,7 @@ mod tests {
             .effective_vfs_manifest_sha256 = "9".repeat(64);
         particle.content_identity_sha256 = particle.content_identity.computed_sha256().unwrap();
         assert_eq!(
-            foreign.validate().unwrap_err(),
+            foreign.validate(TEST_EFFECTIVE_VFS_MANIFEST_SHA256).unwrap_err(),
             "particle content authority differs from production frame"
         );
     }

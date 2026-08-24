@@ -90,8 +90,9 @@ fn emit(feed: &Wave2Feed) -> SidecarEmission {
 
 /// Read this carrier's producer off the fold (lane GP-U16).
 ///
-/// The producer is domain 77's retained render frame for THIS hour: its
-/// checkpoint holds the per-region weather-membership census, and
+/// The producer is domain 77's retained render frame for THIS hour: the
+/// per-region weather-membership census is derived by folding its retained
+/// submits, and
 /// `mint_weather_visual_lifecycle` turns that census into the envelope. Every
 /// rule about what the envelope may say lives in the lane crate beside the
 /// capture that produced the rows; this function only decides whether an hour
@@ -149,11 +150,10 @@ fn produce(fold: &WorldFold) -> Result<Value, Option<String>> {
             "the retained domain-77 render frame's hour {frame_hour} is not a snapshot hour index"
         )));
     };
-    // The checkpoint census is the deduplicated per-region view the collector
-    // folds from the selected submit, so it is the one place a whole-map census
-    // exists. Only that array is decoded: the frame itself carries texture and
-    // draw payloads that this carrier has no use for and that no hour should
-    // pay to re-materialise.
+    // The per-region weather census is derived by folding the retained
+    // submits' weather membership rows (latest row per strategic region), the
+    // exact fold that used to seal the retired RenderCheckpoint carrier, so
+    // no whole-map census has to ride the wire.
     let Some(census) = census_from_frame(frame) else {
         return Err(Some(
             "the retained domain-77 render frame carries no decodable weather census".into(),
@@ -163,57 +163,74 @@ fn produce(fold: &WorldFold) -> Result<Value, Option<String>> {
         .map_err(|refusal| Some(refusal.to_string()))
 }
 
-/// The census the collector folded into this frame's checkpoint.
+/// The census folded from this frame's retained submits.
 ///
-/// Separate from [`produce`] so the path into the projected frame — two key
-/// names that exist nowhere else in this crate — can be tested against the
-/// wire type itself rather than against a hand-written object that would agree
-/// with a typo.
+/// Separate from [`produce`] so the path into the projected frame — the
+/// `submits` key, which exists nowhere else in this crate — can be tested
+/// against the wire type itself rather than against a hand-written object
+/// that would agree with a typo.
 fn census_from_frame(frame: &Value) -> Option<Vec<WeatherMembership>> {
-    let census = frame
-        .get("checkpoint")?
-        .get("weather_state_and_ordered_membership")?;
-    Vec::<WeatherMembership>::deserialize(census).ok()
+    let submits = Vec::<portable_render_stream::RenderSubmit>::deserialize(frame.get("submits")?).ok();
+    portable_render_stream::derive_weather_checkpoint_census(&submits?).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use portable_render_stream::SCHEMA;
 
-    /// kills: a typo or a rename in either key of the census path. The frame
-    /// this walks is `serde_json::to_value` of the REAL wire type, exactly as
+    /// kills: a typo or a rename in the census path. The frame this walks is
+    /// `serde_json::to_value` of the REAL wire type, exactly as
     /// `world_fold.rs::fold_production_render` projects it, so renaming
-    /// `RenderCheckpoint::weather_state_and_ordered_membership` upstream fails
+    /// `ProductionRenderFrame::submits` or the membership rows upstream fails
     /// here instead of turning every hour's carrier silently absent.
     ///
     /// It deliberately does NOT assert an envelope: what the census may say is
     /// the lane crate's contract and is tested there. This test owns exactly
-    /// the two key names.
+    /// the derivation from the projected submits.
     #[test]
     fn the_census_path_matches_the_projected_frame() {
-        let checkpoint = portable_render_stream::RenderCheckpoint {
-            last_sequence: 1,
-            last_update_index: 1,
-            last_submit_index: None,
-            next_stable_ids: Default::default(),
-            active_effect_lifecycle: Vec::new(),
-            active_light_lifecycle: Vec::new(),
-            weather_state_and_ordered_membership: Vec::new(),
-            active_effect_set_sha256: String::new(),
-            ordered_particle_packets_sha256: String::new(),
-            ordered_entity_submissions_sha256: String::new(),
-            ordered_light_submissions_sha256: String::new(),
-            weather_state_sha256: String::new(),
-            weather_membership_sha256: String::new(),
-            weather_lifecycle_sha256: String::new(),
-            weather_visibility_sha256: String::new(),
-            ordered_weather_packets_sha256: String::new(),
-            weather_composition_sha256: String::new(),
-        };
-        let frame = serde_json::json!({
-            "checkpoint": serde_json::to_value(&checkpoint).expect("checkpoint projects"),
+        let submit = serde_json::json!({
+            "global_order": 1,
+            "particles": [],
+            "particle_packet_set_sha256": "6".repeat(64),
+            "entities": [],
+            "weather_membership": [{
+                "sequence": "41",
+                "update_index": "16959360",
+                "strategic_region_id": 3,
+                "rain_light_active": false,
+                "rain_heavy_active": false,
+                "snow_active": true,
+                "blizzard_active": false,
+                "sandstorm_active": false,
+                "arctic_water_active": false,
+                "region_value_i64_fixed_1e5": 0,
+                "transition_expiry_game_hour_i32": 0,
+                "airborne_runtime_code": 4,
+                "weather_position_source_content": {
+                    "effective_vfs_manifest_sha256": "2".repeat(64),
+                    "normalized_game_relative_path": "terrain/weather/baseline.txt",
+                    "winning_layer_ordinal": 0,
+                    "layer_kind": "base",
+                    "layer_id": "base",
+                    "source_sha256": "c".repeat(64),
+                    "payload_sha256": "c".repeat(64),
+                    "payload_bytes": 1
+                },
+                "ordered_variant_content": [],
+                "ordered_positions": [],
+                "ordered_weather_instances": [],
+                "visibility_updates": [],
+                "membership_sha256": "d".repeat(64)
+            }],
+            "political_textures": []
         });
-        assert_eq!(census_from_frame(&frame), Some(Vec::new()));
+        let frame = serde_json::json!({ "submits": [submit] });
+        let census = census_from_frame(&frame).expect("census derives");
+        assert_eq!(census.len(), 1);
+        assert_eq!(census[0].strategic_region_id, 3);
+        assert!(SCHEMA.starts_with("hoi4.production-render-submit."));
         assert_eq!(census_from_frame(&serde_json::json!({})), None);
     }
 }

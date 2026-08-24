@@ -196,17 +196,8 @@ impl AuthenticatedStaticProgramSet {
 
 pub fn portable_render_authority(
     capture: &RawRenderCatalogCapture,
-    effective_vfs_manifest_sha256: String,
-    effect_catalog_sha256: String,
-    entity_animation_catalog_sha256: String,
 ) -> Result<RenderAuthority, CatalogBuildError> {
-    portable_render_authority_with_input(
-        capture,
-        effective_vfs_manifest_sha256,
-        effect_catalog_sha256,
-        entity_animation_catalog_sha256,
-        None,
-    )
+    portable_render_authority_with_input(capture, None)
 }
 
 pub const RECORDED_INPUT_VARIANT_PRODUCTION_ENABLED: bool = true;
@@ -408,56 +399,15 @@ pub fn authenticate_recorded_pointer_input(
 
 pub fn portable_render_authority_with_input(
     capture: &RawRenderCatalogCapture,
-    effective_vfs_manifest_sha256: String,
-    effect_catalog_sha256: String,
-    entity_animation_catalog_sha256: String,
     recorded_input: Option<&AuthenticatedRecordedInputVariant>,
 ) -> Result<RenderAuthority, CatalogBuildError> {
     capture
         .validate_launch_binding()
         .map_err(|error| CatalogBuildError(format!("capture launch receipt: {error}")))?;
-    for (label, value) in [
-        ("effective VFS manifest", &effective_vfs_manifest_sha256),
-        ("effect catalog", &effect_catalog_sha256),
-        ("entity animation catalog", &entity_animation_catalog_sha256),
-    ] {
-        if value.len() != 64
-            || !value
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        {
-            return invalid(format!("{label} SHA-256 is not canonical lowercase hex"));
-        }
-    }
-    let launch = &capture.launch_epoch;
     if let Some(recorded_input) = recorded_input {
         recorded_input.validate(capture)?;
     }
     Ok(RenderAuthority {
-        process_id: launch.process_id,
-        process_start_nonce: launch.process_start_nonce,
-        observer_installed_qpc: launch.observer_installed_qpc,
-        d3d_device_created_qpc: launch.d3d_device_created_qpc,
-        first_creation_sequence: launch.first_creation_sequence,
-        hook_epoch_nonce: launch.hook_epoch_nonce,
-        hook_set_receipt_sha256: launch.hook_set_receipt_sha256.clone(),
-        capture_receipt_sha256: launch.capture_receipt_sha256.clone(),
-        launch_epoch_sha256: compute_render_launch_epoch_sha256(
-            launch.process_id,
-            launch.process_start_nonce,
-            launch.observer_installed_qpc,
-            launch.d3d_device_created_qpc,
-            launch.first_creation_sequence,
-            launch.hook_epoch_nonce,
-            &launch.hook_set_receipt_sha256,
-            &launch.capture_receipt_sha256,
-        ),
-        effective_vfs_manifest_sha256,
-        effect_catalog_sha256,
-        entity_animation_catalog_sha256,
-        recorded_input_variant: recorded_input.map(|receipt| receipt.variant),
-        recorded_input_receipt_sha256: recorded_input
-            .map(|receipt| receipt.observation_receipt_sha256.clone()),
         recorded_input_observation: recorded_input.map(|receipt| RecordedInputObservationReceipt {
             executable_sha256: receipt.executable_sha256.clone(),
             process_id: receipt.process_id,
@@ -476,7 +426,6 @@ pub fn portable_render_authority_with_input(
             authority_manifest_sha256: receipt.authority_manifest_sha256.clone(),
             observation_receipt_sha256: receipt.observation_receipt_sha256.clone(),
         }),
-        particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
     })
 }
 

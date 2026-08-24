@@ -12,8 +12,8 @@ use replay_core::{
     EntityContentIdentity, EntityNativeSelection, EntitySubmission, FillMode, GeometryBinding,
     IndexFormat, InputElementDesc, InterpreterIndexBufferDesc, InterpreterVertexBufferDesc,
     LayerStorageKind, O04CityFrame, O04CitySemantic,
-    O04CitylightState, ParticleRuntimeMode, PipelineDesc, PreparedRenderTarget, PrimitiveTopology,
-    ProductionRenderFrame, RasterizerDesc, RecordedContentLayer, RenderAuthority, RenderCheckpoint,
+    O04CitylightState, PipelineDesc, PreparedRenderTarget, PrimitiveTopology,
+    ProductionRenderFrame, RasterizerDesc, RecordedContentLayer,
     RenderExecutionRef, RenderOutputRef, RenderOutputState, RenderSubmit, RenderTargetDesc,
     RequiredContent, ShaderProgram, ShaderResourceViewDesc, ShaderStage, Skinning,
     SourceGameIdentity, SourceProfileIdentity, StaticGeometrySource, StaticMapCommand,
@@ -490,45 +490,14 @@ fn opaque_static_draw(source: UsedContentKey) -> StaticMapDraw {
     }
 }
 
-fn frame_with_static_program(
-    manifest: &ContentManifest,
-    program: StaticMapPassProgram,
-) -> ProductionRenderFrame {
+fn frame_with_static_program(program: StaticMapPassProgram) -> ProductionRenderFrame {
     let operation_ordinal = program.ordered_operations[0].operation_ordinal;
     ProductionRenderFrame {
         schema: replay_core::PRODUCTION_RENDER_SCHEMA.into(),
-        authority: RenderAuthority {
-            process_id: 7,
-            process_start_nonce: 8,
-            observer_installed_qpc: 9,
-            d3d_device_created_qpc: 10,
-            first_creation_sequence: 1,
-            hook_epoch_nonce: 11,
-            hook_set_receipt_sha256: "a".repeat(64),
-            capture_receipt_sha256: "b".repeat(64),
-            launch_epoch_sha256: replay_core::compute_render_launch_epoch_sha256(
-                7,
-                8,
-                9,
-                10,
-                1,
-                11,
-                &"a".repeat(64),
-                &"b".repeat(64),
-            ),
-            effective_vfs_manifest_sha256: manifest.effective_vfs_manifest_sha256.clone(),
-            effect_catalog_sha256: "3".repeat(64),
-            entity_animation_catalog_sha256: "4".repeat(64),
-            recorded_input_variant: None,
-            recorded_input_receipt_sha256: None,
-            recorded_input_observation: None,
-            particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
-        },
         update_index: 16_959_360,
         first_sequence: 10,
         last_sequence: 20,
         presentation_qpc_frequency_hz: 10_000_000,
-        display_submit_index: Some("12".into()),
         selected_present: replay_core::SelectedPresentReceipt::sealed(
             1,
             "c".repeat(64),
@@ -560,31 +529,6 @@ fn frame_with_static_program(
         o04_cities: None,
         o05_buildings: None,
         authenticated_ui_pass: None,
-        checkpoint: RenderCheckpoint {
-            last_sequence: 20,
-            last_update_index: 16_959_360,
-            last_submit_index: Some("12".into()),
-            next_stable_ids: BTreeMap::new(),
-            active_effect_lifecycle: Vec::new(),
-            active_light_lifecycle: Vec::new(),
-            weather_state_and_ordered_membership: Vec::new(),
-            active_effect_set_sha256: "6".repeat(64),
-            ordered_particle_packets_sha256: "7".repeat(64),
-            ordered_entity_submissions_sha256: "8".repeat(64),
-            ordered_light_submissions_sha256: "a".repeat(64),
-            weather_state_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_membership_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_lifecycle_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_visibility_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            ordered_weather_packets_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_composition_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-        },
     }
 }
 
@@ -1006,41 +950,13 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
         b"name=\"CB\"\ndescriptor=\"mod/cb.mod\"\n",
     );
     write(&mod_root, "gfx/FX/map.shader", b"scene-cb-shader");
-    let (mut renderer, manifest, _) = admitted_renderer(&game, &mod_root, false);
+    let (mut renderer, _, _) = admitted_renderer(&game, &mod_root, false);
     let frame = ProductionRenderFrame {
         schema: replay_core::PRODUCTION_RENDER_SCHEMA.into(),
-        authority: RenderAuthority {
-            process_id: 7,
-            process_start_nonce: 8,
-            observer_installed_qpc: 9,
-            d3d_device_created_qpc: 10,
-            first_creation_sequence: 1,
-            hook_epoch_nonce: 11,
-            hook_set_receipt_sha256: "a".repeat(64),
-            capture_receipt_sha256: "b".repeat(64),
-            launch_epoch_sha256: replay_core::compute_render_launch_epoch_sha256(
-                7,
-                8,
-                9,
-                10,
-                1,
-                11,
-                &"a".repeat(64),
-                &"b".repeat(64),
-            ),
-            effective_vfs_manifest_sha256: manifest.effective_vfs_manifest_sha256.clone(),
-            effect_catalog_sha256: "3".repeat(64),
-            entity_animation_catalog_sha256: "4".repeat(64),
-            recorded_input_variant: None,
-            recorded_input_receipt_sha256: None,
-            recorded_input_observation: None,
-            particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
-        },
         update_index: 16_959_360,
         first_sequence: 10,
         last_sequence: 20,
         presentation_qpc_frequency_hz: 10_000_000,
-        display_submit_index: Some("12".into()),
         selected_present: replay_core::SelectedPresentReceipt::sealed(
             1,
             "c".repeat(64),
@@ -1070,31 +986,6 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
         o04_cities: None,
         o05_buildings: None,
         authenticated_ui_pass: None,
-        checkpoint: RenderCheckpoint {
-            last_sequence: 20,
-            last_update_index: 16_959_360,
-            last_submit_index: Some("12".into()),
-            next_stable_ids: BTreeMap::new(),
-            active_effect_lifecycle: Vec::new(),
-            active_light_lifecycle: Vec::new(),
-            weather_state_and_ordered_membership: Vec::new(),
-            active_effect_set_sha256: "6".repeat(64),
-            ordered_particle_packets_sha256: "7".repeat(64),
-            ordered_entity_submissions_sha256: "8".repeat(64),
-            ordered_light_submissions_sha256: "a".repeat(64),
-            weather_state_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_membership_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_lifecycle_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_visibility_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            ordered_weather_packets_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_composition_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-        },
     };
     let prepared = renderer.prepare_frame(Some(&frame)).unwrap();
     assert_eq!(prepared.selected_submit_index, Some(12));
@@ -1105,6 +996,64 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
     assert!(prepared.ordered_render_operations.is_empty());
     assert!(prepared.political_textures.is_empty());
     let _ = fs::remove_dir_all(root);
+}
+
+/// kills: carrier.production_frame.display_submit_index -- with no carried
+/// hint anywhere on the wire, the derived displayed submit equals exactly
+/// what the retired `display_submit_index` text named on this sealed fixture
+/// frame (the receipt's candidate id 12, global_order 2); two retained submits fail closed
+/// instead of guessing; zero submits derive no submit at all.
+#[test]
+fn displayed_submit_is_derived_from_the_sole_retained_submit() {
+    let submit = |global_order| RenderSubmit {
+        global_order,
+        camera_carrier: None,
+        ordered_static_map_programs: Vec::new(),
+        authenticated_texture_snapshots: Vec::new(),
+        s1_shadow: None,
+        particles: Vec::new(),
+        particle_packet_set_sha256: "5".repeat(64),
+        entities: Vec::new(),
+        rail_construction_arrows: Vec::new(),
+        ordered_render_operations: Vec::new(),
+        weather_membership: Vec::new(),
+        political_textures: Vec::new(),
+    };
+    let frame = ProductionRenderFrame {
+        schema: replay_core::PRODUCTION_RENDER_SCHEMA.into(),
+        update_index: 16_959_360,
+        first_sequence: 10,
+        last_sequence: 20,
+        presentation_qpc_frequency_hz: 10_000_000,
+        selected_present: replay_core::SelectedPresentReceipt::sealed(
+            1,
+            "c".repeat(64),
+            12,
+            0,
+            60_759_359,
+            200,
+            300,
+        ),
+        snow_mud_texture: None,
+        submits: vec![submit(2)],
+        m03_arrows: None,
+        rail_supply_arrows: None,
+        o04_cities: None,
+        o05_buildings: None,
+        authenticated_ui_pass: None,
+    };
+    let derived = selected_submit(&frame).unwrap().expect("sole submit");
+    assert_eq!(
+        (frame.retained_submit_identity(), derived.global_order),
+        (Some(12), 2),
+        "derived display submit differs from what the retired hint carried"
+    );
+    let mut two_submits = frame.clone();
+    two_submits.submits.push(submit(3));
+    assert!(selected_submit(&two_submits).is_err());
+    let mut no_submits = frame;
+    no_submits.submits.clear();
+    assert!(selected_submit(&no_submits).unwrap().is_none());
 }
 
 #[test]
@@ -1179,38 +1128,10 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
 
     let frame = ProductionRenderFrame {
         schema: replay_core::PRODUCTION_RENDER_SCHEMA.into(),
-        authority: RenderAuthority {
-            process_id: 7,
-            process_start_nonce: 8,
-            observer_installed_qpc: 9,
-            d3d_device_created_qpc: 10,
-            first_creation_sequence: 1,
-            hook_epoch_nonce: 11,
-            hook_set_receipt_sha256: "a".repeat(64),
-            capture_receipt_sha256: "b".repeat(64),
-            launch_epoch_sha256: replay_core::compute_render_launch_epoch_sha256(
-                7,
-                8,
-                9,
-                10,
-                1,
-                11,
-                &"a".repeat(64),
-                &"b".repeat(64),
-            ),
-            effective_vfs_manifest_sha256: manifest.effective_vfs_manifest_sha256.clone(),
-            effect_catalog_sha256: "3".repeat(64),
-            entity_animation_catalog_sha256: "4".repeat(64),
-            recorded_input_variant: None,
-            recorded_input_receipt_sha256: None,
-            recorded_input_observation: None,
-            particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
-        },
         update_index: 16_959_360,
         first_sequence: 10,
         last_sequence: 20,
         presentation_qpc_frequency_hz: 10_000_000,
-        display_submit_index: Some("12".into()),
         selected_present: replay_core::SelectedPresentReceipt::sealed(
             1,
             "c".repeat(64),
@@ -1242,31 +1163,6 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
         o04_cities: None,
         o05_buildings: None,
         authenticated_ui_pass: None,
-        checkpoint: RenderCheckpoint {
-            last_sequence: 20,
-            last_update_index: 16_959_360,
-            last_submit_index: Some("12".into()),
-            next_stable_ids: BTreeMap::new(),
-            active_effect_lifecycle: Vec::new(),
-            active_light_lifecycle: Vec::new(),
-            weather_state_and_ordered_membership: Vec::new(),
-            active_effect_set_sha256: "6".repeat(64),
-            ordered_particle_packets_sha256: "7".repeat(64),
-            ordered_entity_submissions_sha256: "8".repeat(64),
-            ordered_light_submissions_sha256: "a".repeat(64),
-            weather_state_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_membership_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_lifecycle_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_visibility_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            ordered_weather_packets_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_composition_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-        },
     };
 
     let prepared = renderer.prepare_frame(Some(&frame)).unwrap();
@@ -1471,7 +1367,7 @@ fn exact_target_initialization_is_sealed_validated_receipted_and_tamper_closed()
     let mut program = make_program();
     program.seal_payload_hashes().unwrap();
     let (mut renderer, manifest, _) = admit(&program);
-    let frame = frame_with_static_program(&manifest, program.clone());
+    let frame = frame_with_static_program(program.clone());
     let plan = renderer.prepare_frame(Some(&frame)).unwrap();
     assert_eq!(renderer.resources().len(), 2);
     let prepared = crate::prepare_production_d3d_frame(&plan, renderer.resources()).unwrap();
@@ -1509,7 +1405,7 @@ fn exact_target_initialization_is_sealed_validated_receipted_and_tamper_closed()
     };
     clear_program.seal_payload_hashes().unwrap();
     let (mut renderer, manifest, _) = admit(&clear_program);
-    let clear_frame = frame_with_static_program(&manifest, clear_program);
+    let clear_frame = frame_with_static_program(clear_program);
     let clear_plan = renderer.prepare_frame(Some(&clear_frame)).unwrap();
     let clear_d3d = crate::prepare_production_d3d_frame(&clear_plan, renderer.resources()).unwrap();
     let mut clear_trace = ReplayConsumerTrace::default();
@@ -1525,9 +1421,9 @@ fn exact_target_initialization_is_sealed_validated_receipted_and_tamper_closed()
         .ordered_content_keys
         .retain(|key| key != INITIAL_KEY);
     omitted.seal_payload_hashes().unwrap();
-    let (mut renderer, manifest, _) = admit(&omitted);
+    let (mut renderer, _, _) = admit(&omitted);
     let error = renderer
-        .prepare_frame(Some(&frame_with_static_program(&manifest, omitted)))
+        .prepare_frame(Some(&frame_with_static_program(omitted)))
         .unwrap_err()
         .to_string();
     assert!(
@@ -1538,9 +1434,9 @@ fn exact_target_initialization_is_sealed_validated_receipted_and_tamper_closed()
     let mut extra = make_program();
     extra.ordered_content_keys.push(EXTRA_KEY.into());
     extra.seal_payload_hashes().unwrap();
-    let (mut renderer, manifest, _) = admit(&extra);
+    let (mut renderer, _, _) = admit(&extra);
     let error = renderer
-        .prepare_frame(Some(&frame_with_static_program(&manifest, extra)))
+        .prepare_frame(Some(&frame_with_static_program(extra)))
         .unwrap_err()
         .to_string();
     assert!(
@@ -1571,9 +1467,9 @@ fn exact_target_initialization_is_sealed_validated_receipted_and_tamper_closed()
         };
         *range_sha256 = "00".repeat(32);
     });
-    let (mut renderer, manifest, _) = admit(&hash_tamper);
+    let (mut renderer, _, _) = admit(&hash_tamper);
     let plan = renderer
-        .prepare_frame(Some(&frame_with_static_program(&manifest, hash_tamper)))
+        .prepare_frame(Some(&frame_with_static_program(hash_tamper)))
         .unwrap();
     let error = crate::prepare_production_d3d_frame(&plan, renderer.resources())
         .unwrap_err()
@@ -1590,9 +1486,9 @@ fn exact_target_initialization_is_sealed_validated_receipted_and_tamper_closed()
         };
         *source_byte_offset = 65;
     });
-    let (mut renderer, manifest, _) = admit(&range_tamper);
+    let (mut renderer, _, _) = admit(&range_tamper);
     let plan = renderer
-        .prepare_frame(Some(&frame_with_static_program(&manifest, range_tamper)))
+        .prepare_frame(Some(&frame_with_static_program(range_tamper)))
         .unwrap();
     let error = crate::prepare_production_d3d_frame(&plan, renderer.resources())
         .unwrap_err()
@@ -1601,9 +1497,9 @@ fn exact_target_initialization_is_sealed_validated_receipted_and_tamper_closed()
 
     let mut order_tamper = make_program();
     mutate_initial(&mut order_tamper, &|initials| initials.swap(0, 1));
-    let (mut renderer, manifest, _) = admit(&order_tamper);
+    let (mut renderer, _, _) = admit(&order_tamper);
     let error = renderer
-        .prepare_frame(Some(&frame_with_static_program(&manifest, order_tamper)))
+        .prepare_frame(Some(&frame_with_static_program(order_tamper)))
         .unwrap_err()
         .to_string();
     assert!(error.contains("out of range/order"), "{error}");
@@ -1731,14 +1627,14 @@ fn o04_city_outputs_are_vfs_admitted_relocated_and_executed_exactly_once() {
             .content
             .clone()
     };
-    let mut frame = frame_with_static_program(&left_manifest, program);
+    let mut frame = frame_with_static_program(program);
     attach_o04_city(
         &mut frame,
         content("o04.entity"),
         content("o04.mesh"),
         content("o04.shader"),
     );
-    frame.validate().unwrap();
+    frame.validate(&left_manifest.effective_vfs_manifest_sha256).unwrap();
     let encoded = serde_json::to_vec(&frame).unwrap();
     assert!(!std::str::from_utf8(&encoded).unwrap().contains("C:\\"));
     let relocated_path = root_b.join("shared").join("o04-frame.json");
@@ -1868,7 +1764,7 @@ fn o04_duplicate_dangling_and_unadmitted_references_fail_closed() {
         payload_sha256: String::new(),
     };
     seed_program.seal_payload_hashes().unwrap();
-    let mut frame = frame_with_static_program(&manifest, seed_program);
+    let mut frame = frame_with_static_program(seed_program);
     frame.submits[0].ordered_static_map_programs.clear();
     frame.submits[0].ordered_render_operations.clear();
     attach_o04_city(
@@ -1877,7 +1773,7 @@ fn o04_duplicate_dangling_and_unadmitted_references_fail_closed() {
         content("o04.mesh"),
         content("o04.shader"),
     );
-    frame.validate().unwrap();
+    frame.validate(&manifest.effective_vfs_manifest_sha256).unwrap();
 
     let mut duplicate = frame.clone();
     let first = duplicate.o04_cities.as_ref().unwrap().ordered_outputs[0].clone();
@@ -2090,7 +1986,7 @@ fn retained_capture_interpreter_relocates_through_vfs_and_executes_in_d77_order(
         right_manifest.required_content
     );
 
-    let frame = frame_with_static_program(&left_manifest, program);
+    let frame = frame_with_static_program(program);
     let encoded = serde_json::to_vec(&frame).unwrap();
     let portable_text = std::str::from_utf8(&encoded).unwrap();
     let capture_root_text = capture_root.to_string_lossy().into_owned();

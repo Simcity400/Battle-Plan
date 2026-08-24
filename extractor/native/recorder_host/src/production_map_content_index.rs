@@ -35,11 +35,9 @@ pub fn resolve_authenticated_o05_building_content<'a>(
     let mut seen = BTreeSet::new();
     for frame in frames {
         frame
-            .validate()
+            .validate(&manifest.effective_vfs_manifest_sha256)
             .map_err(|error| format!("O05 production frame is invalid: {error}"))?;
-        if frame.authority.effective_vfs_manifest_sha256 != manifest.effective_vfs_manifest_sha256
-            || frame.authority.effective_vfs_manifest_sha256 != vfs.authority_manifest_sha256()
-        {
+        if vfs.authority_manifest_sha256() != manifest.effective_vfs_manifest_sha256 {
             return Err("O05 frame, manifest, and selected VFS authorities differ".into());
         }
         let Some(o05) = &frame.o05_buildings else {
@@ -88,11 +86,9 @@ pub fn resolve_authenticated_ui_pass_content<'a>(
     let mut winner_by_pair = BTreeMap::new();
     for frame in frames {
         frame
-            .validate()
+            .validate(&manifest.effective_vfs_manifest_sha256)
             .map_err(|error| format!("UI-pass frame is invalid: {error}"))?;
-        if frame.authority.effective_vfs_manifest_sha256 != manifest.effective_vfs_manifest_sha256
-            || frame.authority.effective_vfs_manifest_sha256 != vfs.authority_manifest_sha256()
-        {
+        if vfs.authority_manifest_sha256() != manifest.effective_vfs_manifest_sha256 {
             return Err("UI-pass frame, manifest, and selected VFS authorities differ".into());
         }
         let Some(pass) = &frame.authenticated_ui_pass else {
@@ -158,25 +154,19 @@ pub fn resolve_authenticated_static_program_content<'a>(
     for frame in frames {
         frame_count += 1;
         frame
-            .validate()
+            .validate(&manifest.effective_vfs_manifest_sha256)
             .map_err(|error| format!("static-program frame is invalid: {error}"))?;
-        let authority = &frame.authority.effective_vfs_manifest_sha256;
-        if authority != &manifest.effective_vfs_manifest_sha256
-            || authority != vfs.authority_manifest_sha256()
+        let authority = &manifest.effective_vfs_manifest_sha256;
+        if authority != vfs.authority_manifest_sha256()
         {
             return Err(
                 "static-program frame, manifest, and selected VFS authorities differ".into(),
             );
         }
-        let display_submit_index = frame
-            .display_submit_index
-            .as_deref()
-            .ok_or("static-program frame has no authenticated display submit")?
-            .parse::<u64>()
-            .map_err(|_| "static-program display submit index is not canonical u64")?;
         let submit = frame
-            .submit(display_submit_index)
-            .ok_or("static-program display submit is absent from the authenticated frame")?;
+            .submits
+            .first()
+            .ok_or("static-program frame has no authenticated display submit")?;
         let mut seen_programs = BTreeSet::new();
         for program in &submit.ordered_static_map_programs {
             let consumer = format!("{STATIC_PROGRAM_CONSUMER_PREFIX}{}", program.payload_sha256);
@@ -364,13 +354,15 @@ mod tests {
     use portable_render_stream::{
         BlendDesc, BlendFactor, BlendOperation, Comparison, CompiledShaderPayload,
         CullMode, DepthDesc, DrawCommand, FillMode, IndexFormat,
-        InputElementDesc, InterpreterVertexBufferDesc, ParticleRuntimeMode, PipelineDesc,
-        PreparedRenderTarget, PrimitiveTopology, RasterizerDesc, RenderAuthority, RenderCheckpoint,
-        RenderExecutionRef, RenderOutputState, RenderSubmit, RenderTargetAttachmentView,
+        InputElementDesc, InterpreterVertexBufferDesc, PipelineDesc,
+        PreparedRenderTarget, PrimitiveTopology, RasterizerDesc, RecordedInputObservationReceipt,
+        RecordedInputVariant, RenderExecutionRef, RenderOutputState, RenderSubmit,
+        RenderTargetAttachmentView,
         RenderTargetExactResource, RenderTargetInitialSubresource, RenderTargetResourceDesc,
         RenderTargetViewDesc, ShaderProgram, ShaderResourceViewDesc, StaticMapDraw,
         StaticMapOperation, StaticShaderResourceBinding, StencilFaceDesc, StencilOperation,
-        TextureResourceDimension, ViewportDesc,
+        TextureResourceDimension, ViewportDesc, RECORDED_INPUT_VARIANT_AUTHORITY_MANIFEST_SHA256,
+        UI_A729_EXECUTABLE_SHA256,
     };
     use snapshot::sha256::{to_hex, Sha256};
     use std::fs;
@@ -826,38 +818,10 @@ mod tests {
         };
         let frame = ProductionRenderFrame {
             schema: portable_render_stream::SCHEMA.into(),
-            authority: RenderAuthority {
-                process_id: 7,
-                process_start_nonce: 8,
-                observer_installed_qpc: 9,
-                d3d_device_created_qpc: 12,
-                first_creation_sequence: 1,
-                hook_epoch_nonce: 11,
-                hook_set_receipt_sha256: "a".repeat(64),
-                capture_receipt_sha256: "b".repeat(64),
-                launch_epoch_sha256: portable_render_stream::compute_render_launch_epoch_sha256(
-                    7,
-                    8,
-                    9,
-                    12,
-                    1,
-                    11,
-                    &"a".repeat(64),
-                    &"b".repeat(64),
-                ),
-                effective_vfs_manifest_sha256: authority,
-                effect_catalog_sha256: "1".repeat(64),
-                entity_animation_catalog_sha256: "2".repeat(64),
-                recorded_input_variant: None,
-                recorded_input_receipt_sha256: None,
-                recorded_input_observation: None,
-                particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
-            },
             update_index: 16_959_360,
             first_sequence: 0,
             last_sequence: 0,
             presentation_qpc_frequency_hz: 1,
-            display_submit_index: Some("1".into()),
             selected_present: portable_render_stream::SelectedPresentReceipt::sealed(
                 1,
                 "c".repeat(64),
@@ -874,33 +838,10 @@ mod tests {
             o04_cities: None,
             o05_buildings: None,
             authenticated_ui_pass: None,
-            checkpoint: RenderCheckpoint {
-                last_sequence: 0,
-                last_update_index: 16_959_360,
-                last_submit_index: Some("1".into()),
-                next_stable_ids: BTreeMap::new(),
-                active_effect_lifecycle: Vec::new(),
-                active_light_lifecycle: Vec::new(),
-                weather_state_and_ordered_membership: Vec::new(),
-                active_effect_set_sha256: "3".repeat(64),
-                ordered_particle_packets_sha256: "4".repeat(64),
-                ordered_entity_submissions_sha256: "5".repeat(64),
-                ordered_light_submissions_sha256: "7".repeat(64),
-                weather_state_sha256:
-                    "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-                weather_membership_sha256:
-                    "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-                weather_lifecycle_sha256:
-                    "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-                weather_visibility_sha256:
-                    "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-                ordered_weather_packets_sha256:
-                    "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-                weather_composition_sha256:
-                    "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            },
         };
-        frame.validate().unwrap();
+        frame
+            .validate("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            .unwrap();
         Fixture {
             root,
             vfs,
@@ -1042,7 +983,7 @@ mod tests {
             schema: EARLY_LAUNCH_MANIFEST_SCHEMA.into(),
             executable_sha256: "9".repeat(64),
             collector_sha256: "8".repeat(64),
-            effective_vfs_manifest_sha256: frame.authority.effective_vfs_manifest_sha256.clone(),
+            effective_vfs_manifest_sha256: "a".repeat(64),
             ordered_content_layers: vec![EarlyLaunchLayer {
                 kind: EarlyLaunchLayerKind::Base,
                 layer_id: "base".into(),
@@ -1074,19 +1015,19 @@ mod tests {
             content_manifest_bytes_sha256: "9".repeat(64),
             content_manifest_byte_count: 512,
             content_manifest_chunk_count: 1,
-            process_id: frame.authority.process_id,
-            process_start_nonce: frame.authority.process_start_nonce,
+            process_id: 7,
+            process_start_nonce: 8,
             executable_sha256: manifest.executable_sha256.clone(),
             collector_sha256: manifest.collector_sha256.clone(),
             created_suspended: true,
-            hook_epoch_nonce: frame.authority.hook_epoch_nonce,
-            hook_set_sha256: frame.authority.hook_set_receipt_sha256.clone(),
+            hook_epoch_nonce: 11,
+            hook_set_sha256: "a".repeat(64),
             hook_ready_sequence: 1,
             resume_sequence: 2,
             hook_ready_qpc: 9,
             resume_qpc: 10,
-            first_creation_sequence: frame.authority.first_creation_sequence,
-            first_game_d3d_creation_qpc: frame.authority.d3d_device_created_qpc,
+            first_creation_sequence: 1,
+            first_game_d3d_creation_qpc: 12,
             staged_hook_generation:
                 compact_contract::early_render_control::EARLY_STAGED_HOOK_GENERATION,
             staged_hook_count: compact_contract::early_render_control::EARLY_STAGED_HOOK_COUNT,
@@ -1130,9 +1071,9 @@ mod tests {
         };
         receipt.transcript_sha256 = early_transcript_sha256(&receipt);
         receipt.validate().unwrap();
-        frame.authority.capture_receipt_sha256 = receipt.sha256().unwrap();
-        reseal_launch_epoch(frame);
-        frame.validate().unwrap();
+        frame
+            .validate(&manifest.effective_vfs_manifest_sha256.clone())
+            .unwrap();
         (manifest, receipt)
     }
 
@@ -1202,20 +1143,6 @@ mod tests {
         hash(&serde_json::to_vec(&transcript).unwrap())
     }
 
-    fn reseal_launch_epoch(frame: &mut ProductionRenderFrame) {
-        let authority = &mut frame.authority;
-        authority.launch_epoch_sha256 = portable_render_stream::compute_render_launch_epoch_sha256(
-            authority.process_id,
-            authority.process_start_nonce,
-            authority.observer_installed_qpc,
-            authority.d3d_device_created_qpc,
-            authority.first_creation_sequence,
-            authority.hook_epoch_nonce,
-            &authority.hook_set_receipt_sha256,
-            &authority.capture_receipt_sha256,
-        );
-    }
-
     #[test]
     fn production_frame_requires_exact_authenticated_early_launch_epoch() {
         let mut fixture = fixture("early-admission");
@@ -1227,55 +1154,65 @@ mod tests {
         )
         .unwrap();
 
-        let mut foreign_process = fixture.frame.clone();
-        foreign_process.authority.process_id += 1;
-        reseal_launch_epoch(&mut foreign_process);
-        foreign_process.validate().unwrap();
+        // kills: carrier.production_frame.authority.recorded_input_observation --
+        // the capture-process identity moved off RenderAuthority and onto the
+        // observation that rides on SelectedPresentReceipt, so THIS join is the
+        // only thing left stopping a nested observation from naming a different
+        // capture process than the sealed early-capture receipt does.
+        //
+        // The observation has to be genuinely valid to reach that join at all:
+        // validate_render_frame_early_admission runs frame.validate() first, which
+        // re-derives the observation's own receipt digest and its QPC chronology.
+        // The fixture's selected Present sits at qpc 1/cutoff 2, which leaves no
+        // room for a prior observation tick (the wire law requires
+        // 0 < prior < selected <= sample_started <= sample_completed <= cutoff), so
+        // the Present is restated at 500/600 before the observation is minted
+        // against it.
+        let mut observed = fixture.frame.clone();
+        observed.selected_present.selected_qpc_ticks = 500;
+        observed.selected_present.selection_cutoff_qpc_ticks = 600;
+        let mut observation = RecordedInputObservationReceipt {
+            executable_sha256: UI_A729_EXECUTABLE_SHA256.into(),
+            process_id: receipt.process_id,
+            process_start_nonce: receipt.process_start_nonce,
+            hook_epoch_nonce: receipt.hook_epoch_nonce,
+            observation_sequence: 1,
+            prior_observation_qpc_ticks: 497,
+            selected_present_qpc_ticks: 500,
+            present_sample_started_qpc_ticks: 501,
+            present_sample_completed_qpc_ticks: 502,
+            selected_present_receipt_sha256: observed
+                .selected_present
+                .computed_sha256()
+                .unwrap(),
+            client_extent: [1920, 1080],
+            prior_client_position: [10, 20],
+            current_client_position: [11, 20],
+            variant: RecordedInputVariant::MouseKeyboard,
+            authority_manifest_sha256: RECORDED_INPUT_VARIANT_AUTHORITY_MANIFEST_SHA256.into(),
+            observation_receipt_sha256: String::new(),
+        };
+        observation.observation_receipt_sha256 = observation.computed_receipt_sha256().unwrap();
+        observed.selected_present.recorded_input_observation = Some(observation.clone());
+        crate::portable_content_manifest::validate_render_frame_early_admission(
+            &observed,
+            &manifest,
+            &receipt,
+        )
+        .expect("an observation naming the sealed capture process is admitted");
+
+        // Same frame, same internally-valid observation, one different capture
+        // process. The digest is re-minted so the observation still authenticates
+        // against itself and the refusal can only come from the receipt join.
+        let mut foreign_process = observed.clone();
+        let mut foreign_observation = observation;
+        foreign_observation.process_id = receipt.process_id + 1;
+        foreign_observation.observation_receipt_sha256 =
+            foreign_observation.computed_receipt_sha256().unwrap();
+        foreign_process.selected_present.recorded_input_observation = Some(foreign_observation);
         assert!(
             crate::portable_content_manifest::validate_render_frame_early_admission(
                 &foreign_process,
-                &manifest,
-                &receipt,
-            )
-            .unwrap_err()
-            .contains("foreign")
-        );
-
-        let mut late_observer = fixture.frame.clone();
-        late_observer.authority.observer_installed_qpc = receipt.hook_ready_qpc + 1;
-        reseal_launch_epoch(&mut late_observer);
-        late_observer.validate().unwrap();
-        assert!(
-            crate::portable_content_manifest::validate_render_frame_early_admission(
-                &late_observer,
-                &manifest,
-                &receipt,
-            )
-            .unwrap_err()
-            .contains("foreign")
-        );
-
-        let mut early_observer = fixture.frame.clone();
-        early_observer.authority.observer_installed_qpc = receipt.hook_ready_qpc - 1;
-        reseal_launch_epoch(&mut early_observer);
-        early_observer.validate().unwrap();
-        assert!(
-            crate::portable_content_manifest::validate_render_frame_early_admission(
-                &early_observer,
-                &manifest,
-                &receipt,
-            )
-            .unwrap_err()
-            .contains("foreign")
-        );
-
-        let mut foreign_first_creation = fixture.frame.clone();
-        foreign_first_creation.authority.first_creation_sequence += 1;
-        reseal_launch_epoch(&mut foreign_first_creation);
-        foreign_first_creation.validate().unwrap();
-        assert!(
-            crate::portable_content_manifest::validate_render_frame_early_admission(
-                &foreign_first_creation,
                 &manifest,
                 &receipt,
             )

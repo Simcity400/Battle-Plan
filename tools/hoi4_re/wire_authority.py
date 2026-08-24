@@ -39,12 +39,6 @@ class AuthorityError(RuntimeError):
 # Facts the verifier states itself because no production source states them in a
 # form that can be parsed. Each one has a cross-check test.
 RESTATED_WITHOUT_DERIVATION = {
-    "launch_epoch_preimage_shape": (
-        "render_stream::production_render_launch_epoch_sha256 feeds the two "
-        "receipt digests as their 64-char hex ASCII (`.as_bytes()`), not as 32 "
-        "raw bytes; the shape of a Rust function body is not a parseable "
-        "constant, so the Python reimplementation asserts it by source shape."
-    ),
     "runtime_dlc_roster_preimage_shape": (
         "canonical_runtime_dlc_roster_sha256 lays its preimage out as a label, a "
         "u32 count, then per name a u32 ordinal, a u32 UTF-8 byte length and the "
@@ -450,7 +444,7 @@ class WireAuthority:
     d77_domain_name: str
     render_frame_schema: str
     render_frame_incompatible_schemas: frozenset
-    launch_epoch_label: bytes
+    render_wire_schema: str
 
     # Early-render contract.
     early_launch_manifest_schema: str
@@ -507,8 +501,6 @@ class WireAuthority:
 _CONTRACT = "extractor/native/compact_contract/src"
 _HOST = "extractor/native/recorder_host/src"
 
-#: The production function whose preimage `launch_epoch_sha256` reproduces.
-LAUNCH_EPOCH_FUNCTION = "compute_render_launch_epoch_sha256"
 #: The production function whose preimage `runtime_dlc_roster_sha256` reproduces.
 RUNTIME_DLC_ROSTER_FUNCTION = "canonical_runtime_dlc_roster_sha256"
 
@@ -592,10 +584,8 @@ def load_wire_authority(root: Path | None = None) -> WireAuthority:
         d77_domain_id=d77_id,
         d77_domain_name=d77_name,
         render_frame_schema=render.string("SCHEMA"),
+        render_wire_schema=render.string("PRODUCTION_RENDER_WIRE_SCHEMA"),
         render_frame_incompatible_schemas=_incompatible_render_schemas(render),
-        launch_epoch_label=_literal_label(
-            render, LAUNCH_EPOCH_FUNCTION, "hoi4.production-render-launch-epoch"
-        ),
         early_launch_manifest_schema=launch.string("EARLY_LAUNCH_MANIFEST_SCHEMA"),
         early_capture_receipt_schema=launch.string("EARLY_CAPTURE_RECEIPT_SCHEMA"),
         early_staged_hook_generation=early_control.integer("EARLY_STAGED_HOOK_GENERATION"),
@@ -980,6 +970,7 @@ def describe_wire_authority(authority: WireAuthority) -> dict[str, Any]:
         "domain_frame": authority.domain_frame,
         "d77_domain_id": authority.d77_domain_id,
         "render_frame_schema": authority.render_frame_schema,
+        "render_wire_schema": authority.render_wire_schema,
         "frame_refusal_versions": sorted(authority.frame_refusal_versions),
         "payload_schema_v2_domains": sorted(authority.payload_schema_v2_domains),
         "early_staged_hook_count": authority.early_staged_hook_count,
