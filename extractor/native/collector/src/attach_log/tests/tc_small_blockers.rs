@@ -363,28 +363,31 @@ fn d38_reader_delegates_to_the_helper_and_the_keys_match() {
 
 // --- d29 ships -----------------------------------------------------------
 
-/// The four arms `NotATaskForce` conflated, each reachable and each counted.
+/// The seven arms `NotATaskForce` conflated, each reachable and each counted.
 ///
 /// `rc_vanilla4` published `naval_oob_walk_not_a_task_force = 17` on all 719
-/// frames with every other refusal counter at zero. Seventeen task forces per
-/// hour, and four possible findings behind them: an unreadable body, a body
-/// that is not the class the subobject vtable implies, a torn parent word, and
-/// a parent this sweep did not discover as a fleet root. The first two would
-/// justify RE of the lift; the fourth is a statement about the DISCOVERY and
-/// not about the task force at all.
+/// frames with every other refusal counter at zero. Lane TC split that into
+/// four; `rc_vanilla5` then said `body identity = 17` on all 690 frames, which
+/// was still three findings in one bucket -- a class word that disagreed, an
+/// id word that would not read, and an id word that is not an identity -- so
+/// lane SJ split that arm again. Seven arms now, and `ForeignIdSpace` is
+/// deliberately NOT one of them: it is not a `NotATaskForce` answer at all.
 ///
-/// kills: collapsing any two arms onto one variant (the four map to four
+/// kills: collapsing any two arms onto one variant (the seven map to seven
 /// distinct counters here); dropping the total (`not_a_task_force` is still
 /// the sum, and `compact_task_force_omissions` does not read the split); and
 /// deleting an arm's counter write, which would leave the total unexplained by
 /// its own parts.
 #[test]
-fn d29_not_a_task_force_arms_are_four_distinct_counters_that_sum_to_the_total() {
+fn d29_not_a_task_force_arms_are_distinct_counters_that_sum_to_the_total() {
     use std::collections::BTreeSet;
 
     let arms = [
         CompactTaskForceMiss::BodyNotHeap,
-        CompactTaskForceMiss::BodyIdentity,
+        CompactTaskForceMiss::BodyVtable,
+        CompactTaskForceMiss::BodyClassUndecided,
+        CompactTaskForceMiss::BodyIdUnreadable,
+        CompactTaskForceMiss::BodyIdUnusable,
         CompactTaskForceMiss::ParentUnreadable,
         CompactTaskForceMiss::ParentNotAFleetRoot,
     ];
@@ -400,7 +403,10 @@ fn d29_not_a_task_force_arms_are_four_distinct_counters_that_sum_to_the_total() 
 
         let split = [
             walk.not_a_task_force_body_not_heap,
-            walk.not_a_task_force_body_identity,
+            walk.not_a_task_force_body_vtable,
+            walk.not_a_task_force_body_class_undecided,
+            walk.not_a_task_force_body_id_unreadable,
+            walk.not_a_task_force_body_id_unusable,
             walk.not_a_task_force_parent_unreadable,
             walk.not_a_task_force_parent_not_a_fleet_root,
         ];
@@ -416,16 +422,16 @@ fn d29_not_a_task_force_arms_are_four_distinct_counters_that_sum_to_the_total() 
         );
         names.insert(format!("{arm:?}"));
     }
-    assert_eq!(names.len(), 4, "the four arms are four distinct findings");
+    assert_eq!(names.len(), 7, "the seven arms are seven distinct findings");
 
     // And each arm is BOUND TO ITS GATE, not merely present once.
     //
-    // Counting tokens is not enough: swapping `BodyIdentity` with either
-    // parent arm leaves every count at one and every arm distinct, and the
-    // capture would then send the next lane to RE the lift when the finding
-    // was a missing fleet root (Codex round 1, finding 5). The four gates run
-    // in a fixed order, so the pin is the INTERLEAVING — gate, its arm, the
-    // next gate, its arm, with no other arm in between.
+    // Counting tokens is not enough: swapping `BodyVtable` with either parent
+    // arm leaves every count at one and every arm distinct, and the capture
+    // would then send the next lane to RE the lift when the finding was a
+    // missing fleet root (Codex round 1, finding 5). The seven gates run in a
+    // fixed order, so the pin is the INTERLEAVING — gate, its arm, the next
+    // gate, its arm, with no other arm in between.
     let source = collector_source_lf();
     let start = source
         .find("fn validate_compact_task_force_body(")
@@ -442,8 +448,20 @@ fn d29_not_a_task_force_arms_are_four_distinct_counters_that_sum_to_the_total() 
             "CompactTaskForceMiss::BodyNotHeap",
         ),
         (
-            "let Some(task_force_id) = validate_oob_body_with_window(",
-            "CompactTaskForceMiss::BodyIdentity",
+            "CompactTaskForceIdentity::NotTheClass => {",
+            "CompactTaskForceMiss::BodyVtable",
+        ),
+        (
+            "CompactTaskForceIdentity::ClassUndecided => {",
+            "CompactTaskForceMiss::BodyClassUndecided",
+        ),
+        (
+            "CompactTaskForceIdentity::IdUnreadable => {",
+            "CompactTaskForceMiss::BodyIdUnreadable",
+        ),
+        (
+            "CompactTaskForceIdentity::IdUnusable => {",
+            "CompactTaskForceMiss::BodyIdUnusable",
         ),
         (
             "snapshot_ptr_or_read(task_force_win, body_ptr, TASK_FORCE_OFF_FLEET_PARENT)",
@@ -500,6 +518,92 @@ fn d29_not_a_task_force_arms_are_four_distinct_counters_that_sum_to_the_total() 
             && walk_body.contains("walk.count_not_a_task_force(miss);"),
         "the walk must bind the arm and count it; discarding it with `NotATaskForce(_)` \
          restores the single undifferentiated bucket"
+    );
+
+
+    // AND THE GATE BINDING IS NOT THE WHOLE PIN. This test reads source text,
+    // which cannot see what `read_compact_task_force_identity` actually reads
+    // out of the body; `d29_task_force_identity_reads_the_class_and_the_id_registry_apart`
+    // in `tests.rs` drives that function over bytes and is what catches a
+    // swapped handle half or a mis-answered unreadable word (Codex round 1,
+    // finding 3).
+    // AND `ForeignIdSpace` IS NOT ONE OF THE ARMS. It is a separate candidate
+    // answer with its own counter, because the elements it names ARE task
+    // forces: the class word agreed and only the clausewitz id registry
+    // differed (lane SJ, `runs/sj_d29_identity/RE_TASK_FORCE_ID_SPACES.md`).
+    // Routing it back through `count_not_a_task_force` would restore the false
+    // statement this lane removed.
+    assert_eq!(
+        body.matches("CompactTaskForceCandidate::ForeignIdSpace").count(),
+        1,
+        "exactly one gate may answer ForeignIdSpace"
+    );
+    // ...and the four LOCATOR words are populated where the population is
+    // counted. Without this, deleting the four assignments leaves every other
+    // assertion green and production advertises a foreign population with no
+    // sample to find it by (Codex round 4, finding 5). The bound is positional:
+    // each assignment must sit between the arm and the counter increment, which
+    // is the only place the FIRST offender of the frame is still known.
+    let arm_at = walk_body
+        .find("CompactTaskForceCandidate::ForeignIdSpace {")
+        .expect("the walk must bind the arm");
+    let count_at = walk_body
+        .find("walk.foreign_id_space = walk.foreign_id_space.saturating_add(1);")
+        .expect("the walk must count the population");
+    assert!(arm_at < count_at, "the arm must precede its counter");
+    let arm_body = &walk_body[arm_at..count_at];
+    // The sample is the FIRST offender of the frame, and the guard is what
+    // makes that true: without it a later element overwrites the one the
+    // outcome sentence quotes, and every assignment below still matches
+    // (Codex round 5, finding 3).
+    const GUARD: &str = "if walk.foreign_id_space == 0 {";
+    let guard_at = arm_body
+        .find(GUARD)
+        .expect("the four locator words must be taken under a first-offender guard");
+    // The guard's own block, by brace matching, so "assigned after the guard
+    // closes" does not pass for "assigned inside it" (Codex round 6, finding 3).
+    let open_at = guard_at + GUARD.len() - 1;
+    let mut depth = 0usize;
+    let mut close_at = None;
+    for (offset, ch) in arm_body[open_at..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close_at = Some(open_at + offset);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let guarded = &arm_body[open_at..close_at.expect("the guard block must close")];
+    for field in [
+        "foreign_id_space_first_type",
+        "foreign_id_space_first_object_id",
+        "foreign_id_space_first_body",
+        "foreign_id_space_first_fleet_id",
+    ] {
+        assert_eq!(
+            arm_body.matches(&format!("walk.{field} = ")).count(),
+            1,
+            "{field} must be assigned exactly once, inside the arm that counts              the population"
+        );
+        assert_eq!(
+            guarded.matches(&format!("walk.{field} = ")).count(),
+            1,
+            "{field} must be assigned INSIDE the first-offender guard; assigned              after it, the sample becomes the LAST offender of the frame"
+        );
+    }
+
+    assert!(
+        walk_body.contains("CompactTaskForceCandidate::ForeignIdSpace {")
+            && walk_body
+                .contains("walk.foreign_id_space = walk.foreign_id_space.saturating_add(1);")
+            && !walk_body.contains("count_not_a_task_force(CompactTaskForceMiss"),
+        "a foreign-id-space task force must be counted in its own population, never as a
+         `NotATaskForce` arm"
     );
 }
 
@@ -598,7 +702,7 @@ fn d64_every_refusal_maps_to_its_own_appended_reason_and_seven_stays_retired() {
         match refusal {
             Why::Freed => R::DelayedEventFreedDuringRead,
             Why::IdentityUnstable => R::DelayedEventIdentityUnstable,
-            Why::VtableUnreadable => R::DelayedEventVtableUnreadable,
+            Why::ClassUndecided => R::DelayedEventClassUndecided,
             Why::FieldUnreadable => R::DelayedEventFieldUnreadable,
             Why::FieldInvalid(_) => R::DelayedEventFieldInvalid,
             Why::FieldUnstable(_) => R::DelayedEventFieldUnstable,
@@ -608,7 +712,7 @@ fn d64_every_refusal_maps_to_its_own_appended_reason_and_seven_stays_retired() {
     let refusals = [
         Why::Freed,
         Why::IdentityUnstable,
-        Why::VtableUnreadable,
+        Why::ClassUndecided,
         Why::FieldUnreadable,
         Why::FieldInvalid(fingerprint),
         Why::FieldUnstable(fingerprint),
@@ -658,7 +762,7 @@ fn d64_every_refusal_maps_to_its_own_appended_reason_and_seven_stays_retired() {
         R::OwnerOrScopeMismatch,
         R::DuplicateIdentity,
         R::AnchorBaseUnresolvable,
-        R::DelayedEventVtableUnreadable,
+        R::DelayedEventClassUndecided,
         R::DelayedEventFieldInvalid,
         R::DelayedEventFreedBetweenPasses,
         R::DelayedEventFieldUnreadable,
@@ -670,7 +774,7 @@ fn d64_every_refusal_maps_to_its_own_appended_reason_and_seven_stays_retired() {
     assert!(!codes.contains(&0), "zero is not a reason; it is a default");
 
     for appended in [
-        R::DelayedEventVtableUnreadable,
+        R::DelayedEventClassUndecided,
         R::DelayedEventFieldInvalid,
         R::DelayedEventFreedBetweenPasses,
         R::DelayedEventFieldUnreadable,
@@ -869,7 +973,7 @@ fn d64_pair_verdict_is_total_symmetric_and_worst_first() {
     let stage = Kind::FieldInvalid(rtti_other_stage);
     let kinds = [
         Kind::Freed,
-        Kind::VtableUnreadable,
+        Kind::ClassUndecided,
         Kind::FieldUnreadable,
         a,
         b,
@@ -902,15 +1006,15 @@ fn d64_pair_verdict_is_total_symmetric_and_worst_first() {
         ((Kind::Freed, Kind::Freed), Why::Freed),
         ((Kind::Row, Kind::Row), Why::IdentityUnstable),
         (
-            (Kind::VtableUnreadable, Kind::FieldUnreadable),
-            Why::VtableUnreadable,
+            (Kind::ClassUndecided, Kind::FieldUnreadable),
+            Why::ClassUndecided,
         ),
-        ((Kind::VtableUnreadable, Kind::Freed), Why::VtableUnreadable),
-        ((Kind::VtableUnreadable, a), Why::VtableUnreadable),
-        ((Kind::VtableUnreadable, Kind::Row), Why::VtableUnreadable),
+        ((Kind::ClassUndecided, Kind::Freed), Why::ClassUndecided),
+        ((Kind::ClassUndecided, a), Why::ClassUndecided),
+        ((Kind::ClassUndecided, Kind::Row), Why::ClassUndecided),
         (
-            (Kind::VtableUnreadable, Kind::VtableUnreadable),
-            Why::VtableUnreadable,
+            (Kind::ClassUndecided, Kind::ClassUndecided),
+            Why::ClassUndecided,
         ),
         ((Kind::FieldUnreadable, Kind::Freed), Why::FieldUnreadable),
         ((Kind::FieldUnreadable, a), Why::FieldUnreadable),
