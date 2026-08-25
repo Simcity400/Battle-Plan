@@ -715,6 +715,149 @@ static CAPTURE_BUSY: AtomicBool = AtomicBool::new(false);
 static EVIDENCE_CAPTURE: AtomicBool = AtomicBool::new(false);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_TARGET: AtomicUsize = AtomicUsize::new(0);
+/// The five bytes the install actually wrote over the A729 call site, packed
+/// little-endian into the low 40 bits, published lock-free for the runtime
+/// context gate.
+///
+/// The gate has to know this, and it cannot take `INSTALL_STATE`'s mutex: it
+/// runs on the game's thread inside the hook, which is the same reason
+/// `EVIDENCE_CAPTURE` exists as an atomic beside it.
+///
+/// Zero means "no patch published". A real patch can never encode to zero --
+/// `make_rel32_call` always emits `0xE8` as byte 0 -- so the sentinel cannot
+/// collide with a live value. Stored with `MODULE_BASE` at install, cleared
+/// with it on every uninstall path.
+static INSTALLED_CALLSITE_PATCH: AtomicU64 = AtomicU64::new(0);
+
+/// The A729 window is the register-setup preamble followed by exactly one call
+/// slot, and the runtime gate splits it at that boundary. If the window, the
+/// call site or the patch length ever move relative to each other, the split is
+/// wrong -- so it fails to compile rather than silently checking the wrong
+/// bytes.
+const _: () = assert!(
+    crate::convoy_terminal_attribution::A729_CONTEXT_BYTES.len()
+        == (crate::convoy_terminal_attribution::A729_HOOK_RVA
+            - crate::convoy_terminal_attribution::A729_CONTEXT_RVA)
+            + A729_CALL_BYTES.len()
+);
+
+/// `patch` packed little-endian into the low 40 bits of a `u64`.
+fn pack_callsite_patch(patch: [u8; A729_CALL_BYTES.len()]) -> u64 {
+    let mut packed = [0u8; 8];
+    packed[..A729_CALL_BYTES.len()].copy_from_slice(&patch);
+    u64::from_le_bytes(packed)
+}
+
+/// Inverse of `pack_callsite_patch`. Total and panic-free: it runs on the
+/// game's thread inside the hook.
+fn unpack_callsite_patch(packed: u64) -> [u8; A729_CALL_BYTES.len()] {
+    let bytes = packed.to_le_bytes();
+    let mut patch = [0u8; A729_CALL_BYTES.len()];
+    patch.copy_from_slice(&bytes[..A729_CALL_BYTES.len()]);
+    patch
+}
+
+/// Forget everything the hot path knows about WHERE the installed hook is.
+///
+/// ONE function, because these five are one fact: the module it is in, the call
+/// site's original target, the bytes we wrote at that call site, and the
+/// evidence arm's two cached addresses. An uninstall path that forgot four of
+/// them and kept the fifth would leave the runtime context gate comparing live
+/// bytes against a patch that is no longer installed anywhere.
+///
+/// Counting clears per statement could not express that: three paths each
+/// clearing the same five is indistinguishable, by count, from one path
+/// clearing ten and another clearing none (Codex round 2, NON-BLOCKING 1). So
+/// the law is structural instead -- `the_hook_location_is_forgotten_in_one_place`
+/// pins every zeroing mutation of the module base to exactly this body. (Which
+/// is why that sentence does not spell the mutation out: the test scans the
+/// production text, and a doc comment quoting the literal would count as a
+/// second site and fail the law it is describing.)
+fn forget_installed_hook_location() {
+    ORIGINAL_TARGET.store(0, Ordering::Release);
+    MODULE_BASE.store(0, Ordering::Release);
+    INSTALLED_CALLSITE_PATCH.store(0, Ordering::Release);
+    EVIDENCE_GAME_STATE.store(0, Ordering::Release);
+    EVIDENCE_GAME_HOUR.store(0, Ordering::Release);
+}
+
+/// Publish the patch, THEN write it. One function, because the order is the
+/// invariant.
+///
+/// The runtime context gate compares the live call site against
+/// `INSTALLED_CALLSITE_PATCH`. If the bytes were written first, an event
+/// arriving in between would come through our own relay, read our own patch at
+/// the call site, find nothing published, and be refused as `context_mismatch`
+/// -- the same lost event this lane exists to stop, under a new name.
+///
+/// TODAY THAT INTERLEAVING CANNOT HAPPEN: the caller holds every other thread
+/// suspended across this call and keeps them suspended until the install
+/// finishes. The order here is therefore a MAINTAINED INVARIANT rather than a
+/// live race being closed -- it is what keeps the helper correct if it is ever
+/// called without that freeze, and what stops a future edit from reintroducing
+/// the window silently (Codex round 7, NON-BLOCKING 3).
+///
+/// Two statements in one installer could be reordered by an edit and only a
+/// text-matching test would notice; a test cannot even express "no other write
+/// to this call site exists" when the write is spelled inline. So the pair
+/// lives here,
+/// `the_installed_patch_is_published_before_the_write_and_cleared_with_the_base`
+/// pins this body's order, and the raw write of the A729 call site has exactly
+/// one caller -- this one (Codex round 5, NON-BLOCKING 3).
+///
+/// # Safety
+/// Same contract as `write_code`, plus the two preconditions the caller proves
+/// before it gets here (Codex round 6, NON-BLOCKING 2):
+///
+/// * `callsite` must be the five-byte A729 call this hook owns, and every other
+///   thread must be suspended for the whole call.
+/// * no suspended thread's instruction pointer may lie inside the callsite or
+///   relay ranges -- the installer establishes this with
+///   `patch_sites_are_clear(&suspended, ..)`, and writing under a frozen thread
+///   that is mid-instruction there would corrupt its resume point.
+/// * `patched_call` must be exactly the rel32 call `make_rel32_call` generated
+///   for THIS callsite and the relay that was allocated for it. Publishing one
+///   patch and writing another would leave the runtime context gate refusing
+///   every event for a call site that is in fact ours.
+unsafe fn publish_then_patch_callsite(
+    callsite: usize,
+    patched_call: [u8; A729_CALL_BYTES.len()],
+) -> Result<(), WriteRefusal> {
+    INSTALLED_CALLSITE_PATCH.store(pack_callsite_patch(patched_call), Ordering::Release);
+    unsafe { write_code(callsite, &patched_call) }
+}
+
+/// Byte offset of the call slot inside the A729 context window: everything
+/// before it is the register-setup preamble the install never writes to,
+/// everything from it on is the five bytes the install owns.
+pub(crate) const A729_CONTEXT_PREAMBLE_LEN: usize =
+    crate::convoy_terminal_attribution::A729_HOOK_RVA
+        - crate::convoy_terminal_attribution::A729_CONTEXT_RVA;
+
+/// Whether the live A729 window is the code this hook pinned, WITH this hook in
+/// it. Pure, so it can be tested; `prepare_observation` reads `ProcessMemory`
+/// and cannot be.
+///
+/// `installed_patch` is `INSTALLED_CALLSITE_PATCH`: the five bytes the install
+/// wrote, packed by `pack_callsite_patch`, or 0 when nothing is published.
+///
+/// The predicate deliberately REFUSES the unpatched window. A window whose call
+/// slot still holds `A729_CALL_BYTES` means the hook is not installed at the
+/// site we are supposedly executing from. No STEADY-STATE entry can observe
+/// that; the one entry that can is a callback descheduled across a teardown
+/// that restored the original bytes, and that is precisely the entry whose
+/// register snapshot is least trustworthy, so refusing it is correct.
+pub(crate) fn a729_context_window_is_ours(
+    window: &[u8; crate::convoy_terminal_attribution::A729_CONTEXT_BYTES.len()],
+    installed_patch: u64,
+) -> bool {
+    if installed_patch == 0 {
+        return false;
+    }
+    window[..A729_CONTEXT_PREAMBLE_LEN]
+        == crate::convoy_terminal_attribution::A729_CONTEXT_BYTES[..A729_CONTEXT_PREAMBLE_LEN]
+        && window[A729_CONTEXT_PREAMBLE_LEN..] == unpack_callsite_patch(installed_patch)
+}
 static PRODUCER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static QUEUE_MUTATION_GENERATION: AtomicU64 = AtomicU64::new(1);
 static HOOK_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
@@ -1520,7 +1663,70 @@ fn prepare_observation(
             return None;
         }
     };
-    let mut context_bytes = vec![0u8; crate::convoy_terminal_attribution::A729_CONTEXT_BYTES.len()];
+    // THE GATE MUST NOT ASK WHETHER THE HOOK IS ABSENT. It used to compare all
+    // 25 bytes of the A729 window against `A729_CONTEXT_BYTES`, and the last
+    // five of those bytes ARE the call site this hook patches:
+    // `A729_HOOK_RVA - A729_CONTEXT_RVA == 0x14 == 20`, and
+    // `A729_CONTEXT_BYTES[20..25] == A729_CALL_BYTES` (the same identity
+    // `a729_call_window_is_exact` derives from). The install writes
+    // `make_rel32_call(hook_address, relay)` over exactly those five bytes and
+    // then re-reads them to prove the overwrite landed -- so for every
+    // STEADY-STATE entry, i.e. every entry while the call site is still
+    // patched, the old comparison could not succeed. It was a self-refuting
+    // predicate, the same shape as the `InvalidMemberState` one lane RX2
+    // deleted fourteen lines above.
+    //
+    // "Steady-state" is not a hedge, it is the one exception: a callback that
+    // read `TEARDOWN == false` and was then descheduled while teardown restored
+    // the original call would, on resuming, find the unpatched window and the
+    // OLD gate would pass for it. That window is a few instructions wide, it
+    // requires a concurrent teardown, and it is the one state in which the
+    // register snapshot is least trustworthy -- so the old gate admitted
+    // precisely the entries it should have refused and refused every one it
+    // should have admitted. The new predicate refuses that state too, because
+    // the restored call site is not the patch that was published.
+    //
+    // It cost this domain every event it has ever had. In captures/rc_vanilla5
+    // 104 of the 129 hook entries reached this gate and 104 were refused here;
+    // in captures/rc_vanilla5_endscreen_wedge, 103 of 103. Two hundred and seven
+    // arrivals, two hundred and seven refusals, no pass ever recorded. Before
+    // RX2 the events died one line earlier, which is why d90 has read zero rows
+    // in every capture ever taken: a chain of self-refuting predicates, each
+    // hiding the next. `runs/sl_d90_resolver/RE_context_gate.md` has the
+    // instruction-level proof and the per-capture counts.
+    //
+    // What the gate is FOR is post-install drift, and the window splits cleanly
+    // in two at byte 20:
+    //
+    // * `[0..20]` is the register-setup preamble that establishes the
+    //   `A729PreCollapseRegisters` ABI the carrier is read through
+    //   (`lea r9,[rsp+20]; mov r8,r15; mov edx,1; mov rcx,[rip+0x19B4B18]`).
+    //   The install never writes here, so it stays pinned to the static bytes.
+    // * `[20..25]` is the call slot this hook owns, so it is pinned to the patch
+    //   the install actually wrote, republished lock-free at
+    //   `INSTALLED_CALLSITE_PATCH`. This is STRICTLY MORE evidence than the old
+    //   comparison could carry: the old one could only ever say "not hooked",
+    //   which is always false here; this one says "hooked, and hooked by us",
+    //   which is the fact the register snapshot's validity actually rests on.
+    //
+    // The full 25-byte window is still proven exactly once, against the
+    // unpatched bytes, at install: `a729_call_window_is_exact` under thread
+    // suspension, then the `original_call` re-read immediately below it. Nothing
+    // is checked less than before; one half moved to where it can be true.
+    //
+    // Both halves keep the single `CAND_CONTEXT_MISMATCH` leaf. They are one
+    // claim -- "the code I am standing in is not the code I pinned" -- and
+    // splitting them would add a wire leaf whose second half is expected to read
+    // zero forever, which is what v8's own subsite comment refuses to do.
+    // The predicate itself is `a729_context_window_is_ours`, a pure function of
+    // the bytes, so it can be driven by a test. THE OLD GATE HAD NO
+    // BEHAVIOURAL TEST AT ALL: `prepare_observation` reads `ProcessMemory`, so
+    // no fixture can reach it, and every test that touched the window built its
+    // image with `memory.put(base + A729_CONTEXT_RVA, &A729_CONTEXT_BYTES)` --
+    // the UNPATCHED state, which no steady-state entry ever sees. The
+    // gate therefore passed in every test and failed in every capture, for two
+    // hundred and seven consecutive events.
+    let mut context_bytes = [0u8; crate::convoy_terminal_attribution::A729_CONTEXT_BYTES.len()];
     let Some(context_address) =
         module_base.checked_add(crate::convoy_terminal_attribution::A729_CONTEXT_RVA)
     else {
@@ -1529,7 +1735,10 @@ fn prepare_observation(
         return None;
     };
     if !memory.read_exact(context_address, &mut context_bytes)
-        || context_bytes != crate::convoy_terminal_attribution::A729_CONTEXT_BYTES
+        || !a729_context_window_is_ours(
+            &context_bytes,
+            INSTALLED_CALLSITE_PATCH.load(Ordering::Acquire),
+        )
     {
         DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
         CAND_CONTEXT_MISMATCH.fetch_add(1, Ordering::Relaxed);
@@ -1620,7 +1829,9 @@ fn prepare_observation(
     };
     let raw = evidence.then(|| HConvoyPositiveRawObservation {
         module_base,
-        context_bytes,
+        // The window is a fixed-size array on the hot path now; only the
+        // evidence arm needs it on the heap, and only the evidence arm pays.
+        context_bytes: context_bytes.to_vec(),
         game_hour_raw: hour,
         rcx: registers.rcx_game_state,
         edx: registers.edx_count,
@@ -1988,7 +2199,9 @@ fn install_convoy_terminal_hook_inner(
     MODULE_BASE.store(module_base, Ordering::Release);
     ORIGINAL_TARGET.store(prepared.original_target_address, Ordering::Release);
     TEARDOWN.store(false, Ordering::Release);
-    if let Err(error) = unsafe { write_code(prepared.hook_address, &patched_call) } {
+    if let Err(error) =
+        unsafe { publish_then_patch_callsite(prepared.hook_address, patched_call) }
+    {
         let outcome = rollback_failed_install(
             &mut state,
             &memory,
@@ -2154,10 +2367,7 @@ fn rollback_failed_install(
 
     if patch_restored && rollback_error.is_none() {
         if unsafe { VirtualFree(relay as *mut c_void, 0, MEM_RELEASE) } != 0 {
-            ORIGINAL_TARGET.store(0, Ordering::Release);
-            MODULE_BASE.store(0, Ordering::Release);
-            EVIDENCE_GAME_STATE.store(0, Ordering::Release);
-            EVIDENCE_GAME_HOUR.store(0, Ordering::Release);
+            forget_installed_hook_location();
             TEARDOWN.store(false, Ordering::Release);
             INSTALLED.store(false, Ordering::Release);
         EVIDENCE_CAPTURE.store(false, Ordering::Release);
@@ -2352,10 +2562,7 @@ fn finalize_convoy_terminal_uninstall(
         }
         clear_convoy_terminal_resolver_snapshot()
             .map_err(ConvoyTerminalInstallError::ResolverClear)?;
-        ORIGINAL_TARGET.store(0, Ordering::Release);
-        MODULE_BASE.store(0, Ordering::Release);
-        EVIDENCE_GAME_STATE.store(0, Ordering::Release);
-        EVIDENCE_GAME_HOUR.store(0, Ordering::Release);
+        forget_installed_hook_location();
         TEARDOWN.store(false, Ordering::Release);
         return Ok(());
     };
@@ -2411,10 +2618,7 @@ fn finalize_convoy_terminal_uninstall(
     }
     clear_convoy_terminal_resolver_snapshot().map_err(ConvoyTerminalInstallError::ResolverClear)?;
     let released_receipt = installed.released_receipt;
-    ORIGINAL_TARGET.store(0, Ordering::Release);
-    MODULE_BASE.store(0, Ordering::Release);
-    EVIDENCE_GAME_STATE.store(0, Ordering::Release);
-    EVIDENCE_GAME_HOUR.store(0, Ordering::Release);
+    forget_installed_hook_location();
     let mut released_slot = RELEASED_HOOK_RECEIPT
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
@@ -2645,17 +2849,32 @@ mod freeze_call_site_tests {
         for (signature, write) in [
             (
                 "fn install_convoy_terminal_hook_inner(",
-                "write_code(prepared.hook_address",
+                // The installer no longer writes the call site inline: the
+                // write moved into `publish_then_patch_callsite`, which
+                // publishes the patch first (lane SL). The freeze law is
+                // unchanged -- this call IS the mutation, and it must still come
+                // after the freeze and the clear-sites proof. That the call
+                // performs the write is established by
+                // `the_installed_patch_is_published_before_the_write_and_cleared_with_the_base`,
+                // which pins the helper's body.
+                "publish_then_patch_callsite(prepared.hook_address, patched_call)",
             ),
             (
                 "fn restore_and_quiesce_convoy_terminal_hook(",
                 "write_code(installed.callsite",
             ),
         ] {
+            // BOUNDED TO THE FUNCTION. Searching the whole remaining file
+            // would keep passing if the mutation moved out of this function
+            // into a later one, which is precisely the edit the freeze law
+            // exists to catch (Codex round 7, NON-BLOCKING 1).
             let body = production
                 .split_once(signature)
                 .unwrap_or_else(|| panic!("{signature} is declared in production"))
-                .1;
+                .1
+                .split_once("\nfn ")
+                .unwrap_or_else(|| panic!("{signature} is terminated by the next item"))
+                .0;
             let freeze = body
                 .find("suspend_all_other_threads()")
                 .unwrap_or_else(|| panic!("{signature} must freeze the process"));
@@ -3306,4 +3525,544 @@ mod frozen_window_allocation_tests {
              the stopped window"
         );
     }
+
+    /// Law: the runtime context gate ADMITS the window a steady-state hook
+    /// entry sees.
+    ///
+    /// This is the test that did not exist. The gate compared all 25 bytes of
+    /// the A729 window against `A729_CONTEXT_BYTES`, whose last five bytes ARE
+    /// the call site the install patches -- so it could only ever pass while the
+    /// hook was NOT installed, and every steady-state entry runs while the hook
+    /// IS. (The one non-steady-state entry, a callback resuming after teardown
+    /// restored the original call, is covered by
+    /// `context_gate_old_rule_and_new_rule_side_by_side`.) Every
+    /// fixture that touched the window built the unpatched image, which is the
+    /// one image no steady-state entry ever sees, so the gate passed in test
+    /// and refused
+    /// 104 of 104 arrivals in captures/rc_vanilla5 and 103 of 103 in
+    /// captures/rc_vanilla5_endscreen_wedge. 207 arrivals, 207 refusals, no pass
+    /// ever recorded. Proof: `runs/sl_d90_resolver/RE_context_gate.md`.
+    ///
+    /// What production change makes this fail: comparing the call slot against
+    /// `A729_CALL_BYTES` (or the whole window against `A729_CONTEXT_BYTES`)
+    /// instead of against the patch the install published.
+    #[test]
+    fn context_gate_admits_the_installed_callsite() {
+        let (window, patch) = installed_window();
+        assert!(
+            super::a729_context_window_is_ours(&window, patch),
+            "the window a hook entry actually sees must be admitted"
+        );
+    }
+
+    /// The same fact, stated as the side-by-side the old rule never got.
+    ///
+    /// OLD RULE: whole window == `A729_CONTEXT_BYTES`.
+    /// NEW RULE: preamble == static bytes AND call slot == published patch.
+    ///
+    /// What production change makes this fail: restoring the old rule.
+    #[test]
+    fn context_gate_old_rule_and_new_rule_side_by_side() {
+        let (installed, patch) = installed_window();
+        let unpatched = crate::convoy_terminal_attribution::A729_CONTEXT_BYTES;
+        let old_rule = |window: &ContextWindow| {
+            *window == crate::convoy_terminal_attribution::A729_CONTEXT_BYTES
+        };
+
+        // The state every steady-state entry is in.
+        assert!(
+            !old_rule(&installed),
+            "OLD RULE refuses the installed window -- this is the defect, and \
+             it is why d90 recorded zero rows in every capture ever taken"
+        );
+        assert!(
+            super::a729_context_window_is_ours(&installed, patch),
+            "NEW RULE admits it"
+        );
+
+        // The state no steady-state hook entry can be in (only a callback
+        // descheduled across a teardown that restored the original bytes, and
+        // the new rule refuses that one too).
+        assert!(
+            old_rule(&unpatched),
+            "OLD RULE admits only the un-hooked window"
+        );
+        assert!(
+            !super::a729_context_window_is_ours(&unpatched, patch),
+            "NEW RULE refuses it. A steady-state entry cannot arrive through a \
+             call site that still holds the original call; the entry that CAN \
+             see this window is a callback resuming after teardown restored it, \
+             and its register snapshot is the least trustworthy of any, so \
+             refusing it is the point rather than a side effect"
+        );
+    }
+
+    /// Law: the gate still refuses a call site that is not ours. This is the
+    /// half the old comparison could never express -- it could only say
+    /// "not hooked", which is always false on this path.
+    ///
+    /// What production change makes this fail: dropping the call-slot
+    /// comparison and checking only the preamble.
+    #[test]
+    fn context_gate_refuses_a_foreign_callsite() {
+        let (mut window, patch) = installed_window();
+        let foreign = super::make_rel32_call(CALLSITE, RELAY.wrapping_add(0x40))
+            .expect("a second relay is in rel32 range of the same call site");
+        assert_ne!(
+            foreign,
+            super::unpack_callsite_patch(patch),
+            "the fixture's two relays must differ, or this proves nothing"
+        );
+        window[super::A729_CONTEXT_PREAMBLE_LEN..].copy_from_slice(&foreign);
+        assert!(
+            !super::a729_context_window_is_ours(&window, patch),
+            "somebody else owns the call site; the register snapshot this hook \
+             took is not authenticated by anything"
+        );
+    }
+
+    /// Law: the ABI preamble is still pinned. It is the evidence that the
+    /// registers `A729PreCollapseRegisters` names are the registers this
+    /// routine actually set up, and the install never writes to it.
+    ///
+    /// What production change makes this fail: dropping the preamble
+    /// comparison, or narrowing it to fewer bytes than the call slot's offset.
+    #[test]
+    fn context_gate_refuses_a_drifted_preamble() {
+        for index in 0..super::A729_CONTEXT_PREAMBLE_LEN {
+            let (mut window, patch) = installed_window();
+            window[index] ^= 0xFF;
+            assert!(
+                !super::a729_context_window_is_ours(&window, patch),
+                "preamble byte {index} drifted and the gate admitted it; the \
+                 argument ABI is no longer proven"
+            );
+        }
+    }
+
+    /// Law: no published patch, no admission. The sentinel cannot collide with
+    /// a real patch, because `make_rel32_call` always emits `0xE8` as byte 0.
+    ///
+    /// What production change makes this fail: treating an unpublished patch as
+    /// a wildcard. (It does NOT observe installation order -- that is the
+    /// separate source test above, and claiming it here would be a claim this
+    /// test does not check. Codex round 2, NON-BLOCKING 1.)
+    #[test]
+    fn context_gate_refuses_when_no_patch_is_published() {
+        let (window, patch) = installed_window();
+        assert_ne!(patch, 0, "a real patch never encodes to the sentinel");
+        assert_eq!(
+            super::unpack_callsite_patch(patch)[0],
+            0xE8,
+            "which is what makes 0 a safe sentinel"
+        );
+        assert!(
+            !super::a729_context_window_is_ours(&window, 0),
+            "an unpublished patch admits nothing"
+        );
+    }
+
+    /// Law: the window splits at the call site and nowhere else. If the split
+    /// were wrong the gate would compare the wrong halves and be silently
+    /// vacuous again -- in the other direction this time.
+    ///
+    /// What production change makes this fail: moving `A729_CONTEXT_RVA`,
+    /// `A729_HOOK_RVA` or the window length without moving the others.
+    #[test]
+    fn context_gate_splits_the_window_at_the_call_site() {
+        assert_eq!(super::A729_CONTEXT_PREAMBLE_LEN, 20);
+        assert_eq!(
+            crate::convoy_terminal_attribution::A729_CONTEXT_BYTES.len()
+                - super::A729_CONTEXT_PREAMBLE_LEN,
+            crate::convoy_terminal_attribution::A729_CALL_BYTES.len(),
+        );
+        assert_eq!(
+            crate::convoy_terminal_attribution::A729_CONTEXT_BYTES
+                [super::A729_CONTEXT_PREAMBLE_LEN..],
+            crate::convoy_terminal_attribution::A729_CALL_BYTES,
+            "the tail of the static window IS the original call, which is what \
+             made the old whole-window comparison self-refuting"
+        );
+    }
+
+    /// Law: the patch is published BEFORE the bytes are written, and cleared on
+    /// every path that clears `MODULE_BASE`.
+    ///
+    /// A patch published after `write_code` leaves a window in which a real
+    /// event arrives through our relay, reads our patch at the call site, finds
+    /// nothing published, and is refused as `context_mismatch` -- the same lost
+    /// event under a new name. A patch left published after an uninstall would
+    /// outlive the hook it describes.
+    ///
+    /// What production change makes this fail: reordering the store past
+    /// `write_code`, or adding an uninstall path that clears `MODULE_BASE`
+    /// without clearing the patch.
+    #[test]
+    fn the_installed_patch_is_published_before_the_write_and_cleared_with_the_base() {
+        let production = super::freeze_call_site_tests::production_code();
+        // THE ORDER IS A PROPERTY OF ONE FUNCTION BODY, not of two offsets in a
+        // file. Comparing `find` offsets could pass after an earlier,
+        // differently spelled write was introduced ahead of the publication,
+        // and would fail after a semantics-preserving refactor (Codex round 5,
+        // NON-BLOCKING 3). So the pair lives in `publish_then_patch_callsite`
+        // and this pins that body's two statements in order.
+        let helper = production
+            .split_once("unsafe fn publish_then_patch_callsite(")
+            .expect("the publish-then-write helper exists")
+            .1
+            .split_once("\n}")
+            .expect("the helper has a body")
+            .0;
+        let helper = helper
+            .lines()
+            .map(|line| line.split_once("//").map(|(head, _)| head).unwrap_or(line))
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>();
+        let body = helper
+            .iter()
+            .skip_while(|line| !line.contains(") -> Result<(), WriteRefusal> {"))
+            .skip(1)
+            .map(|line| line.trim())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            body,
+            vec![
+                "INSTALLED_CALLSITE_PATCH.store(pack_callsite_patch(patched_call), Ordering::Release);",
+                "unsafe { write_code(callsite, &patched_call) }",
+            ],
+            "the helper must publish the patch and then write it, in that order \
+             and with nothing between. The property is that THE PATCH IS \
+             PUBLISHED BEFORE ANY THREAD CAN EXECUTE THE PATCHED SITE: today the \
+             installer also holds every other thread suspended across this call, \
+             so the window is closed twice over, but the suspension is the \
+             installer's business and this order is the helper's. An event that \
+             did arrive in between would come through our own relay, read our \
+             own patch at the call site, find nothing published, and be refused \
+             as `context_mismatch`"
+        );
+        // EVERY production `write_code` call site is enumerated, so a fourth
+        // one in ANY argument spelling fails rather than slipping past two exact
+        // strings (Codex round 6, NON-BLOCKING 1). Comments are stripped first:
+        // this is a census of code, and the doc comments above discuss these
+        // very calls.
+        let calls = production
+            .lines()
+            .map(|line| line.split_once("//").map(|(head, _)| head).unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let sites = [
+            // the patch, reached only through the publish-then-write helper
+            "write_code(callsite, &patched_call)",
+            // the rollback that puts the original call back
+            "write_code(callsite, &original_call)",
+            // the ordinary teardown restore
+            "write_code(installed.callsite, &installed.original_call)",
+        ];
+        let mut accounted = 0usize;
+        for site in sites {
+            let found = calls.matches(site).count();
+            assert_eq!(found, 1, "expected exactly one `{site}`, found {found}");
+            accounted += found;
+        }
+        // Whitespace-tolerant, and every mention of the name is accounted for,
+        // so neither `write_code (..)` nor a rebinding like `let w = write_code;`
+        // can slip past an exact-token count (Codex round 7, NON-BLOCKING 2).
+        // Still a text census, not an AST one: it is a guard against drift in a
+        // file this project edits by hand, and it says so.
+        let mut invocations = 0usize;
+        for (at, _) in calls.match_indices("write_code") {
+            let after = calls[at + "write_code".len()..].trim_start();
+            assert!(
+                after.starts_with('('),
+                "`write_code` is mentioned in production without being called \
+                 (at byte {at}); a rebinding or alias would let a fourth writer \
+                 of the A729 call site escape this census"
+            );
+            invocations += 1;
+        }
+        // `fn write_code(address: usize, bytes: &[u8])` is the declaration, not
+        // a call, so the census is calls + 1.
+        assert_eq!(
+            invocations,
+            accounted + 1,
+            "an unaccounted `write_code` call exists in production. Every write \
+             to the A729 call site must be one of the three named above, because \
+             the runtime context gate compares that site against the published \
+             patch -- a fourth writer would make the two disagree"
+        );
+        // Inside the INSTALLER's own body, not merely once in the file: a lone
+        // occurrence somewhere else would satisfy a bare count while the
+        // installer no longer patched anything (Codex round 7, NON-BLOCKING 1).
+        let installer = production
+            .split_once("fn install_convoy_terminal_hook_inner(")
+            .expect("the installer is declared in production")
+            .1
+            .split_once("\nfn ")
+            .expect("the installer is terminated by the next item")
+            .0;
+        assert_eq!(
+            installer
+                .matches("publish_then_patch_callsite(prepared.hook_address, patched_call)")
+                .count(),
+            1,
+            "the installer reaches the call site through the helper, exactly once"
+        );
+        assert_eq!(
+            production
+                .matches("publish_then_patch_callsite(")
+                .count(),
+            2,
+            "and the helper has exactly one definition and one caller"
+        );
+    }
+
+    /// Law: there is exactly ONE place that forgets where the hook is, and it
+    /// forgets all of it.
+    ///
+    /// Round 1 asked for pairing and got a count; round 2 pointed out that a
+    /// count cannot express pairing (delete both clears from one branch and it
+    /// still passes) and that adjacency of one exact string cannot either -- a
+    /// `MODULE_BASE.swap(0, ..)`, a different `Ordering`, or a helper-function
+    /// refactor all slip past it. So the law is structural: every zeroing
+    /// mutation of the hook's location lives in
+    /// `forget_installed_hook_location`, and that body clears all five.
+    ///
+    /// What production change makes this fail: dropping any of the five clears
+    /// from inside the helper, or zeroing either of the two atomics the context
+    /// gate reads -- `MODULE_BASE` or `INSTALLED_CALLSITE_PATCH` -- outside it
+    /// via `store(0`, `swap(0` or a compare-exchange.
+    ///
+    /// What it does NOT catch, stated so the next reader does not over-trust
+    /// it: a clear spelled some other way (`fetch_and(0)`, a named constant
+    /// instead of a literal `0`). Those three prefixes are the spellings this
+    /// codebase uses; the test is a guard against drift, not a proof of
+    /// exhaustion (Codex round 3, NON-BLOCKING 2).
+    #[test]
+    fn the_hook_location_is_forgotten_in_one_place() {
+        let production = super::freeze_call_site_tests::production_code();
+        let helper = production
+            .split_once("fn forget_installed_hook_location() {")
+            .expect("the lifecycle helper exists")
+            .1
+            .split_once("\n}")
+            .expect("the helper has a body")
+            .0;
+        for cleared in [
+            "ORIGINAL_TARGET",
+            "MODULE_BASE",
+            "INSTALLED_CALLSITE_PATCH",
+            "EVIDENCE_GAME_STATE",
+            "EVIDENCE_GAME_HOUR",
+        ] {
+            assert!(
+                helper.contains(&format!("{cleared}.store(0, Ordering::Release);")),
+                "the helper must forget {cleared}; forgetting four of the five \
+                 leaves the context gate comparing live bytes against a patch \
+                 that is no longer installed"
+            );
+        }
+        // Neither atomic the context gate reads may be zeroed anywhere else.
+        // `MODULE_BASE.store(module_base, ..)` and
+        // `INSTALLED_CALLSITE_PATCH.store(pack_callsite_patch(..), ..)` at
+        // install write real values and are not mutations to zero.
+        for atomic in ["MODULE_BASE", "INSTALLED_CALLSITE_PATCH"] {
+            for spelling in ["store(0", "swap(0", "compare"] {
+                let mutation = format!("{atomic}.{spelling}");
+                let outside = production.matches(&mutation).count()
+                    - helper.matches(&mutation).count();
+                assert_eq!(
+                    outside, 0,
+                    "`{mutation}` occurs outside forget_installed_hook_location; \
+                     every path that forgets the hook's location must go through \
+                     the one place that forgets all of it"
+                );
+            }
+        }
+        // PER BRANCH, not per function. A per-function count would survive
+        // deleting the call from the finalizer's empty-state branch and
+        // duplicating it in its installed-state tail -- same count, one broken
+        // semantic path (Codex round 5, NON-BLOCKING 2). So each of the three
+        // branches is cut out by the text that opens it and checked alone.
+        let branch = |owner: &str, opens_with: &str, ends_with: &str| -> String {
+            let body = production
+                .split_once(&format!("fn {owner}("))
+                .unwrap_or_else(|| panic!("{owner} is declared in production"))
+                .1
+                .split_once("\nfn ")
+                .unwrap_or_else(|| panic!("{owner} is terminated by the next item"))
+                .0;
+            let from = body
+                .find(opens_with)
+                .unwrap_or_else(|| panic!("{owner} still has the branch opening `{opens_with}`"));
+            let rest = &body[from..];
+            let to = rest
+                .find(ends_with)
+                .unwrap_or_else(|| panic!("{owner}'s branch still ends at `{ends_with}`"));
+            rest[..to].to_string()
+        };
+        for (label, text) in [
+            // The rollback that restored the original bytes and freed the relay.
+            (
+                "rollback_failed_install / restored",
+                branch(
+                    "rollback_failed_install",
+                    "if patch_restored && rollback_error.is_none() {",
+                    "return RollbackOutcome::Restored;",
+                ),
+            ),
+            // The finalizer's `None` arm: no installed state to unwind.
+            (
+                "finalize_convoy_terminal_uninstall / no installed state",
+                branch(
+                    "finalize_convoy_terminal_uninstall",
+                    "let Some(mut installed) = *state else {",
+                    "return Ok(());",
+                ),
+            ),
+            // The finalizer's installed-state success tail.
+            (
+                "finalize_convoy_terminal_uninstall / installed state",
+                branch(
+                    "finalize_convoy_terminal_uninstall",
+                    "let released_receipt = installed.released_receipt;",
+                    "let mut released_slot = RELEASED_HOOK_RECEIPT",
+                ),
+            ),
+        ] {
+            assert_eq!(
+                text.matches("forget_installed_hook_location();").count(),
+                1,
+                "{label} must forget the hook's location exactly once; a branch \
+                 that skips it leaves the context gate reading a patch that is \
+                 no longer installed, and one that repeats it is a sign the \
+                 branch was split without being thought about"
+            );
+        }
+    }
+
+    /// Law: the predicate the behavioural tests drive is the predicate
+    /// production runs, fed from the published patch.
+    ///
+    /// Without this, every behavioural test above is a test of a function
+    /// nothing has to call. Restoring the old whole-window comparison inside
+    /// `prepare_observation`, or calling the helper with some other expected
+    /// patch, would leave `a729_context_window_is_ours` correct and green while
+    /// the gate went back to refusing every event (Codex round 3,
+    /// NON-BLOCKING 1).
+    ///
+    /// What production change makes this fail: adding any conjunct to the gate
+    /// condition, calling the predicate more than once or not at all, sourcing
+    /// the expected patch from anywhere but `INSTALLED_CALLSITE_PATCH`, or using
+    /// `A729_CONTEXT_BYTES` in this function for anything but its length.
+    ///
+    /// What it does NOT prove: that no second refusal built from other
+    /// identifiers exists anywhere. It pins the PRIMARY condition and the one
+    /// identifier a whole-window comparison needs (Codex round 5,
+    /// NON-BLOCKING 1).
+    #[test]
+    fn prepare_observation_runs_the_predicate_the_tests_drive() {
+        let production = super::freeze_call_site_tests::production_code();
+        let prepare = production
+            .split_once("fn prepare_observation(")
+            .expect("prepare_observation is declared in production")
+            .1
+            .split_once("\nfn ")
+            .expect("prepare_observation is terminated by the next item")
+            .0;
+        let code = prepare
+            .lines()
+            .map(|line| line.split_once("//").map(|(head, _)| head).unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // THE WHOLE CONDITION, NOT CONTAINMENT. Asserting "calls the predicate"
+        // plus "does not contain one exact forbidden spelling" would stay green
+        // if a second whole-window comparison were appended in some other
+        // spelling (`.as_slice()`, a helper, a reversed operand order), which
+        // restores the refusal while every assertion passes. So the condition
+        // is extracted and compared in full, whitespace-normalised, against the
+        // one text it is allowed to be (Codex round 4, NON-BLOCKING 1).
+        let condition = code
+            .split_once("if !memory.read_exact(context_address, &mut context_bytes)")
+            .expect("the gate reads the window and refuses in one condition")
+            .1
+            .split_once("\n    {")
+            .expect("the condition ends where its block opens")
+            .0;
+        let normalised = condition.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(
+            normalised,
+            "|| !a729_context_window_is_ours( &context_bytes, \
+             INSTALLED_CALLSITE_PATCH.load(Ordering::Acquire), )"
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+            "the gate is exactly: the window read, then the tested predicate fed \
+             the live window and the PUBLISHED patch. Nothing else may join that \
+             condition -- an extra conjunct is a new way to refuse an event, and \
+             a whole-window comparison is the defect this lane closed"
+        );
+        assert_eq!(
+            code.matches("a729_context_window_is_ours(").count(),
+            1,
+            "and it is called once"
+        );
+        // The window must not be compared to the static bytes anywhere in this
+        // function. `A729_CONTEXT_BYTES` may appear here for its LENGTH and
+        // nothing else -- any other use of it is a whole-window comparison
+        // coming back in some new spelling. This is a guard on the one
+        // identifier such a comparison needs, not a proof that no second gate
+        // of any kind can exist; a refusal built from something else entirely
+        // would still get past it (Codex round 5, NON-BLOCKING 1).
+        for use_site in code.match_indices("A729_CONTEXT_BYTES") {
+            let after = &code[use_site.0 + "A729_CONTEXT_BYTES".len()..];
+            assert!(
+                after.starts_with(".len()"),
+                "`A729_CONTEXT_BYTES` is used in prepare_observation for \
+                 something other than its length; the whole-window comparison \
+                 is the defect this lane closed and it must not come back"
+            );
+        }
+        assert_eq!(
+            production
+                .matches("fn a729_context_window_is_ours(")
+                .count(),
+            1,
+            "the predicate is defined once, so the tests and production cannot \
+             drift onto two of them"
+        );
+    }
+
+    type ContextWindow = [u8; crate::convoy_terminal_attribution::A729_CONTEXT_BYTES.len()];
+
+    /// The call site and relay the window fixture is built from. `CALLSITE` is
+    /// `A729_HOOK_RVA` under the load base `captures/rc_vanilla5` actually
+    /// recorded (`target_module_base = 0x7FF68B270000`), and `RELAY` is a page
+    /// within rel32 range of it, which is what `allocate_near_relay`
+    /// guarantees.
+    const MODULE_BASE_FIXTURE: usize = 0x7FF6_8B27_0000;
+    const CALLSITE: usize =
+        MODULE_BASE_FIXTURE + crate::convoy_terminal_attribution::A729_HOOK_RVA;
+    const RELAY: usize = CALLSITE + 0x10_0000;
+
+    /// The A729 window exactly as a steady-state hook entry sees it: the
+    /// untouched register preamble, then the five bytes the install wrote over
+    /// the call. (The one non-steady-state entry -- a callback descheduled
+    /// across a teardown that restored the original bytes -- sees the unpatched
+    /// window instead, and `context_gate_old_rule_and_new_rule_side_by_side`
+    /// covers that as the state the new rule must refuse.)
+    fn installed_window() -> (ContextWindow, u64) {
+        let patched_call = super::make_rel32_call(CALLSITE, RELAY)
+            .expect("the relay is in rel32 range of the call site");
+        assert_ne!(
+            patched_call,
+            crate::convoy_terminal_attribution::A729_CALL_BYTES,
+            "the patch necessarily differs from the original call: they are \
+             equal only if the relay is the terminal aggregator itself"
+        );
+        let mut window = crate::convoy_terminal_attribution::A729_CONTEXT_BYTES;
+        window[super::A729_CONTEXT_PREAMBLE_LEN..].copy_from_slice(&patched_call);
+        (window, super::pack_callsite_patch(patched_call))
+    }
+
 }
