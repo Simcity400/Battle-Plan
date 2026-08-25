@@ -979,7 +979,7 @@ fn fx_naval_air_activity(seed: u64) -> Scenario {
                      "logical_member_count": 1, "member_count_engine": 1
                  },
                  "task_forces": [
-                    {"id": 501, "name": "Channel Patrol", "location_province": 3000, "owner": "ENG", "mission": 1, "ship_count": 8 + tick as i64, "dominant_hull_class": "capital",
+                    {"id": 501, "id_space": 61, "name": "Channel Patrol", "location_province": 3000, "owner": "ENG", "mission": 1, "ship_count": 8 + tick as i64, "dominant_hull_class": "capital",
                      "_r2_oob_command_capture": {"kind": 4, "parent_status": 1, "owner_status": 1}}
                 ]}
             ]);

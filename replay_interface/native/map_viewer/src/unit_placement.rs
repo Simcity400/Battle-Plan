@@ -161,6 +161,14 @@ pub struct DivisionPlacementInput {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FleetPlacementInput {
+    /// The task force's number as the GAME shows it -- the marker's label.
+    ///
+    /// **NOT UNIQUE, and nothing here may assume it is.** Two clausewitz
+    /// registries mint task forces and their numbers collide, so a frame can
+    /// place two markers carrying this same text; they are two different task
+    /// forces in two different provinces. Placement keeps a positional list for
+    /// exactly that reason -- do not turn it into a map keyed on this field. A
+    /// caller that needs the identity has `FleetUnitRow::task_force_key()`.
     pub uid: String,
     pub owner: Option<String>,
     pub location_province: Option<u32>,

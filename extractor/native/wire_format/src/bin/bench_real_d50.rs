@@ -1079,7 +1079,7 @@ mod tests {
 
     fn naval_payload(row_len: u16, status_flags: u32, rows: &[Vec<u8>]) -> Vec<u8> {
         let mut p = Vec::new();
-        p.extend_from_slice(&2u16.to_le_bytes()); // schema version
+        p.extend_from_slice(&d50::SCHEMA_VERSION.to_le_bytes());
         p.extend_from_slice(&row_len.to_le_bytes());
         p.extend_from_slice(&0u64.to_le_bytes()); // elapsed_wall_ms
         p.extend_from_slice(&status_flags.to_le_bytes());
@@ -1159,6 +1159,9 @@ mod tests {
         row[44..48].copy_from_slice(&slot.to_le_bytes());
         row[48..52].copy_from_slice(&2u32.to_le_bytes()); // FEX_STATE_FIGHTING
         row[52..56].copy_from_slice(&300_000i32.to_le_bytes()); // engagement weight
+        // `+56` is `task_force_id_space` in v3, gated by `TASK_FORCE_PRESENT`
+        // exactly as the id at `+60` is. 61 is the fleet registry.
+        row[56..60].copy_from_slice(&61u32.to_le_bytes()); // task-force id space
         row[60..64].copy_from_slice(&17_617u32.to_le_bytes()); // task force
         row[64..68].copy_from_slice(&17_732u32.to_le_bytes()); // fleet
         row[68..72].copy_from_slice(&strength.to_le_bytes());
@@ -1693,7 +1696,9 @@ mod tests {
         // status-independent, so a bad row is a stream rejection whatever the
         // status word says.
         let mut bad = member_row(7, 1, 11, 1_500_000);
-        bad[56..60].copy_from_slice(&1u32.to_le_bytes()); // reserved != 0
+        // A gated task-force reference with no registry at `+56`: half a
+        // reference, and unresolvable against d28's two-registry rows.
+        bad[56..60].copy_from_slice(&0u32.to_le_bytes());
         for status in [
             COMPACT_STATUS_DELTA_DATA,
             COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_PARTIAL_DATA,

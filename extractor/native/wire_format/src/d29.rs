@@ -1,8 +1,8 @@
 //! d29 `ships_live` — one row per live ship instance.
 //!
-//! Derived from `world_fold.rs:21037`-`:21148`
+//! Derived from `world_fold.rs:21262`-`:21394`
 //! (`fold_ships`), its payload constants at `:973`-`:974` and `:1039`-`:1045`, the
-// @world-fold-authority domain=29 functions=fold_ships lines=21037-21148 sha256=05578c1403d6463124e9d7f942c571186b2392b2b7926221a917bf067c8d6b11 closure=9212d74a476aa0cf6bcb3ceaef2a0df6dd58801a7d2ea96f2f9840fb4b39eea6
+// @world-fold-authority domain=29 functions=fold_ships lines=21262-21394 sha256=e8bba8e1d6cc0e37c5bab4d911f65646bb03ceb0e371030a1bf14ca42c7717f1 closure=d8197262ef9e5c6adf1889e024f1ae145068b36fb5a07266b936b8d3229ba51d
 //! render path that consumes the folded state (`:8620`-`:8634`, `:8539`-`:8573`),
 //! and the collector read that produces the presence flags
 //! (`extractor/native/collector/src/attach_log.rs:47977`-`:48031`,
@@ -15,7 +15,9 @@
 //! `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`, `changed_rows` u32 at
 //! `+12`, `status_flags` u32 at `+16`, `observed_ship_rows` u32 at `+20`,
 //! `observed_task_force_rows` u32 at `+24`, `deleted_rows` u32 at `+28`,
-//! `scale_raw` u32 at `+32`, `reserved0` u32 at `+36` — followed by `row_count`
+//! `scale_raw` u32 at `+32`, `payload_version` u32 at `+36` (must be
+//! [`PAYLOAD_VERSION`]; v1 wrote a must-be-zero `reserved0` there, so an old
+//! payload reads `0` and is refused by version) — followed by `row_count`
 //! **variable-length** rows.
 //!
 //! **Rows are variable-length and are therefore walked, never index-addressed.**
@@ -36,7 +38,7 @@
 //! | `+24` | u32 | `experience_raw`   | /100000   | none |
 //! | `+28` | u32 | `sunk_convoys`     | raw       | none |
 //! | `+32` | u32 | `owner_tag_db_id`  | raw       | `1<<3` |
-//! | `+36` | u32 | reserved           | —         | must be 0 (`world_fold.rs::fold_ships`) |
+//! | `+36` | u32 | `task_force_id_space` | raw    | `1<<1` — the SAME gate as `task_force_id`, in both directions (v1 had a must-be-zero reserved here) |
 //! | `+40` | u16+n | `definition`     | symbol    | `1<<2` |
 //!
 //! **The scale is a frame invariant, not an assumption.** The header's
@@ -59,10 +61,11 @@
 //! projection out of the boundary and made every consumer re-derive a
 //! denominator the frame already declares.
 //!
-//! **Four states.** Three fields are gated, and for all
-//! three a clear gate is a **failed read**, never a relation pointing at nothing
-//! and never an inapplicable concept — so all three are `unknown`, and no field
-//! in this domain is `optional` or `nullable`:
+//! **Four states.** FOUR fields are gated -- `task_force_id` and its
+//! `task_force_id_space` share one gate, which is the point of the pair -- and
+//! for all four a clear gate is a **failed read**, never a relation pointing at
+//! nothing and never an inapplicable concept, so all four are `unknown` and no
+//! field in this domain is `optional` or `nullable`:
 //!
 //! - `task_force_id` (`FLAG_TASK_FORCE`). The collector reaches a ship only by
 //!   walking a task force's ship vector and sets the field unconditionally on
@@ -141,7 +144,17 @@ pub mod field {
     pub const EXPERIENCE: u32 = 7;
     pub const SUNK_CONVOYS: u32 = 8;
     pub const OWNER_TAG_DB_ID: u32 = 9;
+    /// The clausewitz id SPACE of [`TASK_FORCE_ID`], and the other half of the
+    /// join into d28's task-force rows (owner ruling 2026-08-27). Appended,
+    /// never reusing an id.
+    pub const TASK_FORCE_ID_SPACE: u32 = 10;
 }
+
+/// The only d29 payload version this schema reads.
+/// `world_fold.rs::SHIP_PAYLOAD_VERSION`. v1 wrote a hard zero into the header
+/// word this occupies (`+36`, and the fold refused a non-zero there), so a v1
+/// payload reads `0` and is refused by name.
+pub const PAYLOAD_VERSION: u32 = 2;
 
 // --- Payload grammar, from `world_fold.rs:973`-`:974`, `:1039`-`:1045`. -------
 
@@ -273,6 +286,14 @@ pub fn schema() -> Schema {
         // genuinely mutable state: 34 ships changed task force during the
         // measured capture.
         Field::new(f::TASK_FORCE_ID, Kind::Unsigned).unknown_capable(),
+        // The other half of that reference (owner ruling 2026-08-27): which
+        // clausewitz registry minted the task force's number. Two do -- the
+        // fleet-id minter (61) and the `CShip` registry (51) -- and their
+        // numbers collide, so `task_force_id` alone names two different task
+        // forces. `Unsigned` for the same reason d28's `id_space` is: the set of
+        // so an enum cardinality would be an invented bound. Rides the same gate
+        // as the id, hence the same `unknown_capable` and no `optional`.
+        Field::new(f::TASK_FORCE_ID_SPACE, Kind::Unsigned).unknown_capable(),
         // content-identity contract: an equipment/hull name is content-defined, so it travels as a
         // symbol id. See `Symbols` for this mapper's pending content-identity contract retrofit.
         Field::new(f::DEFINITION, Kind::ContentId).unknown_capable(),
@@ -335,6 +356,9 @@ pub struct PayloadHeader {
     pub observed_task_force_rows: u32,
     pub deleted_rows: u32,
     pub scale_raw: u32,
+    /// `+36`, v1's must-be-zero `reserved0`. Always [`PAYLOAD_VERSION`] on a
+    /// payload this schema accepts.
+    pub payload_version: u32,
 }
 
 /// One parsed row: the fixed words, the flags, and the definition text.
@@ -343,6 +367,11 @@ pub struct ShipRow {
     pub instance_id: u32,
     pub flags: u32,
     pub task_force_id: u32,
+    /// `+36`, v1's must-be-zero reserved word. The id space of
+    /// `task_force_id`: non-zero exactly when `FLAG_TASK_FORCE` is set, because
+    /// a d28 task-force row always names a registry and a reference that does
+    /// not name one cannot pick between two same-numbered task forces.
+    pub task_force_id_space: u32,
     pub category_enum: u32,
     pub strength_raw: u32,
     pub organisation_raw: u32,
@@ -391,6 +420,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
         observed_task_force_rows: u32_at(payload, 24),
         deleted_rows: u32_at(payload, 28),
         scale_raw: u32_at(payload, 32),
+        payload_version: u32_at(payload, 36),
     };
     // `:14557`-`:14570`, `ensure_count_at_most`.
     if header.changed_rows > header.row_count {
@@ -424,9 +454,14 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
             header.scale_raw
         ));
     }
-    // `:14579`-`:14581`.
-    if u32_at(payload, 36) != 0 {
-        return Err("ships header reserved field is nonzero".into());
+    // `+36` is the payload version since v2 (owner ruling 2026-08-27), in place
+    // of v1's must-be-zero `reserved0`. A v1 payload therefore reads `0` here,
+    // on every input, and is refused by name.
+    if header.payload_version != PAYLOAD_VERSION {
+        return Err(format!(
+            "ships payload version {} is refused: only v{PAYLOAD_VERSION} is legal, and v1 (which wrote 0 here) carries no task-force id space",
+            header.payload_version
+        ));
     }
     Ok(header)
 }
@@ -500,9 +535,10 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<(PayloadHeader, Vec
 /// and **no others**.
 ///
 /// The fold's row rules are exactly four (`:14591`-`:14619`): the fixed part must
-/// be present, an unknown flag bit is fatal, the `+36` reserved word must be
-/// zero, and the `FLAG_DEFINITION` bit and a non-empty string must agree in both
-/// directions. It applies **no range check** to any value word and **no
+/// be present, an unknown flag bit is fatal, `+36` (`task_force_id_space` since
+/// v2, a must-be-zero reserved in v1) must agree with `FLAG_TASK_FORCE` in both
+/// directions, and the `FLAG_DEFINITION` bit and a non-empty string must agree
+/// in both directions. It applies **no range check** to any value word and **no
 /// zero-check** to `instance_id`. The collector and the naval gate lane do
 /// (`attach_log.rs:47993`-`:48011`,
 /// `lanes/naval_oob_fleets_ships_live/domain28_29_compact.rs:1300`-`:1345`), but
@@ -525,9 +561,16 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<ShipRow, String> {
             u32_at(row, 0)
         ));
     }
-    // `:14607`-`:14610`.
-    if u32_at(row, 36) != 0 {
-        return Err("ships row reserved field is nonzero".into());
+    // `+36` is `task_force_id_space` since v2, in place of v1's must-be-zero
+    // reserved word. It rides the same presence flag as the id, in both
+    // directions, so the reference can never be half present.
+    let task_force_id_space = u32_at(row, 36);
+    if flags & FLAG_TASK_FORCE == 0 {
+        if task_force_id_space != 0 {
+            return Err("ships task_force_id_space present without flag".into());
+        }
+    } else if task_force_id_space == 0 {
+        return Err("ships task_force reference carries no id space".into());
     }
     let definition_len =
         u16::from_le_bytes([row[FIXED_ROW_LEN], row[FIXED_ROW_LEN + 1]]) as usize;
@@ -553,6 +596,7 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<ShipRow, String> {
         instance_id: u32_at(row, 0),
         flags,
         task_force_id: u32_at(row, 8),
+        task_force_id_space,
         category_enum: u32_at(row, 12),
         strength_raw: u32_at(row, 16),
         organisation_raw: u32_at(row, 20),
@@ -637,6 +681,16 @@ pub fn record_from_parsed_row(
             field::TASK_FORCE_ID => {
                 if has_task_force {
                     Value::Unsigned(parsed.task_force_id as u64)
+                } else {
+                    Value::Unknown
+                }
+            }
+            // The space rides the same gate as the id, because the two words
+            // are one reference: `task_force_id` alone stopped resolving when
+            // d28 began publishing both clausewitz registries.
+            field::TASK_FORCE_ID_SPACE => {
+                if has_task_force {
+                    Value::Unsigned(parsed.task_force_id_space as u64)
                 } else {
                     Value::Unknown
                 }
@@ -861,10 +915,57 @@ mod tests {
     /// A raw row, built the way the collector packs one
     /// (`attach_log.rs:70138`-`:70150`).
     #[allow(clippy::too_many_arguments)]
+    /// The clausewitz registry `CreateTaskForce` mints from. Spelled out here
+    /// so a test row can name a legal space without importing the collector's
+    /// constant.
+    const OOB_TYPE_FLEET_ID_SPACE_FOR_TESTS: u32 = 61;
+    /// The `CShip` registry, the second space a task force can be minted from.
+    const CSHIP_ID_SPACE_FOR_TESTS: u32 = 51;
+
+    /// The ordinary row builder. `task_force_id_space` is not an argument
+    /// because the grammar leaves it no freedom: it is non-zero exactly when
+    /// `FLAG_TASK_FORCE` is set, so every existing call site keeps its arity
+    /// and its meaning. The tests that care WHICH registry a row names use
+    /// [`raw_row_in_space`].
+    #[allow(clippy::too_many_arguments)]
     fn raw_row(
         instance_id: u32,
         flags: u32,
         task_force_id: u32,
+        category_enum: u32,
+        strength_raw: u32,
+        organisation_raw: u32,
+        experience_raw: u32,
+        sunk_convoys: u32,
+        owner_tag_db_id: u32,
+        definition: &str,
+    ) -> Vec<u8> {
+        let space = if flags & FLAG_TASK_FORCE != 0 {
+            OOB_TYPE_FLEET_ID_SPACE_FOR_TESTS
+        } else {
+            0
+        };
+        raw_row_in_space(
+            instance_id,
+            flags,
+            task_force_id,
+            space,
+            category_enum,
+            strength_raw,
+            organisation_raw,
+            experience_raw,
+            sunk_convoys,
+            owner_tag_db_id,
+            definition,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn raw_row_in_space(
+        instance_id: u32,
+        flags: u32,
+        task_force_id: u32,
+        task_force_id_space: u32,
         category_enum: u32,
         strength_raw: u32,
         organisation_raw: u32,
@@ -884,7 +985,7 @@ mod tests {
             experience_raw,
             sunk_convoys,
             owner_tag_db_id,
-            0,
+            task_force_id_space,
         ] {
             row.extend_from_slice(&word.to_le_bytes());
         }
@@ -926,7 +1027,7 @@ mod tests {
         out.extend_from_slice(&1u32.to_le_bytes()); // observed_task_force_rows
         out.extend_from_slice(&deleted_rows.to_le_bytes());
         out.extend_from_slice(&FIXED_SCALE_RAW.to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes()); // reserved0
+        out.extend_from_slice(&PAYLOAD_VERSION.to_le_bytes());
         assert_eq!(out.len(), HEADER_LEN);
         for row in rows {
             out.extend_from_slice(row);
@@ -962,11 +1063,11 @@ mod tests {
             !keys[0].optional && !keys[0].nullable && !keys[0].unknown_capable,
             "a key is concrete in every row"
         );
-        assert_eq!(c.fields.len(), 9, "1 key + 8 value fields");
+        assert_eq!(c.fields.len(), 10, "1 key + 9 value fields");
     }
 
     #[test]
-    fn exactly_three_fields_are_gated_and_all_three_are_unknown_only() {
+    fn exactly_four_fields_are_gated_and_all_four_are_unknown_only() {
         // The schema declares exactly the states the mapper emits. `Absent` would
         // claim the concept does not apply to a ship; `Null` would claim we know
         // there is nothing. The collector clears each of these gates only when a
@@ -990,10 +1091,14 @@ mod tests {
             unknown_capable,
             vec![
                 field::TASK_FORCE_ID,
+                // Two words, one gate: the reference is `(id_space, id)` since
+                // the owner's 2026-08-27 ruling, and half of it is not a
+                // reference.
+                field::TASK_FORCE_ID_SPACE,
                 field::DEFINITION,
                 field::OWNER_TAG_DB_ID
             ],
-            "exactly the three flag-gated fields"
+            "exactly the flag-gated fields"
         );
     }
 
@@ -1038,6 +1143,7 @@ mod tests {
         assert_eq!(reencoded, bytes);
         for id in [
             field::TASK_FORCE_ID,
+            field::TASK_FORCE_ID_SPACE,
             field::DEFINITION,
             field::OWNER_TAG_DB_ID,
         ] {
@@ -1055,6 +1161,10 @@ mod tests {
         assert_eq!(
             r.values[index_of(&c, field::TASK_FORCE_ID)],
             Value::Unsigned(17938)
+        );
+        assert_eq!(
+            r.values[index_of(&c, field::TASK_FORCE_ID_SPACE)],
+            Value::Unsigned(OOB_TYPE_FLEET_ID_SPACE_FOR_TESTS as u64)
         );
         assert_eq!(
             r.values[index_of(&c, field::DEFINITION)],
@@ -1121,12 +1231,18 @@ mod tests {
         // One gate clear at a time — the whole gate space, not one sampled case.
         let c = collection();
         let s = symbols();
-        let cases: [(u32, u32); 3] = [
-            (FLAG_TASK_FORCE, field::TASK_FORCE_ID),
-            (FLAG_DEFINITION, field::DEFINITION),
-            (FLAG_OWNER, field::OWNER_TAG_DB_ID),
+        // `FLAG_TASK_FORCE` gates TWO fields, because the reference is two
+        // words: a ship pointing at "490" with no registry does not point
+        // anywhere, so the space is unknown exactly when the id is.
+        let cases: [(u32, &[u32]); 3] = [
+            (
+                FLAG_TASK_FORCE,
+                &[field::TASK_FORCE_ID, field::TASK_FORCE_ID_SPACE],
+            ),
+            (FLAG_DEFINITION, &[field::DEFINITION]),
+            (FLAG_OWNER, &[field::OWNER_TAG_DB_ID]),
         ];
-        for (cleared, gated_id) in cases {
+        for (cleared, gated_ids) in cases {
             let flags = LIVE_FLAGS & !cleared;
             let definition = if flags & FLAG_DEFINITION != 0 {
                 "carrier"
@@ -1137,7 +1253,7 @@ mod tests {
             let r = record_from_row(&c, &row, 0, &s)
                 .unwrap_or_else(|e| panic!("maps with flags {flags:#x}: {e}"));
             for f in c.value_fields() {
-                let expect_unknown = f.field_id == gated_id;
+                let expect_unknown = gated_ids.contains(&f.field_id);
                 assert_eq!(
                     r.values[index_of(&c, f.field_id)] == Value::Unknown,
                     expect_unknown,
@@ -1342,10 +1458,36 @@ mod tests {
                 "flag bit {bit} is not in KNOWN_FLAGS and must be rejected"
             );
         }
-        // A nonzero reserved word (`:14607`).
-        let mut reserved = full_row();
-        reserved[36..40].copy_from_slice(&1u32.to_le_bytes());
-        assert!(record_from_row(&c, &reserved, 0, &s).is_err());
+        // `+36` is `task_force_id_space` now, not a must-be-zero reserve, and
+        // it rides the `TASK_FORCE` gate in both directions.
+        let mut spaceless = full_row();
+        spaceless[36..40].copy_from_slice(&0u32.to_le_bytes());
+        assert!(
+            record_from_row(&c, &spaceless, 0, &s).is_err(),
+            "a gated task-force reference must name its registry"
+        );
+        let mut unlinked = raw_row_in_space(
+            4575,
+            LIVE_FLAGS & !FLAG_TASK_FORCE,
+            0,
+            OOB_TYPE_FLEET_ID_SPACE_FOR_TESTS,
+            3,
+            4_600_000,
+            920_000,
+            1_000_000,
+            126,
+            368,
+            "destroyer",
+        );
+        assert!(
+            record_from_row(&c, &unlinked, 0, &s).is_err(),
+            "a space with the gate clear is half a reference"
+        );
+        unlinked[36..40].copy_from_slice(&0u32.to_le_bytes());
+        assert!(
+            record_from_row(&c, &unlinked, 0, &s).is_ok(),
+            "and with both words absent it maps"
+        );
         // The definition flag with an empty string (`:14613`).
         let row = raw_row(1, LIVE_FLAGS, 1, 1, 1, 1, 1, 1, 1, "");
         assert!(record_from_row(&c, &row, 0, &s).is_err());
@@ -1804,5 +1946,89 @@ mod tests {
             fold_payload(&schema, &mut acc, &payload(&[full_row()], 0, 0), false, 0, &symbols())
                 .is_err()
         );
+    }
+
+    /// kills: dropping `TASK_FORCE_ID_SPACE` from the ship row, or reading it
+    /// from anywhere but `+36`.
+    ///
+    /// **It does NOT kill ungating the field from `FLAG_TASK_FORCE`** -- every
+    /// row it builds sets that flag, so a mapper that ignored the gate would
+    /// answer the same. The gate is pinned instead by
+    /// `a_clear_gate_is_unknown_field_by_field`, which clears each flag in turn
+    /// and asserts that `FLAG_TASK_FORCE` makes BOTH words unknown, and by
+    /// `the_mapper_rejects_every_row_the_fold_rejects`, which refuses a gated
+    /// row with no space and an ungated row that carries one.
+    ///
+    /// **What production change makes this fail**: delete the
+    /// `TASK_FORCE_ID_SPACE` arm from `record_from_row` and the schema field.
+    /// Two ships in the same frame, one in each registry, then map to the same
+    /// task-force reference -- which is exactly the mis-join the owner's
+    /// 2026-08-27 ruling closes: d28 now publishes both `{51, 490}` and
+    /// `{61, 490}`, so a ship saying only "490" would be handed to whichever
+    /// one the consumer's map happened to hold.
+    #[test]
+    fn two_ships_in_two_registries_carry_two_distinguishable_references() {
+        let c = collection();
+        let s = symbols();
+        let ship = |instance_id: u32, space: u32| {
+            raw_row_in_space(
+                instance_id,
+                LIVE_FLAGS,
+                490,
+                space,
+                3,
+                100_000,
+                0,
+                0,
+                0,
+                1,
+                "destroyer",
+            )
+        };
+        let cship = record_from_row(&c, &ship(1, CSHIP_ID_SPACE_FOR_TESTS), 0, &s).expect("maps");
+        let fleet =
+            record_from_row(&c, &ship(2, OOB_TYPE_FLEET_ID_SPACE_FOR_TESTS), 0, &s).expect("maps");
+        assert_eq!(
+            cship.values[index_of(&c, field::TASK_FORCE_ID)],
+            fleet.values[index_of(&c, field::TASK_FORCE_ID)],
+            "the numbers are equal, which is the whole problem"
+        );
+        assert_ne!(
+            cship.values[index_of(&c, field::TASK_FORCE_ID_SPACE)],
+            fleet.values[index_of(&c, field::TASK_FORCE_ID_SPACE)],
+            "and the references are not"
+        );
+        assert_eq!(
+            cship.values[index_of(&c, field::TASK_FORCE_ID_SPACE)],
+            Value::Unsigned(CSHIP_ID_SPACE_FOR_TESTS as u64)
+        );
+    }
+
+    /// kills: dropping the payload-version check from `peek_header`.
+    ///
+    /// **What production change makes this fail**: restore the old
+    /// `if u32_at(payload, 36) != 0 { reserved is nonzero }` rule. A v1 payload
+    /// -- which wrote a hard zero there -- would then be ACCEPTED, and its ship
+    /// rows would be read as v2 ones whose `+36` says the task-force reference
+    /// carries no registry, so every linked ship would be refused one row at a
+    /// time with a misleading message instead of the stream being refused once
+    /// with the reason.
+    #[test]
+    fn a_v1_payload_is_refused_by_version() {
+        let mut old = payload(&[full_row()], 0, 0);
+        // v1's `reserved0`: a hard zero, enforced by v1's own fold.
+        old[36..40].copy_from_slice(&0u32.to_le_bytes());
+        let error = peek_header(&old).expect_err("v1 is refused");
+        assert!(
+            error.contains("version 0") && error.contains("id space"),
+            "the refusal names the version and why: {error}"
+        );
+        // And an unknown future version is refused too, by the same word.
+        let mut future = payload(&[full_row()], 0, 0);
+        future[36..40].copy_from_slice(&7u32.to_le_bytes());
+        let error = peek_header(&future).expect_err("v7 is refused");
+        assert!(error.contains("version 7"), "{error}");
+        // The current one is accepted, so the test is not vacuously refusing.
+        peek_header(&payload(&[full_row()], 0, 0)).expect("v2 is legal");
     }
 }

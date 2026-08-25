@@ -258,7 +258,7 @@ fn taskforce_census_fixture() -> Value {
             "fleets": [{
                 "id": 3,
                 "owner": "ENG",
-                "task_forces": [{"id": 71, "location_province": 118}]
+                "task_forces": [{"id": 71, "id_space": 61, "location_province": 118}]
             }]
         }
     })
@@ -281,8 +281,8 @@ fn taskforce_census_fixture_with_engine_absent_location(status: &str) -> Value {
                 "id": 3,
                 "owner": "ENG",
                 "task_forces": [
-                    {"id": 71, "location_province": 118, "location_province_status": "exact"},
-                    {"id": 601, "location_province": null, "location_province_status": status}
+                    {"id": 71, "id_space": 61, "location_province": 118, "location_province_status": "exact"},
+                    {"id": 601, "id_space": 61, "location_province": null, "location_province_status": status}
                 ]
             }]
         }
@@ -331,7 +331,7 @@ fn taskforces_fleets_admits_an_engine_absent_location_and_still_refuses_an_unrea
             "fleets": [{
                 "id": 3,
                 "owner": "ENG",
-                "task_forces": [{"id": 601, "location_province": null}]
+                "task_forces": [{"id": 601, "id_space": 61, "location_province": null}]
             }]
         }
     });
@@ -1472,17 +1472,28 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
             true
         }
         "units.taskforces_fleets" => {
-            // The task force decodes (its id is a usable uid string) and no row
-            // is dropped, so the dropped-row guard does NOT fire; only the
-            // raw-identity requirement does. A non-numeric id leaves
-            // raw_task_force_id unobtained.
+            // A task-force id that is not a number: DROPPED with an
+            // `id is not a nonzero unsigned 32-bit number; row skipped`
+            // warning, census silently short, so the dropped-row guard is what
+            // fires here.
+            //
+            // It used to be admitted, and this case used to be about the
+            // raw-identity requirement instead: the uid took any string while
+            // `raw_task_force_id` took only an integer, so `"opaque"` produced
+            // a row that rendered `"opaque"` in the outliner with no numeric
+            // identity beside it. That admission was the defect (Codex round
+            // 12); the number is now required to be a number, which is why this
+            // case moved guards. The raw-identity clause is still exercised by
+            // the fleet-id cases in the negative sweep below -- it is only the
+            // TASK FORCE's number that can no longer reach it, because the
+            // parser refuses the row first.
             object.insert(
                 "order_of_battle".into(),
                 json!({
                     "fleets": [{
                         "id": 3,
                         "owner": "ENG",
-                        "task_forces": [{"id": "opaque", "location_province": 118}]
+                        "task_forces": [{"id": "opaque", "id_space": 61, "location_province": 118}]
                     }],
                     "air_wings": air_wing_census_fixture()["order_of_battle"]["air_wings"]
                 }),
@@ -2782,7 +2793,7 @@ fn each_unit_requirement_refuses_on_its_own() {
     };
     let one_fleet = json!([{
         "id": 3, "owner": "ENG",
-        "task_forces": [{"id": 71, "location_province": 118}]
+        "task_forces": [{"id": 71, "id_space": 61, "location_province": 118}]
     }]);
     let one_wing = json!([{"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219}]);
 
@@ -2810,17 +2821,19 @@ fn each_unit_requirement_refuses_on_its_own() {
     // fleet id, and each join field.
     for fleets in [
         json!([{"id": 3, "owner": "ENG",
-                "task_forces": [{"id": 71, "location_province": 118}, 9]}]),
-        // Duplicate task-force id. Both the uid and raw_task_force_id derive
-        // from the same `id` field, so this case cannot separate the two
-        // uniqueness guards; it proves the pair refuses a duplicated task force,
-        // which is the claim the ledger row actually makes.
+                "task_forces": [{"id": 71, "id_space": 61, "location_province": 118}, 9]}]),
+        // Duplicate task-force id, in one registry. There is one uniqueness
+        // guard now -- the typed `(raw_task_force_id, raw_task_force_id_space)`
+        // key -- because the uid is the game's own number and two registries
+        // legitimately share it, so uid uniqueness was dropped (landing bounce
+        // #2). This pair collides in BOTH halves, which is the duplicate the
+        // ledger row claims to refuse.
         json!([{"id": 3, "owner": "ENG",
-                "task_forces": [{"id": 71, "location_province": 118},
-                                {"id": 71, "location_province": 119}]}]),
-        json!([{"owner": "ENG", "task_forces": [{"id": 71, "location_province": 118}]}]),
-        json!([{"id": 3, "task_forces": [{"id": 71, "location_province": 118}]}]),
-        json!([{"id": 3, "owner": "ENG", "task_forces": [{"id": 71}]}]),
+                "task_forces": [{"id": 71, "id_space": 61, "location_province": 118},
+                                {"id": 71, "id_space": 61, "location_province": 119}]}]),
+        json!([{"owner": "ENG", "task_forces": [{"id": 71, "id_space": 61, "location_province": 118}]}]),
+        json!([{"id": 3, "task_forces": [{"id": 71, "id_space": 61, "location_province": 118}]}]),
+        json!([{"id": 3, "owner": "ENG", "task_forces": [{"id": 71, "id_space": 61}]}]),
     ] {
         let frame = with(oob(fleets.clone(), one_wing.clone()));
         assert_eq!(frame.fleets_status(), ViewStatus::Present, "{fleets}");

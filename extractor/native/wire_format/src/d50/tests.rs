@@ -34,7 +34,8 @@ struct Raw {
     battle_slot_index_raw: u32,
     state_bitmask: u32,
     engagement_weight_raw: i32,
-    reserved: u32,
+    /// `+56`, v2's must-be-zero reserved word; `task_force_id_space` in v3.
+    task_force_id_space: u32,
     task_force_id: u32,
     fleet_id: u32,
     strength_raw: u32,
@@ -60,7 +61,7 @@ impl Raw {
         row.extend_from_slice(&self.battle_slot_index_raw.to_le_bytes());
         row.extend_from_slice(&self.state_bitmask.to_le_bytes());
         row.extend_from_slice(&self.engagement_weight_raw.to_le_bytes());
-        row.extend_from_slice(&self.reserved.to_le_bytes());
+        row.extend_from_slice(&self.task_force_id_space.to_le_bytes());
         row.extend_from_slice(&self.task_force_id.to_le_bytes());
         row.extend_from_slice(&self.fleet_id.to_le_bytes());
         row.extend_from_slice(&self.strength_raw.to_le_bytes());
@@ -97,7 +98,7 @@ fn ship() -> Raw {
         battle_slot_index_raw: 11,
         state_bitmask: 0x02,
         engagement_weight_raw: 300_000,
-        reserved: 0,
+        task_force_id_space: 61,
         task_force_id: 17_617,
         fleet_id: 17_732,
         strength_raw: 1_500_000,
@@ -109,13 +110,19 @@ fn ship() -> Raw {
 }
 
 /// A convoy member: zero handle, so no CShip identity, no join and none of the
-/// six join-derived fields (`attach_log.rs:40110`-`:40120`, lane `:2051`-`:2056`).
+/// seven join-derived fields -- six, plus `task_force_id_space` since v3
+/// (`attach_log.rs:40110`-`:40120`, lane `:2051`-`:2056`).
 fn convoy() -> Raw {
     Raw {
         flags: IS_CONVOY | MEMBER_OWNED_FLAGS,
         unit_type_tag: 0,
         ship_instance_id: 0,
         task_force_id: 0,
+        // BOTH HALVES, since v3. `TASK_FORCE_PRESENT` is clear on a convoy, and
+        // a clear gate means the whole reference is absent -- leaving the space
+        // at `ship()`'s 61 would be a registry with no number, which the row
+        // rule refuses in the same breath as a number with no registry.
+        task_force_id_space: 0,
         fleet_id: 0,
         strength_raw: 0,
         organisation_raw: 0,
@@ -135,6 +142,8 @@ fn sunk_unjoined_ship() -> Raw {
         flags: SHIP_INSTANCE_PRESENT | MEMBER_OWNED_FLAGS,
         state_bitmask: FEX_STATE_SUNK,
         task_force_id: 0,
+        // Both halves absent together: see `convoy()`.
+        task_force_id_space: 0,
         fleet_id: 0,
         strength_raw: 0,
         organisation_raw: 0,
@@ -317,7 +326,7 @@ fn it_is_a_keyed_set_keyed_by_the_folds_own_tuple() {
             "a key member is concrete"
         );
     }
-    assert_eq!(c.fields.len(), 19, "4 key + 15 value fields");
+    assert_eq!(c.fields.len(), 20, "4 key + 16 value fields (task_force_id_space is v3's)");
     // The key a row produces is legal for those kinds, and matches `member_key`.
     let kinds: Vec<Kind> = keys.iter().map(|f| f.kind).collect();
     let k = key_from_row(&ship().bytes()).expect("keys");
@@ -373,6 +382,9 @@ fn the_schema_declares_exactly_the_states_the_mapper_can_emit() {
         vec![
             field::SHIP_INSTANCE_ID,
             field::TASK_FORCE_ID,
+            // The other half of the task-force reference, gated exactly as the
+            // number is -- in schema order, which puts it between the two.
+            field::TASK_FORCE_ID_SPACE,
             field::FLEET_ID,
             field::STRENGTH,
             field::ORGANISATION,
@@ -394,6 +406,7 @@ fn the_schema_declares_exactly_the_states_the_mapper_can_emit() {
             field::STATE,
             field::ENGAGEMENT_WEIGHT_RAW,
             field::TASK_FORCE_ID,
+            field::TASK_FORCE_ID_SPACE,
             field::FLEET_ID,
             field::STRENGTH,
             field::ORGANISATION,
@@ -690,7 +703,7 @@ fn every_field_reads_its_own_offset() {
         battle_slot_index_raw: 26,
         state_bitmask: 0x08,
         engagement_weight_raw: -27,
-        reserved: 0,
+        task_force_id_space: 61,
         task_force_id: 28,
         fleet_id: 29,
         strength_raw: 30,
@@ -711,7 +724,7 @@ fn every_field_reads_its_own_offset() {
     );
 
     let r = record_from_row(&c, &bytes, 0).expect("maps");
-    let expected: [(u32, Value); 15] = [
+    let expected: [(u32, Value); 16] = [
         (field::GROUP_INDEX, Value::Unsigned(21)),
         (field::MEMBER_INDEX, Value::Unsigned(22)),
         (field::UNIT_TYPE_TAG, Value::Unsigned(51)),
@@ -722,6 +735,7 @@ fn every_field_reads_its_own_offset() {
         (field::STATE, Value::Enum(4)),
         (field::ENGAGEMENT_WEIGHT_RAW, Value::Signed(-27)),
         (field::TASK_FORCE_ID, Value::Unsigned(28)),
+        (field::TASK_FORCE_ID_SPACE, Value::Unsigned(61)),
         (field::FLEET_ID, Value::Unsigned(29)),
         (field::STRENGTH, Value::Continuous(30.0 / FIXED_SCALE)),
         (field::ORGANISATION, Value::Continuous(31.0 / FIXED_SCALE)),
@@ -881,6 +895,8 @@ fn the_join_bit_is_carried_because_it_is_not_derivable() {
     let raw = Raw {
         flags: SHIP_INSTANCE_PRESENT | CSHIP_JOIN_VALIDATED | MEMBER_OWNED_FLAGS,
         task_force_id: 0,
+        // The gate is clear here, so BOTH halves of the reference are absent.
+        task_force_id_space: 0,
         fleet_id: 0,
         strength_raw: 0,
         organisation_raw: 0,
@@ -974,10 +990,22 @@ fn the_mapper_rejects_every_row_the_lane_rejects() {
         raw.side = side;
         assert!(parse_row(&raw.bytes()).is_err(), "side {side}");
     }
-    // The two reserved words (lane `:1991`, `:1997`).
+    // The trailing reserved word (lane `:1997`), and -- in place of the `+56`
+    // reserved v2 had there -- both halves of a broken task-force reference:
+    // a gated id with no registry, and a registry with the gate clear. Neither
+    // can resolve against d28's two-registry task-force rows.
     for (label, mutate) in [
-        ("reserved", (|r: &mut Raw| r.reserved = 1) as fn(&mut Raw)),
-        ("reserved_tail", |r: &mut Raw| r.reserved_tail = 1),
+        (
+            "reserved_tail",
+            (|r: &mut Raw| r.reserved_tail = 1) as fn(&mut Raw),
+        ),
+        ("gated id with no id space", |r: &mut Raw| {
+            r.task_force_id_space = 0
+        }),
+        ("id space with the gate clear", |r: &mut Raw| {
+            r.flags &= !TASK_FORCE_PRESENT;
+            r.task_force_id = 0;
+        }),
     ] {
         let mut raw = ship();
         mutate(&mut raw);
@@ -1179,8 +1207,10 @@ fn split_payload_enforces_the_header_word_by_word() {
         assert!(split_payload(&good[..len]).is_err(), "len {len}");
     }
     // Each header word wrong, one at a time.
-    assert!(split_payload(&payload_with(1, ROW_LEN as u16, 0, 1, 1, 0, &rows)).is_err());
-    assert!(split_payload(&payload_with(3, ROW_LEN as u16, 0, 1, 1, 0, &rows)).is_err());
+    // The neighbours of the current version, not literals: `SCHEMA_VERSION`
+    // became 3 in v3, so the old probe `3` is now the ACCEPTED version.
+    assert!(split_payload(&payload_with(SCHEMA_VERSION - 1, ROW_LEN as u16, 0, 1, 1, 0, &rows)).is_err());
+    assert!(split_payload(&payload_with(SCHEMA_VERSION + 1, ROW_LEN as u16, 0, 1, 1, 0, &rows)).is_err());
     assert!(split_payload(&payload_with(SCHEMA_VERSION, 72, 0, 1, 1, 0, &rows)).is_err());
     assert!(split_payload(&payload_with(SCHEMA_VERSION, 87, 0, 1, 1, 0, &rows)).is_err());
     assert!(split_payload(&payload_with(SCHEMA_VERSION, ROW_LEN as u16, 0, 1, 0, 0, &rows)).is_err());
@@ -1225,7 +1255,7 @@ fn split_payload_enforces_the_header_word_by_word() {
     assert!(split_payload(&nonempty).is_err());
     // A bad row fails the whole payload, exactly as the lane's decode does.
     let mut bad_row = ship();
-    bad_row.reserved = 1;
+    bad_row.reserved_tail = 1;
     assert!(split_payload(&payload(0, &[bad_row.bytes()])).is_err());
     // An empty payload is legal: a delta hour with no changed member.
     let empty = payload(0x400, &[]);

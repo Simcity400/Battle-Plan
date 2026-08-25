@@ -63,6 +63,17 @@ const fn status_for_global_interpretation(domain_id: u16, status_flags: u32) -> 
 
 pub const COMPACT_FIXED_SCALE_RAW: u32 = 100_000;
 
+/// d28's v2 header. It grew from v1's 48 bytes by the eight the payload version
+/// and its reserve occupy at `+48` / `+52` (owner ruling 2026-08-27); every word
+/// before them kept its offset, and neither row length changed.
+pub const COMPACT_OOB_HEADER_LEN: usize = 56;
+/// d28's v1 header, kept only so the refusal can name the version.
+pub const COMPACT_OOB_V1_HEADER_LEN: usize = 48;
+/// The only d28 payload version this gate accepts.
+pub const COMPACT_OOB_PAYLOAD_VERSION: u32 = 2;
+/// The only d29 payload version this gate accepts. v1 wrote a hard zero into
+/// the header word it occupies (`+36`), so a v1 payload reads `0`.
+pub const COMPACT_SHIPS_PAYLOAD_VERSION: u32 = 2;
 pub const COMPACT_OOB_ROW_LEN: usize = 80;
 pub const COMPACT_OOB_MEMBER_ROW_LEN: usize = 8;
 pub const COMPACT_OOB_KIND_ARMY: u32 = 1;
@@ -821,17 +832,76 @@ fn decode_domain_perf_record(
     domain.status_flags_or |= status_flags;
 }
 
+/// Whether this d28 payload is a v1 one -- the format that predates the
+/// task-force id-space key (owner ruling 2026-08-27).
+///
+/// **Exact, not a heuristic**, and byte-for-byte the same test
+/// `world_fold.rs::oob_command_payload_is_v1` makes, so the two cannot disagree
+/// about what an old stream is. v1's header IS v2's first 48 bytes, with
+/// `row_count` at `+8` and `member_count` at `+32` unmoved, and neither row
+/// length changed -- v2 spends v1's two must-be-zero reserved words rather than
+/// appending. So for the same two count words a v1 payload's length is exactly
+/// `48 + 80*rows + 8*members` and a v2 payload's is exactly eight more, and this
+/// asks whether the payload's OWN length is the v1 answer to its OWN counts.
+///
+/// **The one thing it cannot separate** is a payload whose header counts do not
+/// describe its own length: `56 + 80*2 + 8*0` and `48 + 80*2 + 8*1` are both
+/// 216, so a corrupt v2 payload can satisfy the v1 identity. Such a payload is
+/// refused either way; only the wording of the refusal differs, and calling a
+/// corrupt frame "old" is the harmless direction.
+///
+/// It answers `false` for anything that is neither, so a truncated payload still
+/// gets its ordinary length error. Total: no input of any length panics.
+fn oob_command_payload_is_v1(payload: &[u8]) -> bool {
+    if payload.len() < COMPACT_OOB_V1_HEADER_LEN {
+        return false;
+    }
+    let row_count = read_u32_le(payload, 8) as usize;
+    let member_count = read_u32_le(payload, 32) as usize;
+    let Some(rows_len) = row_count.checked_mul(COMPACT_OOB_ROW_LEN) else {
+        return false;
+    };
+    let Some(members_len) = member_count.checked_mul(COMPACT_OOB_MEMBER_ROW_LEN) else {
+        return false;
+    };
+    COMPACT_OOB_V1_HEADER_LEN
+        .checked_add(rows_len)
+        .and_then(|len| len.checked_add(members_len))
+        == Some(payload.len())
+}
+
 pub fn decode_oob_command_data_payload(
     offset: usize,
     payload: &[u8],
     summary: &mut NavalOobGateSummary,
 ) {
-    if payload.len() < 48 {
+    // THE VERSION REFUSAL COMES FIRST, exactly as `fold_oob_command` and the
+    // stream authority order it, so the three cannot disagree about what an old
+    // stream is or about what to say when they meet one.
+    if oob_command_payload_is_v1(payload) {
         summary.parse_errors.push(format!(
-            "offset {offset}: oob command data payload is {} byte(s), expected at least 48",
+            "offset {offset}: oob command payload is v1 ({COMPACT_OOB_V1_HEADER_LEN}-byte header, no task-force id space); this decoder requires v{COMPACT_OOB_PAYLOAD_VERSION}, in which the row key is (kind, id_space, object_id). Old captures are disposable: recapture, because a pre-v2 stream cannot distinguish two task forces that share a number across the engine's two id registries"
+        ));
+        return;
+    }
+    if payload.len() < COMPACT_OOB_HEADER_LEN {
+        summary.parse_errors.push(format!(
+            "offset {offset}: oob command data payload is {} byte(s), expected at least {COMPACT_OOB_HEADER_LEN}",
             payload.len()
         ));
         return;
+    }
+    let payload_version = read_u32_le(payload, 48);
+    if payload_version != COMPACT_OOB_PAYLOAD_VERSION {
+        summary.parse_errors.push(format!(
+            "offset {offset}: oob command payload version {payload_version} is refused; only v{COMPACT_OOB_PAYLOAD_VERSION} (the task-force id-space key) is legal"
+        ));
+        return;
+    }
+    if read_u32_le(payload, 52) != 0 {
+        summary.parse_errors.push(format!(
+            "offset {offset}: oob command header reserved field is nonzero"
+        ));
     }
     let row_count = read_u32_le(payload, 8) as usize;
     let changed_rows = read_u32_le(payload, 12) as usize;
@@ -866,7 +936,7 @@ pub fn decode_oob_command_data_payload(
             "offset {offset}: oob command member_count {member_count} exceeds limit {COMPACT_OOB_MAX_MEMBER_ROWS}"
         ));
     }
-    let expected_len = 48usize
+    let expected_len = COMPACT_OOB_HEADER_LEN
         .saturating_add(row_count.saturating_mul(COMPACT_OOB_ROW_LEN))
         .saturating_add(member_count.saturating_mul(COMPACT_OOB_MEMBER_ROW_LEN));
     if payload.len() != expected_len {
@@ -931,8 +1001,11 @@ pub fn decode_oob_command_data_payload(
         observed_task_force_rows,
     );
 
-    let mut cursor = 48usize;
+    let mut cursor = COMPACT_OOB_HEADER_LEN;
     let mut seen_rows = BTreeSet::new();
+    // `member index -> (kind, id_space, object_id)` of the owning row, so the
+    // member loop can apply the per-OWNER rules rather than per-frame ones.
+    let mut member_owners: Vec<Option<(u32, u32, u32)>> = vec![None; member_count];
     let mut declared_members = 0usize;
     let mut emitted_army_rows = 0usize;
     let mut emitted_army_group_rows = 0usize;
@@ -969,7 +1042,8 @@ pub fn decode_oob_command_data_payload(
         let leader_status = read_u32_le(payload, cursor + 64);
         let leader_trait_status = read_u32_le(payload, cursor + 68);
         let location_province_id = read_u32_le(payload, cursor + 72);
-        let row_reserved1 = read_u32_le(payload, cursor + 76);
+        // v1's must-be-zero reserved word; the row's `id_space` in v2.
+        let id_space = read_u32_le(payload, cursor + 76);
         cursor += COMPACT_OOB_ROW_LEN;
 
         let deleted = (flags & COMPACT_OOB_ROW_FLAG_DELETED) != 0;
@@ -990,9 +1064,24 @@ pub fn decode_oob_command_data_payload(
             summary.parse_errors.push(format!(
                 "offset {offset}: oob command row {row_index} has invalid object_id {object_id}"
             ));
-        } else if !seen_rows.insert((kind, object_id, deleted)) {
+        } else if !seen_rows.insert((kind, id_space, object_id, deleted)) {
+            // The WHOLE key: two task forces sharing a number across the two
+            // clausewitz registries are two rows, not a duplicate.
             summary.parse_errors.push(format!(
-                "offset {offset}: oob command row {row_index} duplicates {kind}:{object_id}"
+                "offset {offset}: oob command row {row_index} duplicates {kind}:{id_space}:{object_id}"
+            ));
+        }
+        // A task-force row names a registry; every other kind's producer
+        // authenticates exactly one clausewitz type, so its rows name none.
+        if kind == COMPACT_OOB_KIND_TASK_FORCE {
+            if id_space == 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: oob command task-force row {row_index} carries no id space"
+                ));
+            }
+        } else if id_space != 0 {
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob command row {row_index} of kind {kind} carries id space {id_space}"
             ));
         }
         if flags
@@ -1156,6 +1245,13 @@ pub fn decode_oob_command_data_payload(
                 ));
             }
             declared_members = declared_members.saturating_add(row_member_count);
+            for slot in member_owners
+                .iter_mut()
+                .take(member_end.min(member_count))
+                .skip(member_first.min(member_count))
+            {
+                *slot = Some((kind, id_space, object_id));
+            }
             match kind {
                 COMPACT_OOB_KIND_ARMY => {
                     member_division_rows = member_division_rows.saturating_add(row_member_count)
@@ -1176,11 +1272,6 @@ pub fn decode_oob_command_data_payload(
         {
             summary.parse_errors.push(format!(
                 "offset {offset}: oob command row {row_index} member_count {row_member_count} != logical_member_count {logical_member_count}"
-            ));
-        }
-        if row_reserved1 != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: oob command row {row_index} reserved field is nonzero"
             ));
         }
     }
@@ -1269,21 +1360,46 @@ pub fn decode_oob_command_data_payload(
     let mut seen_member_rows = BTreeSet::new();
     for row_index in 0..member_count {
         let member_id = read_u32_le(payload, cursor);
-        let row_reserved = read_u32_le(payload, cursor + 4);
+        // v1's must-be-zero reserved word; the EDGE's id space in v2.
+        let member_id_space = read_u32_le(payload, cursor + 4);
         cursor += COMPACT_OOB_MEMBER_ROW_LEN;
         if !valid_oob_id(member_id) {
             summary.parse_errors.push(format!(
                 "offset {offset}: oob command member row {row_index} has invalid member_id {member_id}"
             ));
         }
-        if !seen_member_rows.insert(row_index) {
+        // UNIQUENESS IS PER OWNING COMMAND, which is the rule the fold applies.
+        // This check keyed on `row_index` -- the member's own index, unique by
+        // construction -- so it could never fire; keying it on the owner is what
+        // the message always claimed it did. The id space is part of the
+        // identity for the same reason it is part of the row key.
+        let Some((owner_kind, owner_id_space, owner_object_id)) = member_owners[row_index] else {
             summary.parse_errors.push(format!(
-                "offset {offset}: oob command member row {row_index} duplicates member row index"
+                "offset {offset}: oob command member row {row_index} is unowned"
+            ));
+            continue;
+        };
+        if !seen_member_rows.insert((
+            owner_kind,
+            owner_id_space,
+            owner_object_id,
+            member_id_space,
+            member_id,
+        )) {
+            summary.parse_errors.push(format!(
+                "offset {offset}: oob command member row {row_index} duplicates member {member_id_space}:{member_id} within {owner_kind}:{owner_id_space}:{owner_object_id}"
             ));
         }
-        if row_reserved != 0 {
+        // Only a fleet's edges point at the two-space kind.
+        if owner_kind == COMPACT_OOB_KIND_FLEET {
+            if member_id_space == 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: oob command member row {row_index} of fleet {owner_object_id} carries no id space"
+                ));
+            }
+        } else if member_id_space != 0 {
             summary.parse_errors.push(format!(
-                "offset {offset}: oob command member row {row_index} reserved field is nonzero"
+                "offset {offset}: oob command member row {row_index} of a kind-{owner_kind} row carries id space {member_id_space}"
             ));
         }
     }
@@ -1312,7 +1428,8 @@ pub fn decode_ships_data_payload(offset: usize, payload: &[u8], summary: &mut Na
     let observed_task_force_rows = read_u32_le(payload, 24) as usize;
     let deleted_rows = read_u32_le(payload, 28) as usize;
     let scale_raw = read_u32_le(payload, 32);
-    let reserved0 = read_u32_le(payload, 36);
+    // v1's must-be-zero `reserved0`; the payload version in v2.
+    let payload_version = read_u32_le(payload, 36);
 
     {
         let domain = summary.per_domain.entry(DOMAIN_SHIPS).or_default();
@@ -1343,10 +1460,11 @@ pub fn decode_ships_data_payload(offset: usize, payload: &[u8], summary: &mut Na
             "offset {offset}: ships scale_raw {scale_raw} != {COMPACT_FIXED_SCALE_RAW}"
         ));
     }
-    if reserved0 != 0 {
+    if payload_version != COMPACT_SHIPS_PAYLOAD_VERSION {
         summary.parse_errors.push(format!(
-            "offset {offset}: ships header reserved field is nonzero"
+            "offset {offset}: ships payload version {payload_version} is refused; only v{COMPACT_SHIPS_PAYLOAD_VERSION} (which carries task_force_id_space) is legal"
         ));
+        return;
     }
 
     add_unit(summary, DOMAIN_SHIPS, "ship_rows", row_count);
@@ -1388,7 +1506,10 @@ pub fn decode_ships_data_payload(offset: usize, payload: &[u8], summary: &mut Na
         let experience_raw = read_u32_le(payload, cursor + 24);
         let sunk_convoys = read_u32_le(payload, cursor + 28);
         let owner_tag_db_id = read_u32_le(payload, cursor + 32);
-        let row_reserved1 = read_u32_le(payload, cursor + 36);
+        // v1's must-be-zero reserved word; the id space of `task_force_id` in
+        // v2, without which the reference cannot pick between two task forces
+        // that share a number across the engine's two registries.
+        let task_force_id_space = read_u32_le(payload, cursor + 36);
         cursor += COMPACT_SHIP_ROW_BASE_LEN;
 
         let definition_len = match skip_compact_string(payload, &mut cursor, "ships definition") {
@@ -1427,9 +1548,19 @@ pub fn decode_ships_data_payload(offset: usize, payload: &[u8], summary: &mut Na
                     "offset {offset}: ships row {row_index} has invalid task_force_id {task_force_id}"
                 ));
             }
-        } else if task_force_id != 0 {
+            // BOTH WORDS, gated together. A number with no registry cannot pick
+            // between two task forces that share it; a registry with the gate
+            // clear is half a reference. The fold, the stream authority and the
+            // schema mirror all refuse both shapes, and this gate is not
+            // allowed to certify a stream they reject.
+            if task_force_id_space == 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: ships row {row_index} references task force {task_force_id} with no id space"
+                ));
+            }
+        } else if task_force_id != 0 || task_force_id_space != 0 {
             summary.parse_errors.push(format!(
-                "offset {offset}: ships row {row_index} has task_force_id without flag"
+                "offset {offset}: ships row {row_index} has a task-force reference without flag"
             ));
         }
         if (flags & COMPACT_SHIP_ROW_FLAG_DEFINITION) != 0 {
@@ -1478,6 +1609,7 @@ pub fn decode_ships_data_payload(offset: usize, payload: &[u8], summary: &mut Na
         }
         if deleted
             && (task_force_id != 0
+                || task_force_id_space != 0
                 || category_enum != 0
                 || strength_raw != 0
                 || organisation_raw != 0
@@ -1488,11 +1620,6 @@ pub fn decode_ships_data_payload(offset: usize, payload: &[u8], summary: &mut Na
         {
             summary.parse_errors.push(format!(
                 "offset {offset}: ships deleted row {row_index} has live fields"
-            ));
-        }
-        if row_reserved1 != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: ships row {row_index} reserved field is nonzero"
             ));
         }
     }
@@ -3016,12 +3143,23 @@ mod tests {
     /// One d28 DATA payload with one row, for the (kind x status-word) sweep
     /// below. Everything the row does not need is zero.
     fn sd2_one_row_oob_payload(kind: u32, status_offset: usize, status_value: u32) -> Vec<u8> {
-        let mut payload = vec![0u8; 48 + COMPACT_OOB_ROW_LEN];
+        // A v2 PAYLOAD: 56-byte header with `payload_version` at `+48`, the row
+        // at `+56`, and a non-zero `id_space` at row `+76` on the task-force
+        // kind, which is the one kind v2 requires it of. A v1-shaped payload is
+        // refused by version before any status word is read, which is exactly
+        // what this sweep must not be measuring.
+        let mut payload = vec![0u8; COMPACT_OOB_HEADER_LEN + COMPACT_OOB_ROW_LEN];
         payload[8..12].copy_from_slice(&1u32.to_le_bytes());
         payload[12..16].copy_from_slice(&1u32.to_le_bytes());
-        let row = 48usize;
+        payload[48..52].copy_from_slice(&COMPACT_OOB_PAYLOAD_VERSION.to_le_bytes());
+        let row = COMPACT_OOB_HEADER_LEN;
         payload[row..row + 4].copy_from_slice(&kind.to_le_bytes());
         payload[row + 4..row + 8].copy_from_slice(&17u32.to_le_bytes());
+        if kind == COMPACT_OOB_KIND_TASK_FORCE {
+            // Any non-zero space satisfies the rule; 61 is the fleet minter's,
+            // which is what a vanilla task force carries.
+            payload[row + 76..row + 80].copy_from_slice(&61u32.to_le_bytes());
+        }
         let at = row + status_offset;
         payload[at..at + 4].copy_from_slice(&status_value.to_le_bytes());
         payload

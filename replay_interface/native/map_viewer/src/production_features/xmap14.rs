@@ -2287,8 +2287,16 @@ fn validate_typed_census(
         {
             return Err("XMAP14 naval carrier identity/location join mismatch".into());
         }
-        validate_bare_taskforce_join(&typed.attacker_task_force_ids, &carrier.attackers)?;
-        validate_bare_taskforce_join(&typed.defender_task_force_ids, &carrier.defenders)?;
+        validate_taskforce_reference_join(
+            &typed.attacker_task_force_ids,
+            &typed.attacker_task_force_id_spaces,
+            &carrier.attackers,
+        )?;
+        validate_taskforce_reference_join(
+            &typed.defender_task_force_ids,
+            &typed.defender_task_force_id_spaces,
+            &carrier.defenders,
+        )?;
     }
 
     for identity in envelope
@@ -2364,21 +2372,54 @@ fn validate_bare_division_join(
     Ok(())
 }
 
-fn validate_bare_taskforce_join(
-    typed: &Leaf<Vec<i64>>,
+/// The naval participant join, on the WHOLE task-force reference.
+///
+/// It used to compare `stable_id` alone and throw the carrier's `type_id` away.
+/// Two clausewitz registries mint task forces and their numbers collide (`490`
+/// was measured alive in both at once in one save), so a combat whose
+/// participant is `{51, 490}` validated against a carrier naming `{61, 490}` --
+/// a one-for-one substitution that equal list lengths cannot catch (Codex round
+/// 3, finding 1).
+///
+/// `Xmap13UnitIdentity::TaskForce`'s `type_id` IS the clausewitz registry word,
+/// so the carrier can answer this: d95's `read_handle` and this recorder's
+/// `read_compact_task_force_identity` read the SAME u64 through pointers that
+/// differ by `0x10`. The offset chain is written out at the emission site in
+/// `CreateTaskForce` passes the subobject `+0x10`; the recorder's body is that
+/// subobject `+0x10`).
+///
+/// The two typed vectors are POSITIONALLY PAIRED and a length disagreement
+/// between them is a refusal, not a zip that silently truncates.
+fn validate_taskforce_reference_join(
+    typed_ids: &Leaf<Vec<i64>>,
+    typed_id_spaces: &Leaf<Vec<i64>>,
     carrier: &[Xmap13UnitIdentity],
 ) -> Result<()> {
-    let Leaf::Measured(typed) = typed else {
+    let (Leaf::Measured(typed_ids), Leaf::Measured(typed_id_spaces)) =
+        (typed_ids, typed_id_spaces)
+    else {
         return Err("XMAP14 typed naval task-force vector is unavailable".into());
     };
+    if typed_ids.len() != typed_id_spaces.len() {
+        return Err(
+            "XMAP14 typed naval task-force numbers and id spaces are different lengths".into(),
+        );
+    }
+    let typed = typed_ids
+        .iter()
+        .copied()
+        .zip(typed_id_spaces.iter().copied())
+        .collect::<Vec<_>>();
     let carried = carrier
         .iter()
         .map(|identity| match identity {
-            Xmap13UnitIdentity::TaskForce { stable_id, .. } => Ok(i64::from(*stable_id)),
+            Xmap13UnitIdentity::TaskForce { type_id, stable_id } => {
+                Ok((i64::from(*stable_id), i64::from(*type_id)))
+            }
             _ => Err("XMAP14 naval participant is not a task force"),
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    if *typed != carried {
+    if typed != carried {
         return Err("XMAP14 naval task-force order disagrees with typed D50".into());
     }
     Ok(())
@@ -3601,6 +3642,65 @@ mod tests {
             naval_result_subtype: None,
             ordered_draws: Vec::new(),
         }
+    }
+
+    /// kills: comparing the naval participant join on the task-force NUMBER
+    /// alone.
+    ///
+    /// **What production change makes this fail.** Revert
+    /// `validate_taskforce_reference_join` to the `Xmap13UnitIdentity::TaskForce
+    /// { stable_id, .. }` match it had -- discarding `type_id` -- or drop
+    /// `attacker_task_force_id_spaces` from `NavalCombatRow` and pass only the
+    /// numbers. Either makes the first case below PASS: a combat whose single
+    /// participant is task force `490` from the CShip registry (space 51) would
+    /// validate against a carrier naming task force `490` from the fleet
+    /// registry (space 61), which is a different task force. Both lists have one
+    /// entry, so no length check can catch the substitution -- only the space
+    /// can. `490` is the number lane SJ measured alive in both registries at
+    /// once in a single engine save.
+    ///
+    /// It does NOT kill the positional pairing check; the third case below
+    /// does that.
+    #[test]
+    fn one_number_in_two_registries_is_two_different_participants() {
+        let carrier_in_the_fleet_registry = vec![Xmap13UnitIdentity::TaskForce {
+            type_id: 61,
+            stable_id: 490,
+        }];
+
+        // Same number, other registry: refused.
+        assert!(validate_taskforce_reference_join(
+            &Leaf::Measured(vec![490]),
+            &Leaf::Measured(vec![51]),
+            &carrier_in_the_fleet_registry,
+        )
+        .is_err());
+
+        // Same number, same registry: the join it is supposed to make.
+        assert!(validate_taskforce_reference_join(
+            &Leaf::Measured(vec![490]),
+            &Leaf::Measured(vec![61]),
+            &carrier_in_the_fleet_registry,
+        )
+        .is_ok());
+
+        // The two typed vectors are positionally paired, so a length
+        // disagreement is a refusal rather than a zip that drops a
+        // participant.
+        assert!(validate_taskforce_reference_join(
+            &Leaf::Measured(vec![490]),
+            &Leaf::Measured(vec![61, 51]),
+            &carrier_in_the_fleet_registry,
+        )
+        .is_err());
+
+        // An absent space vector is unavailable, not "assume the fleet one".
+        assert!(validate_taskforce_reference_join(
+            &Leaf::Measured(vec![490]),
+            &Leaf::Absent,
+            &carrier_in_the_fleet_registry,
+        )
+        .is_err());
     }
 
     #[test]

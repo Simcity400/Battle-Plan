@@ -190,3 +190,15 @@ extractor/native/runs/rv_d43_oil_current/*.decompile.c -text
 # lane TA: hash-pinned Ghidra decompiles. AGENTS.md requires `text eol=lf` for
 # hash-pinned committed files; the SHA-256 in MEASUREMENT.md are the LF bytes.
 extractor/native/runs/ta_market_trade/*.decompile.c text eol=lf
+
+# lane SR: hash-pinned Ghidra decompiles, TA's precedent. AGENTS.md requires
+# `text eol=lf` for hash-pinned committed files, so the decompiles are normalised
+# with everything else and MEASUREMENT.md pins BOTH digests: the export store's
+# raw bytes, which is what `ghidra_verify` agrees with, and the committed LF
+# bytes, which is what a checkout reproduces.
+extractor/native/runs/sr_tf_id_space/** text eol=lf
+# The exporter emits a line of two spaces in each of them; `git diff --check`
+# would flag it and stripping it would change a hash-pinned artifact, so the
+# check is turned off for those three files exactly as it is for the
+# hash-authenticated shader above.
+extractor/native/runs/sr_tf_id_space/out/*.decompile.c text eol=lf whitespace=-trailing-space,-space-before-tab

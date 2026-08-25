@@ -3,7 +3,13 @@ use std::fs;
 use std::process;
 
 pub const PROVISIONAL_DOMAIN_NAVAL_OOB_EXT: u16 = 29_001;
-pub const NAVAL_OOB_EXT_SCHEMA_VERSION: u32 = 1;
+// SCHEMA 2 (owner ruling 2026-08-27): the task-force row's must-be-zero
+// `reserved0` became `task_force_id_space`, because the engine mints task forces
+// from two clausewitz registries whose numbers collide and a bare number cannot
+// tell two of them apart. The row did not change length. Version 1 payloads are
+// refused by `decode_payload`'s version check, which is exact -- the word is at
+// `+0` and nothing else can occupy it.
+pub const NAVAL_OOB_EXT_SCHEMA_VERSION: u32 = 2;
 pub const NAVAL_OOB_EXT_HEADER_LEN: usize = 32;
 pub const NAVAL_OOB_EXT_FLEET_ROW_LEN: usize = 40;
 pub const NAVAL_OOB_EXT_TASK_FORCE_ROW_LEN: usize = 40;
@@ -34,6 +40,11 @@ pub const KNOWN_FLAGS: u32 = FLAG_HAS_LEADER
     | FLAG_VALIDATED_DIRECT;
 
 pub const MAX_OOB_ID: u32 = 4_000_000;
+/// The clausewitz registry `CreateTaskForce` mints from. Named only so the
+/// tests below can build a well-formed row; the format itself puts NO bound on
+/// the space word beyond non-zero, because the engine puts none on the type
+/// word it writes into the handle.
+pub const OOB_TYPE_FLEET_ID_SPACE: u32 = 61;
 pub const MAX_OWNER_TAG_DB_ID: u32 =
     compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
@@ -59,6 +70,10 @@ pub struct FleetExtensionRow {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TaskForceExtensionRow {
     pub task_force_id: u32,
+    /// Which clausewitz registry minted `task_force_id`, and the other half of
+    /// this row's identity. Never zero: a task force always came from one.
+    /// Schema 1 spent this word as a must-be-zero `reserved0`.
+    pub task_force_id_space: u32,
     pub fleet_id: u32,
     pub flags: u32,
     pub mission_enum: u32,
@@ -67,7 +82,6 @@ pub struct TaskForceExtensionRow {
     pub strategic_region_id: u32,
     pub naval_base_state_id: u32,
     pub leader_id: u32,
-    pub reserved0: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -130,7 +144,7 @@ pub fn encode_payload(payload: &NavalOobExtensionPayload) -> Vec<u8> {
         push_u32(&mut out, row.strategic_region_id);
         push_u32(&mut out, row.naval_base_state_id);
         push_u32(&mut out, row.leader_id);
-        push_u32(&mut out, row.reserved0);
+        push_u32(&mut out, row.task_force_id_space);
     }
 
     for row in &payload.ship_names {
@@ -165,7 +179,13 @@ pub fn decode_payload(raw: &[u8]) -> Result<NavalOobExtensionPayload, String> {
     }
     let schema_version = read_u32(raw, 0)?;
     if schema_version != NAVAL_OOB_EXT_SCHEMA_VERSION {
-        return Err(format!("unsupported schema_version {schema_version}"));
+        return Err(format!(
+            "unsupported schema_version {schema_version}; this decoder requires \
+             {NAVAL_OOB_EXT_SCHEMA_VERSION}, in which a task-force row carries its clausewitz \
+             id space beside its number. Old captures are disposable: recapture, because a \
+             schema-1 payload cannot distinguish two task forces that share a number across \
+             the engine's two id registries"
+        ));
     }
     let status_flags = read_u32(raw, 4)?;
     validate_flags(status_flags, "payload status_flags")?;
@@ -216,7 +236,7 @@ pub fn decode_payload(raw: &[u8]) -> Result<NavalOobExtensionPayload, String> {
             strategic_region_id: read_u32(raw, cursor + 24)?,
             naval_base_state_id: read_u32(raw, cursor + 28)?,
             leader_id: read_u32(raw, cursor + 32)?,
-            reserved0: read_u32(raw, cursor + 36)?,
+            task_force_id_space: read_u32(raw, cursor + 36)?,
         };
         validate_task_force_row(index, &row)?;
         task_forces.push(row);
@@ -341,8 +361,14 @@ fn validate_task_force_row(index: usize, row: &TaskForceExtensionRow) -> Result<
         return Err(format!("task-force row {index} has invalid strategic_region_id {}", row.strategic_region_id));
     }
     validate_optional_id(row.flags & FLAG_HAS_LEADER != 0, row.leader_id, "task-force leader", index)?;
-    if row.reserved0 != 0 {
-        return Err(format!("task-force row {index} reserved0 must be zero"));
+    // BOTH HALVES OF THE IDENTITY. A number with no registry cannot pick
+    // between two task forces that share it, so a zero here is half a
+    // reference, not a tolerated default.
+    if row.task_force_id_space == 0 {
+        return Err(format!(
+            "task-force row {index} references task force {} with no id space",
+            row.task_force_id
+        ));
     }
     Ok(())
 }
@@ -496,6 +522,7 @@ mod tests {
             }],
             task_forces: vec![TaskForceExtensionRow {
                 task_force_id: 617,
+                task_force_id_space: OOB_TYPE_FLEET_ID_SPACE,
                 fleet_id: 615,
                 flags: FLAG_HAS_REGION | FLAG_DERIVED_REGION | FLAG_FIXTURE_REQUIRED,
                 location_province_id: 12389,
@@ -580,6 +607,7 @@ mod tests {
         let payload = NavalOobExtensionPayload {
             task_forces: vec![TaskForceExtensionRow {
                 task_force_id: 617,
+                task_force_id_space: OOB_TYPE_FLEET_ID_SPACE,
                 fleet_id: 615,
                 location_province_id: 12389,
                 home_base_province_id: 99,

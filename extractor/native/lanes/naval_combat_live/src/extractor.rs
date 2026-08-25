@@ -143,6 +143,10 @@ pub struct CshipSnapshotRow {
     pub alias_instance_id: u32,
     pub ref100_sentinel_raw: u32,
     pub task_force_id: Option<u32>,
+    /// The clausewitz registry that minted `task_force_id`. `Some` exactly when
+    /// `task_force_id` is: the collector reaches a ship THROUGH its task force,
+    /// so the registry is known whenever the number is.
+    pub task_force_id_space: Option<u32>,
     pub fleet_id: Option<u32>,
     pub strength_raw: u32,
     pub organisation_raw: u32,
@@ -543,6 +547,12 @@ fn validate_pending_member_cship_joins(
                 .ship_instance_id
                 .and_then(|ship_id| cships.get(&ship_id))
                 .and_then(|cship| cship.task_force_id),
+            // Carried beside the number, from the same snapshot row, so the
+            // reference cannot be half present.
+            task_force_id_space: member
+                .ship_instance_id
+                .and_then(|ship_id| cships.get(&ship_id))
+                .and_then(|cship| cship.task_force_id_space),
             fleet_id: member
                 .ship_instance_id
                 .and_then(|ship_id| cships.get(&ship_id))
@@ -744,6 +754,7 @@ mod tests {
             alias_instance_id: id,
             ref100_sentinel_raw: CURRENT_870EBF_CSHIP_ROUTE.ref100_sentinel_raw,
             task_force_id: Some(477),
+            task_force_id_space: Some(61),
             fleet_id: Some(88),
             strength_raw: 10_000_000,
             organisation_raw: 9_000_000,
@@ -919,6 +930,7 @@ mod tests {
     fn rejects_cship_without_oob_linkage() {
         let mut unlinked = cship(1001);
         unlinked.task_force_id = None;
+        unlinked.task_force_id_space = None;
         unlinked.fleet_id = None;
         let errors = build_capture_frame(&[fixture()], &[unlinked], 10, 512, 5).unwrap_err();
         assert!(errors

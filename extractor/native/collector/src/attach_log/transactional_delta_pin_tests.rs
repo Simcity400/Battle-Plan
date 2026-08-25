@@ -10,6 +10,7 @@ fn ship(instance_id: u32, strength_raw: u32) -> CompactShipRow {
         instance_id,
         deleted: false,
         task_force_id: Some(201),
+        task_force_id_space: Some(OOB_TYPE_FLEET),
         owner_tag_db_id: Some(1),
         definition: Some("destroyer_1".into()),
         category_enum: 1,

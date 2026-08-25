@@ -364,6 +364,7 @@ fn sibling_lane_withheld_frames_keep_their_baselines_and_emit_nothing() {
         instance_id: 300,
         deleted: false,
         task_force_id: Some(201),
+        task_force_id_space: Some(OOB_TYPE_FLEET),
         owner_tag_db_id: Some(1),
         definition: Some("destroyer_1".into()),
         category_enum: 1,

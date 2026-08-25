@@ -167,7 +167,7 @@ fn snapshot_100() -> Value {
             "fleets": [
                 { "id": 1, "owner": "GER", "name": "Baltic Fleet",
                   "task_forces": [
-                    { "id": 2, "owner": "GER", "location_province": 321,
+                    {"id": 2, "id_space": 61, "owner": "GER", "location_province": 321,
                       "dominant_hull_class": "destroyer",
                       "ships": [
                         { "id": "ship-1", "definition": "destroyer", "organisation": 0.9,
@@ -451,7 +451,7 @@ fn write_unit_census_problem_store(root: &Path) {
                 "fleets": [{
                     "id": 3,
                     "owner": "ENG",
-                    "task_forces": [{"id": 71, "location_province": 118}]
+                    "task_forces": [{"id": 71, "id_space": 61, "location_province": 118}]
                 }],
                 "air_wings": [
                     {"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219}
@@ -953,7 +953,15 @@ fn dir_store_typed_views_and_trichotomy() {
     assert_eq!(d7_unit.equipment, Leaf::Unobtained);
 
     assert_eq!(f100.fleets_status(), ViewStatus::Present);
+    // THE GAME'S OWN NUMBER. Two clausewitz registries mint task forces and
+    // their numbers collide (owner ruling 2026-08-27), so the identity is the
+    // typed key beside it -- but the rendered text is what the game renders,
+    // and the game renders `2`.
     assert_eq!(f100.fleets()[0].task_force_uid, "2");
+    assert_eq!(
+        f100.fleets()[0].task_force_key(),
+        Some(replay_core::TaskForceKey { id: 2, id_space: 61 })
+    );
     assert_eq!(f100.fleets()[0].ship_count, Leaf::Measured(1));
     assert_eq!(
         f100.fleets()[0].dominant_hull_class,

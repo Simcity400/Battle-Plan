@@ -1,9 +1,9 @@
 //! d49 `naval_combat_lifecycle_live` — the per-battle scalars of every live
 //! naval combat.
 //!
-//! Derived from `world_fold.rs:27861`-`:27949`
+//! Derived from `world_fold.rs:28107`-`:28195`
 //! (`fold_naval_combat_lifecycle`, dispatched at `:4718`), the lane codec that
-// @world-fold-authority domain=49 functions=fold_naval_combat_lifecycle lines=27861-27949 sha256=513cfd661b84ade3f5778895882af340697db1795ab087292bd87d3ddf297eb6 closure=587e35c7da2aa85fe29824aa7773dd3f5ed2acf1a75140819a85e478bea255f6
+// @world-fold-authority domain=49 functions=fold_naval_combat_lifecycle lines=28107-28195 sha256=513cfd661b84ade3f5778895882af340697db1795ab087292bd87d3ddf297eb6 closure=587e35c7da2aa85fe29824aa7773dd3f5ed2acf1a75140819a85e478bea255f6
 //! owns the payload grammar
 //! (`extractor/native/lanes/naval_combat_live/src/domain49_50_naval_combat_live.rs`),
 //! the fold's own renderer (`world_fold.rs::build_naval_combats`), and the collector walk
@@ -23,7 +23,7 @@
 //!
 //! | offset | width | field | note |
 //! |---|---|---|---|
-//! | `+0`  | u16 | `schema_version` | must be `2` (`:1802`) |
+//! | `+0`  | u16 | `schema_version` | must be [`SCHEMA_VERSION`], now `3` (`:1802`) |
 //! | `+2`  | u16 | `row_len`        | must be `72` (`:1807`) |
 //! | `+4`  | u64 | `elapsed_wall_ms`| collector timing, not game state |
 //! | `+12` | u32 | `status_flags`   | the failure gate and the lane-local bit 11 |
@@ -197,9 +197,18 @@ pub mod field {
 pub const HEADER_LEN: usize = 28;
 /// `LIFECYCLE_ROW_LEN`, `:26`. Fixed; there is no legacy form.
 pub const ROW_LEN: usize = 72;
-/// `SCHEMA_VERSION`, `:24`. Version 2 is what promoted the two positioning cells
-/// from rounded milli-units to the exact `x100000` values (`:19`-`:23`).
-pub const SCHEMA_VERSION: u16 = 2;
+/// `SCHEMA_VERSION`, `:24`. Version 2 promoted the two positioning cells from
+/// rounded milli-units to the exact `x100000` values (`:19`-`:23`); version 3
+/// spent the d50 MEMBER row's `+56` reserved word on `task_force_id_space`,
+/// because two clausewitz registries mint task forces and their numbers collide
+/// (owner ruling 2026-08-27).
+///
+/// **d49 and d50 share one header constant**, so d49's lifecycle payload is a v3
+/// payload from the moment the lane's `SCHEMA_VERSION` moved, even though no d49
+/// row changed shape. Leaving this at 2 made this mirror refuse every payload
+/// the lane now produces, and its own tests hid that by building their fixtures
+/// from this same constant (Codex round 7).
+pub const SCHEMA_VERSION: u16 = 3;
 /// The lane emits exactly one, empty, string-table entry (`:1820`, `:1850`).
 pub const STRING_COUNT: u32 = 1;
 /// The trailing string table: one `u16` length word, which must be zero.
@@ -1411,16 +1420,25 @@ mod tests {
         //
         // Every word carries a DISTINCT value, so no pair of reads can be swapped
         // and still satisfy this test. Three of the seven are pinned to a constant
-        // by the grammar — `schema_version` is 2, `row_len` is 72, `string_count`
-        // is 1 — so `row_count` is 3 to keep it clear of all three, and the
+        // by the grammar — `schema_version` is 3, `row_len` is 72, `string_count`
+        // is 1 — so `row_count` is FOUR to keep it clear of all three, and the
         // perturbation sweep below is what covers the constrained words: it is not
         // enough to read them once at a value another word also holds.
-        let rows = vec![full_row(), deleted_row(2, 1), deleted_row(3, 1)];
+        //
+        // It was three until `SCHEMA_VERSION` became 3, when d49 and d50's shared
+        // header moved to v3; the collision that would have caused is exactly
+        // what the distinctness check exists to catch.
+        let rows = vec![
+            full_row(),
+            deleted_row(2, 1),
+            deleted_row(3, 1),
+            deleted_row(4, 1),
+        ];
         let p = payload_with(
             SCHEMA_VERSION,
             ROW_LEN as u16,
             0xc00,
-            3,
+            4,
             STRING_COUNT,
             0,
             &rows,
@@ -1430,11 +1448,11 @@ mod tests {
         assert_eq!(header.schema_version, SCHEMA_VERSION);
         assert_eq!(header.row_len as usize, ROW_LEN);
         assert_eq!(header.status_flags, 0xc00);
-        assert_eq!(header.row_count, 3);
+        assert_eq!(header.row_count, 4);
         assert_eq!(header.string_count, STRING_COUNT);
         assert_eq!(header.reserved, 0);
-        // Six of the seven values are pairwise distinct as written (2, 72,
-        // 0, 0xc00, 3, 1, 0 — `elapsed_wall_ms` and `reserved` share 0, and the
+        // Six of the seven values are pairwise distinct as written (3, 72,
+        // 0, 0xc00, 4, 1, 0 — `elapsed_wall_ms` and `reserved` share 0, and the
         // sweep below separates them). Assert that, so a later edit cannot quietly
         // make two of them equal and blunt the test.
         let distinct = [
@@ -1457,7 +1475,7 @@ mod tests {
         let h2 = parse_header(&p2).expect("parses");
         assert_eq!(h2.elapsed_wall_ms, 0x0807_0605_0403_0201);
         assert_eq!(h2.status_flags, 0xc00);
-        assert_eq!(h2.row_count, 3);
+        assert_eq!(h2.row_count, 4);
         assert_eq!(h2.schema_version, SCHEMA_VERSION);
         assert_eq!(h2.row_len as usize, ROW_LEN);
         assert_eq!(h2.string_count, STRING_COUNT);
@@ -1494,7 +1512,7 @@ mod tests {
             ROW_LEN as u64,
             0u64,
             0xc00u64,
-            3u64,
+            4u64,
             u64::from(STRING_COUNT),
             0u64,
         ];
@@ -1921,8 +1939,10 @@ mod tests {
             assert!(parse_header(&p[..len]).is_err(), "len {len}");
             assert!(split_payload(&p[..len]).is_err(), "len {len}");
         }
-        // A wrong schema version (`:1802`).
-        for version in [0u16, 1, 3, u16::MAX] {
+        // A wrong schema version (`:1802`). `2` is in the list and `3` is not:
+        // d49 and d50 share one constant and it moved to 3 in v3, so the old
+        // probe `3` became the accepted version and `2` became a wrong one.
+        for version in [0u16, 1, 2, 4, u16::MAX] {
             let bad = payload_with(version, ROW_LEN as u16, 0, 2, STRING_COUNT, 0, &rows, 0);
             assert!(parse_header(&bad).is_err(), "version {version}");
         }

@@ -560,6 +560,7 @@ fn populated_state_makes_the_ships_domain_emit_domain_data_rows_offline() {
             instance_id,
             deleted: false,
             task_force_id: Some(617),
+            task_force_id_space: Some(OOB_TYPE_FLEET),
             owner_tag_db_id: Some(1),
             definition: Some(definition.to_string()),
             category_enum,
@@ -630,6 +631,9 @@ fn populated_state_makes_the_ships_domain_emit_domain_data_rows_offline() {
         vec![
             ("domain29_source_unavailable".to_string(), 0u64),
             ("domain29_invalid_task_force_rows".to_string(), 0u64),
+            // Lane SR: the same count under the pre-2026-08-27 rule, in the
+            // always-emitted block so a frame where the two AGREE is visible.
+            ("domain29_invalid_task_force_rows_old_rule".to_string(), 0u64),
             (
                 "naval_oob_roots_discovery_us".to_string(),
                 perf_diag_value(&perf, "naval_oob_roots_discovery_us")
@@ -699,6 +703,9 @@ fn a_state_whose_build_profile_is_unverified_makes_d29_typed_source_unavailable(
         vec![
             ("domain29_source_unavailable".to_string(), 1u64),
             ("domain29_invalid_task_force_rows".to_string(), 0u64),
+            // Lane SR: the same count under the pre-2026-08-27 rule, in the
+            // always-emitted block so a frame where the two AGREE is visible.
+            ("domain29_invalid_task_force_rows_old_rule".to_string(), 0u64),
             (
                 "naval_oob_roots_discovery_us".to_string(),
                 perf_diag_value(&perf, "naval_oob_roots_discovery_us")

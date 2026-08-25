@@ -476,8 +476,21 @@ fn rt_naval_air_activity() {
         let tf = f
             .fleets()
             .iter()
-            .find(|r| r.task_force_uid == "501")
-            .expect("task force 501");
+            // FOUND BY THE WHOLE KEY, not by the number: two clausewitz
+            // registries mint task forces and their numbers collide. The uid is
+            // the GAME's number and is display text only.
+            .find(|r| {
+                r.task_force_key()
+                    == Some(replay_core::TaskForceKey {
+                        id: 501,
+                        id_space: 61,
+                    })
+            })
+            .expect("task force 501 in the fleet registry");
+        assert_eq!(
+            tf.task_force_uid, "501",
+            "the rendered uid is what the game shows and carries no registry"
+        );
         let tfp = &["order_of_battle", "fleets", "0", "task_forces", "0"];
         let probe = |leaf_key: &str| {
             let mut path = tfp.to_vec();

@@ -16,7 +16,19 @@ pub const DOMAIN_NAVAL_COMBAT_LIFECYCLE_NAME: &str = "naval_combat_lifecycle_liv
 pub const DOMAIN_NAVAL_COMBAT_MEMBERS: u16 = 50;
 pub const DOMAIN_NAVAL_COMBAT_MEMBERS_NAME: &str = "naval_combat_members_live";
 
-pub const SCHEMA_VERSION: u16 = 2;
+/// **v3 carries the task-force id space** (owner ruling 2026-08-27). A combat
+/// member's `task_force_id` stopped resolving on its own the moment d28 began
+/// publishing both clausewitz registries: the engine mints task forces from the
+/// fleet-id minter (type 61) and from the `CShip` registry (type 51), and their
+/// numbers collide -- id `490` was measured alive in both at once in one engine
+/// save. A member saying only "490" would be attributed to whichever task force
+/// a consumer's map happened to hold.
+///
+/// v3 spends the member row's `+56` reserved word, which v2 required to be zero,
+/// so the row length is unchanged. `decode_payload_header` already refuses any
+/// version but this one, so a v2 payload is refused by name. Old captures are
+/// disposable (`no-backwards-compat-pre-production`).
+pub const SCHEMA_VERSION: u16 = 3;
 pub const PAYLOAD_HEADER_LEN: usize = 28;
 pub const LIFECYCLE_ROW_LEN: usize = 72;
 pub const MEMBER_ROW_LEN: usize = 88;
@@ -176,6 +188,11 @@ pub struct MemberRow {
     pub state_bitmask: Option<u32>,
     pub engagement_weight_raw: Option<i32>,
     pub task_force_id: Option<u32>,
+    /// The clausewitz registry that minted `task_force_id`, and the other half
+    /// of the reference into d28's task-force rows. `Some` exactly when
+    /// `task_force_id` is `Some`: half a reference is not a reference, and both
+    /// words ride the one `MEMBER_TASK_FORCE_PRESENT` flag.
+    pub task_force_id_space: Option<u32>,
     pub fleet_id: Option<u32>,
     pub strength_raw: Option<u32>,
     pub organisation_raw: Option<u32>,
@@ -288,7 +305,9 @@ struct DecodedMemberRow {
     battle_slot_index_raw: u32,
     state_bitmask: u32,
     engagement_weight_raw: i32,
-    reserved: u32,
+    /// `+56`, v2's must-be-zero reserved word; the id space of `task_force_id`
+    /// since v3.
+    task_force_id_space: u32,
     task_force_id: u32,
     fleet_id: u32,
     strength_raw: u32,
@@ -432,7 +451,7 @@ pub fn encode_member_payload(
         push_u32(&mut payload, row.battle_slot_index_raw);
         push_u32(&mut payload, row.state_bitmask.unwrap_or(0));
         push_i32(&mut payload, row.engagement_weight_raw.unwrap_or(0));
-        push_u32(&mut payload, 0);
+        push_u32(&mut payload, row.task_force_id_space.unwrap_or(0));
         push_u32(&mut payload, row.task_force_id.unwrap_or(0));
         push_u32(&mut payload, row.fleet_id.unwrap_or(0));
         push_u32(&mut payload, row.strength_raw.unwrap_or(0));
@@ -550,6 +569,8 @@ pub fn decode_member_rows(payload: &[u8]) -> Result<(u32, Vec<MemberRow>), Vec<S
                 .then_some(row.engagement_weight_raw),
             task_force_id: (row.flags & MEMBER_TASK_FORCE_PRESENT != 0)
                 .then_some(row.task_force_id),
+            task_force_id_space: (row.flags & MEMBER_TASK_FORCE_PRESENT != 0)
+                .then_some(row.task_force_id_space),
             fleet_id: (row.flags & MEMBER_FLEET_PRESENT != 0).then_some(row.fleet_id),
             strength_raw: (row.flags & MEMBER_STRENGTH_PRESENT != 0).then_some(row.strength_raw),
             organisation_raw: (row.flags & MEMBER_ORGANISATION_PRESENT != 0)
@@ -1824,7 +1845,7 @@ fn decode_member_payload(
             battle_slot_index_raw: read_u32(payload, cursor + 44),
             state_bitmask: read_u32(payload, cursor + 48),
             engagement_weight_raw: read_i32(payload, cursor + 52),
-            reserved: read_u32(payload, cursor + 56),
+            task_force_id_space: read_u32(payload, cursor + 56),
             task_force_id: read_u32(payload, cursor + 60),
             fleet_id: read_u32(payload, cursor + 64),
             strength_raw: read_u32(payload, cursor + 68),
@@ -2039,11 +2060,6 @@ fn validate_decoded_member_row(
             row.side
         ));
     }
-    if row.reserved != 0 {
-        errors.push(format!(
-            "offset {offset}: member row {row_index} reserved field is nonzero"
-        ));
-    }
     if row.reserved_tail != 0 {
         errors.push(format!(
             "offset {offset}: member row {row_index} trailing reserved field is nonzero"
@@ -2187,6 +2203,9 @@ fn validate_decoded_member_row(
             "offset {offset}: member row {row_index} has engagement weight without flag"
         ));
     }
+    // THE REFERENCE IS TWO WORDS, and the flag gates both. A number with no
+    // registry cannot pick between two task forces that share it, and a
+    // registry with no number is not a reference at all.
     if row.flags & MEMBER_TASK_FORCE_PRESENT != 0 {
         if row.task_force_id == 0 || row.task_force_id > MAX_OOB_ID {
             errors.push(format!(
@@ -2194,9 +2213,15 @@ fn validate_decoded_member_row(
                 row.task_force_id
             ));
         }
-    } else if row.task_force_id != 0 {
+        if row.task_force_id_space == 0 {
+            errors.push(format!(
+                "offset {offset}: member row {row_index} references task force {} with no id space",
+                row.task_force_id
+            ));
+        }
+    } else if row.task_force_id != 0 || row.task_force_id_space != 0 {
         errors.push(format!(
-            "offset {offset}: member row {row_index} has task_force_id without flag"
+            "offset {offset}: member row {row_index} has a task-force reference without flag"
         ));
     }
     if row.flags & MEMBER_FLEET_PRESENT != 0 {
@@ -2371,6 +2396,14 @@ fn validate_member_row(row: &MemberRow) -> Result<(), String> {
         if task_force_id == 0 || task_force_id > MAX_OOB_ID {
             return Err("invalid task_force_id".to_string());
         }
+    }
+    // Both halves or neither: `encode_member_payload` gates them on one flag,
+    // so a row carrying one is a row this lane cannot serialise.
+    if row.task_force_id.is_some() != row.task_force_id_space.is_some() {
+        return Err("task_force reference carries only half its identity".to_string());
+    }
+    if row.task_force_id_space == Some(0) {
+        return Err("task_force reference carries no id space".to_string());
     }
     if let Some(fleet_id) = row.fleet_id {
         if fleet_id == 0 || fleet_id > MAX_OOB_ID {
@@ -2643,6 +2676,7 @@ mod tests {
             state_bitmask: Some(1),
             engagement_weight_raw: Some(1_000),
             task_force_id: Some(477),
+            task_force_id_space: Some(61),
             fleet_id: Some(88),
             strength_raw: Some(9_500_000),
             organisation_raw: Some(8_750_000),
@@ -2669,6 +2703,7 @@ mod tests {
             state_bitmask: Some(1),
             engagement_weight_raw: Some(500),
             task_force_id: None,
+            task_force_id_space: None,
             fleet_id: None,
             strength_raw: None,
             organisation_raw: None,
@@ -3452,6 +3487,10 @@ mod tests {
         sunk.state_bitmask = Some(FEX_STATE_SUNK);
         sunk.cship_join_validated = false;
         sunk.task_force_id = None;
+        // BOTH HALVES. `validate_member_row` refuses a reference that carries
+        // only one of them, because `encode_member_payload` gates the pair on
+        // one flag and could not serialise a half.
+        sunk.task_force_id_space = None;
         sunk.fleet_id = None;
         sunk.strength_raw = None;
         sunk.organisation_raw = None;
@@ -3742,6 +3781,7 @@ mod tests {
             state_bitmask: None,
             engagement_weight_raw: None,
             task_force_id: None,
+            task_force_id_space: None,
             fleet_id: None,
             strength_raw: None,
             organisation_raw: None,

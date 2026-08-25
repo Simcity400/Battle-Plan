@@ -383,8 +383,11 @@ fn d38_reader_delegates_to_the_helper_and_the_keys_match() {
 /// four; `rc_vanilla5` then said `body identity = 17` on all 690 frames, which
 /// was still three findings in one bucket -- a class word that disagreed, an
 /// id word that would not read, and an id word that is not an identity -- so
-/// lane SJ split that arm again. Seven arms now, and `ForeignIdSpace` is
-/// deliberately NOT one of them: it is not a `NotATaskForce` answer at all.
+/// lane SJ split that arm again. Seven arms now, and the SECOND REGISTRY is
+/// deliberately not one of them: it is not a `NotATaskForce` answer at all.
+/// Since the owner's 2026-08-27 ruling it is not a refusal either -- lane SR
+/// deleted `CompactTaskForceCandidate::ForeignIdSpace` and those bodies are
+/// ACCEPTED with their id space -- so the pins below read the accepted arm.
 ///
 /// kills: collapsing any two arms onto one variant (the seven map to seven
 /// distinct counters here); dropping the total (`not_a_task_force` is still
@@ -540,16 +543,34 @@ fn d29_not_a_task_force_arms_are_distinct_counters_that_sum_to_the_total() {
     // in `tests.rs` drives that function over bytes and is what catches a
     // swapped handle half or a mis-answered unreadable word (Codex round 1,
     // finding 3).
-    // AND `ForeignIdSpace` IS NOT ONE OF THE ARMS. It is a separate candidate
-    // answer with its own counter, because the elements it names ARE task
-    // forces: the class word agreed and only the clausewitz id registry
-    // differed (lane SJ, `runs/sj_d29_identity/RE_TASK_FORCE_ID_SPACES.md`).
-    // Routing it back through `count_not_a_task_force` would restore the false
-    // statement this lane removed.
+    // AND THE SECOND REGISTRY IS NOT ONE OF THE ARMS, because the elements it
+    // names ARE task forces: the class word agreed and only the clausewitz id
+    // registry differed (lane SJ,
+    // `runs/sj_d29_identity/RE_TASK_FORCE_ID_SPACES.md`). Lane SJ made that a
+    // separate refusing candidate; the owner's 2026-08-27 ruling made it an
+    // ACCEPTED one, so the validator must map the foreign identity onto
+    // `Accepted` and to nothing else. Routing it back through
+    // `count_not_a_task_force` would restore the false statement lane SJ
+    // removed; routing it back to any refusal would restore the omission the
+    // ruling removed.
     assert_eq!(
-        body.matches("CompactTaskForceCandidate::ForeignIdSpace").count(),
+        body.matches("CompactTaskForceIdentity::ForeignIdSpace").count(),
         1,
-        "exactly one gate may answer ForeignIdSpace"
+        "exactly one gate may read the foreign identity"
+    );
+    let foreign_at = body
+        .find("CompactTaskForceIdentity::ForeignIdSpace")
+        .expect("counted above");
+    let foreign_arm = &body[foreign_at..];
+    let foreign_arm = &foreign_arm[..foreign_arm.find('\n').unwrap_or(foreign_arm.len())];
+    assert!(
+        !foreign_arm.contains("CompactTaskForceMiss::")
+            && !foreign_arm.contains("NotATaskForce"),
+        "the foreign identity must not be answered with a refusal: {foreign_arm}"
+    );
+    assert!(
+        !body.contains("CompactTaskForceCandidate::ForeignIdSpace"),
+        "the refusing candidate the ruling removed must stay removed"
     );
     // ...and the four LOCATOR words are populated where the population is
     // counted. Without this, deleting the four assignments leaves every other
@@ -557,9 +578,16 @@ fn d29_not_a_task_force_arms_are_distinct_counters_that_sum_to_the_total() {
     // sample to find it by (Codex round 4, finding 5). The bound is positional:
     // each assignment must sit between the arm and the counter increment, which
     // is the only place the FIRST offender of the frame is still known.
+    // THE ACCEPTED ARM, since the ruling: a second-registry task force is
+    // published like any other and the population is counted from its id space
+    // inside that arm, not from a refusal beside it.
     let arm_at = walk_body
-        .find("CompactTaskForceCandidate::ForeignIdSpace {")
-        .expect("the walk must bind the arm");
+        .find("CompactTaskForceCandidate::Accepted {")
+        .expect("the walk must bind the accepted arm");
+    assert!(
+        walk_body[arm_at..].contains("if id_space != OOB_TYPE_FLEET {"),
+        "the accepted arm must be where the second registry is recognised"
+    );
     let count_at = walk_body
         .find("walk.foreign_id_space = walk.foreign_id_space.saturating_add(1);")
         .expect("the walk must count the population");
@@ -611,12 +639,26 @@ fn d29_not_a_task_force_arms_are_distinct_counters_that_sum_to_the_total() {
     }
 
     assert!(
-        walk_body.contains("CompactTaskForceCandidate::ForeignIdSpace {")
+        walk_body.contains("CompactTaskForceCandidate::Accepted {")
+            && walk_body.contains("if id_space != OOB_TYPE_FLEET {")
             && walk_body
                 .contains("walk.foreign_id_space = walk.foreign_id_space.saturating_add(1);")
             && !walk_body.contains("count_not_a_task_force(CompactTaskForceMiss"),
-        "a foreign-id-space task force must be counted in its own population, never as a
-         `NotATaskForce` arm"
+        "a second-registry task force must be ACCEPTED and counted in its own
+         population, never refused and never counted as a `NotATaskForce` arm"
+    );
+    // And it must be accepted BEFORE it is counted -- an increment that ran
+    // outside the accepted arm would count a population the frame did not
+    // publish.
+    let accepted_at = walk_body
+        .find("walk.accepted = walk.accepted.saturating_add(1);")
+        .expect("the walk must count acceptances");
+    let foreign_count_at = walk_body
+        .find("walk.foreign_id_space = walk.foreign_id_space.saturating_add(1);")
+        .expect("the walk must count the second-registry population");
+    assert!(
+        accepted_at < foreign_count_at,
+        "the second registry is counted inside the accepted arm, after the acceptance"
     );
 }
 
@@ -650,6 +692,9 @@ fn d29_reason_names_the_arms_behind_the_omission_count() {
         observed_ship_rows: 1745,
         observed_task_force_rows: 213,
         invalid_task_force_rows: 17,
+        // The fixture's seventeen are `parent_not_a_fleet_root` refusals, which
+        // the id-space ruling did not touch, so the two rules agree here.
+        invalid_task_force_rows_old_rule: 17,
         source_unavailable: false,
         deleted_rows: 0,
         naval_discovery_us: 0,

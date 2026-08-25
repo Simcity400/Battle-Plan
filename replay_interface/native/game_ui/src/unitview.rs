@@ -1,8 +1,8 @@
 
 use crate::gui::{GuiElement, LayoutSet};
 use replay_core::{
-    DivisionUnitRow, EquipmentAmount, FleetUnitRow, Leaf, ShipCompositionRow, ViewStatus,
-    WingUnitRow, WorldFrame,
+    DivisionUnitRow, EquipmentAmount, FleetUnitRow, Leaf, ShipCompositionRow, TaskForceKey,
+    ViewStatus, WingUnitRow, WorldFrame,
 };
 use std::collections::BTreeSet;
 
@@ -323,16 +323,55 @@ pub fn naval_unit_view_from_row(row: &FleetUnitRow, available: bool) -> NavalUni
     }
 }
 
-pub fn naval_unit_view_from_frame(
+/// The task force with this whole identity, if the frame has it.
+///
+/// THE ENTRY POINT ANY CALLER WITH A KEY SHOULD USE. Two clausewitz registries
+/// mint task forces and their numbers collide, so the number alone can name two
+/// different fleets; the key names one (landing bounce #2).
+pub fn naval_unit_view_from_frame_by_key(
     frame: &WorldFrame,
-    task_force_uid: &str,
+    key: TaskForceKey,
 ) -> Option<NavalUnitView> {
     let available = frame.fleets_status() == ViewStatus::Present;
     frame
         .fleets()
         .iter()
-        .find(|f| f.task_force_uid == task_force_uid)
+        .find(|f| f.task_force_key() == Some(key))
         .map(|row| naval_unit_view_from_row(row, available))
+}
+
+/// The task force the game would call by this number.
+///
+/// **FAILS CLOSED ON EITHER KIND OF DOUBT.** `task_force_uid` is the GAME's
+/// number -- what the outliner and the unit panel render -- and resolving a
+/// panel from it can go wrong two ways, so both refuse:
+///
+/// * *Ambiguous.* Both clausewitz registries can mint one number, so a frame
+///   may hold two rows answering to one string. Returning the first would open
+///   whichever the census happened to build first, which is a silently wrong
+///   panel.
+/// * *Keyless.* A row whose `task_force_key()` is `None` has no proven number.
+///   The world-frame builder never makes one -- `build_fleets` skips a row
+///   whose `id` or `id_space` is unusable -- but `FleetUnitRow` is public and
+///   constructible, so the state is representable and a uid match on such a row
+///   proves nothing.
+///
+/// A caller holding an identity should call
+/// [`naval_unit_view_from_frame_by_key`], which has neither problem.
+pub fn naval_unit_view_from_frame(
+    frame: &WorldFrame,
+    task_force_uid: &str,
+) -> Option<NavalUnitView> {
+    let available = frame.fleets_status() == ViewStatus::Present;
+    let mut matches = frame
+        .fleets()
+        .iter()
+        .filter(|f| f.task_force_uid == task_force_uid);
+    let row = matches.next()?;
+    if matches.next().is_some() || row.task_force_key().is_none() {
+        return None;
+    }
+    Some(naval_unit_view_from_row(row, available))
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -485,6 +524,7 @@ mod tests {
             task_force_uid: "201".to_string(),
             fleet_uid: Leaf::Measured("200".to_string()),
             raw_task_force_id: Leaf::Measured(201),
+            raw_task_force_id_space: Leaf::Measured(61),
             raw_fleet_id: Leaf::Measured(200),
             owner: Leaf::Measured("GER".to_string()),
             location_province: Leaf::Measured(6434),

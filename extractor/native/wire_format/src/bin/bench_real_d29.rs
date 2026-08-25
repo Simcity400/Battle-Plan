@@ -317,10 +317,21 @@ fn check_authority_payload(
                 flags & !KNOWN_ROW_FLAGS
             ));
         }
-        // `:6236`-`:6240`.
-        if word(row, 36) != 0 {
+        // `+36` is `task_force_id_space` since payload v2 (owner ruling
+        // 2026-08-27), in place of v1's must-be-zero reserved word. It rides the
+        // same `FLAG_TASK_FORCE` gate as the id, in both directions: a number
+        // with no registry cannot pick between two task forces that share it,
+        // and a registry with no number is not a reference.
+        let task_force_id_space = word(row, 36);
+        if flags & d29::FLAG_TASK_FORCE == 0 {
+            if task_force_id_space != 0 {
+                return Err(format!(
+                    "d29 row {index} at byte {at_byte}: task_force_id_space present without flag"
+                ));
+            }
+        } else if task_force_id_space == 0 {
             return Err(format!(
-                "d29 row {index} at byte {at_byte}: reserved field is nonzero"
+                "d29 row {index} at byte {at_byte}: task_force reference carries no id space"
             ));
         }
         let deleted = flags & d29::FLAG_DELETED != 0;
@@ -1063,10 +1074,27 @@ mod tests {
         )
     }
 
+    /// The clausewitz registry `CreateTaskForce` mints from -- the space of
+    /// every task force created during play, and the one these fixtures model.
+    const FLEET_ID_SPACE: u32 = 61;
+
     fn ship_row(instance_id: u32, strength_raw: u32, definition: &str) -> Vec<u8> {
         let flags = d29::FLAG_TASK_FORCE | d29::FLAG_DEFINITION | d29::FLAG_OWNER;
         let mut row = Vec::new();
-        for word in [instance_id, flags, 10, 3, strength_raw, 0, 0, 0, 1, 0] {
+        // The last word is `+36`: `task_force_id_space` since v2, non-zero
+        // because these rows set `FLAG_TASK_FORCE`.
+        for word in [
+            instance_id,
+            flags,
+            10,
+            3,
+            strength_raw,
+            0,
+            0,
+            0,
+            1,
+            FLEET_ID_SPACE,
+        ] {
             row.extend_from_slice(&word.to_le_bytes());
         }
         row.extend_from_slice(&(definition.len() as u16).to_le_bytes());
@@ -1094,7 +1122,8 @@ mod tests {
         out.extend_from_slice(&1u32.to_le_bytes()); // observed_task_force_rows
         out.extend_from_slice(&deleted_rows.to_le_bytes());
         out.extend_from_slice(&d29::FIXED_SCALE_RAW.to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes()); // reserved0
+        // `+36` is the payload version since v2, in place of v1's `reserved0`.
+        out.extend_from_slice(&d29::PAYLOAD_VERSION.to_le_bytes());
         for row in rows {
             out.extend_from_slice(row);
         }
@@ -1660,10 +1689,12 @@ mod tests {
         let mut unknown_flag = ship_row(1, 1, "destroyer");
         unknown_flag[4..8].copy_from_slice(&(1u32 << 20).to_le_bytes());
         invalid.push(d29_payload(0, &[unknown_flag], 0));
-        // a nonzero row reserved word (`:14533`)
-        let mut reserved = ship_row(1, 1, "destroyer");
-        reserved[36..40].copy_from_slice(&1u32.to_le_bytes());
-        invalid.push(d29_payload(0, &[reserved], 0));
+        // A gated task-force reference with no registry (`+36` zero): half a
+        // reference, and unresolvable against d28's two-registry task-force
+        // rows.
+        let mut spaceless = ship_row(1, 1, "destroyer");
+        spaceless[36..40].copy_from_slice(&0u32.to_le_bytes());
+        invalid.push(d29_payload(0, &[spaceless], 0));
         // the definition flag with an empty string (`:14539`)
         invalid.push(d29_payload(0, &[ship_row(1, 1, "")], 0));
         // a definition string without the flag (`:14542`)
@@ -1907,9 +1938,24 @@ mod tests {
                 "an excluded row carrying unknown flag bit {bit} must refuse"
             );
         }
-        for reserved in [1u32, 0x8000_0000, u32::MAX] {
+        // A task-force reference that carries only half its identity, in both
+        // shapes: the flag set with no registry at `+36`, and a registry at
+        // `+36` with the flag clear. Neither can resolve against d28's
+        // two-registry task-force rows.
+        const LIVE_SHIP_FLAGS: u32 =
+            d29::FLAG_TASK_FORCE | d29::FLAG_DEFINITION | d29::FLAG_OWNER;
+        for (flags, space) in [
+            (LIVE_SHIP_FLAGS, 0u32),
+            (LIVE_SHIP_FLAGS & !d29::FLAG_TASK_FORCE, FLEET_ID_SPACE),
+        ] {
             let mut row = ship_row(1, 100_000, "destroyer");
-            row[36..40].copy_from_slice(&reserved.to_le_bytes());
+            row[4..8].copy_from_slice(&flags.to_le_bytes());
+            // The id has to go with the flag, or the refusal under test is the
+            // pre-existing "task_force_id without flag" one instead.
+            if flags & d29::FLAG_TASK_FORCE == 0 {
+                row[8..12].copy_from_slice(&0u32.to_le_bytes());
+            }
+            row[36..40].copy_from_slice(&space.to_le_bytes());
             let mut s = Vec::new();
             s.extend(record(
                 1,
@@ -1929,7 +1975,7 @@ mod tests {
             s.extend(frame_end(4, 101));
             assert!(
                 scan_stream(&s).is_err(),
-                "an excluded row whose reserved word is {reserved:#x} must refuse"
+                "an excluded row carrying half a task-force reference (flags {flags:#x}, id space {space}) must refuse"
             );
         }
 

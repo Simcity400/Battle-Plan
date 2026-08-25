@@ -1,8 +1,8 @@
 //! d50 `naval_combat_members_live` — the ships and convoys inside each naval combat.
 //!
-//! Derived from `world_fold.rs:27952`-`:28042`
+//! Derived from `world_fold.rs:28198`-`:28288`
 //! (`fold_naval_combat_members`), the D49 fold it depends on
-// @world-fold-authority domain=50 functions=fold_naval_combat_members lines=27952-28042 sha256=4b0a3cce4ee4862f1519c4693203ca513e134edc70b423cc29c4bad6121f602b closure=cdc19031b33942ed3ee07e36ade62878a7591efe136a01d0ef6dba18042fddcd
+// @world-fold-authority domain=50 functions=fold_naval_combat_members lines=28198-28288 sha256=4b0a3cce4ee4862f1519c4693203ca513e134edc70b423cc29c4bad6121f602b closure=cdc19031b33942ed3ee07e36ade62878a7591efe136a01d0ef6dba18042fddcd
 //! (`:20040`-`:20128`, `fold_naval_combat_lifecycle`), the accumulator's JSON
 //! projection (`:8839`-`:8887`), the lane codec that defines the payload grammar
 //! (`extractor/native/lanes/naval_combat_live/src/domain49_50_naval_combat_live.rs`,
@@ -23,7 +23,7 @@
 //!
 //! | offset | width | field | check |
 //! |---|---|---|---|
-//! | `+0`  | u16 | `schema_version` | must be `2` (lane `:1801`) |
+//! | `+0`  | u16 | `schema_version` | must be `3` (lane `:1801`) |
 //! | `+2`  | u16 | `row_len`        | must be `88` (lane `:1806`) |
 //! | `+4`  | u64 | `elapsed_wall_ms` | transport, unchecked |
 //! | `+12` | u32 | `status_flags`   | — |
@@ -48,7 +48,7 @@
 //! | `+44` | u32 | `battle_slot_index_raw`     | raw | none (key; `<= 4096`, lane `:2015`) |
 //! | `+48` | u32 | `state_bitmask`             | enum | `1<<4` |
 //! | `+52` | i32 | `engagement_weight_raw`     | **raw, see below** | `1<<5` |
-//! | `+56` | u32 | `reserved`                  | —   | must be `0` (lane `:1991`) |
+//! | `+56` | u32 | `task_force_id_space`       | raw | `1<<8` (v3; was a must-be-zero reserved in v2) |
 //! | `+60` | u32 | `task_force_id`             | raw | `1<<8` |
 //! | `+64` | u32 | `fleet_id`                  | raw | `1<<9` |
 //! | `+68` | u32 | `strength_raw`              | /100000 | `1<<10` |
@@ -135,12 +135,14 @@
 //! pair or the frame is torn. So:
 //!
 //! * a convoy row can carry no `ship_instance_id`, no CShip join and none of the
-//!   six join-derived fields, and the lane *enforces* that (`:2046`-`:2056`,
+//!   seven join-derived fields (six flags: since v3 `task_force_id` and
+//!   `task_force_id_space` share `TASK_FORCE_PRESENT`, because half a reference
+//!   is not one), and the lane *enforces* that (`:2046`-`:2056`,
 //!   `:2098`-`:2107`). The concepts do not apply → **absent**.
 //! * a non-convoy row always carries `ship_instance_id` — the lane rejects one
 //!   that does not (`:2058`-`:2062`) — so that field is never empty on a ship.
 //!
-//! **`CSHIP_JOIN_VALIDATED` (`1<<6`) is the sibling status word for the six
+//! **`CSHIP_JOIN_VALIDATED` (`1<<6`) is the sibling status word for the seven
 //! join-derived fields**, exactly the d28 `leader_status` pattern: the fields have
 //! their own presence bits, but what a clear bit *means* is decided by the join.
 //! `join = member.ship_instance_id.and_then(|ship| joins.get(&ship))` and every
@@ -158,7 +160,7 @@
 //! second unknown path: the join succeeded but the value failed its range filter
 //! (`attach_log.rs:40226`-`:40233`), which is a read rejection, unknown again.
 //!
-//! So the six join-derived fields are `optional` (convoy) **and**
+//! So the seven join-derived fields are `optional` (convoy) **and**
 //! `unknown_capable` (join not answered), and never null. The lane's own
 //! validation makes the two cases disjoint on every row it accepts, so the mapper
 //! never has to guess which one a clear bit is.
@@ -168,7 +170,7 @@
 //! not Null."* `ship_instance_id` is the one field the join bit does **not**
 //! govern: the lane requires it present on every non-convoy row and forbids it on
 //! every convoy row (`:2046`-`:2062`), so it is value-or-absent and can never be
-//! unknown. The join bit governs the six fields listed above. Measured on
+//! unknown. The join bit governs the seven fields listed above. Measured on
 //! `runs/batch3/deepwar_a`: 15,094 member rows, `SHIP_INSTANCE_PRESENT` set on
 //! exactly the 14,786 non-convoy rows and clear on exactly the 308 convoy rows,
 //! and the join bit clear on 14 non-convoy rows — all 14 with
@@ -279,6 +281,9 @@ pub mod field {
     pub const ORGANISATION: u32 = 17;
     pub const EXPERIENCE: u32 = 18;
     pub const SUNK_CONVOYS: u32 = 19;
+    /// The clausewitz registry that minted [`TASK_FORCE_ID`] (v3). Appended,
+    /// never reusing an id.
+    pub const TASK_FORCE_ID_SPACE: u32 = 20;
 }
 
 // --- Payload grammar, from the lane codec ------------------------------------
@@ -290,7 +295,14 @@ pub const ROW_LEN: usize = 88;
 /// `LIFECYCLE_ROW_LEN`, lane `:26` — the D49 parent mirror's row length.
 pub const LIFECYCLE_ROW_LEN: usize = 72;
 /// `SCHEMA_VERSION`, lane `:24`.
-pub const SCHEMA_VERSION: u16 = 2;
+///
+/// **v3 carries the task-force id space** (owner ruling 2026-08-27). The engine
+/// mints task forces from two clausewitz registries -- the fleet-id minter
+/// (type 61) and the `CShip` registry (type 51) -- and their numbers collide, so
+/// a member's `task_force_id` alone stopped resolving once d28 began publishing
+/// both. v3 spends the member row's `+56` reserved word, which v2 required to be
+/// zero, so the row length is unchanged and a v2 payload is refused by version.
+pub const SCHEMA_VERSION: u16 = 3;
 /// `decode_payload_header`, lane `:1817`.
 pub const MAX_ROW_COUNT: u32 = 100_000;
 
@@ -326,8 +338,11 @@ pub const KNOWN_FLAGS: u32 = ROW_DELETED
     | EXPERIENCE_PRESENT
     | SUNK_CONVOYS_PRESENT;
 
-/// The six fields the CShip join produces, lane `:2072`-`:2078`. A row without a
-/// live join may carry none of them.
+/// The six GATES the CShip join produces, lane `:2072`-`:2078`, covering seven
+/// fields: since v3 `TASK_FORCE_PRESENT` governs `task_force_id` and
+/// `task_force_id_space` together, because a number with no registry cannot name
+/// one of two task forces that share it. A row without a live join may carry
+/// none of them.
 pub const CSHIP_DERIVED_FLAGS: u32 = TASK_FORCE_PRESENT
     | FLEET_PRESENT
     | STRENGTH_PRESENT
@@ -469,10 +484,19 @@ pub fn schema() -> Schema {
                     .unknown_capable(),
                 // An i32 cell (lane `:1777`), raw and unscaled: no fold divides it.
                 Field::new(f::ENGAGEMENT_WEIGHT_RAW, Kind::Signed).unknown_capable(),
-                // The six CShip-join-derived fields: `optional` on a convoy (the
-                // concept does not apply), `unknown_capable` when the join was not
-                // answered. Never null.
+                // The SEVEN CShip-join-derived fields -- six, plus
+                // `task_force_id_space` since v3, which shares the task-force
+                // id's gate because half a reference is not one: `optional` on a
+                // convoy (the concept does not apply), `unknown_capable` when
+                // the join was not answered. Never null.
                 Field::new(f::TASK_FORCE_ID, Kind::Unsigned)
+                    .optional()
+                    .unknown_capable(),
+                // The other half of that reference (v3): which clausewitz
+                // registry minted the number. Two do, and their numbers
+                // collide, so the number alone names two different task forces.
+                // Same gate as the id, hence the same capabilities.
+                Field::new(f::TASK_FORCE_ID_SPACE, Kind::Unsigned)
                     .optional()
                     .unknown_capable(),
                 Field::new(f::FLEET_ID, Kind::Unsigned)
@@ -548,6 +572,10 @@ pub struct MemberRow {
     pub state_bitmask: Option<u32>,
     pub engagement_weight_raw: Option<i32>,
     pub task_force_id: Option<u32>,
+    /// The clausewitz registry that minted `task_force_id` (v3), and the other
+    /// half of the reference into d28's task-force rows. `Some` exactly when
+    /// `task_force_id` is: one flag gates both words.
+    pub task_force_id_space: Option<u32>,
     pub fleet_id: Option<u32>,
     pub strength_raw: Option<u32>,
     pub organisation_raw: Option<u32>,
@@ -754,7 +782,10 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<MemberRow, String> {
     let battle_slot_index_raw = u32_at(row, 44);
     let state_bitmask = u32_at(row, 48);
     let engagement_weight_raw = i32_at(row, 52);
-    let reserved = u32_at(row, 56);
+    // `+56` was a must-be-zero reserved word in v2 and is the id space of
+    // `task_force_id` in v3. It rides the same presence flag as the id, in both
+    // directions.
+    let task_force_id_space = u32_at(row, 56);
     let task_force_id = u32_at(row, 60);
     let fleet_id = u32_at(row, 64);
     let strength_raw = u32_at(row, 68);
@@ -779,8 +810,12 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<MemberRow, String> {
         return Err(format!("invalid side {side_wire_id}"));
     }
     // lane `:1990`-`:2001`.
-    if reserved != 0 {
-        return Err("reserved field is nonzero".into());
+    if flags & TASK_FORCE_PRESENT == 0 {
+        if task_force_id_space != 0 {
+            return Err("task_force_id_space present without flag".into());
+        }
+    } else if task_force_id_space == 0 {
+        return Err("task_force reference carries no id space".into());
     }
     if reserved_tail != 0 {
         return Err("trailing reserved field is nonzero".into());
@@ -952,6 +987,7 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<MemberRow, String> {
         engagement_weight_raw: (flags & ENGAGEMENT_WEIGHT_PRESENT != 0)
             .then_some(engagement_weight_raw),
         task_force_id: task_force,
+        task_force_id_space: (flags & TASK_FORCE_PRESENT != 0).then_some(task_force_id_space),
         fleet_id: fleet,
         strength_raw: strength,
         organisation_raw: organisation,
@@ -1034,8 +1070,8 @@ fn record_from_parsed(
     collection: &Collection,
     parsed: &MemberRow,
 ) -> core::result::Result<Record, String> {
-    // A convoy member has no CShip: the six join-derived concepts do not apply to
-    // it at all, which is record-state contract's `absent`. A ship whose join was not answered has
+    // A convoy member has no CShip: the seven join-derived concepts do not apply
+    // to it at all, which is record-state contract's `absent`. A ship whose join was not answered has
     // them applicable and uncaptured, which is `unknown`. See the module docs.
     let joined = |value: Option<u64>| -> Value {
         if parsed.is_convoy {
@@ -1094,6 +1130,7 @@ fn record_from_parsed(
                 None => Value::Unknown,
             },
             field::TASK_FORCE_ID => joined(parsed.task_force_id.map(u64::from)),
+            field::TASK_FORCE_ID_SPACE => joined(parsed.task_force_id_space.map(u64::from)),
             field::FLEET_ID => joined(parsed.fleet_id.map(u64::from)),
             field::STRENGTH => joined_fixed(parsed.strength_raw),
             field::ORGANISATION => joined_fixed(parsed.organisation_raw),
