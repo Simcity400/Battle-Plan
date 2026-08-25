@@ -38,7 +38,7 @@ use std::sync::atomic::Ordering;
 /// column zero, so that is the terminator; ending at "the next `fn`" instead
 /// would swallow the following item's doc comment, and these guards scan for
 /// identifiers those comments discuss.
-fn item_body<'a>(source: &'a str, signature: &str) -> &'a str {
+pub(super) fn item_body<'a>(source: &'a str, signature: &str) -> &'a str {
     let start = source
         .find(signature)
         .unwrap_or_else(|| panic!("{signature} must exist"));
@@ -52,7 +52,7 @@ fn item_body<'a>(source: &'a str, signature: &str) -> &'a str {
 /// `body` with every whole-line `//` comment and every blank line removed, so a
 /// scan for a token cannot be satisfied -- or defeated -- by prose. The
 /// declarations under test discuss the very identifiers they must not USE.
-fn code_only(body: &str) -> String {
+pub(super) fn code_only(body: &str) -> String {
     body.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with("//"))
