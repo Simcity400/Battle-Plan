@@ -1723,7 +1723,7 @@ where
                 failure_records = failure_records
                     .checked_add(1)
                     .ok_or_else(|| ProductError::new("d81 failure count overflows"))?;
-            } else if payload_version == d81::PAYLOAD_VERSION_V3 && hub_simulation_complete {
+            } else if payload_version == d81::PAYLOAD_VERSION_V4 && hub_simulation_complete {
                 // DEFERRED to the frame's actual close: an hour whose d18
                 // identity was lost closes as a named gap and NEVER publishes
                 // this snapshot, so counting it here would report an

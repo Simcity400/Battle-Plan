@@ -14,7 +14,7 @@
 //! provinces, ordered directed neighbors, hub simulation rows), in 48-hour blocks.
 //! Every emitted baseline or delta is decoded against the reader's own prior
 //! and compared with the source fold at stored precision. No output is created
-//! until the complete stream and the clean, nonempty v3 evidence gate have
+//! until the complete stream and the clean, nonempty v4 evidence gate have
 //! passed. UI-era v2 hub frames are never accepted as production evidence.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -71,7 +71,7 @@ struct StreamScan {
 #[derive(Clone, Debug, Default)]
 struct Coverage {
     v1_failure_carrier: bool,
-    v3_complete_empty_simulation: bool,
+    v4_complete_empty_simulation: bool,
     active_terminal: [bool; 2],
     anchor_variant: [bool; 2],
     rail_level: [bool; 5],
@@ -855,7 +855,7 @@ fn scan_stream(
     let mut last_d81_coverage_end = None;
     let mut last_d81_hour = None;
     let mut last_usable_hour = None;
-    let mut saw_clean_v3 = false;
+    let mut saw_clean_v4 = false;
     let mut coverage = Coverage::default();
 
     let mut pos = 0usize;
@@ -1109,13 +1109,13 @@ fn scan_stream(
                         .and_then(|hour: i32| hour.checked_add(1))
                         == Some(header.game_hour_raw);
                     last_usable_hour = Some(header.game_hour_raw);
-                    saw_clean_v3 |= snapshot.header.payload_version == d81::PAYLOAD_VERSION_V3
+                    saw_clean_v4 |= snapshot.header.payload_version == d81::PAYLOAD_VERSION_V4
                         && snapshot.header.hub_simulation_complete
                         && !snapshot.provinces.is_empty()
                         && !snapshot.directed_neighbors.is_empty()
                         && !snapshot.hub_simulation_rows.is_empty();
-                    coverage.v3_complete_empty_simulation |= snapshot.header.payload_version
-                        == d81::PAYLOAD_VERSION_V3
+                    coverage.v4_complete_empty_simulation |= snapshot.header.payload_version
+                        == d81::PAYLOAD_VERSION_V4
                         && snapshot.header.hub_simulation_complete
                         && snapshot.hub_simulation_rows.is_empty();
                     for province in &compact_decoded.provinces {
@@ -1157,9 +1157,9 @@ fn scan_stream(
     if hours.is_empty() {
         return Err("stream has no usable d81 observations".into());
     }
-    if !saw_clean_v3 {
+    if !saw_clean_v4 {
         return Err(
-            "capture lacks a clean v3 d81 snapshot with nonempty provinces, directed \
+            "capture lacks a clean v4 d81 snapshot with nonempty provinces, directed \
              neighbors, and nonempty complete simulation rows"
                 .into(),
         );
@@ -1550,8 +1550,8 @@ fn run() -> Result<(), String> {
         "failure-class v1 structural carrier (needs a fully valid known-failure v1 payload)",
     );
     missing(
-        !scan.coverage.v3_complete_empty_simulation,
-        "complete-empty v3 simulation snapshot (needs a measured zero-row simulation state)",
+        !scan.coverage.v4_complete_empty_simulation,
+        "complete-empty v4 simulation snapshot (needs a measured zero-row simulation state)",
     );
     for value in 0..=1 {
         missing(
@@ -1662,8 +1662,12 @@ fn run() -> Result<(), String> {
         }
         write_bytes(&stage.join("pov_measurement.tsv"), pov_report.as_bytes())?;
         let pov_report_sha256 = lower_hex(&Sha256::digest(pov_report.as_bytes()));
+        // THE REPORT'S OWN SCHEMA MOVED TO v4 BECAUSE ONE OF ITS KEYS DID:
+        // `coverage_v3_complete_empty_simulation` named the payload version it
+        // gates on, and that version is now v4. Two unrelated things landing on
+        // v4 at once is a coincidence of counting, not a shared version.
         let report = format!(
-            "schema=battle-plan.d81_real_measurement.v3\n\
+            "schema=battle-plan.d81_real_measurement.v4\n\
 session_manifest_sha256={}\nstream_sha256={}\n\
 content_manifest_sha256={}\ndefinition_csv_sha256={}\n\
 definition_resolution_sha256={}\n\
@@ -1680,7 +1684,7 @@ delta_changed_rows_per_transition={:.6}\ndelta_tombstones_per_transition={:.6}\n
 ship_raw_bytes={}\nwire_raw_bytes={}\nship_zstd3_bytes={}\nwire_zstd3_bytes={}\n\
 ship_48h_zstd3_bytes={}\nwire_48h_zstd3_bytes={}\n\
 per_pov_count={}\nper_pov_measurement_sha256={}\n\
-coverage_v1_failure_carrier={}\ncoverage_v3_complete_empty_simulation={}\n\
+coverage_v1_failure_carrier={}\ncoverage_v4_complete_empty_simulation={}\n\
 coverage_active_terminal={:?}\ncoverage_anchor_variant={:?}\n\
 coverage_rail_level={:?}\ncoverage_hub_subtype={:?}\n\
 coverage_foreign_route={:?}\ncoverage_fallback_record={:?}\n\
@@ -1726,7 +1730,7 @@ unexercised={}\n",
             pov_measurements.len(),
             pov_report_sha256,
             scan.coverage.v1_failure_carrier,
-            scan.coverage.v3_complete_empty_simulation,
+            scan.coverage.v4_complete_empty_simulation,
             scan.coverage.active_terminal,
             scan.coverage.anchor_variant,
             scan.coverage.rail_level,
@@ -2031,7 +2035,17 @@ mod tests {
         payload[8..10].copy_from_slice(&(compact_rail::ROW_LEN as u16).to_le_bytes());
         payload[32..36]
             .copy_from_slice(&compact_rail::PAYLOAD_FLAG_HUB_FRAMES_COMPLETE.to_le_bytes());
-        compact_rail::decode_payload(&payload).unwrap();
+        // THE DECODER REFUSES THIS, and that is the point of the fixture: it is
+        // a historical v2 payload, and since the v4 change every pre-v4 payload
+        // is refused by name. This used to `unwrap()` a successful decode to
+        // prove the fixture was really a v2 payload; it now proves the same
+        // thing by the refusal naming version 2.
+        let error = compact_rail::decode_payload(&payload)
+            .expect_err("a pre-v4 payload is refused by the decoder");
+        assert!(
+            error.contains("version 2 is refused") && error.contains("only v4"),
+            "{error}"
+        );
         payload
     }
 
@@ -2083,7 +2097,7 @@ mod tests {
     }
 
     #[test]
-    fn clean_v3_stream_certifies_and_reader_reconstructs_source() {
+    fn clean_v4_stream_certifies_and_reader_reconstructs_source() {
         let stream = [
             perf(1, 10, 0),
             data(2, 10, &payload(0, 1.0)),
@@ -2318,7 +2332,7 @@ mod tests {
     }
 
     #[test]
-    fn structurally_valid_but_empty_v3_cannot_satisfy_clean_capture_gate() {
+    fn structurally_valid_but_empty_v4_cannot_satisfy_clean_capture_gate() {
         let empty = encode_payload_with_hub_simulation(&[], &[], 0, 0, 0, 0).unwrap();
         assert!(scan_stream(
             &one_hour(&empty),
@@ -2327,7 +2341,7 @@ mod tests {
             "test"
         )
         .unwrap_err()
-        .contains("lacks a clean v3"));
+        .contains("lacks a clean v4"));
     }
 
     fn authority_fixture(

@@ -4,7 +4,7 @@
 //! Derived from `world_fold.rs:15700`-`:15727` (`fold_rail_replay_state`).
 // @world-fold-authority domain=81 functions=fold_rail_replay_state lines=15700-15727 sha256=8a46cc4f9a135df3167a6045aa8c0a6de80f62d8132e72cebb8fc73223e9a004 closure=cb4f5a61a41504d33a1af1e0c69136733252870627650a75b3a4015d0d0802ca
 //!
-//! Public schema v3 deliberately carries no GUI object, selected-country, or
+//! Public schema v4 deliberately carries no GUI object, selected-country, or
 //! effective-country state.  The first three collections retain the exact
 //! engine-selected anchors, ordered directed adjacency, and `active_terminal`
 //! byte law.  [`HUB_SIMULATION`] carries only authoritative simulation rows;
@@ -62,6 +62,7 @@ pub const PAYLOAD_MAGIC: u32 = compact::PAYLOAD_MAGIC;
 pub const PAYLOAD_VERSION_V1: u16 = compact::PAYLOAD_VERSION_V1;
 pub const PAYLOAD_VERSION_V2: u16 = compact::PAYLOAD_VERSION_V2;
 pub const PAYLOAD_VERSION_V3: u16 = compact::PAYLOAD_VERSION_V3;
+pub const PAYLOAD_VERSION_V4: u16 = compact::PAYLOAD_VERSION_V4;
 pub const HEADER_LEN: usize = compact::HEADER_LEN;
 pub const ROW_LEN: usize = compact::ROW_LEN;
 pub const ROW_KIND_ANCHOR: u8 = compact::ROW_KIND_ANCHOR;
@@ -73,7 +74,7 @@ pub const ANCHOR_VARIANT_CARDINALITY: u32 = 2;
 pub const EDGE_LEVEL_CARDINALITY: u32 = MAX_RAIL_LEVEL;
 
 const NONCANONICAL_SCHEMA: &str =
-    "rail replay schema does not match the canonical d81 v3 declaration";
+    "rail replay schema does not match the canonical d81 v4 declaration";
 
 pub fn schema() -> Schema {
     use field as f;
@@ -160,7 +161,7 @@ pub enum FoldOutcome {
 }
 
 /// Parse the complete compact carrier. The returned byte region is retained
-/// for the existing wire-product audit seam; v3 mapping uses the typed compact
+/// for the existing wire-product audit seam; v4 mapping uses the typed compact
 /// decoder and never reparses UI-era row layouts.
 pub fn split_payload(payload: &[u8]) -> Result<(PayloadHeader, &[u8]), String> {
     let decoded = compact::decode_payload(payload)
@@ -198,14 +199,14 @@ pub fn fold_payload(
             status_flags: decoded.status_flags,
         });
     }
-    if decoded.payload_version != PAYLOAD_VERSION_V3 {
+    if decoded.payload_version != PAYLOAD_VERSION_V4 {
         return Err(format!(
-            "rail replay payload v{} is historical UI-era/non-production; d81 public schema requires v3",
+            "rail replay payload v{} is historical UI-era/non-production; d81 public schema requires v4",
             decoded.payload_version
         ));
     }
     if !decoded.hub_simulation_complete {
-        return Err("rail replay v3 does not badge a complete simulation snapshot".into());
+        return Err("rail replay v4 does not badge a complete simulation snapshot".into());
     }
 
     validate_symbol_injectivity(&decoded, symbols)?;
@@ -271,7 +272,7 @@ fn map_simulation_row(
         || !matches!((row.subtype, row.route_class), (0, 2) | (1, 1))
     {
         return Err(
-            "rail replay v3 simulation row has invalid owner or subtype/route-class join".into(),
+            "rail replay v4 simulation row has invalid owner or subtype/route-class join".into(),
         );
     }
     Ok((
@@ -483,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v3_is_canonical_and_has_no_ui_fields() {
+    fn schema_v4_is_canonical_and_has_no_ui_fields() {
         let schema = schema();
         schema.validate(TickGrid::HOURLY.log2()).unwrap();
         assert_eq!(schema.collections.len(), COLLECTION_COUNT);

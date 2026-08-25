@@ -1573,8 +1573,21 @@ impl PayloadSpanDeltaBaselines {
 pub struct PayloadSpanDeltaProducer {
     committed: PayloadSpanDeltaBaselines,
     staged: PayloadSpanDeltaBaselines,
-    hours_since_keyframe: Vec<(u16, u32)>,
-    staged_hours_since_keyframe: Vec<(u16, u32)>,
+    /// The GAME HOUR INDEX of each domain's last keyframe.
+    ///
+    /// This used to be a COUNT OF WRAPPED RECORDS called `hours_since_keyframe`
+    /// -- it advanced by one per `wrap`, whatever the clock did. With no gaps
+    /// the two agree; with gaps they do not, and `KEYFRAME_CADENCE_HOURS` is
+    /// stated in HOURS by `domain_repeat_gate.rs`, whose comment reads "the
+    /// cadence is ELAPSED GAME HOURS since this domain's last full record".
+    ///
+    /// Lane RY4 measured the divergence on `captures/rc_vanilla4`: 633 d81
+    /// records span 813 hours, so 181 hours carry no d81 record, and its
+    /// keyframes sat 65 records apart but 75 to 95 GAME HOURS apart. A reader
+    /// resyncing d81 waited up to 95 hours where the law promises 64. That
+    /// affected every delta-enabled domain, because this counter is shared.
+    last_keyframe_hour_index: Vec<(u16, i64)>,
+    staged_last_keyframe_hour_index: Vec<(u16, Option<i64>)>,
 }
 
 impl PayloadSpanDeltaProducer {
@@ -1582,22 +1595,30 @@ impl PayloadSpanDeltaProducer {
         Self::default()
     }
 
-    fn hours_since_keyframe(&self, domain_id: u16) -> u32 {
-        self.hours_since_keyframe
+    fn last_keyframe_hour_index(&self, domain_id: u16) -> Option<i64> {
+        self.last_keyframe_hour_index
             .iter()
             .find(|(id, _)| *id == domain_id)
-            .map(|(_, hours)| *hours)
-            .unwrap_or(0)
+            .map(|(_, hour)| *hour)
     }
 
-    fn set_hours_since_keyframe(&mut self, domain_id: u16, hours: u32) {
+    fn set_last_keyframe_hour_index(&mut self, domain_id: u16, hour: Option<i64>) {
         match self
-            .hours_since_keyframe
-            .iter_mut()
-            .find(|(id, _)| *id == domain_id)
+            .last_keyframe_hour_index
+            .iter()
+            .position(|(id, _)| *id == domain_id)
         {
-            Some(slot) => slot.1 = hours,
-            None => self.hours_since_keyframe.push((domain_id, hours)),
+            Some(position) => match hour {
+                Some(hour) => self.last_keyframe_hour_index[position].1 = hour,
+                None => {
+                    self.last_keyframe_hour_index.remove(position);
+                }
+            },
+            None => {
+                if let Some(hour) = hour {
+                    self.last_keyframe_hour_index.push((domain_id, hour));
+                }
+            }
         }
     }
 
@@ -1612,9 +1633,34 @@ impl PayloadSpanDeltaProducer {
 
     /// True when this hour must re-send the whole payload regardless of what
     /// changed.
-    pub fn keyframe_due(&self, domain_id: u16) -> bool {
-        self.current(domain_id).is_none()
-            || self.hours_since_keyframe(domain_id) >= KEYFRAME_CADENCE_HOURS
+    ///
+    /// THE CADENCE IS ELAPSED GAME HOURS, not wrapped records: the first record
+    /// at or after `KEYFRAME_CADENCE_HOURS` since this domain's last keyframe is
+    /// itself a keyframe. A stream with quiet gaps therefore still resyncs
+    /// within the cadence, which the record-counting predecessor did not --
+    /// lane RY4 measured d81's keyframes 75 to 95 game hours apart on
+    /// `captures/rc_vanilla4` against a stated 64.
+    ///
+    /// Three shapes force a keyframe outright, matching `domain_repeat_gate`'s
+    /// own rule that "a missing anchor, a force-full mark, or an hour index
+    /// that regresses (reload/rollback) all publish FULL":
+    ///
+    /// * no baseline to delta against;
+    /// * no last-keyframe hour recorded for this domain;
+    /// * an hour index this reader cannot place, or one that REGRESSES below
+    ///   the last keyframe's -- a reload or rollback, where "elapsed" has no
+    ///   meaning and a delta could silently describe the wrong hour.
+    pub fn keyframe_due(&self, domain_id: u16, game_hour_raw: i32) -> bool {
+        if self.current(domain_id).is_none() {
+            return true;
+        }
+        let Some(last) = self.last_keyframe_hour_index(domain_id) else {
+            return true;
+        };
+        let Some(current) = crate::calendar::hour_index_from_raw(game_hour_raw) else {
+            return true;
+        };
+        current < last || current.saturating_sub(last) >= i64::from(KEYFRAME_CADENCE_HOURS)
     }
 
     /// Wrap one payload, staging the baseline advance.
@@ -1629,7 +1675,7 @@ impl PayloadSpanDeltaProducer {
         payload: &[u8],
     ) -> Result<Vec<u8>, String> {
         let domain_id = identity.domain_id;
-        let body = if self.keyframe_due(domain_id) {
+        let body = if self.keyframe_due(domain_id, identity.game_hour_raw) {
             PayloadSpanDeltaBody::Keyframe
         } else {
             choose_wire_body(payload, self.current(domain_id))
@@ -1663,20 +1709,27 @@ impl PayloadSpanDeltaProducer {
             (_, None) => unreachable!("only a no-change body skips the new baseline"),
         };
         let wrapped = encode_payload_with_basis_digest(identity, payload, basis_sha256, &body)?;
+        // STAGE THE PREVIOUS VALUE ONCE PER FRAME, so a rollback restores what
+        // the fold's mirror actually holds. `None` is a real staged value here
+        // -- a domain that had never keyframed before this frame must roll back
+        // to having no last-keyframe hour, not to hour zero.
         if !self
-            .staged_hours_since_keyframe
+            .staged_last_keyframe_hour_index
             .iter()
             .any(|(id, _)| *id == domain_id)
         {
-            self.staged_hours_since_keyframe
-                .push((domain_id, self.hours_since_keyframe(domain_id)));
+            let previous = self.last_keyframe_hour_index(domain_id);
+            self.staged_last_keyframe_hour_index
+                .push((domain_id, previous));
         }
-        let advanced = if matches!(body, PayloadSpanDeltaBody::Keyframe) {
-            0
-        } else {
-            self.hours_since_keyframe(domain_id).saturating_add(1)
-        };
-        self.set_hours_since_keyframe(domain_id, advanced);
+        // Only a KEYFRAME moves the mark, and it moves to THIS record's hour.
+        // Deltas and no-change records leave it alone, so the next record's
+        // "elapsed since the last keyframe" is measured from the keyframe and
+        // not from whatever last happened to be emitted.
+        if matches!(body, PayloadSpanDeltaBody::Keyframe) {
+            let hour = crate::calendar::hour_index_from_raw(identity.game_hour_raw);
+            self.set_last_keyframe_hour_index(domain_id, hour);
+        }
         if let Some(baseline) = next_baseline {
             self.staged.set(domain_id, baseline);
         }
@@ -1692,7 +1745,7 @@ impl PayloadSpanDeltaProducer {
         for (domain_id, baseline) in self.staged.drain() {
             self.committed.set(domain_id, baseline);
         }
-        self.staged_hours_since_keyframe.clear();
+        self.staged_last_keyframe_hour_index.clear();
     }
 
     /// This domain's records became `DOMAIN_GAP`s: leave its baseline exactly
@@ -1700,12 +1753,12 @@ impl PayloadSpanDeltaProducer {
     pub fn roll_back(&mut self, domain_id: u16) {
         self.staged.clear(domain_id);
         if let Some(position) = self
-            .staged_hours_since_keyframe
+            .staged_last_keyframe_hour_index
             .iter()
             .position(|(id, _)| *id == domain_id)
         {
-            let (_, previous) = self.staged_hours_since_keyframe.remove(position);
-            self.set_hours_since_keyframe(domain_id, previous);
+            let (_, previous) = self.staged_last_keyframe_hour_index.remove(position);
+            self.set_last_keyframe_hour_index(domain_id, previous);
         }
     }
 
@@ -2605,6 +2658,182 @@ mod tests {
         assert!(
             recovered_at <= KEYFRAME_CADENCE_HOURS as u64 + 2,
             "recovered only at hour {recovered_at}"
+        );
+    }
+
+    /// The body kind a wrapped record declares, read back off the wire.
+    fn wrapped_body_kind(wrapped: &[u8]) -> u8 {
+        wrapped[VOLATILE_HEADER_LEN + 10]
+    }
+
+    #[test]
+    fn a_record_arriving_70_game_hours_after_the_keyframe_is_itself_a_keyframe() {
+        // kills: counting WRAPPED RECORDS instead of GAME HOURS. This is the
+        // defect lane RY4 measured on `captures/rc_vanilla4`, where 181 of 814
+        // hours carried no d81 record and its keyframes sat 75 to 95 game hours
+        // apart against a stated cadence of 64.
+        //
+        // The stream below emits five records -- hours 0, 1, 2, 3 and then a
+        // quiet gap to hour 70. A record-counting cadence sees FOUR records
+        // since the keyframe, far under 64, and emits a DELTA; a reader that
+        // lost hour 3 would still be refusing at hour 70 and beyond. Counting
+        // hours, 70 >= 64, so the first record after the gap is a KEYFRAME.
+        let mut producer = PayloadSpanDeltaProducer::new();
+        let mut basis = basis_of_len(4096, 9);
+        let base_hour = 60_830_824i32;
+
+        let mut kinds = Vec::new();
+        for (index, offset) in [0i32, 1, 2, 3, 70].into_iter().enumerate() {
+            basis[(index * 13) % 4000] ^= 0x5b;
+            let payload = payload_of(basis.clone(), index as u64);
+            let wrapped = producer
+                .wrap(identity(base_hour + offset, index as u64), &payload)
+                .unwrap();
+            producer.commit();
+            kinds.push((offset, wrapped_body_kind(&wrapped)));
+        }
+
+        assert_eq!(kinds[0].1, BODY_KIND_KEYFRAME, "the cold hour keyframes");
+        for (offset, kind) in &kinds[1..4] {
+            assert_ne!(
+                *kind, BODY_KIND_KEYFRAME,
+                "hour +{offset} is inside the cadence and must not keyframe"
+            );
+        }
+        assert_eq!(
+            kinds[4].1, BODY_KIND_KEYFRAME,
+            "the first record 70 game hours after the keyframe MUST keyframe"
+        );
+
+        // And the half that makes this a kills test rather than a restatement:
+        // only FIVE records were wrapped, so no record-counting rule with a
+        // cadence of 64 could have produced that keyframe.
+        assert!(
+            (kinds.len() as u32) < KEYFRAME_CADENCE_HOURS,
+            "the record count must stay under the cadence, or the test proves nothing"
+        );
+    }
+
+    #[test]
+    fn the_first_record_at_or_after_the_cadence_keyframes_and_the_one_before_does_not() {
+        // kills: an off-by-one that resyncs a cadence late, or a `>` where the
+        // law says "at or after". The boundary is stated as the live predicate:
+        // the FIRST record at or after 64 game hours since the last keyframe is
+        // itself a keyframe.
+        for (offset, expect_keyframe) in [
+            (KEYFRAME_CADENCE_HOURS as i32 - 1, false),
+            (KEYFRAME_CADENCE_HOURS as i32, true),
+        ] {
+            let mut producer = PayloadSpanDeltaProducer::new();
+            let mut basis = basis_of_len(4096, 4);
+            let base_hour = 60_830_824i32;
+            let first = payload_of(basis.clone(), 0);
+            let wrapped = producer.wrap(identity(base_hour, 0), &first).unwrap();
+            producer.commit();
+            assert_eq!(wrapped_body_kind(&wrapped), BODY_KIND_KEYFRAME);
+
+            basis[17] ^= 0x77;
+            let later = payload_of(basis, 1);
+            let wrapped = producer
+                .wrap(identity(base_hour + offset, 1), &later)
+                .unwrap();
+            producer.commit();
+            assert_eq!(
+                wrapped_body_kind(&wrapped) == BODY_KIND_KEYFRAME,
+                expect_keyframe,
+                "a record {offset} game hours after the keyframe"
+            );
+        }
+    }
+
+    #[test]
+    fn an_hour_index_that_regresses_forces_a_keyframe() {
+        // kills: treating a reload/rollback as elapsed time. `domain_repeat_gate`
+        // publishes FULL when the hour index regresses, because "elapsed" has no
+        // meaning across a reload and a delta could silently describe the wrong
+        // hour. The producer must agree with the gate.
+        let mut producer = PayloadSpanDeltaProducer::new();
+        let mut basis = basis_of_len(4096, 5);
+        let base_hour = 60_830_824i32;
+        let first = payload_of(basis.clone(), 0);
+        let wrapped = producer.wrap(identity(base_hour + 100, 0), &first).unwrap();
+        producer.commit();
+        assert_eq!(wrapped_body_kind(&wrapped), BODY_KIND_KEYFRAME);
+
+        basis[23] ^= 0x11;
+        let rolled_back = payload_of(basis, 1);
+        let wrapped = producer
+            .wrap(identity(base_hour + 40, 1), &rolled_back)
+            .unwrap();
+        producer.commit();
+        assert_eq!(
+            wrapped_body_kind(&wrapped),
+            BODY_KIND_KEYFRAME,
+            "an hour BEFORE the last keyframe must keyframe, not delta"
+        );
+    }
+
+    #[test]
+    fn a_rolled_back_frame_restores_the_last_keyframe_hour() {
+        // kills: deleting the `set_last_keyframe_hour_index(domain_id, previous)`
+        // restoration in `roll_back`. If the mark stayed advanced, the cadence
+        // would be measured from a keyframe the fold never received, and the
+        // resync it promises would arrive up to a full cadence late.
+        //
+        // THE ROLLED-BACK KEYFRAME IS A LATER, CADENCE-FORCED ONE, and it has to
+        // be. Rolling back the FIRST keyframe also drops the only baseline, and
+        // then the next record keyframes on `current(domain_id).is_none()` alone
+        // -- which is true whether or not the mark was restored, so that shape
+        // proved nothing (Codex round 1, finding 3). Here frame 1's baseline is
+        // COMMITTED and survives frame 2's rollback, which the second case
+        // asserts directly by getting a delta out of it. So the only thing that
+        // can force the keyframe in the first case is the mark being back at H.
+        let basis = basis_of_len(4096, 8);
+        let base_hour = 60_830_824i32;
+
+        // Frames 1 and 2 are identical in both cases: a committed keyframe at
+        // hour H, then the cadence keyframe at H+64 rolled back. Only frame 3's
+        // hour differs.
+        let through_the_rollback = |third_hour: i32| -> u8 {
+            let mut producer = PayloadSpanDeltaProducer::new();
+            let first = payload_of(basis.clone(), 0);
+            let wrapped = producer.wrap(identity(base_hour, 0), &first).unwrap();
+            assert_eq!(wrapped_body_kind(&wrapped), BODY_KIND_KEYFRAME);
+            producer.commit();
+
+            let mut moved = basis.clone();
+            moved[17] ^= 0x5a;
+            let second = payload_of(moved, 1);
+            let wrapped = producer.wrap(identity(base_hour + 64, 1), &second).unwrap();
+            assert_eq!(
+                wrapped_body_kind(&wrapped),
+                BODY_KIND_KEYFRAME,
+                "H+64 is the cadence, so this frame is the keyframe that gets \
+                 rolled back"
+            );
+            producer.roll_back(D53);
+            producer.commit();
+
+            let mut later = basis.clone();
+            later[29] ^= 0x33;
+            let third = payload_of(later, 2);
+            let wrapped = producer.wrap(identity(third_hour, 2), &third).unwrap();
+            producer.commit();
+            wrapped_body_kind(&wrapped)
+        };
+
+        assert_eq!(
+            through_the_rollback(base_hour + 65),
+            BODY_KIND_KEYFRAME,
+            "65 hours past the mark the fold actually holds. With the mark left \
+             at H+64 this is one hour past and deltas instead"
+        );
+        assert_eq!(
+            through_the_rollback(base_hour + 2),
+            BODY_KIND_DELTA,
+            "the COMMITTED baseline survived the rollback, so a record inside \
+             the cadence still deltas -- which is what makes the keyframe above \
+             attributable to the mark and not to a missing baseline"
         );
     }
 

@@ -670,7 +670,35 @@ mod tests {
         // Sixty-six hours, so the run spans a full 64-hour cadence, and the
         // FIRST record -- the only keyframe before it -- is removed.
         const HOURS: i32 = 66;
-        const CADENCE: u64 = 64;
+        const CADENCE_HOURS: u64 = 64;
+
+        // WHERE THE SECOND KEYFRAME LANDS, AND WHY IT MOVED. The law is 64
+        // ELAPSED GAME HOURS: the FIRST record at or after 64 game hours since
+        // the last keyframe is itself a keyframe. `build_streams` emits one
+        // record per consecutive hour, so with the first keyframe at hour
+        // offset 0 the cadence one is the record at offset 64 -- the 65th.
+        //
+        // It used to be the 66th. The producer counted WRAPPED RECORDS, not
+        // hours, and fired at `since_keyframe >= 64` where `since_keyframe` was
+        // still 0 on the record after the keyframe, which put the second
+        // keyframe one record late. This test's expectation was written against
+        // that placement and read `CADENCE`; under the hour law the refused span
+        // is one shorter, because the two keyframe hours are the ENDPOINTS and
+        // neither is inside the span:
+        //
+        //   offset  0        the lost keyframe          -- not counted, removed
+        //   offset  1..=63   deltas naming its baseline -- REFUSED, 63 of them
+        //   offset  64       the cadence keyframe       -- stands alone
+        //   offset  65       a delta naming offset 64   -- reconstructs
+        //
+        // So 63 is "exactly the hours between the lost keyframe and the cadence
+        // one", stated exclusively of both ends, and it is the number the
+        // 64-game-hour law produces. Anything else here means the cadence moved.
+        const REFUSED: u64 = CADENCE_HOURS - 1;
+        // The recovery is a keyframe AND the delta that stands on it, which is
+        // the stronger statement: the chain RESUMES, it does not merely stop
+        // refusing.
+        const RECOVERED: u64 = 2;
 
         // Modelled the way the collector really loses a record: the producer
         // wraps every hour, so the baseline chain advances, but the frame's drop
@@ -701,26 +729,33 @@ mod tests {
         let scan = scan_stream(&path, StreamIdentityMode::Legacy)
             .expect("a lost record must not end the walk");
 
-        // 65 records survive the drop. The first 64 name the baseline the
-        // removed record carried and refuse; the 65th is the cadence keyframe,
-        // which stands alone. So the loss costs exactly the hours between the two
-        // keyframes and then stops costing anything -- which is the whole reason
-        // the cadence exists, and it is only observable because the walk did not
-        // abort at the first refusal.
+        // 65 records survive the drop. The first 63 name the baseline the
+        // removed record carried and refuse; the 64th is the cadence keyframe,
+        // which stands alone, and the 65th is a delta that stands on IT. So the
+        // loss costs exactly the hours between the two keyframes and then stops
+        // costing anything -- which is the whole reason the cadence exists, and
+        // it is only observable because the walk did not abort at the first
+        // refusal.
         assert_eq!(
             scan.unreconstructed_record_count,
-            CADENCE,
+            REFUSED,
             "expected exactly the hours between the lost keyframe and the cadence one"
         );
-        // kills: a cadence that never fires, leaving the domain refused forever.
-        assert_eq!((HOURS as u64) - 1 - scan.unreconstructed_record_count, 1);
+        // kills: a cadence that never fires, leaving the domain refused forever
+        // -- and, now that the cadence keyframe is not the last record, a
+        // recovery that keyframes but leaves the chain unable to carry a delta
+        // forward from it.
+        assert_eq!(
+            (HOURS as u64) - 1 - scan.unreconstructed_record_count,
+            RECOVERED
+        );
         // kills: a walk that stopped early and merely reported fewer refusals.
         // Every remaining byte must have been decoded.
         assert_eq!(scan.decoded_stream_bytes, damaged.len() as u64);
         // kills: counting refusals without naming them.
         assert_eq!(
             scan.unreconstructed_records.len(),
-            MAX_NAMED_RECONSTRUCTION_REFUSALS.min(CADENCE as usize)
+            MAX_NAMED_RECONSTRUCTION_REFUSALS.min(REFUSED as usize)
         );
         assert!(
             scan.unreconstructed_records[0].contains("domain 53")

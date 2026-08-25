@@ -6,7 +6,20 @@ pub const PAYLOAD_MAGIC: u32 = u32::from_le_bytes(*b"RRL1");
 pub const PAYLOAD_VERSION_V1: u16 = 1;
 pub const PAYLOAD_VERSION_V2: u16 = 2;
 pub const PAYLOAD_VERSION_V3: u16 = 3;
-pub const PAYLOAD_VERSION: u16 = PAYLOAD_VERSION_V3;
+/// v4 is v3 with the hub simulation row's POSITIONAL ORDINAL zeroed on the
+/// wire. The field was written twice per hub row -- 8 of every 64 bytes -- and
+/// was redundant: `decode_payload` already derives the same value from the
+/// row's position and used the stored copy only as a redundancy check. Storing
+/// it made a row's BYTES a function of its POSITION, so one inserted row
+/// renumbered every later row and defeated the shipped `PSD1` delta matcher.
+///
+/// Lane RY4 measured the cost of carrying it on `captures/rc_vanilla4`:
+/// d81's wire falls 29,182,565 -> 12,879,587 bytes (2.27x) and the whole spool
+/// stores 2,744,910 bytes less, 2.57% of the artefact, which is 7.1x the
+/// saving lane SG shipped d93 for. Nothing about WHAT IS RECORDED changes; the
+/// decoder re-derives the ordinal by counting, exactly as it always did.
+pub const PAYLOAD_VERSION_V4: u16 = 4;
+pub const PAYLOAD_VERSION: u16 = PAYLOAD_VERSION_V4;
 pub const HEADER_LEN: usize = 40;
 pub const ROW_LEN: usize = 32;
 pub const ROW_KIND_ANCHOR: u8 = 1;
@@ -181,7 +194,7 @@ pub fn encode_payload_with_hub_simulation(
     observed_neighbors: u32,
 ) -> Result<Vec<u8>, String> {
     encode_payload_inner(
-        PAYLOAD_VERSION_V3,
+        PAYLOAD_VERSION_V4,
         provinces,
         &[],
         rows,
@@ -295,6 +308,19 @@ fn encode_payload_inner(
     for (ordinal, row) in hub_simulation_rows.iter().enumerate() {
         let ordinal = u32::try_from(ordinal)
             .map_err(|_| "rail replay simulation ordinal exceeds u32".to_string())?;
+        // v4 stores ZERO where v1-v3 stored the row's own index. The decoder
+        // re-derives it from position -- it already did, and only compared the
+        // stored copy against that derivation. Keeping the field but blanking
+        // it (rather than deleting it) is deliberate: the row stays 32 bytes,
+        // so the delta matcher's 32-byte-aligned block index still lines up.
+        // Lane RY4 measured deleting the field instead and it was far WORSE
+        // (11,494,393 wire bytes against 2,934,986), because every later row
+        // fell out of alignment.
+        let stored_ordinal = if payload_version >= PAYLOAD_VERSION_V4 {
+            0
+        } else {
+            ordinal
+        };
         out.push(ROW_KIND_HUB_SIMULATION);
         out.push(u8::from(row.foreign_route) | (u8::from(row.fallback_record) << 1));
         out.push(row.subtype);
@@ -305,13 +331,13 @@ fn encode_payload_inner(
         out.extend_from_slice(&row.node_kind.to_le_bytes());
         out.push(row.node_flag);
         out.extend_from_slice(&[0; 3]);
-        out.extend_from_slice(&ordinal.to_le_bytes());
+        out.extend_from_slice(&stored_ordinal.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
         debug_assert_eq!((out.len() - HEADER_LEN) % ROW_LEN, 0);
 
         out.push(ROW_KIND_HUB_SIMULATION_CONTINUATION);
         out.extend_from_slice(&[0; 3]);
-        out.extend_from_slice(&ordinal.to_le_bytes());
+        out.extend_from_slice(&stored_ordinal.to_le_bytes());
         out.extend_from_slice(&row.available_raw.to_le_bytes());
         out.extend_from_slice(&row.consumed_raw.to_le_bytes());
         out.extend_from_slice(&row.foreign_max_raw.to_le_bytes());
@@ -351,11 +377,16 @@ pub fn decode_payload(payload: &[u8]) -> Result<DecodedRailReplayPayload, String
         return Err("rail replay payload magic is not RRL1".into());
     }
     let payload_version = read_u16(payload, 4)?;
-    if !matches!(
-        payload_version,
-        PAYLOAD_VERSION_V1 | PAYLOAD_VERSION_V2 | PAYLOAD_VERSION_V3
-    ) {
-        return Err("rail replay payload version is unsupported".into());
+    // PRE-V4 IS REFUSED BY NAME, not silently tolerated. v1-v3 stored the hub
+    // row's positional ordinal; v4 stores zero and the decoder re-derives it.
+    // A v3 payload read as v4 would therefore decode with the ordinal check
+    // inverted, so the versions are not interchangeable and the decoder says
+    // which one it got. Captures predating v4 are disposable by the
+    // pre-production rule; re-record rather than reinterpret.
+    if payload_version != PAYLOAD_VERSION_V4 {
+        return Err(format!(
+            "rail replay payload version {payload_version} is refused: only v{PAYLOAD_VERSION_V4} is legal, and v1-v3 store a hub ordinal v4 re-derives"
+        ));
     }
     let header_len = read_u16(payload, 6)? as usize;
     let row_len = read_u16(payload, 8)? as usize;
@@ -479,9 +510,9 @@ pub fn decode_payload(payload: &[u8]) -> Result<DecodedRailReplayPayload, String
             }
             ROW_KIND_HUB_SIMULATION => {
                 hub_rows_started = true;
-                if payload_version != PAYLOAD_VERSION_V3 {
+                if payload_version != PAYLOAD_VERSION_V4 {
                     return Err(format!(
-                        "rail replay simulation row {index} is not legal before v3"
+                        "rail replay simulation row {index} is not legal before v4"
                     ));
                 }
                 if flags & !0x03 != 0 {
@@ -494,11 +525,19 @@ pub fn decode_payload(payload: &[u8]) -> Result<DecodedRailReplayPayload, String
                         "rail replay simulation row {index} lacks its continuation"
                     ));
                 }
+                // The ordinal slots must both read ZERO. v3 compared them
+                // against `hub_simulation_rows.len()`; v4 stores nothing there,
+                // so the same two words are now an UNASSIGNED FIELD and the
+                // unassigned-bits law says a decoder rejects a non-zero one
+                // rather than ignoring it. The row's ordinal is
+                // `hub_simulation_rows.len()` -- the value v3 compared against,
+                // which is to say the decoder always knew it without being
+                // told.
                 let continuation_base = base + ROW_LEN;
                 if payload[continuation_base] != ROW_KIND_HUB_SIMULATION_CONTINUATION
                     || payload[continuation_base + 1..continuation_base + 4] != [0; 3]
-                    || read_u32(payload, continuation_base + 4)? != read_u32(payload, base + 24)?
-                    || read_u32(payload, base + 24)? as usize != hub_simulation_rows.len()
+                    || read_u32(payload, base + 24)? != 0
+                    || read_u32(payload, continuation_base + 4)? != 0
                     || read_u32(payload, base + 28)? != 0
                 {
                     return Err(format!(
@@ -549,7 +588,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<DecodedRailReplayPayload, String
         provinces,
         hub_frames_complete: payload_version == PAYLOAD_VERSION_V2,
         hub_frames,
-        hub_simulation_complete: payload_version == PAYLOAD_VERSION_V3,
+        hub_simulation_complete: payload_version == PAYLOAD_VERSION_V4,
         hub_simulation_rows,
     })
 }
@@ -571,6 +610,8 @@ fn validate(
         PAYLOAD_VERSION_V2
             if payload_flags == PAYLOAD_FLAG_HUB_FRAMES_COMPLETE
                 && hub_simulation_rows.is_empty() => {}
+        PAYLOAD_VERSION_V4
+            if payload_flags == PAYLOAD_FLAG_HUB_SIMULATION_COMPLETE && hub_frames.is_empty() => {}
         PAYLOAD_VERSION_V3
             if payload_flags == PAYLOAD_FLAG_HUB_SIMULATION_COMPLETE && hub_frames.is_empty() => {}
         PAYLOAD_VERSION_V1 => {
@@ -579,8 +620,8 @@ fn validate(
         PAYLOAD_VERSION_V2 => {
             return Err("rail replay v2 must exclusively badge hub frames complete".into())
         }
-        PAYLOAD_VERSION_V3 => {
-            return Err("rail replay v3 must exclusively badge hub simulation complete".into())
+        PAYLOAD_VERSION_V3 | PAYLOAD_VERSION_V4 => {
+            return Err("rail replay v3/v4 must exclusively badge hub simulation complete".into())
         }
         _ => return Err("rail replay payload version is unsupported".into()),
     }
@@ -762,12 +803,18 @@ mod tests {
                 }],
             },
         ];
+        // kills: accepting a pre-v4 payload. v1-v3 STORE the hub row's
+        // positional ordinal where v4 stores zero and re-derives it, so a v3
+        // payload read as v4 would decode with the ordinal check inverted. The
+        // versions are not interchangeable and the decoder says which one it
+        // got; captures predating v4 are disposable under the pre-production
+        // rule. The v1 encoder survives as the fixture that generates one.
         let bytes = encode_payload(&rows, 7, 0, PAYLOAD_FLAG_HUB_FRAMES_UNAVAILABLE, 2, 2).unwrap();
-        let decoded = decode_payload(&bytes).unwrap();
-        assert_eq!(decoded.payload_version, PAYLOAD_VERSION_V1);
-        assert!(!decoded.hub_frames_complete);
-        assert!(decoded.hub_frames.is_empty());
-        assert_eq!(decoded.provinces, rows);
+        let error = decode_payload(&bytes).unwrap_err();
+        assert!(
+            error.contains("version 1 is refused") && error.contains("only v4"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -800,14 +847,17 @@ mod tests {
             0,
         )
         .unwrap();
-        let decoded = decode_payload(&bytes).unwrap();
-        assert_eq!(decoded.payload_version, PAYLOAD_VERSION_V2);
-        assert!(decoded.hub_frames_complete);
-        assert_eq!(decoded.hub_frames, hubs);
+        // kills: accepting a pre-v4 payload -- see the v1 case for why the
+        // versions cannot be read interchangeably.
+        let error = decode_payload(&bytes).unwrap_err();
+        assert!(
+            error.contains("version 2 is refused") && error.contains("only v4"),
+            "{error}"
+        );
     }
 
     #[test]
-    fn v3_round_trip_preserves_raw_simulation_inputs_without_viewer_state() {
+    fn v4_round_trip_preserves_raw_simulation_inputs_without_viewer_state() {
         let rows = vec![
             RailHubSimulationState {
                 pov_country_id: 7,
@@ -840,16 +890,55 @@ mod tests {
         ];
         let bytes = encode_payload_with_hub_simulation(&[], &rows, 11, 0, 0, 0).unwrap();
         let decoded = decode_payload(&bytes).unwrap();
-        assert_eq!(decoded.payload_version, PAYLOAD_VERSION_V3);
+        assert_eq!(decoded.payload_version, PAYLOAD_VERSION_V4);
         assert!(!decoded.hub_frames_complete);
         assert!(decoded.hub_frames.is_empty());
         assert!(decoded.hub_simulation_complete);
         assert_eq!(decoded.hub_simulation_rows, rows);
         assert_eq!(read_u32(&bytes, 36).unwrap(), (rows.len() * 2) as u32);
+
+        // kills: writing the positional ordinal anyway. v4's whole point is
+        // that BOTH ordinal words of every hub pair read zero on the wire and
+        // the reader counts instead. Row `i` of a v3 payload carried `i` here;
+        // the second row below would have carried 1.
+        for index in 0..rows.len() {
+            let base = HEADER_LEN + index * 2 * ROW_LEN;
+            assert_eq!(bytes[base], ROW_KIND_HUB_SIMULATION);
+            assert_eq!(
+                read_u32(&bytes, base + 24).unwrap(),
+                0,
+                "hub row {index} stores a positional ordinal"
+            );
+            assert_eq!(
+                read_u32(&bytes, base + ROW_LEN + 4).unwrap(),
+                0,
+                "hub continuation {index} stores a positional ordinal"
+            );
+        }
+
+        // kills: dropping EITHER unassigned-bits check. v3 stored the ordinal
+        // in two words -- one in the row, one in its continuation -- and v4
+        // vacated both, so a non-zero in either is a spelling this producer
+        // cannot emit and the decoder refuses rather than ignores. Mutating
+        // only the row word would leave the suite green with the continuation
+        // check deleted (Codex review round 2, finding 3), so both are mutated
+        // independently.
+        for (offset, which) in [
+            (HEADER_LEN + 24, "row"),
+            (HEADER_LEN + ROW_LEN + 4, "continuation"),
+        ] {
+            let mut hostile = bytes.clone();
+            hostile[offset] = 1;
+            let error = match decode_payload(&hostile) {
+                Ok(_) => panic!("a non-zero {which} ordinal decoded"),
+                Err(error) => error,
+            };
+            assert!(error.contains("invalid continuation binding"), "{error}");
+        }
     }
 
     #[test]
-    fn v3_rejects_broken_pair_binding_and_duplicate_identity() {
+    fn v4_rejects_broken_pair_binding_and_duplicate_identity() {
         let row = RailHubSimulationState {
             pov_country_id: 7,
             province_id: 42,

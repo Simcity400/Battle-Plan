@@ -13452,11 +13452,11 @@ fn decode_compact_rail_replay_state_data_payload(
             return;
         }
     };
-    if decoded.payload_version != compact_contract::rail_replay::PAYLOAD_VERSION_V3
+    if decoded.payload_version != compact_contract::rail_replay::PAYLOAD_VERSION_V4
         || !decoded.hub_simulation_complete
     {
         summary.parse_errors.push(format!(
-            "offset {offset}: rail_replay_state RRL1 production authority requires v3 raw supply-simulation rows"
+            "offset {offset}: rail_replay_state RRL1 production authority requires v4 raw supply-simulation rows"
         ));
         return;
     }

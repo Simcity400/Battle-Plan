@@ -102,7 +102,7 @@ fn perf_payload(status: u32) -> Vec<u8> {
     payload
 }
 
-fn d81_v3_payload(status: u32) -> Vec<u8> {
+fn d81_v4_payload(status: u32) -> Vec<u8> {
     compact_contract::rail_replay::encode_payload_with_hub_simulation(&[], &[], 0, status, 0, 0)
         .unwrap()
 }
@@ -216,7 +216,7 @@ fn append_d81_hour(
         wire_format::d81::DOMAIN as u16,
         COMPACT_RECORD_TYPE_DOMAIN_DATA,
         0,
-        &d81_v3_payload(data_status),
+        &d81_v4_payload(data_status),
     );
     *next_sequence += 1;
     let last = push_h4cr_record(
@@ -248,7 +248,7 @@ fn append_d81_d18_country_hour(
         (
             wire_format::d81::DOMAIN as u16,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
-            d81_v3_payload(0),
+            d81_v4_payload(0),
         ),
         (18, COMPACT_RECORD_TYPE_DOMAIN_PERF, perf_payload(0)),
         (
@@ -292,7 +292,7 @@ fn d18_country_authority_requires_status_bound_perf_data_in_the_closed_frame() {
         wire_format::d81::DOMAIN as u16,
         COMPACT_RECORD_TYPE_DOMAIN_DATA,
         0,
-        &d81_v3_payload(0),
+        &d81_v4_payload(0),
     );
     push_h4cr_record(
         &mut missing_perf,
@@ -337,7 +337,7 @@ fn d18_country_authority_requires_status_bound_perf_data_in_the_closed_frame() {
         wire_format::d81::DOMAIN as u16,
         COMPACT_RECORD_TYPE_DOMAIN_DATA,
         0,
-        &d81_v3_payload(0),
+        &d81_v4_payload(0),
     );
     push_h4cr_record(
         &mut status_mismatch,
@@ -801,7 +801,7 @@ fn reconstructed_container_entry_constructor_recomputes_integrity() {
 }
 
 #[test]
-fn canonical_d81_v3_data_uses_zero_h4cr_flags_and_perf_status_at_offset_32() {
+fn canonical_d81_v4_data_uses_zero_h4cr_flags_and_perf_status_at_offset_32() {
     let mut stream = Vec::new();
     let mut sequence = 1;
     append_d81_hour(&mut stream, &mut sequence, 10, 0, 0);
@@ -1571,7 +1571,7 @@ fn public_entry_source_parity_gate_refolds_the_authenticated_h4cr() {
 
 #[test]
 fn d81_perf_and_data_must_be_singletons_with_identical_status() {
-    let data = d81_v3_payload(0);
+    let data = d81_v4_payload(0);
     let perf = perf_payload(0);
     let end = frame_end_payload(1, 1, 0);
 
@@ -1676,7 +1676,7 @@ fn d81_perf_and_data_must_be_singletons_with_identical_status() {
         wire_format::d81::DOMAIN as u16,
         COMPACT_RECORD_TYPE_DOMAIN_DATA,
         0,
-        &d81_v3_payload(COMPACT_STATUS_DELTA_DATA),
+        &d81_v4_payload(COMPACT_STATUS_DELTA_DATA),
     );
     push_h4cr_record(
         &mut mismatched,
@@ -1712,7 +1712,7 @@ fn frame_end_is_mandatory_and_forward_discontinuity_requires_h4dg() {
         wire_format::d81::DOMAIN as u16,
         COMPACT_RECORD_TYPE_DOMAIN_DATA,
         0,
-        &d81_v3_payload(0),
+        &d81_v4_payload(0),
     );
     assert!(inspect_d81_session(legacy_bytes_session(&missing_end))
         .unwrap_err()
@@ -2211,7 +2211,7 @@ fn frame_terminal_outcome_is_exactly_one_perf_or_h4dg_per_domain() {
         wire_format::d81::DOMAIN as u16,
         COMPACT_RECORD_TYPE_DOMAIN_DATA,
         0,
-        &d81_v3_payload(0),
+        &d81_v4_payload(0),
     );
     sequence += 1;
     push_h4cr_record(
@@ -2265,7 +2265,7 @@ fn frame_end_emitted_and_scheduled_domain_counts_must_match() {
         wire_format::d81::DOMAIN as u16,
         COMPACT_RECORD_TYPE_DOMAIN_DATA,
         0,
-        &d81_v3_payload(0),
+        &d81_v4_payload(0),
     );
     push_h4cr_record(
         &mut stream,

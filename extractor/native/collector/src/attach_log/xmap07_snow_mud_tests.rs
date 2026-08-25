@@ -73,7 +73,7 @@ fn the_wire_baseline_survives_a_rejected_bracket_that_wipes_the_epoch_tracker() 
     let sha = [0x33; 32];
     trackers
         .xmap07_snow_mud_wire_baseline
-        .stage(grid.clone(), sha, true);
+        .stage(grid.clone(), sha, true, 60_830_824);
     trackers.xmap07_snow_mud_wire_baseline.commit_pin();
     let mut generations = trackers.xmap07_snow_mud_generation_counter;
     advance_compact_xmap07_snow_mud_tracker(
@@ -115,13 +115,13 @@ fn a_rejected_bracket_drops_this_frames_staged_baseline_but_not_the_committed_on
     let committed_sha = [0x44; 32];
     trackers
         .xmap07_snow_mud_wire_baseline
-        .stage(committed.clone(), committed_sha, true);
+        .stage(committed.clone(), committed_sha, true, 60_830_824);
     trackers.xmap07_snow_mud_wire_baseline.commit_pin();
 
     // This frame encodes a NEW grid and stages it...
     trackers
         .xmap07_snow_mud_wire_baseline
-        .stage(vec![2u8; 64], [0x55; 32], false);
+        .stage(vec![2u8; 64], [0x55; 32], false, 60_830_824 + 1);
 
     // ...and then its record is replaced with a gap.
     let rejected: BTreeSet<u16> = [COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE].into_iter().collect();
@@ -135,9 +135,72 @@ fn a_rejected_bracket_drops_this_frames_staged_baseline_but_not_the_committed_on
             .map(|(bytes, digest)| (bytes.to_vec(), digest)),
         Some((committed, committed_sha))
     );
-    // The cadence counter is rolled back too, so a gapped hour does not consume
-    // one of the 64 hours before the next keyframe.
-    assert_eq!(trackers.xmap07_snow_mud_wire_baseline.hours_since_keyframe, 0);
+    // The cadence mark is rolled back too, so the next keyframe is measured
+    // from the keyframe the fold actually holds and not from a gapped hour.
+    //
+    // IT ROLLS BACK TO THE COMMITTED KEYFRAME'S HOUR, NOT TO `None`. The gapped
+    // frame staged a non-keyframe, which never moved the mark; what the undo
+    // restores is the hour of the keyframe committed above, which is exactly
+    // the keyframe the fold still holds. (Codex review round 2, finding 1: this
+    // asserted `None` and would have failed the gate.) The `Some(None)` case --
+    // a domain whose FIRST keyframe is rolled back -- is the test below.
+    assert_eq!(
+        trackers
+            .xmap07_snow_mud_wire_baseline
+            .last_keyframe_hour_index,
+        compact_contract::calendar::hour_index_from_raw(60_830_824)
+    );
+}
+
+#[test]
+fn a_rejected_bracket_on_a_cold_domain_rolls_the_cadence_mark_back_to_none() {
+    // kills: staging the undo as an hour instead of as "whatever the frame was
+    // entered with". `None` IS a real staged value here -- a domain that had
+    // never keyframed before this frame must roll back to having no mark at
+    // all, not to hour zero and not to the hour it just staged. Rolling back to
+    // hour zero would leave `keyframe_due` measuring elapsed time from 1850,
+    // so the cadence would never fire again; rolling back to the staged hour
+    // would measure from a keyframe the fold never received.
+    let mut trackers = CompactPerfGateTrackers::default();
+    assert_eq!(
+        trackers
+            .xmap07_snow_mud_wire_baseline
+            .last_keyframe_hour_index,
+        None,
+        "the domain starts cold"
+    );
+
+    // The domain's FIRST keyframe, staged and not yet committed...
+    trackers
+        .xmap07_snow_mud_wire_baseline
+        .stage(vec![3u8; 64], [0x66; 32], true, 60_830_824);
+    assert_eq!(
+        trackers
+            .xmap07_snow_mud_wire_baseline
+            .last_keyframe_hour_index,
+        compact_contract::calendar::hour_index_from_raw(60_830_824),
+        "staging a keyframe moves the mark to this hour"
+    );
+
+    // ...and then its record is replaced with a gap.
+    let rejected: BTreeSet<u16> = [COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE].into_iter().collect();
+    reset_trackers_after_rejected_bracket(&mut trackers, &rejected);
+    commit_delta_pin_transactions(&mut trackers);
+
+    assert!(
+        trackers
+            .xmap07_snow_mud_wire_baseline
+            .committed_baseline()
+            .is_none(),
+        "nothing was ever committed"
+    );
+    assert_eq!(
+        trackers
+            .xmap07_snow_mud_wire_baseline
+            .last_keyframe_hour_index,
+        None,
+        "and the mark goes back to having no keyframe at all"
+    );
 }
 
 #[test]
@@ -148,13 +211,19 @@ fn a_surviving_frame_commits_its_staged_baseline_and_advances_the_cadence() {
     let mut trackers = CompactPerfGateTrackers::default();
     trackers
         .xmap07_snow_mud_wire_baseline
-        .stage(vec![1u8; 64], [0x44; 32], true);
+        .stage(vec![1u8; 64], [0x44; 32], true, 60_830_824);
     commit_delta_pin_transactions(&mut trackers);
-    assert_eq!(trackers.xmap07_snow_mud_wire_baseline.hours_since_keyframe, 0);
+    let first_keyframe_hour = compact_contract::calendar::hour_index_from_raw(60_830_824);
+    assert_eq!(
+        trackers
+            .xmap07_snow_mud_wire_baseline
+            .last_keyframe_hour_index,
+        first_keyframe_hour
+    );
 
     trackers
         .xmap07_snow_mud_wire_baseline
-        .stage(vec![2u8; 64], [0x55; 32], false);
+        .stage(vec![2u8; 64], [0x55; 32], false, 60_830_824 + 1);
     commit_delta_pin_transactions(&mut trackers);
 
     assert_eq!(
@@ -164,7 +233,14 @@ fn a_surviving_frame_commits_its_staged_baseline_and_advances_the_cadence() {
             .map(|(bytes, digest)| (bytes.to_vec(), digest)),
         Some((vec![2u8; 64], [0x55; 32]))
     );
-    assert_eq!(trackers.xmap07_snow_mud_wire_baseline.hours_since_keyframe, 1);
+    // A DELTA DOES NOT MOVE THE MARK. The cadence is measured from the last
+    // KEYFRAME, so an intervening delta hour leaves it exactly where it was.
+    assert_eq!(
+        trackers
+            .xmap07_snow_mud_wire_baseline
+            .last_keyframe_hour_index,
+        first_keyframe_hour
+    );
 }
 
 #[test]
@@ -172,19 +248,43 @@ fn the_cadence_forces_a_keyframe_and_a_cold_baseline_demands_one() {
     // kills: removing the keyframe cadence, which is the only bound on how long
     // a consumer that lost a record has to wait before d100 decodes again.
     let mut baseline = CompactXmap07SnowMudWireBaseline::default();
-    assert!(baseline.keyframe_due(), "a cold baseline must keyframe");
+    assert!(
+        baseline.keyframe_due(60_830_824),
+        "a cold baseline must keyframe"
+    );
 
-    baseline.stage(vec![1u8; 64], [0x44; 32], true);
+    baseline.stage(vec![1u8; 64], [0x44; 32], true, 60_830_824);
     baseline.commit_pin();
-    assert!(!baseline.keyframe_due());
+    assert!(!baseline.keyframe_due(60_830_824 + 1));
 
-    for _ in 0..XMAP07_SNOW_MUD_KEYFRAME_CADENCE_HOURS {
-        baseline.stage(vec![1u8; 64], [0x44; 32], false);
+    // THE CADENCE IS GAME HOURS, NOT EMISSIONS. Staging a hundred delta hours
+    // without the clock moving must NOT make it due -- that is precisely the
+    // record-counting defect this lane removed.
+    for _ in 0..(XMAP07_SNOW_MUD_KEYFRAME_CADENCE_HOURS + 36) {
+        baseline.stage(vec![1u8; 64], [0x44; 32], false, 60_830_824 + 1);
         baseline.commit_pin();
     }
     assert!(
-        baseline.keyframe_due(),
-        "after {XMAP07_SNOW_MUD_KEYFRAME_CADENCE_HOURS} delta hours the cadence is due"
+        !baseline.keyframe_due(60_830_824 + 1),
+        "emissions must not consume the cadence; only elapsed hours do"
+    );
+
+    let cadence = XMAP07_SNOW_MUD_KEYFRAME_CADENCE_HOURS as i32;
+    assert!(
+        !baseline.keyframe_due(60_830_824 + cadence - 1),
+        "one hour short of the cadence is still inside it"
+    );
+    assert!(
+        baseline.keyframe_due(60_830_824 + cadence),
+        "the first grid at or after {XMAP07_SNOW_MUD_KEYFRAME_CADENCE_HOURS}          game hours must keyframe"
+    );
+    assert!(
+        baseline.keyframe_due(60_830_824 + cadence + 6),
+        "a grid arriving after a quiet gap must keyframe"
+    );
+    assert!(
+        baseline.keyframe_due(60_830_824 - 10),
+        "an hour that regresses below the keyframe must keyframe"
     );
 }
 
@@ -226,23 +326,28 @@ fn every_reset_opens_a_genuinely_fresh_generation_rather_than_generation_one() {
 fn staging_a_baseline_twice_still_rolls_back_to_the_frames_entry() {
     // kills: recording the cadence undo on every `stage` call instead of once
     // per frame. A second stage would overwrite the undo with the first call's
-    // already-advanced value, and the roll-back would leave the cadence counting
-    // an hour the fold never received.
+    // already-advanced value, and the roll-back would leave the cadence measured
+    // from a keyframe the fold never received.
     let mut baseline = CompactXmap07SnowMudWireBaseline::default();
-    baseline.stage(vec![1u8; 64], [0x44; 32], true);
+    baseline.stage(vec![1u8; 64], [0x44; 32], true, 60_830_824);
     baseline.commit_pin();
-    baseline.stage(vec![2u8; 64], [0x55; 32], false);
+    baseline.stage(vec![2u8; 64], [0x55; 32], false, 60_830_824 + 1);
     baseline.commit_pin();
-    assert_eq!(baseline.hours_since_keyframe, 1);
+    let entry_mark = baseline.last_keyframe_hour_index;
+    assert_eq!(
+        entry_mark,
+        compact_contract::calendar::hour_index_from_raw(60_830_824)
+    );
 
-    // Two stages inside ONE frame, then a roll-back.
-    baseline.stage(vec![3u8; 64], [0x66; 32], false);
-    baseline.stage(vec![4u8; 64], [0x77; 32], false);
+    // Two stages inside ONE frame -- the second a KEYFRAME, so the mark really
+    // does move and the roll-back has something to undo -- then a roll-back.
+    baseline.stage(vec![3u8; 64], [0x66; 32], false, 60_830_824 + 2);
+    baseline.stage(vec![4u8; 64], [0x77; 32], true, 60_830_824 + 2);
     baseline.roll_back_uncommitted_pin();
 
     assert_eq!(
-        baseline.hours_since_keyframe, 1,
-        "the frame was entered at 1, so the roll-back must land on 1"
+        baseline.last_keyframe_hour_index, entry_mark,
+        "the frame was entered on the first keyframe's hour, so the roll-back          must land there"
     );
     assert_eq!(
         baseline
@@ -328,23 +433,28 @@ fn a_cadence_keyframe_of_an_unchanged_grid_is_not_reported_as_a_change() {
     let mut baseline = CompactXmap07SnowMudWireBaseline::default();
     let mut ledger = compact_contract::domain_outcome::DomainOutcomeLedger::default();
 
+    // THE HOURS HERE ARE IN `raw_date_in_range`. They used to be 44_000_000,
+    // which is BELOW the calendar's 1850 floor, so `hour_index_from_raw`
+    // returned None and the cadence fell through to its fail-safe -- the test
+    // would have passed without ever exercising the elapsed-hour path.
+    let base_hour = 60_830_824i32;
+
     // Hour 1: first observation. No baseline, so this is a keyframe AND a change.
-    let mut first = xsm2_read(grid.clone(), 44_000_000, 1);
+    let mut first = xsm2_read(grid.clone(), base_hour, 1);
     finalize_compact_xmap07_snow_mud_read(&mut first, &mut baseline, &mut ledger);
     baseline.commit_pin();
     assert_eq!(first.changed_rows, 1);
     assert!(unit_names(&first).contains(&"xmap07_snow_mud_grid_changed"));
     assert!(unit_names(&first).contains(&"xmap07_snow_mud_wire_keyframe"));
 
-    // Drive the cadence to due WITHOUT changing the grid.
-    for _ in 0..XMAP07_SNOW_MUD_KEYFRAME_CADENCE_HOURS {
-        baseline.stage(grid.clone(), first.snapshot.grid_sha256, false);
-        baseline.commit_pin();
-    }
-    assert!(baseline.keyframe_due());
+    // The cadence is due because 100 GAME HOURS have passed, and for no other
+    // reason. This used to stage 64 unchanged grids to drive a record counter;
+    // that loop is gone with the counter.
+    assert!(!baseline.keyframe_due(base_hour + 1));
+    assert!(baseline.keyframe_due(base_hour + 100));
 
     // Hour N: the cadence forces a keyframe, but the grid is identical.
-    let mut cadence = xsm2_read(grid.clone(), 44_000_100, 2);
+    let mut cadence = xsm2_read(grid.clone(), base_hour + 100, 2);
     finalize_compact_xmap07_snow_mud_read(&mut cadence, &mut baseline, &mut ledger);
     let names = unit_names(&cadence);
     assert!(
