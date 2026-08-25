@@ -683,6 +683,31 @@ pub struct D81PlanCounters {
     /// in-flight predicate.
     pub rail_tap_marks_sample: u64,
     pub rail_tap_windows_sample: u64,
+    /// THE `SourceProvince` FAMILY'S WINDOW COUNT, published because nothing
+    /// published a per-family window count at all (lane SS).
+    ///
+    /// One window per distinct gamestate `CProvince` the family covered, so it
+    /// is both the entry count and the window count. It SUMS over a capture,
+    /// and the per-frame figure it gives -- the one that scales this family's
+    /// guarded calls, its slab bytes, and the compared bytes lane SS's
+    /// reduction removes from the unchanged-geometry gate -- is
+    /// `entries / sum(the six d81_plan_rail_tap_* bins)`.
+    ///
+    /// NOT `d81_plan_frames_served`, and the difference is real (Codex round 4
+    /// finding 1). This is taken INSIDE the copy bracket and a rejected bracket
+    /// preserves the whole `D81PlanCounters` unchanged, while `frames_served`
+    /// publishes `ran`, which such a frame never sets -- so on a capture with
+    /// rejections the numerator grows where that denominator does not. Lane
+    /// SN's six one-hot bins are assigned in the same `Some(capture)` block
+    /// this field is, so they sum to exactly the frames it can accrue on.
+    /// `frames_served` is the same divisor only where nothing was rejected.
+    ///
+    /// `runs/sn_rail_write_tap/MEASUREMENT.md` section 4 could bound it from
+    /// neither side: the family is pushed from the railed provinces AND from
+    /// the selector-key provinces, which pushes it up, while entries with no
+    /// slot or a non-admitted pointer are dropped, which pushes it down. Every
+    /// price that lane and this one put on this family rests on it.
+    pub source_province_entries: u32,
 }
 
 pub fn d81_plan_refusal_ordinal(refusal: &crate::snapshot_recipes::Refusal) -> u32 {

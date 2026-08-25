@@ -67,6 +67,14 @@ fn source_province_of(province: u32) -> u64 {
     SOURCE_PROVINCE + u64::from(province) * SCATTER_STRIDE
 }
 
+/// A per-province stand-in for the `CProvince` vtable pointer. The copy plan
+/// does not authenticate it — only the walk does, and this fixture's replay
+/// walk never reads it — so its only job is to be a value the fed reduction can
+/// be pinned against.
+fn cprovince_vtable_of(province: u32) -> u64 {
+    0x00C0_FFEE_0000_0000 | u64::from(province)
+}
+
 fn voided(province: u32) -> bool {
     let at = u64::from(province) * crate::attach_log::D81_ACTIVE_ENTRY_STRIDE as u64;
     (VOID_PAGE_START..VOID_PAGE_START + PAGE).contains(&at)
@@ -203,10 +211,22 @@ fn stage_world() -> SyntheticMemory {
         );
         let source = source_province_of(province);
         memory.map_zeroed(source, crate::attach_log::CPROVINCE_OFF_ID + 0x20);
+        // A DISTINGUISHABLE VALUE IN EVERY BYTE THE `SourceProvince` FAMILY
+        // SERVES (lane SS). The vtable used to be left at the zeroed default,
+        // which made an assertion on the fed bytes unable to tell the vtable
+        // field from the undecoded span around it; both fields now carry a
+        // value derived from the province, so
+        // `the_source_province_family_serves_and_feeds_only_the_two_decoded_fields`
+        // can pin the exact byte sequence and not just its length.
+        memory.write_u64(source, cprovince_vtable_of(province));
         memory.write_u32(
             source + crate::attach_log::CPROVINCE_OFF_ID as u64,
             province,
         );
+        // AND A DIFFERENT ONE IN THE SPAN THAT IS NEITHER, so a reduction that
+        // fed the wrong twelve bytes per record would produce a sequence the
+        // assertion does not match rather than one it cannot tell apart.
+        memory.write_u64(source + 0x10, 0xDEAD_0000_0000_0000 | u64::from(province));
         memory.write_u64(SOURCE_ARRAY + index * 8, source);
         let map = map_province_of(province);
         memory.map_zeroed(map, MAP_PROVINCE_LEN);
@@ -854,5 +874,233 @@ fn the_shipped_plan_closes_its_rail_headers_before_the_observation_ends() {
         u32::from_le_bytes(live),
         7,
         "the write must be visible live"
+    );
+}
+/// THE `SourceProvince` FAMILY SERVES AND FEEDS TWO FIELDS OUT OF A 168-BYTE
+/// READ, AND REFUSES EVERYTHING ELSE (lane SS).
+///
+/// d81 decodes exactly two things from a game-state `CProvince`: the vtable at
+/// `+0` and the province id at `+0xA4`. The guarded read has to span both,
+/// because the walk's predicate is a CONJUNCTION over them and a conjunction is
+/// only a statement about ONE OBJECT when both fields come from one
+/// observation. So the copy program is untouched -- one 0xA8 window per entry,
+/// one call per image.
+///
+/// What IS narrowed is what that window will serve and what it shows the
+/// unchanged-geometry gate. On `captures/rc_vanilla5` the 156 undecoded bytes
+/// in the middle were the first difference on 53 of the gate's 77 misses over
+/// 448 frames, each one a full province walk bought by bytes nobody reads.
+///
+/// Three properties, and none of them is safe without the other two:
+///
+///  * THE FIELDS SERVE, at both opening images, with the values the world
+///    holds. A narrowing that dropped them too would refuse every hour.
+///  * EVERYTHING ELSE IS REFUSED -- the gap, a sub-span of a field, and the
+///    whole hull -- even though the slab physically holds those bytes. This is
+///    what keeps the gate's invariant true: every byte a reader can reach is a
+///    byte the gate compared.
+///  * THE REFUSAL FAILS CLOSED THROUGH THE REAL WRAPPER, at every image kind
+///    d81 can ask for, and lands on a NAMED miss class. `NotCovered` on its own
+///    is not the property -- it is precisely the answer that sends
+///    `D81SnapshotSource::read_into` on to the bulk view -- so the test drives
+///    `D81ReadSource::snapshot`, the thing the walk actually holds, and checks
+///    both the `None` and the counter.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: removing the field gate in
+/// `D81VectorCapture::read` (the middle becomes servable and the gate is no
+/// longer comparing everything a reader can reach); removing the
+/// `CprovinceFields` reduction in `feed_content` (the fed image grows back and
+/// the byte count below stops matching); widening or narrowing
+/// `D81_CPROVINCE_DECODED_FIELDS` without changing the reader; or a `resolve`
+/// that starts answering spans no window contains.
+#[test]
+fn the_source_province_family_serves_and_feeds_only_the_two_decoded_fields() {
+    use crate::attach_log::d81_copy_bracket::{D81Image, D81ReadSource};
+
+    let memory = stage_world();
+    let hour = HourStamp(19390902);
+    let counting = CountingSnapshotMemory::new(&memory);
+    let mut counters = D81PlanCounters::default();
+    let observation =
+        d81_observe_copy_plan_with(&counting, &plan_roots(), hour, &mut counters).expect("custody");
+    let vector = observation
+        .vector
+        .as_ref()
+        .expect("the plan captured, so the vector pipeline ran");
+    let view = observation
+        .closed
+        .snapshot
+        .view_for(D81_CONSUMER, hour)
+        .expect("the plan captured, so its consumer has a view");
+
+    let entries: Vec<u32> = (0..PROVINCES)
+        .filter(|p| railed(*p) && *p != REJECTED_PROVINCE)
+        .collect();
+    assert!(
+        !entries.is_empty(),
+        "the fixture must stage some source provinces, or this test is vacuous",
+    );
+    assert_eq!(
+        vector.family_window_count(D81Family::SourceProvince),
+        entries.len(),
+        "one window per entry: the guarded read is still the hull, and only \
+         what it SERVES was narrowed",
+    );
+
+    let vtable_field = crate::attach_log::D81_CPROVINCE_VTABLE_FIELD;
+    let id_field = crate::attach_log::D81_CPROVINCE_ID_FIELD;
+    let hull = (id_field.0 as u32) + id_field.1;
+    let gap_start = vtable_field.0 + u64::from(vtable_field.1);
+    assert!(
+        gap_start < id_field.0,
+        "the fields must not be adjacent, or there is nothing to refuse",
+    );
+
+    for province in &entries {
+        let base = source_province_of(*province);
+        for image in [VectorImage::Opening, VectorImage::Sample(1)] {
+            match vector.read(base + vtable_field.0, vtable_field.1, image) {
+                VectorAnswer::Served(bytes) => assert_eq!(
+                    u64::from_le_bytes(bytes.try_into().expect("eight bytes")),
+                    cprovince_vtable_of(*province),
+                    "the vtable field must serve the value the world holds",
+                ),
+                other => panic!("province {province}: the vtable field must serve: {other:?}"),
+            }
+            match vector.read(base + id_field.0, id_field.1, image) {
+                VectorAnswer::Served(bytes) => assert_eq!(
+                    u32::from_le_bytes(bytes.try_into().expect("four bytes")),
+                    *province,
+                    "the id field must serve the value the world holds",
+                ),
+                other => panic!("province {province}: the id field must serve: {other:?}"),
+            }
+        }
+
+        // EVERYTHING ELSE, including spans the slab physically holds.
+        for (what, at, len) in [
+            ("the first byte past the vtable", base + gap_start, 4u32),
+            (
+                "the middle of the undecoded span",
+                base + (gap_start + id_field.0) / 2,
+                4,
+            ),
+            ("a sub-span of the id field", base + id_field.0, 2),
+            ("the whole hull", base, hull),
+            ("a span straddling the vtable and the gap", base, 16),
+        ] {
+            assert!(
+                matches!(
+                    vector.read(at, len, VectorImage::Opening),
+                    VectorAnswer::NotCovered
+                ),
+                "province {province}: {what} must not be served",
+            );
+        }
+    }
+
+    // AND THE REFUSAL FAILS CLOSED THROUGH THE WRAPPER THE WALK HOLDS, at every
+    // image kind, each on a fresh source so the counter it bumps is unambiguous.
+    let probe = source_province_of(entries[0]) + gap_start;
+    for (image, name, slot) in [
+        (D81Image::Opening, "not_captured", 0usize),
+        (D81Image::Sample(1), "samples_absent", 1),
+        (D81Image::Closing, "no_closing_image", 2),
+        (D81Image::ClosingSample(1), "no_closing_image", 2),
+    ] {
+        let source = D81ReadSource::snapshot(view, Some(vector));
+        let mut out = [0u8; 4];
+        assert!(
+            !source.read_into(probe as usize, &mut out, image),
+            "a read of the undecoded span at {image:?} must not be served",
+        );
+        let misses = source.misses();
+        let seen = [
+            misses.not_captured,
+            misses.samples_absent,
+            misses.no_closing_image,
+        ];
+        assert_eq!(
+            seen[slot], 1,
+            "a refused {image:?} read must be counted as {name}, and this one \
+             reported {seen:?}",
+        );
+        assert_eq!(
+            seen.iter().sum::<u32>(),
+            1,
+            "and it must be counted exactly once, in one class",
+        );
+        assert_eq!(
+            misses.unreadable, 0,
+            "an uncopied span is not an unreadable game, and the two classes \
+             must never be confused",
+        );
+    }
+
+    // THE FED IMAGE IS THE SERVED SET AND NOTHING MORE, asserted on the BYTES
+    // and not only on their count (Codex round 2 finding 1). A reduction that
+    // emitted the right number of wrong bytes -- the wrong field offsets, the
+    // fields in the wrong order, or one entry's fields against another's --
+    // would satisfy a length check while letting the gate hit on bytes nobody
+    // is served, which is the exact failure this narrowing must not have.
+    let mut fed: Vec<u8> = Vec::new();
+    vector.feed_content(&mut |store, bytes| {
+        if store == D81Family::SourceProvince as usize {
+            fed.extend_from_slice(bytes);
+        }
+    });
+    {
+        // The expected tail: per slab a raw-length word and then the reduction
+        // -- for each entry, in the sorted order `seal` put the windows in, the
+        // vtable then the id -- for the two slabs this family images, an empty
+        // third, and the two image counts.
+        let mut sorted: Vec<u32> = entries.clone();
+        sorted.sort_by_key(|province| source_province_of(*province));
+        let mut one_image: Vec<u8> = Vec::new();
+        for province in &sorted {
+            one_image.extend_from_slice(&cprovince_vtable_of(*province).to_le_bytes());
+            one_image.extend_from_slice(&province.to_le_bytes());
+        }
+        let raw_slab_len = (hull as u64) * entries.len() as u64;
+        let mut want: Vec<u8> = Vec::new();
+        for _ in 0..2 {
+            want.extend_from_slice(&raw_slab_len.to_le_bytes());
+            want.extend_from_slice(&one_image);
+        }
+        want.extend_from_slice(&0u64.to_le_bytes());
+        want.extend_from_slice(&[2u8, 0u8]);
+        assert!(
+            fed.ends_with(&want[..]),
+            "the family must feed each entry's vtable and id, in window order, \
+             once per image -- the length words still describe the {hull}-byte \
+             hulls the slabs hold, which is what says the SLAB was not narrowed",
+        );
+    }
+    let fed = fed.len();
+    let n = entries.len();
+    let per_entry_fields = (vtable_field.1 + id_field.1) as usize;
+    // `feed_content`'s own framing: a length word and the values of `starts`,
+    // `lens`, `offsets` and `status`, then a length word per slab, then the two
+    // image counts.
+    let framing = (8 + 8 * n) + (8 + 4 * n) + (8 + 4 * (n + 1)) + (8 + n) + 2;
+    // Three slab length words -- `FamilyStore` always holds `[Vec<u8>; 3]` and
+    // `feed_content` walks all three -- and content in the two this family
+    // takes images at.
+    let slabs = 3 * 8 + 2 * (per_entry_fields * n);
+    assert_eq!(
+        fed,
+        framing + slabs,
+        "the family must feed its framing plus {per_entry_fields} bytes per \
+         entry per image, not the {hull}-byte hulls its slabs hold",
+    );
+    assert!(
+        fed < framing + 3 * 8 + 2 * (hull as usize * n),
+        "sanity: the reduction must be a reduction",
+    );
+
+    assert_eq!(
+        counters.source_province_entries as usize,
+        n,
+        "and the wire must publish the entry count the family actually held",
     );
 }

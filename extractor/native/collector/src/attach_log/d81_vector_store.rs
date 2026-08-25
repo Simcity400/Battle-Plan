@@ -167,7 +167,7 @@ impl FamilyStore {
         &self,
         store: usize,
         sink: &mut dyn FnMut(usize, &[u8]),
-        reduce_active_windows: bool,
+        reduce: SlabReduction<'_>,
     ) {
         sink(store, &(self.starts.len() as u64).to_le_bytes());
         for value in &self.starts {
@@ -185,10 +185,12 @@ impl FamilyStore {
         sink(store, &self.status);
         for slab in &self.slabs {
             sink(store, &(slab.len() as u64).to_le_bytes());
-            if reduce_active_windows {
-                feed_active_windows(store, slab, sink);
-            } else {
-                sink(store, slab);
+            match reduce {
+                SlabReduction::None => sink(store, slab),
+                SlabReduction::ActiveWindows => feed_active_windows(store, slab, sink),
+                SlabReduction::CprovinceFields { fields, record } => {
+                    feed_cprovince_fields(store, fields, record, slab, sink)
+                }
             }
         }
         sink(store, &[self.images.opening, self.images.closing]);
@@ -823,6 +825,155 @@ pub struct D81VectorCapture {
     /// that copied. Summed over a capture this is the whole prize, in the same
     /// unit as `d81_plan_copies_issued`, so the two divide.
     pub rail_tap_copies_avoided: u64,
+    /// HOW MANY DISTINCT GAMESTATE `CProvince` OBJECTS THE `SourceProvince`
+    /// FAMILY COVERED THIS FRAME (lane SS).
+    ///
+    /// THE NUMBER BOTH HALVES OF THE FIELD SPLIT'S TRADE NEED, and the one
+    /// `runs/sn_rail_write_tap/MEASUREMENT.md` section 4 named as missing:
+    /// no counter published a per-family window count, so the family's own
+    /// window total -- which drives the extra guarded calls the split costs and
+    /// the compared bytes it removes -- could only be bounded from below by the
+    /// railed-province count. This family is pushed from the railed provinces
+    /// AND from the selector-key provinces, so that bound is a floor and not a
+    /// count.
+    ///
+    /// One window per entry, so this is also the family's window count.
+    pub source_province_entries: u32,
+    /// THE FIELDS OF A `CProvince` d81 DECODES, carried on the capture because
+    /// BOTH halves of lane SS's narrowing need them after `d81_vector_observe`
+    /// has returned: [`Self::read`] refuses to serve anything else out of a
+    /// `SourceProvince` window, and [`Self::feed_content`] shows the gate
+    /// exactly what `read` will serve.
+    cprovince_fields: [(u64, u32); D81_CPROVINCE_FIELD_COUNT],
+}
+
+/// WHICH BYTES OF A STORE'S SLAB REACH THE UNCHANGED-GEOMETRY GATE.
+///
+/// A slab holds what the guarded reads OBTAINED. That is not always what a d81
+/// reader can decode out of it, and where the two differ, feeding the slab raw
+/// puts bytes nobody reads into the gate's comparison and costs hits for
+/// nothing.
+///
+/// TWO FAMILIES DIFFER, FOR TWO DIFFERENT REASONS, and both reductions are
+/// stated where they are applied ([`D81VectorCapture::feed_content`]):
+///
+///  * [`Self::ActiveWindows`] (lane PW) reduces because the PRODUCER's contract
+///    is zero/nonzero over three of four fields, so an entry whose counter
+///    ticked is the same state to every reader. It is fed through
+///    `d81_active_state_from_window`, the walk's own decoder.
+///  * [`Self::CprovinceFields`] (lane SS) reduces because the guarded READ has
+///    to be wider than the decode. The two fields d81 takes off a `CProvince`
+///    are 0xA4 apart and the walk's predicate is a CONJUNCTION over both, so
+///    they must come from ONE observation -- which means one guarded call over
+///    the hull. Nothing decodes the 156 bytes in between, and
+///    [`D81VectorCapture::read`] refuses to serve them, so they are not fed.
+#[derive(Clone, Copy, Debug)]
+enum SlabReduction<'a> {
+    None,
+    ActiveWindows,
+    CprovinceFields {
+        fields: &'a [(u64, u32)],
+        /// The slab bytes one window occupies -- the hull the guarded read
+        /// took, which is what `seal` sized the slab by.
+        record: usize,
+    },
+}
+
+/// THE ONE ENUMERATION OF A `CProvince`'S DECODED FIELDS, as
+/// `(offset in the record, offset in the fed reduction, len)` in table order.
+///
+/// BOTH HALVES OF LANE SS'S NARROWING ARE FOLDS OVER THIS, and that is the
+/// whole safety argument: [`cprovince_field_offset`] decides what
+/// [`D81VectorCapture::read`] will serve by searching it, and
+/// [`feed_cprovince_fields`] emits the reduction by walking it. So "every byte
+/// a reader can reach is a byte the unchanged-geometry gate compared" is a
+/// property of one function rather than an agreement between two loops that
+/// happen to iterate the same table the same way. It is the same shape as the
+/// active table's reduction going through `d81_active_state_from_window`, the
+/// walk's own decoder.
+///
+/// (Codex round 2 finding 1: the first form had `read` and `feed_content`
+/// walking the table independently, which agreed but was not the single
+/// predicate this module claimed.)
+fn cprovince_field_spans(fields: &[(u64, u32)]) -> impl Iterator<Item = (u64, usize, u32)> + '_ {
+    fields.iter().scan(0usize, |fed, &(field_off, field_len)| {
+        let at = *fed;
+        *fed += field_len as usize;
+        Some((field_off, at, field_len))
+    })
+}
+
+/// IS `[addr, addr + len)` EXACTLY ONE OF `base`'S DECODED FIELDS, and where
+/// does it sit in the reduction [`feed_cprovince_fields`] emits?
+///
+/// EXACT, NOT CONTAINED. A read of three bytes inside the id field is refused
+/// along with a read of the undecoded span: d81 takes each field whole, at a
+/// fixed width this module const-asserts, so anything else is a reader the
+/// table does not describe and the right answer is to fail closed and be
+/// counted.
+fn cprovince_field_offset(fields: &[(u64, u32)], base: u64, addr: u64, len: u32) -> Option<usize> {
+    let offset = addr.checked_sub(base)?;
+    cprovince_field_spans(fields)
+        .find(|&(field_off, _, field_len)| field_off == offset && field_len == len)
+        .map(|(_, fed, _)| fed)
+}
+
+/// The bytes one entry contributes to the gate: its fields, back to back, in
+/// table order.
+fn cprovince_fed_len(fields: &[(u64, u32)]) -> usize {
+    cprovince_field_spans(fields)
+        .map(|(_, _, len)| len as usize)
+        .sum()
+}
+
+/// Feed a `SourceProvince` slab as the FIELDS its windows hold, not the hulls
+/// the guarded reads took.
+///
+/// ONE SINK CALL PER IMAGE, not per window (the same rule
+/// [`feed_active_entries`] obeys in `d81_geometry_gate`): the miss-shape
+/// counters are scoped to a fed RUN, and a reduction that called the sink once
+/// per entry would report one differing family as thousands and publish a
+/// `first_len` of 12.
+///
+/// A trailing partial record cannot occur -- `seal` sizes the slab as a whole
+/// number of `record`-byte windows -- but is appended verbatim if it somehow
+/// does: unexplained bytes are compared, never dropped.
+fn feed_cprovince_fields(
+    store: usize,
+    fields: &[(u64, u32)],
+    record: usize,
+    slab: &[u8],
+    sink: &mut dyn FnMut(usize, &[u8]),
+) {
+    // A SLAB THE STORE NEVER SIZED costs nothing here. `FamilyStore` holds
+    // three slabs and this family takes two images, so the third is always
+    // empty; the raw path hands it to the sink as a zero-byte run and so does
+    // this, without an allocation.
+    if record == 0 || slab.is_empty() {
+        sink(store, slab);
+        return;
+    }
+    let mut reduced = Vec::with_capacity(slab.len() / record * cprovince_fed_len(fields) + 8);
+    let mut at = 0usize;
+    while at + record <= slab.len() {
+        for (field_off, _, field_len) in cprovince_field_spans(fields) {
+            let from = at + field_off as usize;
+            let to = from + field_len as usize;
+            match slab.get(from..to) {
+                Some(bytes) => reduced.extend_from_slice(bytes),
+                // Unreachable while the const assertions hold (every field lies
+                // inside the hull `seal` sized the record by); fed as zeros
+                // rather than skipped so a shape that somehow escaped them is a
+                // MISS and not an invisible shortening.
+                None => reduced.extend(std::iter::repeat_n(0u8, field_len as usize)),
+            }
+        }
+        at += record;
+    }
+    if at < slab.len() {
+        reduced.extend_from_slice(&slab[at..]);
+    }
+    sink(store, &reduced);
 }
 
 /// Feed a slab of back-to-back active windows as their SEMANTIC state.
@@ -917,7 +1068,28 @@ impl D81VectorCapture {
             // Feeding it raw here would undo the reduction the gate applies to
             // the snapshot side and put the volatile counter straight back into
             // the comparison, which is exactly the miss lane PW measured.
-            let reduce = index == D81Family::ActiveClose as usize;
+            // THE `SourceProvince` FAMILY IS REDUCED TO ITS FIELDS (lane SS).
+            //
+            // Its guarded read has to be 0xA8 bytes wide -- the walk's
+            // predicate is a conjunction over the vtable at `+0` and the id at
+            // `+0xA4`, and a conjunction over two fields is only a statement
+            // about ONE object when both come from one observation. Nothing
+            // decodes the 156 bytes in between, and `read` refuses to serve
+            // them, so feeding them would put live province state into the
+            // gate's comparison for bytes no reader can reach: on
+            // `captures/rc_vanilla5` that was the first difference on 53 of the
+            // gate's 77 misses over 448 frames. `cprovince_field_offset` is the
+            // single predicate behind both the refusal and this reduction.
+            let reduce = if index == D81Family::ActiveClose as usize {
+                SlabReduction::ActiveWindows
+            } else if index == D81Family::SourceProvince as usize {
+                SlabReduction::CprovinceFields {
+                    fields: &self.cprovince_fields,
+                    record: self.cprovince_record_len(),
+                }
+            } else {
+                SlabReduction::None
+            };
             store.feed_content(index, sink, reduce);
         }
         sink(
@@ -969,6 +1141,16 @@ impl D81VectorCapture {
         owned.sort_unstable();
         owned.dedup();
         owned.len()
+    }
+
+    /// The bytes ONE `SourceProvince` window holds — the hull the guarded read
+    /// takes, which is the end of the last decoded field.
+    ///
+    /// DERIVED FROM THE FIELD TABLE rather than carried beside it, so the read
+    /// width and the decoded set cannot drift: a field added past `+0xA4`
+    /// widens the read by construction, and one removed narrows it.
+    fn cprovince_record_len(&self) -> usize {
+        cprovince_hull_len(&self.cprovince_fields) as usize
     }
 
     pub fn family_window_count(&self, family: D81Family) -> usize {
@@ -1238,6 +1420,38 @@ impl D81VectorCapture {
             ),
         };
         let store = &self.opening[family];
+        // THE `SourceProvince` WINDOW HOLDS 0xA8 BYTES AND SERVES 12 (lane SS).
+        //
+        // The guarded read is the hull because the walk's predicate is a
+        // conjunction over two fields 0xA4 apart and both have to come from one
+        // observation. Nothing decodes what lies between them, and the
+        // unchanged-geometry gate is no longer shown it, so serving it would
+        // break the one invariant that gate rests on: every byte a reader can
+        // reach is a byte the gate compared. Refusing here is what keeps the
+        // two sides equal, and `cprovince_field_offset` is the same predicate
+        // `feed_content` reduces the slab with.
+        //
+        // FAIL-CLOSED AND COUNTED, never silent. `NotCovered` sends
+        // `D81SnapshotSource::read_into` to the bulk view, which never captured
+        // this heap object, so the reader gets `None` and the frame refuses
+        // under a named miss class -- `d81_plan_miss_not_captured` at the
+        // opening image, `d81_plan_samples_absent` at a sample, and
+        // `d81_plan_miss_no_closing_image` at a closing one.
+        //
+        // THE CLOSING SIDE IS ALREADY REFUSED without this, because the family
+        // holds no closing image; the check is written over the OPENING window
+        // it applies to, and the closing arm below never reaches a served
+        // answer for this family.
+        if family == D81Family::SourceProvince as usize {
+            let Some(index) = opening_hit else {
+                return VectorAnswer::NotCovered;
+            };
+            if cprovince_field_offset(&self.cprovince_fields, store.starts[index], addr, len)
+                .is_none()
+            {
+                return VectorAnswer::NotCovered;
+            }
+        }
         match image {
             VectorImage::Opening | VectorImage::Sample(_) => {
                 let ordinal = match image {
@@ -1338,6 +1552,44 @@ pub trait BulkOpeningRead {
     fn covers(&self, addr: u64, len: usize) -> bool;
 }
 
+/// How many disjoint fields of one gamestate `CProvince` the `SourceProvince`
+/// family serves and feeds. NOT a window count — one entry is one window, of
+/// the hull over all of them; see [`cprovince_hull_len`].
+///
+/// Taken from the FIELD LIST in `attach_log::offsets` rather than written as a
+/// literal, so the two cannot disagree: the array's own
+/// `[(u64, u32); D81_CPROVINCE_FIELD_COUNT]` type is what makes adding a field
+/// on one side and not the other a compile error.
+pub const D81_CPROVINCE_FIELD_COUNT: usize = super::D81_CPROVINCE_DECODED_FIELDS.len();
+
+/// THE WIDTH OF ONE `SourceProvince` GUARDED READ, from the field table.
+///
+/// The walk's predicate over a `CProvince` is a CONJUNCTION — the vtable at
+/// `+0` must be `expected_cprovince_vtable` AND the id at `+0xA4` must be the
+/// owner key — and a conjunction over two fields only says something about ONE
+/// OBJECT when both fields come from ONE observation. Two separate guarded
+/// reads do not give that: an object replaced in place between them could show
+/// the expected vtable to the first pair of images and the expected id to the
+/// second, with no instant holding both, and the source-slot close would not
+/// catch it because the SLOT never moved. So the read stays the hull, and the
+/// narrowing happens at [`D81VectorCapture::read`] and
+/// [`D81VectorCapture::feed_content`] instead.
+///
+/// (Codex round 1, BLOCKING. An earlier form of lane SS pushed one window per
+/// field and lost exactly this.)
+pub const fn cprovince_hull_len(fields: &[(u64, u32)]) -> u32 {
+    let mut end = 0u64;
+    let mut index = 0usize;
+    while index < fields.len() {
+        let field_end = fields[index].0 + fields[index].1 as u64;
+        if field_end > end {
+            end = field_end;
+        }
+        index += 1;
+    }
+    end as u32
+}
+
 pub struct D81VectorOffsets {
     pub rail_header_window_off: u64,
     pub rail_header_window_len: u32,
@@ -1349,7 +1601,15 @@ pub struct D81VectorOffsets {
     pub map_anchors_off: u64,
     pub map_anchors_len: u32,
     pub record_key_off: u64,
-    pub cprovince_window_len: u32,
+    /// THE FIELDS OF ONE GAMESTATE `CProvince` THE COPY PROGRAM TAKES, as
+    /// `(offset, len)`, ascending and disjoint (lane SS). Production passes
+    /// `attach_log::D81_CPROVINCE_DECODED_FIELDS`, which is the SAME list
+    /// `d81_resolve_anchor_selector_key` forms its read addresses from.
+    ///
+    /// It replaced a single `cprovince_window_len` of 0xA8 — the smallest hull
+    /// holding both fields, and 156 bytes of live province state the walk never
+    /// decodes. See that constant for the whole argument.
+    pub cprovince_fields: [(u64, u32); D81_CPROVINCE_FIELD_COUNT],
     pub active_entry_stride: u64,
     pub active_window_off: u64,
     pub active_window_len: u32,
@@ -1700,6 +1960,8 @@ pub fn d81_vector_observe(
         memo: Default::default(),
         rail_tap_outcome: D81_RAIL_TAP_HOOKS_NOT_INSTALLED,
         rail_tap_copies_avoided: 0,
+        source_province_entries: 0,
+        cprovince_fields: offsets.cprovince_fields,
     };
 
     // THE BRACKET OPENS HERE, once, before anything is read. This asks only
@@ -2002,11 +2264,48 @@ pub fn d81_vector_observe(
         }
     }
     {
+        // THE READ IS THE HULL; THE NARROWING IS DOWNSTREAM OF IT (lane SS).
+        //
+        // The two fields d81 decodes off a gamestate `CProvince` are the vtable
+        // at `+0` and the id at `+0xA4`, twelve bytes of 168, and the 156 in
+        // between are live province state no d81 reader reads. They were the
+        // first difference on 53 of the unchanged-geometry gate's 77 misses
+        // over `captures/rc_vanilla5`'s 448 frames -- each one a full province
+        // walk bought by bytes nobody decodes.
+        //
+        // THE COPY PROGRAM IS UNCHANGED ANYWAY, and that is not a compromise:
+        // the walk's predicate over this object is a CONJUNCTION (the vtable
+        // must be `expected_cprovince_vtable` AND the id must be the owner
+        // key), and a conjunction over two fields is only a statement about ONE
+        // OBJECT when both fields come from one observation. Two guarded reads
+        // per entry would let an object replaced in place between them show the
+        // expected vtable to the first pair of images and the expected id to
+        // the second, with no instant holding both -- and the source-slot close
+        // would not catch it, because it proves the SLOT still points here, not
+        // that the object did not change. So the hull stays one call per image,
+        // both fields land in one observation, and every tear judgement this
+        // family supports is exactly the one it supported before.
+        //
+        // WHAT THE NARROWING IS INSTEAD: `read` refuses to serve any span but a
+        // field, and `feed_content` shows the gate exactly the spans `read`
+        // will serve. Both go through `cprovince_field_offset`, so "every byte
+        // a reader can reach is a byte the gate compared" is a property of one
+        // function rather than an agreement between two lists -- the same shape
+        // as the active table's reduction going through the walk's own decoder.
+        // A reader this table does not describe is answered `NotCovered`, falls
+        // through to the bulk view, which never captured this heap object, and
+        // takes a COUNTED refusal that fails the hour. Fail-closed and loud,
+        // never a wrong row.
         let store = &mut capture.opening[D81Family::SourceProvince as usize];
+        let hull = cprovince_hull_len(&offsets.cprovince_fields);
         for &pointer in &cprovinces {
-            store.push(pointer, offsets.cprovince_window_len);
+            store.push(pointer, hull);
         }
         store.seal();
+        // `seal` deduplicates whole `(start, len)` pairs and every window here
+        // has the same length, so the survivors are exactly the DISTINCT entry
+        // pointers -- one window each.
+        capture.source_province_entries = store.window_count().min(u32::MAX as usize) as u32;
         store.copy_side(
             2,
             ST_O,
@@ -2438,6 +2737,8 @@ mod shape_tests {
             memo: Default::default(),
             rail_tap_outcome: D81_RAIL_TAP_HOOKS_NOT_INSTALLED,
             rail_tap_copies_avoided: 0,
+            source_province_entries: 0,
+            cprovince_fields: rail_offsets().cprovince_fields,
         }
     }
 
@@ -2764,6 +3065,58 @@ mod shape_tests {
         );
     }
 
+    /// THE MERGED INDEX AND A NAIVE PER-STORE SCAN ANSWER EVERY SPAN THE SAME.
+    ///
+    /// # The reference models the COVERAGE POLICY too (lane SS)
+    ///
+    /// `reference` is a second implementation of `D81VectorCapture::read`, and
+    /// the thing under test is the INDEX: does the merged index find the same
+    /// containing windows, the same family, the same retirement poisoning and
+    /// the same window as `locate_with_dead`'s per-store scan? Everything the
+    /// two share beyond that has to be modelled on both sides or the assertion
+    /// compares two different questions.
+    ///
+    /// Lane SS added a coverage rule — a `SourceProvince` window holds the
+    /// 168-byte hull `[+0, +0xA8)` but serves only the two spans d81 decodes,
+    /// `(+0, 8)` and `(+0xA4, 4)` — and this reference was written before it.
+    /// The landing gate caught the gap: probe `0x10046c` len 8 `Opening` is
+    /// contained by exactly ONE window, the `SourceProvince` window at
+    /// `0x100437` len `0xA8`, at IN-WINDOW OFFSET `0x35`. That is neither field
+    /// and lies wholly inside the undecoded span `[0x8, 0xA4)`, so `read`
+    /// answers `NotCovered` and the old reference served eight bytes.
+    ///
+    /// **`NotCovered` is the correct answer and the reference was asserting the
+    /// old surface.** No d81 reader can reach `+0x35`: the only reads this
+    /// family serves are `u64_stable(P + 0)` and `u32_stable(P + 0xA4)` in
+    /// `d81_resolve_anchor_selector_key`, and the one other d81 reader of a
+    /// gamestate `CProvince`, `d81_admit_map_province_reciprocity`, reads
+    /// `+0xC4` — outside this window, by a const assertion beside
+    /// `D81_RECORD_SELECTOR_KEY_OFF`. `feed_cprovince_fields` no longer emits
+    /// those bytes, so SERVING them would be exactly the served-but-uncompared
+    /// byte the narrowing exists to prevent; refusing sends the read to the
+    /// bulk view, which never captured this heap object, and the frame refuses
+    /// under a counted miss class.
+    ///
+    /// Over the 15,194 probes this test makes there are 935 such spans and
+    /// **none at an exact field span**, so nothing production-reachable is
+    /// refused. The fixture reaches them at all only because it pushes 200
+    /// RANDOM starts of width `0xA8` into one store; production's entries are
+    /// distinct `CProvince` objects, which are at least `0x1CC` bytes wide and
+    /// cannot overlap.
+    ///
+    /// # What was NOT done
+    ///
+    /// The window PICK was checked before assuming it: `locate_with_dead` and
+    /// `MergedWindowIndex::for_each_containing_position` both scan downward
+    /// from the same `partition_point` and take the first containing entry, so
+    /// they name the same window, and the reference gates on its OWN index
+    /// rather than borrowing `read`'s. Exactly two probes in this fixture are
+    /// contained by two `SourceProvince` windows at once in a way that would
+    /// make the pick decide the verdict — `0x10b6ea` and `0x10e18c`, both len
+    /// 8, each sitting at offset 0 of one window and mid-hull in the other —
+    /// and BOTH resolve to `Aliased` on both paths, `0x10e18c` because three
+    /// families contain it and `0x10b6ea` because one containing window is
+    /// retired. So the question never arises here.
     #[test]
     fn merged_index_agrees_with_per_store_scans() {
         let mut seed = 0x9E37_79B9_7F4A_7C15u64;
@@ -2859,6 +3212,37 @@ mod shape_tests {
                 return VectorAnswer::NotCovered;
             };
             let store = &capture.opening[family];
+            // THE FIELD GATE, MODELLED HERE TOO (lane SS).
+            //
+            // Written out longhand rather than by calling
+            // `cprovince_field_offset`, so the two sides of this test stay two
+            // implementations of one POLICY rather than one implementation
+            // compared with itself. The policy input -- the capture's own field
+            // table -- is shared, because it is the thing production is
+            // configured with; the search over it is not.
+            //
+            // IT USES THIS SCAN'S OWN INDEX, which is what makes the assertion
+            // still say something. `locate_with_dead` and
+            // `MergedWindowIndex::for_each_containing_position` both walk
+            // DOWNWARD from the same `partition_point` and take the first
+            // containing entry, so they name the same window -- but that is a
+            // property this test is entitled to check, not one it may assume,
+            // and taking the index from `read` would be assuming it.
+            if family == D81Family::SourceProvince as usize {
+                let Some(index) = opening_hit else {
+                    return VectorAnswer::NotCovered;
+                };
+                let offset = addr.wrapping_sub(store.starts[index]);
+                let mut is_field = false;
+                for &(field_off, field_len) in &capture.cprovince_fields {
+                    if field_off == offset && field_len == len {
+                        is_field = true;
+                    }
+                }
+                if !is_field {
+                    return VectorAnswer::NotCovered;
+                }
+            }
             match image {
                 VectorImage::Opening | VectorImage::Sample(_) => {
                     let ordinal = match image {
@@ -2926,6 +3310,32 @@ mod shape_tests {
         for _ in 0..2000 {
             probes.push((0x10_0000 + (next() % 0x1_0100), 1 + (next() % 16) as u32));
         }
+        // THE FIELD GATE'S TWO ARMS, PROBED ON PURPOSE (lane SS).
+        //
+        // The random stream above lands on a `SourceProvince` window 935 times
+        // on this seed and on an EXACT field span not once -- a 12-byte target
+        // in a 168-byte window at a random offset and a random length in
+        // 1..=16 is not something 2,000 draws find. So the gate would be
+        // exercised in the refusing direction only, and a `reference` whose
+        // copy of it always refused would agree with a production `read` that
+        // always refused: both broken, both green.
+        //
+        // These probe both field spans of every entry, plus a span one byte too
+        // wide and one starting inside the undecoded middle. On this fixture
+        // they make 78 field spans servable (56 vtable, 22 id) against 66
+        // refused middle spans, which is the margin the two assertions at the
+        // end of this test stand on.
+        {
+            let source = &capture.opening[D81Family::SourceProvince as usize];
+            for index in 0..source.starts.len() {
+                let base = source.starts[index];
+                for &(field_off, field_len) in &capture.cprovince_fields {
+                    probes.push((base + field_off, field_len));
+                    probes.push((base + field_off, field_len + 1));
+                }
+                probes.push((base + 8, 8));
+            }
+        }
         let mut agreed = 0usize;
         let mut aliased = 0usize;
         let mut served = 0usize;
@@ -2954,6 +3364,44 @@ mod shape_tests {
         assert!(agreed > 10_000, "{agreed}");
         assert!(aliased > 100, "aliased {aliased}");
         assert!(served > 100, "served {served}");
+
+        // NEITHER ARM OF THE FIELD GATE MAY ROT INTO A NO-OP (lane SS). Both
+        // sides of this test now implement it, so a gate that always refused --
+        // or one deleted from both -- would still agree with itself. These
+        // count the two outcomes over the `SourceProvince` windows directly.
+        let source = &capture.opening[D81Family::SourceProvince as usize];
+        let mut field_served = 0usize;
+        let mut middle_refused = 0usize;
+        for index in 0..source.starts.len() {
+            let base = source.starts[index];
+            for &(field_off, field_len) in &capture.cprovince_fields {
+                if matches!(
+                    capture.read(base + field_off, field_len, VectorImage::Opening),
+                    VectorAnswer::Served(_)
+                ) {
+                    field_served += 1;
+                }
+            }
+            if matches!(
+                capture.read(base + 8, 8, VectorImage::Opening),
+                VectorAnswer::NotCovered
+            ) {
+                middle_refused += 1;
+            }
+        }
+        assert!(
+            field_served > 0,
+            "no decoded field served out of {} windows: the gate refuses \
+             everything and the walk would refuse every hour",
+            source.starts.len(),
+        );
+        assert!(
+            middle_refused > 0,
+            "nothing refused inside the undecoded span over {} windows: the \
+             gate is a no-op and the geometry gate is being shown bytes no \
+             reader can reach",
+            source.starts.len(),
+        );
     }
 
     #[test]
@@ -3001,7 +3449,7 @@ mod shape_tests {
             map_anchors_off: 0x14E4,
             map_anchors_len: 24,
             record_key_off: 0xC4,
-            cprovince_window_len: 0xA8,
+            cprovince_fields: [(0, 8), (0xA4, 4)],
             active_entry_stride: 0x20,
             active_window_off: 0x12,
             active_window_len: 7,
@@ -3260,7 +3708,7 @@ mod shape_tests {
             map_anchors_off: 0x14E4,
             map_anchors_len: 24,
             record_key_off: 0xC4,
-            cprovince_window_len: 0xA8,
+            cprovince_fields: [(0, 8), (0xA4, 4)],
             active_entry_stride: 0x20,
             active_window_off: 0x12,
             active_window_len: 7,

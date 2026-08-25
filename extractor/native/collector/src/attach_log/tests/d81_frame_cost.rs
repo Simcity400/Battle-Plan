@@ -3384,3 +3384,57 @@ fn profile_d81_node_phase_arms() {
         per_node_calls - bulk_calls,
     );
 }
+
+/// THE RESOLVER FORMS ITS TWO ADDRESSES FROM THE TABLE THE FAMILY SERVES BY
+/// (lane SS).
+///
+/// `d81_resolve_anchor_selector_key` is the reader the `SourceProvince` family
+/// exists for, and since `D81VectorCapture::read` began refusing every span but
+/// a whole table field, the table is also what decides which of its reads can
+/// be answered at all. Those are the same fact only while the reader indexes
+/// the table, so this pins that it does.
+///
+/// WHY A SOURCE SCAN AND NOT A BEHAVIOURAL TEST. Spelling the addresses as the
+/// literals `resolved.province_ptr` and `CPROVINCE_OFF_ID` is
+/// behaviour-identical TODAY -- the table holds exactly those values -- so no
+/// fixture can tell the two spellings apart. What it changes is the FUTURE: a
+/// field moved in the table would move what `read` serves and leave the reader
+/// asking for a span the family now refuses, and the first sign of it would be
+/// a live capture refusing every hour under `d81_plan_miss_not_captured`. The
+/// serve and feed sides need no scan; they are pinned behaviourally by
+/// `the_source_province_family_serves_and_feeds_only_the_two_decoded_fields`
+/// in `d81_production_plan`.
+///
+/// WHAT IT DOES NOT DO: prove that no OTHER d81 site reads inside a gamestate
+/// `CProvince`. One does -- `d81_admit_map_province_reciprocity`, at `+0xC4`,
+/// disjoint from this window by a const assertion beside
+/// `D81_RECORD_SELECTOR_KEY_OFF`. What bounds an unfound third is the
+/// fail-closed refusal, not this scan.
+///
+/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: re-inlining either offset in the
+/// resolver.
+#[test]
+fn the_cprovince_reads_are_formed_from_the_field_table_the_copy_program_uses() {
+    let source = collector_source_lf();
+    let body = source
+        .split_once("fn d81_resolve_anchor_selector_key(")
+        .expect("the resolver")
+        .1;
+    // Scoped to the function: the next item at column zero ends it.
+    let body = body.split("\nfn ").next().expect("a non-empty body");
+    assert!(
+        body.contains(".checked_add(D81_CPROVINCE_VTABLE_FIELD.0 as usize)"),
+        "the vtable address must be formed from the field table, not from a \
+         bare `resolved.province_ptr`",
+    );
+    assert!(
+        body.contains(".checked_add(D81_CPROVINCE_ID_FIELD.0 as usize)"),
+        "and the id address from the same table, not from `CPROVINCE_OFF_ID`",
+    );
+    assert!(
+        !body.contains("CPROVINCE_OFF_ID"),
+        "no offset may be re-inlined here: `D81VectorCapture::read` admits \
+         spans against the table, so a reader that does not index it can drift \
+         into asking for a span the family will refuse",
+    );
+}
