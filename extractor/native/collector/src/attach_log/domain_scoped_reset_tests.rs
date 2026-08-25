@@ -188,6 +188,19 @@ fn reader_call_spans(body: &str) -> Vec<ReaderCallSpan> {
         //
         // Same argument index again: `scope, gate, lanes, tag, read, encode`.
         ("spawn_gated_publishing(", 3usize),
+        // THE FINISHING READER IS A READER CALL TOO (lane SQ, 2026-08-25), and
+        // this entry is not optional: domain 53's tracker IS domain-scoped
+        // (`for_each_domain_scoped_tracker` lists
+        // `diplomacy_intel_operatives_live`), and d53 is the reader that spawns
+        // through `spawn_gated_finishing`. Without the spelling here its borrow
+        // reads as `OUTSIDE-EVERY-READER-CALL` and this file's table comparison
+        // fails outright -- which is the scanner doing its job, and the reason
+        // a new spawn helper has to arrive with a line in this list.
+        //
+        // `"spawn_gated("` does not cover it: the pattern requires the
+        // parenthesis immediately after the name. Same argument index again --
+        // `scope, gate, lanes, tag, observe, finish`.
+        ("spawn_gated_finishing(", 3usize),
         ("spawn_gated_lane_only(", 3usize),
         ("lane_time_main(", 1usize),
     ] {
