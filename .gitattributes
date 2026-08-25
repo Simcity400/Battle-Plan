@@ -186,3 +186,7 @@ extractor/native/runs/rp_rc_predicate_tools/** text eol=lf
 # their raw export bytes (their headers carry the exact-build hashes).
 extractor/native/runs/rv_d43_oil_current/** text eol=lf
 extractor/native/runs/rv_d43_oil_current/*.decompile.c -text
+
+# lane TA: hash-pinned Ghidra decompiles. AGENTS.md requires `text eol=lf` for
+# hash-pinned committed files; the SHA-256 in MEASUREMENT.md are the LF bytes.
+extractor/native/runs/ta_market_trade/*.decompile.c text eol=lf
