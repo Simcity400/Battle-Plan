@@ -11,6 +11,65 @@ Usage:
     python report_raw_capture.py --run-dir <dir> [--json] [--all-domains]
     python report_raw_capture.py --selftest
 
+The --json contract, stated ONCE and scoped to what actually holds.
+
+A NUMERIC EXIT CODE IS NOT THE GATE. Several paths through this file exit
+0, 1 or 2 without ever reaching a verdict, and one of them (an argparse usage
+error) collides exactly with the undefined-status-bit code. The gate is the
+`COMPACT_STATUS_VERDICT=<code>` line on STDERR. It is printed by, and only by,
+paths that reached one of THIS FILE'S OWN OUTCOMES -- a verdict (0, 1, 2) or
+its explicit no-verdict (3) -- carrying the code this file is about to return.
+Note "about to return", not "the process exits with": anything that kills the
+process between the receipt and its exit sets a status this file never chose,
+which is exactly why the rule below requires the two to AGREE rather than
+trusting either alone. `Invoke-HeadlessRawCapture.ps1` already applies that
+rule, and a --json caller must apply the same one. Two dispositions:
+
+  PARSE STDOUT when, and only when, stderr carries
+  `COMPACT_STATUS_VERDICT=<code>`, <code> is the process's exit code, and
+  <code> is 0, 1 or 2. Then stdout is exactly one complete JSON document and
+  nothing else, `json.load` works on it with no pre-filtering, and the verdict
+  is a field of it: `report["verdict"]`, with `exit_code` and `label`.
+
+  DO NOT PARSE STDOUT in every other case, whatever is in it. That covers a
+  receipt of 3, where stdout is empty or at most a prefix of a document the
+  process failed to write; and no receipt at all, where stdout says nothing
+  about a capture.
+
+Two things that would otherwise look like promises, said as limits instead.
+
+FIRST, "empty on 3" is the normal case, not a guarantee. The document is
+serialised to a string and then written and flushed in one place, as the LAST
+thing the report does, so a failure anywhere in BUILDING it leaves stdout
+untouched. But a write or flush that fails PARTWAY -- a closed pipe, an
+encoding error -- cannot be un-written. It maps to 3, so the prefix is never
+SILENTLY passed off as a document, and "do not parse on 3" is what makes that
+safe. There is no arrangement of one process's stdout that does better.
+
+SECOND, the paths that emit NO receipt. Not a hedge, and not closed by hoping:
+
+- argparse runs before any report code, so `--help` writes its own non-JSON
+  text to stdout and exits 0, and a usage error exits 2 with empty stdout;
+- `--selftest` is dispatched in `__main__` without calling `guarded_main` at
+  all, so it prints its own `selftest ...` lines to stdout and exits 0 or 1
+  whether or not --json was passed;
+- `KeyboardInterrupt` propagates through `guarded_main` deliberately (a
+  cancellation is not a report crash and must not be relabelled as one), so an
+  interrupt during the stdout write can leave a prefix and no receipt;
+- anything that kills the process BEFORE the receipt is written -- a signal, an
+  OOM, a missing interpreter -- leaves whatever had already been written and no
+  receipt, whether it lands before this file runs or in the middle of it.
+  (Death AFTER the receipt is the other case, and it is covered above: the
+  receipt is there, but the process status may not be the code this file chose,
+  which is why the rule requires the two to agree.)
+
+The last two are why the rule is "no receipt, do not parse" rather than a list
+of exit codes: a caller cannot enumerate the ways a process dies, but it can
+check for one line.
+
+The human `VERDICT:` line is printed only without --json. The receipt goes to
+stderr in both modes.
+
 Exit codes:
     0  clean
     1  blocking domains, or the hourly requirement was not met
@@ -376,6 +435,23 @@ def verdict_exit_code(undefined: list, blocking: list, hourly: dict) -> int:
     return 0
 
 
+VERDICT_LABELS = {
+    0: "clean",
+    1: "BLOCKED",
+    EXIT_UNDEFINED_STATUS_BITS: "BLOCKED (UNDEFINED STATUS BITS)",
+}
+
+
+def verdict_label(exit_code: int) -> str:
+    """The human name for a verdict exit code.
+
+    A plain `[]` lookup, deliberately: an exit code with no label is a code this
+    table has not been taught, and inventing "unknown" for it would let a new
+    verdict class reach a reader as if it had been classified.
+    """
+    return VERDICT_LABELS[exit_code]
+
+
 class ReportError(Exception):
     """This report cannot reach a verdict. Never a statement about the capture."""
 
@@ -579,6 +655,48 @@ def selftest() -> int:
             finally:
                 sys.argv = argv
             return code, buffer.getvalue()
+
+    def run_json(domains, stream_extra=None, raw_manifest=None, write_manifest=True):
+        """The REAL entry path with --json, stdout and stderr kept APART.
+
+        Every other case here merges the two streams into one buffer, which is
+        precisely the shape that cannot see this defect class: a merged buffer
+        reads the same whether the COMPACT_STATUS_VERDICT= receipt went to
+        stderr or landed in the middle of the JSON document.
+
+        Also COUNTS the stdout writes. That count is the only thing in this
+        file that can tell "serialised, then written once" from "streamed at
+        stdout": both put the same characters there on the happy path, and only
+        the write count separates them.
+        """
+
+        class CountingStringIO(io.StringIO):
+            writes = 0
+
+            def write(self, text):
+                self.writes += 1
+                return super().write(text)
+
+        with tempfile.TemporaryDirectory() as run_dir:
+            if write_manifest:
+                path = os.path.join(run_dir, "native_session_manifest.json")
+                with open(path, "w", encoding="utf-8") as handle:
+                    if raw_manifest is None:
+                        json.dump(build(domains, stream_extra), handle)
+                    else:
+                        handle.write(raw_manifest)
+            argv = sys.argv
+            sys.argv = [argv[0], "--run-dir", run_dir, "--json"]
+            out_buffer = CountingStringIO()
+            err_buffer = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out_buffer):
+                    with contextlib.redirect_stderr(err_buffer):
+                        code = guarded_main()
+            finally:
+                sys.argv = argv
+            return (code, out_buffer.getvalue(), err_buffer.getvalue(),
+                    out_buffer.writes)
 
     cases = (
         ("a clean word is clean",
@@ -1053,12 +1171,100 @@ def selftest() -> int:
             failures += 1
             print(out)
 
-    total = (len(cases) + len(error_cases) + len(roster_cases)
+    # --json is a MACHINE interface: stdout must be one JSON document and
+    # nothing else, and the verdict must be reachable from that document rather
+    # than only from the exit code and the stderr receipt.
+    json_cases = (
+        ("--json stdout parses, and carries the clean verdict",
+         {"fuel_live": (10, 0)}, 0, "clean"),
+        ("--json stdout parses, and carries the BLOCKED verdict",
+         {"fuel_live": (10, 1 << 9)}, 1, "BLOCKED"),
+        ("--json stdout parses on the undefined-status-bit verdict too",
+         {"fuel_live": (10, 1 << KNOWN_MASK.bit_length())},
+         EXIT_UNDEFINED_STATUS_BITS, "BLOCKED (UNDEFINED STATUS BITS)"),
+    )
+    for label, domains, want_code, want_label in json_cases:
+        code, out, err, stdout_writes = run_json(domains)
+        ok = code == want_code
+        # kills: replacing the serialise-then-write pair with `json.dump`
+        # streaming straight at stdout. Both leave the same characters there,
+        # so nothing else in this file separates them -- but `dump` issues one
+        # write per token and this asserts EXACTLY ONE. That pair is what makes
+        # a mid-serialise failure produce an empty stdout instead of a
+        # truncated document.
+        #
+        # There is no fixture for the mid-serialise failure itself. It is
+        # reachable in principle -- a deeply enough nested manifest reaches the
+        # recursion limit, and manifest-derived structures are carried into the
+        # report as they are -- but a fixture for it would be pinning CPython's
+        # recursion limit rather than this file's contract. The write count is
+        # the handle that kills the regression without one.
+        if stdout_writes != 1:
+            ok = False
+            print(f"  --json wrote stdout {stdout_writes} time(s), want exactly 1")
+        # kills: NON-WHITESPACE stdout pollution on the --json path -- the human
+        # VERDICT line, the verdict receipt, a stray warning. A whitespace-only
+        # extra write would still parse; the write count above is what kills
+        # that one.
+        try:
+            document = json.loads(out)
+        except json.JSONDecodeError as error:
+            document = None
+            ok = False
+            print(f"  --json stdout is not parseable JSON: {error}")
+        if document is None:
+            pass
+        else:
+            # kills: dropping the verdict back out of the document, or letting
+            # the field disagree with the exit code the caller blocks on.
+            verdict = document.get("verdict") or {}
+            ok = (ok
+                  and verdict.get("exit_code") == want_code
+                  and verdict.get("label") == want_label)
+        # The receipt still has to exist for the caller that greps for it -- on
+        # stderr, never inside the document.
+        ok = ok and has_receipt(err, code) and VERDICT_RECEIPT_PREFIX not in out
+        print(f"selftest {'ok  ' if ok else 'FAIL'} exit={code} "
+              f"(want {want_code}): {label}")
+        if not ok:
+            failures += 1
+            print(out)
+            print(err)
+
+    # The no-verdict path is part of the same contract. Reusing `error_cases`
+    # so the two modes are held to the same set of failures.
+    #
+    # What these kill, said exactly: every `error_cases` entry fails while
+    # LOADING the manifest, before a report exists, so they do not exercise
+    # serialisation at all -- the `json.dumps`/one-write pair is killed above,
+    # by the write count. What they kill is any future --json path that emits
+    # to stdout before it has a verdict: a progress line, a warning, an
+    # `{"error": ...}` placeholder document. Each of those would turn "on a
+    # receipt of 3 stdout is normally empty, at worst a prefix of a document
+    # the process failed to write" into "stdout is routinely something a caller
+    # might try to parse".
+    for label, raw, write in error_cases:
+        code, out, err, stdout_writes = run_json(
+            {}, raw_manifest=raw, write_manifest=write)
+        ok = (code == EXIT_REPORT_ERROR and out == "" and stdout_writes == 0
+              and "REPORT ERROR" in err and has_receipt(err, code))
+        print(f"selftest {'ok  ' if ok else 'FAIL'} exit={code} "
+              f"(want {EXIT_REPORT_ERROR}): --json, {label}")
+        if not ok:
+            failures += 1
+            print(repr(out))
+            print(err)
+
+    total = (len(cases) + 2 * len(error_cases) + len(roster_cases)
              + len(reason_cases) + len(registry_cases)
-             + len(repeat_audit_cases)
-             # two standalone single-run cases: the missing --repeat-audit
-             # file and the resolving-relative input_path refusal.
-             + 2 + len(provenance_cases))
+             + len(repeat_audit_cases) + len(json_cases)
+             # three standalone single-run checks, each of which prints its own
+             # `selftest ...` line and can add to `failures`: the missing
+             # --repeat-audit file, the resolving-relative input_path refusal,
+             # and the pseudo-domain derivation check above `registry_cases`.
+             # The last was missing from this sum, so the denominator read one
+             # short of the lines actually printed.
+             + 3 + len(provenance_cases))
     print(f"selftest: {total - failures}/{total} passed")
     return 1 if failures else 0
 
@@ -1166,6 +1372,11 @@ def main() -> int:
     raw_stream_path = os.path.join(run_dir, raw_stream_name)
     raw_stream_bytes = os.path.getsize(raw_stream_path) if os.path.isfile(raw_stream_path) else None
 
+    # Computed ONCE, above the report, so the JSON field and the human VERDICT
+    # line cannot drift: a --json consumer that reads `report["verdict"]` and an
+    # operator reading the printed line are looking at the same decision.
+    exit_code = verdict_exit_code(undefined, blocking, hourly)
+
     report = {
         "run_dir": run_dir,
         "manifest": manifest_path,
@@ -1219,12 +1430,53 @@ def main() -> int:
         },
         "outcome_reasons_unreadable": unreadable_reason_count,
         "all_domains": rows if args.all_domains else None,
+        # The verdict is a FIELD, not a line a --json reader has to scrape. It
+        # used to be reachable from --json only through the process exit code
+        # and the COMPACT_STATUS_VERDICT= receipt on stderr, so anything that
+        # captured stdout alone (a pipeline, a subprocess call that keeps only
+        # stdout, a saved report file) got the whole census with no answer
+        # attached.
+        "verdict": {
+            "exit_code": exit_code,
+            "label": verdict_label(exit_code),
+            "blocking_domain_count": len(blocking),
+            "undefined_status_bit_domain_count": len(undefined),
+        },
     }
 
     if args.json:
-        json.dump(report, sys.stdout, indent=2)
-        print()
-        return verdict_exit_code(undefined, blocking, hourly)
+        # stdout carries the JSON document and NOTHING else. The human VERDICT
+        # line below is skipped, and the COMPACT_STATUS_VERDICT= receipt goes to
+        # stderr (see `emit_verdict_receipt`), so this stream is json.load-able
+        # as-is.
+        #
+        # `dumps` into a string and ONE write, not `json.dump` straight at
+        # stdout: `dump` streams, so a value it cannot serialise -- a stray
+        # object in a manifest-derived field, a recursion limit -- leaves a
+        # TRUNCATED document on stdout and then `guarded_main` maps the
+        # exception to exit 3. A caller reading stdout alone would be parsing
+        # half a report. Building the whole string first makes the exit-3 stdout
+        # empty instead, which is the honest answer: this report reached no
+        # verdict.
+        #
+        # What this does NOT buy, said plainly rather than left implied: a write
+        # that fails PARTWAY cannot be un-written. If the pipe closes or the
+        # encode fails here, stdout keeps the prefix and the process exits 3.
+        # That is why the module docstring makes the RECEIPT the gate -- a
+        # receipt of 3 means do not parse stdout at all -- instead of promising
+        # stdout is always parseable. The numeric exit code is not the gate;
+        # several paths reach one without ever printing a receipt.
+        #
+        # The explicit flush is here so that a flush failure is raised INSIDE
+        # `guarded_main`'s try, where this file maps it to exit 3. Without it
+        # the buffer is flushed after `guarded_main` has already returned its
+        # code, and this file's own error handling is no longer in the path.
+        # What the interpreter does with a failure at that point is a runtime
+        # detail and is deliberately not claimed here.
+        document = json.dumps(report, indent=2)
+        sys.stdout.write(document + "\n")
+        sys.stdout.flush()
+        return exit_code
 
     def line(label: str, value: object) -> None:
         print(f"  {label:34s} {value}")
@@ -1383,15 +1635,10 @@ def main() -> int:
             print(f"  {row['domain']:48s} d{row['domain_id']:<3d} recs={row['data_record_count']:<6d} "
                   f"rows={row['row_count_total']:<10d} {names}")
 
-    exit_code = verdict_exit_code(undefined, blocking, hourly)
-    verdict = {
-        0: "clean",
-        1: "BLOCKED",
-        EXIT_UNDEFINED_STATUS_BITS: "BLOCKED (UNDEFINED STATUS BITS)",
-    }[exit_code]
-    print(f"\nVERDICT: {verdict} "
-          f"({len(blocking)} domain(s) with residual failure status, "
-          f"{len(undefined)} with undefined status bits)\n")
+    verdict = report["verdict"]
+    print(f"\nVERDICT: {verdict['label']} "
+          f"({verdict['blocking_domain_count']} domain(s) with residual failure status, "
+          f"{verdict['undefined_status_bit_domain_count']} with undefined status bits)\n")
     return exit_code
 
 

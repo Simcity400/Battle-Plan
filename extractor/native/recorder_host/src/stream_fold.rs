@@ -3362,11 +3362,59 @@ mod tests {
     }
 
     /// Accepting the STREAM is not the same as decoding the PAYLOAD: a malformed
-    /// body degrades its domain and the fold keeps going, so these assertions
-    /// alone pass on a payload the decoder rejected. Callers that mean "this
-    /// body is well formed" must also check `malformed_payload_records`, which
-    /// is why the stats come back.
-    fn expect_domain_boundary_acceptance(domain: u16, payload: &[u8]) -> FoldStreamStats {
+    /// body degrades its own domain and the fold keeps going, so the framing
+    /// assertions alone pass on a payload the decoder REJECTED - such a record
+    /// still lands with `data_records == 1`, `bytes_folded == stream.len()` and
+    /// no stop reason. Every caller of this helper means "this production body
+    /// is well formed", so the decode check lives HERE rather than being an
+    /// optional extra at each call site: it used to be returned as stats and
+    /// only the d14 caller looked, which left the other SIX call sites - three
+    /// domains, d51, d53 and d69 - asserting nothing stronger than "the fold
+    /// did not stop".
+    ///
+    /// kills - the production change each caller now catches that it did not
+    /// before. What raises `malformed_payload_records` is any parse error out
+    /// of `summarize_domain_data_payload`, which is TWO sources: the domain's
+    /// own decoder, and `reject_unassigned_status_bits`, which the authority
+    /// applies to every domain's status word after the decoder has run.
+    /// - d14 / `d14_full_popularity_row_remains_boundary_valid`: a change to the
+    ///   D14 32-byte fixed block's width or to the admissible
+    ///   `election_frequency` set that leaves this fixture behind. This site
+    ///   already asserted it; the assertion moved here unchanged.
+    /// - d51 / `d51_and_d69_production_failure_payloads_pass_stream_boundary`:
+    ///   a `scripted_state_domain51_gate::compact` encoder change - header
+    ///   width or field order - that its own `decode_payload` can no longer
+    ///   parse on the SOURCE_UNAVAILABLE / zero-row path, or a d51 status bit
+    ///   published outside the assigned v1 mask and d51's registered lane-local
+    ///   mask, which `reject_unassigned_status_bits` turns into a parse error.
+    ///   Before, a d51 producer emitting a body its own decoder rejects passed
+    ///   this test.
+    /// - d69 / `d51_and_d69_production_failure_payloads_pass_stream_boundary`
+    ///   and `d69_v2_signed_bonus_payload_passes_stream_boundary`: drift in the
+    ///   TSG2 bonus payload that `encode_payload_with_bonuses` emits - the
+    ///   24-byte header, the group/member count framing, or the 12-byte signed
+    ///   member-bonus row - changed on the encoder side only. The fold reaches
+    ///   it through `decode_payload_with_definition_ids`, whose TSG2 branch
+    ///   delegates to `decode_payload_with_bonuses`; a mismatch there is a parse
+    ///   error the old framing-only assertions ignored. The same assertion also
+    ///   catches the policy rejections (group/member counts, member tag_db_id
+    ///   ceiling) that decoder raises after a clean parse.
+    /// - d53 / `d53_plain_delta_production_payload_passes_stream_boundary`,
+    ///   `d53_plain_partial_production_payload_passes_stream_boundary`,
+    ///   `d53_facs_v1_absent_production_payload_passes_stream_boundary`:
+    ///   `diplomacy_intel_operatives_live::compact` encoder/decoder drift on the
+    ///   DELTA, PARTIAL and absent-FACS shapes. The absent-FACS site is the
+    ///   sharpest, and not because it is the shortest fixture - it is not; the
+    ///   PARTIAL one has no rows at all. It is sharpest because it is the ONLY
+    ///   site that pins a trailer's ABSENCE. FACS is a self-describing trailer
+    ///   `append_faction_trailer` omits entirely when the roster is empty and
+    ///   incomplete, and the site asserted only that the bytes contain no
+    ///   `FACS`. That is half a claim: it says the encoder took the omit
+    ///   branch, and says nothing about whether the payload it produced can
+    ///   still be read. A decoder that starts requiring the trailer, or an
+    ///   encoder whose omit branch also drops or mis-sizes something the
+    ///   decoder does need, satisfied the old assertion and fails the new one.
+    fn expect_domain_boundary_acceptance(domain: u16, payload: &[u8]) {
         let hour = raw_for(HOUR_A);
         let mut stream = Vec::new();
         push_record(
@@ -3391,7 +3439,16 @@ mod tests {
         assert_eq!(stats.data_records, 1, "domain {domain}");
         assert_eq!(stats.bytes_folded, stream.len() as u64, "domain {domain}");
         assert!(stats.stop_reason.is_none(), "domain {domain}");
-        stats
+        assert_eq!(
+            stats.malformed_payload_records,
+            0,
+            "domain {domain}: the boundary-valid body must DECODE, not merely ride an accepted \
+             stream; first decoder reason: {:?}",
+            stats
+                .malformed_payload_domains
+                .get(&domain)
+                .map(|malformed| malformed.first_reason.as_str())
+        );
     }
 
     const HOUR_A: i64 = 16_959_360;
@@ -4544,8 +4601,9 @@ mod tests {
         // D14 row was 28 bytes wide; the E28 capital word made it 32 and this
         // fixture kept the old width. The stream still accepted, because a
         // malformed body degrades its own domain rather than stopping the fold -
-        // which is why this test now asserts the body DECODED, the assertion
-        // that catches both the stale width and the two zero words below.
+        // which is why `expect_domain_boundary_acceptance` asserts the body
+        // DECODED, the assertion that catches both the stale width and the two
+        // zero words below.
         //
         // `election_frequency` is `u32::MAX` because zero is not a legal
         // measured value: the decoder admits either the unmeasured marker or
@@ -4560,11 +4618,10 @@ mod tests {
         payload.extend_from_slice(&1u16.to_le_bytes());
         payload.push(b'd');
         payload.extend_from_slice(&50_000i32.to_le_bytes());
-        let stats = expect_domain_boundary_acceptance(14, &payload);
-        assert_eq!(
-            stats.malformed_payload_records, 0,
-            "the boundary-valid D14 body must DECODE, not merely ride an accepted stream"
-        );
+        // The decode assertion this test used to spell out itself now lives
+        // inside `expect_domain_boundary_acceptance`, where it polices every
+        // domain that calls the helper rather than only this one.
+        expect_domain_boundary_acceptance(14, &payload);
     }
 
     #[test]
