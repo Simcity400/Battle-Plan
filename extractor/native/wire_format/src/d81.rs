@@ -2,7 +2,7 @@
 //! simulation inputs.
 //!
 //! Derived from `world_fold.rs:15700`-`:15727` (`fold_rail_replay_state`).
-// @world-fold-authority domain=81 functions=fold_rail_replay_state lines=15700-15727 sha256=8a46cc4f9a135df3167a6045aa8c0a6de80f62d8132e72cebb8fc73223e9a004 closure=cb4f5a61a41504d33a1af1e0c69136733252870627650a75b3a4015d0d0802ca
+// @world-fold-authority domain=81 functions=fold_rail_replay_state lines=15700-15727 sha256=cccace04a76fb96d48374edb442b574ccdd2beec395af042f5a4e6e8bfd26f8f closure=2ca5d361ff5a13ed78187364be791da37c68fac09c23250bc18f782087102f47
 //!
 //! Public schema v4 deliberately carries no GUI object, selected-country, or
 //! effective-country state.  The first three collections retain the exact
