@@ -1,7 +1,7 @@
 //! d20 `divisions_live` — the reference domain schema.
 //!
-//! Derived from `world_fold.rs:26647`-`:27200`
-// @world-fold-authority domain=20 functions=fold_divisions,fold_division_document lines=26647-27200 sha256=a8a69bf224e133476f768ba499e3994bc3129f9f567037a4ebef92e2267aaa85 closure=d441c0a5abea7d1d709ea562528e053768c9aff37ec7507deaf799fca8305e20
+//! Derived from `world_fold.rs:26656`-`:27209`
+// @world-fold-authority domain=20 functions=fold_divisions,fold_division_document lines=26656-27209 sha256=a8a69bf224e133476f768ba499e3994bc3129f9f567037a4ebef92e2267aaa85 closure=d441c0a5abea7d1d709ea562528e053768c9aff37ec7507deaf799fca8305e20
 //! (row decode and object build) and `domain-20::Overview` in
 //! `extractor/documents/technical_evidence.json`.
 //! The quantization rationale is preserved in

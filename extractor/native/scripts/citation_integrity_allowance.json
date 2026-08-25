@@ -836,11 +836,11 @@
       "world_fold.rs:20170-20243": 1
     },
     "extractor/native/wire_format/src/d20.rs": {
-      "world_fold.rs:26647-27200": 1
+      "world_fold.rs:26656-27209": 1
     },
     "extractor/native/wire_format/src/d21.rs": {
       "collector/src/attach_log.rs:72387-72454": 1,
-      "world_fold.rs:27203-27415": 1
+      "world_fold.rs:27212-27424": 1
     },
     "extractor/native/wire_format/src/d22.rs": {
       "attach_log.rs:58564": 1,
@@ -858,7 +858,7 @@
       "world_fold.rs:22247-22252": 1,
       "world_fold.rs:22266": 1,
       "world_fold.rs:22271": 1,
-      "world_fold.rs:30486-30610": 1,
+      "world_fold.rs:30495-30619": 1,
       "world_fold.rs:386-387": 1,
       "world_fold.rs:5350": 1
     },
@@ -876,7 +876,7 @@
       "extractor/native/collector/src/attach_log.rs:58628-58717": 1,
       "world_fold.rs:22451": 1,
       "world_fold.rs:29946": 1,
-      "world_fold.rs:30613-30836": 1,
+      "world_fold.rs:30622-30845": 1,
       "world_fold.rs:400-403": 1
     },
     "extractor/native/wire_format/src/d24.rs": {
@@ -903,7 +903,7 @@
       "world_fold.rs:24228-24240": 2,
       "world_fold.rs:24243": 1,
       "world_fold.rs:24245-24249": 1,
-      "world_fold.rs:24310-24800": 1,
+      "world_fold.rs:24319-24809": 1,
       "world_fold.rs:761-808": 1
     },
     "extractor/native/wire_format/src/d26.rs": {
@@ -927,7 +927,7 @@
       "world_fold.rs:17501": 1,
       "world_fold.rs:24170": 2,
       "world_fold.rs:24171": 1,
-      "world_fold.rs:24803-25109": 1,
+      "world_fold.rs:24812-25118": 1,
       "world_fold.rs:810-816": 1
     },
     "extractor/native/wire_format/src/d27.rs": {
@@ -1213,7 +1213,7 @@
       "world_fold.rs:16342-16348": 1,
       "world_fold.rs:16555-16557": 1,
       "world_fold.rs:1883": 1,
-      "world_fold.rs:22731-22953": 1
+      "world_fold.rs:22740-22962": 1
     },
     "extractor/native/wire_format/src/d48.rs": {
       "collector_module.rs:164-206": 1,
@@ -1292,7 +1292,7 @@
       "world_fold.rs:20328": 1,
       "world_fold.rs:20595": 1,
       "world_fold.rs:2123-2131": 1,
-      "world_fold.rs:28036-28390": 1
+      "world_fold.rs:28045-28399": 1
     },
     "extractor/native/wire_format/src/d49.rs": {
       "attach_log.rs:39810-39816": 1,
@@ -1318,7 +1318,7 @@
       "world_fold.rs:20040-20129": 1,
       "world_fold.rs:20047": 1,
       "world_fold.rs:20047-20062": 1,
-      "world_fold.rs:27852-27940": 1,
+      "world_fold.rs:27861-27949": 1,
       "world_fold.rs:8800": 2
     },
     "extractor/native/wire_format/src/d50.rs": {
@@ -1345,7 +1345,7 @@
       "world_fold.rs:20131-20222": 1,
       "world_fold.rs:20153-20158": 1,
       "world_fold.rs:20220": 1,
-      "world_fold.rs:27943-28033": 1,
+      "world_fold.rs:27952-28042": 1,
       "world_fold.rs:8631": 2,
       "world_fold.rs:8876-8877": 1
     },
@@ -1409,7 +1409,7 @@
       "world_fold.rs:25501": 1,
       "world_fold.rs:25501-25504": 1,
       "world_fold.rs:25523-25530": 1,
-      "world_fold.rs:26191-26406": 1,
+      "world_fold.rs:26200-26415": 1,
       "world_fold.rs:921-965": 2,
       "world_fold.rs:948-949": 1,
       "world_fold.rs:958": 1
@@ -1443,7 +1443,7 @@
       "lanes/occupation_resistance_compliance_live/domain44_compact.rs:235-610": 1,
       "world_fold.rs:16903-16929": 1,
       "world_fold.rs:16960": 1,
-      "world_fold.rs:24027-24033": 1,
+      "world_fold.rs:24036-24042": 1,
       "world_fold.rs:30395-30399": 1,
       "world_fold.rs:30400": 1,
       "world_fold.rs:30419": 1,
@@ -1500,7 +1500,7 @@
       "world_fold.rs:23877-23883": 3,
       "world_fold.rs:25702": 1,
       "world_fold.rs:25850": 1,
-      "world_fold.rs:29625-29726": 1,
+      "world_fold.rs:29634-29735": 1,
       "world_fold.rs:8286-8318": 1
     },
     "extractor/native/wire_format/src/d56.rs": {
@@ -1564,7 +1564,7 @@
       "world_fold.rs:22123-22129": 1,
       "world_fold.rs:22143": 1,
       "world_fold.rs:2872-2874": 1,
-      "world_fold.rs:30376-30483": 1
+      "world_fold.rs:30385-30492": 1
     },
     "extractor/native/wire_format/src/d61.rs": {
       "d62.rs:56-70": 1,
@@ -1607,7 +1607,7 @@
       "record.rs:383": 2,
       "world_fold.rs:15899-15912": 1,
       "world_fold.rs:15908-15912": 1,
-      "world_fold.rs:22609-22662": 1
+      "world_fold.rs:22618-22671": 1
     },
     "extractor/native/wire_format/src/d62.rs": {
       "lib.rs:175-196": 2,
@@ -1642,7 +1642,7 @@
       "schema.rs:371": 1,
       "world_fold.rs:15883": 1,
       "world_fold.rs:15926-15935": 1,
-      "world_fold.rs:22665-22728": 1
+      "world_fold.rs:22674-22737": 1
     },
     "extractor/native/wire_format/src/d63.rs": {
       "attach_log.rs:60576": 2,
