@@ -48,6 +48,19 @@ fn d38_names_the_guard_that_fired_and_speaks_for_both_sides_of_the_roster() {
             observed_equipment_rows: 2141,
             observed_variant_rows: 210,
             invalid_air_wing_rows: invalid,
+            // Lane SK split the total into its four sources. This fixture is
+            // about the GUARD NAMES, not the attribution, so it charges the
+            // whole total to the wing walk -- the sum and the components stay
+            // consistent, which
+            // `d38_the_reason_attributes_every_rejected_row_to_the_walk_that_rejected_it`
+            // is the test for.
+            wing_walk_invalid_rows: invalid,
+            loadout_walk_invalid_rows: 0,
+            variant_walk_invalid_rows: 0,
+            out_of_range_mission_region_rows: 0,
+            walk_retries: 0,
+            walk_retries_healed: 0,
+            walk_retries_unavailable: 0,
             invalid_variant_rows: 0,
             deleted_rows: 0,
             loadout_rows_without_a_wing: loadouts_without_wing,

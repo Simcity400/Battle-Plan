@@ -306,6 +306,7 @@ fn d18_d65_d66_and_d91_emit_sites_route_their_status_word_through_the_ledger() {
             "COMPACT_DOMAIN_AIR_SUPERIORITY_INPUTS",
             "COMPACT_DOMAIN_AIR_VARIANT_RESERVES",
             "COMPACT_DOMAIN_COUNTRY_ARMY_UPGRADE_REQUESTS_LIVE",
+            "COMPACT_DOMAIN_COUNTRY_DYNAMIC_MODIFIERS_LIVE",
             "COMPACT_DOMAIN_COUNTRY_IDENTITY",
             "COMPACT_DOMAIN_DELAYED_EVENTS_LIVE",
             "COMPACT_DOMAIN_MARKET_TRADE_LIVE",
@@ -317,8 +318,9 @@ fn d18_d65_d66_and_d91_emit_sites_route_their_status_word_through_the_ledger() {
         "every emit site that publishes a reader-computed status word must substantiate it; \
          D36 and D38 joined D18/D65/D66/D91 when lane LC closed the silent-PERF class, D43 \
          joined them when the release-candidate capture showed all 324 of its frames \
-         substantiated from the record instead of by their producer, and D29/D42/D64/D93 \
-         joined on rc_vanilla4, which carried the stand-in on 719, 74, 53 and 4 frames"
+         substantiated from the record instead of by their producer, D29/D42/D64/D93 \
+         joined on rc_vanilla4, which carried the stand-in on 719, 74, 53 and 4 frames, and \
+         D67 joined on rc_vanilla5, which carried it on 2"
     );
 }
 
