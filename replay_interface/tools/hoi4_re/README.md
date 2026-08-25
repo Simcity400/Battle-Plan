@@ -21,7 +21,7 @@ readers, and serializes writes. Agents never edit the database directly.
 Agents use this MCP service rather than coordinating separate GUI projects.
 The installed stack is deliberately limited to tools with distinct jobs:
 
-- Ghidra 12.1.2: shared exact-build static authority (20 serialized shards).
+- Ghidra 12.1.2: shared exact-build static authority (10 serialized shards).
 - angr 9.3.2: an independent decompiler and symbolic-analysis second opinion.
 - Rizin 0.8.2: fast independent disassembly and basic-block recovery.
 - Frida 17.15.3: bounded call observation through `trace_calls`.

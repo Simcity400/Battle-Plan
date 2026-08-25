@@ -18,6 +18,12 @@ produces a portable `.battleplan` file, plus a viewer that plays it back. It mus
 work without per-campaign setup for every supported game build and for arbitrary
 valid combinations of mods and DLC.
 
+Sound is part of the reconstructed presentation: playback derives world audio
+(battle and ambient sound) and music viewer-locally from recorded authoritative
+state and authenticated content. Audio is never captured and never a rendering-law
+input; until the derived world-sound layer ships, playback carries music and UI
+chrome sounds only.
+
 The intended experience is attach-and-play: start the recorder and play normally.
 It identifies each running game and campaign, records through relaunches and
 reloads, and produces the replay without asking for a PID, save, DLL, duration, or

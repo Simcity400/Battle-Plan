@@ -1,7 +1,7 @@
 # game_defs — mod-aware static game-data parsers
 
 Parses the **effective mod-over-vanilla** installed content (`common/` + `events/` +
-`localisation/`) into structured JSON for the replacement replay surface. This
+`localisation/`) into structured JSON for the replay viewer. This
 provides the *static definition / world data* the views need that is not game
 state from memory at all.
 

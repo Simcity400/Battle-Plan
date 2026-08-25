@@ -69,38 +69,6 @@ $ReviewExitCode = $LASTEXITCODE
   Codex approves clean - no round limit. Any commit after an APPROVE needs one
   more confirmation round.
 
-## OpenCode runner - the implementation lane runtime
-
-`opencode` (npm `opencode-ai`) is on the Windows PATH. Owner 2026-08-24: implementation
-lanes run on OpenCode (`-Agent build`) instead of Opus subagents. It is never a reviewer;
-Codex stays the only adversarial reviewer, and the LANE runs that loop itself from its
-own shell until a clean APPROVE (the orchestrator never reviews lane work; it touches
-Codex only for its own edits). Start the wrapper from the
-lane's locked worktree (it runs in the current directory; there is no --dir). The prompt
-carries everything: worktree path, job, proof rules, the no-test rule above, report shape.
-
-```powershell
-$Result = & .\tools\reviewers\Invoke-OpenCodeReview.ps1 -Prompt $Prompt -RunDir $RunDir
-if ($Result.ExitCode -ne 0 -or -not $Result.ReplyText) { throw 'opencode job failed' }
-```
-
-- Defaults are fixed and not to be changed silently: `opencode/x-preview-f-free
-  --variant max` (Ox Alpha, max effort, owner 2026-08-21) and the read-only `plan`
-  agent. The script rejects an effort the model does not declare - the CLI drops an
-  unknown one without erroring.
-- Success = `ExitCode -eq 0` AND a non-empty `ReplyText`. Retry once: jobs fail
-  transiently while the OpenCode desktop app holds the same database.
-- OpenCode halts early a lot. The script sends `continue` into the same session until
-  the turn ends cleanly, capped by `-MaxContinues` (20); `$Result.Continues` reports
-  how many it needed. Nothing to do by hand.
-- Session id lands in `<RunDir>\opencode_session.txt` on the first event. Resume by
-  id only - `-SessionId $Result.SessionId`, never `--continue`.
-- A lane that stops early (empty reply, no commit, `step_finish reason=unknown`) is NOT
-  dead: re-prompt the SAME session id with "continue" (again if needed). Never start a
-  new session for a stalled lane (owner 2026-08-24). Keep its inputs small: slice reads
-  (grep -n, then a window), no whole files over ~1000 lines, commit after every step.
-- Prompt rules are Codex's: no project memory, so the prompt carries everything.
-
 ## Orchestration - Only relevant if you are given the role of orchestrator by the owner
 
 - Lanes run in worktrees, each with its own branch and build dir,
