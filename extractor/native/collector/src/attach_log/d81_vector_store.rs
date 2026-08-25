@@ -112,7 +112,18 @@ const ST_CS1: u8 = 1 << 3;
 const ST_CS2: u8 = 1 << 4;
 const ST_DEAD: u8 = 1 << 7;
 
-#[derive(Default)]
+/// CLONE IS THE RAIL WRITE-TAP'S REUSE (lane SN), and it is the only reason
+/// this type is `Clone`. A store is cloned exactly twice per remembered rail
+/// copy: once into [`D81RailReuse`] when a full copy is taken, and once back
+/// out of it on a frame whose witness is still current.
+///
+/// The three rail stores together are of the order of half a megabyte on
+/// `captures/rc_vanilla5`'s shape, against a modelled 2.0 - 3.0 ms of guarded
+/// calls they replace. Both are MODELS: no counter publishes a per-family
+/// window count, and the wall figure is a whole-phase quotient, so read
+/// `runs/sn_rail_write_tap/MEASUREMENT.md` section 3 for what they rest on
+/// rather than either number on its own (Codex r5 finding 1).
+#[derive(Clone, Default)]
 pub struct FamilyStore {
     starts: Vec<u64>,
     lens: Vec<u32>,
@@ -459,6 +470,29 @@ impl FamilyStore {
         let from = self.offsets[index] as usize + (addr - self.starts[index]) as usize;
         &self.slab(ordinal)[from..from + len as usize]
     }
+
+    /// Did EVERY window of this store obtain EVERY image, with none retired?
+    ///
+    /// The rail write-tap's remember-side precondition (lane SN). A store with
+    /// a window that lost an image is a store whose reuse would hand the walk
+    /// an `Unreadable` where the engine had bytes, and a retired window is one
+    /// the alias check already poisoned; neither may be carried into another
+    /// hour, so both refuse the memory and re-owe the baseline.
+    fn every_window_fully_imaged(&self, image_count: usize) -> bool {
+        let wanted = match image_count {
+            0 => return self.starts.is_empty(),
+            n => ((1u16 << n) - 1) as u8,
+        };
+        self.status
+            .iter()
+            .all(|&status| status & ST_DEAD == 0 && status & wanted == wanted)
+    }
+
+    /// How many guarded calls an unmerged side of this store would issue.
+    /// Used only to price what a reuse avoided.
+    fn unmerged_call_count(&self, image_count: usize) -> u64 {
+        (self.starts.len() as u64).saturating_mul(image_count as u64)
+    }
 }
 
 const STORE_HEADER_CLOSE: u8 = D81_FAMILY_COUNT as u8;
@@ -780,6 +814,15 @@ pub struct D81VectorCapture {
     /// where it is. Sound against any later retirement, and against any later
     /// `copy_side`, because both write `status` and neither moves an entry.
     memo: [Cell<Option<GeometryMemo>>; MEMO_WAYS],
+    /// WHY THIS FRAME DID OR DID NOT REUSE THE RAIL STORES (lane SN). One of
+    /// the `D81_RAIL_TAP_*` ordinals, published as a histogram so a capture can
+    /// tell "the rails never moved" from "the detour never fired" from "the
+    /// remembered copy did not match".
+    pub rail_tap_outcome: u8,
+    /// The guarded calls the reuse avoided on this frame, `0` on any frame
+    /// that copied. Summed over a capture this is the whole prize, in the same
+    /// unit as `d81_plan_copies_issued`, so the two divide.
+    pub rail_tap_copies_avoided: u64,
 }
 
 /// Feed a slab of back-to-back active windows as their SEMANTIC state.
@@ -1411,12 +1454,219 @@ fn merge_domain(
     }
 }
 
+// ===================== THE RAIL WRITE-TAP (lane SN) =====================
+//
+// WHAT IT IS. Three of these eleven stores are the rails: `RailHeader` (the
+// sixteen bytes at `CProvinceRailwayInfo + 0x38`, i.e. the pair-vector data
+// pointer and count), its closing image `header_close`, and `PairBlob` (the
+// sorted `(neighbour_province_id, railway_level)` entries). On
+// `captures/rc_vanilla5` those three issue between 14,056 and 21,084 of the
+// frame's 58,523 guarded copies -- 24% to 36% -- the range being the
+// `PairBlob` window count, which no counter in that capture publishes. Times
+// the capture's own `d81_plan_us / d81_plan_copies_issued`, which is a
+// WHOLE-PHASE QUOTIENT and not a marginal per-call cost, that models 2.0 to
+// 3.0 ms of the 8.4 ms `plan` phase, every frame, on a network that almost
+// never moves. Both figures are models; `runs/sn_rail_write_tap/MEASUREMENT.md`
+// section 3 states what they rest on and `d81_plan_rail_tap_copies_avoided` is
+// what measures the call half exactly (Codex r2 finding 3).
+//
+// WHY A HOOK RATHER THAN A COMPARISON. Lane TD searched the whole image for an
+// observable change signal for this data and found none
+// (`runs/td_rail_change_signal/DOSSIER.md`): the level is written in place at a
+// stable address inside a stable allocation (§4 M2a), the engine's own consumer
+// re-compares the vector element by element rather than reading a version word
+// (§6.1), and the one rail dirty bit the engine keeps is cleared by its own
+// producer inside a single update (§6.2). Its §6.6 states what that search
+// could NOT establish -- it is not a proof that no signal exists, and its
+// writer census is not closed. That bounded negative is what the minimise-hooks
+// ruling asks for, and `lanes/d81_rail_change_gate` is the tap it authorises.
+//
+// WHAT REUSE DOES AND DOES NOT CHANGE. It removes guarded COPIES and nothing
+// else. The bulk recipe still runs, the other eight families are still copied,
+// `feed_content` still hands the gate every byte of all eleven stores, and the
+// unchanged-geometry gate's verdict is computed exactly as before. What the
+// walk reads out of the three rail stores on a reused frame are the bytes the
+// last full copy took, which the tap proves are still the bytes in the engine.
+//
+// THE TWO CONDITIONS, and the second is not the tap. Reuse requires
+//
+//   1. the tap: no hooked writer has run since the last full rail copy, and
+//   2. the GEOMETRY: this frame's own `(province_id, info_pointer)` list --
+//      re-derived from the rail table the bulk recipe copies anyway -- is
+//      identical to the list the remembered copy was taken from, and every
+//      root and offset the rail program depends on is unchanged.
+//
+// Condition 2 is what makes the manager's table-slot writers
+// (`GetOrCreateProvinceInfo`, `CRailwayManager::LoadToken`, the constructor)
+// need no hook of their own: their whole mutation is a store into `table[id]`,
+// which this list is derived from, once a frame, for free. That is the
+// minimise-hooks ruling applied rather than quoted.
+
+/// The reuse outcome for one frame, published as a histogram bin. `0` is the
+/// reuse arm; every other value names why the frame copied in full.
+pub const D81_RAIL_TAP_REUSED: u8 = 0;
+/// The detours are not installed (or the build has none). The pre-tap program.
+pub const D81_RAIL_TAP_HOOKS_NOT_INSTALLED: u8 = 1;
+/// No full rail copy has been remembered since the tap was reset.
+pub const D81_RAIL_TAP_BASELINE_PENDING: u8 = 2;
+/// A hooked writer ran; the bytes may have moved.
+pub const D81_RAIL_TAP_RAIL_WRITTEN: u8 = 3;
+/// The tap was clean but this process holds no remembered copy to reuse.
+pub const D81_RAIL_TAP_NO_MEMORY: u8 = 4;
+/// The tap was clean but condition 2 failed: a table slot, a root or an offset
+/// moved, so the remembered windows are not this frame's windows.
+pub const D81_RAIL_TAP_GEOMETRY_CHANGED: u8 = 5;
+
+/// Wire names for the bins, by ordinal.
+pub const D81_RAIL_TAP_OUTCOME_NAMES: [&str; 6] = [
+    "reused",
+    "hooks_not_installed",
+    "baseline_pending",
+    "rail_written",
+    "no_memory",
+    "geometry_changed",
+];
+
+pub const D81_RAIL_TAP_OUTCOME_COUNT: usize = D81_RAIL_TAP_OUTCOME_NAMES.len();
+
+/// ONE READING OF THE TAP, carried opaquely.
+///
+/// The copy program stores it beside the remembered stores and hands it back;
+/// it never reasons about the numbers. `epoch` counts the detours' entry and
+/// exit bumps and `quiet` says no detour was executing. See the lane crate's
+/// `gate` module for why a reading pair either side of the copy is what makes
+/// reuse sound, and why the dirty bit it replaced was not (Codex r2 finding 1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct D81RailWitness {
+    pub epoch: u64,
+    pub quiet: bool,
+}
+
+/// What the copy bracket asks the write-tap, and tells it.
+///
+/// A TRAIT RATHER THAN A DIRECT CALL into the lane crate, for one reason: the
+/// reuse decision has to be exercised in both directions by a fixture, and a
+/// fixture cannot patch a detour into anything.
+pub trait D81RailTap {
+    /// Called ONCE per copy bracket, before anything else. Returns the outcome
+    /// ordinal a GLOBAL condition forces -- [`D81_RAIL_TAP_REUSED`] when none
+    /// does. The per-copy currency question is [`Self::still_current`].
+    fn open_window(&self) -> u8;
+    /// Read the tap right now.
+    fn witness(&self) -> D81RailWitness;
+    /// May a copy taken between these two readings be remembered? True only
+    /// when no hooked writer overlapped the interval between them.
+    fn copy_was_quiet(&self, before: D81RailWitness, after: D81RailWitness) -> bool;
+    /// Is a copy remembered with `remembered` still the engine's current state?
+    fn still_current(&self, remembered: D81RailWitness) -> bool;
+    /// A rail copy was remembered. Discharges the baseline obligation.
+    fn note_memory_seeded(&self);
+    /// The remembered copy is gone. Re-owes the baseline by name.
+    fn note_memory_lost(&self);
+}
+
+/// The last full rail copy, and everything that decides whether it is still
+/// this frame's copy.
+///
+/// EVERY FIELD IS A PRECONDITION, not a convenience. `railed` is compared
+/// element by element rather than by length or by digest: the whole soundness
+/// of reuse rests on "the same provinces point at the same objects", and a
+/// count or a hash would answer "probably" where the gate this feeds refuses
+/// to accept "probably" anywhere else.
+pub struct D81RailReuse {
+    /// The tap reading taken AFTER the copy that produced these stores, and the
+    /// only thing that says they are still the engine's bytes.
+    witness: D81RailWitness,
+    railed: Vec<(u32, u64)>,
+    rail_table: u64,
+    rail_slots: u32,
+    header_off: u64,
+    header_len: u32,
+    pairs_ptr_in_window: usize,
+    pair_count_in_window: usize,
+    pair_stride: u32,
+    max_neighbors: u32,
+    header: FamilyStore,
+    header_close: FamilyStore,
+    pairs: FamilyStore,
+}
+
+impl D81RailReuse {
+    fn matches(
+        &self,
+        roots: &D81VectorRoots,
+        offsets: &D81VectorOffsets,
+        railed: &[(u32, u64)],
+    ) -> bool {
+        self.rail_table == roots.rail_table
+            && self.rail_slots == roots.rail_slots
+            && self.header_off == offsets.rail_header_window_off
+            && self.header_len == offsets.rail_header_window_len
+            && self.pairs_ptr_in_window == offsets.pairs_ptr_in_window
+            && self.pair_count_in_window == offsets.pair_count_in_window
+            && self.pair_stride == offsets.pair_stride
+            && self.max_neighbors == offsets.max_neighbors
+            && self.railed == railed
+    }
+
+    /// The guarded calls a reuse of this memory avoids: every window of the
+    /// three rail stores, at every image their unmerged program would take.
+    fn avoided_calls(&self) -> u64 {
+        self.header
+            .unmerged_call_count(2)
+            .saturating_add(self.header_close.unmerged_call_count(2))
+            .saturating_add(self.pairs.unmerged_call_count(2))
+    }
+}
+
+/// THE REMEMBERED COPY, held for one frame.
+///
+/// A process global rather than a field of the domain tracker, deliberately:
+/// `d81_vector_observe` is the only reader and the only writer, one d81 copy
+/// bracket runs at a time, and threading a carrier through
+/// `d81_observe_copy_plan_with` would have added a parameter to twenty fixture
+/// call sites that have no tap and no memory.
+///
+/// BEING A PROCESS GLOBAL IS ALSO ITS ONE HAZARD, and it cost a BLOCKING
+/// finding (Codex round 4): every reuse precondition is ADDRESS-shaped, so a
+/// boundary that replaces the world WITHOUT changing the addresses -- a
+/// campaign rollover, a same-identity forward reload -- left a memory that
+/// `still_current` and `matches` both accepted for a different campaign. The
+/// two call sites of [`d81_rail_reuse_forget`] are what close that, and
+/// `the_campaign_reset_forgets_the_rail_memory_and_re_owes_the_baseline` in
+/// `attach_log/tests.rs` is what keeps them there.
+static RAIL_REUSE: std::sync::Mutex<Option<D81RailReuse>> = std::sync::Mutex::new(None);
+
+/// Drop the remembered rail copy.
+///
+/// TWO CALLERS, and both are boundaries where the same addresses may belong to
+/// a different world: `reset_campaign_scoped_capture_state!` in `attach_log.rs`
+/// (campaign rollover and same-identity forward reload), and the
+/// defective-copy arm of [`d81_vector_observe`]. Each pairs it with the lane
+/// gate's `note_memory_lost`, so the next bracket copies under a NAMED reason
+/// rather than reporting an unexplained `no_memory`.
+pub fn d81_rail_reuse_forget() {
+    if let Ok(mut slot) = RAIL_REUSE.lock() {
+        *slot = None;
+    }
+}
+
+/// Test-facing: is a copy remembered right now?
+#[cfg(test)]
+fn d81_rail_reuse_present() -> bool {
+    RAIL_REUSE
+        .lock()
+        .map(|slot| slot.is_some())
+        .unwrap_or(false)
+}
+
 pub fn d81_vector_observe(
     hour: crate::snapshot_recipes::HourStamp,
     roots: &D81VectorRoots,
     offsets: &D81VectorOffsets,
     bulk: &dyn BulkOpeningRead,
     memory: &mut D81VectorMemory<'_>,
+    tap: &dyn D81RailTap,
 ) -> D81VectorCapture {
     let mut capture = D81VectorCapture {
         hour,
@@ -1448,7 +1698,16 @@ pub fn d81_vector_observe(
         closing_tail_start: 0,
         merged: std::sync::OnceLock::new(),
         memo: Default::default(),
+        rail_tap_outcome: D81_RAIL_TAP_HOOKS_NOT_INSTALLED,
+        rail_tap_copies_avoided: 0,
     };
+
+    // THE BRACKET OPENS HERE, once, before anything is read. This asks only
+    // the GLOBAL questions -- are the detours installed, is a baseline owed --
+    // because whether the remembered bytes are still the engine's is a question
+    // about that memory's own witness, and it is asked below.
+    let tap_reason = tap.open_window();
+    capture.rail_tap_outcome = tap_reason;
 
     let mut railed: Vec<(u32, u64)> = Vec::new();
     for id in 0..roots.rail_slots {
@@ -1466,90 +1725,135 @@ pub fn d81_vector_observe(
         railed.push((id, pointer));
     }
 
-    {
-        let store = &mut capture.opening[D81Family::RailHeader as usize];
-        for &(_, pointer) in &railed {
-            store.push(
-                pointer + offsets.rail_header_window_off,
-                offsets.rail_header_window_len,
-            );
-        }
-        store.seal();
-        store.copy_side(
-            2,
-            ST_O,
-            memory.copy,
-            &capture.copies,
-            MergePolicy::default(),
-        );
-    }
-
-    let mut blobs: Vec<(u64, u32)> = Vec::new();
-    {
-        let store = &capture.opening[D81Family::RailHeader as usize];
-        for index in 0..store.window_count() {
-            if store.status[index] & ST_O == 0 {
-                capture.voids = capture.voids.saturating_add(1);
-                continue;
-            }
-            let window = store.serve(
-                index,
-                store.starts[index],
-                offsets.rail_header_window_len,
-                0,
-            );
-            let ptr = u64::from_le_bytes(
-                window[offsets.pairs_ptr_in_window..offsets.pairs_ptr_in_window + 8]
-                    .try_into()
-                    .expect("eight bytes"),
-            );
-            let count = u32::from_le_bytes(
-                window[offsets.pair_count_in_window..offsets.pair_count_in_window + 4]
-                    .try_into()
-                    .expect("four bytes"),
-            );
-            if count == 0 || count > offsets.max_neighbors {
-                continue;
-            }
-            if !(memory.admit)(ptr) {
-                capture.pointers_rejected = capture.pointers_rejected.saturating_add(1);
-                continue;
-            }
-            blobs.push((ptr, count.saturating_mul(offsets.pair_stride)));
+    // CONDITION 1 AND CONDITION 2, in that order, and both fail closed.
+    //
+    // A geometry mismatch DROPS the memory and re-owes the baseline rather
+    // than silently copying: the remembered bytes describe a set of objects
+    // this frame does not have, so nothing about them may survive into the
+    // next decision. A stale WITNESS does not drop it -- the bytes still
+    // describe the right objects, they are simply out of date, and the copy
+    // this frame is about to take will replace them.
+    let mut reused = false;
+    if tap_reason == D81_RAIL_TAP_REUSED {
+        match RAIL_REUSE.lock() {
+            Ok(mut slot) => match slot.as_ref() {
+                None => capture.rail_tap_outcome = D81_RAIL_TAP_NO_MEMORY,
+                Some(remembered) if !tap.still_current(remembered.witness) => {
+                    capture.rail_tap_outcome = D81_RAIL_TAP_RAIL_WRITTEN;
+                }
+                Some(remembered) if remembered.matches(roots, offsets, &railed) => {
+                    capture.rail_tap_copies_avoided = remembered.avoided_calls();
+                    capture.opening[D81Family::RailHeader as usize] = remembered.header.clone();
+                    capture.header_close = remembered.header_close.clone();
+                    capture.opening[D81Family::PairBlob as usize] = remembered.pairs.clone();
+                    capture.rail_tap_outcome = D81_RAIL_TAP_REUSED;
+                    reused = true;
+                }
+                Some(_) => {
+                    *slot = None;
+                    tap.note_memory_lost();
+                    capture.rail_tap_outcome = D81_RAIL_TAP_GEOMETRY_CHANGED;
+                }
+            },
+            Err(_) => capture.rail_tap_outcome = D81_RAIL_TAP_NO_MEMORY,
         }
     }
 
-    {
-        let opening = &capture.opening[D81Family::RailHeader as usize];
-        for index in 0..opening.window_count() {
-            capture
-                .header_close
-                .push(opening.starts[index], opening.lens[index]);
+    // THE WITNESS PAIR BRACKETS THE RAIL COPY AND NOTHING ELSE. Everything
+    // between these two readings is the three rail stores' guarded calls; the
+    // other families are copied after, and a writer running during THEM cannot
+    // have touched the bytes this pair is vouching for.
+    let witness_before = tap.witness();
+    if !reused {
+        {
+            let store = &mut capture.opening[D81Family::RailHeader as usize];
+            for &(_, pointer) in &railed {
+                store.push(
+                    pointer + offsets.rail_header_window_off,
+                    offsets.rail_header_window_len,
+                );
+            }
+            store.seal();
+            store.copy_side(
+                2,
+                ST_O,
+                memory.copy,
+                &capture.copies,
+                MergePolicy::default(),
+            );
         }
-        capture.header_close.seal();
-        capture.header_close.copy_side(
-            2,
-            ST_O,
-            memory.copy,
-            &capture.copies,
-            MergePolicy::default(),
-        );
-    }
 
-    {
-        let store = &mut capture.opening[D81Family::PairBlob as usize];
-        for &(ptr, len) in &blobs {
-            store.push(ptr, len);
+        let mut blobs: Vec<(u64, u32)> = Vec::new();
+        {
+            let store = &capture.opening[D81Family::RailHeader as usize];
+            for index in 0..store.window_count() {
+                if store.status[index] & ST_O == 0 {
+                    capture.voids = capture.voids.saturating_add(1);
+                    continue;
+                }
+                let window = store.serve(
+                    index,
+                    store.starts[index],
+                    offsets.rail_header_window_len,
+                    0,
+                );
+                let ptr = u64::from_le_bytes(
+                    window[offsets.pairs_ptr_in_window..offsets.pairs_ptr_in_window + 8]
+                        .try_into()
+                        .expect("eight bytes"),
+                );
+                let count = u32::from_le_bytes(
+                    window[offsets.pair_count_in_window..offsets.pair_count_in_window + 4]
+                        .try_into()
+                        .expect("four bytes"),
+                );
+                if count == 0 || count > offsets.max_neighbors {
+                    continue;
+                }
+                if !(memory.admit)(ptr) {
+                    capture.pointers_rejected = capture.pointers_rejected.saturating_add(1);
+                    continue;
+                }
+                blobs.push((ptr, count.saturating_mul(offsets.pair_stride)));
+            }
         }
-        store.seal();
-        store.copy_side(
-            2,
-            ST_O,
-            memory.copy,
-            &capture.copies,
-            MergePolicy::default(),
-        );
+
+        {
+            let opening = &capture.opening[D81Family::RailHeader as usize];
+            for index in 0..opening.window_count() {
+                capture
+                    .header_close
+                    .push(opening.starts[index], opening.lens[index]);
+            }
+            capture.header_close.seal();
+            capture.header_close.copy_side(
+                2,
+                ST_O,
+                memory.copy,
+                &capture.copies,
+                MergePolicy::default(),
+            );
+        }
+
+        {
+            let store = &mut capture.opening[D81Family::PairBlob as usize];
+            for &(ptr, len) in &blobs {
+                store.push(ptr, len);
+            }
+            store.seal();
+            store.copy_side(
+                2,
+                ST_O,
+                memory.copy,
+                &capture.copies,
+                MergePolicy::default(),
+            );
+        }
     }
+    // THE CLOSING HALF OF THE SEQLOCK PAIR. Taken here, immediately after the
+    // last rail call and before any other family is touched, so the interval it
+    // closes is exactly the rail copy.
+    let witness_after = tap.witness();
 
     let mut map_provinces: Vec<(u32, u64)> = Vec::new();
     for &(id, _) in &railed {
@@ -1712,7 +2016,29 @@ pub fn d81_vector_observe(
         );
     }
 
-    capture.closing_tail_start = capture.copies.get();
+    // THE STAMP IS COMPENSATED FOR A REUSE, and it has to be (lane SN).
+    //
+    // `closing_tail_start` is a copy-call ORDINAL and `feed_content` hands it
+    // to the unchanged-geometry gate, so it is one of the bytes two
+    // observations are compared on. A reused frame issues none of the three
+    // rail families' calls, so the raw counter here would be up to 21,084 lower
+    // than
+    // the frame the memory was taken from -- and every frame after a reuse
+    // would MISS on that one number alone, buying 3 ms of copy and giving back
+    // 20 ms of walk. Adding the avoided calls back restores exactly the value a
+    // full copy would have stamped: reuse is only permitted from a memory whose
+    // every rail window obtained every image, so that frame issued exactly
+    // `windows * images` calls for those three stores, which is what
+    // `avoided_calls` counts.
+    //
+    // `rail_tap_copies_avoided` is zero on every frame that copied, so nothing
+    // about the stamp moves on the pre-tap path, and `d81_plan_copies_issued`
+    // is deliberately NOT compensated -- that counter is the prize and must
+    // show the reduction.
+    capture.closing_tail_start = capture
+        .copies
+        .get()
+        .saturating_add(capture.rail_tap_copies_avoided);
 
     // THE THREE MERGING FAMILIES, and the only three.
     //
@@ -1851,6 +2177,68 @@ pub fn d81_vector_observe(
     measure(&capture.record_ptr_close);
     capture.adjacent_pairs = adjacent;
     capture.near_pairs = near;
+
+    // REMEMBER, and only from a copy that is complete in every direction.
+    //
+    // Placed at the very end because the two defect words this depends on are
+    // only final here: `voids` is summed over every family above, and
+    // `aliases_retired` is set by the retirement pass. A capture the gate
+    // would refuse (`is_defect_free`) is a capture whose rail bytes may be
+    // missing, and reusing those next hour would publish an `Unreadable` where
+    // the engine had data. Anything short of complete therefore DROPS the
+    // memory and re-owes the baseline by name, which costs the next frame a
+    // full copy and nothing else.
+    // REMEMBERED ONLY WHERE IT COULD EVER BE READ. With the detours absent the
+    // tap can never answer current, so remembering would clone the three rail
+    // stores -- of the order of half a megabyte on `rc_vanilla5`'s shape, the
+    // slabs plus each store's `starts`, `lens`, `offsets` and `status`, and a
+    // MODEL either way because no counter publishes a per-family window count
+    // (Codex r6 finding 1) -- every frame for a decision nothing will make.
+    // And in the offline fixtures,
+    // which are exactly the builds with no detours, it would leave one
+    // fixture's rail bytes in a process global another fixture then has to
+    // step over.
+    //
+    // AND ONLY FROM A COPY NO WRITER OVERLAPPED (Codex r2 finding 1).
+    // `copy_was_quiet` is the seqlock check: the epoch must not have moved
+    // across the rail copy and no detour may have been executing at either
+    // end. A copy taken while a writer was inside the engine is bytes that may
+    // be half-written, and remembering it would republish them for as long as
+    // the epoch stayed put.
+    if !reused && capture.rail_tap_outcome != D81_RAIL_TAP_HOOKS_NOT_INSTALLED {
+        let rail_complete = capture.opening[D81Family::RailHeader as usize]
+            .every_window_fully_imaged(2)
+            && capture.header_close.every_window_fully_imaged(2)
+            && capture.opening[D81Family::PairBlob as usize].every_window_fully_imaged(2);
+        let quiet = tap.copy_was_quiet(witness_before, witness_after);
+        if capture.is_defect_free() && rail_complete && quiet {
+            if let Ok(mut slot) = RAIL_REUSE.lock() {
+                *slot = Some(D81RailReuse {
+                    witness: witness_after,
+                    railed,
+                    rail_table: roots.rail_table,
+                    rail_slots: roots.rail_slots,
+                    header_off: offsets.rail_header_window_off,
+                    header_len: offsets.rail_header_window_len,
+                    pairs_ptr_in_window: offsets.pairs_ptr_in_window,
+                    pair_count_in_window: offsets.pair_count_in_window,
+                    pair_stride: offsets.pair_stride,
+                    max_neighbors: offsets.max_neighbors,
+                    header: capture.opening[D81Family::RailHeader as usize].clone(),
+                    header_close: capture.header_close.clone(),
+                    pairs: capture.opening[D81Family::PairBlob as usize].clone(),
+                });
+                // ONLY HERE, and only after the memory is actually held: this
+                // is what discharges the baseline obligation, and a baseline
+                // discharged against a memory nobody stored would open the
+                // gate over nothing.
+                tap.note_memory_seeded();
+            }
+        } else {
+            d81_rail_reuse_forget();
+            tap.note_memory_lost();
+        }
+    }
 
     capture
 }
@@ -2048,6 +2436,8 @@ mod shape_tests {
             closing_tail_start: 0,
             merged: std::sync::OnceLock::new(),
             memo: Default::default(),
+            rail_tap_outcome: D81_RAIL_TAP_HOOKS_NOT_INSTALLED,
+            rail_tap_copies_avoided: 0,
         }
     }
 
@@ -2664,6 +3054,8 @@ mod shape_tests {
             &offsets,
             &bulk,
             &mut memory,
+            // The tap a build with no detours gets: the pre-tap program.
+            &ScriptedTap::new(D81_RAIL_TAP_HOOKS_NOT_INSTALLED, true),
         );
 
         let header_a = rail_a + 0x38;
@@ -2689,6 +3081,743 @@ mod shape_tests {
             capture.read(blob_a, 8, VectorImage::Closing),
             VectorAnswer::NeverObserved
         ));
+    }
+
+    // ==============================================================
+    // THE RAIL WRITE-TAP'S REUSE (lane SN)
+    //
+    // The tap's own seqlock rules are unit-tested where they live
+    // (`lanes/d81_rail_change_gate/src/gate.rs`). What is tested here is the
+    // half that lives in the copy program: that a current witness removes
+    // exactly the rail copies and changes NOTHING the gate can see, that every
+    // other answer copies in full, and that a memory is only ever remembered
+    // from a copy that was complete AND that no writer overlapped.
+    // ==============================================================
+
+    /// Serialises the tests below: [`RAIL_REUSE`] is a process global and the
+    /// harness runs tests concurrently. Nothing else in the crate populates it
+    /// -- every other caller reaches `d81_vector_observe` through
+    /// `D81RailTapLive`, which answers `HooksNotInstalled` off-detour and is
+    /// therefore refused the remember step -- so this lock is the whole of the
+    /// exclusion these need.
+    static RAIL_TAP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn rail_tap_lock() -> std::sync::MutexGuard<'static, ()> {
+        RAIL_TAP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// A tap whose answers the test writes down, so the copy program's own
+    /// behaviour is what is under test rather than the lane gate's. The gate's
+    /// own seqlock rules are unit-tested where they live.
+    ///
+    /// `epoch` is what every witness this tap hands out reports, and a test
+    /// bumps it to stand for a hooked writer having run. `noisy` makes every
+    /// witness non-quiet, standing for a writer that is still inside the
+    /// engine.
+    struct ScriptedTap {
+        reason: u8,
+        epoch: Cell<u64>,
+        noisy: Cell<bool>,
+        /// Bumped by the fixture's own copy closure when the rail copy runs,
+        /// so the epoch moves BETWEEN the two witness readings rather than on
+        /// every reading. That is what makes the mid-copy test sensitive to
+        /// WHERE the readings are taken (Codex r5 finding 2).
+        epoch_bumps: Cell<u32>,
+        seeded: Cell<u32>,
+        lost: Cell<u32>,
+    }
+
+    impl ScriptedTap {
+        /// Stand for a hooked writer arriving right now. Called from the
+        /// fixture's copy closure, so the epoch moves at a KNOWN point inside
+        /// the copy program rather than on a witness reading.
+        fn bump_epoch(&self) {
+            self.epoch.set(self.epoch.get().wrapping_add(1));
+            self.epoch_bumps.set(self.epoch_bumps.get() + 1);
+        }
+
+        /// A tap that will let the copy program reuse, given a matching memory.
+        fn new(reason: u8, current: bool) -> Self {
+            let tap = Self {
+                reason,
+                epoch: Cell::new(1),
+                noisy: Cell::new(false),
+                epoch_bumps: Cell::new(0),
+                seeded: Cell::new(0),
+                lost: Cell::new(0),
+            };
+            if !current {
+                // A different epoch from the one any memory was seeded under.
+                tap.epoch.set(u64::MAX);
+            }
+            tap
+        }
+    }
+
+    impl D81RailTap for ScriptedTap {
+        fn open_window(&self) -> u8 {
+            self.reason
+        }
+        fn witness(&self) -> D81RailWitness {
+            D81RailWitness {
+                epoch: self.epoch.get(),
+                quiet: !self.noisy.get(),
+            }
+        }
+        fn copy_was_quiet(&self, before: D81RailWitness, after: D81RailWitness) -> bool {
+            before.quiet && after.quiet && before.epoch == after.epoch
+        }
+        fn still_current(&self, remembered: D81RailWitness) -> bool {
+            let now = self.witness();
+            now.quiet && now.epoch == remembered.epoch
+        }
+        fn note_memory_seeded(&self) {
+            self.seeded.set(self.seeded.get() + 1);
+        }
+        fn note_memory_lost(&self) {
+            self.lost.set(self.lost.get() + 1);
+        }
+    }
+
+    const RAIL_BASE: u64 = 0x10_0000;
+    const RAIL_WORLD_LEN: usize = 0x10000;
+
+    struct RailBulk<'a> {
+        world: &'a [u8],
+    }
+
+    impl BulkOpeningRead for RailBulk<'_> {
+        fn u64_at(&self, addr: u64) -> Option<u64> {
+            let offset = addr.checked_sub(RAIL_BASE)? as usize;
+            let bytes = self.world.get(offset..offset + 8)?;
+            Some(u64::from_le_bytes(bytes.try_into().ok()?))
+        }
+        fn u32_at(&self, addr: u64) -> Option<u32> {
+            let offset = addr.checked_sub(RAIL_BASE)? as usize;
+            let bytes = self.world.get(offset..offset + 4)?;
+            Some(u32::from_le_bytes(bytes.try_into().ok()?))
+        }
+        fn u8_at(&self, addr: u64) -> Option<u8> {
+            let offset = addr.checked_sub(RAIL_BASE)? as usize;
+            self.world.get(offset).copied()
+        }
+        fn covers(&self, addr: u64, len: usize) -> bool {
+            addr.checked_sub(RAIL_BASE)
+                .and_then(|offset| usize::try_from(offset).ok())
+                .and_then(|offset| offset.checked_add(len))
+                .is_some_and(|end| end <= self.world.len())
+        }
+    }
+
+    fn rail_world() -> Vec<u8> {
+        let mut world = vec![0u8; RAIL_WORLD_LEN];
+        let put_u64 = |world: &mut [u8], addr: u64, value: u64| {
+            let offset = (addr - RAIL_BASE) as usize;
+            world[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        };
+        let put_u32 = |world: &mut [u8], addr: u64, value: u32| {
+            let offset = (addr - RAIL_BASE) as usize;
+            world[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        };
+        put_u64(&mut world, RAIL_BASE + 0x100, RAIL_BASE + 0x1000);
+        put_u64(&mut world, RAIL_BASE + 0x108, RAIL_BASE + 0x2000);
+        put_u64(&mut world, RAIL_BASE + 0x1038, RAIL_BASE + 0x3000);
+        put_u32(&mut world, RAIL_BASE + 0x1044, 1);
+        put_u64(&mut world, RAIL_BASE + 0x2038, RAIL_BASE + 0x4000);
+        put_u32(&mut world, RAIL_BASE + 0x2044, 2);
+        // Distinguishable pair bytes, so a reuse that served the wrong slab
+        // would be visible rather than merely equal to zero.
+        for (index, byte) in world[0x3000..0x3018].iter_mut().enumerate() {
+            *byte = 0xA0 + index as u8;
+        }
+        world
+    }
+
+    fn rail_roots() -> D81VectorRoots {
+        D81VectorRoots {
+            rail_table: RAIL_BASE + 0x100,
+            rail_slots: 2,
+            map_array: RAIL_BASE + 0x200,
+            map_count: 0,
+            source_array: RAIL_BASE + 0x300,
+            source_count: 0,
+            active_table: RAIL_BASE + 0x5000,
+            bulk_spans: Vec::new(),
+        }
+    }
+
+    fn rail_offsets() -> D81VectorOffsets {
+        D81VectorOffsets {
+            rail_header_window_off: 0x38,
+            rail_header_window_len: 0x10,
+            pairs_ptr_in_window: 0,
+            pair_count_in_window: 0xC,
+            pair_stride: 8,
+            max_neighbors: 64,
+            map_record_ptr_off: 0x11B8,
+            map_anchors_off: 0x14E4,
+            map_anchors_len: 24,
+            record_key_off: 0xC4,
+            cprovince_window_len: 0xA8,
+            active_entry_stride: 0x20,
+            active_window_off: 0x12,
+            active_window_len: 7,
+        }
+    }
+
+    /// One frame. Returns the capture and the addresses the guarded copies
+    /// asked for, in order.
+    ///
+    /// `refuse` is handed the address AND HOW MANY TIMES THAT ADDRESS HAS BEEN
+    /// ASKED FOR ALREADY, so a test can fail exactly one IMAGE of one window
+    /// (Codex r1 finding 5). Failing every image of a window is a `voids`
+    /// defect that `is_defect_free` already catches; failing only image 1 is
+    /// not, and it is the case `every_window_fully_imaged` exists for.
+    fn rail_frame(
+        world: &[u8],
+        tap: &ScriptedTap,
+        refuse: impl FnMut(u64, usize) -> bool,
+    ) -> (D81VectorCapture, Vec<u64>) {
+        let (capture, log, _refusals) = rail_frame_counting(world, tap, refuse);
+        (capture, log)
+    }
+
+    /// [`rail_frame`] over a caller-supplied `roots`, so one test can give the
+    /// plan a NON-EMPTY non-rail family. Every other test uses
+    /// [`rail_roots`], whose map and source counts are zero.
+    fn rail_frame_over(
+        world: &[u8],
+        roots: &D81VectorRoots,
+        tap: &ScriptedTap,
+        mut refuse: impl FnMut(u64, usize) -> bool,
+    ) -> (D81VectorCapture, Vec<u64>) {
+        let offsets = rail_offsets();
+        let mut log: Vec<u64> = Vec::new();
+        let capture = {
+            let mut inner = copy_from(world, RAIL_BASE);
+            let mut copy = |addr: u64, out: &mut [u8]| {
+                let seen = log.iter().filter(|&&past| past == addr).count();
+                log.push(addr);
+                if refuse(addr, seen) {
+                    return false;
+                }
+                inner(addr, out)
+            };
+            let admit =
+                |pointer: u64| pointer >= RAIL_BASE && pointer < RAIL_BASE + RAIL_WORLD_LEN as u64;
+            let mut memory = D81VectorMemory {
+                copy: &mut copy,
+                admit: &admit,
+            };
+            let bulk = RailBulk { world };
+            d81_vector_observe(
+                crate::snapshot_recipes::HourStamp(7),
+                roots,
+                &offsets,
+                &bulk,
+                &mut memory,
+                tap,
+            )
+        };
+        (capture, log)
+    }
+
+    /// [`rail_frame`], and HOW MANY CALLS THE CLOSURE ACTUALLY REFUSED.
+    ///
+    /// A test that scripts a refusal and never checks it fired proves nothing
+    /// when the call it aimed at stops being issued (Codex r2 finding 5): the
+    /// expected "not remembered" would then come from the missing call rather
+    /// than from the refusal.
+    fn rail_frame_counting(
+        world: &[u8],
+        tap: &ScriptedTap,
+        mut refuse: impl FnMut(u64, usize) -> bool,
+    ) -> (D81VectorCapture, Vec<u64>, usize) {
+        let mut refusals = 0usize;
+        let roots = rail_roots();
+        let offsets = rail_offsets();
+        let mut log: Vec<u64> = Vec::new();
+        let capture = {
+            let mut inner = copy_from(world, RAIL_BASE);
+            let mut copy = |addr: u64, out: &mut [u8]| {
+                let seen = log.iter().filter(|&&past| past == addr).count();
+                log.push(addr);
+                if refuse(addr, seen) {
+                    refusals += 1;
+                    return false;
+                }
+                inner(addr, out)
+            };
+            let admit =
+                |pointer: u64| pointer >= RAIL_BASE && pointer < RAIL_BASE + RAIL_WORLD_LEN as u64;
+            let mut memory = D81VectorMemory {
+                copy: &mut copy,
+                admit: &admit,
+            };
+            let bulk = RailBulk { world };
+            d81_vector_observe(
+                crate::snapshot_recipes::HourStamp(7),
+                &roots,
+                &offsets,
+                &bulk,
+                &mut memory,
+                tap,
+            )
+        };
+        (capture, log, refusals)
+    }
+
+    fn rail_image(capture: &D81VectorCapture) -> Vec<u8> {
+        let mut image = Vec::new();
+        capture.feed_content(&mut |_store, bytes| image.extend_from_slice(bytes));
+        image
+    }
+
+    /// The addresses only the three rail stores ever ask for, with the number
+    /// of guarded calls a FULL copy issues for each: four for a header window
+    /// (two opening images plus two closing) and two for a pair blob.
+    ///
+    /// Exact counts rather than "was it copied at all" (Codex r2 finding 5): a
+    /// fallback that copied image 0 and dropped image 1 passes a `contains`
+    /// check and is a half-observed window.
+    fn rail_call_counts() -> [(u64, usize); 4] {
+        [
+            (RAIL_BASE + 0x1038, 4),
+            (RAIL_BASE + 0x2038, 4),
+            (RAIL_BASE + 0x3000, 2),
+            (RAIL_BASE + 0x4000, 2),
+        ]
+    }
+
+    fn calls_for(log: &[u64], address: u64) -> usize {
+        log.iter().filter(|&&seen| seen == address).count()
+    }
+
+    /// Seed a remembered copy and return its image.
+    fn seed_memory(world: &[u8]) -> Vec<u8> {
+        d81_rail_reuse_forget();
+        let tap = ScriptedTap::new(D81_RAIL_TAP_BASELINE_PENDING, true);
+        let (capture, _log) = rail_frame(world, &tap, |_, _| false);
+        assert_eq!(capture.rail_tap_outcome, D81_RAIL_TAP_BASELINE_PENDING);
+        assert_eq!(tap.seeded.get(), 1, "a complete copy is remembered");
+        assert!(d81_rail_reuse_present());
+        rail_image(&capture)
+    }
+
+    #[test]
+    fn a_clean_tap_reuses_the_rails_and_the_gate_cannot_tell() {
+        // kills: a reuse that changes ANY byte the unchanged-geometry gate
+        // compares. The gate keys on `feed_content` over all eleven stores, so
+        // if the reused image differed from the copied one by a single byte,
+        // every gated frame after a reuse would MISS -- the tap would buy back
+        // some of the copy and give back the whole walk, which on
+        // `rc_vanilla5`'s shape is the larger of the two by an order of
+        // magnitude (runs/sn_rail_write_tap/MEASUREMENT.md section 3).
+        let _g = rail_tap_lock();
+        let world = rail_world();
+        let copied = seed_memory(&world);
+
+        let tap = ScriptedTap::new(D81_RAIL_TAP_REUSED, true);
+        let (capture, log) = rail_frame(&world, &tap, |_, _| false);
+
+        assert_eq!(capture.rail_tap_outcome, D81_RAIL_TAP_REUSED);
+        assert_eq!(rail_image(&capture), copied, "the image must be identical");
+        for (address, _) in rail_call_counts() {
+            assert_eq!(
+                calls_for(&log, address),
+                0,
+                "{address:#x} was copied on a reused frame"
+            );
+        }
+        // THE ONE FED VALUE A REUSE COULD HAVE MOVED, asserted directly as
+        // well as through the image above: `closing_tail_start` is a copy-call
+        // ordinal, the three rail stores issue twelve of this fixture's calls,
+        // and without the compensation at the stamp it would read 0 here and
+        // 12 on the copied frame -- one number, and every gated frame after a
+        // reuse would miss on it.
+        assert_eq!(capture.closing_tail_start, 12);
+        // Two header windows, two closing images of them, two pair blobs, at
+        // two images each.
+        assert_eq!(capture.rail_tap_copies_avoided, 12);
+        assert_eq!(capture.copies.get(), 6, "only the active table remains");
+        assert_eq!(
+            tap.seeded.get(),
+            0,
+            "a reuse copies nothing, so it consumes no marks"
+        );
+        assert_eq!(tap.lost.get(), 0);
+    }
+
+    #[test]
+    fn a_reused_frame_serves_the_remembered_bytes_to_the_walk() {
+        // kills: a reuse that carries the geometry but not the slabs, which
+        // would answer `Unreadable` where the copy answered `Served` and refuse
+        // every rail read of the hour.
+        let _g = rail_tap_lock();
+        let world = rail_world();
+        seed_memory(&world);
+
+        let tap = ScriptedTap::new(D81_RAIL_TAP_REUSED, true);
+        let (capture, _log) = rail_frame(&world, &tap, |_, _| false);
+        assert_eq!(capture.rail_tap_outcome, D81_RAIL_TAP_REUSED);
+
+        let blob = RAIL_BASE + 0x3000;
+        match capture.read(blob, 8, VectorImage::Opening) {
+            VectorAnswer::Served(bytes) => {
+                assert_eq!(bytes, &world[0x3000..0x3008], "the engine's own bytes");
+            }
+            other => panic!("reused pair blob answered {other:?}"),
+        }
+        assert!(matches!(
+            capture.read(RAIL_BASE + 0x1038, 0x10, VectorImage::Closing),
+            VectorAnswer::Served(_)
+        ));
+    }
+
+    #[test]
+    fn every_answer_but_clean_copies_the_rails_in_full() {
+        // kills: reusing on any arm the tap did not clear. Each of these is a
+        // fail-closed reason and each must cost the guarded calls.
+        let _g = rail_tap_lock();
+        let world = rail_world();
+        for (reason, clean) in [
+            (D81_RAIL_TAP_HOOKS_NOT_INSTALLED, true),
+            (D81_RAIL_TAP_BASELINE_PENDING, true),
+            (D81_RAIL_TAP_RAIL_WRITTEN, true),
+        ] {
+            seed_memory(&world);
+            let tap = ScriptedTap::new(reason, clean);
+            let (capture, log) = rail_frame(&world, &tap, |_, _| false);
+            assert_eq!(capture.rail_tap_outcome, reason, "reason {reason}");
+            assert_eq!(capture.rail_tap_copies_avoided, 0, "reason {reason}");
+            for (address, calls) in rail_call_counts() {
+                assert_eq!(
+                    calls_for(&log, address),
+                    calls,
+                    "reason {reason}: {address:#x} must be copied at EVERY image",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_write_since_the_remembered_copy_is_seen_by_the_reuse_decision() {
+        // kills: opening the bracket, finding no GLOBAL reason to copy, and
+        // reusing without ever asking whether the remembered bytes are still
+        // the engine's. `open_window` answers "nothing global forbids it"; only
+        // `still_current` answers "and nothing has been written since".
+        let _g = rail_tap_lock();
+        let world = rail_world();
+        seed_memory(&world);
+        let tap = ScriptedTap::new(D81_RAIL_TAP_REUSED, false);
+        let (capture, log) = rail_frame(&world, &tap, |_, _| false);
+        assert_eq!(capture.rail_tap_outcome, D81_RAIL_TAP_RAIL_WRITTEN);
+        assert_eq!(capture.rail_tap_copies_avoided, 0);
+        assert_eq!(calls_for(&log, RAIL_BASE + 0x3000), 2);
+        // The memory is NOT dropped by a stale witness -- it describes the
+        // right objects and this frame's copy is about to replace it -- and the
+        // frame that copied re-seeds it.
+        assert_eq!(tap.lost.get(), 0);
+        assert_eq!(tap.seeded.get(), 1);
+    }
+
+    #[test]
+    fn a_copy_taken_while_a_writer_is_inside_the_engine_is_never_remembered() {
+        // kills: THE round-2 defect, at the copy program's own boundary. The
+        // dirty-bit model this replaced could not see a writer that was STILL
+        // RUNNING when the copy ran: its mark had already been consumed by an
+        // earlier bracket, so the copy looked clean and was remembered, and
+        // the frame after it republished half-written bytes.
+        //
+        // The witness pair sees it: `before` is not quiet.
+        let _g = rail_tap_lock();
+        let world = rail_world();
+        d81_rail_reuse_forget();
+        let tap = ScriptedTap::new(D81_RAIL_TAP_BASELINE_PENDING, true);
+        tap.noisy.set(true);
+        let (capture, _log) = rail_frame(&world, &tap, |_, _| false);
+        assert!(capture.is_defect_free(), "the copy itself succeeded");
+        assert_eq!(tap.seeded.get(), 0, "and must still not be remembered");
+        assert_eq!(tap.lost.get(), 1, "the baseline is re-owed by name");
+        assert!(!d81_rail_reuse_present());
+    }
+
+    #[test]
+    fn a_writer_that_starts_during_the_copy_is_never_remembered() {
+        // kills: taking one witness instead of two, AND taking both on the
+        // same side of the rail copy. A writer that enters between the first
+        // reading and the last rail call leaves both readings QUIET -- the
+        // copy program cannot see it in a single snapshot -- and only the
+        // epoch moving ACROSS the pair catches it.
+        //
+        // THE EPOCH MOVES FROM INSIDE THE COPY, not on a witness read (Codex
+        // r5 finding 2). An earlier form bumped on every reading, which would
+        // have passed just as well with both witnesses moved after the copy --
+        // the mutation this test's name is about. Here the bump happens when
+        // the first rail header window is asked for, so it lies strictly
+        // between a correctly placed pair and outside a misplaced one.
+        let _g = rail_tap_lock();
+        let world = rail_world();
+        d81_rail_reuse_forget();
+        let tap = ScriptedTap::new(D81_RAIL_TAP_BASELINE_PENDING, true);
+        let (capture, _log) = rail_frame(&world, &tap, |addr, seen| {
+            if addr == RAIL_BASE + 0x1038 && seen == 0 {
+                tap.bump_epoch();
+            }
+            false
+        });
+        assert_eq!(tap.epoch_bumps.get(), 1, "the fixture must have bumped once");
+        assert!(capture.is_defect_free(), "the copy itself succeeded");
+        assert_eq!(tap.seeded.get(), 0, "the epoch moved across the copy");
+        assert_eq!(tap.lost.get(), 1);
+        assert!(!d81_rail_reuse_present());
+    }
+
+    #[test]
+    fn a_writer_arriving_after_the_rail_copy_does_not_stop_it_being_remembered() {
+        // kills: a closing witness placed too WIDE. A writer that arrives once
+        // the rail copy is done cannot have touched the rail bytes, and a pair
+        // that spanned it would refuse a perfectly good memory on every busy
+        // frame.
+        //
+        // THE BUMP IS ON THE VERY FIRST NON-RAIL CALL, which is why this
+        // fixture gives the plan a non-empty `map_count` (Codex r6 finding 2).
+        // An earlier form bumped during the ACTIVE TABLE -- the last family --
+        // so `witness_after` could have been moved past five whole families and
+        // still passed. `MapRecordPtr` is the first store the copy program
+        // touches after `PairBlob`, so the closing witness is now pinned to
+        // within one family on this side, and to within none on the other by
+        // `a_writer_that_starts_during_the_copy_is_never_remembered`.
+        let _g = rail_tap_lock();
+        let mut world = rail_world();
+        // Two map provinces, so `MapRecordPtr` has windows to copy. Their
+        // record pointers stay zero, which the copy program simply skips.
+        let map_a = RAIL_BASE + 0x7000;
+        let map_b = RAIL_BASE + 0x8000;
+        world[0x200..0x208].copy_from_slice(&map_a.to_le_bytes());
+        world[0x208..0x210].copy_from_slice(&map_b.to_le_bytes());
+        let roots = D81VectorRoots {
+            map_count: 2,
+            ..rail_roots()
+        };
+        let first_non_rail = map_a + 0x11B8;
+
+        d81_rail_reuse_forget();
+        let tap = ScriptedTap::new(D81_RAIL_TAP_BASELINE_PENDING, true);
+        let (capture, log) = rail_frame_over(&world, &roots, &tap, |addr, seen| {
+            if addr == first_non_rail && seen == 0 {
+                tap.bump_epoch();
+            }
+            false
+        });
+        assert_eq!(
+            tap.epoch_bumps.get(),
+            1,
+            "the fixture must have reached the first non-rail window",
+        );
+        assert_eq!(
+            calls_for(&log, first_non_rail),
+            4,
+            "MapRecordPtr takes two images and `record_ptr_close` two more",
+        );
+        assert!(capture.is_defect_free());
+        assert_eq!(tap.seeded.get(), 1, "the rail copy was still quiet");
+        assert_eq!(tap.lost.get(), 0);
+        assert!(d81_rail_reuse_present());
+    }
+
+    #[test]
+    fn a_moved_table_slot_refuses_reuse_and_drops_the_memory() {
+        // kills: THE table-slot writer argument. `GetOrCreateProvinceInfo` and
+        // `CRailwayManager::LoadToken` are deliberately NOT hooked because
+        // their whole mutation is a store into `table[id]`, which this frame
+        // re-derives from the bulk copy. If that comparison did not refuse the
+        // reuse, those two writers would be unobserved and the minimise-hooks
+        // argument for leaving them alone would be false.
+        let _g = rail_tap_lock();
+        let mut world = rail_world();
+        seed_memory(&world);
+
+        // The engine hands province 1 a NEW CProvinceRailwayInfo.
+        let moved = RAIL_BASE + 0x6000;
+        world[0x108..0x110].copy_from_slice(&moved.to_le_bytes());
+        world[0x6038..0x6040].copy_from_slice(&(RAIL_BASE + 0x4000).to_le_bytes());
+        world[0x6044..0x6048].copy_from_slice(&2u32.to_le_bytes());
+
+        let tap = ScriptedTap::new(D81_RAIL_TAP_REUSED, true);
+        let (capture, log) = rail_frame(&world, &tap, |_, _| false);
+        assert_eq!(capture.rail_tap_outcome, D81_RAIL_TAP_GEOMETRY_CHANGED);
+        assert_eq!(tap.lost.get(), 1, "the memory is dropped by name");
+        // EXACT COUNTS over the MOVED geometry (Codex r5 finding 3): the new
+        // header object at every image, the old one at none, and both blobs.
+        for (address, calls) in [
+            (RAIL_BASE + 0x1038, 4usize),
+            (RAIL_BASE + 0x6038, 4),
+            (RAIL_BASE + 0x2038, 0),
+            (RAIL_BASE + 0x3000, 2),
+            (RAIL_BASE + 0x4000, 2),
+        ] {
+            assert_eq!(calls_for(&log, address), calls, "{address:#x}");
+        }
+        // The frame that refused is itself a complete copy, so it re-seeds.
+        assert_eq!(tap.seeded.get(), 1);
+        assert!(d81_rail_reuse_present());
+    }
+
+    #[test]
+    fn a_clean_tap_with_nothing_remembered_copies_and_says_so() {
+        // kills: treating an empty memory as a reuse, which would publish an
+        // empty rail network for the hour.
+        let _g = rail_tap_lock();
+        let world = rail_world();
+        d81_rail_reuse_forget();
+        let tap = ScriptedTap::new(D81_RAIL_TAP_REUSED, true);
+        let (capture, log) = rail_frame(&world, &tap, |_, _| false);
+        assert_eq!(capture.rail_tap_outcome, D81_RAIL_TAP_NO_MEMORY);
+        assert_eq!(capture.rail_tap_copies_avoided, 0);
+        // EXACT COUNTS, like the other fail-closed arms (Codex r5 finding 3):
+        // "was it copied at all" would pass for a partial copy.
+        for (address, calls) in rail_call_counts() {
+            assert_eq!(calls_for(&log, address), calls, "{address:#x}");
+        }
+    }
+
+    #[test]
+    fn an_incomplete_rail_copy_is_never_remembered_whichever_store_lost_it() {
+        // kills: remembering a copy with a hole. Reusing a window that lost an
+        // image would answer `Unreadable` or `SampleAbsent` for that province
+        // every hour until the next rail write, which is data loss the tap
+        // invented.
+        //
+        // AND IT COVERS ALL THREE STORES AND BOTH IMAGES, because they are not
+        // caught by the same thing (Codex r1 finding 5). `capture.voids` and
+        // `is_defect_free` only ever test IMAGE 0: `d81_vector_observe`'s void
+        // loop reads `status & (ST_O | ST_DEAD)`, which is the image-0 bit. A
+        // window that took image 0 and lost image 1 therefore produces a
+        // DEFECT-FREE capture with a half-observed window, and only
+        // `every_window_fully_imaged` refuses it. The `header_close` and
+        // `PairBlob` rows are the ones that fail if the remember-side check is
+        // narrowed to the opening `RailHeader` store.
+        //
+        // The occurrence numbers follow the copy program's own order, which
+        // `pipeline_order_headers_close_between_blob_decode_and_blob_copy`
+        // pins: header opening images 0 and 1, then `header_close` images 0
+        // and 1 over the SAME addresses, then the pair blobs.
+        let _g = rail_tap_lock();
+        let world = rail_world();
+        let header_b = RAIL_BASE + 0x2038;
+        let blob_b = RAIL_BASE + 0x4000;
+        // `expect_calls` pins `copy_window`'s documented asymmetry: an IMAGE-0
+        // refusal ends that window (the later images are never asked for),
+        // while a later image's refusal leaves the bit clear and the next image
+        // still runs. The header rows also cover `header_close`, which re-asks
+        // for the SAME two addresses after the opening pair.
+        for (label, target, occurrence, expect_void, expect_calls) in [
+            // Opening image 0 lost: the window is abandoned (1 call), the blob
+            // derived from it is never pushed, and `header_close` still asks
+            // for its own two.
+            ("RailHeader image 0", header_b, 0usize, true, 3usize),
+            ("RailHeader image 1", header_b, 1, false, 4),
+            ("header_close image 0", header_b, 2, false, 3),
+            ("header_close image 1", header_b, 3, false, 4),
+            // A PairBlob window that lost image 0 IS a void: the final void
+            // loop walks every `opening` family, and `PairBlob` is one.
+            ("PairBlob image 0", blob_b, 0, true, 1),
+            ("PairBlob image 1", blob_b, 1, false, 2),
+        ] {
+            d81_rail_reuse_forget();
+            let tap = ScriptedTap::new(D81_RAIL_TAP_BASELINE_PENDING, true);
+            let (capture, log, refusals) = rail_frame_counting(&world, &tap, |addr, seen| {
+                addr == target && seen == occurrence
+            });
+            // THE REFUSAL MUST HAVE FIRED (Codex r2 finding 5). If the call
+            // this case aims at ever stops being issued, the "not remembered"
+            // below would come from the MISSING call rather than from the lost
+            // image, and the case would pass while testing nothing.
+            assert_eq!(refusals, 1, "{label}: the scripted refusal did not fire");
+            assert_eq!(
+                calls_for(&log, target),
+                expect_calls,
+                "{label}: the copy program issued the wrong number of calls, so                  the refusal did not land where this case says it did",
+            );
+            assert_eq!(
+                capture.voids > 0,
+                expect_void,
+                "{label}: only an image-0 loss is a void, which is exactly why \
+                 the remember side cannot lean on `is_defect_free` alone",
+            );
+            assert_eq!(tap.seeded.get(), 0, "{label}: nothing may be remembered");
+            assert_eq!(tap.lost.get(), 1, "{label}: the baseline is re-owed by name");
+            assert!(!d81_rail_reuse_present(), "{label}");
+
+            // The next clean bracket therefore copies, under a name.
+            let next = ScriptedTap::new(D81_RAIL_TAP_REUSED, true);
+            let (capture, log) = rail_frame(&world, &next, |_, _| false);
+            assert_eq!(
+                capture.rail_tap_outcome, D81_RAIL_TAP_NO_MEMORY,
+                "{label}: the next bracket must find no memory",
+            );
+            assert!(log.contains(&target), "{label}");
+        }
+    }
+
+    #[test]
+    fn a_frame_with_no_tap_at_all_leaves_the_memory_exactly_as_it_found_it() {
+        // kills BOTH directions (Codex r1 finding 5). A detour-less build must
+        // not SEED the process global -- every fixture in this crate is such a
+        // build, and one fixture's rail bytes sitting in a global is something
+        // the next has to step over -- and it must not CLEAR one either, which
+        // an earlier form of this test could not have seen because it started
+        // from an empty memory.
+        let _g = rail_tap_lock();
+        let world = rail_world();
+
+        // Direction one: nothing remembered stays nothing remembered.
+        d81_rail_reuse_forget();
+        let tap = ScriptedTap::new(D81_RAIL_TAP_HOOKS_NOT_INSTALLED, true);
+        let (capture, _log) = rail_frame(&world, &tap, |_, _| false);
+        assert_eq!(capture.rail_tap_outcome, D81_RAIL_TAP_HOOKS_NOT_INSTALLED);
+        assert_eq!(tap.seeded.get(), 0);
+        assert_eq!(tap.lost.get(), 0);
+        assert!(!d81_rail_reuse_present(), "a detour-less frame must not seed");
+
+        // Direction two: a memory that IS held survives untouched, and is
+        // still the memory a later clean bracket reuses.
+        let seeded = seed_memory(&world);
+        let tap = ScriptedTap::new(D81_RAIL_TAP_HOOKS_NOT_INSTALLED, true);
+        let (capture, _log) = rail_frame(&world, &tap, |_, _| false);
+        assert_eq!(capture.rail_tap_outcome, D81_RAIL_TAP_HOOKS_NOT_INSTALLED);
+        assert_eq!(tap.lost.get(), 0, "a detour-less frame must not clear");
+        assert!(d81_rail_reuse_present());
+        let clean = ScriptedTap::new(D81_RAIL_TAP_REUSED, true);
+        let (reused, _log) = rail_frame(&world, &clean, |_, _| false);
+        assert_eq!(reused.rail_tap_outcome, D81_RAIL_TAP_REUSED);
+        assert_eq!(rail_image(&reused), seeded);
+    }
+
+    #[test]
+    fn every_outcome_ordinal_has_exactly_one_name() {
+        // kills: a bin published under the wrong name, or an ordinal past the
+        // end of the histogram.
+        let ordinals = [
+            D81_RAIL_TAP_REUSED,
+            D81_RAIL_TAP_HOOKS_NOT_INSTALLED,
+            D81_RAIL_TAP_BASELINE_PENDING,
+            D81_RAIL_TAP_RAIL_WRITTEN,
+            D81_RAIL_TAP_NO_MEMORY,
+            D81_RAIL_TAP_GEOMETRY_CHANGED,
+        ];
+        assert_eq!(ordinals.len(), D81_RAIL_TAP_OUTCOME_COUNT);
+        let mut seen = Vec::new();
+        for (index, ordinal) in ordinals.iter().enumerate() {
+            assert_eq!(usize::from(*ordinal), index, "ordinals must be dense");
+            let name = D81_RAIL_TAP_OUTCOME_NAMES[index];
+            assert!(!name.is_empty());
+            assert!(!seen.contains(&name), "{name} is used twice");
+            seen.push(name);
+        }
     }
     // ==============================================================
     // THE COPY-WINDOW MERGE (lane RY2)

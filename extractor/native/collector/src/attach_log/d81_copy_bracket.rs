@@ -655,6 +655,34 @@ pub struct D81PlanCounters {
     /// that have no `MergePolicy`. See `D81VectorCapture::adjacent_pairs`.
     pub mergeable_adjacent_pairs: u32,
     pub mergeable_near_pairs: u32,
+    /// THE RAIL WRITE-TAP'S FRAME OUTCOME, one-hot (lane SN).
+    ///
+    /// A HISTOGRAM RATHER THAN AN ORDINAL, because this struct derives
+    /// `Default` and ordinal 0 is the REUSE arm: a frame that never ran the
+    /// vector pipeline at all would otherwise publish itself as a reuse. All
+    /// zeros means "no vector capture this frame", the bins sum to the frames
+    /// that had one, and `d81_plan_rail_tap_reused` is then a rate anyone can
+    /// divide.
+    pub rail_tap_outcome_bins:
+        [u64; super::d81_vector_store::D81_RAIL_TAP_OUTCOME_COUNT],
+    /// Guarded copies the reuse avoided this frame, in the same unit as
+    /// `copies_issued`, so `avoided / (avoided + issued)` is the share of the
+    /// copy program the tap removed.
+    pub rail_tap_copies_avoided: u64,
+    /// Lifetime census off the lane: MARK OPERATIONS performed by the detours,
+    /// and brackets that opened a mark window. Last-write-wins samples, not
+    /// per-frame deltas -- they are what tells "the rails never moved" apart
+    /// from "the detour never fired".
+    ///
+    /// `rail_tap_marks_sample` is TWO PER COMPLETED HOOKED CALL, because every
+    /// detour marks at entry and again at exit (Codex r1 finding 4). Its
+    /// PARITY means nothing -- the exit path lowers the in-flight count before
+    /// it bumps this census, so an odd sample can be perfectly quiet, and two
+    /// concurrent callbacks read even (Codex r3 finding 2). It is a `> 0`
+    /// liveness sample and must be divided into neither a call count nor an
+    /// in-flight predicate.
+    pub rail_tap_marks_sample: u64,
+    pub rail_tap_windows_sample: u64,
 }
 
 pub fn d81_plan_refusal_ordinal(refusal: &crate::snapshot_recipes::Refusal) -> u32 {

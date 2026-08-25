@@ -1137,9 +1137,15 @@ mod tests {
             // roster (45 -> 48); 2026-08-25: d57 readmission kept the count
             // while nine sealed domains left, then lane RO's five
             // gameplay.d13.* change-gate sites joined (48 -> 53) and the
-            // allowlist digest moved with them.
-            allowed_hook_count: 53,
-            active_hook_count: 53,
+            // allowlist digest moved with them; 2026-08-25: lane SN's three
+            // gameplay.d81.* rail write-tap sites joined (53 -> 56) under the
+            // structural-perf ruling of 2026-08-27, and the digest moved
+            // again. These are HAND-PINNED on purpose -- deriving them from
+            // `PINNED_PRODUCTION_HOOK_COUNT_V1` would let the roster grow
+            // without this vector noticing, and the point of a rebuild vector
+            // is that a harness outside this crate can reproduce it.
+            allowed_hook_count: 56,
+            active_hook_count: 56,
             install_freeze_count,
             clock_hour_raw: 60_831_264,
             clock_observation_ordinal: 12,
@@ -1150,7 +1156,7 @@ mod tests {
                 "18883f3ad61d796d13e406b28869e764efca61863928150fbe08cdcb23bb07b8",
             ),
             hook_allowlist_sha256: hex32(
-                "46adf385cbd87c19d5715d11a0e88be1587ccfd86ecdcac37211af650a0538fd",
+                "850961e91b1e89ce931e32784bcbe11aa748448dcb8fcc90c6f12ab9259d579e",
             ),
             hook_outcomes_sha256: hex32(
                 "416db3019bcd56f982a9e11978bcc47a0b9dc06d23147935d56dbbf30907951b",
@@ -1194,7 +1200,7 @@ mod tests {
         assert_eq!(read_u16(&thirteen, 50), 13);
         assert_eq!(
             to_hex32(&capture_ready_payload_sha256(&thirteen)),
-            "cc16c0ee1e931532cb0df751c28af5619ab9d8cc047684bd39fef990e1887eff"
+            "b1c3dcfe275cd7138596281ebbee864f4b5474f7c300ee56707c83c908af5e91"
         );
         let thousand = t63_ready_fields(1000)
             .encode_authenticated(token)
@@ -1202,7 +1208,7 @@ mod tests {
         assert_eq!(read_u16(&thousand, 50), 1000);
         assert_eq!(
             to_hex32(&capture_ready_payload_sha256(&thousand)),
-            "8052536857f29782d414b232d338c921d7aa365baeb89d0fc49e2003e8f7c61d"
+            "5610ee3a3ff331569ccfdee6002112592fdc49645651c6f1c0fb924eb058379b"
         );
         assert_ne!(thirteen, thousand);
     }

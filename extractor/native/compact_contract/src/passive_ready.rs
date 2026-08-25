@@ -395,6 +395,42 @@ pub const PINNED_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpecV1] = &[
         D75_PRODUCTION_INLINE,
         "240d7500bcc91514f59d62739df026a5a76cce41f824923422cbe253e05d1cec"
     ),
+    // d81's rail write-tap (owner rulings 2026-08-24 minimise-hooks and
+    // 2026-08-27 structural perf): the three IDENTIFIED writers of the
+    // `CProvinceRailwayInfo` pair vector. Lane TD's dossier
+    // (runs/td_rail_change_signal/DOSSIER.md) is a whole-image search that
+    // found no usable passive signal - the level is written in place, the
+    // engine's own consumer re-compares the vector's content, and the one
+    // dirty bit the engine keeps is cleared by its own producer inside a
+    // single update - and its own section 6.6 states that its writer census
+    // is NOT closed. Proof digests are SHA-256 over
+    // each site's 16-byte sentinel, exactly as for every roster above; the
+    // bytes come from the hash-pinned indexed instruction artifacts re-verified
+    // with ghidra_verify by lane SN (runs/sn_rail_write_tap/RE_EVIDENCE.md,
+    // 3/3 agrees). Table-slot writers are NOT here: d81 already copies the rail
+    // table extent every frame and compares the list it derives from it, so a
+    // hook on those sites would violate the minimise-hooks ruling.
+    pinned_rva!(
+        "gameplay.d81.rail_info_destructor",
+        0xE7D5C0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "cc42c0bc351fedeea108f928801f827376f07b4839781d742e1666b043fdbed9"
+    ),
+    pinned_rva!(
+        "gameplay.d81.rail_info_load_token",
+        0xE80070,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "e60bc0f195cdfb5bdceee7a57cba744caf60efcdbff835911fb66eb15946246c"
+    ),
+    pinned_rva!(
+        "gameplay.d81.rail_set_railway",
+        0xE806E0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "e016815dc536a92c93eb16963f84b5e84d5dc07739b9829d45333c757e6d1cbe"
+    ),
     pinned_rva!(
         "gameplay.d86.attributed_record_writer",
         0x1D2C90,
@@ -513,7 +549,7 @@ pub const PINNED_PRODUCTION_IMPORT_HOOK_COUNT_V1: u16 = {
     count
 };
 pub const PINNED_PRODUCTION_HOOK_ALLOWLIST_SHA256_V1: [u8; 32] =
-    digest_from_hex("46adf385cbd87c19d5715d11a0e88be1587ccfd86ecdcac37211af650a0538fd");
+    digest_from_hex("850961e91b1e89ce931e32784bcbe11aa748448dcb8fcc90c6f12ab9259d579e");
 
 pub fn pinned_production_hook_count_v1() -> Result<u16, PassiveReadyDigestError> {
     u16::try_from(PINNED_PRODUCTION_HOOK_SPECS_V1.len())
