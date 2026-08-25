@@ -9463,7 +9463,7 @@ fn decode_compact_session_multiplayer_metadata_live_data_payload(
         ));
         return;
     };
-    let Some(expected_len) = event_count
+    let Some(base_len) = event_count
         .checked_mul(event_row_len)
         .and_then(|bytes| event_start.checked_add(bytes))
         .and_then(|bytes| bytes.checked_add(string_bytes))
@@ -9473,11 +9473,26 @@ fn decode_compact_session_multiplayer_metadata_live_data_payload(
         ));
         return;
     };
-    if expected_len != payload.len() {
-        summary.parse_errors.push(format!(
-            "offset {offset}: d57 payload length {} != expected {expected_len}",
-            payload.len()
-        ));
+    // THE length rule lives in the lane crate and is called, never re-spelled.
+    // This site used to demand `base_len == payload.len()`, which is only true of
+    // a payload with no `WT3X` world-tension trailer. Capture rc_vanilla5's 692
+    // d57 records all carried one, so this line alone excluded 692 of 692,
+    // emptied `domain57_frames`, and failed the seal with
+    // `d57_record_count_per_closed_frame_invalid` against 739 closed frames.
+    // See `session57::payload_total_length_error` and
+    // `runs/si_d57_frame_gate/`.
+    //
+    // The trailer is not admitted unchecked: `session57::gate_payload` below
+    // decodes it and requires its declared rows and string blob to account for
+    // its length exactly, and its errors land in `parse_errors` the same way.
+    let details_schema_present =
+        read_u32_le(payload, 40) & session57::SCHEMA_FLAG_WORLD_TENSION_DETAILS != 0;
+    if let Some(error) =
+        session57::payload_total_length_error(payload.len(), base_len, details_schema_present)
+    {
+        summary
+            .parse_errors
+            .push(format!("offset {offset}: d57 {error}"));
         return;
     }
     let gate = session57::gate_payload(payload);

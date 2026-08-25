@@ -6056,6 +6056,106 @@ mod tests {
             "the placeholder must be reported as the mismatch it is, got: {error}"
         );
     }
+
+    /// A d57 payload that carries its `WT3X` world-tension trailer is LONGER
+    /// than its base sections, and the host must admit it.
+    ///
+    /// The host authority decoder derived the expected payload length from the
+    /// four base sections alone and demanded exact equality, so every payload
+    /// with a trailer was excluded as malformed. Capture rc_vanilla5 put 692 d57
+    /// records on the wire and all 692 carried a trailer, so `domain57_frames`
+    /// decoded EMPTY, the seal gate saw zero records against 739 closed frames,
+    /// and the recording published as `native_session.failed.battleplan`. Sweep
+    /// and raw evidence: `runs/si_d57_frame_gate/`.
+    ///
+    /// The rule now lives once, in `session57::payload_total_length_error`.
+    ///
+    /// kills: restoring `base_len == payload.len()` in
+    /// `decode_compact_session_multiplayer_metadata_live_data_payload`, or any
+    /// length check there that does not consult the declared trailer.
+    #[test]
+    fn a_d57_payload_carrying_its_world_tension_trailer_is_admitted() {
+        use session_multiplayer_metadata_live as session57;
+
+        let hour = 60_832_553i32;
+        let details = session57::WorldTensionDetails {
+            current_fixed5: 4_200,
+            prior_fixed5: 4_100,
+            increased: true,
+            monthly_decrease_fixed5: 100,
+            time_scale_fixed5: 1_000,
+            start_date_raw: 43_800_000,
+            country_rows: vec![session57::WorldTensionCountryRow {
+                tag_db_id: 1,
+                flags: session57::WORLD_TENSION_COUNTRY_FLAG_POLICY_CAP_ENABLED,
+                generated_threat_fixed: 14_267_212,
+                // The exact shape rc_vanilla5 carries: the game ideas and rules push
+                // these thresholds below zero.
+                generate_wargoal_threshold_fixed5: -25_000,
+                join_faction_threshold_fixed5: -10_000,
+                lend_lease_threshold_fixed5: 50_000,
+                send_volunteers_threshold_fixed5: 0,
+                guarantee_threshold_fixed5: 0,
+            }],
+            ledger_rows: Vec::new(),
+        };
+        let frame = session57::SessionMetadataFrame {
+            game_hour_raw: hour,
+            status_flags: 0,
+            source_flags: session57::SOURCE_FLAG_DLL_NATIVE
+                | session57::SOURCE_FLAG_SESSION_ROOT_VALIDATED,
+            schema_flags: 0,
+            root_evidence_mask: session57::ROOT_EVIDENCE_WORLD_TENSION,
+            world_tension_fixed5: Some(4_200),
+            world_tension_details: Some(details),
+            player_country_rows: Vec::new(),
+            event_rows: Vec::new(),
+        };
+        let payload = session57::encode_payload(&frame);
+
+        // The base sections alone are the 64-byte header: no player rows, no
+        // event rows, no strings. So the trailer is the whole rest of the
+        // payload, and the old rule rejected it on length alone.
+        let base_len = session57::PAYLOAD_HEADER_LEN;
+        assert!(
+            payload.len() > base_len,
+            "the fixture must actually carry a trailer, got {} bytes",
+            payload.len()
+        );
+
+        validate_domain_data_payload_at(session57::DOMAIN_ID, &payload, 0, 7, hour, 4_096).expect(
+            "a d57 payload carrying a well-formed WT3X trailer must pass host validation",
+        );
+
+        // The trailer is admitted, not waved through: corrupting its magic while
+        // the header still declares it must be refused.
+        let mut corrupted = payload.clone();
+        corrupted[base_len] ^= 0xFF;
+        let error =
+            validate_domain_data_payload_at(session57::DOMAIN_ID, &corrupted, 0, 7, hour, 4_096)
+                .expect_err("a declared trailer with a broken magic must not validate");
+        assert!(
+            error.contains("world-tension extension"),
+            "the trailer must be named as the fault, got: {error}"
+        );
+
+        // And a payload with trailing bytes it does NOT declare is still refused
+        // on length, exactly as before.
+        let mut undeclared = session57::encode_payload(&session57::SessionMetadataFrame {
+            world_tension_details: None,
+            world_tension_fixed5: None,
+            root_evidence_mask: 0,
+            ..frame
+        });
+        undeclared.push(0);
+        let error =
+            validate_domain_data_payload_at(session57::DOMAIN_ID, &undeclared, 0, 7, hour, 4_096)
+                .expect_err("undeclared trailing bytes must still be a length fault");
+        assert!(
+            error.contains("incompatible with base length"),
+            "undeclared trailing bytes must be reported as a length fault, got: {error}"
+        );
+    }
 // -+
 // DOMAIN_DATA_REPEAT and the per-hour seal.
 // -------------------------------------------------------------------------
