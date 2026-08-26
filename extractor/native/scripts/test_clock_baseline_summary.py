@@ -2,8 +2,8 @@
 """Tests for clock_baseline_summary.py.
 
 Every fixture is shaped like the two files the harness actually appends:
-`settle_control.jsonl` records (`hoi4-settle-control-sample-v1`, `*_final` pause
-fields only) and witness records (`hoi4-passive-client-state-witness-v2`, which
+`settle_control.jsonl` records (`hoi4-settle-control-sample-v2`, `*_final` pause
+fields only) and witness records (`hoi4-passive-client-state-witness-v3`, which
 also carry `*_in_window`). The numbers in `test_matches_the_hand_derivation_of_
 run_t19` are the real t19 totals, so the aggregation is pinned to a measurement
 someone already checked by hand rather than to itself.
@@ -13,6 +13,7 @@ Each test names the production change that turns it red.
 
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import json
 import sys
@@ -29,39 +30,122 @@ sys.modules[SPEC.name] = BASELINE
 SPEC.loader.exec_module(BASELINE)
 
 
-def settle_sample(hour_delta, window_ms, paused=False, pause_forced=False):
-    return {
-        "schema": "hoi4-settle-control-sample-v1",
+def _utc(unix_ms):
+    """The ISO spelling the producer writes beside every millisecond stamp."""
+    return (
+        datetime.datetime.fromtimestamp(unix_ms / 1000.0, datetime.timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def settle_sample(hour_delta, window_ms, paused=False, pause_forced=False,
+                  at_ms=None):
+    """One settle-control row, in the COMPLETE shape the harness emits.
+
+    Complete on purpose. `admission_problem` compares a row against the whole
+    producer key set, so a partial fixture is refused -- and a fixture a live
+    reader would refuse is not evidence that the reader survives a live row.
+    `RunDir` fills in the timestamps, the only fields whose values depend on
+    where the row sits in the run.
+    """
+    row = {
+        "schema": "hoi4-settle-control-sample-v2",
         "phase": "settle_no_collector",
+        # The process identity the span estimator joins on. Required at
+        # admission, because two rows that both LACK it used to join on
+        # `None == None`.
+        "pid": 4242,
+        "process_creation_filetime_utc": 7_000_000,
+        "expected_speed": 5,
+        "speed_final": 5,
+        # The endpoints the delta is the difference of. Admission requires all
+        # three and requires them to agree, because `aggregate` sums the delta
+        # and never looks at the endpoints.
+        "hour_a": 100,
+        "hour_b": 100 + hour_delta,
         "hour_delta": hour_delta,
+        "tick_progress_bits_a": 0x3F80_0000,
+        "tick_progress_bits_b": 0x3F80_0000,
         "observed_window_ms": window_ms,
+        "processor_milliseconds": 1_000,
         "paused_final": paused,
         "pause_forced_final": pause_forced,
         "tick_inhibited_final": True,
+        # The v2 host-and-pacing fields. `clock_baseline_summary` reads none of
+        # them and REQUIRES all of them, so a fixture without them is refused
+        # before aggregation -- which is what these fixtures exist to avoid
+        # testing by accident.
+        "available_parallelism": 16,
+        "target_processor_affinity_cores": 8,
+        "target_page_fault_count": 900_000,
+        "target_working_set_bytes": 3_800_000_000,
+        "host_state_unavailable": None,
         "advancing": hour_delta > 0,
     }
+    if at_ms is not None:
+        row["observed_at_unix_ms"] = at_ms
+        row["observed_at_utc"] = _utc(at_ms)
+    return row
 
 
 def witness_sample(hour_delta, window_ms, phase="capture", paused=False,
                    pause_forced=False, at_ms=None):
-    """One witness row. `at_ms` closes its bracket; None means "let RunDir place
-    it", which packs the samples tightly inside the dwell the way a real run
-    does."""
+    """One witness row, in the COMPLETE shape the harness emits.
+
+    `at_ms` closes its bracket; None means "let RunDir place it", which packs
+    the samples tightly inside the dwell the way a real run does.
+
+    Complete for the same reason `settle_sample` is: admission compares against
+    the whole producer key set, and a fixture a live reader would refuse proves
+    nothing about a live row.
+    """
     row = {
-        "schema": "hoi4-passive-client-state-witness-v2",
+        "schema": "hoi4-passive-client-state-witness-v3",
         "phase": phase,
+        "pid": 4242,
+        "process_creation_filetime_utc": 7_000_000,
+        "exe_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+        "observer_sha256": "0" * 64,
+        "access": "PROCESS_QUERY_INFORMATION|PROCESS_VM_READ",
+        "expected_speed": 5,
+        "speed_initial": 5,
+        "speed_final": 5,
+        "hour_a": 500,
+        "hour_b": 500 + hour_delta,
         "hour_delta": hour_delta,
+        "tick_progress_bits_a": 0x3F80_0000,
+        "tick_progress_bits_b": 0x3F80_0000,
         "observed_window_ms": window_ms,
-        "paused_in_window": paused,
-        "pause_forced_in_window": pause_forced,
+        "clock_progress_waited_ms": 60,
+        "clock_progress_budget_ms": 3_000,
+        "processor_milliseconds": 1_000,
+        "paused_initial": paused,
         "paused_final": paused,
+        "paused_in_window": paused,
+        "pause_forced_initial": pause_forced,
         "pause_forced_final": pause_forced,
+        "pause_forced_in_window": pause_forced,
+        "tick_inhibited_initial": True,
+        "tick_inhibited_final": True,
         "tick_inhibited_in_window": True,
+        # The v3 host-and-pacing fields. This summary reads none of them and
+        # REQUIRES all of them, so they are here for two reasons: a fixture
+        # that does not look like a real row stops being evidence that the
+        # summary survives one, and a fixture missing one is refused before
+        # aggregation.
+        "available_parallelism": 16,
+        "target_processor_affinity_cores": 8,
+        "target_page_fault_count": 1_200_000,
+        "target_working_set_bytes": 3_900_000_000,
+        "host_state_unavailable": None,
         "advancing": hour_delta > 0,
     }
     if at_ms is not None:
         row["window_started_at_unix_ms"] = at_ms - window_ms
+        row["window_started_at_utc"] = _utc(at_ms - window_ms)
         row["observed_at_unix_ms"] = at_ms
+        row["observed_at_utc"] = _utc(at_ms)
     return row
 
 
@@ -77,12 +161,19 @@ def span_row(at_ms, hour_a, cpu_ms, phase="capture", pid=1, paused=False,
     """
     row = witness_sample(1, 50, phase=phase, paused=paused, at_ms=at_ms)
     row["hour_a"] = hour_a
+    # Keep the endpoints consistent with the delta the fixture already set, or
+    # admission refuses the row before the span estimator ever sees it.
+    row["hour_b"] = hour_a + row["hour_delta"]
     row["processor_milliseconds"] = cpu_ms
     row["pid"] = pid
     row["process_creation_filetime_utc"] = creation
     for field in drop:
         row.pop(field, None)
     return row
+
+
+WITNESS_FILE_NAME = "passive_speed5_witness.jsonl"
+
 
 
 ATTACH_START_MS = 1_700_000_000_000
@@ -124,7 +215,7 @@ class RunDir:
             row = dict(row)
             row["observed_at_unix_ms"] = ATTACH_START_MS - (len(rows) - 1 - index) * 100
             stamped.append(row)
-        return stamped
+        return [RunDir._with_utc(row) for row in stamped]
 
     @staticmethod
     def _stamped(rows):
@@ -148,7 +239,30 @@ class RunDir:
             row["window_started_at_unix_ms"] = cursor - window
             row["observed_at_unix_ms"] = cursor
             stamped.append(row)
-        return stamped
+        return [RunDir._with_utc(row) for row in stamped]
+
+    @staticmethod
+    def _with_utc(row):
+        """Fill each ISO stamp from the millisecond stamp beside it.
+
+        The producer writes both spellings of every instant it records, and
+        admission compares against the whole key set -- but the millisecond
+        form is the one the fixtures place, because it is the one the tests do
+        arithmetic on. Rather than make every fixture carry a redundant string,
+        derive it here from whatever placement the row ended up with.
+        """
+        row = dict(row)
+        for stamp, spelled in (
+            ("observed_at_unix_ms", "observed_at_utc"),
+            ("window_started_at_unix_ms", "window_started_at_utc"),
+        ):
+            # `isinstance` and not `in`: the null and wrong-type tests put a
+            # None or a string in the millisecond field on purpose, and
+            # deriving from one of those would make the fixture raise instead
+            # of reaching the gate under test.
+            if isinstance(row.get(stamp), int) and not isinstance(row[stamp], bool):
+                row.setdefault(spelled, _utc(row[stamp]))
+        return row
 
     def _write(self, name, rows):
         if not rows:
@@ -784,6 +898,1207 @@ class ClockBaselineSummaryTests(unittest.TestCase):
         bare = RunDir()
         self.addCleanup(bare.close)
         self.assertEqual(BASELINE.main(["--run-dir", str(bare.path)]), 1)
+
+
+class SchemaGateTests(unittest.TestCase):
+    """The summary reads ONE row version, and says so when handed another.
+
+    Lane TJ moved the witness row to `...witness-v3` and the settle-control row
+    to `...sample-v2` to carry host state. Codex round 1 finding 1: this reader
+    filtered by phase and never looked at the schema, so a retired row version
+    still produced a confident receipt and exit 0 -- a compatibility path
+    nobody meant to keep, in the one place the no-backwards-compat rule was
+    supposed to bite.
+
+    Codex round 2 finding 1: the first fix REPORTED on the host fields but
+    FILTERED on the schema string alone, so a current-schema row missing a host
+    field was named as a problem and still reached the numerator, the
+    denominator and the attach-window anchor. Every test below therefore checks
+    both halves -- that the refusal is named, AND that the row contributed
+    nothing.
+    """
+
+    def _run(self, settle, witness):
+        run = RunDir(settle, witness)
+        self.addCleanup(run.close)
+        return run.summary()
+
+    # Both arms, so a mutation that skips validation for ONE schema cannot
+    # survive. Every host / rate case below is parameterised over this
+    # (Codex round 5 finding 3): before it, every host mutation touched the
+    # witness row only, and a production change that dropped the settle arm
+    # would have gone unnoticed.
+    ARMS = (
+        ("free_run", "settle"),
+        ("with_collector", "witness"),
+    )
+
+    def _healthy_pair(self):
+        return (
+            [settle_sample(1, 100)],
+            [witness_sample(1, 100, at_ms=ATTACH_START_MS + 1_000)],
+        )
+
+    def _row(self, settle, witness, which):
+        return settle[0] if which == "settle" else witness[0]
+
+    def assert_refused(self, summary, needle, arm, also=None):
+        """Named as a problem AND absent from the arm it would have fed.
+
+        `also` is a second substring that must appear in the SAME problem line.
+        Without it a loose one-word needle can be satisfied by an unrelated
+        problem the run would have printed anyway -- the missing-`phase` case
+        was green against a generic "capture-phase" message rather than against
+        the gate's own refusal (Codex round 4 finding 3).
+        """
+        matches = [
+            problem
+            for problem in summary["problems"]
+            if needle in problem and (also is None or also in problem)
+        ]
+        self.assertTrue(
+            matches,
+            "no problem mentioned {!r}{}: {}".format(
+                needle,
+                "" if also is None else " together with {!r}".format(also),
+                summary["problems"],
+            ),
+        )
+        self.assertIsNone(
+            summary[arm]["hours_per_second"],
+            "a refused row still produced a {} rate".format(arm),
+        )
+        self.assertEqual(summary[arm]["samples"], 0, summary[arm])
+
+    def test_the_healthy_pair_is_admitted_and_produces_a_rate(self):
+        """The POSITIVE CONTROL, and the reason every other test here means
+        something.
+
+        Kills: a gate so strict that nothing a live harness writes gets
+        through. Each negative test below would still pass against a gate that
+        refused everything; this is the one that says the fixtures -- shaped
+        like what the harness emits -- are admitted and DO produce rates.
+        """
+        settle, witness = self._healthy_pair()
+        summary = self._run(settle, witness)
+        self.assertEqual(summary["problems"], [])
+        self.assertIsNotNone(summary["free_run"]["hours_per_second"])
+        self.assertIsNotNone(summary["with_collector"]["hours_per_second"])
+        self.assertEqual(summary["with_collector"]["samples"], 1)
+
+    def test_a_retired_witness_schema_is_refused_and_feeds_nothing(self):
+        """Kills: deleting the witness arm of the gate, or filtering on
+        anything other than `admission_problem`.
+
+        A v2 row carries no host state at all.
+        """
+        settle, witness = self._healthy_pair()
+        witness[0]["schema"] = "hoi4-passive-client-state-witness-v2"
+        summary = self._run(settle, witness)
+        self.assert_refused(summary, "witness-v2", "with_collector")
+
+    def test_a_retired_settle_schema_is_refused_and_feeds_nothing(self):
+        """Kills: deleting the settle arm of the gate."""
+        settle, witness = self._healthy_pair()
+        settle[0]["schema"] = "hoi4-settle-control-sample-v1"
+        summary = self._run(settle, witness)
+        self.assert_refused(summary, "sample-v1", "free_run")
+
+    def test_a_missing_host_field_is_refused_and_feeds_nothing(self):
+        """Kills: reporting on the host fields while filtering on the schema
+        string -- Codex round 2 finding 1 exactly -- and dropping either arm.
+
+        The first fix named this row as a problem and still counted it.
+        """
+        for arm, which in self.ARMS:
+            for field in (
+                "available_parallelism",
+                "target_processor_affinity_cores",
+                "target_page_fault_count",
+                "target_working_set_bytes",
+                "host_state_unavailable",
+            ):
+                with self.subTest(arm=arm, field=field):
+                    settle, witness = self._healthy_pair()
+                    self._row(settle, witness, which).pop(field)
+                    summary = self._run(settle, witness)
+                    self.assert_refused(summary, field, arm, also="is missing")
+
+    def test_a_null_host_field_with_no_named_cause_is_refused(self):
+        """Kills: a presence-only check.
+
+        `None` is a legal VALUE -- the observer writes it when a host query
+        fails -- but only beside a named cause. Nulls with an empty reason are
+        a host-state-free row wearing the new schema string, which is the shape
+        a presence-only check waves through.
+        """
+        for arm, which in self.ARMS:
+            for reason, needle in (
+                (None, "names no cause"),
+                # A blank string is refused a step earlier, and for its own
+                # stated reason: the observer writes null or a named cause and
+                # never whitespace.
+                ("", "empty string"),
+                ("   ", "empty string"),
+            ):
+                with self.subTest(arm=arm, reason=reason):
+                    settle, witness = self._healthy_pair()
+                    row = self._row(settle, witness, which)
+                    row["target_working_set_bytes"] = None
+                    row["host_state_unavailable"] = reason
+                    summary = self._run(settle, witness)
+                    self.assert_refused(summary, needle, arm)
+
+    def test_a_null_host_field_WITH_a_named_cause_is_admitted(self):
+        """Kills: refusing an honestly-unavailable row -- on EITHER arm.
+
+        An unavailable diagnostic must not destroy the engine sample beside it
+        (Codex round 2 finding 3). This is the counterpart to the test above:
+        the same nulls, with the cause named, are admitted and still produce a
+        rate. Parameterised over both arms because a schema-specific change
+        refusing named nulls on settle rows alone would otherwise survive
+        (Codex round 6 finding 3).
+        """
+        for arm, which in self.ARMS:
+            with self.subTest(arm=arm):
+                settle, witness = self._healthy_pair()
+                row = self._row(settle, witness, which)
+                for field in BASELINE.HOST_STATE_FIELDS_NULLABLE:
+                    row[field] = None
+                # BOTH queries named, joined the way the observer joins them,
+                # because all three counters are null and one cause cannot
+                # account for two different failed calls (Codex round 7
+                # finding 3). An earlier version of this test asserted that
+                # the memory cause alone was enough, which is the invalid
+                # combination the gate now refuses.
+                row["host_state_unavailable"] = (
+                    "ProcessorAffinity: access denied; "
+                    "K32GetProcessMemoryInfo: Win32 error 5"
+                )
+                summary = self._run(settle, witness)
+                self.assertEqual(summary["problems"], [])
+                self.assertIsNotNone(summary[arm]["hours_per_second"])
+
+    def test_a_non_nullable_host_field_is_refused_even_with_a_named_cause(self):
+        """Kills: putting `available_parallelism` back in the nullable loop.
+
+        Codex round 6 finding 2: it has no failure mode --
+        `[Environment]::ProcessorCount` cannot fail and `ClockSample` types it
+        as a plain `i32` -- so a null there is not an unavailable measurement,
+        and a cause naming a DIFFERENT query does not explain it.
+        """
+        for arm, which in self.ARMS:
+            with self.subTest(arm=arm):
+                settle, witness = self._healthy_pair()
+                row = self._row(settle, witness, which)
+                row["available_parallelism"] = None
+                row["host_state_unavailable"] = "K32GetProcessMemoryInfo: Win32 error 5"
+                summary = self._run(settle, witness)
+                self.assert_refused(
+                    summary, "available_parallelism", arm, also="no failure mode"
+                )
+
+    def test_a_non_integer_host_field_is_refused(self):
+        """Kills: accepting whatever type happens to be there.
+
+        `True` is included on purpose: `isinstance(True, int)` is true in
+        Python, so a bare integer check admits a boolean, and `True` is not a
+        core count.
+        """
+        for arm, which in self.ARMS:
+            for value in ("16", 16.5, True, [], {}):
+                with self.subTest(arm=arm, value=value):
+                    settle, witness = self._healthy_pair()
+                    self._row(settle, witness, which)["available_parallelism"] = value
+                    summary = self._run(settle, witness)
+                    self.assert_refused(summary, "not an integer", arm)
+
+    def test_a_refused_row_cannot_anchor_the_attach_window(self):
+        """Kills: filtering after `attach_window` instead of before it.
+
+        `attach_window` reads BOTH row lists to place the collector's dwell, so
+        a row refused for the numerator could still have moved the window that
+        decides which rows the numerator sees.
+
+        Built so the fallback anchor is the one under test: the settle arm is
+        refused, which empties the primary anchor, and the fallback takes
+        `min()` over the `attach_started` witness stamps. The refused row is
+        the EARLIER of the two, so if it leaked in it would win.
+        """
+        refused_ms = ATTACH_START_MS - 9_000
+        admitted_ms = ATTACH_START_MS - 4_000
+
+        settle, witness = self._healthy_pair()
+        settle[0]["schema"] = "hoi4-settle-control-sample-v1"
+        refused = witness_sample(1, 100, phase="attach_started", at_ms=refused_ms)
+        refused["target_working_set_bytes"] = None
+        refused["host_state_unavailable"] = None
+        witness.append(refused)
+        witness.append(
+            witness_sample(1, 100, phase="attach_started", at_ms=admitted_ms)
+        )
+
+        summary = self._run(settle, witness)
+        window = summary["attach_window"]
+        self.assertTrue(
+            any("names no cause" in problem for problem in summary["problems"]),
+            summary["problems"],
+        )
+        self.assertTrue(window["bounded"], window)
+        self.assertEqual(window["start_source"], "attach_started", window)
+        self.assertNotEqual(
+            window["start_unix_ms"],
+            refused_ms,
+            "the refused row anchored the attach window",
+        )
+        self.assertEqual(window["start_unix_ms"], admitted_ms, window)
+
+    def test_one_retired_file_is_one_problem_not_one_per_row(self):
+        """Kills: a per-row problem list.
+
+        A file written entirely by a retired producer would print thousands of
+        identical lines and bury every other finding.
+        """
+        settle, _ = self._healthy_pair()
+        witness = [
+            witness_sample(1, 100, at_ms=ATTACH_START_MS + 1_000 + n * 100)
+            for n in range(25)
+        ]
+        for row in witness:
+            row["schema"] = "hoi4-passive-client-state-witness-v2"
+        summary = self._run(settle, witness)
+        schema_lines = [p for p in summary["problems"] if "witness-v2" in p]
+        self.assertEqual(len(schema_lines), 1, summary["problems"])
+        self.assertIn("25 row(s)", schema_lines[0])
+
+    def test_a_numeric_string_rate_field_is_refused_and_feeds_nothing(self):
+        """Kills: validating only the fields a row is refused FOR, and never
+        the fields it is USED for -- Codex round 3 finding 3 exactly.
+
+        `aggregate` coerces `hour_delta` and `observed_window_ms` with
+        `int(...)`, which accepts the string "1". So a row with numeric strings
+        passed the host-field gate and published a rate no typed producer could
+        have emitted, from a run that exited 0.
+        """
+        for field in ("hour_delta", "observed_window_ms"):
+            with self.subTest(field=field):
+                settle, witness = self._healthy_pair()
+                witness[0][field] = str(witness[0][field])
+                summary = self._run(settle, witness)
+                self.assert_refused(summary, field, "with_collector")
+
+    def test_a_rate_field_of_the_wrong_type_is_refused_on_either_arm(self):
+        """Kills: gating only the witness arm, or accepting a bool as an int.
+
+        `True` is in the list on purpose: `isinstance(True, int)` is true in
+        Python, and one game-hour is not `True`.
+        """
+        for field, value in (
+            ("hour_delta", True),
+            ("observed_window_ms", 100.5),
+            ("phase", 7),
+            ("paused_final", "no"),
+        ):
+            with self.subTest(field=field, value=value):
+                settle, witness = self._healthy_pair()
+                settle[0][field] = value
+                summary = self._run(settle, witness)
+                self.assert_refused(summary, field, "free_run")
+
+    def test_a_missing_rate_field_is_refused(self):
+        """Kills: type-checking a field only when it happens to be there.
+
+        Through the whole summary, not just the predicate: this is the half
+        that says a refused row also FEEDS NOTHING. The exhaustive per-key
+        coverage is `test_every_key_of_the_producer_row_is_required` below;
+        this is the pipeline half, on the three fields the rate is built from.
+        """
+        for field in ("phase", "hour_delta", "observed_window_ms"):
+            with self.subTest(field=field):
+                settle, witness = self._healthy_pair()
+                witness[0].pop(field)
+                summary = self._run(settle, witness)
+                self.assert_refused(
+                    summary, field, "with_collector", also="is missing"
+                )
+
+    def test_a_key_no_producer_emits_is_refused(self):
+        """Kills: checking only that the expected keys are there.
+
+        A row that carries everything AND something else is not a row either
+        `[ordered]@{ ... }` literal can produce -- it is a hand edit or a
+        producer this reader does not know. `ClockSample` refuses the same
+        shape with `#[serde(deny_unknown_fields)]`, and a summary that read it
+        anyway would publish a receipt from a file the run-time reader would
+        not parse.
+        """
+        for arm, which in self.ARMS:
+            with self.subTest(arm=arm):
+                settle, witness = self._healthy_pair()
+                self._row(settle, witness, which)["gpu_busy_percent"] = 40
+                summary = self._run(settle, witness)
+                self.assert_refused(
+                    summary, "gpu_busy_percent", arm, also="no producer"
+                )
+
+    def test_one_key_swapped_for_another_is_refused(self):
+        """Kills: deciding whether to difference the key sets by their SIZE.
+
+        Codex round 8 finding 2. Every other shape case changes the key count
+        -- the missing tests remove one, the unknown test adds one -- so a gate
+        that compared `len(row)` with `len(spec)` first and only differenced
+        the sets when they disagreed would pass all of them. A row with
+        `exe_sha256` replaced by `gpu_busy_percent` has exactly the right
+        number of keys and is still not a row any producer wrote.
+
+        The committed implementation computes both set differences
+        unconditionally, so this passes today; it exists so that it cannot stop
+        being true.
+        """
+        row = dict(self._complete(BASELINE.WITNESS_SCHEMA))
+        row.pop("exe_sha256")
+        row["gpu_busy_percent"] = 40
+        self.assertEqual(len(row), len(BASELINE.ROW_SPEC[BASELINE.WITNESS_SCHEMA]))
+        problem = BASELINE.admission_problem(row, BASELINE.WITNESS_SCHEMA)
+        self.assertIsNotNone(problem)
+        self.assertIn("exe_sha256", problem)
+
+    # ------------------------------------------------------------------
+    # THE EXHAUSTIVE SHAPE COVERAGE.
+    #
+    # These three drive `admission_problem` DIRECTLY rather than through
+    # `RunDir`, and deliberately: the property under test is "every key of the
+    # producer's row is required, typed and non-null", which is a property of
+    # the predicate, and routing 62 mutations each through a temporary
+    # directory would only re-test the filtering the pipeline tests above
+    # already pin. That the predicate is what `summarize` filters on is itself
+    # pinned, by every `assert_refused` case in this class.
+
+    @staticmethod
+    def _complete(schema):
+        """One complete row of `schema`, exactly as a producer writes it."""
+        if schema == BASELINE.SETTLE_SCHEMA:
+            return settle_sample(1, 100, at_ms=ATTACH_START_MS)
+        return witness_sample(1, 100, at_ms=ATTACH_START_MS + 1_000)
+
+    def test_a_complete_row_of_each_schema_is_admitted(self):
+        """The POSITIVE CONTROL for the three exhaustive tests below.
+
+        Each of them asserts that a MUTATED row is refused, and all three would
+        pass against a predicate that refused everything. This is the one that
+        says the unmutated fixtures -- which carry the producers' whole key
+        sets -- are admitted.
+        """
+        for schema in (BASELINE.SETTLE_SCHEMA, BASELINE.WITNESS_SCHEMA):
+            with self.subTest(schema=schema):
+                self.assertIsNone(
+                    BASELINE.admission_problem(self._complete(schema), schema)
+                )
+
+    def test_every_key_of_the_producer_row_is_required(self):
+        """Kills: demoting ANY key of either row to optional.
+
+        Over the WHOLE key set of both schemas, because the previous version of
+        this gate carried a hand-picked list of "the fields the rate is built
+        from" and each review round found another field outside it that a row
+        could lose without being noticed. There is nothing left to pick: a row
+        the producer wrote has all of these.
+        """
+        for schema in (BASELINE.SETTLE_SCHEMA, BASELINE.WITNESS_SCHEMA):
+            for field in sorted(BASELINE.ROW_SPEC[schema]):
+                with self.subTest(schema=schema, field=field):
+                    row = dict(self._complete(schema))
+                    row.pop(field)
+                    problem = BASELINE.admission_problem(row, schema)
+                    self.assertIsNotNone(problem, field)
+                    if field == "schema":
+                        # Losing the schema key is refused one step earlier, by
+                        # the version check, and says so in its own words.
+                        self.assertIn("no compatibility path", problem)
+                    else:
+                        self.assertIn(repr(field), problem)
+                        self.assertIn("is missing", problem)
+
+    def test_every_key_of_the_producer_row_is_typed(self):
+        """Kills: accepting whatever type happens to be in a field.
+
+        `aggregate` coerces with `int(...)`, which accepts the string "1", so
+        an untyped field is a rate no typed producer could have emitted (Codex
+        round 3 finding 3). The wrong value per kind is chosen to be the one a
+        naive check would miss: `True` for an integer field, because
+        `isinstance(True, int)` is true in Python, and an integer for a boolean
+        field for the same reason in reverse.
+        """
+        wrong = {
+            "str": 7,
+            "str?": 7,
+            "int": True,
+            "int?": True,
+            "bool": 1,
+        }
+        expected = {
+            "str": "not a string",
+            "str?": "not a string",
+            "int": "not an integer",
+            "int?": "not an integer",
+            "bool": "not a boolean",
+        }
+        for schema in (BASELINE.SETTLE_SCHEMA, BASELINE.WITNESS_SCHEMA):
+            spec = BASELINE.ROW_SPEC[schema]
+            for field in sorted(spec):
+                if field == "schema":
+                    # Its VALUE is the version check's business, above.
+                    continue
+                with self.subTest(schema=schema, field=field):
+                    row = dict(self._complete(schema))
+                    row[field] = wrong[spec[field]]
+                    problem = BASELINE.admission_problem(row, schema)
+                    self.assertIsNotNone(problem, field)
+                    self.assertIn(repr(field), problem)
+                    self.assertIn(expected[spec[field]], problem)
+
+    def test_only_the_target_counters_may_be_null(self):
+        """Kills: skipping a present-but-null field anywhere in the row.
+
+        Codex round 4 finding 1: `"paused_final": null` on an otherwise valid
+        settle row passed admission, `paused_in_sample` read it as "not
+        paused", and the row entered the free-run denominator. "Absent" and
+        "present with nothing in it" are different, and only the three counters
+        the observer reads OFF THE TARGET can legitimately be the second --
+        those are the only queries that can fail.
+
+        Over every key of both rows, so no field can quietly join the nullable
+        set. The nullable three are checked in the other direction here too: a
+        null in one of them, beside the cause that names its own query, is
+        ADMITTED, which is what stops this from being satisfied by a predicate
+        that simply refuses every null.
+        """
+        for schema in (BASELINE.SETTLE_SCHEMA, BASELINE.WITNESS_SCHEMA):
+            spec = BASELINE.ROW_SPEC[schema]
+            for field in sorted(spec):
+                with self.subTest(schema=schema, field=field):
+                    row = dict(self._complete(schema))
+                    row[field] = None
+                    if field in BASELINE.HOST_STATE_FIELDS_NULLABLE:
+                        row["host_state_unavailable"] = (
+                            BASELINE.HOST_STATE_CAUSE_PREFIX[field] + " denied"
+                        )
+                        self.assertIsNone(
+                            BASELINE.admission_problem(row, schema), field
+                        )
+                        continue
+                    problem = BASELINE.admission_problem(row, schema)
+                    if field == "host_state_unavailable":
+                        # Null is its RESTING value -- it means nothing failed
+                        # -- so with every counter present this is a complete
+                        # row and admitting it is correct.
+                        self.assertIsNone(problem, problem)
+                        continue
+                    self.assertIsNotNone(problem, field)
+                    if field == "schema":
+                        self.assertIn("no compatibility path", problem)
+                    else:
+                        self.assertIn(repr(field), problem)
+                        self.assertIn("may never be null", problem)
+
+    # HAND-WRITTEN MIRRORS OF THE PRODUCTION TABLES.
+    #
+    # The exhaustive tests above iterate `ROW_SPEC`, which means none of them
+    # can notice that table SHRINKING -- they simply stop asking. These are
+    # what notices (Codex round 5 finding 3 for the first instance of this
+    # failure mode, round 6 finding 3 for the second). They are also the copy a
+    # reader can diff against the two `[ordered]@{ ... }` literals in
+    # `Invoke-HeadlessRawCapture.ps1` by eye.
+    SETTLE_SPEC = {
+        "schema": "str",
+        "observed_at_utc": "str",
+        "observed_at_unix_ms": "int",
+        "phase": "str",
+        "pid": "int",
+        "process_creation_filetime_utc": "int",
+        "expected_speed": "int",
+        "speed_final": "int",
+        "paused_final": "bool",
+        "pause_forced_final": "bool",
+        "tick_inhibited_final": "bool",
+        "hour_a": "int",
+        "hour_b": "int",
+        "hour_delta": "int",
+        "tick_progress_bits_a": "int",
+        "tick_progress_bits_b": "int",
+        "observed_window_ms": "int",
+        "processor_milliseconds": "int",
+        "available_parallelism": "int",
+        "target_processor_affinity_cores": "int?",
+        "target_page_fault_count": "int?",
+        "target_working_set_bytes": "int?",
+        "host_state_unavailable": "str?",
+        "advancing": "bool",
+    }
+    WITNESS_ONLY_SPEC = {
+        "exe_sha256": "str",
+        "observer_sha256": "str",
+        "access": "str",
+        "speed_initial": "int",
+        "paused_initial": "bool",
+        "pause_forced_initial": "bool",
+        "tick_inhibited_initial": "bool",
+        "paused_in_window": "bool",
+        "pause_forced_in_window": "bool",
+        "tick_inhibited_in_window": "bool",
+        "window_started_at_utc": "str",
+        "window_started_at_unix_ms": "int",
+        "clock_progress_waited_ms": "int",
+        "clock_progress_budget_ms": "int",
+    }
+
+    def test_row_spec_is_exactly_what_the_harness_emits(self):
+        """Kills: `ROW_SPEC` drifting from the producer in EITHER direction.
+
+        This is the failure the whole shape gate is exposed to, and the only
+        one it can suffer FAIL-CLOSED on a live capture. A key the harness
+        emits and `ROW_SPEC` lacks refuses every real row for carrying
+        something unknown; a key `ROW_SPEC` has and the harness lost refuses
+        every real row for missing it. Either way the summary publishes nothing
+        from a real run and every fixture test in this file stays green,
+        because the fixtures are built from `ROW_SPEC`'s own idea of a row.
+
+        So this reads the PRODUCER: it brace-matches each `[ordered]@{ ... }`
+        literal in `Invoke-HeadlessRawCapture.ps1` -- located by the `schema =`
+        line inside it, so renaming the variable cannot hide it -- and compares
+        the key set against `ROW_SPEC`. The hand-written mirror below is the
+        other half: it catches the table shrinking, which a scan of a harness
+        that shrank with it would not.
+        """
+        harness = self._harness()
+        for schema in (BASELINE.SETTLE_SCHEMA, BASELINE.WITNESS_SCHEMA):
+            with self.subTest(schema=schema):
+                emitted = self._emitted_keys(harness, schema)
+                self.assertEqual(
+                    sorted(emitted),
+                    sorted(BASELINE.ROW_SPEC[schema]),
+                    "ROW_SPEC and the harness disagree about {}".format(schema),
+                )
+
+    @staticmethod
+    def _harness():
+        """The committed harness source, normalised to LF."""
+        return (
+            Path(BASELINE.__file__)
+            .with_name("Invoke-HeadlessRawCapture.ps1")
+            .read_text(encoding="utf-8-sig")
+            .replace("\r\n", "\n")
+        )
+
+    @classmethod
+    def _emitted_keys(cls, harness, schema):
+        """Just the keys of the literal that emits `schema`."""
+        return list(cls._emitted_pairs(harness, schema))
+
+    @staticmethod
+    def _emitted_pairs(harness, schema):
+        """`{key: value expression}` for the literal that emits `schema`.
+
+        Located from the inside out: find the `schema = '<name>'` assignment,
+        walk back to the `[ordered]@{` that opens the literal it sits in, then
+        brace-match forward. Nothing here depends on a variable name, a line
+        number, or the order of the keys.
+        """
+        marker = "= '{}'".format(schema)
+        at = harness.index(marker)
+        open_at = harness.rindex("[ordered]@{", 0, at)
+        cursor = harness.index("{", open_at)
+        depth = 0
+        end = None
+        for index in range(cursor, len(harness)):
+            if harness[index] == "{":
+                depth += 1
+            elif harness[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = index
+                    break
+        assert end is not None, schema
+        pairs = {}
+        for line in harness[cursor + 1:end].split("\n"):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            name, sep, value = stripped.partition("=")
+            assert sep, "unparsed line in the {} literal: {!r}".format(schema, line)
+            name = name.strip()
+            assert name not in pairs, "duplicate key {!r} in {}".format(name, schema)
+            pairs[name] = value.strip()
+        return pairs
+
+    # WHAT EACH KEY'S VALUE EXPRESSION IS ALLOWED TO LOOK LIKE.
+    #
+    # Codex round 8 finding 1: pinning the key set says nothing about the
+    # value. `available_parallelism = [string]$state.AvailableParallelism`
+    # keeps every key in place and makes every live row fail both `ROW_SPEC`
+    # and `ClockSample`; casting one of the four uncast fields silently turns a
+    # failed query's `$null` into `0` or `""`, which is the exact
+    # measured-vs-unavailable confusion those fields exist to prevent.
+    #
+    # So the rule is per KIND, and it is a rule about the cast:
+    #
+    #   int   -> [int] or [int64]      str  -> [string] or a quoted literal
+    #   bool  -> [bool]                *?   -> pinned exactly, see below
+    #
+    # `[int]$null` is `0` and `[string]$null` is `""`, so a cast on a nullable
+    # field does not merely change its type -- it destroys the distinction
+    # between "measured zero" and "could not measure".
+    CAST_FOR_KIND = {
+        "int": ("[int]", "[int64]"),
+        "str": ("[string]",),
+        "bool": ("[bool]",),
+    }
+
+    # THE NULLABLE FOUR, PINNED EXACTLY.
+    #
+    # "No leading cast" is not the property that matters (Codex round 9 finding
+    # 2). `target_page_fault_count = 0` carries no cast and destroys the same
+    # distinction a cast would; so does any computed expression that cannot
+    # produce `$null`. What these fields must be is a bare read of the property
+    # the observer set, which is a small closed set, so it is written out.
+    NULLABLE_EXPRESSION = {
+        "hoi4-settle-control-sample-v2": {
+            "target_processor_affinity_cores": "$sample.TargetProcessorAffinityCores",
+            "target_page_fault_count": "$sample.TargetPageFaultCount",
+            "target_working_set_bytes": "$sample.TargetWorkingSetBytes",
+            "host_state_unavailable": "$sample.HostStateUnavailable",
+        },
+        "hoi4-passive-client-state-witness-v3": {
+            "target_processor_affinity_cores": "$state.TargetProcessorAffinityCores",
+            "target_page_fault_count": "$state.TargetPageFaultCount",
+            "target_working_set_bytes": "$state.TargetWorkingSetBytes",
+            "host_state_unavailable": "$state.HostStateUnavailable",
+        },
+    }
+
+    # THE KEYS WRITTEN AS A BARE VARIABLE, and how that variable gets its type.
+    #
+    # Two modes, because two kinds of variable:
+    #
+    #  * "param" -- a typed parameter, assigned once by the call. The pinned
+    #    string is the declaration, and it must still be in the file.
+    #  * "assignments" -- an ordinary variable. EVERY assignment to it must
+    #    start with one of the pinned prefixes, not merely one of them
+    #    (Codex round 9 finding 1: `$gamePid` is assigned on the attach path
+    #    and on the launch path, and pinning one `[int]` left the other free to
+    #    become `[string]` with the settle row serialising differently for
+    #    exactly the captures the passive path produces).
+    #  * "sole" -- an ordinary variable whose type is not a cast but the shape
+    #    of the expression, so the expression itself is pinned AND it must be
+    #    the only assignment. `$readOnlyObserverSha256` is a string because it
+    #    ends in `.ToLowerInvariant()`, which no prefix can express.
+    UNCAST_BY_DECLARATION = {
+        ("hoi4-settle-control-sample-v2", "pid"): (
+            "$gamePid",
+            "assignments",
+            ("[int]", "0"),
+        ),
+        ("hoi4-settle-control-sample-v2", "process_creation_filetime_utc"): (
+            "$gameCreationFiletimeUtc",
+            "assignments",
+            ("[uint64](",),
+        ),
+        ("hoi4-settle-control-sample-v2", "expected_speed"): (
+            "$Speed",
+            "param",
+            "[int]$Speed = 5,",
+        ),
+        ("hoi4-passive-client-state-witness-v3", "phase"): (
+            "$Phase",
+            "param",
+            "[Parameter(Mandatory = $true)][string]$Phase,",
+        ),
+        ("hoi4-passive-client-state-witness-v3", "pid"): (
+            "$TargetProcessId",
+            "param",
+            "[Parameter(Mandatory = $true)][int]$TargetProcessId,",
+        ),
+        ("hoi4-passive-client-state-witness-v3", "process_creation_filetime_utc"): (
+            "$ExpectedCreationFiletimeUtc",
+            "param",
+            "[Parameter(Mandatory = $true)][uint64]$ExpectedCreationFiletimeUtc,",
+        ),
+        ("hoi4-passive-client-state-witness-v3", "expected_speed"): (
+            "$ExpectedSpeed",
+            "param",
+            "[Parameter(Mandatory = $true)][int]$ExpectedSpeed",
+        ),
+        ("hoi4-passive-client-state-witness-v3", "observer_sha256"): (
+            "$readOnlyObserverSha256",
+            "sole",
+            "$readOnlyObserverSha256 = (\n"
+            "    Get-FileHash -LiteralPath $readOnlyObserver -Algorithm SHA256\n"
+            ").Hash.ToLowerInvariant()",
+        ),
+    }
+
+    @classmethod
+    def _value_problems(cls, harness):
+        """Every way the harness's value expressions disagree with `ROW_SPEC`.
+
+        A LIST, not a set of assertions, so the same rule can be applied to a
+        MUTATED copy of the harness and asserted to fire. A positive control
+        that only re-runs the parser proves nothing about the rule (Codex round
+        9 finding 3).
+        """
+        problems = []
+        for schema in (BASELINE.SETTLE_SCHEMA, BASELINE.WITNESS_SCHEMA):
+            spec = BASELINE.ROW_SPEC[schema]
+            for field, value in cls._emitted_pairs(harness, schema).items():
+                kind = spec.get(field)
+                if kind is None:
+                    problems.append(
+                        "{}: {!r} is emitted and ROW_SPEC does not know it".format(
+                            schema, field
+                        )
+                    )
+                    continue
+                if kind.endswith("?"):
+                    expected = cls.NULLABLE_EXPRESSION[schema][field]
+                    if value != expected:
+                        problems.append(
+                            "{}: {!r} may be null and must be the bare read "
+                            "{!r}; a cast makes $null into 0 or \"\", and a "
+                            "computed value cannot be null at all. Found "
+                            "{!r}".format(schema, field, expected, value)
+                        )
+                    continue
+                declared = cls.UNCAST_BY_DECLARATION.get((schema, field))
+                if declared is not None:
+                    expression, mode, detail = declared
+                    if value != expression:
+                        problems.append(
+                            "{}: {!r} is allowlisted as the bare variable {} "
+                            "and is now {!r}".format(schema, field, expression, value)
+                        )
+                        continue
+                    if mode in ("param", "sole"):
+                        if detail not in harness:
+                            problems.append(
+                                "{}: {!r} is emitted as {} and its typed "
+                                "declaration {!r} is gone".format(
+                                    schema, field, expression, detail
+                                )
+                            )
+                        if mode == "sole":
+                            assignments = cls._assignments_to(harness, expression)
+                            if len(assignments) != 1:
+                                problems.append(
+                                    "{}: {!r} is emitted as {}, whose type comes "
+                                    "from the shape of one pinned expression, and "
+                                    "it now has {} assignments: {}".format(
+                                        schema,
+                                        field,
+                                        expression,
+                                        len(assignments),
+                                        assignments,
+                                    )
+                                )
+                        continue
+                    for assignment in cls._assignments_to(harness, expression):
+                        if not assignment.startswith(detail):
+                            problems.append(
+                                "{}: {!r} is emitted as {}, and one of that "
+                                "variable's assignments is {!r}, which is not "
+                                "one of {}".format(
+                                    schema, field, expression, assignment, detail
+                                )
+                            )
+                    continue
+                if value.startswith("'"):
+                    if kind != "str" or not value.endswith("'"):
+                        problems.append(
+                            "{}: {!r} is read as {} and written as the literal "
+                            "{!r}".format(schema, field, kind, value)
+                        )
+                    continue
+                if not value.startswith(cls.CAST_FOR_KIND[kind]):
+                    problems.append(
+                        "{}: {!r} is read as {} and the harness writes it as "
+                        "{!r}; expected one of {}".format(
+                            schema, field, kind, value, cls.CAST_FOR_KIND[kind]
+                        )
+                    )
+        return problems
+
+    @staticmethod
+    def _assignments_to(harness, variable):
+        """The right-hand side of every `<variable> = ...` in the harness.
+
+        Deliberately every one. Finding one well-typed assignment says nothing
+        about the others, and it is the OTHER branch that reaches the row on
+        the path this measurement actually runs.
+        """
+        found = []
+        for line in harness.split("\n"):
+            stripped = line.strip()
+            if not stripped.startswith(variable + " "):
+                continue
+            name, sep, value = stripped.partition("=")
+            if not sep or name.strip() != variable:
+                continue
+            found.append(value.strip())
+        assert found, "no assignment to {} at all".format(variable)
+        return found
+
+    def test_the_harness_emits_each_key_as_the_type_row_spec_reads(self):
+        """Kills: retyping a producer value without touching its key.
+
+        The key-set scan above is blind to everything right of the `=`, so a
+        cast change leaves it green and breaks every live row (Codex round 8
+        finding 1). This applies `_value_problems` -- the rule for each key's
+        `ROW_SPEC` kind -- to the committed harness.
+
+        The four nullable fields are the sharp end: they are uncast ON PURPOSE,
+        and a cast on one of them would publish `0` cores or `0` resident bytes
+        as if they had been measured.
+        """
+        self.assertEqual(self._value_problems(self._harness()), [])
+
+    def test_the_value_rule_fires_on_every_edit_it_exists_for(self):
+        """Kills: a rule so loose no realistic edit violates it -- and a
+        positive control that only re-runs the parser.
+
+        Codex round 9 finding 3: the previous version of this test asserted
+        that `_emitted_pairs` SAW the edited expression, never that the rule
+        REJECTED it, so it would have stayed green with the rule deleted. Each
+        case below runs the real rule over a mutated copy of the harness and
+        requires it to name the field.
+
+        None of these edits changes a key, so the key-set scan is blind to all
+        four.
+        """
+        harness = self._harness()
+        cases = (
+            (
+                "a non-nullable field is retyped",
+                "available_parallelism          = [int]$state.AvailableParallelism",
+                "available_parallelism          = [string]$state.AvailableParallelism",
+                "available_parallelism",
+            ),
+            (
+                "a nullable counter is cast, so $null becomes 0",
+                "target_page_fault_count        = $state.TargetPageFaultCount",
+                "target_page_fault_count        = [int64]$state.TargetPageFaultCount",
+                "target_page_fault_count",
+            ),
+            (
+                "a nullable counter is given a value that cannot be null",
+                "target_working_set_bytes       = $state.TargetWorkingSetBytes",
+                "target_working_set_bytes       = 0",
+                "target_working_set_bytes",
+            ),
+            (
+                "one of three assignments to an allowlisted variable is retyped",
+                "    $gamePid = [int]$created.ProcessId",
+                "    $gamePid = [string]$created.ProcessId",
+                "pid",
+            ),
+            (
+                "a sole-assignment variable gains a second assignment",
+                "$readOnlyObserverSha256 = (",
+                "$readOnlyObserverSha256 = 'deadbeef'\n$readOnlyObserverSha256 = (",
+                "observer_sha256",
+            ),
+        )
+        for name, old, new, field in cases:
+            with self.subTest(case=name):
+                self.assertEqual(harness.count(old), 1, "stale anchor: {!r}".format(old))
+                problems = self._value_problems(harness.replace(old, new, 1))
+                self.assertTrue(
+                    any(repr(field) in problem for problem in problems),
+                    "the rule did not name {!r}: {}".format(field, problems),
+                )
+
+    def test_the_producer_scan_can_actually_fail(self):
+        """Kills: a scan whose parse is so forgiving it matches anything.
+
+        `test_row_spec_is_exactly_what_the_harness_emits` compares two sets it
+        derives, and a parse that silently returned everything -- or nothing --
+        would make it vacuous in the one direction that matters. This feeds the
+        same parser a literal with a key ADDED and one with a key REMOVED, and
+        requires it to see the difference.
+        """
+        harness = self._harness()
+        baseline = self._emitted_keys(harness, BASELINE.WITNESS_SCHEMA)
+        added = harness.replace(
+            "        advancing                      = [bool]$state.Advancing\n",
+            "        advancing                      = [bool]$state.Advancing\n"
+            "        gpu_busy_percent               = [int]$state.GpuBusyPercent\n",
+            1,
+        )
+        self.assertNotEqual(added, harness, "the anchor for the ADD case is stale")
+        self.assertEqual(
+            sorted(set(self._emitted_keys(added, BASELINE.WITNESS_SCHEMA)) - set(baseline)),
+            ["gpu_busy_percent"],
+        )
+        removed = harness.replace(
+            "        clock_progress_budget_ms       = [int64]$state.ClockProgressBudgetMs\n",
+            "",
+            1,
+        )
+        self.assertNotEqual(removed, harness, "the anchor for the REMOVE case is stale")
+        self.assertEqual(
+            sorted(set(baseline) - set(self._emitted_keys(removed, BASELINE.WITNESS_SCHEMA))),
+            ["clock_progress_budget_ms"],
+        )
+
+    def test_every_production_field_table_is_exactly_what_the_tests_cover(self):
+        """Kills: adding OR removing an entry in any production field table
+        without covering it here.
+
+        The exhaustive tests above iterate `ROW_SPEC`, so a shrinking table
+        makes them all quietly stop asking. This is the only test that fails
+        when one loses a member.
+        """
+        self.assertEqual(BASELINE.ROW_SPEC[BASELINE.SETTLE_SCHEMA], self.SETTLE_SPEC)
+        self.assertEqual(
+            BASELINE.ROW_SPEC[BASELINE.WITNESS_SCHEMA],
+            dict(self.SETTLE_SPEC, **self.WITNESS_ONLY_SPEC),
+        )
+        # The settle row is a strict subset, which is why the witness spec is
+        # built from it rather than written out twice.
+        self.assertEqual(set(self.SETTLE_SPEC) & set(self.WITNESS_ONLY_SPEC), set())
+        # Exactly two schemas, so a third cannot appear unpinned.
+        self.assertEqual(
+            sorted(BASELINE.ROW_SPEC),
+            sorted((BASELINE.SETTLE_SCHEMA, BASELINE.WITNESS_SCHEMA)),
+        )
+        self.assertEqual(
+            BASELINE.HOST_STATE_FIELDS_NULLABLE,
+            (
+                "target_processor_affinity_cores",
+                "target_page_fault_count",
+                "target_working_set_bytes",
+            ),
+        )
+        # Every nullable host field has a cause prefix, and no others.
+        self.assertEqual(
+            tuple(sorted(BASELINE.HOST_STATE_CAUSE_PREFIX)),
+            tuple(sorted(BASELINE.HOST_STATE_FIELDS_NULLABLE)),
+        )
+        # And the two tables agree on WHICH fields those are: `ROW_SPEC` says a
+        # field is nullable with its kind, `HOST_STATE_FIELDS_NULLABLE` says so
+        # by membership, and the relationship checks read the second while the
+        # shape check reads the first.
+        for schema, spec in BASELINE.ROW_SPEC.items():
+            nullable = tuple(
+                field for field in spec if spec[field] == "int?"
+            )
+            self.assertEqual(
+                sorted(nullable),
+                sorted(BASELINE.HOST_STATE_FIELDS_NULLABLE),
+                schema,
+            )
+
+    def test_a_witness_only_pause_field_is_not_required_of_the_settle_row(self):
+        """Kills: one required list for both schemas.
+
+        The settle-control row has no `*_in_window` pause fields at all, so a
+        single required list would refuse every settle row the harness writes.
+        """
+        settle, witness = self._healthy_pair()
+        for field in ("paused_in_window", "pause_forced_in_window"):
+            self.assertNotIn(field, settle[0])
+            self.assertIn(field, witness[0])
+        summary = self._run(settle, witness)
+        self.assertEqual(summary["problems"], [])
+        self.assertIsNotNone(summary["free_run"]["hours_per_second"])
+
+    def test_a_negative_term_of_the_rate_is_refused(self):
+        """Kills: dropping either lower bound on the rate's own terms.
+
+        Codex round 6 finding 1: `aggregate` sums both signed and divides one
+        by the other, so a negative CANCELS a real sample rather than nudging
+        it. Two rows of (hour_delta, observed_window_ms) = (1, 100) and
+        (1, -50) published 2 hours over 50 ms -- 40 h/s -- with nothing named.
+        """
+        for arm, which in self.ARMS:
+            with self.subTest(arm=arm, field="observed_window_ms"):
+                settle, witness = self._healthy_pair()
+                self._row(settle, witness, which)["observed_window_ms"] = -50
+                summary = self._run(settle, witness)
+                self.assert_refused(
+                    summary, "observed_window_ms", arm, also="cannot run backwards"
+                )
+            with self.subTest(arm=arm, field="hour_delta"):
+                settle, witness = self._healthy_pair()
+                row = self._row(settle, witness, which)
+                # Kept self-consistent, so this is refused for being a
+                # rollback and not for failing the identity check.
+                row["hour_delta"] = -1
+                row["hour_b"] = row["hour_a"] - 1
+                summary = self._run(settle, witness)
+                self.assert_refused(summary, "hour_delta", arm, also="rollback")
+
+    def test_positive_hours_over_a_zero_window_are_refused(self):
+        """Kills: bounding the terms at zero and stopping there.
+
+        Codex round 7 finding 1: `aggregate` sums hours and milliseconds
+        INDEPENDENTLY, so rows of (1, 0) and (1, 100) publish two hours over
+        one hundred milliseconds -- 20 h/s -- from a sample that observed game
+        time in no wall time at all.
+        """
+        for arm, which in self.ARMS:
+            with self.subTest(arm=arm):
+                settle, witness = self._healthy_pair()
+                self._row(settle, witness, which)["observed_window_ms"] = 0
+                summary = self._run(settle, witness)
+                self.assert_refused(
+                    summary, "zero-millisecond window", arm, also="game hour"
+                )
+
+    def test_a_cause_for_a_different_query_does_not_excuse_a_null(self):
+        """Kills: accepting any non-blank reason as cover for any null.
+
+        Codex round 7 finding 3. The observer names the query that failed --
+        `ProcessorAffinity:` or `K32GetProcessMemoryInfo:` -- so a row whose
+        affinity is missing and whose only cause is the memory one is a row
+        that does not account for its own gap. TG-3 would then have called
+        missing affinity evidence "accounted for", which defeats the confound
+        witness this lane exists to build.
+        """
+        for arm, which in self.ARMS:
+            for field, wrong in (
+                ("target_processor_affinity_cores", "K32GetProcessMemoryInfo: Win32 error 5"),
+                ("target_page_fault_count", "ProcessorAffinity: access denied"),
+                ("target_working_set_bytes", "ProcessorAffinity: access denied"),
+            ):
+                with self.subTest(arm=arm, field=field):
+                    settle, witness = self._healthy_pair()
+                    row = self._row(settle, witness, which)
+                    row[field] = None
+                    row["host_state_unavailable"] = wrong
+                    summary = self._run(settle, witness)
+                    self.assert_refused(summary, field, arm, also="does not mention")
+
+    def test_the_matching_cause_does_excuse_its_own_null(self):
+        """Kills: a correspondence so strict nothing the observer writes fits.
+
+        The counterpart to the test above, and the reason it is not simply
+        "refuse nulls": each field's own prefix admits it.
+        """
+        for arm, which in self.ARMS:
+            for field, right in (
+                ("target_processor_affinity_cores", "ProcessorAffinity: access denied"),
+                ("target_page_fault_count", "K32GetProcessMemoryInfo: Win32 error 5"),
+                ("target_working_set_bytes", "K32GetProcessMemoryInfo: Win32 error 5"),
+            ):
+                with self.subTest(arm=arm, field=field):
+                    settle, witness = self._healthy_pair()
+                    row = self._row(settle, witness, which)
+                    row[field] = None
+                    row["host_state_unavailable"] = right
+                    summary = self._run(settle, witness)
+                    self.assertEqual(summary["problems"], [])
+                    self.assertIsNotNone(summary[arm]["hours_per_second"])
+
+    def test_a_cause_with_nothing_null_is_refused(self):
+        """Kills: validating the cause only when something is null.
+
+        The observer writes a cause only for a query that failed, so a row
+        carrying both a full set of counters and a cause is not one it wrote.
+        """
+        for arm, which in self.ARMS:
+            with self.subTest(arm=arm):
+                settle, witness = self._healthy_pair()
+                self._row(settle, witness, which)["host_state_unavailable"] = (
+                    "K32GetProcessMemoryInfo: Win32 error 5"
+                )
+                summary = self._run(settle, witness)
+                self.assert_refused(
+                    summary, "every host counter has a value", arm
+                )
+
+    def test_a_non_string_cause_is_refused(self):
+        """Kills: asking only whether the cause is a non-blank string.
+
+        On a row whose counters are all present the old check never looked at
+        the value at all, so a number or a list rode through.
+        """
+        for arm, which in self.ARMS:
+            for value in (7, [], {}, True):
+                with self.subTest(arm=arm, value=value):
+                    settle, witness = self._healthy_pair()
+                    self._row(settle, witness, which)["host_state_unavailable"] = value
+                    summary = self._run(settle, witness)
+                    self.assert_refused(
+                        summary, "host_state_unavailable", arm, also="not a string"
+                    )
+
+    def test_a_zero_hour_delta_is_still_admitted(self):
+        """Kills: refusing a stalled sample along with the negative ones.
+
+        A window in which the clock did not move is an ordinary observation and
+        the denominator still counts its wall time. Only NEGATIVE is refused.
+        """
+        settle, _ = self._healthy_pair()
+        witness = [
+            witness_sample(0, 100, at_ms=ATTACH_START_MS + 1_000),
+            witness_sample(1, 100, at_ms=ATTACH_START_MS + 2_000),
+        ]
+        summary = self._run(settle, witness)
+        self.assertEqual(summary["problems"], [])
+        # Both admitted: the stalled one contributes 0 hours and its 100 ms of
+        # wall time, which is what a stall costs the rate.
+        self.assertEqual(summary["with_collector"]["samples_counted"], 2)
+        self.assertEqual(summary["with_collector"]["game_hours"], 1)
+        self.assertEqual(summary["with_collector"]["observed_window_ms"], 200)
+
+    def test_the_hour_endpoints_must_agree_with_the_delta(self):
+        """Kills: dropping the `hour_b - hour_a == hour_delta` identity.
+
+        Codex round 5 finding 1: `aggregate` sums `hour_delta` and never looks
+        at the endpoints it is supposed to be the difference of, so a row
+        claiming `hour_a == hour_b` with `hour_delta = 8` published eight
+        game-hours that did not happen. Both producers emit all three from one
+        observation, so a row where they disagree is not a row either wrote.
+        """
+        for arm, which in self.ARMS:
+            with self.subTest(arm=arm):
+                settle, witness = self._healthy_pair()
+                row = self._row(settle, witness, which)
+                row["hour_b"] = row["hour_a"]
+                summary = self._run(settle, witness)
+                self.assert_refused(summary, "hour_delta", arm, also="did not happen")
+
+    def test_an_absent_optional_rate_field_is_still_admitted(self):
+        """Kills: promoting the if-present list to required.
+
+        The settle-control row has no `*_in_window` pause fields at all, and
+        the span estimator is documented to tolerate a row without its inputs.
+        A gate that demanded them would refuse rows the harness really writes.
+        """
+        settle, witness = self._healthy_pair()
+        for field in ("paused_in_window", "pause_forced_in_window"):
+            self.assertNotIn(field, settle[0])
+        summary = self._run(settle, witness)
+        self.assertEqual(summary["problems"], [])
+        self.assertIsNotNone(summary["free_run"]["hours_per_second"])
+
+    def test_two_different_faults_in_one_file_are_two_problems(self):
+        """Kills: collapsing per FILE instead of per CAUSE.
+
+        Counting by file would report one of these and hide the other.
+        """
+        settle, _ = self._healthy_pair()
+        witness = [
+            witness_sample(1, 100, at_ms=ATTACH_START_MS + 1_000),
+            witness_sample(1, 100, at_ms=ATTACH_START_MS + 2_000),
+        ]
+        witness[0]["schema"] = "hoi4-passive-client-state-witness-v2"
+        witness[1].pop("target_page_fault_count")
+        summary = self._run(settle, witness)
+        self.assertEqual(
+            len([p for p in summary["problems"] if WITNESS_FILE_NAME in p]),
+            2,
+            summary["problems"],
+        )
 
 
 if __name__ == "__main__":

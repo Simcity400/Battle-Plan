@@ -2,7 +2,7 @@ use super::*;
 
 fn healthy(phase: &str, unix_ms: i64, hour: i32) -> ClockSample {
     ClockSample {
-        schema: WITNESS_SCHEMA_V2.to_string(),
+        schema: WITNESS_SCHEMA_V3.to_string(),
         observed_at_utc: format!("1970-01-01T00:00:{:06.3}Z", unix_ms as f64 / 1000.0),
         observed_at_unix_ms: unix_ms,
         phase: phase.to_string(),
@@ -34,6 +34,11 @@ fn healthy(phase: &str, unix_ms: i64, hour: i32) -> ClockSample {
         clock_progress_waited_ms: 60,
         clock_progress_budget_ms: 3000,
         processor_milliseconds: unix_ms * 3,
+        available_parallelism: 16,
+        target_processor_affinity_cores: Some(8),
+        target_page_fault_count: Some(1_200_000 + unix_ms),
+        target_working_set_bytes: Some(3_900_000_000),
+        host_state_unavailable: None,
         advancing: true,
     }
 }
@@ -384,11 +389,142 @@ fn a_sample_that_contradicts_its_own_raw_fields_is_refused() {
 fn a_sample_from_an_unrecognised_schema_is_refused() {
     let mut run = WitnessRun::new(StallPolicy::default());
     let mut old = healthy("capture", 0, 500);
-    old.schema = "hoi4-passive-client-state-witness-v1".into();
+    old.schema = "hoi4-passive-client-state-witness-v2".into();
     assert!(matches!(
         run.admit(old),
         Err(WitnessFailure::UnusableSample { .. })
     ));
+}
+
+/// Kills: dropping `deserialize_with = "required_option"` from any host field.
+///
+/// The host fields are nullable but NOT omittable. Plain `Option<T>` gives the
+/// wrong half of that -- serde's derive accepts a missing key as `None` on its
+/// own, which an earlier revision of this lane asserted the opposite of, in a
+/// doc comment and in this test (Codex round 3 finding 1). The behaviour is
+/// recorded empirically in
+/// `runs/tj_tg_followups/r3_serde_option_probe.out.txt`.
+#[test]
+fn a_null_host_field_parses_and_a_missing_one_does_not() {
+    for field in [
+        "target_processor_affinity_cores",
+        "target_page_fault_count",
+        "target_working_set_bytes",
+        "host_state_unavailable",
+    ] {
+        let mut value = serde_json::to_value(healthy("capture", 0, 500)).expect("serialize");
+        value
+            .as_object_mut()
+            .expect("object")
+            .insert(field.into(), serde_json::Value::Null);
+        let parsed: ClockSample = serde_json::from_value(value.clone())
+            .unwrap_or_else(|error| panic!("an explicit null for {field} must parse: {error}"));
+        assert_eq!(parsed.schema, WITNESS_SCHEMA_V3);
+
+        value.as_object_mut().expect("object").remove(field);
+        assert!(
+            serde_json::from_value::<ClockSample>(value).is_err(),
+            "a MISSING {field} must not parse"
+        );
+    }
+}
+
+/// Kills: deleting the null/cause pairing check in `admit`.
+///
+/// A host field may be null -- an unavailable diagnostic must not abort a
+/// capture -- but only beside a named cause. A null that says nothing is
+/// unaccounted partial data, and this reader must refuse it exactly as
+/// `clock_baseline_summary.py` does. Leaving that to the Python side alone let
+/// the two readers disagree (Codex round 3 finding 2).
+#[test]
+fn a_null_host_field_with_no_named_cause_is_refused() {
+    for reason in [None, Some(String::new()), Some("   ".to_string())] {
+        let mut run = WitnessRun::new(StallPolicy::default());
+        let mut sample = healthy("capture", 0, 500);
+        sample.target_working_set_bytes = None;
+        sample.host_state_unavailable = reason.clone();
+        let failure = run.admit(sample).expect_err("must refuse");
+        assert!(
+            matches!(failure, WitnessFailure::UnusableSample { .. }),
+            "{reason:?} -> {failure:?}"
+        );
+    }
+}
+
+/// Kills: accepting any non-blank cause as cover for any null.
+///
+/// The observer names the query that failed, so a cause for a DIFFERENT query
+/// does not account for this one -- and if it did, TG-3 would call missing
+/// affinity evidence "accounted for", which defeats the confound witness the
+/// field exists to build (Codex round 7 finding 3). This reader and
+/// `clock_baseline_summary.py` apply the same table.
+#[test]
+fn a_cause_for_a_different_query_does_not_excuse_a_null() {
+    let cases: [(&str, &str); 3] = [
+        (
+            "target_processor_affinity_cores",
+            "K32GetProcessMemoryInfo: Win32 error 5",
+        ),
+        ("target_page_fault_count", "ProcessorAffinity: access denied"),
+        ("target_working_set_bytes", "ProcessorAffinity: access denied"),
+    ];
+    for (field, wrong_cause) in cases {
+        let mut run = WitnessRun::new(StallPolicy::default());
+        let mut sample = healthy("capture", 0, 500);
+        match field {
+            "target_processor_affinity_cores" => {
+                sample.target_processor_affinity_cores = None
+            }
+            "target_page_fault_count" => sample.target_page_fault_count = None,
+            _ => sample.target_working_set_bytes = None,
+        }
+        sample.host_state_unavailable = Some(wrong_cause.to_string());
+        let failure = run.admit(sample).expect_err("must refuse");
+        assert!(
+            matches!(failure, WitnessFailure::UnusableSample { .. }),
+            "{field} / {wrong_cause} -> {failure:?}"
+        );
+    }
+}
+
+/// Kills: validating the cause only when something is null.
+///
+/// The observer writes a cause only for a query that failed, so a row with a
+/// full set of counters AND a cause is not one it wrote.
+#[test]
+fn a_cause_with_no_null_counter_is_refused() {
+    let mut run = WitnessRun::new(StallPolicy::default());
+    let mut sample = healthy("capture", 0, 500);
+    sample.host_state_unavailable = Some("K32GetProcessMemoryInfo: Win32 error 5".into());
+    let failure = run.admit(sample).expect_err("must refuse");
+    assert!(
+        matches!(failure, WitnessFailure::UnusableSample { .. }),
+        "{failure:?}"
+    );
+}
+
+/// Kills: gating a verdict on the host fields' VALUES rather than on their
+/// accounting.
+///
+/// The counterpart to the test above, and the reason it is not simply "refuse
+/// nulls": the same nulls, with the cause named, are admitted. An unavailable
+/// diagnostic must not destroy the engine sample beside it.
+#[test]
+fn a_sample_with_no_host_state_but_a_named_cause_still_passes_the_verdict() {
+    let mut run = WitnessRun::new(StallPolicy::default());
+    let mut sample = healthy("capture", 0, 500);
+    sample.target_processor_affinity_cores = None;
+    sample.target_page_fault_count = None;
+    sample.target_working_set_bytes = None;
+    // BOTH queries named, joined the way the observer joins them. All three
+    // counters are null here, and one cause cannot account for two different
+    // failed calls -- an earlier version of this test asserted that the memory
+    // cause alone sufficed, which is the invalid combination the reader now
+    // refuses (Codex round 7 finding 3).
+    sample.host_state_unavailable = Some(
+        "ProcessorAffinity: access denied; K32GetProcessMemoryInfo: Win32 error 5".to_string(),
+    );
+    assert!(run.admit(sample).is_ok());
 }
 
 #[test]

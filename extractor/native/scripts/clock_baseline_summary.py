@@ -57,6 +57,46 @@ RECEIPT_NAME = "CLOCK_BASELINE_V1.json"
 
 SETTLE_FILE = "settle_control.jsonl"
 WITNESS_FILE = "passive_speed5_witness.jsonl"
+
+# THE EXACT SCHEMAS THIS SUMMARY WILL READ, and nothing else.
+#
+# This reader used to accept any object with the field names it happened to
+# want, which made it a COMPATIBILITY PATH for retired row versions nobody
+# meant to keep. A v2 witness row carries no host state at all, and a summary
+# built from one exits 0 and publishes a confident receipt -- which is exactly
+# the blind spot the v3 bump exists to close (Codex round 1 finding 1 on lane
+# TJ). Refusing by name is what makes the no-backwards-compat rule true here
+# rather than merely stated in the schema string.
+SETTLE_SCHEMA = "hoi4-settle-control-sample-v2"
+WITNESS_SCHEMA = "hoi4-passive-client-state-witness-v3"
+
+# NULLABLE, and only beside a named cause. These are the three the observer
+# reads off the target, each of which can fail.
+HOST_STATE_FIELDS_NULLABLE = (
+    "target_processor_affinity_cores",
+    "target_page_fault_count",
+    "target_working_set_bytes",
+)
+
+# Names the cause when a host field is null. See `admission_problem`.
+HOST_STATE_UNAVAILABLE_FIELD = "host_state_unavailable"
+
+# WHICH CAUSE EXPLAINS WHICH FIELD.
+#
+# The observer contains each host query separately and prefixes the reason it
+# appends with the query's own name, so the reason is not one opaque string --
+# it says which call failed. An earlier revision of this gate accepted ANY
+# non-blank reason as cover for ANY null, so a row whose affinity was missing
+# and whose only reason was "K32GetProcessMemoryInfo: Win32 error 5" was
+# admitted, and TG-3 would then have called missing affinity evidence
+# "accounted for" (Codex round 7 finding 3). That defeats the point of the
+# field: the confound witness is only useful if a gap in it is named.
+HOST_STATE_CAUSE_PREFIX = {
+    "target_processor_affinity_cores": "ProcessorAffinity:",
+    "target_page_fault_count": "K32GetProcessMemoryInfo:",
+    "target_working_set_bytes": "K32GetProcessMemoryInfo:",
+}
+
 READY_RECEIPT_FILE = "CAPTURE_READY_V2.json"
 PASSIVE_INTERVALS_FILE = "PASSIVE_CLOCK_INTERVALS_V2.json"
 
@@ -244,6 +284,337 @@ def read_jsonl(path):
     return rows, problems
 
 
+
+# ============================================================================
+# THE COMPLETE SHAPE OF EACH ROW, and why this is a table rather than a list of
+# checks.
+#
+# The admission predicate below started as "is the schema string right" and
+# grew a check every review round: the host fields, then their types, then the
+# fields the rate is built from, then the pause fields, then nulls, then the
+# hour identity, then the domain of its terms, then the process identity, then
+# the cause-to-field correspondence. Every one of those was a real defect, and
+# every one was found the same way -- by naming a row shape the current list
+# did not happen to cover. A validator built from a list of interesting fields
+# invites that indefinitely, because the space of invalid rows is not bounded
+# by the space of checks anyone thought to write.
+#
+# So the list is gone and this is the whole row. Each producer emits a FIXED
+# key set from one `[ordered]@{ ... }` literal, and a row that is not exactly
+# that key set, with exactly those types, is not a row the producer wrote --
+# whatever else is true of it. Unknown keys are refused for the same reason
+# `ClockSample` is `#[serde(deny_unknown_fields)]`: a key nobody expected is
+# either a producer this reader does not know or a hand edit, and neither is
+# admissible.
+#
+# `int|None` marks the four fields that may be null, and only beside a cause
+# that names them -- see `HOST_STATE_CAUSE_PREFIX`.
+#
+# Keeping this in step with the producers is not left to memory: the
+# source-scan guards in `lanes/passive_clock_witness/src/script_order_tests.rs`
+# pin the emitted key sets in the harness, and
+# `test_every_production_field_table_is_exactly_what_the_tests_cover` pins
+# these tables against a hand-written copy so neither can drift alone.
+_STR = "str"
+_INT = "int"
+_BOOL = "bool"
+_INT_OR_NULL = "int?"
+_STR_OR_NULL = "str?"
+
+_COMMON_ROW_SPEC = {
+    "schema": _STR,
+    "observed_at_utc": _STR,
+    "observed_at_unix_ms": _INT,
+    "phase": _STR,
+    "pid": _INT,
+    "process_creation_filetime_utc": _INT,
+    "expected_speed": _INT,
+    "speed_final": _INT,
+    "paused_final": _BOOL,
+    "pause_forced_final": _BOOL,
+    "tick_inhibited_final": _BOOL,
+    "hour_a": _INT,
+    "hour_b": _INT,
+    "hour_delta": _INT,
+    "tick_progress_bits_a": _INT,
+    "tick_progress_bits_b": _INT,
+    "observed_window_ms": _INT,
+    "processor_milliseconds": _INT,
+    "available_parallelism": _INT,
+    "target_processor_affinity_cores": _INT_OR_NULL,
+    "target_page_fault_count": _INT_OR_NULL,
+    "target_working_set_bytes": _INT_OR_NULL,
+    "host_state_unavailable": _STR_OR_NULL,
+    "advancing": _BOOL,
+}
+
+ROW_SPEC = {
+    SETTLE_SCHEMA: dict(_COMMON_ROW_SPEC),
+    WITNESS_SCHEMA: dict(
+        _COMMON_ROW_SPEC,
+        **{
+            "exe_sha256": _STR,
+            "observer_sha256": _STR,
+            "access": _STR,
+            "speed_initial": _INT,
+            "paused_initial": _BOOL,
+            "pause_forced_initial": _BOOL,
+            "tick_inhibited_initial": _BOOL,
+            "paused_in_window": _BOOL,
+            "pause_forced_in_window": _BOOL,
+            "tick_inhibited_in_window": _BOOL,
+            "window_started_at_utc": _STR,
+            "window_started_at_unix_ms": _INT,
+            "clock_progress_waited_ms": _INT,
+            "clock_progress_budget_ms": _INT,
+        }
+    ),
+}
+
+
+def _spec_problem(row, spec):
+    """The row's shape against `spec`, or None when it matches exactly."""
+    missing = sorted(set(spec) - set(row))
+    if missing:
+        return "is missing {}".format(", ".join(repr(k) for k in missing))
+    unknown = sorted(set(row) - set(spec))
+    if unknown:
+        return "carries {} that no producer of this schema emits".format(
+            ", ".join(repr(k) for k in unknown)
+        )
+    for field in sorted(spec):
+        kind = spec[field]
+        value = row[field]
+        if value is None:
+            if kind.endswith("?"):
+                continue
+            # Only the three counters the observer READS OFF THE TARGET may be
+            # null, and only beside a named cause. Everything else either comes
+            # from the observer's own environment or is a plain engine read, so
+            # a null there is not an unavailable measurement -- it is a field
+            # the producer wrote with nothing in it, which nothing in either
+            # `[ordered]@{ ... }` literal can do. `available_parallelism` is the
+            # one that keeps being mistaken for a host counter: it comes from
+            # `[Environment]::ProcessorCount`, which has no failure mode, and
+            # `ClockSample` types it as a plain `i32` (Codex round 6 finding 2).
+            return (
+                "has a null {!r}, which has no failure mode and may never be "
+                "null".format(field)
+            )
+        if kind in (_INT, _INT_OR_NULL):
+            if isinstance(value, bool) or not isinstance(value, int):
+                return "has {!r} = {!r}, which is not an integer".format(field, value)
+        elif kind in (_STR, _STR_OR_NULL):
+            if not isinstance(value, str):
+                return "has {!r} = {!r}, which is not a string".format(field, value)
+        elif kind == _BOOL:
+            if not isinstance(value, bool):
+                return "has {!r} = {!r}, which is not a boolean".format(field, value)
+    return None
+
+
+def admission_problem(row, expected_schema):
+    """Why this summary will not read `row`, or None when it will.
+
+    THE ONE PREDICATE. Reporting and filtering both call this, and that is the
+    whole point: an earlier revision of this lane reported on the fields and
+    filtered on the schema string alone, so a current-schema row missing a host
+    field was named as a problem AND still reached the numerator, the
+    denominator and the attach-window anchor (Codex round 2 finding 1). Two
+    spellings of "acceptable" is one spelling too many.
+
+    Three things are checked, in the order a reader would ask them.
+
+    1. THE SCHEMA STRING. One row version, no compatibility path.
+    2. THE WHOLE ROW SHAPE, against `ROW_SPEC`: exactly the producer's key set,
+       no more and no less, with each value's type and nullability. The string
+       is not evidence on its own -- a hand-edited or half-migrated file can
+       carry the new name and none of the evidence the name promises -- and
+       checking only the fields a row is refused FOR, never the fields it is
+       USED for, was the gap that let numeric strings through `int(...)` and
+       published a rate no typed producer could emit (Codex round 3 finding 3).
+       See the comment above `ROW_SPEC` for why this is one table rather than a
+       list of interesting fields.
+    3. THE RELATIONSHIPS BETWEEN FIELDS, which no per-field spec can express:
+       a null host counter must be matched by a cause that names ITS query, a
+       named cause must be matched by a null, the identity
+       `hour_b - hour_a == hour_delta` must hold, and both terms of the rate
+       must lie in the domain a sum is meaningful over.
+
+    WHAT THIS PREDICATE IS NOT. It is not a reimplementation of the run-time
+    witness authority in `lanes/passive_clock_witness`, and it deliberately
+    does not refuse every row that authority would. That authority decides
+    whether a capture may CONTINUE, from a live stream; this summary decides
+    what rate a FINISHED run achieved, from its files -- and the harness runs
+    it "on every route out, including the routes where the capture was
+    refused: a refused capture still measured a free-run baseline, and that is
+    exactly the number the next attempt is planned from"
+    (`Invoke-HeadlessRawCapture.ps1`, above the call, with
+    `-AllowNonzeroExit`). A summary that refused what the authority refuses
+    could not report on the runs it exists to report on. What the two readers
+    DO agree on is: the contract this lane introduced -- a host field may be
+    null only beside a named cause -- and the hour identity, which is not
+    borrowed from the authority but required independently, because it is the
+    arithmetic THIS file publishes.
+    """
+    seen = row.get("schema")
+    if seen != expected_schema:
+        return (
+            "schema {!r} is not '{}'; this summary reads one row version and "
+            "there is no compatibility path, so a receipt built from these "
+            "rows would report host state the rows do not carry".format(
+                seen, expected_schema
+            )
+        )
+
+    # THE WHOLE ROW, in one comparison against `ROW_SPEC`. Presence, absence
+    # of anything unexpected, and the type of every value.
+    shape = _spec_problem(row, ROW_SPEC[expected_schema])
+    if shape is not None:
+        return "the row claims schema '{}' but {}".format(expected_schema, shape)
+
+    # THEN THE THINGS A SHAPE CANNOT SAY.
+    #
+    # Everything below is a relationship BETWEEN fields, which no per-field
+    # spec can express.
+    reason = row[HOST_STATE_UNAVAILABLE_FIELD]
+    if isinstance(reason, str) and reason.strip() == "":
+        return (
+            "the row's '{}' is an empty string; the observer writes null when "
+            "nothing failed and a named cause when something did, and neither "
+            "of those is blank".format(HOST_STATE_UNAVAILABLE_FIELD)
+        )
+    reason_is_named = isinstance(reason, str)
+
+    for field in HOST_STATE_FIELDS_NULLABLE:
+        if row[field] is not None:
+            continue
+        if not reason_is_named:
+            return (
+                "the row's '{}' is null and '{}' names no cause, so the host "
+                "state is neither measured nor accounted for".format(
+                    field, HOST_STATE_UNAVAILABLE_FIELD
+                )
+            )
+        prefix = HOST_STATE_CAUSE_PREFIX[field]
+        if prefix not in reason:
+            return (
+                "the row's '{}' is null but '{}' is {!r}, which does not "
+                "mention '{}' -- the observer names the query that failed, and "
+                "a cause for a different query does not account for this "
+                "one".format(field, HOST_STATE_UNAVAILABLE_FIELD, reason, prefix)
+            )
+
+    if reason_is_named and all(
+        row[field] is not None for field in HOST_STATE_FIELDS_NULLABLE
+    ):
+        return (
+            "the row's '{}' is {!r} but every host counter has a value; the "
+            "observer writes a cause only for a query that failed, so a row "
+            "with both is not one it wrote".format(
+                HOST_STATE_UNAVAILABLE_FIELD, reason
+            )
+        )
+
+    # AND THE ONE ARITHMETIC IDENTITY THE RATE IS BUILT ON.
+    #
+    # `aggregate` sums `hour_delta` and never looks at the endpoints it is
+    # supposed to be the difference of, so a row claiming `hour_a == hour_b`
+    # and `hour_delta == 8` publishes eight game-hours that did not happen
+    # (Codex round 5 finding 1). Both committed producers emit all three
+    # together, from the same observation, so a row where they disagree is not
+    # a row either producer wrote.
+    #
+    # THIS IS NOT THE RUN-TIME AUTHORITY MOVING INTO PYTHON, and the boundary
+    # in this function's docstring still holds. It is the one invariant the
+    # ARITHMETIC HERE depends on -- the number this summary publishes is
+    # `hour_delta`, and this says `hour_delta` means what its name says.
+    # Capture-continuation policy, the stall escalation and the rest of
+    # `WitnessRun::admit` stay where they are.
+    recomputed = row["hour_b"] - row["hour_a"]
+    if recomputed != row["hour_delta"]:
+        return (
+            "the row's hour_delta is {} but hour_b - hour_a is {} ({} -> {}); "
+            "this summary sums hour_delta, so a row whose endpoints do not "
+            "agree with it publishes game-hours that did not happen".format(
+                row["hour_delta"], recomputed, row["hour_a"], row["hour_b"]
+            )
+        )
+
+    # AND THE DOMAIN THE ARITHMETIC IS DEFINED OVER.
+    #
+    # `aggregate` sums both of these signed and divides one by the other, so a
+    # negative in either is not a small error -- it CANCELS a real sample.
+    # Two admitted rows of (hour_delta, observed_window_ms) = (1, 100) and
+    # (1, -50) publish 2 hours over 50 ms, or 40 h/s, with no problem named
+    # (Codex round 6 finding 1).
+    #
+    #  * A negative `observed_window_ms` is a measured duration that ran
+    #    backwards. Nothing can produce it and nothing should consume it. The
+    #    run-time authority refuses it too.
+    #  * A negative `hour_delta` is a CLOCK ROLLBACK, and unlike the above it
+    #    IS producer-reachable: the observer emits the raw `hour_b - hour_a`.
+    #    It is refused here anyway, and the two facts are not in tension. This
+    #    summary's numerator is "game hours OBSERVED"; a rollback is not
+    #    negative observation, and summing it silently subtracts hours another
+    #    sample really did see. Refusing names it instead, which is what a
+    #    reader needs -- the row is still in the file.
+    if row["observed_window_ms"] < 0:
+        return (
+            "the row's observed_window_ms is {}; a measured duration cannot "
+            "run backwards, and this summary sums it into a "
+            "denominator".format(row["observed_window_ms"])
+        )
+    if row["observed_window_ms"] == 0 and row["hour_delta"] > 0:
+        return (
+            "the row reports {} game hour(s) over a zero-millisecond window; "
+            "positive game time cannot be observed in no wall time, and "
+            "`aggregate` sums the two independently so this row's hours land "
+            "in the numerator against nothing in the "
+            "denominator".format(row["hour_delta"])
+        )
+    if row["hour_delta"] < 0:
+        return (
+            "the row's hour_delta is {} ({} -> {}), a clock rollback; this "
+            "summary sums hour_delta as game hours OBSERVED, where a negative "
+            "silently cancels hours another sample really did see".format(
+                row["hour_delta"], row["hour_a"], row["hour_b"]
+            )
+        )
+    return None
+
+
+def admitted(rows, expected_schema):
+    """The rows `admission_problem` accepts, in order."""
+    return [row for row in rows if admission_problem(row, expected_schema) is None]
+
+
+def schema_problems(rows, filename, expected_schema):
+    """Name every row this summary refuses, and why.
+
+    PROBLEMS, NOT EXCEPTIONS. `main` already exits nonzero on a non-empty
+    problems list, and a refusal that reached the operator as a traceback would
+    lose the rest of the accounting -- the same reason `read_jsonl` names an
+    unparseable line instead of raising.
+
+    Reported as COUNTS PER DISTINCT CAUSE rather than one line per row: a file
+    written entirely by a retired producer would otherwise print thousands of
+    identical problems and bury every other finding. A file with two different
+    faults still prints two lines, because the cause is the key.
+    """
+    causes = {}
+    for row in rows:
+        problem = admission_problem(row, expected_schema)
+        if problem is not None:
+            causes[problem] = causes.get(problem, 0) + 1
+    return [
+        "{} holds {} row(s) this summary will not read: {}".format(
+            filename, count, cause
+        )
+        for cause, count in sorted(causes.items())
+    ]
+
+
 def paused_in_sample(row):
     """True when the engine reported a pause anywhere in the sample's window.
 
@@ -332,6 +703,19 @@ def span_aggregate(rows, label):
     wall_ms = 0
     cpu_ms = 0
     for first, second in zip(rows, rows[1:]):
+        # IDENTITY MUST BE PRESENT, not merely equal. `None == None` is true,
+        # so two rows that both LACK a pid used to join and publish a span rate
+        # for a process nothing identified (Codex round 7 finding 2).
+        # `admission_problem` now requires both fields of both current schemas,
+        # so this is the second line of defence and the one that holds when
+        # this function is called directly, as its own tests do.
+        if any(
+            row.get(key) is None
+            for row in (first, second)
+            for key in ("pid", "process_creation_filetime_utc")
+        ):
+            dropped += 1
+            continue
         if first.get("pid") != second.get("pid"):
             dropped += 1
             continue
@@ -457,6 +841,20 @@ def summarize(run_dir):
         os.path.join(run_dir, WITNESS_FILE)
     )
     read_problems = read_problems + witness_read_problems
+    # BEFORE AGGREGATION. A refused row must not reach a numerator or a
+    # denominator even though the run will exit nonzero anyway: the receipt is
+    # written whatever the problems say, and a rate computed from rows this
+    # reader does not accept is a number somebody will quote.
+    read_problems = (
+        read_problems
+        + schema_problems(settle_rows, SETTLE_FILE, SETTLE_SCHEMA)
+        + schema_problems(witness_rows, WITNESS_FILE, WITNESS_SCHEMA)
+    )
+    # THE SAME PREDICATE THAT NAMED THEM DROPS THEM, and it runs before
+    # `attach_window`, which reads both lists to place the collector's dwell.
+    # A refused row must anchor nothing either.
+    settle_rows = admitted(settle_rows, SETTLE_SCHEMA)
+    witness_rows = admitted(witness_rows, WITNESS_SCHEMA)
     settle = [row for row in settle_rows if row.get("phase") == "settle_no_collector"]
     labelled = [
         row for row in witness_rows if row.get("phase") in WITH_COLLECTOR_PHASES

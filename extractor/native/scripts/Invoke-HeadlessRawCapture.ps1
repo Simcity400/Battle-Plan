@@ -1535,7 +1535,7 @@ function Write-PassiveWitnessSample {
     # add this process's subprocess teardown to the interval and make the
     # bracket unsatisfiable.
     $sample = [ordered]@{
-        schema                         = 'hoi4-passive-client-state-witness-v2'
+        schema                         = 'hoi4-passive-client-state-witness-v3'
         observed_at_utc                = [string]$state.ObservedAtUtc
         observed_at_unix_ms            = [int64]$state.ObservedAtUnixMs
         phase                          = $Phase
@@ -1567,6 +1567,21 @@ function Write-PassiveWitnessSample {
         clock_progress_waited_ms       = [int64]$state.ClockProgressWaitedMs
         clock_progress_budget_ms       = [int64]$state.ClockProgressBudgetMs
         processor_milliseconds         = [int64]$state.ProcessorMilliseconds
+        # HOST AND PACING CONTEXT (v3). Everything above this line describes
+        # the engine; nothing above it describes the machine the engine was
+        # running on, and that gap is what made lane TG's session confound
+        # cost a whole lane to diagnose. The observer holds all three already
+        # -- the affinity-aware processor count from its own environment, the
+        # fault count and resident bytes off the handle it opened for the
+        # reads above -- so this is a wider row, not a wider access.
+        available_parallelism          = [int]$state.AvailableParallelism
+        # DELIBERATELY UNCAST. Each is $null when its query failed, and
+        # [int]$null is 0 -- casting would publish "zero cores" or "zero
+        # resident bytes" as if measured. The observer already typed them.
+        target_processor_affinity_cores = $state.TargetProcessorAffinityCores
+        target_page_fault_count        = $state.TargetPageFaultCount
+        target_working_set_bytes       = $state.TargetWorkingSetBytes
+        host_state_unavailable         = $state.HostStateUnavailable
         advancing                      = [bool]$state.Advancing
     }
     # Record BEFORE deciding. The previous order threw on rejection and wrote
@@ -3410,7 +3425,7 @@ if ($SettleSeconds -gt 0) {
         # abort the run. Settle legitimately tolerates pauses; this is evidence
         # collection, not a gate, and it must not change what the harness does.
         $settleControl = [ordered]@{
-            schema                        = 'hoi4-settle-control-sample-v1'
+            schema                        = 'hoi4-settle-control-sample-v2'
             observed_at_utc               = [string]$sample.ObservedAtUtc
             observed_at_unix_ms           = [int64]$sample.ObservedAtUnixMs
             phase                         = 'settle_no_collector'
@@ -3428,6 +3443,17 @@ if ($SettleSeconds -gt 0) {
             tick_progress_bits_b          = [int]$sample.TickProgressBitsB
             observed_window_ms            = [int64]$sample.ObservedWindowMs
             processor_milliseconds        = [int64]$sample.ProcessorMilliseconds
+            # The same host and pacing context the witness row carries, and
+            # it has to be here too: this file IS the free-run control arm,
+            # and a control that cannot be compared to the treatment on host
+            # state is not a control. TG's confound lived exactly in the gap
+            # between these two arms.
+            available_parallelism         = [int]$sample.AvailableParallelism
+            # Uncast for the same reason as the witness row above.
+            target_processor_affinity_cores = $sample.TargetProcessorAffinityCores
+            target_page_fault_count       = $sample.TargetPageFaultCount
+            target_working_set_bytes      = $sample.TargetWorkingSetBytes
+            host_state_unavailable        = $sample.HostStateUnavailable
             advancing                     = [bool]$sample.Advancing
         }
         ($settleControl | ConvertTo-Json -Compress -Depth 8) |

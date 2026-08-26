@@ -918,6 +918,61 @@ fn cprovince_field_offset(fields: &[(u64, u32)], base: u64, addr: u64, len: u32)
         .map(|(_, fed, _)| fed)
 }
 
+/// THE MAXIMAL CONTIGUOUS RUNS of [`cprovince_field_spans`], as
+/// `(offset in the record, offset in the fed reduction, len)`.
+///
+/// A FOLD OVER THE SAME ENUMERATION, not a second reading of the table. Two
+/// fields that sit back to back in the RECORD also sit back to back in the
+/// REDUCTION -- `cprovince_field_spans` lays them out in table order with no
+/// gap -- so a run of adjacent fields is one span on both sides and can be
+/// copied with ONE `copy_from_slice` instead of one per field. The reduction's
+/// bytes are unchanged; only the number of copies that produce them falls.
+///
+/// **ON TODAY'S TABLE THIS RETURNS TWO RUNS, AND THAT IS THE ANSWER TO "CAN
+/// THE COMPARE BE MADE CONTIGUOUS PER WINDOW".** The decoded fields are
+/// `(+0, 8)` and `(+0xA4, 4)` inside a `0xA8` hull, so the only contiguous
+/// span covering both is the hull itself -- precisely the 156 undecoded bytes
+/// lane SS removed, which were the first difference on 53 of the gate's 77
+/// misses on `captures/rc_vanilla5`. Coalescing to one run would BE the
+/// coverage weakening, not an optimisation of it. This function COMPUTES that
+/// rather than assuming it, so if a field is ever added adjacent to another
+/// the copy count drops on its own and nobody has to notice.
+///
+/// `None` when the table holds more fields than [`D81_CPROVINCE_FIELD_COUNT`].
+/// That cannot happen for the production array -- it is exactly that long --
+/// and the caller answers it by walking the fields one at a time. Fail closed:
+/// a table this fold cannot describe must never silently lose a field.
+fn cprovince_field_runs(
+    fields: &[(u64, u32)],
+) -> Option<([(u64, usize, u32); D81_CPROVINCE_FIELD_COUNT], usize)> {
+    let mut runs = [(0u64, 0usize, 0u32); D81_CPROVINCE_FIELD_COUNT];
+    let mut count = 0usize;
+    for (field_off, fed_at, field_len) in cprovince_field_spans(fields) {
+        if count > 0 {
+            let last = &mut runs[count - 1];
+            // CHECKED on both sides. A table whose spans overflow is one this
+            // fold cannot describe, and the right answer there is a new run,
+            // never a wrapped one.
+            let contiguous = last
+                .0
+                .checked_add(last.2 as u64)
+                .is_some_and(|end| end == field_off);
+            if contiguous {
+                if let Some(widened) = last.2.checked_add(field_len) {
+                    last.2 = widened;
+                    continue;
+                }
+            }
+        }
+        if count == D81_CPROVINCE_FIELD_COUNT {
+            return None;
+        }
+        runs[count] = (field_off, fed_at, field_len);
+        count += 1;
+    }
+    Some((runs, count))
+}
+
 /// The bytes one entry contributes to the gate: its fields, back to back, in
 /// table order.
 fn cprovince_fed_len(fields: &[(u64, u32)]) -> usize {
@@ -953,18 +1008,107 @@ fn feed_cprovince_fields(
         sink(store, slab);
         return;
     }
-    let mut reduced = Vec::with_capacity(slab.len() / record * cprovince_fed_len(fields) + 8);
+    let fed_len = cprovince_fed_len(fields);
+    let windows = slab.len() / record;
+
+    // THE BATCHED PATH, taken when the fold can describe the table AND every
+    // run it produced lies inside the record.
+    //
+    // Both conditions matter, and the second is what makes this byte-for-byte
+    // the slow path rather than merely equal in practice. `record` is a
+    // parameter, so a caller may hand a record narrower than the fields; the
+    // per-field walk below answers that by zero-filling the fields that do not
+    // fit, and a coalesced copy cannot reproduce that field by field. When
+    // every run DOES fit, every field lies inside every window the loop visits
+    // (`at + record <= slab.len()`), so the per-field walk's `None` arm cannot
+    // fire and the two paths emit identical bytes by construction rather than
+    // by coincidence. `feed_cprovince_reductions_agree_across_layouts` holds
+    // both against each other over the layouts that exercise every branch.
+    //
+    // THE FIT IS CHECKED HERE, NOT INFERRED FROM `cprovince_hull_len`, and
+    // that distinction is a real defect this lane shipped once (Codex round 1
+    // finding 3). That helper returns `u32`, so it TRUNCATES a `u64` field
+    // offset: the table `[(0x1_0000_0000, 1)]` has a hull of 1 by its
+    // arithmetic, would have passed a `hull <= record` guard at `record == 1`,
+    // and the copy would then have indexed the slab at `0x1_0000_0000` and
+    // panicked. Converting each run's offset with `usize::try_from` and
+    // checking its END against the record has no such gap, and it also makes
+    // the indexing below provably in range rather than argued to be.
+    let batched = cprovince_field_runs(fields).and_then(|(runs, count)| {
+        let mut spans = [(0usize, 0usize); D81_CPROVINCE_FIELD_COUNT];
+        for (index, &(run_off, _, run_len)) in runs[..count].iter().enumerate() {
+            let off = usize::try_from(run_off).ok()?;
+            let len = run_len as usize;
+            if off.checked_add(len)? > record {
+                return None;
+            }
+            spans[index] = (off, len);
+        }
+        Some((spans, count))
+    });
+
+    if let Some((spans, count)) = batched {
+        let spans = &spans[..count];
+        // ONE COPY PER RUN, not one per field. On today's table the two
+        // decoded fields are 0xA4 apart so the fold yields two runs and the
+        // copy count is unchanged; the moment two fields sit adjacent it
+        // halves, without anyone noticing.
+        //
+        // Deliberately still `with_capacity` + `extend_from_slice` and NOT a
+        // pre-sized zeroed buffer. An earlier revision used `vec![0u8; _]` and
+        // filled it by index, trading a capacity check per copy for a full
+        // extra pass writing zeros over every byte the loop then overwrote.
+        // That is a certain cost against a speculative saving, and Codex round
+        // 1 finding 4 was right to say the "strictly less work" claim did not
+        // survive it.
+        //
+        // Every index below is provably in range: the loop visits only windows
+        // with `at + record <= slab.len()`, and the guard above proved every
+        // run ends at or before `record`.
+        let mut reduced = Vec::with_capacity(windows.saturating_mul(fed_len).saturating_add(8));
+        let mut at = 0usize;
+        for _ in 0..windows {
+            for &(off, len) in spans {
+                let from = at + off;
+                reduced.extend_from_slice(&slab[from..from + len]);
+            }
+            at += record;
+        }
+        // A trailing partial record cannot occur -- `seal` sizes the slab as a
+        // whole number of `record`-byte windows -- but is appended verbatim if
+        // it somehow does: unexplained bytes are compared, never dropped.
+        if at < slab.len() {
+            reduced.extend_from_slice(&slab[at..]);
+        }
+        sink(store, &reduced);
+        return;
+    }
+
+    // THE PER-FIELD WALK, and still the definition of the output.
+    let mut reduced = Vec::with_capacity(windows.saturating_mul(fed_len).saturating_add(8));
     let mut at = 0usize;
     while at + record <= slab.len() {
         for (field_off, _, field_len) in cprovince_field_spans(fields) {
-            let from = at + field_off as usize;
-            let to = from + field_len as usize;
-            match slab.get(from..to) {
+            // CHECKED, because this is the arm that RECEIVES the tables the
+            // batched path declines -- including the ones whose offsets do not
+            // fit a `usize` or overflow when the window base is added. An
+            // earlier revision computed `at + field_off as usize` and
+            // `from + field_len as usize` directly, so `[(u64::MAX, 1)]` with
+            // `record == 1` panicked here instead of zero-filling (Codex round
+            // 2 finding 4). A fallback that panics on the shapes it exists to
+            // absorb is not a fallback.
+            let span = usize::try_from(field_off)
+                .ok()
+                .and_then(|off| at.checked_add(off))
+                .and_then(|from| {
+                    from.checked_add(field_len as usize).map(|to| (from, to))
+                });
+            match span.and_then(|(from, to)| slab.get(from..to)) {
                 Some(bytes) => reduced.extend_from_slice(bytes),
-                // Unreachable while the const assertions hold (every field lies
-                // inside the hull `seal` sized the record by); fed as zeros
-                // rather than skipped so a shape that somehow escaped them is a
-                // MISS and not an invisible shortening.
+                // Reachable through a `record` narrower than the fields, or an
+                // offset the window base cannot reach; fed as zeros rather
+                // than skipped so a shape that somehow escaped the const
+                // assertions is a MISS and not an invisible shortening.
                 None => reduced.extend(std::iter::repeat_n(0u8, field_len as usize)),
             }
         }
@@ -2540,6 +2684,222 @@ pub fn d81_vector_observe(
     }
 
     capture
+}
+
+#[cfg(test)]
+mod cprovince_reduction_tests {
+    use super::*;
+
+    /// A SECOND SPELLING of the per-field walk, kept here as the DEFINITION
+    /// the batched path is held against.
+    ///
+    /// It began as a verbatim copy of the walk as it stood before the batched
+    /// path was added, and it is no longer one: both it and production gained
+    /// checked span arithmetic when the fallback turned out to panic on the
+    /// shapes it exists to absorb. What matters is not that it is a copy but
+    /// that it is INDEPENDENT -- a test that called the production function
+    /// twice could not tell whether both halves had drifted together.
+    ///
+    /// Independence is now literal: this walks `fields` itself rather than
+    /// calling `cprovince_field_spans`, so a mutation of that shared
+    /// enumeration moves production and NOT this side, and the identity test
+    /// sees it. While it did call it, a fed-offset error in the enumeration
+    /// would have moved both together (Codex round 5 finding 4).
+    fn reduce_field_by_field(fields: &[(u64, u32)], record: usize, slab: &[u8]) -> Vec<u8> {
+        if record == 0 || slab.is_empty() {
+            return slab.to_vec();
+        }
+        let mut reduced = Vec::new();
+        let mut at = 0usize;
+        while at + record <= slab.len() {
+            // WALKS `fields` DIRECTLY, and does not call
+            // `cprovince_field_spans`. An earlier version of this reference
+            // did, which meant a mutation of that shared enumeration moved
+            // BOTH sides together and the test's claim to catch a fed-offset
+            // error was not generally true (Codex round 5 finding 4). Spelling
+            // the table walk out here is what makes the two sides independent.
+            for &(field_off, field_len) in fields {
+                // Checked, like production: a reference that panicked where
+                // production zero-fills could not reach the layouts this test
+                // was extended for.
+                let taken = usize::try_from(field_off)
+                    .ok()
+                    .and_then(|off| at.checked_add(off))
+                    .and_then(|from| {
+                        let to = from.checked_add(field_len as usize)?;
+                        slab.get(from..to)
+                    });
+                match taken {
+                    Some(bytes) => reduced.extend_from_slice(bytes),
+                    None => reduced.extend(std::iter::repeat_n(0u8, field_len as usize)),
+                }
+            }
+            at += record;
+        }
+        if at < slab.len() {
+            reduced.extend_from_slice(&slab[at..]);
+        }
+        reduced
+    }
+
+    fn reduce_in_production(fields: &[(u64, u32)], record: usize, slab: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        feed_cprovince_fields(0, fields, record, slab, &mut |_store, bytes| {
+            out.extend_from_slice(bytes)
+        });
+        out
+    }
+
+    fn slab_of(len: usize) -> Vec<u8> {
+        // Every byte distinct modulo 251, so a copy that lands one byte off,
+        // reads the wrong window, or drops a field changes the output. A
+        // constant fill would hide all three.
+        (0..len).map(|i| (i % 251) as u8).collect()
+    }
+
+    /// TODAY'S TABLE DOES NOT COALESCE, AND THAT IS THE ANSWER TO TG-1.
+    ///
+    /// The two decoded fields are `(+0, 8)` and `(+0xA4, 4)`. They are 0xA4
+    /// apart, so the fold leaves them as two runs and the reduction cannot be
+    /// one contiguous compare per window. The only span covering both is the
+    /// `0xA8` hull, which is the 156 undecoded bytes lane SS removed.
+    ///
+    /// Kills: coalescing the production table into one run, or widening either
+    /// field so that they meet, would make this fail.
+    #[test]
+    fn the_production_field_table_is_two_runs_not_one() {
+        let fields = super::super::D81_CPROVINCE_DECODED_FIELDS;
+        let (runs, count) = cprovince_field_runs(&fields).expect("the production table folds");
+        assert_eq!(count, 2, "runs = {:?}", &runs[..count]);
+        assert_eq!(runs[0], (0, 0, 8));
+        assert_eq!(runs[1], (0xA4, 8, 4));
+        // And the one contiguous span that covers both IS the whole hull, so
+        // "make it contiguous" and "put the undecoded bytes back" are the same
+        // change.
+        assert_eq!(cprovince_hull_len(&fields), 0xA8);
+        assert_eq!(cprovince_fed_len(&fields), 12);
+    }
+
+    /// Adjacent fields DO coalesce, so the batched path is a real reduction in
+    /// copies the moment a layout allows it -- it is not dead code written for
+    /// a table that can never have it.
+    ///
+    /// Kills: a fold that always emits one run per field would fail the first
+    /// case; a fold that merges non-adjacent fields would fail the third.
+    #[test]
+    fn the_fold_coalesces_exactly_the_adjacent_fields() {
+        let (runs, count) = cprovince_field_runs(&[(0, 8), (8, 4)]).expect("folds");
+        assert_eq!(count, 1);
+        assert_eq!(runs[0], (0, 0, 12));
+
+        let (runs, count) = cprovince_field_runs(&[(4, 2), (6, 2)]).expect("folds");
+        assert_eq!(count, 1);
+        assert_eq!(runs[0], (4, 0, 4));
+
+        let (runs, count) = cprovince_field_runs(&[(0, 4), (5, 4)]).expect("folds");
+        assert_eq!(count, 2);
+        assert_eq!(runs[0], (0, 0, 4));
+        assert_eq!(runs[1], (5, 4, 4));
+
+        // A table longer than the production array fails closed rather than
+        // dropping a field.
+        assert!(cprovince_field_runs(&[(0, 1), (2, 1), (4, 1)]).is_none());
+    }
+
+    /// THE COVERAGE RULE, BYTE FOR BYTE. The batched path and the per-field
+    /// walk must emit identical bytes on every layout, including the ones that
+    /// send production down the slow path.
+    ///
+    /// Kills: any off-by-one in the RUN offsets or lengths; a batched path
+    /// taken with a record narrower than the fields (the zero-fill case); a
+    /// run offset that truncates through `cprovince_hull_len`'s `u32`;
+    /// unchecked arithmetic in the per-field walk; a trailing partial record
+    /// dropped instead of appended.
+    ///
+    /// NOT the FED offsets, and an earlier version of this comment claimed
+    /// otherwise (Codex round 6 finding 4). The batched path discards each
+    /// run's fed offset when it builds `spans` -- it appends in order, so the
+    /// fed offset is implied by the append and never read -- which means a
+    /// mutation of the fed accumulator alone changes neither byte stream and
+    /// this test stays green. `the_production_field_table_is_two_runs_not_one`
+    /// is what catches that: it asserts the fed offsets in the runs tuple
+    /// directly.
+    #[test]
+    fn feed_cprovince_reductions_agree_across_layouts() {
+        let production = super::super::D81_CPROVINCE_DECODED_FIELDS.to_vec();
+        let cases: &[(&str, Vec<(u64, u32)>, usize)] = &[
+            ("production 0/8 + 0xA4/4", production, 0xA8),
+            ("adjacent, coalesces to one run", vec![(0, 8), (8, 4)], 0x10),
+            ("gap in the middle", vec![(0, 4), (9, 3)], 0x20),
+            ("field at the very end of the record", vec![(0, 2), (14, 2)], 0x10),
+            // record NARROWER than the hull: the batched path must decline and
+            // the zero-fill arm must run.
+            ("record narrower than the hull", vec![(0, 4), (12, 4)], 8),
+            ("single field", vec![(3, 5)], 0x10),
+            // THE TRUNCATING-HULL LAYOUT (Codex round 1 finding 3).
+            // `cprovince_hull_len` returns u32, so this table's hull is 1 by
+            // its arithmetic; a `hull <= record` guard would have admitted it
+            // at record 1 and the copy would have indexed the slab at
+            // 0x1_0000_0000. The batched path must decline it, and the
+            // per-field walk must answer with zeros.
+            ("offset past usize truncation", vec![(0x1_0000_0000, 1)], 1),
+            ("offset past the record", vec![(0, 1), (0x10_0000, 1)], 4),
+            // THE FALLBACK'S OWN OVERFLOW (Codex round 2 finding 4). The
+            // batched path declines this correctly, and the per-field walk it
+            // falls through to used to compute `from + 1` at `usize::MAX` and
+            // panic. Both paths must now answer with zeros.
+            ("offset at usize::MAX", vec![(u64::MAX, 1)], 1),
+            ("offset at usize::MAX beside a real field", vec![(0, 1), (u64::MAX, 2)], 2),
+        ];
+        for (name, fields, record) in cases {
+            for slab_len in [
+                0usize,
+                1,
+                *record - 1,
+                *record,
+                *record + 1,
+                *record * 7,
+                *record * 7 + 3,
+            ] {
+                let slab = slab_of(slab_len);
+                assert_eq!(
+                    reduce_in_production(fields, *record, &slab),
+                    reduce_field_by_field(fields, *record, &slab),
+                    "{name}: record={record} slab_len={slab_len}"
+                );
+            }
+        }
+    }
+
+    /// The reduction is exactly the decoded fields and nothing between them.
+    ///
+    /// Kills: a batched copy that took the hull instead of the runs would
+    /// produce 168 bytes per window here, not 12, and would carry the byte at
+    /// `+0x35` the merged-index reference proves no reader can reach.
+    #[test]
+    fn the_reduction_carries_the_fields_and_nothing_between_them() {
+        let fields = super::super::D81_CPROVINCE_DECODED_FIELDS;
+        let record = cprovince_hull_len(&fields) as usize;
+        let windows = 5usize;
+        let slab = slab_of(record * windows);
+        let reduced = reduce_in_production(&fields, record, &slab);
+
+        // EXACT, not field-by-field spot checks: the whole reduction is built
+        // independently here and compared in one go, so a byte that is present
+        // but in the wrong place fails as loudly as a byte that is missing.
+        let mut expect = Vec::with_capacity(windows * 12);
+        for window in 0..windows {
+            let base = window * record;
+            expect.extend_from_slice(&slab[base..base + 8]);
+            expect.extend_from_slice(&slab[base + 0xA4..base + 0xA8]);
+        }
+        assert_eq!(reduced, expect);
+        // And therefore the undecoded span is ABSENT rather than moved: the
+        // reduction is 12 bytes per window against a 168-byte record, and the
+        // 12 are accounted for above.
+        assert_eq!(reduced.len(), windows * 12);
+        assert_eq!(record, 0xA8);
+    }
 }
 
 #[cfg(test)]

@@ -89,6 +89,38 @@ public static class Hoi4ReadOnlyStateNative
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool CloseHandle(IntPtr handle);
+
+    // Read-only, and served by the SAME handle every read above uses:
+    // PROCESS_QUERY_INFORMATION | PROCESS_VM_READ is exactly the access this
+    // call is documented to need, so no new right is requested and no second
+    // handle is opened. K32GetProcessMemoryInfo is the kernel32 entry point
+    // rather than the psapi.dll one, to stay on the single library this file
+    // already binds.
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool K32GetProcessMemoryInfo(
+        IntPtr process,
+        out Hoi4ProcessMemoryCounters counters,
+        UInt32 size);
+}
+
+// PROCESS_MEMORY_COUNTERS, declared in full rather than truncated after the
+// two members this file reads. The API checks the `size` argument against the
+// structure it knows, so a short declaration is a failed call, not a cheap
+// one.
+[StructLayout(LayoutKind.Sequential)]
+public struct Hoi4ProcessMemoryCounters
+{
+    public UInt32 cb;
+    public UInt32 PageFaultCount;
+    public UIntPtr PeakWorkingSetSize;
+    public UIntPtr WorkingSetSize;
+    public UIntPtr QuotaPeakPagedPoolUsage;
+    public UIntPtr QuotaPagedPoolUsage;
+    public UIntPtr QuotaPeakNonPagedPoolUsage;
+    public UIntPtr QuotaNonPagedPoolUsage;
+    public UIntPtr PagefileUsage;
+    public UIntPtr PeakPagefileUsage;
 }
 '@
 
@@ -383,6 +415,108 @@ try {
     $process.Refresh()
     $processorMilliseconds = [int64]$process.TotalProcessorTime.TotalMilliseconds
 
+    # HOST AND PACING CONTEXT, taken here for the same reason the CPU time
+    # above is: none of it is a memory read, and all of it answers a question
+    # the engine's own state cannot. Lane TG spent an entire lane deciding
+    # whether an rc_vanilla5-vs-rc_vanilla6 slowdown was a change this project
+    # landed or the machine the two runs happened to be sharing -- the
+    # attach-time proof did identical work in both (1,813,929,574 bytes over
+    # 36,016 files) and took 4.46x longer in the second -- and no artifact
+    # recorded what else the host was doing. These do.
+    #
+    # NONE OF IT MAY END THE OBSERVATION. Every value above this line is
+    # authoritative engine state and its failure is a real failure; everything
+    # below is diagnostic context, and an unavailable diagnostic must not
+    # destroy the engine sample that was already taken. An earlier revision of
+    # this lane threw on a failed counter query, which would have aborted the
+    # graded capture over a number nothing gates on -- Codex round 2 finding 3,
+    # against PROJECT.md's partial-observation rule. So each query below is
+    # contained, its values are $null when it fails, and the CAUSE is named on
+    # the row. Never a zero: a reader believes a zero.
+    $availableParallelism = [int][Environment]::ProcessorCount
+    $hostStateUnavailable = [Collections.Generic.List[string]]::new()
+
+    $targetProcessorAffinityCores = $null
+    try {
+        # How many of those the TARGET was actually allowed to use: the
+        # population count of its affinity mask. With no mask applied the mask
+        # is all ones and this equals AvailableParallelism, so the pair reads
+        # "n of m cores" and a masked run is visible without a separate
+        # receipt -- which matters because -CpuAffinityCores 0 writes no
+        # HARNESS_CPU_AFFINITY_V1.json at all, so its ABSENCE was the only
+        # evidence a run was unmasked. That is what lane TG had to reason from.
+        #
+        # PRIMARY GROUP ONLY. Process.ProcessorAffinity is a bare KAFFINITY
+        # with no processor group, so on a multi-group machine this counts bits
+        # in the target's PRIMARY group and cannot see another. The harness
+        # refuses to mask such a machine at all for the same reason. Recorded
+        # as what it is rather than described as machine-wide (Codex round 2
+        # finding 6).
+        #
+        # Off the same .NET Process object the CPU time above comes from, so it
+        # opens no handle this file was not already holding.
+        #
+        # BYTES REINTERPRETED, NOT CAST. A mask with bit 63 set reads back as a
+        # NEGATIVE Int64 and a direct [uint64] cast of that THROWS -- the
+        # harness carries the same note on its own
+        # ConvertTo-Hoi4AffinityUInt64. An earlier revision of this lane cast
+        # it directly, so a 64-logical-processor group would have failed every
+        # observation in the run (Codex round 2 finding 2).
+        $affinityBits = [System.BitConverter]::ToUInt64(
+            [System.BitConverter]::GetBytes($process.ProcessorAffinity.ToInt64()),
+            0)
+        $cores = 0
+        while ($affinityBits -ne 0) {
+            # Clear the lowest set bit. Counting set bits rather than trailing
+            # zeros so a sparse mask (cores 0 and 8, say) is counted correctly.
+            $affinityBits = $affinityBits -band ($affinityBits - 1)
+            $cores = $cores + 1
+        }
+        $targetProcessorAffinityCores = [int]$cores
+    } catch {
+        $hostStateUnavailable.Add(
+            'ProcessorAffinity: ' +
+            (([string]$_.Exception.Message -replace '\s+', ' ').Trim()))
+    }
+
+    # The target's fault count and resident bytes, off the handle that is
+    # already open. A process whose working set is being trimmed, or whose
+    # fault count is climbing between samples, is paying for memory pressure
+    # rather than for anything a lane landed -- and wall time alone cannot tell
+    # those apart.
+    $targetPageFaultCount = $null
+    $targetWorkingSetBytes = $null
+    try {
+        $memoryCountersSize = [uint32][Runtime.InteropServices.Marshal]::SizeOf(
+            [type]'Hoi4ProcessMemoryCounters')
+        $memoryCounters = New-Object Hoi4ProcessMemoryCounters
+        $memoryCountersOk = [Hoi4ReadOnlyStateNative]::K32GetProcessMemoryInfo(
+            $processHandle,
+            [ref]$memoryCounters,
+            $memoryCountersSize)
+        if ($memoryCountersOk) {
+            # Widened to int64 on the way out. PageFaultCount is a DWORD and
+            # WorkingSetSize a SIZE_T, and both go to JSON consumers that read
+            # signed integers; int64 holds either without a wrap and without
+            # inventing an unsigned type at the schema boundary.
+            $targetPageFaultCount = [int64]$memoryCounters.PageFaultCount
+            $targetWorkingSetBytes = [int64]$memoryCounters.WorkingSetSize.ToUInt64()
+        } else {
+            $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            $hostStateUnavailable.Add(
+                "K32GetProcessMemoryInfo: Win32 error $errorCode")
+        }
+    } catch {
+        $hostStateUnavailable.Add(
+            'K32GetProcessMemoryInfo: ' +
+            (([string]$_.Exception.Message -replace '\s+', ' ').Trim()))
+    }
+
+    $hostStateUnavailableReason = $null
+    if ($hostStateUnavailable.Count -gt 0) {
+        $hostStateUnavailableReason = ($hostStateUnavailable -join '; ')
+    }
+
     [pscustomobject]@{
         Pid = $TargetPid
         ExeSha256 = $actualExeSha256
@@ -424,6 +558,21 @@ try {
         ClockProgressWaitedMs = $clockProgressWaitedMs
         ClockProgressBudgetMs = $ClockProgressBudgetMs
         ProcessorMilliseconds = $processorMilliseconds
+        # Host and pacing context. See where these are sampled for why they
+        # exist: they state what else the machine was doing, which is the one
+        # question two runs of this observer could never be asked before.
+        AvailableParallelism = $availableParallelism
+        # NOT CAST. These are $null when their query failed, and [int]$null is
+        # 0 -- a cast here would turn "we could not read it" into "it was
+        # zero", which is the one thing a diagnostic must never do. The types
+        # are already [int] / [int64] where a value exists.
+        TargetProcessorAffinityCores = $targetProcessorAffinityCores
+        TargetPageFaultCount = $targetPageFaultCount
+        TargetWorkingSetBytes = $targetWorkingSetBytes
+        # $null when every host query succeeded, else the named causes. A row
+        # whose host fields are null and whose reason is empty is a row nobody
+        # can act on, and `clock_baseline_summary.py` refuses exactly that.
+        HostStateUnavailable = $hostStateUnavailableReason
         # True when the engine's pacing block ran at least once inside the
         # budget. Kept named `Advancing` because callers already read it, but
         # it is now a budgeted rate observation rather than one strict
