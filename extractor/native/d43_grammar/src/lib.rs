@@ -5,6 +5,7 @@ extern crate alloc;
 
 pub mod decode;
 pub mod encode;
+pub mod oil_trio;
 
 #[cfg(test)]
 mod tests;

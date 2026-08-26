@@ -301,6 +301,16 @@ REQUIRED_LEAF_AUTHORITIES = {
         root="extractor/native/d43_grammar",
         consumers=(
             "extractor/native/collector/src/attach_log.rs",
+            # Lane TE. `oil_trio` is the second grammar this crate carries, and
+            # these two files hold their own semantic layer over it rather than
+            # naming constants out of it, so both are consumers and neither is
+            # a `const_only` site. `te_d43_selfcheck.rs` builds `Inputs` and
+            # drives the collector's comparator against `oil_trio::derive`;
+            # `sz_d43_oil_requirement.rs` transcribes the engine's rounding
+            # independently and pins where that law is SPELLED, which moved
+            # into the crate when the duplicate spellings were collapsed.
+            "extractor/native/collector/src/attach_log/tests/sz_d43_oil_requirement.rs",
+            "extractor/native/collector/src/attach_log/tests/te_d43_selfcheck.rs",
             "extractor/native/recorder_host/src/domain_data_authority.rs",
             "extractor/native/recorder_host/src/world_fold.rs",
             "extractor/native/lanes/market_trade_live/src/lib.rs",

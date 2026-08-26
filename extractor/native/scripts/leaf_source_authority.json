@@ -31,6 +31,7 @@
         "extractor/native/d43_grammar/src/encode.rs",
         "extractor/native/d43_grammar/src/family.rs",
         "extractor/native/d43_grammar/src/lib.rs",
+        "extractor/native/d43_grammar/src/oil_trio.rs",
         "extractor/native/d43_grammar/src/tests.rs",
         "extractor/native/d43_grammar/src/walk.rs"
       ]
