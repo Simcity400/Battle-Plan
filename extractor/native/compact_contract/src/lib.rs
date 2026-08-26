@@ -77,6 +77,41 @@ pub const MAX_SCHEDULED_DOMAINS: usize = 96;
 pub const DOMAIN49_STATUS_LOCATION_CANDIDATE_UNVALIDATED: u32 = 1 << 11;
 pub const DOMAIN49_LANE_LOCAL_STATUS_MASK: u32 = DOMAIN49_STATUS_LOCATION_CANDIDATE_UNVALIDATED;
 
+/// Set when a D18 membership WALK completed over the whole live state set and
+/// published the family, but at least one individual state's claims-or-cores
+/// container could not be authenticated and is carried as UNMEASURED rather
+/// than as a measured-empty membership.
+///
+/// This exists for exactly the reason `DOMAIN55_STATUS_EVENT_CARRIER_INCOMPLETE`
+/// does. `COMPACT_STATUS_PARTIAL_DATA` is a FAILURE bit in the global v1
+/// vocabulary, and both the payload builder and `world_fold` gate the whole
+/// family on `compact_status_is_failure`, so spending a failure bit on "one
+/// state of 1,081 could not be authenticated" throws away the 1,080 that could.
+/// Capture `rc_vanilla6` is that hour, 249 times out of 249: one state
+/// (`state_id` 794, a container holding a 4-slot buffer with a zero live count)
+/// refused, and the all-or-nothing family word deleted every core membership in
+/// the world -- `d18_membership_core_memberships = 0` on every frame, against
+/// `d18_membership_state_rows = 1081`. The excluded states are named
+/// individually in the CIM1 payload's unmeasured lists together with the stage
+/// that refused each, so nothing hides behind the badge.
+pub const DOMAIN18_STATUS_MEMBERSHIP_STATES_UNMEASURED: u32 = 1 << 16;
+pub const DOMAIN18_LANE_LOCAL_STATUS_MASK: u32 = DOMAIN18_STATUS_MEMBERSHIP_STATES_UNMEASURED;
+
+/// The D18 country-identity membership extension block: ONE definition of the
+/// magic, the version and the header length, shared by the collector's encoder,
+/// the recorder host's `domain_data_authority` validator and `world_fold`'s
+/// decoder. All three used to carry their own `40` literal.
+pub mod country_identity_membership {
+    pub const CIM1_MAGIC: &[u8; 4] = b"CIM1";
+    /// v2 adds the two unmeasured-state counts to the header and the two
+    /// `(state_id, stage)` exclusion lists to the tail. There is no v1 reader:
+    /// captures are disposable before production and formats change cleanly.
+    pub const CIM1_VERSION: u16 = 2;
+    pub const CIM1_HEADER_LEN: usize = 48;
+    /// One exclusion entry: `state_id u32`, `refusal stage u32`.
+    pub const CIM1_UNMEASURED_ENTRY_LEN: usize = 8;
+}
+
 pub const DOMAIN53_STATUS_OPERATIONS_DETAIL_RESISTED: u32 = 1 << 16;
 pub const DOMAIN53_STATUS_INTEL_MAP_RESISTED: u32 = 1 << 17;
 pub const DOMAIN53_STATUS_WAR_ROOT_UNVALIDATED: u32 = 1 << 18;
@@ -121,6 +156,7 @@ pub const DOMAIN55_LANE_LOCAL_STATUS_MASK: u32 = DOMAIN55_STATUS_EVENT_CARRIER_I
 
 pub const fn lane_local_status_mask(domain_id: CompactDomainId) -> u32 {
     match domain_id {
+        18 => DOMAIN18_LANE_LOCAL_STATUS_MASK,
         49 => DOMAIN49_LANE_LOCAL_STATUS_MASK,
         51 => DOMAIN51_LANE_LOCAL_STATUS_MASK,
         53 => DOMAIN53_LANE_LOCAL_STATUS_MASK,
@@ -2728,6 +2764,7 @@ mod tests {
     fn lane_local_status_registry_is_exactly_the_declared_domains() {
         for domain_id in 0..=u16::MAX {
             let expected: u32 = match domain_id {
+                18 => 0x0001_0000,
                 49 => 1 << 11,
                 51 => (1 << 11) | (1 << 12) | (1 << 13),
                 53 => 0x007F_0000,
@@ -2804,6 +2841,31 @@ mod tests {
         );
         assert_eq!(
             DOMAIN55_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_FAILURE_MASK,
+            0
+        );
+        // The whole point of the D18 badge is that it is NOT a failure bit: the
+        // family word it rides on is what both the payload builder and the fold
+        // test with `compact_status_is_failure` to decide whether to publish the
+        // claims/cores families at all. If this bit ever landed inside
+        // `COMPACT_STATUS_FAILURE_MASK`, one unmeasured state would delete the
+        // whole family again, which is the defect it exists to close.
+        // kills: assigning the badge a bit inside the v1 vocabulary, or folding
+        // it into the failure mask.
+        assert_eq!(DOMAIN18_STATUS_MEMBERSHIP_STATES_UNMEASURED, 1 << 16);
+        assert_eq!(
+            DOMAIN18_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_V1_KNOWN_MASK,
+            0
+        );
+        assert_eq!(
+            DOMAIN18_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_FAILURE_MASK,
+            0
+        );
+        assert!(!compact_status_is_failure(
+            DOMAIN18_STATUS_MEMBERSHIP_STATES_UNMEASURED
+        ));
+        assert_eq!(lane_local_status_mask(18), DOMAIN18_LANE_LOCAL_STATUS_MASK);
+        assert_eq!(
+            compact_status_unassigned_flags(18, DOMAIN18_LANE_LOCAL_STATUS_MASK),
             0
         );
     }
@@ -3040,7 +3102,7 @@ mod tests {
     #[test]
     fn unassigned_flags_are_undeclared_bits_only() {
         for spec in COMPACT_STATUS_V1_FLAG_SPECS {
-            for domain_id in [10u16, 17, 49, 51, 53, 55, 60, 99] {
+            for domain_id in [10u16, 17, 18, 49, 51, 53, 55, 60, 99] {
                 assert_eq!(
                     compact_status_unassigned_flags(domain_id, spec.bit),
                     0,
@@ -3051,7 +3113,8 @@ mod tests {
         }
 
         for (domain_id, mask) in [
-            (49u16, DOMAIN49_LANE_LOCAL_STATUS_MASK),
+            (18u16, DOMAIN18_LANE_LOCAL_STATUS_MASK),
+            (49, DOMAIN49_LANE_LOCAL_STATUS_MASK),
             (51, DOMAIN51_LANE_LOCAL_STATUS_MASK),
             (53, DOMAIN53_LANE_LOCAL_STATUS_MASK),
             (60, DOMAIN60_LANE_LOCAL_STATUS_MASK),

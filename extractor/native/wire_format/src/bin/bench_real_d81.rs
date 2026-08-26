@@ -557,6 +557,12 @@ fn authenticated_country_bindings(stream: &[u8]) -> Result<Vec<(u32, String)>, S
                         "country symbol FRAME_END at byte {pos} does not seal its exact terminal/status set"
                     ));
                 }
+                // Same equation as `wire_product`'s D18 binding: PERF equals the
+                // outer DATA roster word OR the three CIM1 family words. The
+                // outer word alone is one term of it, and comparing against
+                // that term refuses producer-emittable CIM1 failures while
+                // admitting payloads whose CIM1 words contradict their PERF.
+                // (Codex reviews 01a03ba4 and 01a03bb5, finding 1.)
                 match (
                     perf_domains.get(&D18).copied(),
                     pending_d18_data.take(),
@@ -629,10 +635,11 @@ fn decode_d18_country_carrier(
             "d18 DATA at byte {at} has unknown status {unknown:#x}"
         ));
     }
-    if compact_contract::compact_status_is_failure(status) {
-        return Ok((status, None));
-    }
-    if row_count == 0 || changed != row_count {
+    // Same as `wire_product`: a failure carrier still carries its CIM1 block,
+    // so returning the outer word alone here refuses producer-sealed hours and
+    // skips the extension's validation entirely. (Codex review 01a03bcf.)
+    let complete = !compact_contract::compact_status_is_failure(status);
+    if complete && (row_count == 0 || changed != row_count) {
         return Err(format!(
             "d18 DATA at byte {at} is not a complete nonempty roster"
         ));
@@ -674,8 +681,11 @@ fn decode_d18_country_carrier(
             }
         }
     }
-    validate_country_identity_extension(payload, cursor, at)?;
-    Ok((status, Some(local.into_iter().collect())))
+    let family_status = validate_country_identity_extension(payload, cursor, at)?;
+    Ok((
+        status | family_status,
+        complete.then(|| local.into_iter().collect()),
+    ))
 }
 
 fn read_u32_slice(bytes: &[u8], cursor: &mut usize, label: &str) -> Result<u32, String> {
@@ -718,26 +728,35 @@ fn read_u16_string(bytes: &[u8], cursor: &mut usize, label: &str) -> Result<Stri
     Ok(text)
 }
 
+/// Validates the CIM1 extent and returns the OR of its three family status
+/// words, which is the rest of the D18 data authority.
 fn validate_country_identity_extension(
     payload: &[u8],
     cursor: usize,
     at: usize,
-) -> Result<(), String> {
+) -> Result<u32, String> {
+    use compact_contract::country_identity_membership as cim;
     let header = payload
-        .get(cursor..cursor.saturating_add(40))
+        .get(cursor..cursor.saturating_add(cim::CIM1_HEADER_LEN))
         .ok_or_else(|| format!("d18 DATA at byte {at} truncates CIM1 extension"))?;
-    if &header[..4] != b"CIM1"
-        || u16::from_le_bytes(header[4..6].try_into().unwrap()) != 1
-        || u16::from_le_bytes(header[6..8].try_into().unwrap()) != 40
-        || header[36..40] != [0; 4]
+    if &header[..4] != cim::CIM1_MAGIC
+        || u16::from_le_bytes(header[4..6].try_into().unwrap()) != cim::CIM1_VERSION
+        || u16::from_le_bytes(header[6..8].try_into().unwrap()) as usize != cim::CIM1_HEADER_LEN
+        || header[44..48] != [0; 4]
     {
         return Err(format!("d18 DATA at byte {at} has invalid CIM1 header"));
     }
+    let family_status = u32::from_le_bytes(header[8..12].try_into().unwrap())
+        | u32::from_le_bytes(header[12..16].try_into().unwrap())
+        | u32::from_le_bytes(header[16..20].try_into().unwrap());
     let state_count = u32::from_le_bytes(header[20..24].try_into().unwrap()) as usize;
     let claims = u32::from_le_bytes(header[24..28].try_into().unwrap()) as usize;
     let cores = u32::from_le_bytes(header[28..32].try_into().unwrap()) as usize;
     let majors = u32::from_le_bytes(header[32..36].try_into().unwrap()) as usize;
-    let mut body = cursor + 40;
+    let unmeasured = (u32::from_le_bytes(header[36..40].try_into().unwrap()) as usize)
+        .checked_add(u32::from_le_bytes(header[40..44].try_into().unwrap()) as usize)
+        .ok_or("CIM1 unmeasured count overflow")?;
+    let mut body = cursor + cim::CIM1_HEADER_LEN;
     let mut seen_claims = 0usize;
     let mut seen_cores = 0usize;
     for _ in 0..state_count {
@@ -772,12 +791,19 @@ fn validate_country_identity_extension(
     body = body
         .checked_add(majors.checked_mul(8).ok_or("CIM1 major extent overflow")?)
         .ok_or("CIM1 extent overflow")?;
+    body = body
+        .checked_add(
+            unmeasured
+                .checked_mul(cim::CIM1_UNMEASURED_ENTRY_LEN)
+                .ok_or("CIM1 unmeasured extent overflow")?,
+        )
+        .ok_or("CIM1 extent overflow")?;
     if body != payload.len() {
         return Err(format!(
             "d18 DATA at byte {at} CIM1 does not exactly cover payload"
         ));
     }
-    Ok(())
+    Ok(family_status)
 }
 
 fn check_frame_end(payload: &[u8], at: usize) -> Result<(u32, u32, u32), String> {
@@ -1976,10 +2002,16 @@ mod tests {
             payload.extend_from_slice(tag.as_bytes());
             payload.push(1);
         }
-        payload.extend_from_slice(b"CIM1");
-        payload.extend_from_slice(&1u16.to_le_bytes());
-        payload.extend_from_slice(&40u16.to_le_bytes());
-        payload.extend_from_slice(&[0; 32]);
+        payload.extend_from_slice(compact_contract::country_identity_membership::CIM1_MAGIC);
+        payload.extend_from_slice(
+            &compact_contract::country_identity_membership::CIM1_VERSION.to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &(compact_contract::country_identity_membership::CIM1_HEADER_LEN as u16).to_le_bytes(),
+        );
+        payload.extend_from_slice(
+            &[0; compact_contract::country_identity_membership::CIM1_HEADER_LEN - 8],
+        );
         record(
             sequence,
             hour,

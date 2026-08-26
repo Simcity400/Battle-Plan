@@ -62,6 +62,7 @@ GLOBAL_STATUS_BITS: Mapping[int, StatusSpec] = {
 }
 
 DOMAIN_STATUS_BITS: Mapping[int, Mapping[int, StatusSpec]] = {
+    18: {16: StatusSpec('LANE:MEMBERSHIP_STATES_UNMEASURED', False)},
     49: {11: StatusSpec('LANE:LOCATION_CANDIDATE_UNVALIDATED', True)},
     51: {
         11: StatusSpec('LANE:FLAG_NAMES_PARTIAL', True),

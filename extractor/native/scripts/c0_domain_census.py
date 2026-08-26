@@ -578,6 +578,12 @@ BIT13_VALID_DOMAINS = {"diplomacy_live", "diplomacy_intel_operatives_live"}
 KNOWN_MASK = (1 << 16) - 1
 
 LANE_LOCAL = {
+    "country_identity": {
+        16: ("LANE:MEMBERSHIP_STATES_UNMEASURED", False,
+             "CapturedPartial: the claims/cores families published, minus the states "
+             "whose containers could not be authenticated; each is named with its "
+             "refusal stage in the CIM1 unmeasured lists"),
+    },
     "naval_combat_lifecycle_live": {
         11: ("LANE:LOCATION_CANDIDATE_UNVALIDATED", True,
              "Failed/UnvalidatedCandidate"),

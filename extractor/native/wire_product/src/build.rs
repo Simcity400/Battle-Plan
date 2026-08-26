@@ -44,6 +44,9 @@ struct ScannedBranch {
 }
 
 struct D18CountryCarrier {
+    /// The COMPLETE D18 data authority: the outer roster status word OR the
+    /// three CIM1 family status words. This is the word the PERF record binds
+    /// against; the outer word alone is only one term of it.
     status: u32,
     rows: Option<Vec<(u32, String)>>,
 }
@@ -1236,6 +1239,31 @@ where
                         "branch {branch} FRAME_END seal mismatch at {record_tick}: emitted={emitted_domains}, scheduled={scheduled_domains}, terminal={observed_domains}, status={frame_status:#x}, expected_status={expected_status:#x}, unknown={unknown_status:#x}, reserved={reserved:#x}"
                     )));
                 }
+                // THE D18 AUTHORITY EQUATION, which is what binds these two
+                // records:
+                //
+                //   PERF status == outer DATA roster status
+                //                  | CIM1 claims | CIM1 cores | CIM1 major
+                //
+                // The producer writes it that way -- `published_status_words`
+                // ORs the three family words into PERF and leaves the outer
+                // DATA word the ROSTER's alone, because
+                // `world_fold::fold_country_identity` drops the whole
+                // `tag_db_id -> TAG` map when THAT word is a failure and a
+                // dozen other domains resolve their tags through it -- and the
+                // recorder host's authority decoder reconstructs exactly that.
+                //
+                // Comparing PERF against the OUTER word alone is a different
+                // equation, and it is wrong in both directions: it refuses
+                // producer-emittable hours whose failure lives in a CIM1 family
+                // (a dynamic-major vector disagreement gives CIM1 major 0x300,
+                // outer 0, PERF 0x300), and it admits a payload whose CIM1
+                // words contradict its own PERF word. An earlier attempt to fix
+                // only the first half, by globalizing PERF before comparing,
+                // deleted the badge and made the second half worse. Once the
+                // DATA side is the COMPLETE authority the two are equal by
+                // construction and raw equality is right again.
+                // (Codex reviews 01a03ba4 and 01a03bb5, finding 1.)
                 match (
                     pending_perf_domains.get(&18).copied(),
                     pending_d18_data.take(),
@@ -1825,10 +1853,21 @@ fn decode_complete_d18_country_rows(payload: &[u8]) -> Result<D18CountryCarrier,
     if unknown != 0 {
         return Err(format!("status has unknown bits {unknown:#x}"));
     }
-    if compact_contract::compact_status_is_failure(status) {
-        return Ok(D18CountryCarrier { status, rows: None });
-    }
-    if row_count == 0 || changed != row_count {
+    // A FAILURE carrier still carries a CIM1 block: the producer appends it
+    // unconditionally, and `CompactCountryIdentityExtension::unavailable` fills
+    // all three family words with `SOURCE_UNAVAILABLE | PARTIAL_DATA`. So the
+    // ordinary shape of a roster failure is outer `0x100`, families `0x300`,
+    // PERF `0x300` -- and returning the outer word here reconstructs `0x100`
+    // and refuses a hour the producer sealed. Returning early also skipped the
+    // extension's own validation, admitting a failure payload with no CIM1
+    // block, with CIM1 words contradicting PERF, or with trailing content.
+    //
+    // The rows are parsed structurally either way -- the payload is
+    // self-describing whatever its status -- but the roster IDENTITY checks
+    // stay on the success branch, where a complete nonempty roster is the
+    // claim being made. (Codex review 01a03bcf, finding 1.)
+    let complete = !compact_contract::compact_status_is_failure(status);
+    if complete && (row_count == 0 || changed != row_count) {
         return Err("successful D18 payload is not a complete nonempty roster".into());
     }
     let mut cursor = 20usize;
@@ -1837,11 +1876,12 @@ fn decode_complete_d18_country_rows(payload: &[u8]) -> Result<D18CountryCarrier,
     for index in 0..row_count {
         let source_id = d18_u32(payload, &mut cursor, "country id")?;
         let tag = d18_string(payload, &mut cursor, "country tag")?;
-        if source_id == 0
-            || tag.len() != 3
-            || !tag
-                .bytes()
-                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+        if complete
+            && (source_id == 0
+                || tag.len() != 3
+                || !tag
+                    .bytes()
+                    .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit()))
         {
             return Err(format!("row {index} has invalid country identity"));
         }
@@ -1856,6 +1896,9 @@ fn decode_complete_d18_country_rows(payload: &[u8]) -> Result<D18CountryCarrier,
             }
             _ => return Err(format!("row {index} has invalid cosmetic marker {marker}")),
         }
+        if !complete {
+            continue;
+        }
         let symbol = format!("country/tag/{tag}");
         if rows.insert(source_id, symbol.clone()).is_some() {
             return Err(format!("row {index} duplicates country source {source_id}"));
@@ -1866,10 +1909,10 @@ fn decode_complete_d18_country_rows(payload: &[u8]) -> Result<D18CountryCarrier,
             ));
         }
     }
-    validate_d18_extension(payload, cursor)?;
+    let family_status = validate_d18_extension(payload, cursor)?;
     Ok(D18CountryCarrier {
-        status,
-        rows: Some(rows.into_iter().collect()),
+        status: status | family_status,
+        rows: complete.then(|| rows.into_iter().collect()),
     })
 }
 
@@ -1913,24 +1956,32 @@ fn d18_string(bytes: &[u8], cursor: &mut usize, label: &str) -> Result<String, S
     Ok(value)
 }
 
-fn validate_d18_extension(payload: &[u8], cursor: usize) -> Result<(), String> {
+/// Validates the CIM1 extent and returns the OR of its three family status
+/// words, which is the rest of the D18 data authority.
+fn validate_d18_extension(payload: &[u8], cursor: usize) -> Result<u32, String> {
+    use compact_contract::country_identity_membership as cim;
     let end = cursor
-        .checked_add(40)
+        .checked_add(cim::CIM1_HEADER_LEN)
         .ok_or_else(|| "CIM1 header extent overflows".to_string())?;
     let header = payload
         .get(cursor..end)
         .ok_or_else(|| "CIM1 extension is truncated".to_string())?;
-    if &header[..4] != b"CIM1"
-        || u16::from_le_bytes(header[4..6].try_into().unwrap()) != 1
-        || u16::from_le_bytes(header[6..8].try_into().unwrap()) != 40
-        || header[36..40] != [0; 4]
+    if &header[..4] != cim::CIM1_MAGIC
+        || u16::from_le_bytes(header[4..6].try_into().unwrap()) != cim::CIM1_VERSION
+        || u16::from_le_bytes(header[6..8].try_into().unwrap()) as usize != cim::CIM1_HEADER_LEN
+        || header[44..48] != [0; 4]
     {
         return Err("CIM1 header is invalid".into());
     }
+    let family_status = u32::from_le_bytes(header[8..12].try_into().unwrap())
+        | u32::from_le_bytes(header[12..16].try_into().unwrap())
+        | u32::from_le_bytes(header[16..20].try_into().unwrap());
     let state_count = u32::from_le_bytes(header[20..24].try_into().unwrap()) as usize;
     let expected_claims = u32::from_le_bytes(header[24..28].try_into().unwrap()) as usize;
     let expected_cores = u32::from_le_bytes(header[28..32].try_into().unwrap()) as usize;
     let major_count = u32::from_le_bytes(header[32..36].try_into().unwrap()) as usize;
+    let claims_unmeasured = u32::from_le_bytes(header[36..40].try_into().unwrap()) as usize;
+    let cores_unmeasured = u32::from_le_bytes(header[40..44].try_into().unwrap()) as usize;
     let mut at = end;
     let mut claims = 0usize;
     let mut cores = 0usize;
@@ -1970,10 +2021,22 @@ fn validate_d18_extension(payload: &[u8], cursor: usize) -> Result<(), String> {
                 .ok_or_else(|| "CIM1 major extent overflows".to_string())?,
         )
         .ok_or_else(|| "CIM1 total extent overflows".to_string())?;
+    // The two exclusion lists. This validator proves EXTENT, not content -- the
+    // recorder host's decoder is where a named state is checked against the
+    // rows -- but the extent has to include them or a payload that carries an
+    // exclusion reads as trailing bytes and the whole product refuses.
+    at = at
+        .checked_add(
+            claims_unmeasured
+                .checked_add(cores_unmeasured)
+                .and_then(|rows| rows.checked_mul(cim::CIM1_UNMEASURED_ENTRY_LEN))
+                .ok_or_else(|| "CIM1 unmeasured extent overflows".to_string())?,
+        )
+        .ok_or_else(|| "CIM1 total extent overflows".to_string())?;
     if at != payload.len() {
         return Err("CIM1 extension does not exactly cover payload".into());
     }
-    Ok(())
+    Ok(family_status)
 }
 
 fn map_d81_domain_gap(

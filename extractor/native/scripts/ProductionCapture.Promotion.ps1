@@ -30,6 +30,7 @@ $script:ProductionPromotionUnknownStatusMask =
 # Pinned against the contract by
 # `compact_contract/tests/compact_contract_suite/script_status_vocabulary_sweep.rs`.
 $script:ProductionPromotionLaneLocalStatusMask = @{
+    18 = [uint32]0x00010000
     49 = [uint32]0x00000800
     51 = [uint32]0x00003800
     53 = [uint32]0x007F0000

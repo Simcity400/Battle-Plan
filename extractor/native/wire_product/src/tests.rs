@@ -122,10 +122,16 @@ fn d18_country_payload_for(status: u32, source_id: u32, tag: &str) -> Vec<u8> {
     payload.extend_from_slice(&(tag.len() as u16).to_le_bytes());
     payload.extend_from_slice(tag.as_bytes());
     payload.push(1);
-    payload.extend_from_slice(b"CIM1");
-    payload.extend_from_slice(&1u16.to_le_bytes());
-    payload.extend_from_slice(&40u16.to_le_bytes());
-    payload.extend_from_slice(&[0; 32]);
+    payload.extend_from_slice(compact_contract::country_identity_membership::CIM1_MAGIC);
+    payload.extend_from_slice(
+        &compact_contract::country_identity_membership::CIM1_VERSION.to_le_bytes(),
+    );
+    payload.extend_from_slice(
+        &(compact_contract::country_identity_membership::CIM1_HEADER_LEN as u16).to_le_bytes(),
+    );
+    payload.extend_from_slice(
+        &[0; compact_contract::country_identity_membership::CIM1_HEADER_LEN - 8],
+    );
     payload
 }
 
@@ -270,6 +276,211 @@ fn append_d81_d18_country_hour(
         &frame_end_payload(2, 2, 0),
     );
     *next_sequence += 1;
+}
+
+/// A D18 DATA payload with an arbitrary outer word and arbitrary CIM1 family
+/// words. `claims_excluded` / `cores_excluded` add the state row and exclusion
+/// entry a BADGED family must carry, so a badged fixture is one the recorder
+/// host would also admit rather than a contradiction it refuses.
+fn d18_country_payload_families(
+    source_id: u32,
+    tag: &str,
+    outer: u32,
+    claims: u32,
+    cores: u32,
+    major: u32,
+    claims_excluded: bool,
+    cores_excluded: bool,
+) -> Vec<u8> {
+    use compact_contract::country_identity_membership as cim;
+    assert_eq!(tag.len(), 3);
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&1u32.to_le_bytes());
+    payload.extend_from_slice(&outer.to_le_bytes());
+    payload.extend_from_slice(&source_id.to_le_bytes());
+    payload.extend_from_slice(&(tag.len() as u16).to_le_bytes());
+    payload.extend_from_slice(tag.as_bytes());
+    payload.push(1);
+    payload.extend_from_slice(cim::CIM1_MAGIC);
+    payload.extend_from_slice(&cim::CIM1_VERSION.to_le_bytes());
+    payload.extend_from_slice(&(cim::CIM1_HEADER_LEN as u16).to_le_bytes());
+    payload.extend_from_slice(&claims.to_le_bytes());
+    payload.extend_from_slice(&cores.to_le_bytes());
+    payload.extend_from_slice(&major.to_le_bytes());
+    let any_excluded = claims_excluded || cores_excluded;
+    payload.extend_from_slice(&u32::from(any_excluded).to_le_bytes()); // state rows
+    payload.extend_from_slice(&0u32.to_le_bytes()); // claim memberships
+    payload.extend_from_slice(&0u32.to_le_bytes()); // core memberships
+    // A CLEAN major family must exactly cover the country roster, which is this
+    // one country. Zero rows under a clean major word is a shape both recorder
+    // consumers refuse, so a fixture claiming producer-admissibility cannot use
+    // it. (Codex review 01a03c12, finding 2.)
+    let major_rows = u32::from(!compact_contract::compact_status_is_failure(major));
+    payload.extend_from_slice(&major_rows.to_le_bytes());
+    payload.extend_from_slice(&u32::from(claims_excluded).to_le_bytes());
+    payload.extend_from_slice(&u32::from(cores_excluded).to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    if any_excluded {
+        // One state row carrying no members, which is what an excluded state
+        // publishes.
+        payload.extend_from_slice(&793u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+    }
+    if major_rows != 0 {
+        payload.extend_from_slice(&source_id.to_le_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&[0, 0, 0]);
+    }
+    // The exclusion lists, claims first, exactly as the producer orders them.
+    for excluded in [claims_excluded, cores_excluded] {
+        if excluded {
+            payload.extend_from_slice(&793u32.to_le_bytes());
+            payload.extend_from_slice(&1815u32.to_le_bytes());
+        }
+    }
+    payload
+}
+
+/// The frame seal is checked BEFORE the D18 authority binder, against the OR of
+/// every PERF word after global interpretation. A fixture that hardcodes zero
+/// there never reaches the binder on any case whose PERF word carries a real
+/// failure bit -- which is two of the three positive cases below.
+/// (Codex review 01a03bfb, finding 1.)
+fn d18_binding_stream(perf_status: u32, data: Vec<u8>) -> Vec<u8> {
+    let tick = valid_hour(0);
+    let mut stream = Vec::new();
+    let mut sequence = 1u64;
+    for (domain, record_type, payload) in [
+        (
+            wire_format::d81::DOMAIN as u16,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            perf_payload(0),
+        ),
+        (
+            wire_format::d81::DOMAIN as u16,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            d81_v4_payload(0),
+        ),
+        (18, COMPACT_RECORD_TYPE_DOMAIN_PERF, perf_payload(perf_status)),
+        (18, COMPACT_RECORD_TYPE_DOMAIN_DATA, data),
+    ] {
+        push_h4cr_record(&mut stream, sequence, tick, domain, record_type, 0, &payload);
+        sequence += 1;
+    }
+    // The d81 PERF word is 0, so the frame status is d18's alone -- AFTER
+    // global interpretation, which strips the lane-local badge. So a badge-only
+    // hour seals at 0 and an hour with a real failure bit seals carrying it,
+    // and this fixture exercises both.
+    let frame_status = compact_contract::compact_status_for_global_interpretation(18, perf_status);
+    push_h4cr_record(
+        &mut stream,
+        sequence,
+        tick,
+        COMPACT_DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        0,
+        &frame_end_payload(2, 2, frame_status),
+    );
+    stream
+}
+
+fn d18_binding_result(perf_status: u32, data: Vec<u8>) -> Result<(), String> {
+    let stream = d18_binding_stream(perf_status, data);
+    inspect_d81_session(H4crSession {
+        branch: 0,
+        identity_mode: StreamIdentityMode::Legacy,
+        source: H4crSource::Bytes(&stream),
+    })
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+/// The D18 authority equation, term by term:
+///
+/// ```text
+/// PERF == outer DATA roster status | CIM1 claims | CIM1 cores | CIM1 major
+/// ```
+///
+/// Binding PERF against the OUTER word alone REFUSED a sealed hour that excluded
+/// one state of 1,081 -- the same data loss the lane closed, moved one stage
+/// downstream -- and it also refused every producer-emittable hour whose failure
+/// lives in a CIM1 family, while admitting payloads whose CIM1 words contradict
+/// their own PERF.
+///
+/// EACH TERM IS PINNED SEPARATELY, which a single badged-cores fixture cannot
+/// do: with one contributing family the OR survives dropping either of the other
+/// two. The cases below give the three families DIFFERENT words so each term is
+/// load-bearing on its own, and the negative case is what kills globalizing the
+/// comparison -- globalizing both sides preserves equality, so only a
+/// contradiction that must be REFUSED can catch it.
+///
+/// (Codex reviews 01a03ba4, 01a03bb5 and 01a03bcf, finding 1.)
+#[test]
+fn d18_binding_reconstructs_every_term_of_the_data_authority() {
+    let badge = compact_contract::DOMAIN18_STATUS_MEMBERSHIP_STATES_UNMEASURED;
+    let failed = compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE
+        | compact_contract::COMPACT_STATUS_PARTIAL_DATA;
+    assert!(
+        !compact_contract::compact_status_is_failure(badge),
+        "the premise: an excluded state is not a failed hour"
+    );
+
+    // (name, outer, claims, cores, major, cores_excluded, which term it pins)
+    for (name, outer, claims, cores, major, claims_excluded, cores_excluded) in [
+        // The rc_vanilla6 shape: cores badged, everything else clean. Pins the
+        // CORES term -- drop it and the reconstruction is 0 against PERF badge.
+        ("cores badged", 0u32, 0u32, badge, 0u32, false, true),
+        // Claims badged with an independent major failure. Pins the CLAIMS term
+        // (drop it: `failed` against `badge|failed`) and the MAJOR term (drop
+        // it: `badge` against `badge|failed`).
+        ("claims badged + major failed", 0, badge, 0, failed, true, false),
+        // A roster failure. The producer still writes the CIM1 block, and
+        // `unavailable()` fills all three families, so PERF is 0x300 while the
+        // outer word is 0x100. Returning the outer word early -- which both
+        // binders used to do on this branch -- refuses a hour the producer
+        // sealed as failed, and skips the extension's validation entirely.
+        (
+            "roster failure carries its families",
+            compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            failed,
+            failed,
+            failed,
+            false,
+            false,
+        ),
+    ] {
+        let data = d18_country_payload_families(
+            7,
+            "GER",
+            outer,
+            claims,
+            cores,
+            major,
+            claims_excluded,
+            cores_excluded,
+        );
+        let perf = outer | claims | cores | major;
+        assert_eq!(
+            d18_binding_result(perf, data),
+            Ok(()),
+            "{name}: PERF {perf:#010x} is exactly the complete data authority and must bind"
+        );
+    }
+
+    // THE NEGATIVE that kills globalization. A PERF word carrying the badge over
+    // a CIM1 block that names no exclusion is a contradiction -- the recorder
+    // host refuses it for badge/list disagreement -- and the binder must refuse
+    // it too. Globalizing BOTH sides preserves equality in every positive case
+    // above, so this is the only case that catches it.
+    let contradiction = d18_country_payload_families(7, "GER", 0, 0, 0, 0, false, false);
+    assert!(
+        d18_binding_result(badge, contradiction).is_err(),
+        "a PERF word that claims an exclusion its own CIM1 block does not carry \
+         must be refused; admitting it is what globalizing the comparison does"
+    );
 }
 
 #[test]

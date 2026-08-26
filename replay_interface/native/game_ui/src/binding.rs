@@ -1162,6 +1162,8 @@ mod tests {
             },
             cores: Leaf::Unobtained,
             claims: Leaf::Unobtained,
+            cores_unmeasured_states: Leaf::Unobtained,
+            claims_unmeasured_states: Leaf::Unobtained,
             preferred_tactic: Leaf::Unobtained,
         }
     }

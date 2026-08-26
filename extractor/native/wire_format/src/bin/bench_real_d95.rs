@@ -455,12 +455,13 @@ fn d18_roster(payload: &[u8]) -> Result<D18Fold, String> {
         // The optional CIM1 extension (`world_fold.rs:13985`-`:14141`). Walked in
         // full: its rejections are the recorder's rejections.
         if cursor < payload.len() {
-            const CIM1_HEADER_LEN: usize = 40;
+            use compact_contract::country_identity_membership as cim;
+            const CIM1_HEADER_LEN: usize = cim::CIM1_HEADER_LEN;
             need(payload, cursor + CIM1_HEADER_LEN, "CIM1 header")?;
-            if &payload[cursor..cursor + 4] != b"CIM1"
-                || u16_at(payload, cursor + 4) != 1
+            if &payload[cursor..cursor + 4] != cim::CIM1_MAGIC
+                || u16_at(payload, cursor + 4) != cim::CIM1_VERSION
                 || u16_at(payload, cursor + 6) as usize != CIM1_HEADER_LEN
-                || u32_at(payload, cursor + 36) != 0
+                || u32_at(payload, cursor + 44) != 0
             {
                 return Err("country_identity CIM1 header is invalid".into());
             }
@@ -471,6 +472,8 @@ fn d18_roster(payload: &[u8]) -> Result<D18Fold, String> {
             let expected_claim_memberships = u32_at(payload, cursor + 24) as usize;
             let expected_core_memberships = u32_at(payload, cursor + 28) as usize;
             let major_count = u32_at(payload, cursor + 32) as usize;
+            let expected_claims_unmeasured = u32_at(payload, cursor + 36) as usize;
+            let expected_cores_unmeasured = u32_at(payload, cursor + 40) as usize;
             let claims_available = !compact_status_is_failure(claims_status);
             let cores_available = !compact_status_is_failure(cores_status);
             let major_available = !compact_status_is_failure(major_status);
@@ -492,6 +495,7 @@ fn d18_roster(payload: &[u8]) -> Result<D18Fold, String> {
             let mut claim_memberships = 0usize;
             let mut core_memberships = 0usize;
             let mut previous_state_id = 0u32;
+            let mut walked_state_ids: BTreeSet<u32> = BTreeSet::new();
             cursor += CIM1_HEADER_LEN;
             for index in 0..state_count {
                 need(payload, cursor + 12, "CIM1 state row")?;
@@ -505,6 +509,7 @@ fn d18_roster(payload: &[u8]) -> Result<D18Fold, String> {
                     ));
                 }
                 previous_state_id = state_id;
+                walked_state_ids.insert(state_id);
                 if (!claims_available && claim_count != 0) || (!cores_available && core_count != 0) {
                     return Err(format!(
                         "country_identity CIM1 unavailable state row {state_id} carries members"
@@ -563,6 +568,46 @@ fn d18_roster(payload: &[u8]) -> Result<D18Fold, String> {
             }
             if major_available && majors != fresh {
                 return Err("country_identity CIM1 major roster is incomplete".into());
+            }
+            let badge = compact_contract::DOMAIN18_STATUS_MEMBERSHIP_STATES_UNMEASURED;
+            if expected_claims_unmeasured > state_count
+                || expected_cores_unmeasured > state_count
+                || (expected_claims_unmeasured != 0) != (claims_status & badge != 0)
+                || (expected_cores_unmeasured != 0) != (cores_status & badge != 0)
+                || (!claims_available && claims_status & badge != 0)
+                || (!cores_available && cores_status & badge != 0)
+                || major_status & badge != 0
+            {
+                return Err("country_identity CIM1 unmeasured-state contract is invalid".into());
+            }
+            // The SAME admission the recorder host makes, not a weaker one:
+            // ascending within a family, and every named state drawn from the rows
+            // this payload actually carries. This walker's whole point is that its
+            // rejections ARE the recorder's. (Codex review 01a03b2f, finding 5.)
+            for (family, count) in [
+                ("claims", expected_claims_unmeasured),
+                ("cores", expected_cores_unmeasured),
+            ] {
+                let mut previous = 0u32;
+                for index in 0..count {
+                    need(
+                        payload,
+                        cursor + cim::CIM1_UNMEASURED_ENTRY_LEN,
+                        "CIM1 unmeasured row",
+                    )?;
+                    let state_id = u32_at(payload, cursor);
+                    let stage = u32_at(payload, cursor + 4);
+                    cursor += cim::CIM1_UNMEASURED_ENTRY_LEN;
+                    if stage == 0
+                        || (index != 0 && state_id <= previous)
+                        || !walked_state_ids.contains(&state_id)
+                    {
+                        return Err(format!(
+                            "country_identity CIM1 {family} unmeasured row {index} is invalid"
+                        ));
+                    }
+                    previous = state_id;
+                }
             }
         }
         if cursor != payload.len() {
@@ -1508,9 +1553,10 @@ mod tests {
     /// country a major row (`world_fold.rs:13985`-`:14141`).
     fn cim1(majors: &[u32]) -> Vec<u8> {
         let mut c = Vec::new();
-        c.extend_from_slice(b"CIM1");
-        c.extend_from_slice(&1u16.to_le_bytes());
-        c.extend_from_slice(&40u16.to_le_bytes());
+        use compact_contract::country_identity_membership as cim;
+        c.extend_from_slice(cim::CIM1_MAGIC);
+        c.extend_from_slice(&cim::CIM1_VERSION.to_le_bytes());
+        c.extend_from_slice(&(cim::CIM1_HEADER_LEN as u16).to_le_bytes());
         c.extend_from_slice(&0u32.to_le_bytes()); // claims status
         c.extend_from_slice(&0u32.to_le_bytes()); // cores status
         c.extend_from_slice(&0u32.to_le_bytes()); // major status
@@ -1518,8 +1564,10 @@ mod tests {
         c.extend_from_slice(&0u32.to_le_bytes()); // claim memberships
         c.extend_from_slice(&0u32.to_le_bytes()); // core memberships
         c.extend_from_slice(&(majors.len() as u32).to_le_bytes());
+        c.extend_from_slice(&0u32.to_le_bytes()); // claims unmeasured states
+        c.extend_from_slice(&0u32.to_le_bytes()); // cores unmeasured states
         c.extend_from_slice(&0u32.to_le_bytes()); // reserved
-        assert_eq!(c.len(), 40);
+        assert_eq!(c.len(), cim::CIM1_HEADER_LEN);
         for id in majors {
             c.extend_from_slice(&id.to_le_bytes());
             c.push(1);

@@ -490,7 +490,8 @@ impl D18Mirror {
         cursor: &mut usize,
         fresh: &BTreeSet<u32>,
     ) -> Result<(), String> {
-        const CIM1_HEADER_LEN: usize = 40;
+        use compact_contract::country_identity_membership as cim;
+        const CIM1_HEADER_LEN: usize = cim::CIM1_HEADER_LEN;
         let base = *cursor;
         if base
             .checked_add(CIM1_HEADER_LEN)
@@ -499,13 +500,15 @@ impl D18Mirror {
             return Err("country_identity CIM1 header truncated".into());
         }
         // `:13991`-`:13997`.
-        if &payload[base..base + 4] != b"CIM1"
-            || u16_at(payload, base + 4) != 1
+        if &payload[base..base + 4] != cim::CIM1_MAGIC
+            || u16_at(payload, base + 4) != cim::CIM1_VERSION
             || u16_at(payload, base + 6) as usize != CIM1_HEADER_LEN
-            || u32_at(payload, base + 36) != 0
+            || u32_at(payload, base + 44) != 0
         {
             return Err("country_identity CIM1 header is invalid".into());
         }
+        let expected_claims_unmeasured = u32_at(payload, base + 36) as usize;
+        let expected_cores_unmeasured = u32_at(payload, base + 40) as usize;
         let claims_status = u32_at(payload, base + 8);
         let cores_status = u32_at(payload, base + 12);
         let major_status = u32_at(payload, base + 16);
@@ -537,6 +540,7 @@ impl D18Mirror {
         let mut claim_memberships = 0usize;
         let mut core_memberships = 0usize;
         let mut previous_state_id = 0u32;
+        let mut walked_state_ids: std::collections::BTreeSet<u32> = Default::default();
         // `:14035`-`:14108`.
         for index in 0..state_count {
             let state_id = read_u32(payload, cursor, "country_identity CIM1 state row")?;
@@ -548,6 +552,7 @@ impl D18Mirror {
                 ));
             }
             previous_state_id = state_id;
+            walked_state_ids.insert(state_id);
             if (!claims_available && claim_count != 0) || (!cores_available && core_count != 0) {
                 return Err(format!(
                     "country_identity CIM1 unavailable state row {state_id} carries members"
@@ -603,6 +608,46 @@ impl D18Mirror {
         // `:14135`-`:14139`.
         if major_available && majors != *fresh {
             return Err("country_identity CIM1 major roster is incomplete".into());
+        }
+        let badge = compact_contract::DOMAIN18_STATUS_MEMBERSHIP_STATES_UNMEASURED;
+        if expected_claims_unmeasured > state_count
+            || expected_cores_unmeasured > state_count
+            || (expected_claims_unmeasured != 0) != (claims_status & badge != 0)
+            || (expected_cores_unmeasured != 0) != (cores_status & badge != 0)
+            || (!claims_available && claims_status & badge != 0)
+            || (!cores_available && cores_status & badge != 0)
+            || major_status & badge != 0
+        {
+            return Err("country_identity CIM1 unmeasured-state contract is invalid".into());
+        }
+        // The SAME admission the recorder host makes, not a weaker one: ascending
+        // within a family, and every named state drawn from the rows this payload
+        // actually carries. A walker that only checked the stage would measure
+        // payloads production refuses. (Codex review 01a03b2f, finding 5.)
+        for (family, count) in [
+            ("claims", expected_claims_unmeasured),
+            ("cores", expected_cores_unmeasured),
+        ] {
+            let mut previous = 0u32;
+            for index in 0..count {
+                if payload.len().saturating_sub(*cursor) < cim::CIM1_UNMEASURED_ENTRY_LEN {
+                    return Err(format!(
+                        "country_identity CIM1 {family} unmeasured row {index} is truncated"
+                    ));
+                }
+                let state_id = u32_at(payload, *cursor);
+                let stage = u32_at(payload, *cursor + 4);
+                *cursor += cim::CIM1_UNMEASURED_ENTRY_LEN;
+                if stage == 0
+                    || (index != 0 && state_id <= previous)
+                    || !walked_state_ids.contains(&state_id)
+                {
+                    return Err(format!(
+                        "country_identity CIM1 {family} unmeasured row {index} is invalid"
+                    ));
+                }
+                previous = state_id;
+            }
         }
         Ok(())
     }

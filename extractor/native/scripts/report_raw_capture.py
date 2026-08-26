@@ -107,6 +107,7 @@ FAILURE_MASK = (
     | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 12)
 )
 LANE_LOCAL_BITS = {
+    18: {16: "d18:membership_states_unmeasured"},
     49: {11: "d49:location_candidate_unvalidated"},
     51: {
         11: "d51:flag_names_partial",
