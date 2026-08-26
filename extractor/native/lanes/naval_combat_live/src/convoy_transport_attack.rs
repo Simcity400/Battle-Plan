@@ -39,7 +39,11 @@ pub const BATCH_MAGIC: u32 = u32::from_le_bytes(*b"CTA2");
 /// where a refusal cause now sits, and reject every member state a v8 producer
 /// writes -- so the batch version moves with the row it carries even though
 /// the header did not change.
-pub const BATCH_VERSION: u16 = 8;
+/// v9 keeps the header byte for byte and moves with the ROW again: the carrier
+/// went to CTA1 v3, where a refused row's bytes 76..80 carry the unmodelled
+/// producer's vtable RVA. A v8 reader requires that window to be zero and
+/// would reject every v9 refusal that names a class.
+pub const BATCH_VERSION: u16 = 9;
 pub const BATCH_HEADER_LEN: usize = 512;
 const V2_TELEMETRY_WORDS_OFF: usize = 32;
 const V3_TELEMETRY_WORDS_OFF: usize = 192;

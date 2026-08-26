@@ -7,7 +7,7 @@ use crate::convoy_route_source::{
     ExactA729RouteRead, CONVOY_ROUTE_REFUSAL_UNCLASSIFIED_INDEX,
 };
 use crate::convoy_terminal_attribution::{
-    CombatEpoch, CombatEpochMembership, ConvoyRouteRefusalCause, EntityHandle,
+    route_resolution_is_well_formed, CombatEpoch, ConvoyRouteRefusalCause, EntityHandle,
     ExactCombatEpochResolver, ExactLiveRouteResolver, LiveRouteResolution, RouteEndpointKind,
     RouteProducerKind, CONVOY_ROUTE_REFUSAL_CAUSE_COUNT, D90_STATIC_AUTHORITY_MANIFEST_SHA256,
     GAME_ENTITY_TYPE_TAG,
@@ -80,7 +80,25 @@ pub struct ResolverSnapshot {
     /// this map every refused sink would be recorded under one indistinct
     /// bucket, which is the shape of the defect the refusal leaves were added
     /// to end.
-    route_refusals: BTreeMap<EntityHandle, u8>,
+    route_refusals: BTreeMap<EntityHandle, RouteRefusalRecord>,
+}
+
+/// What the sweep recorded about one refused client: the named cause, and the
+/// producer vtable RVA when the cause was an unrecognised class.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RouteRefusalRecord {
+    pub cause_index: u8,
+    pub unrecognised_vtable_rva: u32,
+}
+
+impl RouteRefusalRecord {
+    /// A refusal whose cause names no vtable.
+    pub fn cause(cause_index: u8) -> Self {
+        Self {
+            cause_index,
+            unrecognised_vtable_rva: 0,
+        }
+    }
 }
 
 impl Default for ResolverSnapshot {
@@ -136,13 +154,16 @@ impl ExactLiveRouteResolver for ResolverSnapshot {
         // composed here would say only "absent", which is what the sink already
         // knows. A client the sweep never even saw is a different fact and gets
         // its own cause rather than borrowing another's.
-        let cause_index = self
-            .route_refusals
-            .get(&client)
-            .copied()
-            .unwrap_or(CONVOY_ROUTE_REFUSAL_UNCLASSIFIED_INDEX as u8);
+        let record = self.route_refusals.get(&client).copied().unwrap_or(
+            RouteRefusalRecord {
+                cause_index: CONVOY_ROUTE_REFUSAL_UNCLASSIFIED_INDEX as u8,
+                unrecognised_vtable_rva: 0,
+            },
+        );
+        let cause_index = record.cause_index;
         Err(ConvoyRouteRefusalCause {
             cause_index,
+            unrecognised_vtable_rva: record.unrecognised_vtable_rva,
             detail: format!(
                 "client is absent from the authenticated live route publication (cause {cause_index})"
             ),
@@ -228,19 +249,12 @@ fn validate_route_binding(
     {
         return Err("live route binding evidence hashes are absent or not accepted".into());
     }
-    if binding.resolution.source.id == 0 || binding.resolution.destination.id == 0 {
-        return Err("live route binding has a zero endpoint".into());
-    }
-    match binding.resolution.producer_kind {
-        RouteProducerKind::NavalTransport
-        | RouteProducerKind::LendLease
-        | RouteProducerKind::Export => {}
-    }
-    match binding.resolution.source.kind {
-        RouteEndpointKind::State | RouteEndpointKind::Province => {}
-    }
-    match binding.resolution.destination.kind {
-        RouteEndpointKind::State | RouteEndpointKind::Province => {}
+    // The producer decides the endpoint kind and the range its ids may take,
+    // so the pairing is checked here rather than each variant being merely
+    // enumerated: a country tag published as a province id is a reading a
+    // consumer cannot detect.
+    if !route_resolution_is_well_formed(&binding.resolution) {
+        return Err("live route binding endpoints do not match its producer kind".into());
     }
     Ok(())
 }
@@ -279,7 +293,7 @@ pub fn publish_convoy_terminal_resolver_snapshot(
 pub fn publish_convoy_terminal_resolver_bindings(
     member_bindings: &[MemberEpochBinding],
     routes: &[AuthenticatedLiveRouteBinding],
-    route_refusals: &[(EntityHandle, u8)],
+    route_refusals: &[(EntityHandle, RouteRefusalRecord)],
     game_hour_raw: i32,
     unbound_convoy_clients: u32,
 ) -> Result<ResolverPublicationReceipt, String> {
@@ -297,7 +311,7 @@ pub fn publish_convoy_terminal_resolver_bindings(
 pub fn publish_evidence_convoy_terminal_resolver_bindings(
     member_bindings: &[MemberEpochBinding],
     routes: &[AuthenticatedLiveRouteBinding],
-    route_refusals: &[(EntityHandle, u8)],
+    route_refusals: &[(EntityHandle, RouteRefusalRecord)],
     game_hour_raw: i32,
     unbound_convoy_clients: u32,
 ) -> Result<ResolverPublicationReceipt, String> {
@@ -314,7 +328,7 @@ pub fn publish_evidence_convoy_terminal_resolver_bindings(
 fn publish_convoy_terminal_resolver_bindings_with_hashes(
     member_bindings: &[MemberEpochBinding],
     routes: &[AuthenticatedLiveRouteBinding],
-    route_refusals: &[(EntityHandle, u8)],
+    route_refusals: &[(EntityHandle, RouteRefusalRecord)],
     game_hour_raw: i32,
     authority: [u8; 32],
     unbound_convoy_clients: u32,
@@ -345,8 +359,8 @@ fn publish_convoy_terminal_resolver_bindings_with_hashes(
     }
 
     let mut refusal_map = BTreeMap::new();
-    for (client, cause_index) in route_refusals {
-        if usize::from(*cause_index) >= CONVOY_ROUTE_REFUSAL_CAUSE_COUNT {
+    for (client, record) in route_refusals {
+        if usize::from(record.cause_index) >= CONVOY_ROUTE_REFUSAL_CAUSE_COUNT {
             return Err("route refusal cause index is outside the named set".into());
         }
         // A client cannot be both bound and refused in one publication: the
@@ -355,7 +369,7 @@ fn publish_convoy_terminal_resolver_bindings_with_hashes(
         if route_map.contains_key(client) {
             return Err("client handle is both bound and refused in one publication".into());
         }
-        if refusal_map.insert(*client, *cause_index).is_some() {
+        if refusal_map.insert(*client, *record).is_some() {
             return Err("duplicate client handle in the route refusal set".into());
         }
         if refusal_map.len() > MAX_ACTIVE_ROUTE_BINDINGS {
@@ -515,7 +529,7 @@ mod tests {
         publish_convoy_terminal_resolver_bindings_with_hashes(
             &[],
             &[],
-            &[(refused, 5)],
+            &[(refused, RouteRefusalRecord::cause(5))],
             61_000_100,
             [0; 32],
             1,
@@ -551,7 +565,10 @@ mod tests {
         assert!(publish_convoy_terminal_resolver_bindings_with_hashes(
             &[],
             &[],
-            &[(both, u8::try_from(CONVOY_ROUTE_REFUSAL_CAUSE_COUNT).unwrap())],
+            &[(
+                both,
+                RouteRefusalRecord::cause(u8::try_from(CONVOY_ROUTE_REFUSAL_CAUSE_COUNT).unwrap()),
+            )],
             61_000_200,
             [0; 32],
             1,
@@ -562,7 +579,10 @@ mod tests {
             publish_convoy_terminal_resolver_bindings_with_hashes(
                 &[],
                 &[],
-                &[(both, 1), (both, 2)],
+                &[
+                    (both, RouteRefusalRecord::cause(1)),
+                    (both, RouteRefusalRecord::cause(2)),
+                ],
                 61_000_300,
                 [0; 32],
                 1,
@@ -580,7 +600,7 @@ mod tests {
             publish_convoy_terminal_resolver_bindings_with_hashes(
                 &[],
                 &[binding(both, hour)],
-                &[(both, 1)],
+                &[(both, RouteRefusalRecord::cause(1))],
                 hour,
                 [0; 32],
                 1,
@@ -592,7 +612,7 @@ mod tests {
             publish_convoy_terminal_resolver_bindings_with_hashes(
                 &[],
                 &[binding(both, hour)],
-                &[(client(9_999), 1)],
+                &[(client(9_999), RouteRefusalRecord::cause(1))],
                 hour,
                 [0; 32],
                 1,
