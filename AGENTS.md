@@ -8,6 +8,7 @@ Read `PROJECT.md` before changing product behaviour, formats, or architecture.
 
 - When asking questions to the owner, do not use any jargon and be concise; just make things very simple for them to understand and explain how the change would affect the end users UX, if at all.
 - No backwards compat: delete replaced code in the same change, prove it dead.
+- Code comments state only what the code cannot show (invariants, engine quirks, traps). No essays, no narration, no review notes in source — evidence docs carry that. Essay comments are a landing bounce (owner 2026-08-26).
 - Fix what you find. Leave open only what needs the owner, a live game, or
   someone else's active work.
 - Have Codex adversarially review work once you deem it ready to merge. Re-review every fix until it approves clean. You are allowed to push back on findings if you can prove they are wrong.
