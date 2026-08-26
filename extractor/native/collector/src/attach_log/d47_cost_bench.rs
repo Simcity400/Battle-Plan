@@ -1032,6 +1032,117 @@ fn d47_token_pointer_is_captured_after_the_name_read_not_before() {
     );
 }
 
+/// `Hajr<e-diaeresis> Fetahu`, character 69 of rc_vanilla7, whose token the strict
+/// byte rule refused. Written as an escape: this file is read back by
+/// source-law scans and a raw non-ASCII byte here would make the test's
+/// meaning depend on the checkout's encoding.
+const GENERATED_NON_ASCII_NAME: &str = "Hajr\u{eb} Fetahu";
+
+#[test]
+fn d47_identity_token_publishes_the_generated_name_bytes_the_strict_rule_refused() {
+    let arena = BenchArena::new(0x4000);
+    let character = arena.base;
+    let name_buffer = arena.base + 0x1000;
+    let token_buffer = arena.base + 0x2000;
+
+    arena.put_msvc_string(
+        character + CCHARACTER_NAME_OFF as usize,
+        name_buffer,
+        GENERATED_NON_ASCII_NAME,
+    );
+    arena.put_msvc_string(
+        character + CCHARACTER_TOKEN_OFF as usize,
+        token_buffer,
+        GENERATED_NON_ASCII_NAME,
+    );
+
+    page_cache_new_frame();
+    let (name, token) = domain47_character_root_strings(character);
+    assert_eq!(name.as_deref(), Some(GENERATED_NON_ASCII_NAME));
+    assert_eq!(
+        token.as_deref(),
+        Some(GENERATED_NON_ASCII_NAME),
+        "the engine's own name is localize(token), so these are one byte string"
+    );
+
+    assert_eq!(
+        read_msvc_string(
+            character + CCHARACTER_TOKEN_OFF as usize,
+            DOMAIN47_CCHARACTER_STRING_MAX_LEN,
+        ),
+        None,
+        "the strict 32..127 rule this site no longer uses refuses these bytes"
+    );
+}
+
+#[test]
+fn d47_identity_token_is_byte_identical_for_an_authored_ascii_key() {
+    const KEY: &str = "ALB_midhat_frasheri";
+    let localised = "Midhat Frash\u{eb}ri";
+    let arena = BenchArena::new(0x4000);
+    let character = arena.base;
+
+    arena.put_msvc_string(
+        character + CCHARACTER_NAME_OFF as usize,
+        arena.base + 0x1000,
+        localised,
+    );
+    arena.put_msvc_string(
+        character + CCHARACTER_TOKEN_OFF as usize,
+        arena.base + 0x2000,
+        KEY,
+    );
+
+    page_cache_new_frame();
+    let (name, token) = domain47_character_root_strings(character);
+    assert_eq!(name.as_deref(), Some(localised));
+    assert_eq!(token.as_deref(), Some(KEY));
+}
+
+#[test]
+fn d47_identity_token_still_refuses_a_control_character_payload() {
+    let arena = BenchArena::new(0x4000);
+    let character = arena.base;
+
+    arena.put_msvc_string(
+        character + CCHARACTER_NAME_OFF as usize,
+        arena.base + 0x1000,
+        "Readable Name",
+    );
+    arena.put_msvc_string(
+        character + CCHARACTER_TOKEN_OFF as usize,
+        arena.base + 0x2000,
+        "GER_token\u{1}value",
+    );
+
+    page_cache_new_frame();
+    let (name, token) = domain47_character_root_strings(character);
+    assert_eq!(name.as_deref(), Some("Readable Name"));
+    assert_eq!(token, None);
+}
+
+#[test]
+fn d47_unit_leader_identity_token_takes_the_decode_the_character_copy_needs() {
+    let arena = BenchArena::new(0x4000);
+    let leader = arena.base;
+
+    arena.put_msvc_string(
+        leader + domain47::extractor::CUNIT_LEADER_NAME_OFF as usize,
+        arena.base + 0x1000,
+        GENERATED_NON_ASCII_NAME,
+    );
+    arena.put_msvc_string(
+        leader + domain47::extractor::CUNIT_LEADER_TOKEN_OFF as usize,
+        arena.base + 0x2000,
+        GENERATED_NON_ASCII_NAME,
+    );
+
+    page_cache_new_frame();
+    let (name, token) = domain47_unit_leader_root_strings(leader);
+    assert_eq!(name.as_deref(), Some(GENERATED_NON_ASCII_NAME));
+    assert_eq!(token.as_deref(), Some(GENERATED_NON_ASCII_NAME));
+}
+
 const T15_TAIL_ADVISORS: usize = T15_FRAME_ADVISORS;
 const T15_TAIL_UNIT_LEADERS: usize = T15_FRAME_UNIT_LEADERS;
 const T15_TAIL_TRAITS: usize = T15_FRAME_TRAIT_TOKENS;
