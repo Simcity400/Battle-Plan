@@ -1,9 +1,9 @@
 //! d17 `diplomacy_live` — per-country diplomatic standing, and a **stopped**
 //! war-graph collection.
 //!
-//! Derived from `world_fold.rs:20330`-`:20403`
+//! Derived from `world_fold.rs:20345`-`:20418`
 //! (`fold_diplomacy`), the `ascii8` token decoder it calls (`world_fold.rs::ascii8`), and the
-// @world-fold-authority domain=17 functions=fold_diplomacy lines=20330-20403 sha256=82e558081568ce64c0e4bd005367ac677db91caa45bc1e144490f1c77a6fd6c3 closure=858fc80a592968b007e48b4d3aa79f8f8643e6368a9ce026843543ee038e6b17
+// @world-fold-authority domain=17 functions=fold_diplomacy lines=20345-20418 sha256=82e558081568ce64c0e4bd005367ac677db91caa45bc1e144490f1c77a6fd6c3 closure=858fc80a592968b007e48b4d3aa79f8f8643e6368a9ce026843543ee038e6b17
 //! collector reads and writes that produce the payload
 //! (`extractor/native/collector/src/attach_log.rs:69650`-`:69710` writer,
 //! `:80136`-`:80290` reads, `:59759`-`:59780` war-segment accounting).

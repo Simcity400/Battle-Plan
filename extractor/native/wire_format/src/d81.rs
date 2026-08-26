@@ -1,8 +1,8 @@
 //! D81 `rail_replay_state_live`: portable rail topology and supply-hub
 //! simulation inputs.
 //!
-//! Derived from `world_fold.rs:15860`-`:15887` (`fold_rail_replay_state`).
-// @world-fold-authority domain=81 functions=fold_rail_replay_state lines=15860-15887 sha256=cccace04a76fb96d48374edb442b574ccdd2beec395af042f5a4e6e8bfd26f8f closure=2ca5d361ff5a13ed78187364be791da37c68fac09c23250bc18f782087102f47
+//! Derived from `world_fold.rs:15875`-`:15902` (`fold_rail_replay_state`).
+// @world-fold-authority domain=81 functions=fold_rail_replay_state lines=15875-15902 sha256=cccace04a76fb96d48374edb442b574ccdd2beec395af042f5a4e6e8bfd26f8f closure=2ca5d361ff5a13ed78187364be791da37c68fac09c23250bc18f782087102f47
 //!
 //! Public schema v4 deliberately carries no GUI object, selected-country, or
 //! effective-country state.  The first three collections retain the exact
