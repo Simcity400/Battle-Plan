@@ -1340,7 +1340,11 @@ fn d64_data_binds_terminal_del2(
     expected_del2_sha256: [u8; 32],
 ) -> Result<bool, String> {
     const D64_DATA_BASE_HEADER_LEN: usize = 20;
-    const D64_DATA_ROW_LEN: usize = 20;
+    // The d64 base row is 24 bytes: owner, event id, flags, originator, due,
+    // scope country (`attach_log.rs::COMPACT_DELAYED_EVENT_ROW_LEN`). At 20 this
+    // began hashing 4*n bytes before DEL2 and every populated frame failed
+    // custody.
+    const D64_DATA_ROW_LEN: usize = 24;
     if payload.len() < D64_DATA_BASE_HEADER_LEN {
         return Err("XUI21 terminal D64 DATA payload is truncated".into());
     }
@@ -3535,7 +3539,12 @@ mod tests {
     ) -> Vec<u8> {
         let del2_sha256: [u8; 32] = Sha256::digest(del2).into();
         let perf = test_terminal_perf_payload(envelope_sha256, del2_sha256);
+        // ONE base row, so the DEL2 offset actually depends on the stride: a
+        // zero-row header cannot tell 20 from 24.
         let mut d64 = vec![0u8; 20];
+        d64[8..12].copy_from_slice(&1u32.to_le_bytes());
+        d64[12..16].copy_from_slice(&1u32.to_le_bytes());
+        d64.extend_from_slice(&[0u8; 24]);
         d64.extend_from_slice(del2);
         let mut frame = Vec::new();
         append_test_h4cr_record(
