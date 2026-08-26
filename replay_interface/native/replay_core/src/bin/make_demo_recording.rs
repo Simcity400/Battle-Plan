@@ -368,7 +368,19 @@ fn build_snapshot(
         "hour_index": hour_index,
         "save_version": null,
         "provenance": {
-            "collector": null,
+            // This demo is built from a map bundle, not captured from a game,
+            // and the honest way to say so is a channel that says it -- not a
+            // null. The fold always writes this channel as an object carrying
+            // `domain_problems` (`world_fold.rs:9290-9294, :9744`), so
+            // `rederive_collector_domain_problems` treats a present non-object
+            // as a MALFORMED envelope and fails closed: every problem-backed
+            // typed view goes down, owners and controllers among them. The
+            // demo's whole point is that all 1081 owners bind.
+            "collector": {
+                "captured": false,
+                "domains": [],
+                "domain_problems": [],
+            },
             "memory": null,
             "save": {
                 "captured": true,

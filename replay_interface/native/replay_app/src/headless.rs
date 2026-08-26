@@ -1024,7 +1024,21 @@ mod tests {
             "hour_index": 16_959_373,
             "save_version": null,
             "provenance": {
-                "collector": null,
+                // A null channel is NOT the "no collector" shape. The fold
+                // always writes this channel as an object carrying a
+                // `domain_problems` array (`world_fold.rs:9290-9294, :9744`),
+                // so `rederive_collector_domain_problems` reads a present
+                // non-object as a MALFORMED envelope and fails closed --
+                // every problem-backed typed view is downgraded, owners
+                // included. A fixture that then asserts 1081 measured owners
+                // is asserting against a recording shape no capture can
+                // produce. Say what this fixture means instead: the collector
+                // captured nothing here, and it declares no problem.
+                "collector": {
+                    "captured": false,
+                    "domains": [],
+                    "domain_problems": [],
+                },
                 "memory": null,
                 "mod": mod_identity,
                 "save": null,

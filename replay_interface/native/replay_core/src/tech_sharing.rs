@@ -4,6 +4,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
+/// D69 `tech_sharing_groups_live`, as `DOMAIN_PROBLEM_LAZY_CARRIER` spells it.
+pub const DOMAIN_ID: i64 = 69;
+
 pub const TECH_SHARING_BONUS_FIXED5_SCALE: i64 = 100_000;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -72,7 +75,18 @@ pub fn technology_sharing_runtime(
             groups: Leaf::Absent,
         });
     };
-    if value.is_null() {
+    // The carrier is read straight off the raw map, so a present value is not
+    // by itself this hour's measurement. D69 has no unknown test anywhere in
+    // the fold - `build_tech_sharing_groups_value` reads the persistent set
+    // (world_fold.rs:7319-7323) and a hard-failure frame retains it
+    // (world_fold.rs:14776) - so on a hour D69 declared a problem for, these
+    // bytes are the PREVIOUS hour's. The frame says so; the raw map still
+    // holds them for diagnostics.
+    //
+    // kills: dropping this check publishes a retained group set as
+    // `Leaf::Measured` on a problem hour, which is the hour-misattribution
+    // shape this project treats as unacceptable.
+    if value.is_null() || frame.lazy_carrier_unavailable(DOMAIN_ID) {
         return Ok(TechnologySharingRuntimeView {
             groups: Leaf::Unobtained,
         });

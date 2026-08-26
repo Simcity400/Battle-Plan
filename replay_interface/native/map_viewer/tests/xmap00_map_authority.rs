@@ -2689,12 +2689,17 @@ fn a_province_snow_member_the_decoder_discarded_is_not_admitted() {
 /// D18 `country_identity` resolves the owner tag on every unit row and retains
 /// its previous map when current-hour identity is unavailable; D32
 /// `air_wing_loadouts_live` and D34 `air_base_status_live` back the air-base
-/// join. None owns a unit census, so none can be mapped in
-/// `DOMAIN_PROBLEM_VIEW_MAP` without invalidating census claims that are still
-/// sound — the reconciliation pass leaves them under a warning that says the
-/// views "are NOT downgraded and may still present retained state as measured".
-/// A predicate that only reads the retained value cannot tell, so it has to
-/// read the warning.
+/// join; D56 `naval_missions_status_live` overlays the raw task-force identity.
+/// None owns a unit census, so none can be mapped in `DOMAIN_PROBLEM_VIEW_MAP`
+/// at the grain these censuses need without invalidating claims that are still
+/// sound, and a predicate that only reads the retained value cannot tell it is
+/// a carry-over.
+///
+/// The guard therefore reads the hour's own
+/// `provenance.collector.domain_problems` ledger. It used to grep the
+/// "no typed view is mapped to it" coverage warning instead; lane TM
+/// adjudicated all four of these domains, so that warning no longer fires for
+/// any of them and the grep would now always miss.
 #[test]
 fn a_problem_on_an_unmapped_contributor_domain_refuses_the_rows_it_feeds() {
     let with_problem = |domain: i64| {

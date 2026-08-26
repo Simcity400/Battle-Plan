@@ -201,7 +201,7 @@ impl PreparedXmap16Frame {
             || validate_assigned_stages(&self.rail_stage, &self.supply_arrow_stage, &self.hub_stage)
                 .is_err()
             || self.program.validate().is_err()
-            || self.rail.authority != "exact_a729_crailwaygfx_carrier"
+            || self.rail.authority != "exact_a729_supply_simulation_tables"
             || self.rail.ordered_route_records.len() != self.rail.ribbon_program.ordered_draws.len()
             || self.supply_arrows.presentation_authority != "state_first_mode_neutral"
             || self.deterministic_sha256 != prepared_digest(self)
