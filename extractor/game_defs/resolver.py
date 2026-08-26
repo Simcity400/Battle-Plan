@@ -52,8 +52,122 @@ from paradox_parser import parse, Node
 import extract as _ex
 
 
-DEFAULT_USERDATA = _REPO_ROOT.parent.parent.resolve()
+# More than one marker on purpose: a caller looking for dlc_load.json must be
+# able to tell its absence from the directory being wrong.
+_USERDATA_MARKERS = ("settings.txt", "launcher-v2.sqlite", "dlc_load.json")
+
+# The pre-2026-07 layout: repo checked out inside the user-data dir's `mod/`.
+# On this machine it resolves to `C:\`, which is not a user-data dir at all.
+_LEGACY_USERDATA = _REPO_ROOT.parent.parent
+
+
+def _looks_like_userdata(path: Path) -> bool:
+    try:
+        return path.is_dir() and any((path / marker).exists() for marker in _USERDATA_MARKERS)
+    except OSError:
+        return False
+
+
+def _documents_dirs() -> list[Path]:
+    """Every plausible `Documents` root, most authoritative first.
+
+    Windows redirects `Documents`; OneDrive does it by default. The registry
+    holds the shell's answer, so it is asked first.
+    """
+    out: list[Path] = []
+
+    def add(candidate: Path | None) -> None:
+        if candidate is not None and candidate not in out:
+            out.append(candidate)
+
+    try:
+        import winreg  # noqa: PLC0415  (Windows-only, and optional)
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        ) as key:
+            raw, _kind = winreg.QueryValueEx(key, "Personal")
+        add(Path(os.path.expandvars(raw)))
+    except (ImportError, OSError, ValueError, TypeError):
+        # Every one of these means "the registry cannot answer"; the literal
+        # candidates below cover that.
+        pass
+
+    profile = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+    if profile:
+        add(Path(profile) / "Documents")
+    onedrive = os.environ.get("OneDrive") or os.environ.get("OneDriveConsumer")
+    if onedrive:
+        add(Path(onedrive) / "Documents")
+    if profile:
+        add(Path(profile) / "OneDrive" / "Documents")
+    return out
+
+
+def _userdata_candidates() -> list[Path]:
+    candidates = [_LEGACY_USERDATA]
+    for documents in _documents_dirs():
+        candidates.append(documents / "Paradox Interactive" / "Hearts of Iron IV")
+    return candidates
+
+
+def _chosen_userdata(explicit: str | Path | None) -> Path | None:
+    """The user-data dir the caller or the environment NAMED, if either did.
+
+    ONE helper for both entry points: they must never resolve to different
+    profiles. A NAMED directory is not marker-gated -- an unrecognised one is
+    an error to report, not a candidate to skip.
+    """
+    named = explicit or os.environ.get("BATTLE_PLAN_USERDATA", os.environ.get("HOI4_USERDATA"))
+    return Path(named) if named else None
+
+
+def _resolve_default_userdata() -> Path:
+    named = _chosen_userdata(None)
+    if named is not None:
+        return named.resolve()
+    for candidate in _userdata_candidates():
+        if _looks_like_userdata(candidate):
+            return candidate.resolve()
+    # A module-level constant cannot raise at import without taking every
+    # parser in this package down on a machine with no the game profile. Readers of
+    # launcher state go through `userdata_root`, which refuses.
+    return _LEGACY_USERDATA.resolve()
+
+
+DEFAULT_USERDATA = _resolve_default_userdata()
 _DEFAULT_MODSET = _GAME_ASSETS / "active_modset.json"
+
+
+def userdata_root(explicit: str | Path | None = None) -> Path:
+    """Resolve the game user-data dir, or refuse.
+
+    Priority: explicit arg > `BATTLE_PLAN_USERDATA` > the legacy inside-`mod/` layout
+    > the shell's `Documents`. No home path is baked in.
+    """
+    named = _chosen_userdata(explicit)
+    if named is not None:
+        path = named.resolve()
+        if not path.is_dir():
+            raise FileNotFoundError(
+                f"the game user-data dir not found: {path} "
+                "(named explicitly or by BATTLE_PLAN_USERDATA)"
+            )
+        return path
+    for candidate in _userdata_candidates():
+        if _looks_like_userdata(candidate):
+            return candidate.resolve()
+    raise FileNotFoundError(
+        "the game user-data dir not found. Tried: "
+        + "; ".join(str(candidate) for candidate in _userdata_candidates())
+        + ". Set BATTLE_PLAN_USERDATA or pass userdata=... (no home path is baked in)."
+    )
+
+
+def looks_like_userdata(path: str | Path) -> bool:
+    """Whether `path` is a the game user-data dir, by the markers every one carries."""
+    return _looks_like_userdata(Path(path))
 
 
 def vanilla_root(explicit: str | None = None) -> Path:

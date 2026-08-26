@@ -141,6 +141,14 @@ def _dlc_name_from_token(token: str) -> str | None:
 def _load_dlc_selection(userdata: Path, installed_dlc: list[Path]) -> dict[str, Any]:
     dlc_load = userdata / "dlc_load.json"
     installed_names = [path.name for path in installed_dlc]
+    # "No dlc_load.json means every installed DLC is enabled" is the engine's
+    # rule, and only an OBSERVATION when this really is the user-data dir.
+    if not R.looks_like_userdata(userdata):
+        raise RuntimeError(
+            f"{userdata} is not a the game user-data dir (no settings.txt / "
+            f"launcher-v2.sqlite / dlc_load.json), so the absence of dlc_load.json there is not "
+            f"evidence that every installed DLC is enabled. Pass --userdata or set BATTLE_PLAN_USERDATA."
+        )
     if not dlc_load.is_file():
         return {
             "dlc_load_json_present": False,
@@ -190,7 +198,9 @@ def build_gfx_asset_layers(
     """
 
     vanilla_root = R.vanilla_root(vanilla)
-    userdata_root = Path(userdata).resolve() if userdata else R.DEFAULT_USERDATA
+    # `userdata_root()`, not `DEFAULT_USERDATA`: this gate reads launcher state
+    # and must refuse a directory it cannot identify.
+    userdata_root = R.userdata_root(userdata)
     mod_layers = R.build_layers(
         vanilla=str(vanilla_root), mods=mods, userdata=userdata_root, strict_mods=strict_mods
     )

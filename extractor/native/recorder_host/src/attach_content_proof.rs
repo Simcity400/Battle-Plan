@@ -973,6 +973,7 @@ fn scan_artifact_document(
 
     let mut unaccounted = Vec::new();
     collect_claims(&walked, None, &mut Vec::new(), &mut scan, &mut unaccounted)?;
+    account_game_build_provenance_digests(&walked, &mut unaccounted)?;
     if !unaccounted.is_empty() {
         unaccounted.sort();
         unaccounted.dedup();
@@ -999,6 +1000,55 @@ fn scan_artifact_document(
         ));
     }
     Ok(scan)
+}
+
+/// Digest sites naming the GAME BUILD an artifact's RE evidence was read
+/// against. Not file content, so they never resolve through the VFS.
+/// Pinned by NAME and by VALUE.
+const GAME_BUILD_PROVENANCE_DIGEST_SITES: [&str; 1] =
+    ["meta.runtime_token_static_re_evidence.build_sha256"];
+
+/// The `hoi4.exe` this repository is pinned to (1.19.2.0.a729). Spelled per
+/// module, as every other module that asserts it does.
+const PINNED_GAME_BUILD_SHA256: &str =
+    "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
+
+/// Drop the pinned build-provenance digest sites from `unaccounted`.
+///
+/// Case-insensitive: the RE evidence block spells digests in the
+/// disassembler's upper case while content claims are lower case.
+fn account_game_build_provenance_digests(
+    document: &Value,
+    unaccounted: &mut Vec<String>,
+) -> Result<(), String> {
+    for site in GAME_BUILD_PROVENANCE_DIGEST_SITES {
+        let mut node = document;
+        let mut present = true;
+        for segment in site.split('.') {
+            match node.get(segment) {
+                Some(next) => node = next,
+                None => {
+                    present = false;
+                    break;
+                }
+            }
+        }
+        if !present {
+            continue;
+        }
+        let text = node
+            .as_str()
+            .ok_or_else(|| format!("{site} is present but is not a string"))?;
+        if !text.eq_ignore_ascii_case(PINNED_GAME_BUILD_SHA256) {
+            return Err(format!(
+                "{site} must be the pinned game-build digest {PINNED_GAME_BUILD_SHA256}; the \
+                 artifact carries a different value, so it is not the build-provenance digest \
+                 this exemption covers"
+            ));
+        }
+        unaccounted.retain(|entry| entry != site);
+    }
+    Ok(())
 }
 
 /// The digests `localisation_source` may carry. Each states the provenance of
@@ -1369,6 +1419,53 @@ mod tests {
         .expect("the two non-content digests never become content claims");
         assert_eq!(scanned.claims.keys().collect::<Vec<_>>(), vec!["a.txt"]);
         assert_eq!(scanned.localisation_source_sha256, Some("6".repeat(64)));
+    }
+
+    /// The RE evidence block's `build_sha256` is accounted, and only for the
+    /// one value it can be.
+    ///
+    /// kills: deleting the `account_game_build_provenance_digests` call makes
+    /// case 1 refuse. Dropping the `eq_ignore_ascii_case` guard makes case 2
+    /// pass, leaving a name-shaped hole any digest could be parked in.
+    /// Exempting `build_sha256` wherever it appears makes case 3 pass.
+    #[test]
+    fn the_re_evidence_build_digest_is_accounted_by_name_and_by_value() {
+        let evidence = |digest: &str| {
+            json!({
+                "artifact_sha256": "0".repeat(64),
+                "meta": {
+                    "runtime_token_static_re_evidence": {
+                        "build_sha256": digest,
+                    }
+                },
+                "source_files": [{ "relpath": "common/a.txt", "sha256": "1".repeat(64) }]
+            })
+        };
+
+        // 1. the pinned digest in the disassembler's upper case.
+        let scanned = scan(evidence(&PINNED_GAME_BUILD_SHA256.to_ascii_uppercase()))
+            .expect("the pinned build-provenance digest is not a content claim");
+        assert_eq!(scanned.claims.keys().collect::<Vec<_>>(), vec!["common/a.txt"]);
+
+        // 2. any OTHER digest at the same site.
+        let error = scan(evidence(&"7".repeat(64)))
+            .expect_err("a foreign digest at the pinned site must refuse the artifact");
+        assert!(
+            error.contains("must be the pinned game-build digest"),
+            "{error}"
+        );
+
+        // 3. the same member name elsewhere: the exemption is a path, not a key.
+        let error = scan(json!({
+            "artifact_sha256": "0".repeat(64),
+            "definitions": { "build_sha256": PINNED_GAME_BUILD_SHA256 },
+            "source_files": [{ "relpath": "common/a.txt", "sha256": "1".repeat(64) }]
+        }))
+        .expect_err("build_sha256 outside the named site is still an unaccounted digest");
+        assert!(
+            error.contains("definitions.build_sha256"),
+            "{error}"
+        );
     }
 
     /// `focus_defs_static` states one file twice, under two path keys.

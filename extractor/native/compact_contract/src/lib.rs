@@ -613,7 +613,53 @@ pub fn status_in_production_profile(status: CompactDomainStatus) -> bool {
     )
 }
 
+/// One mandatory-profile domain the shipped passive product cannot admit.
+///
+/// Not a readiness statement: every entry is schedulable and production
+/// complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PassiveProductionRefusal {
+    pub id: CompactDomainId,
+    pub decided_on: &'static str,
+    pub reason: &'static str,
+}
+
+/// The mandatory-profile domains the shipped passive product refuses, WITH the
+/// reason for each. Scheduling any of them makes attach return Err.
+pub const PASSIVE_PRODUCTION_REFUSALS: &[PassiveProductionRefusal] = &[
+    PassiveProductionRefusal {
+        id: 71,
+        decided_on: "2026-07-29",
+        reason: "dynamic_collection_trace_live: its only current source is the noncanonical A28 \
+                 auxiliary hook owner, which the passive product does not install \
+                 (collector/src/attach_log.rs, the passive_product_capture refusal)",
+    },
+    PassiveProductionRefusal {
+        id: 82,
+        decided_on: "2026-07-29",
+        reason: "character_presentation_live: presentation observation, which is excluded from \
+                 capture; requesting it in passive production is rejected as an evidence/UI hook \
+                 control (collector/src/attach_log.rs, the `d82_character_presentation` conflict)",
+    },
+    PassiveProductionRefusal {
+        id: 87,
+        decided_on: "2026-07-29",
+        reason: "decision_panel_live: its A34 producer requires the authenticated early-render \
+                 selected-Present owner and the passive product runs with \
+                 `early_render_capture_v1` false; scheduling it also made the host attach an A34 \
+                 decision catalog, which passive capture refuses outright as an evidence control",
+    },
+];
+
 pub const PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS: &[CompactDomainId] = &[71, 82, 87];
+
+/// The recorded reason this domain is refused, or `None` when it is admitted.
+pub fn passive_production_refusal(id: CompactDomainId) -> Option<PassiveProductionRefusal> {
+    PASSIVE_PRODUCTION_REFUSALS
+        .iter()
+        .copied()
+        .find(|refusal| refusal.id == id)
+}
 
 pub fn passive_production_admits(id: CompactDomainId) -> bool {
     !PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS.contains(&id)
@@ -2615,6 +2661,87 @@ mod tests {
             assert!(
                 !roster_ids.contains(id),
                 "the passive collector refuses domain {id} at attach, so no roster may name it"
+            );
+        }
+    }
+
+    /// Every passive-production refusal carries its reason, and the id list and
+    /// the reason table are the SAME set.
+    ///
+    /// kills: dropping a `PASSIVE_PRODUCTION_REFUSALS` entry while leaving its
+    /// id in `PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS`; adding an id to either
+    /// list alone; and pointing a refusal at a domain outside the mandatory
+    /// profile, which would hide an UNFINISHED domain behind an owner refusal.
+    #[test]
+    fn every_passive_production_refusal_names_a_mandatory_domain_and_its_reason() {
+        let reasoned: std::collections::BTreeSet<CompactDomainId> = PASSIVE_PRODUCTION_REFUSALS
+            .iter()
+            .map(|refusal| refusal.id)
+            .collect();
+        let listed: std::collections::BTreeSet<CompactDomainId> =
+            PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS.iter().copied().collect();
+        assert_eq!(
+            reasoned, listed,
+            "PASSIVE_PRODUCTION_REFUSALS and PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS must name the \
+             same domains: a refused id with no recorded reason is the silent exclusion this \
+             table exists to prevent"
+        );
+        assert_eq!(
+            reasoned.len(),
+            PASSIVE_PRODUCTION_REFUSALS.len(),
+            "a domain is refused once; a duplicate row would publish two reasons for it"
+        );
+
+        let profile: std::collections::BTreeSet<CompactDomainId> = ASSIGNED_COMPACT_DOMAINS
+            .iter()
+            .copied()
+            .filter(|descriptor| {
+                descriptor.schedulable
+                    && !is_optional_fail_closed_companion(descriptor.id)
+                    && !is_descheduled_from_capture(descriptor.id)
+                    && status_in_production_profile(descriptor.status)
+            })
+            .map(|descriptor| descriptor.id)
+            .collect();
+
+        for refusal in PASSIVE_PRODUCTION_REFUSALS {
+            let descriptor = assigned_descriptor_by_id(refusal.id)
+                .unwrap_or_else(|| panic!("refused domain {} is not assigned", refusal.id));
+            assert!(
+                profile.contains(&refusal.id),
+                "d{} {} is refused by the passive product but is not a mandatory profile domain; \
+                 a refusal must explain an owner the product does not install, never stand in for \
+                 an unfinished or descheduled domain",
+                refusal.id,
+                descriptor.wire_name
+            );
+            assert!(
+                refusal.reason.contains(descriptor.wire_name),
+                "d{} refusal reason must name the domain it is about",
+                refusal.id
+            );
+            assert!(
+                refusal.reason.len() > 40,
+                "d{} refusal reason must say WHY, not just that it is refused",
+                refusal.id
+            );
+            assert_eq!(
+                passive_production_refusal(refusal.id),
+                Some(*refusal),
+                "the lookup must return the recorded row for d{}",
+                refusal.id
+            );
+            assert!(
+                !passive_production_admits(refusal.id),
+                "a domain with a recorded refusal must not be admitted"
+            );
+        }
+
+        for id in profile.iter().filter(|id| !listed.contains(id)) {
+            assert_eq!(
+                passive_production_refusal(*id),
+                None,
+                "d{id} is admitted by the passive product and must carry no refusal reason"
             );
         }
     }
