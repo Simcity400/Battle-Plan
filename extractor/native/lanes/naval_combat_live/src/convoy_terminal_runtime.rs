@@ -7,7 +7,8 @@ use crate::convoy_route_source::{
     ExactA729RouteRead, CONVOY_ROUTE_REFUSAL_UNCLASSIFIED_INDEX,
 };
 use crate::convoy_terminal_attribution::{
-    route_resolution_is_well_formed, CombatEpoch, ConvoyRouteRefusalCause, EntityHandle,
+    route_resolution_is_well_formed, CombatEpoch, ConvoyCombatRefusal, ConvoyCombatRefusalCause,
+    ConvoyRouteRefusalCause, EntityHandle,
     ExactCombatEpochResolver, ExactLiveRouteResolver, LiveRouteResolution, RouteEndpointKind,
     RouteProducerKind, CONVOY_ROUTE_REFUSAL_CAUSE_COUNT, D90_STATIC_AUTHORITY_MANIFEST_SHA256,
     GAME_ENTITY_TYPE_TAG,
@@ -133,10 +134,14 @@ impl ExactCombatEpochResolver for ResolverSnapshot {
     fn resolve_member_epoch(
         &self,
         member_address: usize,
-    ) -> Result<crate::convoy_terminal_attribution::CombatEpochMembership, String> {
-        self.member_epochs.get(&member_address).copied().ok_or_else(|| {
-            "CFEXMember is absent from the same-hour d49/d50 epoch snapshot".into()
-        })
+    ) -> Result<crate::convoy_terminal_attribution::CombatEpochMembership, ConvoyCombatRefusal> {
+        self.member_epochs
+            .get(&member_address)
+            .copied()
+            .ok_or_else(|| ConvoyCombatRefusal {
+                cause: ConvoyCombatRefusalCause::MemberAbsentFromEpochSnapshot,
+                detail: "CFEXMember is absent from the same-hour d49/d50 epoch snapshot".into(),
+            })
     }
 }
 

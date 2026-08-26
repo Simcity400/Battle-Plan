@@ -4634,11 +4634,19 @@ impl HConvoyFixtureOwner {
                 &self.utc_start,
                 &mut raw_files,
             )?;
+            // Same rule as the route above: the positive arm exists to prove
+            // the d49/d50 join, so a sink whose combat was refused is not the
+            // arm it was asked for. Refuse by name rather than write an epoch
+            // artifact with no epoch in it.
+            let combat = raw.combat.ok_or(
+                "H-CONVOY positive arm captured a sink whose member had no combat-epoch join",
+            )?;
             self.write_json_role(
                 "d49_d50_epoch",
                 &serde_json::json!({
                     "schema": "h-convoy-combat-epoch-v1", "member_address": raw.r12,
-                    "combat_id": raw.combat_id, "combat_generation": raw.combat_generation,
+                    "combat_id": combat.combat_id,
+                    "combat_generation": combat.combat_generation,
                     "game_hour_raw": raw.game_hour_raw,
                 }),
                 &self.utc_start,

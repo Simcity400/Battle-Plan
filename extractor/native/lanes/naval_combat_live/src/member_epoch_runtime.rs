@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use crate::convoy_terminal_attribution::{CombatEpoch, ExactCombatEpochResolver};
+use crate::convoy_terminal_attribution::{
+    CombatEpoch, ConvoyCombatRefusal, ConvoyCombatRefusalCause, ExactCombatEpochResolver,
+};
 
 pub const MAX_ACTIVE_MEMBER_BINDINGS: usize = 65_536;
 
@@ -53,8 +55,13 @@ impl ExactCombatEpochResolver for MemberEpochSnapshot {
     fn resolve_member_epoch(
         &self,
         member_address: usize,
-    ) -> Result<crate::convoy_terminal_attribution::CombatEpochMembership, String> {
-        let resolution = self.resolve_member(member_address)?;
+    ) -> Result<crate::convoy_terminal_attribution::CombatEpochMembership, ConvoyCombatRefusal> {
+        let resolution = self.resolve_member(member_address).map_err(|detail| {
+            ConvoyCombatRefusal {
+                cause: ConvoyCombatRefusalCause::MemberAbsentFromEpochSnapshot,
+                detail,
+            }
+        })?;
         Ok(crate::convoy_terminal_attribution::CombatEpochMembership {
             epoch: resolution.epoch,
             battle_slot_index_raw: resolution.battle_slot_index_raw,
