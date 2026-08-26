@@ -247,6 +247,32 @@ fn validate_xmap05_state_authority(
     Ok(())
 }
 
+/// The provinces a controller must be measured for: STATE MEMBERSHIP decides,
+/// and the definition type does not.
+///
+/// The rule the recording supports, and no more. `captures/rc_vanilla7` measures
+/// 10,272 province controllers; its 1,081 state files put exactly those 10,272
+/// provinces in a state, 118 of them typed `lake`. Requiring type `land` yielded
+/// 10,154 and made the census equality below unsatisfiable. The content carries
+/// no in-state `sea` province, so it cannot say whether one would be measured —
+/// and this does not guess: an in-state province of any type must be measured,
+/// so an unforeseen shape refuses the frame by name instead of being dropped
+/// from the check.
+///
+/// This decides only what must be MEASURED. Nothing here reaches the raster:
+/// `province_is_eligible_land` is derived separately from the definition type,
+/// and `political_texel_class_for_province` classes a lake as `SeaOrLake`.
+fn xmap05_eligible_provinces(
+    definitions: &BTreeMap<u32, ProvinceDefinition>,
+    province_to_state: &BTreeMap<u32, u32>,
+) -> BTreeSet<u32> {
+    definitions
+        .keys()
+        .copied()
+        .filter(|province_id| province_to_state.contains_key(province_id))
+        .collect()
+}
+
 fn validate_xmap05_province_census(
     eligible_provinces: &BTreeSet<u32>,
     province_controllers: &BTreeMap<u32, String>,
@@ -300,13 +326,7 @@ pub(crate) fn xmap05_raster_inputs_with_keying(
         country_roster,
     )?;
 
-    let eligible_provinces = definitions
-        .iter()
-        .filter_map(|(&province_id, definition)| {
-            (definition.province_type == "land" && province_to_state.contains_key(&province_id))
-                .then_some(province_id)
-        })
-        .collect::<BTreeSet<_>>();
+    let eligible_provinces = xmap05_eligible_provinces(&definitions, &province_to_state);
     validate_xmap05_province_census(&eligible_provinces, province_controllers)?;
     for &province_id in &eligible_provinces {
         let state_id = province_to_state[&province_id];
@@ -317,12 +337,12 @@ pub(crate) fn xmap05_raster_inputs_with_keying(
             .or_else(|| keying.state_owners.get(&state_id).map(String::as_str))
             .ok_or_else(|| {
                 format!(
-                    "XMAP05 state {state_id} has no measured owner/controller for land province {province_id}"
+                    "XMAP05 state {state_id} has no measured owner/controller for province {province_id}"
                 )
             })?;
         let province_controller = province_controllers.get(&province_id).ok_or_else(|| {
             format!(
-                "XMAP05 province-control census omits land province {province_id} in state {state_id}"
+                "XMAP05 province-control census omits province {province_id} in state {state_id}"
             )
         })?;
         if province_controller != state_controller {
@@ -1407,6 +1427,37 @@ mod tests {
     fn xmap05_half_resolution_selects_the_center_pixel_without_a_vote() {
         assert_eq!(xmap05_half_res_source_index(4, 4, 0, 0), 2 * 4 + 1);
         assert_eq!(xmap05_half_res_source_index(4, 4, 1, 1), 0 * 4 + 3);
+    }
+
+    #[test]
+    fn xmap05_eligibility_is_state_membership_and_never_the_definition_type() {
+        fn definition(province_type: &str) -> ProvinceDefinition {
+            ProvinceDefinition {
+                rgb: [0, 0, 0],
+                province_type: province_type.into(),
+                coastal: false,
+                terrain: "plains".into(),
+                continent: 1,
+            }
+        }
+        let definitions = BTreeMap::from([
+            (10, definition("land")),
+            (11, definition("land")),
+            (20, definition("lake")),
+            (21, definition("lake")),
+            (30, definition("sea")),
+            (40, definition("land")),
+        ]);
+        // 11 and 21 are in no state. 30 is the shape no content this project has
+        // measured carries: a sea province in a state. It is ELIGIBLE, because
+        // nothing has shown the engine leaves it unmeasured, and a rule that
+        // dropped it would exclude it from the census silently instead of
+        // refusing by name. 40 is in no state either.
+        let province_to_state = BTreeMap::from([(10, 1), (20, 1), (30, 1)]);
+        assert_eq!(
+            xmap05_eligible_provinces(&definitions, &province_to_state),
+            BTreeSet::from([10, 20, 30])
+        );
     }
 
     #[test]

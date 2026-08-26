@@ -754,7 +754,6 @@ struct Xmap05Shared {
 
 impl Xmap05Shared {
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<PreparedPoliticalFrame> {
-        require_owned_authority_gaps(context)?;
         let (keying, province_controllers, presentation) =
             admitted_epoch_keying(context.world_frame)?;
         // The RESOLVED roster, and that is the safe set to hand the raster:
@@ -918,6 +917,15 @@ impl ProductionMapFeatureAdapter for Xmap05PoliticalAdapter {
     }
 
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput> {
+        // Owned-input accounting first, and identically in both states: an
+        // owned row that has been PROVED is admitted rather than gapped, and a
+        // gap-only form aborts the whole foundation graph the hour it is proved.
+        let consumed_gap_ids = crate::account_owned_map_authority_inputs(
+            "XMAP05",
+            &POLITICAL_AUTHORITY_GAPS,
+            context.map_authority_gaps,
+            context.map_authority_admitted,
+        )?;
         let prepared = self.shared.prepare(context)?;
         let element_diagnostics = prepared.excluded_presentation_identities.clone();
         Ok(FoundationFeatureOutput {
@@ -958,10 +966,7 @@ impl ProductionMapFeatureAdapter for Xmap05PoliticalAdapter {
             prepared_map_modes: None,
             prepared_map_furniture: None,
             element_diagnostics,
-            consumed_gap_ids: POLITICAL_AUTHORITY_GAPS
-                .iter()
-                .map(|gap| (*gap).to_string())
-                .collect(),
+            consumed_gap_ids,
         })
     }
 }
@@ -972,6 +977,12 @@ impl ProductionMapFeatureAdapter for Xmap05FowAdapter {
     }
 
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput> {
+        let consumed_gap_ids = crate::account_owned_map_authority_inputs(
+            "XMAP05",
+            &FOW_AUTHORITY_GAPS,
+            context.map_authority_gaps,
+            context.map_authority_admitted,
+        )?;
         let prepared = self.shared.prepare(context)?;
         Ok(FoundationFeatureOutput {
             disposition: FamilyDisposition::Present {
@@ -1016,30 +1027,9 @@ impl ProductionMapFeatureAdapter for Xmap05FowAdapter {
             prepared_map_modes: None,
             prepared_map_furniture: None,
             element_diagnostics: Vec::new(),
-            consumed_gap_ids: FOW_AUTHORITY_GAPS
-                .iter()
-                .map(|gap| (*gap).to_string())
-                .collect(),
+            consumed_gap_ids,
         })
     }
-}
-
-fn require_owned_authority_gaps(context: &FoundationFeatureContext<'_>) -> Result<()> {
-    for input_id in POLITICAL_AUTHORITY_GAPS
-        .iter()
-        .chain(FOW_AUTHORITY_GAPS.iter())
-    {
-        if !context
-            .map_authority_gaps
-            .iter()
-            .any(|gap| gap.input_id == *input_id)
-        {
-            return Err(
-                format!("XMAP05 authority projection omitted owned input {input_id}").into(),
-            );
-        }
-    }
-    Ok(())
 }
 
 /// What XMAP05's frame-pure admission found this hour.
