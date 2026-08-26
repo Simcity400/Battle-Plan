@@ -7668,6 +7668,23 @@ mod tests {
                     | "std::fs::read_to_string(&path).map_err(|e| format!(\"read {}: {e}\", path.display()))?;"
                     | "let path = bundle_dir.join(\"province_to_state.json\");"
             ),
+            // A DIAGNOSTIC BIN, classified on the same footing as
+            // `make_demo_recording.rs` above: every path it touches arrives on
+            // the command line and none is derived from anything inside a
+            // recording, which is the descendant-pathname hazard this census
+            // exists to keep out of the loader. The recording itself is opened
+            // through `open_recording`, so the bin performs no container I/O of
+            // its own; the two `fs::write` sites are its own report and its own
+            // `--dump-out` file, both named by the caller.
+            "replay_core/bin/carrier_census.rs" => matches!(
+                line,
+                "use std::path::PathBuf;"
+                    | "out = Some(PathBuf::from(argv.next().ok_or_else(|| {"
+                    | "dump_out = Some(PathBuf::from(argv.next().ok_or_else(|| {"
+                    | "path = Some(PathBuf::from(other));"
+                    | "std::fs::write(dump_out, &bytes)"
+                    | "std::fs::write(&args.out, &bytes)"
+            ),
             "replay_core/bin/replay_dump.rs" => matches!(
                 line,
                 "coverage.domains.join(\", \")" | ".join(\",\")" | ".join(\", \")"
