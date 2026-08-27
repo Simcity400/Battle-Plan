@@ -50,6 +50,7 @@ pub mod tactic_weight;
 pub mod tech_sharing_groups;
 pub mod untrusted_clock_recovery;
 pub mod worker_error_record;
+pub mod fog_derivation_inputs;
 pub mod map_furniture_victory_points;
 pub mod xmap07_snow_mud;
 
@@ -471,8 +472,12 @@ pub const PRODUCTION_PROFILE_RULE: &str =
 /// seals clean instead of publishing a typed unavailable every frame. Its
 /// three sites are pinned and installed by `ProductionHookLeaseRegistry`
 /// group D57; see PINNED_PRODUCTION_HOOK_SPECS_V1.
+/// d102 joins on the rule, not on a preference: [`PRODUCTION_PROFILE_RULE`]
+/// admits only a complete status to the mandatory profile, and d102's zero-proof
+/// lands on the next capture. A recording without it still seals — the replay
+/// loses exact fog, not the hour.
 pub const OPTIONAL_FAIL_CLOSED_COMPANION_DOMAIN_IDS: &[CompactDomainId] =
-    &[74, 78, 84, 98, 99, 100, 101];
+    &[74, 78, 84, 98, 99, 100, 101, 102];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactDomainStatus {
@@ -1912,6 +1917,15 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         &[],
     ),
     domain(
+        102,
+        "fog_derivation_inputs_live",
+        "fog_derivation_inputs_live",
+        CompactDomainStatus::ActiveIntegration,
+        true,
+        true,
+        &[],
+    ),
+    domain(
         1000,
         "frame",
         "frame",
@@ -2228,7 +2242,7 @@ mod tests {
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
             55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 75, 77, 78,
             79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99,
-            100, 101, 1000,
+            100, 101, 102, 1000,
         ];
         for id in expected {
             assert!(

@@ -103,6 +103,7 @@ members = [
     "lanes/hud_role_observer_live",
     "lanes/character_presentation_live",
     "lanes/nuke_stockpile_live",
+    "lanes/fog_derivation_inputs_live",
     "lanes/theatre_selector_live",
     "lanes/country_army_upgrade_requests_live",
     "lanes/sunk_ship_history_live",

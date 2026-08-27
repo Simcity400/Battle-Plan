@@ -13,6 +13,7 @@ pub mod design_catalog;
 pub mod frd_depth;
 pub mod intelligence_controller_companion;
 pub mod intelligence_presentation;
+pub mod fog_derivation_inputs;
 pub mod map_furniture;
 pub mod orders_group_manager;
 pub mod peace_conference_presentation;
@@ -173,6 +174,11 @@ pub use intelligence_presentation::{
     IntelligenceTextExact, IntelligenceTooltipExact, IntelligenceUpgradeExact, XUI14_AUTHORITY,
     XUI14_EVIDENCE_MANIFEST_SHA256, XUI14_EXECUTABLE_SHA256,
     XUI14_PRODUCER_CONTRACT_MANIFEST_SHA256, XUI14_SCHEMA,
+};
+pub use fog_derivation_inputs::{
+    CountryOrdinalRow, FogDerivationInputsFrame, RadarCoverageRow, StationedProvinceRow,
+    StationedUnitRevealRow, UnitClassRow, UnitViewerLevelRow,
+    FOG_DERIVATION_INPUTS_A729_EXECUTABLE_SHA256, FOG_DERIVATION_INPUTS_SCHEMA,
 };
 pub use map_furniture::{
     MapFurnitureFrame, VictoryPointFurnitureRow, MAP_FURNITURE_A729_EXECUTABLE_SHA256,

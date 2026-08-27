@@ -165,6 +165,7 @@ dependencies = [
  "dynamic_collection_trace_live_lane",
  "fired_event_popups_live_lane",
  "focus_research_decisions_depth_live",
+ "fog_derivation_inputs_live_lane",
  "fow_visibility_live",
  "hub_motorization_live_lane",
  "hud_role_observer_live_lane",
@@ -523,6 +524,13 @@ dependencies = [
  "serde_json",
  "snapshot",
  "windows-sys",
+]
+
+[[package]]
+name = "fog_derivation_inputs_live_lane"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
 ]
 
 [[package]]

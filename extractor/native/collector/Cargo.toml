@@ -62,6 +62,7 @@ design_catalog_context_live_lane = { path = "../lanes/design_catalog_context_liv
 hud_role_observer_live_lane = { path = "../lanes/hud_role_observer_live" }
 character_presentation_live_lane = { path = "../lanes/character_presentation_live" }
 nuke_stockpile_live_lane = { path = "../lanes/nuke_stockpile_live" }
+fog_derivation_inputs_live_lane = { path = "../lanes/fog_derivation_inputs_live" }
 theatre_selector_live_lane = { path = "../lanes/theatre_selector_live" }
 country_army_upgrade_requests_live_lane = { path = "../lanes/country_army_upgrade_requests_live" }
 country_economy_production_stockpile_live_lane = { path = "../lanes/country_economy_production_stockpile_live" }

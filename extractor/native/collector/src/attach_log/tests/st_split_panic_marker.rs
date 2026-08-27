@@ -853,6 +853,11 @@ fn a_panicked_deferred_half_gaps_each_split_domain_through_its_own_refusal_path(
             COMPACT_DOMAIN_MAP_FURNITURE_VICTORY_POINTS_LIVE,
             "d101 map_furniture_victory_points_live",
         ),
+        (
+            COMPACT_DOMAIN_FOG_DERIVATION_INPUTS_LIVE,
+            COMPACT_DOMAIN_FOG_DERIVATION_INPUTS_LIVE,
+            "d102 fog_derivation_inputs_live",
+        ),
     ] {
         let (_fixture, lanes, hour) = coherent_split_lanes();
         let brackets = brackets_after_a_panicking_compute_half(&lanes, tag, hour);
@@ -1114,7 +1119,7 @@ fn the_publishing_helper_catches_instead_of_marking() {
 /// reverted to `spawn_gated` (which would put its compute back in the bracket
 /// and change every frame's `lw_d*_inb_us`).
 #[test]
-fn the_split_helper_serves_exactly_d81_d47_and_d101() {
+fn the_split_helper_serves_exactly_d47_d81_d101_and_d102() {
     let source = super::collector_source_lf();
     // OVER THE BLANKED COPY, and matching the call regardless of how it is
     // formatted. The first spelling required the literal `spawn_gated_split(`
@@ -1150,11 +1155,12 @@ fn the_split_helper_serves_exactly_d81_d47_and_d101() {
         tags,
         vec![
             "COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE".to_string(),
+            "COMPACT_DOMAIN_FOG_DERIVATION_INPUTS_LIVE".to_string(),
             "COMPACT_DOMAIN_MAP_FURNITURE_VICTORY_POINTS_LIVE".to_string(),
             "COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE".to_string(),
         ],
-        "the split readers are d47, d101 and d81 -- add a domain here and it needs its own \
-         row in `a_panicked_deferred_half_gaps_each_split_domain_through_its_own_refusal_path`",
+        "the split readers are d47, d81, d101 and d102 -- add a domain here and it needs its \
+         own row in `a_panicked_deferred_half_gaps_each_split_domain_through_its_own_refusal_path`",
     );
 }
 
