@@ -2083,7 +2083,9 @@ fn read_portable_design_catalog(
         .transpose()
 }
 
-const REQUIRED_PACKAGED_STATIC_ARTIFACTS: &[(&str, &str)] = &[
+/// The canonical roster every recorder-owned recording must account for:
+/// each is packaged, or named in `missing_required_static_artifacts`.
+pub const REQUIRED_PACKAGED_STATIC_ARTIFACTS: &[(&str, &str)] = &[
     (
         "templates_equipment_catalog",
         "static/templates_equipment_catalog/domain59_static_catalog.json",

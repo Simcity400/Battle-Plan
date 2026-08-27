@@ -1427,6 +1427,61 @@ def create_bundle(
         raise
 
 
+
+DLC_ROSTER_BOUND_ARTIFACT = "gfx_icon_asset_manifest_static"
+
+
+def require_declared_asset_layer_roster(
+    catalogs: dict[str, Any], state_bindings: dict[str, Any]
+) -> None:
+    """F5: refuse a bundled catalog generated against another DLC roster.
+
+    A catalog that declares `meta.asset_layer_model` states which DLCs were
+    mounted when it was generated. `out/` is gitignored, so the artifact on disk
+    is a machine-local build product that no commit carries; comparing its own
+    declaration against the DLC state this capture will launch with is what
+    makes the check run per capture instead of by hand.
+    """
+
+    enabled = {
+        row["id"] for row in state_bindings["dlc_state"]["items"] if row["enabled"]
+    }
+    for role, catalog in sorted(catalogs.items()):
+        model = catalog.get("meta", {}).get("asset_layer_model")
+        if model is None:
+            if role == DLC_ROSTER_BOUND_ARTIFACT:
+                raise BundleError(
+                    f"{role}: declares no meta.asset_layer_model, so nothing states which DLCs it "
+                    f"was generated against"
+                )
+            continue
+        if not isinstance(model, dict):
+            raise BundleError(f"{role}: meta.asset_layer_model is not an object")
+        declared_enabled = model.get("enabled_dlcs")
+        if not isinstance(declared_enabled, list) or not all(
+            isinstance(row, str) for row in declared_enabled
+        ):
+            raise BundleError(f"{role}: meta.asset_layer_model.enabled_dlcs is malformed")
+        excluded = model.get("excluded_asset_only_dlcs", [])
+        if not isinstance(excluded, list) or not all(isinstance(row, str) for row in excluded):
+            raise BundleError(
+                f"{role}: meta.asset_layer_model.excluded_asset_only_dlcs is malformed"
+            )
+        if model.get("dlc_load_json_present") is not True:
+            raise BundleError(
+                f"{role}: was generated without reading dlc_load.json, so it names a DLC roster "
+                f"no capture is known to run"
+            )
+        declared = set(declared_enabled) - set(excluded)
+        if declared == enabled:
+            continue
+        raise BundleError(
+            f"{role}: generated against a different DLC roster than this capture mounts; "
+            f"built with but not enabled here {sorted(declared - enabled)}; "
+            f"enabled here but not built with {sorted(enabled - declared)}"
+        )
+
+
 def verify_bundle(
     bundle_dir: Path,
     *,
@@ -1580,6 +1635,7 @@ def verify_bundle(
         "load_order": _load_binding(load_order, "load_order"),
     }
     _validate_binding_identity(state_bindings)
+    require_declared_asset_layer_roster(bundled_catalogs, state_bindings)
     if external_source["identity"] != state_bindings["mod_state"]["identity"]:
         raise BundleError("live source inventory identity does not match current state bindings")
     validate_source_inventory_bindings(external_source, state_bindings)

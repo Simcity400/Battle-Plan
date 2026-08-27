@@ -1,6 +1,5 @@
 use crate::*;
 use std::fs;
-use std::path::Path;
 
 const SEASONS_SOURCE: &str = "map/seasons.txt";
 
@@ -172,11 +171,6 @@ pub fn apply_tree_season_cb_override(cb1_bytes: &mut [u8], values: Option<(f32, 
     cb1_bytes[TREE_SEASON_CB1_COLUMN_OFFSET..TREE_SEASON_CB1_OVERRIDE_END]
         .copy_from_slice(&column.to_le_bytes());
     true
-}
-
-pub fn seasons_table_from_game_dir(game_dir: &Path) -> Result<SeasonsTable> {
-    let resolver = GameFileResolver::vanilla(game_dir.to_path_buf())?;
-    seasons_table_from_resolver(&resolver)
 }
 
 pub fn seasons_table_from_resolver(resolver: &GameFileResolver) -> Result<SeasonsTable> {

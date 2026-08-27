@@ -253,8 +253,17 @@ pub(crate) fn run(
         animation_time_f32_bits: 0.0f32.to_bits(),
         frame_delta_seconds_f32_bits: 0.0f32.to_bits(),
     };
-    let terrain_options =
-        crate::install_paths::playback_terrain_lod_options_from_paths(product_paths)?;
+    let (terrain_options, render_settings_pin) =
+        crate::install_paths::playback_render_settings(
+            product_paths,
+            &manifest.required_settings,
+        )?;
+    crate::app::announce_game_file_ledger(
+        &content_admission,
+        provider.product_admission(),
+        &render_settings_pin,
+        &manifest.localisation_language,
+    );
     let mut composition = crate::app::ProductMapCompositionSession::start_for_benchmark(
         &resolver,
         &content_admission,

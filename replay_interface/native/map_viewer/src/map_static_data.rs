@@ -1,6 +1,5 @@
 use crate::*;
 use std::fs;
-use std::path::Path;
 
 const MAP_BUILDINGS_SOURCE: &str = "map/buildings.txt";
 const MAP_UNITSTACKS_SOURCE: &str = "map/unitstacks.txt";
@@ -53,11 +52,6 @@ pub struct ShowOnMapBuilding {
     pub show_on_map_meshes: Option<u32>,
 }
 
-pub fn map_building_placements_from_game_dir(game_dir: &Path) -> Result<Vec<MapBuildingPlacement>> {
-    let resolver = GameFileResolver::vanilla(game_dir.to_path_buf())?;
-    map_building_placements_from_resolver(&resolver)
-}
-
 pub fn map_building_placements_from_resolver(
     resolver: &GameFileResolver,
 ) -> Result<Vec<MapBuildingPlacement>> {
@@ -89,11 +83,6 @@ pub fn map_building_placements_from_source(source: &str) -> Result<Vec<MapBuildi
     })
 }
 
-pub fn unit_stack_placements_from_game_dir(game_dir: &Path) -> Result<Vec<UnitStackPlacement>> {
-    let resolver = GameFileResolver::vanilla(game_dir.to_path_buf())?;
-    unit_stack_placements_from_resolver(&resolver)
-}
-
 pub fn unit_stack_placements_from_resolver(
     resolver: &GameFileResolver,
 ) -> Result<Vec<UnitStackPlacement>> {
@@ -118,11 +107,6 @@ pub fn unit_stack_placements_from_source(source: &str) -> Result<Vec<UnitStackPl
             offset: parse_f32_field(fields[6], MAP_UNITSTACKS_SOURCE, line, "offset")?,
         })
     })
-}
-
-pub fn railway_segments_from_game_dir(game_dir: &Path) -> Result<Vec<RailwaySegment>> {
-    let resolver = GameFileResolver::vanilla(game_dir.to_path_buf())?;
-    railway_segments_from_resolver(&resolver)
 }
 
 pub fn railway_segments_from_resolver(resolver: &GameFileResolver) -> Result<Vec<RailwaySegment>> {
@@ -171,11 +155,6 @@ pub fn railway_segments_from_source(source: &str) -> Result<Vec<RailwaySegment>>
     Ok(segments)
 }
 
-pub fn supply_nodes_from_game_dir(game_dir: &Path) -> Result<Vec<SupplyNode>> {
-    let resolver = GameFileResolver::vanilla(game_dir.to_path_buf())?;
-    supply_nodes_from_resolver(&resolver)
-}
-
 pub fn supply_nodes_from_resolver(resolver: &GameFileResolver) -> Result<Vec<SupplyNode>> {
     parse_resolved_game_file(resolver, MAP_SUPPLY_NODES_SOURCE, supply_nodes_from_source)
 }
@@ -187,11 +166,6 @@ pub fn supply_nodes_from_source(source: &str) -> Result<Vec<SupplyNode>> {
             province_id: parse_u32_field(fields[1], MAP_SUPPLY_NODES_SOURCE, line, "province_id")?,
         })
     })
-}
-
-pub fn weather_positions_from_game_dir(game_dir: &Path) -> Result<Vec<WeatherPosition>> {
-    let resolver = GameFileResolver::vanilla(game_dir.to_path_buf())?;
-    weather_positions_from_resolver(&resolver)
 }
 
 pub fn weather_positions_from_resolver(
@@ -216,11 +190,6 @@ pub fn weather_positions_from_source(source: &str) -> Result<Vec<WeatherPosition
             size: fields[4].to_string(),
         })
     })
-}
-
-pub fn show_on_map_buildings_from_game_dir(game_dir: &Path) -> Result<Vec<ShowOnMapBuilding>> {
-    let resolver = GameFileResolver::vanilla(game_dir.to_path_buf())?;
-    show_on_map_buildings_from_resolver(&resolver)
 }
 
 pub fn show_on_map_buildings_from_resolver(
@@ -1117,19 +1086,20 @@ mod tests {
     )]
     fn gated_vanilla_map_static_data_loads_real_install() {
         let game_dir = replay_test_gates::require_vanilla_game_root();
+        let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
 
         let buildings =
-            map_building_placements_from_game_dir(&game_dir).expect("parse vanilla buildings.txt");
+            map_building_placements_from_resolver(&resolver).expect("parse vanilla buildings.txt");
         let unitstacks =
-            unit_stack_placements_from_game_dir(&game_dir).expect("parse vanilla unitstacks.txt");
+            unit_stack_placements_from_resolver(&resolver).expect("parse vanilla unitstacks.txt");
         let railways =
-            railway_segments_from_game_dir(&game_dir).expect("parse vanilla railways.txt");
+            railway_segments_from_resolver(&resolver).expect("parse vanilla railways.txt");
         let supply_nodes =
-            supply_nodes_from_game_dir(&game_dir).expect("parse vanilla supply_nodes.txt");
-        let weather =
-            weather_positions_from_game_dir(&game_dir).expect("parse vanilla weatherpositions.txt");
-        let show_on_map =
-            show_on_map_buildings_from_game_dir(&game_dir).expect("parse vanilla 00_buildings.txt");
+            supply_nodes_from_resolver(&resolver).expect("parse vanilla supply_nodes.txt");
+        let weather = weather_positions_from_resolver(&resolver)
+            .expect("parse vanilla weatherpositions.txt");
+        let show_on_map = show_on_map_buildings_from_resolver(&resolver)
+            .expect("parse vanilla 00_buildings.txt");
 
         assert_eq!(buildings.len(), 66_664);
         assert_eq!(unitstacks.len(), 265_355);

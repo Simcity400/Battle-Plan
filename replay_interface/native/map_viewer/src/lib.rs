@@ -411,14 +411,12 @@ pub use map_mode_terrain_resource::{
 pub use map_static_data::{
     building_slot_rows_from_resolver, building_slot_rows_from_source,
     BuildingSlotSourceRows,
-    map_building_placements_from_game_dir, map_building_placements_from_resolver,
-    map_building_placements_from_source, railway_segments_from_game_dir,
-    railway_segments_from_resolver, railway_segments_from_source,
-    show_on_map_buildings_from_game_dir, show_on_map_buildings_from_resolver,
-    show_on_map_buildings_from_source, supply_nodes_from_game_dir, supply_nodes_from_resolver,
-    supply_nodes_from_source, unit_stack_placements_from_game_dir,
-    unit_stack_placements_from_resolver, unit_stack_placements_from_source,
-    weather_positions_from_game_dir, weather_positions_from_resolver,
+    map_building_placements_from_resolver,
+    map_building_placements_from_source, railway_segments_from_resolver, railway_segments_from_source,
+    show_on_map_buildings_from_resolver,
+    show_on_map_buildings_from_source, supply_nodes_from_resolver,
+    supply_nodes_from_source, unit_stack_placements_from_resolver, unit_stack_placements_from_source,
+    weather_positions_from_resolver,
     weather_positions_from_source, MapBuildingPlacement, RailwaySegment, ShowOnMapBuilding,
     SupplyNode, UnitStackPlacement, WeatherPosition,
 };
@@ -489,7 +487,7 @@ pub use pass_graph::{
 };
 pub use pdx_mesh::{
     extract_pdx_anim, extract_pdx_model, parse_pdx_asset, pdx_anim_from_resolver,
-    pdx_model_from_game_dir, pdx_model_from_resolver, pdx_model_to_obj,
+    pdx_model_from_resolver, pdx_model_to_obj,
     scan_pdx_assets_from_resolver, validate_pdx_model, PdxAnimData, PdxAnimJoint,
     PdxAssetScanReport, PdxAssetTree, PdxJoint, PdxLocator, PdxMaterial, PdxMeshData,
     PdxMeshValidationRow, PdxModel, PdxNode, PdxProperty, PdxShape, PdxSkin, PdxValues,
@@ -649,7 +647,7 @@ pub use river_world_synthesis::{
     RiverWorldSynthesisParams, RiverWorldVertex, HEIGHTMAP_BMP_SOURCE, RIVERS_BMP_SOURCE,
 };
 pub use seasons::{
-    apply_tree_season_cb_override, seasons_table_from_game_dir, seasons_table_from_resolver,
+    apply_tree_season_cb_override, seasons_table_from_resolver,
     seasons_table_from_source, tree_season_cb_values, SeasonBlock, SeasonColorGrade, SeasonDate,
     SeasonDateRange, SeasonId, SeasonsTable, TreeSeasonId,
 };
@@ -799,8 +797,7 @@ pub use shader_compile::{
 };
 pub use snow_law::{
     captured_snow_mud_stats, compare_floor_to_capture, decode_snow_mud_texel,
-    encode_snow_mud_texel, parse_region_weather, region_weather_from_game_dir,
-    region_weather_from_resolver, snow_mud_fade_from_cb0, synthesize_snow_floor_from_resolver,
+    encode_snow_mud_texel, parse_region_weather, region_weather_from_resolver, snow_mud_fade_from_cb0, synthesize_snow_floor_from_resolver,
     synthesize_snow_floor_texture, world_to_snow_mud_texel, CapturedSnowMudStats, RegionWeather,
     SnowDate, SnowFloorInputs, SnowFloorResidual, SnowFloorTexture, SnowMudAddressing,
     SnowMudChannels, WeatherPeriod, WeatherPoint, CB0_OFFSET_SNOW_MUD_FADE,

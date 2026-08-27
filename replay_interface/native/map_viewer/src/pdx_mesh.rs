@@ -1173,13 +1173,6 @@ pub fn pdx_anim_from_resolver(resolver: &GameFileResolver, rel_path: &str) -> Re
     extract_pdx_anim(&tree).map_err(|err| format!("{rel_path}: {err}").into())
 }
 
-pub fn pdx_model_from_game_dir(game_dir: &std::path::Path, rel_path: &str) -> Result<PdxModel> {
-    pdx_model_from_resolver(
-        &GameFileResolver::vanilla(game_dir.to_path_buf())?,
-        rel_path,
-    )
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct PdxAssetScanReport {
     pub mesh_files: usize,

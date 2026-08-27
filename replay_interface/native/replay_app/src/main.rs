@@ -13,6 +13,7 @@ mod content_compatibility;
 #[cfg(test)]
 mod e2e_playback;
 mod font;
+mod game_file_ledger;
 mod grading_law;
 mod gui_definition_admission;
 mod install_paths;
@@ -631,6 +632,7 @@ fn main() {
                     || product_entry::attach_parent_console();
                 product_entry::visible_errors_for_route(false, diagnostics_available)
             };
+            product_entry::set_visible_diagnostics(visible_errors);
             (args, visible_errors)
         }
         Err(error) => {

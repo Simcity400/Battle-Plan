@@ -17,7 +17,7 @@ use portable_content_manifest::{
     authored_ui::{canonical_localisation_language, safe_language_directory},
     normalize_game_relative_path,
 };
-use replay_core::{ContentLayerKind, RecordedContentLayer, UsedContentKey};
+use replay_core::{ContentLayerKind, UsedContentKey};
 use serde::{Deserialize, Serialize};
 use snapshot::sha256::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
@@ -235,30 +235,6 @@ pub fn root_role_consumer(root_name: &str, role: &HudSemanticRole) -> Result<Str
     Ok(format!(
         "{REPLAY_ROOT_CONSUMER_PREFIX}/{root_name}/{suffix}"
     ))
-}
-
-pub fn emit_effective_vfs_hud_role_index_from_launch(
-    game_root: &Path,
-    user_dir: &Path,
-    recorded_layers: &[RecordedContentLayer],
-    source_inventory_sha256: &str,
-    localisation_language: &str,
-) -> Result<EffectiveVfsRootRoleIndexDocument, String> {
-    let recorded = recorded_layers
-        .iter()
-        .filter(|layer| layer.layer_kind != ContentLayerKind::Base)
-        .map(|layer| map_viewer::RecordedContentSource {
-            ordinal: layer.ordinal,
-            source_id: layer.layer_id.clone(),
-        })
-        .collect::<Vec<_>>();
-    let resolver = GameFileResolver::from_recorded_content_layers(
-        game_root,
-        user_dir.to_path_buf(),
-        &recorded,
-    )
-    .map_err(|error| format!("construct launch-bound HUD effective VFS failed: {error}"))?;
-    emit_effective_vfs_hud_role_index(&resolver, source_inventory_sha256, localisation_language)
 }
 
 pub fn emit_effective_vfs_hud_role_index(
@@ -831,6 +807,7 @@ fn validate_sha(value: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use replay_core::RecordedContentLayer;
     use crate::engine_surface_roots::ENGINE_CONTROLLER_ROOTS;
     use std::fs;
     use std::path::PathBuf;
@@ -1673,14 +1650,22 @@ mod tests {
                 required_for_playback: false,
             })
             .collect::<Vec<_>>();
-        let index = emit_effective_vfs_hud_role_index_from_launch(
+        let recorded = recorded_layers
+            .iter()
+            .filter(|layer| layer.layer_kind != ContentLayerKind::Base)
+            .map(|layer| map_viewer::RecordedContentSource {
+                ordinal: layer.ordinal,
+                source_id: layer.layer_id.clone(),
+            })
+            .collect::<Vec<_>>();
+        let resolver = GameFileResolver::from_recorded_content_layers(
             &game,
-            &user,
-            &recorded_layers,
-            &"a".repeat(64),
-            "english",
+            user.clone(),
+            &recorded,
         )
         .unwrap();
+        let index =
+            emit_effective_vfs_hud_role_index(&resolver, &"a".repeat(64), "english").unwrap();
         for closure in &index.closures {
             eprintln!(
                 "installed root {}: complete={} bindings={} missing={:?}",

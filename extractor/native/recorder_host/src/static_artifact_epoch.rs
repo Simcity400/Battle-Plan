@@ -146,7 +146,11 @@ mod tests {
                 join("localisation_join", &digest(0x01)),
                 join("technology_sharing_static", &digest(0x02)),
             ],
-            vec![json!({"role": "focus_defs_static", "reason": "a claimed path disagreed"})],
+            vec![json!({
+                "role": "focus_defs_static",
+                "artifact_sha256": digest(0x09),
+                "reason": "a claimed path disagreed",
+            })],
         );
         let decided = StaticArtifactEpochs::decide(
             &authority,

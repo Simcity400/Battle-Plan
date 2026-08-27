@@ -355,7 +355,8 @@ pub fn playback_environment_from_paths(
         settings_language
     };
 
-    let full_settings = exact_material_settings(graphics, size, min_gui, &settings_bytes)?;
+    let full_settings =
+        exact_material_settings(settings_text, graphics, size, min_gui, &settings_bytes)?;
     let mut settings = BTreeMap::new();
     for key in required_setting_keys {
         let value = full_settings.get(&key).ok_or_else(|| {
@@ -415,9 +416,34 @@ pub fn playback_ui_profile_from_paths(
         .map_err(|error| format!("admit local playback UI profile: {error:?}").into())
 }
 
-pub fn playback_terrain_lod_options_from_paths(
+/// `settings.txt mapRenderingOptions` keys that change what the replay DRAWS,
+/// under the manifest spelling a recording pins them with.
+pub const RENDER_SETTING_KEYS: [&str; 3] = [
+    "map_draw_hires_terrain",
+    "map_high_gfx_shaders",
+    "map_texture_quality",
+];
+
+/// Whether this recording pinned the render settings, or the local install
+/// supplied them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RenderSettingsPin {
+    /// The recording pins all three keys and this machine's values agree.
+    Pinned,
+    /// The recording pins none of them, so these came from THIS machine's
+    /// `settings.txt` and the image may differ from the capture. Recordings
+    /// made before the keys existed land here; the viewer is told.
+    LocalUnpinned {
+        draw_hires_terrain: bool,
+        high_gfx_shaders: bool,
+        texture_quality: u8,
+    },
+}
+
+pub fn playback_render_settings(
     paths: &ProductPaths,
-) -> Result<map_viewer::TerrainLodCullOptions> {
+    required_settings: &BTreeMap<String, String>,
+) -> Result<(map_viewer::TerrainLodCullOptions, RenderSettingsPin)> {
     let settings_path = paths.user_data.join("settings.txt");
     let settings = fs::read_to_string(&settings_path).map_err(|error| {
         format!(
@@ -425,23 +451,45 @@ pub fn playback_terrain_lod_options_from_paths(
             settings_path.display()
         )
     })?;
-    let options = named_block(&settings, "mapRenderingOptions")?;
-    Ok(map_viewer::TerrainLodCullOptions {
-        suppress_near_stride_one: yes_no_bool(
-            assignment(options, "draw_hires_terrain")?,
-            "mapRenderingOptions.draw_hires_terrain",
-        )?,
-        high_gfx_shaders: yes_no_bool(
-            assignment(options, "high_gfx_shaders")?,
-            "mapRenderingOptions.high_gfx_shaders",
-        )?,
-        texture_quality: bounded_u8(
-            assignment(options, "texture_quality")?,
-            0,
-            2,
-            "mapRenderingOptions.texture_quality",
-        )?,
-    })
+    let (options, local_values) = map_rendering_options(&settings)?;
+    let draw_hires_terrain = options.suppress_near_stride_one;
+    let high_gfx_shaders = options.high_gfx_shaders;
+    let texture_quality = options.texture_quality;
+    let pinned = RENDER_SETTING_KEYS
+        .iter()
+        .filter(|key| required_settings.contains_key(**key))
+        .count();
+    let pin = match pinned {
+        0 => RenderSettingsPin::LocalUnpinned {
+            draw_hires_terrain,
+            high_gfx_shaders,
+            texture_quality,
+        },
+        3 => {
+            for key in RENDER_SETTING_KEYS {
+                let actual = &local_values[key];
+                let recorded = &required_settings[key];
+                if recorded != actual {
+                    return Err(format!(
+                        "CONTENT INCOMPATIBLE: material render setting {key} is {recorded:?} in \
+                         this recording and {actual:?} on this machine; the replay would draw a \
+                         different image. Change it in settings.txt and reopen the replay."
+                    )
+                    .into());
+                }
+            }
+            RenderSettingsPin::Pinned
+        }
+        _ => {
+            return Err(format!(
+                "CONTENT INCOMPATIBLE: this recording pins {pinned} of the {} material render \
+                 settings; a partial set cannot say what the capture drew",
+                RENDER_SETTING_KEYS.len()
+            )
+            .into())
+        }
+    };
+    Ok((options, pin))
 }
 
 fn source_game_identity(game_install: &Path) -> Result<replay_core::SourceGameIdentity> {
@@ -507,6 +555,7 @@ fn safe_relative_path(value: &str) -> Result<PathBuf> {
 }
 
 fn exact_material_settings(
+    settings_text: &str,
     graphics: &str,
     size: &str,
     min_gui: &str,
@@ -527,7 +576,7 @@ fn exact_material_settings(
     } else {
         "windowed"
     };
-    Ok(BTreeMap::from([
+    let mut exact = BTreeMap::from([
         ("physical_width".into(), assignment(size, "x")?.into()),
         ("physical_height".into(), assignment(size, "y")?.into()),
         ("min_gui_width".into(), assignment(min_gui, "x")?.into()),
@@ -548,7 +597,57 @@ fn exact_material_settings(
             "settings_file_sha256".into(),
             format!("{:x}", Sha256::digest(settings_bytes)),
         ),
-    ]))
+    ]);
+    // Offered only when this profile states them: a recording that pins the
+    // render settings must be refused on a profile that has none by naming the
+    // missing setting, not by claiming this replayer cannot parse it.
+    if let Ok((_options, values)) = map_rendering_options(settings_text) {
+        exact.extend(values);
+    }
+    Ok(exact)
+}
+
+/// `mapRenderingOptions`, as both the culling options and the manifest-spelled
+/// settings a recording pins them with.
+fn map_rendering_options(
+    settings_text: &str,
+) -> Result<(map_viewer::TerrainLodCullOptions, BTreeMap<String, String>)> {
+    let options = named_block(settings_text, "mapRenderingOptions")?;
+    let draw_hires_terrain = yes_no_bool(
+        assignment(options, "draw_hires_terrain")?,
+        "mapRenderingOptions.draw_hires_terrain",
+    )?;
+    let high_gfx_shaders = yes_no_bool(
+        assignment(options, "high_gfx_shaders")?,
+        "mapRenderingOptions.high_gfx_shaders",
+    )?;
+    let texture_quality = bounded_u8(
+        assignment(options, "texture_quality")?,
+        0,
+        2,
+        "mapRenderingOptions.texture_quality",
+    )?;
+    Ok((
+        map_viewer::TerrainLodCullOptions {
+            suppress_near_stride_one: draw_hires_terrain,
+            high_gfx_shaders,
+            texture_quality,
+        },
+        BTreeMap::from([
+            (
+                RENDER_SETTING_KEYS[0].to_string(),
+                draw_hires_terrain.to_string(),
+            ),
+            (
+                RENDER_SETTING_KEYS[1].to_string(),
+                high_gfx_shaders.to_string(),
+            ),
+            (
+                RENDER_SETTING_KEYS[2].to_string(),
+                texture_quality.to_string(),
+            ),
+        ]),
+    ))
 }
 
 fn yes_no_bool(value: &str, label: &str) -> Result<bool> {
@@ -921,20 +1020,67 @@ mod tests {
             game_install: game,
             user_data: user.clone(),
         };
-        let initial = playback_terrain_lod_options_from_paths(&paths).unwrap();
+        let (initial, pin) = playback_render_settings(&paths, &BTreeMap::new()).unwrap();
         assert!(!initial.suppress_near_stride_one);
         assert!(initial.high_gfx_shaders);
         assert_eq!(initial.texture_quality, 0);
+        assert_eq!(
+            pin,
+            RenderSettingsPin::LocalUnpinned {
+                draw_hires_terrain: false,
+                high_gfx_shaders: true,
+                texture_quality: 0,
+            },
+            "a recording that pins nothing must say the values came from here"
+        );
         let settings_path = user.join("settings.txt");
         let settings = fs::read_to_string(&settings_path)
             .unwrap()
             .replace("draw_hires_terrain=no", "draw_hires_terrain=yes")
             .replace("texture_quality=0", "texture_quality=2");
         fs::write(&settings_path, settings).unwrap();
-        let changed = playback_terrain_lod_options_from_paths(&paths).unwrap();
+        let (changed, _) = playback_render_settings(&paths, &BTreeMap::new()).unwrap();
         assert!(changed.suppress_near_stride_one);
         assert!(changed.high_gfx_shaders);
         assert_eq!(changed.texture_quality, 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// kills: reading `mapRenderingOptions` out of the LOCAL profile while a
+    /// recording states its own values. `high_gfx_shaders` swaps the terrain
+    /// effect for `terrain_low_gfx` out of the same admitted shader file, so a
+    /// disagreement changes the image with no content-admission refusal to catch
+    /// it.
+    #[test]
+    fn a_recording_that_pins_render_settings_refuses_a_machine_that_disagrees() {
+        let root = root("render-settings-pin");
+        let (game, user) = valid_profile_roots(&root);
+        let paths = ProductPaths {
+            game_install: game,
+            user_data: user,
+        };
+        let agreeing = BTreeMap::from([
+            ("map_draw_hires_terrain".to_string(), "false".to_string()),
+            ("map_high_gfx_shaders".to_string(), "true".to_string()),
+            ("map_texture_quality".to_string(), "0".to_string()),
+        ]);
+        let (_options, pin) = playback_render_settings(&paths, &agreeing).unwrap();
+        assert_eq!(pin, RenderSettingsPin::Pinned);
+
+        let mut disagreeing = agreeing.clone();
+        disagreeing.insert("map_high_gfx_shaders".to_string(), "false".to_string());
+        let error = playback_render_settings(&paths, &disagreeing)
+            .expect_err("a different shader tier must refuse")
+            .to_string();
+        assert!(error.contains("map_high_gfx_shaders"), "{error}");
+        assert!(error.contains("CONTENT INCOMPATIBLE"), "{error}");
+
+        let mut partial = agreeing;
+        partial.remove("map_texture_quality");
+        let error = playback_render_settings(&paths, &partial)
+            .expect_err("a partial pin cannot say what the capture drew")
+            .to_string();
+        assert!(error.contains("2 of the 3"), "{error}");
         let _ = fs::remove_dir_all(root);
     }
 

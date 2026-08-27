@@ -340,6 +340,31 @@ pub fn show_error(message: &str) {
     }
 }
 
+/// A non-fatal statement the viewer must see. Playback continues after it.
+pub fn show_notice(message: &str) {
+    unsafe {
+        MessageBoxW(
+            ptr::null_mut(),
+            wide(message).as_ptr(),
+            wide("Battle Plan").as_ptr(),
+            0x0000_0040,
+        );
+    }
+}
+
+static VISIBLE_DIAGNOSTICS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Set once from the entry point: this process has no console the viewer reads,
+/// so anything they must see goes through a dialog.
+pub fn set_visible_diagnostics(visible: bool) {
+    VISIBLE_DIAGNOSTICS.store(visible, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn visible_diagnostics() -> bool {
+    VISIBLE_DIAGNOSTICS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn attach_parent_console() -> bool {
     unsafe {
         !GetConsoleWindow().is_null()

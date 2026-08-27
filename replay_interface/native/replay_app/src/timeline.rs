@@ -316,6 +316,12 @@ pub trait OwnerProvider: Send + Sync {
         None
     }
 
+    /// The recorder's own statement of what it could and could not package.
+    /// The game-file ledger turns it into the viewer-visible degradation list.
+    fn product_admission(&self) -> Option<&replay_core::RecorderProductAdmission> {
+        None
+    }
+
     fn admit_playback_content(
         &self,
         _inventory: &replay_core::PlaybackContentInventory,
@@ -648,6 +654,10 @@ impl OwnerProvider for RecordingTimeline {
 
     fn static_artifact(&self, name: &str) -> Option<&replay_core::PackagedStaticArtifact> {
         self.timeline.static_artifact(name)
+    }
+
+    fn product_admission(&self) -> Option<&replay_core::RecorderProductAdmission> {
+        self.timeline.product_admission()
     }
 
     fn admit_playback_content(

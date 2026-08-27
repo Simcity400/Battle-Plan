@@ -150,15 +150,17 @@ def _load_dlc_selection(userdata: Path, installed_dlc: list[Path]) -> dict[str, 
             f"evidence that every installed DLC is enabled. Pass --userdata or set BATTLE_PLAN_USERDATA."
         )
     if not dlc_load.is_file():
-        return {
-            "dlc_load_json_present": False,
-            "dlc_load_json_name": "dlc_load.json",
-            "missing_dlc_load_means_all_installed_enabled": True,
-            "installed_dlcs": installed_names,
-            "enabled_dlcs": installed_names,
-            "disabled_dlcs": [],
-            "disabled_dlc_paths": [],
-        }
+        # F5: this branch is how a catalog gets built against every installed
+        # DLC while the capture mounts a smaller roster. A capture profile
+        # always carries dlc_load.json - the replay side refuses a user-data
+        # root without one - so its absence here means the wrong directory was
+        # resolved, not that everything is enabled.
+        raise RuntimeError(
+            f"{dlc_load} does not exist, so this run cannot state which DLCs the capture will "
+            f"mount. Assuming every installed DLC is enabled builds a catalog against a roster "
+            f"no capture runs. Pass --userdata (or set BATTLE_PLAN_USERDATA) to the profile directory "
+            f"the capture will launch with."
+        )
 
     data = json.loads(dlc_load.read_text(encoding="utf-8"))
     raw_disabled = data.get("disabled_dlcs", [])

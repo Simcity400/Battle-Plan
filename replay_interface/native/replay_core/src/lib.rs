@@ -223,6 +223,7 @@ pub use source::{
     DeclaredCoverageSelection, PackagedDecisionCatalog, PackagedStaticArtifact,
     ProductionProfileAuthority, ProductionProfileGuarantee, RawFrame, RecordedCampaignIdentity,
     RecordedCampaignIdentityWitnesses, RecorderProductAdmission, ReplaySource, SourceError,
+    REQUIRED_PACKAGED_STATIC_ARTIFACTS,
 };
 pub use static_focus_defs::{
     admit_static_focus_definitions, AdmittedStaticFocusDefinitions, StaticFocusBackgroundStyle,

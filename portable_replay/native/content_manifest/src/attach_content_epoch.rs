@@ -141,6 +141,16 @@ pub fn epoch_from_proof_json(proof: &Value) -> Result<AttachContentEpoch, String
             .ok_or_else(|| "attach-time content proof refusal is not an object".to_string())?;
         let role = read_non_empty(row, "role")?;
         let reason = read_non_empty(row, "reason")?;
+        // A refusal that does not identify the build it refused cannot be
+        // traced back to an artifact on disk; the key is required, and null is
+        // the only way to say "the file could not be read at all".
+        if !row.contains_key("artifact_sha256") {
+            return Err(format!(
+                "attach-time content proof refusal for artifact role {role:?} names no \
+                 artifact_sha256"
+            ));
+        }
+        read_optional_digest(row, "artifact_sha256")?;
         if refused
             .insert(role.to_string(), reason.to_string())
             .is_some()
@@ -477,7 +487,11 @@ mod tests {
     fn bind_admits_only_the_exact_certified_build() {
         let epoch = epoch_from_proof_json(&proof(
             vec![join("localisation_join", &digest(0x01))],
-            vec![json!({"role": "focus_defs_static", "reason": "two paths disagreed"})],
+            vec![json!({
+                "role": "focus_defs_static",
+                "artifact_sha256": digest(0x09),
+                "reason": "two paths disagreed",
+            })],
         ))
         .unwrap();
         assert_eq!(
@@ -498,7 +512,11 @@ mod tests {
     fn a_role_that_is_both_joined_and_refused_is_refused() {
         let error = epoch_from_proof_json(&proof(
             vec![join("localisation_join", &digest(0x01))],
-            vec![json!({"role": "localisation_join", "reason": "mismatch"})],
+            vec![json!({
+                "role": "localisation_join",
+                "artifact_sha256": digest(0x0a),
+                "reason": "mismatch",
+            })],
         ))
         .unwrap_err();
         assert!(error.contains("both joins and refuses"), "{error}");

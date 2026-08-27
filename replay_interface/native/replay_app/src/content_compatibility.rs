@@ -369,6 +369,18 @@ pub fn validate_timeline_content(
         .playback_inventory(manifest, environment)
         .map_err(|error| format!("CONTENT INCOMPATIBLE: {error}"))?;
     let admission = admit_selected_content(timeline, &inventory)?;
+    let (_terrain_options, render_settings_pin) =
+        crate::install_paths::playback_render_settings(paths, &manifest.required_settings)
+            .map_err(|error| error.to_string())?;
+    println!(
+        "{}",
+        crate::game_file_ledger::open_statement(
+            &admission,
+            timeline.product_admission(),
+            &render_settings_pin,
+            &manifest.localisation_language,
+        )
+    );
     println!(
         "{}",
         compatibility_summary(

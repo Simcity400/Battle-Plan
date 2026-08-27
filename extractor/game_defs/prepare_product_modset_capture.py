@@ -419,7 +419,10 @@ def _complete_preparation(
         raise LR.ResolutionError("prepared static bundle has a malformed artifact row")
     expected_roles = sorted(spec.role for spec in SB.DEFAULT_SPECS)
     if roles != expected_roles:
-        raise LR.ResolutionError("capture-ready bundle does not have the exact seven-role roster")
+        raise LR.ResolutionError(
+            "capture-ready bundle does not have the exact "
+            f"{len(expected_roles)}-role roster"
+        )
 
     corpus = binding_corpus or {
         "schema": "extractor.product_modset_binding_corpus.v1",

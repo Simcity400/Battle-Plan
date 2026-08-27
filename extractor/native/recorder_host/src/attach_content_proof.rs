@@ -163,6 +163,9 @@ pub struct ArtifactJoin {
 #[derive(Clone, Debug)]
 pub struct RefusedArtifact {
     pub role: String,
+    /// The digest of the build that was refused, so the refusal identifies the
+    /// artifact by content. `None` only when the file could not be read at all.
+    pub artifact_sha256: Option<String>,
     pub reason: String,
 }
 
@@ -226,7 +229,11 @@ impl AttachTimeContentProof {
             "refused_artifacts": self
                 .refused_artifacts
                 .iter()
-                .map(|refused| json!({ "role": refused.role, "reason": refused.reason }))
+                .map(|refused| json!({
+                    "role": refused.role,
+                    "artifact_sha256": refused.artifact_sha256,
+                    "reason": refused.reason,
+                }))
                 .collect::<Vec<_>>(),
             "required_content": self
                 .required_content
@@ -452,6 +459,7 @@ fn certify(
             Ok(scan) => scans.push(scan),
             Err(reason) => refused_artifacts.push(RefusedArtifact {
                 role: artifact.role.clone(),
+                artifact_sha256: artifact_file_digest(&artifact.path),
                 reason,
             }),
         }
@@ -509,11 +517,39 @@ fn certify(
     let outcome = last.ok_or("attach-time content proof produced no attempt")?;
     let mut refused = refused_artifacts;
     if window_settled {
-        refused.extend(outcome.refused);
+        let mounted = mounted_dlc_directories(&outcome.proof_layers);
+        let mut roster_refused = BTreeMap::new();
+        for scan in &scans {
+            let Some(model) = &scan.asset_layer_model else {
+                continue;
+            };
+            if let Err(reason) = model.agrees_with(&mounted) {
+                roster_refused.insert(scan.role.clone(), reason);
+            }
+        }
+        refused.extend(
+            outcome
+                .refused
+                .iter()
+                .filter(|row| !roster_refused.contains_key(&row.role))
+                .cloned(),
+        );
+        for (role, reason) in roster_refused {
+            let artifact_sha256 = scans
+                .iter()
+                .find(|scan| scan.role == role)
+                .map(|scan| scan.artifact_file_sha256.clone());
+            refused.push(RefusedArtifact {
+                role,
+                artifact_sha256,
+                reason,
+            });
+        }
     } else {
         for scan in &scans {
             refused.push(RefusedArtifact {
                 role: scan.role.clone(),
+                artifact_sha256: Some(scan.artifact_file_sha256.clone()),
                 reason: format!(
                     "the attach window never settled: the install changed during all {attempts} \
                      fingerprint attempts, so no observation inside it describes one install"
@@ -522,8 +558,16 @@ fn certify(
         }
     }
     refused.sort_by(|left, right| left.role.cmp(&right.role));
+    let refused_roles = refused
+        .iter()
+        .map(|row| row.role.clone())
+        .collect::<std::collections::BTreeSet<_>>();
     let mut joins = if window_settled {
-        outcome.joins
+        outcome
+            .joins
+            .into_iter()
+            .filter(|join| !refused_roles.contains(&join.role))
+            .collect()
     } else {
         Vec::new()
     };
@@ -628,6 +672,7 @@ fn walk_corpus(
             ArtifactVerdict::Joined(join) => outcome.joins.push(join),
             ArtifactVerdict::Refused(reason) => outcome.refused.push(RefusedArtifact {
                 role: scan.role.clone(),
+                artifact_sha256: Some(scan.artifact_file_sha256.clone()),
                 reason,
             }),
             ArtifactVerdict::Churned => {
@@ -814,6 +859,8 @@ struct ArtifactScan {
     claims: BTreeMap<String, ContentClaim>,
     absent_claims: Vec<String>,
     localisation_source_sha256: Option<String>,
+    /// `meta.asset_layer_model`, when the artifact declares one.
+    asset_layer_model: Option<DeclaredAssetLayerModel>,
     /// `{source_file, source_sha256}` rows: RESTATEMENTS of a claim the artifact
     /// makes elsewhere, never a claim of their own. See
     /// [`reconcile_restated_claims`].
@@ -838,6 +885,102 @@ fn read_and_scan_artifact(request: &ArtifactRequest) -> Result<ArtifactScan, Str
     scan_artifact_document(&request.role, &artifact_file_sha256, &document)
 }
 
+/// The DLC roster a static artifact states it was generated against, read from
+/// the artifact's own `meta.asset_layer_model`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct DeclaredAssetLayerModel {
+    enabled_dlcs: std::collections::BTreeSet<String>,
+    excluded_asset_only_dlcs: std::collections::BTreeSet<String>,
+    dlc_load_json_present: bool,
+}
+
+impl DeclaredAssetLayerModel {
+    /// THE F5 GATE, run per capture: the roster the artifact was generated
+    /// against must be the roster this attach actually mounts. Before this ran,
+    /// a manifest built against every installed DLC was refused only later, by
+    /// path count, with no statement of the cause.
+    fn agrees_with(&self, mounted: &std::collections::BTreeSet<String>) -> Result<(), String> {
+        let expected = self
+            .enabled_dlcs
+            .difference(&self.excluded_asset_only_dlcs)
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        if &expected == mounted {
+            return Ok(());
+        }
+        let not_mounted = expected.difference(mounted).cloned().collect::<Vec<_>>();
+        let not_declared = mounted.difference(&expected).cloned().collect::<Vec<_>>();
+        Err(format!(
+            "the artifact was generated against a different DLC roster than this capture mounts              (its own dlc_load.json was {}): built with but not mounted here {not_mounted:?};              mounted here but not built with {not_declared:?}",
+            if self.dlc_load_json_present {
+                "read"
+            } else {
+                "absent, so every installed DLC was treated as enabled"
+            }
+        ))
+    }
+}
+
+fn declared_asset_layer_model(document: &Value) -> Result<Option<DeclaredAssetLayerModel>, String> {
+    let Some(model) = document
+        .get("meta")
+        .and_then(|meta| meta.get("asset_layer_model"))
+    else {
+        return Ok(None);
+    };
+    let model = model
+        .as_object()
+        .ok_or_else(|| "meta.asset_layer_model is not an object".to_string())?;
+    let names = |field: &str| -> Result<std::collections::BTreeSet<String>, String> {
+        let Some(value) = model.get(field) else {
+            return Ok(std::collections::BTreeSet::new());
+        };
+        value
+            .as_array()
+            .ok_or_else(|| format!("meta.asset_layer_model.{field} is not an array"))?
+            .iter()
+            .map(|row| {
+                row.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("meta.asset_layer_model.{field} holds a non-string"))
+            })
+            .collect()
+    };
+    Ok(Some(DeclaredAssetLayerModel {
+        enabled_dlcs: names("enabled_dlcs")?,
+        excluded_asset_only_dlcs: names("excluded_asset_only_dlcs")?,
+        dlc_load_json_present: model
+            .get("dlc_load_json_present")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                "meta.asset_layer_model has no boolean dlc_load_json_present".to_string()
+            })?,
+    }))
+}
+
+/// The DLC directory names this attach actually mounts, in the spelling the
+/// static artifacts use.
+fn mounted_dlc_directories(layers: &[ProofLayer]) -> std::collections::BTreeSet<String> {
+    layers
+        .iter()
+        .filter(|layer| layer.kind == "dlc")
+        .filter_map(|layer| dlc_directory_name(&layer.layer_id))
+        .collect()
+}
+
+fn dlc_directory_name(layer_id: &str) -> Option<String> {
+    let normalized = layer_id.replace('\\', "/");
+    let mut parts = normalized.split('/').filter(|part| !part.is_empty());
+    if parts.next()? != "dlc" {
+        return None;
+    }
+    parts.next().map(str::to_string)
+}
+
+fn artifact_file_digest(path: &Path) -> Option<String> {
+    hash_file(path).ok().map(|(sha256, _)| sha256)
+}
+
 fn scan_artifact_document(
     role: &str,
     artifact_file_sha256: &str,
@@ -849,6 +992,7 @@ fn scan_artifact_document(
         claims: BTreeMap::new(),
         absent_claims: Vec::new(),
         localisation_source_sha256: None,
+        asset_layer_model: declared_asset_layer_model(document)?,
         restated_claims: Vec::new(),
     };
     let root = document
@@ -907,6 +1051,7 @@ fn scan_artifact_document(
             claims: BTreeMap::new(),
             absent_claims: Vec::new(),
             localisation_source_sha256: None,
+            asset_layer_model: None,
             restated_claims: Vec::new(),
         };
         collect_claims(
@@ -1316,6 +1461,7 @@ fn reconcile_localisation_sources(scans: &[ArtifactScan], refused: &mut Vec<Refu
             if let Some(declared) = scan.localisation_source_sha256.as_ref() {
                 refused.push(RefusedArtifact {
                     role: scan.role.clone(),
+                    artifact_sha256: Some(scan.artifact_file_sha256.clone()),
                     reason: format!(
                         "the artifact was built against localisation catalog {declared}, which \
                          this recording does not package"
@@ -1332,6 +1478,7 @@ fn reconcile_localisation_sources(scans: &[ArtifactScan], refused: &mut Vec<Refu
         if declared != &packaged {
             refused.push(RefusedArtifact {
                 role: scan.role.clone(),
+                artifact_sha256: Some(scan.artifact_file_sha256.clone()),
                 reason: format!(
                     "the artifact was built against localisation catalog {declared}, but this \
                      recording packages {packaged}"
@@ -1853,6 +2000,7 @@ mod tests {
             claims: BTreeMap::new(),
             absent_claims: Vec::new(),
             localisation_source_sha256: Some("b".repeat(64)),
+            asset_layer_model: None,
             restated_claims: Vec::new(),
         }];
         let mut refused = Vec::new();
@@ -1874,6 +2022,7 @@ mod tests {
                 claims: BTreeMap::new(),
                 absent_claims: Vec::new(),
                 localisation_source_sha256: None,
+                asset_layer_model: None,
                 restated_claims: Vec::new(),
             },
             ArtifactScan {
@@ -1882,6 +2031,7 @@ mod tests {
                 claims: BTreeMap::new(),
                 absent_claims: Vec::new(),
                 localisation_source_sha256: Some("b".repeat(64)),
+                asset_layer_model: None,
                 restated_claims: Vec::new(),
             },
         ];
@@ -2015,5 +2165,139 @@ mod tests {
         proof.layer_stack = vec![published_layer("base", None)];
         require_bracket_descriptors_match_certified(&bracket(&[]), &proof, "before")
             .expect("a stack of nothing but base observes no descriptors");
+    }
+    /// kills: F5 - a static artifact generated against every installed DLC
+    /// while the capture mounts a smaller roster. Before this gate the artifact
+    /// was refused only later, by claimed-path count, with nothing stating the
+    /// cause; the roster difference is now the reason.
+    #[test]
+    fn an_artifact_built_against_another_dlc_roster_is_refused_by_roster_not_by_path_count() {
+        let model = DeclaredAssetLayerModel {
+            enabled_dlcs: ["dlc025_axis_armor_pack", "dlc034_no_step_back"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            excluded_asset_only_dlcs: std::collections::BTreeSet::new(),
+            dlc_load_json_present: false,
+        };
+        let mounted = ["dlc034_no_step_back"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<std::collections::BTreeSet<_>>();
+        let reason = model
+            .agrees_with(&mounted)
+            .expect_err("a wider roster than the capture mounts is refused");
+        assert!(reason.contains("dlc025_axis_armor_pack"), "{reason}");
+        assert!(reason.contains("built with but not mounted here"), "{reason}");
+        assert!(
+            reason.contains("every installed DLC was treated as enabled"),
+            "the refusal must state that the generator saw no dlc_load.json: {reason}"
+        );
+
+        let matching = DeclaredAssetLayerModel {
+            enabled_dlcs: ["dlc034_no_step_back"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            excluded_asset_only_dlcs: std::collections::BTreeSet::new(),
+            dlc_load_json_present: true,
+        };
+        matching
+            .agrees_with(&mounted)
+            .expect("the roster the capture mounts is admitted");
     }
+
+    /// kills: refusing an asset-only DLC layer that has no descriptor and so can
+    /// never appear in the attach layer stack, which would make every capture
+    /// with one refuse its own artifacts.
+    #[test]
+    fn a_declared_asset_only_dlc_is_not_expected_in_the_mounted_stack() {
+        let model = DeclaredAssetLayerModel {
+            enabled_dlcs: ["dlc014_wallpaper", "dlc034_no_step_back"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            excluded_asset_only_dlcs: ["dlc014_wallpaper"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            dlc_load_json_present: true,
+        };
+        let mounted = ["dlc034_no_step_back"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<std::collections::BTreeSet<_>>();
+        model.agrees_with(&mounted).expect("asset-only layers are excluded");
+    }
+
+    #[test]
+    fn the_mounted_dlc_roster_reads_directory_names_out_of_layer_ids() {
+        let layers = vec![
+            ProofLayer {
+                ordinal: 0,
+                kind: "base",
+                layer_id: "base".into(),
+                descriptor_sha256: None,
+                descriptor_file_sha256: None,
+                source_container_sha256: None,
+            },
+            ProofLayer {
+                ordinal: 1,
+                kind: "dlc",
+                layer_id: "dlc/dlc034_no_step_back/dlc034.dlc".into(),
+                descriptor_sha256: None,
+                descriptor_file_sha256: None,
+                source_container_sha256: None,
+            },
+            ProofLayer {
+                ordinal: 2,
+                kind: "mod",
+                layer_id: "mod/test.mod".into(),
+                descriptor_sha256: None,
+                descriptor_file_sha256: None,
+                source_container_sha256: None,
+            },
+        ];
+        assert_eq!(
+            mounted_dlc_directories(&layers),
+            ["dlc034_no_step_back"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+        assert_eq!(
+            dlc_directory_name(r"dlc\dlc025_axis_armor_pack\dlc025.dlc").as_deref(),
+            Some("dlc025_axis_armor_pack")
+        );
+        assert_eq!(dlc_directory_name("mod/test.mod"), None);
+    }
+
+    /// kills: reading `meta.asset_layer_model` loosely, so an artifact that
+    /// states no DLC binding at all silently passes the roster gate as if it
+    /// had declared a matching one.
+    #[test]
+    fn an_artifact_with_no_declared_layer_model_states_none_and_a_malformed_one_refuses() {
+        assert_eq!(
+            declared_asset_layer_model(&json!({ "meta": { "sprites": 3 } })).unwrap(),
+            None
+        );
+        declared_asset_layer_model(&json!({
+            "meta": { "asset_layer_model": { "enabled_dlcs": ["a"] } }
+        }))
+        .expect_err("a model with no dlc_load_json_present is malformed");
+        let model = declared_asset_layer_model(&json!({
+            "meta": {
+                "asset_layer_model": {
+                    "enabled_dlcs": ["a", "b"],
+                    "excluded_asset_only_dlcs": ["b"],
+                    "dlc_load_json_present": true,
+                }
+            }
+        }))
+        .unwrap()
+        .expect("a complete model is read");
+        assert_eq!(model.excluded_asset_only_dlcs.len(), 1);
+        assert!(model.dlc_load_json_present);
+    }
+
 }

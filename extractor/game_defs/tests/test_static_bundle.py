@@ -233,7 +233,16 @@ def _fixture(tmp_path: Path):
             src,
             "gfx_icon_asset_manifest_static",
             "gfx_icon_asset_manifest_static.static_artifact.v2",
-            {"sprites": {"GFX_ok": {}}},
+            {
+                "sprites": {"GFX_ok": {}},
+                "meta": {
+                    "asset_layer_model": {
+                        "enabled_dlcs": ["dlc-1"],
+                        "excluded_asset_only_dlcs": [],
+                        "dlc_load_json_present": True,
+                    }
+                },
+            },
         ),
         _artifact(
             src,
@@ -1086,3 +1095,80 @@ def test_verify_cli_deferred_phase_rejects_final_capture_provenance(tmp_path, ca
     ]
     assert SB.main(args) == 1
     assert "cannot accept final capture provenance" in capsys.readouterr().err
+
+
+def test_a_gfx_catalog_built_against_another_dlc_roster_is_refused(tmp_path):
+    """kills: F5 - the shipped gfx manifest enabled every installed DLC while the
+    capture mounted a smaller roster, and nothing compared the two until the
+    attach-time path join refused it without naming a cause."""
+
+    state = {
+        "dlc_state": {
+            "items": [
+                {"id": "dlc-1", "enabled": True},
+                {"id": "dlc-2", "enabled": False},
+            ]
+        }
+    }
+
+    def catalog(model):
+        return {SB.DLC_ROSTER_BOUND_ARTIFACT: {"meta": {"asset_layer_model": model}}}
+
+    SB.require_declared_asset_layer_roster(
+        catalog(
+            {
+                "enabled_dlcs": ["dlc-1"],
+                "excluded_asset_only_dlcs": [],
+                "dlc_load_json_present": True,
+            }
+        ),
+        state,
+    )
+
+    with pytest.raises(SB.BundleError) as wider:
+        SB.require_declared_asset_layer_roster(
+            catalog(
+                {
+                    "enabled_dlcs": ["dlc-1", "dlc-2"],
+                    "excluded_asset_only_dlcs": [],
+                    "dlc_load_json_present": True,
+                }
+            ),
+            state,
+        )
+    assert "dlc-2" in str(wider.value)
+    assert "built with but not enabled here" in str(wider.value)
+
+    with pytest.raises(SB.BundleError) as no_selection:
+        SB.require_declared_asset_layer_roster(
+            catalog(
+                {
+                    "enabled_dlcs": ["dlc-1"],
+                    "excluded_asset_only_dlcs": [],
+                    "dlc_load_json_present": False,
+                }
+            ),
+            state,
+        )
+    assert "without reading dlc_load.json" in str(no_selection.value)
+
+    with pytest.raises(SB.BundleError) as undeclared:
+        SB.require_declared_asset_layer_roster(
+            {SB.DLC_ROSTER_BOUND_ARTIFACT: {"meta": {}}}, state
+        )
+    assert "declares no meta.asset_layer_model" in str(undeclared.value)
+
+    SB.require_declared_asset_layer_roster(
+        {
+            SB.DLC_ROSTER_BOUND_ARTIFACT: {
+                "meta": {
+                    "asset_layer_model": {
+                        "enabled_dlcs": ["dlc-1", "dlc-asset-only"],
+                        "excluded_asset_only_dlcs": ["dlc-asset-only"],
+                        "dlc_load_json_present": True,
+                    }
+                }
+            }
+        },
+        state,
+    )

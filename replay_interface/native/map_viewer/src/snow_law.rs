@@ -1,7 +1,6 @@
 
 use crate::*;
 use std::collections::BTreeMap;
-use std::path::Path;
 
 pub const STRATEGIC_REGIONS_DIR: &str = "map/strategicregions";
 pub const SNOW_PROVINCES_BMP_SOURCE: &str = "map/provinces.bmp";
@@ -242,11 +241,6 @@ pub fn region_weather_from_resolver(
         );
     }
     Ok(out)
-}
-
-pub fn region_weather_from_game_dir(game_dir: &Path) -> Result<BTreeMap<u32, RegionWeather>> {
-    let resolver = GameFileResolver::vanilla(game_dir.to_path_buf())?;
-    region_weather_from_resolver(&resolver)
 }
 
 pub fn parse_region_weather(source: &str) -> Result<Option<RegionWeather>> {

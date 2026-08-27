@@ -3727,6 +3727,15 @@ fn certify_attach_time_content_proof(
             .get("reason")
             .and_then(Value::as_str)
             .ok_or_else(|| format!("{field}.refused_artifacts row for {role:?} names no reason"))?;
+        let digest = row.get("artifact_sha256").ok_or_else(|| {
+            format!("{field}.refused_artifacts row for {role:?} names no artifact_sha256")
+        })?;
+        if !digest.is_null() {
+            canonical_sha256(
+                Some(digest),
+                &format!("{field}.refused_artifacts {role:?} artifact_sha256"),
+            )?;
+        }
         refused.insert(role.to_string(), reason.to_string());
     }
     let join_rows = proof
@@ -12660,8 +12669,11 @@ mod tests {
                         .clone();
                     manifest
                         [recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD]
-                        ["refused_artifacts"] =
-                        json!([{ "role": role, "reason": "fixture contradiction" }]);
+                        ["refused_artifacts"] = json!([{
+                            "role": role,
+                            "artifact_sha256": "d".repeat(64),
+                            "reason": "fixture contradiction",
+                        }]);
                 }),
                 "both joins and refuses static role",
             ),

@@ -2425,6 +2425,7 @@ fn the_attach_time_content_epoch_admits_packaged_research_catalogs_end_to_end() 
         joins.retain(|join| join["role"] != json!("technology_sharing_static"));
         proof["refused_artifacts"] = json!([{
             "role": "technology_sharing_static",
+            "artifact_sha256": "9".repeat(64),
             "reason": "a claimed path disagreed on re-read",
         }]);
     });
