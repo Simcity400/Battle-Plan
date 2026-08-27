@@ -3465,20 +3465,15 @@ fn material_texture_source<'a>(
     slot_name: &str,
     authored: &str,
 ) -> Result<&'a crate::Xmap12TextureSource> {
-    let normalized = authored.replace('\\', "/").to_ascii_lowercase();
-    let authored_base = normalized.rsplit('/').next().unwrap_or("");
+    // The AUTHORED bytes the producer recorded beside the path it resolved.
+    // Folding this to a lower-cased basename could not find the `.dds` a729
+    // opens for an authored `.tga`, and made two directory-qualified references
+    // sharing a basename ambiguous (`crate::pdxmesh_asset_law`).
     let source = draw
         .ordered_texture_sources
         .iter()
         .filter(|row| {
-            row.slot.eq_ignore_ascii_case(slot_name)
-                && row
-                    .content
-                    .normalized_game_relative_path
-                    .to_ascii_lowercase()
-                    .rsplit('/')
-                    .next()
-                    == Some(authored_base)
+            row.slot.eq_ignore_ascii_case(slot_name) && row.authored_reference == authored
         })
         .collect::<Vec<_>>();
     if source.len() != 1 {

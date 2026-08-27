@@ -67,6 +67,7 @@ mod occupation_mapmode;
 mod occupation_stripe_law;
 mod pass_graph;
 mod pdx_mesh;
+pub mod pdxmesh_asset_law;
 mod political_color_synthesis;
 mod posteffect_region_weights;
 mod production_d3d;
@@ -452,7 +453,8 @@ pub use mapmode_infrastructure::{
     VANILLA_INFRA_GRADIENT_COLORS, VANILLA_INFRA_STATE_MAX,
 };
 pub use mod_resolver::{
-    semantic_descriptor_sha256, sensitive_file_overrides, stable_dlc_product_id,
+    content_path_is_canonical, semantic_descriptor_sha256, sensitive_file_overrides,
+    stable_dlc_product_id,
     ContentAdmissionLease, GameContentSource, GameFileResolver, GameFileResolverOptions,
     GameFileResolverStats, PlaybackEnvironment, RecordedContentSource, RequiredGameContent,
     ResolvedGameFile, RestrictedGameFileResolver, SensitiveFileOverrideReport,
@@ -494,6 +496,14 @@ pub use pdx_mesh::{
     PdxAssetScanReport, PdxAssetTree, PdxJoint, PdxLocator, PdxMaterial, PdxMeshData,
     PdxMeshValidationRow, PdxModel, PdxNode, PdxProperty, PdxShape, PdxSkin, PdxValues,
     PDX_ASSET_BINARY_MAGIC, PDX_ASSET_SUPPORTED_VERSION, PDX_ASSET_TEXT_MAGIC, PDX_MODELS_ROOT,
+};
+pub use pdxmesh_asset_law::{
+    mesh_relative_texture_path, pdxmesh_effective_material_slots, pdxmesh_material_override_row,
+    pdxmesh_opened_texture_path, pdxmesh_path_is_askable, pdxmesh_texture_index_from_resolver,
+    tga_rewritten_to_dds,
+    PdxmeshTextureIndex, PdxmeshTexturePath, PdxmeshVertexStreams, PDXMESH_MATERIAL_SLOTS,
+    PDXMESH_STREAM_FLOATS, PDXMESH_TEXTURE_INDEX_EXTENSIONS, PDXMESH_TEXTURE_INDEX_ROOT,
+    PDXMESH_TREE_EFFECT_STREAMS, PDXMESH_UV1_SHADER_DEFINE,
 };
 pub use political_color_synthesis::{
     compare_political_colors_to_capture, dump_political_color_comparison,

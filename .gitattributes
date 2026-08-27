@@ -208,3 +208,6 @@ extractor/native/runs/sr_tf_id_space/out/*.decompile.c text eol=lf whitespace=-t
 # bytes the broker's ghidra_verify agrees with, so no EOL conversion (lane QP
 # and XUI19 precedent) - one digest, and a checkout reproduces it.
 extractor/native/runs/tt_controller_authority/evidence/* -text -diff
+
+# Lane UF evidence: byte-stable both ways, so quoted hashes hold.
+extractor/native/runs/uf_pdxmesh_frame_image/** -text

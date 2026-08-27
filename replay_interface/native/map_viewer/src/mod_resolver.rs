@@ -3291,6 +3291,18 @@ pub(crate) fn normalize_rel_path(value: &str) -> String {
         .join("/")
 }
 
+/// Whether the replay's content namespace can ask about this EXACT string.
+///
+/// Every lookup goes through `content_identity_key`, so a path that is not
+/// already its own key names a different file than the one asked about — the
+/// key rewrites `\` to `/`, lower-cases, trims, strips quotes, collapses empty
+/// components, and refuses `.`, `..`, a leading `/`, NUL and `:`. A caller that
+/// must preserve authored bytes asks this instead of enumerating those, so the
+/// two can never drift apart.
+pub fn content_path_is_canonical(value: &str) -> bool {
+    content_identity_key(value).map(|key| key == value).unwrap_or(false)
+}
+
 fn content_identity_key(rel: &str) -> Result<String> {
     Ok(checked_rel_path(rel)?.to_ascii_lowercase())
 }

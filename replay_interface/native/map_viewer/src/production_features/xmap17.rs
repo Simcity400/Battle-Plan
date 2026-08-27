@@ -1437,9 +1437,19 @@ fn resolve_static_mapname_text(
                         }
                         token.push(next);
                     }
-                    if !closed || token.is_empty() || token.contains('|') {
+                    // A `$TOKEN$` is either a nested localisation key or a
+                    // variable the engine fills at runtime. Only the first can
+                    // be expanded from admitted content; the second has to be
+                    // named as the operand it is, not reported as a missing key.
+                    if !closed
+                        || token.is_empty()
+                        || token.contains('|')
+                        || !localization.contains_key(&token)
+                    {
                         return Err(format!(
-                            "XMAP17 localization {key} requires a runtime/formatted variable"
+                            "XMAP17 localization {key} requires the runtime variable \
+                             {token:?}, which is not a localisation key and no admitted content \
+                             supplies"
                         )
                         .into());
                     }
@@ -2192,6 +2202,17 @@ mod tests {
             "FRENCH EMPIRE"
         );
         assert!(resolve_static_mapname_text(&localization, "BAD").is_err());
+        // Kills: reporting a runtime variable as a missing localisation key.
+        // Vanilla's `$OVERLORDADJ$` is filled from the subject's overlord, so a
+        // "key is absent" refusal sends the reader looking for a file entry that
+        // was never supposed to exist.
+        let overlord = BTreeMap::from([("INS_subject".into(), "$OVERLORDADJ$ East Indies".into())]);
+        let message = resolve_static_mapname_text(&overlord, "INS_subject")
+            .expect_err("a runtime variable cannot be expanded from content")
+            .to_string();
+        assert!(message.contains("runtime variable"), "{message}");
+        assert!(message.contains("OVERLORDADJ"), "{message}");
+        assert!(!message.contains("is absent"), "{message}");
         assert_eq!(
             resolve_static_mapname_text(
                 &BTreeMap::from([("GER".into(), "German Reich".into())]),

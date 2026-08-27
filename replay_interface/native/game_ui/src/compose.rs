@@ -1999,6 +1999,27 @@ fn horizontal_line_shift(container_width: i32, line_width: i32, align: TextAlign
     }
 }
 
+/// The authored text-effect row a font role must carry.
+///
+/// The path is compared through the manifest's own normalizer: the authored
+/// constant carries the engine's `gfx/FX/` spelling while
+/// `normalized_game_relative_path` is lower-cased, so a verbatim comparison
+/// rejects every real font role in production while a fixture written in the
+/// authored spelling still passes.
+fn text_effect_row_is_the_authored_shader(
+    content: &portable_content_manifest::UsedContentKey,
+    shader_bytes: usize,
+) -> bool {
+    let Ok(key) = portable_content_manifest::normalize_game_relative_path(
+        portable_content_manifest::authored_ui::AUTHORED_BITMAP_FONT_TEXT_EFFECT_PATH,
+    ) else {
+        return false;
+    };
+    content.normalized_game_relative_path == key
+        && content.payload_sha256 == TEXT_SHADER_SHA256
+        && u64::try_from(shader_bytes).ok() == Some(TEXT_SHADER_BYTES)
+}
+
 impl<'a> Compositor<'a> {
     pub fn measure_resolved_text_height(
         &mut self,
@@ -3216,17 +3237,10 @@ impl<'a> Compositor<'a> {
         }
         let (_, shader_bytes) =
             self.read_verified_content_bytes(&font_role.text_effect_content, child_path)?;
-        // Compared through the manifest's own normalizer: the authored path
-        // constant carries the engine's `gfx/FX/` spelling and the field is
-        // lower-cased, so a verbatim comparison rejects every real font role.
-        let text_effect_key = portable_content_manifest::normalize_game_relative_path(
-            portable_content_manifest::authored_ui::AUTHORED_BITMAP_FONT_TEXT_EFFECT_PATH,
-        )
-        .map_err(|_| AuthenticatedComposeRejection::UnsupportedTextVariant(child_path.to_vec()))?;
-        if font_role.text_effect_content.normalized_game_relative_path != text_effect_key
-            || font_role.text_effect_content.payload_sha256 != TEXT_SHADER_SHA256
-            || u64::try_from(shader_bytes.len()).ok() != Some(TEXT_SHADER_BYTES)
-        {
+        if !text_effect_row_is_the_authored_shader(
+            &font_role.text_effect_content,
+            shader_bytes.len(),
+        ) {
             return Err(AuthenticatedComposeRejection::UnsupportedTextVariant(
                 child_path.to_vec(),
             ));
@@ -7632,6 +7646,66 @@ mod tests {
             payload_sha256: payload.to_string().repeat(64),
             payload_bytes: 1,
         }
+    }
+
+    fn authored_text_effect_row() -> UsedContentKey {
+        let mut row = cache_content(
+            &portable_content_manifest::normalize_game_relative_path(
+                portable_content_manifest::authored_ui::AUTHORED_BITMAP_FONT_TEXT_EFFECT_PATH,
+            )
+            .expect("the authored text-effect path normalizes"),
+            '9',
+        );
+        row.payload_sha256 = TEXT_SHADER_SHA256.to_string();
+        row
+    }
+
+    /// Kills: comparing `normalized_game_relative_path` against the authored
+    /// `gfx/FX/text.shader` spelling verbatim. Production only ever stores the
+    /// lower-cased key, so the verbatim guard rejects every authenticated font
+    /// role while a fixture written in the authored spelling still passes.
+    #[test]
+    fn the_text_effect_guard_accepts_the_spelling_production_stores() {
+        let row = authored_text_effect_row();
+        assert_ne!(
+            row.normalized_game_relative_path,
+            portable_content_manifest::authored_ui::AUTHORED_BITMAP_FONT_TEXT_EFFECT_PATH,
+            "the authored constant must differ from its normalized key or this proves nothing"
+        );
+        assert!(text_effect_row_is_the_authored_shader(
+            &row,
+            TEXT_SHADER_BYTES as usize
+        ));
+    }
+
+    /// Kills: accepting any spelling at all, or any payload. The row has to be
+    /// the authored shader by key, digest and length.
+    #[test]
+    fn the_text_effect_guard_rejects_a_row_that_is_not_the_authored_shader() {
+        let authored_spelling = {
+            let mut row = authored_text_effect_row();
+            row.normalized_game_relative_path =
+                portable_content_manifest::authored_ui::AUTHORED_BITMAP_FONT_TEXT_EFFECT_PATH
+                    .to_string();
+            row
+        };
+        assert!(!text_effect_row_is_the_authored_shader(
+            &authored_spelling,
+            TEXT_SHADER_BYTES as usize
+        ));
+        let wrong_digest = {
+            let mut row = authored_text_effect_row();
+            row.payload_sha256 = "c".repeat(64);
+            row
+        };
+        assert!(!text_effect_row_is_the_authored_shader(
+            &wrong_digest,
+            TEXT_SHADER_BYTES as usize
+        ));
+        assert!(!text_effect_row_is_the_authored_shader(
+            &authored_text_effect_row(),
+            TEXT_SHADER_BYTES as usize + 1
+        ));
     }
 
     fn cache_sprite_and_role() -> (

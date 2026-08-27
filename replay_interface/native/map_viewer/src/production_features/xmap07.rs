@@ -82,6 +82,21 @@ const XMAP07_AUTHORITY_GAPS: [&str; 2] = [
     "weather.province_snow_accumulator",
 ];
 
+/// `weather.province_snow_accumulator` is an owner-proven admission, so on an
+/// hour that carries it the row is ADMITTED and not a gap. Claiming both ids
+/// unconditionally refused every such hour.
+fn xmap07_consumed_gap_ids(
+    gaps: &[crate::MapAuthorityGap],
+    admitted: &[crate::MapAuthorityAdmittedInput],
+) -> Result<Vec<String>> {
+    Ok(crate::account_owned_map_authority_inputs(
+        "XMAP07",
+        &XMAP07_AUTHORITY_GAPS,
+        gaps,
+        admitted,
+    )?)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreparedWaterSampler {
     pub symbol: String,
@@ -836,12 +851,7 @@ impl ProductionMapFeatureAdapter for Xmap07WaterAdapter {
     }
 
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput> {
-        // `weather.province_snow_accumulator` is an owner-proven admission, so
-        // on an hour that carries it the row is ADMITTED and not a gap. Claiming
-        // both ids unconditionally refused every such hour.
-        let consumed_gap_ids = crate::account_owned_map_authority_inputs(
-            "XMAP07",
-            &XMAP07_AUTHORITY_GAPS,
+        let consumed_gap_ids = xmap07_consumed_gap_ids(
             context.map_authority_gaps,
             context.map_authority_admitted,
         )?;
@@ -1560,6 +1570,53 @@ fn validate_sha256(value: &str, label: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gap(input_id: &str) -> crate::MapAuthorityGap {
+        crate::MapAuthorityGap {
+            input_id: input_id.to_string(),
+            disposition: crate::MapAuthorityRequirementDisposition::Unavailable,
+            reason: "test".to_string(),
+        }
+    }
+
+    fn admitted(input_id: &str) -> crate::MapAuthorityAdmittedInput {
+        crate::MapAuthorityAdmittedInput {
+            input_id: input_id.to_string(),
+            owner_packet: "XMAP07".to_string(),
+            payload_schema: "test".to_string(),
+            cadence: "test".to_string(),
+            identity_order: "test".to_string(),
+        }
+    }
+
+    /// Kills: claiming both owned ids as gaps unconditionally. On an hour that
+    /// carries the owner-proven `weather.province_snow_accumulator` the row is
+    /// admitted, so claiming it is a gap that was never opened and the packet
+    /// refuses the whole hour.
+    #[test]
+    fn an_admitted_owned_input_is_accounted_as_admitted_not_claimed_as_a_gap() {
+        let consumed = xmap07_consumed_gap_ids(
+            &[gap("terrain.snow_mud_semantic")],
+            &[admitted("weather.province_snow_accumulator")],
+        )
+        .expect("an admitted owned input must not refuse");
+        assert_eq!(consumed, vec!["terrain.snow_mud_semantic".to_string()]);
+    }
+
+    /// Kills: dropping the still-a-gap half. Both ids are owned, so an hour
+    /// where neither is admitted must still claim both.
+    #[test]
+    fn owned_inputs_that_are_still_gaps_are_all_claimed() {
+        let consumed = xmap07_consumed_gap_ids(
+            &[
+                gap("terrain.snow_mud_semantic"),
+                gap("weather.province_snow_accumulator"),
+            ],
+            &[],
+        )
+        .expect("both gaps are claimable");
+        assert_eq!(consumed, XMAP07_AUTHORITY_GAPS.to_vec());
+    }
 
     #[test]
     fn water_quad_is_exact_signed_short_triangle_strip() {
