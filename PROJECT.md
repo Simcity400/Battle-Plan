@@ -21,8 +21,9 @@ valid combinations of mods and DLC.
 Sound is part of the reconstructed presentation: playback derives world audio
 (battle and ambient sound) and music viewer-locally from recorded authoritative
 state and authenticated content. Audio is never captured and never a rendering-law
-input; until the derived world-sound layer ships, playback carries music and UI
-chrome sounds only.
+input. Each sound class ships only once its engine or game-file rule is proven and
+its recorded inputs are present; a class whose rule or inputs are incomplete is
+silent and named, never approximated into something the game would not play.
 
 The intended experience is attach-and-play: start the recorder and play normally.
 It identifies each running game and campaign, records through relaunches and

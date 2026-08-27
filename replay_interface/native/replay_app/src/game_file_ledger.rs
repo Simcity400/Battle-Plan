@@ -145,6 +145,7 @@ pub const GAME_FILE_LEDGER: &[LedgerRow] = &[
         "map_viewer/src/weather_law.rs",
         "map_viewer/src/xmap04_d3d_handoff.rs",
         "map_viewer/src/xmap07_d3d_handoff.rs",
+        "map_viewer/src/province_positions.rs",
         "map_viewer/src/xmap12_population.rs",
         "replay_app/src/content_compatibility.rs",
         ],
@@ -430,6 +431,7 @@ pub const GAME_FILE_LEDGER: &[LedgerRow] = &[
         "replay_app/src/font.rs",
         "replay_app/src/gui_definition_admission.rs",
         "replay_app/src/political_scene.rs",
+        "replay_app/src/world_audio_law.rs",
         ],
         logical_path_examples: &["common/defines/00_graphics.lua", "common/weather.txt"],
         validation: Validation::InstallReadPinned,
@@ -784,15 +786,24 @@ pub const GAME_FILE_LEDGER: &[LedgerRow] = &[
     },
     LedgerRow {
         class: AUDIO,
-        subject: "music, sound and any other audio asset",
-        route: "none: the replay layer opens no audio file",
-        read_sites: &[],
-        logical_path_examples: &[],
+        subject: "the sound definition namespace and the wav payloads it names: \
+                  sound/**/*.asset from the base tree, from integrated_dlc/*/sound and from the \
+                  dlc/ overlay, and every wav a bound soundeffect resolves to",
+        route: "GameFileResolver under the recording's ValidatedContentAdmission. \
+                SoundBank::from_resolver requires the WHOLE sound/**/*.asset namespace to be \
+                admitted before it binds anything, so a partial admission refuses rather than \
+                binding a base definition a mod had overridden; each wav is then resolved by the \
+                logical path its own defining .asset carries",
+        read_sites: &["replay_app/src/world_audio.rs", "replay_app/src/world_audio_law.rs"],
+        logical_path_examples: &[
+            "sound/soundeffects.asset",
+            "sound/category.asset",
+            "sound/falloff.asset",
+            "sound/animations/amb_battle_distant_01.wav",
+            "sound/animations/amb_battle_distant_02.wav",
+        ],
         validation: Validation::InstallReadPinned,
-        mismatch:
-            "no row can mismatch because no audio is read. Derived world sound is owner-scoped \
-             work that comes after the blockers and the perf bar; when it lands its reads join \
-             the admitted classes above",
+        mismatch: PINNED_MISMATCH,
     },
 ];
 
@@ -841,6 +852,9 @@ pub fn classify_admitted_path(logical_path: &str) -> &'static str {
     }
     if starts("common/") {
         return SCRIPT_DEFINITION;
+    }
+    if starts("sound/") || starts("music/") {
+        return AUDIO;
     }
     if starts("events/") {
         return EVENT_DEFINITION;
@@ -1146,6 +1160,7 @@ mod tests {
         "map_viewer/src/production_features/xmap20.rs",
         "map_viewer/src/production_foundation.rs",
         "map_viewer/src/production_map_renderer.rs",
+        "map_viewer/src/province_positions.rs",
         "map_viewer/src/rail_files.rs",
         "map_viewer/src/reflection_cube_law.rs",
         "map_viewer/src/river_mesh_synthesis.rs",
@@ -1186,6 +1201,8 @@ mod tests {
         "replay_app/src/map_labels.rs",
         "replay_app/src/political_scene.rs",
         "replay_app/src/submitted_draw.rs",
+        "replay_app/src/world_audio.rs",
+        "replay_app/src/world_audio_law.rs",
     ];
 
     /// Top-level directories of a the game install. A literal starting with one of
@@ -2067,6 +2084,7 @@ mod tests {
             SCRIPT_DEFINITION,
             EVENT_DEFINITION,
             WORLD_GFX_TABLE,
+            AUDIO,
             OTHER_ADMITTED,
             PASS_THROUGH_READER,
         ];
@@ -2923,8 +2941,7 @@ fn render_statement(
         }
     }
     for entry in GAME_FILE_LEDGER {
-        if entry.class == AUDIO
-            || entry.class == PROFILE_IDENTITY
+        if entry.class == PROFILE_IDENTITY
             || entry.class == CONTENT_ROOT
             || entry.class == PASS_THROUGH_READER
             || entry.class == RESOLVED_PATH_DECODER

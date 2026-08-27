@@ -32,6 +32,7 @@ mod timeline;
 mod tooltip_runtime;
 mod transport;
 mod validate;
+mod world_audio_law;
 
 #[cfg(windows)]
 mod app;
@@ -65,6 +66,8 @@ mod text;
 mod ui_runtime;
 #[cfg(windows)]
 mod win32;
+#[cfg(windows)]
+mod world_audio;
 #[cfg(windows)]
 mod xmap20_effects;
 
