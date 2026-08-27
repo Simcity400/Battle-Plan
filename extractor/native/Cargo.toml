@@ -24,6 +24,10 @@ members = [
     # every converted domain into every consumer's dependent closure, so a d43
     # edit would invalidate `wire_format` even though d43 has no wire port
     # (Codex thread 01a0056e-5193-7001-be11-b124736b4b5d, round 1).
+    # D64's lifecycle reason column (lane TV). Same ruling, same leaf shape: the
+    # producer lane and the wire port each held their own enum with its own
+    # copy of the codes and could not see the other.
+    "d64_grammar",
     "d68_grammar",
     # D24's payload grammar (lane KO). Its header words at `+40`/`+44` recently
     # stopped being reserved zeros and became the producer's two discovered

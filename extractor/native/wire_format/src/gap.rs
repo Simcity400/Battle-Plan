@@ -25,25 +25,22 @@ pub enum GapReason {
     Backpressure = 8,
 }
 
-impl GapReason {
-    fn from_code(code: u8) -> Result<Self> {
-        match code {
-            0 => Ok(Self::TornSweep),
-            1 => Ok(Self::SourceUnavailable),
-            2 => Ok(Self::PartialData),
-            3 => Ok(Self::Coalesced),
-            4 => Ok(Self::Skipped),
-            5 => Ok(Self::BridgeUnavailable),
-            6 => Ok(Self::WorkerPanic),
-            7 => Ok(Self::CoverageShortfall),
-            8 => Ok(Self::Backpressure),
-            _ => Err(WireError::Corrupt("unassigned gap reason")),
-        }
-    }
+crate::wire_coded::wire_coded_kinds! {
+    GapReason: u8,
+    code = pub code,
+    Ok = from_code(code) -> crate::Result<Self> {
+        Err(crate::WireError::Corrupt("unassigned gap reason"))
+    };
 
-    pub const fn code(self) -> u8 {
-        self as u8
-    }
+    TornSweep = 0,
+    SourceUnavailable = 1,
+    PartialData = 2,
+    Coalesced = 3,
+    Skipped = 4,
+    BridgeUnavailable = 5,
+    WorkerPanic = 6,
+    CoverageShortfall = 7,
+    Backpressure = 8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -54,20 +51,19 @@ pub enum GapPart {
     Both = 2,
 }
 
+crate::wire_coded::wire_coded_kinds! {
+    GapPart: u8,
+    code = pub code,
+    Ok = from_code(code) -> crate::Result<Self> {
+        Err(crate::WireError::Corrupt("gap part is outside 0..=2"))
+    };
+
+    State = 0,
+    Event = 1,
+    Both = 2,
+}
+
 impl GapPart {
-    fn from_code(code: u8) -> Result<Self> {
-        match code {
-            0 => Ok(Self::State),
-            1 => Ok(Self::Event),
-            2 => Ok(Self::Both),
-            _ => Err(WireError::Corrupt("gap part is outside 0..=2")),
-        }
-    }
-
-    pub const fn code(self) -> u8 {
-        self as u8
-    }
-
     pub const fn affects_state(self) -> bool {
         matches!(self, Self::State | Self::Both)
     }

@@ -9,8 +9,8 @@ use crate::convoy_route_source::{
 use crate::convoy_terminal_attribution::{
     route_resolution_is_well_formed, CombatEpoch, ConvoyCombatRefusal, ConvoyCombatRefusalCause,
     ConvoyRouteRefusalCause, EntityHandle,
-    ExactCombatEpochResolver, ExactLiveRouteResolver, LiveRouteResolution, RouteEndpointKind,
-    RouteProducerKind, CONVOY_ROUTE_REFUSAL_CAUSE_COUNT, D90_STATIC_AUTHORITY_MANIFEST_SHA256,
+    ExactCombatEpochResolver, ExactLiveRouteResolver, LiveRouteResolution,
+    CONVOY_ROUTE_REFUSAL_CAUSE_COUNT, D90_STATIC_AUTHORITY_MANIFEST_SHA256,
     GAME_ENTITY_TYPE_TAG,
 };
 use crate::extractor::ValidatedCombatSnapshot;
@@ -462,7 +462,7 @@ mod tests {
     // Only the fixtures build endpoints; production here carries whole
     // resolutions, so the import belongs to the test module or it is an
     // unused import in every real build (Codex round 10).
-    use crate::convoy_terminal_attribution::RouteEndpoint;
+    use crate::convoy_terminal_attribution::{RouteEndpoint, RouteEndpointKind, RouteProducerKind};
 
     /// The resolver snapshot is PROCESS-GLOBAL, and cargo runs the tests in
     /// one binary concurrently. Every test that publishes takes this first, or

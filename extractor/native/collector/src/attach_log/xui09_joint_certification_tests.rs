@@ -256,7 +256,7 @@ fn xui09_joint_a_country_the_frame_did_not_measure_loses_its_witness() {
     );
     assert_eq!(
         france["technology_states_unmeasured_reason"],
-        json!(XUI09_REFUSAL_RESEARCH_ROW_ABSENT),
+        json!(Xui09RefusalReason::ResearchRowAbsent.code()),
         "and the drop must name its cause"
     );
     let germany = &second_hour["countries"]["GER"]["research"];

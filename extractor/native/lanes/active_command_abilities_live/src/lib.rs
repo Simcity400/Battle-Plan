@@ -25,26 +25,18 @@ pub enum SelectedContextKind {
     Other(u32),
 }
 
-impl SelectedContextKind {
-    fn wire(self) -> u32 {
-        match self {
-            Self::ArmyLeader => 1,
-            Self::FieldMarshal => 2,
-            Self::ArmyGroup => 3,
-            Self::Army => 4,
-            Self::Other(v) => v | 0x8000_0000,
-        }
-    }
-    fn from_wire(v: u32) -> Result<Self, AbilityError> {
-        match v {
-            1 => Ok(Self::ArmyLeader),
-            2 => Ok(Self::FieldMarshal),
-            3 => Ok(Self::ArmyGroup),
-            4 => Ok(Self::Army),
-            v if v & 0x8000_0000 != 0 => Ok(Self::Other(v & 0x7fff_ffff)),
-            _ => invalid("selected context kind invalid"),
-        }
-    }
+compact_contract::wire_coded_codes! {
+    no_discriminant SelectedContextKind: u32,
+    code = pub(crate) wire,
+    Ok = from_wire(v) -> Result<Self, AbilityError> {
+        invalid("selected context kind invalid")
+    };
+
+    ArmyLeader = 1,
+    FieldMarshal = 2,
+    ArmyGroup = 3,
+    Army = 4,
+    ; escape masked Other, flag = 0x8000_0000u32, payload = 0x7fff_ffffu32
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,19 +46,33 @@ pub enum TimerValue {
     Hours(u32),
 }
 
+compact_contract::wire_coded_codes! {
+    no_discriminant TimerValue: u32,
+    code = tag,
+    Ok = from_tag(tag) -> Result<Self, AbilityError> {
+        invalid("timer sentinel invalid")
+    };
+
+    NotStarted = 0,
+    Indefinite = 1,
+    ; escape reserved 2 { Hours with 0 }
+}
+
 impl TimerValue {
     fn wire(self) -> (u32, u32) {
-        match self {
-            Self::NotStarted => (0, 0),
-            Self::Indefinite => (1, 0),
-            Self::Hours(v) => (2, v),
-        }
+        (
+            self.tag(),
+            match self {
+                Self::Hours(hours) => hours,
+                _ => 0,
+            },
+        )
     }
+
     fn from_wire(tag: u32, value: u32) -> Result<Self, AbilityError> {
-        match tag {
-            0 if value == 0 => Ok(Self::NotStarted),
-            1 if value == 0 => Ok(Self::Indefinite),
-            2 => Ok(Self::Hours(value)),
+        match (Self::from_tag(tag)?, value) {
+            (Self::Hours(_), hours) => Ok(Self::Hours(hours)),
+            (sentinel, 0) => Ok(sentinel),
             _ => invalid("timer sentinel invalid"),
         }
     }

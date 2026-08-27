@@ -123,8 +123,13 @@ pub struct RailWitness {
     pub quiet: bool,
 }
 
-/// Which reason forces a FULL rail copy this bracket, if any. Named on the
-/// diagnostics channel rather than silently absorbed.
+/// Which reason forces a FULL rail copy this bracket, if any.
+///
+/// The BIN and the wire name a reason is published under belong to the
+/// collector, which matches this enum exhaustively: a reason added here does
+/// not compile there until it is given one. This carried its own `as_str`
+/// and `ordinal` until lane TV made that match exhaustive, at which point
+/// nothing called either.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FullCopyReason {
     None,
@@ -133,31 +138,6 @@ pub enum FullCopyReason {
     RailWritten,
 }
 
-impl FullCopyReason {
-    pub fn as_str(self) -> Option<&'static str> {
-        match self {
-            Self::None => None,
-            Self::HooksNotInstalled => Some("d81_rail_tap_hooks_not_installed"),
-            Self::BaselinePending => Some("d81_rail_tap_baseline_pending"),
-            Self::RailWritten => Some("d81_rail_tap_rail_written"),
-        }
-    }
-
-    /// The wire ordinal this reason is binned under. `0` is the reuse arm, so
-    /// every ordinal here is non-zero and the bins partition the frames.
-    pub fn ordinal(self) -> u8 {
-        match self {
-            Self::None => 0,
-            Self::HooksNotInstalled => 1,
-            Self::BaselinePending => 2,
-            Self::RailWritten => 3,
-        }
-    }
-
-    pub fn gate_open(self) -> bool {
-        self == Self::None
-    }
-}
 
 /// Called ONCE per d81 copy bracket, before anything is read. Reports the
 /// reason the rail families must be copied in full this bracket if a GLOBAL
@@ -686,26 +666,6 @@ mod tests {
         // The next reading, with nothing in the way, is clean again: giving up
         // is per-reading and latches nothing.
         assert!(witness().quiet);
-    }
-
-    #[test]
-    fn every_reason_has_its_own_ordinal_and_none_collides_with_the_reuse_arm() {
-        // kills: two fail-closed reasons published under one bin, which would
-        // make the histogram unable to say why a frame copied.
-        let _g = lock();
-        let reasons = [
-            FullCopyReason::None,
-            FullCopyReason::HooksNotInstalled,
-            FullCopyReason::BaselinePending,
-            FullCopyReason::RailWritten,
-        ];
-        let mut seen = Vec::new();
-        for reason in reasons {
-            assert!(!seen.contains(&reason.ordinal()), "{reason:?} collides");
-            assert_eq!(reason.gate_open(), reason.ordinal() == 0);
-            assert_eq!(reason.as_str().is_none(), reason.gate_open());
-            seen.push(reason.ordinal());
-        }
     }
 
     #[test]

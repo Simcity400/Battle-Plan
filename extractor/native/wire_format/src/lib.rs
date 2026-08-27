@@ -72,6 +72,7 @@ pub mod schema;
 pub mod update;
 pub mod value;
 pub mod variant_upgrades;
+mod wire_coded;
 pub mod varint;
 
 pub use bitmap::Bitmap;

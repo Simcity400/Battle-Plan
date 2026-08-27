@@ -84,6 +84,31 @@ enum Checkpoint {
     CachedJoin = 13,
 }
 
+// The stub embeds the discriminant as an immediate and the callback decoded it
+// with a literal `match` whose wildcard RETURNED, so a checkpoint added to the
+// enum and hooked compiled and dropped every observation from that site in
+// silence (lane TV, Codex round 12).
+compact_contract::wire_coded_codes! {
+    Checkpoint: u32,
+    code = code,
+    Some = from_code(code) -> Option<Self> { None };
+
+    Entry = 0,
+    Upkeep = 1,
+    Terrain = 2,
+    Equipment = 3,
+    State = 4,
+    SupplyA = 5,
+    SupplyB = 6,
+    StateModifiers = 7,
+    WeatherModifiers = 8,
+    DerivedTerms = 9,
+    Training = 10,
+    BorderWar = 11,
+    Final = 12,
+    CachedJoin = 13,
+}
+
 #[derive(Clone, Copy)]
 enum CallbackSide {
     BeforeDisplaced,
@@ -290,22 +315,8 @@ unsafe extern "system" fn checkpoint_callback(
     if !ADMISSION_OPEN.load(Ordering::Acquire) || saved_base.is_null() || original_rsp == 0 {
         return;
     }
-    let checkpoint = match checkpoint_raw {
-        0 => Checkpoint::Entry,
-        1 => Checkpoint::Upkeep,
-        2 => Checkpoint::Terrain,
-        3 => Checkpoint::Equipment,
-        4 => Checkpoint::State,
-        5 => Checkpoint::SupplyA,
-        6 => Checkpoint::SupplyB,
-        7 => Checkpoint::StateModifiers,
-        8 => Checkpoint::WeatherModifiers,
-        9 => Checkpoint::DerivedTerms,
-        10 => Checkpoint::Training,
-        11 => Checkpoint::BorderWar,
-        12 => Checkpoint::Final,
-        13 => Checkpoint::CachedJoin,
-        _ => return,
+    let Some(checkpoint) = Checkpoint::from_code(checkpoint_raw) else {
+        return;
     };
     let registers = SavedRegisters {
         base: saved_base,
@@ -980,7 +991,7 @@ fn emit_stub(
     out.extend_from_slice(&(core::ptr::addr_of!(CALLBACKS_IN_FLIGHT) as u64).to_le_bytes());
     out.extend_from_slice(&[0xf0, 0x48, 0xff, 0x00]);
     out.push(0xb9);
-    out.extend_from_slice(&(site.checkpoint as u32).to_le_bytes());
+    out.extend_from_slice(&site.checkpoint.code().to_le_bytes());
     out.extend_from_slice(&[0x4c, 0x89, 0xe2]);
     out.extend_from_slice(&[0x4c, 0x8d, 0x44, 0x24, 0x20]);
     out.extend_from_slice(&[0x4d, 0x8d, 0x8c, 0x24, 0x80, 0x00, 0x00, 0x00]);

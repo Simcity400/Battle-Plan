@@ -28,23 +28,26 @@ pub enum Kind {
     ReservedEvent7 = 7,
 }
 
+crate::wire_coded::wire_coded_kinds! {
+    Kind: u64,
+    code = pub code,
+    Ok = from_code_inner(code) -> crate::Result<Self> {
+        Err(crate::WireError::Corrupt("kind is three bits"))
+    };
+
+    Baseline = 0,
+    Delta = 1,
+    Unchanged = 2,
+    Events = 3,
+    ReservedState4 = 4,
+    ReservedState5 = 5,
+    ReservedEvent6 = 6,
+    ReservedEvent7 = 7,
+}
+
 impl Kind {
     pub fn from_code(code: u64) -> Result<Self> {
-        Ok(match code {
-            0 => Kind::Baseline,
-            1 => Kind::Delta,
-            2 => Kind::Unchanged,
-            3 => Kind::Events,
-            4 => Kind::ReservedState4,
-            5 => Kind::ReservedState5,
-            6 => Kind::ReservedEvent6,
-            7 => Kind::ReservedEvent7,
-            _ => return Err(WireError::Corrupt("kind is three bits")),
-        })
-    }
-
-    pub fn code(self) -> u64 {
-        self as u64
+        Self::from_code_inner(code)
     }
 
     pub fn part(self) -> Part {

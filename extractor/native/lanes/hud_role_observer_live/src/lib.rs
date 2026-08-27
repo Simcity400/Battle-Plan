@@ -31,6 +31,17 @@ pub enum AlertDedupIdentity {
     OpaqueEngineObjectOmitted = 3,
 }
 
+compact_contract::wire_coded_codes! {
+    AlertDedupIdentity: u8,
+    code = pub code,
+    Some = from_code(code) -> Option<Self> { None };
+
+    ZeroTuple = 0,
+    CountryDbId = 1,
+    CommandGroupOmitted = 2,
+    OpaqueEngineObjectOmitted = 3,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActiveAlertRow {
     pub alert_type: u16,
@@ -158,7 +169,7 @@ pub fn encode_activation_payload(frame: &HudSurfaceActivationFrame) -> Result<Ve
     out.extend_from_slice(&(frame.active_surfaces.len() as u16).to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes());
     for row in &frame.active_surfaces {
-        out.push(surface_code(row.surface));
+        out.push(row.surface.code());
         out.push(0);
         out.extend_from_slice(&(row.runtime_root_name.len() as u16).to_le_bytes());
         out.extend_from_slice(row.runtime_root_name.as_bytes());
@@ -183,7 +194,7 @@ pub fn encode_activation_payload_with_topbar_alerts(
     for row in &alerts.active_alerts {
         out.extend_from_slice(&row.alert_type.to_le_bytes());
         out.extend_from_slice(&row.source_ordinal.to_le_bytes());
-        out.push(row.dedup_identity as u8);
+        out.push(row.dedup_identity.code());
         out.push(u8::from(row.icon_present));
         out.extend_from_slice(&row.icon_frame.unwrap_or(u16::MAX).to_le_bytes());
         out.extend_from_slice(&row.priority.to_le_bytes());
@@ -220,7 +231,9 @@ pub fn decode_activation_payload_with_topbar_alerts(
         if cursor.saturating_add(4) > payload.len() || payload[cursor + 1] != 0 {
             return Err("HUD activation row header is truncated or invalid".into());
         }
-        let surface = surface_from_code(payload[cursor])?;
+        let Some(surface) = HudSurface::from_code(payload[cursor]) else {
+            return Err("HUD activation payload contains an unknown surface code".into());
+        };
         let name_len =
             u16::from_le_bytes(payload[cursor + 2..cursor + 4].try_into().unwrap()) as usize;
         cursor += 4;
@@ -266,12 +279,9 @@ pub fn decode_activation_payload_with_topbar_alerts(
         let mut active_alerts = Vec::with_capacity(row_count);
         let mut row_cursor = cursor + 32;
         for _ in 0..row_count {
-            let dedup_identity = match payload[row_cursor + 4] {
-                0 => AlertDedupIdentity::ZeroTuple,
-                1 => AlertDedupIdentity::CountryDbId,
-                2 => AlertDedupIdentity::CommandGroupOmitted,
-                3 => AlertDedupIdentity::OpaqueEngineObjectOmitted,
-                _ => return Err("HUD active-alert row has an unknown dedup identity".into()),
+            let Some(dedup_identity) = AlertDedupIdentity::from_code(payload[row_cursor + 4])
+            else {
+                return Err("HUD active-alert row has an unknown dedup identity".into());
             };
             let flags = payload[row_cursor + 5];
             if flags & !1 != 0 || u32_at(row_cursor + 24) != 0 {
@@ -385,25 +395,6 @@ fn validate_topbar_alert_counts(alerts: &TopbarAlertCounts) -> Result<(), String
         previous = Some((row.alert_type, row.source_ordinal));
     }
     Ok(())
-}
-
-fn surface_code(surface: HudSurface) -> u8 {
-    match surface {
-        HudSurface::Topbar => 0,
-        HudSurface::Minimap => 1,
-        HudSurface::Mapmodes => 2,
-        HudSurface::TheatreSelector => 3,
-        HudSurface::DesignerCountryEquipment => 4,
-        HudSurface::DesignerTank => 5,
-        HudSurface::DesignerPlane => 6,
-    }
-}
-
-fn surface_from_code(code: u8) -> Result<HudSurface, String> {
-    ALL_HUD_SURFACES
-        .get(code as usize)
-        .copied()
-        .ok_or_else(|| "HUD activation payload contains an unknown surface code".into())
 }
 
 fn validate_activations(surfaces: &[HudSurfaceActivation]) -> Result<(), String> {

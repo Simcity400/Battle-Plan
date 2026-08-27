@@ -124,15 +124,22 @@ impl FreezeCensusPhase {
     }
 }
 
+crate::wire_coded_codes! {
+    FreezeCensusPhase: u8,
+    code = pub code,
+    Ok = from_wire(value) -> Result<Self, String> {
+        Err(format!("H4FC phase {value} is unassigned"))
+    };
+
+    Install = 1,
+    Release = 2,
+}
+
 impl TryFrom<u8> for FreezeCensusPhase {
     type Error = String;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(Self::Install),
-            2 => Ok(Self::Release),
-            _ => Err(format!("H4FC phase {value} is unassigned")),
-        }
+        Self::from_wire(value)
     }
 }
 
@@ -164,21 +171,28 @@ impl FreezeCensusEntryPoint {
     }
 }
 
+crate::wire_coded_codes! {
+    FreezeCensusEntryPoint: u8,
+    code = pub code,
+    Ok = from_wire(value) -> Result<Self, String> {
+        Err(format!("H4FC entry-point code {value} is unassigned"))
+    };
+
+    Direct = 0,
+    Enable = 1,
+    ApplyQueued = 2,
+    EnableBatch = 3,
+    Disable = 4,
+    DisableBatch = 5,
+    Remove = 6,
+    RemoveBatch = 7,
+}
+
 impl TryFrom<u8> for FreezeCensusEntryPoint {
     type Error = String;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::Direct),
-            1 => Ok(Self::Enable),
-            2 => Ok(Self::ApplyQueued),
-            3 => Ok(Self::EnableBatch),
-            4 => Ok(Self::Disable),
-            5 => Ok(Self::DisableBatch),
-            6 => Ok(Self::Remove),
-            7 => Ok(Self::RemoveBatch),
-            _ => Err(format!("H4FC entry-point code {value} is unassigned")),
-        }
+        Self::from_wire(value)
     }
 }
 
@@ -433,7 +447,7 @@ impl FreezeCensusRecordV1 {
         out[0..4].copy_from_slice(FREEZE_CENSUS_MAGIC);
         put_u16(&mut out, 4, FREEZE_CENSUS_VERSION);
         put_u16(&mut out, 6, FREEZE_CENSUS_HEADER_LEN as u16);
-        out[8] = phase as u8;
+        out[8] = phase.code();
         out[9] = quality;
         put_u16(&mut out, 10, FREEZE_CENSUS_ROW_LEN as u16);
         put_u32(&mut out, 12, payload_len_u32);
@@ -464,7 +478,7 @@ impl FreezeCensusRecordV1 {
             put_u64(&mut out, row_start, row.ordinal);
             out[row_start + 8] = row
                 .entry_point
-                .map_or(REFUSED_ENTRY_POINT_SENTINEL, |entry| entry as u8);
+                .map_or(REFUSED_ENTRY_POINT_SENTINEL, |entry| entry.code());
             out[row_start + 9] = if row.refused { ROW_FLAG_REFUSED } else { 0 };
             put_u16(
                 &mut out,

@@ -70,47 +70,67 @@ pub enum TextUnavailable {
     NotUtf8,
 }
 
+/// The code, its reverse and the token are ONE declaration.
+///
+/// They were three matches over the same mapping, so swapping two tokens
+/// compiled and made the attach log and the world fold publish each cause
+/// under the other's name (Codex round 6). The token must now spell its own
+/// variant, the two code directions are generated from one column, and the
+/// codes are a dense set from 1.
+macro_rules! text_unavailable_causes {
+    ($( $variant:ident = $code:literal => $token:literal, )+) => {
+        impl TextUnavailable {
+            pub const fn code(self) -> u8 {
+                match self {
+                    $(Self::$variant => $code,)+
+                }
+            }
+
+            pub const fn from_code(code: u8) -> Option<Self> {
+                match code {
+                    $($code => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+
+            pub const fn token(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $token,)+
+                }
+            }
+        }
+
+        const _: () = {
+            assert!(
+                compact_contract::diagnostic_channel::indices_are_a_bijection(
+                    &[$($code - 1,)+],
+                    [$($code,)+].len(),
+                ),
+                "two text-unavailable causes share a code, or one is outside 1..=count",
+            );
+            $(assert!(
+                compact_contract::diagnostic_channel::const_str_is_snake_of(
+                    $token,
+                    stringify!($variant),
+                ),
+                "a text-unavailable token does not spell the cause it names",
+            );)+
+        };
+    };
+}
+
+text_unavailable_causes! {
+    LengthWordUnreadable = 1 => "length_word_unreadable",
+    CapacityWordUnreadable = 2 => "capacity_word_unreadable",
+    EngineEmpty = 3 => "engine_empty",
+    LengthExceedsCaptureBound = 4 => "length_exceeds_capture_bound",
+    CapacityBelowLength = 5 => "capacity_below_length",
+    PayloadUnreadable = 6 => "payload_unreadable",
+    EmbeddedNul = 7 => "embedded_nul",
+    NotUtf8 = 8 => "not_utf8",
+}
+
 impl TextUnavailable {
-    pub const fn code(self) -> u8 {
-        match self {
-            Self::LengthWordUnreadable => 1,
-            Self::CapacityWordUnreadable => 2,
-            Self::EngineEmpty => 3,
-            Self::LengthExceedsCaptureBound => 4,
-            Self::CapacityBelowLength => 5,
-            Self::PayloadUnreadable => 6,
-            Self::EmbeddedNul => 7,
-            Self::NotUtf8 => 8,
-        }
-    }
-
-    pub const fn from_code(code: u8) -> Option<Self> {
-        match code {
-            1 => Some(Self::LengthWordUnreadable),
-            2 => Some(Self::CapacityWordUnreadable),
-            3 => Some(Self::EngineEmpty),
-            4 => Some(Self::LengthExceedsCaptureBound),
-            5 => Some(Self::CapacityBelowLength),
-            6 => Some(Self::PayloadUnreadable),
-            7 => Some(Self::EmbeddedNul),
-            8 => Some(Self::NotUtf8),
-            _ => None,
-        }
-    }
-
-    pub const fn token(self) -> &'static str {
-        match self {
-            Self::LengthWordUnreadable => "length_word_unreadable",
-            Self::CapacityWordUnreadable => "capacity_word_unreadable",
-            Self::EngineEmpty => "engine_empty",
-            Self::LengthExceedsCaptureBound => "length_exceeds_capture_bound",
-            Self::CapacityBelowLength => "capacity_below_length",
-            Self::PayloadUnreadable => "payload_unreadable",
-            Self::EmbeddedNul => "embedded_nul",
-            Self::NotUtf8 => "not_utf8",
-        }
-    }
-
     pub const fn describe(self) -> &'static str {
         match self {
             Self::LengthWordUnreadable => "the std::string length word (+0x10) could not be read",

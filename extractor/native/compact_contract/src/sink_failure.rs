@@ -49,20 +49,19 @@ pub enum SinkErrorClass {
     OtherIo = 8,
 }
 
-impl SinkErrorClass {
-    fn from_wire(value: u16) -> Result<Self, SinkStatusError> {
-        match value {
-            1 => Ok(Self::Win32),
-            2 => Ok(Self::AccessDenied),
-            3 => Ok(Self::BrokenPipe),
-            4 => Ok(Self::DiskFull),
-            5 => Ok(Self::ShortWrite),
-            6 => Ok(Self::Cancelled),
-            7 => Ok(Self::DeadlineExpired),
-            8 => Ok(Self::OtherIo),
-            other => Err(SinkStatusError::UnknownErrorClass(other)),
-        }
-    }
+crate::wire_coded_codes! {
+    SinkErrorClass: u16,
+    code = pub code,
+    Ok = from_wire(value) -> Result<Self, SinkStatusError> { Err(SinkStatusError::UnknownErrorClass(value)) };
+
+    Win32 = 1,
+    AccessDenied = 2,
+    BrokenPipe = 3,
+    DiskFull = 4,
+    ShortWrite = 5,
+    Cancelled = 6,
+    DeadlineExpired = 7,
+    OtherIo = 8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -133,7 +132,7 @@ pub fn encode_sink_failure(
     payload[5] = report.opened.bits();
     payload[6] = report.failed.bits();
     payload[7] = report.terminality as u8;
-    payload[8..10].copy_from_slice(&(report.error_class as u16).to_le_bytes());
+    payload[8..10].copy_from_slice(&report.error_class.code().to_le_bytes());
     if let Some(error) = report.win32_error {
         payload[10] = 1;
         payload[12..16].copy_from_slice(&error.to_le_bytes());

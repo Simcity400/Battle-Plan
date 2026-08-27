@@ -38,52 +38,6 @@ pub const GAP_REASON_CODE_COVERAGE_SHORTFALL: u8 = 8;
 pub const GAP_REASON_CODE_BACKPRESSURE: u8 = 9;
 
 impl GapReason {
-    pub const ALL: [GapReason; 9] = [
-        Self::Coalesced,
-        Self::SkippedHour,
-        Self::SourceUnavailable,
-        Self::PartialData,
-        Self::BridgeUnavailable,
-        Self::WorkerPanic,
-        Self::TornSweep,
-        Self::CoverageShortfall,
-        Self::Backpressure,
-    ];
-
-    pub const fn wire_name(self) -> &'static str {
-        match self {
-            Self::Coalesced => "coalesced",
-            Self::SkippedHour => "skipped_hour",
-            Self::SourceUnavailable => "source_unavailable",
-            Self::PartialData => "partial_data",
-            Self::BridgeUnavailable => "bridge_unavailable",
-            Self::WorkerPanic => "worker_panic",
-            Self::TornSweep => "torn_sweep",
-            Self::CoverageShortfall => "coverage_shortfall",
-            Self::Backpressure => "backpressure",
-        }
-    }
-
-    pub fn from_wire_name(name: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|reason| reason.wire_name() == name)
-    }
-
-    pub const fn code(self) -> u8 {
-        match self {
-            Self::Coalesced => GAP_REASON_CODE_COALESCED,
-            Self::SkippedHour => GAP_REASON_CODE_SKIPPED_HOUR,
-            Self::SourceUnavailable => GAP_REASON_CODE_SOURCE_UNAVAILABLE,
-            Self::PartialData => GAP_REASON_CODE_PARTIAL_DATA,
-            Self::BridgeUnavailable => GAP_REASON_CODE_BRIDGE_UNAVAILABLE,
-            Self::WorkerPanic => GAP_REASON_CODE_WORKER_PANIC,
-            Self::TornSweep => GAP_REASON_CODE_TORN_SWEEP,
-            Self::CoverageShortfall => GAP_REASON_CODE_COVERAGE_SHORTFALL,
-            Self::Backpressure => GAP_REASON_CODE_BACKPRESSURE,
-        }
-    }
-
     pub const fn canonical_for_status_bits(status_bits: u32) -> Option<Self> {
         if status_bits == 0 || status_bits & !GAP_STATUS_MASK != 0 {
             None
@@ -112,35 +66,6 @@ pub const GAP_COUNTER_CODE_COALESCED_HOURS: u8 = 1;
 pub const GAP_COUNTER_CODE_QUEUE_OVERRUN_HOURS: u8 = 2;
 pub const GAP_COUNTER_CODE_SINK_BACKPRESSURE_HOURS: u8 = 3;
 
-impl GapCounter {
-    pub const ALL: [GapCounter; 3] = [
-        Self::CoalescedHours,
-        Self::QueueOverrunHours,
-        Self::SinkBackpressureHours,
-    ];
-
-    pub const fn code(self) -> u8 {
-        match self {
-            Self::CoalescedHours => GAP_COUNTER_CODE_COALESCED_HOURS,
-            Self::QueueOverrunHours => GAP_COUNTER_CODE_QUEUE_OVERRUN_HOURS,
-            Self::SinkBackpressureHours => GAP_COUNTER_CODE_SINK_BACKPRESSURE_HOURS,
-        }
-    }
-
-    pub const fn wire_name(self) -> &'static str {
-        match self {
-            Self::CoalescedHours => "coalesced_hours",
-            Self::QueueOverrunHours => "queue_overrun_hours",
-            Self::SinkBackpressureHours => "sink_backpressure_hours",
-        }
-    }
-
-    pub fn from_wire_name(name: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|counter| counter.wire_name() == name)
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GapWitness {
@@ -515,18 +440,7 @@ fn gap_reason_code(reason: GapReason) -> u8 {
 }
 
 fn gap_reason_from_code(code: u8) -> Result<GapReason, GapRecordCodecError> {
-    match code {
-        GAP_REASON_CODE_COALESCED => Ok(GapReason::Coalesced),
-        GAP_REASON_CODE_SKIPPED_HOUR => Ok(GapReason::SkippedHour),
-        GAP_REASON_CODE_SOURCE_UNAVAILABLE => Ok(GapReason::SourceUnavailable),
-        GAP_REASON_CODE_PARTIAL_DATA => Ok(GapReason::PartialData),
-        GAP_REASON_CODE_BRIDGE_UNAVAILABLE => Ok(GapReason::BridgeUnavailable),
-        GAP_REASON_CODE_WORKER_PANIC => Ok(GapReason::WorkerPanic),
-        GAP_REASON_CODE_TORN_SWEEP => Ok(GapReason::TornSweep),
-        GAP_REASON_CODE_COVERAGE_SHORTFALL => Ok(GapReason::CoverageShortfall),
-        GAP_REASON_CODE_BACKPRESSURE => Ok(GapReason::Backpressure),
-        other => Err(GapRecordCodecError::UnknownReason(other)),
-    }
+    GapReason::decode(code).ok_or(GapRecordCodecError::UnknownReason(code))
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> u16 {
@@ -731,15 +645,13 @@ pub fn decode_gap_record(bytes: &[u8]) -> Result<GapRecord, GapRecordCodecError>
             {
                 return Err(GapRecordCodecError::NonZeroReserved);
             }
-            let counter = match bytes[28] {
-                GAP_COUNTER_CODE_COALESCED_HOURS => GapCounter::CoalescedHours,
-                GAP_COUNTER_CODE_QUEUE_OVERRUN_HOURS if version == GAP_RECORD_VERSION => {
-                    GapCounter::QueueOverrunHours
-                }
-                GAP_COUNTER_CODE_SINK_BACKPRESSURE_HOURS if version == GAP_RECORD_VERSION => {
-                    GapCounter::SinkBackpressureHours
-                }
-                other => return Err(GapRecordCodecError::UnknownCounter(other)),
+            // The counter set is the taxonomy's; only the VERSION GUARD lives
+            // here, because which counters a version may carry is this
+            // decoder's question and not the taxonomy's.
+            let counter = match GapCounter::decode(bytes[28]) {
+                Some(GapCounter::CoalescedHours) => GapCounter::CoalescedHours,
+                Some(counter) if version == GAP_RECORD_VERSION => counter,
+                _ => return Err(GapRecordCodecError::UnknownCounter(bytes[28])),
             };
             GapWitness::Counter {
                 counter,
@@ -1372,4 +1284,30 @@ mod tests {
         }
         assert_eq!(GapReason::from_wire_name("not_a_reason"), None);
     }
+}
+
+crate::cause_tables::wire_coded_causes! {
+    GapReason: u8, all = ALL, code = code, from_code = decode,
+    wire_name = wire_name, from_wire_name = from_wire_name,
+    discriminant_is_code = false;
+
+    Coalesced = GAP_REASON_CODE_COALESCED => "coalesced",
+    SkippedHour = GAP_REASON_CODE_SKIPPED_HOUR => "skipped_hour",
+    SourceUnavailable = GAP_REASON_CODE_SOURCE_UNAVAILABLE => "source_unavailable",
+    PartialData = GAP_REASON_CODE_PARTIAL_DATA => "partial_data",
+    BridgeUnavailable = GAP_REASON_CODE_BRIDGE_UNAVAILABLE => "bridge_unavailable",
+    WorkerPanic = GAP_REASON_CODE_WORKER_PANIC => "worker_panic",
+    TornSweep = GAP_REASON_CODE_TORN_SWEEP => "torn_sweep",
+    CoverageShortfall = GAP_REASON_CODE_COVERAGE_SHORTFALL => "coverage_shortfall",
+    Backpressure = GAP_REASON_CODE_BACKPRESSURE => "backpressure",
+}
+
+crate::cause_tables::wire_coded_causes! {
+    GapCounter: u8, all = ALL, code = code, from_code = decode,
+    wire_name = wire_name, from_wire_name = from_wire_name,
+    discriminant_is_code = false;
+
+    CoalescedHours = GAP_COUNTER_CODE_COALESCED_HOURS => "coalesced_hours",
+    QueueOverrunHours = GAP_COUNTER_CODE_QUEUE_OVERRUN_HOURS => "queue_overrun_hours",
+    SinkBackpressureHours = GAP_COUNTER_CODE_SINK_BACKPRESSURE_HOURS => "sink_backpressure_hours",
 }

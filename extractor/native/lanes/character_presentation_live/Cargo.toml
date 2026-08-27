@@ -14,6 +14,9 @@ path = "src/lib.rs"
 # 39573eb8a; that call was removed before this change.) The package builder and
 # the receipt verifier assert this table's shape, so a feature added back here
 # is refused before a package is built.
+[dependencies]
+compact_contract = { path = "../../compact_contract" }
+
 [features]
 default = []
 

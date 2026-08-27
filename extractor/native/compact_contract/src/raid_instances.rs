@@ -21,6 +21,15 @@ pub enum RaidParentClassification {
     Country = 1,
 }
 
+crate::wire_coded_codes! {
+    RaidParentClassification: u32,
+    code = pub code,
+    Some = pub from_raw(value) -> Option<Self> { None };
+
+    MissingTagDummy = 0,
+    Country = 1,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum RaidPhase {
@@ -31,18 +40,19 @@ pub enum RaidPhase {
     Ended = 5,
 }
 
-impl RaidPhase {
-    pub fn from_raw(value: u32) -> Option<Self> {
-        Some(match value {
-            1 => Self::Assembling,
-            2 => Self::Preparing,
-            3 => Self::Prepared,
-            4 => Self::InProgress,
-            5 => Self::Ended,
-            _ => return None,
-        })
-    }
+crate::wire_coded_codes! {
+    RaidPhase: u32,
+    code = pub code,
+    Some = pub from_raw(value) -> Option<Self> { None };
 
+    Assembling = 1,
+    Preparing = 2,
+    Prepared = 3,
+    InProgress = 4,
+    Ended = 5,
+}
+
+impl RaidPhase {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Assembling => "ASSEMBLING",
@@ -65,19 +75,20 @@ pub enum RaidOutcome {
     Canceled = 5,
 }
 
-impl RaidOutcome {
-    pub fn from_raw(value: u32) -> Option<Self> {
-        Some(match value {
-            0 => Self::None,
-            1 => Self::Failure,
-            2 => Self::LimitedSuccess,
-            3 => Self::Success,
-            4 => Self::CriticalSuccess,
-            5 => Self::Canceled,
-            _ => return None,
-        })
-    }
+crate::wire_coded_codes! {
+    RaidOutcome: u32,
+    code = pub code,
+    Some = pub from_raw(value) -> Option<Self> { None };
 
+    None = 0,
+    Failure = 1,
+    LimitedSuccess = 2,
+    Success = 3,
+    CriticalSuccess = 4,
+    Canceled = 5,
+}
+
+impl RaidOutcome {
     pub fn as_str(self) -> Option<&'static str> {
         Some(match self {
             Self::None => return None,
@@ -171,7 +182,7 @@ pub fn encode_payload(
         put_u32(&mut out, row.producer_ordinal);
         put_u32(&mut out, row.country_tag_db_id);
         put_i32(&mut out, row.priority);
-        put_u32(&mut out, row.classification as u32);
+        put_u32(&mut out, row.classification.code());
         put_u32(&mut out, row.first_child_ordinal);
         put_u32(&mut out, row.child_count);
         put_u64(&mut out, 0);
@@ -183,8 +194,8 @@ pub fn encode_payload(
         put_u32(&mut out, row.raid_id);
         put_u32(&mut out, row.raid_id_type);
         put_i32(&mut out, row.prep_time_hours);
-        put_u32(&mut out, row.phase as u32);
-        put_u32(&mut out, row.outcome as u32);
+        put_u32(&mut out, row.phase.code());
+        put_u32(&mut out, row.outcome.code());
         put_u32(&mut out, u32::from(row.end_date_present));
         put_u32(&mut out, row.victim_country_tag_db_id);
         put_u32(&mut out, row.source_kind_raw);
@@ -245,11 +256,8 @@ pub fn decode_payload(payload: &[u8]) -> Result<DecodedRaidInstancesPayload, Str
     let mut parents = Vec::with_capacity(parent_count);
     for index in 0..parent_count {
         let at = HEADER_LEN + index * PARENT_LEN;
-        let classification = match read_u32(payload, at + 12)? {
-            0 => RaidParentClassification::MissingTagDummy,
-            1 => RaidParentClassification::Country,
-            _ => return Err(format!("RID1 parent {index} classification invalid")),
-        };
+        let classification = RaidParentClassification::from_raw(read_u32(payload, at + 12)?)
+            .ok_or_else(|| format!("RID1 parent {index} classification invalid"))?;
         if read_u64(payload, at + 24)? != 0 {
             return Err(format!("RID1 parent {index} reserved tail nonzero"));
         }

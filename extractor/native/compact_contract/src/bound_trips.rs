@@ -1,73 +1,28 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
-pub const BOUND_TRIP_UNIT_LEADER_SKILL: usize = 0;
-pub const BOUND_TRIP_FOCUS_COUNT: usize = 1;
-pub const BOUND_TRIP_COMPLETED_TECH_COUNT: usize = 2;
-pub const BOUND_TRIP_OWNER_TAG_DB_ID: usize = 3;
-pub const BOUND_TRIP_PLAYER_TAG_DB_ID: usize = 4;
-pub const BOUND_TRIP_TAG_DB_ID_1024: usize = 5;
-pub const BOUND_TRIP_FACTION_SLOTS: usize = 6;
-pub const BOUND_TRIP_FACTION_MEMBERS: usize = 7;
-pub const BOUND_TRIP_COUNTRY_LINK_INDEX: usize = 8;
-pub const BOUND_TRIP_SUPPLY_PROVINCE_ID: usize = 9;
-pub const BOUND_TRIP_WEATHER_ARRAY_LEN: usize = 10;
-pub const BOUND_TRIP_POLITICAL_PARTY_COUNT: usize = 11;
-pub const BOUND_TRIP_MAP_STATE_ID: usize = 12;
-pub const BOUND_TRIP_FACTION_GROUP_INDEX: usize = 13;
-pub const BOUND_TRIP_MAP_PROVINCE_ID: usize = 14;
-pub const BOUND_TRIP_MAP_PROVINCE_SLOTS: usize = 15;
-pub const BOUND_TRIP_CSUPPLY_INPUT_LEN: usize = 16;
-pub const BOUND_TRIP_ID_COUNT: usize = 17;
+crate::cause_tables::numbered_cause_id_pairs! {
+    count = BOUND_TRIP_ID_COUNT, names = BOUND_TRIP_UNITS,
+    unit_prefix = "bt_", count_suffix = "_trips", sample_suffix = "_raw_sample",
+    id_prefix = "bound_trip_";
 
-pub const BOUND_TRIP_UNITS: [(&str, &str); BOUND_TRIP_ID_COUNT] = [
-    (
-        "bt_unit_leader_skill_trips",
-        "bt_unit_leader_skill_raw_sample",
-    ),
-    ("bt_focus_count_trips", "bt_focus_count_raw_sample"),
-    (
-        "bt_completed_tech_count_trips",
-        "bt_completed_tech_count_raw_sample",
-    ),
-    ("bt_owner_tag_db_id_trips", "bt_owner_tag_db_id_raw_sample"),
-    (
-        "bt_player_tag_db_id_trips",
-        "bt_player_tag_db_id_raw_sample",
-    ),
-    ("bt_tag_db_id_1024_trips", "bt_tag_db_id_1024_raw_sample"),
-    ("bt_faction_slots_trips", "bt_faction_slots_raw_sample"),
-    ("bt_faction_members_trips", "bt_faction_members_raw_sample"),
-    (
-        "bt_country_link_index_trips",
-        "bt_country_link_index_raw_sample",
-    ),
-    (
-        "bt_supply_province_id_trips",
-        "bt_supply_province_id_raw_sample",
-    ),
-    (
-        "bt_weather_array_len_trips",
-        "bt_weather_array_len_raw_sample",
-    ),
-    (
-        "bt_political_party_count_trips",
-        "bt_political_party_count_raw_sample",
-    ),
-    ("bt_map_state_id_trips", "bt_map_state_id_raw_sample"),
-    (
-        "bt_faction_group_index_trips",
-        "bt_faction_group_index_raw_sample",
-    ),
-    ("bt_map_province_id_trips", "bt_map_province_id_raw_sample"),
-    (
-        "bt_map_province_slots_trips",
-        "bt_map_province_slots_raw_sample",
-    ),
-    (
-        "bt_csupply_input_len_trips",
-        "bt_csupply_input_len_raw_sample",
-    ),
-];
+    BOUND_TRIP_UNIT_LEADER_SKILL = 0 => unit_leader_skill,
+    BOUND_TRIP_FOCUS_COUNT = 1 => focus_count,
+    BOUND_TRIP_COMPLETED_TECH_COUNT = 2 => completed_tech_count,
+    BOUND_TRIP_OWNER_TAG_DB_ID = 3 => owner_tag_db_id,
+    BOUND_TRIP_PLAYER_TAG_DB_ID = 4 => player_tag_db_id,
+    BOUND_TRIP_TAG_DB_ID_1024 = 5 => tag_db_id_1024,
+    BOUND_TRIP_FACTION_SLOTS = 6 => faction_slots,
+    BOUND_TRIP_FACTION_MEMBERS = 7 => faction_members,
+    BOUND_TRIP_COUNTRY_LINK_INDEX = 8 => country_link_index,
+    BOUND_TRIP_SUPPLY_PROVINCE_ID = 9 => supply_province_id,
+    BOUND_TRIP_WEATHER_ARRAY_LEN = 10 => weather_array_len,
+    BOUND_TRIP_POLITICAL_PARTY_COUNT = 11 => political_party_count,
+    BOUND_TRIP_MAP_STATE_ID = 12 => map_state_id,
+    BOUND_TRIP_FACTION_GROUP_INDEX = 13 => faction_group_index,
+    BOUND_TRIP_MAP_PROVINCE_ID = 14 => map_province_id,
+    BOUND_TRIP_MAP_PROVINCE_SLOTS = 15 => map_province_slots,
+    BOUND_TRIP_CSUPPLY_INPUT_LEN = 16 => csupply_input_len,
+}
 
 #[allow(clippy::declare_interior_mutable_const)]
 const ATOMIC_ZERO: AtomicU64 = AtomicU64::new(0);
@@ -422,153 +377,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn each_bound_id_is_pinned_to_its_own_unit_names() {
-        let mut pinned = std::vec::Vec::new();
-        for (id, expected) in [
-            (
-                BOUND_TRIP_UNIT_LEADER_SKILL,
-                (
-                    "bt_unit_leader_skill_trips",
-                    "bt_unit_leader_skill_raw_sample",
-                ),
-            ),
-            (
-                BOUND_TRIP_FOCUS_COUNT,
-                ("bt_focus_count_trips", "bt_focus_count_raw_sample"),
-            ),
-            (
-                BOUND_TRIP_COMPLETED_TECH_COUNT,
-                (
-                    "bt_completed_tech_count_trips",
-                    "bt_completed_tech_count_raw_sample",
-                ),
-            ),
-            (
-                BOUND_TRIP_OWNER_TAG_DB_ID,
-                ("bt_owner_tag_db_id_trips", "bt_owner_tag_db_id_raw_sample"),
-            ),
-            (
-                BOUND_TRIP_PLAYER_TAG_DB_ID,
-                (
-                    "bt_player_tag_db_id_trips",
-                    "bt_player_tag_db_id_raw_sample",
-                ),
-            ),
-            (
-                BOUND_TRIP_TAG_DB_ID_1024,
-                ("bt_tag_db_id_1024_trips", "bt_tag_db_id_1024_raw_sample"),
-            ),
-            (
-                BOUND_TRIP_FACTION_SLOTS,
-                ("bt_faction_slots_trips", "bt_faction_slots_raw_sample"),
-            ),
-            (
-                BOUND_TRIP_FACTION_MEMBERS,
-                ("bt_faction_members_trips", "bt_faction_members_raw_sample"),
-            ),
-            (
-                BOUND_TRIP_COUNTRY_LINK_INDEX,
-                (
-                    "bt_country_link_index_trips",
-                    "bt_country_link_index_raw_sample",
-                ),
-            ),
-            (
-                BOUND_TRIP_SUPPLY_PROVINCE_ID,
-                (
-                    "bt_supply_province_id_trips",
-                    "bt_supply_province_id_raw_sample",
-                ),
-            ),
-            (
-                BOUND_TRIP_WEATHER_ARRAY_LEN,
-                (
-                    "bt_weather_array_len_trips",
-                    "bt_weather_array_len_raw_sample",
-                ),
-            ),
-            (
-                BOUND_TRIP_POLITICAL_PARTY_COUNT,
-                (
-                    "bt_political_party_count_trips",
-                    "bt_political_party_count_raw_sample",
-                ),
-            ),
-            (
-                BOUND_TRIP_MAP_STATE_ID,
-                ("bt_map_state_id_trips", "bt_map_state_id_raw_sample"),
-            ),
-            (
-                BOUND_TRIP_FACTION_GROUP_INDEX,
-                (
-                    "bt_faction_group_index_trips",
-                    "bt_faction_group_index_raw_sample",
-                ),
-            ),
-            (
-                BOUND_TRIP_MAP_PROVINCE_ID,
-                ("bt_map_province_id_trips", "bt_map_province_id_raw_sample"),
-            ),
-            (
-                BOUND_TRIP_MAP_PROVINCE_SLOTS,
-                (
-                    "bt_map_province_slots_trips",
-                    "bt_map_province_slots_raw_sample",
-                ),
-            ),
-            (
-                BOUND_TRIP_CSUPPLY_INPUT_LEN,
-                (
-                    "bt_csupply_input_len_trips",
-                    "bt_csupply_input_len_raw_sample",
-                ),
-            ),
-        ] {
-            pinned.push(id);
-            assert_eq!(BOUND_TRIP_UNITS[id], expected, "bound id {id}");
-        }
-
-        pinned.sort_unstable();
-        assert_eq!(
-            pinned,
-            (0..BOUND_TRIP_ID_COUNT).collect::<std::vec::Vec<_>>(),
-            "every bound id must be pinned to its own unit NAMES above, not just \
-             to the distinctness list below"
-        );
-
-        let ids = [
-            BOUND_TRIP_UNIT_LEADER_SKILL,
-            BOUND_TRIP_FOCUS_COUNT,
-            BOUND_TRIP_COMPLETED_TECH_COUNT,
-            BOUND_TRIP_OWNER_TAG_DB_ID,
-            BOUND_TRIP_PLAYER_TAG_DB_ID,
-            BOUND_TRIP_TAG_DB_ID_1024,
-            BOUND_TRIP_FACTION_SLOTS,
-            BOUND_TRIP_FACTION_MEMBERS,
-            BOUND_TRIP_COUNTRY_LINK_INDEX,
-            BOUND_TRIP_SUPPLY_PROVINCE_ID,
-            BOUND_TRIP_WEATHER_ARRAY_LEN,
-            BOUND_TRIP_POLITICAL_PARTY_COUNT,
-            BOUND_TRIP_MAP_STATE_ID,
-            BOUND_TRIP_FACTION_GROUP_INDEX,
-            BOUND_TRIP_MAP_PROVINCE_ID,
-            BOUND_TRIP_MAP_PROVINCE_SLOTS,
-            BOUND_TRIP_CSUPPLY_INPUT_LEN,
-        ];
-        assert_eq!(
-            ids.len(),
-            BOUND_TRIP_ID_COUNT,
-            "an id is missing from this table"
-        );
-        let mut sorted = ids;
-        sorted.sort_unstable();
-        assert_eq!(
-            sorted,
-            core::array::from_fn::<usize, BOUND_TRIP_ID_COUNT, _>(|i| i),
-            "the bound ids must be exactly 0..BOUND_TRIP_ID_COUNT with no alias and no hole"
-        );
-    }
 
     #[test]
     fn every_bound_id_has_its_own_counter_slot() {

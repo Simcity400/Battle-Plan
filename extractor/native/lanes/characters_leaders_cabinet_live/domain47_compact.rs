@@ -103,21 +103,50 @@ pub enum PortraitIdentityEncoding {
     Windows1252,
 }
 
-impl PortraitIdentityEncoding {
-    pub fn wire_name(self) -> &'static str {
-        match self {
-            Self::Utf8 => "utf8",
-            Self::Windows1252 => "windows1252",
-        }
-    }
+/// The name and its reverse, ONE declaration: they were two matches, so
+/// renaming a state in the writer alone compiled and read it back as
+/// another (lane TV, Codex round 10).
+macro_rules! portraitidentityencoding_names {
+    ($( $variant:ident => $name:literal, )+) => {
+        impl PortraitIdentityEncoding {
+            pub fn wire_name(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name,)+
+                }
+            }
 
-    pub fn from_wire_name(name: &str) -> Option<Self> {
-        match name {
-            "utf8" => Some(Self::Utf8),
-            "windows1252" => Some(Self::Windows1252),
-            _ => None,
+            pub fn from_wire_name(name: &str) -> Option<Self> {
+                match name {
+                    $($name => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
         }
-    }
+
+        const _: () = {
+            let names = [$($name,)+];
+            let mut i = 0;
+            while i < names.len() {
+                let mut j = i + 1;
+                while j < names.len() {
+                    assert!(
+                        !compact_contract::diagnostic_channel::const_str_eq(
+                            names[i],
+                            names[j],
+                        ),
+                        "two values share a wire name",
+                    );
+                    j += 1;
+                }
+                i += 1;
+            }
+        };
+    };
+}
+
+portraitidentityencoding_names! {
+    Utf8 => "utf8",
+    Windows1252 => "windows1252",
 }
 
 const CHARACTER_ROW_LEN: u8 = 20;

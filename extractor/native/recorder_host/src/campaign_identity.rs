@@ -24,25 +24,52 @@ pub enum CampaignIdentityState {
     Conflict,
 }
 
-impl CampaignIdentityState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            CampaignIdentityState::Known => "known",
-            CampaignIdentityState::Unavailable => "unavailable",
-            CampaignIdentityState::Unbound => "unbound",
-            CampaignIdentityState::Conflict => "identity_component_conflict",
-        }
-    }
+/// The name and its reverse, ONE declaration: they were two matches, so
+/// renaming a state in the writer alone compiled and read it back as
+/// another (lane TV, Codex round 10).
+macro_rules! campaignidentitystate_names {
+    ($( $variant:ident => $name:literal, )+) => {
+        impl CampaignIdentityState {
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name,)+
+                }
+            }
 
-    fn from_str(s: &str) -> Option<Self> {
-        Some(match s {
-            "known" => CampaignIdentityState::Known,
-            "unavailable" => CampaignIdentityState::Unavailable,
-            "unbound" => CampaignIdentityState::Unbound,
-            "identity_component_conflict" => CampaignIdentityState::Conflict,
-            _ => return None,
-        })
-    }
+            fn from_str(name: &str) -> Option<Self> {
+                match name {
+                    $($name => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+
+        const _: () = {
+            let names = [$($name,)+];
+            let mut i = 0;
+            while i < names.len() {
+                let mut j = i + 1;
+                while j < names.len() {
+                    assert!(
+                        !compact_contract::diagnostic_channel::const_str_eq(
+                            names[i],
+                            names[j],
+                        ),
+                        "two values share a wire name",
+                    );
+                    j += 1;
+                }
+                i += 1;
+            }
+        };
+    };
+}
+
+campaignidentitystate_names! {
+    Known => "known",
+    Unavailable => "unavailable",
+    Unbound => "unbound",
+    Conflict => "identity_component_conflict",
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

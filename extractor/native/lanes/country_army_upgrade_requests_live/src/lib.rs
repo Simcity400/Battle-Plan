@@ -158,21 +158,13 @@ pub enum AuthorityState {
     ExactA729Receipt,
 }
 
-impl AuthorityState {
-    const fn raw(self) -> u32 {
-        match self {
-            Self::SourceUnavailable => AUTHORITY_SOURCE_UNAVAILABLE,
-            Self::ExactA729Receipt => AUTHORITY_EXACT_A729_RECEIPT,
-        }
-    }
+compact_contract::wire_coded_codes! {
+    no_discriminant AuthorityState: u32,
+    code = raw,
+    Ok = from_raw(value) -> Result<Self, CarrierError> { invalid("AUR1 authority is unknown") };
 
-    fn from_raw(value: u32) -> Result<Self, CarrierError> {
-        match value {
-            AUTHORITY_SOURCE_UNAVAILABLE => Ok(Self::SourceUnavailable),
-            AUTHORITY_EXACT_A729_RECEIPT => Ok(Self::ExactA729Receipt),
-            _ => invalid("AUR1 authority is unknown"),
-        }
-    }
+    SourceUnavailable = AUTHORITY_SOURCE_UNAVAILABLE,
+    ExactA729Receipt = AUTHORITY_EXACT_A729_RECEIPT,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

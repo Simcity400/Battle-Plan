@@ -540,11 +540,11 @@ pub fn encode_payload(frame: &FiredEventFrame) -> Result<Vec<u8>, CarrierError> 
         optional_u16(&mut out, row.chosen_option_ordinal);
         optional_string(&mut out, row.selected_desc_key.as_deref())?;
         optional_string(&mut out, row.shown_picture_gfx.as_deref())?;
-        u32v(&mut out, subtype_code(row.popup_subtype));
+        u32v(&mut out, row.popup_subtype.subtype_code());
         u32v(&mut out, row.effective_timeout_hours);
         u64v(&mut out, row.timeout_tick);
         optional_u64(&mut out, row.resolved_tick);
-        u32v(&mut out, reason_code(row.resolution_reason));
+        u32v(&mut out, row.resolution_reason.reason_code());
         optional_string(&mut out, row.runtime_title_text_context_id.as_deref())?;
         optional_string(&mut out, row.runtime_description_text_context_id.as_deref())?;
         u32v(&mut out, row.runtime_option_text_contexts.len() as u32);
@@ -595,11 +595,11 @@ pub fn decode_payload(payload: &[u8]) -> Result<FiredEventFrame, CarrierError> {
         let chosen_option_ordinal = r.optional_u16()?;
         let selected_desc_key = r.optional_string()?;
         let shown_picture_gfx = r.optional_string()?;
-        let popup_subtype = subtype_from(r.u32()?)?;
+        let popup_subtype = PopupSubtype::subtype_from(r.u32()?)?;
         let effective_timeout_hours = r.u32()?;
         let timeout_tick = r.u64()?;
         let resolved_tick = r.optional_u64()?;
-        let resolution_reason = reason_from(r.u32()?)?;
+        let resolution_reason = ResolutionReason::reason_from(r.u32()?)?;
         let runtime_title_text_context_id = r.optional_string()?;
         let runtime_description_text_context_id = r.optional_string()?;
         let context_count = r.u32()? as usize;
@@ -675,39 +675,30 @@ fn put_telemetry(o: &mut Vec<u8>, t: &HookTelemetry) {
         u64v(o, v);
     }
 }
-fn subtype_code(v: PopupSubtype) -> u32 {
-    match v {
-        PopupSubtype::Country => 0,
-        PopupSubtype::News => 1,
-        PopupSubtype::State => 2,
-        PopupSubtype::UnitLeader => 3,
-        PopupSubtype::OperativeLeader => 4,
-    }
+compact_contract::wire_coded_codes! {
+    no_discriminant PopupSubtype: u32,
+    code = subtype_code,
+    Ok = subtype_from(v) -> Result<Self, CarrierError> {
+        invalid("popup subtype invalid")
+    };
+
+    Country = 0,
+    News = 1,
+    State = 2,
+    UnitLeader = 3,
+    OperativeLeader = 4,
 }
-fn subtype_from(v: u32) -> Result<PopupSubtype, CarrierError> {
-    match v {
-        0 => Ok(PopupSubtype::Country),
-        1 => Ok(PopupSubtype::News),
-        2 => Ok(PopupSubtype::State),
-        3 => Ok(PopupSubtype::UnitLeader),
-        4 => Ok(PopupSubtype::OperativeLeader),
-        _ => invalid("popup subtype invalid"),
-    }
-}
-fn reason_code(v: ResolutionReason) -> u32 {
-    match v {
-        ResolutionReason::Pending => 0,
-        ResolutionReason::Selected => 1,
-        ResolutionReason::Timeout => 2,
-    }
-}
-fn reason_from(v: u32) -> Result<ResolutionReason, CarrierError> {
-    match v {
-        0 => Ok(ResolutionReason::Pending),
-        1 => Ok(ResolutionReason::Selected),
-        2 => Ok(ResolutionReason::Timeout),
-        _ => invalid("resolution reason invalid"),
-    }
+
+compact_contract::wire_coded_codes! {
+    no_discriminant ResolutionReason: u32,
+    code = reason_code,
+    Ok = reason_from(v) -> Result<Self, CarrierError> {
+        invalid("resolution reason invalid")
+    };
+
+    Pending = 0,
+    Selected = 1,
+    Timeout = 2,
 }
 fn u32v(o: &mut Vec<u8>, v: u32) {
     o.extend_from_slice(&v.to_le_bytes())

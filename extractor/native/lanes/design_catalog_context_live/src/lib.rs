@@ -47,24 +47,19 @@ pub enum DesignerFamily {
     Plane,
 }
 
+compact_contract::wire_coded_codes! {
+    no_discriminant DesignerFamily: i32,
+    code = pub mode,
+    Ok = pub from_mode(mode) -> Result<Self, CarrierError> {
+        invalid("designer mode outside exact a729 range 0..=2")
+    };
+
+    CountryEquipment = 0,
+    Tank = 1,
+    Plane = 2,
+}
+
 impl DesignerFamily {
-    pub fn from_mode(mode: i32) -> Result<Self, CarrierError> {
-        match mode {
-            0 => Ok(Self::CountryEquipment),
-            1 => Ok(Self::Tank),
-            2 => Ok(Self::Plane),
-            _ => invalid("designer mode outside exact a729 range 0..=2"),
-        }
-    }
-
-    pub const fn mode(self) -> i32 {
-        match self {
-            Self::CountryEquipment => 0,
-            Self::Tank => 1,
-            Self::Plane => 2,
-        }
-    }
-
     pub const fn engine_view_name(self) -> &'static str {
         match self {
             Self::CountryEquipment => "countryequipmentdesignerview",

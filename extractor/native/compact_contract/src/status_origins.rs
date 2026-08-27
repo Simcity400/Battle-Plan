@@ -4,137 +4,84 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 pub const ATTRIBUTION_NO_CLOCK_HOUR: i32 = i32::MIN;
 
-pub const SO_D45_PARTIAL_TARGETED_TIMED_STRUCTURAL: usize = 0;
-pub const SO_D48_PARTIAL_INHERITED: usize = 1;
-pub const SO_D48_PARTIAL_ROOTS_ERR: usize = 2;
-pub const SO_D48_PARTIAL_HARD_OR_GATE: usize = 3;
-pub const SO_NAVAL_PARTIAL_INHERITED: usize = 4;
-pub const SO_NAVAL_PARTIAL_TORN_WALK: usize = 5;
-pub const SO_NAVAL_PARTIAL_JOIN: usize = 6;
-pub const SO_NAVAL_SOURCE_EMPTY: usize = 7;
-pub const SO_NAVAL_WORKER_PANIC: usize = 8;
-pub const SO_D60_SOURCE_UNAVAILABLE: usize = 9;
-pub const SO_D60_PARTIAL_INHERITED: usize = 10;
-pub const SO_D60_PARTIAL_TORN_ROW: usize = 11;
-pub const SO_D60_WORKER_PANIC: usize = 12;
-pub const SO_D53_SOURCE_UNAVAILABLE: usize = 13;
-pub const SO_D53_PARTIAL_INHERITED: usize = 14;
-pub const SO_D53_PARTIAL_ROW_SKIPPED: usize = 15;
-pub const SO_D53_PARTIAL_SHADOW_MISMATCH: usize = 16;
-pub const SO_D53_WORKER_PANIC: usize = 17;
-pub const SO_D54_PARTIAL_INHERITED: usize = 18;
-pub const SO_D54_PARTIAL_ARMY_ORDERS: usize = 19;
-pub const SO_D54_PARTIAL_OOB_COMMAND: usize = 20;
-pub const SO_D54_HARD_DEPENDENCY: usize = 21;
-pub const SO_D54_PARTIAL_SKIPPED_ROWS: usize = 22;
-pub const SO_D65_SOURCE_EMPTY_NO_WITNESS: usize = 23;
-pub const SO_D65_PARTIAL_DROPPED_AMBIGUOUS: usize = 24;
-pub const SO_D55_TRANSITION_BASELINE_RESET: usize = 25;
-pub const SO_FRAME_CONTROL_INVALID: usize = 26;
-pub const SO_D43_SOURCE_EMPTY_WARM_KNOWN: usize = 27;
-pub const SO_D43_SOURCE_EMPTY_COLD: usize = 28;
-pub const SO_D53_POSTBUILD_GATE: usize = 29;
-pub const SO_D48_WORKER_PANIC: usize = 30;
-pub const SO_D54_SOURCE_DEPENDENCY: usize = 31;
-pub const SO_D54_WORKER_PANIC: usize = 32;
-pub const SO_D65_SOURCE_NO_SCALAR: usize = 33;
-pub const SO_D65_SOURCE_VTABLE_RVA: usize = 34;
-pub const SO_D48_LANE_FAILED_COUNTRY_ROOTS: usize = 35;
-pub const SO_D48_LANE_FAILED_STATE_BUILDING_ROOTS: usize = 36;
-pub const SO_D48_LANE_FAILED_STATE_RESOURCE_ROOTS: usize = 37;
-pub const SO_D48_LANE_FAILED_PROVINCE_BUILDING_ROOTS: usize = 38;
-pub const SO_D48_LANE_SKIPPED_CONSTRUCTION_ROWS: usize = 39;
-pub const SO_D48_LANE_SKIPPED_BUILDING_ROWS: usize = 40;
-pub const SO_D48_LANE_SKIPPED_RESOURCE_ROWS: usize = 41;
-pub const SO_D65_PARTIAL_WALK_FAILURE: usize = 42;
-pub const SO_D55_TERMINAL_RECORD_UNPUBLISHABLE: usize = 43;
-pub const SO_D65_PARTIAL_PROFILE_MISMATCH: usize = 44;
-pub const SO_D66_PARTIAL_PROFILE_MISMATCH: usize = 45;
-pub const SO_D48_LANE_DUPLICATE_STATE_ROOTS: usize = 46;
-pub const SO_D48_LANE_DUPLICATE_PROVINCE_ROOTS: usize = 47;
-pub const SO_D60_WARMUP_GAP: usize = 48;
-/// d77/d80 sealed degraded: the selected Present's d80 fold was refused for
-/// lack of sealed scene constant-buffer bytes, so the hour published a named
-/// DOMAIN_GAP instead of a production-render frame.
-pub const SO_D77_D80_SCENE_CB_GAP: usize = 49;
-/// d77/d80 sealed degraded: the hour observed GUI paints but its selected
-/// Present minted no hourly recorded-input observation, so no authenticated UI
-/// pass could seal; the hour publishes a named DOMAIN_GAP instead of a
-/// production-render frame.
-pub const SO_D77_D80_HOURLY_INPUT_GAP: usize = 50;
-/// d77/d80 sealed degraded: the selected Present's in-hook foreground pointer
-/// sample completed after its selection cutoff (benign timing race), so no
-/// recorded-input observation could authenticate; the hour publishes a named
-/// DOMAIN_GAP instead of a production-render frame.
-pub const SO_D77_D80_PRESENT_SAMPLE_CUTOFF_GAP: usize = 51;
-/// d53 first-attach warmup (lane RS): the shared heap sweep has not completed
-/// its first pass AND this tracker has never consumed a ready frame, so the
-/// frame publishes one named DOMAIN_GAP instead of a failing record. The
-/// sample value is FNV-1a of the static fail-closed reason.
-pub const SO_D53_WARMUP_GAP: usize = 52;
-/// d77/d80 sealed degraded: the selected Present binds the tiled point-light
-/// textures whose semantic census is owner-unproven, so no lawful payload
-/// exists; the hour publishes a named DOMAIN_GAP instead of a
-/// production-render frame.
-pub const SO_D77_D80_TILED_LIGHT_CENSUS_GAP: usize = 53;
-pub const STATUS_ORIGIN_ID_COUNT: usize = 54;
+crate::cause_tables::numbered_cause_ids! {
+    count = STATUS_ORIGIN_ID_COUNT, names = STATUS_ORIGIN_UNITS,
+    unit_prefix = "so_", id_prefix = "so_";
 
-pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
-    "so_d45_partial_targeted_timed_structural",
-    "so_d48_partial_inherited",
-    "so_d48_partial_roots_err",
-    "so_d48_partial_hard_or_gate",
-    "so_naval_partial_inherited",
-    "so_naval_partial_torn_walk",
-    "so_naval_partial_join",
-    "so_naval_source_empty",
-    "so_naval_worker_panic",
-    "so_d60_source_unavailable",
-    "so_d60_partial_inherited",
-    "so_d60_partial_torn_row",
-    "so_d60_worker_panic",
-    "so_d53_source_unavailable",
-    "so_d53_partial_inherited",
-    "so_d53_partial_row_skipped",
-    "so_d53_partial_shadow_mismatch",
-    "so_d53_worker_panic",
-    "so_d54_partial_inherited",
-    "so_d54_partial_army_orders",
-    "so_d54_partial_oob_command",
-    "so_d54_hard_dependency",
-    "so_d54_partial_skipped_rows",
-    "so_d65_source_empty_no_witness",
-    "so_d65_partial_dropped_ambiguous",
-    "so_d55_transition_baseline_reset",
-    "so_frame_control_invalid",
-    "so_d43_source_empty_warm_known",
-    "so_d43_source_empty_cold",
-    "so_d53_postbuild_gate",
-    "so_d48_worker_panic",
-    "so_d54_source_dependency",
-    "so_d54_worker_panic",
-    "so_d65_source_no_scalar",
-    "so_d65_source_vtable_rva",
-    "so_d48_lane_failed_country_roots",
-    "so_d48_lane_failed_state_building_roots",
-    "so_d48_lane_failed_state_resource_roots",
-    "so_d48_lane_failed_province_building_roots",
-    "so_d48_lane_skipped_construction_rows",
-    "so_d48_lane_skipped_building_rows",
-    "so_d48_lane_skipped_resource_rows",
-    "so_d65_partial_walk_failure",
-    "so_d55_terminal_record_unpublishable",
-    "so_d65_partial_profile_mismatch",
-    "so_d66_partial_profile_mismatch",
-    "so_d48_lane_duplicate_state_roots",
-    "so_d48_lane_duplicate_province_roots",
-    "so_d60_warmup_gap",
-    "so_d77_d80_scene_cb_gap",
-    "so_d77_d80_hourly_input_gap",
-    "so_d77_d80_present_sample_cutoff_gap",
-    "so_d53_warmup_gap",
-    "so_d77_d80_tiled_light_census_gap",
-];
+    SO_D45_PARTIAL_TARGETED_TIMED_STRUCTURAL = 0 => d45_partial_targeted_timed_structural,
+    SO_D48_PARTIAL_INHERITED = 1 => d48_partial_inherited,
+    SO_D48_PARTIAL_ROOTS_ERR = 2 => d48_partial_roots_err,
+    SO_D48_PARTIAL_HARD_OR_GATE = 3 => d48_partial_hard_or_gate,
+    SO_NAVAL_PARTIAL_INHERITED = 4 => naval_partial_inherited,
+    SO_NAVAL_PARTIAL_TORN_WALK = 5 => naval_partial_torn_walk,
+    SO_NAVAL_PARTIAL_JOIN = 6 => naval_partial_join,
+    SO_NAVAL_SOURCE_EMPTY = 7 => naval_source_empty,
+    SO_NAVAL_WORKER_PANIC = 8 => naval_worker_panic,
+    SO_D60_SOURCE_UNAVAILABLE = 9 => d60_source_unavailable,
+    SO_D60_PARTIAL_INHERITED = 10 => d60_partial_inherited,
+    SO_D60_PARTIAL_TORN_ROW = 11 => d60_partial_torn_row,
+    SO_D60_WORKER_PANIC = 12 => d60_worker_panic,
+    SO_D53_SOURCE_UNAVAILABLE = 13 => d53_source_unavailable,
+    SO_D53_PARTIAL_INHERITED = 14 => d53_partial_inherited,
+    SO_D53_PARTIAL_ROW_SKIPPED = 15 => d53_partial_row_skipped,
+    SO_D53_PARTIAL_SHADOW_MISMATCH = 16 => d53_partial_shadow_mismatch,
+    SO_D53_WORKER_PANIC = 17 => d53_worker_panic,
+    SO_D54_PARTIAL_INHERITED = 18 => d54_partial_inherited,
+    SO_D54_PARTIAL_ARMY_ORDERS = 19 => d54_partial_army_orders,
+    SO_D54_PARTIAL_OOB_COMMAND = 20 => d54_partial_oob_command,
+    SO_D54_HARD_DEPENDENCY = 21 => d54_hard_dependency,
+    SO_D54_PARTIAL_SKIPPED_ROWS = 22 => d54_partial_skipped_rows,
+    SO_D65_SOURCE_EMPTY_NO_WITNESS = 23 => d65_source_empty_no_witness,
+    SO_D65_PARTIAL_DROPPED_AMBIGUOUS = 24 => d65_partial_dropped_ambiguous,
+    SO_D55_TRANSITION_BASELINE_RESET = 25 => d55_transition_baseline_reset,
+    SO_FRAME_CONTROL_INVALID = 26 => frame_control_invalid,
+    SO_D43_SOURCE_EMPTY_WARM_KNOWN = 27 => d43_source_empty_warm_known,
+    SO_D43_SOURCE_EMPTY_COLD = 28 => d43_source_empty_cold,
+    SO_D53_POSTBUILD_GATE = 29 => d53_postbuild_gate,
+    SO_D48_WORKER_PANIC = 30 => d48_worker_panic,
+    SO_D54_SOURCE_DEPENDENCY = 31 => d54_source_dependency,
+    SO_D54_WORKER_PANIC = 32 => d54_worker_panic,
+    SO_D65_SOURCE_NO_SCALAR = 33 => d65_source_no_scalar,
+    SO_D65_SOURCE_VTABLE_RVA = 34 => d65_source_vtable_rva,
+    SO_D48_LANE_FAILED_COUNTRY_ROOTS = 35 => d48_lane_failed_country_roots,
+    SO_D48_LANE_FAILED_STATE_BUILDING_ROOTS = 36 => d48_lane_failed_state_building_roots,
+    SO_D48_LANE_FAILED_STATE_RESOURCE_ROOTS = 37 => d48_lane_failed_state_resource_roots,
+    SO_D48_LANE_FAILED_PROVINCE_BUILDING_ROOTS = 38 => d48_lane_failed_province_building_roots,
+    SO_D48_LANE_SKIPPED_CONSTRUCTION_ROWS = 39 => d48_lane_skipped_construction_rows,
+    SO_D48_LANE_SKIPPED_BUILDING_ROWS = 40 => d48_lane_skipped_building_rows,
+    SO_D48_LANE_SKIPPED_RESOURCE_ROWS = 41 => d48_lane_skipped_resource_rows,
+    SO_D65_PARTIAL_WALK_FAILURE = 42 => d65_partial_walk_failure,
+    SO_D55_TERMINAL_RECORD_UNPUBLISHABLE = 43 => d55_terminal_record_unpublishable,
+    SO_D65_PARTIAL_PROFILE_MISMATCH = 44 => d65_partial_profile_mismatch,
+    SO_D66_PARTIAL_PROFILE_MISMATCH = 45 => d66_partial_profile_mismatch,
+    SO_D48_LANE_DUPLICATE_STATE_ROOTS = 46 => d48_lane_duplicate_state_roots,
+    SO_D48_LANE_DUPLICATE_PROVINCE_ROOTS = 47 => d48_lane_duplicate_province_roots,
+    SO_D60_WARMUP_GAP = 48 => d60_warmup_gap,
+    /// d77/d80 sealed degraded: the selected Present's d80 fold was refused for
+    /// lack of sealed scene constant-buffer bytes, so the hour published a named
+    /// DOMAIN_GAP instead of a production-render frame.
+    SO_D77_D80_SCENE_CB_GAP = 49 => d77_d80_scene_cb_gap,
+    /// d77/d80 sealed degraded: the hour observed GUI paints but its selected
+    /// Present minted no hourly recorded-input observation, so no authenticated UI
+    /// pass could seal; the hour publishes a named DOMAIN_GAP instead of a
+    /// production-render frame.
+    SO_D77_D80_HOURLY_INPUT_GAP = 50 => d77_d80_hourly_input_gap,
+    /// d77/d80 sealed degraded: the selected Present's in-hook foreground pointer
+    /// sample completed after its selection cutoff (benign timing race), so no
+    /// recorded-input observation could authenticate; the hour publishes a named
+    /// DOMAIN_GAP instead of a production-render frame.
+    SO_D77_D80_PRESENT_SAMPLE_CUTOFF_GAP = 51 => d77_d80_present_sample_cutoff_gap,
+    /// d53 first-attach warmup (lane RS): the shared heap sweep has not completed
+    /// its first pass AND this tracker has never consumed a ready frame, so the
+    /// frame publishes one named DOMAIN_GAP instead of a failing record. The
+    /// sample value is FNV-1a of the static fail-closed reason.
+    SO_D53_WARMUP_GAP = 52 => d53_warmup_gap,
+    /// d77/d80 sealed degraded: the selected Present binds the tiled point-light
+    /// textures whose semantic census is owner-unproven, so no lawful payload
+    /// exists; the hour publishes a named DOMAIN_GAP instead of a
+    /// production-render frame.
+    SO_D77_D80_TILED_LIGHT_CENSUS_GAP = 53 => d77_d80_tiled_light_census_gap,
+}
 
 #[allow(clippy::declare_interior_mutable_const)]
 const ATOMIC_ZERO: AtomicU64 = AtomicU64::new(0);
@@ -668,141 +615,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_id_constant_indexes_its_exact_unit_name() {
-        let expected: [(usize, &str); STATUS_ORIGIN_ID_COUNT] = [
-            (
-                SO_D45_PARTIAL_TARGETED_TIMED_STRUCTURAL,
-                "so_d45_partial_targeted_timed_structural",
-            ),
-            (SO_D48_PARTIAL_INHERITED, "so_d48_partial_inherited"),
-            (SO_D48_PARTIAL_ROOTS_ERR, "so_d48_partial_roots_err"),
-            (SO_D48_PARTIAL_HARD_OR_GATE, "so_d48_partial_hard_or_gate"),
-            (SO_NAVAL_PARTIAL_INHERITED, "so_naval_partial_inherited"),
-            (SO_NAVAL_PARTIAL_TORN_WALK, "so_naval_partial_torn_walk"),
-            (SO_NAVAL_PARTIAL_JOIN, "so_naval_partial_join"),
-            (SO_NAVAL_SOURCE_EMPTY, "so_naval_source_empty"),
-            (SO_NAVAL_WORKER_PANIC, "so_naval_worker_panic"),
-            (SO_D60_SOURCE_UNAVAILABLE, "so_d60_source_unavailable"),
-            (SO_D60_PARTIAL_INHERITED, "so_d60_partial_inherited"),
-            (SO_D60_PARTIAL_TORN_ROW, "so_d60_partial_torn_row"),
-            (SO_D60_WORKER_PANIC, "so_d60_worker_panic"),
-            (SO_D53_SOURCE_UNAVAILABLE, "so_d53_source_unavailable"),
-            (SO_D53_PARTIAL_INHERITED, "so_d53_partial_inherited"),
-            (SO_D53_PARTIAL_ROW_SKIPPED, "so_d53_partial_row_skipped"),
-            (
-                SO_D53_PARTIAL_SHADOW_MISMATCH,
-                "so_d53_partial_shadow_mismatch",
-            ),
-            (SO_D53_WORKER_PANIC, "so_d53_worker_panic"),
-            (SO_D54_PARTIAL_INHERITED, "so_d54_partial_inherited"),
-            (SO_D54_PARTIAL_ARMY_ORDERS, "so_d54_partial_army_orders"),
-            (SO_D54_PARTIAL_OOB_COMMAND, "so_d54_partial_oob_command"),
-            (SO_D54_HARD_DEPENDENCY, "so_d54_hard_dependency"),
-            (SO_D54_PARTIAL_SKIPPED_ROWS, "so_d54_partial_skipped_rows"),
-            (
-                SO_D65_SOURCE_EMPTY_NO_WITNESS,
-                "so_d65_source_empty_no_witness",
-            ),
-            (
-                SO_D65_PARTIAL_DROPPED_AMBIGUOUS,
-                "so_d65_partial_dropped_ambiguous",
-            ),
-            (
-                SO_D55_TRANSITION_BASELINE_RESET,
-                "so_d55_transition_baseline_reset",
-            ),
-            (SO_FRAME_CONTROL_INVALID, "so_frame_control_invalid"),
-            (
-                SO_D43_SOURCE_EMPTY_WARM_KNOWN,
-                "so_d43_source_empty_warm_known",
-            ),
-            (SO_D43_SOURCE_EMPTY_COLD, "so_d43_source_empty_cold"),
-            (SO_D53_POSTBUILD_GATE, "so_d53_postbuild_gate"),
-            (SO_D48_WORKER_PANIC, "so_d48_worker_panic"),
-            (SO_D54_SOURCE_DEPENDENCY, "so_d54_source_dependency"),
-            (SO_D54_WORKER_PANIC, "so_d54_worker_panic"),
-            (SO_D65_SOURCE_NO_SCALAR, "so_d65_source_no_scalar"),
-            (SO_D65_SOURCE_VTABLE_RVA, "so_d65_source_vtable_rva"),
-            (
-                SO_D48_LANE_FAILED_COUNTRY_ROOTS,
-                "so_d48_lane_failed_country_roots",
-            ),
-            (
-                SO_D48_LANE_FAILED_STATE_BUILDING_ROOTS,
-                "so_d48_lane_failed_state_building_roots",
-            ),
-            (
-                SO_D48_LANE_FAILED_STATE_RESOURCE_ROOTS,
-                "so_d48_lane_failed_state_resource_roots",
-            ),
-            (
-                SO_D48_LANE_FAILED_PROVINCE_BUILDING_ROOTS,
-                "so_d48_lane_failed_province_building_roots",
-            ),
-            (
-                SO_D48_LANE_SKIPPED_CONSTRUCTION_ROWS,
-                "so_d48_lane_skipped_construction_rows",
-            ),
-            (
-                SO_D48_LANE_SKIPPED_BUILDING_ROWS,
-                "so_d48_lane_skipped_building_rows",
-            ),
-            (
-                SO_D48_LANE_SKIPPED_RESOURCE_ROWS,
-                "so_d48_lane_skipped_resource_rows",
-            ),
-            (SO_D65_PARTIAL_WALK_FAILURE, "so_d65_partial_walk_failure"),
-            (
-                SO_D55_TERMINAL_RECORD_UNPUBLISHABLE,
-                "so_d55_terminal_record_unpublishable",
-            ),
-            (
-                SO_D65_PARTIAL_PROFILE_MISMATCH,
-                "so_d65_partial_profile_mismatch",
-            ),
-            (
-                SO_D66_PARTIAL_PROFILE_MISMATCH,
-                "so_d66_partial_profile_mismatch",
-            ),
-            (
-                SO_D48_LANE_DUPLICATE_STATE_ROOTS,
-                "so_d48_lane_duplicate_state_roots",
-            ),
-            (
-                SO_D48_LANE_DUPLICATE_PROVINCE_ROOTS,
-                "so_d48_lane_duplicate_province_roots",
-            ),
-            (SO_D60_WARMUP_GAP, "so_d60_warmup_gap"),
-            (
-                SO_D77_D80_SCENE_CB_GAP,
-                "so_d77_d80_scene_cb_gap",
-            ),
-            (
-                SO_D77_D80_HOURLY_INPUT_GAP,
-                "so_d77_d80_hourly_input_gap",
-            ),
-            (
-                SO_D77_D80_PRESENT_SAMPLE_CUTOFF_GAP,
-                "so_d77_d80_present_sample_cutoff_gap",
-            ),
-            (SO_D53_WARMUP_GAP, "so_d53_warmup_gap"),
-            (
-                SO_D77_D80_TILED_LIGHT_CENSUS_GAP,
-                "so_d77_d80_tiled_light_census_gap",
-            ),
-        ];
-        for (id, name) in expected {
-            assert_eq!(
-                STATUS_ORIGIN_UNITS[id], name,
-                "id {id} must index unit {name}"
-            );
-        }
-        let mut ids: Vec<usize> = expected.iter().map(|(id, _)| *id).collect();
-        ids.sort_unstable();
-        ids.dedup();
-        assert_eq!(ids.len(), STATUS_ORIGIN_ID_COUNT);
-        assert_eq!(ids.first(), Some(&0));
-        assert_eq!(ids.last(), Some(&(STATUS_ORIGIN_ID_COUNT - 1)));
-    }
 }

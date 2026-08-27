@@ -20,6 +20,17 @@ pub enum EarlyRenderStartupPhase {
     PostCommitBootstrap = 4,
 }
 
+crate::wire_coded_codes! {
+    EarlyRenderStartupPhase: u16,
+    code = pub code,
+    Ok = from_wire(value) -> Result<Self, EarlyRenderStartupFailureCodecError> { Err(EarlyRenderStartupFailureCodecError::UnknownPhase(value)) };
+
+    PostHelloPreBind = 1,
+    PostBindPreFirst = 2,
+    PostFirstPreCommit = 3,
+    PostCommitBootstrap = 4,
+}
+
 impl EarlyRenderStartupPhase {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -27,16 +38,6 @@ impl EarlyRenderStartupPhase {
             Self::PostBindPreFirst => "post_bind_pre_first",
             Self::PostFirstPreCommit => "post_first_pre_commit",
             Self::PostCommitBootstrap => "post_commit_bootstrap",
-        }
-    }
-
-    fn from_wire(value: u16) -> Result<Self, EarlyRenderStartupFailureCodecError> {
-        match value {
-            1 => Ok(Self::PostHelloPreBind),
-            2 => Ok(Self::PostBindPreFirst),
-            3 => Ok(Self::PostFirstPreCommit),
-            4 => Ok(Self::PostCommitBootstrap),
-            other => Err(EarlyRenderStartupFailureCodecError::UnknownPhase(other)),
         }
     }
 
@@ -185,7 +186,7 @@ pub fn encode_early_render_startup_failure(
     let mut payload = vec![0u8; EARLY_RENDER_STARTUP_FAILURE_FIXED_LEN];
     payload[0..4].copy_from_slice(MAGIC);
     payload[4..6].copy_from_slice(&VERSION.to_le_bytes());
-    payload[6..8].copy_from_slice(&(report.phase as u16).to_le_bytes());
+    payload[6..8].copy_from_slice(&report.phase.code().to_le_bytes());
     payload[8..12].copy_from_slice(&report.process_id.to_le_bytes());
     payload[12..14].copy_from_slice(&flags.to_le_bytes());
     payload[16..24].copy_from_slice(&report.process_start_nonce.to_le_bytes());

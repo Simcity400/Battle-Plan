@@ -96,21 +96,13 @@ pub enum AuthorityState {
     ExactA729,
 }
 
-impl AuthorityState {
-    const fn raw(self) -> u32 {
-        match self {
-            Self::SourceUnavailable => AUTHORITY_UNAVAILABLE,
-            Self::ExactA729 => AUTHORITY_EXACT_A729,
-        }
-    }
+compact_contract::wire_coded_codes! {
+    no_discriminant AuthorityState: u32,
+    code = raw,
+    Ok = from_raw(raw) -> Result<Self, CarrierError> { invalid("THS2 authority is unknown") };
 
-    fn from_raw(raw: u32) -> Result<Self, CarrierError> {
-        match raw {
-            AUTHORITY_UNAVAILABLE => Ok(Self::SourceUnavailable),
-            AUTHORITY_EXACT_A729 => Ok(Self::ExactA729),
-            _ => invalid("THS2 authority is unknown"),
-        }
-    }
+    SourceUnavailable = AUTHORITY_UNAVAILABLE,
+    ExactA729 = AUTHORITY_EXACT_A729,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -126,21 +118,22 @@ pub enum ObjectKind {
     AirWing = 8,
 }
 
-impl ObjectKind {
-    fn from_raw(raw: u8) -> Result<Self, CarrierError> {
-        match raw {
-            1 => Ok(Self::LandTheatre),
-            2 => Ok(Self::NavyTheatre),
-            3 => Ok(Self::AirTheatre),
-            4 => Ok(Self::Army),
-            5 => Ok(Self::ArmyGroup),
-            6 => Ok(Self::Fleet),
-            7 => Ok(Self::AirGroup),
-            8 => Ok(Self::AirWing),
-            _ => invalid("THS2 object kind is unknown"),
-        }
-    }
+compact_contract::wire_coded_codes! {
+    ObjectKind: u8,
+    code = pub code,
+    Ok = from_raw(raw) -> Result<Self, CarrierError> { invalid("THS2 object kind is unknown") };
 
+    LandTheatre = 1,
+    NavyTheatre = 2,
+    AirTheatre = 3,
+    Army = 4,
+    ArmyGroup = 5,
+    Fleet = 6,
+    AirGroup = 7,
+    AirWing = 8,
+}
+
+impl ObjectKind {
     pub const fn is_theatre(self) -> bool {
         matches!(
             self,
@@ -166,16 +159,15 @@ pub enum ContentLayerKind {
     Mod = 4,
 }
 
-impl ContentLayerKind {
-    fn from_raw(raw: u8) -> Result<Self, CarrierError> {
-        match raw {
-            1 => Ok(Self::Base),
-            2 => Ok(Self::IntegratedDlc),
-            3 => Ok(Self::Dlc),
-            4 => Ok(Self::Mod),
-            _ => invalid("THS2 content layer kind is unknown"),
-        }
-    }
+compact_contract::wire_coded_codes! {
+    ContentLayerKind: u8,
+    code = pub code,
+    Ok = from_raw(raw) -> Result<Self, CarrierError> { invalid("THS2 content layer kind is unknown") };
+
+    Base = 1,
+    IntegratedDlc = 2,
+    Dlc = 3,
+    Mod = 4,
 }
 
 pub mod engine_localisation_provenance;
@@ -210,6 +202,32 @@ pub struct EngineRosterEntry {
 pub enum NameProvenance {
     EngineRuntimeString,
     LocalizationKey(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NameProvenanceTag {
+    EngineRuntimeString,
+    LocalizationKey,
+}
+
+compact_contract::wire_coded_codes! {
+    no_discriminant NameProvenanceTag: u8,
+    code = code,
+    Ok = from_code(tag) -> Result<Self, CarrierError> {
+        invalid("THS2 name provenance is unknown")
+    };
+
+    EngineRuntimeString = 1,
+    LocalizationKey = 2,
+}
+
+impl NameProvenance {
+    fn tag(&self) -> NameProvenanceTag {
+        match self {
+            Self::EngineRuntimeString => NameProvenanceTag::EngineRuntimeString,
+            Self::LocalizationKey(_) => NameProvenanceTag::LocalizationKey,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -297,22 +315,21 @@ pub enum SectionRejection {
     BoundExceeded = 10,
 }
 
-impl SectionRejection {
-    fn from_raw(raw: u32) -> Result<Self, CarrierError> {
-        match raw {
-            1 => Ok(Self::SourceUnreadable),
-            2 => Ok(Self::DuplicateIdentity),
-            3 => Ok(Self::NonContiguousOrder),
-            4 => Ok(Self::CrossOwnerRow),
-            5 => Ok(Self::OrphanRow),
-            6 => Ok(Self::IdentityAuthenticationFailed),
-            7 => Ok(Self::IncompleteWalk),
-            8 => Ok(Self::DisplayNameUnreadable),
-            9 => Ok(Self::FrameHourMismatch),
-            10 => Ok(Self::BoundExceeded),
-            _ => invalid("THS2 section rejection reason is unknown"),
-        }
-    }
+compact_contract::wire_coded_codes! {
+    SectionRejection: u32,
+    code = pub code,
+    Ok = from_raw(raw) -> Result<Self, CarrierError> { invalid("THS2 section rejection reason is unknown") };
+
+    SourceUnreadable = 1,
+    DuplicateIdentity = 2,
+    NonContiguousOrder = 3,
+    CrossOwnerRow = 4,
+    OrphanRow = 5,
+    IdentityAuthenticationFailed = 6,
+    IncompleteWalk = 7,
+    DisplayNameUnreadable = 8,
+    FrameHourMismatch = 9,
+    BoundExceeded = 10,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -759,7 +776,7 @@ pub fn encode_payload(frame: &TheatreSelectorFrame) -> Result<Vec<u8>, CarrierEr
     u32v(&mut out, identity.ordered_layers.len() as u32);
     for layer in &identity.ordered_layers {
         u32v(&mut out, layer.ordinal);
-        out.push(layer.layer_kind as u8);
+        out.push(layer.layer_kind.code());
         out.extend_from_slice(&[0; 3]);
         string(&mut out, &layer.layer_id);
         out.extend_from_slice(&layer.content_sha256);
@@ -774,7 +791,7 @@ pub fn encode_payload(frame: &TheatreSelectorFrame) -> Result<Vec<u8>, CarrierEr
     }
     u32v(&mut out, roster.discovered.len() as u32);
     for entry in &roster.discovered {
-        out.push(entry.kind as u8);
+        out.push(entry.kind.code());
         out.push(u8::from(entry.selected));
         out.push(u8::from(entry.mounted));
         out.push(0);
@@ -794,7 +811,7 @@ pub fn encode_payload(frame: &TheatreSelectorFrame) -> Result<Vec<u8>, CarrierEr
             SectionAdmission::Unavailable(reason) => {
                 out.push(0);
                 out.extend_from_slice(&[0; 3]);
-                u32v(&mut out, *reason as u32);
+                u32v(&mut out, reason.code());
             }
             SectionAdmission::Admitted(body) => {
                 out.push(1);
@@ -802,7 +819,7 @@ pub fn encode_payload(frame: &TheatreSelectorFrame) -> Result<Vec<u8>, CarrierEr
                 u32v(&mut out, body.theatres.len() as u32);
                 u32v(&mut out, body.free_air_wings.len() as u32);
                 for theatre in &body.theatres {
-                    out.push(theatre.kind as u8);
+                    out.push(theatre.kind.code());
                     out.extend_from_slice(&[0; 3]);
                     u32v(&mut out, theatre.object_id);
                     u32v(&mut out, theatre.owner_tag_db_id);
@@ -814,8 +831,8 @@ pub fn encode_payload(frame: &TheatreSelectorFrame) -> Result<Vec<u8>, CarrierEr
                     u32v(&mut out, theatre.members.len() as u32);
                     u32v(&mut out, theatre.alert_categories.len() as u32);
                     for member in &theatre.members {
-                        out.push(member.kind as u8);
-                        out.push(member.parent_kind as u8);
+                        out.push(member.kind.code());
+                        out.push(member.parent_kind.code());
                         out.push(u8::from(member.reserve_navy));
                         out.push(u8::from(member.display_name.is_some()));
                         u32v(&mut out, member.object_id);
@@ -1131,16 +1148,10 @@ fn opt_string(out: &mut Vec<u8>, value: &str) {
     }
 }
 fn provenance(out: &mut Vec<u8>, value: &NameProvenance) {
-    match value {
-        NameProvenance::EngineRuntimeString => {
-            out.push(1);
-            out.extend_from_slice(&[0; 3]);
-        }
-        NameProvenance::LocalizationKey(key) => {
-            out.push(2);
-            out.extend_from_slice(&[0; 3]);
-            string(out, key);
-        }
+    out.push(value.tag().code());
+    out.extend_from_slice(&[0; 3]);
+    if let NameProvenance::LocalizationKey(key) = value {
+        string(out, key);
     }
 }
 fn opt_bool(out: &mut Vec<u8>, value: Option<bool>) {
@@ -1235,10 +1246,11 @@ impl<'a> Reader<'a> {
         if self.bytes(3)? != [0, 0, 0] {
             return invalid("THS2 provenance reserved bytes are nonzero");
         }
-        match tag {
-            1 => Ok(NameProvenance::EngineRuntimeString),
-            2 => Ok(NameProvenance::LocalizationKey(self.string()?)),
-            _ => invalid("THS2 name provenance is unknown"),
+        match NameProvenanceTag::from_code(tag)? {
+            NameProvenanceTag::EngineRuntimeString => Ok(NameProvenance::EngineRuntimeString),
+            NameProvenanceTag::LocalizationKey => {
+                Ok(NameProvenance::LocalizationKey(self.string()?))
+            }
         }
     }
     fn opt_bool(&mut self) -> Result<Option<bool>, CarrierError> {

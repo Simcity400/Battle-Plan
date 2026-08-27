@@ -490,7 +490,7 @@ pub fn encode_payload(frame: &DecisionPanelFrame) -> Result<Vec<u8>, CarrierErro
         u32v(&mut output, snapshot.children.len() as u32);
         for child in &snapshot.children {
             u32v(&mut output, child.presentation_index);
-            output.push(child_kind_raw(child.kind));
+            output.push(child.kind.child_kind_raw());
             let mut flags = 0u8;
             if child.name_text.is_some() {
                 flags |= 1;
@@ -573,7 +573,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<DecisionPanelFrame, CarrierError
         let mut children = Vec::with_capacity(child_count);
         for _ in 0..child_count {
             let presentation_index = reader.u32()?;
-            let kind = child_kind_from(reader.u8()?)?;
+            let kind = PanelChildKind::child_kind_from(reader.u8()?)?;
             let flags = reader.u8()?;
             if flags & !0x1f != 0 || reader.bytes(2)? != [0, 0] {
                 return invalid("DPN1 child flags/reserved bytes invalid");
@@ -706,8 +706,8 @@ fn decode_grid(reader: &mut Reader<'_>) -> Result<DecisionGridState, CarrierErro
 
 fn encode_row(output: &mut Vec<u8>, row: &DecisionRow) {
     u32v(output, row.presentation_index);
-    output.push(availability_raw(row.availability));
-    output.push(lifecycle_raw(row.lifecycle));
+    output.push(row.availability.availability_raw());
+    output.push(row.lifecycle.lifecycle_raw());
     output.push(match &row.target {
         None => 0,
         Some(Target::Country(_)) => 1,
@@ -792,8 +792,8 @@ fn encode_row(output: &mut Vec<u8>, row: &DecisionRow) {
 
 fn decode_row(reader: &mut Reader<'_>) -> Result<DecisionRow, CarrierError> {
     let presentation_index = reader.u32()?;
-    let availability = availability_from(reader.u8()?)?;
-    let lifecycle = lifecycle_from(reader.u8()?)?;
+    let availability = Availability::availability_from(reader.u8()?)?;
+    let lifecycle = Lifecycle::lifecycle_from(reader.u8()?)?;
     let target_kind = reader.u8()?;
     let flags = reader.u16()?;
     if flags & !0x3ff != 0 {
@@ -870,60 +870,44 @@ fn decode_row(reader: &mut Reader<'_>) -> Result<DecisionRow, CarrierError> {
     })
 }
 
-fn child_kind_raw(value: PanelChildKind) -> u8 {
-    match value {
-        PanelChildKind::Category => 0,
-        PanelChildKind::FixedHeader => 1,
-        PanelChildKind::Event => 2,
-        PanelChildKind::Decision => 3,
-    }
+compact_contract::wire_coded_codes! {
+    no_discriminant PanelChildKind: u8,
+    code = child_kind_raw,
+    Ok = child_kind_from(value) -> Result<Self, CarrierError> {
+        invalid("DPN1 child kind unknown")
+    };
+
+    Category = 0,
+    FixedHeader = 1,
+    Event = 2,
+    Decision = 3,
 }
 
-fn child_kind_from(value: u8) -> Result<PanelChildKind, CarrierError> {
-    match value {
-        0 => Ok(PanelChildKind::Category),
-        1 => Ok(PanelChildKind::FixedHeader),
-        2 => Ok(PanelChildKind::Event),
-        3 => Ok(PanelChildKind::Decision),
-        _ => invalid("DPN1 child kind unknown"),
-    }
+compact_contract::wire_coded_codes! {
+    no_discriminant Availability: u8,
+    code = availability_raw,
+    Ok = availability_from(value) -> Result<Self, CarrierError> {
+        invalid("DPN1 availability enum unknown")
+    };
+
+    Available = 0,
+    Unavailable = 1,
+    Active = 2,
+    OnCooldown = 3,
 }
 
-fn availability_raw(value: Availability) -> u8 {
-    match value {
-        Availability::Available => 0,
-        Availability::Unavailable => 1,
-        Availability::Active => 2,
-        Availability::OnCooldown => 3,
-    }
-}
-fn availability_from(value: u8) -> Result<Availability, CarrierError> {
-    match value {
-        0 => Ok(Availability::Available),
-        1 => Ok(Availability::Unavailable),
-        2 => Ok(Availability::Active),
-        3 => Ok(Availability::OnCooldown),
-        _ => invalid("DPN1 availability enum unknown"),
-    }
-}
-fn lifecycle_raw(value: Lifecycle) -> u8 {
-    match value {
-        Lifecycle::Pending => 0,
-        Lifecycle::Running => 1,
-        Lifecycle::Completed => 2,
-        Lifecycle::Failed => 3,
-        Lifecycle::Removed => 4,
-    }
-}
-fn lifecycle_from(value: u8) -> Result<Lifecycle, CarrierError> {
-    match value {
-        0 => Ok(Lifecycle::Pending),
-        1 => Ok(Lifecycle::Running),
-        2 => Ok(Lifecycle::Completed),
-        3 => Ok(Lifecycle::Failed),
-        4 => Ok(Lifecycle::Removed),
-        _ => invalid("DPN1 lifecycle enum unknown"),
-    }
+compact_contract::wire_coded_codes! {
+    no_discriminant Lifecycle: u8,
+    code = lifecycle_raw,
+    Ok = lifecycle_from(value) -> Result<Self, CarrierError> {
+        invalid("DPN1 lifecycle enum unknown")
+    };
+
+    Pending = 0,
+    Running = 1,
+    Completed = 2,
+    Failed = 3,
+    Removed = 4,
 }
 fn optional_nonnegative(value: i32, present: bool) -> Result<Option<i32>, CarrierError> {
     if present && value >= 0 {

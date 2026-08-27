@@ -210,41 +210,6 @@ fn unbounded_modifier_vector_read_is_refused() {
     );
 }
 
-#[test]
-fn every_carrier_refusal_carries_a_distinct_non_zero_code() {
-    let all = [
-        CarrierRefusal::SideNotHeapPointer,
-        CarrierRefusal::UnitVectorHeaderUnreadable,
-        CarrierRefusal::UnitVectorHeaderOutOfRange,
-        CarrierRefusal::UnitVectorDataNotHeapPointer,
-        CarrierRefusal::UnitVectorBodyUnreadable,
-        CarrierRefusal::UnitVectorHeaderChangedDuringRead,
-        CarrierRefusal::UnitElementNotHeapPointer,
-        CarrierRefusal::UnitIdentityInvalid,
-        CarrierRefusal::ModifierHeaderUnreadable,
-        CarrierRefusal::ModifierHeaderOutOfRange,
-        CarrierRefusal::ModifierDataNotHeapPointer,
-        CarrierRefusal::ModifierBodyUnreadable,
-        CarrierRefusal::ModifierHeaderChangedDuringRead,
-        CarrierRefusal::FoldsUnreadable,
-        CarrierRefusal::LeaderHeaderUnreadable,
-        CarrierRefusal::LeaderHeaderOutOfRange,
-        CarrierRefusal::LeaderDataNotHeapPointer,
-        CarrierRefusal::LeaderBodyUnreadable,
-        CarrierRefusal::LeaderHeaderChangedDuringRead,
-        CarrierRefusal::LeaderEntryHandleInvalid,
-        CarrierRefusal::CarrierRowBudgetExceeded,
-    ];
-    let mut seen = BTreeSet::new();
-    for refusal in all {
-        assert_ne!(refusal.wire_code(), 0, "{refusal} must not encode as zero");
-        assert!(
-            seen.insert(refusal.wire_code()),
-            "{refusal} reuses a wire code"
-        );
-        assert!(!refusal.as_str().is_empty());
-    }
-}
 
 #[test]
 fn modifier_rows_cannot_claim_completeness_without_a_tick_phase_witness() {

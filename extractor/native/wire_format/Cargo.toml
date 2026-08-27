@@ -35,6 +35,7 @@ d11_grammar = { path = "../d11_grammar" }
 d13_grammar = { path = "../d13_grammar" }
 # D68's payload grammar (lane KO). Same ruling, same shape: one leaf crate per
 # domain, so a converted domain never enters an unrelated consumer's closure.
+d64_grammar = { path = "../d64_grammar" }
 d68_grammar = { path = "../d68_grammar" }
 # D24's payload grammar (lane KO).
 d24_grammar = { path = "../d24_grammar" }

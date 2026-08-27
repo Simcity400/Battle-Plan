@@ -8,6 +8,7 @@ name = "direct_frd_transitions_live"
 path = "src/lib.rs"
 
 [dependencies]
+compact_contract = { path = "../../compact_contract" }
 production_hook_receipt = { path = "../production_hook_receipt" }
 
 [target.'cfg(windows)'.dependencies]

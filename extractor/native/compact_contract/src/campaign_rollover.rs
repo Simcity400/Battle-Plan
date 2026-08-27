@@ -13,14 +13,13 @@ pub enum RolloverReason {
     SamePairTimeRollback = 2,
 }
 
-impl RolloverReason {
-    fn decode(raw: u16) -> Result<Self, RolloverCodecError> {
-        match raw {
-            1 => Ok(Self::WholePairChanged),
-            2 => Ok(Self::SamePairTimeRollback),
-            other => Err(RolloverCodecError::UnknownReason(other)),
-        }
-    }
+crate::wire_coded_codes! {
+    RolloverReason: u16,
+    code = pub code,
+    Ok = decode(raw) -> Result<Self, RolloverCodecError> { Err(RolloverCodecError::UnknownReason(raw)) };
+
+    WholePairChanged = 1,
+    SamePairTimeRollback = 2,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,14 +29,13 @@ pub enum RolloverDecision {
     Reject = 2,
 }
 
-impl RolloverDecision {
-    fn decode(raw: u16) -> Result<Self, RolloverCodecError> {
-        match raw {
-            1 => Ok(Self::Accept),
-            2 => Ok(Self::Reject),
-            other => Err(RolloverCodecError::UnknownDecision(other)),
-        }
-    }
+crate::wire_coded_codes! {
+    RolloverDecision: u16,
+    code = pub code,
+    Ok = decode(raw) -> Result<Self, RolloverCodecError> { Err(RolloverCodecError::UnknownDecision(raw)) };
+
+    Accept = 1,
+    Reject = 2,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -178,7 +176,7 @@ pub fn encode_rollover_propose(
     out[8..16].copy_from_slice(&value.proposed_logical_stream_id.to_le_bytes());
     out[16..24].copy_from_slice(&value.last_admitted_h4cr_sequence.to_le_bytes());
     out[24..28].copy_from_slice(&value.boundary_game_hour_raw.to_le_bytes());
-    out[28..30].copy_from_slice(&(value.reason as u16).to_le_bytes());
+    out[28..30].copy_from_slice(&value.reason.code().to_le_bytes());
     out[32..64].copy_from_slice(&value.current_campaign_id);
     out[64..96].copy_from_slice(&value.proposed_campaign_id);
     out[96..128].copy_from_slice(&value.current_cid1_payload_sha256);
@@ -217,7 +215,7 @@ pub fn encode_rollover_ack(
     out[6..8].copy_from_slice(&(ROLLOVER_ACK_LEN as u16).to_le_bytes());
     out[8..16].copy_from_slice(&value.proposed_logical_stream_id.to_le_bytes());
     out[16..24].copy_from_slice(&value.proposal_nonce.to_le_bytes());
-    out[24..26].copy_from_slice(&(value.decision as u16).to_le_bytes());
+    out[24..26].copy_from_slice(&value.decision.code().to_le_bytes());
     out[26..28].copy_from_slice(&value.error_code.to_le_bytes());
     Ok(out)
 }

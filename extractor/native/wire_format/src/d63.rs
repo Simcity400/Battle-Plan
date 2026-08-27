@@ -1,8 +1,8 @@
 //! d63 `country_core_scalars_live` — per-country core scalars.
 //!
-//! Derived from `world_fold.rs:14089`-`:14308`
+//! Derived from `world_fold.rs:14104`-`:14323`
 //! (`fold_country_core_scalars`), its payload constants at `:159`-`:172`, and the
-// @world-fold-authority domain=63 functions=fold_country_core_scalars lines=14089-14308 sha256=9d0ad424e548b0539a71f764081750d9be96e415c46038bd3cd5219ba8658329 closure=0dd159a90189e5e5158a8cfcd2a54396d86484e3e18dfb26335df2c334033560
+// @world-fold-authority domain=63 functions=fold_country_core_scalars lines=14104-14323 sha256=9d0ad424e548b0539a71f764081750d9be96e415c46038bd3cd5219ba8658329 closure=e8640548ee471a933de765c5828370bf4e43b9113e59734debb5942a2ee62eaf
 //! collector read that produces the presence flags
 //! (`extractor/native/collector/src/attach_log.rs:60573`-`:60757`).
 //! The fold and collector read are the field-level basis.

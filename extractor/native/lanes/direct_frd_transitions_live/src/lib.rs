@@ -92,6 +92,25 @@ pub enum DirectEventKind {
     TargetedDecisionTimeoutEffectInvoked = 12,
 }
 
+compact_contract::wire_coded_codes! {
+    DirectEventKind: u32,
+    code = pub code,
+    Ok = from_wire(value) -> Result<Self, CarrierError> { Err(CarrierError::InvalidKind(value)) };
+
+    FocusCompleted = 1,
+    ResearchCompleted = 2,
+    OrdinaryDecisionTaken = 3,
+    TargetedDecisionTaken = 4,
+    TimedDecisionActivated = 5,
+    OnActionInvoked = 6,
+    DecisionCancelEffectInvoked = 7,
+    DecisionRemoveEffectInvoked = 8,
+    DecisionTimeoutEffectInvoked = 9,
+    TargetedDecisionCancelEffectInvoked = 10,
+    TargetedDecisionRemoveEffectInvoked = 11,
+    TargetedDecisionTimeoutEffectInvoked = 12,
+}
+
 impl DirectEventKind {
     pub const fn expected_root_rva_a729(self) -> u32 {
         match self {
@@ -167,23 +186,6 @@ impl DirectEventKind {
         matches!(self, Self::ResearchCompleted)
     }
 
-    fn from_wire(value: u32) -> Result<Self, CarrierError> {
-        match value {
-            1 => Ok(Self::FocusCompleted),
-            2 => Ok(Self::ResearchCompleted),
-            3 => Ok(Self::OrdinaryDecisionTaken),
-            4 => Ok(Self::TargetedDecisionTaken),
-            5 => Ok(Self::TimedDecisionActivated),
-            6 => Ok(Self::OnActionInvoked),
-            7 => Ok(Self::DecisionCancelEffectInvoked),
-            8 => Ok(Self::DecisionRemoveEffectInvoked),
-            9 => Ok(Self::DecisionTimeoutEffectInvoked),
-            10 => Ok(Self::TargetedDecisionCancelEffectInvoked),
-            11 => Ok(Self::TargetedDecisionRemoveEffectInvoked),
-            12 => Ok(Self::TargetedDecisionTimeoutEffectInvoked),
-            _ => Err(CarrierError::InvalidKind(value)),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -583,7 +585,7 @@ pub fn encode_row(row: &DirectEventRow) -> Result<[u8; D45_V5_DIRECT_EVENT_ROW_L
     row.validate()?;
     let mut bytes = [0u8; D45_V5_DIRECT_EVENT_ROW_LEN];
     bytes[0..8].copy_from_slice(&row.sequence.to_le_bytes());
-    bytes[8..12].copy_from_slice(&(row.kind as u32).to_le_bytes());
+    bytes[8..12].copy_from_slice(&row.kind.code().to_le_bytes());
     bytes[12..16].copy_from_slice(&row.thread_id.to_le_bytes());
     bytes[16..20].copy_from_slice(&row.game_hour_raw.to_le_bytes());
     bytes[20..24].copy_from_slice(&row.root_rva.to_le_bytes());

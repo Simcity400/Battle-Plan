@@ -86,19 +86,52 @@ pub enum SetEncoding {
     Bitmap = 3,
 }
 
-impl SetEncoding {
-    fn from_tag(tag: u8) -> Option<Self> {
-        match tag {
-            1 => Some(Self::Runs),
-            2 => Some(Self::Delta),
-            3 => Some(Self::Bitmap),
-            _ => None,
-        }
-    }
+/// The tag and its reverse, ONE declaration. The discriminant was the writer
+/// and a literal `match` the reader, so exchanging two discriminants compiled
+/// and read each block under the other encoding (lane TV). The writer is
+/// generated from the same column, as an exhaustive match rather than an `as`
+/// cast, so an encoding left out of the column fails to compile instead of
+/// writing a tag its own reader refuses.
+macro_rules! set_encodings {
+    ($( $variant:ident = $tag:literal, )+) => {
+        impl SetEncoding {
+            pub const fn tag(self) -> u8 {
+                match self {
+                    $(Self::$variant => $tag,)+
+                }
+            }
 
-    pub fn tag(self) -> u8 {
-        self as u8
-    }
+            fn from_tag(tag: u8) -> Option<Self> {
+                match tag {
+                    $($tag => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+
+        const _: () = {
+            $(assert!(
+                SetEncoding::$variant as u8 == $tag,
+                "an encoding's declared tag is not its own discriminant",
+            );)+
+            let tags = [$($tag,)+];
+            let mut i = 0;
+            while i < tags.len() {
+                let mut j = i + 1;
+                while j < tags.len() {
+                    assert!(tags[i] != tags[j], "two encodings share a tag");
+                    j += 1;
+                }
+                i += 1;
+            }
+        };
+    };
+}
+
+set_encodings! {
+    Runs = 1,
+    Delta = 2,
+    Bitmap = 3,
 }
 
 /// The empty set has ONE spelling: `Runs`, zero ids, zero bytes.

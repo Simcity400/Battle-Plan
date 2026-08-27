@@ -85,21 +85,15 @@ pub enum TraitTreeRoot {
     ControllerOffset130,
 }
 
-impl TraitTreeRoot {
-    pub const fn raw_offset(self) -> u16 {
-        match self {
-            Self::ControllerOffset120 => 0x120,
-            Self::ControllerOffset130 => 0x130,
-        }
-    }
+compact_contract::wire_coded_codes! {
+    no_discriminant TraitTreeRoot: u16,
+    code = pub raw_offset,
+    Ok = from_raw_offset(value) -> Result<Self, CarrierError> {
+        invalid("trait tree root is not exact controller offset 0x120 or 0x130")
+    };
 
-    fn from_raw_offset(value: u16) -> Result<Self, CarrierError> {
-        match value {
-            0x120 => Ok(Self::ControllerOffset120),
-            0x130 => Ok(Self::ControllerOffset130),
-            _ => invalid("trait tree root is not exact controller offset 0x120 or 0x130"),
-        }
-    }
+    ControllerOffset120 = 0x120,
+    ControllerOffset130 = 0x130,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,23 +103,16 @@ pub enum TraitNodeState {
     Picked,
 }
 
-impl TraitNodeState {
-    pub const fn raw(self) -> u8 {
-        match self {
-            Self::Blocked => 0,
-            Self::Pickable => 1,
-            Self::Picked => 2,
-        }
-    }
+compact_contract::wire_coded_codes! {
+    no_discriminant TraitNodeState: u8,
+    code = pub raw,
+    Ok = pub from_raw(value) -> Result<Self, CarrierError> {
+        invalid("trait node state is outside exact a729 range 0..=2")
+    };
 
-    pub fn from_raw(value: u8) -> Result<Self, CarrierError> {
-        match value {
-            0 => Ok(Self::Blocked),
-            1 => Ok(Self::Pickable),
-            2 => Ok(Self::Picked),
-            _ => invalid("trait node state is outside exact a729 range 0..=2"),
-        }
-    }
+    Blocked = 0,
+    Pickable = 1,
+    Picked = 2,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

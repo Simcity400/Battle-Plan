@@ -313,6 +313,48 @@ pub enum MessageKind {
     CaptureReadyAck = 35,
 }
 
+crate::wire_coded_codes! {
+    MessageKind: u16,
+    code = pub code,
+    Ok = from_wire(value) -> Result<Self, ControlError> { Err(ControlError::UnknownMessageKind(value)) };
+
+    RecorderHello = 1,
+    CollectorHello = 2,
+    HeartbeatChallenge = 3,
+    HeartbeatProof = 4,
+    FirstCompactFrameAck = 5,
+    RolloverPropose = 6,
+    RolloverAck = 7,
+    EpochTokenOffer = 8,
+    EpochTokenEcho = 9,
+    DeclarationTableReady = 10,
+    DeclarationTableAck = 11,
+    EpochSealReady = 12,
+    EpochSealAck = 13,
+    SinkSetupFailure = 14,
+    SinkTerminalFailure = 15,
+    IdentityFailure = 16,
+    IdentityFailureAck = 17,
+    EarlyRenderReady = 18,
+    EarlyRenderFirstGameD3d = 19,
+    EarlyRenderCommitReceipt = 20,
+    EarlyRenderLaunchBind = 21,
+    EarlyRenderVfsIndexChunk = 22,
+    EarlyRenderVfsIndexCommit = 23,
+    EarlyRenderVfsPayloadRequest = 24,
+    EarlyRenderVfsPayloadChunk = 25,
+    EarlyRenderVfsPayloadCommit = 26,
+    EarlyRenderContentManifestChunk = 27,
+    EarlyRenderContentManifestCommit = 28,
+    EarlyRenderRuntimeDlcRoster = 29,
+    EarlyRenderDiagnosticLivenessRequest = 30,
+    EarlyRenderDiagnosticLivenessResponse = 31,
+    EarlyRenderDiagnosticEnd = 32,
+    EarlyRenderStartupFailure = 33,
+    CaptureReady = 34,
+    CaptureReadyAck = 35,
+}
+
 impl MessageKind {
     pub const fn sender(self) -> EndpointRole {
         match self {
@@ -392,46 +434,6 @@ impl MessageKind {
         }
     }
 
-    fn from_wire(value: u16) -> Result<Self, ControlError> {
-        match value {
-            1 => Ok(Self::RecorderHello),
-            2 => Ok(Self::CollectorHello),
-            3 => Ok(Self::HeartbeatChallenge),
-            4 => Ok(Self::HeartbeatProof),
-            5 => Ok(Self::FirstCompactFrameAck),
-            6 => Ok(Self::RolloverPropose),
-            7 => Ok(Self::RolloverAck),
-            8 => Ok(Self::EpochTokenOffer),
-            9 => Ok(Self::EpochTokenEcho),
-            10 => Ok(Self::DeclarationTableReady),
-            11 => Ok(Self::DeclarationTableAck),
-            12 => Ok(Self::EpochSealReady),
-            13 => Ok(Self::EpochSealAck),
-            14 => Ok(Self::SinkSetupFailure),
-            15 => Ok(Self::SinkTerminalFailure),
-            16 => Ok(Self::IdentityFailure),
-            17 => Ok(Self::IdentityFailureAck),
-            18 => Ok(Self::EarlyRenderReady),
-            19 => Ok(Self::EarlyRenderFirstGameD3d),
-            20 => Ok(Self::EarlyRenderCommitReceipt),
-            21 => Ok(Self::EarlyRenderLaunchBind),
-            22 => Ok(Self::EarlyRenderVfsIndexChunk),
-            23 => Ok(Self::EarlyRenderVfsIndexCommit),
-            24 => Ok(Self::EarlyRenderVfsPayloadRequest),
-            25 => Ok(Self::EarlyRenderVfsPayloadChunk),
-            26 => Ok(Self::EarlyRenderVfsPayloadCommit),
-            27 => Ok(Self::EarlyRenderContentManifestChunk),
-            28 => Ok(Self::EarlyRenderContentManifestCommit),
-            29 => Ok(Self::EarlyRenderRuntimeDlcRoster),
-            30 => Ok(Self::EarlyRenderDiagnosticLivenessRequest),
-            31 => Ok(Self::EarlyRenderDiagnosticLivenessResponse),
-            32 => Ok(Self::EarlyRenderDiagnosticEnd),
-            33 => Ok(Self::EarlyRenderStartupFailure),
-            34 => Ok(Self::CaptureReady),
-            35 => Ok(Self::CaptureReadyAck),
-            other => Err(ControlError::UnknownMessageKind(other)),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1000,7 +1002,7 @@ pub fn encode_frame(
     wire[0..4].copy_from_slice(CONTROL_MAGIC);
     wire[4..6].copy_from_slice(&CONTROL_VERSION.to_le_bytes());
     wire[6..8].copy_from_slice(&(CONTROL_HEADER_LEN as u16).to_le_bytes());
-    wire[8..10].copy_from_slice(&(kind as u16).to_le_bytes());
+    wire[8..10].copy_from_slice(&kind.code().to_le_bytes());
     wire[12..16].copy_from_slice(&(payload.len() as u32).to_le_bytes());
     wire[16..32].copy_from_slice(&session_id.0);
     wire[32..40].copy_from_slice(&sequence.to_le_bytes());

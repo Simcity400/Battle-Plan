@@ -17,17 +17,24 @@ pub enum EarlyRenderVfsLayerKind {
     Mod = 4,
 }
 
+crate::wire_coded_codes! {
+    EarlyRenderVfsLayerKind: u8,
+    code = pub code,
+    Ok = from_wire(value) -> Result<Self, EarlyRenderVfsCodecError> {
+        Err(EarlyRenderVfsCodecError::InvalidField)
+    };
+
+    Base = 1,
+    IntegratedDlc = 2,
+    Dlc = 3,
+    Mod = 4,
+}
+
 impl TryFrom<u8> for EarlyRenderVfsLayerKind {
     type Error = EarlyRenderVfsCodecError;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(Self::Base),
-            2 => Ok(Self::IntegratedDlc),
-            3 => Ok(Self::Dlc),
-            4 => Ok(Self::Mod),
-            _ => Err(EarlyRenderVfsCodecError::InvalidField),
-        }
+        Self::from_wire(value)
     }
 }
 
@@ -252,7 +259,7 @@ pub fn encode_early_render_vfs_winner_row(
     }
     let mut out = Vec::with_capacity(ROW_FIXED_LEN + path_len + layer_len);
     put_header(&mut out, ROW_MAGIC);
-    out.push(row.layer_kind as u8);
+    out.push(row.layer_kind.code());
     out.push(0);
     out.extend_from_slice(&row.winning_layer_ordinal.to_le_bytes());
     out.extend_from_slice(&row.payload_bytes.to_le_bytes());

@@ -3,6 +3,7 @@ pub mod build_profile;
 pub mod building_registry;
 pub mod calendar;
 pub mod campaign_identity;
+mod cause_tables;
 pub mod campaign_rollover;
 pub mod capture_termination;
 pub mod cid1_lifecycle_evidence;
@@ -53,6 +54,7 @@ pub mod worker_error_record;
 pub mod fog_derivation_inputs;
 pub mod map_furniture_victory_points;
 pub mod xmap07_snow_mud;
+pub mod xui09_refusal;
 
 pub use domain_gap::{
     DomainGapError, DomainGapPart, DomainGapReason, DomainGapRecordV1, DomainGapWitnessProvenance,

@@ -23,17 +23,6 @@ pub enum DomainGapReason {
 }
 
 impl DomainGapReason {
-    pub const ALL: [DomainGapReason; 8] = [
-        Self::Torn,
-        Self::Overrun,
-        Self::Backpressure,
-        Self::ClockUnreadable,
-        Self::WorkerPanic,
-        Self::SourceUnavailable,
-        Self::ReaderSilent,
-        Self::HourLabelMismatch,
-    ];
-
     const fn position(self) -> usize {
         match self {
             Self::Torn => 0,
@@ -47,44 +36,26 @@ impl DomainGapReason {
         }
     }
 
-    pub const fn code(self) -> u16 {
-        self as u16
-    }
-
-    pub const fn wire_name(self) -> &'static str {
-        match self {
-            Self::Torn => "torn",
-            Self::Overrun => "overrun",
-            Self::Backpressure => "backpressure",
-            Self::ClockUnreadable => "clock_unreadable",
-            Self::WorkerPanic => "worker_panic",
-            Self::SourceUnavailable => "source_unavailable",
-            Self::ReaderSilent => "reader_silent",
-            Self::HourLabelMismatch => "hour_label_mismatch",
-        }
-    }
-
-    pub fn from_wire_name(name: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|reason| reason.wire_name() == name)
-    }
-
     fn from_code(code: u16) -> Result<Self, DomainGapError> {
-        match code {
-            DOMAIN_GAP_REASON_TORN => Ok(Self::Torn),
-            DOMAIN_GAP_REASON_OVERRUN => Ok(Self::Overrun),
-            DOMAIN_GAP_REASON_BACKPRESSURE => Ok(Self::Backpressure),
-            DOMAIN_GAP_REASON_CLOCK_UNREADABLE => Ok(Self::ClockUnreadable),
-            DOMAIN_GAP_REASON_WORKER_PANIC => Ok(Self::WorkerPanic),
-            DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE => Ok(Self::SourceUnavailable),
-            DOMAIN_GAP_REASON_READER_SILENT => Ok(Self::ReaderSilent),
-            DOMAIN_GAP_REASON_HOUR_LABEL_MISMATCH => Ok(Self::HourLabelMismatch),
-            other => Err(DomainGapError::InvalidSemantics(format!(
-                "DOMAIN_GAP reason {other} is unknown"
-            ))),
-        }
+        Self::decode(code).ok_or_else(|| {
+            DomainGapError::InvalidSemantics(format!("DOMAIN_GAP reason {code} is unknown"))
+        })
     }
+}
+
+crate::cause_tables::wire_coded_causes! {
+    DomainGapReason: u16, all = ALL, code = code, from_code = decode,
+    wire_name = wire_name, from_wire_name = from_wire_name,
+    discriminant_is_code = true;
+
+    Torn = DOMAIN_GAP_REASON_TORN => "torn",
+    Overrun = DOMAIN_GAP_REASON_OVERRUN => "overrun",
+    Backpressure = DOMAIN_GAP_REASON_BACKPRESSURE => "backpressure",
+    ClockUnreadable = DOMAIN_GAP_REASON_CLOCK_UNREADABLE => "clock_unreadable",
+    WorkerPanic = DOMAIN_GAP_REASON_WORKER_PANIC => "worker_panic",
+    SourceUnavailable = DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE => "source_unavailable",
+    ReaderSilent = DOMAIN_GAP_REASON_READER_SILENT => "reader_silent",
+    HourLabelMismatch = DOMAIN_GAP_REASON_HOUR_LABEL_MISMATCH => "hour_label_mismatch",
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -97,35 +68,27 @@ pub enum DomainGapWitnessProvenance {
 }
 
 impl DomainGapWitnessProvenance {
-    pub const ALL: [DomainGapWitnessProvenance; 3] =
-        [Self::Unstated, Self::BracketObserved, Self::Unobserved];
-
-    pub const fn code(self) -> u16 {
-        self as u16
-    }
-
-    pub const fn wire_name(self) -> &'static str {
-        match self {
-            Self::Unstated => "unstated",
-            Self::BracketObserved => "bracket_observed",
-            Self::Unobserved => "unobserved",
-        }
-    }
-
     pub const fn is_a_bracket_observation(self) -> bool {
         matches!(self, Self::BracketObserved)
     }
 
     fn from_code(code: u16) -> Result<Self, DomainGapError> {
-        match code {
-            DOMAIN_GAP_WITNESS_PROVENANCE_UNSTATED => Ok(Self::Unstated),
-            DOMAIN_GAP_WITNESS_PROVENANCE_BRACKET_OBSERVED => Ok(Self::BracketObserved),
-            DOMAIN_GAP_WITNESS_PROVENANCE_UNOBSERVED => Ok(Self::Unobserved),
-            other => Err(DomainGapError::InvalidSemantics(format!(
-                "DOMAIN_GAP witness provenance {other} is unknown"
-            ))),
-        }
+        Self::decode(code).ok_or_else(|| {
+            DomainGapError::InvalidSemantics(format!(
+                "DOMAIN_GAP witness provenance {code} is unknown"
+            ))
+        })
     }
+}
+
+crate::cause_tables::wire_coded_causes! {
+    DomainGapWitnessProvenance: u16, all = ALL, code = code, from_code = decode,
+    wire_name = wire_name, from_wire_name = from_wire_name,
+    discriminant_is_code = true;
+
+    Unstated = DOMAIN_GAP_WITNESS_PROVENANCE_UNSTATED => "unstated",
+    BracketObserved = DOMAIN_GAP_WITNESS_PROVENANCE_BRACKET_OBSERVED => "bracket_observed",
+    Unobserved = DOMAIN_GAP_WITNESS_PROVENANCE_UNOBSERVED => "unobserved",
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -137,34 +100,21 @@ pub enum DomainGapPart {
 }
 
 impl DomainGapPart {
-    pub const ALL: [DomainGapPart; 3] = [Self::State, Self::Event, Self::Both];
-
-    pub const fn code(self) -> u16 {
-        self as u16
-    }
-
-    pub const fn wire_name(self) -> &'static str {
-        match self {
-            Self::State => "state",
-            Self::Event => "event",
-            Self::Both => "both",
-        }
-    }
-
-    pub fn from_wire_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|part| part.wire_name() == name)
-    }
-
     fn from_code(code: u16) -> Result<Self, DomainGapError> {
-        match code {
-            DOMAIN_GAP_PART_STATE => Ok(Self::State),
-            DOMAIN_GAP_PART_EVENT => Ok(Self::Event),
-            DOMAIN_GAP_PART_BOTH => Ok(Self::Both),
-            other => Err(DomainGapError::InvalidSemantics(format!(
-                "DOMAIN_GAP part {other} is unknown"
-            ))),
-        }
+        Self::decode(code).ok_or_else(|| {
+            DomainGapError::InvalidSemantics(format!("DOMAIN_GAP part {code} is unknown"))
+        })
     }
+}
+
+crate::cause_tables::wire_coded_causes! {
+    DomainGapPart: u16, all = ALL, code = code, from_code = decode,
+    wire_name = wire_name, from_wire_name = from_wire_name,
+    discriminant_is_code = true;
+
+    State = DOMAIN_GAP_PART_STATE => "state",
+    Event = DOMAIN_GAP_PART_EVENT => "event",
+    Both = DOMAIN_GAP_PART_BOTH => "both",
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

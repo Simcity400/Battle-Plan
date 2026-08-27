@@ -83,16 +83,6 @@ fn valid_portable_identity(value: &str) -> bool {
         })
 }
 
-fn context_kind_code(kind: crate::SelectedContextKind) -> u32 {
-    match kind {
-        crate::SelectedContextKind::ArmyLeader => 1,
-        crate::SelectedContextKind::FieldMarshal => 2,
-        crate::SelectedContextKind::ArmyGroup => 3,
-        crate::SelectedContextKind::Army => 4,
-        crate::SelectedContextKind::Other(value) => value | 0x8000_0000,
-    }
-}
-
 pub fn validate_frame(frame: &ProductionAbilityFrame) -> Result<(), CarrierError> {
     match frame.authority {
         AuthorityState::Unavailable
@@ -126,7 +116,7 @@ pub fn validate_frame(frame: &ProductionAbilityFrame) -> Result<(), CarrierError
                 "a729:a36:{}:{}:{}:{}",
                 snapshot.frame_hour,
                 snapshot.country_tag,
-                context_kind_code(snapshot.selected_context_kind),
+                snapshot.selected_context_kind.wire(),
                 snapshot.selected_context_id,
             );
             if snapshot.source_record_id != expected_record_id {

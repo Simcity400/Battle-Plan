@@ -23,37 +23,63 @@ pub enum FreezeEntryPoint {
     RemoveBatch = 7,
 }
 
-impl FreezeEntryPoint {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Direct => "freeze_process",
-            Self::Enable => "enable",
-            Self::ApplyQueued => "apply_queued",
-            Self::EnableBatch => "enable_batch",
-            Self::Disable => "disable",
-            Self::DisableBatch => "disable_batch",
-            Self::Remove => "remove",
-            Self::RemoveBatch => "remove_batch",
+/// The code, its reverse and the name, ONE declaration.
+///
+/// The discriminant was the encoder and a literal `match` the decoder, so
+/// exchanging two discriminants compiled and reported each freeze window under
+/// the other entry point (lane TV, Codex round 10). Written locally: this
+/// crate depends on nothing, and a taxonomy helper is not worth a dependency.
+macro_rules! freeze_entry_points {
+    ($( $variant:ident = $code:literal => $name:literal, )+) => {
+        impl FreezeEntryPoint {
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name,)+
+                }
+            }
+
+            const fn code(self) -> u32 {
+                match self {
+                    $(Self::$variant => $code,)+
+                }
+            }
+
+            fn from_code(code: u32) -> Option<Self> {
+                match code {
+                    $($code => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
         }
-    }
 
-    const fn code(self) -> u32 {
-        self as u32
-    }
+        const _: () = {
+            $(assert!(
+                FreezeEntryPoint::$variant as u32 == $code,
+                "an entry point's declared code is not its own discriminant",
+            );)+
+            let codes = [$($code,)+];
+            let mut i = 0;
+            while i < codes.len() {
+                let mut j = i + 1;
+                while j < codes.len() {
+                    assert!(codes[i] != codes[j], "two entry points share a code");
+                    j += 1;
+                }
+                i += 1;
+            }
+        };
+    };
+}
 
-    fn from_code(code: u32) -> Option<Self> {
-        Some(match code {
-            0 => Self::Direct,
-            1 => Self::Enable,
-            2 => Self::ApplyQueued,
-            3 => Self::EnableBatch,
-            4 => Self::Disable,
-            5 => Self::DisableBatch,
-            6 => Self::Remove,
-            7 => Self::RemoveBatch,
-            _ => return None,
-        })
-    }
+freeze_entry_points! {
+    Direct = 0 => "freeze_process",
+    Enable = 1 => "enable",
+    ApplyQueued = 2 => "apply_queued",
+    EnableBatch = 3 => "enable_batch",
+    Disable = 4 => "disable",
+    DisableBatch = 5 => "disable_batch",
+    Remove = 6 => "remove",
+    RemoveBatch = 7 => "remove_batch",
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

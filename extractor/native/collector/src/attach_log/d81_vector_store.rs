@@ -577,6 +577,23 @@ const STORE_FAMILY: [u8; STORE_COUNT] = [
     D81Family::MapRecordPtr as u8,
 ];
 
+/// The opening half of `STORE_FAMILY` is the identity, which is what
+/// [`D81VectorCapture::stores`] builds and what `D81_VECTOR_STORE_NAMES`'
+/// first nine entries name. A family listed out of order here would describe a
+/// store that holds a different family's windows.
+const _: () = {
+    let mut family = 0;
+    while family < D81_FAMILY_COUNT {
+        assert!(
+            STORE_FAMILY[family] as usize == family,
+            "an opening store does not hold its own family",
+        );
+        family += 1;
+    }
+    assert!(STORE_FAMILY[STORE_HEADER_CLOSE as usize] == D81Family::RailHeader as u8);
+    assert!(STORE_FAMILY[STORE_RECORD_PTR_CLOSE as usize] == D81Family::MapRecordPtr as u8);
+};
+
 /// WHICH WINDOWS ANSWER ONE READ, decided before the image is chosen.
 ///
 /// [`D81VectorCapture::read`] used to decide this inline, as an
@@ -1151,20 +1168,21 @@ fn feed_active_windows(store: usize, slab: &[u8], sink: &mut dyn FnMut(usize, &[
 }
 
 impl D81VectorCapture {
+    /// BUILT BY INDEX, not written out. Store `i` below `D81_FAMILY_COUNT` is
+    /// family `i`'s opening store because this loop makes it so; a written
+    /// list could have been reordered while `STORE_FAMILY` and
+    /// `D81_VECTOR_STORE_NAMES` stayed put, and every bin would then have
+    /// reported one family's churn under another's name.
     fn stores(&self) -> [&FamilyStore; STORE_COUNT] {
-        [
-            &self.opening[0],
-            &self.opening[1],
-            &self.opening[2],
-            &self.opening[3],
-            &self.opening[4],
-            &self.opening[5],
-            &self.opening[6],
-            &self.opening[7],
-            &self.opening[8],
-            &self.header_close,
-            &self.record_ptr_close,
-        ]
+        let mut stores = [&self.opening[0]; STORE_COUNT];
+        let mut family = 0;
+        while family < D81_FAMILY_COUNT {
+            stores[family] = &self.opening[family];
+            family += 1;
+        }
+        stores[STORE_HEADER_CLOSE as usize] = &self.header_close;
+        stores[STORE_RECORD_PTR_CLOSE as usize] = &self.record_ptr_close;
+        stores
     }
 
     fn merged(&self) -> &MergedWindowIndex {
@@ -1908,30 +1926,50 @@ fn merge_domain(
 
 /// The reuse outcome for one frame, published as a histogram bin. `0` is the
 /// reuse arm; every other value names why the frame copied in full.
-pub const D81_RAIL_TAP_REUSED: u8 = 0;
-/// The detours are not installed (or the build has none). The pre-tap program.
-pub const D81_RAIL_TAP_HOOKS_NOT_INSTALLED: u8 = 1;
-/// No full rail copy has been remembered since the tap was reset.
-pub const D81_RAIL_TAP_BASELINE_PENDING: u8 = 2;
-/// A hooked writer ran; the bytes may have moved.
-pub const D81_RAIL_TAP_RAIL_WRITTEN: u8 = 3;
-/// The tap was clean but this process holds no remembered copy to reuse.
-pub const D81_RAIL_TAP_NO_MEMORY: u8 = 4;
-/// The tap was clean but condition 2 failed: a table slot, a root or an offset
-/// moved, so the remembered windows are not this frame's windows.
-pub const D81_RAIL_TAP_GEOMETRY_CHANGED: u8 = 5;
+///
+/// ONE DECLARATION. The ordinal const, the wire name and the count come from
+/// the list below and nowhere else, so an outcome cannot exist as an ordinal
+/// with no bin to land in -- which four hand-written lists (the consts, the
+/// names, the bijection input and a test's own copy) could not prevent.
+macro_rules! d81_rail_tap_outcomes {
+    ($($(#[$doc:meta])* $ordinal_const:ident = $ordinal:literal => $name:ident,)+) => {
+        $($(#[$doc])* pub const $ordinal_const: u8 = $ordinal;)+
 
-/// Wire names for the bins, by ordinal.
-pub const D81_RAIL_TAP_OUTCOME_NAMES: [&str; 6] = [
-    "reused",
-    "hooks_not_installed",
-    "baseline_pending",
-    "rail_written",
-    "no_memory",
-    "geometry_changed",
-];
+        pub const D81_RAIL_TAP_OUTCOME_COUNT: usize = [$($ordinal,)+].len();
 
-pub const D81_RAIL_TAP_OUTCOME_COUNT: usize = D81_RAIL_TAP_OUTCOME_NAMES.len();
+        /// Wire names for the bins, by ordinal.
+        pub const D81_RAIL_TAP_OUTCOME_NAMES: [&str; D81_RAIL_TAP_OUTCOME_COUNT] = {
+            let mut names = [""; D81_RAIL_TAP_OUTCOME_COUNT];
+            $(names[$ordinal] = stringify!($name);)+
+            names
+        };
+
+        const _: () = assert!(
+            compact_contract::diagnostic_channel::indices_are_a_bijection(
+                &[$($ordinal,)+],
+                D81_RAIL_TAP_OUTCOME_COUNT,
+            ),
+            "two rail-tap outcomes share an ordinal, or one indexes past the histogram",
+        );
+    };
+}
+
+d81_rail_tap_outcomes! {
+    D81_RAIL_TAP_REUSED = 0 => reused,
+    /// The detours are not installed (or the build has none). The pre-tap
+    /// program.
+    D81_RAIL_TAP_HOOKS_NOT_INSTALLED = 1 => hooks_not_installed,
+    /// No full rail copy has been remembered since the tap was reset.
+    D81_RAIL_TAP_BASELINE_PENDING = 2 => baseline_pending,
+    /// A hooked writer ran; the bytes may have moved.
+    D81_RAIL_TAP_RAIL_WRITTEN = 3 => rail_written,
+    /// The tap was clean but this process holds no remembered copy to reuse.
+    D81_RAIL_TAP_NO_MEMORY = 4 => no_memory,
+    /// The tap was clean but condition 2 failed: a table slot, a root or an
+    /// offset moved, so the remembered windows are not this frame's windows.
+    D81_RAIL_TAP_GEOMETRY_CHANGED = 5 => geometry_changed,
+}
+
 
 /// ONE READING OF THE TAP, carried opaquely.
 ///
@@ -4605,28 +4643,6 @@ mod shape_tests {
         assert_eq!(rail_image(&reused), seeded);
     }
 
-    #[test]
-    fn every_outcome_ordinal_has_exactly_one_name() {
-        // kills: a bin published under the wrong name, or an ordinal past the
-        // end of the histogram.
-        let ordinals = [
-            D81_RAIL_TAP_REUSED,
-            D81_RAIL_TAP_HOOKS_NOT_INSTALLED,
-            D81_RAIL_TAP_BASELINE_PENDING,
-            D81_RAIL_TAP_RAIL_WRITTEN,
-            D81_RAIL_TAP_NO_MEMORY,
-            D81_RAIL_TAP_GEOMETRY_CHANGED,
-        ];
-        assert_eq!(ordinals.len(), D81_RAIL_TAP_OUTCOME_COUNT);
-        let mut seen = Vec::new();
-        for (index, ordinal) in ordinals.iter().enumerate() {
-            assert_eq!(usize::from(*ordinal), index, "ordinals must be dense");
-            let name = D81_RAIL_TAP_OUTCOME_NAMES[index];
-            assert!(!name.is_empty());
-            assert!(!seen.contains(&name), "{name} is used twice");
-            seen.push(name);
-        }
-    }
     // ==============================================================
     // THE COPY-WINDOW MERGE (lane RY2)
     //

@@ -1,0 +1,14 @@
+[package]
+name = "d64_grammar"
+version = "0.1.0"
+edition = "2021"
+description = "Domain 64's lifecycle reason column: the code that the delayed-event-lifecycle producer writes and the wire port reads, declared once. Owner ruling 2026-08-15 - ONE shared decoder per domain."
+
+# THIS CRATE HAS NO DEPENDENCIES, AND THAT IS THE POINT.
+#
+# The producer lane and `wire_format` each held their own `LifecycleReason` with
+# its own copy of the codes, and neither could see the other: `wire_format`
+# takes no lane dependency, and its `compact_contract` dependency is allow-listed
+# to d81's payload authority. A leaf with no dependencies is the only shape both
+# sides can take without reversing a direction (lane TV, Codex round 12).
+[dependencies]

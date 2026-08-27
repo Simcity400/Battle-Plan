@@ -23,15 +23,14 @@ pub enum HeartbeatState {
     PausedForControl = 3,
 }
 
-impl HeartbeatState {
-    fn from_wire(value: u16) -> Result<Self, HeartbeatError> {
-        match value {
-            1 => Ok(Self::WaitingForWorld),
-            2 => Ok(Self::Producing),
-            3 => Ok(Self::PausedForControl),
-            other => Err(HeartbeatError::UnknownState(other)),
-        }
-    }
+compact_contract::wire_coded_codes! {
+    HeartbeatState: u16,
+    code = pub code,
+    Ok = from_wire(value) -> Result<Self, HeartbeatError> { Err(HeartbeatError::UnknownState(value)) };
+
+    WaitingForWorld = 1,
+    Producing = 2,
+    PausedForControl = 3,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,7 +134,7 @@ pub fn encode_heartbeat_proof(
     payload[0..2].copy_from_slice(&PAYLOAD_SCHEMA.to_le_bytes());
     payload[4..20].copy_from_slice(&proof.challenge);
     payload[20..28].copy_from_slice(&proof.last_complete_h4cr_sequence.to_le_bytes());
-    payload[28..30].copy_from_slice(&(proof.state as u16).to_le_bytes());
+    payload[28..30].copy_from_slice(&proof.state.code().to_le_bytes());
     Ok(payload)
 }
 

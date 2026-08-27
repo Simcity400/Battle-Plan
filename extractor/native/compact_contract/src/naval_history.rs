@@ -65,6 +65,16 @@ pub enum SunkConvoyHistoryAuthority {
     StaticExact20Receipt,
 }
 
+crate::wire_coded_codes! {
+    no_discriminant SunkConvoyHistoryAuthority: u16,
+    code = pub emitted_code,
+    Some = pub from_emitted_code(code) -> Option<Self> { None };
+
+    Unavailable = 0,
+    StaticExact20Receipt = 1,
+    ; escape reserved 0xffff { LegacyUnbound => never }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedSunkConvoyHistoryPayload {
     pub schema_version: u16,
@@ -178,13 +188,10 @@ fn encode_v3(
     authority: SunkConvoyHistoryAuthority,
 ) -> Result<Vec<u8>, String> {
     validate_rows(rows, observed_rows, false)?;
-    let authority_raw = match authority {
-        SunkConvoyHistoryAuthority::Unavailable => 0u16,
-        SunkConvoyHistoryAuthority::StaticExact20Receipt => 1u16,
-        SunkConvoyHistoryAuthority::LegacyUnbound => {
-            return Err("legacy authority cannot be emitted in SCH1/v3".to_string())
-        }
-    };
+    if authority == SunkConvoyHistoryAuthority::LegacyUnbound {
+        return Err("legacy authority cannot be emitted in SCH1/v3".to_string());
+    }
+    let authority_raw = authority.emitted_code();
     if authority == SunkConvoyHistoryAuthority::Unavailable && !rows.is_empty() {
         return Err("unavailable sunk-convoy payload carries rows".to_string());
     }
@@ -309,14 +316,10 @@ pub fn decode_payload(payload: &[u8]) -> Result<DecodedSunkConvoyHistoryPayload,
         ));
     }
     let (authority, frame_hour, source_sequence) = if version == PAYLOAD_VERSION {
-        let authority = match authority_raw {
-            0 => SunkConvoyHistoryAuthority::Unavailable,
-            1 => SunkConvoyHistoryAuthority::StaticExact20Receipt,
-            other => {
-                return Err(format!(
-                    "sunk-convoy history authority state {other} is unsupported"
-                ))
-            }
+        let Some(authority) = SunkConvoyHistoryAuthority::from_emitted_code(authority_raw) else {
+            return Err(format!(
+                "sunk-convoy history authority state {authority_raw} is unsupported"
+            ));
         };
         let frame_hour = read_u64(payload, 32)?;
         let source_sequence = read_u64(payload, 40)?;

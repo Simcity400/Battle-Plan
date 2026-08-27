@@ -74,23 +74,22 @@ pub enum IdentityFailureReason {
     Cid1EncodeOrHashFailure = 11,
 }
 
-impl IdentityFailureReason {
-    fn from_wire(value: u16) -> Result<Self, IdentityControlCodecError> {
-        match value {
-            1 => Ok(Self::UnreadableRoot),
-            2 => Ok(Self::TornRead),
-            3 => Ok(Self::UuidMissing),
-            4 => Ok(Self::SeedMissing),
-            5 => Ok(Self::UuidMalformed),
-            6 => Ok(Self::SeedMalformed),
-            7 => Ok(Self::InvalidHour),
-            8 => Ok(Self::InvalidProfile),
-            9 => Ok(Self::StabilityIncompleteOrMismatch),
-            10 => Ok(Self::ComponentTransitionConflict),
-            11 => Ok(Self::Cid1EncodeOrHashFailure),
-            other => Err(IdentityControlCodecError::UnknownReason(other)),
-        }
-    }
+crate::wire_coded_codes! {
+    IdentityFailureReason: u16,
+    code = pub code,
+    Ok = from_wire(value) -> Result<Self, IdentityControlCodecError> { Err(IdentityControlCodecError::UnknownReason(value)) };
+
+    UnreadableRoot = 1,
+    TornRead = 2,
+    UuidMissing = 3,
+    SeedMissing = 4,
+    UuidMalformed = 5,
+    SeedMalformed = 6,
+    InvalidHour = 7,
+    InvalidProfile = 8,
+    StabilityIncompleteOrMismatch = 9,
+    ComponentTransitionConflict = 10,
+    Cid1EncodeOrHashFailure = 11,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -203,7 +202,7 @@ pub fn encode_identity_failure(
     out[4..6].copy_from_slice(&WIRE_VERSION.to_le_bytes());
     out[6..8].copy_from_slice(&(IDENTITY_FAILURE_FIXED_LEN as u16).to_le_bytes());
     out[8..12].copy_from_slice(&(total_len as u32).to_le_bytes());
-    out[12..14].copy_from_slice(&(value.reason as u16).to_le_bytes());
+    out[12..14].copy_from_slice(&value.reason.code().to_le_bytes());
     out[14..16].copy_from_slice(&value.flags().to_le_bytes());
     out[16..24].copy_from_slice(&value.current_logical_id.unwrap_or(u64::MAX).to_le_bytes());
     out[24..32].copy_from_slice(&value.attempt_id.to_le_bytes());
@@ -320,14 +319,13 @@ pub enum IdentityFailureAckDisposition {
     Rejected = 2,
 }
 
-impl IdentityFailureAckDisposition {
-    fn from_wire(value: u16) -> Result<Self, IdentityControlCodecError> {
-        match value {
-            1 => Ok(Self::DurablyRecorded),
-            2 => Ok(Self::Rejected),
-            other => Err(IdentityControlCodecError::UnknownDisposition(other)),
-        }
-    }
+crate::wire_coded_codes! {
+    IdentityFailureAckDisposition: u16,
+    code = pub code,
+    Ok = from_wire(value) -> Result<Self, IdentityControlCodecError> { Err(IdentityControlCodecError::UnknownDisposition(value)) };
+
+    DurablyRecorded = 1,
+    Rejected = 2,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -366,7 +364,7 @@ pub fn encode_identity_failure_ack(
     out[6..8].copy_from_slice(&(IDENTITY_FAILURE_ACK_LEN as u16).to_le_bytes());
     out[8..16].copy_from_slice(&value.attempt_id.to_le_bytes());
     out[16..24].copy_from_slice(&value.logical_id.unwrap_or(u64::MAX).to_le_bytes());
-    out[24..26].copy_from_slice(&(value.disposition as u16).to_le_bytes());
+    out[24..26].copy_from_slice(&value.disposition.code().to_le_bytes());
     out[26..28].copy_from_slice(&value.error.to_le_bytes());
     Ok(out)
 }

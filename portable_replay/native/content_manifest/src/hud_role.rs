@@ -7,41 +7,74 @@ pub const MAX_ROOTS_PER_SNAPSHOT: usize = 64;
 pub const MAX_BINDINGS_PER_SURFACE: usize = 65_536;
 pub const MAX_RUNTIME_ROOT_NAME_BYTES: usize = 512;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HudSurface {
-    Topbar,
-    Minimap,
-    Mapmodes,
-    TheatreSelector,
-    DesignerCountryEquipment,
-    DesignerTank,
-    DesignerPlane,
-}
-
-impl HudSurface {
-    pub fn token(self) -> &'static str {
-        match self {
-            Self::Topbar => "topbar",
-            Self::Minimap => "minimap",
-            Self::Mapmodes => "mapmodes",
-            Self::TheatreSelector => "theatre_selector",
-            Self::DesignerCountryEquipment => "designer/country_equipment",
-            Self::DesignerTank => "designer/tank",
-            Self::DesignerPlane => "designer/plane",
+/// The surface, its wire code, its token and the canonical roster, from one
+/// column.
+///
+/// The wire code was a `match` in the observer lane and the code's meaning was
+/// this array's ORDER, so a surface appended here and coded there compiled and
+/// read every later surface as its neighbour (lane TV, Codex round 12).
+/// Written here rather than taken from `compact_contract`: this crate is in the
+/// portable replay workspace and does not depend on the extractor's.
+macro_rules! hud_surfaces {
+    ( $( $variant:ident = $code:literal => $token:literal, )+ ) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum HudSurface {
+            $($variant,)+
         }
-    }
+
+        impl HudSurface {
+            pub const fn token(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $token,)+
+                }
+            }
+
+            pub const fn code(self) -> u8 {
+                match self {
+                    $(Self::$variant => $code,)+
+                }
+            }
+
+            // A `match`, not the equality chain the extractor's copy of this
+            // law uses: the codes here are literals, so they are patterns, and
+            // `replay_app`'s `no_silent_skip` scan refuses a `macro_rules!`
+            // whose expansion contains `return` -- a macro used inside a test
+            // body could end it early where no scan of that body can see it.
+            pub fn from_code(code: u8) -> Option<Self> {
+                match code {
+                    $($code => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+
+        pub const ALL_HUD_SURFACES: [HudSurface; [$($code,)+].len()] =
+            [$(HudSurface::$variant,)+];
+
+        const _: () = {
+            let codes = [$($code,)+];
+            let mut i = 0;
+            while i < codes.len() {
+                assert!(
+                    codes[i] == i as u8,
+                    "a surface's declared code is not its place in the roster",
+                );
+                i += 1;
+            }
+        };
+    };
 }
 
-pub const ALL_HUD_SURFACES: [HudSurface; 7] = [
-    HudSurface::Topbar,
-    HudSurface::Minimap,
-    HudSurface::Mapmodes,
-    HudSurface::TheatreSelector,
-    HudSurface::DesignerCountryEquipment,
-    HudSurface::DesignerTank,
-    HudSurface::DesignerPlane,
-];
+hud_surfaces! {
+    Topbar = 0 => "topbar",
+    Minimap = 1 => "minimap",
+    Mapmodes = 2 => "mapmodes",
+    TheatreSelector = 3 => "theatre_selector",
+    DesignerCountryEquipment = 4 => "designer/country_equipment",
+    DesignerTank = 5 => "designer/tank",
+    DesignerPlane = 6 => "designer/plane",
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HudSurfaceActivation {

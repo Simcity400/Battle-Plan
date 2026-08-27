@@ -710,96 +710,86 @@ pub struct D81PlanCounters {
     pub source_province_entries: u32,
 }
 
-pub fn d81_plan_refusal_ordinal(refusal: &crate::snapshot_recipes::Refusal) -> u32 {
-    use crate::snapshot_recipes::Refusal as R;
-    match refusal {
-        R::DepthExceeded { .. } => 1,
-        R::CopyTaskLimitExceeded { .. } => 2,
-        R::RangeLimitExceeded { .. } => 3,
-        R::ByteLimitExceeded { .. } => 4,
-        R::RangeTooWide { .. } => 5,
-        R::ExtentCountExceeded { .. } => 6,
-        R::ExtentBytesExceeded { .. } => 7,
-        R::JoinOutOfRange { .. } => 8,
-        R::JoinTableMissing { .. } => 9,
-        R::FieldNotCaptured { .. } => 10,
-        R::MemoryUnreadable { .. } => 11,
-        R::AddressNotRepresentable { .. } => 12,
-        R::PointerNotAdmissible { .. } => 13,
-        R::CarryNotSet { .. } => 14,
-        R::ConditionalUnresolved { .. } => 15,
-        R::ClosedIntervalReopened { .. } => 16,
-        R::Malformed { .. } => 17,
-        R::CarryHolderUnknown { .. } => 18,
+use crate::snapshot_recipes::view::ViewRefusal as V;
+use crate::snapshot_recipes::GapReason as G;
+use crate::snapshot_recipes::Refusal as R;
+
+crate::attach_log::ordinal_taxonomy::d81_plan_ordinal_bins! {
+    crate::snapshot_recipes::Refusal as R => fn d81_plan_refusal_ordinal,
+    fn d81_plan_refusal_unit_name,
+    prefix = "d81_plan_refusal_", unknown = "00_unknown";
+
+    causes {
+        DepthExceeded = 1 => "01_depth_exceeded",
+        RangeTooWide = 5 => "05_range_too_wide",
+        JoinOutOfRange = 8 => "08_join_out_of_range",
+        JoinTableMissing = 9 => "09_join_table_missing",
+        FieldNotCaptured = 10 => "10_field_not_captured",
+        MemoryUnreadable = 11 => "11_memory_unreadable",
+        AddressNotRepresentable = 12 => "12_address_not_representable",
+        PointerNotAdmissible = 13 => "13_pointer_not_admissible",
+        CarryNotSet = 14 => "14_carry_not_set",
+        ConditionalUnresolved = 15 => "15_conditional_unresolved",
+        ClosedIntervalReopened = 16 => "16_closed_interval_reopened",
+        Malformed = 17 => "17_malformed",
+        CarryHolderUnknown = 18 => "18_carry_holder_unknown",
     }
+
+    renamed {
+        /// The five limit refusals drop the `_exceeded` their variants carry:
+        /// every one of these bins IS a limit being exceeded, so the word adds
+        /// nothing to a manifest column and costs it width.
+        CopyTaskLimitExceeded = 2 => "02_copy_task_limit",
+        RangeLimitExceeded = 3 => "03_range_limit",
+        ByteLimitExceeded = 4 => "04_byte_limit",
+        ExtentCountExceeded = 6 => "06_extent_count",
+        ExtentBytesExceeded = 7 => "07_extent_bytes",
+    }
+
+    nested {}
 }
 
-pub fn d81_plan_refusal_unit_name(ordinal: u32) -> &'static str {
-    match ordinal {
-        1 => "d81_plan_refusal_01_depth_exceeded",
-        2 => "d81_plan_refusal_02_copy_task_limit",
-        3 => "d81_plan_refusal_03_range_limit",
-        4 => "d81_plan_refusal_04_byte_limit",
-        5 => "d81_plan_refusal_05_range_too_wide",
-        6 => "d81_plan_refusal_06_extent_count",
-        7 => "d81_plan_refusal_07_extent_bytes",
-        8 => "d81_plan_refusal_08_join_out_of_range",
-        9 => "d81_plan_refusal_09_join_table_missing",
-        10 => "d81_plan_refusal_10_field_not_captured",
-        11 => "d81_plan_refusal_11_memory_unreadable",
-        12 => "d81_plan_refusal_12_address_not_representable",
-        13 => "d81_plan_refusal_13_pointer_not_admissible",
-        14 => "d81_plan_refusal_14_carry_not_set",
-        15 => "d81_plan_refusal_15_conditional_unresolved",
-        16 => "d81_plan_refusal_16_closed_interval_reopened",
-        17 => "d81_plan_refusal_17_malformed",
-        18 => "d81_plan_refusal_18_carry_holder_unknown",
-        _ => "d81_plan_refusal_00_unknown",
-    }
-}
+crate::attach_log::ordinal_taxonomy::d81_plan_ordinal_bins! {
+    crate::snapshot_recipes::view::ViewRefusal as V => fn d81_plan_gap_ordinal,
+    fn d81_plan_gap_unit_name,
+    prefix = "d81_plan_gap_", unknown = "00_unknown";
 
-pub fn d81_plan_gap_ordinal(refusal: &crate::snapshot_recipes::view::ViewRefusal) -> u32 {
-    use crate::snapshot_recipes::view::ViewRefusal as V;
-    use crate::snapshot_recipes::GapReason as G;
-    match refusal {
-        V::ForeignHour { .. } => 1,
-        V::ConsumerGapped(G::Refused(_)) => 2,
-        V::ConsumerGapped(G::WitnessChanged { .. }) => 3,
-        V::ConsumerGapped(G::WitnessDependency { .. }) => 4,
-        V::ConsumerGapped(G::SamplesDisagreed { .. }) => 5,
-        V::NotCaptured { .. } => 6,
-        V::NotContiguous { .. } => 7,
-        V::NotOwned { .. } => 8,
-        V::Unreadable { .. } => 9,
+    causes {
+        ForeignHour = 1 => "01_foreign_hour",
+        NotCaptured = 6 => "06_not_captured",
+        NotContiguous = 7 => "07_not_contiguous",
+        NotOwned = 8 => "08_not_owned",
+        Unreadable = 9 => "09_unreadable",
     }
-}
 
-pub fn d81_plan_gap_unit_name(ordinal: u32) -> &'static str {
-    match ordinal {
-        1 => "d81_plan_gap_01_foreign_hour",
-        2 => "d81_plan_gap_02_recipe_refused",
-        3 => "d81_plan_gap_03_witness_changed",
-        4 => "d81_plan_gap_04_witness_dependency",
-        5 => "d81_plan_gap_05_samples_disagreed",
-        6 => "d81_plan_gap_06_not_captured",
-        7 => "d81_plan_gap_07_not_contiguous",
-        8 => "d81_plan_gap_08_not_owned",
-        9 => "d81_plan_gap_09_unreadable",
-        _ => "d81_plan_gap_00_unknown",
+    renamed {}
+
+    nested {
+        /// Four bins inside one variant: `ConsumerGapped` carries the recipe
+        /// layer's own reason, and which reason it is is the whole point of
+        /// splitting them. The names are that reason, not the variant.
+        V::ConsumerGapped(G::Refused(_)) = 2 => "02_recipe_refused",
+        V::ConsumerGapped(G::WitnessChanged { .. }) = 3 => "03_witness_changed",
+        V::ConsumerGapped(G::WitnessDependency { .. }) = 4 => "04_witness_dependency",
+        V::ConsumerGapped(G::SamplesDisagreed { .. }) = 5 => "05_samples_disagreed",
     }
 }
 
 pub const D81_COPY_BRACKET_SHADOW_ENV: &str = "BATTLE_PLAN_D81_COPY_BRACKET_SHADOW";
 
-pub const D81_SHADOW_FIELD_UNITS: [&str; 7] = [
-    "d81_shadow_divergence_00_none",
-    "d81_shadow_divergence_01_row_present",
-    "d81_shadow_divergence_02_province_id",
-    "d81_shadow_divergence_03_active_terminal",
-    "d81_shadow_divergence_04_anchor_variant",
-    "d81_shadow_divergence_05_anchor_bits",
-    "d81_shadow_divergence_06_neighbors",
-];
+crate::attach_log::ordinal_taxonomy::ordinal_named_cause_bins! {
+    mod d81_shadow_divergence, names = D81_SHADOW_FIELD_UNITS,
+    count = D81_SHADOW_FIELD_COUNT,
+    prefix = "d81_shadow_divergence_";
+
+    none = 0 => "00_none",
+    row_present = 1 => "01_row_present",
+    province_id = 2 => "02_province_id",
+    active_terminal = 3 => "03_active_terminal",
+    anchor_variant = 4 => "04_anchor_variant",
+    anchor_bits = 5 => "05_anchor_bits",
+    neighbors = 6 => "06_neighbors",
+}
 
 pub fn d81_shadow_divergence_unit_name(ordinal: u32) -> &'static str {
     D81_SHADOW_FIELD_UNITS
@@ -857,8 +847,8 @@ pub fn d81_equality_compare<F: PartialEq>(
             authoritative.provinces.get(index),
         ) else {
             counters.rows_divergent = counters.rows_divergent.saturating_add(1);
-            if counters.first_divergence_field == 0 {
-                counters.first_divergence_field = 1;
+            if counters.first_divergence_field == d81_shadow_divergence::none {
+                counters.first_divergence_field = d81_shadow_divergence::row_present;
                 counters.first_divergence_province = live
                     .provinces
                     .get(index)
@@ -869,23 +859,23 @@ pub fn d81_equality_compare<F: PartialEq>(
             continue;
         };
         let diverged = if left.province_id != right.province_id {
-            2
+            d81_shadow_divergence::province_id
         } else if left.active_terminal != right.active_terminal {
-            3
+            d81_shadow_divergence::active_terminal
         } else if left.anchor_variant != right.anchor_variant {
-            4
+            d81_shadow_divergence::anchor_variant
         } else if left.anchor_bits != right.anchor_bits {
-            5
+            d81_shadow_divergence::anchor_bits
         } else if left.neighbors != right.neighbors {
-            6
+            d81_shadow_divergence::neighbors
         } else {
-            0
+            d81_shadow_divergence::none
         };
-        if diverged == 0 {
+        if diverged == d81_shadow_divergence::none {
             counters.rows_equal = counters.rows_equal.saturating_add(1);
         } else {
             counters.rows_divergent = counters.rows_divergent.saturating_add(1);
-            if counters.first_divergence_field == 0 {
+            if counters.first_divergence_field == d81_shadow_divergence::none {
                 counters.first_divergence_province = left.province_id;
                 counters.first_divergence_field = diverged;
             }

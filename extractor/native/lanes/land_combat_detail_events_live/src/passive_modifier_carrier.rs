@@ -56,64 +56,71 @@ pub enum CarrierRefusal {
     CarrierRowBudgetExceeded,
 }
 
-impl CarrierRefusal {
-    pub fn wire_code(self) -> u32 {
-        match self {
-            CarrierRefusal::SideNotHeapPointer => 1,
-            CarrierRefusal::UnitVectorHeaderUnreadable => 2,
-            CarrierRefusal::UnitVectorHeaderOutOfRange => 3,
-            CarrierRefusal::UnitVectorDataNotHeapPointer => 4,
-            CarrierRefusal::UnitVectorBodyUnreadable => 5,
-            CarrierRefusal::UnitVectorHeaderChangedDuringRead => 6,
-            CarrierRefusal::UnitElementNotHeapPointer => 7,
-            CarrierRefusal::UnitIdentityInvalid => 8,
-            CarrierRefusal::ModifierHeaderUnreadable => 9,
-            CarrierRefusal::ModifierHeaderOutOfRange => 10,
-            CarrierRefusal::ModifierDataNotHeapPointer => 11,
-            CarrierRefusal::ModifierBodyUnreadable => 12,
-            CarrierRefusal::ModifierHeaderChangedDuringRead => 13,
-            CarrierRefusal::FoldsUnreadable => 14,
-            CarrierRefusal::LeaderHeaderUnreadable => 15,
-            CarrierRefusal::LeaderHeaderOutOfRange => 16,
-            CarrierRefusal::LeaderDataNotHeapPointer => 17,
-            CarrierRefusal::LeaderBodyUnreadable => 18,
-            CarrierRefusal::LeaderHeaderChangedDuringRead => 19,
-            CarrierRefusal::LeaderEntryHandleInvalid => 20,
-            CarrierRefusal::CarrierRowBudgetExceeded => 21,
-            CarrierRefusal::UnitVectorDisagreesWithCensus => 22,
-        }
-    }
+/// The code, the name and the variant are ONE declaration.
+///
+/// `wire_code` and `as_str` were two matches over one enum and the
+/// exhaustiveness claim was a third list, in a test, which had already fallen
+/// behind by one variant (Codex round 9). A refusal added to the enum must now
+/// appear here or the matches do not compile; its code must be free; and its
+/// name must spell it.
+macro_rules! carrier_refusals {
+    ($( $variant:ident = $code:literal => $name:literal, )+) => {
+        impl CarrierRefusal {
+            pub fn wire_code(self) -> u32 {
+                match self {
+                    $(CarrierRefusal::$variant => $code,)+
+                }
+            }
 
-    pub fn as_str(self) -> &'static str {
-        match self {
-            CarrierRefusal::SideNotHeapPointer => "side_not_heap_pointer",
-            CarrierRefusal::UnitVectorHeaderUnreadable => "unit_vector_header_unreadable",
-            CarrierRefusal::UnitVectorHeaderOutOfRange => "unit_vector_header_out_of_range",
-            CarrierRefusal::UnitVectorDataNotHeapPointer => "unit_vector_data_not_heap_pointer",
-            CarrierRefusal::UnitVectorBodyUnreadable => "unit_vector_body_unreadable",
-            CarrierRefusal::UnitVectorHeaderChangedDuringRead => {
-                "unit_vector_header_changed_during_read"
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(CarrierRefusal::$variant => $name,)+
+                }
             }
-            CarrierRefusal::UnitElementNotHeapPointer => "unit_element_not_heap_pointer",
-            CarrierRefusal::UnitIdentityInvalid => "unit_identity_invalid",
-            CarrierRefusal::ModifierHeaderUnreadable => "modifier_header_unreadable",
-            CarrierRefusal::ModifierHeaderOutOfRange => "modifier_header_out_of_range",
-            CarrierRefusal::ModifierDataNotHeapPointer => "modifier_data_not_heap_pointer",
-            CarrierRefusal::ModifierBodyUnreadable => "modifier_body_unreadable",
-            CarrierRefusal::ModifierHeaderChangedDuringRead => {
-                "modifier_header_changed_during_read"
-            }
-            CarrierRefusal::FoldsUnreadable => "folds_unreadable",
-            CarrierRefusal::LeaderHeaderUnreadable => "leader_header_unreadable",
-            CarrierRefusal::LeaderHeaderOutOfRange => "leader_header_out_of_range",
-            CarrierRefusal::LeaderDataNotHeapPointer => "leader_data_not_heap_pointer",
-            CarrierRefusal::LeaderBodyUnreadable => "leader_body_unreadable",
-            CarrierRefusal::LeaderHeaderChangedDuringRead => "leader_header_changed_during_read",
-            CarrierRefusal::LeaderEntryHandleInvalid => "leader_entry_handle_invalid",
-            CarrierRefusal::CarrierRowBudgetExceeded => "carrier_row_budget_exceeded",
-            CarrierRefusal::UnitVectorDisagreesWithCensus => "unit_vector_disagrees_with_census",
         }
-    }
+
+        const _: () = {
+            assert!(
+                compact_contract::diagnostic_channel::indices_are_a_bijection(
+                    &[$($code - 1,)+],
+                    [$($code,)+].len(),
+                ),
+                "two carrier refusals share a wire code, or one is outside 1..=count",
+            );
+            $(assert!(
+                compact_contract::diagnostic_channel::const_str_is_snake_of(
+                    $name,
+                    stringify!($variant),
+                ),
+                "a carrier refusal's name does not spell the refusal",
+            );)+
+        };
+    };
+}
+
+carrier_refusals! {
+    SideNotHeapPointer = 1 => "side_not_heap_pointer",
+    UnitVectorHeaderUnreadable = 2 => "unit_vector_header_unreadable",
+    UnitVectorHeaderOutOfRange = 3 => "unit_vector_header_out_of_range",
+    UnitVectorDataNotHeapPointer = 4 => "unit_vector_data_not_heap_pointer",
+    UnitVectorBodyUnreadable = 5 => "unit_vector_body_unreadable",
+    UnitVectorHeaderChangedDuringRead = 6 => "unit_vector_header_changed_during_read",
+    UnitElementNotHeapPointer = 7 => "unit_element_not_heap_pointer",
+    UnitIdentityInvalid = 8 => "unit_identity_invalid",
+    ModifierHeaderUnreadable = 9 => "modifier_header_unreadable",
+    ModifierHeaderOutOfRange = 10 => "modifier_header_out_of_range",
+    ModifierDataNotHeapPointer = 11 => "modifier_data_not_heap_pointer",
+    ModifierBodyUnreadable = 12 => "modifier_body_unreadable",
+    ModifierHeaderChangedDuringRead = 13 => "modifier_header_changed_during_read",
+    FoldsUnreadable = 14 => "folds_unreadable",
+    LeaderHeaderUnreadable = 15 => "leader_header_unreadable",
+    LeaderHeaderOutOfRange = 16 => "leader_header_out_of_range",
+    LeaderDataNotHeapPointer = 17 => "leader_data_not_heap_pointer",
+    LeaderBodyUnreadable = 18 => "leader_body_unreadable",
+    LeaderHeaderChangedDuringRead = 19 => "leader_header_changed_during_read",
+    LeaderEntryHandleInvalid = 20 => "leader_entry_handle_invalid",
+    CarrierRowBudgetExceeded = 21 => "carrier_row_budget_exceeded",
+    UnitVectorDisagreesWithCensus = 22 => "unit_vector_disagrees_with_census",
 }
 
 impl fmt::Display for CarrierRefusal {
@@ -124,26 +131,23 @@ impl fmt::Display for CarrierRefusal {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ModifierTickWitness {
-    NoTickPhaseWitness,
-    ProvenQuiescent,
+    NoTickPhaseWitness = 1,
+    ProvenQuiescent = 2,
+}
+
+compact_contract::wire_coded_variants! {
+    ModifierTickWitness: u32, all = ALL, code = wire_code, from_code = from_wire_code,
+    label = wire_name;
+
+    codes {
+        NoTickPhaseWitness = 1 => "no_tick_phase_witness",
+        ProvenQuiescent = 2 => "proven_quiescent",
+    }
+
+    reserved {}
 }
 
 impl ModifierTickWitness {
-    pub fn wire_code(self) -> u32 {
-        match self {
-            ModifierTickWitness::NoTickPhaseWitness => 1,
-            ModifierTickWitness::ProvenQuiescent => 2,
-        }
-    }
-
-    pub fn from_wire_code(code: u32) -> Option<Self> {
-        match code {
-            1 => Some(ModifierTickWitness::NoTickPhaseWitness),
-            2 => Some(ModifierTickWitness::ProvenQuiescent),
-            _ => None,
-        }
-    }
-
     pub fn is_provisional(self) -> bool {
         matches!(self, ModifierTickWitness::NoTickPhaseWitness)
     }
@@ -151,26 +155,23 @@ impl ModifierTickWitness {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LeaderFreshness {
-    LastNonNullNoFreshnessProof,
-    ProvenCurrent,
+    LastNonNullNoFreshnessProof = 1,
+    ProvenCurrent = 2,
+}
+
+compact_contract::wire_coded_variants! {
+    LeaderFreshness: u32, all = ALL, code = wire_code, from_code = from_wire_code,
+    label = wire_name;
+
+    codes {
+        LastNonNullNoFreshnessProof = 1 => "last_non_null_no_freshness_proof",
+        ProvenCurrent = 2 => "proven_current",
+    }
+
+    reserved {}
 }
 
 impl LeaderFreshness {
-    pub fn wire_code(self) -> u32 {
-        match self {
-            LeaderFreshness::LastNonNullNoFreshnessProof => 1,
-            LeaderFreshness::ProvenCurrent => 2,
-        }
-    }
-
-    pub fn from_wire_code(code: u32) -> Option<Self> {
-        match code {
-            1 => Some(LeaderFreshness::LastNonNullNoFreshnessProof),
-            2 => Some(LeaderFreshness::ProvenCurrent),
-            _ => None,
-        }
-    }
-
     pub fn is_stale_permitted(self) -> bool {
         matches!(self, LeaderFreshness::LastNonNullNoFreshnessProof)
     }

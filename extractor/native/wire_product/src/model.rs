@@ -22,47 +22,40 @@ pub enum ArtifactRole {
     ProvinceCatalog = 6,
 }
 
-impl ArtifactRole {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::BundleMetadata => "rebuilt_wire_bundle_metadata",
-            Self::BranchTable => "rebuilt_wire_branch_table",
-            Self::SchemaRegistry => "rebuilt_wire_schema_registry",
-            Self::SymbolManifest => "rebuilt_wire_symbol_manifest",
-            Self::StateBlock => "rebuilt_wire_state_block",
-            Self::GapRecord => "rebuilt_wire_gap_record",
-            Self::ProvinceCatalog => "rebuilt_wire_province_catalog",
-        }
+compact_contract::wire_coded_variants! {
+    ArtifactRole: u8, all = ALL, code = code, from_code = decode, label = as_str;
+
+    codes {
+        BundleMetadata = 0 => "rebuilt_wire_bundle_metadata",
+        BranchTable = 1 => "rebuilt_wire_branch_table",
+        SchemaRegistry = 2 => "rebuilt_wire_schema_registry",
+        SymbolManifest = 3 => "rebuilt_wire_symbol_manifest",
+        StateBlock = 4 => "rebuilt_wire_state_block",
+        GapRecord = 5 => "rebuilt_wire_gap_record",
+        ProvinceCatalog = 6 => "rebuilt_wire_province_catalog",
     }
 
+    reserved {}
+}
+
+impl ArtifactRole {
     pub fn from_str(value: &str) -> Result<Self, ProductError> {
-        match value {
-            "rebuilt_wire_bundle_metadata" => Ok(Self::BundleMetadata),
-            "rebuilt_wire_branch_table" => Ok(Self::BranchTable),
-            "rebuilt_wire_schema_registry" => Ok(Self::SchemaRegistry),
-            "rebuilt_wire_symbol_manifest" => Ok(Self::SymbolManifest),
-            "rebuilt_wire_state_block" => Ok(Self::StateBlock),
-            "rebuilt_wire_gap_record" => Ok(Self::GapRecord),
-            "rebuilt_wire_province_catalog" => Ok(Self::ProvinceCatalog),
-            _ => Err(ProductError::new(format!(
-                "unknown rebuilt-wire artifact role {value:?}"
-            ))),
+        let mut i = 0;
+        while i < Self::ALL.len() {
+            if Self::ALL[i].as_str() == value {
+                return Ok(Self::ALL[i]);
+            }
+            i += 1;
         }
+        Err(ProductError::new(format!(
+            "unknown rebuilt-wire artifact role {value:?}"
+        )))
     }
 
     pub(crate) fn from_code(code: u8) -> Result<Self, ProductError> {
-        match code {
-            0 => Ok(Self::BundleMetadata),
-            1 => Ok(Self::BranchTable),
-            2 => Ok(Self::SchemaRegistry),
-            3 => Ok(Self::SymbolManifest),
-            4 => Ok(Self::StateBlock),
-            5 => Ok(Self::GapRecord),
-            6 => Ok(Self::ProvinceCatalog),
-            _ => Err(ProductError::new(format!(
-                "unassigned rebuilt-wire artifact role code {code}"
-            ))),
-        }
+        Self::decode(code).ok_or_else(|| {
+            ProductError::new(format!("unassigned rebuilt-wire artifact role code {code}"))
+        })
     }
 }
 

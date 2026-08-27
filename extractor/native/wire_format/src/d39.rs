@@ -2,11 +2,11 @@
 //!
 //! **The grammar lives in [`crate::variant_upgrades`]**, which d39 shares
 //! byte-for-byte with d40 `stockpile_variant_upgrades`. The shared fold is
-//! `world_fold.rs:23209`-`:23290`; dispatch lines 4714 and 4715 call it for both
+//! `world_fold.rs:23221`-`:23302`; dispatch lines 4714 and 4715 call it for both
 //! domains, and the
 //! only divergences inside it are the accumulator it writes (`world_fold.rs::fold_variant_upgrades`)
 //! and the name in its error strings (`world_fold.rs::fold_variant_upgrades`). Read that module for
-// @world-fold-authority domain=39 functions=fold_variant_upgrades lines=23209-23290 sha256=c8dd403bda7ec0313372fdfe81ec3ff275289d4884eeaa2c4279c1e63eb9e781 closure=b1063bbca8083631c4d686d570e5b738185af1a4542018debf2a47413548ca0a
+// @world-fold-authority domain=39 functions=fold_variant_upgrades lines=23221-23302 sha256=c8dd403bda7ec0313372fdfe81ec3ff275289d4884eeaa2c4279c1e63eb9e781 closure=47acf64619e28af9969d93bb904afe8f5996faa762dec8f9944cc004aff69320
 //! the payload tables, the four-state decision (none: `flags` must be exactly
 //! zero, `world_fold.rs::fold_variant_upgrades`), the upsert-only fold, and the one place the mapping is
 //! stricter than the fold.

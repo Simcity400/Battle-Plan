@@ -12,30 +12,18 @@ pub enum UnitRole {
     Undeclared = 5,
 }
 
-impl UnitRole {
-    pub const fn code(self) -> u8 {
-        self as u8
+crate::wire_coded_variants! {
+    UnitRole: u8, all = ALL, code = code, from_code = from_code, label = label;
+
+    codes {
+        Deciding = 1 => "deciding",
+        Locator = 2 => "locator",
+        Context = 3 => "context",
+        Counter = 4 => "counter",
+        Undeclared = 5 => "undeclared",
     }
 
-    pub const fn from_code(code: u8) -> Option<Self> {
-        match code {
-            1 => Some(Self::Deciding),
-            2 => Some(Self::Locator),
-            3 => Some(Self::Context),
-            4 => Some(Self::Counter),
-            5 => Some(Self::Undeclared),
-            _ => None,
-        }
-    }
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Deciding => "deciding",
-            Self::Locator => "locator",
-            Self::Context => "context",
-            Self::Counter => "counter",
-            Self::Undeclared => "undeclared",
-        }
+    reserved {
     }
 }
 
@@ -49,32 +37,22 @@ pub enum UnitPresence {
     Undeclared = 5,
 }
 
+crate::wire_coded_variants! {
+    UnitPresence: u8, all = ALL, code = code, from_code = from_code, label = label;
+
+    codes {
+        Observed = 1 => "observed",
+        Absent = 2 => "absent",
+        ResetSentinel = 3 => "sentinel",
+        NotApplicable = 4 => "n/a",
+        Undeclared = 5 => "undeclared",
+    }
+
+    reserved {
+    }
+}
+
 impl UnitPresence {
-    pub const fn code(self) -> u8 {
-        self as u8
-    }
-
-    pub const fn from_code(code: u8) -> Option<Self> {
-        match code {
-            1 => Some(Self::Observed),
-            2 => Some(Self::Absent),
-            3 => Some(Self::ResetSentinel),
-            4 => Some(Self::NotApplicable),
-            5 => Some(Self::Undeclared),
-            _ => None,
-        }
-    }
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Observed => "observed",
-            Self::Absent => "absent",
-            Self::ResetSentinel => "sentinel",
-            Self::NotApplicable => "n/a",
-            Self::Undeclared => "undeclared",
-        }
-    }
-
     pub const fn value_is_a_measurement(self) -> bool {
         matches!(self, Self::Observed)
     }
@@ -523,28 +501,17 @@ pub enum OffFrameTerminal {
     Panicked = 4,
 }
 
-impl OffFrameTerminal {
-    pub const fn code(self) -> u8 {
-        self as u8
+crate::wire_coded_variants! {
+    OffFrameTerminal: u8, all = ALL, code = code, from_code = from_code, label = label;
+
+    codes {
+        Running = 1 => "running",
+        CompletedOk = 2 => "completed_ok",
+        CompletedError = 3 => "completed_error",
+        Panicked = 4 => "panicked",
     }
 
-    pub const fn from_code(code: u8) -> Option<Self> {
-        match code {
-            1 => Some(Self::Running),
-            2 => Some(Self::CompletedOk),
-            3 => Some(Self::CompletedError),
-            4 => Some(Self::Panicked),
-            _ => None,
-        }
-    }
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::CompletedOk => "completed_ok",
-            Self::CompletedError => "completed_error",
-            Self::Panicked => "panicked",
-        }
+    reserved {
     }
 }
 
@@ -626,29 +593,18 @@ pub enum TruncationKind {
     Undeclared = 0,
 }
 
-impl TruncationKind {
-    pub const fn code(self) -> u8 {
-        self as u8
+crate::wire_coded_variants! {
+    TruncationKind: u8, all = ALL, code = code, from_code = from_code, label = label;
+
+    codes {
+        None = 1 => "complete",
+        BudgetShare = 2 => "budget_share",
+        UnitTooLarge = 3 => "unit_too_large",
+        ProducerOverflow = 4 => "producer_overflow",
     }
 
-    pub const fn from_code(code: u8) -> Option<Self> {
-        match code {
-            1 => Some(Self::None),
-            2 => Some(Self::BudgetShare),
-            3 => Some(Self::UnitTooLarge),
-            4 => Some(Self::ProducerOverflow),
-            _ => None,
-        }
-    }
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::None => "complete",
-            Self::BudgetShare => "budget_share",
-            Self::UnitTooLarge => "unit_too_large",
-            Self::ProducerOverflow => "producer_overflow",
-            Self::Undeclared => "undeclared",
-        }
+    reserved {
+        Undeclared = 0 => "undeclared",
     }
 }
 
@@ -910,42 +866,23 @@ pub enum Accumulation {
     Undeclared = 6,
 }
 
+crate::wire_coded_variants! {
+    Accumulation: u8, all = ALL, code = code, from_code = from_code, label = label;
+
+    codes {
+        PerFrame = 1 => "per_frame",
+        Cumulative = 2 => "cumulative",
+        Gauge = 3 => "gauge",
+        LastValue = 4 => "last_value",
+        BitwiseOr = 5 => "bitwise_or",
+        Undeclared = 6 => "undeclared",
+    }
+
+    reserved {
+    }
+}
+
 impl Accumulation {
-    pub const fn code(self) -> u8 {
-        self as u8
-    }
-
-    pub const fn from_code(code: u8) -> Option<Self> {
-        match code {
-            1 => Some(Self::PerFrame),
-            2 => Some(Self::Cumulative),
-            3 => Some(Self::Gauge),
-            4 => Some(Self::LastValue),
-            5 => Some(Self::BitwiseOr),
-            6 => Some(Self::Undeclared),
-            _ => None,
-        }
-    }
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::PerFrame => "per_frame",
-            Self::Cumulative => "cumulative",
-            Self::Gauge => "gauge",
-            Self::LastValue => "last_value",
-            Self::BitwiseOr => "bitwise_or",
-            Self::Undeclared => "undeclared",
-        }
-    }
-
-    pub const ALL: [Self; 6] = [
-        Self::PerFrame,
-        Self::Cumulative,
-        Self::Gauge,
-        Self::LastValue,
-        Self::BitwiseOr,
-        Self::Undeclared,
-    ];
 
     pub fn fold(self, running: Option<u64>, incoming: u64) -> u64 {
         let Some(running) = running else {
@@ -1191,18 +1128,48 @@ pub const CUMULATIVE_UNITS: &[&str] = &[
 ];
 
 /// each country's ENGINE LIFETIME total for that channel, so it is cumulative
-fn is_air_loss_channel_total(name: &str) -> bool {
-    name.starts_with("air_loss_") && name.ends_with("_raw_sum")
+const fn is_air_loss_channel_total(name: &str) -> bool {
+    const_str_starts_with(name, "air_loss_") && const_str_ends_with(name, "_raw_sum")
 }
 
-fn is_digest_word_or_group(name: &str) -> bool {
-    if let Some((group, index)) = name.rsplit_once("_sha256_") {
-        return !group.is_empty() && !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit());
+const fn is_digest_word_or_group(name: &str) -> bool {
+    if const_str_eq(name, "d75_terminal_payload")
+        || const_str_eq(name, "d64_terminal_envelope")
+        || const_str_eq(name, "d64_terminal_del2")
+    {
+        return true;
     }
-    matches!(
-        name,
-        "d75_terminal_payload" | "d64_terminal_envelope" | "d64_terminal_del2"
-    )
+    let bytes = name.as_bytes();
+    let marker = b"_sha256_";
+    // The LAST occurrence, mirroring `rsplit_once`.
+    let mut split = usize::MAX;
+    let mut start = 0;
+    while start + marker.len() <= bytes.len() {
+        let mut k = 0;
+        let mut hit = true;
+        while k < marker.len() {
+            if bytes[start + k] != marker[k] {
+                hit = false;
+                break;
+            }
+            k += 1;
+        }
+        if hit {
+            split = start;
+        }
+        start += 1;
+    }
+    if split == usize::MAX || split == 0 || split + marker.len() == bytes.len() {
+        return false;
+    }
+    let mut i = split + marker.len();
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            return false;
+        }
+        i += 1;
+    }
+    true
 }
 
 pub const GAUGE_UNITS: &[&str] = &[
@@ -1702,54 +1669,77 @@ pub const DOMAIN47_PREWARM_UNITS: &[(&str, Accumulation)] = &[
     ),
 ];
 
-pub fn unit_accumulation(name: &str) -> Accumulation {
-    declared_unit_accumulation(name).unwrap_or(Accumulation::PerFrame)
+pub const fn unit_accumulation(name: &str) -> Accumulation {
+    match declared_unit_accumulation(name) {
+        Some(class) => class,
+        None => Accumulation::PerFrame,
+    }
 }
 
-pub fn declared_unit_accumulation(name: &str) -> Option<Accumulation> {
-    if let Some((_, class)) = DOMAIN47_PREWARM_UNITS
-        .iter()
-        .find(|(unit, _)| *unit == name)
-    {
-        return Some(*class);
+/// CONST so a producer can assert its own leaf spellings against it.
+///
+/// The alternative was a second const-evaluable copy of these rules, which is
+/// the shape this lane exists to remove: two readings of one law that can
+/// disagree. The body is the same law in the same order, written with index
+/// loops because iterators are not available in a const fn.
+pub const fn declared_unit_accumulation(name: &str) -> Option<Accumulation> {
+    let mut i = 0;
+    while i < DOMAIN47_PREWARM_UNITS.len() {
+        if const_str_eq(DOMAIN47_PREWARM_UNITS[i].0, name) {
+            return Some(DOMAIN47_PREWARM_UNITS[i].1);
+        }
+        i += 1;
     }
-    if RAW_WORD_SUFFIXES
-        .iter()
-        .any(|suffix| name.ends_with(suffix))
-    {
+    if const_ends_with_any(name, RAW_WORD_SUFFIXES) {
         return Some(Accumulation::LastValue);
     }
-    if BITMASK_SUFFIXES.iter().any(|suffix| name.ends_with(suffix)) {
+    if const_ends_with_any(name, BITMASK_SUFFIXES) {
         return Some(Accumulation::BitwiseOr);
     }
-    if name.starts_with("d69_failed_slot_mask_") {
+    if const_str_starts_with(name, "d69_failed_slot_mask_") {
         return Some(Accumulation::BitwiseOr);
     }
     if is_digest_word_or_group(name) {
         return Some(Accumulation::LastValue);
     }
-    if CUMULATIVE_UNITS.contains(&name)
-        || LANE_WALL_SESSION_CONSTANTS.contains(&name)
+    if const_names_contain(CUMULATIVE_UNITS, name)
+        || const_names_contain(LANE_WALL_SESSION_CONSTANTS, name)
         || is_air_loss_channel_total(name)
     {
         return Some(Accumulation::Cumulative);
     }
-    if GAUGE_UNITS.contains(&name) || ZERO_GAUGE_UNITS.contains(&name) {
+    if const_names_contain(GAUGE_UNITS, name) || const_names_contain(ZERO_GAUGE_UNITS, name) {
         return Some(Accumulation::Gauge);
     }
-    if LAST_VALUE_UNITS.contains(&name) || RAW_FAILURE_CONTEXT_UNITS.contains(&name) {
+    if const_names_contain(LAST_VALUE_UNITS, name)
+        || const_names_contain(RAW_FAILURE_CONTEXT_UNITS, name)
+    {
         return Some(Accumulation::LastValue);
     }
-    if STATEFUL_FAMILY_PER_FRAME_UNITS.contains(&name) {
+    if const_names_contain(STATEFUL_FAMILY_PER_FRAME_UNITS, name) {
         return Some(Accumulation::PerFrame);
     }
-    if STATEFUL_UNIT_PREFIXES
-        .iter()
-        .any(|prefix| name.starts_with(prefix))
-    {
+    if const_starts_with_any(name, STATEFUL_UNIT_PREFIXES) {
         return Some(Accumulation::Undeclared);
     }
     None
+}
+
+/// `declared_unit_accumulation(name) == Some(Accumulation::Cumulative)`.
+pub const fn declares_cumulative_unit(name: &str) -> bool {
+    matches!(
+        declared_unit_accumulation(name),
+        Some(Accumulation::Cumulative)
+    )
+}
+
+/// `unit_accumulation(name) == Accumulation::PerFrame`.
+///
+/// A name that falls off the end of every class INSIDE a stateful family is
+/// `Undeclared` rather than per-frame, and fails the producer sweep; this says
+/// so, because the two are the same answer only outside such a family.
+pub const fn declares_per_frame_unit(name: &str) -> bool {
+    matches!(unit_accumulation(name), Accumulation::PerFrame)
 }
 
 pub fn is_stateful_unit_family(name: &str) -> bool {
@@ -1758,11 +1748,416 @@ pub fn is_stateful_unit_family(name: &str) -> bool {
         .any(|prefix| name.starts_with(prefix))
 }
 
+pub const fn const_str_eq(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < left.len() {
+        if left[i] != right[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// `const_str_eq(name, concat!(prefix, suffix))` without building the joined
+/// string: `concat!` needs literals and a producer's leaf spelling is usually a
+/// const it must be checked against.
+pub const fn const_str_is_prefixed(name: &str, prefix: &str, suffix: &str) -> bool {
+    let (name, prefix, suffix) = (name.as_bytes(), prefix.as_bytes(), suffix.as_bytes());
+    if name.len() != prefix.len() + suffix.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < prefix.len() {
+        if name[i] != prefix[i] {
+            return false;
+        }
+        i += 1;
+    }
+    let mut j = 0;
+    while j < suffix.len() {
+        if name[prefix.len() + j] != suffix[j] {
+            return false;
+        }
+        j += 1;
+    }
+    true
+}
+
+const fn const_str_ends_with(name: &str, suffix: &str) -> bool {
+    let (name, suffix) = (name.as_bytes(), suffix.as_bytes());
+    if name.len() < suffix.len() {
+        return false;
+    }
+    let offset = name.len() - suffix.len();
+    let mut i = 0;
+    while i < suffix.len() {
+        if name[offset + i] != suffix[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+pub const fn const_names_contain(names: &[&str], name: &str) -> bool {
+    let mut i = 0;
+    while i < names.len() {
+        if const_str_eq(names[i], name) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+const fn const_str_starts_with(name: &str, prefix: &str) -> bool {
+    let (name, prefix) = (name.as_bytes(), prefix.as_bytes());
+    if name.len() < prefix.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < prefix.len() {
+        if name[i] != prefix[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+const fn const_ends_with_any(name: &str, suffixes: &[&str]) -> bool {
+    let mut i = 0;
+    while i < suffixes.len() {
+        if const_str_ends_with(name, suffixes[i]) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+const fn const_starts_with_any(name: &str, prefixes: &[&str]) -> bool {
+    let mut i = 0;
+    while i < prefixes.len() {
+        if const_str_starts_with(name, prefixes[i]) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// No two entries of `names` are the same string.
+///
+/// The half a bijection over INDICES cannot see: distinct slots carrying one
+/// name are summed together by a manifest that aggregates by name, so one
+/// cause's count silently absorbs another's.
+pub const fn const_names_are_distinct(names: &[&str]) -> bool {
+    let mut i = 0;
+    while i < names.len() {
+        let mut j = i + 1;
+        while j < names.len() {
+            if const_str_eq(names[i], names[j]) {
+                return false;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// `name` begins with `ordinal` as two zero-padded digits and an underscore.
+///
+/// Wire spellings that carry their own ordinal are readable in a manifest and
+/// unreadable once the two disagree, which nothing else notices: the counter
+/// still increments, under a number that names a different cause.
+pub const fn const_str_has_ordinal_prefix(name: &str, ordinal: u32) -> bool {
+    if ordinal > 99 {
+        return false;
+    }
+    let bytes = name.as_bytes();
+    bytes.len() > 3
+        && bytes[0] == b'0' + (ordinal / 10) as u8
+        && bytes[1] == b'0' + (ordinal % 10) as u8
+        && bytes[2] == b'_'
+}
+/// `name` is `ordinal` in two digits, an underscore, then `tail`.
+pub const fn const_str_is_ordinal_then(name: &str, ordinal: u32, tail: &str) -> bool {
+    if !const_str_has_ordinal_prefix(name, ordinal) {
+        return false;
+    }
+    let (name, tail) = (name.as_bytes(), tail.as_bytes());
+    if name.len() != tail.len() + 3 {
+        return false;
+    }
+    let mut i = 0;
+    while i < tail.len() {
+        if name[3 + i] != tail[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// `left` and `right` are the same string once their own prefixes are removed.
+///
+/// For a counter published twice under two primitives: the pair is one list
+/// spelled twice, and the two spellings drifting apart renames one arm of an
+/// A/B.
+pub const fn const_str_tails_match(
+    left: &str,
+    left_prefix: &str,
+    right: &str,
+    right_prefix: &str,
+) -> bool {
+    let (l, lp) = (left.as_bytes(), left_prefix.as_bytes());
+    let (r, rp) = (right.as_bytes(), right_prefix.as_bytes());
+    if l.len() < lp.len() || r.len() < rp.len() || l.len() - lp.len() != r.len() - rp.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < lp.len() {
+        if l[i] != lp[i] {
+            return false;
+        }
+        i += 1;
+    }
+    let mut i = 0;
+    while i < rp.len() {
+        if r[i] != rp[i] {
+            return false;
+        }
+        i += 1;
+    }
+    let mut i = 0;
+    while lp.len() + i < l.len() {
+        if l[lp.len() + i] != r[rp.len() + i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+/// `name` is `variant` spelled in snake case.
+///
+/// A wire name and the variant it names are one word in two conventions, and
+/// a `match` arm can pair either variant with either word.
+pub const fn const_str_is_snake_of(name: &str, variant: &str) -> bool {
+    let (name, variant) = (name.as_bytes(), variant.as_bytes());
+    let mut i = 0;
+    let mut j = 0;
+    while i < variant.len() {
+        let byte = variant[i];
+        if byte.is_ascii_uppercase() {
+            if i > 0 {
+                if j >= name.len() || name[j] != b'_' {
+                    return false;
+                }
+                j += 1;
+            }
+            if j >= name.len() || name[j] != byte.to_ascii_lowercase() {
+                return false;
+            }
+        } else {
+            if j >= name.len() || name[j] != byte {
+                return false;
+            }
+        }
+        i += 1;
+        j += 1;
+    }
+    j == name.len()
+}
+/// The two strings differ only in ASCII case.
+///
+/// For a cause whose CONSTANT is upper snake and whose wire leaf is the same
+/// word in lower snake: the two are one name, and the compiler cannot lower a
+/// `stringify!` to check it any other way.
+pub const fn const_str_eq_ignore_ascii_case(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < left.len() {
+        if left[i].to_ascii_lowercase() != right[i].to_ascii_lowercase() {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// `name` is `prefix`, then `first`, then an underscore, then `second`.
+///
+/// A cross-tabulated cell's name, checked against the row's cause and the
+/// column's class without composing the string, which `concat!` cannot do
+/// across two independent macro repetitions.
+pub const fn const_str_is_joined(name: &str, prefix: &str, first: &str, second: &str) -> bool {
+    let (n, p, a, b) = (
+        name.as_bytes(),
+        prefix.as_bytes(),
+        first.as_bytes(),
+        second.as_bytes(),
+    );
+    if n.len() != p.len() + a.len() + 1 + b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < p.len() {
+        if n[i] != p[i] {
+            return false;
+        }
+        i += 1;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if n[p.len() + i] != a[i] {
+            return false;
+        }
+        i += 1;
+    }
+    if n[p.len() + a.len()] != b'_' {
+        return false;
+    }
+    let mut i = 0;
+    while i < b.len() {
+        if n[p.len() + a.len() + 1 + i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+/// Every index in `indices` is below `count` and appears once, so the indices
+/// and the slots `0..count` are the same set.
+///
+/// The compile-time half of a wire taxonomy: a variant given an index another
+/// variant already holds is what makes a loss count under another cause's name,
+/// and an exhaustive match cannot see it.
+pub const fn indices_are_a_bijection(indices: &[usize], count: usize) -> bool {
+    if indices.len() != count {
+        return false;
+    }
+    let mut i = 0;
+    while i < indices.len() {
+        if indices[i] >= count {
+            return false;
+        }
+        let mut j = i + 1;
+        while j < indices.len() {
+            if indices[i] == indices[j] {
+                return false;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
+    /// The guard producers const-assert their wire taxonomies with.
+    ///
+    /// Nothing in the tree exercises its false arms -- a taxonomy that tripped
+    /// one would not compile -- so a rubber stamp here would be invisible and
+    /// would let a cause count its losses under another cause's name.
+    ///
+    /// MUTATION: `indices_are_a_bijection` returns `true` unconditionally.
+    /// Every taxonomy still compiles and this fails on the first case.
+    #[test]
+    fn indices_are_a_bijection_refuses_the_collision_and_the_overrun() {
+        assert!(indices_are_a_bijection(&[0, 1, 2], 3));
+        assert!(indices_are_a_bijection(&[2, 0, 1], 3));
+        assert!(indices_are_a_bijection(&[], 0));
+        assert!(!indices_are_a_bijection(&[0, 1, 1], 3));
+        assert!(!indices_are_a_bijection(&[0, 1, 3], 3));
+        assert!(!indices_are_a_bijection(&[0, 1], 3));
+        assert!(!indices_are_a_bijection(&[0, 1, 2], 2));
+    }
+
+    /// The other three guards producers const-assert their taxonomies with.
+    ///
+    /// Same reason as the bijection above: a taxonomy that tripped one of
+    /// these would not compile, so nothing in the tree exercises their false
+    /// arms and a rubber stamp would be invisible (Codex round 4, finding 2).
+    ///
+    /// MUTATION: any of the three returns `true` unconditionally. Every
+    /// taxonomy still compiles -- `declares_cumulative_unit` would then admit
+    /// a leaf the manifest folds per-frame, `const_names_are_distinct` two
+    /// causes summed under one name, `const_str_is_prefixed` a frozen version
+    /// whose slots have moved -- and this fails.
+    #[test]
+    fn the_taxonomy_guards_refuse_what_they_exist_to_refuse() {
+        assert!(declares_cumulative_unit(
+            "convoy_transport_attack_dropped_capture_error_route_join"
+        ));
+        assert!(!declares_cumulative_unit("a_name_no_list_declares"));
+        assert!(!declares_cumulative_unit("convoy_transport_attack_remaining_events"));
+
+        assert!(declares_per_frame_unit("a_name_no_list_declares"));
+        assert!(!declares_per_frame_unit("rs_observations"));
+        assert!(!declares_per_frame_unit("rs_a_stateful_name_nothing_declares"));
+
+        assert!(const_names_are_distinct(&["one", "two", "three"]));
+        assert!(const_names_are_distinct(&[]));
+        assert!(!const_names_are_distinct(&["one", "two", "one"]));
+
+        assert!(const_str_is_prefixed("d81_plan_rail_tap_reused", "d81_plan_rail_tap_", "reused"));
+        assert!(!const_str_is_prefixed("d81_plan_rail_tap_reused", "d81_plan_rail_tap_", "no_memory"));
+        assert!(!const_str_is_prefixed("d81_plan_rail_tap_reused_x", "d81_plan_rail_tap_", "reused"));
+        assert!(!const_str_is_prefixed("other_prefix_reused", "d81_plan_rail_tap_", "reused"));
+
+        assert!(const_str_has_ordinal_prefix("07_extent_bytes", 7));
+        assert!(!const_str_has_ordinal_prefix("07_extent_bytes", 8));
+        assert!(!const_str_has_ordinal_prefix("7_extent_bytes", 7));
+
+        assert!(const_str_is_ordinal_then("05_anchor_bits", 5, "anchor_bits"));
+        assert!(!const_str_is_ordinal_then("05_anchor_bits", 5, "anchor_variant"));
+        assert!(!const_str_is_ordinal_then("06_anchor_bits", 5, "anchor_bits"));
+        assert!(!const_str_is_ordinal_then("05_anchor_bits_x", 5, "anchor_bits"));
+
+        assert!(const_str_tails_match("rc_seh_reads", "rc_seh_", "rc_rpm_reads", "rc_rpm_"));
+        assert!(!const_str_tails_match(
+            "rc_seh_reads",
+            "rc_seh_",
+            "rc_rpm_region_hits",
+            "rc_rpm_"
+        ));
+        assert!(!const_str_tails_match("rc_seh_reads", "rc_rpm_", "rc_rpm_reads", "rc_rpm_"));
+
+        assert!(const_str_eq_ignore_ascii_case("SO_D48_PARTIAL_INHERITED", "so_d48_partial_inherited"));
+        assert!(!const_str_eq_ignore_ascii_case("SO_D48_PARTIAL_INHERITED", "so_d48_partial_roots_err"));
+
+        assert!(const_str_is_snake_of("hour_label_mismatch", "HourLabelMismatch"));
+        assert!(!const_str_is_snake_of("hour_label_mismatch", "HourLabelMismatched"));
+        assert!(!const_str_is_snake_of("hourlabelmismatch", "HourLabelMismatch"));
+
+        assert!(const_str_is_joined("skip_owner_absent_active", "skip_", "owner_absent", "active"));
+        assert!(!const_str_is_joined(
+            "skip_owner_absent_active",
+            "skip_",
+            "owner_absent",
+            "pool_a"
+        ));
+        assert!(!const_str_is_joined(
+            "skip_owner_absentactive",
+            "skip_",
+            "owner_absent",
+            "active"
+        ));
+    }
     #[test]
     fn every_role_and_presence_code_is_non_zero_and_round_trips() {
         for role in [

@@ -180,6 +180,16 @@ pub enum ObserverBoundary {
     RefreshCommitted = 3,
 }
 
+compact_contract::wire_coded_codes! {
+    ObserverBoundary: u32,
+    code = pub code,
+    Ok = from_wire(value) -> Result<Self, ObserverError> { invalid("unknown observer boundary") };
+
+    OwnerConstructed = 1,
+    PopulationCommitted = 2,
+    RefreshCommitted = 3,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum ObservationPhase {
@@ -188,15 +198,6 @@ pub enum ObservationPhase {
 }
 
 impl ObserverBoundary {
-    fn from_wire(value: u32) -> Result<Self, ObserverError> {
-        match value {
-            1 => Ok(Self::OwnerConstructed),
-            2 => Ok(Self::PopulationCommitted),
-            3 => Ok(Self::RefreshCommitted),
-            _ => invalid("unknown observer boundary"),
-        }
-    }
-
     fn is_complete_snapshot_boundary(self) -> bool {
         matches!(self, Self::PopulationCommitted | Self::RefreshCommitted)
     }
@@ -211,16 +212,15 @@ pub enum DrawableKind {
     ControllerOverlay = 4,
 }
 
-impl DrawableKind {
-    fn from_wire(value: u32) -> Result<Self, ObserverError> {
-        match value {
-            1 => Ok(Self::TechnologyNode),
-            2 => Ok(Self::ConnectorSegment),
-            3 => Ok(Self::ConnectorJoint),
-            4 => Ok(Self::ControllerOverlay),
-            _ => invalid("unknown technology drawable kind"),
-        }
-    }
+compact_contract::wire_coded_codes! {
+    DrawableKind: u32,
+    code = pub code,
+    Ok = from_wire(value) -> Result<Self, ObserverError> { invalid("unknown technology drawable kind") };
+
+    TechnologyNode = 1,
+    ConnectorSegment = 2,
+    ConnectorJoint = 3,
+    ControllerOverlay = 4,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -902,7 +902,7 @@ fn encode_payload(frame: &TechnologyCanvasFrame) -> Result<Vec<u8>, ObserverErro
     put_u64(&mut out, frame.selected_present_qpc_ticks);
     put_u64(&mut out, frame.selected_present_cutoff_qpc_ticks);
     put_u64(&mut out, frame.selected_present_engine_instance_token);
-    put_u32(&mut out, frame.boundary as u32);
+    put_u32(&mut out, frame.boundary.code());
     put_u32(&mut out, frame.controller_mode);
     put_string(&mut out, &frame.authority.executable_sha256)?;
     put_string(&mut out, &frame.authority.exact20_receipt_sha256)?;
@@ -964,7 +964,7 @@ fn encode_payload(frame: &TechnologyCanvasFrame) -> Result<Vec<u8>, ObserverErro
         put_string(&mut out, &item.hierarchy_path)?;
         put_string(&mut out, &item.folder_id)?;
         put_u32(&mut out, item.source_ordinal);
-        put_u32(&mut out, item.kind as u32);
+        put_u32(&mut out, item.kind.code());
         put_u32(&mut out, if item.included { 1 } else { 0 });
         put_optional_string(&mut out, item.exclusion_reason.as_deref())?;
     }

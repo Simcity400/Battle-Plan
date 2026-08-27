@@ -146,9 +146,73 @@ fn looks_like_a_unit_name(literal: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
+/// The names a `convoy_named_counters!` declaration constructs.
+///
+/// A counter's published name is `concat!(prefix, stringify!(field))`, so the
+/// literal exists nowhere in the tree and the literal-hunting forms below
+/// cannot see it. The declaration IS the construction site: this reads the
+/// prefix and each field off it and rebuilds what the macro will emit.
+///
+/// Scanned rather than imported for the same reason as everything else here --
+/// importing the generated table would make the sweep agree with the producer
+/// by construction and prove nothing.
+fn convoy_named_counter_units(text: &str) -> BTreeSet<String> {
+    const INVOCATION: &str = "convoy_named_counters! {";
+    let mut out = BTreeSet::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(INVOCATION) {
+        rest = &rest[at + INVOCATION.len()..];
+        // The invocation body, to its matching close brace.
+        let mut depth = 1usize;
+        let mut end = 0usize;
+        for (offset, ch) in rest.char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = offset;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if depth != 0 {
+            break;
+        }
+        let body = &rest[..end];
+        rest = &rest[end..];
+        let Some(prefix) = body
+            .find("prefix = \"")
+            .map(|at| &body[at + "prefix = \"".len()..])
+            .and_then(|tail| tail.find('"').map(|end| &tail[..end]))
+        else {
+            continue;
+        };
+        // A field is a line that is one snake-case identifier and a comma.
+        // Everything else in the body -- the struct name, the `prefix =` and
+        // `all =` header lines, the group headers, the doc comments -- fails
+        // that shape. `lines()` is what makes this line-ending agnostic.
+        for line in body.lines() {
+            let Some(field) = line.trim().strip_suffix(',') else {
+                continue;
+            };
+            if !looks_like_a_unit_name(field) {
+                continue;
+            }
+            let name = format!("{prefix}{field}");
+            if looks_like_a_unit_name(&name) {
+                out.insert(name);
+            }
+        }
+    }
+    out
+}
+
 /// Every literal that is CONSTRUCTED as a unit name somewhere in `text`.
 fn constructed_unit_names(text: &str) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
+    let mut out = convoy_named_counter_units(text);
     // `const NAME: &str = "literal";` where NAME is later handed to a
     // construction call. The binding is where the literal becomes a name, and
     // the use can be arbitrarily far away -- so a window around the call site

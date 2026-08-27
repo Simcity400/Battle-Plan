@@ -7,6 +7,7 @@ edition = "2021"
 path = "src/lib.rs"
 
 [dependencies]
+compact_contract = { path = "../../compact_contract" }
 runtime_text_inputs_live_lane = { path = "../runtime_text_inputs_live" }
 serde = { version = "1", features = ["derive"] }
 

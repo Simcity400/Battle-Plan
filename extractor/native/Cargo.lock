@@ -118,6 +118,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 name = "character_presentation_live_lane"
 version = "0.1.0"
 dependencies = [
+ "compact_contract",
  "inline_detour",
  "minhook_h4",
  "production_hook_receipt",
@@ -251,6 +252,9 @@ dependencies = [
 [[package]]
 name = "country_army_upgrade_requests_live_lane"
 version = "0.1.0"
+dependencies = [
+ "compact_contract",
+]
 
 [[package]]
 name = "country_dynamic_modifiers_live_lane"
@@ -348,6 +352,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "d64_grammar"
+version = "0.1.0"
+
+[[package]]
 name = "d68_grammar"
 version = "0.1.0"
 
@@ -369,6 +377,7 @@ dependencies = [
 name = "decision_panel_live_lane"
 version = "0.1.0"
 dependencies = [
+ "compact_contract",
  "inline_detour",
  "minhook_h4",
  "runtime_text_inputs_live_lane",
@@ -427,6 +436,7 @@ dependencies = [
 name = "direct_frd_transitions_live"
 version = "0.1.0"
 dependencies = [
+ "compact_contract",
  "inline_detour",
  "minhook_h4",
  "production_hook_receipt",
@@ -596,6 +606,7 @@ version = "0.1.0"
 name = "hud_role_observer_live_lane"
 version = "0.1.0"
 dependencies = [
+ "compact_contract",
  "inline_detour",
  "minhook_h4",
  "portable_content_manifest",
@@ -756,6 +767,9 @@ dependencies = [
 [[package]]
 name = "nuke_stockpile_live_lane"
 version = "0.1.0"
+dependencies = [
+ "compact_contract",
+]
 
 [[package]]
 name = "occupation_resistance_compliance_live_lane"
@@ -1018,6 +1032,7 @@ name = "scripted_state_flags_variables_live_lane"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "d64_grammar",
  "inline_detour",
  "minhook_h4",
  "portable_admission",
@@ -1194,6 +1209,7 @@ dependencies = [
 name = "theatre_selector_live_lane"
 version = "0.1.0"
 dependencies = [
+ "compact_contract",
  "sha2",
 ]
 
@@ -1314,6 +1330,7 @@ dependencies = [
  "d13_grammar",
  "d24_grammar",
  "d48_grammar",
+ "d64_grammar",
  "d68_grammar",
  "portable_admission",
  "portable_content_manifest",

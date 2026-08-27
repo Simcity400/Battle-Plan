@@ -12,6 +12,7 @@ test-support = ["production_hook_receipt/test-support"]
 
 [dependencies]
 compact_contract = { path = "../../compact_contract" }
+d64_grammar = { path = "../../d64_grammar" }
 # The A19 lifecycle ledger's identity and cardinality ceilings are re-applied by
 # the replay consumer; they live in the crate both workspaces path-depend on.
 portable_admission = { path = "../../../../portable_replay/native/admission" }

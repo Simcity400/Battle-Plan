@@ -387,21 +387,47 @@ enum DomainGrouping {
     Shared,
 }
 
-impl DomainGrouping {
-    const fn wire_name(self) -> &'static str {
-        match self {
-            Self::PerDomain => "per_domain",
-            Self::Shared => "shared",
-        }
-    }
+/// The two directions of one name, from one declaration.
+///
+/// They were two matches, so renaming a grouping in the writer alone compiled
+/// and serialised a per-domain grouping as shared (Codex round 8). The name
+/// must spell the variant, and the reader is the writer read backwards.
+macro_rules! domain_grouping_wire_names {
+    ($( $variant:ident => $name:literal, )+) => {
+        impl DomainGrouping {
+            const fn wire_name(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name,)+
+                }
+            }
 
-    fn from_wire_name(name: &str) -> Option<Self> {
-        match name {
-            "per_domain" => Some(Self::PerDomain),
-            "shared" => Some(Self::Shared),
-            _ => None,
+            fn from_wire_name(name: &str) -> Option<Self> {
+                match name {
+                    $($name => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
         }
-    }
+
+        const _: () = {
+            $(assert!(
+                compact_contract::diagnostic_channel::const_str_is_snake_of(
+                    $name,
+                    stringify!($variant),
+                ),
+                "a grouping's wire name does not spell the grouping",
+            );)+
+            assert!(
+                compact_contract::diagnostic_channel::const_names_are_distinct(&[$($name,)+]),
+                "two groupings share a wire name",
+            );
+        };
+    };
+}
+
+domain_grouping_wire_names! {
+    PerDomain => "per_domain",
+    Shared => "shared",
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

@@ -130,14 +130,16 @@ pub enum CombatSide {
     Defender,
 }
 
-impl CombatSide {
-    pub fn wire_id(self) -> u32 {
-        match self {
-            Self::Attacker => 1,
-            Self::Defender => 2,
-        }
-    }
+compact_contract::wire_coded_codes! {
+    no_discriminant CombatSide: u32,
+    code = pub wire_id,
+    Some = from_wire_id(value) -> Option<Self> { None };
 
+    Attacker = 1,
+    Defender = 2,
+}
+
+impl CombatSide {
     pub fn name(self) -> &'static str {
         match self {
             Self::Attacker => "attacker",
@@ -145,13 +147,6 @@ impl CombatSide {
         }
     }
 
-    fn from_wire_id(value: u32) -> Option<Self> {
-        match value {
-            1 => Some(Self::Attacker),
-            2 => Some(Self::Defender),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

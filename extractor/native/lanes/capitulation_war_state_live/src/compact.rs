@@ -68,23 +68,20 @@ pub enum HostilityReason {
     NotApplicable = 5,
 }
 
+compact_contract::wire_coded_codes! {
+    HostilityReason: u32,
+    code = pub raw,
+    Some = pub from_raw(raw) -> Option<Self> { None };
+
+    War = 0,
+    Puppet = 1,
+    Ally = 2,
+    AskedToJoin = 3,
+    Guarantee = 4,
+    NotApplicable = 5,
+}
+
 impl HostilityReason {
-    pub fn from_raw(raw: u32) -> Option<Self> {
-        match raw {
-            0 => Some(Self::War),
-            1 => Some(Self::Puppet),
-            2 => Some(Self::Ally),
-            3 => Some(Self::AskedToJoin),
-            4 => Some(Self::Guarantee),
-            5 => Some(Self::NotApplicable),
-            _ => None,
-        }
-    }
-
-    pub const fn raw(self) -> u32 {
-        self as u32
-    }
-
     pub const fn spelling(self) -> &'static str {
         match self {
             Self::War => "war",
