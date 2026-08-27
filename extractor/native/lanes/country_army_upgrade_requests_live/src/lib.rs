@@ -226,7 +226,303 @@ pub enum CarrierError {
 /// sleep, pause the engine, or widen the frame bracket -- and exhausting the
 /// bound still refuses under its own name so a persistently torn graph is
 /// never published as measured data.
+///
+/// The unit the contract restarts is ONE COUNTRY, not the whole roster (lane
+/// UD), so the window that has to hold still is one country's objects rather
+/// than the whole 439-country graph, and the two reads a country is admitted
+/// on are adjacent instead of a full roster sweep apart. A clean frame costs
+/// two reads per country plus one membership scan of each -- the roster-wide
+/// loop's clean cost plus the scan.
+///
+/// The worst case is this bound TIMES the roster bound, not this bound alone:
+/// a country walked under all [`ROSTER_MEMBERSHIP_WITNESS_ATTEMPTS`] roster
+/// walks can be read `ROSTER_MEMBERSHIP_WITNESS_ATTEMPTS *
+/// COHERENT_READ_MAX_PASSES` = 24 times, with one membership scan per walk.
+/// Both factors are constants and neither loop can be re-entered, so the walk
+/// is bounded; it is not bounded by 8.
+///
+/// What the roster-wide comparison ALSO enforced, as a side effect of
+/// demanding the whole graph be byte-identical, is that no `CArmy` moved
+/// between two countries while the roster was being read. Per-country
+/// coherence is satisfied on both sides of such a move, so that claim is now
+/// made explicitly and separately by [`roster_membership_still_holds`], and a
+/// roster whose membership will not hold still for one walk refuses under
+/// [`ROSTER_MEMBERSHIP_UNWITNESSED`] rather than sealing a stitch.
 pub const COHERENT_READ_MAX_PASSES: usize = 8;
+
+/// Reads one country costs when nothing tears and nothing changes: the read
+/// that proposes a value and the read that agrees with it. Reads beyond this
+/// are what [`CoherenceCost::extra_country_reads`] counts.
+pub const COHERENT_READS_A_SETTLED_COUNTRY_COSTS: usize = 2;
+
+/// Whole-roster walks spent on getting one membership witness to hold. A
+/// separate, smaller bound than [`COHERENT_READ_MAX_PASSES`]: it is reached
+/// only when armies keep moving BETWEEN countries during the walk, and each
+/// attempt costs a whole roster rather than one country. Sized to the budget
+/// the collector's other whole-walk tear retries spend.
+pub const ROSTER_MEMBERSHIP_WITNESS_ATTEMPTS: usize = 3;
+
+/// The root at this address reads stably and is NOT the country the roster
+/// admitted. Re-reading cannot make it so, so it refuses on the first read
+/// like every other standing refusal.
+pub const ROOT_IS_NOT_THIS_COUNTRY: &str =
+    "AUR1 country root is not the country it was admitted as";
+/// The root's own identity window would not read.
+pub const ROOT_IDENTITY_UNREADABLE: &str = "AUR1 country root identity is unreadable";
+/// Two successful reads of the root's identity window disagreed. Healable, so
+/// it is one of [`TORN_READ_REASONS`].
+const TORN_COUNTRY_IDENTITY: &str = "AUR1 country root identity changed during snapshot";
+pub const TORN_COUNTRY_IDENTITY_EXHAUSTED: &str =
+    "AUR1 country root identity kept tearing across every coherent-read restart";
+
+const TORN_COUNTRY_GRAPH: &str = "AUR1 country/status graph changed during snapshot";
+pub const TORN_COUNTRY_GRAPH_EXHAUSTED: &str =
+    "AUR1 country/status graph kept tearing across every coherent-read restart";
+const TORN_REQUEST_VECTOR: &str = "AUR1 request vector changed during snapshot";
+pub const TORN_REQUEST_VECTOR_EXHAUSTED: &str =
+    "AUR1 request vector kept tearing across every coherent-read restart";
+const TORN_PRODUCED_VECTOR: &str = "AUR1 produced vector changed during snapshot";
+pub const TORN_PRODUCED_VECTOR_EXHAUSTED: &str =
+    "AUR1 produced vector kept tearing across every coherent-read restart";
+const TORN_DELIVERY_VECTOR: &str = "AUR1 delivery vector changed during snapshot";
+pub const TORN_DELIVERY_VECTOR_EXHAUSTED: &str =
+    "AUR1 delivery vector kept tearing across every coherent-read restart";
+/// The country's own status POINTER changed under the read. Its own name
+/// rather than [`TORN_COUNTRY_GRAPH`]'s, because the two are different events:
+/// one replaces the country's whole upgrade status, the other rewrites the
+/// group vector inside it. Both halves of that close are lane QZ's, so both
+/// are [`TearOrigin::Legacy`]; it is the NULL branch below that lane UD added.
+const TORN_STATUS_POINTER: &str = "AUR1 country status pointer changed during snapshot";
+pub const TORN_STATUS_POINTER_EXHAUSTED: &str =
+    "AUR1 country status pointer kept tearing across every coherent-read restart";
+/// A country whose structure was VALID on a completed pass and invalid on a
+/// later one: a vector header past its capacity, a null pointer, a vtable that
+/// no longer matches. The admission rules raise their own standing names for
+/// these, and on the FIRST pass that is what they are. After a pass has
+/// completed, the same observation is the engine writing a graph this walk
+/// already read whole, and another read can settle it (Codex round 11).
+///
+/// It has no exhausted name of its own, and cannot have one: reaching it
+/// requires a COMPLETED pass, a completed pass is a change, and a country that
+/// both changed and tore exhausts as [`MIXED_RESTARTS_EXHAUSTED`]. A name for
+/// the all-eight-reads-did-this case would be a unit no capture can carry
+/// (Codex round 12, finding 2).
+///
+/// A country that read as having NO upgrade status had one by the time the
+/// read closed. Distinct from [`TORN_STATUS_POINTER`], which is one status
+/// object replaced by another: this is the country acquiring one, and it is
+/// the only tear the null branch can raise.
+const TORN_STATUS_POINTER_APPEARED: &str = "AUR1 country status pointer appeared during snapshot";
+pub const TORN_STATUS_POINTER_APPEARED_EXHAUSTED: &str =
+    "AUR1 country status pointer kept appearing across every coherent-read restart";
+
+/// The AUR1 refusals raised by a re-verification: each one fires only because
+/// a header this walk had already used was rewritten under it, which is the
+/// same event the pass comparison detects and therefore takes the same
+/// restart. Left of the pair is the reason a single read raises, right of it
+/// is the reason the country takes when every restart tore -- distinct names
+/// so a capture separates "our read straddled one mutation" (retried, and
+/// absent from the wire when it settles) from "this country tore on all
+/// [`COHERENT_READ_MAX_PASSES`] reads".
+///
+/// This table is one of THREE retry classes, and the whole rule has to be read
+/// together or the boundary between them is easy to widen by accident, which
+/// is how two defects reached rounds 11 and 12:
+///
+/// 1. A reason in this table is a tear on ANY pass, including the first: these
+///    refusals only fire because a header this walk had already used was
+///    rewritten under it, which cannot be a standing defect.
+/// 2. Any other `Invalid` from the graph read -- vtable mismatches, bound
+///    violations, null pointers, an unformable address -- is a standing
+///    refusal on the FIRST pass, when nothing has validated those objects, and
+///    a tear on a later one, when a completed pass has. That is
+///    `convertible_after_admission`.
+/// 3. Memory that will not serve a read, and the two STANDING root-identity
+///    refusals, are never retried on any pass. Re-reading does not heal them,
+///    and retrying would spend the bound and charge the capture gate's counter
+///    for a refusal the engine did not make.
+///
+const TORN_READ_REASONS: [(&str, &str); 7] = [
+    (TORN_COUNTRY_GRAPH, TORN_COUNTRY_GRAPH_EXHAUSTED),
+    (TORN_REQUEST_VECTOR, TORN_REQUEST_VECTOR_EXHAUSTED),
+    (TORN_PRODUCED_VECTOR, TORN_PRODUCED_VECTOR_EXHAUSTED),
+    (TORN_DELIVERY_VECTOR, TORN_DELIVERY_VECTOR_EXHAUSTED),
+    (TORN_COUNTRY_IDENTITY, TORN_COUNTRY_IDENTITY_EXHAUSTED),
+    (TORN_STATUS_POINTER, TORN_STATUS_POINTER_EXHAUSTED),
+    (
+        TORN_STATUS_POINTER_APPEARED,
+        TORN_STATUS_POINTER_APPEARED_EXHAUSTED,
+    ),
+];
+
+/// Which detector raised a tear, and therefore what a restart of it is
+/// evidence OF.
+///
+/// A `Legacy` detector existed before lane UD and propagated straight out of
+/// the walk, so a frame that sealed after restarting one is a frame the old
+/// code would have degraded. An `AddedByLaneUd` detector did not exist, so the
+/// old code did not look and did not refuse; restarting one is a new
+/// correctness check doing its job, not a converted refusal (Codex round 4,
+/// finding 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TearOrigin {
+    Legacy,
+    AddedByLaneUd,
+}
+
+/// Which detector inside ONE COUNTRY'S WALK raises a given tear.
+///
+/// Origin is a property of the raise SITE, not of the cause: the same status
+/// pointer changing is lane QZ's closing re-verification when the country had
+/// a status object and lane UD's null close when it did not (Codex round 5,
+/// finding 1). The membership witness does not consult this at all -- every
+/// tear it raises is lane UD's, because the witness itself is.
+fn country_walk_tear_origin(reason: &str) -> TearOrigin {
+    match reason {
+        TORN_COUNTRY_GRAPH | TORN_REQUEST_VECTOR | TORN_PRODUCED_VECTOR | TORN_DELIVERY_VECTOR
+        | TORN_STATUS_POINTER => TearOrigin::Legacy,
+        _ => TearOrigin::AddedByLaneUd,
+    }
+}
+
+
+/// A country whose VALUES never settled -- every read completed and no two
+/// agreed. Retained from lane QZ, and now wrapped in
+/// [`CarrierError::CountryRead`] so it names which country did not settle.
+const COHERENT_RESTARTS_EXHAUSTED: &str =
+    "AUR1 object graph kept changing across every coherent-read restart";
+/// A country where some reads completed and some tore, or which tore in more
+/// than one place. Its own name, because calling it either of the other two
+/// would put a cause on the wire that no read produced.
+pub const MIXED_RESTARTS_EXHAUSTED: &str =
+    "AUR1 country neither settled nor tore consistently across every coherent-read restart";
+/// Armies kept moving between countries across every whole-roster walk, so no
+/// walk could be witnessed as one membership.
+pub const ROSTER_MEMBERSHIP_UNWITNESSED: &str =
+    "AUR1 army membership kept moving between countries across every roster walk";
+/// The roster walks did not all fail the same way: some found membership
+/// moved, some were straddled, or different walks tore in different places or
+/// different countries. Its own name for the same reason
+/// [`MIXED_RESTARTS_EXHAUSTED`] has one.
+pub const ROSTER_MEMBERSHIP_MIXED: &str =
+    "AUR1 roster membership neither held nor tore consistently across every roster walk";
+/// The membership witness tore on the same country's graph on every roster
+/// walk. A ROSTER-level name: the country's own coherent read settled, and
+/// only the later witness reads tore, so naming this after the country-level
+/// restart would claim reads that did not happen (Codex round 4, finding 1).
+pub const WITNESS_GRAPH_TEAR_EXHAUSTED: &str =
+    "AUR1 membership witness kept tearing on the country/status graph across every roster walk";
+/// The membership witness tore on the same country's status pointer on every
+/// roster walk.
+pub const WITNESS_STATUS_POINTER_TEAR_EXHAUSTED: &str =
+    "AUR1 membership witness kept tearing on the country status pointer across every roster walk";
+/// The membership witness found the same country's root identity being written
+/// on every roster walk.
+pub const WITNESS_IDENTITY_TEAR_EXHAUSTED: &str =
+    "AUR1 membership witness kept tearing on the country root identity across every roster walk";
+
+/// Re-proves that a root is still the country the roster authenticated it as.
+///
+/// The lane owns WHEN the proof must hold -- at the close of every read of that
+/// country and again at its membership witness. The collector owns the proof
+/// itself, because the `CCountry` identity offsets and the tag canonicalisation
+/// live with the roster builder that produced the roots.
+///
+/// WHAT IT PROVES is exactly the roster's own per-object predicate, re-run: the
+/// country vtable and the `CCountry+0x08` tag the root was admitted on. It does
+/// NOT re-prove the country table's slot, the tag canonicalisation, or the
+/// object's lifetime -- those are the roster builder's once-per-frame witnesses
+/// and this trait does not repeat them (Codex round 2, finding 1). So an object
+/// detached from the table whose bytes still read, or a replacement at the same
+/// address carrying the same vtable and tag, is admitted here: what is closed
+/// is a recycled root that reads as a DIFFERENT country, not every form of
+/// reuse. Closing the rest needs a lifetime or generation witness the a729
+/// evidence does not currently name.
+pub trait CountryRootIdentity {
+    fn reprove_root(&self, root: &CountryRoot) -> RootIdentity;
+}
+
+/// The outcomes of re-proving a root, kept apart because they take different
+/// answers.
+///
+/// An object that reads STABLY as a different country, and one whose identity
+/// will not read at all, are standing refusals that no re-read can heal. An
+/// identity window that two successful reads disagreed on is the opposite: it
+/// was being written while it was read, which is the same event the rest of
+/// the walk's re-verifications detect, so it takes the same restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootIdentity {
+    Proved,
+    Disproved,
+    Unreadable,
+    Torn,
+}
+
+/// What the coherence contract actually spent on a frame, published on every
+/// d93 frame whose reader ran.
+///
+/// A capture with zero d93 residual frames is not by itself evidence that the
+/// restart lever works: `rc_vanilla5` had zero under the code this replaces.
+/// One of these counters is that evidence and the others are not, so they are
+/// kept apart rather than summed (Codex round 4, finding 2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CoherenceCost {
+    /// Reads of a country beyond the two a settled country costs.
+    pub extra_country_reads: u64,
+    /// Restarts of a [`TearOrigin::Legacy`] detector -- one of the four
+    /// re-verifications lane QZ already had. Each one propagated out of the
+    /// walk and refused the whole frame before lane UD, so a frame that SEALED
+    /// with this non-zero is a frame the old code would have degraded. This is
+    /// the counter the capture gate rests on.
+    pub legacy_tears_restarted: u64,
+    /// Restarts of a detector lane UD ADDED: the root-identity proof, the
+    /// null-owner status-pointer close, and every tear the membership witness
+    /// raises. The old code did not look, so it did not refuse on these, and a
+    /// restart of one converts nothing -- it is a new check doing its job.
+    pub added_detector_tears: u64,
+    /// Whole-roster walks beyond the first. The membership witness is also new,
+    /// so this converts nothing either: without it the old code SEALED the
+    /// stitched frame.
+    pub extra_roster_walks: u64,
+}
+
+impl CoherenceCost {
+    fn charge_tear(&mut self, origin: TearOrigin) {
+        match origin {
+            TearOrigin::Legacy => self.legacy_tears_restarted += 1,
+            TearOrigin::AddedByLaneUd => self.added_detector_tears += 1,
+        }
+    }
+}
+
+/// Whether a refusal raised AFTER a completed pass is one this walk may take
+/// again.
+///
+/// Only [`CarrierError::Invalid`] converts: memory that will not serve a read
+/// is not healed by another one. The two standing root-identity refusals never
+/// convert whenever they are raised -- an object that reads stably as another
+/// country, and one whose identity will not read, are not this country's graph
+/// changing, and retrying them would spend the bound and charge the capture
+/// gate's counter for a detector lane UD added (Codex round 12, finding 1).
+fn convertible_after_admission(error: &CarrierError) -> bool {
+    match error {
+        CarrierError::Invalid(reason) => {
+            reason != ROOT_IS_NOT_THIS_COUNTRY && reason != ROOT_IDENTITY_UNREADABLE
+        }
+        _ => false,
+    }
+}
+
+/// The [`TORN_READ_REASONS`] row an error matches, if it is a tear at all.
+fn torn_read_row(error: &CarrierError) -> Option<(&'static str, &'static str)> {
+    let CarrierError::Invalid(reason) = error else {
+        return None;
+    };
+    TORN_READ_REASONS
+        .iter()
+        .copied()
+        .find(|(torn, _)| *torn == reason.as_str())
+}
 
 // --- widened guarded copies (lane SF) -----------------------------------
 //
@@ -550,64 +846,459 @@ impl WalkBuffers {
     }
 }
 
-pub fn read_snapshot_from_country_roots<M: ArmyUpgradeMemory>(
+pub fn read_snapshot_from_country_roots<M: ArmyUpgradeMemory, I: CountryRootIdentity>(
     memory: &M,
     module_base: u64,
     source_sequence: u64,
     roots: &[CountryRoot],
-) -> Result<ArmyUpgradeSnapshot, CarrierError> {
-    let mut buffers = WalkBuffers::new();
-    let mut previous =
-        read_snapshot_once(memory, module_base, source_sequence, roots, &mut buffers)?;
-    for _pass in 1..COHERENT_READ_MAX_PASSES {
-        let current =
-            read_snapshot_once(memory, module_base, source_sequence, roots, &mut buffers)?;
-        if current == previous {
-            return Ok(current);
-        }
-        previous = current;
-    }
-    invalid("AUR1 object graph kept changing across every coherent-read restart")
-}
-
-fn read_snapshot_once<M: ArmyUpgradeMemory>(
-    memory: &M,
-    module_base: u64,
-    source_sequence: u64,
-    roots: &[CountryRoot],
-    buffers: &mut WalkBuffers,
+    identity: &I,
+    cost: &mut CoherenceCost,
 ) -> Result<ArmyUpgradeSnapshot, CarrierError> {
     if module_base == 0 || source_sequence == 0 || roots.len() > MAX_COUNTRIES {
         return invalid("AUR1 country-root snapshot header is invalid");
     }
+    let mut buffers = WalkBuffers::new();
     let mut country_ids = BTreeSet::new();
-    let mut countries = Vec::with_capacity(roots.len());
-    let mut total_leaf_rows = 0usize;
     for root in roots {
         if root.tag_db_id == 0 || root.object_ptr == 0 || !country_ids.insert(root.tag_db_id) {
             return invalid("AUR1 country identity is zero or duplicated");
         }
-        let mut groups =
-            read_country_groups(memory, module_base, root, &mut total_leaf_rows, buffers).map_err(
-                |source| CarrierError::CountryRead {
-                    tag_db_id: root.tag_db_id,
-                    object_ptr: root.object_ptr,
-                    source: Box::new(source),
-                },
-            )?;
-        groups.sort_by_key(|group| group.army);
-        countries.push(CountryArmyUpgradeRow {
-            tag_db_id: root.tag_db_id,
-            groups,
-        });
     }
-    countries.sort_by_key(|country| country.tag_db_id);
-    let snapshot = ArmyUpgradeSnapshot {
-        source_sequence,
-        countries,
-    };
-    validate_snapshot(&snapshot)?;
-    Ok(snapshot)
+    let mut roster = RosterExhaustion::default();
+    for walk in 0..ROSTER_MEMBERSHIP_WITNESS_ATTEMPTS {
+        let another_walk_follows = walk + 1 < ROSTER_MEMBERSHIP_WITNESS_ATTEMPTS;
+        if walk > 0 {
+            cost.extra_roster_walks += 1;
+        }
+        let mut countries = Vec::with_capacity(roots.len());
+        let mut total_leaf_rows = 0usize;
+        for root in roots {
+            let groups = read_country_groups_coherent(
+                memory,
+                module_base,
+                root,
+                identity,
+                &mut total_leaf_rows,
+                &mut buffers,
+                cost,
+            )
+            .map_err(|source| CarrierError::CountryRead {
+                tag_db_id: root.tag_db_id,
+                object_ptr: root.object_ptr,
+                source: Box::new(source),
+            })?;
+            countries.push(CountryArmyUpgradeRow {
+                tag_db_id: root.tag_db_id,
+                groups,
+            });
+        }
+        match witness_roster_membership(memory, roots, &countries, identity)? {
+            MembershipWitness::Holds => {}
+            MembershipWitness::Moved => {
+                roster.saw_move();
+                continue;
+            }
+            MembershipWitness::Torn(torn) => {
+                // The witness is a detector lane UD added, so its restarts are
+                // never charged to the legacy counter whatever they tore on;
+                // and the last walk's tear restarts nothing.
+                if another_walk_follows {
+                    cost.added_detector_tears += 1;
+                }
+                roster.saw_tear(torn);
+                continue;
+            }
+        }
+        countries.sort_by_key(|country| country.tag_db_id);
+        let snapshot = ArmyUpgradeSnapshot {
+            source_sequence,
+            countries,
+        };
+        validate_snapshot(&snapshot)?;
+        return Ok(snapshot);
+    }
+    Err(roster.refusal())
+}
+
+/// What every roster walk's closing witness did, reduced to the one name and
+/// the one country the refusal takes when the attempts run out.
+///
+/// The country is part of the reduction, not decoration: the same tear in two
+/// DIFFERENT countries across two walks is not one country that kept tearing,
+/// and naming it as one would put a country on the wire that settled on one of
+/// the walks (Codex round 4, finding 1).
+#[derive(Default)]
+struct RosterExhaustion {
+    moved: bool,
+    torn: Option<WitnessTear>,
+    mixed: bool,
+}
+
+impl RosterExhaustion {
+    fn saw_move(&mut self) {
+        self.mixed |= self.torn.is_some();
+        self.moved = true;
+    }
+
+    fn saw_tear(&mut self, torn: WitnessTear) {
+        self.mixed |= self.moved || self.torn.is_some_and(|seen| seen != torn);
+        self.torn = Some(torn);
+    }
+
+    fn refusal(&self) -> CarrierError {
+        match (self.mixed, self.torn) {
+            (false, Some(torn)) => CarrierError::CountryRead {
+                tag_db_id: torn.tag_db_id,
+                object_ptr: torn.object_ptr,
+                source: Box::new(CarrierError::Invalid(torn.exhausted().to_string())),
+            },
+            (false, None) => CarrierError::Invalid(ROSTER_MEMBERSHIP_UNWITNESSED.to_string()),
+            (true, _) => CarrierError::Invalid(ROSTER_MEMBERSHIP_MIXED.to_string()),
+        }
+    }
+}
+
+/// Whether the roster still holds the army membership the walk was admitted
+/// on: each country's army list, re-derived after the LAST country was read,
+/// equal to the list that country was admitted with.
+///
+/// This is what the retired roster-wide pass comparison used to enforce as a
+/// side effect of demanding the whole graph be byte-identical, and it is the
+/// only cross-country claim the AUR1 payload can express -- a `CArmy` moving
+/// between two countries between their admissions would otherwise reach the
+/// frame twice, or not at all, with per-country coherence satisfied on both
+/// sides.
+///
+/// A list that DIFFERS walks the roster again, and so does a witness whose own
+/// read was straddled: both are events another read can settle, and neither may
+/// refuse the frame on one look (Codex round 3, finding 2). The witness is
+/// never an authority in the other direction: it can refuse a walk, never admit
+/// rows the walk did not read. That direction is what makes its own reads safe
+/// without the walk's vtable and back-reference checks: a witness that reads a
+/// pointer the walk would have rejected produces a list that does not match,
+/// which costs a roster walk and can never seal one.
+///
+/// Each country's root is re-proved at the CLOSE of its witness read as well as
+/// at the close of its own walk: the walk's proof is only current as of that
+/// country's admission, and the last country's admission can be a whole roster
+/// later.
+fn witness_roster_membership<M: ArmyUpgradeMemory, I: CountryRootIdentity>(
+    memory: &M,
+    roots: &[CountryRoot],
+    countries: &[CountryArmyUpgradeRow],
+    identity: &I,
+) -> Result<MembershipWitness, CarrierError> {
+    for (root, admitted) in roots.iter().zip(countries) {
+        debug_assert_eq!(root.tag_db_id, admitted.tag_db_id);
+        let country_read = |source| CarrierError::CountryRead {
+            tag_db_id: root.tag_db_id,
+            object_ptr: root.object_ptr,
+            source: Box::new(source),
+        };
+        let witness_tear = |place: WitnessTearPlace| {
+            Ok(MembershipWitness::Torn(WitnessTear {
+                place,
+                tag_db_id: root.tag_db_id,
+                object_ptr: root.object_ptr,
+            }))
+        };
+        let armies = match read_country_army_membership(memory, root) {
+            Ok(armies) => armies,
+            Err(error) => {
+                return match torn_read_row(&error) {
+                    Some((TORN_STATUS_POINTER | TORN_STATUS_POINTER_APPEARED, _)) => {
+                        witness_tear(WitnessTearPlace::StatusPointer)
+                    }
+                    Some(_) => witness_tear(WitnessTearPlace::CountryGraph),
+                    None => Err(country_read(error)),
+                }
+            }
+        };
+        match identity.reprove_root(root) {
+            RootIdentity::Proved => {}
+            RootIdentity::Torn => return witness_tear(WitnessTearPlace::RootIdentity),
+            RootIdentity::Disproved => {
+                return Err(country_read(CarrierError::Invalid(
+                    ROOT_IS_NOT_THIS_COUNTRY.to_string(),
+                )))
+            }
+            RootIdentity::Unreadable => {
+                return Err(country_read(CarrierError::Invalid(
+                    ROOT_IDENTITY_UNREADABLE.to_string(),
+                )))
+            }
+        }
+        if armies.len() != admitted.groups.len()
+            || armies
+                .iter()
+                .zip(&admitted.groups)
+                .any(|(army, group)| *army != group.army)
+        {
+            return Ok(MembershipWitness::Moved);
+        }
+    }
+    Ok(MembershipWitness::Holds)
+}
+
+/// What one whole-roster membership witness found. `Moved` and `Torn` both
+/// take another roster walk; they are kept apart so the name the roster takes
+/// when the attempts run out is the one that actually happened.
+enum MembershipWitness {
+    Holds,
+    Moved,
+    Torn(WitnessTear),
+}
+
+/// A tear the witness raised, WITH the country it read when it tore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WitnessTear {
+    place: WitnessTearPlace,
+    tag_db_id: u32,
+    object_ptr: u64,
+}
+
+/// Where a witness tear happened. Its own enum rather than the single-read
+/// reason strings, because those name a COUNTRY-level restart the witness does
+/// not take, and reaching the wire with one would resurrect a spelling that is
+/// otherwise unreachable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WitnessTearPlace {
+    CountryGraph,
+    StatusPointer,
+    RootIdentity,
+}
+
+impl WitnessTear {
+    fn exhausted(&self) -> &'static str {
+        match self.place {
+            WitnessTearPlace::CountryGraph => WITNESS_GRAPH_TEAR_EXHAUSTED,
+            WitnessTearPlace::StatusPointer => WITNESS_STATUS_POINTER_TEAR_EXHAUSTED,
+            WitnessTearPlace::RootIdentity => WITNESS_IDENTITY_TEAR_EXHAUSTED,
+        }
+    }
+}
+
+/// One country's army identities, ascending, read through the same offsets and
+/// helpers the full walk uses so the two cannot name different armies -- which
+/// `the_membership_witness_names_the_walks_armies` pins on a static graph.
+///
+/// The slot pointers are taken one at a time rather than through an
+/// [`ArrayWindow`]: the witness carries no widened-copy fallback of its own,
+/// and a window a memory will not serve whole must not turn a readable array
+/// into a refusal. It closes on the same re-verification the walk closes on,
+/// so a witness that was itself straddled reports the tear rather than
+/// comparing a list assembled out of two states.
+///
+/// That close detects a header that changed and STAYED changed. A header
+/// rewritten and restored to the same begin/count while the slots underneath
+/// were refilled -- an ABA within one witness -- reads as unchanged, here and
+/// in the walk's own closing re-verification, which uses the same comparison.
+/// Detecting it needs a generation counter, and no a729 evidence names one on
+/// this vector.
+fn read_country_army_membership<M: ArmyUpgradeMemory>(
+    memory: &M,
+    root: &CountryRoot,
+) -> Result<Vec<PersistentId>, CarrierError> {
+    match witness_membership(memory, root) {
+        // EVERY structural refusal raised inside the witness is that graph
+        // being written under it. Nothing in there is an admission: the
+        // country's two coherent reads accepted and closed the same objects
+        // moments earlier, so a header, pointer, identity or ADDRESS the
+        // witness cannot make sense of is instability another roster walk can
+        // settle. Converting at this ONE boundary is what makes that true of
+        // the `?` on an address calculation as well, which runs before any
+        // wrapper the call sits inside could see it (Codex round 10).
+        //
+        // Reasons that are already tears keep their own name: the witness
+        // distinguishes a rewritten group vector from a replaced or newly
+        // appeared status object, and that distinction reaches the wire.
+        Err(CarrierError::Invalid(reason)) => {
+            if TORN_READ_REASONS.iter().any(|(torn, _)| *torn == reason) {
+                Err(CarrierError::Invalid(reason))
+            } else {
+                invalid(TORN_COUNTRY_GRAPH)
+            }
+        }
+        // Memory that will not serve a read, and a truncated payload, are not
+        // healed by another walk.
+        other => other,
+    }
+}
+
+fn witness_membership<M: ArmyUpgradeMemory>(
+    memory: &M,
+    root: &CountryRoot,
+) -> Result<Vec<PersistentId>, CarrierError> {
+    let status_ptr_at = add(root.object_ptr, COUNTRY_UPGRADE_STATUS_PTR_OFF)?;
+    let owner = read_u64(memory, status_ptr_at)?;
+    let mut armies = Vec::new();
+    if owner == 0 {
+        // A country with no upgrade status closes on the pointer that said so.
+        // Returning the empty list on one read would let a null-to-non-null
+        // transition inside the witness pass as "this country holds nothing"
+        // (Codex round 3, finding 3).
+        if read_u64(memory, status_ptr_at)? != 0 {
+            return invalid(TORN_STATUS_POINTER_APPEARED);
+        }
+        return Ok(armies);
+    }
+    let (begin, count) = membership_group_header(memory, owner)?;
+    for index in 0..count {
+        let group_ptr = read_u64(memory, add(begin, (index as u64) * 8)?)?;
+        if group_ptr == 0 {
+            return invalid(TORN_COUNTRY_GRAPH);
+        }
+        let army_ptr = read_u64(memory, add(group_ptr, REQUESTS_ARMY_PTR_OFF)?)?;
+        if army_ptr == 0 {
+            return invalid(TORN_COUNTRY_GRAPH);
+        }
+        armies.push(read_persistent_id(memory, add(army_ptr, ARMY_ID_OFF)?)?);
+    }
+    let closing = membership_group_header(memory, owner)?;
+    if closing != (begin, count) {
+        return invalid(TORN_COUNTRY_GRAPH);
+    }
+    if read_u64(memory, status_ptr_at)? != owner {
+        return invalid(TORN_STATUS_POINTER);
+    }
+    armies.sort();
+    Ok(armies)
+}
+
+fn membership_group_header<M: ArmyUpgradeMemory>(
+    memory: &M,
+    owner: u64,
+) -> Result<(u64, usize), CarrierError> {
+    reread_vector_header(
+        memory,
+        owner,
+        STATUS_GROUP_BEGIN_OFF,
+        STATUS_GROUP_CAPACITY_OFF,
+        STATUS_GROUP_COUNT_OFF,
+        MAX_GROUPS_PER_COUNTRY,
+        "army-upgrade group",
+    )
+}
+
+/// One country, read until two consecutive reads of it agree.
+///
+/// The running leaf total is only advanced by the read that is ACCEPTED, so a
+/// restarted country contributes its rows to the bound once.
+fn read_country_groups_coherent<M: ArmyUpgradeMemory, I: CountryRootIdentity>(
+    memory: &M,
+    module_base: u64,
+    root: &CountryRoot,
+    identity: &I,
+    total_leaf_rows: &mut usize,
+    buffers: &mut WalkBuffers,
+    cost: &mut CoherenceCost,
+) -> Result<Vec<ArmyUpgradeGroup>, CarrierError> {
+    let mut previous: Option<Vec<ArmyUpgradeGroup>> = None;
+    // Whether any pass of THIS country has completed. Before the first one,
+    // the objects are being admitted and a structural refusal is a standing
+    // defect; after it, the same refusal is that structure changing under a
+    // walk that already read it whole.
+    let mut a_pass_completed = false;
+    let mut exhaustion = Exhaustion::default();
+    for read in 0..COHERENT_READ_MAX_PASSES {
+        let another_read_follows = read + 1 < COHERENT_READ_MAX_PASSES;
+        if read >= COHERENT_READS_A_SETTLED_COUNTRY_COSTS {
+            cost.extra_country_reads += 1;
+        }
+        let mut leaf_rows = *total_leaf_rows;
+        let graph = read_country_groups(memory, module_base, root, &mut leaf_rows, buffers);
+        // The root is re-proved on EVERY pass, including passes whose graph
+        // read refused, and its answer OUTRANKS that refusal: a graph that
+        // stopped making sense because the object is no longer this country
+        // has to say so, not be filed as the graph tearing (Codex round 12,
+        // finding 1).
+        let read = match identity.reprove_root(root) {
+            RootIdentity::Proved => graph,
+            RootIdentity::Disproved => invalid(ROOT_IS_NOT_THIS_COUNTRY),
+            RootIdentity::Unreadable => invalid(ROOT_IDENTITY_UNREADABLE),
+            RootIdentity::Torn => invalid(TORN_COUNTRY_IDENTITY),
+        };
+        match read {
+            Ok(mut groups) => {
+                a_pass_completed = true;
+                groups.sort_by_key(|group| group.army);
+                if previous.as_deref() == Some(groups.as_slice()) {
+                    *total_leaf_rows = leaf_rows;
+                    return Ok(groups);
+                }
+                previous = Some(groups);
+                exhaustion.saw_change();
+            }
+            Err(error) => {
+                if let Some((torn_now, torn)) = torn_read_row(&error) {
+                    // Not charged on the last pass: the counters are named for
+                    // restarts, and the loop is about to exhaust without
+                    // taking another read (Codex round 9, finding 2).
+                    if another_read_follows {
+                        cost.charge_tear(country_walk_tear_origin(torn_now));
+                    }
+                    previous = None;
+                    exhaustion.saw_tear(torn);
+                } else if a_pass_completed && convertible_after_admission(&error) {
+                    // A structure that was valid on a completed pass and is
+                    // not now was written under a walk that already read it
+                    // whole. Charged Legacy: the detector that raised it is
+                    // lane QZ's own admission validator, and before lane UD
+                    // that refusal propagated out and cost the hour.
+                    if another_read_follows {
+                        cost.charge_tear(TearOrigin::Legacy);
+                    }
+                    previous = None;
+                    exhaustion.saw_structural_regression();
+                } else {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    invalid(exhaustion.reason())
+}
+
+/// What every read of one country did, reduced to the one name the wire takes
+/// when the bound runs out.
+///
+/// A country that tore on every read, a country whose values never settled,
+/// and a country that did some of each are three different states, and naming
+/// any of them after the LAST read alone would put a cause on the wire that
+/// did not happen.
+#[derive(Default)]
+struct Exhaustion {
+    changed: bool,
+    torn: Option<&'static str>,
+    mixed: bool,
+}
+
+impl Exhaustion {
+    fn saw_change(&mut self) {
+        self.mixed |= self.torn.is_some();
+        self.changed = true;
+    }
+
+    /// A structural refusal that only happens after a completed pass, so the
+    /// country has already changed and this reduces to mixed by construction.
+    /// It carries no tear name because no reachable outcome would use one.
+    fn saw_structural_regression(&mut self) {
+        debug_assert!(self.changed);
+        self.mixed = true;
+    }
+
+    fn saw_tear(&mut self, torn: &'static str) {
+        self.mixed |= self.changed || self.torn.is_some_and(|seen| seen != torn);
+        self.torn = Some(torn);
+    }
+
+    fn reason(&self) -> &'static str {
+        match (self.mixed, self.torn) {
+            (false, Some(torn)) => torn,
+            (false, None) => COHERENT_RESTARTS_EXHAUSTED,
+            (true, _) => MIXED_RESTARTS_EXHAUSTED,
+        }
+    }
 }
 
 /// One country's army-upgrade groups. A named function rather than the
@@ -626,12 +1317,18 @@ fn read_country_groups<M: ArmyUpgradeMemory>(
         delivery_slots,
         produced_rows,
     } = buffers;
-    let owner = read_u64(
-        memory,
-        add(root.object_ptr, COUNTRY_UPGRADE_STATUS_PTR_OFF)?,
-    )?;
+    let status_ptr_at = add(root.object_ptr, COUNTRY_UPGRADE_STATUS_PTR_OFF)?;
+    let owner = read_u64(memory, status_ptr_at)?;
     let mut groups = Vec::new();
     if owner == 0 {
+        // Closed on the same pointer, for the same reason the witness closes
+        // its null branch: an empty country is a claim, and one read of a
+        // pointer that is being written does not support it. This close is
+        // lane UD's, unlike the non-null close below, which is lane QZ's --
+        // which is why the two take different names and different counters.
+        if read_u64(memory, status_ptr_at)? != 0 {
+            return invalid(TORN_STATUS_POINTER_APPEARED);
+        }
         return Ok(groups);
     }
     let status = read_block::<STATUS_BLOCK_LEN, _>(memory, owner);
@@ -719,7 +1416,11 @@ fn read_country_groups<M: ArmyUpgradeMemory>(
             deliveries,
         });
     }
-    if reread_vector_header(
+    // Lane QZ's close, split by FIELD: one name per event, so a status object
+    // that was replaced is not reported as its group vector being rewritten
+    // (Codex round 5, finding 1). Both halves stay Legacy -- the split changes
+    // what the refusal is CALLED, not which detector found it.
+    if reread_vector_header_or_tear(
         memory,
         owner,
         STATUS_GROUP_BEGIN_OFF,
@@ -727,13 +1428,13 @@ fn read_country_groups<M: ArmyUpgradeMemory>(
         STATUS_GROUP_COUNT_OFF,
         MAX_GROUPS_PER_COUNTRY,
         "army-upgrade group",
+        TORN_COUNTRY_GRAPH,
     )? != (begin, count)
-        || read_u64(
-            memory,
-            add(root.object_ptr, COUNTRY_UPGRADE_STATUS_PTR_OFF)?,
-        )? != owner
     {
-        return invalid("AUR1 country/status graph changed during snapshot");
+        return invalid(TORN_COUNTRY_GRAPH);
+    }
+    if read_u64(memory, status_ptr_at)? != owner {
+        return invalid(TORN_STATUS_POINTER);
     }
     Ok(groups)
 }
@@ -792,7 +1493,7 @@ fn read_request_rows<M: ArmyUpgradeMemory>(
             }
         }
     }
-    if reread_vector_header(
+    if reread_vector_header_or_tear(
         memory,
         group_ptr,
         REQUEST_ROW_BEGIN_OFF,
@@ -800,9 +1501,10 @@ fn read_request_rows<M: ArmyUpgradeMemory>(
         REQUEST_ROW_COUNT_OFF,
         MAX_REQUEST_ROWS_PER_GROUP,
         "army-upgrade request",
+        TORN_REQUEST_VECTOR,
     )? != (begin, count)
     {
-        return invalid("AUR1 request vector changed during snapshot");
+        return invalid(TORN_REQUEST_VECTOR);
     }
     Ok(rows)
 }
@@ -880,7 +1582,7 @@ fn read_deliveries<M: ArmyUpgradeMemory>(
                 }
             }
         }
-        if reread_vector_header(
+        if reread_vector_header_or_tear(
             memory,
             delivery,
             PRODUCED_ROW_BEGIN_OFF,
@@ -888,9 +1590,10 @@ fn read_deliveries<M: ArmyUpgradeMemory>(
             PRODUCED_ROW_COUNT_OFF,
             MAX_PRODUCED_ROWS_PER_DELIVERY,
             "army-upgrade produced equipment",
+            TORN_PRODUCED_VECTOR,
         )? != (produced_begin, produced_count)
         {
-            return invalid("AUR1 produced vector changed during snapshot");
+            return invalid(TORN_PRODUCED_VECTOR);
         }
         let status = block.u32_at(memory, DELIVERY_STATUS_OFF)?;
         rows.push(UpgradeDeliveryRow {
@@ -905,7 +1608,7 @@ fn read_deliveries<M: ArmyUpgradeMemory>(
             produced,
         });
     }
-    if reread_vector_header(
+    if reread_vector_header_or_tear(
         memory,
         group_ptr,
         DELIVERY_BEGIN_OFF,
@@ -913,9 +1616,10 @@ fn read_deliveries<M: ArmyUpgradeMemory>(
         DELIVERY_COUNT_OFF,
         MAX_DELIVERIES_PER_GROUP,
         "army-upgrade delivery",
+        TORN_DELIVERY_VECTOR,
     )? != (begin, count)
     {
-        return invalid("AUR1 delivery vector changed during snapshot");
+        return invalid(TORN_DELIVERY_VECTOR);
     }
     Ok(rows)
 }
@@ -953,6 +1657,43 @@ fn vector_header_from_fields(
         return invalid(format!("AUR1 {label} vector begin is null"));
     }
     Ok((begin, count as usize))
+}
+
+/// A CLOSING re-verification of a vector header.
+///
+/// The admitted header was already valid and its entries were walked, so a
+/// fresh observation that is structurally invalid -- a count past its
+/// capacity, a negative field, a null begin under a nonzero count -- is not a
+/// malformed vector. It is that header being written while it was read, which
+/// is the same event a merely DIFFERENT header is, and it takes the same
+/// restart (Codex round 8, finding 1). Admission is untouched: a header that
+/// is invalid on the FIRST read still refuses on the first read, under its own
+/// standing name.
+///
+/// Read failures pass through unchanged. Memory that will not serve the
+/// closing read is not a tear, and re-reading does not fix it.
+fn reread_vector_header_or_tear<M: ArmyUpgradeMemory>(
+    memory: &M,
+    object: u64,
+    begin_off: u64,
+    capacity_off: u64,
+    count_off: u64,
+    maximum: usize,
+    label: &str,
+    torn: &'static str,
+) -> Result<(u64, usize), CarrierError> {
+    match reread_vector_header(
+        memory,
+        object,
+        begin_off,
+        capacity_off,
+        count_off,
+        maximum,
+        label,
+    ) {
+        Err(CarrierError::Invalid(_)) => invalid(torn),
+        other => other,
+    }
 }
 
 /// A FRESH copy of a `{begin, capacity, count}` vector header: the
@@ -1536,6 +2277,8 @@ mod tests {
                 tag_db_id: 41,
                 object_ptr: 0x2000_0000,
             }],
+        &StableRoots,
+        &mut CoherenceCost::default(),
         )
         .unwrap_err();
         assert!(matches!(
@@ -1612,6 +2355,16 @@ mod tests {
     const FIXTURE_GROUP: u64 = 0x2003_0000;
     const FIXTURE_ARMY: u64 = 0x2004_0000;
 
+    /// Every root stays the country it was authenticated as. The tests that
+    /// care about a recycled root use `RecycledRoot` instead.
+    struct StableRoots;
+
+    impl CountryRootIdentity for StableRoots {
+        fn reprove_root(&self, _root: &CountryRoot) -> RootIdentity {
+            RootIdentity::Proved
+        }
+    }
+
     #[derive(Default)]
     struct SparseMemory {
         bytes: std::collections::BTreeMap<u64, u8>,
@@ -1652,48 +2405,58 @@ mod tests {
         }
     }
 
-    fn single_group_memory(army_kind: u32, army_id: u32) -> SparseMemory {
-        let mut memory = SparseMemory::default();
-        memory.present(FIXTURE_STATUS, STATUS_BLOCK_LEN);
-        memory.present(FIXTURE_GROUP, GROUP_BLOCK_LEN);
-        memory.present(FIXTURE_ARMY, ARMY_BLOCK_LEN);
-        memory.u64(
-            FIXTURE_COUNTRY + COUNTRY_UPGRADE_STATUS_PTR_OFF,
-            FIXTURE_STATUS,
-        );
+    /// One country chain -- status, one group, one CArmy -- stamped at every
+    /// fixture address shifted by `delta`, so a roster can hold two countries
+    /// that share no object.
+    fn stamp_country(memory: &mut SparseMemory, delta: u64, army_kind: u32, army_id: u32) {
+        let country = FIXTURE_COUNTRY + delta;
+        let status = FIXTURE_STATUS + delta;
+        let group_slots = FIXTURE_GROUP_SLOTS + delta;
+        let group = FIXTURE_GROUP + delta;
+        let army = FIXTURE_ARMY + delta;
 
-        memory.u64(FIXTURE_STATUS, FIXTURE_BASE + STATUS_VTABLE_RVA);
+        memory.present(status, STATUS_BLOCK_LEN);
+        memory.present(group, GROUP_BLOCK_LEN);
+        memory.present(army, ARMY_BLOCK_LEN);
+        memory.u64(country + COUNTRY_UPGRADE_STATUS_PTR_OFF, status);
+
+        memory.u64(status, FIXTURE_BASE + STATUS_VTABLE_RVA);
         memory.u64(
-            FIXTURE_STATUS + STATUS_PERSISTENT_VTABLE_OFF,
+            status + STATUS_PERSISTENT_VTABLE_OFF,
             FIXTURE_BASE + STATUS_PERSISTENT_VTABLE_RVA,
         );
-        memory.u64(FIXTURE_STATUS + STATUS_GROUP_BEGIN_OFF, FIXTURE_GROUP_SLOTS);
-        memory.u32(FIXTURE_STATUS + STATUS_GROUP_CAPACITY_OFF, 1);
-        memory.u32(FIXTURE_STATUS + STATUS_GROUP_COUNT_OFF, 1);
-        memory.u64(FIXTURE_GROUP_SLOTS, FIXTURE_GROUP);
+        memory.u64(status + STATUS_GROUP_BEGIN_OFF, group_slots);
+        memory.u32(status + STATUS_GROUP_CAPACITY_OFF, 1);
+        memory.u32(status + STATUS_GROUP_COUNT_OFF, 1);
+        memory.u64(group_slots, group);
 
-        memory.u64(FIXTURE_GROUP, FIXTURE_BASE + REQUESTS_VTABLE_RVA);
+        memory.u64(group, FIXTURE_BASE + REQUESTS_VTABLE_RVA);
         memory.u64(
-            FIXTURE_GROUP + REQUESTS_PERSISTENT_VTABLE_OFF,
+            group + REQUESTS_PERSISTENT_VTABLE_OFF,
             FIXTURE_BASE + REQUESTS_PERSISTENT_VTABLE_RVA,
         );
-        memory.u32(FIXTURE_GROUP + REQUESTS_VERSION_OFF, REQUESTS_VERSION);
-        memory.u64(FIXTURE_GROUP + REQUESTS_ARMY_PTR_OFF, FIXTURE_ARMY);
-        memory.u64(FIXTURE_GROUP + REQUESTS_STATUS_PTR_OFF, FIXTURE_STATUS);
-        memory.u64(FIXTURE_GROUP + REQUEST_ROW_BEGIN_OFF, 0);
-        memory.u32(FIXTURE_GROUP + REQUEST_ROW_CAPACITY_OFF, 0);
-        memory.u32(FIXTURE_GROUP + REQUEST_ROW_COUNT_OFF, 0);
-        memory.u64(FIXTURE_GROUP + DELIVERY_BEGIN_OFF, 0);
-        memory.u32(FIXTURE_GROUP + DELIVERY_CAPACITY_OFF, 0);
-        memory.u32(FIXTURE_GROUP + DELIVERY_COUNT_OFF, 0);
+        memory.u32(group + REQUESTS_VERSION_OFF, REQUESTS_VERSION);
+        memory.u64(group + REQUESTS_ARMY_PTR_OFF, army);
+        memory.u64(group + REQUESTS_STATUS_PTR_OFF, status);
+        memory.u64(group + REQUEST_ROW_BEGIN_OFF, 0);
+        memory.u32(group + REQUEST_ROW_CAPACITY_OFF, 0);
+        memory.u32(group + REQUEST_ROW_COUNT_OFF, 0);
+        memory.u64(group + DELIVERY_BEGIN_OFF, 0);
+        memory.u32(group + DELIVERY_CAPACITY_OFF, 0);
+        memory.u32(group + DELIVERY_COUNT_OFF, 0);
 
-        memory.u64(FIXTURE_ARMY, FIXTURE_BASE + ARMY_VTABLE_RVA);
+        memory.u64(army, FIXTURE_BASE + ARMY_VTABLE_RVA);
         memory.u64(
-            FIXTURE_ARMY + ARMY_PERSISTENT_VTABLE_OFF,
+            army + ARMY_PERSISTENT_VTABLE_OFF,
             FIXTURE_BASE + ARMY_PERSISTENT_VTABLE_RVA,
         );
-        memory.u32(FIXTURE_ARMY + ARMY_ID_OFF, army_kind);
-        memory.u32(FIXTURE_ARMY + ARMY_ID_OFF + 4, army_id);
+        memory.u32(army + ARMY_ID_OFF, army_kind);
+        memory.u32(army + ARMY_ID_OFF + 4, army_id);
+    }
+
+    fn single_group_memory(army_kind: u32, army_id: u32) -> SparseMemory {
+        let mut memory = SparseMemory::default();
+        stamp_country(&mut memory, 0, army_kind, army_id);
         memory
     }
 
@@ -1706,6 +2469,8 @@ mod tests {
                 tag_db_id: 1,
                 object_ptr: FIXTURE_COUNTRY,
             }],
+        &StableRoots,
+        &mut CoherenceCost::default(),
         )
     }
 
@@ -1744,6 +2509,8 @@ mod tests {
                 tag_db_id: 1,
                 object_ptr: FIXTURE_COUNTRY,
             }],
+        &StableRoots,
+        &mut CoherenceCost::default(),
         )
         .expect_err("a zero CArmy id must stay refused");
         assert!(matches!(&error, CarrierError::CountryRead { source, .. }
@@ -1822,6 +2589,8 @@ mod tests {
                 tag_db_id: 1,
                 object_ptr: FIXTURE_COUNTRY,
             }],
+        &StableRoots,
+        &mut CoherenceCost::default(),
         )
     }
 
@@ -1838,7 +2607,9 @@ mod tests {
         let snapshot = read_mutating(&memory)
             .unwrap_or_else(|error| panic!("a settling graph must still seal: {error:?}"));
         assert_eq!(snapshot.countries[0].groups[0].army.id, 14_647);
-        assert_eq!(memory.watch_reads.get(), 3);
+        // Three walk reads, then the closing membership witness reads the
+        // CArmy identity once more.
+        assert_eq!(memory.watch_reads.get(), 4);
     }
 
     // kills: any unbounded retry, and any collapse of a persistently torn
@@ -1848,7 +2619,7 @@ mod tests {
     // the eight fixture passes are memory-only and complete in microseconds,
     // so any per-pass sleep/yield of meaningful size blows the ceiling. That
     // no production path sleeps is additionally established by inspection --
-    // the loop body is only `read_snapshot_once` calls.
+    // the loop body is only `read_country_groups` calls.
     #[test]
     fn coherent_read_refuses_by_name_when_the_graph_never_settles() {
         let memory = mutating_memory(vec![14_646, 14_647], true);
@@ -1858,8 +2629,10 @@ mod tests {
             .expect("a graph that changes on every pass must stay refused");
         let elapsed = started.elapsed();
         assert!(
-            matches!(&error, CarrierError::Invalid(reason)
-                if reason == "AUR1 object graph kept changing across every coherent-read restart"),
+            matches!(&error, CarrierError::CountryRead { tag_db_id: 1, source, .. }
+                if matches!(source.as_ref(), CarrierError::Invalid(reason)
+                    if reason
+                        == "AUR1 object graph kept changing across every coherent-read restart")),
             "never-settling graph produced {error:?}"
         );
         assert_eq!(memory.watch_reads.get(), COHERENT_READ_MAX_PASSES);
@@ -1867,6 +2640,1245 @@ mod tests {
             elapsed < std::time::Duration::from_millis(500),
             "the bounded refusal must not wait (took {elapsed:?})"
         );
+    }
+
+    // --- lane UD: the tear detectors take the same restart ----------------
+
+    const FIXTURE_DELTA_B: u64 = 0x0010_0000;
+
+    /// The country's status pointer as the walk's OPENING read, and something
+    /// else as its closing re-verification read on the first `tear_attempts`
+    /// reads of the country -- the engine relocating `CCountryArmyUpgradeStatus`
+    /// under the walk, which is what [`TORN_STATUS_POINTER`] reports. It was
+    /// `TORN_COUNTRY_GRAPH` until the closing comparison was split by field,
+    /// because that one name covered both the pointer and the group vector.
+    ///
+    /// The two reads at that address per walk are the whole protocol: index
+    /// `2n` opens attempt `n` and index `2n+1` closes it. A torn attempt stops
+    /// AT the closing read, so the pairing holds across restarts.
+    struct TearingMemory {
+        inner: SparseMemory,
+        watch_address: u64,
+        tear_attempts: usize,
+        reads: std::cell::Cell<usize>,
+    }
+
+    impl ArmyUpgradeMemory for TearingMemory {
+        fn read_exact(&self, address: u64, out: &mut [u8]) -> Result<(), ()> {
+            self.inner.read_exact(address, out)?;
+            if address == self.watch_address && out.len() == 8 {
+                let index = self.reads.get();
+                self.reads.set(index + 1);
+                if index % 2 == 1 && index / 2 < self.tear_attempts {
+                    out.copy_from_slice(&(FIXTURE_STATUS + 0x8000).to_le_bytes());
+                }
+            }
+            Ok(())
+        }
+    }
+
+    fn tearing_memory(inner: SparseMemory, tear_attempts: usize) -> TearingMemory {
+        TearingMemory {
+            inner,
+            watch_address: FIXTURE_COUNTRY + COUNTRY_UPGRADE_STATUS_PTR_OFF,
+            tear_attempts,
+            reads: std::cell::Cell::new(0),
+        }
+    }
+
+    fn read_tearing(memory: &TearingMemory) -> Result<ArmyUpgradeSnapshot, CarrierError> {
+        read_snapshot_from_country_roots(
+            memory,
+            FIXTURE_BASE,
+            1,
+            &[CountryRoot {
+                tag_db_id: 1,
+                object_ptr: FIXTURE_COUNTRY,
+            }],
+        &StableRoots,
+        &mut CoherenceCost::default(),
+        )
+    }
+
+    // kills: the `?` that carried a tear detector straight out of the walk, so
+    // the four re-verification refusals spent ZERO restarts and refused the
+    // frame on one straddled read -- the rc_vanilla7 hour-60831057 shape.
+    #[test]
+    fn a_torn_read_restarts_and_settles() {
+        let memory = tearing_memory(single_group_memory(ARMY_ID_TYPE, 14_646), 1);
+        let snapshot = read_tearing(&memory)
+            .unwrap_or_else(|error| panic!("a settling tear must still seal: {error:?}"));
+        assert_eq!(snapshot.countries[0].groups[0].army.id, 14_646);
+        // Three reads of the country at two status-pointer reads each, then
+        // TWO more for the closing membership witness, which opens on that
+        // pointer and closes on it exactly as a pass does.
+        // `the_status_pointer_read_schedule_is_what_the_tear_tests_assume`
+        // pins the same shape on a graph that never tears.
+        assert_eq!(memory.reads.get(), 3 * 2 + 2);
+    }
+
+    // kills: retrying a tear forever, and renaming a standing tear as the
+    // value-churn refusal -- a country that tears on every read must exhaust
+    // exactly COHERENT_READ_MAX_PASSES reads and refuse under a name only that
+    // state can reach, still without waiting.
+    #[test]
+    fn a_standing_tear_refuses_under_its_own_exhausted_name() {
+        let memory = tearing_memory(single_group_memory(ARMY_ID_TYPE, 14_646), usize::MAX);
+        let started = std::time::Instant::now();
+        let error = read_tearing(&memory)
+            .err()
+            .expect("a country that tears on every read must stay refused");
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(&error, CarrierError::CountryRead { tag_db_id: 1, source, .. }
+                if matches!(source.as_ref(), CarrierError::Invalid(reason)
+                    if reason == TORN_STATUS_POINTER_EXHAUSTED)),
+            "standing tear produced {error:?}"
+        );
+        assert_eq!(memory.reads.get(), 2 * COHERENT_READ_MAX_PASSES);
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "the bounded refusal must not wait (took {elapsed:?})"
+        );
+    }
+
+    // kills: retrying refusals the engine cannot fix by being read again --
+    // which would both spend the bound on a dead read and rename a standing
+    // defect as a tear.
+    #[test]
+    fn a_refusal_that_is_not_a_tear_is_not_retried() {
+        let memory = tearing_memory(single_group_memory(ARMY_ID_TYPE, 0), 0);
+        let error = read_tearing(&memory)
+            .err()
+            .expect("a null CArmy identity must refuse");
+        assert!(
+            matches!(&error, CarrierError::CountryRead { source, .. }
+                if matches!(source.as_ref(), CarrierError::Invalid(reason)
+                    if reason == "AUR1 CArmy persistent identity is invalid or duplicated")),
+            "a non-tear refusal produced {error:?}"
+        );
+        assert_eq!(memory.reads.get(), 1);
+    }
+
+    /// A roster whose FIRST country is static and whose SECOND never settles.
+    struct RosterMemory {
+        inner: SparseMemory,
+        churn_address: u64,
+        churn_reads: std::cell::Cell<usize>,
+        settled_address: u64,
+        settled_reads: std::cell::Cell<usize>,
+    }
+
+    impl ArmyUpgradeMemory for RosterMemory {
+        fn read_exact(&self, address: u64, out: &mut [u8]) -> Result<(), ()> {
+            self.inner.read_exact(address, out)?;
+            if address == self.settled_address && out.len() == 8 {
+                self.settled_reads.set(self.settled_reads.get() + 1);
+            }
+            let covers = address <= self.churn_address
+                && self
+                    .churn_address
+                    .checked_add(4)
+                    .is_some_and(|end| end <= address + out.len() as u64);
+            if covers {
+                let index = self.churn_reads.get();
+                self.churn_reads.set(index + 1);
+                let at = (self.churn_address - address) as usize;
+                out[at..at + 4].copy_from_slice(&(14_646 + index as u32).to_le_bytes());
+            }
+            Ok(())
+        }
+    }
+
+    // kills: restarting the WHOLE roster when one country moves. Country 1 is
+    // static and country 2 changes on every read; country 1 must be admitted
+    // on its own two reads and never walked again, which is the granularity
+    // claim behind COHERENT_READ_MAX_PASSES -- the roster-wide loop read it
+    // COHERENT_READ_MAX_PASSES times for a neighbour's churn.
+    #[test]
+    fn one_country_that_never_settles_does_not_re_walk_its_neighbours() {
+        let mut inner = SparseMemory::default();
+        stamp_country(&mut inner, FIXTURE_DELTA_B, ARMY_ID_TYPE, 14_646);
+        stamp_country(&mut inner, 0, ARMY_ID_TYPE, 14_646);
+        let memory = RosterMemory {
+            inner,
+            churn_address: FIXTURE_ARMY + ARMY_ID_OFF + 4,
+            churn_reads: std::cell::Cell::new(0),
+            settled_address: FIXTURE_COUNTRY + FIXTURE_DELTA_B + COUNTRY_UPGRADE_STATUS_PTR_OFF,
+            settled_reads: std::cell::Cell::new(0),
+        };
+        let error = read_snapshot_from_country_roots(
+            &memory,
+            FIXTURE_BASE,
+            1,
+            &[
+                CountryRoot {
+                    tag_db_id: 1,
+                    object_ptr: FIXTURE_COUNTRY + FIXTURE_DELTA_B,
+                },
+                CountryRoot {
+                    tag_db_id: 2,
+                    object_ptr: FIXTURE_COUNTRY,
+                },
+            ],
+        &StableRoots,
+        &mut CoherenceCost::default(),
+        )
+        .err()
+        .expect("the churning country must refuse the frame");
+        assert!(
+            matches!(&error, CarrierError::CountryRead { tag_db_id: 2, source, .. }
+                if matches!(source.as_ref(), CarrierError::Invalid(reason)
+                    if reason
+                        == "AUR1 object graph kept changing across every coherent-read restart")),
+            "the churning country must be the one named: {error:?}"
+        );
+        assert_eq!(memory.churn_reads.get(), COHERENT_READ_MAX_PASSES);
+        assert_eq!(memory.settled_reads.get(), 4);
+    }
+
+    // kills: an exhausted-tear name with no exact arm in the collector's
+    // mapper, which would file a standing tear under
+    // `d93_fail_reason_other_invalid`; and a single-read tear reason that
+    // collides with the exhausted family's suffix, which would file a retried
+    // straddle as a standing one.
+    #[test]
+    fn the_exhausted_tear_names_are_exactly_the_suffix_family() {
+        // The tail every right-hand name ends with and no left-hand name
+        // does. The VERB is cause-specific -- a status object that keeps being
+        // replaced tears, one that keeps appearing appears -- so the shared
+        // part is the tail alone. The collector maps each exhausted cause by
+        // its own exact name, so a spelling that drifted into or out of this
+        // family would silently change which unit it lands on; this is where
+        // that drift is caught, which is why the constant lives with the
+        // assertion.
+        const TORN_READ_EXHAUSTED_SUFFIX: &str = " across every coherent-read restart";
+        for (torn, exhausted) in TORN_READ_REASONS {
+            assert!(
+                exhausted.ends_with(TORN_READ_EXHAUSTED_SUFFIX),
+                "{exhausted} must join the collector's one arm"
+            );
+            assert!(
+                !torn.ends_with(TORN_READ_EXHAUSTED_SUFFIX),
+                "{torn} is one straddled read, not a standing tear"
+            );
+            assert_eq!(
+                torn_read_row(&CarrierError::Invalid(torn.to_string()))
+                    .map(|(_, exhausted)| exhausted),
+                Some(exhausted)
+            );
+        }
+        assert!(torn_read_row(&CarrierError::Invalid(
+            "AUR1 CArmy persistent identity is invalid or duplicated".to_string()
+        ))
+        .is_none());
+        assert!(torn_read_row(&CarrierError::Truncated).is_none());
+    }
+
+    // kills: naming an exhausted country after its LAST read alone. Seven
+    // value changes then one tear is not "kept tearing"; seven tears then one
+    // completed read is not value churn; two different tears are neither. Each
+    // of those would publish a cause no read produced.
+    #[test]
+    fn exhaustion_is_named_after_every_read_not_the_last_one() {
+        let all_torn = |torn: &'static str| {
+            let mut seen = Exhaustion::default();
+            for _ in 0..COHERENT_READ_MAX_PASSES {
+                seen.saw_tear(torn);
+            }
+            seen
+        };
+        assert_eq!(
+            all_torn(TORN_COUNTRY_GRAPH_EXHAUSTED).reason(),
+            TORN_COUNTRY_GRAPH_EXHAUSTED
+        );
+
+        let mut only_changed = Exhaustion::default();
+        for _ in 0..COHERENT_READ_MAX_PASSES {
+            only_changed.saw_change();
+        }
+        assert_eq!(only_changed.reason(), COHERENT_RESTARTS_EXHAUSTED);
+
+        let mut changed_then_torn = Exhaustion::default();
+        for _ in 1..COHERENT_READ_MAX_PASSES {
+            changed_then_torn.saw_change();
+        }
+        changed_then_torn.saw_tear(TORN_COUNTRY_GRAPH_EXHAUSTED);
+        assert_eq!(changed_then_torn.reason(), MIXED_RESTARTS_EXHAUSTED);
+
+        let mut torn_then_changed = all_torn(TORN_COUNTRY_GRAPH_EXHAUSTED);
+        torn_then_changed.saw_change();
+        assert_eq!(torn_then_changed.reason(), MIXED_RESTARTS_EXHAUSTED);
+
+        let mut two_tears = all_torn(TORN_COUNTRY_GRAPH_EXHAUSTED);
+        two_tears.saw_tear(TORN_REQUEST_VECTOR_EXHAUSTED);
+        assert_eq!(two_tears.reason(), MIXED_RESTARTS_EXHAUSTED);
+    }
+
+    /// A roster of two countries where the first country's army changes only
+    /// on the closing witness read -- the shape of an army leaving a country
+    /// AFTER that country was admitted, which per-country coherence cannot
+    /// see because both of its reads happened before the move.
+    ///
+    /// Each roster walk reads this army three times: twice to admit the
+    /// country, once for the witness. `settle` decides whether the move
+    /// happens once (the next walk admits the new membership) or on every
+    /// walk's witness (no walk is ever witnessable).
+    struct MovingArmyMemory {
+        inner: SparseMemory,
+        watched: u64,
+        reads: std::cell::Cell<usize>,
+        settle: bool,
+    }
+
+    impl ArmyUpgradeMemory for MovingArmyMemory {
+        fn read_exact(&self, address: u64, out: &mut [u8]) -> Result<(), ()> {
+            self.inner.read_exact(address, out)?;
+            let covers = address <= self.watched
+                && self
+                    .watched
+                    .checked_add(4)
+                    .is_some_and(|end| end <= address + out.len() as u64);
+            if covers {
+                let index = self.reads.get();
+                self.reads.set(index + 1);
+                let moved = if self.settle {
+                    index >= 2
+                } else {
+                    index % 3 == 2
+                };
+                let at = (self.watched - address) as usize;
+                let id: u32 = if moved { 14_999 } else { 14_646 };
+                out[at..at + 4].copy_from_slice(&id.to_le_bytes());
+            }
+            Ok(())
+        }
+    }
+
+    fn read_two_country_roster<M: ArmyUpgradeMemory>(
+        memory: &M,
+    ) -> Result<ArmyUpgradeSnapshot, CarrierError> {
+        read_snapshot_from_country_roots(
+            memory,
+            FIXTURE_BASE,
+            1,
+            &[
+                CountryRoot {
+                    tag_db_id: 1,
+                    object_ptr: FIXTURE_COUNTRY,
+                },
+                CountryRoot {
+                    tag_db_id: 2,
+                    object_ptr: FIXTURE_COUNTRY + FIXTURE_DELTA_B,
+                },
+            ],
+            &StableRoots,
+            &mut CoherenceCost::default(),
+        )
+    }
+
+    fn moving_army_memory(settle: bool) -> MovingArmyMemory {
+        let mut inner = SparseMemory::default();
+        stamp_country(&mut inner, 0, ARMY_ID_TYPE, 14_646);
+        stamp_country(&mut inner, FIXTURE_DELTA_B, ARMY_ID_TYPE, 14_646);
+        MovingArmyMemory {
+            inner,
+            watched: FIXTURE_ARMY + ARMY_ID_OFF + 4,
+            reads: std::cell::Cell::new(0),
+            settle,
+        }
+    }
+
+    // kills: publishing a roster stitched across a membership change. Per-
+    // country coherence is satisfied on both sides of an army that leaves the
+    // first country after it was admitted, so without the closing witness the
+    // frame seals a country holding an army it no longer holds. The retired
+    // roster-wide pass comparison caught this as a side effect; the witness is
+    // what replaces it.
+    #[test]
+    fn a_roster_whose_membership_moved_is_walked_again() {
+        let memory = moving_army_memory(true);
+        let snapshot = read_two_country_roster(&memory)
+            .unwrap_or_else(|error| panic!("a settled second walk must seal: {error:?}"));
+        assert_eq!(snapshot.countries[0].groups[0].army.id, 14_999);
+        assert_eq!(memory.reads.get(), 6);
+    }
+
+    /// Two countries where one `CArmy` TRANSFERS from the second to the first
+    /// between their admissions, by the two group counts changing together.
+    ///
+    /// The move is triggered by the first read of the second country's status
+    /// object, which is the moment the walk leaves country 1 -- so country 1 is
+    /// admitted empty, country 2 is admitted empty, and the army the engine
+    /// holds reaches the frame in NEITHER country. No per-country comparison
+    /// can see it: both countries were coherent on both of their own reads.
+    struct TransferredArmyMemory {
+        inner: SparseMemory,
+        first_count_at: u64,
+        second_count_at: u64,
+        second_status_at: u64,
+        moved: std::cell::Cell<bool>,
+    }
+
+    impl TransferredArmyMemory {
+        /// Overwrite a u32 in an already-served buffer when the read covered
+        /// it, whatever width the caller asked for.
+        fn patch_u32(address: u64, out: &mut [u8], field: u64, value: u32) {
+            let Some(end) = field.checked_add(4) else {
+                return;
+            };
+            if address <= field && end <= address + out.len() as u64 {
+                let at = (field - address) as usize;
+                out[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+    }
+
+    impl ArmyUpgradeMemory for TransferredArmyMemory {
+        fn read_exact(&self, address: u64, out: &mut [u8]) -> Result<(), ()> {
+            self.inner.read_exact(address, out)?;
+            let moved = self.moved.get();
+            Self::patch_u32(address, out, self.first_count_at, u32::from(moved));
+            Self::patch_u32(address, out, self.second_count_at, u32::from(!moved));
+            if !moved && address <= self.second_status_at
+                && self.second_status_at < address + out.len() as u64
+            {
+                self.moved.set(true);
+            }
+            Ok(())
+        }
+    }
+
+    // kills: sealing a frame that LOSES an army. An army moving between two
+    // countries after the first was admitted leaves per-country coherence
+    // satisfied on both sides, and -- unlike the double-count direction --
+    // leaves nothing behind for the payload's own duplicate check to find.
+    // The closing witness is the only reader that can see it.
+    #[test]
+    fn an_army_transferred_between_countries_is_walked_again() {
+        let mut inner = SparseMemory::default();
+        stamp_country(&mut inner, 0, ARMY_ID_TYPE, 14_646);
+        stamp_country(&mut inner, FIXTURE_DELTA_B, ARMY_ID_TYPE, 14_646);
+        let memory = TransferredArmyMemory {
+            inner,
+            first_count_at: FIXTURE_STATUS + STATUS_GROUP_COUNT_OFF,
+            second_count_at: FIXTURE_STATUS + FIXTURE_DELTA_B + STATUS_GROUP_COUNT_OFF,
+            second_status_at: FIXTURE_STATUS + FIXTURE_DELTA_B,
+            moved: std::cell::Cell::new(false),
+        };
+        let mut cost = CoherenceCost::default();
+        let snapshot = read_snapshot_from_country_roots(
+            &memory,
+            FIXTURE_BASE,
+            1,
+            &[
+                CountryRoot {
+                    tag_db_id: 1,
+                    object_ptr: FIXTURE_COUNTRY,
+                },
+                CountryRoot {
+                    tag_db_id: 2,
+                    object_ptr: FIXTURE_COUNTRY + FIXTURE_DELTA_B,
+                },
+            ],
+            &StableRoots,
+            &mut cost,
+        )
+        .unwrap_or_else(|error| panic!("the settled second walk must seal: {error:?}"));
+        assert_eq!(snapshot.countries[0].groups.len(), 1);
+        assert_eq!(snapshot.countries[0].groups[0].army.id, 14_646);
+        assert!(snapshot.countries[1].groups.is_empty());
+        assert_eq!(cost.extra_roster_walks, 1);
+    }
+
+    // kills: an unbounded outer loop, and sealing a roster whose membership
+    // never held still for one walk.
+    #[test]
+    fn membership_that_never_holds_refuses_by_name() {
+        let memory = moving_army_memory(false);
+        let started = std::time::Instant::now();
+        let error = read_two_country_roster(&memory)
+            .err()
+            .expect("membership that keeps moving must refuse");
+        assert!(
+            matches!(&error, CarrierError::Invalid(reason)
+                if reason == ROSTER_MEMBERSHIP_UNWITNESSED),
+            "moving membership produced {error:?}"
+        );
+        assert_eq!(
+            memory.reads.get(),
+            3 * ROSTER_MEMBERSHIP_WITNESS_ATTEMPTS,
+            "exactly ROSTER_MEMBERSHIP_WITNESS_ATTEMPTS whole-roster walks"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "the bounded refusal must not wait"
+        );
+    }
+
+    // kills: a membership witness that reads a different set of armies than
+    // the walk admits, which would either refuse every clean frame or witness
+    // nothing at all.
+    #[test]
+    fn the_membership_witness_names_the_walks_armies() {
+        let memory = single_group_memory(ARMY_ID_TYPE, 14_646);
+        let root = CountryRoot {
+            tag_db_id: 1,
+            object_ptr: FIXTURE_COUNTRY,
+        };
+        let mut buffers = WalkBuffers::new();
+        let mut leaf_rows = 0usize;
+        let groups = read_country_groups(&memory, FIXTURE_BASE, &root, &mut leaf_rows, &mut buffers)
+            .expect("a static graph must walk");
+        let witnessed =
+            read_country_army_membership(&memory, &root).expect("a static graph must witness");
+        let mut walked = groups.iter().map(|group| group.army).collect::<Vec<_>>();
+        walked.sort();
+        assert_eq!(witnessed, walked);
+        assert_eq!(witnessed.len(), 1);
+    }
+
+    /// A root that stops authenticating as the country it was admitted as,
+    /// after `holds_for` proving reads.
+    struct RecycledRoot {
+        holds_for: usize,
+        after: RootIdentity,
+        checks: std::cell::Cell<usize>,
+    }
+
+    impl CountryRootIdentity for RecycledRoot {
+        fn reprove_root(&self, _root: &CountryRoot) -> RootIdentity {
+            let index = self.checks.get();
+            self.checks.set(index + 1);
+            if index < self.holds_for {
+                RootIdentity::Proved
+            } else {
+                self.after
+            }
+        }
+    }
+
+    // kills: publishing a recycled country object's graph under the tag the
+    // roster authenticated before the walk. The roster proves each root once
+    // per frame; a restart that re-reads only the graph would settle on the
+    // NEW object and seal it under the OLD tag.
+    #[test]
+    fn a_root_that_stops_authenticating_refuses_by_name() {
+        let memory = single_group_memory(ARMY_ID_TYPE, 14_646);
+        let identity = RecycledRoot {
+            holds_for: 0,
+            after: RootIdentity::Disproved,
+            checks: std::cell::Cell::new(0),
+        };
+        let error = read_snapshot_from_country_roots(
+            &memory,
+            FIXTURE_BASE,
+            1,
+            &[CountryRoot {
+                tag_db_id: 1,
+                object_ptr: FIXTURE_COUNTRY,
+            }],
+            &identity,
+            &mut CoherenceCost::default(),
+        )
+        .err()
+        .expect("a root that no longer authenticates must refuse");
+        assert!(
+            matches!(&error, CarrierError::CountryRead { tag_db_id: 1, source, .. }
+                if matches!(source.as_ref(), CarrierError::Invalid(reason)
+                    if reason == ROOT_IS_NOT_THIS_COUNTRY)),
+            "a recycled root produced {error:?}"
+        );
+        assert_eq!(identity.checks.get(), 1);
+    }
+
+    // kills: spending the restart bound on a root that reads stably as another
+    // country. Re-reading cannot turn it back, so the refusal must be the
+    // first read's, not an exhausted one eight reads later.
+    #[test]
+    fn a_disproved_root_does_not_spend_the_restart_bound() {
+        let memory = single_group_memory(ARMY_ID_TYPE, 14_646);
+        let mut cost = CoherenceCost::default();
+        let identity = RecycledRoot {
+            holds_for: 0,
+            after: RootIdentity::Disproved,
+            checks: std::cell::Cell::new(0),
+        };
+        let _ = read_snapshot_from_country_roots(
+            &memory,
+            FIXTURE_BASE,
+            1,
+            &[CountryRoot {
+                tag_db_id: 1,
+                object_ptr: FIXTURE_COUNTRY,
+            }],
+            &identity,
+            &mut cost,
+        );
+        assert_eq!(cost, CoherenceCost::default());
+    }
+
+    // kills: renaming an unreadable identity window as the recycled-root
+    // refusal. The two take different answers from a reader -- one is a
+    // standing defect at a known address, the other is a live object that is
+    // not this country -- so they cannot share a name.
+    #[test]
+    fn an_unreadable_root_identity_refuses_under_its_own_name() {
+        let memory = single_group_memory(ARMY_ID_TYPE, 14_646);
+        let identity = RecycledRoot {
+            holds_for: 0,
+            after: RootIdentity::Unreadable,
+            checks: std::cell::Cell::new(0),
+        };
+        let error = read_snapshot_from_country_roots(
+            &memory,
+            FIXTURE_BASE,
+            1,
+            &[CountryRoot {
+                tag_db_id: 1,
+                object_ptr: FIXTURE_COUNTRY,
+            }],
+            &identity,
+            &mut CoherenceCost::default(),
+        )
+        .err()
+        .expect("an unreadable root identity must refuse");
+        assert!(
+            matches!(&error, CarrierError::CountryRead { source, .. }
+                if matches!(source.as_ref(), CarrierError::Invalid(reason)
+                    if reason == ROOT_IDENTITY_UNREADABLE)),
+            "an unreadable identity produced {error:?}"
+        );
+    }
+
+    /// A root whose identity window is being WRITTEN for the first
+    /// `torn_for` reads and reads stably afterwards.
+    struct TornThenStable {
+        torn_for: usize,
+        checks: std::cell::Cell<usize>,
+    }
+
+    impl CountryRootIdentity for TornThenStable {
+        fn reprove_root(&self, _root: &CountryRoot) -> RootIdentity {
+            let index = self.checks.get();
+            self.checks.set(index + 1);
+            if index < self.torn_for {
+                RootIdentity::Torn
+            } else {
+                RootIdentity::Proved
+            }
+        }
+    }
+
+    // kills: treating an identity window that two successful reads disagreed
+    // on as a standing refusal. That is the one identity outcome another read
+    // can settle, so it must take the restart and the frame must seal --
+    // refusing it would name a defect the engine does not have.
+    #[test]
+    fn a_torn_root_identity_is_retried_and_settles() {
+        let memory = single_group_memory(ARMY_ID_TYPE, 14_646);
+        let identity = TornThenStable {
+            torn_for: 2,
+            checks: std::cell::Cell::new(0),
+        };
+        let mut cost = CoherenceCost::default();
+        let snapshot = read_snapshot_from_country_roots(
+            &memory,
+            FIXTURE_BASE,
+            1,
+            &[CountryRoot {
+                tag_db_id: 1,
+                object_ptr: FIXTURE_COUNTRY,
+            }],
+            &identity,
+            &mut cost,
+        )
+        .unwrap_or_else(|error| panic!("a settling identity must seal: {error:?}"));
+        assert_eq!(snapshot.countries[0].groups.len(), 1);
+        // The identity proof is lane UD's own detector, so its restarts are
+        // never evidence that a former refusal was converted.
+        assert_eq!(cost.added_detector_tears, 2);
+        assert_eq!(cost.legacy_tears_restarted, 0);
+        assert!(cost.extra_country_reads > 0);
+    }
+
+    /// A memory that serves one country's status POINTER according to a
+    /// schedule: `plan(n)` may replace the value the nth read of that pointer
+    /// sees, counting from 1 across the whole call.
+    ///
+    /// The schedule for a one-country roster, which
+    /// `the_status_pointer_read_schedule_is_what_the_tear_tests_assume` pins:
+    /// each coherent pass opens on the pointer and closes on it, so two
+    /// settling passes take reads 1-4; the witness opens on 5 and closes on 6.
+    struct PointerScheduleMemory {
+        inner: SparseMemory,
+        pointer_at: u64,
+        plan: fn(usize) -> Option<u64>,
+        reads: std::cell::Cell<usize>,
+    }
+
+    impl PointerScheduleMemory {
+        fn new(plan: fn(usize) -> Option<u64>) -> Self {
+            Self {
+                inner: single_group_memory(ARMY_ID_TYPE, 14_646),
+                pointer_at: FIXTURE_COUNTRY + COUNTRY_UPGRADE_STATUS_PTR_OFF,
+                plan,
+                reads: std::cell::Cell::new(0),
+            }
+        }
+
+        fn read_one_country(&self, cost: &mut CoherenceCost) -> Result<ArmyUpgradeSnapshot, CarrierError> {
+            read_snapshot_from_country_roots(
+                self,
+                FIXTURE_BASE,
+                1,
+                &[CountryRoot {
+                    tag_db_id: 1,
+                    object_ptr: FIXTURE_COUNTRY,
+                }],
+                &StableRoots,
+                cost,
+            )
+        }
+    }
+
+    /// Some other live status object: a REPLACEMENT, not a null.
+    const OTHER_STATUS: u64 = FIXTURE_STATUS + 0x40;
+
+    impl ArmyUpgradeMemory for PointerScheduleMemory {
+        fn read_exact(&self, address: u64, out: &mut [u8]) -> Result<(), ()> {
+            self.inner.read_exact(address, out)?;
+            if address == self.pointer_at && out.len() == 8 {
+                let index = self.reads.get() + 1;
+                self.reads.set(index);
+                if let Some(value) = (self.plan)(index) {
+                    out.copy_from_slice(&value.to_le_bytes());
+                }
+            }
+            Ok(())
+        }
+    }
+
+    // kills: a tear raised by the membership witness refusing the frame on one
+    // look. The witness's own reads race the engine exactly as the walk's do,
+    // so a straddled witness must cost a roster walk, not an hour -- and the
+    // old single-read name must not reach the wire from this path.
+    #[test]
+    fn a_torn_membership_witness_walks_the_roster_again() {
+        let memory =
+            PointerScheduleMemory::new(|read| (read == 6).then_some(OTHER_STATUS));
+        let mut cost = CoherenceCost::default();
+        let snapshot = memory
+            .read_one_country(&mut cost)
+            .unwrap_or_else(|error| panic!("a witness tear must be retried, not refused: {error:?}"));
+        assert_eq!(snapshot.countries[0].groups.len(), 1);
+        assert_eq!(cost.extra_roster_walks, 1);
+        // The witness is lane UD's own detector: a tear it catches is not a
+        // refusal the old code would have made.
+        assert_eq!(cost.added_detector_tears, 1);
+        assert_eq!(cost.legacy_tears_restarted, 0);
+        // Two settled walks of two passes, each pass opening and closing on
+        // the pointer, plus two witnesses: 12. Asserted so that a change to
+        // the read schedule fails HERE rather than silently moving `tear_on`
+        // onto some other read (Codex round 4, finding 3).
+        assert_eq!(memory.reads.get(), 12);
+    }
+
+    /// A memory that makes the group vector header read as STRUCTURALLY
+    /// INVALID -- a count past its capacity -- on selected reads of the
+    /// closing header address, counting from 1.
+    ///
+    /// Only closing reads land on that address: the walk admits the header out
+    /// of the widened status block. For a one-country roster the reads are
+    /// pass 1's close, pass 2's close, then the witness's open and close.
+    struct InvalidClosingHeaderMemory {
+        inner: SparseMemory,
+        header_at: u64,
+        corrupt: fn(usize) -> bool,
+        reads: std::cell::Cell<usize>,
+    }
+
+    impl InvalidClosingHeaderMemory {
+        fn new(corrupt: fn(usize) -> bool) -> Self {
+            Self {
+                inner: single_group_memory(ARMY_ID_TYPE, 14_646),
+                header_at: FIXTURE_STATUS + STATUS_GROUP_BEGIN_OFF,
+                corrupt,
+                reads: std::cell::Cell::new(0),
+            }
+        }
+
+        fn read_one_country(
+            &self,
+            cost: &mut CoherenceCost,
+        ) -> Result<ArmyUpgradeSnapshot, CarrierError> {
+            read_snapshot_from_country_roots(
+                self,
+                FIXTURE_BASE,
+                1,
+                &[CountryRoot {
+                    tag_db_id: 1,
+                    object_ptr: FIXTURE_COUNTRY,
+                }],
+                &StableRoots,
+                cost,
+            )
+        }
+    }
+
+    impl ArmyUpgradeMemory for InvalidClosingHeaderMemory {
+        fn read_exact(&self, address: u64, out: &mut [u8]) -> Result<(), ()> {
+            self.inner.read_exact(address, out)?;
+            if address == self.header_at && out.len() == VECTOR_HEADER_LEN {
+                let index = self.reads.get() + 1;
+                self.reads.set(index);
+                if (self.corrupt)(index) {
+                    // count past capacity: what a half-written header looks
+                    // like, and what the admission rules reject.
+                    out[12..16].copy_from_slice(&i32::MAX.to_le_bytes());
+                }
+            }
+            Ok(())
+        }
+    }
+
+    // kills: refusing a frame on ONE read because the closing re-verification
+    // caught a header mid-write. The admitted header was valid and its entries
+    // were walked, so a structurally invalid FRESH header is a tear, and the
+    // whole point of this lane is that a tear is re-read rather than published
+    // as a refusal.
+    #[test]
+    fn a_structurally_invalid_closing_header_is_retried_not_refused() {
+        let memory = InvalidClosingHeaderMemory::new(|read| read == 1);
+        let mut cost = CoherenceCost::default();
+        let snapshot = memory
+            .read_one_country(&mut cost)
+            .unwrap_or_else(|error| panic!("a torn closing header must be retried: {error:?}"));
+        assert_eq!(snapshot.countries[0].groups.len(), 1);
+        // Lane QZ's own close found it, so it is the capture gate's counter.
+        assert_eq!(cost.legacy_tears_restarted, 1);
+        assert_eq!(cost.added_detector_tears, 0);
+    }
+
+    // kills: naming a closing header tear after the ADMISSION rule it tripped.
+    // "AUR1 army-upgrade group vector header is invalid" says the vector is
+    // malformed; this one was walked successfully and then rewritten.
+    #[test]
+    fn a_closing_header_that_never_settles_exhausts_as_a_tear() {
+        let memory = InvalidClosingHeaderMemory::new(|_| true);
+        let mut cost = CoherenceCost::default();
+        let error = memory
+            .read_one_country(&mut cost)
+            .err()
+            .expect("a header that is never coherent must refuse");
+        assert!(
+            matches!(&error, CarrierError::CountryRead { source, .. }
+                if matches!(source.as_ref(), CarrierError::Invalid(reason)
+                    if reason == TORN_COUNTRY_GRAPH_EXHAUSTED)),
+            "a permanently torn closing header produced {error:?}"
+        );
+        assert_eq!(
+            cost.legacy_tears_restarted,
+            COHERENT_READ_MAX_PASSES as u64 - 1
+        );
+    }
+
+    // kills: the witness's own closing header check refusing the frame on one
+    // look when it catches the same mid-write. Reads 1 and 2 are the two
+    // coherent passes' closes; 3 and 4 are the witness opening and closing.
+    #[test]
+    fn a_structurally_invalid_witness_close_walks_the_roster_again() {
+        let memory = InvalidClosingHeaderMemory::new(|read| read == 4);
+        let mut cost = CoherenceCost::default();
+        let snapshot = memory
+            .read_one_country(&mut cost)
+            .unwrap_or_else(|error| panic!("a torn witness close must be retried: {error:?}"));
+        assert_eq!(snapshot.countries[0].groups.len(), 1);
+        assert_eq!(cost.extra_roster_walks, 1);
+        assert_eq!(cost.added_detector_tears, 1);
+        assert_eq!(cost.legacy_tears_restarted, 0);
+    }
+
+    // kills: the witness's OPENING header refusing the frame on one look. Two
+    // coherent reads have already accepted and closed this vector, so a header
+    // the witness finds malformed is one being written, and it must cost a
+    // roster walk like any other witness tear.
+    #[test]
+    fn a_structurally_invalid_witness_open_walks_the_roster_again() {
+        let memory = InvalidClosingHeaderMemory::new(|read| read == 3);
+        let mut cost = CoherenceCost::default();
+        let snapshot = memory
+            .read_one_country(&mut cost)
+            .unwrap_or_else(|error| panic!("a torn witness open must be retried: {error:?}"));
+        assert_eq!(snapshot.countries[0].groups.len(), 1);
+        assert_eq!(cost.extra_roster_walks, 1);
+        assert_eq!(cost.added_detector_tears, 1);
+        assert_eq!(cost.legacy_tears_restarted, 0);
+    }
+
+    /// A memory that serves one country's single group-slot pointer as
+    /// `u64::MAX` on a chosen read of that slot, counting from 1.
+    ///
+    /// Both the walk and the witness read that address, so the schedule for a
+    /// one-country roster is: pass 1, pass 2, then the witness.
+    struct OverflowingSlotMemory {
+        inner: SparseMemory,
+        slot_at: u64,
+        overflow_on: usize,
+        reads: std::cell::Cell<usize>,
+    }
+
+    impl ArmyUpgradeMemory for OverflowingSlotMemory {
+        fn read_exact(&self, address: u64, out: &mut [u8]) -> Result<(), ()> {
+            self.inner.read_exact(address, out)?;
+            if address == self.slot_at && out.len() == 8 {
+                let index = self.reads.get() + 1;
+                self.reads.set(index);
+                if index == self.overflow_on {
+                    out.copy_from_slice(&u64::MAX.to_le_bytes());
+                }
+            }
+            Ok(())
+        }
+    }
+
+    fn read_one_country_over<M: ArmyUpgradeMemory>(
+        memory: &M,
+        cost: &mut CoherenceCost,
+    ) -> Result<ArmyUpgradeSnapshot, CarrierError> {
+        read_snapshot_from_country_roots(
+            memory,
+            FIXTURE_BASE,
+            1,
+            &[CountryRoot {
+                tag_db_id: 1,
+                object_ptr: FIXTURE_COUNTRY,
+            }],
+            &StableRoots,
+            cost,
+        )
+    }
+
+    // kills: an ADDRESS that cannot be formed inside the witness refusing the
+    // hour on one look. `add(..)?` runs before any wrapper the call sits
+    // inside, so a pointer read as u64::MAX during the witness used to escape
+    // as a standing arithmetic overflow -- the same unit a genuinely
+    // impossible address gets -- instead of costing a roster walk.
+    #[test]
+    fn a_witness_only_pointer_overflow_walks_the_roster_again() {
+        let memory = OverflowingSlotMemory {
+            inner: single_group_memory(ARMY_ID_TYPE, 14_646),
+            slot_at: FIXTURE_GROUP_SLOTS,
+            overflow_on: 3,
+            reads: std::cell::Cell::new(0),
+        };
+        let mut cost = CoherenceCost::default();
+        let snapshot = read_one_country_over(&memory, &mut cost)
+            .unwrap_or_else(|error| panic!("a witness-only overflow must be retried: {error:?}"));
+        assert_eq!(snapshot.countries[0].groups.len(), 1);
+        assert_eq!(cost.extra_roster_walks, 1);
+        assert_eq!(cost.added_detector_tears, 1);
+        assert_eq!(cost.legacy_tears_restarted, 0);
+        // Two walks of two passes plus a witness each: 6.
+        assert_eq!(memory.reads.get(), 6);
+    }
+
+    // kills: an address the WALK cannot form being renamed as a tear. Nothing
+    // has validated this root, so no re-read is owed -- which is the boundary
+    // the witness's conversion must not widen into.
+    //
+    // The root itself overflows, rather than a slot pointer: a slot read as
+    // u64::MAX is declined by the widened copy and then refuses as a MEMORY
+    // read at that address, before any nonzero-offset add can overflow (Codex
+    // round 11, finding 2).
+    #[test]
+    fn a_walk_address_overflow_still_refuses_on_the_first_read() {
+        let memory = single_group_memory(ARMY_ID_TYPE, 14_646);
+        let mut cost = CoherenceCost::default();
+        let error = read_snapshot_from_country_roots(
+            &memory,
+            FIXTURE_BASE,
+            1,
+            &[CountryRoot {
+                tag_db_id: 1,
+                object_ptr: u64::MAX,
+            }],
+            &StableRoots,
+            &mut cost,
+        )
+        .err()
+        .expect("an unformable address must refuse");
+        assert!(
+            matches!(&error, CarrierError::CountryRead { source, .. }
+                if matches!(source.as_ref(), CarrierError::Invalid(reason)
+                    if reason == "AUR1 address overflow")),
+            "a walk-time overflow produced {error:?}"
+        );
+        assert_eq!(cost.legacy_tears_restarted, 0);
+        assert_eq!(cost.added_detector_tears, 0);
+    }
+
+    // kills: retrying an UNREADABLE root identity once a pass has completed.
+    // The post-admission conversion must not reach the two identity refusals
+    // no re-read can heal, or the bound is spent on a dead read.
+    #[test]
+    fn an_unreadable_identity_after_a_completed_pass_still_refuses_at_once() {
+        let memory = single_group_memory(ARMY_ID_TYPE, 14_646);
+        let identity = RecycledRoot {
+            holds_for: 1,
+            after: RootIdentity::Unreadable,
+            checks: std::cell::Cell::new(0),
+        };
+        let mut cost = CoherenceCost::default();
+        let error = read_snapshot_from_country_roots(
+            &memory,
+            FIXTURE_BASE,
+            1,
+            &[CountryRoot {
+                tag_db_id: 1,
+                object_ptr: FIXTURE_COUNTRY,
+            }],
+            &identity,
+            &mut cost,
+        )
+        .err()
+        .expect("an unreadable identity must refuse whenever it is raised");
+        assert!(
+            matches!(&error, CarrierError::CountryRead { source, .. }
+                if matches!(source.as_ref(), CarrierError::Invalid(reason)
+                    if reason == ROOT_IDENTITY_UNREADABLE)),
+            "an unreadable identity after a completed pass produced {error:?}"
+        );
+        assert_eq!(identity.checks.get(), 2);
+        assert_eq!(cost.legacy_tears_restarted, 0);
+    }
+
+    // kills: filing a RECYCLED root as a structural tear because its
+    // replacement's graph refused first. The identity answer outranks the
+    // graph refusal, so the frame names the object that is no longer this
+    // country rather than the vector that stopped making sense because of it.
+    #[test]
+    fn a_recycled_root_outranks_the_graph_refusal_it_caused() {
+        let memory = StatusBlockRegressionMemory {
+            inner: single_group_memory(ARMY_ID_TYPE, 14_646),
+            block_at: FIXTURE_STATUS,
+            invalid_on: 2,
+            reads: std::cell::Cell::new(0),
+        };
+        let identity = RecycledRoot {
+            holds_for: 1,
+            after: RootIdentity::Disproved,
+            checks: std::cell::Cell::new(0),
+        };
+        let mut cost = CoherenceCost::default();
+        let error = read_snapshot_from_country_roots(
+            &memory,
+            FIXTURE_BASE,
+            1,
+            &[CountryRoot {
+                tag_db_id: 1,
+                object_ptr: FIXTURE_COUNTRY,
+            }],
+            &identity,
+            &mut cost,
+        )
+        .err()
+        .expect("a recycled root must refuse");
+        assert!(
+            matches!(&error, CarrierError::CountryRead { source, .. }
+                if matches!(source.as_ref(), CarrierError::Invalid(reason)
+                    if reason == ROOT_IS_NOT_THIS_COUNTRY)),
+            "a recycled root behind a graph refusal produced {error:?}"
+        );
+        assert_eq!(cost.legacy_tears_restarted, 0);
+        assert_eq!(cost.added_detector_tears, 0);
+    }
+
+    // kills: a later pass refusing the hour on one look after an earlier pass
+    // read the same country whole. Read 1 admits it, read 2 sees a header the
+    // admission rules reject, and read 3 settles: that is a graph changing
+    // under the walk, not a malformed vector.
+    #[test]
+    fn a_structure_that_regresses_after_a_completed_pass_is_retried() {
+        let regressing = StatusBlockRegressionMemory {
+            inner: single_group_memory(ARMY_ID_TYPE, 14_646),
+            block_at: FIXTURE_STATUS,
+            invalid_on: 2,
+            reads: std::cell::Cell::new(0),
+        };
+        let mut cost = CoherenceCost::default();
+        let snapshot = read_snapshot_from_country_roots(
+            &regressing,
+            FIXTURE_BASE,
+            1,
+            &[CountryRoot {
+                tag_db_id: 1,
+                object_ptr: FIXTURE_COUNTRY,
+            }],
+            &StableRoots,
+            &mut cost,
+        )
+        .unwrap_or_else(|error| panic!("a regressed structure must be retried: {error:?}"));
+        assert_eq!(snapshot.countries[0].groups.len(), 1);
+        // Lane QZ's admission validator raised it and lane QZ refused the hour
+        // on it, so healing it is a conversion the capture gate counts.
+        assert_eq!(cost.legacy_tears_restarted, 1);
+        assert_eq!(cost.added_detector_tears, 0);
+    }
+
+    /// A memory that serves one country's STATUS BLOCK with a group count past
+    /// its capacity on a chosen read of that block, counting from 1. The block
+    /// is what each coherent pass admits its header from, so read n is pass n.
+    struct StatusBlockRegressionMemory {
+        inner: SparseMemory,
+        block_at: u64,
+        invalid_on: usize,
+        reads: std::cell::Cell<usize>,
+    }
+
+    impl ArmyUpgradeMemory for StatusBlockRegressionMemory {
+        fn read_exact(&self, address: u64, out: &mut [u8]) -> Result<(), ()> {
+            self.inner.read_exact(address, out)?;
+            if address == self.block_at && out.len() == STATUS_BLOCK_LEN {
+                let index = self.reads.get() + 1;
+                self.reads.set(index);
+                if index == self.invalid_on {
+                    let at = STATUS_GROUP_COUNT_OFF as usize;
+                    out[at..at + 4].copy_from_slice(&i32::MAX.to_le_bytes());
+                }
+            }
+            Ok(())
+        }
+    }
+
+    // kills: the tests above indexing onto reads other than the ones their
+    // comments name. It pins the closing-header schedule.
+    #[test]
+    fn the_closing_header_read_schedule_is_what_those_tests_assume() {
+        let memory = InvalidClosingHeaderMemory::new(|_| false);
+        memory
+            .read_one_country(&mut CoherenceCost::default())
+            .expect("a static graph must seal on the first walk");
+        assert_eq!(memory.reads.get(), 4);
+    }
+
+    // kills: charging a LEGACY tear to the added-detector counter, which would
+    // empty the one counter the capture gate in FINDING.md section 5a rests
+    // on. Read 2 is the first coherent pass's closing re-verification, which
+    // lane QZ already had and which refused the whole frame before lane UD.
+    #[test]
+    fn a_legacy_tear_that_settles_is_charged_to_the_legacy_counter() {
+        let memory =
+            PointerScheduleMemory::new(|read| (read == 2).then_some(OTHER_STATUS));
+        let mut cost = CoherenceCost::default();
+        memory
+            .read_one_country(&mut cost)
+            .unwrap_or_else(|error| panic!("a legacy tear must be retried: {error:?}"));
+        assert_eq!(cost.legacy_tears_restarted, 1);
+        assert_eq!(cost.added_detector_tears, 0);
+        assert_eq!(cost.extra_roster_walks, 0);
+    }
+
+    // kills: reporting a REPLACED status object as its group vector being
+    // rewritten. The two are different events and lane QZ's close used to
+    // raise one name for both, so the exhausted name a capture carries would
+    // have sent a reader to the wrong field (Codex round 5, finding 1).
+    #[test]
+    fn a_replaced_status_pointer_exhausts_under_the_pointer_name() {
+        // Every closing read of the pointer, which is every even read.
+        let memory =
+            PointerScheduleMemory::new(|read| (read % 2 == 0).then_some(OTHER_STATUS));
+        let mut cost = CoherenceCost::default();
+        let error = memory
+            .read_one_country(&mut cost)
+            .err()
+            .expect("a pointer that never settles must refuse");
+        assert!(
+            matches!(&error, CarrierError::CountryRead { source, .. }
+                if matches!(source.as_ref(), CarrierError::Invalid(reason)
+                    if reason == TORN_STATUS_POINTER_EXHAUSTED)),
+            "a replaced status pointer produced {error:?}"
+        );
+        // Lane QZ's close found it, so the capture gate's counter is the one
+        // that moves.
+        // Eight reads tore; seven of them were followed by another read, and
+        // the eighth exhausted.
+        assert_eq!(
+            cost.legacy_tears_restarted,
+            COHERENT_READ_MAX_PASSES as u64 - 1
+        );
+        assert_eq!(cost.added_detector_tears, 0);
+    }
+
+    // kills: charging lane UD's null close to the legacy counter, and naming a
+    // country that ACQUIRED a status object as one whose object was replaced.
+    #[test]
+    fn an_appearing_status_pointer_exhausts_under_its_own_name_and_counter() {
+        // The opening read of every pass sees no status object; the closing
+        // read sees the one the fixture really has.
+        let memory = PointerScheduleMemory::new(|read| (read % 2 == 1).then_some(0));
+        let mut cost = CoherenceCost::default();
+        let error = memory
+            .read_one_country(&mut cost)
+            .err()
+            .expect("a status object that keeps appearing must refuse");
+        assert!(
+            matches!(&error, CarrierError::CountryRead { source, .. }
+                if matches!(source.as_ref(), CarrierError::Invalid(reason)
+                    if reason == TORN_STATUS_POINTER_APPEARED_EXHAUSTED)),
+            "an appearing status pointer produced {error:?}"
+        );
+        assert_eq!(
+            cost.added_detector_tears,
+            COHERENT_READ_MAX_PASSES as u64 - 1
+        );
+        assert_eq!(cost.legacy_tears_restarted, 0);
+    }
+
+    // kills: the two tear tests above silently testing a read other than the
+    // one their comments name. It pins the schedule they index into.
+    #[test]
+    fn the_status_pointer_read_schedule_is_what_the_tear_tests_assume() {
+        let memory = PointerScheduleMemory::new(|_| None);
+        memory
+            .read_one_country(&mut CoherenceCost::default())
+            .expect("a static graph must seal on the first walk");
+        // Two coherent passes opening and closing on the pointer, then one
+        // witness doing the same: reads 1-4 are the walk, 5 and 6 the witness.
+        assert_eq!(memory.reads.get(), 6);
+    }
+
+    // kills: an identity proof taken once and trusted for the rest of the
+    // country's restarts -- the proof must hold on the read that is ACCEPTED,
+    // not merely on some earlier one.
+    #[test]
+    fn the_root_identity_must_hold_on_the_accepted_read() {
+        let memory = single_group_memory(ARMY_ID_TYPE, 14_646);
+        let identity = RecycledRoot {
+            holds_for: 1,
+            after: RootIdentity::Disproved,
+            checks: std::cell::Cell::new(0),
+        };
+        let error = read_snapshot_from_country_roots(
+            &memory,
+            FIXTURE_BASE,
+            1,
+            &[CountryRoot {
+                tag_db_id: 1,
+                object_ptr: FIXTURE_COUNTRY,
+            }],
+            &identity,
+            &mut CoherenceCost::default(),
+        )
+        .err()
+        .expect("one holding read cannot admit a country");
+        assert!(
+            matches!(&error, CarrierError::CountryRead { source, .. }
+                if matches!(source.as_ref(), CarrierError::Invalid(reason)
+                    if reason == ROOT_IS_NOT_THIS_COUNTRY)),
+            "one hold then a disproved root produced {error:?}"
+        );
+        assert_eq!(identity.checks.get(), 2);
     }
 
     // --- lane SF: the widened guarded copies -----------------------------
@@ -2236,6 +4248,8 @@ mod tests {
             fixture.module_base,
             5,
             &fixture.roots,
+        &StableRoots,
+        &mut CoherenceCost::default(),
         )
         .expect("the widened walk must read the fixture graph");
         let widened_reads = std::mem::take(&mut *fixture.memory.served.borrow_mut());
@@ -2246,6 +4260,8 @@ mod tests {
             fixture.module_base,
             5,
             &fixture.roots,
+        &StableRoots,
+        &mut CoherenceCost::default(),
         )
         .expect("the scalar walk must read the same fixture graph");
         let scalar_reads = std::mem::take(&mut *fixture.memory.served.borrow_mut());
@@ -2295,11 +4311,6 @@ mod tests {
                 VECTOR_HEADER_LEN,
                 "the produced vector-header re-read",
             ),
-            (
-                fixture.status + STATUS_GROUP_BEGIN_OFF,
-                VECTOR_HEADER_LEN,
-                "the group vector-header re-read",
-            ),
         ] {
             assert_eq!(
                 widened_reads
@@ -2310,6 +4321,19 @@ mod tests {
                 "{what} must be served as one widened copy per coherent-read pass"
             );
         }
+        // The group vector header is the one address BOTH the walk and the
+        // membership witness re-read: once per coherent pass at the close of
+        // the walk, and twice in the witness, which opens on it and closes by
+        // re-reading it. Two passes and one witness is four.
+        assert_eq!(
+            widened_reads
+                .iter()
+                .filter(|(at, served)| *at == fixture.status + STATUS_GROUP_BEGIN_OFF
+                    && *served == VECTOR_HEADER_LEN)
+                .count(),
+            2 + 2,
+            "the group vector header must be served once per pass and twice per witness"
+        );
 
         // The 200-row request array is longer than one window, so a working
         // window takes it as a full window plus a short tail at the address
@@ -2404,6 +4428,8 @@ mod tests {
             fixture.module_base,
             5,
             &fixture.roots,
+        &StableRoots,
+        &mut CoherenceCost::default(),
         )
         .expect_err("an unreadable CArmy pointer must refuse");
         assert!(
@@ -2425,6 +4451,8 @@ mod tests {
             fixture.module_base,
             5,
             &fixture.roots,
+        &StableRoots,
+        &mut CoherenceCost::default(),
         )
         .unwrap();
         let counts = observed_counts(&snapshot);
@@ -2508,6 +4536,8 @@ mod tests {
             fixture.module_base,
             5,
             &fixture.roots,
+        &StableRoots,
+        &mut CoherenceCost::default(),
         )
         .unwrap();
         let rich = receipt_frame(snapshot);
