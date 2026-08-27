@@ -1751,6 +1751,50 @@ fn every_stable_family_has_only_explicit_unresolved_metadata_and_blocker() {
     assert!(map_authority_requirement_metadata("recorder.selected_present").is_none());
 }
 
+/// An owner-proven row's blocker is only ever read on a frame the proven
+/// predicate refused, so "XMAPnn must prove ..." there names work that is done
+/// and says nothing about the hour.
+///
+/// kills: putting the four `units.*` rows back on the shared
+/// "XMAP13 must prove the exact all-country unit/hierarchy subset ..." text they
+/// carried until lane UA, which is what made `units.air_base_location` refuse 238
+/// of 238 hours of `captures/rc_vanilla7` without naming the cause.
+#[test]
+fn owner_proven_blockers_name_what_the_recording_lacks() {
+    for proven in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
+        let blocker = map_authority_requirement_metadata(proven.input_id)
+            .unwrap()
+            .blocker;
+        assert!(
+            !blocker.contains("must prove"),
+            "{} is owner-proven and its blocker names viewer work instead of the hour: {blocker}",
+            proven.input_id
+        );
+    }
+
+    // The air-base join's cause is the one this lane measured: the census D34
+    // takes is per-state, so a wing based outside it has no province on the wire.
+    let air_base = map_authority_requirement_metadata("units.air_base_location")
+        .unwrap()
+        .blocker;
+    assert!(air_base.contains("per-state air-base table"), "{air_base}");
+
+    // The two weather rows refuse for different reasons and must not share one
+    // string: the lifecycle carrier is a declared producer absence, not an
+    // unproven viewer contract alone.
+    let gameplay = map_authority_requirement_metadata("weather.region_gameplay")
+        .unwrap()
+        .blocker;
+    let lifecycle = map_authority_requirement_metadata("weather.visual_membership_lifecycle")
+        .unwrap()
+        .blocker;
+    assert_ne!(gameplay, lifecycle);
+    assert!(
+        lifecycle.contains("map._r2_weather_visual_lifecycle") && lifecycle.contains("domain-77"),
+        "{lifecycle}"
+    );
+}
+
 #[test]
 fn xmap00_can_only_return_a_complete_typed_gap_report() {
     let admission = admit_map_authority_projection(&unresolved_projection()).unwrap();
