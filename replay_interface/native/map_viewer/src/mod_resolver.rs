@@ -612,6 +612,48 @@ impl GameFileResolver {
             .ok_or_else(|| format!("missing {label}: {}", normalize_rel_path(rel_path)).into())
     }
 
+    /// Whether a729's PhysFS layer opens exactly these bytes, mount kind and all.
+    ///
+    /// `resolve` answers the case-insensitive question, because this namespace is
+    /// folded throughout. `crate::pdxmesh_mount_opens` carries the engine rule
+    /// that makes that answer conditional; the two facts it needs are here.
+    /// `source_relative_path` is `normalize_rel_path` of the layer's own
+    /// `real_rel`, which rewrites separators but does NOT fold case, so it is the
+    /// spelling the layer stores; `source.archive_sha256` is `Some` exactly for a
+    /// layer materialized out of a `.zip`.
+    ///
+    /// A layer that carries the file under another spelling makes this `false`
+    /// even though a729 would go on to search LOWER mounts, one of which may be a
+    /// directory that folds. Only this namespace's winning layer is visible here,
+    /// so that case is a miss rather than a guess — a729 binding where the replay
+    /// does not, never the reverse.
+    pub fn physfs_opens(&self, asked: &str) -> Result<bool> {
+        // `pdxmesh_physfs_requested_path` has already produced exactly the string
+        // a729 looks up. `resolve_with_provenance` would put it through
+        // `checked_rel_path` again, which TRIMS whitespace, strips surrounding
+        // quotes and refuses a `.`/`..` component — so `leaf.dds"` would resolve
+        // `leaf.dds`, a file a729 never asks for because it hands the quote
+        // straight to `GetFileAttributesExW`, and `gfx/models/.. ` would be
+        // refused after a trim the engine does not perform. Both are answers
+        // about a DIFFERENT string, so where this namespace will not carry these
+        // bytes unchanged the honest answer is a miss.
+        //
+        // Only that class is swallowed. This returns before the admission
+        // lookup, whose own refusal of an unrecorded path is a proof-contract
+        // failure and still propagates.
+        if checked_rel_path(asked).map(|kept| kept != asked).unwrap_or(true) {
+            return Ok(false);
+        }
+        let Some(resolved) = self.resolve_with_provenance(asked)? else {
+            return Ok(false);
+        };
+        Ok(crate::pdxmesh_mount_opens(
+            asked,
+            &resolved.source_relative_path,
+            resolved.source.archive_sha256.is_some(),
+        ))
+    }
+
     pub fn resolve_with_provenance(&self, rel_path: &str) -> Result<Option<ResolvedGameFile>> {
         Ok(self
             .resolve_with_provenance_bytes(rel_path)?
@@ -3291,18 +3333,6 @@ pub(crate) fn normalize_rel_path(value: &str) -> String {
         .join("/")
 }
 
-/// Whether the replay's content namespace can ask about this EXACT string.
-///
-/// Every lookup goes through `content_identity_key`, so a path that is not
-/// already its own key names a different file than the one asked about — the
-/// key rewrites `\` to `/`, lower-cases, trims, strips quotes, collapses empty
-/// components, and refuses `.`, `..`, a leading `/`, NUL and `:`. A caller that
-/// must preserve authored bytes asks this instead of enumerating those, so the
-/// two can never drift apart.
-pub fn content_path_is_canonical(value: &str) -> bool {
-    content_identity_key(value).map(|key| key == value).unwrap_or(false)
-}
-
 fn content_identity_key(rel: &str) -> Result<String> {
     Ok(checked_rel_path(rel)?.to_ascii_lowercase())
 }
@@ -3318,7 +3348,10 @@ fn checked_rel_path(value: &str) -> Result<String> {
         // Dropping `.` here silently was a divergence from the recorder side,
         // which refuses it, and the engine agrees with the recorder:
         // `sanitizePlatformIndependentPath` (`0x1424e3ff0`) fails a `.` or `..`
-        // component with `PHYSFS_ERR_BAD_FILENAME`. See
+        // component with `PHYSFS_ERR_BAD_FILENAME` — every component but the
+        // LAST, which its copy loop returns past before testing. This namespace
+        // is the stricter of the two by that one case; `crate::pdxmesh_asset_law`
+        // models the engine's exactly. See
         // `portable_content_manifest::sanitize_engine_path`.
         if part.is_empty() {
             continue;
@@ -5498,6 +5531,42 @@ mod tests {
                 "{unsafe_path:?}"
             );
         }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Kills BOTH ways this namespace can answer for a string a729 never asked
+    /// about.
+    ///
+    /// `pdxmesh_physfs_requested_path` hands one through while `checked_rel_path`
+    /// refuses every dot component — a hard error where a729 simply gets an
+    /// answer, so it has to be a miss. And `checked_rel_path` REWRITES two
+    /// shapes rather than refusing them: it trims whitespace and strips
+    /// surrounding quotes, so `safe.gui"` would resolve the real `safe.gui` and
+    /// claim a729 opens a name it hands to the filesystem quote and all. Only a
+    /// string this namespace carries unchanged may be answered for.
+    #[test]
+    fn physfs_opens_is_a_miss_where_this_namespace_will_not_carry_the_bytes() {
+        let root = temp_test_dir("resolver_physfs_opens_byte_preserving");
+        let game = root.join("game");
+        write_text(&game, "interface/safe.gui", "safe");
+        let resolver = GameFileResolver::vanilla(game).unwrap();
+
+        // The engine's sanitizer accepts all three; this namespace rewrites or
+        // refuses each, so each is a miss rather than an error or a false hit.
+        for outran in ["interface/..", "interface/safe.gui\"", "interface/safe.gui "] {
+            assert_eq!(
+                crate::pdxmesh_physfs_requested_path(outran).as_deref(),
+                Some(outran),
+                "{outran:?}"
+            );
+            assert!(!resolver.physfs_opens(outran).unwrap(), "{outran:?}");
+        }
+        // Without the guard the quoted spelling resolves the real file, which is
+        // exactly the false hit above.
+        assert!(resolver.resolve("interface/safe.gui\"").unwrap().is_some());
+        assert!(resolver.resolve("interface/..").is_err());
+        // The ordinary case is untouched: a real file still opens.
+        assert!(resolver.physfs_opens("interface/safe.gui").unwrap());
         let _ = fs::remove_dir_all(&root);
     }
 

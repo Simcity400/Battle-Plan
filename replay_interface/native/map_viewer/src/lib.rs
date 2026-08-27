@@ -453,7 +453,7 @@ pub use mapmode_infrastructure::{
     VANILLA_INFRA_GRADIENT_COLORS, VANILLA_INFRA_STATE_MAX,
 };
 pub use mod_resolver::{
-    content_path_is_canonical, semantic_descriptor_sha256, sensitive_file_overrides,
+    semantic_descriptor_sha256, sensitive_file_overrides,
     stable_dlc_product_id,
     ContentAdmissionLease, GameContentSource, GameFileResolver, GameFileResolverOptions,
     GameFileResolverStats, PlaybackEnvironment, RecordedContentSource, RequiredGameContent,
@@ -499,7 +499,9 @@ pub use pdx_mesh::{
 };
 pub use pdxmesh_asset_law::{
     mesh_relative_texture_path, pdxmesh_effective_material_slots, pdxmesh_material_override_row,
-    pdxmesh_opened_texture_path, pdxmesh_path_is_askable, pdxmesh_texture_index_from_resolver,
+    pdxmesh_mount_opens, pdxmesh_opened_texture_path, pdxmesh_physfs_opens,
+    pdxmesh_physfs_requested_path,
+    pdxmesh_texture_index_from_resolver,
     tga_rewritten_to_dds,
     PdxmeshTextureIndex, PdxmeshTexturePath, PdxmeshVertexStreams, PDXMESH_MATERIAL_SLOTS,
     PDXMESH_STREAM_FLOATS, PDXMESH_TEXTURE_INDEX_EXTENSIONS, PDXMESH_TEXTURE_INDEX_ROOT,
