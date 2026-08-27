@@ -60,12 +60,15 @@ $ReviewExitCode = $LASTEXITCODE
   defect class, an out-of-scope list, raw evidence paths, and "this job is
   read-only — do not modify files". Feed it via stdin with a trailing `-`.
   Forbid it from consulting any machine-wide memory store.
-- Any long call (battery, Codex, capture) runs as ONE tracked background task,
-  and you STAY ACTIVE and wait for it with the Monitor tool (block on its
-  output file / exit condition; if the wait times out, Monitor again). Never
-  sleep-poll in a shell loop, never detach with `&`, and never end your turn
-  while your work is unfinished — you end your turn exactly once, with the
-  final report.
+- Any long call (battery, Codex, capture) runs as ONE tracked background task
+  (the Bash tool's background mode — NOT `&`, NOT Monitor; detached watchers
+  die when your turn ends). For a Codex call: launch it tracked, stay in-turn
+  only long enough to read the event stream's first line and commit the
+  thread id, then end your turn with the single line "WIP: waiting on <task>".
+  The task finishing wakes you instantly — zero polling, zero latency. Never
+  sleep-poll in a shell loop; a bounded long-interval wait loop is the
+  fallback ONLY for a job the harness cannot track. The final report is still
+  written exactly once, after everything is finished.
 - Review loop: run the review, fix the findings, re-review. Keep looping until
   Codex approves clean - no round limit. Any commit after an APPROVE needs one
   more confirmation round.
