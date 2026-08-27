@@ -713,7 +713,8 @@ pub use production_features::xmap04::{
     XMAP04_REPLAY_FRAME_IDENTITY_DOMAIN,
 };
 pub use production_features::xmap05::{
-    xmap05_admission_verdict, PreparedPoliticalFrame, PreparedXmap05Visibility,
+    mapc1_control_authority_envelope, xmap05_admission_verdict, PreparedPoliticalFrame,
+    PreparedXmap05Visibility,
     Xmap05AdmissionVerdict, Xmap05AuthenticatedMapClock,
     Xmap05GeneratedTexture, Xmap05SceneCb0Patch, Xmap05TextureDescriptor, Xmap05VisibilityReason,
     Xmap05VisibleEntity, GRADIENT_BORDER_CHANNEL3_DXGI_FORMAT, GRADIENT_BORDER_CHANNEL_DXGI_FORMAT,

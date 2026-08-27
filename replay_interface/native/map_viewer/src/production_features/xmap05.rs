@@ -1112,6 +1112,27 @@ pub(crate) fn admitted_epoch_keying(
     frame: &WorldFrame,
 ) -> Result<(KeyingTables, BTreeMap<u32, String>, PresentationCensus)> {
     validate_mapc1_authority(frame)?;
+    let tables = xmap05_certified_tables(frame)?;
+    validate_mapc1_payload(frame, &tables)?;
+    Ok((
+        KeyingTables::from_world_frame(frame),
+        tables.province_controllers,
+        tables.presentation,
+    ))
+}
+
+/// The frame's own control/roster/presentation census, derived before the MAPC1
+/// envelope is consulted at all.
+pub(crate) struct Xmap05CertifiedTables {
+    owners: BTreeMap<u32, String>,
+    controllers: BTreeMap<u32, String>,
+    province_controllers: BTreeMap<u32, String>,
+    roster: Vec<replay_core::D18CountryRosterEntry>,
+    roster_excluded: Vec<String>,
+    presentation: PresentationCensus,
+}
+
+fn xmap05_certified_tables(frame: &WorldFrame) -> Result<Xmap05CertifiedTables> {
     for (label, status) in [
         ("owner_by_state", frame.owner_by_state_status()),
         ("control_by_state", frame.control_by_state_status()),
@@ -1199,20 +1220,135 @@ pub(crate) fn admitted_epoch_keying(
         );
     }
     let province_controllers = measured_tags("control_by_province", frame.control_by_province())?;
-    validate_mapc1_payload(
-        frame,
-        &owners,
-        &controllers,
-        &province_controllers,
-        &roster_entries,
-        &roster_excluded,
-        &presentation,
-    )?;
-    Ok((
-        KeyingTables::from_world_frame(frame),
+    // Every control TAG must be a RESOLVED roster country. This is what makes
+    // roster exclusion safe at country grain: a country the recording could not
+    // name owns and controls nothing, so a control row naming it refuses the
+    // frame instead of drawing an unnameable country.
+    //
+    // It lives HERE, in the frame-pure certifier, and not only in
+    // `political_color_synthesis::validate_xmap05_state_authority`: that one runs
+    // in the render path, long after the four XMAP00 ledger rows have reported
+    // Present, so without this a frame could be certified for a TAG the roster
+    // does not carry (Codex round 1).
+    let resolved = roster_entries
+        .iter()
+        .map(|entry| entry.tag.as_str())
+        .collect::<BTreeSet<_>>();
+    for (label, rows) in [
+        ("owner_by_state", &owners),
+        ("control_by_state", &controllers),
+        ("control_by_province", &province_controllers),
+    ] {
+        for (&id, tag) in rows {
+            if !resolved.contains(tag.as_str()) {
+                return Err(format!(
+                    "XMAP05 {label} row {id} names {tag}, which is not a resolved D18 roster \
+                     country this hour"
+                )
+                .into());
+            }
+        }
+    }
+    Ok(Xmap05CertifiedTables {
+        owners,
+        controllers,
         province_controllers,
+        roster: roster_entries,
+        roster_excluded,
         presentation,
-    ))
+    })
+}
+
+/// Mint the MAPC1 v3 control-authority envelope this frame's own census implies.
+///
+/// The recorder is the production producer
+/// (`recorder_host/.../xmap05_control_authority.rs`); this is the same derivation
+/// over a `WorldFrame`, so a test frame can carry a digest-correct envelope
+/// without any digest being typed by hand.
+/// `mapc1_minted_envelope_is_the_producer_contract_fixtures_own_authority` pins it
+/// to the producer contract fixture.
+pub fn mapc1_control_authority_envelope(
+    frame: &WorldFrame,
+    capture_sequence: u64,
+) -> std::result::Result<serde_json::Value, String> {
+    let tables = xmap05_certified_tables(frame).map_err(|error| error.to_string())?;
+    Ok(serde_json::Value::Object(mapc1_envelope_from_tables(
+        frame.hour_index(),
+        capture_sequence,
+        &tables,
+    )))
+}
+
+fn mapc1_envelope_from_tables(
+    frame_hour: i64,
+    capture_sequence: u64,
+    tables: &Xmap05CertifiedTables,
+) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::json;
+    let mut envelope = serde_json::Map::new();
+    for (key, value) in [
+        ("schema", json!("MAPC1")),
+        ("schema_version", json!(3)),
+        (
+            "producer",
+            json!("presentation-independent owner/controller epoch"),
+        ),
+        ("executable_sha256", json!(MAPC1_EXECUTABLE_SHA256)),
+        ("ghidra_manifest_sha256", json!(MAPC1_GHIDRA_MANIFEST_SHA256)),
+        ("province_controller_field_offset", json!("0x188")),
+        ("country_remap_rva", json!("0x00ba6240")),
+        ("state_identity_order", json!("state_id_ascending")),
+        ("province_identity_order", json!("province_id_ascending")),
+        ("presentation_independent", json!(true)),
+        ("state_owner_complete", json!(true)),
+        ("state_controller_complete", json!(true)),
+        ("province_controller_complete", json!(true)),
+        ("frame_hour", json!(frame_hour)),
+        ("capture_sequence", json!(capture_sequence)),
+        ("state_count", json!(tables.owners.len())),
+        ("province_count", json!(tables.province_controllers.len())),
+        (
+            "country_count",
+            json!(tables.roster.len() + tables.roster_excluded.len()),
+        ),
+        (
+            "state_owner_sha256",
+            json!(mapc1_tag_table_digest("state_owner", &tables.owners)),
+        ),
+        (
+            "state_controller_sha256",
+            json!(mapc1_tag_table_digest(
+                "state_controller",
+                &tables.controllers
+            )),
+        ),
+        (
+            "province_controller_sha256",
+            json!(mapc1_tag_table_digest(
+                "province_controller",
+                &tables.province_controllers
+            )),
+        ),
+        (
+            "country_roster_sha256",
+            json!(mapc1_roster_digest(
+                &tables.roster,
+                &tables.roster_excluded
+            )),
+        ),
+        (
+            "presentation_identity_sha256",
+            json!(mapc1_presentation_digest(&tables.presentation)),
+        ),
+        (
+            "presentation_identity_excluded",
+            json!(tables.presentation.excluded),
+        ),
+        ("roster_identity_excluded", json!(tables.roster_excluded)),
+    ] {
+        envelope.insert(key.to_string(), value);
+    }
+    envelope
 }
 
 /// One accounted row per country whose presentation identity this hour did not
@@ -1384,24 +1520,16 @@ fn validate_mapc1_authority_object(
     Ok(())
 }
 
-fn validate_mapc1_payload(
-    frame: &WorldFrame,
-    owners: &BTreeMap<u32, String>,
-    controllers: &BTreeMap<u32, String>,
-    province_controllers: &BTreeMap<u32, String>,
-    roster: &[replay_core::D18CountryRosterEntry],
-    roster_excluded: &[String],
-    census: &PresentationCensus,
-) -> Result<()> {
+fn validate_mapc1_payload(frame: &WorldFrame, tables: &Xmap05CertifiedTables) -> Result<()> {
     let authority = mapc1_authority(frame)?;
     validate_mapc1_payload_tables(
         authority,
-        owners,
-        controllers,
-        province_controllers,
-        roster,
-        roster_excluded,
-        census,
+        &tables.owners,
+        &tables.controllers,
+        &tables.province_controllers,
+        &tables.roster,
+        &tables.roster_excluded,
+        &tables.presentation,
     )
 }
 
@@ -4602,6 +4730,50 @@ mod tests {
             mapc1_presentation_census_from(&self.roster, |tag| self.cosmetic.get(tag))
         }
 
+        /// The producer fixture as a recorded frame's `rest` object, spelled the
+        /// way the fold writes it: the three tag tables as `map.*` mirrors, the
+        /// roster as `countries.<TAG>._r2_tag_db_id`, an unnameable country as a
+        /// `countries` entry WITHOUT that key, and the cosmetic identity at the
+        /// ROOT field `countries.<TAG>.cosmetic_tag` (`world_fold.rs`, "Cosmetic
+        /// tag (D18)"), absent spelled by writing no key at all.
+        ///
+        /// The root field and not `extra.cosmetic_tag`: `build_country_identities`
+        /// takes the first of `extra.cosmetic_tag`, `misc.cosmetic_tag`,
+        /// `cosmetic_tag`, so a fixture on an alias would leave the branch the
+        /// recorder actually feeds untested (Codex round 2).
+        fn snapshot(&self) -> serde_json::Value {
+            let mut countries = serde_json::Map::new();
+            for row in &self.roster {
+                let mut country = serde_json::json!({"_r2_tag_db_id": row.tag_db_id});
+                // `Mapc1Fixture::parse` only ever produces `Measured` or
+                // `Absent` here, and absent is spelled by writing no key.
+                if let Some(Leaf::Measured(cosmetic)) = self.cosmetic.get(&row.tag) {
+                    country["cosmetic_tag"] = serde_json::json!(cosmetic);
+                }
+                countries.insert(row.tag.clone(), country);
+            }
+            for key in &self.roster_excluded {
+                countries.insert(key.clone(), serde_json::json!({}));
+            }
+            let table = |rows: &BTreeMap<u32, String>| {
+                rows.iter()
+                    .map(|(id, tag)| (id.to_string(), serde_json::json!(tag)))
+                    .collect::<serde_json::Map<_, _>>()
+            };
+            serde_json::json!({
+                "countries": countries,
+                "map": {
+                    "owner_by_state": table(&self.owners),
+                    "control_by_state": table(&self.controllers),
+                    "control_by_province": table(&self.province_controllers),
+                }
+            })
+        }
+
+        fn frame(&self) -> std::sync::Arc<WorldFrame> {
+            world_frame_at(self.snapshot(), self.frame_hour())
+        }
+
         fn admit(&self) -> Result<()> {
             validate_mapc1_authority_object(&self.authority, self.frame_hour())?;
             validate_mapc1_payload_tables(
@@ -4613,6 +4785,164 @@ mod tests {
                 &self.roster_excluded,
                 &self.presentation_census()?,
             )
+        }
+    }
+
+    struct FixtureSource {
+        hours: Vec<i64>,
+        rest: serde_json::Map<String, serde_json::Value>,
+    }
+
+    impl replay_core::ReplaySource for FixtureSource {
+        fn game_id(&self) -> &str {
+            "xmap05-mapc1-contract"
+        }
+        fn hours(&self) -> &[i64] {
+            &self.hours
+        }
+        fn warnings(&self) -> &[String] {
+            &[]
+        }
+        fn frame(
+            &self,
+            hour_index: i64,
+        ) -> std::result::Result<replay_core::RawFrame, replay_core::SourceError> {
+            Ok(replay_core::RawFrame {
+                hour_index,
+                date: None,
+                save_version: None,
+                schema_version: None,
+                rest: self.rest.clone(),
+            })
+        }
+    }
+
+    fn world_frame_at(rest: serde_json::Value, hour_index: i64) -> std::sync::Arc<WorldFrame> {
+        let timeline = replay_core::WorldTimeline::open(Box::new(FixtureSource {
+            hours: vec![hour_index],
+            rest: rest.as_object().expect("snapshot object").clone(),
+        }))
+        .expect("timeline");
+        timeline.frame(hour_index).expect("frame")
+    }
+
+    /// kills: a fixture route that derives its digests from anything other than
+    /// the preimages the recorder writes, and any drift in the frame-side
+    /// derivation those preimages are taken over.
+    ///
+    /// The whole public route runs here — `Mapc1Fixture::snapshot` is opened as
+    /// an envelope-less recorded frame and `mapc1_control_authority_envelope`
+    /// reads its tables back out — so a swap or mis-read anywhere in
+    /// `xmap05_certified_tables` moves a digest and fails this, which is the
+    /// hole the first version of this test had (Codex round 1: it fed
+    /// hand-assembled tables straight to `mapc1_envelope_from_tables`).
+    ///
+    /// Every minted field must equal the producer contract fixture's own, on the
+    /// two shapes the recorder emits - the clean hour and the
+    /// presentation-excluded hour. `provinces_outside_state` is the one producer
+    /// field with no minted counterpart: the consumer never reads it, and a
+    /// frame does not carry state/province membership to recompute it from.
+    ///
+    /// `MAPC1_ROSTER_EXCLUDED_FIXTURE_V3` is deliberately NOT here. Lane TL made
+    /// that shape unreachable from the current recorder by withholding an
+    /// unnameable country key from `countries` upstream, and
+    /// `world_fold/tests.rs::mapc1_never_sees_an_unresolved_country_key_because_the_fold_withheld_it`
+    /// records that as a finding and assigns the retire-or-keep decision to lane
+    /// PQ. A test that says "this is what the producer mints" must not name a
+    /// shape the producer cannot mint (Codex round 3). The consumer's own
+    /// acceptance of it stays covered by
+    /// `mapc1_admits_an_hour_whose_roster_could_not_name_one_country`, which is
+    /// untouched and is lane PQ's to adjudicate.
+    #[test]
+    fn mapc1_minted_envelope_is_the_producer_contract_fixtures_own_authority() {
+        for fixture in [Mapc1Fixture::load(), Mapc1Fixture::load_excluded()] {
+            let capture_sequence = fixture.authority["capture_sequence"]
+                .as_u64()
+                .expect("capture sequence");
+            // The fixture frame must reach the presentation census through the
+            // producer's own root field, with no alias shadowing it.
+            for country in fixture.snapshot()["countries"].as_object().unwrap().values() {
+                for alias in ["extra", "misc"] {
+                    assert!(country.get(alias).is_none(), "{alias} cosmetic alias");
+                }
+            }
+            let frame = fixture.frame();
+            let minted = mapc1_control_authority_envelope(&frame, capture_sequence)
+                .expect("the fixture frame carries a complete XMAP05 census");
+            let minted = minted.as_object().expect("envelope object");
+            for (key, value) in minted {
+                assert_eq!(Some(value), fixture.authority.get(key), "{key}");
+            }
+            let unminted = fixture
+                .authority
+                .keys()
+                .filter(|key| !minted.contains_key(*key))
+                .cloned()
+                .collect::<Vec<_>>();
+            assert_eq!(unminted, vec!["provinces_outside_state".to_string()]);
+
+            // ... and the frame the envelope was minted from admits under it,
+            // which is the property the four XMAP00 ledger rows rest on.
+            let mut carrying = fixture.snapshot();
+            carrying["map"]["_r2_xmap05_control_authority"] =
+                serde_json::Value::Object(minted.clone());
+            admitted_epoch_keying(&world_frame_at(carrying, fixture.frame_hour()))
+                .expect("the minted envelope admits the frame it was minted from");
+        }
+    }
+
+    /// kills: a derivation that reads the state-owner table where the
+    /// state-controller table belongs, or vice versa. The producer fixture's two
+    /// tables differ on state 11 (owner FRA, controller GER), so exchanging them
+    /// must move both digests off the producer's.
+    #[test]
+    fn mapc1_minting_is_sensitive_to_which_control_table_it_read() {
+        let fixture = Mapc1Fixture::load();
+        let mut swapped = fixture.snapshot();
+        let owners = swapped["map"]["owner_by_state"].clone();
+        swapped["map"]["owner_by_state"] = swapped["map"]["control_by_state"].clone();
+        swapped["map"]["control_by_state"] = owners;
+        let minted = mapc1_control_authority_envelope(
+            &world_frame_at(swapped, fixture.frame_hour()),
+            fixture.authority["capture_sequence"].as_u64().unwrap(),
+        )
+        .expect("the swapped frame still carries a complete census");
+        for key in ["state_owner_sha256", "state_controller_sha256"] {
+            assert_ne!(minted[key], fixture.authority[key], "{key}");
+        }
+    }
+
+    /// kills: certifying a frame whose control tables name a country the D18
+    /// roster could not resolve. `validate_xmap05_state_authority` catches it in
+    /// the RENDER path, which is after the four XMAP00 rows have already reported
+    /// Present, so the frame-pure certifier has to catch it too (Codex round 1).
+    #[test]
+    fn mapc1_refuses_a_control_row_naming_a_country_outside_the_resolved_roster() {
+        let fixture = Mapc1Fixture::load();
+        for table in ["owner_by_state", "control_by_state", "control_by_province"] {
+            let mut outside = fixture.snapshot();
+            let key = outside["map"][table]
+                .as_object()
+                .unwrap()
+                .keys()
+                .next()
+                .unwrap()
+                .clone();
+            outside["map"][table][&key] = serde_json::json!("ZZZ");
+            let frame = world_frame_at(outside.clone(), fixture.frame_hour());
+            let error = mapc1_control_authority_envelope(&frame, 1)
+                .expect_err("an unresolvable control TAG cannot be minted for");
+            assert!(
+                error.contains("ZZZ") && error.contains("resolved D18 roster"),
+                "{error}"
+            );
+
+            // ... and it is not certifiable even under the producer's own
+            // envelope, which is the frame the four ledger rows would admit.
+            outside["map"]["_r2_xmap05_control_authority"] =
+                serde_json::Value::Object(fixture.authority.clone());
+            admitted_epoch_keying(&world_frame_at(outside, fixture.frame_hour()))
+                .expect_err("an unresolvable control TAG refuses the frame");
         }
     }
 

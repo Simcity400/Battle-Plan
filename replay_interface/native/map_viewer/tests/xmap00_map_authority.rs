@@ -1170,8 +1170,68 @@ fn rail_topology_carrier() -> Value {
     })
 }
 
+/// The XMAP05 control-authority census, under a MAPC1 v3 envelope MINTED from
+/// this frame's own tables by `mapc1_control_authority_envelope` -- the
+/// derivation the recorder runs -- so none of MAPC1's five digests, and no
+/// count, is typed here.
+///
+/// The roster is `measured_countries()`'s, because the merged snapshot's D18
+/// roster is what the envelope's `country_roster_sha256` binds: a country only
+/// this fixture carried would digest differently standalone and merged.
+///
+/// The cosmetic identity sits at the ROOT `countries.<TAG>.cosmetic_tag`, which
+/// is where `world_fold.rs` writes it, and not at the `extra.cosmetic_tag` alias
+/// `build_country_identities` prefers -- an alias fixture would leave the branch
+/// the recorder feeds untested (Codex round 2).
+fn xmap05_control_authority_fixture() -> Value {
+    let mut rest = json!({
+        "countries": {
+            "ENG": {"_r2_tag_db_id": 2, "cosmetic_tag": Value::Null},
+            "GER": {"_r2_tag_db_id": 1, "cosmetic_tag": "GER_REICH"}
+        },
+        "map": {
+            "owner_by_state": {"5": "GER", "6": "ENG"},
+            "control_by_state": {"5": "GER", "6": "GER"},
+            "control_by_province": {"100": "GER", "101": "GER", "102": "ENG"}
+        }
+    });
+    let envelope = map_viewer::mapc1_control_authority_envelope(&world_frame_with(rest.clone()), 1)
+        .expect("the fixture frame carries a complete XMAP05 control census");
+    rest["map"]["_r2_xmap05_control_authority"] = envelope;
+    rest
+}
+
 fn owner_proven_fixture_table() -> BTreeMap<&'static str, NamedSnapshotFixture> {
+    let xmap05_control_authority = xmap05_control_authority_fixture();
     BTreeMap::from([
+        (
+            "control.owner_by_state",
+            NamedSnapshotFixture {
+                name: "MAPC1 v3 certified state-owner census",
+                rest: xmap05_control_authority.clone(),
+            },
+        ),
+        (
+            "control.controller_by_state",
+            NamedSnapshotFixture {
+                name: "MAPC1 v3 certified state-controller census over the same state set",
+                rest: xmap05_control_authority.clone(),
+            },
+        ),
+        (
+            "control.controller_by_province",
+            NamedSnapshotFixture {
+                name: "MAPC1 v3 certified province-controller census",
+                rest: xmap05_control_authority.clone(),
+            },
+        ),
+        (
+            "country.presentation_identity",
+            NamedSnapshotFixture {
+                name: "MAPC1 v3 certified presentation-identity split, no country excluded",
+                rest: xmap05_control_authority,
+            },
+        ),
         (
             "combat.land_active_epoch",
             NamedSnapshotFixture {
@@ -1469,6 +1529,28 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
             object.remove("diplomacy_world");
             false
         }
+        // Each XMAP05 break is one unread row inside one of the four censuses
+        // the MAPC1 envelope certifies, so every root accessor stays Present and
+        // it is the certifier that refuses. The three tag tables spell an unread
+        // row `null` (`tag_map_from_object`); the presentation split's unread
+        // spelling is a MISSING key, so its malformed case -- a blank measured
+        // override -- is what breaks it here without also moving the roster.
+        "control.owner_by_state" => {
+            object["map"]["owner_by_state"]["5"] = Value::Null;
+            true
+        }
+        "control.controller_by_state" => {
+            object["map"]["control_by_state"]["5"] = Value::Null;
+            true
+        }
+        "control.controller_by_province" => {
+            object["map"]["control_by_province"]["100"] = Value::Null;
+            true
+        }
+        "country.presentation_identity" => {
+            object["countries"]["GER"]["cosmetic_tag"] = json!("");
+            true
+        }
         "mapmode.occupation_resistance_compliance" => {
             object
                 .get_mut("_r2_occupation_census_live")
@@ -1697,8 +1779,12 @@ fn ledger_accessor_status(frame: &WorldFrame, input_id: &str) -> ViewStatus {
         "combat.land_active_epoch" => frame.combats_status(),
         "combat.land_terminal_detail" => frame.ended_combats_status(),
         "combat.naval_air_epoch" => frame.naval_air_combat_status(),
+        "control.owner_by_state" => frame.owner_by_state_status(),
+        "control.controller_by_state" => frame.control_by_state_status(),
+        "control.controller_by_province" => frame.control_by_province_status(),
         "country.current_capital_state" => frame.countries_status(),
         "country.d18_complete_roster" => frame.d18_country_roster().complete_status(),
+        "country.presentation_identity" => frame.country_identities_status(),
         "diplomacy.faction_roster" => match frame.diplomacy().faction_roster_status() {
             replay_core::world::FactionRosterStatus::Unavailable => ViewStatus::DomainUnavailable,
             replay_core::world::FactionRosterStatus::MeasuredEmpty
@@ -2121,6 +2207,10 @@ fn owner_proven_inputs_refuse_with_their_named_blocker_when_unmeasured() {
             "countries": Value::Null,
             "diplomacy_live": Value::Null,
             "states": Value::Null,
+            // The province domain, spelled unread the way `states` is. Omitting
+            // it left `control.controller_by_province` DomainAbsent on a frame
+            // every other row reads as unobtained.
+            "provinces": Value::Null,
             "divisions": Value::Null,
             "order_of_battle": Value::Null,
             "map_furniture": Value::Null,
@@ -2202,7 +2292,7 @@ fn owner_proven_inputs_refuse_with_their_named_blocker_when_unmeasured() {
 
 #[test]
 fn an_input_without_owner_proven_evidence_can_never_be_admitted() {
-    let unproven = "control.controller_by_province";
+    let unproven = "fog.province_visibility_by_pov";
     assert!(map_authority_owner_proven_admission(unproven).is_none());
     let mut forged = unresolved_projection();
     let index = forged
@@ -2211,7 +2301,7 @@ fn an_input_without_owner_proven_evidence_can_never_be_admitted() {
         .position(|row| row.input_id == unproven)
         .unwrap();
     forged.requirements[index].disposition = MapAuthorityRequirementDisposition::Admitted;
-    forged.requirements[index].payload_schema = Some("WorldFrame.map.control_by_province".into());
+    forged.requirements[index].payload_schema = Some("WorldFrame.visibility_by_pov".into());
     forged.requirements[index].cadence =
         Some("one decoded view per canonical recorded hour".into());
     forged.requirements[index].identity_order = Some("province id ascending".into());
@@ -3055,7 +3145,7 @@ fn a_proven_input_refuses_when_its_own_payload_is_unmeasured() {
             .is_admitted(proven.input_id));
     }
     assert_eq!(
-        composites_covered, 10,
+        composites_covered, 14,
         "the composite-accessor cases are the ones this test exists for"
     );
 }
@@ -3080,11 +3170,24 @@ fn unmeasuring_one_proven_input_leaves_its_siblings_admitted() {
             // unresolved numeric id renders as a 3-char decimal string, so
             // shape alone cannot authenticate a tag). The theatre hierarchy's
             // all-country census must EQUAL that same complete roster.
+            // XMAP05's four rows are ONE MAPC1 v3 certificate over four
+            // censuses: the envelope's five digests are re-derived together, so
+            // an unread row in any of them refuses all four. The D18 roster is
+            // inside that certificate too (`country_roster_sha256`), so
+            // withdrawing a country's identity refuses the family the same way.
+            let xmap05_control_authority = [
+                "control.controller_by_province",
+                "control.controller_by_state",
+                "control.owner_by_state",
+                "country.presentation_identity",
+            ];
             let consumes_unmeasured_input = matches!(
                 (proven.input_id, other.input_id),
                 ("country.d18_complete_roster", "mapmode.raids")
                     | ("country.d18_complete_roster", "orders.theatre_army_hierarchy")
-            );
+            ) || (xmap05_control_authority.contains(&other.input_id)
+                && (xmap05_control_authority.contains(&proven.input_id)
+                    || proven.input_id == "country.d18_complete_roster"));
             if consumes_unmeasured_input {
                 assert_eq!(
                     requirement(&projection, other.input_id).disposition,
@@ -3402,7 +3505,13 @@ fn lane_hw_rows_with_an_open_producer_defect_stay_unproven() {
         "fog.province_visibility_by_pov",
         "fog.spotted_land_by_pov",
         "fog.spotted_taskforces_by_pov",
-        "country.presentation_identity",
+        // `country.presentation_identity` LEFT this list on 2026-08-27 (lane
+        // UH), with the three `control.*` rows that share its certificate: lane
+        // GP-U15's MAPC1 v3 envelope is the producer HW's blocker asked for, and
+        // `xmap05::admitted_epoch_keying` re-derives its five digests from the
+        // frame. 237 of the 238 hours of captures/rc_vanilla7 admit; the 238th
+        // is the teardown hour, which carries no envelope
+        // (extractor/native/runs/uh_xmap05_admission/RESULTS.md).
         "logistics.rail_hub_frames",
         // `logistics.rail_topology_state` LEFT this list on 2026-08-27 (lane
         // TW). Lane TM rebuilt the D81 replay contract onto the carrier the

@@ -115,8 +115,24 @@ fn run() -> Result<(), String> {
                 render_list(&admission.missing_required_static_artifacts)
             );
             println!(
+                "  attach-time proof refusals: {}",
+                render_list(
+                    &admission
+                        .attach_time_refusals
+                        .iter()
+                        .map(|row| format!("{} ({})", row.role, row.rendered()))
+                        .collect::<Vec<_>>()
+                )
+            );
+            println!(
                 "  static artifacts carried but refused (no content epoch): {}",
-                render_list(&admission.static_artifacts_not_content_bound)
+                render_list(
+                    &admission
+                        .static_artifacts_not_content_bound
+                        .iter()
+                        .map(|row| format!("{} ({})", row.role, row.rendered()))
+                        .collect::<Vec<_>>()
+                )
             );
         }
     }

@@ -1690,7 +1690,14 @@ mod tests {
             ],
             profile_domains_not_scheduled: vec!["decision_panel_live".into()],
             missing_required_static_artifacts: vec!["focus_defs_static".into()],
-            static_artifacts_not_content_bound: vec!["localisation_join".into()],
+            static_artifacts_not_content_bound: vec![
+                replay_core::StaticArtifactNotContentBound {
+                    role: "localisation_join".into(),
+                    reason: "this recording states no content epoch".into(),
+                    digest: portable_content_manifest::attach_content_epoch::RefusedArtifactDigest::Recorded,
+                },
+            ],
+            attach_time_refusals: Vec::new(),
         };
         let source = ProductReplaySource {
             inner: Box::new(AdmissionSource {

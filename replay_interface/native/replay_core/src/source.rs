@@ -71,7 +71,40 @@ pub struct RecorderProductAdmission {
     pub guarantees_not_held: Vec<ProductionProfileGuarantee>,
     pub profile_domains_not_scheduled: Vec<String>,
     pub missing_required_static_artifacts: Vec<String>,
-    pub static_artifacts_not_content_bound: Vec<String>,
+    pub static_artifacts_not_content_bound: Vec<StaticArtifactNotContentBound>,
+    /// Every artifact the attach-time content proof refused and WHY, including
+    /// roles the package does not carry at all -- which is where a pre-bump
+    /// recording's unrecorded digest shows up, since a missing role never
+    /// reaches the content-bound check.
+    pub attach_time_refusals: Vec<StaticArtifactNotContentBound>,
+}
+
+/// A packaged static artifact the recording carries but could not bind to
+/// engine content, and WHY.
+///
+/// The role alone used to be the whole record, which made every cause read
+/// alike; a refusal that names no cause is the shape
+/// `degraded-outcomes-name-the-cause` exists to stop. `reason` is the
+/// attach-time proof's own refusal text, so a row whose `artifact_sha256` key
+/// was never written carries `DIGEST_UNRECORDED_PRE_BUMP` here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticArtifactNotContentBound {
+    pub role: String,
+    pub reason: String,
+    /// TYPED, from the proof's JSON shape. A surface renders the pre-bump note
+    /// from THIS and never by matching text inside `reason`, which a producer
+    /// can spell (Codex round 6).
+    pub digest: portable_content_manifest::attach_content_epoch::RefusedArtifactDigest,
+}
+
+impl StaticArtifactNotContentBound {
+    /// The reason with the digest disposition's note, for a one-line surface.
+    pub fn rendered(&self) -> String {
+        match self.digest.note() {
+            Some(note) => format!("{}; {note}", self.reason),
+            None => self.reason.clone(),
+        }
+    }
 }
 
 impl RecorderProductAdmission {
@@ -89,6 +122,7 @@ impl RecorderProductAdmission {
             profile_domains_not_scheduled: Vec::new(),
             missing_required_static_artifacts: Vec::new(),
             static_artifacts_not_content_bound: Vec::new(),
+            attach_time_refusals: Vec::new(),
         }
     }
 
@@ -352,6 +386,7 @@ impl MetadataRoute {
             }
             binding.product_admission.static_artifacts_not_content_bound =
                 roster.not_content_bound;
+            binding.product_admission.attach_time_refusals = roster.attach_time_refusals;
         }
         Ok(roster.admitted)
     }
@@ -2124,7 +2159,8 @@ const LEGACY_PACKAGED_STATIC_ARTIFACT_COUNT: usize =
 
 struct PackagedStaticArtifactRoster {
     admitted: BTreeMap<String, PackagedStaticArtifact>,
-    not_content_bound: Vec<String>,
+    not_content_bound: Vec<StaticArtifactNotContentBound>,
+    attach_time_refusals: Vec<StaticArtifactNotContentBound>,
     absent: BTreeSet<String>,
     legacy_skipped: Option<&'static str>,
 }
@@ -2156,6 +2192,45 @@ impl RecordingContentEpoch {
                 Ok(_) => Option::None,
             },
             _ => Option::None,
+        }
+    }
+
+    /// Every artifact the attach-time proof refused, whether or not the package
+    /// carries it.
+    ///
+    /// A role the recording does NOT carry never reaches `authorizes`, so
+    /// without this its refusal reason has nowhere to go -- which is how
+    /// `captures/rc_vanilla7` came to report its one refused role as a bare name
+    /// under "required static artifacts missing" with the cause dropped.
+    fn attach_time_refusals(&self) -> Vec<StaticArtifactNotContentBound> {
+        match self {
+            RecordingContentEpoch::None | RecordingContentEpoch::ContainerManifest(_) => Vec::new(),
+            RecordingContentEpoch::AttachTime(epoch) => match epoch.as_ref() {
+                Ok(epoch) => epoch
+                    .refusals()
+                    .map(|(role, refusal)| StaticArtifactNotContentBound {
+                        role: role.to_string(),
+                        reason: refusal.reason.clone(),
+                        digest: refusal.digest,
+                    })
+                    .collect(),
+                Err(_) => Vec::new(),
+            },
+        }
+    }
+
+    /// The proof's own typed refusal for one role, when the epoch is an
+    /// attach-time proof that refused it.
+    fn refusal_for(
+        &self,
+        role: &str,
+    ) -> Option<&portable_content_manifest::attach_content_epoch::ArtifactRefusal> {
+        match self {
+            RecordingContentEpoch::None | RecordingContentEpoch::ContainerManifest(_) => None,
+            RecordingContentEpoch::AttachTime(epoch) => match epoch.as_ref() {
+                Ok(epoch) => epoch.refusal_for(role),
+                Err(_) => None,
+            },
         }
     }
 
@@ -2230,6 +2305,7 @@ fn validate_packaged_static_artifact_roster(
         return Ok(PackagedStaticArtifactRoster {
             admitted: BTreeMap::new(),
             not_content_bound: Vec::new(),
+            attach_time_refusals: Vec::new(),
             absent: BTreeSet::new(),
             legacy_skipped: None,
         });
@@ -2450,8 +2526,27 @@ fn validate_packaged_static_artifact_roster(
                         "verified static artifact {name:?} bytes disagree with package authorities"
                     )));
                 }
-                if epoch_authority.authorizes(name, &actual_sha).is_err() {
-                    not_content_bound.push(name.to_string());
+                if let Err(reason) = epoch_authority.authorizes(name, &actual_sha) {
+                    // The proof's TYPED refusal when it has one for this role.
+                    // `authorizes` flattens the disposition into a rendered
+                    // string, and taking that string would put every carried
+                    // refusal back to `Recorded` -- which is R6-2 reopened on the
+                    // carried-role path (Codex round 7). A role the proof did not
+                    // refuse (no join at all, a different build, no epoch) has no
+                    // withheld digest to report, so it keeps `Recorded`.
+                    let (reason, digest) = match epoch_authority.refusal_for(name) {
+                        Some(refusal) => (refusal.reason.clone(), refusal.digest),
+                        None => (
+                            reason,
+                            portable_content_manifest::attach_content_epoch::
+                                RefusedArtifactDigest::Recorded,
+                        ),
+                    };
+                    not_content_bound.push(StaticArtifactNotContentBound {
+                        role: name.to_string(),
+                        reason,
+                        digest,
+                    });
                     expected_container_paths.insert(container_path);
                     continue;
                 }
@@ -2468,7 +2563,13 @@ fn validate_packaged_static_artifact_roster(
                             },
                         );
                     }
-                    None => not_content_bound.push(name.to_string()),
+                    None => not_content_bound.push(StaticArtifactNotContentBound {
+                        role: name.to_string(),
+                        reason: "the recorder manifest binds no content epoch to this artifact"
+                            .to_string(),
+                        digest: portable_content_manifest::attach_content_epoch::
+                            RefusedArtifactDigest::Recorded,
+                    }),
                 }
                 expected_container_paths.insert(container_path);
             }
@@ -2498,6 +2599,7 @@ fn validate_packaged_static_artifact_roster(
     Ok(PackagedStaticArtifactRoster {
         admitted,
         not_content_bound,
+        attach_time_refusals: epoch_authority.attach_time_refusals(),
         absent,
         legacy_skipped,
     })
@@ -3464,6 +3566,7 @@ fn validate_recorder_product_admission(
             profile_domains_not_scheduled,
             missing_required_static_artifacts,
             static_artifacts_not_content_bound: Vec::new(),
+            attach_time_refusals: Vec::new(),
         });
     }
 
@@ -3479,6 +3582,7 @@ fn validate_recorder_product_admission(
         profile_domains_not_scheduled,
         missing_required_static_artifacts,
         static_artifacts_not_content_bound: Vec::new(),
+        attach_time_refusals: Vec::new(),
     })
 }
 

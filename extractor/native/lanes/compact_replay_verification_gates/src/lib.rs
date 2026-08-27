@@ -3473,6 +3473,35 @@ fn read_content_proof_kind(embedded_manifest: &Value) -> Result<ContentProofKind
     }
 }
 
+/// One proof array, under the SAME row ceiling
+/// `attach_content_epoch::read_rows` enforces. Without the ceiling here a proof
+/// with more rows than the portable parser accepts certifies at this gate and
+/// then cannot be opened (Codex rounds 7 and 8).
+///
+/// EVERY array the gate reads out of the proof goes through this, and the list
+/// is the same five `epoch_from_proof_json` reads: `layer_stack`,
+/// `artifact_joins`, `refused_artifacts`, `required_content`,
+/// `refused_required_content`. Capping only the one a finding named would leave
+/// the next one to be found the same way.
+fn proof_rows<'a>(
+    proof: &'a serde_json::Map<String, Value>,
+    field: &str,
+    key: &str,
+) -> Result<&'a Vec<Value>, String> {
+    let rows = proof
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{field}.{key} is missing or not an array"))?;
+    let ceiling = portable_content_manifest::attach_content_epoch::MAX_PROOF_ROWS;
+    if rows.len() > ceiling {
+        return Err(format!(
+            "{field}.{key} has {} rows, above the {ceiling} ceiling",
+            rows.len()
+        ));
+    }
+    Ok(rows)
+}
+
 fn certify_attach_time_content_proof(
     container: &Container,
     embedded_manifest: &Value,
@@ -3561,10 +3590,7 @@ fn certify_attach_time_content_proof(
         proof.get("dlc_load_sha256"),
         &format!("{field}.dlc_load_sha256"),
     )?;
-    let layer_rows = proof
-        .get("layer_stack")
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("{field}.layer_stack is missing or not an array"))?;
+    let layer_rows = proof_rows(proof, field, "layer_stack")?;
     if layer_rows.is_empty() {
         return Err(format!(
             "{field}.layer_stack is empty: a proof that states no content layers states no world"
@@ -3713,35 +3739,65 @@ fn certify_attach_time_content_proof(
     let admitted =
         admit_packaged_static_artifacts(container, game_id, &declared, &artifact_hashes, None)?;
 
-    let refused_rows = proof
-        .get("refused_artifacts")
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("{field}.refused_artifacts is missing or not an array"))?;
+    let refused_rows = proof_rows(proof, field, "refused_artifacts")?;
     let mut refused = BTreeMap::new();
     for row in refused_rows {
+        // Non-empty, both of them, because `epoch_from_proof_json`'s
+        // `read_non_empty` refuses a blank one: a gate that certified what the
+        // portable parser rejects is a recording that passes here and cannot be
+        // opened (Codex round 6).
         let role = row
             .get("role")
             .and_then(Value::as_str)
+            .filter(|role| !role.is_empty())
             .ok_or_else(|| format!("{field}.refused_artifacts row names no role"))?;
         let reason = row
             .get("reason")
             .and_then(Value::as_str)
+            .filter(|reason| !reason.is_empty())
             .ok_or_else(|| format!("{field}.refused_artifacts row for {role:?} names no reason"))?;
-        let digest = row.get("artifact_sha256").ok_or_else(|| {
-            format!("{field}.refused_artifacts row for {role:?} names no artifact_sha256")
-        })?;
-        if !digest.is_null() {
+        // Absent, null and present are three states, not two. See
+        // `attach_content_epoch::epoch_from_proof_json`, which draws the same
+        // line: present is validated strictly, null is the recorder's own
+        // "unreadable", and an absent key is a pre-bump recording whose refusal
+        // reason says so from here on rather than passing as an ordinary one.
+        let digest = row.get("artifact_sha256");
+        if let Some(digest) = digest.filter(|digest| !digest.is_null()) {
             canonical_sha256(
                 Some(digest),
                 &format!("{field}.refused_artifacts {role:?} artifact_sha256"),
             )?;
         }
-        refused.insert(role.to_string(), reason.to_string());
+        // TYPED, from the JSON shape, never from the producer's reason text:
+        // `epoch_from_proof_json` draws the same three-way line, and a reason
+        // string that happened to spell the pre-bump note must not read as the
+        // pre-bump disposition.
+        let refusal = portable_content_manifest::attach_content_epoch::ArtifactRefusal {
+            reason: reason.to_string(),
+            digest: match digest {
+                None => {
+                    portable_content_manifest::attach_content_epoch::RefusedArtifactDigest::UnrecordedPreBump
+                }
+                Some(Value::Null) => {
+                    portable_content_manifest::attach_content_epoch::RefusedArtifactDigest::RecorderUnreadable
+                }
+                Some(_) => {
+                    portable_content_manifest::attach_content_epoch::RefusedArtifactDigest::Recorded
+                }
+            },
+        };
+        // Duplicate roles are refused here for the reason
+        // `epoch_from_proof_json` refuses them: a second row silently replaces
+        // the first, so an absent-key row followed by an explicit-null row for
+        // the same role would erase the pre-bump badge and leave this gate
+        // certifying a proof the portable parser rejects.
+        if refused.insert(role.to_string(), refusal).is_some() {
+            return Err(format!(
+                "{field}.refused_artifacts refuses static role {role:?} more than once"
+            ));
+        }
     }
-    let join_rows = proof
-        .get("artifact_joins")
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("{field}.artifact_joins is missing or not an array"))?;
+    let join_rows = proof_rows(proof, field, "artifact_joins")?;
     let mut joins = BTreeMap::new();
     for row in join_rows {
         let role = row
@@ -3792,7 +3848,7 @@ fn certify_attach_time_content_proof(
                 "static role {name:?} is packaged but has no attach-time join receipt{}",
                 refused
                     .get(name)
-                    .map(|reason| format!(": {reason}"))
+                    .map(|refusal| format!(": {}", refusal.rendered()))
                     .unwrap_or_default()
             ));
         };
@@ -3826,10 +3882,7 @@ fn certify_attach_time_content_proof(
         expected_required_content
             .insert(recorder_host::attach_content_proof::D81_PROVINCE_CATALOG_PATH.to_string());
     }
-    let joined_required = proof
-        .get("required_content")
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("{field}.required_content is missing or not an array"))?;
+    let joined_required = proof_rows(proof, field, "required_content")?;
     let mut joined_required_paths = BTreeSet::new();
     for row in joined_required {
         let logical_path = row
@@ -3874,10 +3927,7 @@ fn certify_attach_time_content_proof(
                 .collect::<Vec<_>>()
         ));
     }
-    let refused_required = proof
-        .get("refused_required_content")
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("{field}.refused_required_content is missing or not an array"))?;
+    let refused_required = proof_rows(proof, field, "refused_required_content")?;
     if !refused_required.is_empty() {
         return Err(format!(
             "{field} could not resolve {} playback-required content file(s) through the \
@@ -3898,6 +3948,25 @@ fn certify_attach_time_content_proof(
         ));
     }
 
+    // THE PARITY GUARANTEE, and the reason this gate no longer restates the
+    // portable reader's field laws one at a time.
+    //
+    // Rounds 7, 8 and 9 each found another rule this gate had not mirrored - the
+    // row ceiling on two arrays, then on three more, then
+    // `localisation_source_sha256`, `executable_size_bytes`, `joined_bytes`,
+    // `proven_absent_paths`, empty join roles, `required_content.purpose`. Every
+    // one of them was the same defect: a proof that certifies here and then
+    // cannot be OPENED, because replay admits through `epoch_from_proof_json` and
+    // this gate did not. Mirroring the next rule would only have queued up the
+    // one after it, so the gate now certifies nothing the portable reader
+    // refuses, by construction.
+    //
+    // It runs LAST so the gate's own checks keep naming their own causes; this
+    // catches only what they do not cover.
+    portable_content_manifest::attach_content_epoch::epoch_from_proof_json(&Value::Object(proof.clone())).map_err(
+        |error| format!("{field} is not admissible to the portable replay reader: {error}"),
+    )?;
+
     Ok(json!({
         "content_proof_kind":
             recorder_host::attach_content_proof::KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1,
@@ -3906,6 +3975,26 @@ fn certify_attach_time_content_proof(
         "exact_required_roles": declared.len() == canonical.len(),
         "packaged_roles": declared.iter().collect::<Vec<_>>(),
         "missing_required_static_artifacts": missing.iter().collect::<Vec<_>>(),
+        // The refusals ride the SUCCESS details, not only a failure message: a
+        // certified recording can lawfully carry refused roles, and a bare role
+        // name does not say why. Each reason is the one read above, so a
+        // pre-bump row says so here.
+        "refused_artifacts": refused
+            .iter()
+            .map(|(role, refusal)| json!({
+                "role": role,
+                "reason": refusal.reason,
+                // The typed disposition, not only the rendered line: a consumer
+                // must be able to tell an unrecorded pre-bump digest from a
+                // recorder-unreadable one without parsing prose.
+                "digest_disposition": match refusal.digest {
+                    portable_content_manifest::attach_content_epoch::RefusedArtifactDigest::Recorded => "recorded",
+                    portable_content_manifest::attach_content_epoch::RefusedArtifactDigest::RecorderUnreadable => "recorder_unreadable",
+                    portable_content_manifest::attach_content_epoch::RefusedArtifactDigest::UnrecordedPreBump => "unrecorded_pre_bump",
+                },
+                "rendered": refusal.rendered(),
+            }))
+            .collect::<Vec<_>>(),
         "attach_window_observed_at_unix": observed_at,
         "attach_window_completed_at_unix": completed_at,
         "attach_window_seconds": completed_at.saturating_sub(observed_at),
@@ -12802,6 +12891,301 @@ mod tests {
             assert!(
                 error.contains(expected),
                 "{label}: expected a refusal naming {expected:?}, got {error}"
+            );
+        }
+    }
+
+    /// A refused artifact's `artifact_sha256` has THREE states at this gate too,
+    /// and the gate must draw the same line `attach_content_epoch` draws.
+    ///
+    /// kills: requiring the key (which made every recording sealed before the
+    /// recorder wrote it unopenable - `captures/rc_vanilla7` is one, and it is
+    /// the evidence basis for the live lanes), and a tolerance for the absent key
+    /// that also swallows a WRONG one. Owner ruling 2026-08-27, lane UH.
+    #[test]
+    fn a_refused_artifacts_digest_is_validated_named_or_refused_at_the_gate() {
+        let packaged = [
+            compact_contract::STATIC_ARTIFACT_TEMPLATES_EQUIPMENT_CATALOG,
+            compact_contract::STATIC_ARTIFACT_LOCALISATION_JOIN,
+            compact_contract::STATIC_ARTIFACT_DECISIONS_STATIC_DEFINITIONS,
+            compact_contract::STATIC_ARTIFACT_IDEA_TECH_LOC_XREF_STATIC,
+            compact_contract::STATIC_ARTIFACT_SHIP_DEFINITIONS_STATIC,
+            compact_contract::STATIC_ARTIFACT_GFX_ICON_MANIFEST,
+        ];
+        // The refusal reason only reaches a surface a test can read when the role
+        // is PACKAGED and has no join receipt, so each case drops one join and
+        // refuses that same role.
+        let refuse_first_joined_role = |artifact_sha256: Option<Value>| -> String {
+            let field = recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD;
+            let dir = TmpDir::new("attach_refused_digest");
+            let mut manifest = attach_time_manifest("g", &dir.0, &packaged);
+            let joins = manifest[FIELD]["artifact_joins"].as_array_mut().unwrap();
+            let dropped = joins.remove(0);
+            let mut row = json!({
+                "role": dropped["role"].clone(),
+                "reason": "33 claimed paths did not match",
+            });
+            if let Some(digest) = artifact_sha256 {
+                row["artifact_sha256"] = digest;
+            }
+            manifest[field]["refused_artifacts"] = json!([row]);
+            let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+            write_attach_time_replay_fixture(&dir.0, "g", &manifest_bytes, &packaged);
+            load_verified_replay_authority(
+                &manifest,
+                &manifest_bytes,
+                &dir.0,
+                TEST_MAX_STREAM_BYTES,
+            )
+            .map(|authority| format!("unexpectedly certified: {}", authority.details))
+            .unwrap_err()
+        };
+        let pre_bump = portable_content_manifest::attach_content_epoch::DIGEST_UNRECORDED_PRE_BUMP;
+        const FIELD: &str = recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD;
+
+        // PRESENT and valid, and NULL: both reach the join-receipt refusal with
+        // the reason as written, and neither is badged pre-bump.
+        for recorded in [json!("d".repeat(64)), Value::Null] {
+            let error = refuse_first_joined_role(Some(recorded.clone()));
+            assert!(
+                error.contains("no attach-time join receipt: 33 claimed paths did not match"),
+                "{recorded}: {error}"
+            );
+            assert!(!error.contains(pre_bump), "{recorded}: {error}");
+        }
+
+        // ABSENT: admitted the same way, and NAMED.
+        let absent = refuse_first_joined_role(None);
+        assert!(
+            absent.contains(&format!(
+                "no attach-time join receipt: 33 claimed paths did not match; {pre_bump}"
+            )),
+            "{absent}"
+        );
+
+        // PRESENT and wrong: still refused on the digest itself, never reaching
+        // the join-receipt message. The tolerance must not have widened.
+        for wrong in [
+            json!("not-a-digest"),
+            json!(""),
+            json!("D".repeat(64)),
+            json!("d".repeat(63)),
+            json!(7),
+            json!([&"d".repeat(64)]),
+        ] {
+            let error = refuse_first_joined_role(Some(wrong.clone()));
+            assert!(
+                error.contains("refused_artifacts")
+                    && error.contains("artifact_sha256")
+                    && !error.contains(pre_bump),
+                "{wrong}: {error}"
+            );
+        }
+
+        // A BLANK role or reason, with an absent digest so the row is otherwise
+        // the pre-bump shape. `epoch_from_proof_json`'s `read_non_empty` refuses
+        // both, and a gate that certified what the portable parser rejects is a
+        // recording that passes here and cannot be opened (Codex round 6).
+        for (label, blank_field) in [("blank_role", "role"), ("blank_reason", "reason")] {
+            let dir = TmpDir::new(label);
+            let mut manifest = attach_time_manifest("g", &dir.0, &packaged);
+            let joins = manifest[FIELD]["artifact_joins"].as_array_mut().unwrap();
+            let dropped = joins.remove(0);
+            let mut row = json!({
+                "role": dropped["role"].clone(),
+                "reason": "33 claimed paths did not match",
+            });
+            row[blank_field] = json!("");
+            manifest[FIELD]["refused_artifacts"] = json!([row.clone()]);
+            let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+            write_attach_time_replay_fixture(&dir.0, "g", &manifest_bytes, &packaged);
+            let error = load_verified_replay_authority(
+                &manifest,
+                &manifest_bytes,
+                &dir.0,
+                TEST_MAX_STREAM_BYTES,
+            )
+            .map(|authority| format!("unexpectedly certified: {}", authority.details))
+            .unwrap_err();
+            assert!(
+                error.contains("names no role") || error.contains("names no reason"),
+                "{label}: {error}"
+            );
+
+            // ... and the portable parser refuses the same row, which is the
+            // agreement this case exists to hold.
+            let mut proof = manifest[FIELD].clone();
+            proof["refused_artifacts"] = json!([row]);
+            portable_content_manifest::attach_content_epoch::epoch_from_proof_json(&proof)
+                .expect_err(&format!("{label}: the portable parser must refuse it too"));
+        }
+
+        // One row OVER the shared ceiling, on EVERY array the gate reads out of
+        // the proof -- not just the one a finding named. The ceiling is checked
+        // at read, before any row is parsed, so filler shape cannot be what
+        // refuses these; the count is. A gate without the cap certifies a proof
+        // the portable parser rejects, which is a recording that passes here and
+        // cannot be opened (Codex rounds 7 and 8).
+        let ceiling = portable_content_manifest::attach_content_epoch::MAX_PROOF_ROWS;
+        for array in [
+            "layer_stack",
+            "artifact_joins",
+            "refused_artifacts",
+            "required_content",
+            "refused_required_content",
+        ] {
+            let dir = TmpDir::new(&format!("over_ceiling_{array}"));
+            let mut manifest = attach_time_manifest("g", &dir.0, &packaged);
+            let existing = manifest[FIELD][array].as_array().unwrap().clone();
+            let mut rows = existing.clone();
+            rows.extend(
+                (0..=ceiling.saturating_sub(existing.len()))
+                    .map(|index| json!({"filler": format!("{array}_{index}")})),
+            );
+            assert!(rows.len() > ceiling, "{array}: the fixture must exceed it");
+            manifest[FIELD][array] = json!(rows);
+            let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+            write_attach_time_replay_fixture(&dir.0, "g", &manifest_bytes, &packaged);
+            let error = load_verified_replay_authority(
+                &manifest,
+                &manifest_bytes,
+                &dir.0,
+                TEST_MAX_STREAM_BYTES,
+            )
+            .map(|authority| format!("unexpectedly certified: {}", authority.details))
+            .unwrap_err();
+            assert!(
+                error.contains(array) && error.contains("above the") && error.contains("ceiling"),
+                "{array}: {error}"
+            );
+            let proof = manifest[FIELD].clone();
+            let portable =
+                portable_content_manifest::attach_content_epoch::epoch_from_proof_json(&proof)
+                    .expect_err("the portable parser refuses the same array");
+            assert!(
+                portable.contains(array) && portable.contains("ceiling"),
+                "{array}: {portable}"
+            );
+        }
+
+        // Every field law the portable reader enforces that this gate does not
+        // restate. None of these is refused by a check written here; they are
+        // refused because the gate certifies nothing `epoch_from_proof_json`
+        // refuses (Codex round 9). A mutation that both sites already caught
+        // would prove nothing, so each of these is a rule ONLY the portable
+        // reader has.
+        for (label, mutate) in [
+            (
+                "join_localisation_digest_uppercase",
+                Box::new(|proof: &mut Value| {
+                    proof["artifact_joins"][0]["localisation_source_sha256"] =
+                        json!("A".repeat(64));
+                }) as Box<dyn Fn(&mut Value)>,
+            ),
+            (
+                "join_localisation_digest_short",
+                Box::new(|proof: &mut Value| {
+                    proof["artifact_joins"][0]["localisation_source_sha256"] =
+                        json!("d".repeat(63));
+                }),
+            ),
+            (
+                "join_localisation_digest_not_a_string",
+                Box::new(|proof: &mut Value| {
+                    proof["artifact_joins"][0]["localisation_source_sha256"] = json!(7);
+                }),
+            ),
+            // A BLANK join role is deliberately not in this list: the gate
+            // already refuses it on its own, by a different route -- the
+            // packaged role then has no join receipt -- so it would not test
+            // the parity call.
+            (
+                "join_bytes_not_a_number",
+                Box::new(|proof: &mut Value| {
+                    proof["artifact_joins"][0]["joined_bytes"] = json!("many");
+                }),
+            ),
+            (
+                "join_proven_absent_paths_missing",
+                Box::new(|proof: &mut Value| {
+                    proof["artifact_joins"][0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("proven_absent_paths");
+                }),
+            ),
+            (
+                "executable_size_not_a_number",
+                Box::new(|proof: &mut Value| {
+                    proof["executable_size_bytes"] = json!("big");
+                }),
+            ),
+            (
+                "required_content_purpose_blank",
+                Box::new(|proof: &mut Value| {
+                    proof["required_content"][0]["purpose"] = json!("");
+                }),
+            ),
+        ] {
+            let dir = TmpDir::new(label);
+            let mut manifest = attach_time_manifest("g", &dir.0, &packaged);
+            mutate(&mut manifest[FIELD]);
+            let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+            write_attach_time_replay_fixture(&dir.0, "g", &manifest_bytes, &packaged);
+            let error = load_verified_replay_authority(
+                &manifest,
+                &manifest_bytes,
+                &dir.0,
+                TEST_MAX_STREAM_BYTES,
+            )
+            .map(|authority| format!("unexpectedly certified: {}", authority.details))
+            .unwrap_err();
+            assert!(
+                error.contains("not admissible to the portable replay reader"),
+                "{label}: {error}"
+            );
+            let proof = manifest[FIELD].clone();
+            portable_content_manifest::attach_content_epoch::epoch_from_proof_json(&proof)
+                .expect_err(&format!("{label}: the portable reader must refuse it"));
+        }
+
+        // A role refused TWICE. `epoch_from_proof_json` has always refused that;
+        // this gate used to let the second row silently replace the first, so an
+        // absent-then-null pair erased the pre-bump badge and this gate could
+        // certify a proof the portable parser rejects. Both orders, because only
+        // one of them loses the badge and both must be refused.
+        for (label, first, second) in [
+            ("absent_then_null", None, Some(Value::Null)),
+            ("null_then_absent", Some(Value::Null), None),
+        ] {
+            let dir = TmpDir::new(label);
+            let mut manifest = attach_time_manifest("g", &dir.0, &packaged);
+            let joins = manifest[FIELD]["artifact_joins"].as_array_mut().unwrap();
+            let dropped = joins.remove(0);
+            let row = |artifact_sha256: Option<Value>| {
+                let mut row = json!({
+                    "role": dropped["role"].clone(),
+                    "reason": "33 claimed paths did not match",
+                });
+                if let Some(digest) = artifact_sha256 {
+                    row["artifact_sha256"] = digest;
+                }
+                row
+            };
+            manifest[FIELD]["refused_artifacts"] = json!([row(first), row(second)]);
+            let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
+            write_attach_time_replay_fixture(&dir.0, "g", &manifest_bytes, &packaged);
+            let error = load_verified_replay_authority(
+                &manifest,
+                &manifest_bytes,
+                &dir.0,
+                TEST_MAX_STREAM_BYTES,
+            )
+            .map(|authority| format!("unexpectedly certified: {}", authority.details))
+            .unwrap_err();
+            assert!(
+                error.contains("refuses static role") && error.contains("more than once"),
+                "{label}: {error}"
             );
         }
     }

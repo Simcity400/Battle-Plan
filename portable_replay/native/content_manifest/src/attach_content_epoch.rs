@@ -16,7 +16,63 @@ pub const KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1: &str = "attach_time_effective_
 
 pub const KIND_NONE: &str = "none";
 
-const MAX_PROOF_ROWS: usize = 1 << 16;
+/// How a refused artifact's `artifact_sha256` reads when it is rendered for a
+/// human. Never the CARRIER of the disposition - see [`RefusedArtifactDigest`].
+pub const DIGEST_UNRECORDED_PRE_BUMP: &str = "digest unrecorded (pre-bump capture)";
+
+/// What the proof said about the build it refused.
+///
+/// TYPED, and derived from the JSON SHAPE rather than from any text the producer
+/// wrote. An earlier version of this appended `DIGEST_UNRECORDED_PRE_BUMP` to the
+/// free-text `reason`, which meant a proof carrying an explicit null and that
+/// phrase inside its own reason string was indistinguishable from a pre-bump row
+/// (Codex round 6). A producer cannot spell this field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefusedArtifactDigest {
+    /// The proof named the build it refused.
+    Recorded,
+    /// `artifact_sha256: null` - the recorder could not read the file at all.
+    RecorderUnreadable,
+    /// No `artifact_sha256` key, which only a recording sealed before the
+    /// recorder wrote that field can do.
+    UnrecordedPreBump,
+}
+
+impl RefusedArtifactDigest {
+    /// The phrase a rendered refusal appends, or `None` when there is nothing to
+    /// add beyond the producer's own reason.
+    pub fn note(self) -> Option<&'static str> {
+        match self {
+            RefusedArtifactDigest::UnrecordedPreBump => Some(DIGEST_UNRECORDED_PRE_BUMP),
+            RefusedArtifactDigest::Recorded | RefusedArtifactDigest::RecorderUnreadable => None,
+        }
+    }
+}
+
+/// One refused artifact: the producer's reason, verbatim, plus the typed
+/// disposition of the digest it did or did not name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtifactRefusal {
+    pub reason: String,
+    pub digest: RefusedArtifactDigest,
+}
+
+impl ArtifactRefusal {
+    /// The reason with the digest disposition's note, for a surface that prints
+    /// one line.
+    pub fn rendered(&self) -> String {
+        match self.digest.note() {
+            Some(note) => format!("{}; {note}", self.reason),
+            None => self.reason.clone(),
+        }
+    }
+}
+
+/// The row ceiling every reader of this proof shares. Public so the compact
+/// verification gate enforces the SAME one: a gate that certified an array this
+/// parser refuses is a recording that passes the gate and cannot be opened
+/// (Codex round 7).
+pub const MAX_PROOF_ROWS: usize = 1 << 16;
 
 const LAYER_KINDS: [&str; 4] = ["base", "integrated_dlc", "dlc", "mod"];
 
@@ -24,7 +80,7 @@ const LAYER_KINDS: [&str; 4] = ["base", "integrated_dlc", "dlc", "mod"];
 pub struct AttachContentEpoch {
     digest: String,
     joined: BTreeMap<String, String>,
-    refused: BTreeMap<String, String>,
+    refused: BTreeMap<String, ArtifactRefusal>,
 }
 
 impl AttachContentEpoch {
@@ -36,16 +92,24 @@ impl AttachContentEpoch {
         self.joined.keys().map(String::as_str)
     }
 
-    pub fn refusals(&self) -> impl Iterator<Item = (&str, &str)> {
+    /// The proof's own refusal for one role, typed, or `None` if it did not
+    /// refuse that role. A caller that only has `authorizes`' rendered message
+    /// would lose the disposition, so this is what a typed surface reads.
+    pub fn refusal_for(&self, role: &str) -> Option<&ArtifactRefusal> {
+        self.refused.get(role)
+    }
+
+    pub fn refusals(&self) -> impl Iterator<Item = (&str, &ArtifactRefusal)> {
         self.refused
             .iter()
-            .map(|(role, reason)| (role.as_str(), reason.as_str()))
+            .map(|(role, refusal)| (role.as_str(), refusal))
     }
 
     pub fn bind(&self, role: &str, artifact_sha256: &str) -> Result<&str, String> {
-        if let Some(reason) = self.refused.get(role) {
+        if let Some(refusal) = self.refused.get(role) {
             return Err(format!(
-                "attach-time content proof refused this artifact: {reason}"
+                "attach-time content proof refused this artifact: {}",
+                refusal.rendered()
             ));
         }
         match self.joined.get(role) {
@@ -115,10 +179,23 @@ pub fn epoch_from_proof_json(proof: &Value) -> Result<AttachContentEpoch, String
         })?;
         let role = read_non_empty(row, "role")?;
         let artifact_sha256 = read_digest(row, "artifact_sha256")?;
+        // A join over ZERO paths compared the artifact against nothing in the
+        // effective VFS, so it proves nothing about the captured content - and
+        // `bind` authorizes on the digest alone, which would let such a join
+        // pass an artifact off as content-bound. The compact gate has always
+        // refused it; this reader accepted it, and the two must not disagree
+        // (Codex round 10).
+        let claimed_paths = read_u64(row, "claimed_paths")?;
+        if claimed_paths == 0 {
+            return Err(format!(
+                "attach-time content proof join for artifact role {role:?} claims zero paths, so \
+                 it binds the artifact to no content at all"
+            ));
+        }
         let canonical = json!({
             "role": role,
             "artifact_sha256": artifact_sha256,
-            "claimed_paths": read_u64(row, "claimed_paths")?,
+            "claimed_paths": claimed_paths,
             "joined_bytes": read_u64(row, "joined_bytes")?,
             "proven_absent_paths": read_u64(row, "proven_absent_paths")?,
             "localisation_source_sha256": read_optional_digest(row, "localisation_source_sha256")?,
@@ -141,20 +218,28 @@ pub fn epoch_from_proof_json(proof: &Value) -> Result<AttachContentEpoch, String
             .ok_or_else(|| "attach-time content proof refusal is not an object".to_string())?;
         let role = read_non_empty(row, "role")?;
         let reason = read_non_empty(row, "reason")?;
-        // A refusal that does not identify the build it refused cannot be
-        // traced back to an artifact on disk; the key is required, and null is
-        // the only way to say "the file could not be read at all".
-        if !row.contains_key("artifact_sha256") {
-            return Err(format!(
-                "attach-time content proof refusal for artifact role {role:?} names no \
-                 artifact_sha256"
-            ));
-        }
+        // A refusal that does not identify the build it refused cannot be traced
+        // back to an artifact on disk, so the digest is read strictly whenever it
+        // is there and `null` stays the recorder's way of saying "the file could
+        // not be read at all".
+        //
+        // An ABSENT key is a recording sealed before the recorder wrote the field.
+        // It means the same thing the null does - digest unknown - and refusing
+        // it would make every such recording unopenable, so it is admitted. It is
+        // NOT equated silently: the disposition below is typed and taken from the
+        // JSON shape, so the two are distinguishable by a consumer and the
+        // producer's own reason text cannot forge either.
+        let digest = match row.get("artifact_sha256") {
+            None => RefusedArtifactDigest::UnrecordedPreBump,
+            Some(Value::Null) => RefusedArtifactDigest::RecorderUnreadable,
+            Some(_) => RefusedArtifactDigest::Recorded,
+        };
         read_optional_digest(row, "artifact_sha256")?;
-        if refused
-            .insert(role.to_string(), reason.to_string())
-            .is_some()
-        {
+        let refusal = ArtifactRefusal {
+            reason: reason.to_string(),
+            digest,
+        };
+        if refused.insert(role.to_string(), refusal).is_some() {
             return Err(format!(
                 "attach-time content proof refuses artifact role {role:?} more than once"
             ));
@@ -397,6 +482,153 @@ mod tests {
             "proven_absent_paths": 0,
             "localisation_source_sha256": Value::Null,
         })
+    }
+
+    fn refusal(role: &str, artifact_sha256: Option<Value>) -> Value {
+        let mut row = json!({"role": role, "reason": "33 claimed paths did not match"});
+        if let Some(digest) = artifact_sha256 {
+            row["artifact_sha256"] = digest;
+        }
+        row
+    }
+
+    /// A refused artifact's `artifact_sha256` has THREE states and each gets its
+    /// own outcome.
+    ///
+    /// kills: a tolerance for the absent key that also swallows a wrong one, and
+    /// an absent key that reads as an ordinary refusal. `captures/rc_vanilla7`
+    /// was sealed before the recorder wrote the field and carries exactly the
+    /// absent shape; requiring the key made every such recording unopenable
+    /// (lane UH, owner ruling 2026-08-27).
+    #[test]
+    fn a_refused_artifacts_digest_is_validated_named_or_refused_and_never_confused() {
+        let epoch = |artifact_sha256: Option<Value>| {
+            epoch_from_proof_json(&proof(
+                vec![join("localisation_join", &digest(0x01))],
+                vec![refusal("gfx_icon_asset_manifest_static", artifact_sha256)],
+            ))
+        };
+        let refusal = |result: &AttachContentEpoch| {
+            result
+                .refusals()
+                .find(|(role, _)| *role == "gfx_icon_asset_manifest_static")
+                .expect("the refusal is carried")
+                .1
+                .clone()
+        };
+
+        // PRESENT and valid: taken as written, nothing appended.
+        let present = refusal(&epoch(Some(json!(digest(0x07)))).expect("a valid digest is admitted"));
+        assert_eq!(present.digest, RefusedArtifactDigest::Recorded);
+        assert_eq!(present.rendered(), "33 claimed paths did not match");
+
+        // NULL: the recorder's own "the file could not be read at all". Admitted,
+        // and it keeps its own wording -- it is not the pre-bump case.
+        let null = refusal(&epoch(Some(Value::Null)).expect("a null digest is admitted"));
+        assert_eq!(null.digest, RefusedArtifactDigest::RecorderUnreadable);
+        assert_eq!(null.rendered(), "33 claimed paths did not match");
+
+        // ABSENT: admitted like the null, and NAMED so the two never read alike.
+        let absent = refusal(&epoch(None).expect("an absent digest is admitted"));
+        assert_eq!(absent.digest, RefusedArtifactDigest::UnrecordedPreBump);
+        assert_eq!(
+            absent.rendered(),
+            format!("33 claimed paths did not match; {DIGEST_UNRECORDED_PRE_BUMP}")
+        );
+        assert_ne!(absent.digest, null.digest);
+
+        // PRESENT and wrong: still a whole-proof refusal, in every spelling. The
+        // tolerance above must not have widened into this.
+        for wrong in [
+            json!("not-a-digest"),
+            json!(""),
+            // Uppercase hex: a digest this crate spells only in lowercase. The
+            // seed has to carry a letter for the case to differ at all.
+            json!(digest(0xab).to_uppercase()),
+            json!(digest(0x07)[..63].to_string()),
+            json!(7),
+            json!([digest(0x07)]),
+        ] {
+            epoch(Some(wrong.clone()))
+                .expect_err(&format!("{wrong} is not a digest and must refuse the proof"));
+        }
+    }
+
+    /// kills: carrying the digest disposition in the free-text reason, where a
+    /// producer can spell it. These two rows render IDENTICALLY and must still be
+    /// distinguishable, because only one of them actually withheld the key
+    /// (Codex round 6).
+    #[test]
+    fn a_reason_that_spells_the_pre_bump_note_cannot_forge_the_disposition() {
+        let epoch = |artifact_sha256: Option<Value>, reason: &str| {
+            let mut row = json!({"role": "gfx_icon_asset_manifest_static", "reason": reason});
+            if let Some(digest) = artifact_sha256 {
+                row["artifact_sha256"] = digest;
+            }
+            epoch_from_proof_json(&proof(
+                vec![join("localisation_join", &digest(0x01))],
+                vec![row],
+            ))
+            .expect("both rows are admitted")
+                .refusals()
+                .find(|(role, _)| *role == "gfx_icon_asset_manifest_static")
+                .expect("the refusal is carried")
+                .1
+                .clone()
+        };
+        let forged = epoch(
+            Some(Value::Null),
+            &format!("33 claimed paths did not match; {DIGEST_UNRECORDED_PRE_BUMP}"),
+        );
+        let genuine = epoch(None, "33 claimed paths did not match");
+        assert_eq!(forged.rendered(), genuine.rendered());
+        assert_eq!(forged.digest, RefusedArtifactDigest::RecorderUnreadable);
+        assert_eq!(genuine.digest, RefusedArtifactDigest::UnrecordedPreBump);
+        assert_ne!(forged.digest, genuine.digest);
+    }
+
+    /// kills: authorizing an artifact off a join that compared it against
+    /// nothing. `bind` checks the digest alone, so a zero-path join would let a
+    /// proof declare the package's own digest and have the artifact read as
+    /// content-bound. The compact gate always refused this; both sites do now
+    /// (Codex round 10).
+    #[test]
+    fn a_join_that_claims_no_paths_binds_nothing_and_is_refused() {
+        let mut row = join("localisation_join", &digest(0x01));
+        row["claimed_paths"] = json!(0);
+        let error = epoch_from_proof_json(&proof(vec![row], Vec::new()))
+            .expect_err("a zero-path join proves nothing");
+        assert!(
+            error.contains("localisation_join") && error.contains("zero paths"),
+            "{error}"
+        );
+        epoch_from_proof_json(&proof(
+            vec![join("localisation_join", &digest(0x01))],
+            Vec::new(),
+        ))
+        .expect("one claimed path is enough to be a join");
+    }
+
+    /// The named refusal reason is not inside the epoch digest, so admitting a
+    /// pre-bump recording cannot move the content identity of any recording that
+    /// already opened.
+    #[test]
+    fn naming_the_unrecorded_digest_does_not_move_the_epoch() {
+        let joins = vec![join("localisation_join", &digest(0x01))];
+        let with_absent = epoch_from_proof_json(&proof(
+            joins.clone(),
+            vec![refusal("gfx_icon_asset_manifest_static", None)],
+        ))
+        .unwrap();
+        let with_null = epoch_from_proof_json(&proof(
+            joins,
+            vec![refusal(
+                "gfx_icon_asset_manifest_static",
+                Some(Value::Null),
+            )],
+        ))
+        .unwrap();
+        assert_eq!(with_absent.digest(), with_null.digest());
     }
 
     #[test]

@@ -2432,12 +2432,129 @@ fn the_attach_time_content_epoch_admits_packaged_research_catalogs_end_to_end() 
     let source = open_recording(&refused).expect("a partially refused proof still opens");
     assert!(source.static_artifact("localisation_join").is_some());
     assert!(source.static_artifact("technology_sharing_static").is_none());
+    // The refused role AND the cause: a bare role name made every refusal read
+    // alike, which is what let a pre-bump recording's unrecorded digest pass as
+    // an ordinary refusal.
+    let refused_rows = &source
+        .product_admission()
+        .expect("recorder-manifest recording")
+        .static_artifacts_not_content_bound;
     assert_eq!(
-        source
-            .product_admission()
-            .expect("recorder-manifest recording")
-            .static_artifacts_not_content_bound,
-        vec!["technology_sharing_static".to_string()]
+        refused_rows
+            .iter()
+            .map(|row| row.role.as_str())
+            .collect::<Vec<_>>(),
+        vec!["technology_sharing_static"]
+    );
+    assert!(
+        refused_rows[0]
+            .reason
+            .contains("a claimed path disagreed on re-read"),
+        "{:?}",
+        refused_rows[0]
+    );
+    assert!(
+        !refused_rows[0].reason.contains("pre-bump"),
+        "a recorded digest is not the pre-bump case: {:?}",
+        refused_rows[0]
+    );
+    drop(source);
+
+    // A recording sealed before the recorder wrote `artifact_sha256` on its
+    // refused rows. It must OPEN -- captures/rc_vanilla7 is one and it is the
+    // evidence basis for the live lanes -- and the successful open must carry
+    // the cause, not just the role. Owner ruling 2026-08-27, lane UH.
+    //
+    // kills: dropping the pre-bump badge on the success path, which is the only
+    // path a healthy recording ever takes, and equating it with the null above.
+    let pre_bump = build("pre_bump", &|proof, joins| {
+        joins.retain(|join| join["role"] != json!("technology_sharing_static"));
+        proof["refused_artifacts"] = json!([{
+            "role": "technology_sharing_static",
+            "reason": "a claimed path disagreed on re-read",
+        }]);
+    });
+    let source = open_recording(&pre_bump).expect("a pre-bump refused row still opens");
+    let refused_rows = &source
+        .product_admission()
+        .expect("recorder-manifest recording")
+        .static_artifacts_not_content_bound;
+    assert_eq!(
+        refused_rows
+            .iter()
+            .map(|row| row.role.as_str())
+            .collect::<Vec<_>>(),
+        vec!["technology_sharing_static"]
+    );
+    assert_eq!(
+        refused_rows[0].digest,
+        portable_content_manifest::attach_content_epoch::RefusedArtifactDigest::UnrecordedPreBump,
+        "the TYPED disposition must survive the carried-role path: {:?}",
+        refused_rows[0]
+    );
+    assert!(
+        refused_rows[0].rendered().contains(
+            portable_content_manifest::attach_content_epoch::DIGEST_UNRECORDED_PRE_BUMP
+        ),
+        "the pre-bump cause must reach the successful open: {:?}",
+        refused_rows[0]
+    );
+    drop(source);
+
+    // The explicit null says the recorder could not READ the file. Same
+    // disposition, and it stays unbadged, so the two never read alike.
+    let null_digest = build("null_digest", &|proof, joins| {
+        joins.retain(|join| join["role"] != json!("technology_sharing_static"));
+        proof["refused_artifacts"] = json!([{
+            "role": "technology_sharing_static",
+            "artifact_sha256": Value::Null,
+            "reason": "a claimed path disagreed on re-read",
+        }]);
+    });
+    let source = open_recording(&null_digest).expect("a null digest still opens");
+    let refused_rows = &source
+        .product_admission()
+        .expect("recorder-manifest recording")
+        .static_artifacts_not_content_bound;
+    assert_eq!(
+        refused_rows[0].digest,
+        portable_content_manifest::attach_content_epoch::RefusedArtifactDigest::RecorderUnreadable,
+        "a recorded null is not the pre-bump case: {:?}",
+        refused_rows[0]
+    );
+    assert!(
+        !refused_rows[0].rendered().contains(
+            portable_content_manifest::attach_content_epoch::DIGEST_UNRECORDED_PRE_BUMP
+        ),
+        "{:?}",
+        refused_rows[0]
+    );
+    drop(source);
+
+    // The collision, on the carried-role path: an explicit null whose reason
+    // SPELLS the pre-bump note renders exactly like the genuine pre-bump row
+    // above, and must still be a different disposition (Codex round 7).
+    let forged = build("forged_note", &|proof, joins| {
+        joins.retain(|join| join["role"] != json!("technology_sharing_static"));
+        proof["refused_artifacts"] = json!([{
+            "role": "technology_sharing_static",
+            "artifact_sha256": Value::Null,
+            "reason": format!(
+                "a claimed path disagreed on re-read; {}",
+                portable_content_manifest::attach_content_epoch::DIGEST_UNRECORDED_PRE_BUMP
+            ),
+        }]);
+    });
+    let source = open_recording(&forged).expect("a forged note still opens");
+    let forged_rows = &source
+        .product_admission()
+        .expect("recorder-manifest recording")
+        .static_artifacts_not_content_bound;
+    assert_eq!(
+        forged_rows[0].digest,
+        portable_content_manifest::attach_content_epoch::RefusedArtifactDigest::RecorderUnreadable,
+        "a reason string must not be able to forge the disposition: {:?}",
+        forged_rows[0]
     );
     drop(source);
 
@@ -2648,8 +2765,12 @@ fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifa
         .guarantees_not_held
         .contains(&ProductionProfileGuarantee::ContentBoundStaticArtifacts));
     assert_eq!(
-        admission.static_artifacts_not_content_bound,
-        vec![NAME.to_string()]
+        admission
+            .static_artifacts_not_content_bound
+            .iter()
+            .map(|row| (row.role.as_str(), row.reason.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(NAME, "this recording states no content epoch")]
     );
     drop(source);
 

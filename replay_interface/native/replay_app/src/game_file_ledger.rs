@@ -2540,6 +2540,7 @@ mod tests {
             profile_domains_not_scheduled: Vec::new(),
             missing_required_static_artifacts: Vec::new(),
             static_artifacts_not_content_bound: Vec::new(),
+            attach_time_refusals: Vec::new(),
         };
         let text = super::open_statement_for_tests(
             &[],
@@ -2573,6 +2574,82 @@ mod tests {
         );
     }
 
+    /// kills: printing a generic cause over the attach-time proof's own, which
+    /// is what dropped `captures/rc_vanilla7`'s "digest unrecorded (pre-bump
+    /// capture)" on the floor. The role there is MISSING, not carried, so the
+    /// cause has to reach the missing-artifact line and not only the
+    /// content-bound one (lane UH, Codex round 5).
+    #[test]
+    fn a_missing_catalog_names_the_attach_time_proofs_own_cause() {
+        use portable_content_manifest::attach_content_epoch::{
+            RefusedArtifactDigest, DIGEST_UNRECORDED_PRE_BUMP,
+        };
+        let raw_reason = "33 of 30002 claimed paths did not match";
+        let admission = |digest: RefusedArtifactDigest, reason: &str| RecorderProductAdmission {
+            authority: replay_core::ProductionProfileAuthority::Disabled,
+            guarantees_not_held: vec![
+                replay_core::ProductionProfileGuarantee::RequiredStaticArtifacts,
+            ],
+            profile_domains_not_scheduled: Vec::new(),
+            missing_required_static_artifacts: vec!["gfx_icon_asset_manifest_static".into()],
+            static_artifacts_not_content_bound: Vec::new(),
+            attach_time_refusals: vec![replay_core::StaticArtifactNotContentBound {
+                role: "gfx_icon_asset_manifest_static".into(),
+                reason: reason.into(),
+                digest,
+            }],
+        };
+        let statement = |product: &RecorderProductAdmission| {
+            super::open_statement_for_tests(&[], Some(product), &RenderSettingsPin::Pinned, "l_english")
+        };
+
+        let product = admission(RefusedArtifactDigest::UnrecordedPreBump, raw_reason);
+        let text = statement(&product);
+        assert!(
+            text.contains(&format!(
+                "Cause: {raw_reason}; {DIGEST_UNRECORDED_PRE_BUMP}"
+            )),
+            "the pre-bump cause must reach the viewer: {text}"
+        );
+
+        // The badge comes from the TYPED disposition, not from the reason text.
+        // A producer that spells the phrase into its own reason under an explicit
+        // null does not get the pre-bump badge appended (Codex round 6).
+        let forged = admission(
+            RefusedArtifactDigest::RecorderUnreadable,
+            &format!("{raw_reason}; {DIGEST_UNRECORDED_PRE_BUMP}"),
+        );
+        let forged_text = statement(&forged);
+        assert_eq!(
+            forged_text.matches(DIGEST_UNRECORDED_PRE_BUMP).count(),
+            1,
+            "the note must be the producer's own text once, not badged again: {forged_text}"
+        );
+        assert_eq!(
+            text.matches(DIGEST_UNRECORDED_PRE_BUMP).count(),
+            1,
+            "{text}"
+        );
+
+        // A role the proof says nothing about keeps the generic cause rather
+        // than borrowing another role's.
+        let unnamed = RecorderProductAdmission {
+            attach_time_refusals: Vec::new(),
+            ..product
+        };
+        let text = super::open_statement_for_tests(
+            &[],
+            Some(&unnamed),
+            &RenderSettingsPin::Pinned,
+            "l_english",
+        );
+        assert!(
+            text.contains("did not match the content that capture mounted")
+                && !text.contains("pre-bump"),
+            "{text}"
+        );
+    }
+
     #[test]
     fn a_refused_catalog_is_named_in_the_open_statement() {
         let product = RecorderProductAdmission {
@@ -2580,7 +2657,14 @@ mod tests {
             guarantees_not_held: vec![replay_core::ProductionProfileGuarantee::RequiredStaticArtifacts],
             profile_domains_not_scheduled: Vec::new(),
             missing_required_static_artifacts: vec!["gfx_icon_asset_manifest_static".into()],
-            static_artifacts_not_content_bound: vec!["localisation_join".into()],
+            static_artifacts_not_content_bound: vec![
+                replay_core::StaticArtifactNotContentBound {
+                    role: "localisation_join".into(),
+                    reason: "this recording states no content epoch".into(),
+                    digest: portable_content_manifest::attach_content_epoch::RefusedArtifactDigest::Recorded,
+                },
+            ],
+            attach_time_refusals: Vec::new(),
         };
         let text = super::open_statement_for_tests(
             &[],
@@ -2602,6 +2686,7 @@ mod tests {
             profile_domains_not_scheduled: Vec::new(),
             missing_required_static_artifacts: Vec::new(),
             static_artifacts_not_content_bound: Vec::new(),
+            attach_time_refusals: Vec::new(),
         };
         let text = super::open_statement_for_tests(
             &[],
@@ -2671,6 +2756,7 @@ mod tests {
             profile_domains_not_scheduled: Vec::new(),
             missing_required_static_artifacts: Vec::new(),
             static_artifacts_not_content_bound: Vec::new(),
+            attach_time_refusals: Vec::new(),
         };
         let french = super::open_statement_for_tests(
             &[],
@@ -2703,7 +2789,14 @@ mod tests {
         );
 
         let unbound = RecorderProductAdmission {
-            static_artifacts_not_content_bound: vec!["localisation_join".into()],
+            static_artifacts_not_content_bound: vec![
+                replay_core::StaticArtifactNotContentBound {
+                    role: "localisation_join".into(),
+                    reason: "this recording states no content epoch".into(),
+                    digest: portable_content_manifest::attach_content_epoch::RefusedArtifactDigest::Recorded,
+                },
+            ],
+            attach_time_refusals: Vec::new(),
             ..clean
         };
         let text = super::open_statement_for_tests(
@@ -2743,6 +2836,7 @@ mod tests {
             profile_domains_not_scheduled: Vec::new(),
             missing_required_static_artifacts: Vec::new(),
             static_artifacts_not_content_bound: Vec::new(),
+            attach_time_refusals: Vec::new(),
         };
         let pinned = super::open_statement_for_tests(
             &[],
@@ -2913,24 +3007,49 @@ fn render_statement(
                 ));
             }
             for name in &product.missing_required_static_artifacts {
+                // The attach-time proof's own reason when it has one for this
+                // role, which is the only place a pre-bump recording's
+                // unrecorded digest can be read: a role the package does not
+                // carry never reaches the content-bound check below.
+                let cause = product
+                    .attach_time_refusals
+                    .iter()
+                    .find(|row| row.role == *name)
+                    .map(replay_core::StaticArtifactNotContentBound::rendered)
+                    .unwrap_or_else(|| {
+                        "the artifact on the capture machine did not match the content that \
+                         capture mounted"
+                            .to_string()
+                    });
                 text.push_str(&format!(
                     "\nDEGRADED: the capture could not package {name}, so this replay cannot show \
-                     {}. Cause: the artifact on the capture machine did not match the content \
-                     that capture mounted.",
+                     {}. Cause: {cause}.",
                     artifact_loss(name)
                 ));
             }
-            for name in &product.static_artifacts_not_content_bound {
+            for row in &product.static_artifacts_not_content_bound {
+                // The proof's own refusal reason, verbatim. A row whose
+                // `artifact_sha256` key was never written says so here, instead
+                // of reading like an ordinary unauthorized digest.
                 text.push_str(&format!(
-                    "\nDEGRADED: {name} is carried but this recording's content epoch does not \
-                     authorize its digest, so it is not consumed and this replay cannot show {}.",
-                    artifact_loss(name)
+                    "\nDEGRADED: {} is carried but this recording's content epoch does not \
+                     authorize its digest, so it is not consumed and this replay cannot show {}. \
+                     Cause: {}.",
+                    row.role,
+                    artifact_loss(&row.role),
+                    row.rendered()
                 ));
             }
             let english_join_consumed = !product
                 .missing_required_static_artifacts
                 .iter()
-                .chain(product.static_artifacts_not_content_bound.iter())
+                .map(String::as_str)
+                .chain(
+                    product
+                        .static_artifacts_not_content_bound
+                        .iter()
+                        .map(|row| row.role.as_str()),
+                )
                 .any(|name| name == "localisation_join");
             if english_join_consumed && !is_english(localisation_language) {
                 text.push_str(&format!(
