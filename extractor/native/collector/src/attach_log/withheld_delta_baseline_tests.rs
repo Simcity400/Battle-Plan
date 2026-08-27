@@ -467,6 +467,7 @@ fn sibling_lane_withheld_frames_keep_their_baselines_and_emit_nothing() {
         building_level: 8,
         based_wing_count: 3,
         based_plane_count: 278,
+        anchor: CompactAirBaseAnchor::State,
     };
     let mut air_base_tracker = CompactAirBaseStatusTracker::default();
     let (rows, ..) = compact_air_base_status_delta_rows(

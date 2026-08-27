@@ -586,6 +586,7 @@ mod tests {
             air_base: Leaf::Measured("39:65".into()),
             air_base_province: Leaf::Measured(6508),
             state_id: Leaf::Measured(193),
+            air_base_anchor: Leaf::Measured(replay_core::AirBaseAnchor::State),
             plane_definition: Leaf::Absent,
             effective_planes: Leaf::Absent,
             equipment: Leaf::Absent,

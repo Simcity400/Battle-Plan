@@ -664,9 +664,14 @@
       "read_u64"
     ],
     "34": [
+      "AIR_BASE_ANCHOR_KIND_HOST",
+      "AIR_BASE_ANCHOR_KIND_POOL_OBSERVED_UNRESOLVED",
+      "AIR_BASE_ANCHOR_KIND_STATE",
       "AIR_BASE_STATUS_DOMAIN_ID",
       "AIR_BASE_STATUS_HEADER_LEN",
+      "AIR_BASE_STATUS_PAYLOAD_VERSION",
       "AIR_BASE_STATUS_ROW_LEN",
+      "AirBaseAnchor",
       "AirBaseStatusState",
       "BTreeMap",
       "COMPACT_STATUS_DELTA_DATA",

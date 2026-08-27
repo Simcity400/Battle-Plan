@@ -1,8 +1,8 @@
 //! d34 `air_base_status` — per-air-base capacity, level and basing occupancy.
 //!
-//! Derived from `world_fold.rs:22614`-`:22696`
+//! Derived from `world_fold.rs:22664`-`:22780`
 //! (`fold_air_base_status`), its payload constants at `:985`-`:986`, `:758` and
-// @world-fold-authority domain=34 functions=fold_air_base_status lines=22614-22696 sha256=7e016bc6ad8f2b0b1038f0abe9d7d59b82698ccc322a61146577a461a5c13311 closure=c194a084432c3e204ded5ab3eb41c58dc413b135312bb8e239a763f481ecb6af
+// @world-fold-authority domain=34 functions=fold_air_base_status lines=22664-22780 sha256=0f7047afd891bf9477e921027b7c458e2b1f69471564da364ae7342d79e3a9da closure=8dc489d1b5bff7a38483e7e02da285d057feb5a7aad7b1fa455ff40e5b3e6c9b
 //! `:499`, the accumulator it folds into (`:1870`), the two consumers of that
 //! accumulator (`:8169`-`:8219`, `:8926`-`:8962`), and the collector read and
 //! payload writer that produce the rows
@@ -11,21 +11,29 @@
 //! no d34 dossier, so the fold and the collector read are the whole basis.
 //!
 //! **Payload grammar** (`world_fold.rs::fold_air_base_status`, writer at
-//! `attach_log.rs:71582`-`:71590`): a 36-byte header followed by `row_count`
-//! fixed 32-byte rows. There is no legacy short row — the fold requires
-//! `payload.len() == 36 + row_count * 32` exactly (`:15161`-`:15168`), so the
+//! `attach_log.rs::compact_air_base_status_data_payload`): a 36-byte header
+//! followed by `row_count` fixed 44-byte rows. There is no legacy short row —
+//! the fold requires `payload.len() == 36 + row_count * 44` exactly, so the
 //! length never selects a row form and the mapper accepts exactly one.
 //!
 //! | header | offset | field | read by the fold? |
 //! |---|---|---|---|
 //! | u64 | `+0`  | `elapsed_wall_ms`         | no |
-//! | u32 | `+8`  | `row_count`               | **yes** (`:15145`) |
+//! | u32 | `+8`  | `row_count`               | **yes** |
 //! | u32 | `+12` | `changed_rows`            | no |
-//! | u32 | `+16` | `status_flags`            | **yes** (`:15146`) |
+//! | u32 | `+16` | `status_flags`            | **yes** |
 //! | u32 | `+20` | `observed_air_base_rows`  | no |
-//! | u32 | `+24` | `observed_pool_rows`      | no |
+//! | u32 | `+24` | `observed_pool_rows`      | **yes** — the bound on unresolved rows |
 //! | u32 | `+28` | `deleted_rows`            | no |
-//! | u32 | `+32` | `reserved`                | **yes**, must be 0 (`:15147`-`:15150`) |
+//! | u32 | `+32` | `payload_version`         | **yes**, must be [`PAYLOAD_VERSION`] |
+//!
+//! **No word here is unread.** The four the fold ignores are read by
+//! `recorder_host/src/domain_data_authority.rs::decode_compact_air_base_status_data_payload`,
+//! which publishes each as a per-domain unit count and cross-checks
+//! `changed_rows`, `observed_air_base_rows` and `deleted_rows` against
+//! `row_count`. `observed_pool_rows` gained its second reader with the anchored
+//! rows below: the fold refuses a record carrying more
+//! `pool_observed_unresolved` rows than the pool walk saw pools.
 //!
 //! **`changed_rows == row_count` is NOT an invariant of this domain.** d63's
 //! fold asserts it (`:9267`); this one never reads the word at all. The writer
@@ -39,14 +47,34 @@
 //! |---|---|---|---|---|---|
 //! | `+0`  | u32 | `air_base_id`       | raw | none (key; zero **not** rejected) |
 //! | `+4`  | u32 | `state_id`          | raw | none |
-//! | `+8`  | u32 | `flags`             | —   | only `1<<0` DELETED is legal (`:15178`) |
+//! | `+8`  | u32 | `flags`             | —   | only `1<<0` DELETED is legal |
 //! | `+12` | u32 | `capacity`          | raw | none |
 //! | `+16` | u32 | `building_level`    | raw | none |
 //! | `+20` | u32 | `based_wing_count`  | raw | none |
 //! | `+24` | u32 | `based_plane_count` | raw | none |
-//! | `+28` | u32 | `province_id`       | raw | none; `0` means unobtained (`:15181`-`:15184`) |
+//! | `+28` | u32 | `province_id`       | raw | none; `0` means no province of its own |
+//! | `+32` | u32 | `anchor_kind`       | —   | one of the three [`ANCHOR_KIND_STATE`] values |
+//! | `+36` | u32 | `host_object_type`  | raw | nonzero iff `anchor_kind == 1` |
+//! | `+40` | u32 | `host_object_id`    | raw | nonzero iff `anchor_kind == 1` |
 //!
-//! **No scale factors anywhere.** Every one of the six carried values is a u32
+//! # An air base is placed by a state OR by a host, never by neither
+//!
+//! `runs/ue_d34_pool_bases/RE_NON_STATE_AIR_BASE.md` is the engine evidence, and
+//! the engine states the rule in its own assertion text: a `CAirBase` with no
+//! state row and no host reference is refused at creation
+//! (*"Invalid air base, no carrier or state"*, `strategicair.cpp:0x1ac7`), and
+//! the province slot at `CAirBase+0x70` is derived only when the state pointer
+//! at `+0x68` is set. So a carrier-hosted base has **no province at all**, and
+//! `province_id == 0` on such a row is the world, not a gap in the reading.
+//!
+//! `anchor_kind == 2` is neither: the wing-pool walk named that air-base id and
+//! no `CAirBase` walk reached the object. The row exists so the id is named
+//! rather than dropped, and its two occupancy counters are what the pool walk
+//! measured. It carries **no** status bit: d34 has no expected-partial
+//! tolerance, so a failure-class bit would make the recorder withhold every row
+//! of the record — this one included. The row is the account.
+//!
+//! **No scale factors anywhere.** Every one of the nine carried values is a u32
 //! the fold stores verbatim (`:15192`-`:15203`) and every consumer reads back
 //! verbatim (`:8939`-`:8955`). There is no `FIXED_SCALE` word in the header and
 //! no division in the fold, so there is no continuous field and nothing to
@@ -77,36 +105,47 @@
 //!
 //! # Four-state semantics
 //!
-//! **`province_id == 0` is `unknown`, and the fold says so in words.**
-//! `world_fold.rs::fold_air_base_status`: *"A7 exact-a729 placement closure reuses the
-//! former reserved word for the pointer-free CAirBase -> CProvince id. Zero
-//! remains accepted for older recordings and means province unobtained."* That
-//! is recipe step-2 case 3 — the value existed and the recording could not carry
-//! it — and it is d20's legacy-row case in a different shape: the *source*, not
-//! the world, is what is missing. The collector corroborates it from the other
-//! side: `read_compact_air_base_record` returns `None` (dropping the row
-//! entirely, counted as invalid) when the province pointer, its vtable, its
-//! back-link to the state, or its id fails to read
-//! (`attach_log.rs:56169`-`:56176`), so **today's collector cannot emit a zero
-//! province at all** — a zero can only come from a recording written before the
-//! word carried the id. Not `null`: every air base sits in a province, so the
-//! relation never genuinely points at nothing. Not `absent`: the concept applies
-//! to every row. Measured: **0** zero-province rows across all 1014 rows of the
-//! reference capture, so the state is reachable but unseen there.
+//! **`anchor_kind` decides which empty state a zero is, and it decides it for
+//! every relation a row carries.** Zero is a legal state id, a legal province
+//! id and a legal registry id, so no such word can be read on its own; the row
+//! says which of the four states applies.
+//!
+//! | | `state_id` | `province_id == 0` | absent host pair |
+//! |---|---|---|---|
+//! | `anchor_kind == 0` state | the id, zero included — the fold applies no zero check and this mapper may not add one | *unknown* — the base HAS a province and the recording failed to carry it | *null* — a state base is known to have no host |
+//! | `anchor_kind == 1` host | *null* — a base with no state row has no owning state | *null* — and so no province of its own either | (never absent: a host row with no host is refused) |
+//! | `anchor_kind == 2` unresolved | *unknown* — no air-base object was reached | *unknown* — likewise | *unknown* — likewise |
+//!
+//! Every *null* cell is the engine's own mutual exclusion, not an inference:
+//! a `CAirBase` is valid iff it has a state row **or** a host
+//! (`strategicair.cpp:0x1ac7`), the province slot is derived only from the state
+//! (`RE_NON_STATE_AIR_BASE.md` §2), and the recorder refuses a state-anchored
+//! row that carries a host pair. Collapsing either cell into *unknown* would say
+//! "this existed and we missed it" about something the engine guarantees is not
+//! there — the exact conflation this format's four states exist to prevent
+//! (`value.rs` module docs).
+//!
+//! [`AirBaseRow::state`], [`AirBaseRow::empty_province`] and
+//! [`AirBaseRow::empty_host`] are the one implementation of that table. Measured on the reference capture: **0**
+//! zero-province rows across all 1014 rows, all state-anchored.
 //!
 //! *Recorded conflict.* Both JSON consumers render a zero province as
-//! `Value::Null` (`world_fold.rs:8940`-`:8944`, `:8948`-`:8952`, and
-//! `:8186`-`:8187` filters it out). JSON has no `unknown`, so that is the fold's
-//! uniform value-vs-nothing collapse, not a semantic claim that outranks the
-//! fold's own comment.
+//! `Value::Null` (`world_fold.rs::build_order_of_battle`,
+//! `world_fold.rs::build_strategic_air`). JSON has no `unknown`, so that is the
+//! fold's uniform value-vs-nothing collapse, not a semantic claim that outranks
+//! the table above. Both now also emit the anchor beside it, so a consumer can
+//! tell the two zeroes apart — which is the whole reason the anchor is on the
+//! wire and not inferred.
 //!
-//! **Nothing else reaches an empty state.** `state_id`, `capacity`,
-//! `building_level`, `based_wing_count` and `based_plane_count` are read
-//! unconditionally with no gate, no range check and no sentinel
-//! (`world_fold.rs::fold_air_base_status`); a zero in any of them is a real measured
-//! value — an air base with no wings based on it reads `0` and that is a fact,
-//! not a missing reading. So the schema declares `unknown_capable` on
-//! `province_id` and **no** `optional` and **no** `nullable` field at all.
+//! **Nothing else reaches an empty state.** `capacity`, `building_level`,
+//! `based_wing_count`, `based_plane_count` and `anchor_kind` are read
+//! unconditionally with no gate and no sentinel
+//! (`world_fold.rs::fold_air_base_status`); a zero in any of them is a real
+//! measured value — an air base with no wings based on it reads `0` and that is
+//! a fact, not a missing reading. So the schema declares both empty states on
+//! the four placement fields and on nothing else, and **no** `optional` field at
+//! all: nothing here is ever inapplicable, because every row is an air base and
+//! every air base has a placement.
 //!
 //! **`flags` is not a field.** Its only legal bit is DELETED (`world_fold.rs::fold_air_base_status`
 //! rejects every other bit), and DELETED is a wire tombstone — a removal, not a
@@ -135,6 +174,9 @@ pub mod field {
     pub const BASED_WING_COUNT: u32 = 5;
     pub const BASED_PLANE_COUNT: u32 = 6;
     pub const PROVINCE_ID: u32 = 7;
+    pub const ANCHOR_KIND: u32 = 8;
+    pub const HOST_OBJECT_TYPE: u32 = 9;
+    pub const HOST_OBJECT_ID: u32 = 10;
 }
 
 // --- Payload grammar, from `world_fold.rs:985`-`:986`, `:758`, `:499`. --------
@@ -142,7 +184,22 @@ pub mod field {
 /// `AIR_BASE_STATUS_HEADER_LEN`, `world_fold.rs::AIR_BASE_STATUS_HEADER_LEN`.
 pub const HEADER_LEN: usize = 36;
 /// `AIR_BASE_STATUS_ROW_LEN`, `world_fold.rs::AIR_BASE_STATUS_ROW_LEN`. Fixed; no legacy form.
-pub const ROW_LEN: usize = 32;
+pub const ROW_LEN: usize = 44;
+
+/// `AIR_BASE_STATUS_PAYLOAD_VERSION`, `world_fold.rs::AIR_BASE_STATUS_PAYLOAD_VERSION`,
+/// in the header word that used to be `reserved`. A payload declaring any other
+/// version is refused rather than reinterpreted.
+pub const PAYLOAD_VERSION: u32 = 1;
+
+/// `world_fold.rs::AIR_BASE_ANCHOR_KIND_STATE`. Reached through the per-state
+/// air-base table; `province_id` is the base's own.
+pub const ANCHOR_KIND_STATE: u32 = 0;
+/// `world_fold.rs::AIR_BASE_ANCHOR_KIND_HOST`. Reached through the manager's
+/// stateless vector; the host handle is the only placement the base has.
+pub const ANCHOR_KIND_HOST: u32 = 1;
+/// `world_fold.rs::AIR_BASE_ANCHOR_KIND_POOL_OBSERVED_UNRESOLVED`. The wing-pool
+/// walk named this id and no `CAirBase` walk reached it.
+pub const ANCHOR_KIND_POOL_OBSERVED_UNRESOLVED: u32 = 2;
 
 /// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs::ROW_FLAG_DELETED_LOW_BIT`. The **only** legal flag bit:
 /// `flags & !ROW_FLAG_DELETED_LOW_BIT != 0` is a hard error (`:15178`-`:15180`).
@@ -204,8 +261,12 @@ pub fn schema() -> Schema {
         Field::new(f::AIR_BASE_ID, Kind::Unsigned).key(0),
         // The owning state's id (`world_fold.rs::fold_air_base_status`). `ContentId`: a state is
         // defined by map content, so state 1081 is whatever state the mod set
-        // defines — the same call d22 makes for `province_state_id`.
-        Field::new(f::STATE_ID, Kind::ContentId),
+        // defines — the same call d22 makes for `province_state_id`. Both empty
+        // states, because a base with no state row has no owning state at all;
+        // see the module docs.
+        Field::new(f::STATE_ID, Kind::ContentId)
+            .nullable()
+            .unknown_capable(),
         // Plane slots the base provides (`:15198`). A capacity that is spent and
         // rebuilt, not a counter: `Unsigned`, and it falls when the base is
         // damaged, so `Monotone` would be a false hint.
@@ -220,10 +281,28 @@ pub fn schema() -> Schema {
         Field::new(f::BASED_WING_COUNT, Kind::Unsigned),
         Field::new(f::BASED_PLANE_COUNT, Kind::Unsigned),
         // The province the base sits in (`:15184`). `ContentId` — a province is
-        // content-defined, exactly as d20 and d22 class theirs. `unknown_capable`
-        // and nothing else: see the module docs for why `0` is record-state contract's *unknown*
-        // rather than null, absent, or a real province zero.
-        Field::new(f::PROVINCE_ID, Kind::ContentId).unknown_capable(),
+        // content-defined, exactly as d20 and d22 class theirs. BOTH empty
+        // states, because `anchor_kind` decides which one a zero is: see the
+        // module docs.
+        Field::new(f::PROVINCE_ID, Kind::ContentId)
+            .nullable()
+            .unknown_capable(),
+        // Which of the three placements this row carries. `Unsigned`: an engine
+        // enum this producer defines, not content, and never absent -- every row
+        // declares one, and a row that does not is refused rather than mapped to
+        // an empty state. `runs/ue_d34_pool_bases/RE_NON_STATE_AIR_BASE.md`.
+        Field::new(f::ANCHOR_KIND, Kind::Unsigned),
+        // The hosting object's reference pair (`CAirBase+0x60`). The type word is
+        // a clausewitz registry id and the id word is that registry's instance
+        // id -- for a carrier base the pair is `(CSHIP_TYPE, d29 ship instance
+        // id)`, which is the join. Both empty states, for the reason in the
+        // module docs.
+        Field::new(f::HOST_OBJECT_TYPE, Kind::Unsigned)
+            .nullable()
+            .unknown_capable(),
+        Field::new(f::HOST_OBJECT_ID, Kind::Unsigned)
+            .nullable()
+            .unknown_capable(),
     ];
 
     Schema {
@@ -257,6 +336,7 @@ pub struct PayloadHeader {
     pub observed_air_base_rows: u32,
     pub observed_pool_rows: u32,
     pub deleted_rows: u32,
+    pub payload_version: u32,
 }
 
 /// Read the header **without** validating the payload's total length.
@@ -265,7 +345,7 @@ pub struct PayloadHeader {
 /// load-bearing (recipe event-continuity contract: "derive the exclusion's POSITION from your fold's
 /// call order"). `fold_air_base_status` runs, in this sequence:
 ///
-/// 1. `need(payload, 36)` and the `reserved != 0` rejection (`:15140`-`:15150`);
+/// 1. `need(payload, 36)` and the `payload_version != 1` rejection;
 /// 2. `handle_compact_failure` — returns without folding on a failure status;
 /// 3. `reject_delta_before_baseline` — returns without folding;
 /// 4. only then the exact-length check (`:15161`-`:15168`).
@@ -280,11 +360,12 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
             payload.len()
         ));
     }
-    // `world_fold.rs::fold_air_base_status`: the trailing header word must be zero.
-    let reserved = u32_at(payload, 32);
-    if reserved != 0 {
+    // `world_fold.rs::fold_air_base_status`: the trailing header word declares the
+    // payload version, and only the current one folds.
+    let payload_version = u32_at(payload, 32);
+    if payload_version != PAYLOAD_VERSION {
         return Err(format!(
-            "air_base_status header reserved field is nonzero ({reserved})"
+            "air_base_status payload version {payload_version} != {PAYLOAD_VERSION}"
         ));
     }
     Ok(PayloadHeader {
@@ -295,6 +376,7 @@ pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String
         observed_air_base_rows: u32_at(payload, 20),
         observed_pool_rows: u32_at(payload, 24),
         deleted_rows: u32_at(payload, 28),
+        payload_version,
     })
 }
 
@@ -339,11 +421,70 @@ pub struct AirBaseRow {
     pub building_level: u32,
     pub based_wing_count: u32,
     pub based_plane_count: u32,
-    /// `None` is the `province unobtained` sentinel (`0`), record-state contract's *unknown*.
+    /// `None` is the zero sentinel. WHICH empty state that is depends on
+    /// `anchor_kind`, and [`AirBaseRow::empty_province`] is the one place that
+    /// decides: *null* on a host-anchored row, because the engine derives the
+    /// province slot only when the state pointer is set
+    /// (`runs/ue_d34_pool_bases/RE_NON_STATE_AIR_BASE.md` §2), and *unknown*
+    /// otherwise.
     pub province_id: Option<u32>,
+    /// One of [`ANCHOR_KIND_STATE`], [`ANCHOR_KIND_HOST`],
+    /// [`ANCHOR_KIND_POOL_OBSERVED_UNRESOLVED`].
+    pub anchor_kind: u32,
+    /// The hosting object's `(type, id)` pair, `None` on a row with no host.
+    pub host: Option<(u32, u32)>,
 }
 
-/// Parse and validate one 32-byte row.
+impl AirBaseRow {
+    /// Which empty state an absent host is, for THIS row.
+    ///
+    /// A state-anchored base is *known* to have no host: the engine's two
+    /// validity rules are mutually exclusive (`RE_NON_STATE_AIR_BASE.md` §3) and
+    /// the recorder refuses a state-anchored row that carries a host pair. That
+    /// is [`Value::Null`] — "the relation genuinely points at nothing" — and not
+    /// [`Value::Unknown`], which would say the host existed and was not
+    /// captured. On a `pool_observed_unresolved` row no air-base object was
+    /// reached at all, so *unknown* is exactly right there.
+    pub fn empty_host(&self) -> Value {
+        match self.anchor_kind {
+            ANCHOR_KIND_STATE => Value::Null,
+            _ => Value::Unknown,
+        }
+    }
+
+    /// The owning state, whose empty states are chosen by `anchor_kind`.
+    ///
+    /// A state-anchored row's id is a VALUE even when it is zero: the fold
+    /// applies no zero check to this word, and this mapper may not refuse or
+    /// reinterpret a row the fold folds. The other two kinds have no owning
+    /// state at all — the host-anchored one because the engine's two validity
+    /// rules are mutually exclusive (`RE_NON_STATE_AIR_BASE.md` §3), which is
+    /// *null*, and the unresolved one because no air-base object was reached,
+    /// which is *unknown*.
+    pub fn state(&self) -> Value {
+        match self.anchor_kind {
+            ANCHOR_KIND_STATE => Value::ContentId(self.state_id as u64),
+            ANCHOR_KIND_HOST => Value::Null,
+            _ => Value::Unknown,
+        }
+    }
+
+    /// Which empty state an absent province is, for THIS row.
+    ///
+    /// The mirror of [`AirBaseRow::empty_host`]: a base with no state row has no
+    /// province of its own — the engine derives the slot only from the state
+    /// (`RE_NON_STATE_AIR_BASE.md` §2) — so a host-anchored zero is *null*. A
+    /// state-anchored zero is a province the recording failed to carry, and an
+    /// unresolved row captured nothing; both are *unknown*.
+    pub fn empty_province(&self) -> Value {
+        match self.anchor_kind {
+            ANCHOR_KIND_HOST => Value::Null,
+            _ => Value::Unknown,
+        }
+    }
+}
+
+/// Parse and validate one [`ROW_LEN`]-byte row.
 ///
 /// The check order mirrors the fold exactly, because it decides which of two
 /// errors a doubly-invalid row reports and, more importantly, that a **deleted**
@@ -375,6 +516,25 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<AirBaseRow, String> {
              (max {MAX_PROVINCE_ID})"
         ));
     }
+    let anchor_kind = u32_at(row, 32);
+    let host_object_type = u32_at(row, 36);
+    let host_object_id = u32_at(row, 40);
+    // `world_fold.rs::fold_air_base_status`: an unknown kind is a hard error, and
+    // a host-anchored row with no host is one too.
+    match anchor_kind {
+        ANCHOR_KIND_STATE | ANCHOR_KIND_POOL_OBSERVED_UNRESOLVED => {}
+        ANCHOR_KIND_HOST if host_object_type != 0 && host_object_id != 0 => {}
+        ANCHOR_KIND_HOST => {
+            return Err(format!(
+                "air_base_status row {air_base_id} is host-anchored and carries no host"
+            ))
+        }
+        other => {
+            return Err(format!(
+                "air_base_status row {air_base_id} has unknown anchor kind {other}"
+            ))
+        }
+    }
     Ok(AirBaseRow {
         air_base_id,
         state_id,
@@ -384,6 +544,8 @@ pub fn parse_row(row: &[u8]) -> core::result::Result<AirBaseRow, String> {
         based_wing_count: u32_at(row, 20),
         based_plane_count: u32_at(row, 24),
         province_id: (province_word != PROVINCE_ID_UNOBTAINED).then_some(province_word),
+        anchor_kind,
+        host: (anchor_kind == ANCHOR_KIND_HOST).then_some((host_object_type, host_object_id)),
     })
 }
 
@@ -395,7 +557,7 @@ pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
 }
 
 /// One compact row of the `air_bases` table, as the collector emits it today,
-/// onto its stored Record. `row` is the raw 32-byte row slice (the caller has
+/// onto its stored Record. `row` is the raw [`ROW_LEN`]-byte slice (the caller has
 /// already consumed the table header via [`split_payload`]); d34 has exactly one
 /// row form, so length selects nothing and a wrong length is rejected.
 /// `frame_tick` is derived-field contract's derived-field input (stored = v + c * (frame_tick >> u));
@@ -406,7 +568,7 @@ pub fn key_from_row(row: &[u8]) -> core::result::Result<Key, String> {
 /// reject is an `Err` here, never a coerced value. A **deleted** row is a removal
 /// and has no record at all — it is an `Err` here and the caller (see
 /// [`Accumulator::fold_payload`]) drops the key instead. Nothing in this function
-/// can panic on any 32-byte input.
+/// can panic on any [`ROW_LEN`]-byte input.
 pub fn record_from_row(
     collection: &Collection,
     row: &[u8],
@@ -420,7 +582,7 @@ pub fn record_from_row(
 }
 
 /// [`record_from_row`] on an already-parsed row, so a caller that must branch on
-/// [`AirBaseRow::deleted`] does not parse the same 32 bytes twice.
+/// [`AirBaseRow::deleted`] does not parse the same bytes twice.
 pub fn record_from_parsed_row(
     collection: &Collection,
     parsed: &AirBaseRow,
@@ -434,15 +596,24 @@ pub fn record_from_parsed_row(
     let mut values = Vec::with_capacity(collection.fields.len());
     for f in collection.value_fields() {
         let value = match f.field_id {
-            field::STATE_ID => Value::ContentId(parsed.state_id as u64),
+            field::STATE_ID => parsed.state(),
             field::CAPACITY => Value::Unsigned(parsed.capacity as u64),
             field::BUILDING_LEVEL => Value::Unsigned(parsed.building_level as u64),
             field::BASED_WING_COUNT => Value::Unsigned(parsed.based_wing_count as u64),
             field::BASED_PLANE_COUNT => Value::Unsigned(parsed.based_plane_count as u64),
-            // The one empty state this domain reaches. See the module docs.
+            // Both empty states, chosen by the anchor. See the module docs.
             field::PROVINCE_ID => match parsed.province_id {
                 Some(id) => Value::ContentId(id as u64),
-                None => Value::Unknown,
+                None => parsed.empty_province(),
+            },
+            field::ANCHOR_KIND => Value::Unsigned(parsed.anchor_kind as u64),
+            field::HOST_OBJECT_TYPE => match parsed.host {
+                Some((host_object_type, _)) => Value::Unsigned(host_object_type as u64),
+                None => parsed.empty_host(),
+            },
+            field::HOST_OBJECT_ID => match parsed.host {
+                Some((_, host_object_id)) => Value::Unsigned(host_object_id as u64),
+                None => parsed.empty_host(),
             },
             other => {
                 // A collection this mapper does not know how to fill. Filling it
@@ -623,9 +794,10 @@ mod tests {
             .expect("field is in the schema")
     }
 
-    /// A raw 32-byte row, packed the way the collector packs one
-    /// (`attach_log.rs:71596`-`:71603`) — note that `province_id` is LAST, after
-    /// the two occupancy counters, not adjacent to `state_id`.
+    /// A raw row, packed the way the collector packs one
+    /// (`attach_log.rs::compact_air_base_status_data_payload`) — note that
+    /// `province_id` is not adjacent to `state_id` but sits after the two
+    /// occupancy counters, and the anchor triple is last.
     #[allow(clippy::too_many_arguments)]
     fn raw_row(
         air_base_id: u32,
@@ -637,6 +809,35 @@ mod tests {
         based_plane_count: u32,
         province_id: u32,
     ) -> Vec<u8> {
+        raw_row_anchored(
+            air_base_id,
+            state_id,
+            flags,
+            capacity,
+            building_level,
+            based_wing_count,
+            based_plane_count,
+            province_id,
+            ANCHOR_KIND_STATE,
+            0,
+            0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn raw_row_anchored(
+        air_base_id: u32,
+        state_id: u32,
+        flags: u32,
+        capacity: u32,
+        building_level: u32,
+        based_wing_count: u32,
+        based_plane_count: u32,
+        province_id: u32,
+        anchor_kind: u32,
+        host_object_type: u32,
+        host_object_id: u32,
+    ) -> Vec<u8> {
         let mut row = Vec::with_capacity(ROW_LEN);
         for word in [
             air_base_id,
@@ -647,6 +848,9 @@ mod tests {
             based_wing_count,
             based_plane_count,
             province_id,
+            anchor_kind,
+            host_object_type,
+            host_object_id,
         ] {
             row.extend_from_slice(&word.to_le_bytes());
         }
@@ -657,6 +861,11 @@ mod tests {
     /// Every field a distinct value, so a transposition cannot pass.
     fn full_row() -> Vec<u8> {
         raw_row(407, 1081, 0, 2000, 10, 23, 1995, 13367)
+    }
+
+    /// The shape lane UE added: no state, no province, a hosting object.
+    fn host_row() -> Vec<u8> {
+        raw_row_anchored(403, 0, 0, 12, 0, 1, 1, 0, ANCHOR_KIND_HOST, 51, 4211)
     }
 
     fn payload(status_flags: u32, rows: &[Vec<u8>]) -> Vec<u8> {
@@ -677,7 +886,7 @@ mod tests {
         p.extend_from_slice(&0u32.to_le_bytes()); // observed_air_base_rows
         p.extend_from_slice(&0u32.to_le_bytes()); // observed_pool_rows
         p.extend_from_slice(&0u32.to_le_bytes()); // deleted_rows
-        p.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        p.extend_from_slice(&PAYLOAD_VERSION.to_le_bytes());
         assert_eq!(p.len(), HEADER_LEN);
         for row in rows {
             p.extend_from_slice(row);
@@ -717,30 +926,132 @@ mod tests {
         // derived (recipe step 5).
         assert!(!keys[0].optional && !keys[0].nullable && !keys[0].unknown_capable);
         assert!(keys[0].derived.is_none());
-        assert_eq!(c.fields.len(), 7, "1 key + 6 carried values");
+        assert_eq!(c.fields.len(), 10, "1 key + 9 carried values");
     }
 
     // --- Step 8.3: the states the schema declares, through the mapper --------
 
+    /// The two empty states are declared on exactly the four fields that reach
+    /// them, and `optional` on none.
+    ///
+    /// `optional` would claim an air base can lack the CONCEPT of a placement.
+    /// Every row is an air base and every air base has one, so nothing here is
+    /// ever inapplicable. `anchor_kind` carries neither state: every row
+    /// declares one, and a row that does not is refused by [`parse_row`] rather
+    /// than mapped to an empty value.
     #[test]
-    fn the_only_declared_capability_is_unknown_on_the_province() {
-        // The schema declares exactly one empty state on exactly one field, so
-        // the mapper may emit exactly that one. `optional` would claim an air
-        // base can lack the concept of a province; `nullable` would claim we know
-        // it sits in none. The fold says the opposite (`:15181`-`:15184`) and the
-        // collector cannot even emit a zero (`attach_log.rs:56169`-`:56176`).
+    fn both_empty_states_are_declared_on_exactly_the_four_placement_fields() {
         let c = collection();
         assert_eq!(c.optional_count(), 0, "no field is ever inapplicable");
-        assert!(
-            c.value_fields().all(|f| !f.nullable),
-            "no field is a relation that can point at nothing"
-        );
+        let placement = vec![
+            field::STATE_ID,
+            field::PROVINCE_ID,
+            field::HOST_OBJECT_TYPE,
+            field::HOST_OBJECT_ID,
+        ];
+        let nullable: Vec<u32> = c
+            .value_fields()
+            .filter(|f| f.nullable)
+            .map(|f| f.field_id)
+            .collect();
         let unknown_capable: Vec<u32> = c
             .value_fields()
             .filter(|f| f.unknown_capable)
             .map(|f| f.field_id)
             .collect();
-        assert_eq!(unknown_capable, vec![field::PROVINCE_ID]);
+        assert_eq!(nullable, placement);
+        assert_eq!(unknown_capable, placement);
+    }
+
+    /// *null* and *unknown* are selected by `anchor_kind`, and never collapsed.
+    ///
+    /// The table in the module docs, driven through the real mapper from raw row
+    /// bytes. Each cell is a different sentence about the world, and this is the
+    /// test that fails if any two of them become the same value.
+    ///
+    /// kills: mapping an absent host to `Unknown` on a state-anchored row (the
+    /// engine guarantees a state base has no host, so that would claim a host
+    /// existed and was missed); mapping a host-anchored zero province to
+    /// `Unknown` (same claim, one relation over); mapping either to a real zero;
+    /// and dropping `.nullable()` from the schema, which makes the whole mapping
+    /// unrepresentable.
+    #[test]
+    fn the_empty_state_of_a_placement_is_chosen_by_the_anchor() {
+        let c = collection();
+        let state = index_of(&c, field::STATE_ID);
+        let province = index_of(&c, field::PROVINCE_ID);
+        let host_type = index_of(&c, field::HOST_OBJECT_TYPE);
+        let host_id = index_of(&c, field::HOST_OBJECT_ID);
+
+        // State-anchored: state and province are real readings, the host is
+        // KNOWN absent.
+        let state_row = record_from_row(&c, &full_row(), 0).expect("maps");
+        assert_eq!(state_row.values[state], Value::ContentId(1081));
+        assert_eq!(state_row.values[province], Value::ContentId(13367));
+        assert_eq!(state_row.values[host_type], Value::Null);
+        assert_eq!(state_row.values[host_id], Value::Null);
+
+        // State-anchored with no province: the base HAS one and the recording
+        // did not carry it. Its state id stays a value — including a zero one,
+        // which is `a_real_zero_is_a_value_not_an_empty_state`'s subject.
+        let unobtained = raw_row(407, 1081, 0, 2000, 10, 23, 1995, PROVINCE_ID_UNOBTAINED);
+        let state_zero = record_from_row(&c, &unobtained, 0).expect("maps");
+        assert_eq!(state_zero.values[province], Value::Unknown);
+        assert_eq!(state_zero.values[host_type], Value::Null);
+
+        // Host-anchored: the state and the province are KNOWN absent, the host
+        // is measured. A `ContentId(0)` in either would be a fabricated state.
+        let host = record_from_row(&c, &host_row(), 0).expect("maps");
+        assert_eq!(host.values[state], Value::Null);
+        assert_eq!(host.values[province], Value::Null);
+        assert_eq!(host.values[host_type], Value::Unsigned(51));
+        assert_eq!(host.values[host_id], Value::Unsigned(4211));
+
+        // Pool-observed unresolved: nothing was reached, so nothing is known.
+        let unresolved = raw_row_anchored(
+            403,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            0,
+            ANCHOR_KIND_POOL_OBSERVED_UNRESOLVED,
+            0,
+            0,
+        );
+        let unreached = record_from_row(&c, &unresolved, 0).expect("maps");
+        assert_eq!(unreached.values[state], Value::Unknown);
+        assert_eq!(unreached.values[province], Value::Unknown);
+        assert_eq!(unreached.values[host_type], Value::Unknown);
+        assert_eq!(unreached.values[host_id], Value::Unknown);
+
+        // The four states stay four states.
+        assert_ne!(Value::Null, Value::Unknown);
+    }
+
+    /// A row carrying BOTH empty states survives the encoder.
+    ///
+    /// `nullable` and `unknown_capable` are declarations, and a declaration the
+    /// encoder cannot represent is worse than no declaration at all: the mapper
+    /// would build records that fail to encode. A host row carries *null* in two
+    /// fields and real values in two others, so it exercises the pair.
+    ///
+    /// kills: dropping `.nullable()` from any of the four placement fields.
+    #[test]
+    fn a_host_row_carrying_both_empty_states_roundtrips_byte_for_byte() {
+        let c = collection();
+        let record = record_from_row(&c, &host_row(), 0).expect("maps");
+        let mut bytes = Vec::new();
+        record.encode(&c, &mut bytes).expect("encodes");
+        let (back, pos) = Record::decode(&c, &bytes, 0).expect("decodes");
+        assert_eq!(pos, bytes.len(), "consumes exactly its own bytes");
+        assert_eq!(back, record, "decode reproduces the record");
+
+        let mut reencoded = Vec::new();
+        back.encode(&c, &mut reencoded).expect("re-encodes");
+        assert_eq!(reencoded, bytes, "decode/encode is byte-identical");
     }
 
     #[test]
@@ -1051,12 +1362,14 @@ mod tests {
         let mut over = p.clone();
         over.push(0);
         assert!(split_payload(&over).is_err());
-        // A non-zero reserved word (`world_fold.rs::fold_air_base_status`), every bit.
-        for bit in 0..32u32 {
+        // Any version word but the current one
+        // (`world_fold.rs::fold_air_base_status`). Zero is the version-0 shape
+        // whose rows were four bytes shorter and carried no anchor.
+        for version in [0u32, 2, 3, u32::MAX] {
             let mut bad = p.clone();
-            bad[32..36].copy_from_slice(&(1u32 << bit).to_le_bytes());
-            assert!(peek_header(&bad).is_err(), "reserved bit {bit}");
-            assert!(split_payload(&bad).is_err(), "reserved bit {bit}");
+            bad[32..36].copy_from_slice(&version.to_le_bytes());
+            assert!(peek_header(&bad).is_err(), "version {version}");
+            assert!(split_payload(&bad).is_err(), "version {version}");
         }
         // A row_count whose byte length overflows `usize` must be rejected, not
         // wrapped into a plausible small length.
@@ -1075,8 +1388,9 @@ mod tests {
     #[test]
     fn changed_rows_is_carried_but_never_enforced() {
         // d63's fold asserts `changed_rows == row_count` (`:9267`); THIS fold
-        // never reads the word (`:15145`-`:15147` read only rows, status and
-        // reserved). Enforcing it here would refuse a payload the recorder folds.
+        // never reads the word (`:15145`-`:15147` read only rows, status, the
+        // pool count and the version). Enforcing it here would refuse a payload
+        // the recorder folds.
         let p = payload_with_counts(0, &[full_row()], 1, 0);
         let (header, _) = split_payload(&p).expect("accepted");
         assert_eq!(header.changed_rows, 0);
@@ -1101,6 +1415,57 @@ mod tests {
         assert_eq!(h.observed_air_base_rows, 374);
         assert_eq!(h.observed_pool_rows, 302);
         assert_eq!(h.deleted_rows, 5);
+        assert_eq!(h.payload_version, PAYLOAD_VERSION);
+    }
+
+    /// A host-anchored row maps onto the anchor triple, and neither half of the
+    /// pair may be missing.
+    ///
+    /// kills: reading either host word from the wrong offset; dropping the
+    /// host-anchored-with-no-host refusal; admitting an anchor kind the grammar
+    /// does not define.
+    #[test]
+    fn the_anchor_triple_round_trips_and_a_hostless_host_row_is_refused() {
+        let c = collection();
+        let parsed = parse_row(&host_row()).expect("a host row parses");
+        assert_eq!(parsed.anchor_kind, ANCHOR_KIND_HOST);
+        assert_eq!(parsed.host, Some((51, 4211)));
+        assert_eq!(parsed.province_id, None);
+        let record = record_from_row(&c, &host_row(), 0).expect("maps");
+        assert_eq!(
+            record.values[index_of(&c, field::ANCHOR_KIND)],
+            Value::Unsigned(ANCHOR_KIND_HOST as u64)
+        );
+        assert_eq!(
+            record.values[index_of(&c, field::HOST_OBJECT_TYPE)],
+            Value::Unsigned(51)
+        );
+        assert_eq!(
+            record.values[index_of(&c, field::HOST_OBJECT_ID)],
+            Value::Unsigned(4211)
+        );
+
+        let state_record = record_from_row(&c, &full_row(), 0).expect("maps");
+        assert_eq!(
+            state_record.values[index_of(&c, field::ANCHOR_KIND)],
+            Value::Unsigned(ANCHOR_KIND_STATE as u64)
+        );
+        // What the state row's EMPTY host words are is
+        // `the_empty_state_of_a_placement_is_chosen_by_the_anchor`'s subject.
+
+        // Host-anchored with either half of the pair missing.
+        for (host_type, host_id) in [(0u32, 4211u32), (51, 0), (0, 0)] {
+            let row = raw_row_anchored(403, 0, 0, 12, 0, 1, 1, 0, ANCHOR_KIND_HOST, host_type, host_id);
+            assert!(
+                parse_row(&row).is_err(),
+                "host-anchored ({host_type}, {host_id}) must be refused"
+            );
+        }
+        // An anchor kind the grammar does not define.
+        for kind in [3u32, 4, u32::MAX] {
+            let row = raw_row_anchored(403, 0, 0, 12, 0, 1, 1, 0, kind, 0, 0);
+            assert!(parse_row(&row).is_err(), "anchor kind {kind} must be refused");
+        }
     }
 
     // --- The accumulator ------------------------------------------------------
@@ -1193,9 +1558,9 @@ mod tests {
         // the delta check, because `need()` and the reserved check precede
         // `reject_delta_before_baseline` in the fold (`:15140`-`:15150`).
         let mut fresh = Accumulator::new();
-        let mut bad_reserved = payload(0, &[]);
-        bad_reserved[32..36].copy_from_slice(&1u32.to_le_bytes());
-        assert!(fresh.fold_payload(&c, &bad_reserved, true).is_err());
+        let mut bad_version = payload(0, &[]);
+        bad_version[32..36].copy_from_slice(&0u32.to_le_bytes());
+        assert!(fresh.fold_payload(&c, &bad_version, true).is_err());
         assert!(fresh.fold_payload(&c, &[], true).is_err());
     }
 

@@ -663,6 +663,48 @@ pub const PASSIVE_PRODUCTION_REFUSALS: &[PassiveProductionRefusal] = &[
 
 pub const PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS: &[CompactDomainId] = &[71, 82, 87];
 
+/// A domain whose producer is BUILT and whose only source is a render session
+/// that exists on an early-LAUNCH capture.
+///
+/// `schedulable: false` on its own reads as "never built". For a domain on this
+/// list that reading is wrong: it has a lane, a fold arm and a wire emission,
+/// and what it lacks is a capture shape that can feed it — the owner's
+/// 2026-08-25 RC capture shape has the owner hosting the game, so no product
+/// capture reaches it. This list is where that reason is recorded, because
+/// [`PASSIVE_PRODUCTION_REFUSALS`] covers mandatory-profile domains and d77 is
+/// not one.
+///
+/// **d80 `production_map_content_snapshot_live` is deliberately NOT here.** Lane
+/// UA read it as "the same shape as d77"; it is not. There is no d80 lane, the
+/// recorder's fold dispatcher has no arm for it, and the collector emits no d80
+/// record — so `reserved` / `schedulable: false` is already the whole and
+/// correct account of it, and adding a gate reason would assert a producer that
+/// does not exist. `every_early_launch_only_producer_has_a_fold_arm`
+/// (`recorder_host`) is what keeps a not-built domain off this list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EarlyLaunchOnlyProducer {
+    pub id: CompactDomainId,
+    pub recorded_on: &'static str,
+    pub reason: &'static str,
+}
+
+pub const EARLY_LAUNCH_ONLY_PRODUCERS: &[EarlyLaunchOnlyProducer] = &[
+    EarlyLaunchOnlyProducer {
+        id: 77,
+        recorded_on: "2026-08-27",
+        reason: "production_render_submits_live: built (lane production_render_submit_live,                  world_fold.rs::fold_production_render,                  collector/src/attach_log.rs::insert_production_render_record_before_frame_end)                  and gated on the render session, which run_early_render_startup opens only when                  control.early_render_capture_v1 is set — and recorder_host/src/main.rs sets that                  word iff cfg.early_launch.is_some(). An attach capture never has it, so no                  product capture can mint the domain or the wave-2 carrier that folds from it",
+    },
+];
+
+/// The recorded reason this domain cannot mint on an attach capture, or `None`
+/// when the question does not apply to it.
+pub fn early_launch_only_producer(id: CompactDomainId) -> Option<EarlyLaunchOnlyProducer> {
+    EARLY_LAUNCH_ONLY_PRODUCERS
+        .iter()
+        .copied()
+        .find(|producer| producer.id == id)
+}
+
 /// The recorded reason this domain is refused, or `None` when it is admitted.
 pub fn passive_production_refusal(id: CompactDomainId) -> Option<PassiveProductionRefusal> {
     PASSIVE_PRODUCTION_REFUSALS
@@ -2470,6 +2512,72 @@ mod tests {
                 !is_descheduled_from_capture(descriptor.id),
                 "json capture_scheduled drift for domain {}",
                 descriptor.id
+            );
+            // A `schedulable: false` row reads as "never built" on its own, so
+            // one that IS built carries its reason in the mirror.
+            let early_launch_only = early_launch_only_producer(descriptor.id);
+            assert_eq!(
+                domain
+                    .get("cannot_mint_on_attach_capture")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+                early_launch_only.is_some(),
+                "json cannot_mint_on_attach_capture drift for domain {}",
+                descriptor.id
+            );
+            assert_eq!(
+                domain
+                    .get("early_launch_only_reason")
+                    .and_then(serde_json::Value::as_str),
+                early_launch_only.map(|producer| producer.reason),
+                "json early_launch_only_reason drift for domain {}",
+                descriptor.id
+            );
+        }
+
+        assert!(
+            registry
+                .get("early_launch_only_note")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|note| note.contains("schedulable: false")),
+            "the mirror must say what `schedulable: false` does NOT mean for these rows"
+        );
+    }
+
+    /// Every early-launch-only producer is a `schedulable: false` domain that is
+    /// nonetheless built, and none of them is also a passive-transport refusal.
+    ///
+    /// kills: listing a schedulable domain here (its absence from a roster would
+    /// then have two competing explanations); and the older accounting, in which
+    /// d77 and d80 were `reserved`/`schedulable: false` and nothing anywhere
+    /// recorded why they cannot mint on the capture shape the owner hosts.
+    #[test]
+    fn early_launch_only_producers_are_built_but_unschedulable() {
+        assert_eq!(
+            EARLY_LAUNCH_ONLY_PRODUCERS
+                .iter()
+                .map(|producer| producer.id)
+                .collect::<Vec<_>>(),
+            vec![77],
+            "d80 has no lane, no fold arm and no wire emission, so `schedulable: false`              already accounts for it and a gate reason would assert a producer that does not exist"
+        );
+        for producer in EARLY_LAUNCH_ONLY_PRODUCERS {
+            let descriptor = assigned_descriptor_by_id(producer.id)
+                .unwrap_or_else(|| panic!("d{} is an assigned domain", producer.id));
+            assert!(
+                !descriptor.schedulable,
+                "d{} is schedulable, so its absence needs no separate reason",
+                producer.id
+            );
+            assert!(
+                !PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS.contains(&producer.id),
+                "d{} cannot be both a transport refusal and an early-launch-only producer",
+                producer.id
+            );
+            assert!(
+                producer.reason.contains("early_launch"),
+                "d{}'s reason must name the gate, not merely restate the status",
+                producer.id
             );
         }
     }

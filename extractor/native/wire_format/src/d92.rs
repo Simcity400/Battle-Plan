@@ -1,8 +1,8 @@
 //! d92 `country_preferred_tactic_live` — each country's selected combat tactic.
 //!
-//! Derived from `world_fold.rs:15237`-`:15300`
+//! Derived from `world_fold.rs:15287`-`:15350`
 //! (`fold_country_preferred_tactics`, dispatched at `:4747`), its payload codec
-// @world-fold-authority domain=92 functions=fold_country_preferred_tactics lines=15237-15300 sha256=71d2fd757b4fb2313157fe9236ed757d33079ecc19ce02c2d3fbfe631d9acf54 closure=7a14b7c090d7ab195b649380f61a639a2dabea7e956b748c4fb30262ea63be0d
+// @world-fold-authority domain=92 functions=fold_country_preferred_tactics lines=15287-15350 sha256=71d2fd757b4fb2313157fe9236ed757d33079ecc19ce02c2d3fbfe631d9acf54 closure=7a14b7c090d7ab195b649380f61a639a2dabea7e956b748c4fb30262ea63be0d
 //! `extractor/native/compact_contract/src/preferred_tactic.rs`, and the collector
 //! read that produces every row
 //! (`extractor/native/collector/src/attach_log.rs:32490`-`:32557`,

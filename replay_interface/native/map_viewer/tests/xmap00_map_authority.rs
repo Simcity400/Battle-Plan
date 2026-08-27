@@ -293,7 +293,7 @@ fn air_wing_census_fixture() -> Value {
     json!({
         "order_of_battle": {
             "air_wings": [
-                {"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219}
+                {"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219, "air_base_anchor": {"kind": "state"}}
             ]
         }
     })
@@ -1658,8 +1658,8 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
                 .insert(
                     "air_wings".into(),
                     json!([
-                        {"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219},
-                        {"id": 12, "owner": "SOV", "air_base_province": 908, "state_id": 220}
+                        {"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219, "air_base_anchor": {"kind": "state"}},
+                        {"id": 12, "owner": "SOV", "air_base_province": 908, "state_id": 220, "air_base_anchor": {"kind": "state"}}
                     ]),
                 );
             true
@@ -1675,7 +1675,7 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
                 .insert(
                     "air_wings".into(),
                     json!([
-                        {"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 0}
+                        {"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 0, "air_base_anchor": {"kind": "state"}}
                     ]),
                 );
             true
@@ -1844,7 +1844,9 @@ fn every_stable_family_has_only_explicit_unresolved_metadata_and_blocker() {
 /// kills: putting the four `units.*` rows back on the shared
 /// "XMAP13 must prove the exact all-country unit/hierarchy subset ..." text they
 /// carried until lane UA, which is what made `units.air_base_location` refuse 238
-/// of 238 hours of `captures/rc_vanilla7` without naming the cause.
+/// of 238 hours of `captures/rc_vanilla7` without naming the cause; and
+/// reverting the air-base row's text to lane UA's per-state-table diagnosis,
+/// which named a producer gap lane UE closed.
 #[test]
 fn owner_proven_blockers_name_what_the_recording_lacks() {
     for proven in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
@@ -1858,12 +1860,17 @@ fn owner_proven_blockers_name_what_the_recording_lacks() {
         );
     }
 
-    // The air-base join's cause is the one this lane measured: the census D34
-    // takes is per-state, so a wing based outside it has no province on the wire.
+    // The air-base join's cause is the hour's own missing anchor, and no longer
+    // the producer gap lane UA diagnosed: D34 now carries a row for every
+    // pool-observed air base, so a carrier-hosted wing has a placement.
     let air_base = map_authority_requirement_metadata("units.air_base_location")
         .unwrap()
         .blocker;
-    assert!(air_base.contains("per-state air-base table"), "{air_base}");
+    assert!(air_base.contains("air-base anchor"), "{air_base}");
+    assert!(
+        !air_base.contains("per-state air-base table"),
+        "the per-state census is no longer what stops a wing being placed: {air_base}"
+    );
 
     // The two weather rows refuse for different reasons and must not share one
     // string: the lifecycle carrier is a declared producer absence, not an
@@ -3007,7 +3014,7 @@ fn each_unit_requirement_refuses_on_its_own() {
         "id": 3, "owner": "ENG",
         "task_forces": [{"id": 71, "id_space": 61, "location_province": 118}]
     }]);
-    let one_wing = json!([{"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219}]);
+    let one_wing = json!([{"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219, "air_base_anchor": {"kind": "state"}}]);
 
     // units.divisions: a dropped source row, and each identity/join field.
     for divisions in [
@@ -3054,26 +3061,80 @@ fn each_unit_requirement_refuses_on_its_own() {
 
     // units.wings: an unreadable row, a duplicate wing id, an absent owner.
     for wings in [
-        json!([{"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219}, 4]),
-        json!([{"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219},
-               {"id": 12, "owner": "SOV", "air_base_province": 908, "state_id": 220}]),
-        json!([{"id": 12, "air_base_province": 907, "state_id": 219}]),
+        json!([{"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219, "air_base_anchor": {"kind": "state"}}, 4]),
+        json!([{"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219, "air_base_anchor": {"kind": "state"}},
+               {"id": 12, "owner": "SOV", "air_base_province": 908, "state_id": 220, "air_base_anchor": {"kind": "state"}}]),
+        json!([{"id": 12, "air_base_province": 907, "state_id": 219, "air_base_anchor": {"kind": "state"}}]),
     ] {
         let frame = with(oob(one_fleet.clone(), wings.clone()));
         assert_eq!(frame.wings_status(), ViewStatus::Present, "{wings}");
         assert_owner_proven_unavailable(&frame, "units.wings");
     }
 
-    // units.air_base_location: the province half of the join, in both of its
-    // invalid spellings.
+    // units.air_base_location: every way an anchor fails to resolve. The first
+    // three are the state-anchored half; the rest are the host-anchored one,
+    // whose only placement is the host ship's task force.
     for wings in [
-        json!([{"id": 12, "owner": "SOV", "air_base_province": null, "state_id": 219}]),
-        json!([{"id": 12, "owner": "SOV", "air_base_province": 0, "state_id": 219}]),
+        json!([{"id": 12, "owner": "SOV", "air_base_province": null, "state_id": 219, "air_base_anchor": {"kind": "state"}}]),
+        json!([{"id": 12, "owner": "SOV", "air_base_province": 0, "state_id": 219, "air_base_anchor": {"kind": "state"}}]),
+        json!([{"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 0, "air_base_anchor": {"kind": "state"}}]),
+        // No anchor at all.
+        json!([{"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219}]),
+        // The producer reached no air base for an id a wing pool named.
+        json!([{"id": 12, "owner": "SOV", "air_base_anchor": {"kind": "pool_observed_unresolved"}}]),
+        // A host kind this replay has no placement rule for.
+        json!([{"id": 12, "owner": "SOV",
+                "air_base_anchor": {"kind": "host", "host_object_type": 4713, "host_object_id": 40}}]),
+        // A ship id this hour's census does not hold.
+        json!([{"id": 12, "owner": "SOV",
+                "air_base_anchor": {"kind": "host", "host_object_type": 51, "host_object_id": 999}}]),
     ] {
         let frame = with(oob(one_fleet.clone(), wings.clone()));
         assert_eq!(frame.wings_status(), ViewStatus::Present, "{wings}");
         assert_owner_proven_unavailable(&frame, "units.air_base_location");
     }
+
+    // Two task forces claiming the same ship uid: two candidate provinces and
+    // therefore no placement, rather than whichever row came first.
+    //
+    // kills: resolving the host with `.find(...)` instead of proving the match
+    // unique -- that spelling silently places the wing at province 118.
+    let hosted = json!([{"id": 12, "owner": "SOV",
+        "air_base_anchor": {"kind": "host", "host_object_type": 51, "host_object_id": 4211}}]);
+    let ambiguous = json!([{"id": 3, "owner": "ENG", "task_forces": [
+        {"id": 71, "id_space": 61, "location_province": 118,
+         "ships": [{"id": 4211, "definition": "carrier"}]},
+        {"id": 72, "id_space": 61, "location_province": 119,
+         "ships": [{"id": 4211, "definition": "carrier"}]}]}]);
+    let frame = with(oob(ambiguous, hosted.clone()));
+    assert_eq!(frame.wings_status(), ViewStatus::Present);
+    assert_eq!(
+        frame.wing_anchor_province(&frame.wings()[0]),
+        Err(replay_core::WingAnchorRefusal::HostShipAmbiguous)
+    );
+    assert_owner_proven_unavailable(&frame, "units.air_base_location");
+
+    // The admitted host arm: the host ship IS in a task force, and the wing is
+    // placed at that task force's province rather than at any base province.
+    //
+    // kills: reverting the predicate to `air_base_province != 0 && state_id != 0`
+    // -- this wing has neither and must still be admitted.
+    let carrier_fleet = json!([{"id": 3, "owner": "ENG", "task_forces": [
+        {"id": 71, "id_space": 61, "location_province": 118,
+         "ships": [{"id": 4211, "definition": "carrier"}]}]}]);
+    let frame = with(oob(carrier_fleet, hosted));
+    assert_eq!(frame.wings_status(), ViewStatus::Present);
+    assert_eq!(
+        frame.wing_anchor_province(&frame.wings()[0]),
+        Ok(118),
+        "a carried wing is placed at its host ship's task force"
+    );
+    let projection =
+        map_authority_projection_from_world_frame(&frame, &fixture_manifest()).unwrap();
+    assert_eq!(
+        requirement(&projection, "units.air_base_location").disposition,
+        MapAuthorityRequirementDisposition::Admitted
+    );
 }
 
 #[test]
