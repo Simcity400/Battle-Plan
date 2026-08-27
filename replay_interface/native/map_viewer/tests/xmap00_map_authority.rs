@@ -1130,6 +1130,46 @@ fn raid_census_fixture() -> Value {
     })
 }
 
+/// The D81 carrier the fold writes (`world_fold.rs:9560`), at the smallest
+/// shape `build_rail_replay` admits: the seven fixed authority words, one
+/// reciprocal edge, and a complete empty hub census.
+///
+/// `1_065_353_216` is `f32::to_bits(1.0)`; the anchor only has to decode finite.
+fn rail_topology_carrier() -> Value {
+    let anchor = json!({
+        "variant": 0,
+        "x_bits": 1_065_353_216u32,
+        "y_bits": 1_065_353_216u32,
+        "z_bits": 1_065_353_216u32,
+    });
+    json!({
+        "schema_version": 4,
+        "authority": "exact_a729_supply_simulation_tables",
+        "source_binary_sha256":
+            "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+        "supply_system_root": "CGameState+0x3d8",
+        "country_supply_table": "CSupplySystem+0x108",
+        "country_supply_companion": "CCountrySupplySystem+0x80",
+        "edge_join_law": "reciprocal_min",
+        "provinces": {
+            "100": {
+                "active_terminal": false,
+                "anchor": anchor,
+                "neighbors": [{"ordinal": 0, "province_id": 200, "edge_level": 3}],
+            },
+            "200": {
+                "active_terminal": true,
+                "anchor": anchor,
+                "neighbors": [{"ordinal": 0, "province_id": 100, "edge_level": 3}],
+            },
+        },
+        "hub_simulation": [],
+        "hub_simulation_complete": true,
+        "viewer_state_captured": false,
+        "derived_visual_frames_captured": false,
+    })
+}
+
 fn owner_proven_fixture_table() -> BTreeMap<&'static str, NamedSnapshotFixture> {
     BTreeMap::from([
         (
@@ -1174,6 +1214,15 @@ fn owner_proven_fixture_table() -> BTreeMap<&'static str, NamedSnapshotFixture> 
                     "countries": {
                         "GER": {"politics": {"capital_state": 161}}
                     }
+                }),
+            },
+        ),
+        (
+            "logistics.rail_topology_state",
+            NamedSnapshotFixture {
+                name: "measured RRL1 v4 rail topology, two provinces on one reciprocal edge",
+                rest: json!({
+                    "map": {"rail_replay_state_live": rail_topology_carrier()}
                 }),
             },
         ),
@@ -1428,6 +1477,22 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
                 .insert("census_complete".into(), json!(false));
             true
         }
+        // A neighbour ordinal that is not its own index. The v4 law refuses the
+        // province, so the carrier is on the wire and the view is still
+        // unavailable — which is the case this row has to name rather than the
+        // fold's own null.
+        "logistics.rail_topology_state" => {
+            let mut carrier = rail_topology_carrier();
+            carrier["provinces"]["200"]["neighbors"] =
+                json!([{"ordinal": 1, "province_id": 100, "edge_level": 3}]);
+            object
+                .entry("map")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .expect("map is an object in the measured fixture")
+                .insert("rail_replay_state_live".into(), carrier);
+            false
+        }
         "mapmode.supply_state" => {
             // The fold's fail-closed shape: a domain the collector could not
             // vouch for stores Null, which the strict decoder reports as
@@ -1647,6 +1712,7 @@ fn ledger_accessor_status(frame: &WorldFrame, input_id: &str) -> ViewStatus {
         "weather.province_snow_accumulator" => frame.weather_province_snow_status(),
         "map_furniture.current_victory_points" => frame.map_furniture_status(),
         "mapmode.raids" => frame.raids_status(),
+        "logistics.rail_topology_state" => frame.rail_replay().status,
         "mapmode.supply_state" => frame.hub_motorization_status(),
         "session.player_country_set" => map_viewer::player_country_set_leaf_status(frame),
         "world.calendar_time" => match frame.date() {
@@ -2000,7 +2066,14 @@ fn owner_proven_inputs_refuse_with_their_named_blocker_when_unmeasured() {
             "combats": Value::Null,
             "ended_combats": Value::Null,
             "naval_combats": Value::Null,
-            "map": {"_r2_weather_live": Value::Null},
+            // Both map-scoped carriers spelled the way their own producer spells
+            // an unread hour. `rail_replay_state_live` has to be HERE and not
+            // merely omitted: an absent key is `DomainAbsent`
+            // (`build_rail_replay`), and this frame is the UNOBTAINED case.
+            "map": {
+                "_r2_weather_live": Value::Null,
+                "rail_replay_state_live": Value::Null,
+            },
             "countries": Value::Null,
             "diplomacy_live": Value::Null,
             "states": Value::Null,
@@ -3287,7 +3360,15 @@ fn lane_hw_rows_with_an_open_producer_defect_stay_unproven() {
         "fog.spotted_taskforces_by_pov",
         "country.presentation_identity",
         "logistics.rail_hub_frames",
-        "logistics.rail_topology_state",
+        // `logistics.rail_topology_state` LEFT this list on 2026-08-27 (lane
+        // TW). Lane TM rebuilt the D81 replay contract onto the carrier the
+        // fold actually writes (runs/tm_contract_viewmap/D81_CONTRACT.md) and
+        // named the owner admission as the only thing still owed; XMAP16 now
+        // consumes WorldFrame.rail_replay.provinces for it. Measured basis:
+        // 172 of the 238 hours of captures/rc_vanilla7 admit, the other 66 are
+        // the fold's own `map.rail_replay_state_live: null`, and no hour is
+        // refused for a topology reason
+        // (extractor/native/runs/tw_ledger_certification/reach_v7_rail.json).
         // `mapmode.supply_state` LEFT this list on 2026-08-22 (lane RD): the
         // D62 engine-law dossier landed
         // (extractor/native/runs/rd_d62_supply_law/DOSSIER.md) and
