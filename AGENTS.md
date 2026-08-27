@@ -23,6 +23,7 @@ Read `PROJECT.md` before changing product behaviour, formats, or architecture.
 ## Tools
 
 - Agents, subagents and lanes run NO tests and NO validation - not `cargo test`/`cargo nextest`, not `Invoke-Validation.ps1`, not the battery, not the citation verify/restamp scripts (owner directive 2026-08-24). All testing, validation AND compilation is done centrally by the orchestrator at landing (owner 2026-08-24: lanes run no cargo at all - a non-compiling commit comes back with the compiler error); a lane reports which tests the orchestrator should run.
+- ONE exception (owner 2026-08-26): a lane runs the tests IT wrote or changed, once, before declaring converged - "your new test must have executed once." Scoped `cargo nextest run` on exactly those tests; full suites and everything else stay central.
 - `-Mode Landing` (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-Validation.ps1 -Mode Landing`) is the orchestrator's gate, run once on the merged tree at landing time; capture the exit code.
 - Run `-Mode ReleaseManual -AllowReleaseManual` only when the owner explicitly requests release/manual validation.
 - Never run a full battery or release/manual validation by default.
