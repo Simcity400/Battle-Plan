@@ -370,6 +370,11 @@ pub const COMPACT_EXPECTED_PARTIAL_TOLERANCES: &[CompactExpectedPartialTolerance
         reason: "characters_leaders_cabinet_live: only a payload-declared per-family gap is tolerated, and the header's family-presence mask names every family the frame did not observe with the decoder refusing any other spelling — a bare PARTIAL_DATA without the declaration, a declaration without PARTIAL_DATA, rows from a declared-absent family, or a unit-leader trait count asserted while the trait family was unobserved. The rows carried are exact and whole families are the only unit of omission, so the sparse patch fabricates no deletion; row-level loss inside an observed family keeps SOURCE_UNAVAILABLE and stays outside this tolerance, and the domain/hour remains unknown for every family the mask declares absent",
     },
     CompactExpectedPartialTolerance {
+        domain_id: 53,
+        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
+        reason: "diplomacy_intel_operatives_live: only a payload-declared row omission is tolerated, and the declaration IS the payload spelling — the D53O trailer names every omitted row BY IDENTITY (operative id; relation pair; overlord/subject pair; faction slot), the declared count is that list's length, and the decoder refuses a trailer that names nothing, a declaration without PARTIAL_DATA, an out-of-canonical-order list and an identity no class could produce. A cause with no per-row key — relation-root/slot, incoming-action, agency, cryptology, war, shadow mismatch — cannot be declared, and a frame carrying one is spelled SOURCE_UNAVAILABLE|PARTIAL_DATA by the producer, as is a record whose declaration does not reconcile with its skip census; so no consumer that reads only the status word can tolerate an undeclared partial. The rows carried are exact measurements and whole rows are the only unit of omission; the fold drops exactly the declared identities and the derived state events their class owns, so no omitted row survives the sparse patch as the hour's measurement and no deletion is fabricated. Every other failing word (SOURCE_UNAVAILABLE from the post-build gate or the source funnel, WORKER_PANIC, inherited frame failures) keeps the pre-tolerance verdict, and the domain/hour remains unknown for exactly the rows the declaration names",
+    },
+    CompactExpectedPartialTolerance {
         domain_id: 54,
         tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
         reason: "army_battleplans_depth_live: inherited d27/d28 partials or counted non-exact/linkage/identity/active/path omissions are diagnostic only; no omitted-order identity list exists, so the domain/hour remains unknown",
@@ -2866,9 +2871,24 @@ mod tests {
             0,
             "a registered lane badge is not an unassigned bit"
         );
+        // OLD RULE: d53 had no tolerance, so the measured batch-3a word left a
+        // residual of PARTIAL_DATA and every one of rc_vanilla7's 227 d53 DATA
+        // hours was a `compact_status_failure`.
+        // NEW RULE: the declared-omission tolerance clears a word whose only
+        // failure bit is PARTIAL_DATA. The lane badges strip first, so this is
+        // the same arithmetic the fold does.
         assert_eq!(
             compact_status_failure_flags_after_expected_partial_tolerance(53, observed),
-            COMPACT_STATUS_PARTIAL_DATA
+            0
+        );
+        // And it clears ONLY that word: any other failure bit keeps the
+        // pre-tolerance verdict.
+        assert_eq!(
+            compact_status_failure_flags_after_expected_partial_tolerance(
+                53,
+                observed | COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            ),
+            COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_SOURCE_UNAVAILABLE
         );
         for bit in 16..=22u32 {
             assert_eq!(
@@ -3047,7 +3067,7 @@ mod tests {
             .iter()
             .map(|tolerance| tolerance.domain_id)
             .collect::<Vec<_>>();
-        assert_eq!(domains, vec![26, 27, 28, 42, 47, 54, 86]);
+        assert_eq!(domains, vec![26, 27, 28, 42, 47, 53, 54, 86]);
     }
 
     #[test]
@@ -3064,10 +3084,10 @@ mod tests {
 
     #[test]
     fn expected_partial_tolerance_lookup_rejects_unaccepted_partial_domains() {
-        for domain_id in [29, 41, 45, 48, 49, 50, 53, 56, 65] {
+        for domain_id in [29, 41, 45, 48, 49, 50, 56, 65] {
             assert_eq!(expected_partial_tolerance(domain_id), None);
         }
-        for domain_id in [26, 27, 28, 42, 47, 54, 86] {
+        for domain_id in [26, 27, 28, 42, 47, 53, 54, 86] {
             assert_eq!(
                 expected_partial_tolerance(domain_id).map(|tolerance| tolerance.tolerated_flags),
                 Some(COMPACT_STATUS_PARTIAL_DATA)

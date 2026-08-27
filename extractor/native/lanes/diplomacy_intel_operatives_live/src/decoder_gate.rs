@@ -25,6 +25,8 @@ pub struct Domain53RecordGateSummary {
     pub data_changed_rows_total: u64,
     pub data_units_total: BTreeMap<&'static str, u64>,
     pub parse_errors: Vec<String>,
+    pub declared_omission_total: u64,
+    pub undeclared_expected_partial: bool,
 }
 
 pub fn encode_domain53_data_record(sequence: u64, game_hour_raw: i32, payload: &[u8]) -> Vec<u8> {
@@ -123,6 +125,10 @@ fn merge_payload_summary(out: &mut Domain53RecordGateSummary, payload: Domain53G
         let entry = out.data_units_total.entry(name).or_default();
         *entry = entry.saturating_add(count);
     }
+    out.declared_omission_total = out
+        .declared_omission_total
+        .saturating_add(payload.declared_omission_total);
+    out.undeclared_expected_partial |= payload.undeclared_expected_partial;
     out.parse_errors.extend(payload.parse_errors);
 }
 
