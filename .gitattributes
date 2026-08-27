@@ -202,3 +202,9 @@ extractor/native/runs/sr_tf_id_space/** text eol=lf
 # check is turned off for those three files exactly as it is for the
 # hash-authenticated shader above.
 extractor/native/runs/sr_tf_id_space/out/*.decompile.c text eol=lf whitespace=-trailing-space,-space-before-tab
+
+# lane TT: byte-exact Ghidra decompiles. The sha256 in
+# runs/tt_controller_authority/POLITICAL_FILL_AUTHORITY.json are the raw export
+# bytes the broker's ghidra_verify agrees with, so no EOL conversion (lane QP
+# and XUI19 precedent) - one digest, and a checkout reproduces it.
+extractor/native/runs/tt_controller_authority/evidence/* -text -diff

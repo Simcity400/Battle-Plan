@@ -328,30 +328,6 @@ pub(crate) fn xmap05_raster_inputs_with_keying(
 
     let eligible_provinces = xmap05_eligible_provinces(&definitions, &province_to_state);
     validate_xmap05_province_census(&eligible_provinces, province_controllers)?;
-    for &province_id in &eligible_provinces {
-        let state_id = province_to_state[&province_id];
-        let state_controller = keying
-            .state_controls
-            .get(&state_id)
-            .and_then(|control| control.controller.as_deref())
-            .or_else(|| keying.state_owners.get(&state_id).map(String::as_str))
-            .ok_or_else(|| {
-                format!(
-                    "XMAP05 state {state_id} has no measured owner/controller for province {province_id}"
-                )
-            })?;
-        let province_controller = province_controllers.get(&province_id).ok_or_else(|| {
-            format!(
-                "XMAP05 province-control census omits province {province_id} in state {state_id}"
-            )
-        })?;
-        if province_controller != state_controller {
-            return Err(format!(
-                "XMAP05 province {province_id} controller {province_controller} disagrees with state {state_id} controller {state_controller}"
-            )
-            .into());
-        }
-    }
 
     let max_province = definitions
         .keys()
@@ -379,33 +355,30 @@ pub(crate) fn xmap05_raster_inputs_with_keying(
         })
         .collect::<Result<Vec<_>>>()?;
 
+    // The political group is keyed by the province's OWN controller, not its
+    // single province to `_CountryLinkIndices[province+0x188]` at `province+0xa4`.
+    // The region below is keyed by the resolved TAG. That link index is a
+    // POSITION in the engine's per-country shape array, so one recorded TAG is
+    // one position; the proof, and every citation for this rule, is in
+    // runs/tt_controller_authority/POLITICAL_FILL_AUTHORITY.json.
     let mut tag_regions = BTreeMap::<String, u32>::new();
     let mut region_colors = vec![[0u8; 3]];
-    let max_state = states.keys().copied().max().unwrap_or(0) as usize;
-    let mut state_regions = vec![0u32; max_state + 1];
-    for &state_id in states.keys() {
-        let Some(control) = keying.state_controls.get(&state_id) else {
-            continue;
-        };
-        let controller = control
-            .controller
-            .as_deref()
-            .or(control.owner.as_deref())
-            .or_else(|| keying.state_owners.get(&state_id).map(String::as_str));
-        let Some(controller) = controller else {
-            continue;
-        };
+    let mut province_region_by_id = BTreeMap::<u32, u32>::new();
+    for &province_id in &eligible_provinces {
+        let controller = province_controllers.get(&province_id).ok_or_else(|| {
+            format!("XMAP05 province-control census omits province {province_id}")
+        })?;
         let raw_color = require_country_color(&country_colors, controller)?;
         let region = if let Some(region) = tag_regions.get(controller) {
             *region
         } else {
             let region = u32::try_from(region_colors.len())
                 .map_err(|_| "GradientBorder controller region id overflow")?;
-            tag_regions.insert(controller.to_string(), region);
+            tag_regions.insert(controller.clone(), region);
             region_colors.push(raw_color);
             region
         };
-        state_regions[state_id as usize] = region;
+        province_region_by_id.insert(province_id, region);
     }
 
     let width = provinces.width / 2;
@@ -414,10 +387,13 @@ pub(crate) fn xmap05_raster_inputs_with_keying(
     let mut land_mask = vec![false; width * height];
     let mut region_areas = vec![0u32; region_colors.len()];
     for &province_id in &provinces.ids {
-        let Some(&state_id) = province_to_state.get(&province_id) else {
+        if !province_to_state.contains_key(&province_id) {
             continue;
-        };
-        let region = state_regions.get(state_id as usize).copied().unwrap_or(0);
+        }
+        let region = province_region_by_id
+            .get(&province_id)
+            .copied()
+            .unwrap_or(0);
         province_regions[usize::try_from(province_id)?] = region;
         if region != 0 {
             region_areas[region as usize] = region_areas[region as usize]
@@ -430,12 +406,14 @@ pub(crate) fn xmap05_raster_inputs_with_keying(
             let texel = y * width + x;
             let source = xmap05_half_res_source_index(provinces.width, provinces.height, x, y);
             let province_id = provinces.ids[source];
-            let state_id = province_to_state.get(&province_id).copied().unwrap_or(0);
-            if state_id == 0 {
+            if !province_to_state.contains_key(&province_id) {
                 continue;
             }
             land_mask[texel] = true;
-            regions[texel] = state_regions.get(state_id as usize).copied().unwrap_or(0);
+            regions[texel] = province_region_by_id
+                .get(&province_id)
+                .copied()
+                .unwrap_or(0);
         }
     }
 
