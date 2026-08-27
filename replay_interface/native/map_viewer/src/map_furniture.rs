@@ -1938,7 +1938,7 @@ VICTORY_POINT_MAP_ICON_MAX_VICTORY_POINTS_FOR_PERCENT = 22,\n";
         ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
     )]
     fn gate_vanilla_vp_strip_grid_evidence() {
-        let resolver = vanilla_resolver();
+        let resolver = vanilla_sprite_resolver();
         let strip = load_vp_strip_rgba(&resolver).expect("vp strip decodes");
         assert_eq!(
             (strip.width, strip.height),
@@ -2133,6 +2133,30 @@ VICTORY_POINT_MAP_ICON_MAX_VICTORY_POINTS_FOR_PERCENT = 22,\n";
             .expect("vanilla resolver")
     }
 
+    /// The sprite path runs `require_complete_admitted_dir` over the whole
+    /// `interface/*.gfx` namespace, so the admission has to list every one of
+    /// them, not just the file the sprite resolves to.
+    fn vanilla_sprite_resolver() -> GameFileResolver {
+        let resolver = vanilla_resolver();
+        let mut paths = resolver
+            .audit_effective_dir_files("interface", Some("gfx"))
+            .expect("interface gfx census")
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        assert!(
+            !paths.is_empty(),
+            "the vanilla install must ship interface/*.gfx sprite catalogues"
+        );
+        for source in [
+            VP_STRIP_SPRITE_TEXTURE,
+            HOI_20BS_FNT_SOURCE,
+            HOI_20BS_ATLAS_SOURCE,
+        ] {
+            paths.insert(source.to_string());
+        }
+        crate::test_support::admitted_vanilla_resolver(&resolver, &paths, "xmap21-furniture-gate").0
+    }
+
     #[test]
     #[cfg_attr(
         not(gate_hoi4_install),
@@ -2242,7 +2266,7 @@ VICTORY_POINT_MAP_ICON_MAX_VICTORY_POINTS_FOR_PERCENT = 22,\n";
         ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
     )]
     fn gate_vanilla_sprite_and_font_resolve() {
-        let resolver = vanilla_resolver();
+        let resolver = vanilla_sprite_resolver();
         let sprite = vp_strip_texture_path(&resolver)
             .expect("resolve vp strip")
             .expect("vp strip texture present");

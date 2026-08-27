@@ -543,6 +543,7 @@ dependencies = [
  "serde_json",
  "snapshot",
  "sunk_ship_history_live_lane",
+ "wire_format",
 ]
 
 [[package]]

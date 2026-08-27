@@ -70,7 +70,6 @@ struct StreamScan {
 
 #[derive(Clone, Debug, Default)]
 struct Coverage {
-    v1_failure_carrier: bool,
     v4_complete_empty_simulation: bool,
     active_terminal: [bool; 2],
     anchor_variant: [bool; 2],
@@ -1126,9 +1125,6 @@ fn scan_stream(
             {
                 FoldOutcome::Unavailable { .. } => {
                     failures += 1;
-                    coverage.v1_failure_carrier |=
-                        u16::from_le_bytes(payload[4..6].try_into().unwrap())
-                            == d81::PAYLOAD_VERSION_V1;
                 }
                 FoldOutcome::Snapshot(snapshot) => {
                     let follows_previous = last_usable_hour
@@ -1572,10 +1568,6 @@ fn run() -> Result<(), String> {
         "hub-simulation collection change (needs changed simulation state)",
     );
     missing(
-        !scan.coverage.v1_failure_carrier,
-        "failure-class v1 structural carrier (needs a fully valid known-failure v1 payload)",
-    );
-    missing(
         !scan.coverage.v4_complete_empty_simulation,
         "complete-empty v4 simulation snapshot (needs a measured zero-row simulation state)",
     );
@@ -1710,7 +1702,7 @@ delta_changed_rows_per_transition={:.6}\ndelta_tombstones_per_transition={:.6}\n
 ship_raw_bytes={}\nwire_raw_bytes={}\nship_zstd3_bytes={}\nwire_zstd3_bytes={}\n\
 ship_48h_zstd3_bytes={}\nwire_48h_zstd3_bytes={}\n\
 per_pov_count={}\nper_pov_measurement_sha256={}\n\
-coverage_v1_failure_carrier={}\ncoverage_v4_complete_empty_simulation={}\n\
+coverage_v4_complete_empty_simulation={}\n\
 coverage_active_terminal={:?}\ncoverage_anchor_variant={:?}\n\
 coverage_rail_level={:?}\ncoverage_hub_subtype={:?}\n\
 coverage_foreign_route={:?}\ncoverage_fallback_record={:?}\n\
@@ -1755,7 +1747,6 @@ unexercised={}\n",
             wire_block_zstd,
             pov_measurements.len(),
             pov_report_sha256,
-            scan.coverage.v1_failure_carrier,
             scan.coverage.v4_complete_empty_simulation,
             scan.coverage.active_terminal,
             scan.coverage.anchor_variant,
@@ -2305,8 +2296,12 @@ mod tests {
         assert_eq!(measured.gap_baselines, 1);
     }
 
+    // Since lane RY5 made v4 the only legal RRL1 version, `decode_payload`
+    // refuses a pre-v4 payload before any status word is read, so a v1 failure
+    // is refused exactly like a v1 success rather than typed Unavailable. The
+    // pin is the version NUMBER the refusal names, not the sentence around it.
     #[test]
-    fn historical_v1_success_is_rejected_but_v1_failure_is_typed_unavailable() {
+    fn a_historical_v1_payload_is_refused_by_version_whatever_status_it_declares() {
         let provinces = decode_payload(&payload(0, 1.0)).unwrap().provinces;
         let v1_success =
             encode_payload(&provinces, 0, 0, PAYLOAD_FLAG_HUB_FRAMES_UNAVAILABLE, 2, 2).unwrap();
@@ -2326,7 +2321,7 @@ mod tests {
             "test",
         )
         .unwrap_err()
-        .contains("historical UI-era/non-production"));
+        .contains("payload version 1 is refused"));
         let stream = [
             perf(1, 10, COMPACT_STATUS_STATE_UNAVAILABLE),
             data(2, 10, &v1_failure),
@@ -2336,8 +2331,11 @@ mod tests {
             frame_end(6, 11),
         ]
         .concat();
-        let scan = scan_stream(&stream, &symbols(), StreamIdentityMode::Legacy, "test").unwrap();
-        assert!(scan.coverage.v1_failure_carrier);
+        assert!(
+            scan_stream(&stream, &symbols(), StreamIdentityMode::Legacy, "test")
+                .unwrap_err()
+                .contains("payload version 1 is refused")
+        );
     }
 
     #[test]
@@ -2349,7 +2347,7 @@ mod tests {
             "test",
         )
         .unwrap_err()
-        .contains("historical UI-era/non-production"));
+        .contains("payload version 2 is refused"));
     }
 
     #[test]

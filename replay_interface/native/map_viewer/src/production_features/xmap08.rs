@@ -1845,11 +1845,6 @@ fn component_enumerator_witness(frame: &PreparedRiversStraitsFrame, river: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(windows)]
-    use replay_core::{
-        ContentLayerKind, ContentManifest, LayerStorageKind, RecordedContentLayer, RequiredContent,
-        RequiredContentKind, SourceGameIdentity, SourceProfileIdentity,
-    };
 
     #[test]
     fn river_texture_quality_selects_one_exact_engine_variant() {
@@ -1928,120 +1923,11 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn content_layer_kind(kind: &str) -> ContentLayerKind {
-        match kind {
-            "integrated_dlc" => ContentLayerKind::IntegratedDlc,
-            "dlc" => ContentLayerKind::Dlc,
-            "mod" => ContentLayerKind::Mod,
-            _ => ContentLayerKind::Base,
-        }
-    }
-
-    #[cfg(windows)]
     fn admitted_program_inputs(
         resolver: &GameFileResolver,
         paths: &BTreeSet<String>,
     ) -> (GameFileResolver, ValidatedContentAdmission) {
-        let effective_vfs_manifest_sha256 = "ab".repeat(32);
-        let required_content = paths
-            .iter()
-            .enumerate()
-            .map(|(index, path)| {
-                let actual = resolver
-                    .resolve_required_with_provenance(path, "XMAP08 executable program gate")
-                    .unwrap();
-                RequiredContent {
-                    content_key: format!("xmap08-program-{index}"),
-                    kind: if path.ends_with(".dds") {
-                        RequiredContentKind::Texture
-                    } else {
-                        RequiredContentKind::ShaderSource
-                    },
-                    content: UsedContentKey {
-                        effective_vfs_manifest_sha256: effective_vfs_manifest_sha256.clone(),
-                        normalized_game_relative_path: actual.logical_path.to_ascii_lowercase(),
-                        winning_layer_ordinal: actual.source.ordinal as u32,
-                        layer_kind: content_layer_kind(&actual.source.kind),
-                        layer_id: actual.source.source_id,
-                        source_sha256: actual
-                            .source
-                            .archive_sha256
-                            .unwrap_or_else(|| actual.sha256.clone()),
-                        payload_sha256: actual.sha256,
-                        payload_bytes: actual.byte_len,
-                    },
-                    observation_count: 1,
-                    consumers: vec!["XMAP08".into()],
-                }
-            })
-            .collect::<Vec<_>>();
-        let used_ordinals = required_content
-            .iter()
-            .map(|row| row.content.winning_layer_ordinal as usize)
-            .collect::<BTreeSet<_>>();
-        let ordered_layers = resolver
-            .active_sources()
-            .into_iter()
-            .map(|source| RecordedContentLayer {
-                ordinal: source.ordinal as u32,
-                layer_kind: content_layer_kind(&source.kind),
-                layer_id: source.source_id.clone(),
-                display_name: source.source_id,
-                descriptor_sha256: source.descriptor_sha256,
-                source_container_sha256: source.archive_sha256.clone(),
-                storage_kind: if source.archive_sha256.is_some() {
-                    LayerStorageKind::ZipArchive
-                } else {
-                    LayerStorageKind::Directory
-                },
-                replace_paths: source.replace_path,
-                required_for_playback: used_ordinals.contains(&source.ordinal),
-            })
-            .collect();
-        let source_game = SourceGameIdentity {
-            version: "1.19.2.0".into(),
-            build: "a729".into(),
-            executable_sha256: "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
-                .into(),
-            build_profile: "xmap08-executable-gate".into(),
-        };
-        let mut manifest = ContentManifest {
-            schema: replay_core::PORTABLE_CONTENT_MANIFEST_SCHEMA.into(),
-            product_modset_sha256: "99".repeat(32),
-            source_game: source_game.clone(),
-            source_profile: SourceProfileIdentity {
-                profile_id: "xmap08-executable-gate".into(),
-                playset_id: "vanilla".into(),
-                selection_sha256: "00".repeat(32),
-            },
-            effective_vfs_manifest_sha256,
-            ordered_layers,
-            dlc_selection: Vec::new(),
-            localisation_language: "l_english".into(),
-            required_settings: BTreeMap::new(),
-            recorder_local_settings: BTreeMap::new(),
-            required_content,
-            manifest_digest_sha256: None,
-        };
-        manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
-        manifest = manifest.with_computed_digest().unwrap();
-        let inventory = resolver
-            .playback_inventory(
-                &manifest,
-                crate::PlaybackEnvironment {
-                    source_game,
-                    source_profile: manifest.source_profile.clone(),
-                    dlc_selection: Vec::new(),
-                    localisation_language: "l_english".into(),
-                    settings: BTreeMap::new(),
-                },
-            )
-            .unwrap();
-        let admission = manifest.admit_playback(&inventory).unwrap();
-        (
-            resolver.clone().with_content_admission(&admission).unwrap(),
-            admission,
-        )
+        crate::test_support::admitted_vanilla_resolver(resolver, paths, "xmap08-executable-gate")
     }
 
     #[cfg(windows)]

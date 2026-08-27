@@ -2719,3 +2719,145 @@ pub(crate) fn write_minimal_runtime_import_bundle(root: &Path) -> Manifest {
         .expect("write terrain runtime contract");
     manifest
 }
+
+/// A vanilla-install resolver carrying a validated content admission over
+/// `paths`, for the install gates whose production entry point calls
+/// `require_complete_admitted_dir`.
+pub(crate) fn admitted_vanilla_resolver(
+    resolver: &GameFileResolver,
+    paths: &std::collections::BTreeSet<String>,
+    label: &str,
+) -> (GameFileResolver, replay_core::ValidatedContentAdmission) {
+    use replay_core::{
+        ContentManifest, LayerStorageKind, RecordedContentLayer, RequiredContent,
+        SourceGameIdentity, SourceProfileIdentity, UsedContentKey,
+    };
+
+    let effective_vfs_manifest_sha256 = "ab".repeat(32);
+    let required_content = paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            let actual = resolver
+                .resolve_required_with_provenance(path, label)
+                .unwrap_or_else(|error| panic!("{label} resolves {path}: {error}"));
+            RequiredContent {
+                content_key: format!("{label}-{index}"),
+                kind: admitted_content_kind(path),
+                content: UsedContentKey {
+                    effective_vfs_manifest_sha256: effective_vfs_manifest_sha256.clone(),
+                    normalized_game_relative_path: actual.logical_path.to_ascii_lowercase(),
+                    winning_layer_ordinal: actual.source.ordinal as u32,
+                    layer_kind: admitted_layer_kind(&actual.source.kind),
+                    layer_id: actual.source.source_id,
+                    source_sha256: actual
+                        .source
+                        .archive_sha256
+                        .unwrap_or_else(|| actual.sha256.clone()),
+                    payload_sha256: actual.sha256,
+                    payload_bytes: actual.byte_len,
+                },
+                observation_count: 1,
+                consumers: vec![label.to_string()],
+            }
+        })
+        .collect::<Vec<_>>();
+    let used_ordinals = required_content
+        .iter()
+        .map(|row| row.content.winning_layer_ordinal as usize)
+        .collect::<std::collections::BTreeSet<_>>();
+    let ordered_layers = resolver
+        .active_sources()
+        .into_iter()
+        .map(|source| RecordedContentLayer {
+            ordinal: source.ordinal as u32,
+            layer_kind: admitted_layer_kind(&source.kind),
+            layer_id: source.source_id.clone(),
+            display_name: source.source_id,
+            descriptor_sha256: source.descriptor_sha256,
+            source_container_sha256: source.archive_sha256.clone(),
+            storage_kind: if source.archive_sha256.is_some() {
+                LayerStorageKind::ZipArchive
+            } else {
+                LayerStorageKind::Directory
+            },
+            replace_paths: source.replace_path,
+            required_for_playback: used_ordinals.contains(&source.ordinal),
+        })
+        .collect();
+    let source_game = SourceGameIdentity {
+        version: "1.19.2.0".into(),
+        build: "a729".into(),
+        executable_sha256: "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
+            .into(),
+        build_profile: label.to_string(),
+    };
+    let mut manifest = ContentManifest {
+        schema: replay_core::PORTABLE_CONTENT_MANIFEST_SCHEMA.into(),
+        product_modset_sha256: "99".repeat(32),
+        source_game: source_game.clone(),
+        source_profile: SourceProfileIdentity {
+            profile_id: label.to_string(),
+            playset_id: "vanilla".into(),
+            selection_sha256: "00".repeat(32),
+        },
+        effective_vfs_manifest_sha256,
+        ordered_layers,
+        dlc_selection: Vec::new(),
+        localisation_language: "l_english".into(),
+        required_settings: BTreeMap::new(),
+        recorder_local_settings: BTreeMap::new(),
+        required_content,
+        manifest_digest_sha256: None,
+    };
+    manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
+    manifest = manifest.with_computed_digest().unwrap();
+    let inventory = resolver
+        .playback_inventory(
+            &manifest,
+            crate::PlaybackEnvironment {
+                source_game,
+                source_profile: manifest.source_profile.clone(),
+                dlc_selection: Vec::new(),
+                localisation_language: "l_english".into(),
+                settings: BTreeMap::new(),
+            },
+        )
+        .unwrap();
+    let admission = manifest.admit_playback(&inventory).unwrap();
+    (
+        resolver.clone().with_content_admission(&admission).unwrap(),
+        admission,
+    )
+}
+
+pub(crate) fn admitted_layer_kind(kind: &str) -> replay_core::ContentLayerKind {
+    use replay_core::ContentLayerKind;
+    match kind {
+        "integrated_dlc" => ContentLayerKind::IntegratedDlc,
+        "dlc" => ContentLayerKind::Dlc,
+        "mod" => ContentLayerKind::Mod,
+        _ => ContentLayerKind::Base,
+    }
+}
+
+fn admitted_content_kind(path: &str) -> replay_core::RequiredContentKind {
+    use replay_core::RequiredContentKind;
+    match Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "dds" | "tga" | "png" | "bmp" => RequiredContentKind::Texture,
+        "fx" | "fxh" | "shader" => RequiredContentKind::ShaderSource,
+        "gui" => RequiredContentKind::GuiDefinition,
+        "gfx" => RequiredContentKind::Catalog,
+        "yml" => RequiredContentKind::Localisation,
+        "fnt" => RequiredContentKind::Font,
+        "mesh" => RequiredContentKind::Mesh,
+        "txt" | "lua" | "csv" | "asset" => RequiredContentKind::Definition,
+        _ => RequiredContentKind::Other,
+    }
+}

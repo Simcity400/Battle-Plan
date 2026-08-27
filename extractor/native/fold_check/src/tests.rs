@@ -2796,17 +2796,18 @@ fn d86_failed_reads_certify_through_the_declaration_and_never_through_the_tolera
 }
 
 const SHIPS_DOMAIN: u16 = 29;
-const SHIP_HEADER_LEN: usize = 40;
-const SHIP_SCALE_RAW: u32 = 100_000;
-const SHIP_ROW_FLAG_DELETED: u32 = 1;
-const SHIP_ROW_FLAG_DEFINITION: u32 = 1 << 2;
-const SHIP_ROW_FLAG_OWNER: u32 = 1 << 3;
+// The d29 wire shape comes from `wire_format::d29`, which is version-pinned to
+// `world_fold.rs::SHIP_PAYLOAD_VERSION`. Hand-copied literals here silently
+// fell a version behind lane SR's v2 bump and every ships record these tests
+// built was excluded by the decoder.
+use wire_format::d29 as ships_wire;
 
 type Ship = (u32, u32);
 
 fn ships_payload(live: &[Ship], deleted: &[u32], status_flags: u32) -> Vec<u8> {
     let row_count = live.len() + deleted.len();
-    let mut payload = Vec::with_capacity(SHIP_HEADER_LEN + row_count * 48);
+    let mut payload =
+        Vec::with_capacity(ships_wire::HEADER_LEN + row_count * (ships_wire::FIXED_ROW_LEN + 16));
     payload.extend_from_slice(&0u64.to_le_bytes());
     payload.extend_from_slice(&(row_count as u32).to_le_bytes());
     payload.extend_from_slice(&(row_count as u32).to_le_bytes());
@@ -2814,9 +2815,14 @@ fn ships_payload(live: &[Ship], deleted: &[u32], status_flags: u32) -> Vec<u8> {
     payload.extend_from_slice(&(live.len() as u32).to_le_bytes());
     payload.extend_from_slice(&0u32.to_le_bytes());
     payload.extend_from_slice(&(deleted.len() as u32).to_le_bytes());
-    payload.extend_from_slice(&SHIP_SCALE_RAW.to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes());
-    assert_eq!(payload.len(), SHIP_HEADER_LEN, "ships header is 40 bytes");
+    payload.extend_from_slice(&ships_wire::FIXED_SCALE_RAW.to_le_bytes());
+    payload.extend_from_slice(&ships_wire::PAYLOAD_VERSION.to_le_bytes());
+    assert_eq!(
+        payload.len(),
+        ships_wire::HEADER_LEN,
+        "ships header is {} bytes",
+        ships_wire::HEADER_LEN
+    );
 
     let mut push_row = |instance_id: u32, strength_raw: u32, definition: &str, flags: u32| {
         payload.extend_from_slice(&instance_id.to_le_bytes());
@@ -2828,6 +2834,8 @@ fn ships_payload(live: &[Ship], deleted: &[u32], status_flags: u32) -> Vec<u8> {
         payload.extend_from_slice(&0u32.to_le_bytes());
         payload.extend_from_slice(&0u32.to_le_bytes());
         payload.extend_from_slice(&47u32.to_le_bytes());
+        // `task_force_id_space`: zero is the only legal value while
+        // `FLAG_TASK_FORCE` is clear, which it is on every row here.
         payload.extend_from_slice(&0u32.to_le_bytes());
         payload.extend_from_slice(&(definition.len() as u16).to_le_bytes());
         payload.extend_from_slice(definition.as_bytes());
@@ -2837,11 +2845,11 @@ fn ships_payload(live: &[Ship], deleted: &[u32], status_flags: u32) -> Vec<u8> {
             *instance_id,
             *strength_raw,
             "destroyer_1",
-            SHIP_ROW_FLAG_OWNER | SHIP_ROW_FLAG_DEFINITION,
+            ships_wire::FLAG_OWNER | ships_wire::FLAG_DEFINITION,
         );
     }
     for instance_id in deleted {
-        push_row(*instance_id, 0, "", SHIP_ROW_FLAG_DELETED);
+        push_row(*instance_id, 0, "", ships_wire::FLAG_DELETED);
     }
     payload
 }

@@ -22,6 +22,10 @@ serde_json = "1"
 # constructible for a test either, or the test pins a shape production cannot
 # produce.
 sunk_ship_history_live_lane = { path = "../lanes/sunk_ship_history_live" }
+# d29's wire constants (header length, payload version, row flags, fixed
+# scale), so a synthetic ships payload tracks the shipping grammar instead of a
+# hand-copied literal that goes stale the next time the version moves.
+wire_format = { path = "../wire_format" }
 
 [[bin]]
 name = "fold_check"
