@@ -1,9 +1,9 @@
 //! d23 `map_detail_live` — per-state resources and buildings, per-province
 //! buildings.
 //!
-//! Derived from `world_fold.rs:31687`-`:31910`
+//! Derived from `world_fold.rs:31795`-`:32018`
 //! (`fold_map_detail`), its payload constants at `:400`-`:403`, the shared row
-// @world-fold-authority domain=23 functions=fold_map_detail lines=31687-31910 sha256=f1811dd2ba44bb469d40dcd00b7a9d855d7c247270108333059ee41aa65f9494 closure=54342c645f9b014e1fd8b3e8cfc45b2d8bc2c72bfa408d0a64b6d0b5b2e88045
+// @world-fold-authority domain=23 functions=fold_map_detail lines=31795-32018 sha256=f1811dd2ba44bb469d40dcd00b7a9d855d7c247270108333059ee41aa65f9494 closure=36cab00cbd3bbb6c40b63e6239070bb467c09347ea7a3a46e4ab672fa9be9486
 //! helpers at `:29977`-`:30044`, and the collector read and packer that produce
 //! the flags (`extractor/native/collector/src/attach_log.rs:58628`-`:58717`,
 //! `:59312`-`:59444`, `:71729`-`:71850`). The fold and collector read are the
