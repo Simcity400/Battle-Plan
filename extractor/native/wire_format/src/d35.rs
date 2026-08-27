@@ -1,8 +1,8 @@
 //! d35 `air_variant_stats` — the per-variant aircraft stat catalog.
 //!
-//! Derived from `world_fold.rs:22494`-`:22557`
+//! Derived from `world_fold.rs:22697`-`:22760`
 //! (`fold_air_variant_stats`), its payload constants at `:987`-`:988`, the state
-// @world-fold-authority domain=35 functions=fold_air_variant_stats lines=22494-22557 sha256=d39b1dfa684718401b65209d22f943d7593c95d8c65c0b7f669764c571f07a50 closure=4842a338d8c2d8d30766eefc8e0eb4c1bacfdb859cf644953faabf6ea15de02c
+// @world-fold-authority domain=35 functions=fold_air_variant_stats lines=22697-22760 sha256=d39b1dfa684718401b65209d22f943d7593c95d8c65c0b7f669764c571f07a50 closure=69c01aeb6475925afdc3f3ff8d2b1f428733b923b2a165b263bf8e622c0cb14f
 //! struct and render at `:23835`-`:23889`, and the collector read and payload
 //! writer that produce the rows
 //! (`extractor/native/collector/src/attach_log.rs:52997`-`:53067`,
