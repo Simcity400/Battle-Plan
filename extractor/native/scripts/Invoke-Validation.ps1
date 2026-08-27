@@ -292,7 +292,12 @@ function Get-ShippingPackageIds {
         # through dev-dependencies, so the production-forward walk below can
         # never reach it, yet its integration pins (junction_pin,
         # no_console_shellouts) must execute at landing.
-        if ([string]$entry.Value.name -in @('collector', 'recorder_host', 'replay_app', 'portable_test_fs_retry')) {
+        # fold_check, terrain_capture and replay_fixture_gen are consumers of
+        # the product with no reverse dependency, so the forward walk never
+        # reaches them either; fold_check guards world_fold (the single-file
+        # replay contract) and sat red on master for two days unseen (lane UG,
+        # 2026-08-26). All three are proven green under the full workspace run.
+        if ([string]$entry.Value.name -in @('collector', 'recorder_host', 'replay_app', 'portable_test_fs_retry', 'fold_check', 'terrain_capture', 'replay_fixture_gen')) {
             if ($selected.Add([string]$entry.Key)) { $queue.Enqueue([string]$entry.Key) }
         }
     }
@@ -368,7 +373,22 @@ function Invoke-ShippingTests {
         [switch]$PlanOnly
     )
 
-    $shippingBins = @('collector_record', 'replay_app')
+    # Deny-list (lane UG, 2026-08-26): bin targets are planned by DEFAULT so
+    # their #[cfg(test)] modules run at landing (525 tests were invisible under
+    # the old allow-list). Every exclusion added here must carry its reason.
+    $excludedShippingBins = @(
+        # Feature-gated bins (cargo metadata required-features): unbuildable in
+        # the plain landing plan. Complete set as of 2026-08-26; re-derive with
+        # cargo metadata if a new feature-gated bin appears.
+        'collector_record_evidence',   # evidence-client-driving
+        'gq_bad_hour',                 # gq-bad-hour
+        'gz_interior_holes',           # gz-interior-holes
+        'ha_entry_confinement',        # ha-entry-confinement
+        'hr_truncated_prefix',         # hr-truncated-prefix
+        'pv_repeat_gate_reencode',     # pv-repeat-gate
+        'pv_repeat_diag',              # pv-repeat-gate
+        'pv_hour_dump'                 # pv-repeat-gate
+    )
     $plans = @()
     foreach ($root in $Topology.Roots) {
         $packages = @($root.Packages | Where-Object {
@@ -389,7 +409,7 @@ function Invoke-ShippingTests {
                 if ($kinds -contains 'test' -and (Test-ShippingTestTarget ([string]$target.name))) {
                     [void]$tests.Add([string]$target.name)
                 }
-                if ($kinds -contains 'bin' -and $shippingBins -contains [string]$target.name) {
+                if ($kinds -contains 'bin' -and $excludedShippingBins -notcontains [string]$target.name) {
                     [void]$bins.Add([string]$target.name)
                 }
             }
