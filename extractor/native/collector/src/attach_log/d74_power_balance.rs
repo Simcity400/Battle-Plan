@@ -30,13 +30,17 @@ impl CopyBudget {
         }
     }
 
-    fn check(&self) -> Result<(), &'static str> {
-        #[cfg(test)]
-        self.checks.set(self.checks.get().saturating_add(1));
-        if self.started.elapsed() > self.budget {
+    fn verdict(&self, elapsed: Duration) -> Result<(), &'static str> {
+        if elapsed > self.budget {
             return Err("power_balance_census_copy_budget_exceeded");
         }
         Ok(())
+    }
+
+    fn check(&self) -> Result<(), &'static str> {
+        #[cfg(test)]
+        self.checks.set(self.checks.get().saturating_add(1));
+        self.verdict(self.started.elapsed())
     }
 }
 
@@ -303,6 +307,7 @@ fn copy_once(
     elapsed_wall_ms: u64,
     budget: &CopyBudget,
 ) -> Result<CopiedCensus, &'static str> {
+    budget.check()?;
     let profile = state
         .power_balance_attach_profile()
         .ok_or("a729_power_balance_attach_profile_unavailable")?;
@@ -352,6 +357,7 @@ fn copy_once(
     if fixed_len > 0 && !is_map_control_heap_pointer(base) {
         return Err("manager_record_array_pointer_invalid");
     }
+    budget.check()?;
     let fixed_all = copy_exact(base, fixed_len).ok_or("manager_record_array_unreadable")?;
     let mut records = Vec::with_capacity(count as usize);
     for ordinal in 0..count as usize {
@@ -490,22 +496,30 @@ fn copy_once(
     })
 }
 
-pub(super) fn copy_census(
-    state: &CollectorState,
-    frame_hour: u64,
-    elapsed_wall_ms: u64,
+fn census_within_budget(
+    budget: &CopyBudget,
+    copy: impl Fn(&CopyBudget) -> Result<CopiedCensus, &'static str>,
 ) -> Result<CopiedCensus, &'static str> {
-    let budget = CopyBudget::new(CENSUS_COPY_BUDGET_US);
     for _ in 0..RETRIES {
-        let first = copy_once(state, frame_hour, elapsed_wall_ms, &budget)?;
-        let second = copy_once(state, frame_hour, elapsed_wall_ms, &budget)?;
-        if first.equal_within_budget(&second, &budget)? {
+        let first = copy(budget)?;
+        let second = copy(budget)?;
+        if first.equal_within_budget(&second, budget)? {
             budget.check()?;
             return Ok(first);
         }
         budget.check()?;
     }
     Err("power_balance_data_changed_while_being_read")
+}
+
+pub(super) fn copy_census(
+    state: &CollectorState,
+    frame_hour: u64,
+    elapsed_wall_ms: u64,
+) -> Result<CopiedCensus, &'static str> {
+    census_within_budget(&CopyBudget::new(CENSUS_COPY_BUDGET_US), |budget| {
+        copy_once(state, frame_hour, elapsed_wall_ms, budget)
+    })
 }
 
 fn resolve_side_gfx_overrides(
@@ -618,6 +632,300 @@ pub(super) fn build_payload(
 mod tests {
     use super::*;
 
+    fn never_expires() -> CopyBudget {
+        CopyBudget::new(u64::MAX)
+    }
+
+    fn already_expired() -> CopyBudget {
+        let budget = CopyBudget::new(0);
+        while budget.started.elapsed() == Duration::ZERO {
+            core::hint::spin_loop();
+        }
+        budget
+    }
+
+    fn production_code() -> String {
+        include_str!("d74_power_balance.rs")
+            .replace("\r\n", "\n")
+            .split_once("#[cfg(test)]\nmod tests {")
+            .expect("this file has a test module")
+            .0
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn production_item(production: &str, opening: &str) -> String {
+        let lines: Vec<&str> = production.lines().collect();
+        let start = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with(opening))
+            .unwrap_or_else(|| panic!("the production text has no `{opening}`"));
+        let indent = &lines[start][..lines[start].len() - lines[start].trim_start().len()];
+        let closing = format!("{indent}}}");
+        let end = start
+            + 1
+            + lines[start + 1..]
+                .iter()
+                .position(|line| *line == closing)
+                .expect("the item closes at its own indentation");
+        lines[start..=end].join("\n")
+    }
+
+    fn one_line(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn one_census_is_metered_by_one_budget_read_off_one_clock() {
+        let production = production_code();
+        assert!(
+            production.contains("fn census_within_budget"),
+            "the production text this test reads is the retry site's, not the \
+             test module's"
+        );
+        assert!(
+            !production.contains("/*"),
+            "only line comments are stripped, so a block comment could hide any \
+             of the counts below"
+        );
+        assert!(
+            !production
+                .lines()
+                .any(|line| line.trim_start().starts_with("mod ")),
+            "a child module's own file is out of this scan's reach and could \
+             still see CopyBudget"
+        );
+        assert_eq!(
+            production.matches("CopyBudget::new").count(),
+            1,
+            "copy_census builds the census's only budget; a second one anywhere \
+             in production is a second allowance, which no unit test can see \
+             because copy_once reads the live game. Naming the constructor \
+             without calling it counts too"
+        );
+        assert_eq!(
+            production.matches("CopyBudget::new(").count(),
+            1,
+            "the constructor is called where it is named, never bound to a name \
+             that can then be called as often as it likes"
+        );
+        assert!(
+            !production.contains("Self::new"),
+            "inside the impl, Self::new is the same constructor under a name the \
+             count above cannot see"
+        );
+        assert!(
+            production_item(&production, "impl CopyBudget {").contains("fn check"),
+            "the slice below must span the whole impl, not its first method"
+        );
+        let retries = one_line(&production_item(&production, "fn census_within_budget"));
+        assert_eq!(
+            retries.matches("return Ok(").count(),
+            1,
+            "the retry loop succeeds in exactly one place, the settled arm below; \
+             an earlier return hands back a census that reached neither the \
+             compare nor the settle"
+        );
+        assert!(
+            retries.contains(
+                "if first.equal_within_budget(&second, budget)? { budget.check()?; \
+                 return Ok(first); } budget.check()?;"
+            ),
+            "the settle is checked AFTER the compare, on both arms: a compare \
+             whose last unit crosses the deadline is a census that ran out, and \
+             a check hoisted above it would return that census as if it had not"
+        );
+        assert_eq!(
+            one_line(&production_item(&production, "fn new(budget_us: u64)")),
+            "fn new(budget_us: u64) -> Self { Self { started: Instant::now(), \
+             budget: Duration::from_micros(budget_us), #[cfg(test)] checks: \
+             std::cell::Cell::new(0), } }",
+            "the census starts at the instant the budget is built; a `started` \
+             put anywhere but now buys an allowance no test can see"
+        );
+        assert_eq!(
+            one_line(&production_item(&production, "fn check(&self)")),
+            "fn check(&self) -> Result<(), &'static str> { #[cfg(test)] \
+             self.checks.set(self.checks.get().saturating_add(1)); \
+             self.verdict(self.started.elapsed()) }",
+            "check is the delegate that hands verdict the census's own elapsed \
+             time, untouched; nothing it could do to that time is visible to a \
+             test that must not read a clock"
+        );
+        let constructions = production_item(&production, "impl CopyBudget {")
+            .lines()
+            .filter(|line| line.trim() == "Self {")
+            .count()
+            + production
+                .lines()
+                .map(str::trim)
+                .filter(|line| {
+                    line.contains("CopyBudget {")
+                        && !line.starts_with("struct ")
+                        && !line.starts_with("impl ")
+                })
+                .count();
+        assert_eq!(
+            constructions, 1,
+            "only CopyBudget::new builds one; a struct literal elsewhere would \
+             build a budget past it"
+        );
+        assert_eq!(
+            production.matches("Instant::now()").count(),
+            1,
+            "the census is timed from the one instant CopyBudget::new takes"
+        );
+    }
+
+    fn production_blocks(production: &str) -> Vec<String> {
+        let lines: Vec<&str> = production.lines().collect();
+        let mut blocks = Vec::new();
+        let mut index = 0;
+        while index < lines.len() {
+            let line = lines[index];
+            let top_level = !line.starts_with(' ') && !line.is_empty();
+            let item =
+                line.starts_with("fn ") || line.contains(" fn ") || line.starts_with("impl ");
+            if top_level && item && (line.ends_with('{') || line.ends_with('(')) {
+                let end = lines[index + 1..]
+                    .iter()
+                    .position(|later| *later == "}")
+                    .map(|at| index + 1 + at)
+                    .unwrap_or(lines.len() - 1);
+                blocks.push(lines[index..=end].join("\n"));
+                index = end + 1;
+                continue;
+            }
+            index += 1;
+        }
+        blocks
+    }
+
+    const REPEATS: [&str; 24] = [
+        "for ",
+        "while ",
+        "loop {",
+        ".for_each(",
+        ".try_for_each(",
+        ".fold(",
+        ".try_fold(",
+        ".collect(",
+        ".collect::",
+        ".retain(",
+        ".flat_map(",
+        ".filter_map(",
+        ".find_map(",
+        ".map_while(",
+        ".take_while(",
+        ".skip_while(",
+        ".inspect(",
+        ".reduce(",
+        ".partition(",
+        ".any(",
+        ".all(",
+        ".position(",
+        ".scan(",
+        ".repeat(",
+    ];
+
+    fn repetitions(text: &str) -> usize {
+        REPEATS
+            .iter()
+            .map(|repeat| text.matches(repeat).count())
+            .sum()
+    }
+
+    #[test]
+    fn no_live_walk_escapes_the_budget() {
+        const LIVE_READS: [&str; 8] = [
+            "read_into(",
+            "read_u64(",
+            "read_u32(",
+            "read_u64_stable(",
+            "read_u32_stable(",
+            "copy_exact(",
+            "copy_string(",
+            "copy_modifiers(",
+        ];
+        let blocks = production_blocks(&production_code());
+        assert!(
+            blocks.len() >= 8,
+            "the production text did not split into items: {} found",
+            blocks.len()
+        );
+        let mut walkers = Vec::new();
+        for block in &blocks {
+            if !REPEATS.iter().any(|repeat| block.contains(repeat)) {
+                continue;
+            }
+            if !LIVE_READS.iter().any(|call| block.contains(call)) {
+                continue;
+            }
+            let name = block.lines().next().unwrap_or_default().trim().to_owned();
+            assert!(
+                block.contains("budget.check()?;"),
+                "`{name}` walks live memory without reaching the budget"
+            );
+            walkers.push(name);
+        }
+        assert_eq!(
+            walkers,
+            vec!["fn copy_once(".to_string()],
+            "copy_once is the only production item that walks live memory. A \
+             helper that grows a loop over reads walks it too, however small \
+             each read looks, and owes the budget a check per row"
+        );
+    }
+
+    #[test]
+    fn the_live_copy_reaches_the_budget_before_each_row_it_copies() {
+        let copy_once = one_line(&production_item(&production_code(), "fn copy_once("));
+        assert!(
+            copy_once.starts_with(
+                "fn copy_once( state: &CollectorState, frame_hour: u64, \
+                 elapsed_wall_ms: u64, budget: &CopyBudget, ) -> \
+                 Result<CopiedCensus, &'static str> { budget.check()?;"
+            ),
+            "the budget is reached before the first live read of the pass, not \
+             only before each walk: with no countries the manager's whole record \
+             array is copied before the record walk starts"
+        );
+        for walk in [
+            "for row in &state.country_identity.rows { budget.check()?;",
+            "for ordinal in 0..count as usize { budget.check()?;",
+            "for index in 0..override_count as usize { budget.check()?;",
+        ] {
+            assert!(
+                copy_once.contains(walk),
+                "copy_once no longer opens `{walk}`. The whole header is pinned, \
+                 not just the first statement, because an iterator adaptor in the \
+                 header reads the game before the body reaches the budget"
+            );
+        }
+        assert_eq!(
+            copy_once.matches("copy_exact(base, fixed_len)").count(),
+            1,
+            "the manager's record array is copied once, by the bulk copy the \
+             next assertion meters"
+        );
+        assert!(
+            copy_once.contains("budget.check()?; let fixed_all = copy_exact(base, fixed_len)"),
+            "the one bulk copy between the country walk and the record walk is \
+             the largest single read of the pass and is reached through the \
+             budget, not after the last country's check"
+        );
+        assert_eq!(
+            repetitions(&copy_once),
+            3,
+            "copy_once repeats itself exactly three times, and the three pinned \
+             above are those three. Any other repetition here -- another walk, \
+             an iterator adaptor driving a closure, a bare loop -- reads the \
+             game a row at a time behind whichever check came before it"
+        );
+    }
+
     #[test]
     fn the_copy_budget_expires_and_names_the_hour() {
         let budget = CopyBudget::new(0);
@@ -632,31 +940,30 @@ mod tests {
 
     #[test]
     fn the_budget_expires_exactly_when_the_elapsed_time_passes_it() {
+        let metered = CopyBudget::new(CENSUS_COPY_BUDGET_US);
         let budget = Duration::from_micros(CENSUS_COPY_BUDGET_US);
-        let started = |ago_us: u64| {
-            Instant::now()
-                .checked_sub(Duration::from_micros(ago_us))
-                .expect("the monotonic clock is older than the test's window")
-        };
-        assert_eq!(
-            CopyBudget::new(CENSUS_COPY_BUDGET_US).budget,
-            Duration::from_micros(CENSUS_COPY_BUDGET_US)
-        );
-        let over = CopyBudget {
-            started: started(CENSUS_COPY_BUDGET_US + 1_000),
+        assert_eq!(metered.budget, budget);
+        for under in [
+            Duration::ZERO,
+            budget / 2,
+            budget - Duration::from_nanos(1),
             budget,
-            checks: std::cell::Cell::new(0),
-        };
+        ] {
+            assert_eq!(metered.verdict(under), Ok(()), "{under:?}");
+        }
+        for over in [budget + Duration::from_nanos(1), budget * 2, Duration::MAX] {
+            assert_eq!(
+                metered.verdict(over),
+                Err("power_balance_census_copy_budget_exceeded"),
+                "{over:?}"
+            );
+        }
+
+        assert_eq!(never_expires().check(), Ok(()));
         assert_eq!(
-            over.check(),
+            already_expired().check(),
             Err("power_balance_census_copy_budget_exceeded")
         );
-        let under = CopyBudget {
-            started: started(CENSUS_COPY_BUDGET_US / 2),
-            budget,
-            checks: std::cell::Cell::new(0),
-        };
-        assert_eq!(under.check(), Ok(()));
 
         assert!(
             CENSUS_COPY_BUDGET_US >= 8_000,
@@ -708,31 +1015,52 @@ mod tests {
         }
     }
 
+    fn census_shaped(countries: usize, records: usize, overrides: usize) -> CopiedCensus {
+        let mut census = census_of(countries, records);
+        for record in &mut census.records {
+            record.overrides = (0..overrides)
+                .map(|index| CopiedOverride {
+                    side: copied_string(&format!("side{index}")),
+                    gfx: copied_string("gfx"),
+                })
+                .collect();
+        }
+        census
+    }
+
+    fn compare_spending(
+        mine: &CopiedCensus,
+        theirs: &CopiedCensus,
+    ) -> (Result<bool, &'static str>, usize) {
+        let budget = never_expires();
+        let outcome = mine.equal_within_budget(theirs, &budget);
+        (outcome, budget.checks.get() as usize)
+    }
+
     #[test]
     fn comparing_the_two_passes_is_spent_under_the_same_budget_as_the_copy() {
         let first = census_of(3, 2);
         let second = census_of(3, 2);
-        let live = CopyBudget::new(CENSUS_COPY_BUDGET_US);
-        assert_eq!(first.equal_within_budget(&second, &live), Ok(true));
+        let free = never_expires();
+        assert_eq!(first.equal_within_budget(&second, &free), Ok(true));
 
-        let spent = CopyBudget {
-            started: Instant::now()
-                .checked_sub(Duration::from_micros(CENSUS_COPY_BUDGET_US + 1_000))
-                .expect("the monotonic clock is older than the test's window"),
-            budget: Duration::from_micros(CENSUS_COPY_BUDGET_US),
-            checks: std::cell::Cell::new(0),
-        };
+        let spent = already_expired();
         assert_eq!(
             first.equal_within_budget(&second, &spent),
             Err("power_balance_census_copy_budget_exceeded")
         );
+        assert_eq!(
+            census_of(0, 1).equal_within_budget(&census_of(0, 1), &already_expired()),
+            Err("power_balance_census_copy_budget_exceeded"),
+            "the record walk carries the budget of its own, not the country walk's"
+        );
 
         assert_eq!(
-            first.equal_within_budget(&census_of(2, 2), &live),
+            first.equal_within_budget(&census_of(2, 2), &free),
             Ok(false)
         );
         assert_eq!(
-            first.equal_within_budget(&census_of(3, 1), &live),
+            first.equal_within_budget(&census_of(3, 1), &free),
             Ok(false)
         );
         assert_eq!(
@@ -742,26 +1070,93 @@ mod tests {
 
         let mut third = census_of(3, 2);
         third.records[1].overrides[0].gfx = copied_string("other_gfx");
-        assert_eq!(first.equal_within_budget(&third, &live), Ok(false));
+        assert_eq!(first.equal_within_budget(&third, &free), Ok(false));
         let mut fourth = census_of(3, 2);
         fourth.countries[2].modifiers = vec![0xFF; 0x10];
-        assert_eq!(first.equal_within_budget(&fourth, &live), Ok(false));
+        assert_eq!(first.equal_within_budget(&fourth, &free), Ok(false));
 
-        let counted = CopyBudget::new(CENSUS_COPY_BUDGET_US);
-        let (countries, records, overrides_per_record) = (5, 4, 1);
-        let big = census_of(countries, records);
+        for (countries, records, overrides) in [(5, 4, 1), (9, 7, 3), (4, 5, 0), (0, 0, 0)] {
+            let same = census_shaped(countries, records, overrides);
+            assert_eq!(
+                compare_spending(&same, &census_shaped(countries, records, overrides)),
+                (Ok(true), countries + records + records * overrides),
+                "one check per country, per record and per override, and no \
+                 other budget the compare pass could be spending instead"
+            );
+        }
+
+        let mut countries_differ = census_shaped(5, 4, 0);
+        countries_differ.countries[2].modifiers = vec![0xFF; 0x10];
         assert_eq!(
-            big.records[0].overrides.len(),
-            overrides_per_record,
-            "the census helper's shape is what the arithmetic below counts"
+            compare_spending(&census_shaped(5, 4, 0), &countries_differ),
+            (Ok(false), 3),
+            "the third country cost a check before it was read, not after"
+        );
+
+        let mut records_differ = census_shaped(0, 4, 0);
+        records_differ.records[2].fixed = vec![0xFF; RECORD_STRIDE];
+        assert_eq!(
+            compare_spending(&census_shaped(0, 4, 0), &records_differ),
+            (Ok(false), 3),
+            "the third record cost a check before it was read, not after"
+        );
+
+        let mut overrides_differ = census_shaped(0, 1, 3);
+        overrides_differ.records[0].overrides[1].gfx = copied_string("other_gfx");
+        assert_eq!(
+            compare_spending(&census_shaped(0, 1, 3), &overrides_differ),
+            (Ok(false), 3),
+            "the second override cost a check before it was read, not after"
+        );
+    }
+
+    #[test]
+    fn the_retry_loop_spends_every_pass_out_of_the_one_budget_it_was_given() {
+        let budget = never_expires();
+        let copies = std::cell::Cell::new(0usize);
+        let copy = |budget: &CopyBudget| {
+            copies.set(copies.get() + 1);
+            budget.check()?;
+            Ok(census_shaped(2, 1, 1))
+        };
+        assert!(census_within_budget(&budget, copy).is_ok());
+        assert_eq!(copies.get(), 2, "one settled census is two copies");
+        assert_eq!(
+            budget.checks.get() as usize,
+            2 + (2 + 1 + 1) + 1,
+            "both copies, the compare of them and the settle all draw on the \
+             budget handed in, and nothing draws on one of its own"
+        );
+
+        let churning = never_expires();
+        let churned = std::cell::Cell::new(0usize);
+        assert_eq!(
+            census_within_budget(&churning, |budget| {
+                churned.set(churned.get() + 1);
+                budget.check()?;
+                Ok(census_shaped(churned.get(), 0, 0))
+            })
+            .err(),
+            Some("power_balance_data_changed_while_being_read")
+        );
+        assert_eq!(churned.get(), 2 * RETRIES);
+        assert_eq!(churning.checks.get() as usize, 2 * RETRIES + RETRIES);
+
+        let spent = already_expired();
+        let attempted = std::cell::Cell::new(0usize);
+        assert_eq!(
+            census_within_budget(&spent, |budget| {
+                attempted.set(attempted.get() + 1);
+                budget.check()?;
+                Ok(census_shaped(1, 1, 1))
+            })
+            .err(),
+            Some("power_balance_census_copy_budget_exceeded")
         );
         assert_eq!(
-            big.equal_within_budget(&census_of(countries, records), &counted),
-            Ok(true)
-        );
-        assert_eq!(
-            counted.checks.get() as usize,
-            countries + records + records * overrides_per_record
+            attempted.get(),
+            1,
+            "a budget already gone is not restarted by the retry loop"
         );
     }
 
