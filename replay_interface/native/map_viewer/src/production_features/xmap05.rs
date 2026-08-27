@@ -785,16 +785,8 @@ impl Xmap05Shared {
             &province_controllers,
             &country_roster,
         )?;
-        // prepare BEFORE the all-country census so a POV whose vector is not
-        // recorded refuses with ITS named binding list rather than the
-        // generic census message; the census gate itself still runs (and
-        // still holds its all-or-nothing claim) before any texture is built.
         let (visibility, province_visibility) =
             prepare_visibility(context, raster.province_is_eligible_land.len())?;
-        validate_all_country_visibility(
-            context.world_frame,
-            raster.province_is_eligible_land.len(),
-        )?;
         let (channel1, channel2) =
             synthesize_gradient_border_channels(&raster, self.content.defines)?;
         let (intel_width, intel_height, intel_bytes) = exact_a729_intel_map(
@@ -842,10 +834,6 @@ fn xmap05_semantic_cache_key(
         .world_frame
         .domain("countries")
         .ok_or("XMAP05 cache identity requires the countries domain")?;
-    let visibility = context
-        .world_frame
-        .domain("visibility")
-        .ok_or("XMAP05 cache identity requires the visibility domain")?;
     xmap05_semantic_cache_digest(
         context.world_frame.hour_index(),
         context.viewer.observer_country_id.as_deref(),
@@ -853,10 +841,14 @@ fn xmap05_semantic_cache_key(
         province_controllers,
         map,
         countries,
-        visibility,
+        context.world_frame.domain("visibility"),
     )
 }
 
+/// The identity must cover what the render READ, so the mode decides whether the
+/// visibility domain is an input at all. That scoping lives HERE rather than at
+/// the call site: an observer digest is blind to the recorded vector as a
+/// property of the digest, not of who called it.
 fn xmap05_semantic_cache_digest(
     hour_index: i64,
     observer_country_id: Option<&str>,
@@ -864,21 +856,30 @@ fn xmap05_semantic_cache_digest(
     province_controllers: &BTreeMap<u32, String>,
     map: &serde_json::Value,
     countries: &serde_json::Value,
-    visibility: &serde_json::Value,
+    visibility: Option<&serde_json::Value>,
 ) -> Result<String> {
-    let mut bytes = b"XMAP05_SEMANTIC_CACHE_V2\0".to_vec();
+    let visibility = match observer_country_id {
+        None => None,
+        Some(_) => Some(
+            visibility.ok_or("XMAP05 cache identity requires the visibility domain in POV mode")?,
+        ),
+    };
+    let mut bytes = b"XMAP05_SEMANTIC_CACHE_V3\0".to_vec();
     bytes.extend_from_slice(&hour_index.to_le_bytes());
-    bytes.extend_from_slice(observer_country_id.unwrap_or("<omniscient>").as_bytes());
+    bytes.extend_from_slice(observer_country_id.unwrap_or("<observer>").as_bytes());
     bytes.push(0);
     bytes.extend_from_slice(format!("{keying:?}\0{province_controllers:?}\0").as_bytes());
     for (label, value) in [
-        ("map", map),
-        ("countries", countries),
+        ("map", Some(map)),
+        ("countries", Some(countries)),
         ("visibility", visibility),
     ] {
         bytes.extend_from_slice(label.as_bytes());
         bytes.push(0);
-        bytes.extend_from_slice(&serde_json::to_vec(value)?);
+        match value {
+            Some(value) => bytes.extend_from_slice(&serde_json::to_vec(value)?),
+            None => bytes.extend_from_slice(b"<unread>"),
+        }
         bytes.push(0);
     }
     Ok(Sha256::hex(&bytes))
@@ -1050,10 +1051,10 @@ impl ProductionMapFeatureAdapter for Xmap05FowAdapter {
 /// status functions call this; until then it is what measures whether they
 /// could be.
 ///
-/// It does NOT cover the fog-of-war half of the family: that needs the province
-/// count from `map/provinces.bmp` (`validate_all_country_visibility` takes
-/// `province_slots`), so it is not derivable from a frame alone. The
-/// POV-census half that IS frame-pure is reported separately.
+/// It does NOT cover the fog-of-war half of the family: reading one POV's
+/// vector needs the province count from `map/provinces.bmp`, so it is not
+/// derivable from a frame alone. The POV-census half that IS frame-pure is
+/// reported separately.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Xmap05AdmissionVerdict {
     /// Roster countries whose presentation identity this hour certified.
@@ -1739,43 +1740,6 @@ fn mapc1_presentation_digest(census: &PresentationCensus) -> String {
     Sha256::hex(&bytes)
 }
 
-fn validate_all_country_visibility(frame: &WorldFrame, province_slots: usize) -> Result<()> {
-    if frame.visibility_status() != ViewStatus::Present {
-        return Err("XMAP05 all-country visibility root is not Present".into());
-    }
-    // COMPLETE, not partial, and it is the one XMAP05 gate that must stay that
-    // way: the claim is that this recording carries EVERY country's visibility.
-    // A country the recorder could not name is a country whose visibility this
-    // recording cannot carry, so the census is not all-country while one exists.
-    let roster = frame.d18_country_roster();
-    let roster_entries = match roster.complete() {
-        Ok(entries) => entries,
-        Err(refusal) => {
-            return Err(format!(
-                "XMAP05 all-country visibility requires the complete D18 roster: {refusal}"
-            )
-            .into())
-        }
-    };
-    let expected = roster_entries
-        .iter()
-        .map(|entry| entry.tag.as_str())
-        .collect::<BTreeSet<_>>();
-    let actual = frame.visibility_povs().collect::<BTreeSet<_>>();
-    if actual != expected {
-        return Err(format!(
-            "XMAP05 visibility POV census has {} countries, expected complete D18 roster of {}",
-            actual.len(),
-            expected.len()
-        )
-        .into());
-    }
-    for entry in roster_entries {
-        prepare_country_visibility(frame, &entry.tag, entry.tag_db_id, province_slots)?;
-    }
-    Ok(())
-}
-
 fn operation(
     operation_id: &str,
     global_order: u32,
@@ -1904,32 +1868,46 @@ fn generated_texture(
     })
 }
 
+/// Which per-country visibility vectors an XMAP05 render consumes.
+///
+/// The two arms are the two fog states the real game runs in, and the
+/// map_viewer's own CAP4 round corpus captures both from it:
+/// `fow_on_pov_front` and `fow_off_observer_front`
+/// (`fow_law::analyze_wave1_cap4_fow_pair`, gated by `test_gates.rs`'s
+/// `wave1_cap4_rounds_dir`). Observer is not the absence of a POV — it is the
+/// recording's world truth drawn with no fog layer, which is why it needs no
+/// country's visibility vector to be complete.
+///
+/// Neither arm reads more than one vector, so a census over the whole D18
+/// roster is not a precondition of either. Of what that census used to assert,
+/// only the KEY-SET half survives, in
+/// [`Xmap05AdmissionVerdict::visibility_povs_match_roster`], which reports it
+/// rather than refusing on it. Its per-vector-length half is asserted nowhere
+/// now, and no code carries it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Xmap05VisibilityMode {
+    /// No fog layer: every province at full visibility, no POV, no recorded
+    /// vector read.
+    Observer,
+    /// One country's fog map, which the recording must carry for that country.
+    Pov(String),
+}
+
+pub fn xmap05_visibility_mode(viewer: &ViewerOwnedMapState) -> Xmap05VisibilityMode {
+    match viewer.observer_country_id.as_deref() {
+        None => Xmap05VisibilityMode::Observer,
+        Some(country) => Xmap05VisibilityMode::Pov(country.to_string()),
+    }
+}
+
 fn prepare_visibility(
     context: &FoundationFeatureContext<'_>,
     province_slots: usize,
 ) -> Result<(PreparedXmap05Visibility, Vec<u8>)> {
-    if context.viewer.observer_country_id.is_none() {
-        let province_visibility = vec![u8::MAX; province_slots];
-        let mut visibility = PreparedXmap05Visibility {
-            schema: XMAP05_VISIBILITY_SCHEMA.into(),
-            viewer_country: None,
-            fow_enabled: false,
-            capture_sequence: None,
-            pov_country_id: None,
-            province_visibility_sha256: Sha256::hex(&province_visibility),
-            land_units: Vec::new(),
-            taskforce_units: Vec::new(),
-            air_wing_spotting_unavailable: true,
-            land_frame_sequence: None,
-            taskforce_frame_sequence: None,
-            deterministic_sha256: String::new(),
-        };
-        visibility.deterministic_sha256 = visibility_digest(&visibility);
-        visibility.validate()?;
-        return Ok((visibility, province_visibility));
-    }
-
-    let country = context.viewer.observer_country_id.as_deref().unwrap();
+    let country = match xmap05_visibility_mode(context.viewer) {
+        Xmap05VisibilityMode::Observer => return prepare_observer_visibility(province_slots),
+        Xmap05VisibilityMode::Pov(country) => country,
+    };
     // PARTIAL: one country's PRESENCE, not a census. Whether some other country
     // could be named this hour says nothing about whether this one was.
     let split = xmap05_roster(context.world_frame)?;
@@ -1952,10 +1930,38 @@ fn prepare_visibility(
         })?;
     prepare_country_visibility(
         context.world_frame,
-        country,
+        &country,
         expected_country_id,
         province_slots,
     )
+}
+
+/// [`Xmap05VisibilityMode::Observer`]: the constant fully-visible vector.
+///
+/// `fow_enabled: false` is what `fow_law::exact_a729_intel_map_texel` reads to
+/// take `u8::MAX` for every sample without consulting the vector at all, so
+/// this vector is the payload's declared identity rather than an input to it.
+fn prepare_observer_visibility(
+    province_slots: usize,
+) -> Result<(PreparedXmap05Visibility, Vec<u8>)> {
+    let province_visibility = vec![u8::MAX; province_slots];
+    let mut visibility = PreparedXmap05Visibility {
+        schema: XMAP05_VISIBILITY_SCHEMA.into(),
+        viewer_country: None,
+        fow_enabled: false,
+        capture_sequence: None,
+        pov_country_id: None,
+        province_visibility_sha256: Sha256::hex(&province_visibility),
+        land_units: Vec::new(),
+        taskforce_units: Vec::new(),
+        air_wing_spotting_unavailable: true,
+        land_frame_sequence: None,
+        taskforce_frame_sequence: None,
+        deterministic_sha256: String::new(),
+    };
+    visibility.deterministic_sha256 = visibility_digest(&visibility);
+    visibility.validate()?;
+    Ok((visibility, province_visibility))
 }
 
 fn prepare_country_visibility(
@@ -1967,26 +1973,23 @@ fn prepare_country_visibility(
     let view = frame.visibility_for(country);
     if view.status != ViewStatus::Present {
         // The recording does not carry this POV. The engine-exact derivation
-        // law (fog_derivation_law) stands ready, but its standing input
-        // bindings are evaluated for THIS hour and the refusal names them:
-        // never an approximation, always the precise unsealed inputs. A
-        // network carrier that is absent/unobtained counts as "networks
-        // cannot be proven absent" — never as measured emptiness.
-        let networks = &frame.diplomacy().intel_network_graphs;
-        let shape = match networks {
-            Leaf::Measured(rows) if rows.is_empty() => {
-                fog_derivation_law::FogNetworkShape::MeasuredEmpty
-            }
-            Leaf::Measured(_) => fog_derivation_law::FogNetworkShape::MeasuredNonEmpty,
-            Leaf::Absent | Leaf::Unobtained => {
-                fog_derivation_law::FogNetworkShape::Unavailable
-            }
+        // law stands ready, but the binding gate is evaluated for THIS hour and
+        // the refusal names what it found: the standing residuals, and the
+        // recorded operands this frame does not carry.
+        let report = fog_derivation_law::fog_binding_refusals(frame, Some(country));
+        let absent = report.missing_recorded();
+        let absent = if absent.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; and these recorded operands are absent this hour: {}",
+                absent.join(", ")
+            )
         };
-        let report = fog_derivation_law::fog_binding_refusals(shape);
         return Err(format!(
             "XMAP05 viewer POV {country} visibility is {:?}; the recorded capture carries no \
              vector for this country and per-POV fog-of-war derivation refuses by name until \
-             these input bindings seal: {}",
+             these input bindings seal: {}{absent}",
             view.status,
             report.blocked().join(", ")
         )
@@ -3536,6 +3539,59 @@ mod tests {
         patch.validate().unwrap();
     }
 
+    fn test_viewer(observer_country_id: Option<&str>) -> ViewerOwnedMapState {
+        ViewerOwnedMapState {
+            viewport_width: 1920,
+            viewport_height: 1080,
+            camera: None,
+            observer_country_id: observer_country_id.map(str::to_string),
+            map_mode_id: "viewer.map_mode.unselected".into(),
+            map_mode_selection_epoch: 0,
+            selected_object_ids: Vec::new(),
+            input_revision: 0,
+            animation_time_f32_bits: 0.0f32.to_bits(),
+            frame_delta_seconds_f32_bits: 0.0f32.to_bits(),
+        }
+    }
+
+    #[test]
+    fn observer_mode_consumes_no_recorded_visibility_vector() {
+        assert_eq!(
+            xmap05_visibility_mode(&test_viewer(None)),
+            Xmap05VisibilityMode::Observer
+        );
+        assert_eq!(
+            xmap05_visibility_mode(&test_viewer(Some("SOV"))),
+            Xmap05VisibilityMode::Pov("SOV".into())
+        );
+
+        let (visibility, province_visibility) = prepare_observer_visibility(7).unwrap();
+        assert!(!visibility.fow_enabled);
+        assert_eq!(visibility.viewer_country, None);
+        assert_eq!(visibility.pov_country_id, None);
+        assert_eq!(province_visibility, vec![u8::MAX; 7]);
+
+        // The payload's vector is its declared identity, not an operand: under
+        // `fow_enabled == false` the intel map reads the same texel from a
+        // fully dark vector, so no recorded POV could change this render.
+        let eligible = vec![true; 7];
+        let dark = vec![0u8; 7];
+        let from_declared =
+            crate::fow_law::exact_a729_intel_map_texel(&[3], &eligible, &province_visibility, false)
+                .unwrap();
+        let from_dark =
+            crate::fow_law::exact_a729_intel_map_texel(&[3], &eligible, &dark, false).unwrap();
+        assert_eq!(from_declared, from_dark);
+        assert_eq!(from_declared, !u8::MAX);
+        // ... and with fog on the same two vectors disagree, so the equality
+        // above is the mode's doing rather than the texel law's.
+        assert_ne!(
+            crate::fow_law::exact_a729_intel_map_texel(&[3], &eligible, &province_visibility, true)
+                .unwrap(),
+            crate::fow_law::exact_a729_intel_map_texel(&[3], &eligible, &dark, true).unwrap()
+        );
+    }
+
     #[test]
     fn viewer_clock_uses_xmap10_presentation_time_without_selected_present() {
         let presentation = Xmap10ViewerPresentationState::new().unwrap();
@@ -4172,7 +4228,7 @@ mod tests {
             &provinces,
             &map_a,
             &countries,
-            &visibility_a,
+            Some(&visibility_a),
         )
         .unwrap();
         assert_ne!(
@@ -4184,7 +4240,7 @@ mod tests {
                 &provinces,
                 &map_b,
                 &countries,
-                &visibility_a,
+                Some(&visibility_a),
             )
             .unwrap()
         );
@@ -4197,10 +4253,71 @@ mod tests {
                 &provinces,
                 &map_a,
                 &countries,
-                &visibility_b,
+                Some(&visibility_b),
             )
             .unwrap()
         );
+    }
+
+    /// Observer identity must not depend on the visibility domain at all: the
+    /// mode reads no recorded vector, so a POV's recorded bytes changing must
+    /// not change an observer frame's identity.
+    #[test]
+    fn observer_cache_identity_is_blind_to_recorded_visibility() {
+        let keying = KeyingTables::default();
+        let provinces = BTreeMap::new();
+        let map = serde_json::json!({"_r2_xmap05_control_authority":{"capture_sequence":1}});
+        let countries = serde_json::json!({"GER":{"_r2_tag_db_id":1}});
+        let observer = xmap05_semantic_cache_digest(
+            10, None, &keying, &provinces, &map, &countries, None,
+        )
+        .unwrap();
+        for recorded in [
+            serde_json::json!({"povs":{"GER":{"capture_sequence":3}}}),
+            serde_json::json!({"povs":{"SOV":{"capture_sequence":9999}}}),
+        ] {
+            assert_eq!(
+                observer,
+                xmap05_semantic_cache_digest(
+                    10, None, &keying, &provinces, &map, &countries, Some(&recorded),
+                )
+                .unwrap(),
+                "observer identity must ignore the visibility domain"
+            );
+        }
+        // ... and a POV render must still bind it.
+        let pov_a = xmap05_semantic_cache_digest(
+            10,
+            Some("GER"),
+            &keying,
+            &provinces,
+            &map,
+            &countries,
+            Some(&serde_json::json!({"povs":{"GER":{"capture_sequence":3}}})),
+        )
+        .unwrap();
+        let pov_b = xmap05_semantic_cache_digest(
+            10,
+            Some("GER"),
+            &keying,
+            &provinces,
+            &map,
+            &countries,
+            Some(&serde_json::json!({"povs":{"GER":{"capture_sequence":4}}})),
+        )
+        .unwrap();
+        assert_ne!(pov_a, pov_b);
+        assert_ne!(observer, pov_a);
+        assert!(xmap05_semantic_cache_digest(
+            10,
+            Some("GER"),
+            &keying,
+            &provinces,
+            &map,
+            &countries,
+            None,
+        )
+        .is_err());
     }
 
     #[test]

@@ -3216,7 +3216,14 @@ impl<'a> Compositor<'a> {
         }
         let (_, shader_bytes) =
             self.read_verified_content_bytes(&font_role.text_effect_content, child_path)?;
-        if font_role.text_effect_content.normalized_game_relative_path != "gfx/FX/text.shader"
+        // Compared through the manifest's own normalizer: the authored path
+        // constant carries the engine's `gfx/FX/` spelling and the field is
+        // lower-cased, so a verbatim comparison rejects every real font role.
+        let text_effect_key = portable_content_manifest::normalize_game_relative_path(
+            portable_content_manifest::authored_ui::AUTHORED_BITMAP_FONT_TEXT_EFFECT_PATH,
+        )
+        .map_err(|_| AuthenticatedComposeRejection::UnsupportedTextVariant(child_path.to_vec()))?;
+        if font_role.text_effect_content.normalized_game_relative_path != text_effect_key
             || font_role.text_effect_content.payload_sha256 != TEXT_SHADER_SHA256
             || u64::try_from(shader_bytes.len()).ok() != Some(TEXT_SHADER_BYTES)
         {
@@ -7939,7 +7946,9 @@ mod tests {
                     base_border_color: None,
                     font_local_textcolors: None,
                     global_textcolor_tables: Vec::new(),
-                    text_effect_content: cache_content("gfx/FX/text.shader", '9'),
+                    // Lower-case because that is the only spelling
+                    // `normalize_game_relative_path` ever stores in this field.
+                    text_effect_content: cache_content("gfx/fx/text.shader", '9'),
                 });
         crate::authored_role_index::AuthoredElementRole {
             element_id: format!("test/{child_path:?}"),

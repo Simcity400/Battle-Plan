@@ -836,6 +836,15 @@ impl ProductionMapFeatureAdapter for Xmap07WaterAdapter {
     }
 
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput> {
+        // `weather.province_snow_accumulator` is an owner-proven admission, so
+        // on an hour that carries it the row is ADMITTED and not a gap. Claiming
+        // both ids unconditionally refused every such hour.
+        let consumed_gap_ids = crate::account_owned_map_authority_inputs(
+            "XMAP07",
+            &XMAP07_AUTHORITY_GAPS,
+            context.map_authority_gaps,
+            context.map_authority_admitted,
+        )?;
         let assigned_stage = context
             .require_assigned_stage("water_surface", "water.surface.draw")?
             .clone();
@@ -959,10 +968,7 @@ impl ProductionMapFeatureAdapter for Xmap07WaterAdapter {
             prepared_map_modes: None,
             prepared_map_furniture: None,
             element_diagnostics: Vec::new(),
-            consumed_gap_ids: XMAP07_AUTHORITY_GAPS
-                .iter()
-                .map(|gap| (*gap).to_string())
-                .collect(),
+            consumed_gap_ids,
         })
     }
 }
