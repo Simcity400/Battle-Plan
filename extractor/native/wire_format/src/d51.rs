@@ -2,11 +2,11 @@
 //! the frame-level fold mirror.
 //!
 //! Authority, in the recipe's precedence order:
-//! `world_fold.rs:27319`-`:27534`'s `fold_scripted_state` (dispatched
+//! `world_fold.rs:27343`-`:27558`'s `fold_scripted_state` (dispatched
 //! at `:4726`), its row validator `validate_scripted_state_row` (`world_fold.rs::validate_scripted_state_row`), its
 //! accumulator writer `apply_scripted_state_row` (`world_fold.rs::apply_scripted_state_row`) and its clear
 //! `clear_scripted_state_accumulators` (`world_fold.rs::clear_scripted_state_accumulators`). There is no dossier for this
-// @world-fold-authority domain=51 functions=fold_scripted_state lines=27319-27534 sha256=e92a1ed010a355d572703f77b655f9d358d4d48d2e1fda54be0ccee32b82e2e8 closure=f387ee21727789d0d251ea2601ed20466cb5456cbc988378eb820835aafbf796
+// @world-fold-authority domain=51 functions=fold_scripted_state lines=27343-27558 sha256=e92a1ed010a355d572703f77b655f9d358d4d48d2e1fda54be0ccee32b82e2e8 closure=f387ee21727789d0d251ea2601ed20466cb5456cbc988378eb820835aafbf796
 // @lane-payload-authority domain=51 path=extractor/native/lanes/scripted_state_flags_variables_live/scripted_state_compact.rs function=decode_payload lines=231-663 sha256=ebb8ac22ae995651cc86c6ff81709f2ccce422c0b4e830714cfb5b48b624bc80
 //! domain; the fold is sufficient. The lane's own payload decoder
 //! (`lanes/scripted_state_flags_variables_live/scripted_state_compact.rs`,
