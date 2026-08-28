@@ -1,9 +1,9 @@
 //! d96 `country_preferred_tactic_weight_live` — the multiplier the land-combat
 //! consumer applies to each country's selected combat tactic.
 //!
-//! Derived from `world_fold.rs:15496`-`:15534`
+//! Derived from `world_fold.rs:15509`-`:15547`
 //! (`fold_country_preferred_tactic_weights`, dispatched at `:4763`) together with
-// @world-fold-authority domain=96 functions=fold_country_preferred_tactic_weights lines=15496-15534 sha256=78a2fe55c72480d7ec9621eda4995fe17b27dd7f3ed95795117d0162985508e5 closure=7f3b210229be84242c5e253c672a33e03ad3687dc2fd77d4c132ea1489bdb0f9
+// @world-fold-authority domain=96 functions=fold_country_preferred_tactic_weights lines=15509-15547 sha256=78a2fe55c72480d7ec9621eda4995fe17b27dd7f3ed95795117d0162985508e5 closure=7f3b210229be84242c5e253c672a33e03ad3687dc2fd77d4c132ea1489bdb0f9
 //! the deferred fold it delegates to,
 //! `extractor/native/recorder_host/src/tactic_weight_fold.rs:32`-`:80`
 //! (`TacticWeightFoldState::fold_payload`); its payload codec
