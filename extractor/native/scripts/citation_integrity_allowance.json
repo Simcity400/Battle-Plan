@@ -179,12 +179,6 @@
       "xmap05.rs:1176": 1,
       "xmap05.rs:1193": 1
     },
-    "extractor/native/recorder_host/src/world_fold/wave2_sidecars/xui23_command_abilities.rs": {
-      "game_ui/src/active_abilities.rs:1091": 1,
-      "game_ui/src/active_abilities.rs:1091-1101": 1,
-      "game_ui/src/active_abilities.rs:2681": 1,
-      "game_ui/tests/production_renderer.rs:429-431": 1
-    },
     "extractor/native/scripts/compress_arms.py": {
       "bench_real_d10.rs:604": 1,
       "bench_real_d22.rs:722": 1,
