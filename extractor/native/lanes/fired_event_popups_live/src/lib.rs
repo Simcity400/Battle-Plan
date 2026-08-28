@@ -16,9 +16,10 @@ pub mod a729_runtime;
 pub const DOMAIN_ID: u16 = 75;
 pub const DOMAIN_NAME: &str = "fired_event_popups_live";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"FEV1");
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 pub const AUTHORITY_A729_INLINE_HOOKS: u32 = 1;
 pub const MAX_ROWS: usize = 1_000_000;
+pub const MAX_CAPTURE_START_FIRED_IDS: usize = 1_000_000;
 pub const MAX_OPTIONS: usize = 65_536;
 pub const MAX_STRING: usize = 65_536;
 pub const PRODUCER_MANIFEST_SHA256: [u8; 32] = [
@@ -93,6 +94,11 @@ pub struct HookTelemetry {
     pub correlation_failures: u64,
     pub invalid_definition_joins: u64,
     pub fired_ledger_shadow_mismatches: u64,
+    /// Entries of the engine's retained fired-event set that were present when
+    /// the observer attached but whose event id would not resolve. Non-zero
+    /// withholds the baseline (see `capture_start_fired_event_ids`); it does
+    /// not touch hook coverage, which is a statement about the detours.
+    pub capture_start_fired_ids_unresolved: u64,
 }
 
 impl HookTelemetry {
@@ -120,7 +126,28 @@ pub struct FiredEventFrame {
     pub producer_manifest_sha256: [u8; 32],
     pub telemetry: HookTelemetry,
     pub fired_events_complete: bool,
+    /// Event ids the engine's retained fired-event set already held when the
+    /// observer attached. `rows` starts at the attach, so these fires have no
+    /// row and never will; naming them is what keeps the published history from
+    /// claiming the capture saw everything that ever fired.
+    ///
+    /// `None` when the set could not be named in full, which is not the same as
+    /// the empty list. It never shortens: a partly-readable set is withheld
+    /// whole, with `capture_start_fired_ids_unresolved` naming why.
+    pub capture_start_fired_event_ids: Option<Vec<String>>,
     pub rows: Vec<FiredEventRow>,
+}
+
+impl FiredEventFrame {
+    /// The rows are the whole fired history only when the hooks have a zero gap
+    /// AND nothing had already fired before they were installed.
+    pub fn history_complete(&self) -> bool {
+        self.fired_events_complete
+            && self
+                .capture_start_fired_event_ids
+                .as_ref()
+                .is_some_and(|ids| ids.is_empty())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,6 +163,13 @@ mod exact_source_seal {
     pub trait Sealed {}
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FiredEventSnapshot {
+    pub telemetry: HookTelemetry,
+    pub capture_start_fired_event_ids: Option<Vec<String>>,
+    pub rows: Vec<FiredEventRow>,
+}
+
 pub trait ExactFiredEventSource: exact_source_seal::Sealed {
     fn is_authenticated_a729_hook_source(&self) -> bool;
     fn producer_manifest_sha256(&self) -> [u8; 32];
@@ -143,7 +177,7 @@ pub trait ExactFiredEventSource: exact_source_seal::Sealed {
         &self,
         frame_hour: u64,
         elapsed_wall_ms: u64,
-    ) -> Result<(HookTelemetry, Vec<FiredEventRow>), String>;
+    ) -> Result<FiredEventSnapshot, String>;
 }
 
 pub(crate) struct A729EventLedger {
@@ -153,6 +187,11 @@ pub(crate) struct A729EventLedger {
 
 struct LedgerState {
     telemetry: HookTelemetry,
+    /// False until the attach-time read is recorded. An empty `Vec` is the
+    /// measurement "nothing had fired yet" and must never stand in for "never
+    /// looked", so the snapshot refuses rather than encode the initial value.
+    capture_start_baseline_recorded: bool,
+    capture_start_fired_event_ids: Option<Vec<String>>,
     rows: Vec<FiredEventRow>,
 }
 
@@ -190,6 +229,14 @@ pub struct ResolutionInput {
     pub reason: ResolutionReason,
 }
 
+/// The engine's retained fired-event set as it stood when the observer
+/// attached, resolved to event ids.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CaptureStartFiredBaseline {
+    pub event_ids: Vec<String>,
+    pub unresolved: u64,
+}
+
 impl A729EventLedger {
     pub(crate) fn new(capacity: usize) -> Self {
         let capacity = capacity.clamp(1, MAX_ROWS);
@@ -199,6 +246,8 @@ impl A729EventLedger {
                     queue_capacity: capacity as u32,
                     ..Default::default()
                 },
+                capture_start_baseline_recorded: false,
+                capture_start_fired_event_ids: None,
                 rows: Vec::new(),
             }),
             capacity,
@@ -216,16 +265,20 @@ impl A729EventLedger {
                 .saturating_add(telemetry.dropped_resolution_rows)
                 .saturating_add(telemetry.correlation_failures)
                 .saturating_add(telemetry.invalid_definition_joins)
-                .saturating_add(telemetry.fired_ledger_shadow_mismatches),
+                .saturating_add(telemetry.fired_ledger_shadow_mismatches)
+                .saturating_add(telemetry.capture_start_fired_ids_unresolved),
             poisoned: !telemetry.zero_gap(),
         };
         state.rows.clear();
+        state.capture_start_baseline_recorded = false;
+        state.capture_start_fired_event_ids = None;
         // release fails and the abort is retried -- report the same diagnostics
         state.telemetry.dropped_fire_rows = 0;
         state.telemetry.dropped_resolution_rows = 0;
         state.telemetry.correlation_failures = 0;
         state.telemetry.invalid_definition_joins = 0;
         state.telemetry.fired_ledger_shadow_mismatches = 0;
+        state.telemetry.capture_start_fired_ids_unresolved = 0;
         discard
     }
 
@@ -241,6 +294,24 @@ impl A729EventLedger {
     pub(crate) fn record_baseline_complete(&self, complete: bool) {
         if let Ok(mut state) = self.state.lock() {
             state.telemetry.capture_start_baseline_complete = complete;
+        }
+    }
+
+    pub(crate) fn record_capture_start_fired_baseline(
+        &self,
+        baseline: CaptureStartFiredBaseline,
+    ) {
+        if let Ok(mut state) = self.state.lock() {
+            state.capture_start_baseline_recorded = true;
+            state.telemetry.capture_start_fired_ids_unresolved = baseline.unresolved;
+            state.capture_start_fired_event_ids = if baseline.unresolved == 0 {
+                let mut ids = baseline.event_ids;
+                ids.sort_unstable();
+                ids.dedup();
+                Some(ids)
+            } else {
+                None
+            };
         }
     }
 
@@ -260,6 +331,7 @@ impl A729EventLedger {
     ) {
         self.record_installation_validation(false);
         self.record_baseline_complete(baseline_complete);
+        self.record_capture_start_fired_baseline(CaptureStartFiredBaseline::default());
         self.record_route_certification(all_classes, all_resolution_paths);
     }
 
@@ -373,12 +445,19 @@ impl A729EventLedger {
         &self,
         _frame_hour: u64,
         _elapsed_wall_ms: u64,
-    ) -> Result<(HookTelemetry, Vec<FiredEventRow>), String> {
+    ) -> Result<FiredEventSnapshot, String> {
         let state = self
             .state
             .lock()
             .map_err(|_| "event ledger poisoned".to_string())?;
-        Ok((state.telemetry.clone(), state.rows.clone()))
+        if !state.capture_start_baseline_recorded {
+            return Err("XUI21 capture-start fired baseline was never recorded".to_string());
+        }
+        Ok(FiredEventSnapshot {
+            telemetry: state.telemetry.clone(),
+            capture_start_fired_event_ids: state.capture_start_fired_event_ids.clone(),
+            rows: state.rows.clone(),
+        })
     }
 }
 
@@ -397,7 +476,7 @@ impl ExactFiredEventSource for A729EventLedger {
         &self,
         frame_hour: u64,
         elapsed_wall_ms: u64,
-    ) -> Result<(HookTelemetry, Vec<FiredEventRow>), String> {
+    ) -> Result<FiredEventSnapshot, String> {
         self.snapshot_rows(frame_hour, elapsed_wall_ms)
     }
 }
@@ -412,16 +491,17 @@ pub fn collect_and_encode<S: ExactFiredEventSource>(
     {
         return Err(CarrierError::UnauthenticatedSource);
     }
-    let (telemetry, rows) = source
+    let snapshot = source
         .snapshot(frame_hour, elapsed_wall_ms)
         .map_err(CarrierError::Source)?;
     let frame = FiredEventFrame {
         elapsed_wall_ms,
         frame_hour,
         producer_manifest_sha256: source.producer_manifest_sha256(),
-        fired_events_complete: telemetry.zero_gap(),
-        telemetry,
-        rows,
+        fired_events_complete: snapshot.telemetry.zero_gap(),
+        telemetry: snapshot.telemetry,
+        capture_start_fired_event_ids: snapshot.capture_start_fired_event_ids,
+        rows: snapshot.rows,
     };
     encode_payload(&frame)
 }
@@ -435,6 +515,28 @@ pub fn validate_frame(frame: &FiredEventFrame) -> Result<(), CarrierError> {
     }
     if frame.rows.len() > MAX_ROWS {
         return invalid("row count exceeds bound");
+    }
+    // A named list must be the WHOLE retained set: any entry that would not
+    // resolve withholds it, because a list one id short reads exactly like a
+    // list that never had that id. `None` needs no such guard -- it is the
+    // unobtained spelling, which is the safe direction, and the refusal frames
+    // the collector emits when there is no producer at all use it.
+    match &frame.capture_start_fired_event_ids {
+        Some(_) if frame.telemetry.capture_start_fired_ids_unresolved != 0 => {
+            return invalid("capture-start fired baseline is named but not fully resolved")
+        }
+        None => {}
+        Some(ids) => {
+            if ids.len() > MAX_CAPTURE_START_FIRED_IDS {
+                return invalid("capture-start fired id count exceeds bound");
+            }
+            for id in ids {
+                nonempty(id, "capture-start fired event id")?;
+            }
+            if ids.windows(2).any(|w| w[0] >= w[1]) {
+                return invalid("capture-start fired event ids not strictly ordered");
+            }
+        }
     }
     let mut seq = None;
     let mut tick = None;
@@ -525,6 +627,16 @@ pub fn encode_payload(frame: &FiredEventFrame) -> Result<Vec<u8>, CarrierError> 
     u64v(&mut out, frame.frame_hour);
     out.extend_from_slice(&frame.producer_manifest_sha256);
     put_telemetry(&mut out, &frame.telemetry);
+    match &frame.capture_start_fired_event_ids {
+        None => u32v(&mut out, 0),
+        Some(ids) => {
+            u32v(&mut out, 1);
+            u32v(&mut out, ids.len() as u32);
+            for id in ids {
+                string(&mut out, id)?;
+            }
+        }
+    }
     u32v(&mut out, frame.rows.len() as u32);
     for row in &frame.rows {
         string(&mut out, &row.event_id)?;
@@ -569,6 +681,21 @@ pub fn decode_payload(payload: &[u8]) -> Result<FiredEventFrame, CarrierError> {
     let frame_hour = r.u64()?;
     let producer_manifest_sha256 = r.array32()?;
     let telemetry = r.telemetry()?;
+    let capture_start_fired_event_ids = match r.u32()? {
+        0 => None,
+        1 => {
+            let baseline_count = r.u32()? as usize;
+            if baseline_count > MAX_CAPTURE_START_FIRED_IDS {
+                return invalid("capture-start fired id count exceeds bound");
+            }
+            let mut ids = Vec::with_capacity(baseline_count);
+            for _ in 0..baseline_count {
+                ids.push(r.string()?);
+            }
+            Some(ids)
+        }
+        _ => return invalid("capture-start fired baseline marker invalid"),
+    };
     let count = r.u32()? as usize;
     if count > MAX_ROWS {
         return invalid("row count exceeds bound");
@@ -645,6 +772,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<FiredEventFrame, CarrierError> {
         producer_manifest_sha256,
         telemetry,
         fired_events_complete,
+        capture_start_fired_event_ids,
         rows,
     };
     validate_frame(&frame)?;
@@ -671,6 +799,7 @@ fn put_telemetry(o: &mut Vec<u8>, t: &HookTelemetry) {
         t.correlation_failures,
         t.invalid_definition_joins,
         t.fired_ledger_shadow_mismatches,
+        t.capture_start_fired_ids_unresolved,
     ] {
         u64v(o, v);
     }
@@ -841,6 +970,7 @@ impl<'a> Reader<'a> {
             correlation_failures: self.u64()?,
             invalid_definition_joins: self.u64()?,
             fired_ledger_shadow_mismatches: self.u64()?,
+            capture_start_fired_ids_unresolved: self.u64()?,
         })
     }
 }
@@ -892,11 +1022,165 @@ mod tests {
             producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
             telemetry: telemetry(),
             fired_events_complete: true,
+            capture_start_fired_event_ids: Some(Vec::new()),
             rows: vec![row()],
         };
         let b = encode_payload(&f).unwrap();
         assert_eq!(decode_payload(&b).unwrap(), f);
         assert_eq!(encode_payload(&decode_payload(&b).unwrap()).unwrap(), b)
+    }
+
+    #[test]
+    fn a_pre_attach_fired_set_survives_the_wire_and_denies_a_complete_history() {
+        let mut f = FiredEventFrame {
+            elapsed_wall_ms: 1,
+            frame_hour: 12,
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+            telemetry: telemetry(),
+            fired_events_complete: true,
+            capture_start_fired_event_ids: Some(vec!["france.10".into(), "germany.1".into()]),
+            rows: vec![row()],
+        };
+        assert!(f.fired_events_complete);
+        assert!(
+            !f.history_complete(),
+            "clean hooks cannot make an attach-truncated history complete"
+        );
+        let bytes = encode_payload(&f).unwrap();
+        let decoded = decode_payload(&bytes).unwrap();
+        assert_eq!(decoded, f);
+        assert_eq!(
+            decoded.capture_start_fired_event_ids,
+            Some(vec!["france.10".to_string(), "germany.1".to_string()])
+        );
+
+        f.capture_start_fired_event_ids = Some(Vec::new());
+        assert!(f.history_complete());
+    }
+
+    #[test]
+    fn an_unordered_pre_attach_baseline_is_refused_by_the_carrier() {
+        let f = FiredEventFrame {
+            elapsed_wall_ms: 1,
+            frame_hour: 12,
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+            telemetry: telemetry(),
+            fired_events_complete: true,
+            capture_start_fired_event_ids: Some(vec!["germany.1".into(), "france.10".into()]),
+            rows: Vec::new(),
+        };
+        assert!(matches!(encode_payload(&f), Err(CarrierError::Invalid(_))));
+
+        let duplicated = FiredEventFrame {
+            capture_start_fired_event_ids: Some(vec!["germany.1".into(), "germany.1".into()]),
+            ..f.clone()
+        };
+        assert!(matches!(
+            encode_payload(&duplicated),
+            Err(CarrierError::Invalid(_))
+        ));
+
+        let blank = FiredEventFrame {
+            capture_start_fired_event_ids: Some(vec![String::new()]),
+            ..f
+        };
+        assert!(matches!(
+            encode_payload(&blank),
+            Err(CarrierError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn a_ledger_that_never_read_the_retained_set_refuses_instead_of_claiming_none() {
+        let ledger = A729EventLedger::new(8);
+        ledger.record_installation_validation(true);
+        ledger.record_baseline_complete(true);
+        ledger.record_route_certification(true, true);
+        // No `record_capture_start_fired_baseline`: the attach-time read never
+        // happened, so there is no honest value for the field.
+        assert!(
+            ledger.snapshot_rows(0, 0).is_err(),
+            "an unrecorded baseline must refuse, not encode as a measured empty list"
+        );
+
+        ledger.record_capture_start_fired_baseline(CaptureStartFiredBaseline::default());
+        let snapshot = ledger.snapshot_rows(0, 0).expect("recorded baseline snapshots");
+        assert_eq!(snapshot.capture_start_fired_event_ids, Some(Vec::new()));
+        assert!(snapshot.telemetry.zero_gap());
+    }
+
+    /// An entry of the retained set that will not name itself withholds the
+    /// BASELINE. It must not poison hook coverage: the detours were clean, and
+    /// refusing the domain on this would throw away every genuine post-attach
+    /// row for the rest of the session.
+    #[test]
+    fn an_unnameable_pre_attach_fire_withholds_the_baseline_and_spares_the_rows() {
+        let ledger = A729EventLedger::new(8);
+        ledger.authenticate_installation_and_route_certification(true, true, true);
+        ledger.record_capture_start_fired_baseline(CaptureStartFiredBaseline {
+            event_ids: vec!["germany.1".into()],
+            unresolved: 1,
+        });
+        let snapshot = ledger.snapshot_rows(0, 0).unwrap();
+        assert_eq!(
+            snapshot.capture_start_fired_event_ids, None,
+            "a partly-readable retained set is withheld whole, never shortened"
+        );
+        assert_eq!(snapshot.telemetry.capture_start_fired_ids_unresolved, 1);
+        assert!(
+            snapshot.telemetry.zero_gap(),
+            "hook coverage is a statement about the detours, which were clean"
+        );
+
+        let frame = FiredEventFrame {
+            elapsed_wall_ms: 1,
+            frame_hour: 12,
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+            fired_events_complete: snapshot.telemetry.zero_gap(),
+            telemetry: snapshot.telemetry,
+            capture_start_fired_event_ids: snapshot.capture_start_fired_event_ids,
+            rows: vec![row()],
+        };
+        assert!(
+            !frame.history_complete(),
+            "an unnameable baseline cannot yield a complete history"
+        );
+        let bytes = encode_payload(&frame).expect("a withheld baseline is encodable");
+        assert_eq!(decode_payload(&bytes).unwrap(), frame);
+        assert_eq!(decode_payload(&bytes).unwrap().rows.len(), 1);
+    }
+
+    /// The two spellings of the baseline are exclusive: a named list alongside a
+    /// non-zero unresolved count is a list that is short by exactly that many
+    /// ids, and a withheld list with nothing unresolved has no cause.
+    #[test]
+    fn a_named_baseline_and_an_unresolved_count_cannot_both_stand() {
+        let mut unresolved = telemetry();
+        unresolved.capture_start_fired_ids_unresolved = 1;
+        let short = FiredEventFrame {
+            elapsed_wall_ms: 1,
+            frame_hour: 12,
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+            fired_events_complete: unresolved.zero_gap(),
+            telemetry: unresolved,
+            capture_start_fired_event_ids: Some(vec!["germany.1".into()]),
+            rows: Vec::new(),
+        };
+        assert!(matches!(
+            encode_payload(&short),
+            Err(CarrierError::Invalid(_))
+        ));
+
+        // Withholding is always allowed: it is the unobtained spelling, and the
+        // collector's no-producer refusal frames carry it with nothing
+        // unresolved.
+        let withheld = FiredEventFrame {
+            telemetry: telemetry(),
+            capture_start_fired_event_ids: None,
+            ..short
+        };
+        let bytes = encode_payload(&withheld).expect("withholding needs no cause");
+        assert_eq!(decode_payload(&bytes).unwrap(), withheld);
     }
 
     #[test]
@@ -910,7 +1194,7 @@ mod tests {
 
         let ledger = A729EventLedger::new(8);
         ledger.authenticate_installation_and_route_certification(true, true, true);
-        let (telemetry, _) = ledger.snapshot_rows(0, 0).unwrap();
+        let telemetry = ledger.snapshot_rows(0, 0).unwrap().telemetry;
         assert!(telemetry.zero_gap());
         assert!(!telemetry.materialisation_hook_validated);
     }
@@ -955,6 +1239,7 @@ mod tests {
             producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
             telemetry: t,
             fired_events_complete: true,
+            capture_start_fired_event_ids: Some(Vec::new()),
             rows: vec![row()],
         };
         assert!(validate_frame(&f).is_err());
@@ -966,6 +1251,7 @@ mod tests {
             producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
             telemetry: telemetry(),
             fired_events_complete: true,
+            capture_start_fired_event_ids: Some(Vec::new()),
             rows: vec![r],
         };
         assert!(validate_frame(&f).is_err())
@@ -1102,6 +1388,7 @@ mod tests {
             producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
             telemetry: telemetry(),
             fired_events_complete: true,
+            capture_start_fired_event_ids: Some(Vec::new()),
             rows: vec![ai],
         };
         assert!(validate_frame(&frame).is_ok());
@@ -1130,6 +1417,7 @@ mod tests {
             producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
             telemetry: telemetry(),
             fired_events_complete: true,
+            capture_start_fired_event_ids: Some(Vec::new()),
             rows: vec![timeout_default, timeout_no_choice],
         };
         let decoded = decode_payload(&encode_payload(&frame).unwrap()).unwrap();
@@ -1150,6 +1438,7 @@ mod tests {
             producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
             telemetry: telemetry(),
             fired_events_complete: true,
+            capture_start_fired_event_ids: Some(Vec::new()),
             rows: vec![invalid],
         };
         assert!(validate_frame(&frame).is_err());

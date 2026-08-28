@@ -5,8 +5,8 @@ use crate::a729_runtime::{
     RepeatedEventIdWitness, ResolutionPath, SameHourFiringsWitness,
 };
 use crate::{
-    FireInput, MaterialisationInput, OptionRuntimeTextContext, PopupSubtype, ResolutionInput,
-    ResolutionReason, PRODUCER_MANIFEST_SHA256,
+    CaptureStartFiredBaseline, FireInput, MaterialisationInput, OptionRuntimeTextContext,
+    PopupSubtype, ResolutionInput, ResolutionReason, PRODUCER_MANIFEST_SHA256,
 };
 use compact_contract::country_tag::ENGINE_COUNTRY_TAG_LEN;
 use std::collections::{BTreeMap, BTreeSet};
@@ -217,6 +217,7 @@ struct BridgeState {
     unbound_by_key: BTreeMap<FireKey, Vec<u64>>,
     pending_before_by_sequence: BTreeMap<u64, BTreeSet<u32>>,
     fired_shadow_expected: BTreeSet<usize>,
+    capture_start_fired_baseline: CaptureStartFiredBaseline,
     coverage: CoverageState,
     sequence_coverage: BTreeMap<u64, SequenceCoverage>,
 }
@@ -321,11 +322,18 @@ impl<M: A729Memory, R: A729DefinitionRegistry> ExactA729CollectorBridge<M, R> {
             state: Mutex::new(BridgeState::default()),
         };
         let fired = bridge.read_fired_event_set()?;
-        bridge
-            .state
-            .lock()
-            .map_err(|_| "XUI21 bridge mutex poisoned".to_string())?
-            .fired_shadow_expected = fired;
+        // Resolved here, at the one moment the set is still exactly the
+        // pre-observation history: from the first `record_fire` onwards the
+        // engine's set and the observed rows are indistinguishable in it.
+        let baseline = bridge.resolve_capture_start_fired_baseline(&fired);
+        {
+            let mut state = bridge
+                .state
+                .lock()
+                .map_err(|_| "XUI21 bridge mutex poisoned".to_string())?;
+            state.fired_shadow_expected = fired;
+            state.capture_start_fired_baseline = baseline;
+        }
         Ok(bridge)
     }
 
@@ -738,6 +746,26 @@ impl<M: A729Memory, R: A729DefinitionRegistry> ExactA729CollectorBridge<M, R> {
             recipient_tag_id,
             due_tick,
         })
+    }
+
+    fn resolve_capture_start_fired_baseline(
+        &self,
+        fired: &BTreeSet<usize>,
+    ) -> CaptureStartFiredBaseline {
+        let mut event_ids = Vec::with_capacity(fired.len());
+        let mut unresolved = 0u64;
+        for event in fired {
+            match self.definition(*event) {
+                Ok(definition) => event_ids.push(definition.event_id),
+                Err(_) => unresolved = unresolved.saturating_add(1),
+            }
+        }
+        event_ids.sort_unstable();
+        event_ids.dedup();
+        CaptureStartFiredBaseline {
+            event_ids,
+            unresolved,
+        }
     }
 
     fn read_fired_event_set(&self) -> Result<BTreeSet<usize>, String> {
@@ -1408,6 +1436,15 @@ impl<M: A729Memory, R: A729DefinitionRegistry> A729EventBridge for ExactA729Coll
             lifecycle: state.coverage.lifecycle.clone(),
             hook_telemetry: None,
         }))
+    }
+
+    fn capture_start_fired_baseline(&self) -> Result<CaptureStartFiredBaseline, String> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| "XUI21 bridge mutex poisoned".to_string())?
+            .capture_start_fired_baseline
+            .clone())
     }
 
     fn fired_ledger_shadow_matches(&self) -> Result<bool, String> {

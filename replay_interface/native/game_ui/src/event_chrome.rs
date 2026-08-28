@@ -1447,6 +1447,13 @@ enum ValidatedVisibleOptionOrdinals {
 pub enum EventHistoryRejection {
     MissingProvenance,
     HistoryIncomplete,
+    /// Events had already fired when the observer attached, so the rows cannot
+    /// be the whole history however clean the hooks were. Carries those ids.
+    EventsFiredBeforeObservation(Vec<String>),
+    /// The detours were clean and the rows are measured, but the engine's
+    /// retained fired set could not be named in full, so whether anything
+    /// predates observation is unknown.
+    PreAttachBaselineUnobtained,
     HistoryUnavailable,
     InvalidIdentity,
     MissingDefinition,
@@ -1481,6 +1488,22 @@ pub fn admit_event_history(
         return Err(EventHistoryRejection::MissingProvenance);
     }
     if request.history.history_complete.measured() != Some(&true) {
+        if let Some(prior) = request
+            .history
+            .prior_to_capture
+            .measured()
+            .filter(|ids| !ids.is_empty())
+        {
+            return Err(EventHistoryRejection::EventsFiredBeforeObservation(
+                prior.clone(),
+            ));
+        }
+        if request.history.events.measured().is_some()
+            && request.history.hook_coverage_complete.measured() == Some(&true)
+            && matches!(request.history.prior_to_capture, Leaf::Unobtained)
+        {
+            return Err(EventHistoryRejection::PreAttachBaselineUnobtained);
+        }
         return Err(EventHistoryRejection::HistoryIncomplete);
     }
     let rows = request
@@ -2312,6 +2335,8 @@ mod tests {
         let history = FiredEventsView {
             events: Leaf::Measured(vec![row]),
             history_complete: Leaf::Measured(true),
+            hook_coverage_complete: Leaf::Measured(true),
+            prior_to_capture: Leaf::Measured(Vec::new()),
         };
         admit_event_history(EventHistoryRequest {
             source_record_id: "record:popup-suppression",
@@ -2742,6 +2767,8 @@ mod tests {
             let history = FiredEventsView {
                 events: Leaf::Measured(vec![row]),
                 history_complete: Leaf::Measured(true),
+                hook_coverage_complete: Leaf::Measured(true),
+                prior_to_capture: Leaf::Measured(Vec::new()),
             };
             admit_event_history(EventHistoryRequest {
                 source_record_id: "record:timeout-negative",
@@ -2783,6 +2810,8 @@ mod tests {
         let history = FiredEventsView {
             events: Leaf::Measured(vec![rich_row()]),
             history_complete: Leaf::Measured(true),
+            hook_coverage_complete: Leaf::Measured(true),
+            prior_to_capture: Leaf::Measured(Vec::new()),
         };
         let mut loc = Localisation::default();
         for (key, text) in [
@@ -2906,6 +2935,8 @@ mod tests {
         let history = FiredEventsView {
             events: Leaf::Measured(vec![row.clone()]),
             history_complete: Leaf::Measured(true),
+            hook_coverage_complete: Leaf::Measured(true),
+            prior_to_capture: Leaf::Measured(Vec::new()),
         };
         let runtime_text = BTreeMap::from([
             (
@@ -2946,6 +2977,8 @@ mod tests {
         let mismatched = FiredEventsView {
             events: Leaf::Measured(vec![row]),
             history_complete: Leaf::Measured(true),
+            hook_coverage_complete: Leaf::Measured(true),
+            prior_to_capture: Leaf::Measured(Vec::new()),
         };
         let admitted = admit_event_history(EventHistoryRequest {
             source_record_id: "record:dynamic-popup-mismatch",
@@ -2971,6 +3004,8 @@ mod tests {
                 ..rich_row()
             }]),
             history_complete: Leaf::Measured(false),
+            hook_coverage_complete: Leaf::Measured(false),
+            prior_to_capture: Leaf::Measured(Vec::new()),
         };
         let result = admit_event_history(EventHistoryRequest {
             source_record_id: "record:1",
@@ -3008,6 +3043,8 @@ mod tests {
         let history = FiredEventsView {
             events: Leaf::Measured(vec![hidden, ai]),
             history_complete: Leaf::Measured(true),
+            hook_coverage_complete: Leaf::Measured(true),
+            prior_to_capture: Leaf::Measured(Vec::new()),
         };
         let admitted = admit_event_history(EventHistoryRequest {
             source_record_id: "record:lifecycle",
@@ -3037,10 +3074,88 @@ mod tests {
     }
 
     #[test]
+    fn xui21_pre_attach_fires_are_refused_by_name_not_as_a_generic_gap() {
+        // Rows measured, hooks clean -- but the observer attached after these two
+        // had fired. The rejection must carry them, so the observer gap says what
+        // is missing instead of only that something is.
+        let late = FiredEventsView {
+            events: Leaf::Measured(Vec::new()),
+            history_complete: Leaf::Measured(false),
+            hook_coverage_complete: Leaf::Measured(true),
+            prior_to_capture: Leaf::Measured(vec!["france.10".into(), "germany.1".into()]),
+        };
+        let definitions = BTreeMap::new();
+        let localisation = Localisation::default();
+        let sprites = SpriteRegistry::new();
+        let runtime_text = BTreeMap::new();
+        fn request<'a>(
+            history: &'a FiredEventsView,
+            definitions: &'a BTreeMap<String, EventDef>,
+            localisation: &'a Localisation,
+            sprites: &'a SpriteRegistry,
+            runtime_text: &'a BTreeMap<String, RuntimeTextContext>,
+        ) -> EventHistoryRequest<'a> {
+            EventHistoryRequest {
+                source_record_id: "record:late-attach",
+                history,
+                definitions,
+                localisation,
+                sprites,
+                runtime_text,
+            }
+        }
+        assert_eq!(
+            admit_event_history(request(&late, &definitions, &localisation, &sprites, &runtime_text)),
+            Err(EventHistoryRejection::EventsFiredBeforeObservation(vec![
+                "france.10".into(),
+                "germany.1".into()
+            ]))
+        );
+
+        // A hook-coverage gap with nothing pre-dating the attach keeps the
+        // generic cause: the three are different failures.
+        let hook_gap = FiredEventsView {
+            history_complete: Leaf::Measured(false),
+            hook_coverage_complete: Leaf::Measured(false),
+            prior_to_capture: Leaf::Measured(Vec::new()),
+            ..late.clone()
+        };
+        assert_eq!(
+            admit_event_history(request(&hook_gap, &definitions, &localisation, &sprites, &runtime_text)),
+            Err(EventHistoryRejection::HistoryIncomplete)
+        );
+
+        // Clean detours, measured rows, but the retained set would not name
+        // itself: whether anything predates observation is unknown, and that is
+        // its own cause -- not the hook-coverage one.
+        let unnameable = FiredEventsView {
+            history_complete: Leaf::Measured(false),
+            hook_coverage_complete: Leaf::Measured(true),
+            prior_to_capture: Leaf::Unobtained,
+            ..late.clone()
+        };
+        assert_eq!(
+            admit_event_history(request(&unnameable, &definitions, &localisation, &sprites, &runtime_text)),
+            Err(EventHistoryRejection::PreAttachBaselineUnobtained)
+        );
+
+        // And an attach with an empty retained set is admitted as before.
+        let clean = FiredEventsView {
+            history_complete: Leaf::Measured(true),
+            hook_coverage_complete: Leaf::Measured(true),
+            prior_to_capture: Leaf::Measured(Vec::new()),
+            ..late
+        };
+        assert_eq!(admit_event_history(request(&clean, &definitions, &localisation, &sprites, &runtime_text)), Ok(Vec::new()));
+    }
+
+    #[test]
     fn xui21_measured_empty_complete_history_admits_zero_rows() {
         let history = FiredEventsView {
             events: Leaf::Measured(Vec::new()),
             history_complete: Leaf::Measured(true),
+            hook_coverage_complete: Leaf::Measured(true),
+            prior_to_capture: Leaf::Measured(Vec::new()),
         };
         let admitted = admit_event_history(EventHistoryRequest {
             source_record_id: "record:empty",
@@ -3056,6 +3171,8 @@ mod tests {
         let unobserved = FiredEventsView {
             events: Leaf::Unobtained,
             history_complete: Leaf::Measured(true),
+            hook_coverage_complete: Leaf::Measured(true),
+            prior_to_capture: Leaf::Measured(Vec::new()),
         };
         assert_eq!(
             admit_event_history(EventHistoryRequest {
@@ -3236,6 +3353,8 @@ mod tests {
             let history = FiredEventsView {
                 events: Leaf::Measured(vec![row]),
                 history_complete: Leaf::Measured(true),
+                hook_coverage_complete: Leaf::Measured(true),
+                prior_to_capture: Leaf::Measured(Vec::new()),
             };
             admit_event_history(EventHistoryRequest {
                 source_record_id: "record:save-derived",
@@ -3342,6 +3461,8 @@ mod tests {
         let history = FiredEventsView {
             events: Leaf::Measured(vec![zero, no_desc]),
             history_complete: Leaf::Measured(true),
+            hook_coverage_complete: Leaf::Measured(true),
+            prior_to_capture: Leaf::Measured(Vec::new()),
         };
         let mut loc = Localisation::default();
         for (key, text) in [
@@ -3392,6 +3513,8 @@ mod tests {
         let history = FiredEventsView {
             events: Leaf::Measured(vec![row]),
             history_complete: Leaf::Measured(true),
+            hook_coverage_complete: Leaf::Measured(true),
+            prior_to_capture: Leaf::Measured(Vec::new()),
         };
         let mut loc = Localisation::default();
         for (key, text) in [
@@ -3463,6 +3586,8 @@ mod tests {
         let history = FiredEventsView {
             events: Leaf::Measured(vec![row]),
             history_complete: Leaf::Measured(true),
+            hook_coverage_complete: Leaf::Measured(true),
+            prior_to_capture: Leaf::Measured(Vec::new()),
         };
         let mut localisation = Localisation::default();
         for (key, text) in [

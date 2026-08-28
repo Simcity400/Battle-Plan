@@ -1,7 +1,8 @@
 use crate::a729_inline_hook::{self, CallbackBinding, InstalledHookSet, SiteKind};
 use crate::{
-    encode_payload, A729EventLedger, ExactFiredEventSource, FireInput, FiredEventFrame,
-    FiredEventRow, HookTelemetry, MaterialisationInput, ResolutionInput, ResolutionReason,
+    encode_payload, A729EventLedger, CaptureStartFiredBaseline, ExactFiredEventSource, FireInput,
+    FiredEventFrame, FiredEventRow, FiredEventSnapshot, HookTelemetry, MaterialisationInput,
+    ResolutionInput, ResolutionReason,
     CERTIFIED_ROUTE_EXECUTABLE_SHA256, CERTIFIED_ROUTE_MANIFEST_SHA256, CERTIFIED_ROUTE_RECEIPT,
     PRODUCER_MANIFEST_SHA256,
 };
@@ -285,6 +286,7 @@ pub struct CoverageTelemetryWitness {
     pub correlation_failures: u64,
     pub invalid_definition_joins: u64,
     pub fired_ledger_shadow_mismatches: u64,
+    pub capture_start_fired_ids_unresolved: u64,
 }
 
 impl CoverageTelemetryWitness {
@@ -304,6 +306,7 @@ impl CoverageTelemetryWitness {
             correlation_failures: value.correlation_failures,
             invalid_definition_joins: value.invalid_definition_joins,
             fired_ledger_shadow_mismatches: value.fired_ledger_shadow_mismatches,
+            capture_start_fired_ids_unresolved: value.capture_start_fired_ids_unresolved,
         }
     }
 }
@@ -331,6 +334,7 @@ impl CoverageReceipt {
                     && telemetry.correlation_failures == 0
                     && telemetry.invalid_definition_joins == 0
                     && telemetry.fired_ledger_shadow_mismatches == 0
+                    && telemetry.capture_start_fired_ids_unresolved == 0
             })
     }
 }
@@ -358,6 +362,7 @@ pub trait A729EventBridge: Send + Sync + 'static {
     fn coverage_receipt(&self) -> Result<Option<CoverageReceipt>, String> {
         Ok(None)
     }
+    fn capture_start_fired_baseline(&self) -> Result<CaptureStartFiredBaseline, String>;
     fn fired_ledger_shadow_matches(&self) -> Result<bool, String>;
 }
 
@@ -1849,6 +1854,9 @@ fn install_a729_event_runtime_inner(
             runtime.ledger.record_fire(row);
         }
         runtime.ledger.record_baseline_complete(baseline.complete);
+        runtime
+            .ledger
+            .record_capture_start_fired_baseline(runtime.bridge.capture_start_fired_baseline()?);
         let coverage = certified_route_attestation()?;
         runtime.ledger.record_route_certification(
             coverage.all_event_class_routes_certified,
@@ -2100,7 +2108,7 @@ fn terminal_snapshot(
         Ok(false) => runtime.ledger.note_shadow_mismatch(),
         Err(error) => return Err(error),
     }
-    let (telemetry, rows) = runtime.ledger.snapshot_rows(frame_hour, elapsed_wall_ms)?;
+    let snapshot = runtime.ledger.snapshot_rows(frame_hour, elapsed_wall_ms)?;
     if runtime.in_flight.load(Ordering::Acquire) != 0
         || runtime.epoch.load(Ordering::Acquire) != terminal_epoch
     {
@@ -2110,9 +2118,10 @@ fn terminal_snapshot(
         elapsed_wall_ms,
         frame_hour,
         producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
-        fired_events_complete: telemetry.zero_gap(),
-        telemetry,
-        rows,
+        fired_events_complete: snapshot.telemetry.zero_gap(),
+        telemetry: snapshot.telemetry,
+        capture_start_fired_event_ids: snapshot.capture_start_fired_event_ids,
+        rows: snapshot.rows,
     };
     let payload = encode_payload(&frame)
         .map_err(|error| format!("XUI21 terminal payload encoding failed: {error:?}"))?;
@@ -2733,7 +2742,7 @@ impl ExactFiredEventSource for A729RuntimeSource {
         &self,
         frame_hour: u64,
         elapsed_wall_ms: u64,
-    ) -> Result<(HookTelemetry, Vec<FiredEventRow>), String> {
+    ) -> Result<FiredEventSnapshot, String> {
         let runtime = runtime_slot()
             .lock()
             .map_err(|_| "XUI21 runtime slot poisoned".to_string())?
@@ -2761,7 +2770,7 @@ impl ExactFiredEventSource for A729RuntimeSource {
         let mut coverage_receipt = runtime.bridge.coverage_receipt()?;
         if let Some(receipt) = coverage_receipt.as_mut() {
             receipt.hook_telemetry =
-                Some(CoverageTelemetryWitness::from_hook_telemetry(&snapshot.0));
+                Some(CoverageTelemetryWitness::from_hook_telemetry(&snapshot.telemetry));
         }
         if runtime.in_flight.load(Ordering::Acquire) != 0
             || runtime.epoch.load(Ordering::Acquire) != epoch
@@ -3901,6 +3910,9 @@ mod tests {
     impl A729EventBridge for CompleteBridge {
         fn producer_manifest_sha256(&self) -> [u8; 32] {
             PRODUCER_MANIFEST_SHA256
+        }
+        fn capture_start_fired_baseline(&self) -> Result<CaptureStartFiredBaseline, String> {
+            Ok(CaptureStartFiredBaseline::default())
         }
         fn pending_baseline(&self) -> Result<PendingBaseline, String> {
             Ok(PendingBaseline {
