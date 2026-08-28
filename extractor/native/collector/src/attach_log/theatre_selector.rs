@@ -119,6 +119,42 @@ pub(super) fn orders_visibility_from_raw(
     }
 }
 
+/// The witnessed identity of an orders group, keeping the class that
+/// `validate_order_container_body` discards: `CArmy` and `CArmyGroup` share
+/// `ARMY_TYPE` and are told apart only by vtable.
+fn orders_group_identity(base: usize, object: usize) -> Result<(usize, u32, u32), Rejection> {
+    if let Some(id) = validate_army_body(base, object) {
+        return Ok((ARMY_VTABLE_RVA, ARMY_TYPE, id));
+    }
+    validate_oob_body(base, object, AG_VTABLE_RVA, ARMY_TYPE)
+        .map(|id| (AG_VTABLE_RVA, ARMY_TYPE, id))
+        .ok_or(Rejection::IdentityAuthenticationFailed)
+}
+
+/// Enrol an object in the witness set. Re-authenticating one address to a
+/// DIFFERENT class or id means it changed under the walk, so the disagreement
+/// refuses rather than letting the later tuple overwrite the earlier one.
+pub(super) fn enrol(
+    witnesses: &mut BTreeMap<usize, (usize, u32, u32)>,
+    object: usize,
+    identity: (usize, u32, u32),
+) -> Result<(), Rejection> {
+    match witnesses.insert(object, identity) {
+        Some(previous) if previous != identity => Err(Rejection::IdentityAuthenticationFailed),
+        _ => Ok(()),
+    }
+}
+
+fn is_army_group(orders_group: usize) -> Result<bool, Rejection> {
+    Ok(read_u8_stable(
+        orders_group
+            .checked_add(ORDERS_GROUP_OFF_IS_ARMY_GROUP)
+            .ok_or(Rejection::SourceUnreadable)?,
+    )
+    .ok_or(Rejection::SourceUnreadable)?
+        != 0)
+}
+
 fn army_border_conflict_state(army: usize) -> Result<u64, Rejection> {
     read_u64_stable(
         army.checked_add(ARMY_OFF_BORDER_CONFLICT_STATE)
@@ -400,72 +436,110 @@ impl AllCountrySource<'_> {
         out: &mut Vec<lane::TheatreRow>,
     ) -> Result<(), Rejection> {
         use lane::{MemberRow, ObjectKind, TheatreRow};
-        let wrappers = ptr_vector(
+        let theatres = ptr_vector(
             country.object_ptr,
-            COUNTRY_LAND_THEATRE_WRAPPER_DATA,
-            COUNTRY_LAND_THEATRE_WRAPPER_CAPACITY,
-            COUNTRY_LAND_THEATRE_WRAPPER_COUNT,
+            COUNTRY_THEATRE_DATA,
+            COUNTRY_THEATRE_CAPACITY,
+            COUNTRY_THEATRE_COUNT,
         )?;
         let mut seen_theatres = BTreeSet::new();
         let mut theatre_order = 0u32;
-        for wrapper in wrappers {
-            for theatre in ptr_vector(
-                wrapper,
-                LAND_THEATRE_WRAPPER_VECTOR_DATA,
-                LAND_THEATRE_WRAPPER_VECTOR_CAPACITY,
-                LAND_THEATRE_WRAPPER_VECTOR_COUNT,
+        for owning_theatre in theatres {
+            let (owning_theatre_id, _) = reference_id(
+                owning_theatre,
+                self.state.base,
+                THEATRE_VTABLE_RVA,
+                Some(OOB_TYPE_THEATRE),
+            )?;
+            for theater_group in ptr_vector(
+                owning_theatre,
+                THEATRE_OFF_THEATER_GROUP_DATA,
+                THEATRE_OFF_THEATER_GROUP_CAPACITY,
+                THEATRE_OFF_THEATER_GROUP_COUNT,
             )? {
                 let (theatre_id, _) = reference_id(
-                    theatre,
+                    theater_group,
                     self.state.base,
-                    THEATRE_VTABLE_RVA,
-                    Some(OOB_TYPE_THEATRE),
+                    THEATER_GROUP_VTABLE_RVA,
+                    Some(OOB_TYPE_THEATER_GROUP),
                 )?;
                 if !seen_theatres.insert(theatre_id) {
                     return Err(Rejection::DuplicateIdentity);
                 }
+                // Every object this row is built from, re-checked once after
+                // the last read of any of them. A guard only proves the class
+                // at the instant it runs, and the `==` tests below would still
+                // pass against an address freed and reused mid-walk.
+                let mut witnesses: BTreeMap<usize, (usize, u32, u32)> = BTreeMap::new();
+                enrol(
+                    &mut witnesses,
+                    owning_theatre,
+                    (THEATRE_VTABLE_RVA, OOB_TYPE_THEATRE, owning_theatre_id),
+                )?;
+                enrol(
+                    &mut witnesses,
+                    theater_group,
+                    (
+                        THEATER_GROUP_VTABLE_RVA,
+                        OOB_TYPE_THEATER_GROUP,
+                        theatre_id,
+                    ),
+                )?;
+                if read_u64_stable(theater_group + THEATER_GROUP_OFF_THEATRE)
+                    .map(|value| value as usize)
+                    != Some(owning_theatre)
+                {
+                    return Err(Rejection::OrphanRow);
+                }
                 let army_rows = ptr_vector(
-                    theatre,
-                    LAND_THEATRE_OFF_ARMY_DATA,
-                    LAND_THEATRE_OFF_ARMY_CAPACITY,
-                    LAND_THEATRE_OFF_ARMY_COUNT,
+                    theater_group,
+                    THEATER_GROUP_OFF_ARMY_DATA,
+                    THEATER_GROUP_OFF_ARMY_CAPACITY,
+                    THEATER_GROUP_OFF_ARMY_COUNT,
                 )?;
                 let army_set = army_rows.iter().copied().collect::<BTreeSet<_>>();
                 let mut border_conflict_by_army = BTreeMap::new();
                 for &army in &army_rows {
+                    // container guard is the union; the row sites below narrow it.
+                    // Enrolling BEFORE the field read binds the published value
+                    // to the identity the sweep will re-check.
+                    enrol(
+                        &mut witnesses,
+                        army,
+                        orders_group_identity(self.state.base, army)?,
+                    )?;
                     border_conflict_by_army.insert(army, army_border_conflict_state(army)?);
                 }
                 let delete_eligible = border_conflict_by_army.values().any(|&value| value != 0);
-                let manager = read_u64_stable(theatre + LAND_THEATRE_OFF_GROUP_MANAGER)
-                    .ok_or(Rejection::SourceUnreadable)? as usize;
-                if !is_map_control_heap_pointer(manager) {
-                    return Err(Rejection::SourceUnreadable);
-                }
                 let groups = ptr_vector(
-                    manager,
-                    LAND_GROUP_MANAGER_DATA,
-                    LAND_GROUP_MANAGER_CAPACITY,
-                    LAND_GROUP_MANAGER_COUNT,
+                    owning_theatre,
+                    THEATRE_OFF_ARMY_GROUP_DATA,
+                    THEATRE_OFF_ARMY_GROUP_CAPACITY,
+                    THEATRE_OFF_ARMY_GROUP_COUNT,
                 )?;
                 let mut members = Vec::new();
                 let mut grouped_armies = BTreeSet::new();
                 let mut group_order = 0u32;
                 for group in groups {
-                    let backref = read_u64_stable(group + ARMY_OFF_THEATRE_GROUP)
-                        .ok_or(Rejection::SourceUnreadable)?
-                        as usize;
-                    if backref != theatre {
-                        reference_id(
-                            backref,
-                            self.state.base,
-                            THEATRE_VTABLE_RVA,
-                            Some(OOB_TYPE_THEATRE),
-                        )?;
-                        continue;
-                    }
                     let group_id =
                         validate_oob_body(self.state.base, group, AG_VTABLE_RVA, ARMY_TYPE)
                             .ok_or(Rejection::IdentityAuthenticationFailed)?;
+                    if !is_army_group(group)? {
+                        return Err(Rejection::IdentityAuthenticationFailed);
+                    }
+                    enrol(&mut witnesses, group, (AG_VTABLE_RVA, ARMY_TYPE, group_id))?;
+                    let backref = read_u64_stable(group + ARMY_OFF_THEATRE_GROUP)
+                        .ok_or(Rejection::SourceUnreadable)?
+                        as usize;
+                    if backref != theater_group {
+                        reference_id(
+                            backref,
+                            self.state.base,
+                            THEATER_GROUP_VTABLE_RVA,
+                            Some(OOB_TYPE_THEATER_GROUP),
+                        )?;
+                        continue;
+                    }
                     members.push(MemberRow {
                         kind: ObjectKind::ArmyGroup,
                         object_id: group_id,
@@ -484,14 +558,16 @@ impl AllCountrySource<'_> {
                     group_order = group_order.saturating_add(1);
                     let children = ptr_vector(
                         group,
-                        ARMY_OFF_MEMBER_DATA,
-                        ARMY_OFF_MEMBER_CAPACITY,
-                        ARMY_OFF_MEMBER_COUNT,
+                        ARMY_GROUP_OFF_MEMBER_DATA,
+                        ARMY_GROUP_OFF_MEMBER_CAPACITY,
+                        ARMY_GROUP_OFF_MEMBER_COUNT,
                     )?;
                     for (child_order, army) in children.into_iter().enumerate() {
-                        let army_id =
-                            validate_oob_body(self.state.base, army, AG_VTABLE_RVA, ARMY_TYPE)
-                                .ok_or(Rejection::IdentityAuthenticationFailed)?;
+                        // CArmy, not CArmyGroup: a nested army group has no Army row
+                        // shape on the wire, and this vtable refuses it by name.
+                        let army_id = validate_army_body(self.state.base, army)
+                            .ok_or(Rejection::IdentityAuthenticationFailed)?;
+                        enrol(&mut witnesses, army, (ARMY_VTABLE_RVA, ARMY_TYPE, army_id))?;
                         if !army_set.contains(&army) {
                             return Err(Rejection::OrphanRow);
                         }
@@ -524,16 +600,16 @@ impl AllCountrySource<'_> {
                     }
                 }
                 let priority_ordinal = read_u32_stable(
-                    theatre
-                        .checked_add(LAND_THEATRE_OFF_PRIORITY_ORDINAL)
+                    theater_group
+                        .checked_add(THEATER_GROUP_OFF_PRIORITY_ORDINAL)
                         .ok_or(Rejection::SourceUnreadable)?,
                 )
                 .ok_or(Rejection::SourceUnreadable)?;
                 let mut standalone_order = 0u32;
                 for &army in &army_rows {
-                    let army_id =
-                        validate_oob_body(self.state.base, army, AG_VTABLE_RVA, ARMY_TYPE)
-                            .ok_or(Rejection::IdentityAuthenticationFailed)?;
+                    let army_id = validate_army_body(self.state.base, army)
+                        .ok_or(Rejection::IdentityAuthenticationFailed)?;
+                    enrol(&mut witnesses, army, (ARMY_VTABLE_RVA, ARMY_TYPE, army_id))?;
                     let parent = read_u64_stable(army + ARMY_OFF_AG_PARENT)
                         .ok_or(Rejection::SourceUnreadable)?
                         as usize;
@@ -558,17 +634,31 @@ impl AllCountrySource<'_> {
                         return Err(Rejection::OrphanRow);
                     }
                 }
+                // The LAST engine read of this row, so the witness sweep below
+                // it genuinely closes every object's read window.
+                let display_name = display_name(theater_group, THEATER_GROUP_OFF_NAME)?;
+                for (&object, &(vtable_rva, type_tag, expected_id)) in &witnesses {
+                    if validate_oob_body(self.state.base, object, vtable_rva, type_tag)
+                        != Some(expected_id)
+                    {
+                        return Err(Rejection::IdentityAuthenticationFailed);
+                    }
+                }
                 out.push(TheatreRow {
                     kind: ObjectKind::LandTheatre,
                     object_id: theatre_id,
                     owner_tag_db_id: country.tag_db_id,
                     engine_order: theatre_order,
-                    display_name: display_name(theatre, LAND_THEATRE_OFF_NAME)?,
+                    display_name,
                     name_provenance: lane::NameProvenance::EngineRuntimeString,
                     priority_ordinal: lane::PriorityOrdinal::Measured(priority_ordinal),
                     delete_eligible: Some(delete_eligible),
                     members,
-                    alert_categories: self.alerts.get(&theatre).cloned().unwrap_or_default(),
+                    alert_categories: self
+                        .alerts
+                        .get(&theater_group)
+                        .cloned()
+                        .unwrap_or_default(),
                 });
                 theatre_order = theatre_order.saturating_add(1);
             }
