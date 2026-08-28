@@ -1,3 +1,4 @@
+pub mod ability_visibility;
 pub mod active_abilities;
 pub mod alerts;
 pub mod assets;

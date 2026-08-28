@@ -2863,7 +2863,28 @@ fn le_usize(bytes: &[u8], offset: usize) -> Result<usize, String> {
     Ok(u64::from_le_bytes(raw) as usize)
 }
 
-fn rpm(address: usize, len: usize) -> Option<Vec<u8>> {
+/// The bracket-legal read: fills a buffer the caller already owns.
+pub(crate) fn rpm_into(address: usize, out: &mut [u8]) -> bool {
+    if out.is_empty() {
+        return true;
+    }
+    if address == 0 {
+        return false;
+    }
+    let mut read = 0usize;
+    let ok = unsafe {
+        ReadProcessMemory(
+            GetCurrentProcess(),
+            address as *const c_void,
+            out.as_mut_ptr() as *mut c_void,
+            out.len(),
+            &mut read,
+        )
+    };
+    ok != 0 && read == out.len()
+}
+
+pub(crate) fn rpm(address: usize, len: usize) -> Option<Vec<u8>> {
     if address == 0 || len == 0 {
         return (len == 0).then(Vec::new);
     }

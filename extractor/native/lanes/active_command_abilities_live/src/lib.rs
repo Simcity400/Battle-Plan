@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 #[cfg(windows)]
 pub mod a729_hook;
 pub mod production_carrier;
+pub mod world_lifecycle;
 
 pub const MAGIC: u32 = u32::from_le_bytes(*b"ABL1");
 pub const SCHEMA_VERSION: u32 = 2;
@@ -345,10 +346,10 @@ fn validate_nonempty(value: &str, field: &str) -> Result<(), AbilityError> {
         Ok(())
     }
 }
-fn put_u32(out: &mut Vec<u8>, v: u32) {
+pub(crate) fn put_u32(out: &mut Vec<u8>, v: u32) {
     out.extend_from_slice(&v.to_le_bytes());
 }
-fn put_u64(out: &mut Vec<u8>, v: u64) {
+pub(crate) fn put_u64(out: &mut Vec<u8>, v: u64) {
     out.extend_from_slice(&v.to_le_bytes());
 }
 fn put_i64(out: &mut Vec<u8>, v: i64) {
@@ -365,7 +366,7 @@ fn put_timer(out: &mut Vec<u8>, v: TimerValue) {
     put_u32(out, tag);
     put_u32(out, value);
 }
-fn put_string(out: &mut Vec<u8>, v: &str) -> Result<(), AbilityError> {
+pub(crate) fn put_string(out: &mut Vec<u8>, v: &str) -> Result<(), AbilityError> {
     validate_nonempty(v, "wire string")?;
     put_u32(out, v.len() as u32);
     out.extend_from_slice(v.as_bytes());
@@ -379,7 +380,7 @@ fn put_optional_string(out: &mut Vec<u8>, v: Option<&str>) -> Result<(), Ability
     Ok(())
 }
 
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     bytes: &'a [u8],
     offset: usize,
 }
