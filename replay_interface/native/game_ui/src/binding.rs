@@ -297,6 +297,55 @@ fn require_exact_observer_format(
     }
 }
 
+/// The observer topbar fields no recorded domain can supply, each naming the
+/// domain that would close it. A wrong `required_domain` is worse than none: it
+/// sends the next lane to a domain that cannot produce the value.
+pub const OBSERVER_TOPBAR_BASE_GAPS: &[ObserverTopbarGap] = &[
+    ObserverTopbarGap {
+        field: "initiative",
+        required_domain: "initiative",
+        reason: "no replay gamestate family carries the engine-evaluated initiative alert count",
+    },
+    ObserverTopbarGap {
+        field: "decision_available_items",
+        required_domain: "d14",
+        reason: "d16 active aggregates do not prove evaluated available-decision membership",
+    },
+    ObserverTopbarGap {
+        field: "decision_timeout_items",
+        required_domain: "d14",
+        reason: "no non-presentation gamestate family carries the evaluated decision timeout alert count",
+    },
+    // Lane UJ settled the source: both counts are read from the HUD
+    // intel singleton at INTEL_STATE_RVA 0x03324490 (available +0x6c,
+    // prepared +0x24 and completed +0x0c summed), which counts intel
+    // REPORTS for the LOCAL VIEWER only. No d53 pair-matrix predicate
+    // reproduces them, so naming d30/d53 here sent the reader to a
+    // domain that cannot close it. The only producer is d79, which is
+    // descheduled with proof, and its absence is a deliberate omission
+    // rather than a recording that predates the carrier.
+    ObserverTopbarGap {
+        field: "intel_available",
+        required_domain: "d79",
+        reason: "the displayed available count exists only in the viewer-local HUD intel singleton, whose only producer (d79) is descheduled; no recorded byte supports a predicate, and the owning country is named only by that same absent source",
+    },
+    ObserverTopbarGap {
+        field: "intel_prepared_or_completed",
+        required_domain: "d79",
+        reason: "the displayed prepared-or-completed count exists only in the viewer-local HUD intel singleton, whose only producer (d79) is descheduled; no recorded byte supports a predicate, and the owning country is named only by that same absent source",
+    },
+    ObserverTopbarGap {
+        field: "non_delivering_contracts",
+        required_domain: "d43",
+        reason: "trade relations do not carry the engine-evaluated non-delivering contract alert count",
+    },
+    ObserverTopbarGap {
+        field: "ongoing_contracts",
+        required_domain: "d43",
+        reason: "trade relations do not carry the engine-evaluated ongoing contract alert count",
+    },
+];
+
 pub fn topbar_binding_from_observer_frame(
     frame: &WorldFrame,
     country_tag: &str,
@@ -320,43 +369,7 @@ pub fn topbar_binding_from_observer_frame(
         }
     }
 
-    let mut gaps = vec![
-            ObserverTopbarGap {
-                field: "initiative",
-                required_domain: "initiative",
-                reason: "no replay gamestate family carries the engine-evaluated initiative alert count",
-            },
-            ObserverTopbarGap {
-                field: "decision_available_items",
-                required_domain: "d14",
-                reason: "d16 active aggregates do not prove evaluated available-decision membership",
-            },
-            ObserverTopbarGap {
-                field: "decision_timeout_items",
-                required_domain: "d14",
-                reason: "no non-presentation gamestate family carries the evaluated decision timeout alert count",
-            },
-            ObserverTopbarGap {
-                field: "intel_available",
-                required_domain: "d30/d53",
-                reason: "operation rows do not prove the intelligence controller's displayed available count",
-            },
-            ObserverTopbarGap {
-                field: "intel_prepared_or_completed",
-                required_domain: "d30/d53",
-                reason: "no admitted semantic leaf carries the intelligence controller's prepared-or-completed count",
-            },
-            ObserverTopbarGap {
-                field: "non_delivering_contracts",
-                required_domain: "d43",
-                reason: "trade relations do not carry the engine-evaluated non-delivering contract alert count",
-            },
-            ObserverTopbarGap {
-                field: "ongoing_contracts",
-                required_domain: "d43",
-                reason: "trade relations do not carry the engine-evaluated ongoing contract alert count",
-            },
-        ];
+    let mut gaps = OBSERVER_TOPBAR_BASE_GAPS.to_vec();
 
     let runtime_rows = match frame.runtime_text() {
         Ok(Leaf::Measured(catalog)) => {
@@ -1074,6 +1087,36 @@ pub fn state_tooltip_from_frame(frame: &WorldFrame, state_id: u32) -> StateToolt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// kills: re-pointing the two intel alert gaps at d53. Lane UJ proved the
+    /// counts come from the viewer-local HUD intel singleton and that no d53
+    /// pair-matrix predicate reproduces them, so a gap naming d30/d53 sends the
+    /// next reader to a domain that cannot close it. d79 owns them and is
+    /// descheduled with proof: the absence is a decision, not a recording that
+    /// predates the carrier.
+    #[test]
+    fn the_intel_alert_gaps_name_d79_as_their_only_producer() {
+        for field in ["intel_available", "intel_prepared_or_completed"] {
+            let gap = OBSERVER_TOPBAR_BASE_GAPS
+                .iter()
+                .find(|gap| gap.field == field)
+                .unwrap_or_else(|| panic!("{field} must declare a gap"));
+            assert_eq!(
+                gap.required_domain, "d79",
+                "{field} must name the domain that actually produces it"
+            );
+            assert!(
+                gap.reason.contains("descheduled"),
+                "{field} must say the source was descheduled, not merely underivable: {}",
+                gap.reason
+            );
+            assert!(
+                !gap.reason.contains("d53") && !gap.reason.contains("d30"),
+                "{field} must not send the reader back to the refuted d53 route: {}",
+                gap.reason
+            );
+        }
+    }
 
     fn runtime_text_record(
         context_id: &str,

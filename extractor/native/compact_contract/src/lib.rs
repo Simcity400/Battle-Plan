@@ -727,10 +727,23 @@ pub const DESCHEDULED_CAPTURE_DECISION_DATE: &str = "2026-08-03";
 
 pub const DESCHEDULED_CAPTURE_DECISION_REF: &str = "PROJECT.md";
 
+/// The 2026-08-03 batch reason as originally written joined two independent
+/// claims: that the source is POV-local, and that the replay derives it from
+/// captured domains so nothing is lost. Lane UN's audit
+/// (`runs/un_fired_events/BATCH_AUDIT_2026_08_03.md`) found the SECOND false or
+/// unproven for every member — each descheduled producer is the only observer
+/// of something — and false for d75 on both counts, which is why d75 was
+/// rescheduled. The decision for the rest did not change, because the FIRST
+/// clause is what carries it. So the shared reason now states only that clause.
+///
+/// What each domain still leaves uncovered is deliberately NOT restated here:
+/// the replay-producer gap ledger owns those descriptions, and a second prose
+/// copy in the contract drifts out of date the moment the ledger moves. The
+/// ruling names the ledger row instead.
 pub const DESCHEDULED_CAPTURE_REASON: &str =
-    "POV-local presentation: what one client's screen had already resolved. The replay is an \
-     observer-mode model and derives these panels from authoritative captured domains at render \
-     time, so capturing them adds nothing.";
+    "POV-local producer: the source observes only what one client's screen had already \
+     resolved, so scheduling it would publish one client's view as though it were the world. \
+     A recording cannot obtain world truth this way, whatever the panel showed.";
 
 pub const DESCHEDULED_CAPTURE_REASON_D85: &str =
     "Client UI selection state has no clean observation when no designer is open; the source \
@@ -742,6 +755,15 @@ pub struct DescheduledCaptureRuling {
     pub id: CompactDomainId,
     pub decided_on: &'static str,
     pub reason: &'static str,
+    /// The replay-producer gap ledger row that characterises what the recording
+    /// still lacks from this domain's surface.
+    ///
+    /// This ruling settles only WHY the producer is not scheduled. It does not
+    /// settle what is missing, and must not be read as settling it: `None` means
+    /// **no ledger row exists yet**, never that nothing is lost. Every domain on
+    /// this list is the sole observer of something, so a `None` here is an open
+    /// question, not a clean bill.
+    pub gap_ledger_row: Option<&'static str>,
 }
 
 pub const DESCHEDULED_CAPTURE_RULINGS: &[DescheduledCaptureRuling] = &[
@@ -749,31 +771,31 @@ pub const DESCHEDULED_CAPTURE_RULINGS: &[DescheduledCaptureRuling] = &[
         id: 72,
         decided_on: "2026-08-03",
         reason: DESCHEDULED_CAPTURE_REASON,
-    },
-    DescheduledCaptureRuling {
-        id: 75,
-        decided_on: "2026-08-03",
-        reason: DESCHEDULED_CAPTURE_REASON,
+        gap_ledger_row: None,
     },
     DescheduledCaptureRuling {
         id: 79,
         decided_on: "2026-08-03",
         reason: DESCHEDULED_CAPTURE_REASON,
+        gap_ledger_row: None,
     },
     DescheduledCaptureRuling {
         id: 85,
         decided_on: "2026-08-13",
         reason: DESCHEDULED_CAPTURE_REASON_D85,
+        gap_ledger_row: None,
     },
     DescheduledCaptureRuling {
         id: 88,
         decided_on: "2026-08-03",
         reason: DESCHEDULED_CAPTURE_REASON,
+        gap_ledger_row: Some("EIR-NE-009"),
     },
     DescheduledCaptureRuling {
         id: 89,
         decided_on: "2026-08-03",
         reason: DESCHEDULED_CAPTURE_REASON,
+        gap_ledger_row: Some("EIR-NE-002"),
     },
 ];
 
@@ -785,55 +807,22 @@ pub fn descheduled_capture_ruling(
         .find(|ruling| ruling.id == id)
 }
 
-pub const DESCHEDULED_CAPTURE_DOMAIN_IDS: &[CompactDomainId] = &[72, 75, 79, 85, 88, 89];
+/// d75 belonged here until 2026-08-28. The 2026-08-03 batch swept it in under
+/// [`DESCHEDULED_CAPTURE_REASON`], whose two clauses are both false of it: an
+/// event firing is world truth rather than POV-local presentation, and no
+/// captured domain derives it. d64's DEL2 ledger observes the delayed-dispatch
+/// caller only — `0x140a028a0` has three — and carries no chosen option.
+/// See `runs/un_fired_events/DERIVE_FIRST_VERDICT.md`.
+pub const DESCHEDULED_CAPTURE_DOMAIN_IDS: &[CompactDomainId] = &[72, 79, 85, 88, 89];
 
 pub fn is_descheduled_from_capture(id: CompactDomainId) -> bool {
     DESCHEDULED_CAPTURE_DOMAIN_IDS.contains(&id)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DescheduledDomainHookPrerequisite {
-    pub descheduled: CompactDomainId,
-    pub held_by: CompactDomainId,
-    pub sites: &'static [&'static str],
-    pub reason: &'static str,
-    pub citation: &'static str,
-}
-
-pub const DESCHEDULED_DOMAIN_HOOK_PREREQUISITES: &[DescheduledDomainHookPrerequisite] =
-    &[DescheduledDomainHookPrerequisite {
-        descheduled: 75,
-        held_by: 64,
-        sites: &[
-            "gameplay.d75.common_fire",
-            "gameplay.d75.option_command",
-            "gameplay.d75.timeout_resolution",
-        ],
-        reason: "d75's XUI21 producer edge registers the A19 delayed-event dispatch observer d64 reads through; d64's installer refuses when that observer is absent, and the two are one install unit so the edge closes before d64 is drained",
-        citation: "collector/src/attach_log.rs PRODUCTION_INSTALL_UNITS (the Xui21ProducerEdge + D64 unit) and its doc comment",
-    }];
-
-/// a domain leaving the shipped roster releases every hold it had.
-pub fn is_in_passive_production_roster(id: CompactDomainId) -> bool {
-    passive_production_roster()
-        .into_iter()
-        .any(|descriptor| descriptor.id == id)
-}
-
-pub fn descheduled_hook_site_prerequisite(
-    logical_name: &str,
-) -> Option<&'static DescheduledDomainHookPrerequisite> {
-    DESCHEDULED_DOMAIN_HOOK_PREREQUISITES.iter().find(|hold| {
-        hold.sites.contains(&logical_name) && is_in_passive_production_roster(hold.held_by)
-    })
-}
-
 pub const OPTIONAL_COMPANION_SITES_DEFERRED_TO_ACTIVE_LANES: &[&str] = &[];
 
 pub fn production_hook_site_installs(logical_name: &str, producer_domain: CompactDomainId) -> bool {
-    if is_descheduled_from_capture(producer_domain)
-        && descheduled_hook_site_prerequisite(logical_name).is_none()
-    {
+    if is_descheduled_from_capture(producer_domain) {
         return false;
     }
     if is_optional_fail_closed_companion(producer_domain) {
@@ -2304,7 +2293,6 @@ mod tests {
 
     const RULED_OUT_OF_CAPTURE_SCOPE: &[(CompactDomainId, &str, &str)] = &[
         (72, "resolved_tooltip_instances_live", "2026-08-03"),
-        (75, "fired_event_popups_live", "2026-08-03"),
         (79, "hud_surface_activation_live", "2026-08-03"),
         (85, "selected_designer_identity_live", "2026-08-13"),
         (88, "active_command_abilities_live", "2026-08-03"),
@@ -2413,6 +2401,68 @@ mod tests {
                 edge.dependency
             );
         }
+    }
+
+    #[test]
+    /// d75 joins the mandatory profile on [`PRODUCTION_PROFILE_RULE`], not on a
+    /// preference: it is `ProductionComplete`, schedulable, and no longer carries a
+    /// deschedule ruling. Its three hook sites were already installed on every
+    /// production capture as the `Xui21ProducerEdge` half of the D64 install unit,
+    /// so scheduling it drains a producer that was already running rather than
+    /// adding a read. See `runs/un_fired_events/DERIVE_FIRST_VERDICT.md`.
+    #[test]
+    fn d75_fired_events_is_scheduled_and_its_hook_sites_install() {
+        let descriptor = assigned_descriptor_by_id(75).expect("d75 is assigned");
+        assert_eq!(descriptor.wire_name, "fired_event_popups_live");
+        assert!(descriptor.schedulable && descriptor.requires_data_record);
+        assert!(
+            status_in_production_profile(descriptor.status),
+            "d75 must satisfy PRODUCTION_PROFILE_RULE to be mandatory, not be waived into it"
+        );
+        assert!(!is_descheduled_from_capture(75));
+        assert!(descheduled_capture_ruling(75).is_none());
+        assert!(!is_optional_fail_closed_companion(75));
+        assert!(in_production_profile(descriptor));
+        assert!(production_profile_scheduled_names().contains(&"fired_event_popups_live"));
+        assert!(is_in_passive_capture_roster(75));
+        for site in [
+            "gameplay.d75.common_fire",
+            "gameplay.d75.option_command",
+            "gameplay.d75.timeout_resolution",
+        ] {
+            assert!(production_hook_site_installs(site, 75));
+        }
+    }
+
+    /// kills: restoring a blanket "the replay derives these panels, so capturing
+    /// them adds nothing" to the shared reason. That claim is false for the three
+    /// domains below — each is the only observer of something no other domain
+    /// carries — and a reader who believes it stops looking for a real gap. The
+    /// deschedule still stands on the POV-local clause; the gap is named, not
+    /// denied.
+    #[test]
+    fn the_shared_deschedule_reason_states_only_the_clause_that_is_true() {
+        assert!(
+            DESCHEDULED_CAPTURE_REASON.contains("POV-local producer"),
+            "the surviving clause is that the producer only sees one client's view"
+        );
+        for denial in ["adds nothing", "derives these panels"] {
+            assert!(
+                !DESCHEDULED_CAPTURE_REASON.contains(denial),
+                "the shared reason must not deny a residual it does not know about: {denial:?}"
+            );
+        }
+        // The ruling must not carry a prose copy of what is missing: the gap
+        // ledger owns that, and a second copy drifts. Where a ledger row exists
+        // it is referenced by id.
+        assert_eq!(
+            descheduled_capture_ruling(88).expect("ruling").gap_ledger_row,
+            Some("EIR-NE-009")
+        );
+        assert_eq!(
+            descheduled_capture_ruling(89).expect("ruling").gap_ledger_row,
+            Some("EIR-NE-002")
+        );
     }
 
     #[test]

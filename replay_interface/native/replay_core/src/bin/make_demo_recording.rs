@@ -399,7 +399,6 @@ fn build_snapshot(
         "combats": combats,
         "diplomacy_world": {},
         "map": { "owner_by_state": owner_by_state },
-        "events": [],
     })
 }
 

@@ -1905,36 +1905,27 @@ mod pinned_bootstrap_import_primitive {
             .collect();
         assert!(
             stale.is_empty(),
-            "these sites belong to descheduled domains with nothing holding them, \
-             yet the pinned roster still names them -- every capture would demand \
-             a receipt no install unit mints: {stale:?}"
+            "these sites belong to descheduled domains, yet the pinned roster still \
+             names them -- every capture would demand a receipt no install unit \
+             mints: {stale:?}"
         );
 
         let pinned_names: Vec<&str> = domain_sites.iter().map(|(_, name)| *name).collect();
-        for hold in crate::DESCHEDULED_DOMAIN_HOOK_PREREQUISITES {
-            if !crate::is_in_passive_production_roster(hold.held_by) {
-                continue;
-            }
+        for site in [
+            "gameplay.d75.common_fire",
+            "gameplay.d75.option_command",
+            "gameplay.d75.timeout_resolution",
+        ] {
             assert!(
-                !hold.sites.is_empty(),
-                "a hold that names no site holds nothing"
+                pinned_names.contains(&site),
+                "{site} must stay pinned: it is d75's own producer now that d75 is \
+                 scheduled, and it is still the dispatch observer d64 installs with"
             );
-            for site in hold.sites {
-                assert!(
-                    pinned_names.contains(site),
-                    "d{} is held installed by d{} through {site}, but that site is \
-                     not in the pinned roster",
-                    hold.descheduled,
-                    hold.held_by
-                );
-                assert_eq!(
-                    super::pinned_hook_producer(site).expect("a held site parses"),
-                    PinnedHookProducer::Domain(hold.descheduled),
-                    "{site} is held on d{}'s behalf but is not d{}'s producer",
-                    hold.descheduled,
-                    hold.descheduled
-                );
-            }
+            assert_eq!(
+                super::pinned_hook_producer(site),
+                Ok(PinnedHookProducer::Domain(75))
+            );
+            assert!(crate::production_hook_site_installs(site, 75));
         }
 
         assert_eq!(
@@ -1980,12 +1971,11 @@ mod pinned_bootstrap_import_primitive {
                  is not an optional companion, so no ruling covers it"
             );
             assert!(
-                !crate::is_descheduled_from_capture(id)
-                    || crate::descheduled_hook_site_prerequisite(deferred).is_some(),
-                "d{id} has been descheduled with nothing holding {deferred}, so the \
-                 deschedule authority already removes it and this deferral no longer \
-                 defers anything -- delete the entry rather than leaving a carve-out \
-                 that describes nothing"
+                !crate::is_descheduled_from_capture(id),
+                "d{id} has been descheduled, so the deschedule authority already \
+                 removes {deferred} and this deferral no longer defers anything -- \
+                 delete the entry rather than leaving a carve-out that describes \
+                 nothing"
             );
             assert!(
                 pinned.contains(deferred),
@@ -2063,14 +2053,6 @@ mod pinned_bootstrap_import_primitive {
         }
 
         for id in crate::DESCHEDULED_CAPTURE_DOMAIN_IDS {
-            let held = crate::DESCHEDULED_DOMAIN_HOOK_PREREQUISITES
-                .iter()
-                .any(|hold| {
-                    hold.descheduled == *id && crate::is_in_passive_production_roster(hold.held_by)
-                });
-            if held {
-                continue;
-            }
             let still_pinned: Vec<&str> = PINNED_PRODUCTION_HOOK_SPECS_V1
                 .iter()
                 .map(|spec| spec.logical_name)
@@ -2080,8 +2062,8 @@ mod pinned_bootstrap_import_primitive {
                 .collect();
             assert!(
                 still_pinned.is_empty(),
-                "d{id} is descheduled and unheld, so these must not be pinned as \
-                 installable: {still_pinned:?}"
+                "d{id} is descheduled, so these must not be pinned as installable: \
+                 {still_pinned:?}"
             );
         }
     }

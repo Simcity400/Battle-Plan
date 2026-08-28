@@ -2024,8 +2024,7 @@ fn base_snapshot(
             "faction_influence": [],
             "world_tension_inputs": {"average_major_ic": 42.0, "tension_scaling_base_country": "GER"},
             "saved_event_targets": []
-        },
-        "events": []
+        }
     });
     refresh_division_counts(&mut snap);
     refresh_map_layers(&mut snap);
