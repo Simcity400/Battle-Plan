@@ -50,16 +50,34 @@ extractor/native/*/out/
 replay_interface/native/*/out/
 
 # Native collector/recorder proof outputs and ad hoc cargo target dirs.
-extractor/native/runs/
-extractor/native/**/runs/
+# runs/ evidence is TRACKED (lane deliverable; the blanket ignore silently
+# dropped whole evidence dirs from commits that reported success — recovered
+# 2026-08-28). Only the bulk measurement corpora below stay local.
+extractor/native/runs/batch1/
+extractor/native/runs/batch2/
+extractor/native/runs/batch3/
+extractor/native/runs/batch4/
+extractor/native/runs/crashrate/
+extractor/native/runs/d20_deepwar/
+extractor/native/runs/d20_real_dynamics/
+extractor/native/runs/d20_real_save/
+extractor/native/runs/d20_reference/
+extractor/native/runs/hookdose/
+extractor/native/runs/jl_render_purge/
+extractor/native/runs/live_unlock/
+extractor/native/runs/lq_teardown_census/
+extractor/native/runs/s0_census/
+extractor/native/runs/t51_pricing/
+extractor/native/runs/t53_live_proofs/
+extractor/native/runs/t54_live_proofs/
+extractor/native/runs/t55_attempt3_unsealed_modset_path/
+extractor/native/runs/**/.replay_decoder_artifacts-*/
 extractor/native/**/proofs/
 extractor/native/**/proof_current_head_*/
 extractor/native/**/proof_current*/
 extractor/native/target*/
 extractor/native/**/target/
 extractor/native/**/proof_out/
-replay_interface/native/runs/
-replay_interface/native/**/runs/
 replay_interface/native/**/proofs/
 replay_interface/native/target*/
 replay_interface/native/**/target/
