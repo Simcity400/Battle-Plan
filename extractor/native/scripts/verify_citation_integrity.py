@@ -242,6 +242,40 @@ ITEM_CITATION = re.compile(
 )
 
 
+def citation_matches(
+    pattern: "re.Pattern[str]", text: str
+) -> "Iterator[re.Match[str]]":
+    """`pattern.finditer(text)`, restricted to the lines that contain `.rs`.
+
+    Identical output, by two properties every citation pattern here has: a
+    match always contains the literal `.rs` (each pattern's `base` group ends
+    `\\.rs`), and a match never spans a newline (no character class in them
+    admits one).  So only lines containing `.rs` can hold a match, and scanning
+    with `pos`/`endpos` on the WHOLE string -- never a slice -- keeps the
+    look-behind reading the true preceding character and makes the trailing
+    look-aheads see end-of-region exactly where the full scan saw a newline,
+    which no citation pattern's look-ahead distinguishes from one.
+
+    What it buys: `(?:{PATH_CHAR}+[/\\\\])*{PATH_CHAR}+\\.rs` backtracks
+    quadratically over every long run of path characters that does NOT end in
+    `.rs`, which is nearly all of a large generated file.  Skipping the lines
+    that cannot match turned a 190-second restamp into seconds; the gate's own
+    scan is the same three patterns over the same files.
+    """
+    pos = 0
+    length = len(text)
+    while True:
+        hit = text.find(".rs", pos)
+        if hit == -1:
+            return
+        line_start = text.rfind("\n", 0, hit) + 1
+        line_end = text.find("\n", hit)
+        if line_end == -1:
+            line_end = length
+        yield from pattern.finditer(text, line_start, line_end)
+        pos = line_end + 1
+
+
 class VerificationError(RuntimeError):
     """A citation in this tree does not resolve, or is not grandfathered."""
 
@@ -1148,7 +1182,7 @@ def verify_one(
     budget = Counter(permitted.get(citing, {}))
     item_spans: list[tuple[int, int]] = []
 
-    for match in MALFORMED_ITEM.finditer(text):
+    for match in citation_matches(MALFORMED_ITEM, text):
         line = text.count("\n", 0, match.start()) + 1
         path, base = cited_path(text, match, tree)
         written = f"{path}{base}::{match.group('item')}"
@@ -1158,7 +1192,7 @@ def verify_one(
             f"the separator."
         )
 
-    for match in ITEM_CITATION.finditer(text):
+    for match in citation_matches(ITEM_CITATION, text):
         item_spans.append((match.start(), match.end()))
         path, base = cited_path(text, match, tree)
         item_path = match.group("item")
@@ -1198,8 +1232,10 @@ def verify_one(
                 f"its path to name one"
             )
 
-    for match in LINE_CITATION.finditer(text):
-        if any(start <= match.start() < end for start, end in item_spans):
+    item_span_starts = [start for start, _end in item_spans]
+    for match in citation_matches(LINE_CITATION, text):
+        at = bisect.bisect_right(item_span_starts, match.start()) - 1
+        if at >= 0 and match.start() < item_spans[at][1]:
             continue
         path, base = cited_path(text, match, tree)
         cited_line = int(match.group("line"))

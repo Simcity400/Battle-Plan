@@ -28,6 +28,7 @@ regenerated rather than edited.
 from __future__ import annotations
 
 import argparse
+import bisect
 import importlib.util
 import io
 import json
@@ -93,11 +94,13 @@ def generate(repo_root: Path) -> dict:
             text = handle.read()
         spans = [
             (match.start(), match.end())
-            for match in VERIFY.ITEM_CITATION.finditer(text)
+            for match in VERIFY.citation_matches(VERIFY.ITEM_CITATION, text)
         ]
+        span_starts = [start for start, _end in spans]
         counts: Counter[str] = Counter()
-        for match in VERIFY.LINE_CITATION.finditer(text):
-            if any(start <= match.start() < end for start, end in spans):
+        for match in VERIFY.citation_matches(VERIFY.LINE_CITATION, text):
+            at = bisect.bisect_right(span_starts, match.start()) - 1
+            if at >= 0 and match.start() < spans[at][1]:
                 continue
             path, base = VERIFY.cited_path(text, match, tree)
             if VERIFY._external(tree_external, path, base):
