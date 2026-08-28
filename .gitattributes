@@ -217,3 +217,9 @@ extractor/native/runs/uf_pdxmesh_frame_image/** -text
 # checkout bytes stable on Windows instead of letting core.autocrlf drift them.
 extractor/native/runs/um_audio_gain/*.json text eol=lf
 extractor/native/runs/um_audio_gain/live_probe/**/*.json text eol=lf
+
+# Lane VA rail-z-frame: the Ghidra export copies under
+# extractor/native/runs/va_rail_z_frame/evidence must keep the export store's
+# exact bytes so their sha256s in FUNCTION_EVIDENCE_MANIFEST.json stay checkable.
+extractor/native/runs/va_rail_z_frame/evidence/*.c -text
+extractor/native/runs/va_rail_z_frame/evidence/*.txt -text
