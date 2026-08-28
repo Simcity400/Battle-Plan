@@ -640,7 +640,9 @@ pub use production_map_target::{
     production_main_scene_inputs_from_viewer, ProductionMainSceneInputs,
     ProductionMainSceneTargetDesc,
 };
-pub use province_positions::{province_anchors_from_resolver, ProvinceAnchors};
+pub use province_positions::{
+    engine_province_anchors, province_anchors_from_resolver, EngineProvinceAnchor, ProvinceAnchors,
+};
 pub use rail_files::{
     bind_exact_rail_construction_arrows, bind_exact_rail_d80_draws, compute_province_centroids,
     cubic_bezier, exact_rail_segments_from_replay, parse_rail_geometry_defines,
