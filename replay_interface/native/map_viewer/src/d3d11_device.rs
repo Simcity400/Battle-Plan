@@ -4256,7 +4256,7 @@ fn native_d3d11_needs_tree_input_layout_repair(draw: &MapFrameDraw) -> bool {
             .vertex_buffers
             .get("0")
             .and_then(|buffer| buffer.stride)
-            == Some(56)
+            .is_some_and(|stride| crate::TREE_MESH_PACKED_STRIDES.contains(&stride))
         && draw.input_layout.elements.len() < 7
 }
 
