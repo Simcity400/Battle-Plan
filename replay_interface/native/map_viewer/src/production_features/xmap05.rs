@@ -1392,6 +1392,7 @@ fn excluded_presentation_identities(census: &PresentationCensus) -> Vec<ElementD
             element_id: format!("XMAP05:presentation-identity:{tag}"),
             source_ordinal: None,
             outcome: ElementOutcome::DrawnFromDocumentedSubstitute,
+            cause_id: "cosmetic-identity-unread".into(),
             // Deliberately empty. `part` is reserved for the structural
             // family-exception outcome, and it is also the collapse bound's
             // blind spot: `collapse_family` refuses to aggregate any row that

@@ -887,10 +887,16 @@ impl Xmap17LabelAdapter {
             &self.content.heightmap,
             self.content.height as f32,
         )?;
-        let (faction, faction_source_sha256) =
-            faction_label_set(context.world_frame, &controllers, &self.content)?;
-        let (player, player_carrier_record_sha256) =
-            player_label_set(context.world_frame, &controllers, &self.content)?;
+        let faction_layer = faction_label_set(context.world_frame, &controllers, &self.content)?;
+        let player_layer = player_label_set(context.world_frame, &controllers, &self.content)?;
+        let dark_layers = [
+            ("faction", faction_layer.absences),
+            ("player", player_layer.absences),
+        ];
+        let faction = faction_layer.set;
+        let faction_source_sha256 = faction_layer.source_sha256;
+        let player = player_layer.set;
+        let player_carrier_record_sha256 = player_layer.source_sha256;
         let mut prepared = PreparedMapLabelFrame {
             schema: XMAP17_LABEL_SCHEMA.into(),
             hour_index: context.world_frame.hour_index(),
@@ -1006,6 +1012,7 @@ impl Xmap17LabelAdapter {
                         source_ordinal: None,
                         outcome: ElementOutcome::UnknownContentToken,
                         part: String::new(),
+                        cause_id: "state-label-localisation-missing".into(),
                         element_count: 1,
                         detail: format!(
                             "state {state_id} names localisation key {key}, which the effective \
@@ -1014,6 +1021,22 @@ impl Xmap17LabelAdapter {
                              unaffected"
                         ),
                     })
+                    .chain(dark_layers.into_iter().flat_map(|(layer, absences)| {
+                        absences.into_iter().map(move |absence| ElementDiagnostic {
+                            family: MapVisualFamily::LabelsMapText,
+                            owner_packet: MapVisualFamily::LabelsMapText.owner_packet().into(),
+                            element_id: format!(
+                                "xmap17:{layer}-label-layer:{}",
+                                absence.cause_id()
+                            ),
+                            source_ordinal: None,
+                            outcome: ElementOutcome::ExcludedUnknownInput,
+                            part: String::new(),
+                            cause_id: format!("{layer}-label-layer:{}", absence.cause_id()),
+                            element_count: 1,
+                            detail: absence.detail(layer),
+                        })
+                    }))
                     .collect(),
                 consumed_gap_ids: Vec::new(),
             },
@@ -1064,19 +1087,132 @@ fn grouped_label_set(
     )
 }
 
+/// Why a grouped label layer carries no set this hour.
+///
+/// The layer used to go dark by returning a bare `None`, which merged two
+/// unrelated absences: the recording carrying no exact carrier at all, and
+/// D53 not measuring the roster this hour. The receipt then said `Present`
+/// with a none-sentinel digest and no reason anywhere, so a reader could not
+/// tell either case from a game that genuinely had no factions.
+pub(crate) enum Xmap17LayerAbsence {
+    /// D53 did not measure the roster this layer groups by.
+    RosterUnmeasured { leaf: &'static str },
+    /// The exact carrier is not `Present`; the view's own diagnostic travels
+    /// verbatim rather than being re-worded here.
+    Carrier {
+        status: ViewStatus,
+        diagnostic: Option<String>,
+    },
+}
+
+impl Xmap17LayerAbsence {
+    /// The cause's own id segment.
+    ///
+    /// A layer dark for two reasons emits two rows, and the envelope orders
+    /// diagnostics by `(family, element_id, part, outcome)` and refuses a
+    /// repeated key — so the cause, not just the layer, has to be in the id.
+    pub(crate) fn cause_id(&self) -> &'static str {
+        match self {
+            Self::RosterUnmeasured { .. } => "roster-unmeasured",
+            Self::Carrier { .. } => "carrier-not-present",
+        }
+    }
+
+    fn detail(&self, layer: &str) -> String {
+        match self {
+            Self::RosterUnmeasured { leaf } => format!(
+                "the {layer} label layer is excluded because D53 did not measure {leaf} this \
+                 hour, so there is no roster to group controllers by; every other label layer \
+                 is unaffected"
+            ),
+            Self::Carrier { status, diagnostic } => format!(
+                "the {layer} label layer is excluded because its exact carrier is {status:?}{}; \
+                 every other label layer is unaffected",
+                diagnostic
+                    .as_deref()
+                    .map(|reason| format!(" ({reason})"))
+                    .unwrap_or_default()
+            ),
+        }
+    }
+}
+
+/// One grouped label layer's outcome: the set when it built, and when it did
+/// not, EVERY reason in a shape the receipt can render.
+///
+/// Plural on purpose. A layer can be dark for more than one reason at once —
+/// on rc_v7 the faction layer has both an unmeasured D53 roster and no
+/// recorded carrier — and reporting only whichever check ran first would let
+/// closing one cause silently promote the other into the same one-line hole.
+struct Xmap17LayerOutcome {
+    set: Option<PreparedMapLabelSet>,
+    source_sha256: Option<String>,
+    absences: Vec<Xmap17LayerAbsence>,
+}
+
+impl Xmap17LayerOutcome {
+    fn absent(absences: Vec<Xmap17LayerAbsence>) -> Self {
+        Self {
+            set: None,
+            source_sha256: None,
+            absences,
+        }
+    }
+}
+
+/// Every reason the FACTION label layer is dark this hour, in engine-input
+/// order. Empty means the layer builds.
+///
+/// Pure in the frame, and the single source of truth for the cause: the
+/// producer refuses on it and the evidence harness counts it, so a ledger of
+/// what the layer reports can never drift from what it does.
+pub(crate) fn faction_layer_absences(world: &WorldFrame) -> Vec<Xmap17LayerAbsence> {
+    // Both inputs are judged before either refuses, so a layer that is dark
+    // twice over says so twice over.
+    let mut absences = Vec::new();
+    if !matches!(&world.diplomacy().faction_members, Leaf::Measured(_)) {
+        absences.push(Xmap17LayerAbsence::RosterUnmeasured {
+            leaf: "diplomacy.faction_members",
+        });
+    }
+    let view = world.xmap17_faction_labels_exact();
+    if view.status != ViewStatus::Present {
+        absences.push(Xmap17LayerAbsence::Carrier {
+            status: view.status,
+            diagnostic: view.diagnostic.clone(),
+        });
+    }
+    absences
+}
+
+/// Every reason the PLAYER label layer is dark this hour. It groups by the
+/// carrier's own player-object identity and has no D53 roster input, so the
+/// carrier is its only cause.
+pub(crate) fn player_layer_absences(world: &WorldFrame) -> Vec<Xmap17LayerAbsence> {
+    let view = world.xmap17_player_labels_exact();
+    if view.status == ViewStatus::Present {
+        return Vec::new();
+    }
+    vec![Xmap17LayerAbsence::Carrier {
+        status: view.status,
+        diagnostic: view.diagnostic.clone(),
+    }]
+}
+
 fn faction_label_set(
     world: &WorldFrame,
     controllers: &BTreeMap<u32, String>,
     content: &Xmap17Content,
-) -> Result<(Option<PreparedMapLabelSet>, Option<String>)> {
+) -> Result<Xmap17LayerOutcome> {
     let diplomacy = world.diplomacy();
-    let Leaf::Measured(roster) = &diplomacy.faction_members else {
-        return Ok((None, None));
-    };
     let label_view = world.xmap17_faction_labels_exact();
-    if label_view.status != ViewStatus::Present {
-        return Ok((None, None));
+    let absences = faction_layer_absences(world);
+    if !absences.is_empty() {
+        return Ok(Xmap17LayerOutcome::absent(absences));
     }
+    let Leaf::Measured(roster) = &diplomacy.faction_members else {
+        return Err("XMAP17 faction roster passed its measured check then vanished".into());
+    };
     let label_carrier = label_view
         .carrier
         .as_ref()
@@ -1125,26 +1261,28 @@ fn faction_label_set(
         }
     }
     let source_sha256 = label_carrier.record_sha256.clone();
-    Ok((
-        Some(grouped_label_set(
+    Ok(Xmap17LayerOutcome {
+        set: Some(grouped_label_set(
             1,
             controllers,
             &tag_to_group,
             &group_names,
             content,
         )?),
-        Some(source_sha256),
-    ))
+        source_sha256: Some(source_sha256),
+        absences: Vec::new(),
+    })
 }
 
 fn player_label_set(
     world: &WorldFrame,
     controllers: &BTreeMap<u32, String>,
     content: &Xmap17Content,
-) -> Result<(Option<PreparedMapLabelSet>, Option<String>)> {
+) -> Result<Xmap17LayerOutcome> {
     let view = world.xmap17_player_labels_exact();
-    if view.status != ViewStatus::Present {
-        return Ok((None, None));
+    let absences = player_layer_absences(world);
+    if !absences.is_empty() {
+        return Ok(Xmap17LayerOutcome::absent(absences));
     }
     let carrier = view
         .carrier
@@ -1169,16 +1307,17 @@ fn player_label_set(
         }
         tag_to_group.insert(row.country_tag.clone(), group);
     }
-    Ok((
-        Some(grouped_label_set(
+    Ok(Xmap17LayerOutcome {
+        set: Some(grouped_label_set(
             3,
             controllers,
             &tag_to_group,
             &group_names,
             content,
         )?),
-        Some(carrier.record_sha256.clone()),
-    ))
+        source_sha256: Some(carrier.record_sha256.clone()),
+        absences: Vec::new(),
+    })
 }
 
 fn country_display_names<'a>(
@@ -2390,5 +2529,85 @@ mod tests {
             .preflight_execution(&ready, &identity, &stage)
             .is_err());
         assert_eq!(alpha, MapNameAlphaState::new(0.0, 0.0).unwrap());
+    }
+
+    /// A dark grouped-label layer names WHICH cause made it dark.
+    ///
+    /// Kills the shape this replaced: both causes returned a bare `None`, the
+    /// receipt said `Present` with a none-sentinel digest, and no row anywhere
+    /// distinguished "D53 measured no roster" from "the exact carrier was
+    /// never recorded" -- or from a game that genuinely had no factions.
+    #[test]
+    fn a_dark_label_layer_names_its_cause_and_the_two_causes_differ() {
+        let roster = Xmap17LayerAbsence::RosterUnmeasured {
+            leaf: "diplomacy.faction_members",
+        }
+        .detail("faction");
+        let carrier = Xmap17LayerAbsence::Carrier {
+            status: ViewStatus::DomainAbsent,
+            diagnostic: Some("XMAP17 passive faction-label carrier was not recorded".into()),
+        }
+        .detail("faction");
+
+        assert!(roster.contains("diplomacy.faction_members"), "{roster}");
+        assert!(roster.contains("faction"), "{roster}");
+        // The carrier arm must carry the view's OWN words, not a re-wording:
+        // the admission states the cause once and this row quotes it.
+        assert!(
+            carrier.contains("XMAP17 passive faction-label carrier was not recorded"),
+            "{carrier}"
+        );
+        assert!(carrier.contains("DomainAbsent"), "{carrier}");
+        assert_ne!(roster, carrier);
+
+        // A carrier that is present-but-refused is a third, distinct sentence.
+        let refused = Xmap17LayerAbsence::Carrier {
+            status: ViewStatus::DomainUnavailable,
+            diagnostic: Some("strict decode failed".into()),
+        }
+        .detail("player");
+        assert!(refused.contains("player"), "{refused}");
+        assert!(refused.contains("strict decode failed"), "{refused}");
+        assert_ne!(refused, carrier);
+
+        // Kills the duplicate-key hazard the plural form introduces: a layer
+        // dark for BOTH causes emits two rows, the envelope orders diagnostics
+        // by (family, element_id, part, outcome) and refuses a repeated key, so
+        // two rows sharing one layer must not share one id.
+        let roster_cause = Xmap17LayerAbsence::RosterUnmeasured {
+            leaf: "diplomacy.faction_members",
+        };
+        let carrier_cause = Xmap17LayerAbsence::Carrier {
+            status: ViewStatus::DomainAbsent,
+            diagnostic: None,
+        };
+        assert_ne!(roster_cause.cause_id(), carrier_cause.cause_id());
+        assert_ne!(
+            format!("xmap17:faction-label-layer:{}", roster_cause.cause_id()),
+            format!("xmap17:faction-label-layer:{}", carrier_cause.cause_id()),
+        );
+
+        // The declared vocabulary must match what the two layers can ACTUALLY reach. The
+        // faction layer has both causes; the player layer groups by the carrier's own
+        // player-object identity and has no roster input, so a roster cause for it would be
+        // a reason production cannot produce - declaring one would let a fabricated receipt
+        // name it and still validate.
+        // kills: re-adding player-label-layer:roster-unmeasured to the vocabulary; adding a
+        // roster check to the player layer without declaring its cause.
+        let labels = MapVisualFamily::LabelsMapText;
+        for layer in ["faction", "player"] {
+            assert!(
+                labels.declares_cause(&format!("{layer}-label-layer:{}", carrier_cause.cause_id())),
+                "{layer} carrier cause is not declared"
+            );
+        }
+        assert!(labels.declares_cause(&format!(
+            "faction-label-layer:{}",
+            roster_cause.cause_id()
+        )));
+        assert!(
+            !labels.declares_cause(&format!("player-label-layer:{}", roster_cause.cause_id())),
+            "the player layer has no roster input, so it must not declare a roster cause"
+        );
     }
 }

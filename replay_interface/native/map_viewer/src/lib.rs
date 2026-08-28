@@ -574,6 +574,25 @@ pub use production_features::xmap16::{
     PreparedXmap16Frame, PreparedXmap16RailProgram, PreparedXmap16RailSampler,
     XMAP16_HUB_OPERATION_NAME, XMAP16_HUB_STAGE_NAME, XMAP16_RAIL_SUPPLY_SCHEMA,
 };
+/// Why each XMAP17 grouped-label layer is dark this hour, as `(layer, cause)`
+/// pairs, empty when both build.
+///
+/// The layers themselves refuse on these same functions, so a survey over a
+/// recording reports the causes the renderer would actually emit rather than
+/// an independent re-derivation of them.
+pub fn xmap17_dark_label_layer_causes(frame: &replay_core::WorldFrame) -> Vec<(&'static str, String)> {
+    let faction = production_features::xmap17::faction_layer_absences(frame)
+        .into_iter()
+        .map(|absence| ("faction", absence));
+    let player = production_features::xmap17::player_layer_absences(frame)
+        .into_iter()
+        .map(|absence| ("player", absence));
+    faction
+        .chain(player)
+        .map(|(layer, absence)| (layer, absence.cause_id().to_owned()))
+        .collect()
+}
+
 pub use production_features::xmap17::{
     MapLabelFinalImageDependencies, MapNameAlphaState, PreparedMapLabelFrame,
     PreparedMapLabelProgram, PreparedMapLabelRow, PreparedMapLabelSet, ReadyMapLabelDrawContract,

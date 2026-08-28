@@ -11,7 +11,12 @@ use std::collections::{BTreeMap, BTreeSet};
 /// unsupported schema — one identifier describing two grammars that cannot read
 /// each other. Pre-production, formats change cleanly: the version moves and no
 /// compatibility arm is added.
-pub const FOUNDATION_RENDER_SCHEMA: &str = "hoi4.viewer-map-foundation.v3";
+///
+/// v3 -> v4 because [`ElementDiagnostic`] gained `cause_id`, a REQUIRED field
+/// under `deny_unknown_fields`. The break runs both ways: a v3 receipt is
+/// missing the field for this reader, and a v4 receipt carries an unknown one
+/// for a v3 reader. Same rule, same remedy — the version moves.
+pub const FOUNDATION_RENDER_SCHEMA: &str = "hoi4.viewer-map-foundation.v4";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -222,6 +227,16 @@ pub struct ElementDiagnostic {
     pub outcome: ElementOutcome,
     /// The named part the outcome applies to, or empty for the whole element.
     pub part: String,
+    /// WHY this row exists, in the producer's own vocabulary: a reason code, a law name,
+    /// a missing operand.
+    ///
+    /// Low cardinality on purpose. `element_id` identifies WHICH element is affected and is
+    /// as numerous as the elements; this identifies WHAT is wrong and is a small closed set
+    /// per family. Collapsing groups on it, so a family past
+    /// [`MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY`] compresses to one row per cause with an
+    /// exact count instead of one row per outcome with the causes erased. A reason that only
+    /// survives while the frame is quiet is not on the wire in any sense that matters.
+    pub cause_id: String,
     /// How many elements this row accounts for.
     ///
     /// Zero is legal ONLY for a structural family-scope exception, which is a standing
@@ -246,10 +261,90 @@ pub struct ElementDiagnostic {
 /// aggregate carries the full count - while bounding the channel.
 pub const MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY: usize = 256;
 
+impl MapVisualFamily {
+    /// Every cause this family may name, and nothing else.
+    ///
+    /// A CLOSED set is what makes the row bound a bound. `cause_id` is the collapse group
+    /// key, so if a producer could mint one per element the channel would grow without
+    /// limit again - and the only answers left at that point are erasing the causes or
+    /// killing the frame, both of which were tried and rejected. Declaring the vocabulary
+    /// makes the overflow unrepresentable instead: a family's groups can never outnumber
+    /// its outcomes times this list, both compile-time constants.
+    ///
+    /// It also puts every reason the product can give in one reviewable place, which is
+    /// what "reasons live on the wire" asks for. A family that emits no diagnostics
+    /// declares nothing and may emit nothing; adding a reason means adding it here, and
+    /// that is deliberate friction.
+    ///
+    /// A cause names the REASON, never the element or the datum: the specific state,
+    /// country, building or reason-code belongs in `detail`.
+    pub const fn cause_vocabulary(self) -> &'static [&'static str] {
+        match self {
+            Self::PoliticalFillGradients => &["cosmetic-identity-unread"],
+            Self::ThinBorders => &["undecidable_reason_codes", "hidden_row_marker"],
+            Self::CitiesBuildingsMapObjects => &[
+                "slot-token-unknown-to-content",
+                "d48-level-missing-for-candidate",
+                "d48-level-missing-and-bucket-order-undecided",
+                "built-candidate-order-undecided",
+                "spawn-point-scope-ambiguous",
+                "damage-level-unresolved-mesh-choice",
+            ],
+            Self::CombatMarkers => &["naval-result-pov-operands-unrecorded"],
+            Self::LabelsMapText => &[
+                "state-label-localisation-missing",
+                "faction-label-layer:roster-unmeasured",
+                "faction-label-layer:carrier-not-present",
+                // The player layer groups by the carrier's own player-object identity and
+                // has no roster input, so it has no roster cause to declare. Declaring one
+                // anyway would let a fabricated receipt name a reason production cannot
+                // reach and still validate.
+                "player-label-layer:carrier-not-present",
+            ],
+            Self::MapFurnitureIcons => &["control-leaf-unmeasured", "controller-outside-roster"],
+            // NO WILDCARD. A family that emits no diagnostics says so by name, so adding a
+            // family is a compile error until someone decides what it may report - rather
+            // than it silently inheriting an empty vocabulary and refusing every row its
+            // producer later emits.
+            Self::CameraView
+            | Self::Terrain
+            | Self::FogOfWar
+            | Self::WaterIce
+            | Self::RiversStraits
+            | Self::LightingShadows
+            | Self::GradingPostFx
+            | Self::Trees
+            | Self::UnitsCounters
+            | Self::OrdersFrontsArrows
+            | Self::RailSupply
+            | Self::MapModes
+            | Self::WeatherAtmosphere
+            | Self::ParticlesEffects => &[],
+        }
+    }
+
+    /// Whether this family may name this cause.
+    pub fn declares_cause(self, cause_id: &str) -> bool {
+        self.cause_vocabulary().contains(&cause_id)
+    }
+}
+
 impl ElementDiagnostic {
     /// The id prefix a collapsed aggregate row carries for a family.
     pub fn aggregate_id_prefix(family: MapVisualFamily) -> String {
         format!("{}:aggregate:", family.owner_packet())
+    }
+
+    /// The id a collapsed aggregate carries for one (outcome, cause) group.
+    ///
+    /// The cause is IN the id, so two causes that share an outcome stay two rows and stay
+    /// distinguishable to the strict `(family, element_id, part, outcome)` ordering.
+    pub fn aggregate_id(family: MapVisualFamily, outcome: ElementOutcome, cause_id: &str) -> String {
+        format!(
+            "{}{}:{cause_id}",
+            Self::aggregate_id_prefix(family),
+            outcome.as_str()
+        )
     }
 
     /// The id prefix a family-scope named exception carries.
@@ -277,6 +372,7 @@ impl ElementDiagnostic {
             source_ordinal: None,
             outcome: ElementOutcome::ExactExceptNamedBranch,
             part: branch_id.into(),
+            cause_id: branch_id.into(),
             element_count,
             detail,
         }
@@ -307,6 +403,14 @@ impl ElementDiagnostic {
                 self.element_id
             ));
         }
+        if !self.family.declares_cause(&self.cause_id) {
+            return Err(format!(
+                "element diagnostic {} names cause {:?}, which {:?} does not declare. The cause \
+                 is the collapse group key and its vocabulary is closed so the row bound cannot \
+                 be outgrown; a cause names the reason, never the element",
+                self.element_id, self.cause_id, self.family
+            ));
+        }
         if self.element_count == 0 && !self.outcome.is_structural() {
             return Err(format!(
                 "element diagnostic {} accounts for no elements",
@@ -325,6 +429,36 @@ impl ElementDiagnostic {
             return Err(format!(
                 "element diagnostic {} must use the family-exception id exactly for a \
                  structural family-scope outcome",
+                self.element_id
+            ));
+        }
+        // An id is a CLAIM about what kind of row this is, and both reserved prefixes grant
+        // exemptions (an aggregate and an exception may omit the source ordinal). Decoded
+        // JSON reaches here having only been checked for shape, so the claim is checked
+        // against the row's own fields rather than trusted: an ordinary row may not wear a
+        // reserved prefix, an aggregate's id must be exactly the canonical one for its
+        // (family, outcome, cause), and an exception must name one branch in all three of
+        // element_id, part and cause_id. Without this a receipt could carry cause A in
+        // `cause_id` and cause B in `element_id`, or split one logical aggregate across
+        // several forged ids that still sort distinctly.
+        if self.is_aggregate() {
+            let canonical = Self::aggregate_id(self.family, self.outcome, &self.cause_id);
+            if self.element_id != canonical {
+                return Err(format!(
+                    "element diagnostic {} claims to be an aggregate but its id is not the \
+                     canonical {canonical} for its outcome and cause",
+                    self.element_id
+                ));
+            }
+        }
+        if self.is_family_scope()
+            && (self.cause_id != self.part
+                || self.element_id
+                    != format!("{}{}", Self::family_exception_id_prefix(self.family), self.part))
+        {
+            return Err(format!(
+                "element diagnostic {} is a family exception whose id, part and cause do not \
+                 name one branch",
                 self.element_id
             ));
         }
@@ -359,6 +493,15 @@ impl ElementDiagnostic {
 pub fn collapse_element_diagnostics(
     mut rows: Vec<ElementDiagnostic>,
 ) -> Result<Vec<ElementDiagnostic>, String> {
+    // EVERY input row is judged before any of them is folded. Collapsing replaces a group's
+    // owner, id, ordinal and detail, so a malformed row that reaches an aggregate vanishes
+    // into a valid-looking one - and only when the family is busy enough to collapse. The
+    // same row is refused outright below the bound. Validity that depends on how many
+    // neighbours a row has is not a format invariant, so the check happens first, always.
+    for row in &rows {
+        row.validate()
+            .map_err(|error| format!("element diagnostic rejected before collapsing: {error}"))?;
+    }
     rows.sort_by(|left, right| left.order_key().cmp(&right.order_key()));
     let mut per_family: BTreeMap<MapVisualFamily, Vec<ElementDiagnostic>> = BTreeMap::new();
     for row in rows {
@@ -373,6 +516,18 @@ pub fn collapse_element_diagnostics(
         let (structural, per_element): (Vec<_>, Vec<_>) = family_rows
             .into_iter()
             .partition(|row| row.outcome.is_structural());
+        // Structural rows are never collapsed, so the bound only holds if they cannot repeat.
+        // One branch is one standing exception; two rows for it would both inflate the family
+        // and break the envelope's strict ordering later, further from the cause.
+        let mut branches = BTreeSet::new();
+        for row in &structural {
+            if !branches.insert(row.cause_id.as_str()) {
+                return Err(format!(
+                    "{family:?} names standing exception {} twice",
+                    row.cause_id
+                ));
+            }
+        }
         if structural.len() > MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY {
             return Err(format!(
                 "{family:?} names more than {MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY} standing \
@@ -385,11 +540,14 @@ pub fn collapse_element_diagnostics(
             continue;
         }
         let staged = collapse_family(family, per_element)?;
-        // The bound covers everything the family carries, retained structural rows included -
-        // checking only the collapsed part would let the total exceed the stated bound while
-        // each half looked fine. Grouping by outcome cannot produce more groups than there
-        // are outcomes, so exceeding this means a producer named a pathological number of
-        // standing exceptions: refuse loudly rather than quietly break the contract.
+        // Belt and braces, and provably unreachable: every row's cause comes from the
+        // family's closed vocabulary (checked above, per row), structural rows carry one
+        // branch each, and the collapsed part is one row per (outcome, cause). So the total
+        // is at most `vocabulary * (1 + outcomes)`, which
+        // `no_family_can_outgrow_the_row_bound_through_its_vocabulary` holds under the bound
+        // for every family. This stays as a guard rather than an assertion because a frame
+        // refusing is better than a frame silently over the contract, but nothing in the
+        // product can reach it.
         if structural.len() + staged.len() > MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY {
             return Err(format!(
                 "{family:?} element diagnostics did not collapse below the \
@@ -403,16 +561,23 @@ pub fn collapse_element_diagnostics(
     Ok(collapsed)
 }
 
-/// Group a family's per-element rows by outcome into accounted aggregates.
+/// Group a family's per-element rows by (outcome, cause) into accounted aggregates.
 ///
-/// Only structural family-scope outcomes carry a `part`, and those never reach here, so the
-/// group key is the outcome alone and the number of groups is bounded by the number of
-/// outcomes.
+/// COMPRESS, NEVER ERASE. Grouping by outcome alone bounded the channel just as well and was
+/// cheaper, but it replaced every row's detail with a generic sentence - so the one thing the
+/// row existed to carry, why the element could not be vouched, was dropped at exactly the hour
+/// that had most of it to report. Reasons live on the wire, and a reason that survives only
+/// while the frame is quiet does not. The cause is therefore part of the group key, of the
+/// aggregate's id, and of its detail.
+///
+/// Only structural family-scope outcomes carry a `part`, and those never reach here.
+/// `cause_id` is low cardinality by construction - a producer names its reasons, not its
+/// elements - so the number of groups stays bounded.
 fn collapse_family(
     family: MapVisualFamily,
     rows: Vec<ElementDiagnostic>,
 ) -> Result<Vec<ElementDiagnostic>, String> {
-    let mut groups: BTreeMap<ElementOutcome, (u64, u64)> = BTreeMap::new();
+    let mut groups: BTreeMap<(ElementOutcome, String), CauseGroup> = BTreeMap::new();
     for row in rows {
         if !row.part.trim().is_empty() {
             return Err(format!(
@@ -421,33 +586,68 @@ fn collapse_family(
                 row.element_id
             ));
         }
-        let entry = groups.entry(row.outcome).or_insert((0, 0));
-        entry.0 = entry.0.checked_add(row.element_count).ok_or_else(|| {
-            format!("{family:?} element diagnostic counts overflow a u64 when aggregated")
-        })?;
-        entry.1 += 1;
+        if row.cause_id.trim().is_empty() {
+            return Err(format!(
+                "{family:?} cannot aggregate {}: it names no cause, and folding it in with \
+                 another reason would erase both",
+                row.element_id
+            ));
+        }
+        let group = groups
+            .entry((row.outcome, row.cause_id.clone()))
+            // The FIRST row's detail is kept as a NAMED EXAMPLE, never as the group's
+            // universal statement. Rows sharing a cause say the same KIND of thing, but each
+            // says it about its own element and names it: XMAP05's row names the country,
+            // XMAP12's names the candidate buildings. Presenting one of those as if it
+            // described all of them would attribute one element's specifics to every element
+            // in the group - a quieter falsehood than the generic sentence this replaced. So
+            // it is labelled as one instance, and `cause_id` carries the general claim.
+            .or_insert_with(|| CauseGroup {
+                element_count: 0,
+                row_count: 0,
+                detail: row.detail.clone(),
+            });
+        group.element_count = group
+            .element_count
+            .checked_add(row.element_count)
+            .ok_or_else(|| {
+                format!("{family:?} element diagnostic counts overflow a u64 when aggregated")
+            })?;
+        group.row_count += 1;
     }
     let mut aggregated = Vec::with_capacity(groups.len());
-    for (outcome, (element_count, row_count)) in groups {
+    for ((outcome, cause_id), group) in groups {
+        let CauseGroup {
+            element_count,
+            row_count,
+            detail,
+        } = group;
+        let element_id = ElementDiagnostic::aggregate_id(family, outcome, &cause_id);
+        let summary = format!(
+            "{row_count} rows share cause {cause_id}; collapsed at the \
+             {MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY}-row per-family bound, count kept exact. \
+             One of them reads: {detail}"
+        );
         aggregated.push(ElementDiagnostic {
             family,
             owner_packet: family.owner_packet().into(),
-            element_id: format!(
-                "{}{}",
-                ElementDiagnostic::aggregate_id_prefix(family),
-                outcome.as_str()
-            ),
+            element_id,
             source_ordinal: None,
             outcome,
             part: String::new(),
+            cause_id,
             element_count,
-            detail: format!(
-                "{row_count} rows share this outcome; collapsed at the \
-                 {MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY}-row per-family bound, count kept exact"
-            ),
+            detail: summary,
         });
     }
     Ok(aggregated)
+}
+
+/// One (outcome, cause) group mid-collapse.
+struct CauseGroup {
+    element_count: u64,
+    row_count: u64,
+    detail: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -917,15 +1117,40 @@ mod tests {
     }
 
     fn diagnostic(element_id: &str, outcome: ElementOutcome, part: &str) -> ElementDiagnostic {
+        diagnostic_because(
+            element_id,
+            outcome,
+            part,
+            // A real CitiesBuildingsMapObjects cause: the vocabulary is closed, so a made-up
+            // one would be refused - and a fixture must be a shape production can emit.
+            "d48-level-missing-for-candidate",
+        )
+    }
+
+    fn diagnostic_because(
+        element_id: &str,
+        outcome: ElementOutcome,
+        part: &str,
+        cause_id: &str,
+    ) -> ElementDiagnostic {
         ElementDiagnostic {
             family: MapVisualFamily::CitiesBuildingsMapObjects,
             owner_packet: MapVisualFamily::CitiesBuildingsMapObjects
                 .owner_packet()
                 .into(),
             element_id: element_id.into(),
-            source_ordinal: Some(3),
+            // Only a row about ONE element may carry a position in the authored population;
+            // validate() refuses an ordinal on a content-token, aggregate or family-scope
+            // row. The helper follows that rule so a fixture cannot be a shape production
+            // could never emit - and both real UnknownContentToken producers (XMAP12's slot
+            // token, XMAP17's state label) do pass None.
+            source_ordinal: match outcome {
+                ElementOutcome::UnknownContentToken => None,
+                _ => Some(3),
+            },
             outcome,
             part: part.into(),
+            cause_id: cause_id.into(),
             element_count: 1,
             detail: "an engine law this build has not decoded".into(),
         }
@@ -1207,8 +1432,8 @@ mod tests {
 
         let mut missing_part = present_envelope();
         let mut row = ElementDiagnostic::family_exception(
-            MapVisualFamily::CitiesBuildingsMapObjects,
-            "branch",
+            MapVisualFamily::ThinBorders,
+            "hidden_row_marker",
             1,
             "detail".into(),
         );
@@ -1247,7 +1472,7 @@ mod tests {
         ));
         let total: u64 = over.iter().map(|row| row.element_count).sum();
         let collapsed = collapse_element_diagnostics(over).unwrap();
-        assert_eq!(collapsed.len(), 2, "one aggregate per outcome");
+        assert_eq!(collapsed.len(), 2, "one aggregate per (outcome, cause)");
         assert_eq!(
             collapsed.iter().map(|row| row.element_count).sum::<u64>(),
             total
@@ -1260,10 +1485,12 @@ mod tests {
     #[test]
     fn the_row_bound_holds_because_the_group_key_is_bounded() {
         // The bound is only a bound if the group key cannot take as many values as there are
-        // rows. Only a standing family exception names a part, and those never collapse, so
-        // the key is the outcome alone - and a part on a collapsible row is refused rather
-        // than silently producing one group per row.
-        // kills: grouping collapsible rows by a key a producer can vary per row.
+        // rows. The key is (outcome, cause_id): the outcome is a closed enum, and a cause is
+        // a reason a producer writes by hand, so neither scales with the element population.
+        // A part on a collapsible row is refused rather than silently producing one group per
+        // row.
+        // kills: grouping collapsible rows by a key a producer can vary per ELEMENT - an id,
+        // an ordinal, or a detail string with an element name in it.
         let mut rows: Vec<_> = (0..MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY + 1)
             .map(|index| {
                 diagnostic(
@@ -1280,7 +1507,7 @@ mod tests {
         ));
         let total: u64 = rows.iter().map(|row| row.element_count).sum();
         let collapsed = collapse_element_diagnostics(rows).unwrap();
-        assert_eq!(collapsed.len(), 2, "one aggregate per outcome");
+        assert_eq!(collapsed.len(), 2, "one aggregate per (outcome, cause)");
         assert!(collapsed.len() <= MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY);
         assert_eq!(
             collapsed.iter().map(|row| row.element_count).sum::<u64>(),
@@ -1289,6 +1516,310 @@ mod tests {
         let mut envelope = present_envelope();
         envelope.element_diagnostics = collapsed;
         envelope.validate().unwrap();
+    }
+
+    #[test]
+    fn collapsing_a_flooded_family_compresses_the_rows_but_never_the_causes() {
+        // THE RULE: collapse may compress, never erase. Grouping by outcome alone bounded the
+        // channel but replaced every detail with a generic sentence, so a family past the
+        // bound reported THAT elements were excluded and no longer WHY - losing the reason at
+        // exactly the hour that had most of it. Reasons live on the wire.
+        //
+        // kills: grouping by outcome alone; dropping the producer's detail on the floor;
+        // counting a cause's elements into another cause's row.
+        let causes = [
+            ("d48-level-missing-for-candidate", ElementOutcome::ExcludedUnknownInput, 400usize),
+            ("damage-level-unresolved-mesh-choice", ElementOutcome::ExcludedUnknownInput, 90),
+            ("d48-level-missing-and-bucket-order-undecided", ElementOutcome::ExcludedUndecodedLaw, 7),
+            ("slot-token-unknown-to-content", ElementOutcome::UnknownContentToken, 3),
+        ];
+        let mut rows = Vec::new();
+        for (cause, outcome, count) in causes {
+            for index in 0..count {
+                let mut row = diagnostic_because(
+                    &format!("xmap12:building:{cause}:{index:05}"),
+                    outcome,
+                    "",
+                    cause,
+                );
+                // A detail that names its own element, which is the realistic shape and the
+                // one that would defeat any scheme that grouped on detail text.
+                row.detail = format!("{cause} at element {index}");
+                rows.push(row);
+            }
+        }
+        let total: u64 = rows.iter().map(|row| row.element_count).sum();
+        assert!(rows.len() > MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY);
+
+        let collapsed = collapse_element_diagnostics(rows).unwrap();
+
+        // Compressed: far fewer rows than elements, and inside the bound.
+        assert_eq!(collapsed.len(), causes.len());
+        assert!(collapsed.len() <= MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY);
+        // Nothing lost: every element is still accounted for somewhere.
+        assert_eq!(
+            collapsed.iter().map(|row| row.element_count).sum::<u64>(),
+            total
+        );
+        // Every distinct cause survives, with ITS OWN exact count and its own row.
+        for (cause, outcome, count) in causes {
+            let row = collapsed
+                .iter()
+                .find(|row| row.cause_id == cause)
+                .unwrap_or_else(|| panic!("cause {cause} was erased by collapsing"));
+            assert_eq!(row.element_count, count as u64, "{cause} count");
+            assert_eq!(row.outcome, outcome, "{cause} outcome");
+            assert!(row.is_aggregate(), "{cause} must be an aggregate row");
+            // The cause is IN the id, so two causes sharing an outcome stay two rows under
+            // the strict (family, element_id, part, outcome) ordering.
+            assert!(row.element_id.ends_with(cause), "{}", row.element_id);
+            // The producer's own sentence survives, not just a count -- but LABELLED as one
+            // instance. Rows sharing a cause name their own element in `detail` (XMAP05 names
+            // the country, XMAP12 the candidate buildings), so presenting one verbatim as the
+            // group's statement would attribute one element's specifics to all of them.
+            // kills: dropping "One of them reads:" and re-attributing the example.
+            assert!(row.detail.contains(cause), "{}", row.detail);
+            assert!(
+                row.detail.contains("One of them reads:"),
+                "the retained detail must be labelled as one instance: {}",
+                row.detail
+            );
+            assert!(
+                row.detail.contains(&format!("{cause} at element 0")),
+                "the example must be a real row's words: {}",
+                row.detail
+            );
+        }
+        // Two causes shared one outcome and did NOT merge.
+        assert_eq!(
+            collapsed
+                .iter()
+                .filter(|row| row.outcome == ElementOutcome::ExcludedUnknownInput)
+                .count(),
+            2
+        );
+
+        let mut envelope = present_envelope();
+        envelope.element_diagnostics = collapsed;
+        envelope.validate().unwrap();
+    }
+
+    #[test]
+    fn a_busy_family_cannot_launder_a_malformed_row_into_an_aggregate() {
+        // Collapsing replaces a group's owner, id, ordinal and detail, so a malformed row
+        // that survives to an aggregate disappears into a valid-looking one - and only when
+        // the family is busy enough to collapse. Validity that depends on how many neighbours
+        // a row has is not a format invariant.
+        // kills: validating only the OUTPUT of collapse, or only the under-bound path.
+        for break_it in [
+            (|row: &mut ElementDiagnostic| row.detail = String::new()) as fn(&mut ElementDiagnostic),
+            |row: &mut ElementDiagnostic| row.element_id = String::new(),
+            |row: &mut ElementDiagnostic| row.owner_packet = "XMAP04".into(),
+            |row: &mut ElementDiagnostic| row.element_count = 0,
+            |row: &mut ElementDiagnostic| row.cause_id = String::new(),
+        ] {
+            let mut rows: Vec<_> = (0..MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY + 1)
+                .map(|index| {
+                    diagnostic(
+                        &format!("xmap12:building:{index:04}"),
+                        ElementOutcome::ExcludedUnknownInput,
+                        "",
+                    )
+                })
+                .collect();
+            break_it(&mut rows[0]);
+            // Refused below the bound...
+            let under = vec![rows[0].clone()];
+            assert!(collapse_element_diagnostics(under).is_err());
+            // ...and refused above it, by the same rule rather than by luck.
+            assert!(
+                collapse_element_diagnostics(rows).is_err(),
+                "a malformed row was laundered by a busy family"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reserved_id_prefix_is_a_claim_the_row_must_be_able_to_back() {
+        // Both reserved prefixes grant exemptions, and decoded JSON reaches validate() having
+        // only been checked for shape. So the id is checked against the row's own fields.
+        // kills: classifying by starts_with alone; letting cause_id and element_id name
+        // different causes; forging several ids for one logical aggregate.
+        let family = MapVisualFamily::CitiesBuildingsMapObjects;
+        let outcome = ElementOutcome::ExcludedUnknownInput;
+
+        // A canonical aggregate is fine.
+        let cause = "d48-level-missing-for-candidate";
+        let other_cause = "damage-level-unresolved-mesh-choice";
+        let mut aggregate = diagnostic_because("", outcome, "", cause);
+        aggregate.element_id = ElementDiagnostic::aggregate_id(family, outcome, cause);
+        aggregate.source_ordinal = None;
+        assert!(aggregate.is_aggregate());
+        aggregate.validate().unwrap();
+
+        // Cause A in the id, cause B in the field: refused.
+        let mut forged = aggregate.clone();
+        forged.cause_id = other_cause.into();
+        assert!(forged.validate().unwrap_err().contains("canonical"));
+
+        // A second, non-canonical id for the same logical aggregate: refused, so one cause
+        // cannot be split across several rows that all sort distinctly.
+        let mut duplicate = aggregate.clone();
+        duplicate.element_id = format!("{}-2", aggregate.element_id);
+        assert!(duplicate.validate().unwrap_err().contains("canonical"));
+
+        // An ordinary element row may not wear the aggregate prefix and inherit its
+        // ordinal exemption.
+        // Everything else about it is legal - including the ordinal, which an aggregate may
+        // not carry - so the ONLY thing wrong is that it wears a prefix it cannot back. With
+        // an ordinal left on, this passed before the canonical-id rule existed and proved
+        // nothing about it.
+        let mut squatter = diagnostic_because("", outcome, "", cause);
+        squatter.source_ordinal = None;
+        squatter.element_id =
+            format!("{}not-an-aggregate", ElementDiagnostic::aggregate_id_prefix(family));
+        assert!(squatter.validate().unwrap_err().contains("canonical"));
+        // ...and it is refused through the decoder too, not only by a direct call.
+        let mut envelope = present_envelope();
+        envelope.element_diagnostics = vec![squatter];
+        let json = serde_json::to_vec(&envelope).unwrap();
+        assert!(FoundationRenderEnvelope::decode_json(&json)
+            .unwrap_err()
+            .to_string()
+            .contains("canonical"));
+
+        // A family exception must name ONE branch in all three places.
+        let good = ElementDiagnostic::family_exception(
+            MapVisualFamily::ThinBorders,
+            "hidden_row_marker",
+            0,
+            "the branch".into(),
+        );
+        good.validate().unwrap();
+        let mut split = good.clone();
+        split.cause_id = "undecidable_reason_codes".into();
+        assert!(split.validate().unwrap_err().contains("one branch"));
+        let mut renamed = good.clone();
+        renamed.element_id = format!(
+            "{}undecidable_reason_codes",
+            ElementDiagnostic::family_exception_id_prefix(MapVisualFamily::ThinBorders)
+        );
+        assert!(renamed.validate().unwrap_err().contains("one branch"));
+    }
+
+    #[test]
+    fn no_family_can_outgrow_the_row_bound_through_its_vocabulary() {
+        // THE BOUND IS A BOUND because the cause vocabulary is closed. A family carries at
+        // most one structural row per branch plus one collapsed row per (outcome, cause), so
+        // `vocabulary * (1 + outcomes)` is its ceiling - and that has to fit under the row
+        // bound for EVERY family, or the residual guard becomes reachable again and with it
+        // the choice between erasing causes and killing the frame.
+        //
+        // Exhaustiveness comes from the compiler, not from this loop: `cause_vocabulary` has
+        // no wildcard arm, so a new family cannot compile without declaring what it may
+        // report, and `ordinal` below has none either. This loop then prices what they
+        // declare.
+        // kills: adding causes to a family until its ceiling passes 256; widening
+        // ElementOutcome without re-checking; letting a vocabulary entry be blank or repeat.
+        const OUTCOMES: usize = 5;
+        for family in MapVisualFamily::ALL {
+            let vocabulary = family.cause_vocabulary();
+            let ceiling = vocabulary.len() * (1 + OUTCOMES);
+            assert!(
+                ceiling <= MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY,
+                "{family:?} can reach {ceiling} rows, over the bound"
+            );
+            let mut seen = BTreeSet::new();
+            for cause in vocabulary {
+                assert!(!cause.trim().is_empty(), "{family:?} declares a blank cause");
+                assert!(seen.insert(*cause), "{family:?} declares {cause} twice");
+                assert!(family.declares_cause(cause));
+            }
+            assert!(!family.declares_cause("a-cause-nobody-declared"));
+        }
+        // The arity is checked AGAINST THE ENUM, not hand-counted twice. `ordinal` is an
+        // exhaustive match, so adding an outcome stops this compiling; the bijection onto
+        // 0..OUTCOMES then forces OUTCOMES and the list to move with it.
+        const fn ordinal(outcome: ElementOutcome) -> usize {
+            match outcome {
+                ElementOutcome::ExcludedUndecodedLaw => 0,
+                ElementOutcome::ExcludedUnknownInput => 1,
+                ElementOutcome::UnknownContentToken => 2,
+                ElementOutcome::ExactExceptNamedBranch => 3,
+                ElementOutcome::DrawnFromDocumentedSubstitute => 4,
+            }
+        }
+        let every_outcome = [
+            ElementOutcome::ExcludedUndecodedLaw,
+            ElementOutcome::ExcludedUnknownInput,
+            ElementOutcome::UnknownContentToken,
+            ElementOutcome::ExactExceptNamedBranch,
+            ElementOutcome::DrawnFromDocumentedSubstitute,
+        ];
+        assert_eq!(every_outcome.len(), OUTCOMES);
+        assert_eq!(
+            every_outcome.iter().map(|o| ordinal(*o)).collect::<BTreeSet<_>>(),
+            (0..OUTCOMES).collect::<BTreeSet<_>>(),
+            "the outcome list and the exhaustive match must agree"
+        );
+    }
+
+    #[test]
+    fn a_cause_its_family_does_not_declare_is_refused() {
+        // The closed vocabulary is what makes overflow unrepresentable, so a producer cannot
+        // be allowed to invent a cause at runtime - including by formatting one from an
+        // element id, which is exactly how the bound was outgrown before.
+        // kills: accepting any non-empty string as a cause; checking the vocabulary only at
+        // collapse, so a small family smuggles one through.
+        let mut row = diagnostic("xmap12:building:0001", ElementOutcome::ExcludedUnknownInput, "");
+        row.cause_id = "cause-for-element-0001".into();
+        let error = row.validate().unwrap_err();
+        assert!(error.contains("does not declare"), "{error}");
+
+        // A blank cause is refused by the same rule rather than a special case: no family
+        // declares the empty string, so it cannot pool every unnamed reason into one group.
+        let mut blank = diagnostic("xmap12:building:0003", ElementOutcome::ExcludedUnknownInput, "");
+        blank.cause_id = String::new();
+        assert!(blank.validate().unwrap_err().contains("does not declare"));
+
+        // Refused one at a time, and refused in a crowd - the check cannot depend on how busy
+        // the family is.
+        assert!(collapse_element_diagnostics(vec![row.clone()]).is_err());
+        let mut crowd: Vec<_> = (0..MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY + 1)
+            .map(|index| {
+                diagnostic(
+                    &format!("xmap12:building:{index:04}"),
+                    ElementOutcome::ExcludedUnknownInput,
+                    "",
+                )
+            })
+            .collect();
+        crowd.push(row);
+        assert!(collapse_element_diagnostics(crowd).is_err());
+
+        // A cause one family declares is not thereby legal for another.
+        let mut borrowed = diagnostic("xmap12:building:0002", ElementOutcome::ExcludedUnknownInput, "");
+        borrowed.family = MapVisualFamily::CombatMarkers;
+        borrowed.owner_packet = MapVisualFamily::CombatMarkers.owner_packet().into();
+        assert!(borrowed.validate().unwrap_err().contains("does not declare"));
+    }
+
+    #[test]
+    fn one_standing_exception_per_branch_or_the_family_is_refused() {
+        // Structural rows never collapse, so the ceiling above only holds if a branch cannot
+        // repeat. Two rows for one branch would also collide in the envelope's strict
+        // ordering, which reports the problem further from its cause.
+        // kills: dropping the duplicate-branch check and relying on ordering to catch it.
+        let exception = || {
+            ElementDiagnostic::family_exception(
+                MapVisualFamily::ThinBorders,
+                "hidden_row_marker",
+                1,
+                "the branch".into(),
+            )
+        };
+        let error = collapse_element_diagnostics(vec![exception(), exception()]).unwrap_err();
+        assert!(error.contains("twice"), "{error}");
     }
 
     #[test]
@@ -1319,7 +1850,7 @@ mod tests {
         // and letting a family-scope row masquerade as a per-element one.
         let exception = ElementDiagnostic::family_exception(
             MapVisualFamily::ThinBorders,
-            "reason_code_7",
+            "undecidable_reason_codes",
             3,
             "chains carrying this reason code draw as ordinary borders".into(),
         );
@@ -1355,8 +1886,8 @@ mod tests {
             .contains("family-exception id"));
 
         row = ElementDiagnostic::family_exception(
-            MapVisualFamily::CitiesBuildingsMapObjects,
-            "branch",
+            MapVisualFamily::ThinBorders,
+            "hidden_row_marker",
             1,
             "detail".into(),
         );
@@ -1379,7 +1910,7 @@ mod tests {
         // per-element row.
         let unexercised = ElementDiagnostic::family_exception(
             MapVisualFamily::ThinBorders,
-            "reason_code_9",
+            "hidden_row_marker",
             0,
             "no chain carried this reason code this hour".into(),
         );
@@ -1410,18 +1941,26 @@ mod tests {
         // form, which validation refuses for a structural outcome - turning a legitimate
         // frame into a failing one, the exact escalation this channel exists to prevent.
         // kills: collapsing structural rows along with per-element ones.
+        // The flood and the standing exception must be the SAME family, or they land in
+        // different `per_family` buckets and this proves nothing about mixing them. XMAP12
+        // declares no standing branch, so the whole fixture moves to ThinBorders, which
+        // declares two: one carries the flood, the other the exception.
         let mut rows: Vec<_> = (0..MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY + 1)
             .map(|index| {
-                diagnostic(
-                    &format!("xmap12:building:{index:04}"),
-                    ElementOutcome::ExcludedUndecodedLaw,
+                let mut row = diagnostic_because(
+                    &format!("xmap06:chain:{index:04}"),
+                    ElementOutcome::ExcludedUnknownInput,
                     "",
-                )
+                    "undecidable_reason_codes",
+                );
+                row.family = MapVisualFamily::ThinBorders;
+                row.owner_packet = MapVisualFamily::ThinBorders.owner_packet().into();
+                row
             })
             .collect();
         rows.push(ElementDiagnostic::family_exception(
-            MapVisualFamily::CitiesBuildingsMapObjects,
-            "some_branch",
+            MapVisualFamily::ThinBorders,
+            "hidden_row_marker",
             2,
             "a standing exception".into(),
         ));
@@ -1441,10 +1980,14 @@ mod tests {
 
     #[test]
     fn the_bound_counts_the_rows_the_family_actually_carries() {
-        // Checking only the collapsed half lets the total exceed the stated bound while each
-        // half looks fine, and the envelope has no bound check of its own to catch it.
-        // kills: bounding `staged.len()` instead of everything the family carries.
-        let mut rows: Vec<_> = (0..=MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY)
+        // This used to build 256 standing exceptions with generated branch ids and pin that
+        // the residual guard caught the overflow. That scenario is now UNREACHABLE, and the
+        // change of regime is the thing worth pinning: a generated branch id is a cause its
+        // family does not declare, so the rows are refused before collapse ever counts them.
+        // The bound is still enforced (the guard remains), but nothing in the product can
+        // reach it - see `no_family_can_outgrow_the_row_bound_through_its_vocabulary`.
+        // kills: reopening the vocabulary so producers can mint branches again.
+        let mut rows: Vec<_> = (0..8)
             .map(|index| {
                 diagnostic(
                     &format!("xmap12:building:{index:04}"),
@@ -1462,7 +2005,7 @@ mod tests {
             )
         }));
         let error = collapse_element_diagnostics(rows).unwrap_err();
-        assert!(error.contains("did not collapse below"), "{error}");
+        assert!(error.contains("does not declare"), "{error}");
     }
 
     #[test]
@@ -1504,6 +2047,9 @@ mod tests {
             "",
         );
         row.element_count = 2_334;
+        // Set explicitly: the helper now follows the rule this test exists to pin, so the
+        // violation has to be built on purpose rather than inherited from a fixture.
+        row.source_ordinal = Some(3);
         envelope.element_diagnostics = vec![row.clone()];
         assert!(envelope
             .validate()
@@ -1555,6 +2101,7 @@ mod tests {
             source_ordinal: None,
             outcome,
             part: String::new(),
+            cause_id: "cosmetic-identity-unread".into(),
             element_count: 1,
             detail: "base colour substituted for an unread cosmetic identity".into(),
         };
