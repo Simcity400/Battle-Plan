@@ -752,3 +752,60 @@ fn a_declaring_partial_frame_is_never_delta_emitted() {
         "and the baseline stays pinned at the clean value"
     );
 }
+
+/// THE INTEL TABLE AND ITS ROSTER ARE ONE FAMILY ON THE DELTA PATH TOO.
+///
+/// `compact_domain53_apply_emit_mode` reconstructs the emitted rows field by
+/// field. A delta frame that carried `intel_map` without `intel_map_roster`
+/// would state a table against no roster, which both gates refuse -- so the
+/// default delta mode could not carry the family past its seed frame.
+///
+/// kills: dropping `intel_map_roster` from the reconstruction.
+#[test]
+fn a_delta_frame_carries_the_intel_roster_with_its_table() {
+    let square = |countries: &[u32], army: i32| {
+        let mut rows = Vec::new();
+        for owner in countries {
+            for target in countries {
+                if owner == target {
+                    continue;
+                }
+                rows.push(diplomacy53::compact::IntelMapRow {
+                    owner_tag_db_id: *owner,
+                    target_tag_db_id: *target,
+                    civilian_raw: 10_000,
+                    army_raw: army,
+                    navy_raw: 30_000,
+                    air_raw: 40_000,
+                    resisted: false,
+                });
+            }
+        }
+        rows
+    };
+    let frame = |army: i32| {
+        let mut r = diplomacy53::extractor::proof_fixture_rows();
+        r.operation_anchors.clear();
+        r.intel_map = square(&[1, 3], army);
+        r.intel_map_roster = vec![1, 3];
+        r
+    };
+    let proofs = diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS
+        | diplomacy53::extractor::SOURCE_PROOF_INTEL_MAP_PERCENTAGES_870EBF;
+
+    let mut tracker = CompactDiplomacyIntelOperativesLiveTracker::default();
+    apply_mode(frame(20_000), CLEAN, D53EmitMode::Delta, &mut tracker);
+    let (emitted, status) = apply_mode(frame(25_000), CLEAN, D53EmitMode::Delta, &mut tracker);
+
+    assert!(is_delta(status), "status 0x{status:08X}");
+    assert_eq!(emitted.intel_map_roster, vec![1, 3]);
+    let built = diplomacy53::extractor::build_domain53_payload_with_status(emitted, proofs, status);
+    assert!(built.ok(), "{:?}", built.errors);
+    assert!(
+        diplomacy53::compact::decode_payload(0, &built.payload)
+            .parse_errors
+            .is_empty(),
+        "{:?}",
+        diplomacy53::compact::decode_payload(0, &built.payload).parse_errors
+    );
+}

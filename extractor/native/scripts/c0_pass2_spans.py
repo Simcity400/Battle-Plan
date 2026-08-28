@@ -78,6 +78,7 @@ DOMAIN_STATUS_BITS: Mapping[int, Mapping[int, StatusSpec]] = {
         20: StatusSpec('LANE:WAR_LIFECYCLE_DETAIL_UNVALIDATED', True),
         21: StatusSpec('LANE:FACTION_GROUP_UNVALIDATED', True),
         22: StatusSpec('LANE:INTEL_NETWORK_GRAPH_UNVALIDATED', True),
+        23: StatusSpec('LANE:INTEL_MAP_UNPROVEN', True),
     },
     60: {
         16: StatusSpec('LANE:WAR_CASUALTIES_RUNNING_ACCUMULATOR', False),

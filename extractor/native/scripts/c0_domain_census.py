@@ -608,6 +608,7 @@ LANE_LOCAL = {
              "Failed/UnvalidatedDetail"),
         22: ("LANE:INTEL_NETWORK_GRAPH_UNVALIDATED", True,
              "Failed/UnvalidatedDetail"),
+        23: ("LANE:INTEL_MAP_UNPROVEN", True, "Failed/Unavailable"),
     },
     "capitulation_war_state_live": {
         16: ("LANE:WAR_CASUALTIES_RUNNING_ACCUMULATOR", False,

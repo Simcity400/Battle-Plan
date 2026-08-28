@@ -83,9 +83,20 @@ fn the_warmup_read_carries_no_failure_bits_into_any_window_or() {
         Domain53RootStageDiag::default(),
     );
     assert!(read.warmup_gap);
+    // The warmup record is EMPTY, so it declares its intel table absent -- and
+    // that is the whole of what it adds. `DOMAIN53_STATUS_INTEL_MAP_UNPROVEN` is
+    // lane-local: `compact_status_for_global_interpretation` strips it, so it
+    // cannot reach the window-wide OR this test exists to protect. Without it the
+    // fold would read a warmup hour's absent matrix as a measured EMPTY one.
     assert_eq!(
-        read.status_flags, inherited,
-        "warmup passes the incoming word through untouched"
+        read.status_flags,
+        inherited | diplomacy53::compact::STATUS_INTEL_MAP_UNPROVEN,
+        "warmup adds the empty record's intel declaration and nothing else"
+    );
+    assert_eq!(
+        compact_contract::compact_status_for_global_interpretation(53, read.status_flags),
+        compact_contract::compact_status_for_global_interpretation(53, inherited),
+        "the declaration must be invisible to the global vocabulary"
     );
     assert_eq!(
         read.status_flags & (COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA),

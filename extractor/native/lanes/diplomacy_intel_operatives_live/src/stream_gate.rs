@@ -310,7 +310,8 @@ pub fn verify_domain53_stream(bytes: &[u8]) -> Domain53StreamGateSummary {
         | compact::STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED
         | compact::STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED
         | compact::STATUS_FACTION_GROUP_UNVALIDATED
-        | compact::STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED;
+        | compact::STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED
+        | compact::STATUS_INTEL_MAP_UNPROVEN;
     let unknown = out.status_flags_or & !allowed_status;
     if unknown != 0 {
         out.parse_errors.push(format!(

@@ -122,13 +122,20 @@ pub const DOMAIN53_STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED: u32 = 1 << 19;
 pub const DOMAIN53_STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED: u32 = 1 << 20;
 pub const DOMAIN53_STATUS_FACTION_GROUP_UNVALIDATED: u32 = 1 << 21;
 pub const DOMAIN53_STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED: u32 = 1 << 22;
+/// The intel map is not on this record at all: an unreadable family root, or
+/// the family switched off. DISTINCT FROM
+/// [`DOMAIN53_STATUS_INTEL_MAP_RESISTED`], which now means only "some pairs
+/// ship resisted and the rest are measured" -- the two were one bit, so one bad
+/// pair withheld the whole 439x439 table from the fold.
+pub const DOMAIN53_STATUS_INTEL_MAP_UNPROVEN: u32 = 1 << 23;
 pub const DOMAIN53_LANE_LOCAL_STATUS_MASK: u32 = DOMAIN53_STATUS_OPERATIONS_DETAIL_RESISTED
     | DOMAIN53_STATUS_INTEL_MAP_RESISTED
     | DOMAIN53_STATUS_WAR_ROOT_UNVALIDATED
     | DOMAIN53_STATUS_INCOMING_ACTION_QUEUE_UNVALIDATED
     | DOMAIN53_STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED
     | DOMAIN53_STATUS_FACTION_GROUP_UNVALIDATED
-    | DOMAIN53_STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED;
+    | DOMAIN53_STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED
+    | DOMAIN53_STATUS_INTEL_MAP_UNPROVEN;
 
 pub const DOMAIN60_STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR: u32 = 1 << 16;
 pub const DOMAIN60_STATUS_WAR_RESIDUALS_EXACT: u32 = 1 << 17;
@@ -3050,7 +3057,7 @@ mod tests {
             ),
             COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_SOURCE_UNAVAILABLE
         );
-        for bit in 16..=22u32 {
+        for bit in 16..=23u32 {
             assert_eq!(
                 compact_status_for_global_interpretation(
                     53,
@@ -3088,7 +3095,7 @@ mod tests {
                 18 => 0x0001_0000,
                 49 => 1 << 11,
                 51 => (1 << 11) | (1 << 12) | (1 << 13),
-                53 => 0x007F_0000,
+                53 => 0x00FF_0000,
                 55 => 0x0001_0000,
                 60 => 0x0003_0000,
                 99 => 0x0007_0000,
@@ -3107,6 +3114,7 @@ mod tests {
         assert_eq!(DOMAIN53_STATUS_WAR_LIFECYCLE_DETAIL_UNVALIDATED, 1 << 20);
         assert_eq!(DOMAIN53_STATUS_FACTION_GROUP_UNVALIDATED, 1 << 21);
         assert_eq!(DOMAIN53_STATUS_INTEL_NETWORK_GRAPH_UNVALIDATED, 1 << 22);
+        assert_eq!(DOMAIN53_STATUS_INTEL_MAP_UNPROVEN, 1 << 23);
         assert_eq!(DOMAIN60_STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR, 1 << 16);
         assert_eq!(DOMAIN60_STATUS_WAR_RESIDUALS_EXACT, 1 << 17);
         assert_eq!(

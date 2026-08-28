@@ -11575,8 +11575,11 @@ mod tests {
             0x1234u32 & !characters_leaders_cabinet_live_lane::STATUS_PARTIAL_DATA;
         let d47 =
             characters_leaders_cabinet_live_lane::encode_payload(0, d47_legacy_status, 0, &[]);
+        // The snapshot carries no intel table at all, which is UNPROVEN.
+        // RESISTED means "the table is here and some pairs in it are named
+        // unmeasured" and the decoder refuses it without such a row.
         let d53_status = diplomacy_intel_operatives_live::compact::STATUS_OPERATIONS_DETAIL_RESISTED
-            | diplomacy_intel_operatives_live::compact::STATUS_INTEL_MAP_RESISTED;
+            | diplomacy_intel_operatives_live::compact::STATUS_INTEL_MAP_UNPROVEN;
         let d53 = diplomacy_intel_operatives_live::compact::encode_payload(
             &diplomacy_intel_operatives_live::compact::DiplomacyIntelSnapshot {
                 status_flags: d53_status,

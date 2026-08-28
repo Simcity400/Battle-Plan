@@ -440,6 +440,9 @@ mod tests {
         use diplomacy_intel_operatives_live::compact as d53;
         let mut payload = vec![0u8; d53::HEADER_LEN];
         payload[0..8].copy_from_slice(&elapsed_wall_ms.to_le_bytes());
+        // An empty record carries no intel table, and the decoder holds the
+        // badge and the roster trailer to each other.
+        payload[16..20].copy_from_slice(&d53::STATUS_INTEL_MAP_UNPROVEN.to_le_bytes());
         payload[20..24].copy_from_slice(&d53::SCHEMA_VERSION.to_le_bytes());
         payload[24..28].copy_from_slice(&d53::FIXED_SCALE_RAW.to_le_bytes());
         payload

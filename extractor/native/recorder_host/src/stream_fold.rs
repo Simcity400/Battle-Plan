@@ -4738,7 +4738,7 @@ mod tests {
         use diplomacy_intel_operatives_live::compact as d53c;
 
         let payload = d53c::encode_payload(&d53c::DiplomacyIntelSnapshot {
-            status_flags: COMPACT_STATUS_DELTA_DATA,
+            status_flags: COMPACT_STATUS_DELTA_DATA | d53c::STATUS_INTEL_MAP_UNPROVEN,
             opinions: vec![d53c::OpinionRow {
                 src_tag_db_id: 1,
                 target_tag_db_id: 2,
@@ -4754,7 +4754,7 @@ mod tests {
         use diplomacy_intel_operatives_live::compact as d53c;
 
         let payload = d53c::encode_payload(&d53c::DiplomacyIntelSnapshot {
-            status_flags: COMPACT_STATUS_PARTIAL_DATA,
+            status_flags: COMPACT_STATUS_PARTIAL_DATA | d53c::STATUS_INTEL_MAP_UNPROVEN,
             ..Default::default()
         });
         expect_domain_boundary_acceptance(53, &payload);
@@ -4765,6 +4765,7 @@ mod tests {
         use diplomacy_intel_operatives_live::compact as d53c;
 
         let payload = d53c::encode_payload(&d53c::DiplomacyIntelSnapshot {
+            status_flags: d53c::STATUS_INTEL_MAP_UNPROVEN,
             opinions: vec![d53c::OpinionRow {
                 src_tag_db_id: 1,
                 target_tag_db_id: 2,
@@ -4785,11 +4786,13 @@ mod tests {
         use diplomacy_intel_operatives_live::compact as d53c;
 
         let baseline = d53c::encode_payload(&d53c::DiplomacyIntelSnapshot {
-            status_flags: COMPACT_STATUS_PARTIAL_DATA,
+            status_flags: COMPACT_STATUS_PARTIAL_DATA | d53c::STATUS_INTEL_MAP_UNPROVEN,
             ..Default::default()
         });
         let delta = d53c::encode_payload(&d53c::DiplomacyIntelSnapshot {
-            status_flags: COMPACT_STATUS_DELTA_DATA | COMPACT_STATUS_PARTIAL_DATA,
+            status_flags: COMPACT_STATUS_DELTA_DATA
+                | COMPACT_STATUS_PARTIAL_DATA
+                | d53c::STATUS_INTEL_MAP_UNPROVEN,
             opinions: vec![d53c::OpinionRow {
                 src_tag_db_id: 1,
                 target_tag_db_id: 2,
