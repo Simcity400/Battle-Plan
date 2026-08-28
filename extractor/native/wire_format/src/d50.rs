@@ -1,8 +1,8 @@
 //! d50 `naval_combat_members_live` — the ships and convoys inside each naval combat.
 //!
-//! Derived from `world_fold.rs:29063`-`:29153`
+//! Derived from `world_fold.rs:29071`-`:29161`
 //! (`fold_naval_combat_members`), the D49 fold it depends on
-// @world-fold-authority domain=50 functions=fold_naval_combat_members lines=29063-29153 sha256=4b0a3cce4ee4862f1519c4693203ca513e134edc70b423cc29c4bad6121f602b closure=91edbba2f623b8cf29b53ddaf1d653896b16806b824893f2044c6be4bfd9fd8e
+// @world-fold-authority domain=50 functions=fold_naval_combat_members lines=29071-29161 sha256=4b0a3cce4ee4862f1519c4693203ca513e134edc70b423cc29c4bad6121f602b closure=91edbba2f623b8cf29b53ddaf1d653896b16806b824893f2044c6be4bfd9fd8e
 //! (`:20040`-`:20128`, `fold_naval_combat_lifecycle`), the accumulator's JSON
 //! projection (`:8839`-`:8887`), the lane codec that defines the payload grammar
 //! (`extractor/native/lanes/naval_combat_live/src/domain49_50_naval_combat_live.rs`,
