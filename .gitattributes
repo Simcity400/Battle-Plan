@@ -211,3 +211,9 @@ extractor/native/runs/tt_controller_authority/evidence/* -text -diff
 
 # Lane UF evidence: byte-stable both ways, so quoted hashes hold.
 extractor/native/runs/uf_pdxmesh_frame_image/** -text
+
+# Lane UM's audio-gain evidence is hash-pinned: the live-probe job artifacts
+# are copied verbatim from the RE broker and their sha256 is cited. Keep their
+# checkout bytes stable on Windows instead of letting core.autocrlf drift them.
+extractor/native/runs/um_audio_gain/*.json text eol=lf
+extractor/native/runs/um_audio_gain/live_probe/**/*.json text eol=lf
