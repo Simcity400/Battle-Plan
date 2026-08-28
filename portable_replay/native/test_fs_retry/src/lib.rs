@@ -237,7 +237,11 @@ pub fn remove_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
     run_removal("remove_dir_all", || std::fs::remove_dir_all(path), || {})
 }
 
-///     .expect("acquire the read guard")
+/// Retries `path` open until it succeeds, then runs `op`. The handle it holds
+/// shares reads, writes and deletes, so the only openers it excludes are those
+/// whose own share mode omits FILE_SHARE_READ. It does not stop a concurrent
+/// writer or deleter from taking a handle, so it is not a guard against the
+/// ERROR_SHARING_VIOLATION those raise for an opener that shares reads only.
 pub fn with_read_guard<T>(path: impl AsRef<Path>, op: impl FnOnce() -> T) -> io::Result<T> {
     let guard = open(path)?;
     let outcome = op();
@@ -645,7 +649,6 @@ mod tests {
         let dir = scratch("absent");
         let path = dir.join("never_written.bin");
         let absent_dir = dir.join("never_created");
-        let started = std::time::Instant::now();
 
         assert_eq!(open(&path).unwrap_err().kind(), io::ErrorKind::NotFound);
         assert_eq!(
@@ -693,10 +696,24 @@ mod tests {
             .kind(),
             io::ErrorKind::NotFound
         );
-        assert!(
-            started.elapsed() < RETRY_BUDGET,
-            "an absent path waited out the retry budget"
+        // Every entry point above reaches one of these two, so counting the
+        // retries they take is what "immediately" means here. A wall clock
+        // would only be measuring the disk.
+        let mut opened = 0_u32;
+        assert_eq!(
+            run("open", || File::open(&path), || opened += 1)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
         );
+        let mut removed = 0_u32;
+        assert_eq!(
+            run_removal("remove_file", || std::fs::remove_file(&path), || removed += 1)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!((opened, removed), (0, 0), "an absent path was retried");
         let _ = remove_dir_all(&dir);
     }
 

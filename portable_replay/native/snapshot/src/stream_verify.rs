@@ -1536,14 +1536,16 @@ fn eocd_comment_ends_at_eof(tail: &[u8], off: usize) -> bool {
 #[cfg(test)]
 mod tests {
 
+    /// These tests are about what the container holds. A handle opened the way
+    /// any reader opens one keeps them off the retained open's path sharing,
+    /// which is not their subject and which they cannot control.
     fn open_container_guarded(
         path: &std::path::Path,
         expected: &ExpectedIdentity,
     ) -> Result<Container, crate::ContainerError> {
-        portable_test_fs_retry::with_tree_read_guard(path, || {
-            crate::Container::open(path, expected)
-        })
-        .expect("hold the container open across the scanner's window")
+        let file = std::fs::File::open(path).map_err(crate::ContainerError::Io)?;
+        crate::Container::open_strict_with_file_receipt_from_file(file, expected)
+            .map(|(container, _, _)| container)
     }
 
     use super::*;

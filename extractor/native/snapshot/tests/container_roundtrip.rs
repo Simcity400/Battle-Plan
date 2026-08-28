@@ -354,7 +354,12 @@ fn legacy_pre222_store_deflate_fixture_opens_and_stream_verifies() {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/data/legacy/pre222_store_deflate.battleplan");
     let container =
-        Container::open(&path, &ExpectedIdentity::default()).expect("open legacy fixture");
+        Container::open_strict_with_file_receipt_from_file(
+            std::fs::File::open(&path).expect("open legacy fixture"),
+            &ExpectedIdentity::default(),
+        )
+        .map(|(container, _, _)| container)
+        .expect("open legacy fixture");
     assert_eq!(container.game_id(), "legacy");
     let snap = container
         .load(16_959_360)

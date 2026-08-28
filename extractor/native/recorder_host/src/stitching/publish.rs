@@ -2833,8 +2833,12 @@ mod tests {
         let second = publish_stitched_container_retained(&plan, &source, &second_path).unwrap();
         assert_eq!(first.container_sha256, second.container_sha256);
         assert_eq!(first.container_bytes, second.container_bytes);
+        // This test is about the published bytes and the temps left behind,
+        // not about the retained open's path sharing; the handle keeps it off
+        // a race it does not control.
+        let published = fs::File::open(&first_path).expect("open the published container");
         let (container, _, _) =
-            Container::open_strict_with_file_receipt(&first_path, &ExpectedIdentity::default())
+            Container::open_strict_with_file_receipt_from_file(published, &ExpectedIdentity::default())
                 .unwrap();
         container.verify_all_streaming().unwrap();
         assert!(container.index().is_stitched());

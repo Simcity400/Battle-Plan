@@ -339,18 +339,161 @@ fn file_archive_entry_error(error: crate::stream_verify::EntryFailure) -> Contai
     }
 }
 
+/// Longest a retained open waits, in total across the ancestor walk and the
+/// file, for foreign write or delete handles to close.
+#[cfg(windows)]
+const RETAINED_OPEN_SHARING_BUDGET: std::time::Duration = std::time::Duration::from_millis(2000);
+
+#[cfg(windows)]
+const RETAINED_OPEN_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_millis(16);
+
+#[cfg(all(windows, not(test)))]
+fn retained_open_sharing_budget(_path: &Path) -> std::time::Duration {
+    RETAINED_OPEN_SHARING_BUDGET
+}
+
+/// Lifted only for the exact paths a test has registered, so a test whose
+/// subject is not the budget cannot change what any other path sees.
+#[cfg(all(windows, test))]
+fn retained_open_sharing_budget(path: &Path) -> std::time::Duration {
+    sharing_wait_probe::budget(path)
+}
+
+/// Records, per path, that the retained open was refused, so a test can
+/// release its holder on that fact instead of on a clock.
+#[cfg(all(windows, test))]
+mod sharing_wait_probe {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+
+    fn counts() -> &'static Mutex<HashMap<PathBuf, u64>> {
+        static COUNTS: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
+        COUNTS.get_or_init(Default::default)
+    }
+
+    pub(super) fn note(path: &Path) {
+        *counts()
+            .lock()
+            .expect("sharing wait probe")
+            .entry(path.to_path_buf())
+            .or_default() += 1;
+    }
+
+    pub(super) fn waits_on(path: &Path) -> u64 {
+        counts()
+            .lock()
+            .expect("sharing wait probe")
+            .get(path)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    use std::collections::HashSet;
+    use std::sync::OnceLock as OnceLockSet;
+    use std::time::Duration;
+
+    fn lifted() -> &'static Mutex<HashSet<PathBuf>> {
+        static LIFTED: OnceLockSet<Mutex<HashSet<PathBuf>>> = OnceLockSet::new();
+        LIFTED.get_or_init(Default::default)
+    }
+
+    pub(super) fn budget(path: &Path) -> Duration {
+        if lifted().lock().expect("sharing wait probe").contains(path) {
+            Duration::MAX
+        } else {
+            super::RETAINED_OPEN_SHARING_BUDGET
+        }
+    }
+
+    /// Lifts the budget for one path for the length of one test, so that the
+    /// only thing able to end a wait on THAT path is the holder the test
+    /// controls. Every other path, in this test or any other running beside
+    /// it, keeps the shipped budget.
+    pub(super) struct LiftedBudget(PathBuf);
+
+    impl Drop for LiftedBudget {
+        fn drop(&mut self) {
+            lifted().lock().expect("sharing wait probe").remove(&self.0);
+        }
+    }
+
+    pub(super) fn lift_budget_for(path: &Path) -> LiftedBudget {
+        lifted()
+            .lock()
+            .expect("sharing wait probe")
+            .insert(path.to_path_buf());
+        LiftedBudget(path.to_path_buf())
+    }
+}
+
+#[cfg(all(windows, test))]
+fn note_sharing_wait(path: &Path) {
+    sharing_wait_probe::note(path);
+}
+
+#[cfg(all(windows, not(test)))]
+fn note_sharing_wait(_path: &Path) {}
+
+/// Opens `path` with the sharing the retained archive needs: read access, and
+/// no write or delete handle admitted for as long as it is held.
+///
+/// ERROR_SHARING_VIOLATION here means an existing handle is incompatible with
+/// this one: it holds an access this share mode denies (write or delete), or
+/// its own share mode denies the read this asks for. Either way the conflict
+/// is somebody else's handle, so it clears when they close, and the wait is
+/// bounded by `budget_started`, which the caller shares across the whole walk.
+/// Every other error is returned on the first attempt.
+#[cfg(windows)]
+fn open_share_read(
+    path: &Path,
+    custom_flags: u32,
+    budget_started: std::time::Instant,
+) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+
+    let mut backoff = std::time::Duration::from_millis(1);
+    loop {
+        let error = match OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(custom_flags)
+            .open(path)
+        {
+            Ok(file) => return Ok(file),
+            Err(error) => error,
+        };
+        if error.raw_os_error() != Some(ERROR_SHARING_VIOLATION) {
+            return Err(error);
+        }
+        note_sharing_wait(path);
+        let Some(remaining) = retained_open_sharing_budget(path).checked_sub(budget_started.elapsed())
+        else {
+            return Err(error);
+        };
+        if remaining.is_zero() {
+            return Err(error);
+        }
+        std::thread::sleep(backoff.min(remaining));
+        backoff = (backoff * 2).min(RETAINED_OPEN_MAX_BACKOFF);
+    }
+}
+
 fn open_retained_container_file(path: &Path) -> std::io::Result<File> {
     #[cfg(windows)]
     {
         use std::io::{Error, ErrorKind};
-        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        use std::os::windows::fs::MetadataExt;
         use std::path::{Component, Prefix};
 
-        // for the lifetime of the retained archive. A writer that predates this
-        const FILE_SHARE_READ: u32 = 0x0000_0001;
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
         const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
         const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+        let budget_started = std::time::Instant::now();
 
         let unresolved = if path.is_absolute() {
             path.to_path_buf()
@@ -417,11 +560,20 @@ fn open_retained_container_file(path: &Path) -> std::io::Result<File> {
         cursor.push("\\");
         for component in parent.components().skip(2) {
             cursor.push(component.as_os_str());
-            let directory = OpenOptions::new()
-                .read(true)
-                .share_mode(FILE_SHARE_READ)
-                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-                .open(&cursor)?;
+            let directory = open_share_read(
+                &cursor,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                budget_started,
+            )
+            .map_err(|error| {
+                Error::new(
+                    error.kind(),
+                    format!(
+                        "replay container ancestor {} could not be retained: {error}",
+                        cursor.display()
+                    ),
+                )
+            })?;
             let metadata = directory.metadata()?;
             if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
             {
@@ -436,11 +588,7 @@ fn open_retained_container_file(path: &Path) -> std::io::Result<File> {
             retained.push(directory);
         }
 
-        let file = OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(&absolute)?;
+        let file = open_share_read(&absolute, FILE_FLAG_OPEN_REPARSE_POINT, budget_started)?;
         let metadata = file.metadata()?;
         if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             return Err(Error::new(
@@ -3352,17 +3500,27 @@ fn verify_and_read(
 #[cfg(test)]
 mod tests {
 
-    fn open_container_guarded(
-        path: &std::path::Path,
-        expected: &ExpectedIdentity,
-    ) -> Result<Container, ContainerError> {
-        portable_test_fs_retry::with_tree_read_guard(path, || Container::open(path, expected))
-            .expect("hold the container open across the scanner's window")
-    }
-
     use super::*;
     use crate::pack::{pack, pack_with, PackEntry, PackIdentity, PackOptions};
     use crate::COMPACT_STREAM_ROLE;
+
+    /// These tests are about what the container holds, not about the sharing
+    /// the retained open takes on every ancestor of its path, so they take a
+    /// handle the way any reader does and stay off that race.
+    ///
+    /// This is weaker than the retained open, and deliberately so: the strict
+    /// open's before-and-after receipts catch a container rewritten across the
+    /// parse, but not one changed and restored inside it, changed after it, or
+    /// unlinked from its pathname while the handle reads on. All three need a
+    /// writer or a deleter racing the read, which is not what any test here
+    /// asserts. The
+    /// retained open, which does defend against one, is the subject of
+    /// `retained_open_sharing` below.
+    fn open_fixture_container(path: &std::path::Path) -> Result<Container, ContainerError> {
+        let file = File::open(path).map_err(ContainerError::Io)?;
+        Container::open_strict_with_file_receipt_from_file(file, &ExpectedIdentity::default())
+            .map(|(container, _, _)| container)
+    }
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -3438,15 +3596,207 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    mod retained_open_sharing {
+        use super::*;
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        use std::time::Instant;
+
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+        const DELETE: u32 = 0x0001_0000;
+        const FILE_LIST_DIRECTORY: u32 = 0x0000_0001;
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+        fn container_in_its_own_directory(label: &str) -> (TempSpoolDir, std::path::PathBuf) {
+            let dir = TempSpoolDir::create(label);
+            let path = dir.0.join("native_session.battleplan");
+            fs::write(&path, compact_container_bytes(b"retained open sharing"))
+                .expect("write the container");
+            (dir, path)
+        }
+
+        /// A handle with write access, sharing reads only: exactly what the
+        /// retained open's own sharing refuses.
+        fn write_holder(path: &std::path::Path) -> File {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .share_mode(FILE_SHARE_READ)
+                .open(path)
+                .expect("take the write handle")
+        }
+
+        /// A handle with delete access on a directory: what `remove_dir_all`
+        /// and any rename of that directory hold.
+        fn delete_holder(directory: &std::path::Path) -> File {
+            OpenOptions::new()
+                .access_mode(DELETE | FILE_LIST_DIRECTORY)
+                .share_mode(FILE_SHARE_READ)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(directory)
+                .expect("take the delete handle")
+        }
+
+        fn sharing_violation_of(error: &ContainerError) -> bool {
+            matches!(error, ContainerError::Io(io) if io.raw_os_error() == Some(ERROR_SHARING_VIOLATION))
+        }
+
+        /// Production's own sharing on the container file, taken directly, so
+        /// a holder's refusal is a fact this test establishes rather than a
+        /// race it hopes for.
+        fn share_read_open(path: &std::path::Path) -> std::io::Result<File> {
+            OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .open(path)
+        }
+
+        /// The same, for an ancestor directory on the retained walk.
+        fn share_read_dir_open(directory: &std::path::Path) -> std::io::Result<File> {
+            OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                .open(directory)
+        }
+
+        fn refuses_share_read(outcome: std::io::Result<File>) -> bool {
+            outcome
+                .err()
+                .is_some_and(|error| error.raw_os_error() == Some(ERROR_SHARING_VIOLATION))
+        }
+
+        /// `holder` is released only once the retained open has been refused on
+        /// `watched` and entered its wait, so the open that has to succeed is
+        /// always one that was refused first. No clock takes part: an opener
+        /// that returns without ever waiting fails here by name, and one that
+        /// never returns is a wedge for the runner to name.
+        fn open_while_held(
+            holder: File,
+            watched: &std::path::Path,
+            path: std::path::PathBuf,
+        ) -> Result<Container, ContainerError> {
+            let before = sharing_wait_probe::waits_on(watched);
+            let opener =
+                std::thread::spawn(move || Container::open(&path, &ExpectedIdentity::default()));
+            while sharing_wait_probe::waits_on(watched) == before {
+                assert!(
+                    !opener.is_finished(),
+                    "the retained open returned without ever waiting on {}",
+                    watched.display()
+                );
+                std::thread::yield_now();
+            }
+            drop(holder);
+            opener.join().expect("opener")
+        }
+
+        #[test]
+        fn a_write_handle_on_the_container_is_waited_out() {
+            let (_dir, path) = container_in_its_own_directory("retained_write_holder");
+            let _budget = sharing_wait_probe::lift_budget_for(&path);
+            let holder = write_holder(&path);
+            assert!(
+                refuses_share_read(share_read_open(&path)),
+                "the fixture handle does not refuse the retained open's sharing"
+            );
+            let container = open_while_held(holder, &path, path.clone())
+                .expect("a foreign write handle that closes must not refuse the container");
+            container.verify_all().expect("the container is intact");
+        }
+
+        #[test]
+        fn a_delete_handle_on_an_ancestor_directory_is_waited_out() {
+            let (dir, path) = container_in_its_own_directory("retained_delete_holder");
+            let _budget = sharing_wait_probe::lift_budget_for(&dir.0);
+            let holder = delete_holder(&dir.0);
+            assert!(
+                refuses_share_read(share_read_dir_open(&dir.0)),
+                "the fixture handle does not refuse the retained walk's sharing"
+            );
+            open_while_held(holder, &dir.0, path.clone())
+                .expect("a foreign delete handle that closes must not refuse the container");
+        }
+
+        /// The upper end of the budget is not asserted: a wait that never gave
+        /// up would hang, which the runner names, and any bound tight enough
+        /// to catch an overshoot is a bound a loaded machine can trip.
+        #[test]
+        fn a_holder_that_never_closes_refuses_after_waiting_out_the_budget() {
+            let (_dir, path) = container_in_its_own_directory("retained_permanent_holder");
+            let _holder = write_holder(&path);
+            let started = Instant::now();
+            let Err(error) = Container::open(&path, &ExpectedIdentity::default()) else {
+                panic!("a handle that never closes must still refuse");
+            };
+            let elapsed = started.elapsed();
+            assert!(sharing_violation_of(&error), "{error}");
+            assert!(
+                elapsed >= RETAINED_OPEN_SHARING_BUDGET,
+                "the budget was abandoned early: {elapsed:?}"
+            );
+        }
+
+        #[test]
+        fn an_ancestor_that_never_closes_names_the_ancestor() {
+            let (dir, path) = container_in_its_own_directory("retained_permanent_ancestor");
+            let _holder = delete_holder(&dir.0);
+            let Err(error) = Container::open(&path, &ExpectedIdentity::default()) else {
+                panic!("a held ancestor must still refuse");
+            };
+            let text = error.to_string();
+            assert!(
+                text.contains(&dir.0.display().to_string()),
+                "the refusal must name the ancestor that was held, got {text}"
+            );
+        }
+
+        /// Neither the wait nor the ancestor naming may launder the errors
+        /// they do not handle into the sharing violation the budget reports.
+        #[test]
+        fn an_absent_container_or_ancestor_is_still_refused_as_not_found() {
+            let dir = TempSpoolDir::create("retained_absent");
+            for absent in [
+                dir.0.join("never_written.battleplan"),
+                dir.0.join("no_such_directory").join("c.battleplan"),
+            ] {
+                let Err(error) = Container::open(&absent, &ExpectedIdentity::default()) else {
+                    panic!("{} does not exist, so opening it must refuse", absent.display());
+                };
+                assert!(
+                    matches!(&error, ContainerError::Io(io) if io.kind() == std::io::ErrorKind::NotFound),
+                    "{error}"
+                );
+            }
+        }
+
+        /// The guard the recorder-side tests used to take before this wait
+        /// existed: it is granted while a write handle is open, and the
+        /// retained open is refused all the same, so it excluded nothing.
+        #[test]
+        fn a_plain_read_guard_does_not_stop_the_container_from_being_refused() {
+            let (_dir, path) = container_in_its_own_directory("retained_guard_is_not_a_guard");
+            let _holder = write_holder(&path);
+            let _guard =
+                File::open(&path).expect("a plain read guard is admitted through a write handle");
+            let Err(error) = Container::open(&path, &ExpectedIdentity::default()) else {
+                panic!("the retained open must not admit a concurrently written container");
+            };
+            assert!(sharing_violation_of(&error), "{error}");
+        }
+    }
+
     #[test]
     fn the_streaming_verification_route_is_not_weaker_than_the_materializing_one() {
         let bytes = compact_container_bytes(b"route equivalence payload");
         let archive = TempContainerFile::write("route_equivalence", &bytes);
 
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
         container.verify_all().expect("intact container verifies");
         drop(container);
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
         container
             .verify_all_streaming()
             .expect("intact container verifies streamed");
@@ -3460,12 +3810,12 @@ mod tests {
         corrupted[offset] ^= 0x01;
         let archive = TempContainerFile::write("route_equivalence_bad", &corrupted);
 
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
         let materializing = container
             .verify_all()
             .expect_err("a corrupted entry must not verify");
         drop(container);
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
         let streamed = container
             .verify_all_streaming()
             .expect_err("a corrupted entry must not verify streamed");
@@ -3513,8 +3863,9 @@ mod tests {
         let bytes = pack("g", &[empty_index_entry()], &PackIdentity::default(), false).unwrap();
         let path = TempContainerFile::write("backend_selection", &bytes);
 
-        let file_backed = open_container_guarded(&path.0, &ExpectedIdentity::default())
-            .expect("path container opens");
+        // The path route is this test's subject, so it stays on Container::open.
+        let file_backed =
+            Container::open(&path.0, &ExpectedIdentity::default()).expect("path container opens");
         assert!(matches!(&file_backed.archive, ContainerArchive::File(_)));
 
         let in_memory = Container::from_bytes(bytes, &ExpectedIdentity::default())
@@ -3536,7 +3887,7 @@ mod tests {
         )
         .unwrap();
         let archive = TempContainerFile::write("bounded_spool", &bytes);
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
         let root = TempSpoolDir::create("bounded");
         let destination = root.join("compact.bin");
         let error = container
@@ -3638,7 +3989,7 @@ mod tests {
         )
         .unwrap();
         let archive = TempContainerFile::write("post_sync_substitution", &bytes);
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
         assert!(matches!(&container.archive, ContainerArchive::File(_)));
         let root = TempSpoolDir::create("race");
         let destination = root.join("compact.bin");
@@ -3725,7 +4076,7 @@ mod tests {
             .unwrap();
             let archive = TempContainerFile::write(&format!("retained_handle_{label}"), &bytes);
             let container =
-                open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+                open_fixture_container(&archive.0).unwrap();
             let root = TempSpoolDir::create(&format!("retained_{label}"));
             let destination = root.join("retained.bin");
 
@@ -3781,7 +4132,7 @@ mod tests {
         )
         .unwrap();
         let archive = TempContainerFile::write("post_link_failure", &bytes);
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
         assert!(matches!(&container.archive, ContainerArchive::File(_)));
         let root = TempSpoolDir::create("post_link");
         let destination = root.join("post-link.bin");
@@ -3829,7 +4180,7 @@ mod tests {
         const PAYLOAD: &[u8] = b"reparse guard payload";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("reparse_component", &bytes);
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
         let root = TempSpoolDir::create("reparse");
 
         let target = root.join("target");
@@ -3872,7 +4223,7 @@ mod tests {
         const PAYLOAD: &[u8] = b"filesystem root guard payload";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("filesystem_root", &bytes);
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
 
         let volume_root = std::env::temp_dir()
             .ancestors()
@@ -3904,7 +4255,7 @@ mod tests {
         const PAYLOAD: &[u8] = b"lexical destination guard payload";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("lexical_destination", &bytes);
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
         let root = TempSpoolDir::create("lexical");
 
         let cur_dir_relative = TempSpoolPath(std::path::Path::new(".").join(format!(
@@ -3977,7 +4328,7 @@ mod tests {
         const OCCUPIED: &[u8] = b"occupied by another writer";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("unique_name_window", &bytes);
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
         let root = TempSpoolDir::create("unique_name_window");
         let destination = root.join("compact.bin");
         let destination_name = destination.file_name().unwrap().to_owned();
@@ -4107,7 +4458,7 @@ mod tests {
         const FOREIGN: &[u8] = b"an object this rollback did not publish";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("rollback_rebind", &bytes);
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
         let root = TempSpoolDir::create("rollback_rebind");
         let destination = root.join("compact.bin");
         let rebound = Arc::new(AtomicBool::new(false));
@@ -4172,7 +4523,7 @@ mod tests {
         const FILE_SHARE_WRITE: u32 = 0x0000_0002;
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("rollback_undeletable", &bytes);
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
         let root = TempSpoolDir::create("rollback_undeletable");
         let destination = root.join("compact.bin");
         let held: Arc<Mutex<Option<File>>> = Arc::new(Mutex::new(None));
@@ -4230,7 +4581,7 @@ mod tests {
         const FOREIGN: &[u8] = b"an object this spool did not create";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("temp_cleanup_identity", &bytes);
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
         let root = TempSpoolDir::create("temp_cleanup_identity");
         let destination = root.join("compact.bin");
         let rebound = Arc::new(AtomicBool::new(false));
@@ -4288,7 +4639,7 @@ mod tests {
         );
 
         let archive = TempContainerFile::write("whole_file_receipt", &bytes);
-        let file_backed = open_container_guarded(&archive.0, &ExpectedIdentity::default())
+        let file_backed = open_fixture_container(&archive.0)
             .expect("path container opens");
         let (len, sha256) = file_backed
             .retained_file_receipt()
@@ -4302,7 +4653,7 @@ mod tests {
         const PAYLOAD: &[u8] = b"requested spool sha256 payload";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("requested_sha256", &bytes);
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
         let ContainerArchive::File(file_archive) = &container.archive else {
             panic!("the fixture must be file-backed");
         };
@@ -4351,7 +4702,7 @@ mod tests {
         const PAYLOAD: &[u8] = b"authenticate entry payload";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("authenticate_entry", &bytes);
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
 
         let receipt = container
             .authenticate_entry("payload/g/compact.bin")
@@ -4376,7 +4727,7 @@ mod tests {
         tampered[offset] ^= 0xff;
         let tampered_archive = TempContainerFile::write("authenticate_entry_tampered", &tampered);
         let tampered_container =
-            open_container_guarded(&tampered_archive.0, &ExpectedIdentity::default())
+            open_fixture_container(&tampered_archive.0)
                 .expect("entry bytes are authenticated lazily, so the container still opens");
         let error = tampered_container
             .authenticate_entry("payload/g/compact.bin")
@@ -4403,7 +4754,7 @@ mod tests {
         const PAYLOAD: &[u8] = b"unpublished writer payload";
         let bytes = compact_container_bytes(PAYLOAD);
         let archive = TempContainerFile::write("unpublished_writer", &bytes);
-        let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+        let container = open_fixture_container(&archive.0).unwrap();
 
         let mut sink = Vec::new();
         let receipt = container

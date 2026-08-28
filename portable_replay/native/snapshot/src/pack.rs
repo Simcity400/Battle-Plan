@@ -1955,6 +1955,20 @@ fn write_all_counted<W: Write>(
 
 #[cfg(test)]
 mod tests {
+
+    /// These tests are about the bytes pack produced, not about the retained
+    /// open's path sharing; a handle opened the way any reader opens one keeps
+    /// them off a race they do not control.
+    fn open_packed_container(
+        path: &std::path::Path,
+    ) -> Result<crate::Container, crate::ContainerError> {
+        let file = std::fs::File::open(path).map_err(crate::ContainerError::Io)?;
+        crate::Container::open_strict_with_file_receipt_from_file(
+            file,
+            &crate::ExpectedIdentity::default(),
+        )
+        .map(|(container, _, _)| container)
+    }
     use super::*;
     use portable_content_manifest::{
         ContentLayerKind, ContentManifest, DlcSelection, LayerStorageKind, RecordedContentLayer,
@@ -2109,7 +2123,7 @@ mod tests {
         let dir = TmpDir::new("content_manifest");
         let path = dir.join("portable.battleplan");
         fs::write(&path, bytes).unwrap();
-        let opened = crate::Container::open(&path, &crate::ExpectedIdentity::default()).unwrap();
+        let opened = open_packed_container(&path).unwrap();
         assert_eq!(opened.content_manifest(), Some(&content));
         assert!(opened
             .manifest()
@@ -2893,7 +2907,7 @@ mod tests {
             }
             let path = dir.join(&format!("{tag}.battleplan"));
             fs::write(&path, bytes).unwrap();
-            let opened = crate::Container::open(&path, &crate::ExpectedIdentity::default());
+            let opened = open_packed_container(&path);
             if tag == "big_v2" {
                 // A REAL stitched publication also needs a stitched index and
                 // segment graph, which this compression fixture is not, so it

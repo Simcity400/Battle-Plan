@@ -627,7 +627,6 @@ fn preflight_io_error(error: String) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::time::Duration;
 
     use super::super::identity_control::{
@@ -657,6 +656,14 @@ mod tests {
     fn deadline() -> ControlDeadline {
         ControlDeadline::after(Duration::from_secs(10)).unwrap()
     }
+
+    /// Above BOTH nextest profiles' terminate-after in
+    /// extractor/native/.config/nextest.toml - 240 s on default, 600 s on
+    /// evidence - so the runner always reaches a wedge first and names it. A
+    /// bound under either would turn a correct-but-slow run into a failure
+    /// this file invented. It exists only so a bare `cargo test`, which has no
+    /// timeout of its own, eventually stops.
+    const RUNNER_KILLS_A_WEDGE_FIRST: Duration = Duration::from_secs(1800);
 
     fn failure(attempt_id: u64) -> IdentityFailureV1 {
         IdentityFailureV1 {
@@ -796,33 +803,42 @@ mod tests {
             .exists());
     }
 
+    /// The worker cannot finish until this test releases it, so the bounded
+    /// wait must give up first; the wait is given a deadline no scheduling
+    /// delay reaches, so which refusal it gives up with is fixed too.
     #[test]
-    fn timed_out_worker_eventually_cleans_its_owned_result() {
-        struct CleanupProbe(Arc<std::sync::atomic::AtomicBool>);
+    fn a_worker_abandoned_by_the_bounded_wait_cleans_the_result_it_still_owns() {
+        struct CleanupProbe(mpsc::SyncSender<()>);
 
         impl Drop for CleanupProbe {
             fn drop(&mut self) {
-                self.0.store(true, Ordering::Release);
+                let _ = self.0.send(());
             }
         }
 
-        let cleaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let worker_cleaned = cleaned.clone();
-        let deadline = ControlDeadline::after(Duration::from_millis(1)).unwrap();
+        let (cleaned_tx, cleaned_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+        let cancellation = ControlCancellation::new();
+        let worker_cancellation = cancellation.clone();
         let result = run_bounded_worker(
             "identity-journal-cleanup-test",
-            deadline,
-            &ControlCancellation::new(),
+            ControlDeadline::after(RUNNER_KILLS_A_WEDGE_FIRST).unwrap(),
+            &cancellation,
             move || {
-                thread::sleep(Duration::from_millis(25));
-                Ok(CleanupProbe(worker_cleaned))
+                worker_cancellation.cancel();
+                release_rx
+                    .recv()
+                    .map_err(|error| format!("release the abandoned worker: {error}"))?;
+                Ok(CleanupProbe(cleaned_tx))
             },
         );
-        assert!(result.is_err());
-        let wait_until = std::time::Instant::now() + Duration::from_secs(1);
-        while !cleaned.load(Ordering::Acquire) && std::time::Instant::now() < wait_until {
-            thread::yield_now();
-        }
-        assert!(cleaned.load(Ordering::Acquire));
+        assert_eq!(
+            result.err(),
+            Some("identity journal filesystem operation cancelled".to_string())
+        );
+        release_tx.send(()).expect("release the abandoned worker");
+        cleaned_rx
+            .recv()
+            .expect("the abandoned worker must drop the result the wait no longer takes");
     }
 }

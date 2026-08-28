@@ -1570,6 +1570,22 @@ mod tests {
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
+    /// These tests are about what the store writes, not how fast it writes it;
+    /// the refusal these calls make on an expired deadline has its own test
+    /// below. The value is above the workspace nextest profile's
+    /// terminate-after (240 s) on purpose: a bound under it would turn a
+    /// correct-but-slow run into a failure this file invented, while the
+    /// runner is already there to kill a wedge and name it. It exists only so
+    /// a bare `cargo test`, which has no timeout of its own, eventually stops,
+    /// and it is above BOTH profiles' terminate-after in
+    /// extractor/native/.config/nextest.toml - 240 s on default, 600 s on
+    /// evidence - so under either the runner gets there first.
+    fn storage_deadline() -> ControlDeadline {
+        ControlDeadline::after(RUNNER_KILLS_A_WEDGE_FIRST).unwrap()
+    }
+
+    const RUNNER_KILLS_A_WEDGE_FIRST: Duration = Duration::from_secs(1800);
+
     struct TestRoot(PathBuf);
 
     impl TestRoot {
@@ -1666,6 +1682,46 @@ mod tests {
         compact_stream::StreamCompression::Zstd,
     ];
 
+    /// The bound the behaviour tests no longer carry, exercised where it is
+    /// the subject: an instant that is already past, and a cancellation that
+    /// is already set, each refuse by name without waiting on a clock.
+    #[test]
+    fn an_expired_deadline_or_a_set_cancellation_refuses_every_bounded_storage_call() {
+        let root = TestRoot::new();
+        let (first, current) = cid1(-1234, hour(0));
+        let (mut store, _writer) = FilesystemRolloverStore::create_for_test(
+            &root.0,
+            &first,
+            compact_stream::StreamCompression::None,
+        )
+        .unwrap();
+        let (_, next) = cid1(-1235, hour(2));
+        let proposal = proposal(&current, &next);
+
+        let expired = ControlDeadline::at(std::time::Instant::now());
+        assert_eq!(
+            store
+                .drain_contiguous_through(&proposal, expired, &ControlCancellation::new())
+                .unwrap_err(),
+            "rollover storage operation deadline expired"
+        );
+        assert_eq!(
+            store
+                .wait_for_new_header(expired, &ControlCancellation::new())
+                .unwrap_err(),
+            "rollover storage operation deadline expired"
+        );
+
+        let cancelled = ControlCancellation::new();
+        cancelled.cancel();
+        assert_eq!(
+            store
+                .wait_for_new_header(storage_deadline(), &cancelled)
+                .unwrap_err(),
+            "rollover storage operation cancelled"
+        );
+    }
+
     #[test]
     fn durable_store_cuts_files_and_withholds_streaming_until_cid1_commit() {
         for storage in STORAGE_ENCODINGS {
@@ -1685,7 +1741,7 @@ mod tests {
         let drained = store
             .drain_contiguous_through(
                 &proposal,
-                ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+                storage_deadline(),
                 &ControlCancellation::new(),
             )
             .unwrap();
@@ -1709,17 +1765,18 @@ mod tests {
         assert_eq!(
             store
                 .wait_for_new_header(
-                    ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+                    storage_deadline(),
                     &ControlCancellation::new(),
                 )
                 .unwrap(),
             next_first
         );
+        assert!(
+            matches!(done_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+            "the writer finished before the rollover it must wait for was committed"
+        );
         store.commit_new_header_for_test(1).unwrap();
-        done_rx
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap()
-            .unwrap();
+        done_rx.recv().unwrap().unwrap();
         blocked.join().unwrap();
         assert_eq!(
             store.durable_state().unwrap().phase,
@@ -1837,7 +1894,7 @@ mod tests {
         let drained = store
             .drain_contiguous_through(
                 &proposal,
-                ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+                storage_deadline(),
                 &ControlCancellation::new(),
             )
             .unwrap();
@@ -1845,7 +1902,7 @@ mod tests {
         writer.append_complete_record(&next_first).unwrap();
         store
             .wait_for_new_header(
-                ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+                storage_deadline(),
                 &ControlCancellation::new(),
             )
             .unwrap();
@@ -1934,7 +1991,7 @@ mod tests {
             let drained = store
                 .drain_contiguous_through(
                     &proposal,
-                    ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+                    storage_deadline(),
                     &ControlCancellation::new(),
                 )
                 .unwrap();
@@ -1970,7 +2027,7 @@ mod tests {
             let drained = store
                 .drain_contiguous_through(
                     &proposal,
-                    ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+                    storage_deadline(),
                     &ControlCancellation::new(),
                 )
                 .unwrap();

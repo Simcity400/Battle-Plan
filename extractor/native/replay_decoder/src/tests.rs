@@ -894,10 +894,11 @@ fn legacy_container_opens_and_matches_reference() {
     );
     assert_eq!(v.get("game_id").and_then(|x| x.as_str()), Some("legacy"));
 
-    let container = snapshot::container::Container::open(
-        &path,
+    let container = snapshot::container::Container::open_strict_with_file_receipt_from_file(
+        std::fs::File::open(&path).expect("open container directly"),
         &snapshot::container::ExpectedIdentity::default(),
     )
+    .map(|(container, _, _)| container)
     .expect("open container directly");
     let entry = container.entries_by_role(STREAM_ROLE);
     assert_eq!(entry.len(), 1);
