@@ -326,6 +326,88 @@ pub trait ProductionMapFeatureAdapter {
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput>;
 }
 
+/// The one error an adapter may raise that is an ANSWER rather than a defect:
+/// this family cannot be vouched from the admitted content, the recorded hour,
+/// or an upstream family that itself refused. It is recorded as
+/// [`FamilyDisposition::Unavailable`] and the remaining families are still
+/// prepared; `seal_readiness` is what refuses the frame.
+///
+/// Every other error out of an adapter is a contract violation and still aborts
+/// the preparation. Raising this type for one would file a defect as a content
+/// outcome.
+#[derive(Debug)]
+pub struct FamilyContentRefusal {
+    gap_id: String,
+    reason: String,
+}
+
+impl FamilyContentRefusal {
+    /// `gap_id` is owner-scoped (`"XMAP17.country_name_runtime_variable"`) for
+    /// the same reason a draw contract is: an unscoped id would let one
+    /// family's refusal be read as another's.
+    pub fn new(gap_id: impl Into<String>, reason: impl Into<String>) -> Box<dyn std::error::Error> {
+        Box::new(Self {
+            gap_id: gap_id.into(),
+            reason: reason.into(),
+        })
+    }
+
+    fn into_gap(self, family: MapVisualFamily, hour: i64) -> Result<FoundationGap> {
+        let owner_prefix = format!("{}.", family.owner_packet());
+        if !self.gap_id.starts_with(&owner_prefix)
+            || self.gap_id.len() <= owner_prefix.len()
+            || self.gap_id.trim() != self.gap_id
+            || self.reason.trim().is_empty()
+        {
+            return Err(format!(
+                "{family:?} raised a content refusal whose gap id {:?} is not scoped to its owner packet, or whose reason is blank",
+                self.gap_id
+            )
+            .into());
+        }
+        let witness_sha256 = Sha256::hex(
+            format!("{}\n{hour}\n{hour}\n{}", self.gap_id, self.reason).as_bytes(),
+        );
+        Ok(FoundationGap {
+            gap_id: self.gap_id,
+            first_unavailable_hour: hour,
+            last_unavailable_hour: hour,
+            witness_sha256,
+            reason: self.reason,
+        })
+    }
+}
+
+impl std::fmt::Display for FamilyContentRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.reason, self.gap_id)
+    }
+}
+
+impl std::error::Error for FamilyContentRefusal {}
+
+/// One family's preparation, once a content refusal has been separated from a
+/// contract violation.
+#[derive(Debug)]
+enum FamilyPreparation<T> {
+    Prepared(T),
+    Refused(FoundationGap),
+}
+
+fn classify_family_preparation<T>(
+    family: MapVisualFamily,
+    hour: i64,
+    outcome: Result<T>,
+) -> Result<FamilyPreparation<T>> {
+    match outcome {
+        Ok(value) => Ok(FamilyPreparation::Prepared(value)),
+        Err(error) => match error.downcast::<FamilyContentRefusal>() {
+            Ok(refusal) => Ok(FamilyPreparation::Refused(refusal.into_gap(family, hour)?)),
+            Err(error) => Err(error),
+        },
+    }
+}
+
 #[derive(Default)]
 pub struct ProductionMapFeatureAdapters<'a> {
     slots: BTreeMap<MapVisualFamily, Box<dyn ProductionMapFeatureAdapter + 'a>>,
@@ -338,14 +420,10 @@ pub struct ProductionMapFeatureAdapters<'a> {
 impl<'a> ProductionMapFeatureAdapters<'a> {
     pub fn register(&mut self, adapter: Box<dyn ProductionMapFeatureAdapter + 'a>) -> Result<()> {
         let family = adapter.family();
-        if (family == MapVisualFamily::Trees && self.xmap11.is_some())
-            || (family == MapVisualFamily::CitiesBuildingsMapObjects && self.xmap12.is_some())
-        {
+        if self.already_registered(family) {
             return Err(format!("duplicate production adapter for {family:?}").into());
         }
-        if self.slots.insert(family, adapter).is_some() {
-            return Err(format!("duplicate production adapter for {family:?}").into());
-        }
+        self.slots.insert(family, adapter);
         Ok(())
     }
 
@@ -357,11 +435,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
         &mut self,
         adapter: crate::production_features::xmap12::Xmap12CitiesBuildingsMapObjectsAdapter,
     ) -> Result<()> {
-        if self
-            .slots
-            .contains_key(&MapVisualFamily::CitiesBuildingsMapObjects)
-            || self.xmap12.is_some()
-        {
+        if self.already_registered(MapVisualFamily::CitiesBuildingsMapObjects) {
             return Err("duplicate production adapter for CitiesBuildingsMapObjects".into());
         }
         self.xmap12 = Some(adapter);
@@ -372,7 +446,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
         &mut self,
         adapter: crate::production_features::xmap11::Xmap11TreesAdapter,
     ) -> Result<()> {
-        if self.slots.contains_key(&MapVisualFamily::Trees) || self.xmap11.is_some() {
+        if self.already_registered(MapVisualFamily::Trees) {
             return Err("duplicate production adapter for Trees".into());
         }
         self.xmap11 = Some(adapter);
@@ -383,13 +457,30 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
         &mut self,
         adapter: crate::production_features::xmap17::Xmap17LabelAdapter,
     ) -> Result<()> {
-        if self.slots.contains_key(&MapVisualFamily::LabelsMapText) || self.xmap17.is_some() {
+        if self.already_registered(MapVisualFamily::LabelsMapText) {
             return Err("duplicate production adapter for LabelsMapText".into());
         }
         self.xmap17 = Some(adapter);
         Ok(())
     }
 
+    /// Registered by EITHER route. Three families are held in a dedicated slot
+    /// and the family loop prepares that one instead of a slot adapter, so a
+    /// family registered both ways would be prepared twice and one answer
+    /// discarded.
+    fn already_registered(&self, family: MapVisualFamily) -> bool {
+        self.slots.contains_key(&family)
+            || match family {
+                MapVisualFamily::Trees => self.xmap11.is_some(),
+                MapVisualFamily::CitiesBuildingsMapObjects => self.xmap12.is_some(),
+                MapVisualFamily::LabelsMapText => self.xmap17.is_some(),
+                _ => false,
+            }
+    }
+
+    /// Whether the family's OWN packet adapter is registered - the one that can
+    /// produce its executable payload, which a slot adapter for a dedicated
+    /// family is not.
     fn has(&self, family: MapVisualFamily) -> bool {
         if family == MapVisualFamily::Trees {
             self.xmap11.is_some()
@@ -1053,36 +1144,58 @@ fn prepare_foundation_frame_inner(
             }),
             xmap15_selection,
         };
+        // A family that cannot vouch is recorded and the loop goes on; only a
+        // contract violation stops the preparation here.
+        let mut content_refusal: Option<FoundationGap> = None;
+        let hour = world_frame.hour_index();
+        // A local macro rather than a closure: the four call sites prepare four
+        // different payload types, which one monomorphic closure cannot take.
+        macro_rules! prepared_or_refusal {
+            ($outcome:expr) => {
+                match classify_family_preparation(family, hour, $outcome)? {
+                    FamilyPreparation::Prepared(value) => Some(value),
+                    FamilyPreparation::Refused(gap) => {
+                        content_refusal = Some(gap);
+                        None
+                    }
+                }
+            };
+        }
         let xmap12_preparation = if family == MapVisualFamily::CitiesBuildingsMapObjects {
-            adapters
-                .xmap12
-                .as_ref()
-                .map(|adapter| {
-                    adapter.prepare(&context, xmap12_previous_building_visual, xmap12_fixed_runtime)
-                })
-                .transpose()?
+            match adapters.xmap12.as_ref() {
+                Some(adapter) => prepared_or_refusal!(adapter.prepare(
+                    &context,
+                    xmap12_previous_building_visual,
+                    xmap12_fixed_runtime,
+                )),
+                None => None,
+            }
         } else {
             None
         };
         let xmap11_preparation = if family == MapVisualFamily::Trees {
-            adapters
-                .xmap11
-                .as_ref()
-                .map(|adapter| adapter.prepare(&context))
-                .transpose()?
+            match adapters.xmap11.as_ref() {
+                Some(adapter) => prepared_or_refusal!(adapter.prepare(&context)),
+                None => None,
+            }
         } else {
             None
         };
         let xmap17_preparation = if family == MapVisualFamily::LabelsMapText {
-            adapters
-                .xmap17
-                .as_ref()
-                .map(|adapter| adapter.prepare(&context))
-                .transpose()?
+            match adapters.xmap17.as_ref() {
+                Some(adapter) => prepared_or_refusal!(adapter.prepare(&context)),
+                None => None,
+            }
         } else {
             None
         };
-        let disposition = if let Some(xmap11) = xmap11_preparation {
+        let generic_preparation = match adapters.get(family) {
+            Some(adapter) => prepared_or_refusal!(adapter.prepare(&context)),
+            None => None,
+        };
+        let disposition = if let Some(gap) = content_refusal {
+            FamilyDisposition::Unavailable { gap }
+        } else if let Some(xmap11) = xmap11_preparation {
             if prepared_trees.replace(xmap11.prepared).is_some() {
                 return Err("foundation produced duplicate XMAP11 tree payload".into());
             }
@@ -1123,7 +1236,7 @@ fn prepare_foundation_frame_inner(
             }
             output.disposition
         } else {
-            match (xmap12_preparation, adapters.get(family)) {
+            match (xmap12_preparation, generic_preparation) {
                 (Some(xmap12), _) => {
                     prepared_xmap12_building_visual = xmap12.building_visual;
                     if let Some(payload) = xmap12.prepared {
@@ -1156,8 +1269,7 @@ fn prepare_foundation_frame_inner(
                     }
                     output.disposition
                 }
-                (None, Some(adapter)) => {
-                    let output = adapter.prepare(&context)?;
+                (None, Some(output)) => {
                     if let Some(terrain) = output.prepared_terrain {
                         if family != MapVisualFamily::Terrain
                             || prepared_terrain.replace(terrain).is_some()
@@ -1468,14 +1580,18 @@ fn prepare_foundation_frame_inner(
     envelope.validate()?;
     let envelope = FoundationRenderEnvelope::decode_json(&envelope.encode_json()?)
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
-    let terrain =
-        prepared_terrain.ok_or("foundation Terrain adapter produced no executable draw payload")?;
+    // These three have no absent form - the rest of the preparation reads their
+    // payloads directly - so an absent one names the gap it recorded, not the
+    // symptom.
+    let terrain = prepared_terrain
+        .ok_or_else(|| mandatory_family_absence(&envelope, MapVisualFamily::Terrain))?;
     terrain.validate()?;
-    let political = prepared_political
-        .ok_or("foundation XMAP05 adapter produced no executable political payload")?;
+    let political = prepared_political.ok_or_else(|| {
+        mandatory_family_absence(&envelope, MapVisualFamily::PoliticalFillGradients)
+    })?;
     political.validate()?;
-    let map_modes =
-        prepared_map_modes.ok_or("foundation XMAP18 adapter produced no map-mode payload")?;
+    let map_modes = prepared_map_modes
+        .ok_or_else(|| mandatory_family_absence(&envelope, MapVisualFamily::MapModes))?;
     map_modes.validate()?;
     if map_modes.composition == crate::MapModeComposition::Supply {
         let rail_supply = envelope
@@ -1748,22 +1864,25 @@ fn prepare_foundation_frame_inner(
         }
     }
     let labels = if adapters.has(MapVisualFamily::LabelsMapText) {
-        let labels = prepared_labels
-            .ok_or("foundation XMAP17 adapter produced no executable label payload")?;
-        labels.validate()?;
         let row = envelope
             .families
             .iter()
             .find(|row| row.family == MapVisualFamily::LabelsMapText)
             .ok_or("foundation envelope omitted LabelsMapText")?;
-        if !matches!(
-            &row.disposition,
-            FamilyDisposition::Present { payload_sha256, .. }
-                if payload_sha256 == &labels.deterministic_sha256
-        ) {
-            return Err("foundation XMAP17 family row disagrees with executable payload".into());
+        match (&row.disposition, prepared_labels) {
+            // A refusing XMAP17 carries no payload, exactly as XMAP14 and XMAP15
+            // already do; the frame does not seal, `seal_readiness` says so.
+            (FamilyDisposition::Unavailable { .. }, None) => None,
+            (FamilyDisposition::Present { payload_sha256, .. }, Some(labels))
+                if payload_sha256 == &labels.deterministic_sha256 =>
+            {
+                labels.validate()?;
+                Some(labels)
+            }
+            _ => {
+                return Err("foundation XMAP17 family row disagrees with executable payload".into())
+            }
         }
-        Some(labels)
     } else {
         if prepared_labels.is_some() {
             return Err("foundation produced XMAP17 labels without registering its adapter".into());
@@ -1791,6 +1910,28 @@ fn prepare_foundation_frame_inner(
         map_modes,
         map_furniture: prepared_map_furniture,
     })
+}
+
+/// Why a family the rest of the preparation reads directly has no payload.
+fn mandatory_family_absence(
+    envelope: &FoundationRenderEnvelope,
+    family: MapVisualFamily,
+) -> Box<dyn std::error::Error> {
+    let owner = family.owner_packet();
+    match envelope
+        .families
+        .iter()
+        .find(|row| row.family == family)
+        .map(|row| &row.disposition)
+    {
+        Some(FamilyDisposition::Unavailable { gap }) => format!(
+            "{owner} refuses the mandatory {family:?} family, so this frame has no foundation: \
+             {} ({})",
+            gap.reason, gap.gap_id
+        ),
+        _ => format!("foundation {owner} adapter produced no executable {family:?} payload"),
+    }
+    .into()
 }
 
 fn unimplemented_adapter_gap(family: MapVisualFamily, hour: i64) -> FoundationGap {
@@ -2025,6 +2166,434 @@ fn validate_sha256(value: &str, label: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// kills: recording every adapter error as a content gap (a defect filed as
+    /// an outcome); dropping the owner scope from a refusal's gap id; accepting
+    /// a blank cause; and widening the hour window a single hour's refusal
+    /// claims.
+    #[test]
+    fn only_a_typed_content_refusal_becomes_an_owner_scoped_gap() {
+        let hour = 17_030_998i64;
+        let family = MapVisualFamily::LabelsMapText;
+
+        match classify_family_preparation(family, hour, Ok(7u32)).unwrap() {
+            FamilyPreparation::Prepared(value) => assert_eq!(value, 7),
+            FamilyPreparation::Refused(gap) => panic!("a success refused: {}", gap.reason),
+        }
+
+        let refusal = classify_family_preparation::<u32>(
+            family,
+            hour,
+            Err(FamilyContentRefusal::new(
+                "XMAP17.unbound_runtime_variable",
+                "no operand binds OVERLORDADJ",
+            )),
+        )
+        .unwrap();
+        let FamilyPreparation::Refused(gap) = refusal else {
+            panic!("a content refusal was taken for a prepared family");
+        };
+        assert_eq!(gap.gap_id, "XMAP17.unbound_runtime_variable");
+        assert_eq!(gap.reason, "no operand binds OVERLORDADJ");
+        assert_eq!(gap.first_unavailable_hour, hour);
+        assert_eq!(gap.last_unavailable_hour, hour);
+        assert_eq!(gap.witness_sha256.len(), 64);
+        assert!(gap
+            .witness_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+        // The witness has to move with what is being claimed, or two different
+        // refusals would carry one witness.
+        let other = classify_family_preparation::<u32>(
+            family,
+            hour,
+            Err(FamilyContentRefusal::new(
+                "XMAP17.unbound_runtime_variable",
+                "a different cause",
+            )),
+        )
+        .unwrap();
+        let FamilyPreparation::Refused(other) = other else {
+            panic!("a content refusal was taken for a prepared family");
+        };
+        assert_ne!(other.witness_sha256, gap.witness_sha256);
+
+        // Anything that is not a content refusal is a contract violation and
+        // still stops the preparation, with its own words.
+        let contract: Box<dyn std::error::Error> =
+            "XMAP17 admitted content belongs to another product modset".into();
+        let error = classify_family_preparation::<u32>(family, hour, Err(contract)).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "XMAP17 admitted content belongs to another product modset"
+        );
+
+        // A refusal that is not scoped to the family's own owner packet, or
+        // that says nothing, is itself a defect.
+        for (gap_id, reason) in [
+            ("XMAP04.unbound_runtime_variable", "wrong owner"),
+            ("XMAP17.", "empty suffix"),
+            ("unbound_runtime_variable", "no owner at all"),
+            ("XMAP17.unbound_runtime_variable", "   "),
+        ] {
+            let error = classify_family_preparation::<u32>(
+                family,
+                hour,
+                Err(FamilyContentRefusal::new(gap_id, reason)),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains("is not scoped to its owner packet, or whose reason is blank"),
+                "{gap_id:?}/{reason:?} was admitted: {error}"
+            );
+        }
+    }
+
+    /// kills: letting one family be registered twice. The family loop prepares
+    /// the generic slot adapter for every family, so one also held in a
+    /// dedicated slot would be prepared twice and one answer discarded.
+    #[test]
+    fn a_family_cannot_be_registered_twice_by_either_route() {
+        struct Fixture(MapVisualFamily);
+        impl ProductionMapFeatureAdapter for Fixture {
+            fn family(&self) -> MapVisualFamily {
+                self.0
+            }
+
+            fn prepare(
+                &self,
+                _context: &FoundationFeatureContext<'_>,
+            ) -> Result<FoundationFeatureOutput> {
+                unreachable!("registration fixture is never prepared")
+            }
+        }
+
+        for family in MapVisualFamily::ALL {
+            let mut adapters = ProductionMapFeatureAdapters::default();
+            adapters.register(Box::new(Fixture(family))).unwrap();
+            assert!(adapters.already_registered(family), "{family:?}");
+            let error = adapters
+                .register(Box::new(Fixture(family)))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("duplicate production adapter"),
+                "{family:?}: {error}"
+            );
+        }
+
+        // The dedicated-slot direction, which the loop above cannot reach: one
+        // predicate covers both, and each dedicated family names itself in it.
+        let source = include_str!("production_foundation.rs");
+        let predicate = source
+            .split_once("fn already_registered(&self, family: MapVisualFamily) -> bool {")
+            .expect("the registration predicate must exist")
+            .1
+            .split_once("\n    }")
+            .expect("the registration predicate must end")
+            .0;
+        assert!(predicate.contains("self.slots.contains_key(&family)"));
+        for (family, slot) in [
+            ("MapVisualFamily::Trees", "self.xmap11"),
+            ("MapVisualFamily::CitiesBuildingsMapObjects", "self.xmap12"),
+            ("MapVisualFamily::LabelsMapText", "self.xmap17"),
+        ] {
+            assert!(
+                predicate.contains(&format!("{family} => {slot}.is_some()")),
+                "{family} is not covered by the registration predicate"
+            );
+        }
+    }
+
+    /// Two families are registered in a constructor that can never vouch, so no
+    /// frame this product composes can seal, on any recording or hour.
+    ///
+    /// kills: gaining a third standing refusal unnoticed; changing either gap
+    /// id out from under the readiness graph. Promoting either family is meant
+    /// to fail this test - the count and the gap ids are what get re-stated.
+    #[test]
+    fn the_shipped_adapter_set_carries_exactly_two_standing_refusals() {
+        // The shipped set is built in two halves, and both register adapters.
+        let source = include_str!("production_foundation.rs");
+        let after_core = source
+            .split_once("fn foundation_feature_adapter_core(")
+            .expect("the production adapter set must exist")
+            .1;
+        let core = format!(
+            "{}{}",
+            after_core
+                .split_once("\npub fn ")
+                .expect("adapter core must end")
+                .0,
+            after_core
+                .split_once("pub fn product_feature_adapters_with_assigned_stage_schedule(")
+                .expect("the shipped adapter set must exist")
+                .1
+                .split_once("\n#[derive(")
+                .expect("the shipped adapter set must end")
+                .0
+        );
+        assert_eq!(
+            core.matches("_absent()").count(),
+            2,
+            "the shipped adapter set's standing refusals are no longer the two this test states"
+        );
+        assert_eq!(core.matches("carrier_absent()").count(), 1);
+        assert_eq!(core.matches("authority_absent()").count(), 1);
+        // XMAP14's is CONDITIONAL - it refuses only when this install's content
+        // cannot build the layer - so it is not a standing refusal and is
+        // counted separately.
+        assert_eq!(core.matches("new_or_unavailable(").count(), 1);
+
+        let hour = 17_030_998i64;
+        let standing = [
+            (
+                MapVisualFamily::ParticlesEffects,
+                "XMAP20.effect_lifecycle_carrier_absent",
+                crate::production_features::xmap20::Xmap20EffectsAdapter::carrier_absent_output(
+                    hour,
+                ),
+            ),
+            (
+                MapVisualFamily::MapFurnitureIcons,
+                "XMAP21.map_furniture_authority_absent",
+                crate::production_features::xmap21::Xmap21MapFurnitureAdapter::authority_absent_output(
+                    hour,
+                ),
+            ),
+        ];
+        let mut refusing = Vec::new();
+        for (family, gap_id, output) in &standing {
+            match &output.disposition {
+                FamilyDisposition::Unavailable { gap } => {
+                    assert_eq!(&gap.gap_id, gap_id, "{family:?}");
+                    assert!(!gap.reason.trim().is_empty(), "{family:?} refuses silently");
+                    refusing.push(*family);
+                }
+                other => panic!("{family:?} is no longer a standing refusal: {other:?}"),
+            }
+        }
+        assert_eq!(refusing.len(), 2);
+
+        // Every OTHER family vouching does not rescue the frame, and the seal
+        // says which two stopped it.
+        let envelope = FoundationRenderEnvelope {
+            schema: FOUNDATION_RENDER_SCHEMA.into(),
+            hour_index: hour,
+            content_manifest_sha256: "1".repeat(64),
+            product_modset_sha256: "2".repeat(64),
+            effective_vfs_manifest_sha256: "3".repeat(64),
+            foundation_content_operation_sha256: "4".repeat(64),
+            families: MapVisualFamily::ALL
+                .into_iter()
+                .map(|family| FamilyCoverageRow {
+                    family,
+                    owner_packet: family.owner_packet().into(),
+                    disposition: standing
+                        .iter()
+                        .find(|(standing_family, _, _)| *standing_family == family)
+                        .map(|(_, _, output)| output.disposition.clone())
+                        .unwrap_or(FamilyDisposition::AuthenticatedEmpty {
+                            producer_registration_sha256: "5".repeat(64),
+                            enumerator_witness_sha256: "6".repeat(64),
+                        }),
+                })
+                .collect(),
+            element_diagnostics: Vec::new(),
+        };
+        assert_eq!(envelope.gaps().count(), 2);
+        let refusal = envelope
+            .seal_readiness(&std::collections::BTreeSet::new())
+            .unwrap_err();
+        assert!(refusal.contains("ParticlesEffects"), "{refusal}");
+    }
+
+    /// kills: routing a fifth adapter preparation around the accounting, and
+    /// reverting any of the four back to a bare `?` that aborts the whole
+    /// preparation on one family's refusal.
+    #[test]
+    fn every_adapter_preparation_in_the_family_loop_is_accounted() {
+        let source = include_str!("production_foundation.rs");
+        let body = source
+            .split_once("fn prepare_foundation_frame_inner(")
+            .expect("the family loop must exist")
+            .1
+            .split_once("\n/// Why a family the rest of the preparation reads directly")
+            .expect("the family loop must end")
+            .0;
+        assert_eq!(
+            body.matches(".prepare(").count(),
+            4,
+            "the family loop prepares a number of adapters this test does not account for"
+        );
+        assert_eq!(
+            body.matches("prepared_or_refusal!(").count(),
+            4,
+            "an adapter preparation bypasses the content-refusal accounting"
+        );
+        let arm = body
+            .split_once("macro_rules! prepared_or_refusal {")
+            .expect("the accounting macro must exist")
+            .1
+            .split_once("\n        }")
+            .expect("the accounting macro must end")
+            .0;
+        assert!(arm.contains("classify_family_preparation(family, hour, $outcome)?"));
+        assert!(arm.contains("content_refusal = Some(gap)"));
+        // The refusal arm RECORDS and falls through: a `return` here would stop
+        // the preparation on the first family that cannot answer, and every
+        // string counted above would still be present.
+        for stop in ["return", "break", "continue"] {
+            assert!(
+                !arm.contains(stop),
+                "the refusal arm {stop}s instead of recording the family and going on"
+            );
+        }
+        // ...and what the loop then does with a recorded refusal: one row, and
+        // on to the next family.
+        let flat = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains(
+                concat!(
+                    "let disposition = if let Some(gap) = content_refusal {",
+                    " FamilyDisposition::Unavailable { gap } } else if"
+                )
+            ),
+            "a recorded refusal no longer becomes this family's row"
+        );
+
+        // Registration is what keeps that per-family preparation single.
+        let register = source
+            .split_once("pub fn register(&mut self")
+            .expect("registration must exist")
+            .1
+            .split_once("
+    }")
+            .expect("registration must end")
+            .0;
+        assert!(register.contains("if self.already_registered(family) {"));
+        for (route, family) in [
+            ("fn register_xmap11(", "MapVisualFamily::Trees"),
+            ("fn register_xmap12(", "MapVisualFamily::CitiesBuildingsMapObjects"),
+            ("fn register_xmap17(", "MapVisualFamily::LabelsMapText"),
+        ] {
+            let body = source
+                .split_once(route)
+                .unwrap_or_else(|| panic!("{route} must exist"))
+                .1
+                .split_once("
+    }")
+                .unwrap_or_else(|| panic!("{route} must end"))
+                .0;
+            assert!(
+                body.contains(&format!("if self.already_registered({family}) {{")),
+                "{route} no longer refuses a family the other route already holds"
+            );
+        }
+    }
+
+    /// The dump's own path, end to end at envelope grain: three families refuse,
+    /// and ONE preparation names all three instead of the first.
+    ///
+    /// kills: reporting only the first refusal; letting a refusing hour be
+    /// served from the stale-frame cache; and treating a draw-time deferral as
+    /// a refusal.
+    #[test]
+    fn one_refusing_hour_names_every_refusing_family_at_once() {
+        let hour = 17_030_998i64;
+        let refusals = [
+            (
+                MapVisualFamily::LabelsMapText,
+                "XMAP17.unbound_runtime_variable",
+            ),
+            (
+                MapVisualFamily::ParticlesEffects,
+                "XMAP20.effect_lifecycle_carrier_absent",
+            ),
+            (
+                MapVisualFamily::MapFurnitureIcons,
+                "XMAP21.map_furniture_authority_absent",
+            ),
+        ];
+        let envelope = FoundationRenderEnvelope {
+            schema: FOUNDATION_RENDER_SCHEMA.into(),
+            hour_index: hour,
+            content_manifest_sha256: "1".repeat(64),
+            product_modset_sha256: "2".repeat(64),
+            effective_vfs_manifest_sha256: "3".repeat(64),
+            foundation_content_operation_sha256: "4".repeat(64),
+            families: MapVisualFamily::ALL
+                .into_iter()
+                .map(|family| FamilyCoverageRow {
+                    family,
+                    owner_packet: family.owner_packet().into(),
+                    disposition: match refusals.iter().find(|(refusing, _)| *refusing == family) {
+                        Some((_, gap_id)) => {
+                            let reason = format!("{gap_id} cannot be vouched");
+                            FamilyDisposition::Unavailable {
+                                gap: FoundationGap {
+                                    gap_id: (*gap_id).into(),
+                                    first_unavailable_hour: hour,
+                                    last_unavailable_hour: hour,
+                                    witness_sha256: Sha256::hex(gap_id.as_bytes()),
+                                    reason,
+                                },
+                            }
+                        }
+                        None if family == MapVisualFamily::GradingPostFx => {
+                            FamilyDisposition::DeferredToDraw {
+                                producer_registration_sha256: "5".repeat(64),
+                                draw_contract_id: "XMAP10.postfx".into(),
+                                reason: "answered per frame".into(),
+                            }
+                        }
+                        None => FamilyDisposition::AuthenticatedEmpty {
+                            producer_registration_sha256: "6".repeat(64),
+                            enumerator_witness_sha256: "7".repeat(64),
+                        },
+                    },
+                })
+                .collect(),
+            element_diagnostics: Vec::new(),
+        };
+        envelope.validate().unwrap();
+
+        // This is the product route a dump takes: playback admission, then the
+        // freshness requirement that turns the outcome into the CLI's error.
+        let mut playback = FoundationPlaybackState::default();
+        let outcome = playback
+            .admit_allowing_xmap16_unavailable(envelope.clone())
+            .unwrap();
+        let unavailable = require_fresh_foundation_frame(outcome).unwrap_err();
+        let message = unavailable.to_string();
+        for (family, gap_id) in refusals {
+            assert!(message.contains(gap_id), "{family:?} is missing from {message}");
+        }
+        assert!(!message.contains("XMAP10.postfx"), "a deferral is not a refusal: {message}");
+
+        // A refusing hour never enters the stale-frame cache, so a later hour
+        // cannot be served this one's frame.
+        let vouched = FoundationRenderEnvelope {
+            families: MapVisualFamily::ALL
+                .into_iter()
+                .map(|family| FamilyCoverageRow {
+                    family,
+                    owner_packet: family.owner_packet().into(),
+                    disposition: FamilyDisposition::AuthenticatedEmpty {
+                        producer_registration_sha256: "6".repeat(64),
+                        enumerator_witness_sha256: "7".repeat(64),
+                    },
+                })
+                .collect(),
+            hour_index: hour + 1,
+            ..envelope.clone()
+        };
+        assert!(matches!(
+            playback.admit_allowing_xmap16_unavailable(vouched).unwrap(),
+            FoundationPlaybackOutcome::Fresh(_)
+        ));
+    }
 
     #[test]
     fn product_foundation_topology_seals_packet_chains_and_independent_stages() {

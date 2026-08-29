@@ -8,6 +8,10 @@ pub(crate) struct ProductMapFoundationSession {
     content_receipt: map_viewer::FoundationContentExecutionReceipt,
     adapters: map_viewer::ProductionMapFeatureAdapters<'static>,
     playback: map_viewer::FoundationPlaybackState,
+    /// Recorded BEFORE playback admission rules on it: a refusing hour never
+    /// gets past that admission, so this is the only place its per-family
+    /// account survives.
+    last_candidate_envelope: Option<map_viewer::FoundationRenderEnvelope>,
 }
 
 #[cfg(windows)]
@@ -83,7 +87,14 @@ impl ProductMapFoundationSession {
                 &manifest.localisation_language,
             )?,
             playback: map_viewer::FoundationPlaybackState::default(),
+            last_candidate_envelope: None,
         })
+    }
+
+    pub(crate) fn last_candidate_envelope(
+        &self,
+    ) -> Option<&map_viewer::FoundationRenderEnvelope> {
+        self.last_candidate_envelope.as_ref()
     }
 
     pub(crate) fn prepare_with_xmap12_inputs(
@@ -94,6 +105,9 @@ impl ProductMapFoundationSession {
         building_visual: Option<&map_viewer::Xmap12BuildingVisualFrame>,
         fixed_runtime: Option<&map_viewer::Xmap12FixedRuntimeState>,
     ) -> crate::Result<map_viewer::PreparedFoundationFrame> {
+        // Cleared FIRST: a failure before the family loop must not leave the
+        // previous hour's account standing as this one's.
+        self.last_candidate_envelope = None;
         let projection = map_viewer::map_authority_projection_from_world_frame(frame, manifest)?;
         let admission = map_viewer::admit_map_authority_projection(&projection)?;
         let candidate = self.adapters.prepare_with_xmap12_inputs(
@@ -105,6 +119,7 @@ impl ProductMapFoundationSession {
             building_visual,
             fixed_runtime,
         )?;
+        self.last_candidate_envelope = Some(candidate.envelope.clone());
         let fresh = map_viewer::require_fresh_foundation_frame(
             self.playback
                 .admit_allowing_xmap16_unavailable(candidate.envelope.clone())?,
@@ -125,6 +140,9 @@ impl ProductMapFoundationSession {
         fixed_runtime: Option<&map_viewer::Xmap12FixedRuntimeState>,
         selection: &map_viewer::Xmap15ViewerSelection,
     ) -> crate::Result<map_viewer::PreparedFoundationFrame> {
+        // Cleared FIRST: a failure before the family loop must not leave the
+        // previous hour's account standing as this one's.
+        self.last_candidate_envelope = None;
         let projection = map_viewer::map_authority_projection_from_world_frame(frame, manifest)?;
         let admission = map_viewer::admit_map_authority_projection(&projection)?;
         let candidate = self.adapters.prepare_with_xmap12_and_xmap15_inputs(
@@ -137,6 +155,7 @@ impl ProductMapFoundationSession {
             fixed_runtime,
             selection,
         )?;
+        self.last_candidate_envelope = Some(candidate.envelope.clone());
         let fresh = map_viewer::require_fresh_foundation_frame(
             self.playback
                 .admit_allowing_xmap16_unavailable(candidate.envelope.clone())?,

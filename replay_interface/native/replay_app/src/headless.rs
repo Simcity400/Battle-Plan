@@ -66,6 +66,229 @@ pub(crate) fn verify_xmap22_dump(path: &Path) -> Result<()> {
     Ok(())
 }
 
+pub(crate) const FRAME_DUMP_REFUSAL_SCHEMA: &str = "hoi4.frame-dump-refusal.v1";
+
+/// The per-family account of a dump that published no frame. A dump that seals
+/// publishes the XMAP22 composition receipt instead, whose
+/// `mandatory_family_execution_census` is the same account one grain richer.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FrameDumpRefusalAccount {
+    pub schema: String,
+    pub foundation_envelope_sha256: String,
+    pub envelope: map_viewer::FoundationRenderEnvelope,
+}
+
+impl FrameDumpRefusalAccount {
+    pub(crate) fn from_envelope(envelope: &map_viewer::FoundationRenderEnvelope) -> Result<Self> {
+        let account = Self {
+            schema: FRAME_DUMP_REFUSAL_SCHEMA.into(),
+            foundation_envelope_sha256: envelope.deterministic_sha256()?,
+            envelope: envelope.clone(),
+        };
+        account.validate()?;
+        Ok(account)
+    }
+
+    pub(crate) fn decode_json(bytes: &[u8]) -> Result<Self> {
+        let value: Self = serde_json::from_slice(bytes)?;
+        // `deny_unknown_fields` does not reach inside an internally tagged
+        // enum's variants, so a stray field in a disposition would be dropped
+        // and two different files would admit as one account. Comparing the
+        // submitted tree against the re-encoded decode closes that.
+        let submitted: serde_json::Value = serde_json::from_slice(bytes)?;
+        if submitted != serde_json::to_value(&value)? {
+            return Err(
+                "frame-dump refusal account carries fields outside its admitted schema".into(),
+            );
+        }
+        value.validate()?;
+        Ok(value)
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.schema != FRAME_DUMP_REFUSAL_SCHEMA {
+            return Err(format!("frame-dump refusal account schema {}", self.schema).into());
+        }
+        // The envelope's own law is where "twenty families, in family order" is
+        // enforced; the digest binds this account to that envelope and no other.
+        self.envelope.validate()?;
+        if self.foundation_envelope_sha256 != self.envelope.deterministic_sha256()? {
+            return Err("frame-dump refusal account digest is not its own envelope's".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn families_total(&self) -> usize {
+        self.envelope.families.len()
+    }
+
+    pub(crate) fn families_refusing(&self) -> usize {
+        self.envelope.gaps().count()
+    }
+
+    /// The refusing families, in family order, as one line each.
+    pub(crate) fn refusal_lines(&self) -> Vec<String> {
+        self.envelope
+            .gaps()
+            .map(|(family, gap)| {
+                format!(
+                    "{family:?} ({}) refuses: {} [{}]",
+                    family.owner_packet(),
+                    gap.reason,
+                    gap.gap_id
+                )
+            })
+            .collect()
+    }
+}
+
+fn frame_dump_refusal_path(path: &Path) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(".refusal.json");
+    PathBuf::from(value)
+}
+
+/// A dump has exactly one outcome.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum DumpOutcome {
+    Frame,
+    Refusal,
+}
+
+impl DumpOutcome {
+    fn token(self) -> &'static str {
+        match self {
+            Self::Frame => "frame",
+            Self::Refusal => "refusal",
+        }
+    }
+
+    /// The FIRST artifact this outcome publishes, and therefore the one name
+    /// that settles whether the outcome happened. Every other artifact a dump
+    /// writes - the XMAP22 receipt, the H2 sidecars - follows it, which
+    /// `the_dump_path_publishes_the_account_and_claims_its_outcome` holds each
+    /// route to, so no second name has to be remembered here.
+    fn first_artifact(self, out: &Path) -> PathBuf {
+        match self {
+            Self::Frame => out.to_path_buf(),
+            Self::Refusal => frame_dump_refusal_path(out),
+        }
+    }
+
+    fn other(self) -> Self {
+        match self {
+            Self::Frame => Self::Refusal,
+            Self::Refusal => Self::Frame,
+        }
+    }
+}
+
+const DUMP_OUTCOME_CLAIM_SUFFIX: &str = ".outcome";
+
+fn dump_outcome_claim_path(out: &Path) -> PathBuf {
+    let mut path = out.as_os_str().to_os_string();
+    path.push(DUMP_OUTCOME_CLAIM_SUFFIX);
+    PathBuf::from(path)
+}
+
+/// Both outcome paths claim the dump here before publishing anything of their
+/// own, so a frame and a refusal never end up beside each other.
+///
+/// Two things arbitrate, because one cannot do both jobs. The other outcome's
+/// first artifact is ASKED ABOUT BY NAME rather than found by folding directory
+/// entries: whether two names are one file is the filesystem's judgement, not a
+/// case table's, and `try_exists` turns a question it cannot answer into an
+/// error instead of an absence. The claim file then settles two runs racing at
+/// one path, because `hard_link` refuses a name that already exists.
+///
+/// The claim is PERMANENT and nothing removes it, so what a path admits is
+/// settled once and for all: ONE outcome, for ever. It is not spent by the
+/// claim alone - the SAME outcome may be attempted again, which is what lets a
+/// dump killed in its 45-minute admission be re-run without inventing a new
+/// path. What the second attempt may publish is then each artifact's own
+/// business, and every one of them refuses to be republished with different
+/// bytes.
+fn claim_dump_outcome(out: &Path, outcome: DumpOutcome) -> Result<()> {
+    let published = outcome.other().first_artifact(out);
+    if published.try_exists().map_err(|error| {
+        format!(
+            "cannot establish whether {} was already published: {error}",
+            published.display()
+        )
+    })? {
+        return Err(format!(
+            "this dump cannot publish {}: {} is the other outcome, already published",
+            outcome.token(),
+            published.display()
+        )
+        .into());
+    }
+    write_create_new_or_equal(
+        &dump_outcome_claim_path(out),
+        format!("{}\n", outcome.token()).as_bytes(),
+        "dump outcome claim",
+    )
+    .map_err(|error| -> Box<dyn std::error::Error> {
+        format!("this dump cannot publish {}: {error}", outcome.token()).into()
+    })
+}
+
+fn publish_frame_dump_refusal_account(
+    out: &Path,
+    hour: i64,
+    envelope: &map_viewer::FoundationRenderEnvelope,
+) -> Result<(PathBuf, FrameDumpRefusalAccount)> {
+    if envelope.hour_index != hour {
+        return Err(format!(
+            "the account on hand is hour {}, not the hour {hour} this dump asked for",
+            envelope.hour_index
+        )
+        .into());
+    }
+    // Built and validated before the outcome is claimed, so an envelope this
+    // account cannot describe leaves the dump's outcome unclaimed.
+    let account = FrameDumpRefusalAccount::from_envelope(envelope)?;
+    let mut bytes = serde_json::to_vec_pretty(&account)?;
+    bytes.push(b'\n');
+    claim_dump_outcome(out, DumpOutcome::Refusal)?;
+    let path = frame_dump_refusal_path(out);
+    write_create_new_or_equal(&path, &bytes, "frame-dump refusal account")?;
+    Ok((path, account))
+}
+
+/// A composition that did not seal still owes the reader an account. The
+/// original error stays first and unaltered; a sink failure never replaces it.
+fn frame_dump_refusal_error(
+    out: &Path,
+    hour: i64,
+    envelope: Option<&map_viewer::FoundationRenderEnvelope>,
+    error: Box<dyn std::error::Error>,
+) -> Box<dyn std::error::Error> {
+    let Some(envelope) = envelope else {
+        return error;
+    };
+    match publish_frame_dump_refusal_account(out, hour, envelope) {
+        Ok((path, account)) => {
+            let mut message = format!(
+                "{error}\nno frame was published; the per-family account is {}\n\
+                 {} of {} families refused this hour:",
+                path.display(),
+                account.families_refusing(),
+                account.families_total()
+            );
+            for line in account.refusal_lines() {
+                message.push_str("\n  ");
+                message.push_str(&line);
+            }
+            message.into()
+        }
+        Err(sink) => {
+            format!("{error} (the per-family account could not be written: {sink})").into()
+        }
+    }
+}
+
 fn xmap22_receipt_path(path: &Path) -> PathBuf {
     let mut value = path.as_os_str().to_os_string();
     value.push(".xmap22.json");
@@ -359,7 +582,6 @@ pub(crate) fn write_create_new_or_equal(path: &Path, bytes: &[u8], label: &str) 
     result
 }
 
-
 struct FrameKeying {
     owners: std::sync::Arc<std::collections::BTreeMap<u32, String>>,
     controllers: std::sync::Arc<std::collections::BTreeMap<u32, String>>,
@@ -521,6 +743,7 @@ fn dump_debug_frame(
     let line2 =
         format!("{label} | {POLITICAL_COLOR_BLOCKER_BADGE} | prov - state - owner - controller -");
     overlay.draw(&gfx, &hour_label, &line2, hour_index, hours.len())?;
+    claim_dump_outcome(out, DumpOutcome::Frame)?;
     let pixels = gfx.read_target()?;
     write_bmp(out, DUMP_WIDTH, DUMP_HEIGHT, &pixels)?;
     let snow_mud_h2_receipt_path = renderer
@@ -740,7 +963,7 @@ fn dump_production_recording_frame(
         crate::win32::actual_client_input_variant(),
     )?;
     let xmap15_selection = map_viewer::xmap15_viewer_selection(&frame, None);
-    let receipt = composition.execute(
+    let executed = composition.execute(
         &game_resolver,
         &content_admission,
         content_manifest,
@@ -752,8 +975,20 @@ fn dump_production_recording_frame(
         false,
         false,
         ui_profile.key().gui_scale(),
-    )?;
+    );
     phases.mark("render_execute");
+    let receipt = match executed {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            return Err(frame_dump_refusal_error(
+                out,
+                selected_hour,
+                composition.last_foundation_envelope(),
+                error,
+            ))
+        }
+    };
+    claim_dump_outcome(out, DumpOutcome::Frame)?;
     let pixels = composition.read_target()?;
     if snapshot::sha256::Sha256::hex(&pixels) != receipt.final_pixels_sha256 {
         return Err("XMAP22 headless readback changed after the sealed composition".into());
@@ -763,7 +998,13 @@ fn dump_production_recording_frame(
     let receipt_path = xmap22_receipt_path(out);
     let mut receipt_bytes = serde_json::to_vec_pretty(&receipt)?;
     receipt_bytes.push(b'\n');
-    write_create_new_or_equal(&receipt_path, &receipt_bytes, "XMAP22 composition receipt")
+    write_create_new_or_equal(&receipt_path, &receipt_bytes, "XMAP22 composition receipt")?;
+    println!(
+        "wrote frame dump: {} ({DUMP_WIDTH}x{DUMP_HEIGHT}, hour {selected_hour}), receipt {}",
+        out.display(),
+        receipt_path.display()
+    );
+    Ok(())
 }
 
 fn reject_production_dump_debug_inputs(
@@ -843,6 +1084,429 @@ fn canonical_bmp_header(width: u32, height: u32, image_bytes: u32) -> Result<[u8
 mod tests {
     use super::*;
     use snapshot::{pack, PackEntry, PackIdentity};
+
+    fn account_digest(seed: u8) -> String {
+        snapshot::sha256::Sha256::hex(&[seed])
+    }
+
+    fn account_envelope(
+        overrides: &[(map_viewer::MapVisualFamily, map_viewer::FamilyDisposition)],
+        omit: Option<map_viewer::MapVisualFamily>,
+    ) -> map_viewer::FoundationRenderEnvelope {
+        let families = map_viewer::MapVisualFamily::ALL
+            .into_iter()
+            .filter(|family| Some(*family) != omit)
+            .map(|family| map_viewer::FamilyCoverageRow {
+                family,
+                owner_packet: family.owner_packet().into(),
+                disposition: overrides
+                    .iter()
+                    .find(|(over, _)| *over == family)
+                    .map(|(_, disposition)| disposition.clone())
+                    .unwrap_or(map_viewer::FamilyDisposition::Present {
+                        payload_schema: "hoi4.test.v1".into(),
+                        producer_registration_sha256: account_digest(1),
+                        payload_sha256: account_digest(2),
+                        ordered_operations: Vec::new(),
+                        ordered_used_content: Vec::new(),
+                    }),
+            })
+            .collect();
+        map_viewer::FoundationRenderEnvelope {
+            schema: map_viewer::FOUNDATION_RENDER_SCHEMA.into(),
+            hour_index: 17_030_998,
+            content_manifest_sha256: account_digest(3),
+            product_modset_sha256: account_digest(4),
+            effective_vfs_manifest_sha256: account_digest(5),
+            foundation_content_operation_sha256: account_digest(6),
+            families,
+            element_diagnostics: Vec::new(),
+        }
+    }
+
+    fn refusing_labels() -> (map_viewer::MapVisualFamily, map_viewer::FamilyDisposition) {
+        (
+            map_viewer::MapVisualFamily::LabelsMapText,
+            map_viewer::FamilyDisposition::Unavailable {
+                gap: map_viewer::FoundationGap {
+                    gap_id: "XMAP17.unbound_runtime_variable".into(),
+                    first_unavailable_hour: 17_030_998,
+                    last_unavailable_hour: 17_030_998,
+                    witness_sha256: account_digest(7),
+                    reason: "no operand binds OVERLORDADJ".into(),
+                },
+            },
+        )
+    }
+
+    /// kills: an account that says less than the preparation knew, or that
+    /// reads as an account it is not.
+    #[test]
+    fn the_refusal_account_covers_every_family_and_names_each_refusal() {
+        let total = map_viewer::MapVisualFamily::ALL.len();
+        let vouched = FrameDumpRefusalAccount::from_envelope(&account_envelope(&[], None)).unwrap();
+        assert_eq!(vouched.families_total(), total);
+        assert_eq!(vouched.families_refusing(), 0);
+        assert!(vouched.refusal_lines().is_empty());
+
+        let deferred = (
+            map_viewer::MapVisualFamily::GradingPostFx,
+            map_viewer::FamilyDisposition::DeferredToDraw {
+                producer_registration_sha256: account_digest(8),
+                draw_contract_id: "XMAP10.postfx".into(),
+                reason: "answered per frame".into(),
+            },
+        );
+        let refused = account_envelope(&[refusing_labels(), deferred], None);
+        let account = FrameDumpRefusalAccount::from_envelope(&refused).unwrap();
+        assert_eq!(account.families_total(), total);
+        assert_eq!(account.families_refusing(), 1);
+        assert_eq!(account.envelope, refused);
+        assert_eq!(
+            account.refusal_lines(),
+            vec![concat!(
+                "LabelsMapText (XMAP17) refuses: no operand binds OVERLORDADJ",
+                " [XMAP17.unbound_runtime_variable]"
+            )
+            .to_string()]
+        );
+        // A deferral is not a refusal and never appears as one.
+        assert!(!account.refusal_lines().iter().any(|line| line.contains("XMAP10")));
+
+        // An envelope that is not twenty families in family order is refused by
+        // the envelope's own law, which this account is required to run.
+        assert!(FrameDumpRefusalAccount::from_envelope(&account_envelope(
+            &[],
+            Some(map_viewer::MapVisualFamily::Trees)
+        ))
+        .is_err());
+
+        // A file carrying anything outside the schema is refused rather than
+        // normalised into an account that is not what was written.
+        let bytes = serde_json::to_vec(&account).unwrap();
+        let decoded = FrameDumpRefusalAccount::decode_json(&bytes).unwrap();
+        assert_eq!(decoded, account);
+        let mut tree: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        tree["envelope"]["families"][0]["disposition"]["smuggled"] =
+            serde_json::Value::from("field");
+        assert!(
+            FrameDumpRefusalAccount::decode_json(&serde_json::to_vec(&tree).unwrap())
+                .unwrap_err()
+                .to_string()
+                .contains("outside its admitted schema")
+        );
+
+        // Each forgery agrees with itself and disagrees with its own envelope.
+        let forge = |edit: &dyn Fn(&mut FrameDumpRefusalAccount)| {
+            let mut forged = account.clone();
+            edit(&mut forged);
+            forged.validate().unwrap_err().to_string()
+        };
+        assert!(
+            forge(&|forged| forged.envelope.hour_index += 1).contains("is not its own envelope's"),
+            "an account for another hour must not read as this one's"
+        );
+        assert!(
+            forge(&|forged| forged.envelope.effective_vfs_manifest_sha256 = account_digest(9))
+                .contains("is not its own envelope's"),
+            "an account for another install must not read as this one's"
+        );
+        assert!(forge(&|forged| forged.schema = "hoi4.frame-dump-refusal.v2".into())
+            .contains("frame-dump refusal account schema"));
+    }
+
+    /// kills: publishing a refusal account beside a published frame or a frame
+    /// beside a published refusal; overwriting one run's account with another's;
+    /// and losing the composition error when there is no account to publish.
+    #[test]
+    fn a_dump_publishes_one_outcome_and_its_account_is_immutable() {
+        let root = std::env::temp_dir().join(format!(
+            "battle-plan-wb-refusal-{}-{}",
+            std::process::id(),
+            IMMUTABLE_PUBLISH_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let out = root.join("frame.bmp");
+        let refused = account_envelope(&[refusing_labels()], None);
+
+        // No envelope means no account, and the composition error survives whole.
+        let hour = 17_030_998i64;
+        let bare = frame_dump_refusal_error(&out, hour, None, "the composition failed".into());
+        assert_eq!(bare.to_string(), "the composition failed");
+        assert!(!frame_dump_refusal_path(&out).exists());
+
+        // An account for another hour is not this dump's outcome and is never
+        // published as one; the composition error survives that refusal.
+        let wrong_hour = frame_dump_refusal_error(
+            &out,
+            hour + 1,
+            Some(&refused),
+            "XMAP22 cannot seal this frame".into(),
+        )
+        .to_string();
+        assert!(wrong_hour.contains("not the hour 17030999 this dump asked for"), "{wrong_hour}");
+        assert!(wrong_hour.starts_with("XMAP22 cannot seal this frame"), "{wrong_hour}");
+        assert!(!frame_dump_refusal_path(&out).exists());
+
+        let reported = frame_dump_refusal_error(
+            &out,
+            hour,
+            Some(&refused),
+            "XMAP22 cannot seal this frame".into(),
+        )
+        .to_string();
+        assert!(reported.starts_with("XMAP22 cannot seal this frame"), "{reported}");
+        assert!(reported.contains("1 of 20 families refused this hour"), "{reported}");
+        assert!(reported.contains("XMAP17.unbound_runtime_variable"), "{reported}");
+        assert!(reported.contains("no operand binds OVERLORDADJ"), "{reported}");
+
+        let path = frame_dump_refusal_path(&out);
+        let written =
+            FrameDumpRefusalAccount::decode_json(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(written.envelope, refused);
+
+        // Republishing the same account is the same account; a different one is
+        // refused rather than overwriting the first.
+        publish_frame_dump_refusal_account(&out, hour, &refused).unwrap();
+        assert!(
+            publish_frame_dump_refusal_account(&out, hour, &account_envelope(&[], None))
+                .unwrap_err()
+                .to_string()
+                .contains("already exists with different bytes")
+        );
+
+        // A dump has one outcome, in either order: a published refusal stops a
+        // frame, and a published frame stops a refusal.
+        assert!(claim_dump_outcome(&out, DumpOutcome::Frame)
+            .unwrap_err()
+            .to_string()
+            .contains("this dump cannot publish frame"));
+        let sealed = root.join("sealed.bmp");
+        claim_dump_outcome(&sealed, DumpOutcome::Frame).unwrap();
+        write_bmp(&sealed, 1, 1, &[0, 0, 0, 255]).unwrap();
+        assert!(publish_frame_dump_refusal_account(&sealed, hour, &refused)
+            .unwrap_err()
+            .to_string()
+            .contains("this dump cannot publish refusal"));
+        assert!(!frame_dump_refusal_path(&sealed).exists());
+
+        // An artifact published without a claim - by a run that predates the
+        // claim, or one killed between publishing and claiming - still settles
+        // the outcome, because the claim is not the only arbiter. Each outcome
+        // is settled by the ONE artifact it publishes first; everything else a
+        // dump writes follows that one, which the wiring guard holds each route
+        // to.
+        for (name, blocked) in [
+            ("bare.bmp", DumpOutcome::Refusal),
+            ("refused.bmp", DumpOutcome::Frame),
+        ] {
+            let path = root.join(name);
+            let published = blocked.other().first_artifact(&path);
+            std::fs::write(&published, b"published\n").unwrap();
+            let error = claim_dump_outcome(&path, blocked).unwrap_err().to_string();
+            assert!(error.contains("is the other outcome, already published"), "{error}");
+            assert!(error.contains(&published.display().to_string()), "{error}");
+            assert!(
+                !dump_outcome_claim_path(&path).exists(),
+                "a refused claim was still taken"
+            );
+        }
+
+        // What a path admits is settled once and for all. The SAME outcome may
+        // be attempted again - a dump killed in its admission is re-run at the
+        // path it already claimed - and the other outcome never may.
+        let settled = root.join("settled.bmp");
+        claim_dump_outcome(&settled, DumpOutcome::Frame).unwrap();
+        claim_dump_outcome(&settled, DumpOutcome::Frame).unwrap();
+        assert!(dump_outcome_claim_path(&settled).exists());
+        assert!(claim_dump_outcome(&settled, DumpOutcome::Refusal)
+            .unwrap_err()
+            .to_string()
+            .contains("this dump cannot publish refusal"));
+        // ...and a second attempt at the same outcome still cannot publish
+        // different bytes over what the first one left.
+        write_bmp(&settled, 1, 1, &[0, 0, 0, 255]).unwrap();
+        assert!(write_bmp(&settled, 1, 1, &[255, 255, 255, 255])
+            .unwrap_err()
+            .to_string()
+            .contains("already exists with different bytes"));
+
+        // The two outcomes name two different first artifacts, and each asks
+        // about the other's by name rather than deciding which directory
+        // entries look like its own.
+        let named = root.join("named.bmp");
+        assert_eq!(DumpOutcome::Frame.first_artifact(&named), named);
+        assert_eq!(
+            DumpOutcome::Refusal.first_artifact(&named),
+            frame_dump_refusal_path(&named)
+        );
+        assert_eq!(DumpOutcome::Frame.other(), DumpOutcome::Refusal);
+        assert_eq!(DumpOutcome::Refusal.other(), DumpOutcome::Frame);
+
+        // A neighbour that merely starts with the same name is nobody's
+        // artifact and settles nothing.
+        let bounded = root.join("bounded.bmp");
+        for neighbour in ["bounded.bmp2", "bounded.bmpx", "bounded.bmp-backup"] {
+            std::fs::write(root.join(neighbour), b"not ours\n").unwrap();
+        }
+        claim_dump_outcome(&bounded, DumpOutcome::Refusal).unwrap();
+
+        // Absence has to be established, not assumed: a path whose parent
+        // directory is missing has nothing published at it, and a question the
+        // filesystem cannot answer is an error rather than an absence.
+        let missing = root.join("no-such-directory").join("frame.bmp");
+        claim_dump_outcome(&missing, DumpOutcome::Frame).unwrap_err();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// One function's body, found by BALANCING BRACES rather than by a sentinel
+    /// in the text after it, so an unrelated edit nearby cannot move it.
+    fn function_body<'a>(source: &'a str, signature: &str) -> &'a str {
+        let after = source
+            .split_once(signature)
+            .unwrap_or_else(|| panic!("{signature} must exist"))
+            .1;
+        let open = after
+            .find('{')
+            .unwrap_or_else(|| panic!("{signature} has no body"));
+        let body = &after[open + 1..];
+        let bytes = body.as_bytes();
+        let (mut depth, mut index) = (1usize, 0usize);
+        let (mut in_string, mut in_char, mut escaped, mut in_comment) =
+            (false, false, false, false);
+        while index < bytes.len() {
+            let byte = bytes[index];
+            if in_comment {
+                if byte == b'\n' {
+                    in_comment = false;
+                }
+            } else if escaped {
+                escaped = false;
+            } else if byte == b'\\' && (in_string || in_char) {
+                escaped = true;
+            } else if in_string {
+                in_string = byte != b'"';
+            } else if in_char {
+                in_char = byte != b'\'';
+            } else if byte == b'"' {
+                in_string = true;
+            } else if byte == b'\'' && bytes.get(index + 1) != Some(&b'a') {
+                // A lifetime (`'a`) is not a character literal. The bodies this
+                // walks carry no other apostrophe outside a string.
+                in_char = true;
+            } else if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+                in_comment = true;
+            } else if byte == b'{' {
+                depth += 1;
+            } else if byte == b'}' {
+                depth -= 1;
+                if depth == 0 {
+                    return &body[..index];
+                }
+            }
+            index += 1;
+        }
+        panic!("{signature} body is not brace-balanced");
+    }
+
+    /// The wiring the helpers above cannot reach on their own: only a real dump
+    /// of a real capture executes it, so it is pinned at the source.
+    ///
+    /// kills: a dump that returns its composition error without publishing the
+    /// account; either frame publisher losing its outcome claim or publishing
+    /// anything before it; and a foundation session that stops recording the
+    /// envelope a refusing hour leaves behind, or records it too late.
+    #[test]
+    fn the_dump_path_publishes_the_account_and_claims_its_outcome() {
+        let source = include_str!("headless.rs");
+        let flatten = |body: &str| body.split_whitespace().collect::<Vec<_>>().join(" ");
+        let production = flatten(function_body(source, "fn dump_production_recording_frame("));
+        assert!(
+            production.contains(concat!(
+                "Err(error) => { return Err(frame_dump_refusal_error( out, selected_hour,",
+                " composition.last_foundation_envelope(), error, )) }"
+            )),
+            "the dump no longer publishes an account for a composition it could not seal"
+        );
+
+        for (route, frame) in [
+            ("the production dump", &production),
+            (
+                "the debug dump",
+                &flatten(function_body(source, "fn dump_debug_frame(")),
+            ),
+        ] {
+            assert_eq!(
+                frame
+                    .matches("claim_dump_outcome(out, DumpOutcome::Frame)?;")
+                    .count(),
+                1,
+                "{route} publishes a frame without claiming the outcome exactly once"
+            );
+            let claim = frame
+                .find("claim_dump_outcome(out, DumpOutcome::Frame)?;")
+                .expect("the claim was just counted");
+            for published in [
+                "read_target()?",
+                "write_bmp(out, DUMP_WIDTH, DUMP_HEIGHT, &pixels)?;",
+            ] {
+                let at = frame
+                    .find(published)
+                    .unwrap_or_else(|| panic!("{route} no longer publishes {published}"));
+                assert!(claim < at, "{route} publishes {published} before its claim");
+            }
+            // Every artifact derived from `out` follows THE BMP, not merely the
+            // claim: `DumpOutcome::first_artifact` names one artifact per
+            // outcome and asks about the other's, which only settles the
+            // question while nothing this route writes can appear before it.
+            // `--dump-hdr` is not among them: its path is the caller's, not one
+            // this dump derives.
+            let bmp = frame
+                .find("write_bmp(out, DUMP_WIDTH, DUMP_HEIGHT, &pixels)?;")
+                .expect("the BMP write was just required");
+            for sidecar in [
+                "write_snow_mud_h2_receipt(",
+                "write_occupation_secondary_h2_evidence(",
+                "xmap22_receipt_path(out)",
+            ] {
+                if let Some(at) = frame.find(sidecar) {
+                    assert!(bmp < at, "{route} publishes {sidecar} before the frame it belongs to");
+                }
+            }
+        }
+
+        // Each preparation clears the previous hour's account as its FIRST
+        // statement and records between the family loop and the playback
+        // admission that rejects a refusing hour.
+        let session = include_str!("validate.rs");
+        for method in [
+            "pub(crate) fn prepare_with_xmap12_inputs(",
+            "pub(crate) fn prepare_with_xmap12_and_xmap15_inputs(",
+        ] {
+            let raw = function_body(session, method);
+            let prepare = flatten(raw);
+            let at = |needle: &str| {
+                prepare
+                    .find(needle)
+                    .unwrap_or_else(|| panic!("{method} no longer has: {needle}"))
+            };
+            let first = raw
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty() && !line.starts_with("//"))
+                .unwrap_or_else(|| panic!("{method} has no statements"));
+            assert_eq!(
+                first, "self.last_candidate_envelope = None;",
+                "{method} does something before clearing the previous hour's account"
+            );
+            let recorded = at("self.last_candidate_envelope = Some(candidate.envelope.clone());");
+            assert!(
+                at("let candidate = self.adapters.prepare_with_xmap12") < recorded
+                    && recorded < at(".admit_allowing_xmap16_unavailable("),
+                "{method} records the envelope outside the window it exists in"
+            );
+        }
+    }
 
     #[test]
     fn xmap22_bmp_decoder_round_trips_top_down_bgra_and_rejects_trailing_bytes() {
