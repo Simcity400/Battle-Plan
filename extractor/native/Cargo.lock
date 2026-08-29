@@ -997,6 +997,7 @@ dependencies = [
  "collector",
  "compact_contract",
  "compact_stream",
+ "portable_engine_evidence",
  "recorder_host",
  "serde_json",
  "sha2",
