@@ -630,8 +630,10 @@ categories = {
             assert_eq!(colors.get(*name), Some(rgb), "category {name} colour");
         }
         let mode = terrain_map_mode_from_resolver(&resolver).expect("mode");
-        assert_eq!(mode.total_provinces, 13414, "vanilla province count");
-        assert_eq!(mode.unclassified.len(), 13414);
+        // 13413, not 13414: the definition map no longer carries row position
+        // engine's null instance and never a province.
+        assert_eq!(mode.total_provinces, 13413, "vanilla province count");
+        assert_eq!(mode.unclassified.len(), 13413);
         assert_eq!(mode.classified_count(), 0);
         assert!(mode.province_fill.is_empty());
         assert!(mode.category_province_counts.is_empty());

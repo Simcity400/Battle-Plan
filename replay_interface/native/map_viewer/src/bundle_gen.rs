@@ -232,8 +232,9 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
     }
     println!("========================================================================");
 
-    let (definitions, color_to_id) = load_definition_csv(&definition_csv)?;
+    let (mut definitions, color_to_id) = load_definition_csv(&definition_csv)?;
     let bmp = load_provinces_bmp(&provinces_bmp, &color_to_id)?;
+    crate::image_load::admit_invented_provinces(&mut definitions, &bmp.invented);
     let (state_meta, province_to_state, state_owners) = load_states(&state_paths)?;
     let country_colors = load_country_colors(resolver)?;
     let (region_to_provinces, region_meta, province_to_region) =

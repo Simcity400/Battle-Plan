@@ -492,6 +492,81 @@ pub fn playback_render_settings(
     Ok((options, pin))
 }
 
+/// What every root the engine could read a province-map sidecar out of holds.
+///
+/// The law this answers, and what a hit means, is stated once in
+/// `game_file_ledger::ENGINE_DERIVED_FILES`.
+///
+/// `found` empty is a claim only about the roots that were ENUMERATED. A root
+/// whose `map/` directory exists but could not be read lands in `unreadable`
+/// and is reported, because "we could not look" and "we looked and there is
+/// nothing" are not the same statement.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MapSidecarProbe {
+    /// `<root label>:<file name>`, sorted.
+    pub found: Vec<String>,
+    /// Root labels whose `map/` directory could not be enumerated, sorted.
+    pub unreadable: Vec<String>,
+    pub roots_probed: usize,
+}
+
+impl MapSidecarProbe {
+    pub fn is_clean(&self) -> bool {
+        self.found.is_empty() && self.unreadable.is_empty()
+    }
+}
+
+/// The two roots that exist on every machine. The game directory is PhysFS's
+/// base dir and the user-data directory is its write dir; the loader's writer
+/// same path, and takes the base dir only in that case. Every mounted content
+/// layer is probed on top of these, because the loader's existence test is a
+/// PhysFS lookup over the whole search path, not a look in those two roots.
+pub const MAP_SIDECAR_PROBED_ROOTS: [&str; 2] = ["game directory", "user-data directory"];
+
+pub fn playback_map_sidecar_probe(
+    paths: &ProductPaths,
+    mounted_layers: &[(String, PathBuf)],
+) -> MapSidecarProbe {
+    let mut probe = MapSidecarProbe::default();
+    let base = MAP_SIDECAR_PROBED_ROOTS
+        .into_iter()
+        .map(str::to_string)
+        .zip([paths.game_install.clone(), paths.user_data.clone()]);
+    for (label, root) in base.chain(
+        mounted_layers
+            .iter()
+            .map(|(id, root)| (format!("content layer {id}"), root.clone())),
+    ) {
+        probe.roots_probed += 1;
+        let entries = match fs::read_dir(root.join("map")) {
+            Ok(entries) => entries,
+            // No `map/` under this root is a definite absence. Anything else -
+            // a permission error, a device error - is not, and saying "none"
+            // about it would be the fail-open this probe exists to prevent.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                probe.unreadable.push(label);
+                continue;
+            }
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                probe.unreadable.push(label.clone());
+                break;
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if replay_core::is_engine_derived_map_sidecar(&format!("map/{name}")) {
+                probe.found.push(format!("{label}:{name}"));
+            }
+        }
+    }
+    probe.found.sort();
+    probe.found.dedup();
+    probe.unreadable.sort();
+    probe.unreadable.dedup();
+    probe
+}
+
 fn source_game_identity(game_install: &Path) -> Result<replay_core::SourceGameIdentity> {
     let launcher_path = game_install.join("launcher-settings.json");
     let launcher: serde_json::Value =

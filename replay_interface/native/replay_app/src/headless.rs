@@ -689,6 +689,8 @@ fn dump_production_recording_frame(
         &content_admission,
         provider.product_admission(),
         &render_settings_pin,
+        product_paths,
+        &game_resolver.mounted_layer_roots(),
         &content_manifest.localisation_language,
     );
     let mut composition = crate::app::ProductMapCompositionSession::start_for_headless(

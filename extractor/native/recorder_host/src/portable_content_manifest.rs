@@ -7,6 +7,7 @@ use portable_content_manifest::{
     DlcSelection, LayerStorageKind, RecordedContentLayer, RequiredContent, RequiredContentKind,
     SourceGameIdentity, SourceProfileIdentity, UsedContentKey, AUTHORED_GFX_NAMESPACE_CONSUMER,
     AUTHORED_GUI_NAMESPACE_CONSUMER, AUTHORED_LOCALISATION_NAMESPACES_CONSUMER,
+    MAP_SIDECAR_CAPTURE_KEY, MAP_SIDECAR_CAPTURE_PROBE_KEY,
     SCHEMA as CONTENT_MANIFEST_SCHEMA,
 };
 use portable_render_stream::ProductionRenderFrame;
@@ -213,6 +214,101 @@ impl RuntimeContentRoots {
     }
 }
 
+/// What the capture machine's roots held, as the two values that go into
+/// [`MAP_SIDECAR_CAPTURE_KEY`] and [`MAP_SIDECAR_CAPTURE_PROBE_KEY`].
+///
+/// to the PhysFS write directory, and to the base directory in the one case
+/// where the two are the same path; directory-backed mod layers are probed on
+/// top of those because the loader's existence test is a PhysFS lookup over the
+/// whole search path. An archive layer is not probed: the engine cannot write
+/// into one, and a sidecar SHIPPED inside a mod archive is content the engine
+/// read, so it reaches the manifest as a required-content row and
+/// `ContentManifest::validate` refuses it there.
+/// Where a mod descriptor's authored `path=` actually is, when it is a
+/// directory.
+///
+/// The authored string is normally RELATIVE to the Paradox user directory
+/// (`mod/foo`). Taking it as-is resolves it against the recorder's current
+/// directory instead, which quietly left every ordinary mod out of the
+/// capture-time probe.
+fn directory_layer_root(user_dir: &Path, authored: &str) -> Option<PathBuf> {
+    let authored = PathBuf::from(authored);
+    let path = if authored.is_absolute() {
+        authored
+    } else {
+        user_dir.join(authored)
+    };
+    path.is_dir().then_some(path)
+}
+
+pub fn capture_map_sidecar_pin(
+    install_root: &Path,
+    user_dir: &Path,
+    directory_layers: &[(String, PathBuf)],
+) -> (String, String) {
+    let mut found: Vec<String> = Vec::new();
+    let mut unreadable: Vec<String> = Vec::new();
+    let roots = [
+        ("game directory".to_string(), install_root.to_path_buf()),
+        ("user-data directory".to_string(), user_dir.to_path_buf()),
+    ];
+    for (label, root) in roots.iter().cloned().chain(
+        directory_layers
+            .iter()
+            .map(|(id, root)| (format!("content layer {id}"), root.clone())),
+    ) {
+        let entries = match fs::read_dir(root.join("map")) {
+            Ok(entries) => entries,
+            // No `map/` under this root is a definite absence. Anything else is
+            // not, and calling it one would be the fail-open this pin exists to
+            // prevent.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                unreadable.push(label);
+                continue;
+            }
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                unreadable.push(label.clone());
+                break;
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if portable_content_manifest::is_engine_derived_map_sidecar(&format!("map/{name}")) {
+                // Escaped: a Windows file name may hold a `;` and a layer id
+                // either separator, and the pin's own parser splits on both.
+                found.push(format!(
+                    "{}:{}",
+                    portable_content_manifest::map_sidecar_pin_escape(&label),
+                    portable_content_manifest::map_sidecar_pin_escape(&name)
+                ));
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    unreadable.sort();
+    unreadable.dedup();
+    let state = if found.is_empty() {
+        "absent".to_string()
+    } else {
+        found.join(";")
+    };
+    let probe = if unreadable.is_empty() {
+        "complete".to_string()
+    } else {
+        format!(
+            "unreadable:{}",
+            unreadable
+                .iter()
+                .map(|label| portable_content_manifest::map_sidecar_pin_escape(label))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
+    (state, probe)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundMod {
     pub layer_id: String,
@@ -294,6 +390,25 @@ impl PortableLaunchBinding {
                 settings_authority.as_str().to_string(),
             ),
         ]);
+        let roots = RuntimeContentRoots::from_modset(report)?;
+        let directory_layers = report
+            .enabled_mods
+            .iter()
+            .filter_map(|source| {
+                let path =
+                    directory_layer_root(&roots.user_dir, source.content_path.as_deref()?)?;
+                Some((
+                    normalize_stable_layer_id(&source.descriptor_entry)
+                        .unwrap_or_else(|_| source.descriptor_entry.clone()),
+                    path,
+                ))
+            })
+            .collect::<Vec<_>>();
+        let (sidecar_state, sidecar_probe) =
+            capture_map_sidecar_pin(&roots.install_root, &roots.user_dir, &directory_layers);
+        let mut recorder_local_settings = recorder_local_settings;
+        recorder_local_settings.insert(MAP_SIDECAR_CAPTURE_KEY.into(), sidecar_state);
+        recorder_local_settings.insert(MAP_SIDECAR_CAPTURE_PROBE_KEY.into(), sidecar_probe);
         let ordered_mods = report
             .enabled_mods
             .iter()
@@ -2709,6 +2824,92 @@ mod tests {
 
     fn sha(byte: char) -> String {
         byte.to_string().repeat(64)
+    }
+
+    /// THE CAPTURE-TIME PROVINCE-SIDECAR PIN. The engine writes
+    /// `map/<definition>.fixed.csv` and its `.cache` and reads them back, and
+    /// nothing in the recording digests them - so a sidecar in play at capture
+    /// and deleted before playback is visible only if the capture wrote down
+    /// what it saw.
+    ///
+    /// kills: probing one root instead of the writer's two; calling a root that
+    /// could not be enumerated an absence; and admitting a `map/` file that is
+    /// not a sidecar.
+    #[test]
+    fn the_capture_pin_names_every_root_the_engines_writer_can_reach() {
+        let dir = std::env::temp_dir().join(format!("vc_capture_pin_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let install = dir.join("install");
+        let user = dir.join("user");
+        let layer = dir.join("layer");
+        for root in [&install, &user, &layer] {
+            fs::create_dir_all(root.join("map")).expect("mkdir");
+        }
+        fs::write(install.join("map/definition.csv"), b"0;0;0;0\n").expect("write");
+
+        let layers = vec![("mod/x.mod".to_string(), layer.clone())];
+        let (state, probe) = capture_map_sidecar_pin(&install, &user, &layers);
+        assert_eq!(state, "absent", "an authored definition.csv is not a sidecar");
+        assert_eq!(probe, "complete");
+
+        fs::write(user.join("map/definition.cache"), b"").expect("write");
+        fs::write(layer.join("map/definition.fixed.csv"), b"").expect("write");
+        let (state, probe) = capture_map_sidecar_pin(&install, &user, &layers);
+        assert_eq!(
+            state,
+            "content layer mod/x.mod:definition.fixed.csv;user-data directory:definition.cache"
+        );
+        assert_eq!(probe, "complete");
+
+        // ROUND-TRIP THROUGH THE PARSER, over a layer id carrying both of the
+        // grammar's own separators. Unescaped, this produced a value the
+        // parser called malformed.
+        let odd = vec![("mod/foo;bar:baz.mod".to_string(), layer.clone())];
+        let (state, _) = capture_map_sidecar_pin(&install, &user, &odd);
+        let parsed = portable_content_manifest::MapSidecarCapturePin {
+            state: Some(state),
+            probe: Some("complete".into()),
+        }
+        .state();
+        match parsed {
+            portable_content_manifest::MapSidecarCaptureState::Reported { found, .. } => {
+                let found = found.expect("a hit");
+                assert!(found.contains("mod/foo;bar:baz.mod"), "{found}");
+                assert!(found.contains("definition.fixed.csv"), "{found}");
+            }
+            other => panic!("the producer's own value must parse: {other:?}"),
+        }
+
+        // A root whose map/ is a FILE cannot be enumerated, and that is not an
+        // absence. Exercised through the production function, not a hand-built
+        // value.
+        fs::remove_dir_all(install.join("map")).expect("rmdir");
+        fs::write(install.join("map"), b"not a directory").expect("write");
+        let (_, probe) = capture_map_sidecar_pin(&install, &user, &layers);
+        assert_eq!(probe, "unreadable:game directory");
+
+        // AND THE AUTHORED PATH IS RESOLVED THE WAY A DESCRIPTOR WRITES IT.
+        // `path=mod/foo` is relative to the Paradox user directory; taking it
+        // as-is resolves it against the recorder's current directory, which
+        // silently drops every ordinary mod out of the probe.
+        fs::create_dir_all(user.join("mod/foo/map")).expect("mkdir");
+        assert_eq!(
+            directory_layer_root(&user, "mod/foo"),
+            Some(user.join("mod/foo")),
+            "a relative descriptor path resolves against the user directory"
+        );
+        assert_eq!(
+            directory_layer_root(&user, "mod/absent"),
+            None,
+            "and a path that is not a directory is not a layer"
+        );
+        assert_eq!(
+            directory_layer_root(&user, &layer.to_string_lossy()),
+            Some(layer.clone()),
+            "an absolute path is taken as it stands"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn engine_runtime_artifact_declaration() -> serde_json::Value {

@@ -916,13 +916,14 @@ impl Xmap08Content {
         }
 
         let definition_source = latin1(required_bytes(&bytes_for, "map/definition.csv")?);
-        let (definitions, color_to_id) =
+        let (mut definitions, color_to_id) =
             decode_definition_csv(&definition_source, Path::new("map/definition.csv"))?;
         let provinces = decode_provinces_bmp(
             required_bytes(&bytes_for, "map/provinces.bmp")?,
             Path::new("map/provinces.bmp"),
             &color_to_id,
         )?;
+        crate::image_load::admit_invented_provinces(&mut definitions, &provinces.invented);
         if provinces.width != rivers.width || provinces.height != rivers.height {
             return Err("XMAP08 provinces/rivers map dimensions disagree".into());
         }

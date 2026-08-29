@@ -302,8 +302,9 @@ pub(crate) fn xmap05_raster_inputs_with_keying(
     let definition_csv = resolver.resolve_required("map/definition.csv", "definition.csv")?;
     let provinces_bmp = resolver.resolve_required("map/provinces.bmp", "provinces.bmp")?;
     let state_paths = resolver.resolve_dir_files("history/states", Some("txt"))?;
-    let (definitions, color_to_id) = load_definition_csv(&definition_csv)?;
+    let (mut definitions, color_to_id) = load_definition_csv(&definition_csv)?;
     let provinces = load_provinces_bmp(&provinces_bmp, &color_to_id)?;
+    crate::image_load::admit_invented_provinces(&mut definitions, &provinces.invented);
     if provinces.width == 0
         || provinces.height == 0
         || provinces.width % 2 != 0
@@ -454,8 +455,9 @@ fn synthesize_political_colors_impl(
     let state_paths = resolver.resolve_dir_files("history/states", Some("txt"))?;
     let colors_txt = resolver.resolve("common/countries/colors.txt")?;
 
-    let (definitions, color_to_id) = load_definition_csv(&definition_csv)?;
+    let (mut definitions, color_to_id) = load_definition_csv(&definition_csv)?;
     let provinces = load_provinces_bmp(&provinces_bmp, &color_to_id)?;
+    crate::image_load::admit_invented_provinces(&mut definitions, &provinces.invented);
     if provinces.width == 0
         || provinces.height == 0
         || provinces.width % 2 != 0
@@ -1246,6 +1248,7 @@ mod tests {
             height: 2,
             ids: vec![1, 2, 3, 0, 1, 2, 3, 0],
             unknown_pixels: 0,
+            invented: Vec::new(),
         };
         let mut province_to_state = BTreeMap::new();
         province_to_state.insert(1, 10);

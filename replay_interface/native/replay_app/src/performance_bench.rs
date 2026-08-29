@@ -262,6 +262,8 @@ pub(crate) fn run(
         &content_admission,
         provider.product_admission(),
         &render_settings_pin,
+        product_paths,
+        &resolver.mounted_layer_roots(),
         &manifest.localisation_language,
     );
     let mut composition = crate::app::ProductMapCompositionSession::start_for_benchmark(

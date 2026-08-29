@@ -378,6 +378,7 @@ pub fn validate_timeline_content(
             &admission,
             timeline.product_admission(),
             &render_settings_pin,
+            &crate::install_paths::playback_map_sidecar_probe(paths, &resolver.mounted_layer_roots()),
             &manifest.localisation_language,
         )
     );

@@ -654,6 +654,7 @@ pub use rail_files::{
     ExactRailD80Binding, ExactRailD80DrawBinding, ExactRailHubVisualState, ExactRailReplayCarrier,
     ExactRailResourceIdentity, ExactRailSegment, ProvinceCentroid, ProvinceWorldAnchor,
     RailFileDerivedLayer, RailFileDerivedStats, RailGeometryDefines, RailLawRow, RailPolyline,
+    RailRasterAnchors,
     SupplyHubContentIdentity, SupplyHubMarker, SupplyHubSpriteBinding,
     A729_RAILROAD_EFFECT_REGISTRATION_ROOT_RVA, A729_RAILROAD_VERTEX_STRIDE_BYTES,
     DEFINES_SOURCE as RAIL_DEFINES_SOURCE, DEFINITION_CSV_SOURCE as RAIL_DEFINITION_CSV_SOURCE,

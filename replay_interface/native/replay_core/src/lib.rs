@@ -35,13 +35,18 @@ pub use xmap17_player_labels::*;
 pub use xui26_frontend::*;
 
 pub use portable_content_manifest::{
-    build_profile_label, compute_selection_sha256, normalize_dlc_selection_id,
+    build_profile_label, compute_selection_sha256, is_engine_derived_map_sidecar,
+    normalize_dlc_selection_id,
     normalize_game_relative_path, parse_launcher_version_and_build,
     ContentIssue, ContentIssueCode, ContentLayerKind, ContentManifest, ContentValidationReport,
-    DlcSelection, LayerStorageKind, PlaybackContentInventory, PlaybackContentLayer,
+    DlcSelection, LayerStorageKind, MapSidecarCaptureState, MapSidecarCapturePin,
+    PlaybackContentInventory,
+    PlaybackContentLayer,
     RecordedContentLayer, RequiredContent, RequiredContentKind, ResolvedPlaybackContent,
     SelectionDlcIdentity, SelectionLayerIdentity, SourceGameIdentity, SourceProfileIdentity,
-    UsedContentKey, ValidatedContentAdmission, SCHEMA as PORTABLE_CONTENT_MANIFEST_SCHEMA,
+    UsedContentKey, ValidatedContentAdmission,
+    ENGINE_DERIVED_MAP_SIDECAR_SUFFIXES, MAP_SIDECAR_CAPTURE_KEY,
+    MAP_SIDECAR_CAPTURE_PROBE_KEY, SCHEMA as PORTABLE_CONTENT_MANIFEST_SCHEMA,
 };
 
 pub use portable_render_stream::{

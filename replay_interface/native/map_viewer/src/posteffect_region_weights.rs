@@ -99,17 +99,9 @@ pub fn posteffect_region_weights_from_resolver(
         "posteffect province raster",
     )?;
 
-    let (definitions, color_to_id) = load_definition_csv(&definition_csv.local_path)?;
+    let (mut definitions, color_to_id) = load_definition_csv(&definition_csv.local_path)?;
     let raster = load_provinces_bmp(&provinces_bmp.local_path, &color_to_id)?;
-    if raster.unknown_pixels != 0 {
-        return Err(format!(
-            "{} contains {} pixels absent from {}",
-            provinces_bmp.local_path.display(),
-            raster.unknown_pixels,
-            definition_csv.local_path.display()
-        )
-        .into());
-    }
+    crate::image_load::admit_invented_provinces(&mut definitions, &raster.invented);
 
     let enumerated_state_files =
         resolver.resolve_dir_files(POSTEFFECT_REGION_STATES_SOURCE, Some("txt"))?;
