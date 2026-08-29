@@ -68,6 +68,10 @@ members = [
     # game code through `inline_detour`, so it belongs with the rest of the
     # injected code, not in `replay_interface/native` where it used to sit.
     "terrain_capture",
+    # Lane VC's dossier gate: no production code, only the closure between
+    # RESULTS.json's citations and the evidence portable_engine_evidence
+    # embeds. It lives on this side because the document does.
+    "lanes/vc_map_content_auth",
     "lanes/air_wings_variants_lifecycle_live",
     "lanes/air_loss_stats_live",
     "lanes/hub_motorization_live",

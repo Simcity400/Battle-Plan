@@ -828,6 +828,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "portable_engine_evidence"
+version = "0.1.0"
+
+[[package]]
 name = "portable_render_stream"
 version = "0.1.0"
 dependencies = [
@@ -1267,6 +1271,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
 dependencies = [
  "tinyvec",
+]
+
+[[package]]
+name = "vc_map_content_auth"
+version = "0.1.0"
+dependencies = [
+ "portable_engine_evidence",
 ]
 
 [[package]]

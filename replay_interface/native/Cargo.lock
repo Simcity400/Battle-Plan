@@ -354,6 +354,7 @@ dependencies = [
  "game_ui",
  "map_viewer",
  "portable_content_manifest",
+ "portable_engine_evidence",
  "portable_replay_format",
  "portable_test_fs_retry",
  "replay_core",
