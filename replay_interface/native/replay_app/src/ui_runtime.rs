@@ -195,7 +195,11 @@ impl ProductObserverOccupationRuntime {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+// Clone only. The outcome carries the d79-derived semantic receipts, so `{:?}`
+// of the whole value would format them into one string and `==` would turn them
+// into a boolean -- either is a route from d79 to a pixel that names none of its
+// fields. EIR-NE-017.
+#[derive(Clone)]
 pub struct ObserverUiOutcome {
     pub authored_roots: Vec<String>,
     pub authored_panel_draw_count: usize,
@@ -264,7 +268,6 @@ pub struct ObserverUiOutcome {
     pub gaps: Vec<game_ui::production_renderer::ObserverUiGap>,
     pub occupation_applied_scroll_row: Option<usize>,
     pub occupation_input_region: Option<game_ui::occupation_compositor::OccupationInputRegion>,
-    pub occupation_alert: Option<game_ui::occupation_binding::OccupationAlertProductBinding>,
     pub promoted_extension_packets: Vec<String>,
 }
 
@@ -2903,7 +2906,8 @@ impl ProductObserverUiRuntime {
         let mut character_hit_targets = Vec::new();
         let mut character_tooltip_targets = Vec::new();
         let mut character_semantic_state = None;
-        let occupation_alert = match (
+        // Discarded: the join's product is the semantic receipt it pushes.
+        let _ = match (
             viewer.selected_country.as_deref(),
             occupation_outcome.and_then(|outcome| outcome.surface.as_ref()),
         ) {
@@ -4582,7 +4586,6 @@ impl ProductObserverUiRuntime {
             gaps: output_gaps,
             occupation_applied_scroll_row,
             occupation_input_region,
-            occupation_alert,
             promoted_extension_packets: game_ui::production_renderer::PROMOTED_EXTENSION_PACKETS
                 .iter()
                 .map(|packet| (*packet).to_string())

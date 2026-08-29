@@ -3,7 +3,7 @@
 
 use crate::assets::AssetResolver;
 use crate::binding::{
-    apply_clock, clock_binding_from_frame, topbar_binding_from_frame,
+    apply_clock, clock_binding_from_frame, topbar_flag_identity_from_frame,
     topbar_binding_from_observer_frame,
 };
 use crate::combat_detail_canvas::{
@@ -2512,7 +2512,13 @@ impl ProductionUiRenderer {
                         xui19_cloned_name("value", &icon_namespace),
                         icon.value_text.clone(),
                     );
-                    let binding = topbar_binding_from_frame(frame, &icon.flag_tag);
+                    // The flag-only binder: the alert-bearing binding is never
+                    // held here at all. EIR-NE-017.
+                    let crate::binding::TopbarFlagIdentity {
+                        country_tag,
+                        country_ideology,
+                        flag_texture,
+                    } = topbar_flag_identity_from_frame(frame, &icon.flag_tag);
                     let cosmetic = crate::binding::admitted_flag_cosmetic(
                         frame.country_identity(&icon.flag_tag),
                     )
@@ -2523,10 +2529,10 @@ impl ProductionUiRenderer {
                         ))
                     })?;
                     let candidates = crate::topbar::flag_candidates_for_size(
-                        binding.country_tag.as_deref(),
-                        binding.country_ideology.as_deref(),
+                        country_tag.as_deref(),
+                        country_ideology.as_deref(),
                         cosmetic,
-                        binding.flag_texture.as_deref(),
+                        flag_texture.as_deref(),
                         crate::topbar::FlagSizeFolder::Small,
                     );
                     let mut decoded = None;
@@ -2759,7 +2765,11 @@ impl ProductionUiRenderer {
                 }
                 match card.target.as_ref() {
                     Some(replay_core::DecisionTargetExactV1::Country { flag_tag, .. }) => {
-                        let binding = topbar_binding_from_frame(frame, flag_tag);
+                        let crate::binding::TopbarFlagIdentity {
+                            country_tag,
+                            country_ideology,
+                            flag_texture,
+                        } = topbar_flag_identity_from_frame(frame, flag_tag);
                         let cosmetic =
                             crate::binding::admitted_flag_cosmetic(frame.country_identity(flag_tag))
                                 .map_err(|detail| {
@@ -2768,10 +2778,10 @@ impl ProductionUiRenderer {
                                     ))
                                 })?;
                         let candidates = crate::topbar::flag_candidates_for_size(
-                            binding.country_tag.as_deref(),
-                            binding.country_ideology.as_deref(),
+                            country_tag.as_deref(),
+                            country_ideology.as_deref(),
                             cosmetic,
-                            binding.flag_texture.as_deref(),
+                            flag_texture.as_deref(),
                             crate::topbar::FlagSizeFolder::Small,
                         );
                         let mut decoded = None;

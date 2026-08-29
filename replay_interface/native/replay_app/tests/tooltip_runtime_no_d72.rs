@@ -90,8 +90,27 @@ fn product_runtime_composes_authenticated_tooltip_last_without_d72() {
         .expect("single framebuffer upload");
     assert!(compose < upload, "XUI05 must be blended before the one upload");
     assert!(execute[compose..upload].contains("manager-overlay-composited-last"));
-    for forbidden in ["resolved_tooltip_exact", "selected_present", "_r2_resolved_tooltip_instances_live"] {
-        assert!(!execute[..upload].contains(forbidden));
+    // Scanned over the whole shipping half of the module, not the execute slice:
+    // a helper declared after `invalidate` and called from execute under a new
+    // name would otherwise carry the carrier in unseen. The last three tokens are
+    // every entry point that reaches `frame.resolved_tooltip_exact()`; each reads
+    // it without naming it at the call site.
+    let production = runtime
+        .split_once("\n#[cfg(test)]\n")
+        .expect("ui_runtime.rs has a top-level test module")
+        .0;
+    for forbidden in [
+        "resolved_tooltip_exact",
+        "selected_present",
+        "_r2_resolved_tooltip_instances_live",
+        "tooltip_binding_from_frame(",
+        "tooltip_binding_from_exact_view(",
+        "admit_xui05_tooltip_route(",
+    ] {
+        assert!(
+            !production.contains(forbidden),
+            "product runtime reached the d72 carrier through {forbidden:?}"
+        );
     }
 }
 

@@ -210,6 +210,36 @@ fn apply_identity(binding: &mut TopbarBinding, pov_tag: &str, identity: &Country
     binding.cosmetic_tag = rendered_cosmetic_override(&identity.cosmetic_tag).map(str::to_string);
 }
 
+/// The three fields a flag route needs, without the alert trailer.
+///
+/// `topbar_binding_from_frame` fills eight d79 fields into the same value, so a
+/// shipping site holding one could be made to depend on d79 without naming a
+/// carrier. EIR-NE-017: the flag sites take this instead, and never hold the
+/// alert-bearing binding at all.
+pub struct TopbarFlagIdentity {
+    pub country_tag: Option<String>,
+    pub country_ideology: Option<String>,
+    pub flag_texture: Option<String>,
+}
+
+pub fn topbar_flag_identity_from_frame(frame: &WorldFrame, pov_tag: &str) -> TopbarFlagIdentity {
+    // Same values the full binding carried for these three: `country_tag` is
+    // `Some(pov_tag)` on every branch there, `country_ideology` comes only from
+    // `apply_identity`, and `flag_texture` is never assigned anywhere.
+    let country_ideology = if frame.country_identities_status() == ViewStatus::Present {
+        frame
+            .country_identity(pov_tag)
+            .and_then(|identity| identity.ruling_ideology.measured().cloned())
+    } else {
+        None
+    };
+    TopbarFlagIdentity {
+        country_tag: Some(pov_tag.to_string()),
+        country_ideology,
+        flag_texture: None,
+    }
+}
+
 pub fn topbar_binding_from_frame(frame: &WorldFrame, pov_tag: &str) -> TopbarBinding {
     let mut binding = TopbarBinding::default();
 
@@ -1113,6 +1143,32 @@ mod tests {
             assert!(
                 !gap.reason.contains("d53") && !gap.reason.contains("d30"),
                 "{field} must not send the reader back to the refuted d53 route: {}",
+                gap.reason
+            );
+        }
+    }
+
+    /// kills: re-pointing the two market contract gaps at d79 by analogy with
+    /// the intel pair above. `required_domain` names the domain that would have
+    /// to carry the value, not one that carries it today —
+    /// `decision_available_items` names d14 on those same terms. No domain
+    /// carries the engine's evaluated counts; d43 `market_trade_live` carries
+    /// the contracts they are counted over, while the intel counts have no
+    /// world-truth carrier at all, which is why only that pair moved to d79.
+    #[test]
+    fn the_market_contract_gaps_name_d43_not_the_d79_trailer_that_fills_them() {
+        for field in ["non_delivering_contracts", "ongoing_contracts"] {
+            let gap = OBSERVER_TOPBAR_BASE_GAPS
+                .iter()
+                .find(|gap| gap.field == field)
+                .unwrap_or_else(|| panic!("{field} must declare a gap"));
+            assert_eq!(
+                gap.required_domain, "d43",
+                "{field} must name the domain that carries the contracts"
+            );
+            assert!(
+                gap.reason.contains("contract alert count"),
+                "{field} must say what trade relations do not carry: {}",
                 gap.reason
             );
         }

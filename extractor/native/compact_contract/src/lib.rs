@@ -778,19 +778,19 @@ pub const DESCHEDULED_CAPTURE_RULINGS: &[DescheduledCaptureRuling] = &[
         id: 72,
         decided_on: "2026-08-03",
         reason: DESCHEDULED_CAPTURE_REASON,
-        gap_ledger_row: None,
+        gap_ledger_row: Some("EIR-NE-016"),
     },
     DescheduledCaptureRuling {
         id: 79,
         decided_on: "2026-08-03",
         reason: DESCHEDULED_CAPTURE_REASON,
-        gap_ledger_row: None,
+        gap_ledger_row: Some("EIR-NE-017"),
     },
     DescheduledCaptureRuling {
         id: 85,
         decided_on: "2026-08-13",
         reason: DESCHEDULED_CAPTURE_REASON_D85,
-        gap_ledger_row: None,
+        gap_ledger_row: Some("EIR-NE-018"),
     },
     DescheduledCaptureRuling {
         id: 88,
@@ -2460,15 +2460,69 @@ mod tests {
             );
         }
         // The ruling must not carry a prose copy of what is missing: the gap
-        // ledger owns that, and a second copy drifts. Where a ledger row exists
-        // it is referenced by id.
-        assert_eq!(
-            descheduled_capture_ruling(88).expect("ruling").gap_ledger_row,
-            Some("EIR-NE-009")
+        // ledger owns that, and a second copy drifts. Every domain on the list
+        // is the sole observer of something, so every one of them names a row.
+        for (id, row) in [
+            (72u16, "EIR-NE-016"),
+            (79, "EIR-NE-017"),
+            (85, "EIR-NE-018"),
+            (88, "EIR-NE-009"),
+            (89, "EIR-NE-002"),
+        ] {
+            assert_eq!(
+                descheduled_capture_ruling(id).expect("ruling").gap_ledger_row,
+                Some(row),
+                "d{id} names its gap ledger row"
+            );
+        }
+    }
+
+    /// kills: a `gap_ledger_row` that no longer names a row the ledger carries.
+    /// The rulings and the ledger are separate files, so a row renamed or
+    /// retired there leaves every literal-string assertion above green while the
+    /// published ruling points at nothing. Reading the ledger is a test-time
+    /// read of a checked-in evidence file, the same reach `world_fold/tests.rs`
+    /// already makes for the canonical envelopes.
+    #[test]
+    fn every_named_gap_ledger_row_is_carried_by_the_canonical_ledger() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../replay_interface/re_evidence/rendering_laws/XUI27/\
+             external_producer_dependencies.json",
         );
-        assert_eq!(
-            descheduled_capture_ruling(89).expect("ruling").gap_ledger_row,
-            Some("EIR-NE-002")
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        let ledger: serde_json::Value =
+            serde_json::from_str(&text).expect("the canonical gap ledger parses as JSON");
+        let carried = ledger["dependencies"]
+            .as_array()
+            .expect("the ledger carries a dependency list")
+            .iter()
+            .map(|row| {
+                row["id"]
+                    .as_str()
+                    .expect("every ledger row has a string id")
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !carried.is_empty(),
+            "the ledger parsed but carries no rows, so this join would pass vacuously"
+        );
+        let mut joined = 0;
+        for ruling in DESCHEDULED_CAPTURE_RULINGS {
+            let Some(row) = ruling.gap_ledger_row else {
+                continue;
+            };
+            assert!(
+                carried.iter().any(|id| id == row),
+                "d{} names gap ledger row {row}, which the ledger does not carry: {carried:?}",
+                ruling.id
+            );
+            joined += 1;
+        }
+        assert!(
+            joined > 0,
+            "no ruling named a row, so the join above checked nothing"
         );
     }
 
