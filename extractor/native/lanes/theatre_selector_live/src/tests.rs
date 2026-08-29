@@ -1161,3 +1161,141 @@ fn an_absent_controller_leaf_with_a_set_value_byte_is_refused() {
         );
     }
 }
+
+/// The profile gate is NOT the only thing between D98 and its shipping
+/// consumer, and this pins the second blocker so a lane that lifts the gate
+/// does not expect a rendered panel.
+///
+/// D98 is out of the mandatory production profile twice over -- the status
+/// clause on `ValidatedSliceOpenGaps`, and the owner's 2026-08-13
+/// optional-fail-closed-companion ruling -- which
+/// `compact_contract::tests::d98_is_schedulable_by_name_and_out_of_production_by_profile_policy`
+/// already asserts. What nothing asserted is that scheduling the domain by name
+/// would still not satisfy EIR-NE-012: replay's schema-6 decoder compares the
+/// producer's evidence set against `REQUIRED_PRODUCER_EVIDENCE_SHA256` by exact
+/// length and order, and this producer declares FOUR manifests out of the
+/// THIRTY-ONE that list holds. Declaring the other 27 would assert reads that
+/// never happened, so the shortfall is correct and the gap is the missing read
+/// laws, not the declaration.
+///
+/// This half pins what the PRODUCER declares, off the one constant the binary
+/// carrier and the fold both encode
+/// (`world_fold.rs` `producer_evidence_sha256`). The consumer's half of the
+/// same pin -- that its list is 31 long and that these four are its first four,
+/// in order -- is
+/// `replay_core::theatre_selector::tests::the_producers_four_manifests_are_the_first_four_of_thirty_one`.
+/// The two halves are numbers, not shared code: the extractor and the replay
+/// layer are joined only by the replay file.
+///
+/// kills: declaring a fifth manifest without landing its read law (the count
+/// moves and this fails), declaring one twice to pad the set, and reading the
+/// profile gate as the whole story.
+#[test]
+fn the_declared_producer_evidence_set_is_four_of_the_consumers_thirty_one() {
+    const CONSUMER_REQUIRED_MANIFESTS: usize = 31;
+    let declared = PRODUCER_EVIDENCE_MANIFESTS;
+    assert_eq!(declared.len(), 4);
+    assert!(
+        declared.len() < CONSUMER_REQUIRED_MANIFESTS,
+        "if the producer ever declares the whole set, this pin has to be retired with the \
+         read laws that closed it"
+    );
+    let distinct: BTreeSet<[u8; 32]> = declared.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        declared.len(),
+        "a repeated manifest would pad the set without adding a read law"
+    );
+    assert!(
+        !distinct.contains(&EXECUTABLE_SHA256),
+        "the executable identity is not a read-law manifest"
+    );
+    // The binary carrier encodes the same set in the same order, right after the
+    // executable identity, so the two spellings cannot drift apart.
+    let encoded = encode_source_unavailable(1, 1, 0, 1).expect("encode a bodyless frame");
+    let evidence_offset = encoded
+        .windows(EXECUTABLE_SHA256.len())
+        .position(|window| window == EXECUTABLE_SHA256)
+        .expect("the carrier carries the executable identity")
+        + EXECUTABLE_SHA256.len();
+    for (ordinal, manifest) in declared.iter().enumerate() {
+        let at = evidence_offset + ordinal * manifest.len();
+        assert_eq!(
+            &encoded[at..at + manifest.len()],
+            manifest.as_slice(),
+            "carrier evidence entry {ordinal} is not the declared manifest"
+        );
+    }
+}
+
+/// The producer half of the D98 identity fixture: the four fields replay checks
+/// BEFORE it looks at anything this producer measures, written exactly as the
+/// fold writes them (`world_fold.rs`, search `producer_evidence_sha256`).
+///
+/// The consumer half reads the same file and asserts what replay does with it --
+/// rejection, on the evidence-set length. Neither workspace may depend on the
+/// other, so the fixture IS the join, and there is exactly one of it: changing a
+/// manifest here fails this test until it is regenerated, and regenerating it
+/// moves what the consumer reads. Regenerate with
+/// `VJ_WRITE_D98_FIXTURE=1 cargo test -p theatre_selector_live_lane`.
+#[test]
+fn the_producer_emits_the_committed_d98_identity_fixture() {
+    // Hand-rendered line by line: this crate carries no JSON dependency, and
+    // the bytes are the contract either way.
+    let comment = concat!(
+        "Lane VJ D98 identity fixture. ",
+        "Producer half: extractor/native/lanes/theatre_selector_live/src/tests.rs. ",
+        "Consumer half: replay_interface/native/replay_core/src/theatre_selector.rs. ",
+        "Regenerate with VJ_WRITE_D98_FIXTURE=1."
+    );
+    let mut out = vec![
+        "{".to_string(),
+        format!("  \"_comment\": \"{comment}\","),
+        format!("  \"schema_version\": {SCHEMA_VERSION},"),
+        "  \"authority\": \"exact_a729_all_country_theatre_selector\",".to_string(),
+        format!("  \"executable_sha256\": \"{}\",", hex(&EXECUTABLE_SHA256)),
+        "  \"producer_evidence_sha256\": [".to_string(),
+    ];
+    for (ordinal, manifest) in PRODUCER_EVIDENCE_MANIFESTS.iter().enumerate() {
+        let comma = if ordinal + 1 == PRODUCER_EVIDENCE_MANIFESTS.len() {
+            ""
+        } else {
+            ","
+        };
+        out.push(format!("    \"{}\"{comma}", hex(manifest)));
+    }
+    out.push("  ]".to_string());
+    out.push("}".to_string());
+    let rendered = out.join("\n") + "\n";
+    // ONE canonical copy, and it lives on the consumer's side of the wire:
+    // this test writes and checks it, the replay test reads it, and neither can
+    // move without the other failing. It sits there rather than here because the
+    // replay tree may not name a path under the acquisition tree
+    // (`game_ui/tests/replay_dependency_boundary.rs`) while this direction is
+    // already how the canonical envelopes are pinned
+    // (`world_fold/tests.rs`, air disclosure).
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../../replay_interface/fixtures")
+        .join("d98_producer_evidence.json");
+    if std::env::var("VJ_WRITE_D98_FIXTURE").as_deref() == Ok("1") {
+        std::fs::create_dir_all(path.parent().expect("fixtures dir")).expect("create fixtures dir");
+        std::fs::write(&path, &rendered).expect("write fixture");
+    }
+    let committed = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "the D98 identity fixture {} is missing ({error}); regenerate it with \
+             VJ_WRITE_D98_FIXTURE=1",
+            path.display()
+        )
+    });
+    assert_eq!(
+        committed.replace('\r', ""),
+        rendered.replace('\r', ""),
+        "the producer's declared identity drifted from the committed fixture; the replay consumer \
+         compares this evidence set by exact length and order, so this is a contract break"
+    );
+}
+
+fn hex(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}

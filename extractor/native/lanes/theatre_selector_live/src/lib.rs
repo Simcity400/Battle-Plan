@@ -29,6 +29,22 @@ pub const RESERVE_NAVY_FILTER_MANIFEST_SHA256: [u8; 32] =
 pub const AIR_AND_NAVY_LAW_MANIFEST_SHA256: [u8; 32] =
     hex32(b"eee5a6c973edc425a709864071f940ebb002b4f741d138f09864dab4dc017ed6");
 
+/// The evidence set this producer declares, in order, and the ONLY spelling of
+/// it: the binary carrier and the fold's `producer_evidence_sha256` both read
+/// this array, so a fifth manifest cannot be declared in one and not the other.
+///
+/// These are the manifests this producer's own read laws rest on. Replay's
+/// `REQUIRED_PRODUCER_EVIDENCE_SHA256` is a 31-entry list whose first four these
+/// are; the other 27 authenticate controller laws this producer does not
+/// implement, so declaring them would assert reads that never happened and the
+/// consumer's exact-length comparison rejects the carrier until they land.
+pub const PRODUCER_EVIDENCE_MANIFESTS: [[u8; 32]; 4] = [
+    SELECTOR_MATERIALIZER_MANIFEST_SHA256,
+    SELECTOR_SOURCE_LAYOUT_MANIFEST_SHA256,
+    RESERVE_NAVY_FILTER_MANIFEST_SHA256,
+    AIR_AND_NAVY_LAW_MANIFEST_SHA256,
+];
+
 /// Owner ruling on lane RE's DOSSIER section 2.4 (option A, 2026-08-23): the
 /// land combat-log leaf is retired from the all-country carrier entirely --
 /// never carried, never measured; the replay viewer derives the icon from
@@ -754,10 +770,9 @@ pub fn encode_payload(frame: &TheatreSelectorFrame) -> Result<Vec<u8>, CarrierEr
     u64v(&mut out, frame.frame_hour);
     u64v(&mut out, frame.source_sequence);
     out.extend_from_slice(&EXECUTABLE_SHA256);
-    out.extend_from_slice(&SELECTOR_MATERIALIZER_MANIFEST_SHA256);
-    out.extend_from_slice(&SELECTOR_SOURCE_LAYOUT_MANIFEST_SHA256);
-    out.extend_from_slice(&RESERVE_NAVY_FILTER_MANIFEST_SHA256);
-    out.extend_from_slice(&AIR_AND_NAVY_LAW_MANIFEST_SHA256);
+    for manifest in &PRODUCER_EVIDENCE_MANIFESTS {
+        out.extend_from_slice(manifest);
+    }
     let Some(snapshot) = &frame.snapshot else {
         out.push(0);
         out.extend_from_slice(&[0; 3]);

@@ -290,16 +290,40 @@ impl MapVisualFamily {
                 "spawn-point-scope-ambiguous",
                 "damage-level-unresolved-mesh-choice",
             ],
-            Self::CombatMarkers => &["naval-result-pov-operands-unrecorded"],
+            Self::CombatMarkers => &[
+                "naval-result-pov-operands-unrecorded",
+                "land-air-frame-display-config-unrecorded",
+            ],
             Self::LabelsMapText => &[
                 "state-label-localisation-missing",
+                // A resolved localisation token is not a promise that the map
+                // font can draw it: a mod can override localisation without
+                // overriding the font, and one such character would otherwise
+                // fail the whole frame.
+                "country-label:display-text-unrenderable",
+                "state-label:display-text-unrenderable",
                 "faction-label-layer:roster-unmeasured",
                 "faction-label-layer:carrier-not-present",
-                // The player layer groups by the carrier's own player-object identity and
-                // has no roster input, so it has no roster cause to declare. Declaring one
-                // anyway would let a fabricated receipt name a reason production cannot
-                // reach and still validate.
-                "player-label-layer:carrier-not-present",
+                // A faction's display name can be a player's own text, so the
+                // map font may have no glyph for it - the one country-grain
+                // cause this layer has.
+                "faction-label-country:display-text-unrenderable",
+                // The player layer is derived from the D18 roster and D57's
+                // player-country set, so it has both a roster cause and an input
+                // cause, and no carrier cause: there is no carrier for it to be
+                // missing. Declaring one anyway would let a fabricated receipt
+                // name a reason production cannot reach and still validate.
+                "player-label-layer:roster-unmeasured",
+                "player-label-layer:derived-input-unusable",
+                "player-label-layer:derived-operands-disagree",
+                // And, at COUNTRY grain, the three classes the derivation
+                // accounts while the rest of the layer still builds. The layer
+                // draws no label over these countries, so each one is a
+                // measurement excluded and counted, not a dark layer.
+                "player-label-country:unnamed-human",
+                "player-label-country:co-op",
+                "player-label-country:shared-player-key",
+                "player-label-country:display-text-unrenderable",
             ],
             Self::MapFurnitureIcons => &["control-leaf-unmeasured", "controller-outside-roster"],
             // NO WILDCARD. A family that emits no diagnostics says so by name, so adding a

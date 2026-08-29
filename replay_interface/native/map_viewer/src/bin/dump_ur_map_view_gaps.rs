@@ -17,7 +17,6 @@ const USAGE: &str = "usage: dump_ur_map_view_gaps <recording-path> [--game ID] [
 
 const XMAP14_CARRIER_KEY: &str = "_xmap14_combat_indicators_exact";
 const XMAP17_FACTION_CARRIER_KEY: &str = "_xmap17_faction_labels_exact";
-const XMAP17_PLAYER_CARRIER_KEY: &str = "_xmap17_player_labels_exact";
 
 fn main() -> ExitCode {
     match run() {
@@ -123,7 +122,10 @@ struct Tally {
     naval_rows_max: usize,
 
     faction_carrier: CarrierTally,
-    player_carrier: CarrierTally,
+    player_named_countries_max: usize,
+    player_unnamed_human_max: usize,
+    player_co_op_max: usize,
+    player_shared_key_max: usize,
     faction_view_status: BTreeMap<String, usize>,
     player_view_status: BTreeMap<String, usize>,
     faction_view_diagnostic: BTreeMap<String, usize>,
@@ -188,7 +190,6 @@ impl Tally {
 
     fn observe_xmap17(&mut self, frame: &WorldFrame) {
         self.faction_carrier.observe(frame, XMAP17_FACTION_CARRIER_KEY);
-        self.player_carrier.observe(frame, XMAP17_PLAYER_CARRIER_KEY);
 
         let diplomacy = frame.diplomacy();
         let faction_view = frame.xmap17_faction_labels_exact();
@@ -199,13 +200,28 @@ impl Tally {
         if let Some(diagnostic) = &faction_view.diagnostic {
             bump(&mut self.faction_view_diagnostic, diagnostic.clone());
         }
-        let player_view = frame.xmap17_player_labels_exact();
+        let player_view = frame.xmap17_player_labels_derived();
         bump(
             &mut self.player_view_status,
             format!("{:?}", player_view.status),
         );
         if let Some(diagnostic) = &player_view.diagnostic {
             bump(&mut self.player_view_diagnostic, diagnostic.clone());
+        }
+        if let Some(derived) = &player_view.derived {
+            let named = derived
+                .rows
+                .iter()
+                .filter(|row| row.player_key_hash.is_some())
+                .count();
+            self.player_named_countries_max = self.player_named_countries_max.max(named);
+            self.player_unnamed_human_max = self
+                .player_unnamed_human_max
+                .max(derived.unnamed_human_countries.len());
+            self.player_co_op_max = self.player_co_op_max.max(derived.co_op_countries.len());
+            self.player_shared_key_max = self
+                .player_shared_key_max
+                .max(derived.shared_player_key_countries.len());
         }
 
         bump(
@@ -283,8 +299,11 @@ impl Tally {
             "faction_carrier": self.faction_carrier.to_json(),
             "faction_view_status": self.faction_view_status,
             "faction_view_diagnostic": self.faction_view_diagnostic,
-            "player_carrier_key": XMAP17_PLAYER_CARRIER_KEY,
-            "player_carrier": self.player_carrier.to_json(),
+            "player_layer_source": "derived from D18 roster + D57 players_by_country",
+            "player_named_countries_max": self.player_named_countries_max,
+            "player_unnamed_human_countries_max": self.player_unnamed_human_max,
+            "player_co_op_countries_max": self.player_co_op_max,
+            "player_shared_player_key_countries_max": self.player_shared_key_max,
             "player_view_status": self.player_view_status,
             "player_view_diagnostic": self.player_view_diagnostic,
             "d53_faction_members_leaf": self.faction_members_status,

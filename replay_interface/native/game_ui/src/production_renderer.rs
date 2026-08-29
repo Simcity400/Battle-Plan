@@ -7343,7 +7343,14 @@ mod tests {
             rest.insert(
                 "_r2_session_multiplayer_metadata_live".into(),
                 serde_json::json!({
-                    "players_by_country": {"state": "known", "rows": rows}
+                    // `complete`: the producer's human-country walk reached
+                    // every country slot. Without it the set is not the hour's
+                    // player-country set and the leaf refuses it.
+                    "players_by_country": {
+                        "state": "known",
+                        "complete": true,
+                        "rows": rows,
+                    }
                 }),
             );
             observer_test_frame(rest)
@@ -7353,6 +7360,11 @@ mod tests {
                 "country_tag": tag,
                 "is_human_controlled": true,
                 "tag_db_id": 23,
+                // BOTH identity leaves, because the producer writes both on
+                // every row it publishes: a row missing one is a row
+                // `world_fold` could not have written, and the one decoder of
+                // this sidecar refuses it rather than reading half a row.
+                "player_key_hash": {"state": "not_sourced"},
                 "human_name": {"state": "not_sourced"}
             })
         };

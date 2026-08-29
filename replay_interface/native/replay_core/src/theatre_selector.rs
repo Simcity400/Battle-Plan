@@ -1526,3 +1526,95 @@ fn parse_theatre_selector(raw: &Map<String, Value>) -> TheatreSelectorView {
 
 #[cfg(test)]
 mod tests;
+
+/// The D98 identity fixture's consumer half, INLINE.
+///
+/// It reads a repository file, and `source::tests::
+/// production_sources_have_no_descendant_pathname_read` audits every
+/// replay_core source for exactly that - masking `#[cfg(test)]` ITEMS, which
+/// a file-based test module is not. So this one test lives beside the code it
+/// tests rather than in `tests.rs`, where the audit would read its fixture
+/// read as a production loader.
+#[cfg(test)]
+mod d98_identity_fixture {
+    use super::*;
+    use serde_json::json;
+    use std::collections::BTreeSet;
+
+    fn raw(value: Value) -> Map<String, Value> {
+        value.as_object().unwrap().clone()
+    }
+
+    /// The consumer half of the D98 identity fixture, and the second blocker in one
+    /// assertion: replay REJECTS the carrier this producer emits, and does it on the
+    /// evidence-set length.
+    ///
+    /// The fixture is the producer's own bytes, and there is exactly one copy of it:
+    /// the file the producer test asserts it emits. The producer half is
+    /// `theatre_selector_live_lane::tests::the_producer_emits_the_committed_d98_identity_fixture`;
+    /// regenerate with `VJ_WRITE_D98_FIXTURE=1 cargo test -p theatre_selector_live_lane`.
+    ///
+    /// kills: changing this consumer's requirement list (the four stop being its
+    /// first four, or the length stops being 31), and changing the producer's
+    /// declaration — regenerating the fixture moves what this test reads, so the
+    /// producer cannot re-declare its evidence set without this side agreeing.
+    #[test]
+    fn the_producers_four_manifests_are_the_first_four_of_thirty_one() {
+        // The producer's bytes, in the one place both sides read. Two copies with
+        // two digest pins can drift apart - each side passing its own test while
+        // replay refuses what the extractor emits - so there is one file, and the
+        // producer test writes and checks THIS one. Nothing here links the extractor:
+        // the two halves still share nothing but bytes.
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures")
+            .join("d98_producer_evidence.json");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!(
+                "the D98 identity fixture {} is missing ({error}); regenerate it with \
+                 VJ_WRITE_D98_FIXTURE=1 cargo test -p theatre_selector_live_lane",
+                path.display()
+            )
+        });
+        let fixture: Value = serde_json::from_str(&text).expect("the fixture is JSON");
+        let declared: Vec<&str> = fixture["producer_evidence_sha256"]
+            .as_array()
+            .expect("the fixture declares an evidence set")
+            .iter()
+            .map(|value| value.as_str().expect("evidence entries are strings"))
+            .collect();
+        assert_eq!(declared.len(), 4, "the producer declares four manifests");
+        assert_eq!(REQUIRED_PRODUCER_EVIDENCE_SHA256.len(), 31);
+        assert_eq!(
+            declared.as_slice(),
+            &REQUIRED_PRODUCER_EVIDENCE_SHA256[..4],
+            "the four the producer's read laws rest on are this list's first four"
+        );
+        let distinct: BTreeSet<&str> = REQUIRED_PRODUCER_EVIDENCE_SHA256.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            REQUIRED_PRODUCER_EVIDENCE_SHA256.len(),
+            "a repeated manifest would make the exact-order comparison ambiguous"
+        );
+        assert!(
+            !distinct.contains(EXACT_A729_EXECUTABLE_SHA256),
+            "the executable identity is not a read-law manifest"
+        );
+
+        // And what replay does with it: the carrier is refused, by name, on the
+        // evidence set. Lifting D98's profile gate alone would not render a panel.
+        let refused = parse_theatre_selector(&raw(json!({
+            THEATRE_SELECTOR_FIELD: {
+                "authority": fixture["authority"],
+                "schema_version": fixture["schema_version"],
+                "executable_sha256": fixture["executable_sha256"],
+                "producer_evidence_sha256": fixture["producer_evidence_sha256"],
+            }
+        })));
+        assert_eq!(refused.status, ViewStatus::DomainUnavailable);
+        assert_eq!(
+            refused.diagnostic.as_deref(),
+            Some("producer evidence identity mismatch"),
+            "the pinned expectation for a scheduled D98 capture is this rejection, not a panel"
+        );
+    }
+}

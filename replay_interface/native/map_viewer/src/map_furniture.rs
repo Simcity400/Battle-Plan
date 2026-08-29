@@ -691,6 +691,7 @@ impl BmFont {
         self.glyphs.get(&code)
     }
 
+
     pub fn measure(&self, text: &str) -> i32 {
         let mut width = 0;
         let mut previous = None;
@@ -2642,4 +2643,5 @@ NDefines = { NGraphics = {\n\
             layer.naval_unattributed.len()
         );
     }
+
 }
