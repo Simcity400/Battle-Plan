@@ -16,6 +16,7 @@ pub mod a30_recruitable_capture_join;
 #[cfg(windows)]
 pub mod a30_visibility;
 pub mod agency_upgrade_controller;
+pub(crate) mod cause_column;
 pub mod cipher_controller;
 pub mod decoder_gate;
 pub mod extractor;
