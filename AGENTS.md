@@ -8,7 +8,7 @@ Read `PROJECT.md` before changing product behaviour, formats, or architecture.
 
 - When asking questions to the owner, do not use any jargon and be concise; just make things very simple for them to understand and explain how the change would affect the end users UX, if at all.
 - No backwards compat: delete replaced code in the same change, prove it dead.
-- Code comments state only what the code cannot show (invariants, engine quirks, traps). No essays, no narration, no review notes in source — evidence docs carry that. Essay comments are a landing bounce (owner 2026-08-26).
+- Code comments state only what the code cannot show (invariants, engine quirks, traps). No essays, no narration, no review notes in source. Essay comments are a landing bounce (owner 2026-08-26). This is not a licence to essay in the run dir instead — see "What evidence IS" under Tools (owner 2026-08-29): claims become tests or structured data.
 - Fix what you find. Leave open only what needs the owner, a live game, or
   someone else's active work.
 - Have Codex adversarially review work once you deem it ready to merge. Re-review every fix until it approves clean. You are allowed to push back on findings if you can prove they are wrong.
@@ -32,6 +32,15 @@ Read `PROJECT.md` before changing product behaviour, formats, or architecture.
 - `candidate_census` and `cross_analyze_function` are discovery or second-opinion outputs, not proof or automatic promotion; the exact-build Ghidra broker remains the static authority. See the tool READMEs for details.
 - Live instrumentation requires explicit owner authorization and an already-running matching game; one job at a time.
 - Evidence: `extractor/native/runs/<run>/`, append-only.
+- What evidence IS (owner 2026-08-29): raw artifacts (probe outputs, logs,
+  decompiles), structured data (JSON manifests, ledgers), and asserting tests.
+  Claims live as tests or structured data, never as prose. Narrative markdown
+  is capped at ONE short pointer file per run — what was done, where the
+  artifacts are, a few lines per item; an irreproducible observation gets its
+  few sentences there. No RESULTS essays, no closing narratives, no dossiers.
+  Codex reviews code + structured evidence only; markdown is out of review
+  scope. Pre-existing run-dir prose stays (append-only), write no new prose
+  in that style.
 
 ## Codex reviewer - Only relevant for Claude agents. Ignore if a Codex agent
 
