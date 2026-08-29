@@ -1008,6 +1008,7 @@ dependencies = [
 name = "resolved_tooltip_instances_live_lane"
 version = "0.1.0"
 dependencies = [
+ "compact_contract",
  "inline_detour",
  "minhook_h4",
  "windows-sys",

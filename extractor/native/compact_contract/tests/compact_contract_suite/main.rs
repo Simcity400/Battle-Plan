@@ -1,3 +1,4 @@
+mod counter_wire_census;
 mod derive_panel_stats_has_no_production_caller;
 mod diagnostic_unit_accumulation_sweep;
 mod known_record_type_exhaustive;

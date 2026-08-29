@@ -119,67 +119,61 @@ static SITE_ENTRIES: [AtomicU64; HOOK_RECEIPT_COUNT] = [
 static LATEST: OnceLock<Mutex<LatestFrames>> = OnceLock::new();
 static LIFECYCLE: Mutex<()> = Mutex::new(());
 
-/// Lifetime per-arm census, in `CENSUS_*` index order. Published on the wire so
+/// Which surface an intel-getter entry belongs to, for the hook that reads it.
 const CENSUS_LAND: usize = 0;
 const CENSUS_TASKFORCE: usize = 1;
-const CENSUS_SURFACE_COUNT: usize = 2;
 
-/// process lifetime.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct FrameCensus {
-    candidates_seen: u64,
-    rejected_unreadable_handle: u64,
-    rejected_below_intel_threshold: u64,
-    rejected_by_eligibility: u64,
-    rejected_taskforce_state: u64,
-    abandoned_pending: u64,
-    admitted: u64,
-    frames_without_enumeration: u64,
-    frames_producer_gate_closed: u64,
-    admitted_rows_lost_to_replacement: u64,
-    frames_source_collection_empty: u64,
+compact_contract::wire_counters! {
+    /// The lifetime census of both surfaces, and the wire name of every counter
+    /// in it. A build frame fills only the half its own surface names, so the
+    /// lifetime fold is a whole-struct add with no index between a count and
+    /// the name it arrives under.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct D95StateCounters, prefix = "d95_";
+
+    land_candidates_seen,
+    land_rejected_unreadable_handle,
+    land_rejected_below_intel_threshold,
+    land_rejected_by_eligibility,
+    land_rejected_taskforce_state,
+    land_abandoned_pending,
+    land_admitted,
+    land_frames_without_enumeration,
+    land_frames_producer_gate_closed,
+    land_admitted_rows_lost_to_replacement,
+
+    taskforce_candidates_seen,
+    taskforce_rejected_unreadable_handle,
+    taskforce_rejected_below_intel_threshold,
+    taskforce_rejected_by_eligibility,
+    taskforce_rejected_taskforce_state,
+    taskforce_abandoned_pending,
+    taskforce_admitted,
+    taskforce_frames_without_enumeration,
+    taskforce_frames_producer_gate_closed,
+    taskforce_admitted_rows_lost_to_replacement,
+    taskforce_frames_source_collection_empty,
 }
 
-impl FrameCensus {
-    fn accounted(&self) -> u64 {
-        self.rejected_unreadable_handle
-            .saturating_add(self.rejected_below_intel_threshold)
-            .saturating_add(self.rejected_by_eligibility)
-            .saturating_add(self.rejected_taskforce_state)
-            .saturating_add(self.abandoned_pending)
-            .saturating_add(self.admitted)
+impl D95StateCounters {
+    #[cfg(test)]
+    fn land_accounted(&self) -> u64 {
+        self.land_rejected_unreadable_handle
+            .saturating_add(self.land_rejected_below_intel_threshold)
+            .saturating_add(self.land_rejected_by_eligibility)
+            .saturating_add(self.land_rejected_taskforce_state)
+            .saturating_add(self.land_abandoned_pending)
+            .saturating_add(self.land_admitted)
     }
 
-    fn accumulate(&mut self, other: &FrameCensus) {
-        self.candidates_seen = self.candidates_seen.saturating_add(other.candidates_seen);
-        self.rejected_unreadable_handle = self
-            .rejected_unreadable_handle
-            .saturating_add(other.rejected_unreadable_handle);
-        self.rejected_below_intel_threshold = self
-            .rejected_below_intel_threshold
-            .saturating_add(other.rejected_below_intel_threshold);
-        self.rejected_by_eligibility = self
-            .rejected_by_eligibility
-            .saturating_add(other.rejected_by_eligibility);
-        self.rejected_taskforce_state = self
-            .rejected_taskforce_state
-            .saturating_add(other.rejected_taskforce_state);
-        self.abandoned_pending = self
-            .abandoned_pending
-            .saturating_add(other.abandoned_pending);
-        self.admitted = self.admitted.saturating_add(other.admitted);
-        self.frames_without_enumeration = self
-            .frames_without_enumeration
-            .saturating_add(other.frames_without_enumeration);
-        self.frames_producer_gate_closed = self
-            .frames_producer_gate_closed
-            .saturating_add(other.frames_producer_gate_closed);
-        self.frames_source_collection_empty = self
-            .frames_source_collection_empty
-            .saturating_add(other.frames_source_collection_empty);
-        self.admitted_rows_lost_to_replacement = self
-            .admitted_rows_lost_to_replacement
-            .saturating_add(other.admitted_rows_lost_to_replacement);
+    #[cfg(test)]
+    fn taskforce_accounted(&self) -> u64 {
+        self.taskforce_rejected_unreadable_handle
+            .saturating_add(self.taskforce_rejected_below_intel_threshold)
+            .saturating_add(self.taskforce_rejected_by_eligibility)
+            .saturating_add(self.taskforce_rejected_taskforce_state)
+            .saturating_add(self.taskforce_abandoned_pending)
+            .saturating_add(self.taskforce_admitted)
     }
 }
 
@@ -197,8 +191,8 @@ struct CompleteFrame {
 struct LatestFrames {
     land: Option<CompleteFrame>,
     taskforces: Option<CompleteFrame>,
-    /// Lifetime census per surface, indexed by `CENSUS_*`.
-    census: [FrameCensus; CENSUS_SURFACE_COUNT],
+    /// Lifetime census, both surfaces in one declaration.
+    counters: D95StateCounters,
 }
 
 struct BuildingFrame {
@@ -208,7 +202,7 @@ struct BuildingFrame {
     pending_land: Option<SpottedUnitHandle>,
     enumeration_gate_open: Option<bool>,
     source_collection_len: Option<i32>,
-    census: FrameCensus,
+    census: D95StateCounters,
 }
 
 thread_local! {
@@ -571,45 +565,103 @@ fn mark_served(slot: Option<&mut CompleteFrame>, served_sequence: Option<u64>) {
     }
 }
 
-/// The lifetime per-arm census, indexed by `CENSUS_*`. Empty before the first
-pub fn census_units() -> [[u64; CENSUS_UNIT_COUNT]; CENSUS_SURFACE_COUNT] {
-    let Some(latest) = LATEST.get().and_then(|latest| latest.lock().ok()) else {
-        return [[0; CENSUS_UNIT_COUNT]; CENSUS_SURFACE_COUNT];
-    };
-    let mut out = [[0; CENSUS_UNIT_COUNT]; CENSUS_SURFACE_COUNT];
-    for (index, census) in latest.census.iter().enumerate() {
-        out[index] = [
-            census.candidates_seen,
-            census.rejected_unreadable_handle,
-            census.rejected_below_intel_threshold,
-            census.rejected_by_eligibility,
-            census.rejected_taskforce_state,
-            census.abandoned_pending,
-            census.admitted,
-            census.frames_without_enumeration,
-            census.frames_producer_gate_closed,
-            census.frames_source_collection_empty,
-            census.admitted_rows_lost_to_replacement,
-        ];
-    }
-    out
+/// What this lane publishes about its own reading of the hour.
+///
+/// Every field is a counter with a registered wire name; the collector copies
+/// it into its producer struct field for field, so no index stands between a
+/// count and the name it arrives under.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CensusDiagnostics {
+    pub hooks_installed: bool,
+    pub site_entries_intel_getter: u64,
+    pub site_entries_land_frame: u64,
+    pub site_entries_land_eligibility: u64,
+    pub site_entries_taskforce_frame: u64,
+    pub land_candidates_seen: u64,
+    pub land_rejected_unreadable_handle: u64,
+    pub land_rejected_below_intel_threshold: u64,
+    pub land_rejected_by_eligibility: u64,
+    pub land_rejected_taskforce_state: u64,
+    pub land_abandoned_pending: u64,
+    pub land_admitted: u64,
+    pub land_frames_without_enumeration: u64,
+    pub land_frames_producer_gate_closed: u64,
+    pub land_admitted_rows_lost_to_replacement: u64,
+    pub taskforce_candidates_seen: u64,
+    pub taskforce_rejected_unreadable_handle: u64,
+    pub taskforce_rejected_below_intel_threshold: u64,
+    pub taskforce_rejected_by_eligibility: u64,
+    pub taskforce_rejected_taskforce_state: u64,
+    pub taskforce_abandoned_pending: u64,
+    pub taskforce_admitted: u64,
+    pub taskforce_frames_without_enumeration: u64,
+    pub taskforce_frames_producer_gate_closed: u64,
+    pub taskforce_admitted_rows_lost_to_replacement: u64,
+    pub taskforce_frames_source_collection_empty: u64,
+    pub next_sequence: u64,
 }
 
-pub const CENSUS_CANDIDATES_SEEN: usize = 0;
-pub const CENSUS_REJECTED_UNREADABLE_HANDLE: usize = 1;
-pub const CENSUS_REJECTED_BELOW_INTEL_THRESHOLD: usize = 2;
-pub const CENSUS_REJECTED_BY_ELIGIBILITY: usize = 3;
-pub const CENSUS_REJECTED_TASKFORCE_STATE: usize = 4;
-pub const CENSUS_ABANDONED_PENDING: usize = 5;
-pub const CENSUS_ADMITTED: usize = 6;
-pub const CENSUS_FRAMES_WITHOUT_ENUMERATION: usize = 7;
-pub const CENSUS_FRAMES_PRODUCER_GATE_CLOSED: usize = 8;
-pub const CENSUS_FRAMES_SOURCE_COLLECTION_EMPTY: usize = 9;
-pub const CENSUS_ADMITTED_ROWS_LOST_TO_REPLACEMENT: usize = 10;
-pub const CENSUS_SURFACE_LAND: usize = CENSUS_LAND;
-pub const CENSUS_SURFACE_TASKFORCE: usize = CENSUS_TASKFORCE;
-pub const CENSUS_UNIT_COUNT: usize = 11;
-pub const CENSUS_SURFACES: usize = CENSUS_SURFACE_COUNT;
+/// The lifetime census and the hook's own receipts, in one reading.
+///
+/// Zero before the first install, which is what the counters really are then.
+///
+/// A POISONED MUTEX IS RECOVERED, not skipped. Poisoning means a callback
+/// panicked while holding the lock; the counters behind it are still the totals
+/// this process accumulated, and returning zeros instead would publish "this
+/// lane counted nothing" for a lane that counted plenty -- the defect this
+/// registry exists to catch, at runtime. `into_inner` reads what is there.
+///
+/// THE CENSUS IS COPIED FIRST, then the site entries. A site entry is
+/// incremented when a callback is ENTERED and the census inside that same
+/// callback afterwards, so a census taken before its entries can only be short
+/// of them -- while entries taken first could be short of a census counted
+/// after them, which reads as a frame nobody entered.
+pub fn diagnostics() -> CensusDiagnostics {
+    let counters = LATEST
+        .get()
+        .map(|latest| {
+            latest
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .counters
+        })
+        .unwrap_or_default();
+    // READ OFF THE ARRAY ITSELF, so the registry's lift names the static and
+    // the declaration backstop accounts for it by that lift rather than by an
+    // exemption. It was excused as "published by the rows that read this
+    // array", which was true and was still an exemption standing where a proof
+    // belongs (Codex round 5).
+
+    CensusDiagnostics {
+        hooks_installed: installed(),
+        site_entries_intel_getter: SITE_ENTRIES[SITE_INTEL_GETTER].load(Ordering::Relaxed),
+        site_entries_land_frame: SITE_ENTRIES[SITE_LAND_FRAME].load(Ordering::Relaxed),
+        site_entries_land_eligibility: SITE_ENTRIES[SITE_LAND_ELIGIBILITY].load(Ordering::Relaxed),
+        site_entries_taskforce_frame: SITE_ENTRIES[SITE_TASKFORCE_FRAME].load(Ordering::Relaxed),
+        land_candidates_seen: counters.land_candidates_seen,
+        land_rejected_unreadable_handle: counters.land_rejected_unreadable_handle,
+        land_rejected_below_intel_threshold: counters.land_rejected_below_intel_threshold,
+        land_rejected_by_eligibility: counters.land_rejected_by_eligibility,
+        land_rejected_taskforce_state: counters.land_rejected_taskforce_state,
+        land_abandoned_pending: counters.land_abandoned_pending,
+        land_admitted: counters.land_admitted,
+        land_frames_without_enumeration: counters.land_frames_without_enumeration,
+        land_frames_producer_gate_closed: counters.land_frames_producer_gate_closed,
+        land_admitted_rows_lost_to_replacement: counters.land_admitted_rows_lost_to_replacement,
+        taskforce_candidates_seen: counters.taskforce_candidates_seen,
+        taskforce_rejected_unreadable_handle: counters.taskforce_rejected_unreadable_handle,
+        taskforce_rejected_below_intel_threshold: counters.taskforce_rejected_below_intel_threshold,
+        taskforce_rejected_by_eligibility: counters.taskforce_rejected_by_eligibility,
+        taskforce_rejected_taskforce_state: counters.taskforce_rejected_taskforce_state,
+        taskforce_abandoned_pending: counters.taskforce_abandoned_pending,
+        taskforce_admitted: counters.taskforce_admitted,
+        taskforce_frames_without_enumeration: counters.taskforce_frames_without_enumeration,
+        taskforce_frames_producer_gate_closed: counters.taskforce_frames_producer_gate_closed,
+        taskforce_admitted_rows_lost_to_replacement: counters.taskforce_admitted_rows_lost_to_replacement,
+        taskforce_frames_source_collection_empty: counters.taskforce_frames_source_collection_empty,
+        next_sequence: NEXT_SEQUENCE.load(Ordering::Acquire),
+    }
+}
 
 #[cfg(test)]
 fn snapshot_from_latest(latest: &LatestFrames) -> Result<Option<SpottedUnitsSnapshot>, String> {
@@ -787,20 +839,20 @@ unsafe extern "system" fn hook_intel_getter(unit: usize) -> u32 {
 }
 
 fn offer_land_candidate(frame: &mut BuildingFrame, handle: Option<SpottedUnitHandle>) {
-    frame.census.candidates_seen = frame.census.candidates_seen.saturating_add(1);
+    frame.census.bump(|census| &mut census.land_candidates_seen);
     if frame.pending_land.is_some() {
-        frame.census.abandoned_pending = frame.census.abandoned_pending.saturating_add(1);
+        frame.census.bump(|census| &mut census.land_abandoned_pending);
     }
     match handle {
         None => {
-            frame.census.rejected_unreadable_handle =
-                frame.census.rejected_unreadable_handle.saturating_add(1);
+            frame
+                .census
+                .bump(|census| &mut census.land_rejected_unreadable_handle);
         }
         Some(row) if row.raw_intel < 250 => {
-            frame.census.rejected_below_intel_threshold = frame
+            frame
                 .census
-                .rejected_below_intel_threshold
-                .saturating_add(1);
+                .bump(|census| &mut census.land_rejected_below_intel_threshold);
         }
         Some(_) => {}
     }
@@ -812,11 +864,12 @@ fn offer_land_eligibility(frame: &mut BuildingFrame, admitted: bool) {
         return;
     };
     if admitted {
-        frame.census.admitted = frame.census.admitted.saturating_add(1);
+        frame.census.bump(|census| &mut census.land_admitted);
         insert_row(frame, row);
     } else {
-        frame.census.rejected_by_eligibility =
-            frame.census.rejected_by_eligibility.saturating_add(1);
+        frame
+            .census
+            .bump(|census| &mut census.land_rejected_by_eligibility);
     }
 }
 
@@ -825,24 +878,25 @@ fn offer_taskforce_candidate(
     readable: bool,
     state: Option<(SpottedUnitHandle, bool)>,
 ) {
-    frame.census.candidates_seen = frame.census.candidates_seen.saturating_add(1);
+    frame.census.bump(|census| &mut census.taskforce_candidates_seen);
     match state {
         None if !readable => {
-            frame.census.rejected_unreadable_handle =
-                frame.census.rejected_unreadable_handle.saturating_add(1);
+            frame
+                .census
+                .bump(|census| &mut census.taskforce_rejected_unreadable_handle);
         }
         None => {
-            frame.census.rejected_below_intel_threshold = frame
+            frame
                 .census
-                .rejected_below_intel_threshold
-                .saturating_add(1);
+                .bump(|census| &mut census.taskforce_rejected_below_intel_threshold);
         }
         Some((_, false)) => {
-            frame.census.rejected_taskforce_state =
-                frame.census.rejected_taskforce_state.saturating_add(1);
+            frame
+                .census
+                .bump(|census| &mut census.taskforce_rejected_taskforce_state);
         }
         Some((row, true)) => {
-            frame.census.admitted = frame.census.admitted.saturating_add(1);
+            frame.census.bump(|census| &mut census.taskforce_admitted);
             insert_row(frame, row);
         }
     }
@@ -872,7 +926,7 @@ fn new_building_frame(pov_country_id: u32) -> BuildingFrame {
         pending_land: None,
         enumeration_gate_open: None,
         source_collection_len: None,
-        census: FrameCensus::default(),
+        census: D95StateCounters::default(),
     }
 }
 
@@ -909,13 +963,16 @@ fn publish(frame: BuildingFrame, land: bool) {
     let Some(sequence) = next_sequence() else {
         return;
     };
-    // mutex is taken, and the outgoing frame is dropped AFTER it is released,
     let (census, complete) = materialise_frame(frame, sequence, land);
-    let outgoing = LATEST.get().and_then(|latest| {
-        latest
+    // The outgoing frame is dropped AFTER the guard is released, and a poisoned
+    // lock is RECOVERED: skipping the frame would discard its census with it,
+    // and the totals would keep being published as an observed reading of hours
+    // that were never counted.
+    let outgoing = LATEST.get().map(|latest| {
+        let mut slot = latest
             .lock()
-            .ok()
-            .map(|mut slot| commit_complete(&mut slot, census, complete, land))
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        commit_complete(&mut slot, census, complete, land)
     });
     drop(outgoing);
 }
@@ -930,13 +987,22 @@ fn materialise_frame(
     frame: BuildingFrame,
     sequence: u64,
     land: bool,
-) -> (FrameCensus, CompleteFrame) {
+) -> (D95StateCounters, CompleteFrame) {
     let mut census = frame.census;
-    if census.candidates_seen == 0 {
-        census.frames_without_enumeration = 1;
+    // Land has no source-count reading at all -- its collection hangs off a
+    // country this lane cannot resolve passively -- so the declaration gives it
+    // no source-collection-empty field to set.
+    if land && census.land_candidates_seen == 0 {
+        census.land_frames_without_enumeration = 1;
+        if frame.enumeration_gate_open == Some(false) {
+            census.land_frames_producer_gate_closed = 1;
+        }
+    }
+    if !land && census.taskforce_candidates_seen == 0 {
+        census.taskforce_frames_without_enumeration = 1;
         match (frame.enumeration_gate_open, frame.source_collection_len) {
-            (Some(false), _) => census.frames_producer_gate_closed = 1,
-            (Some(true), Some(0)) => census.frames_source_collection_empty = 1,
+            (Some(false), _) => census.taskforce_frames_producer_gate_closed = 1,
+            (Some(true), Some(0)) => census.taskforce_frames_source_collection_empty = 1,
             _ => {}
         }
     }
@@ -974,11 +1040,10 @@ fn materialise_frame(
 /// caller drops it after the lock is released — its row buffer is the one
 fn commit_complete(
     latest: &mut LatestFrames,
-    mut census: FrameCensus,
+    mut census: D95StateCounters,
     complete: CompleteFrame,
     land: bool,
 ) -> Option<CompleteFrame> {
-    let index = if land { CENSUS_LAND } else { CENSUS_TASKFORCE };
     let slot = if land {
         &mut latest.land
     } else {
@@ -986,10 +1051,17 @@ fn commit_complete(
     };
     if let Some(outgoing) = slot.as_ref() {
         if !outgoing.served && !outgoing.rows.is_empty() {
-            census.admitted_rows_lost_to_replacement = outgoing.rows.len() as u64;
+            let lost = outgoing.rows.len() as u64;
+            if land {
+                census.land_admitted_rows_lost_to_replacement = lost;
+            } else {
+                census.taskforce_admitted_rows_lost_to_replacement = lost;
+            }
         }
     }
-    latest.census[index].accumulate(&census);
+    // The frame filled only its own surface's half, so the other half adds zero
+    // and the fold needs no surface index.
+    latest.counters.accumulate(&census);
     slot.replace(complete)
 }
 
@@ -1311,6 +1383,224 @@ mod tests {
             .expect("the D95 detour roster must bind to its own specs by name");
     }
 
+    /// A detour counts ITS OWN site, and the table names it in ITS OWN slot.
+    ///
+    /// The check below reads each site constant once, which two hooks can
+    /// satisfy while holding each other's constants: `hook_land_frame` taking
+    /// `SITE_TASKFORCE_FRAME` and `hook_taskforce_frame` taking
+    /// `SITE_LAND_FRAME` publishes two registered counters carrying each other's
+    /// values, with every name, role and position correct (Codex VB2 round 6,
+    /// finding 2). The pairing is what makes the count mean the site.
+    ///
+    /// MUTATION: swap the two constants, or reorder `detours()`, and this fails.
+    /// The INSTALLER's own table names one site per row.
+    ///
+    /// `every_detour_body_takes_the_lease_for_its_own_site` pins the body to the
+    /// site it counts and `detours()` to the site it names, and neither reads
+    /// the tuple table `install` really patches with (Codex VB2 round 7,
+    /// finding 3). Swapping two of its detour/original-slot pairs attaches a
+    /// correctly-counted body to the wrong RVA: every count keeps its name and
+    /// role, and every value is a reading of the other site.
+    ///
+    /// The four names of a row are one site's, so the whole table is pinned
+    /// rather than any one column of it.
+    ///
+    /// MUTATION: swap any two entries of a row, or reorder the table against
+    /// `PRODUCTION_HOOK_SPECS`, and this fails.
+    #[test]
+    fn the_installer_patches_each_site_with_its_own_detour() {
+        const ROWS: [(&str, &str, &str, &str, &str); HOOK_RECEIPT_COUNT] = [
+            (
+                "gameplay.d95.intel_getter",
+                "INTEL_GETTER_RVA",
+                "GETTER_SENTINEL",
+                "hook_intel_getter",
+                "ORIGINAL_GETTER",
+            ),
+            (
+                "gameplay.d95.land_frame",
+                "LAND_FRAME_RVA",
+                "LAND_FRAME_SENTINEL",
+                "hook_land_frame",
+                "ORIGINAL_LAND_FRAME",
+            ),
+            (
+                "gameplay.d95.land_eligibility",
+                "LAND_ELIGIBILITY_RVA",
+                "LAND_ELIGIBILITY_SENTINEL",
+                "hook_land_eligibility",
+                "ORIGINAL_LAND_ELIGIBILITY",
+            ),
+            (
+                "gameplay.d95.taskforce_frame",
+                "TASKFORCE_FRAME_RVA",
+                "TASKFORCE_FRAME_SENTINEL",
+                "hook_taskforce_frame",
+                "ORIGINAL_TASKFORCE_FRAME",
+            ),
+        ];
+        let production = production_code();
+        // THE WHOLE OF install(), PINNED.
+        //
+        // Round after round of review found another way to make the installer
+        // patch something other than the row it is walking: a hard-coded body in
+        // `create_hook`, one slot for every original, a shadowing `let detour =`
+        // inside the loop, an alias bound before it, a second `let specs` between
+        // the checked table and the loop, a block-local `static ORIGINAL_..`
+        // shadowing the module's before the table resolves its names. Each was a
+        // different spelling of one defect, and a check that named spellings
+        // always had one more to miss. Installation is short and it is all of
+        // this function, so the text from its signature to the store that ends it
+        // is pinned: any edit at all fails here and has to be re-pinned
+        // deliberately, in a diff a reader sees (owner ruling 2026-08-29: close
+        // the class by counted, asserted completeness).
+        let production = production_code();
+        let installation = production
+            .split_once("pub fn install() -> Result<(), String> {")
+            .expect("install is a production function")
+            .1;
+        let installation = installation
+            .split_once("\n    MODULE_BASE")
+            .expect("install stores the module base once it has patched")
+            .0;
+        let installer: String =
+            std::iter::once("pub fn install() -> Result<(), String> {")
+                .chain(installation.split_whitespace())
+                .collect::<Vec<_>>()
+                .join(" ");
+        const PINNED_INSTALLATION: &str =
+            "pub fn install() -> Result<(), String> { let _guard = LIFECYCLE .lock() .map_err(|_| \
+             \"spotted-unit hook lifecycle poisoned\")?; if INSTALLED.load(Ordering::Acquire) { \
+             return Ok(()); } // A previous release left a detour live. `INSTALLED` is false, so \
+             without if RETAINED_LIVE.load(Ordering::Acquire) { return Err( \"spotted-unit hooks \
+             cannot be reinstalled: a previous release left a live detour\" .into(), ); } let \
+             base = unsafe { GetModuleHandleW(ptr::null()) } as usize; if base == 0 { return \
+             Err(\"spotted-unit hook module unavailable\".into()); } let specs: [(u32, &[u8], \
+             *mut c_void, &AtomicUsize); 4] = [ ( INTEL_GETTER_RVA, &GETTER_SENTINEL, \
+             hook_intel_getter as *mut c_void, &ORIGINAL_GETTER, ), ( LAND_FRAME_RVA, \
+             &LAND_FRAME_SENTINEL, hook_land_frame as *mut c_void, &ORIGINAL_LAND_FRAME, ), ( \
+             LAND_ELIGIBILITY_RVA, &LAND_ELIGIBILITY_SENTINEL, hook_land_eligibility as *mut \
+             c_void, &ORIGINAL_LAND_ELIGIBILITY, ), ( TASKFORCE_FRAME_RVA, \
+             &TASKFORCE_FRAME_SENTINEL, hook_taskforce_frame as *mut c_void, \
+             &ORIGINAL_TASKFORCE_FRAME, ), ]; let mut created = Vec::new(); for (rva, sentinel, \
+             detour, original_slot) in specs { let target = match base.checked_add(rva as usize) \
+             { Some(target) => target, None => { if !rollback(&created) { clear_originals(); } \
+             return Err(\"spotted-unit hook address overflow\".into()); } }; let mut actual = \
+             vec![0u8; sentinel.len()]; if let Err(error) = read_exact(target, &mut actual) { if \
+             !rollback(&created) { clear_originals(); } return Err(error); } if actual != \
+             sentinel { if !rollback(&created) { clear_originals(); } return Err(format!( \
+             \"spotted-unit hook sentinel mismatch at RVA {rva:#x}\" )); } let original = match \
+             unsafe { MinHook::create_hook(target as *mut c_void, detour) } { Ok(value) => value, \
+             Err(status) => { if !rollback(&created) { clear_originals(); } return Err(format!( \
+             \"spotted-unit hook creation failed at RVA {rva:#x}: {status}\" )); } }; \
+             original_slot.store(original as usize, Ordering::Release); created.push(target); }";
+        assert_eq!(
+            installer, PINNED_INSTALLATION,
+            "install() changed. It is pinned whole because every check that named one \
+             misuse of the row it walks was defeated by the next spelling; read the \
+             change, satisfy yourself each of rva, sentinel, detour and \
+             original_slot still comes from the row the loop is on and resolves to \
+             the module's own statics, and re-pin it."
+        );
+        let table = production
+            .split_once("let specs: [(u32, &[u8], *mut c_void, &AtomicUsize); 4] = [")
+            .expect("install builds its patch table")
+            .1;
+        let table = table
+            .split_once("
+    ];")
+            .expect("the patch table closes")
+            .0;
+        let rows: Vec<&str> = table.split("        (").skip(1).collect();
+        assert_eq!(
+            rows.len(),
+            HOOK_RECEIPT_COUNT,
+            "the patch table does not hold one row per site"
+        );
+        for (row, (logical, rva, sentinel, detour, slot)) in rows.iter().zip(ROWS) {
+            let names: Vec<&str> = row
+                .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+                .filter(|name| !name.is_empty())
+                .collect();
+            assert_eq!(
+                names,
+                vec![rva, sentinel, detour, "as", "mut", "c_void", slot],
+                "the patch row for {logical} does not name one site's own RVA, sentinel,                  detour and original slot"
+            );
+            // And the same row of the receipt table, which is what the roster
+            // binds by identity: one site, one RVA, one sentinel, one body.
+            let spec = PRODUCTION_HOOK_SPECS
+                .iter()
+                .find(|spec| spec.logical_name == logical)
+                .expect("every patched site has a receipt spec");
+            assert_eq!(
+                spec.requested_rva,
+                u64::from(match rva {
+                    "INTEL_GETTER_RVA" => INTEL_GETTER_RVA,
+                    "LAND_FRAME_RVA" => LAND_FRAME_RVA,
+                    "LAND_ELIGIBILITY_RVA" => LAND_ELIGIBILITY_RVA,
+                    _ => TASKFORCE_FRAME_RVA,
+                }),
+                "{logical} is patched at an RVA its receipt spec does not expect"
+            );
+            assert!(
+                std::ptr::eq(
+                    spec.original_prefix,
+                    match sentinel {
+                        "GETTER_SENTINEL" => &GETTER_SENTINEL[..],
+                        "LAND_FRAME_SENTINEL" => &LAND_FRAME_SENTINEL[..],
+                        "LAND_ELIGIBILITY_SENTINEL" => &LAND_ELIGIBILITY_SENTINEL[..],
+                        _ => &TASKFORCE_FRAME_SENTINEL[..],
+                    }
+                ),
+                "{logical} is patched behind a sentinel its receipt spec does not expect"
+            );
+        }
+    }
+
+    #[test]
+    fn every_detour_body_takes_the_lease_for_its_own_site() {
+        let production = production_code();
+        let detours = detours();
+        for (hook, site, index, suffix) in [
+            ("hook_intel_getter", "SITE_INTEL_GETTER", SITE_INTEL_GETTER, "intel_getter"),
+            ("hook_land_frame", "SITE_LAND_FRAME", SITE_LAND_FRAME, "land_frame"),
+            (
+                "hook_land_eligibility",
+                "SITE_LAND_ELIGIBILITY",
+                SITE_LAND_ELIGIBILITY,
+                "land_eligibility",
+            ),
+            (
+                "hook_taskforce_frame",
+                "SITE_TASKFORCE_FRAME",
+                SITE_TASKFORCE_FRAME,
+                "taskforce_frame",
+            ),
+        ] {
+            let at = production
+                .find(&format!("fn {hook}("))
+                .unwrap_or_else(|| panic!("{hook} is not a production function"));
+            let body = &production[at..];
+            let end = body[1..]
+                .find("
+unsafe extern")
+                .map(|offset| offset + 1)
+                .unwrap_or(body.len());
+            assert!(
+                body[..end].contains(&format!("CallbackLease::enter({site})")),
+                "{hook} does not take the lease for {site}, so its entries are counted                  under another site's name"
+            );
+            // And the slot the constant indexes is the detour the roster binds,
+            // so the count cannot be moved by reordering the table instead.
+            assert!(
+                detours[index].logical_name.ends_with(suffix),
+                "detours()[{site}] is {:?}, which is not the {suffix} site",
+                detours[index].logical_name
+            );
+        }
+    }
+
     #[test]
     fn every_detour_body_counts_its_own_entries() {
         let production = production_code();
@@ -1369,7 +1659,7 @@ mod tests {
                 rows_certified: true,
                 served: false,
             }),
-            census: Default::default(),
+            counters: Default::default(),
         };
 
         let first = snapshot_from_latest(&latest).unwrap().unwrap();
@@ -1401,7 +1691,7 @@ mod tests {
         let mut latest = LatestFrames {
             land: Some(land(11)),
             taskforces: None,
-            census: Default::default(),
+            counters: Default::default(),
         };
 
         let early = snapshot_from_latest(&latest)
@@ -1512,39 +1802,39 @@ mod tests {
 
     #[test]
     fn every_land_candidate_is_censused_under_exactly_one_arm() {
-        let cases: [(Option<SpottedUnitHandle>, FrameCensus, bool); 4] = [
+        let cases: [(Option<SpottedUnitHandle>, D95StateCounters, bool); 4] = [
             (
                 None,
-                FrameCensus {
-                    candidates_seen: 1,
-                    rejected_unreadable_handle: 1,
-                    ..FrameCensus::default()
+                D95StateCounters {
+                    land_candidates_seen: 1,
+                    land_rejected_unreadable_handle: 1,
+                    ..D95StateCounters::default()
                 },
                 false,
             ),
             (
                 Some(handle(1, 0)),
-                FrameCensus {
-                    candidates_seen: 1,
-                    rejected_below_intel_threshold: 1,
-                    ..FrameCensus::default()
+                D95StateCounters {
+                    land_candidates_seen: 1,
+                    land_rejected_below_intel_threshold: 1,
+                    ..D95StateCounters::default()
                 },
                 false,
             ),
             (
                 Some(handle(2, 249)),
-                FrameCensus {
-                    candidates_seen: 1,
-                    rejected_below_intel_threshold: 1,
-                    ..FrameCensus::default()
+                D95StateCounters {
+                    land_candidates_seen: 1,
+                    land_rejected_below_intel_threshold: 1,
+                    ..D95StateCounters::default()
                 },
                 false,
             ),
             (
                 Some(handle(3, 250)),
-                FrameCensus {
-                    candidates_seen: 1,
-                    ..FrameCensus::default()
+                D95StateCounters {
+                    land_candidates_seen: 1,
+                    ..D95StateCounters::default()
                 },
                 true,
             ),
@@ -1568,22 +1858,22 @@ mod tests {
         let mut admitted = new_building_frame(7);
         offer_land_candidate(&mut admitted, Some(handle(3, 255)));
         offer_land_eligibility(&mut admitted, true);
-        assert_eq!(admitted.census.admitted, 1);
-        assert_eq!(admitted.census.rejected_by_eligibility, 0);
+        assert_eq!(admitted.census.land_admitted, 1);
+        assert_eq!(admitted.census.land_rejected_by_eligibility, 0);
         assert_eq!(admitted.rows.len(), 1);
 
         let mut refused = new_building_frame(7);
         offer_land_candidate(&mut refused, Some(handle(3, 255)));
         offer_land_eligibility(&mut refused, false);
-        assert_eq!(refused.census.admitted, 0);
-        assert_eq!(refused.census.rejected_by_eligibility, 1);
+        assert_eq!(refused.census.land_admitted, 0);
+        assert_eq!(refused.census.land_rejected_by_eligibility, 1);
         assert!(refused.rows.is_empty());
 
         let mut unpaired = new_building_frame(7);
         offer_land_eligibility(&mut unpaired, false);
         assert_eq!(
             unpaired.census,
-            FrameCensus::default(),
+            D95StateCounters::default(),
             "an eligibility call with nothing pending is not this frame's \
              candidate being rejected"
         );
@@ -1591,44 +1881,44 @@ mod tests {
 
     #[test]
     fn every_taskforce_candidate_is_censused_under_exactly_one_arm() {
-        let cases: [(bool, Option<(SpottedUnitHandle, bool)>, FrameCensus, usize); 4] = [
+        let cases: [(bool, Option<(SpottedUnitHandle, bool)>, D95StateCounters, usize); 4] = [
             (
                 false,
                 None,
-                FrameCensus {
-                    candidates_seen: 1,
-                    rejected_unreadable_handle: 1,
-                    ..FrameCensus::default()
+                D95StateCounters {
+                    taskforce_candidates_seen: 1,
+                    taskforce_rejected_unreadable_handle: 1,
+                    ..D95StateCounters::default()
                 },
                 0,
             ),
             (
                 true,
                 None,
-                FrameCensus {
-                    candidates_seen: 1,
-                    rejected_below_intel_threshold: 1,
-                    ..FrameCensus::default()
+                D95StateCounters {
+                    taskforce_candidates_seen: 1,
+                    taskforce_rejected_below_intel_threshold: 1,
+                    ..D95StateCounters::default()
                 },
                 0,
             ),
             (
                 true,
                 Some((handle(5, 150), false)),
-                FrameCensus {
-                    candidates_seen: 1,
-                    rejected_taskforce_state: 1,
-                    ..FrameCensus::default()
+                D95StateCounters {
+                    taskforce_candidates_seen: 1,
+                    taskforce_rejected_taskforce_state: 1,
+                    ..D95StateCounters::default()
                 },
                 0,
             ),
             (
                 true,
                 Some((handle(5, 150), true)),
-                FrameCensus {
-                    candidates_seen: 1,
-                    admitted: 1,
-                    ..FrameCensus::default()
+                D95StateCounters {
+                    taskforce_candidates_seen: 1,
+                    taskforce_admitted: 1,
+                    ..D95StateCounters::default()
                 },
                 1,
             ),
@@ -1642,6 +1932,149 @@ mod tests {
             );
             assert_eq!(frame.rows.len(), rows);
         }
+    }
+
+    #[test]
+    /// The two surfaces share one struct, so the only way a count can go to the
+    /// wrong place is a field name. Nothing a land frame does may move a
+    /// `taskforce_*` counter, and nothing a task-force frame does may move a
+    /// `land_*` one.
+    ///
+    /// MUTATION: point any bump or any `materialise_frame` assignment at the
+    /// other surface's field and this fails naming it.
+    #[test]
+    fn a_frame_never_adds_to_the_other_surfaces_half() {
+        let zeros = D95StateCounters::default();
+        let named = |counters: &D95StateCounters| -> Vec<(&'static str, u64)> {
+            D95StateCounters::COUNTER_FIELDS
+                .into_iter()
+                .zip(counters.wire_counters())
+                .map(|(field, (_, value))| (field, value))
+                .collect()
+        };
+
+        let mut latest = LatestFrames::default();
+        let mut land = new_building_frame(11);
+        offer_land_candidate(&mut land, None);
+        offer_land_candidate(&mut land, Some(handle(1, 249)));
+        offer_land_candidate(&mut land, Some(handle(2, 250)));
+        offer_land_eligibility(&mut land, true);
+        offer_land_candidate(&mut land, Some(handle(3, 255)));
+        offer_land_eligibility(&mut land, false);
+        commit_frame(&mut latest, land, true, 41);
+        let moved: Vec<&'static str> = named(&latest.counters)
+            .into_iter()
+            .zip(named(&zeros))
+            .filter(|((_, after), (_, before))| after != before)
+            .map(|((field, _), _)| field)
+            .collect();
+        assert!(
+            !moved.is_empty(),
+            "the land frame moved no counter at all, so this proves nothing"
+        );
+        assert!(
+            moved.iter().all(|field| field.starts_with("land_")),
+            "a land frame moved {moved:?}"
+        );
+
+        let mut latest = LatestFrames::default();
+        let mut taskforce = new_building_frame(11);
+        offer_taskforce_candidate(&mut taskforce, false, None);
+        offer_taskforce_candidate(&mut taskforce, true, None);
+        offer_taskforce_candidate(&mut taskforce, true, Some((handle(7, 150), false)));
+        offer_taskforce_candidate(&mut taskforce, true, Some((handle(8, 200), true)));
+        commit_frame(&mut latest, taskforce, false, 42);
+        let moved: Vec<&'static str> = named(&latest.counters)
+            .into_iter()
+            .zip(named(&zeros))
+            .filter(|((_, after), (_, before))| after != before)
+            .map(|((field, _), _)| field)
+            .collect();
+        assert!(
+            !moved.is_empty(),
+            "the task-force frame moved no counter at all, so this proves nothing"
+        );
+        assert!(
+            moved.iter().all(|field| field.starts_with("taskforce_")),
+            "a task-force frame moved {moved:?}"
+        );
+
+        // The empty-frame arms too: they are the ones with a runtime `land`
+        // branch rather than a surface-specific call site.
+        for (land, prefix) in [(true, "land_"), (false, "taskforce_")] {
+            let mut latest = LatestFrames::default();
+            let mut frame = new_building_frame(11);
+            frame.enumeration_gate_open = Some(false);
+            commit_frame(&mut latest, frame, land, 43);
+            let moved: Vec<&'static str> = named(&latest.counters)
+                .into_iter()
+                .zip(named(&zeros))
+                .filter(|((_, after), (_, before))| after != before)
+                .map(|((field, _), _)| field)
+                .collect();
+            assert_eq!(
+                moved.len(),
+                2,
+                "an empty frame under a closed gate is counted twice: {moved:?}"
+            );
+            assert!(
+                moved.iter().all(|field| field.starts_with(prefix)),
+                "an empty {prefix} frame moved {moved:?}"
+            );
+        }
+    }
+
+    /// A panicking callback must not turn the lifetime totals into zeros.
+    ///
+    /// A poisoned mutex means a hook panicked while holding it. The counters
+    /// behind it are still what this process accumulated, and publishing zeros
+    /// would say the lane counted nothing -- the defect this registry exists to
+    /// catch, arriving at runtime instead of through a code change.
+    ///
+    /// MUTATION: go back to `.lock().ok()` and this fails.
+    #[test]
+    fn a_poisoned_frame_lock_still_publishes_what_the_lane_counted() {
+        let _sequence_guard = capture_sequence_test_lock();
+        let latest = LATEST.get_or_init(|| Mutex::new(LatestFrames::default()));
+        {
+            let mut held = latest
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            held.counters.land_admitted = 4_242;
+        }
+        assert_eq!(
+            diagnostics().land_admitted,
+            4_242,
+            "the fixture did not reach the published reading, so the poison below              would prove nothing"
+        );
+
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = latest
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            panic!("a callback panicked while holding the frame lock");
+        }));
+        assert!(poisoned.is_err(), "the fixture did not poison the lock");
+        assert!(latest.is_poisoned(), "the lock is not poisoned");
+
+        assert_eq!(
+            diagnostics().land_admitted,
+            4_242,
+            "a poisoned lock published a zero for a counter the lane had already              counted 4242 of"
+        );
+
+        // And the other half: a frame that arrives AFTER the poison is still
+        // counted. Dropping it would leave the totals above standing as a
+        // reading of hours nothing counted.
+        let mut frame = new_building_frame(11);
+        offer_land_candidate(&mut frame, Some(handle(1, 255)));
+        offer_land_eligibility(&mut frame, true);
+        publish(frame, true);
+        assert_eq!(
+            diagnostics().land_admitted,
+            4_243,
+            "a frame published after the poison was discarded, census and all"
+        );
     }
 
     #[test]
@@ -1671,11 +2104,11 @@ mod tests {
             "an empty producer call is a publication, not a refusal"
         );
         assert_eq!(
-            latest.census[CENSUS_LAND].frames_without_enumeration, 1,
+            latest.counters.land_frames_without_enumeration, 1,
             "and the wire is told the frame had nothing to enumerate"
         );
-        assert_eq!(latest.census[CENSUS_LAND].candidates_seen, 2);
-        assert_eq!(latest.census[CENSUS_LAND].admitted, 2);
+        assert_eq!(latest.counters.land_candidates_seen, 2);
+        assert_eq!(latest.counters.land_admitted, 2);
     }
 
     #[test]
@@ -1708,24 +2141,24 @@ mod tests {
             frame.enumeration_gate_open = gate;
             frame.source_collection_len = source;
             commit_frame(&mut latest, frame, false, 41 + index as u64);
-            let census = latest.census[CENSUS_TASKFORCE];
+            let census = latest.counters;
             assert_eq!(
-                census.frames_without_enumeration, 1,
+                census.taskforce_frames_without_enumeration, 1,
                 "gate={gate:?} source={source:?}: an empty frame is always counted as empty"
             );
             assert_eq!(
-                census.frames_producer_gate_closed, want_closed,
+                census.taskforce_frames_producer_gate_closed, want_closed,
                 "gate={gate:?} source={source:?}: suppression charge"
             );
             assert_eq!(
-                census.frames_source_collection_empty, want_empty,
+                census.taskforce_frames_source_collection_empty, want_empty,
                 "gate={gate:?} source={source:?}: measured-empty charge"
             );
             assert!(
                 census
-                    .frames_producer_gate_closed
-                    .saturating_add(census.frames_source_collection_empty)
-                    <= census.frames_without_enumeration,
+                    .taskforce_frames_producer_gate_closed
+                    .saturating_add(census.taskforce_frames_source_collection_empty)
+                    <= census.taskforce_frames_without_enumeration,
                 "gate={gate:?} source={source:?}: the two charges must not \
                  double-count one frame"
             );
@@ -1738,14 +2171,14 @@ mod tests {
             enumerated.source_collection_len = Some(0);
             offer_taskforce_candidate(&mut enumerated, true, Some((handle(5, 150), true)));
             commit_frame(&mut latest, enumerated, false, 60);
-            let census = latest.census[CENSUS_TASKFORCE];
+            let census = latest.counters;
             assert_eq!(
-                census.frames_without_enumeration, 0,
+                census.taskforce_frames_without_enumeration, 0,
                 "gate={gate:?}: a frame that enumerated is not an empty frame"
             );
-            assert_eq!(census.frames_producer_gate_closed, 0, "gate={gate:?}");
-            assert_eq!(census.frames_source_collection_empty, 0, "gate={gate:?}");
-            assert_eq!(census.admitted, 1, "gate={gate:?}");
+            assert_eq!(census.taskforce_frames_producer_gate_closed, 0, "gate={gate:?}");
+            assert_eq!(census.taskforce_frames_source_collection_empty, 0, "gate={gate:?}");
+            assert_eq!(census.taskforce_admitted, 1, "gate={gate:?}");
         }
     }
 
@@ -1777,7 +2210,7 @@ mod tests {
         };
         commit_frame(&mut latest, new_building_frame(7), false, 12);
         assert_eq!(
-            latest.census[CENSUS_TASKFORCE].admitted_rows_lost_to_replacement, 2,
+            latest.counters.taskforce_admitted_rows_lost_to_replacement, 2,
             "rows admitted into a frame no drain reached are lost, and the wire \
              must say so"
         );
@@ -1793,7 +2226,7 @@ mod tests {
         record_served(&mut latest, Some(&snapshot));
         commit_frame(&mut latest, new_building_frame(7), false, 12);
         assert_eq!(
-            latest.census[CENSUS_TASKFORCE].admitted_rows_lost_to_replacement, 0,
+            latest.counters.taskforce_admitted_rows_lost_to_replacement, 0,
             "a frame a drain already carried loses nothing when it is replaced"
         );
 
@@ -1819,7 +2252,7 @@ mod tests {
         record_served(&mut latest, Some(&snapshot));
         commit_frame(&mut latest, new_building_frame(9), false, 21);
         assert_eq!(
-            latest.census[CENSUS_TASKFORCE].admitted_rows_lost_to_replacement, 2,
+            latest.counters.taskforce_admitted_rows_lost_to_replacement, 2,
             "a surface the drain dropped was not served, so its admitted rows \
              are still a loss when the producer replaces them"
         );
@@ -1836,7 +2269,7 @@ mod tests {
         latest.taskforces = Some(taskforce(11, 7));
         commit_frame(&mut latest, new_building_frame(7), false, 13);
         assert_eq!(
-            latest.census[CENSUS_TASKFORCE].admitted_rows_lost_to_replacement, 2,
+            latest.counters.taskforce_admitted_rows_lost_to_replacement, 2,
             "a frame that committed after a higher-numbered one was served is \
              still unserved, and its rows are still a loss"
         );
@@ -1934,8 +2367,8 @@ mod tests {
         offer_land_eligibility(&mut frame, false);
         offer_land_candidate(&mut frame, Some(handle(3, 255)));
         offer_land_eligibility(&mut frame, true);
-        assert_eq!(frame.census.candidates_seen, 4);
-        assert_eq!(frame.census.accounted(), 4);
+        assert_eq!(frame.census.land_candidates_seen, 4);
+        assert_eq!(frame.census.land_accounted(), 4);
         assert!(frame.pending_land.is_none());
 
         let mut displaced = new_building_frame(11);
@@ -1943,10 +2376,10 @@ mod tests {
         offer_land_candidate(&mut displaced, Some(handle(5, 250)));
         offer_land_eligibility(&mut displaced, true);
         offer_land_candidate(&mut displaced, Some(handle(6, 100)));
-        assert_eq!(displaced.census.candidates_seen, 3);
-        assert_eq!(displaced.census.abandoned_pending, 1);
+        assert_eq!(displaced.census.land_candidates_seen, 3);
+        assert_eq!(displaced.census.land_abandoned_pending, 1);
         assert_eq!(
-            displaced.census.accounted(),
+            displaced.census.land_accounted(),
             3,
             "a displaced candidate must still be accounted for"
         );
@@ -1956,8 +2389,8 @@ mod tests {
         offer_taskforce_candidate(&mut taskforce, true, None);
         offer_taskforce_candidate(&mut taskforce, true, Some((handle(7, 150), false)));
         offer_taskforce_candidate(&mut taskforce, true, Some((handle(8, 200), true)));
-        assert_eq!(taskforce.census.candidates_seen, 4);
-        assert_eq!(taskforce.census.accounted(), 4);
+        assert_eq!(taskforce.census.taskforce_candidates_seen, 4);
+        assert_eq!(taskforce.census.taskforce_accounted(), 4);
     }
 
     #[test]

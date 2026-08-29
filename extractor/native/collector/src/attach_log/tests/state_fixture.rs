@@ -2930,6 +2930,7 @@ fn every_d95_census_unit_is_classified_cumulative_and_a_new_sibling_is_undeclare
         "d95_taskforce_frames_source_collection_empty",
         "d95_land_admitted_rows_lost_to_replacement",
         "d95_taskforce_admitted_rows_lost_to_replacement",
+        "d95_next_sequence",
     ] {
         assert_eq!(unit_accumulation(name), Accumulation::Cumulative, "{name}");
     }
@@ -2943,12 +2944,13 @@ fn every_d95_census_unit_is_classified_cumulative_and_a_new_sibling_is_undeclare
 #[test]
 fn every_unit_d95_declares_is_registered_and_reaches_the_emit_site() {
     use compact_contract::diagnostic_channel::{unit_accumulation, Accumulation, UnitRole};
-    let declared = super::super::d95_declared_diagnostic_units();
+    let declared =
+        super::super::d95_declared_diagnostic_units(&spotted_units_live_lane::diagnostics());
     assert_eq!(
         declared.len(),
-        26,
+        27,
         "one installed flag, four site-entry counts, ten census arms per surface, \
-         and the task-force-only measured-empty count"
+         the task-force-only measured-empty count, and the frame-id allocator"
     );
     for unit in &declared {
         assert_eq!(
@@ -3005,8 +3007,8 @@ fn every_unit_d95_declares_is_registered_and_reaches_the_emit_site() {
         .take(600)
         .collect::<String>();
     assert!(
-        arguments.contains("&d95_declared_diagnostic_units(),"),
-        "and the units it appends must be d95's own"
+        arguments.contains("&d95_declared_diagnostic_units(&spotted_units_live_lane::diagnostics()),"),
+        "and the units it appends must be d95's own, read through the lane's own          published diagnostics"
     );
 }
 

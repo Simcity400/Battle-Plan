@@ -10,6 +10,7 @@ pub mod cid1_lifecycle_evidence;
 pub mod clock_unreadable_interval;
 pub mod content_identity_census;
 pub mod control_transport;
+pub mod counter_wire_registry;
 pub mod country_tag;
 pub mod country_tag_db;
 pub mod diagnostic_channel;

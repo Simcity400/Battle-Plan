@@ -111,14 +111,21 @@ fn retained_for_in_flight_bodies() -> String {
     )
 }
 
+compact_contract::wire_counters! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct D78StateCounters, prefix = "d78_hook_";
+
+    next_transition_sequence,
+    callback_count,
+}
+
 #[derive(Clone, Debug, Default)]
 struct HookState {
-    next_transition_sequence: u64,
+    counters: D78StateCounters,
     latest: Option<DesignerViewContext>,
     latest_view_ptr: usize,
     latest_runtime_root_ptr: usize,
     current_error: Option<String>,
-    callback_count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,6 +144,8 @@ pub struct InstalledHookAddress {
 pub struct HookDiagnostics {
     pub callback_count: u64,
     pub latest_transition_sequence: u64,
+    pub next_transition_sequence: u64,
+    pub in_flight_callbacks: usize,
     pub has_complete_snapshot: bool,
     pub current_error: Option<String>,
 }
@@ -380,12 +389,14 @@ pub fn diagnostics() -> HookDiagnostics {
         return HookDiagnostics::default();
     };
     HookDiagnostics {
-        callback_count: state.callback_count,
+        callback_count: state.counters.callback_count,
         latest_transition_sequence: state
             .latest
             .as_ref()
             .map(|row| row.transition_sequence)
             .unwrap_or(0),
+        next_transition_sequence: state.counters.next_transition_sequence,
+        in_flight_callbacks: IN_FLIGHT_CALLBACKS.load(Ordering::Acquire),
         has_complete_snapshot: state.latest.is_some(),
         current_error: state.current_error.clone(),
     }
@@ -463,12 +474,12 @@ unsafe extern "system" fn hook_refresh(view: usize) {
     if !nested && ADMISSION_OPEN.load(Ordering::Acquire) {
         let result = capture_after_refresh(view);
         if let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) {
-            state.callback_count = state.callback_count.saturating_add(1);
+            state.counters.bump(|counters| &mut counters.callback_count);
             match result {
                 Ok((mut context, runtime_root_ptr)) => {
-                    state.next_transition_sequence =
-                        state.next_transition_sequence.saturating_add(1).max(1);
-                    context.transition_sequence = state.next_transition_sequence;
+                    context.transition_sequence = state
+                        .counters
+                        .bump(|counters| &mut counters.next_transition_sequence);
                     state.latest = Some(context);
                     state.latest_view_ptr = view;
                     state.latest_runtime_root_ptr = runtime_root_ptr;

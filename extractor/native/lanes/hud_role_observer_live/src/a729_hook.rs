@@ -139,11 +139,18 @@ fn disable_drain_and_remove(resolved: InstalledAddresses) -> Result<(), String> 
     Ok(())
 }
 
+compact_contract::wire_counters! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct D79StateCounters, prefix = "d79_hook_";
+
+    callback_count,
+    rejected_observation_count,
+}
+
 #[derive(Default)]
 struct HookState {
     latest: BTreeMap<HudSurface, RawHudControllerRoot>,
-    callback_count: u64,
-    rejected_observation_count: u64,
+    counters: D79StateCounters,
     current_error: Option<String>,
 }
 
@@ -160,6 +167,8 @@ pub struct HookDiagnostics {
     pub callback_count: u64,
     pub rejected_observation_count: u64,
     pub authenticated_surface_count: usize,
+    pub in_flight_callbacks: usize,
+    pub next_sequence: u64,
     pub current_error: Option<String>,
 }
 
@@ -472,9 +481,11 @@ pub fn diagnostics() -> HookDiagnostics {
         return HookDiagnostics::default();
     };
     HookDiagnostics {
-        callback_count: state.callback_count,
-        rejected_observation_count: state.rejected_observation_count,
+        callback_count: state.counters.callback_count,
+        rejected_observation_count: state.counters.rejected_observation_count,
         authenticated_surface_count: state.latest.len(),
+        in_flight_callbacks: IN_FLIGHT_CALLBACKS.load(Ordering::Acquire),
+        next_sequence: NEXT_SEQUENCE.load(Ordering::Acquire),
         current_error: state.current_error.clone(),
     }
 }
@@ -553,14 +564,15 @@ fn call_original_and_capture(
     if !nested && ADMISSION_OPEN.load(Ordering::Acquire) {
         let result = capture_root(controller, surface, setup_rva, root_offset);
         if let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) {
-            state.callback_count = state.callback_count.saturating_add(1);
+            state.counters.bump(|counters| &mut counters.callback_count);
             match result {
                 Ok(root) => {
                     state.latest.insert(surface, root);
                 }
                 Err(error) => {
-                    state.rejected_observation_count =
-                        state.rejected_observation_count.saturating_add(1);
+                    state
+                        .counters
+                        .bump(|counters| &mut counters.rejected_observation_count);
                     state.current_error = Some(error);
                 }
             }

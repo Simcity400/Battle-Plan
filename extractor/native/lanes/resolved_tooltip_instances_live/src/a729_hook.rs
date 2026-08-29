@@ -82,14 +82,21 @@ enum ControllerObservation {
     Visible(VisibleObservation),
 }
 
+compact_contract::wire_counters! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct D72StateCounters, prefix = "d72_hook_";
+
+    controller_calls,
+    observation_sequence,
+    owner_generation,
+}
+
 #[derive(Default)]
 struct HookState {
-    controller_calls: u64,
-    observation_sequence: u64,
+    counters: D72StateCounters,
     observations: VecDeque<ControllerObservation>,
     last_sealed_present_qpc_ticks: u64,
     last_owner_address: usize,
-    owner_generation: u64,
     poison: Option<String>,
 }
 
@@ -318,7 +325,7 @@ impl ExactTooltipInstanceSource for A729ResolvedTooltipHookSource {
             })
             .cloned();
         let Some(observation) = observation else {
-            return Err(if state.controller_calls == 0 {
+            return Err(if state.counters.controller_calls == 0 {
                 "A26 has no controller observation; startup silence is unobtained".into()
             } else {
                 "A26 has no controller observation inside the selected-Present interval".into()
@@ -385,12 +392,18 @@ pub fn diagnostics() -> HookDiagnostics {
         install_epoch: INSTALL_EPOCH.load(Ordering::Acquire) as u64,
         callbacks_open: CALLBACKS_OPEN.load(Ordering::Acquire),
         in_flight_callbacks: IN_FLIGHT_CALLBACKS.load(Ordering::Acquire),
-        controller_calls: state.as_ref().map_or(0, |state| state.controller_calls),
-        observation_sequence: state.as_ref().map_or(0, |state| state.observation_sequence),
-        owner_generation: state.as_ref().map_or(0, |state| state.owner_generation),
+        controller_calls: state
+            .as_ref()
+            .map_or(0, |state| state.counters.controller_calls),
+        observation_sequence: state
+            .as_ref()
+            .map_or(0, |state| state.counters.observation_sequence),
+        owner_generation: state
+            .as_ref()
+            .map_or(0, |state| state.counters.owner_generation),
         has_observed_baseline: state
             .as_ref()
-            .is_some_and(|state| state.controller_calls > 0),
+            .is_some_and(|state| state.counters.controller_calls > 0),
         poisoned: state.as_ref().is_some_and(|state| state.poison.is_some()),
     }
 }
@@ -435,9 +448,10 @@ fn publish_controller_observation(controller: usize) {
     let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) else {
         return;
     };
-    state.controller_calls = state.controller_calls.saturating_add(1);
-    state.observation_sequence = state.observation_sequence.saturating_add(1);
-    let sequence = state.observation_sequence;
+    state.counters.bump(|counters| &mut counters.controller_calls);
+    let sequence = state
+        .counters
+        .bump(|counters| &mut counters.observation_sequence);
     match result {
         Ok(SnapshotResult::Hidden {
             qpc_ticks,
@@ -516,9 +530,9 @@ fn push_observation(state: &mut HookState, observation: ControllerObservation) {
 fn update_owner_generation(state: &mut HookState, owner_address: usize) -> u64 {
     if state.last_owner_address != owner_address {
         state.last_owner_address = owner_address;
-        state.owner_generation = state.owner_generation.saturating_add(1);
+        state.counters.bump(|counters| &mut counters.owner_generation);
     }
-    state.owner_generation
+    state.counters.owner_generation
 }
 
 enum SnapshotResult {
@@ -724,11 +738,11 @@ mod campaign_reset_tests {
     fn campaign_reset_drops_queue_frontier_and_poison() {
         let mut state = HookState::default();
         state.last_sealed_present_qpc_ticks = 99;
-        state.controller_calls = 7;
+        state.counters.controller_calls = 7;
         state.poison = Some("old campaign".into());
         clear_campaign_observations(&mut state);
         assert_eq!(state.last_sealed_present_qpc_ticks, 0);
-        assert_eq!(state.controller_calls, 0);
+        assert_eq!(state.counters.controller_calls, 0);
         assert!(state.observations.is_empty());
         assert!(state.poison.is_none());
     }

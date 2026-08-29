@@ -251,19 +251,26 @@ struct CaptureEpoch {
     error: Option<String>,
 }
 
+compact_contract::wire_counters! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct D87StateCounters, prefix = "d87_hook_";
+
+    next_generation,
+    materializer_calls,
+    insertion_calls,
+    text_events,
+    can_take_calls,
+    timeout_calls,
+}
+
 #[derive(Default)]
 struct HookState {
-    next_generation: u64,
+    counters: D87StateCounters,
     epoch: Option<CaptureEpoch>,
     pending_receipt: Option<MaterializationReceipt>,
     outstanding_receipt_nonce: Option<u64>,
     latest_snapshot: Option<DecisionPanelSnapshot>,
     latest_frame_hour: Option<u64>,
-    materializer_calls: u64,
-    insertion_calls: u64,
-    text_events: u64,
-    can_take_calls: u64,
-    timeout_calls: u64,
     current_error: Option<String>,
 }
 
@@ -395,6 +402,8 @@ pub struct HookDiagnostics {
     pub text_events: u64,
     pub can_take_calls: u64,
     pub timeout_calls: u64,
+    pub in_flight_callbacks: usize,
+    pub next_generation: u64,
     pub current_error: bool,
 }
 
@@ -578,8 +587,7 @@ pub fn uninstall() -> Result<(), String> {
 }
 
 fn allocate_epoch_generation(state: &mut HookState) -> u64 {
-    state.next_generation = state.next_generation.saturating_add(1).max(1);
-    state.next_generation
+    state.counters.bump(|counters| &mut counters.next_generation)
 }
 
 pub fn begin_capture_epoch(frame_hour: u64) -> Result<u64, String> {
@@ -1081,6 +1089,7 @@ pub fn diagnostics() -> HookDiagnostics {
     let Ok(state) = state().lock() else {
         return HookDiagnostics {
             installed: installed(),
+            in_flight_callbacks: IN_FLIGHT_CALLBACKS.load(Ordering::Acquire),
             current_error: true,
             ..HookDiagnostics::default()
         };
@@ -1090,11 +1099,13 @@ pub fn diagnostics() -> HookDiagnostics {
         epoch_open: state.epoch.is_some(),
         pending_receipt: state.pending_receipt.is_some(),
         authenticated_snapshot: state.latest_snapshot.is_some(),
-        materializer_calls: state.materializer_calls,
-        insertion_calls: state.insertion_calls,
-        text_events: state.text_events,
-        can_take_calls: state.can_take_calls,
-        timeout_calls: state.timeout_calls,
+        materializer_calls: state.counters.materializer_calls,
+        insertion_calls: state.counters.insertion_calls,
+        text_events: state.counters.text_events,
+        can_take_calls: state.counters.can_take_calls,
+        timeout_calls: state.counters.timeout_calls,
+        in_flight_callbacks: IN_FLIGHT_CALLBACKS.load(Ordering::Acquire),
+        next_generation: state.counters.next_generation,
         current_error: state.current_error.is_some(),
     }
 }
@@ -1227,7 +1238,7 @@ unsafe extern "system" fn hook_insert(
     });
     if matched_country_grid {
         if let Ok(mut state) = state().lock() {
-            state.insertion_calls = state.insertion_calls.saturating_add(1);
+            state.counters.bump(|counters| &mut counters.insertion_calls);
         }
     }
 }
@@ -1579,7 +1590,7 @@ unsafe extern "system" fn post_setter_observer(_: usize, setter_widget: usize, c
         }
     });
     if let Ok(mut state) = state().lock() {
-        state.text_events = state.text_events.saturating_add(1);
+        state.counters.bump(|counters| &mut counters.text_events);
     }
 }
 
@@ -1782,7 +1793,7 @@ fn is_decision_family(family: PresenterFamily) -> bool {
 
 fn record_panel(panel: WorkingPanel) {
     if let Ok(mut state) = state().lock() {
-        state.materializer_calls = state.materializer_calls.saturating_add(1);
+        state.counters.bump(|counters| &mut counters.materializer_calls);
         if let Some(epoch) = state.epoch.as_mut() {
             if !bind_epoch_thread(epoch) {
                 epoch.error = Some("A34 materializer crossed scheduler thread".into());
@@ -1802,8 +1813,12 @@ fn record_alert(alert: WorkingAlert, count: usize) {
     })();
     if let Ok(mut state) = state().lock() {
         match kind {
-            AlertKind::CanTake => state.can_take_calls = state.can_take_calls.saturating_add(1),
-            AlertKind::Timeout => state.timeout_calls = state.timeout_calls.saturating_add(1),
+            AlertKind::CanTake => {
+                state.counters.bump(|counters| &mut counters.can_take_calls);
+            }
+            AlertKind::Timeout => {
+                state.counters.bump(|counters| &mut counters.timeout_calls);
+            }
         }
         let Some(epoch) = state.epoch.as_mut() else {
             return;
@@ -2377,7 +2392,7 @@ mod tests {
     fn first_capture_epoch_generation_is_never_zero() {
         let mut state = HookState::default();
         assert_eq!(
-            state.next_generation, 0,
+            state.counters.next_generation, 0,
             "the Default hook state is still zero-initialised; the guard lives in the hand-out"
         );
 
@@ -2387,7 +2402,7 @@ mod tests {
             "the first A34 epoch id would fail DPN1 validate_snapshot closed"
         );
         assert_eq!(first, 1);
-        assert_eq!(state.next_generation, 1);
+        assert_eq!(state.counters.next_generation, 1);
 
         let mut previous = first;
         for _ in 0..8 {
@@ -2399,7 +2414,10 @@ mod tests {
         assert_eq!(previous, 9);
 
         let mut saturated = HookState {
-            next_generation: u64::MAX,
+            counters: D87StateCounters {
+                next_generation: u64::MAX,
+                ..D87StateCounters::default()
+            },
             ..HookState::default()
         };
         assert_eq!(allocate_epoch_generation(&mut saturated), u64::MAX);

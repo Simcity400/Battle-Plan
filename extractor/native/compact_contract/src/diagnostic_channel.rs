@@ -913,6 +913,13 @@ pub const STATEFUL_UNIT_PREFIXES: &[&str] = &[
     "d85_",
     "d97_",
     "d95_",
+    // `wire_counters!` producer families. Declared stateful so a name added
+    // beside them is `Undeclared` and refused, rather than defaulting to
+    // per-frame and being summed across the hours of a hook lifetime total.
+    "d79_hook_",
+    "d87_hook_",
+    "d72_hook_",
+    "d78_hook_",
 ];
 
 pub const RAW_WORD_SUFFIXES: &[&str] = &[
@@ -1125,6 +1132,39 @@ pub const CUMULATIVE_UNITS: &[&str] = &[
     // Lifetime totals of rows this lane admitted into a frame that was then
     "d95_land_admitted_rows_lost_to_replacement",
     "d95_taskforce_admitted_rows_lost_to_replacement",
+    // The frame-id allocator, monotone for the process lifetime like every
+    // other next_* below it.
+    "d95_next_sequence",
+    // `wire_counters!` producer families: hook-lifetime totals, and the
+    // install/epoch state beside them, which is `Cumulative` for the reason
+    // `d95_hooks_installed` and `d97_hook_installed` are. Both fold by maximum.
+    // The instantaneous readings of the same families sit in `GAUGE_UNITS`.
+    "d79_hook_callback_count",
+    "d79_hook_rejected_observation_count",
+    "d79_hook_next_sequence",
+    "d87_hook_next_generation",
+    "d78_hook_next_transition_sequence",
+    "d87_hook_installed",
+    "d87_hook_epoch_open",
+    "d87_hook_pending_receipt",
+    "d87_hook_authenticated_snapshot",
+    "d87_hook_materializer_calls",
+    "d87_hook_insertion_calls",
+    "d87_hook_text_events",
+    "d87_hook_can_take_calls",
+    "d87_hook_timeout_calls",
+    "d87_hook_current_error",
+    "d72_hook_installed",
+    "d72_hook_install_epoch",
+    "d72_hook_callbacks_open",
+    "d72_hook_controller_calls",
+    "d72_hook_observation_sequence",
+    "d72_hook_owner_generation",
+    "d72_hook_has_observed_baseline",
+    "d72_hook_poisoned",
+    "d78_hook_callback_count",
+    "d78_hook_latest_transition_sequence",
+    "d78_hook_has_complete_snapshot",
 ];
 
 /// each country's ENGINE LIFETIME total for that channel, so it is cumulative
@@ -1186,6 +1226,12 @@ pub const GAUGE_UNITS: &[&str] = &[
     "d43_contract_outer_count",
     "d97_conference_count",
     "d85_observed_families",
+    // Depth at the instant the frame read the hook, not a total since install.
+    "d79_hook_authenticated_surface_count",
+    "d72_hook_in_flight_callbacks",
+    "d79_hook_in_flight_callbacks",
+    "d87_hook_in_flight_callbacks",
+    "d78_hook_in_flight_callbacks",
 ];
 
 pub const OUTSIDE_BUILD_SEGMENTS: &[(u16, &str)] = &[
@@ -1332,7 +1378,11 @@ pub fn poll_gap_bucket_of_unit(name: &str) -> Option<usize> {
         .position(|bucket| *bucket == name)
 }
 
-pub const STATEFUL_FAMILY_PER_FRAME_UNITS: &[&str] = &[
+/// Names classified per frame BY NAME rather than by falling through to the
+/// per-frame default: a name inside a stateful family, which would otherwise be
+/// `Undeclared`, and a name a `wire_counters!` producer publishes, which the
+/// macro refuses unless a table here names its class.
+pub const EXPLICIT_PER_FRAME_UNITS: &[&str] = &[
     "convoy_transport_attack_batches",
     "convoy_transport_attack_rows",
     // Sinks RECORDED with their route gap named (lane RX2). Per frame and
@@ -1379,6 +1429,13 @@ pub const STATEFUL_FAMILY_PER_FRAME_UNITS: &[&str] = &[
     "convoy_transport_attack_drops_this_drain",
     "air_loss_stat_rows",
     "air_loss_binding_verified_rows",
+    // d102's walk counters. Each is a count of what THIS hour's walk dropped,
+    // so summing the hours of a run is the reading, exactly as the per-frame
+    // default already gave them before the macro required the class be said.
+    "fog_derivation_inputs_countries_walked",
+    "fog_derivation_inputs_units_without_handle",
+    "fog_derivation_inputs_viewer_levels_non_positive",
+    "fog_derivation_inputs_units_undispatched_class",
 ];
 
 pub const LAST_VALUE_UNITS: &[&str] = &[
@@ -1716,7 +1773,7 @@ pub const fn declared_unit_accumulation(name: &str) -> Option<Accumulation> {
     {
         return Some(Accumulation::LastValue);
     }
-    if const_names_contain(STATEFUL_FAMILY_PER_FRAME_UNITS, name) {
+    if const_names_contain(EXPLICIT_PER_FRAME_UNITS, name) {
         return Some(Accumulation::PerFrame);
     }
     if const_starts_with_any(name, STATEFUL_UNIT_PREFIXES) {
@@ -1740,6 +1797,12 @@ pub const fn declares_cumulative_unit(name: &str) -> bool {
 /// so, because the two are the same answer only outside such a family.
 pub const fn declares_per_frame_unit(name: &str) -> bool {
     matches!(unit_accumulation(name), Accumulation::PerFrame)
+}
+
+/// A table in this module names the class, rather than the caller falling
+/// through to the per-frame default.
+pub const fn declares_explicit_unit_accumulation(name: &str) -> bool {
+    declared_unit_accumulation(name).is_some()
 }
 
 pub fn is_stateful_unit_family(name: &str) -> bool {
@@ -3319,7 +3382,7 @@ mod tests {
             (ZERO_GAUGE_UNITS, Accumulation::Gauge),
             (LAST_VALUE_UNITS, Accumulation::LastValue),
             (RAW_FAILURE_CONTEXT_UNITS, Accumulation::LastValue),
-            (STATEFUL_FAMILY_PER_FRAME_UNITS, Accumulation::PerFrame),
+            (EXPLICIT_PER_FRAME_UNITS, Accumulation::PerFrame),
         ] {
             for name in table {
                 assert!(
