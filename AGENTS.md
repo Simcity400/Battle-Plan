@@ -13,9 +13,10 @@ Read `PROJECT.md` before changing product behaviour, formats, or architecture.
   someone else's active work.
 - Have Codex adversarially review work once you deem it ready to merge. Re-review every fix until it approves clean. You are allowed to push back on findings if you can prove they are wrong.
 - Report once, numbers first, when EVERYTHING is finished. Reviewers get raw
-  evidence, not summaries. While a tracked task is still running, end your
-  turn with a single line ("WIP: waiting on <task>") and nothing else — no
-  status summaries, no partial findings; they bloat the orchestrator.
+  evidence, not summaries. Never end your turn to wait on a running task — an
+  ended agent turn is never woken by a finishing task. Wait in-turn with
+  TaskOutput (see Codex section). No status summaries, no partial findings
+  mid-work; they bloat the orchestrator.
 - Clean up your worktree, branch, build output, temp files. Never stash.
 - Completion requires validated changes on pushed remote `main`; delete the task branch after landing.
 - Hash-pinned committed files need `.gitattributes` `text eol=lf`.
@@ -63,11 +64,14 @@ $ReviewExitCode = $LASTEXITCODE
   Forbid it from consulting any machine-wide memory store.
 - Any long call (battery, Codex, capture) runs as ONE tracked background task
   (the Bash tool's background mode — NOT `&`, NOT Monitor; detached watchers
-  die when your turn ends). For a Codex call: launch it tracked, stay in-turn
-  only long enough to read the event stream's first line and commit the
-  thread id, then end your turn with the single line "WIP: waiting on <task>".
-  The task finishing wakes you instantly — zero polling, zero latency. Never
-  sleep-poll in a shell loop; a bounded long-interval wait loop is the
+  die when your turn ends). For a Codex call: launch it tracked, read the
+  event stream's first line and commit the thread id, then WAIT IN-TURN with
+  the TaskOutput tool: `TaskOutput(task_id, block=true, timeout=600000)`,
+  calling it again each time it returns with the task still running, until
+  the task completes. Do NOT end your turn while the review runs: an ended
+  agent turn is never woken by a finishing task, and the codex child can be
+  reaped with the turn (three lanes lost their reviews this way, 2026-08-29).
+  Never sleep-poll in a shell loop; a bounded long-interval wait loop is the
   fallback ONLY for a job the harness cannot track. The final report is still
   written exactly once, after everything is finished.
 - Review loop: run the review, fix the findings, re-review. Keep looping until
