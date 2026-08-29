@@ -77,6 +77,20 @@ $ReviewExitCode = $LASTEXITCODE
 - Review loop: run the review, fix the findings, re-review. Keep looping until
   Codex approves clean - no round limit. Any commit after an APPROVE needs one
   more confirmation round.
+- Round discipline (owner 2026-08-29, after lanes hit 15-23 rounds):
+  1. Every review prompt demands ALL blocking findings in one exhaustive pass —
+     "report every defect you can find, ranked; do not stop at the first."
+     A round that returns one finding from a partial read is a wasted round.
+  2. Round 2 onward reviews the DELTA: the diff since the previous round plus
+     the fix for each prior finding, with the prior findings listed. Not the
+     whole lane again. The landing gate still runs full-tree.
+  3. Wording-only findings on evidence documents are never their own rounds:
+     collect them and fix them in ONE consolidated pass at the end.
+  4. At round 7, stop and diagnose before running round 8: if the findings are
+     one recurring class (an open-ended census, "one more field", "one more
+     consumer"), close the CLASS structurally — make completeness a counted,
+     asserted number rather than a reviewed claim — instead of playing the
+     next round. Write the diagnosis into the run dir.
 
 ## Orchestration - Only relevant if you are given the role of orchestrator by the owner
 
