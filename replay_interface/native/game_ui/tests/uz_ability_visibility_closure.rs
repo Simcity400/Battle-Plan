@@ -324,11 +324,7 @@ fn closing_the_capture_gaps_and_the_key_bindings_determines_the_whole_panel() {
 /// pinned disassembly back is what stops a hand-typed id drifting.
 #[test]
 fn every_bound_key_carries_the_id_the_registrar_emits() {
-    let evidence = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../extractor/native/runs/uz_ability_panel/evidence")
-        .join("20260828T1050Z-uz-key-id-bindings.disasm.txt");
-    let text = std::fs::read_to_string(&evidence)
-        .unwrap_or_else(|error| panic!("{} is unreadable: {error}", evidence.display()));
+    let text = portable_engine_evidence::artifacts::KEY_ID_BINDINGS_DISASM;
 
     let mut emitted: BTreeMap<String, u32> = BTreeMap::new();
     let mut pending: Option<u32> = None;

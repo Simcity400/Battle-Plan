@@ -16,6 +16,10 @@ replay_test_gates = { path = "../replay_test_gates" }
 # freshly written file. Test-only: nothing this package ships calls it.
 portable_test_fs_retry = { path = "../../../portable_replay/native/test_fs_retry" }
 replay_test_gates = { path = "../replay_test_gates" }
+# The engine evidence the UZ derivations read. It lives in portable_replay/
+# because a replay-side test must not open a path under the acquisition tree;
+# replay_dependency_boundary.rs enforces that.
+portable_engine_evidence = { path = "../../../portable_replay/native/engine_evidence" }
 # Turns on replay_core's `test_support` seam so this crate's tests can author
 # packaged static-catalog bytes and drive the real semantic admission over them.
 # Declared here rather than in [dependencies] because the v2 resolver does not

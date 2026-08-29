@@ -145,6 +145,7 @@ dependencies = [
  "flate2",
  "map_viewer",
  "portable_content_manifest",
+ "portable_engine_evidence",
  "portable_replay_format",
  "portable_test_fs_retry",
  "replay_core",
@@ -279,6 +280,10 @@ dependencies = [
  "sha2",
  "zip",
 ]
+
+[[package]]
+name = "portable_engine_evidence"
+version = "0.1.0"
 
 [[package]]
 name = "portable_render_stream"

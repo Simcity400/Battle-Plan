@@ -3,10 +3,14 @@
 //! Four authored keys -- `AND`, `OR`, `NOT`, `OWNER` -- are interned by the
 //! the game lexer itself, with no registrar call site, so their ids exist only in
 //! the running process. They were read on 2026-08-29 out of the engine's own
-//! static-token hash map. This test re-derives them from the archived job
-//! bytes instead of trusting the number typed into `AUTHORED_KEY_BINDINGS`:
-//! it decodes the map header, recomputes each hash, reproduces the bucket
-//! address the read actually used, walks the bucket, and reads the id back.
+//! static-token hash map. This test re-derives them from those raw bytes
+//! instead of trusting the number typed into `AUTHORED_KEY_BINDINGS`: it
+//! decodes the map header, recomputes each hash, reproduces the bucket address
+//! the read actually used, walks the bucket, and reads the id back.
+//!
+//! The bytes come from `portable_engine_evidence`, compiled in rather than
+//! opened: a replay-side test must not reach for a path under the acquisition
+//! tree, which `replay_dependency_boundary.rs` enforces.
 //!
 //! The seven controls are why the answer is trustworthy. A mis-addressed
 //! bucket returns a clean-looking miss that is indistinguishable from "key
@@ -14,19 +18,9 @@
 //! offset. Keys whose ids are already known statically catch it.
 
 use game_ui::ability_visibility::{authored_key_binding, AuthoredKeyBinding};
-use std::path::PathBuf;
 
-/// `extractor/native/runs/uz_ability_panel/evidence`, from this crate.
-fn evidence() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../extractor/native/runs/uz_ability_panel/evidence")
-}
-
-fn read_json(name: &str) -> serde_json::Value {
-    let path = evidence().join(name);
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("{} is archived lane evidence: {error}", path.display()));
-    serde_json::from_str(&text).expect("the harness writes well-formed json")
+fn read_json(text: &str) -> serde_json::Value {
+    serde_json::from_str(text).expect("the harness writes well-formed json")
 }
 
 fn bytes_of(hex: &str) -> Vec<u8> {
@@ -58,7 +52,7 @@ struct MapHeader {
 }
 
 fn stage_a() -> MapHeader {
-    let result = read_json("20260828T224940Z-uz-tokenmap-stage-a.result.json");
+    let result = read_json(portable_engine_evidence::artifacts::TOKEN_MAP_HEADER);
     let observation = &result["observations"][0];
     assert_eq!(observation["path_id"], "uz-tokenmap-header2");
     let buffer = bytes_of(observation["value"].as_str().expect("a value was read"));
@@ -131,7 +125,7 @@ const READ: &[(&str, &str, Option<u32>)] = &[
 #[test]
 fn the_interned_ids_re_derive_from_the_raw_live_read() {
     let header = stage_a();
-    let result = read_json("20260828T230337Z-uz-tokenmap-stage-b.result.json");
+    let result = read_json(portable_engine_evidence::artifacts::TOKEN_MAP_BUCKETS);
     let observations = result["observations"]
         .as_array()
         .expect("stage B read every path in one job");
