@@ -1560,22 +1560,15 @@ mod d98_identity_fixture {
     /// producer cannot re-declare its evidence set without this side agreeing.
     #[test]
     fn the_producers_four_manifests_are_the_first_four_of_thirty_one() {
-        // The producer's bytes, in the one place both sides read. Two copies with
-        // two digest pins can drift apart - each side passing its own test while
-        // replay refuses what the extractor emits - so there is one file, and the
-        // producer test writes and checks THIS one. Nothing here links the extractor:
-        // the two halves still share nothing but bytes.
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures")
-            .join("d98_producer_evidence.json");
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|error| {
-            panic!(
-                "the D98 identity fixture {} is missing ({error}); regenerate it with \
-                 VJ_WRITE_D98_FIXTURE=1 cargo test -p theatre_selector_live_lane",
-                path.display()
-            )
-        });
-        let fixture: Value = serde_json::from_str(&text).expect("the fixture is JSON");
+        // The producer's bytes, in the one place both sides read: the crate that
+        // exists for artifacts neither tree may own. Two copies with two digest
+        // pins can drift apart - each side passing its own test while replay
+        // refuses what the extractor emits - so there is ONE constant, and the
+        // producer test asserts it renders exactly these bytes. Nothing here
+        // links the extractor: the two halves still share nothing but bytes, and
+        // neither names a path into the other's tree.
+        let text = portable_engine_evidence::artifacts::D98_PRODUCER_EVIDENCE;
+        let fixture: Value = serde_json::from_str(text).expect("the fixture is JSON");
         let declared: Vec<&str> = fixture["producer_evidence_sha256"]
             .as_array()
             .expect("the fixture declares an evidence set")

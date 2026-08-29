@@ -38,3 +38,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 # Waits out the Windows sharing violation a real-time scanner causes on a
 # freshly written file. Test-only: nothing this package ships calls it.
 portable_test_fs_retry = { path = "../../../portable_replay/native/test_fs_retry" }
+# The D98 producer identity both trees read, embedded rather than opened: the
+# artifact is a cross-tree contract, not replay data, and the replay tree may
+# not name a path under the acquisition tree. Test-only.
+portable_engine_evidence = { path = "../../../portable_replay/native/engine_evidence" }

@@ -9,3 +9,8 @@ path = "src/lib.rs"
 [dependencies]
 compact_contract = { path = "../../compact_contract" }
 sha2 = "0.10"
+
+[dev-dependencies]
+# The D98 identity artifact both trees read. A dev dependency, because only the
+# test that renders those bytes compares them; nothing this lane ships reads it.
+portable_engine_evidence = { path = "../../../../portable_replay/native/engine_evidence" }

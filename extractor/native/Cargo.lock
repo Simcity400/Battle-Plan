@@ -1216,6 +1216,7 @@ name = "theatre_selector_live_lane"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "portable_engine_evidence",
  "sha2",
 ]
 
