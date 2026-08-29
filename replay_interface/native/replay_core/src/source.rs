@@ -7556,10 +7556,6 @@ mod tests {
                 )
                 | ("replay_core/source.rs", "} else if metadata.is_dir() {")
                 | ("snapshot/lib.rs", "if path.is_file() {")
-                | (
-                    "snapshot/container.rs",
-                    "let data = std::fs::read(path.as_ref())?;"
-                )
                 | ("snapshot/dir_store/linux.rs", "use std::fs::File;")
                 | ("snapshot/dir_store/linux.rs", "use std::path::Path;")
                 | (
@@ -7628,7 +7624,6 @@ mod tests {
                 "use std::fs::{self, File, OpenOptions};"
                     | "use std::path::{Path, PathBuf};"
                     | "let joined = components.join(\"/\");"
-                    | "use std::os::windows::fs::{MetadataExt, OpenOptionsExt};"
                     | "use std::path::{Component, Prefix};"
                     | "std::env::current_dir()?.join(path)"
                     | "let mut absolute = PathBuf::from(&prefix);"
@@ -7637,11 +7632,11 @@ mod tests {
                     | "let mut cursor = PathBuf::from(prefix);"
                     | "cursor.push(\"\\\\\");"
                     | "cursor.push(component.as_os_str());"
-                    | "let directory = OpenOptions::new()"
-                    | ".open(&cursor)?;"
-                    | "if !metadata.is_dir()"
-                    | "let file = OpenOptions::new()"
-                    | ".open(&absolute)?;"
+                    // The one open the retained walk makes, of a target the
+                    // lines above built and of nothing else, whose handle is
+                    // held until the file itself is open.
+                    | "let error = match OpenOptions::new()"
+                    | "use std::os::windows::fs::MetadataExt;"
                     | "if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {"
                     | "File::open(path)"
                     // Authenticated transactional output-spool ownership and
@@ -7668,7 +7663,6 @@ mod tests {
                     | "fs::hard_link(&temp, &destination).map_err(|error| {"
                     | "match fs::remove_file(&destination) {"
                     | "let _ = fs::remove_file(&temp);"
-                    | "match fs::remove_file(path) {"
             )
     }
 
@@ -7731,16 +7725,13 @@ mod tests {
                     | "let bytes = match fs::read(&p) {"
                     | "let tpath = gdir.join(\"timeline.json\");"
                     | "if let Ok(tb) = fs::read(&tpath) {"
-                    | "fs::create_dir_all(parent)"
-                    // Debloat-reformat spelling of the same output-directory
-                    // creation, wrapped with its map_err on one line.
+                    // The output-directory creation, with its map_err on
+                    // one line.
                     | "fs::create_dir_all(parent).map_err(|error| format!(\"create output directory: {error}\"))?;"
                     | "let canonical_parent = fs::canonicalize(parent.unwrap_or_else(|| Path::new(\".\")))"
                     | "let anchored_out = canonical_parent.join(file_name);"
-                    | "let published = fs::read(&anchored_out)"
-                    // The debloat reformat wrapped the published-container
-                    // re-read (the packer's byte-identity check on its own
-                    // just-written output) onto a continuation line.
+                    // The published-container re-read: the packer's
+                    // byte-identity check on its own just-written output.
                     | "fs::read(&anchored_out).map_err(|error| format!(\"read published container: {error}\"))?;"
                     | "fn create_unique_temp(out: &Path) -> Result<(PathBuf, fs::File), String> {"
                     | "let parent = out.parent().unwrap_or_else(|| Path::new(\".\"));"
@@ -7833,8 +7824,6 @@ mod tests {
                     | "fn open_private_prefold_spool_file(spool_path: &Path) -> Result<fs::File, SourceError> {"
                     | "let spool_file = fs::OpenOptions::new()"
                     | ".open(spool_path)"
-                    | "let file = fs::OpenOptions::new()"
-                    | ".open(&raw_path)"
                     | "let meta = fs::symlink_metadata(base).map_err(|error| {"
                     | "if !meta.file_type().is_dir() || meta.file_type().is_symlink() {"
                     | "let canonical_base = fs::canonicalize(base).map_err(|error| {"
