@@ -597,6 +597,33 @@ fn dump_debug_frame(
     Ok(())
 }
 
+/// Wall clock per phase of one frame dump, so where a dump spends its time is
+/// measured rather than guessed.
+struct DumpPhaseLog {
+    start: std::time::Instant,
+    last: std::time::Instant,
+}
+
+impl DumpPhaseLog {
+    fn new() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            start: now,
+            last: now,
+        }
+    }
+
+    fn mark(&mut self, phase: &str) {
+        let now = std::time::Instant::now();
+        eprintln!(
+            "PHASE {phase}: {} ms (elapsed {} ms)",
+            now.duration_since(self.last).as_millis(),
+            now.duration_since(self.start).as_millis()
+        );
+        self.last = now;
+    }
+}
+
 fn dump_production_recording_frame(
     mode: &TimelineMode,
     hour: Option<i64>,
@@ -609,6 +636,7 @@ fn dump_production_recording_frame(
     capture_dir: Option<&Path>,
     day_night_hour_override: Option<f32>,
 ) -> Result<()> {
+    let mut phases = DumpPhaseLog::new();
     let provider = match mode {
         TimelineMode::Recording {
             path,
@@ -631,6 +659,7 @@ fn dump_production_recording_frame(
                 .into(),
         ),
     };
+    phases.mark("recording_open");
     reject_production_dump_debug_inputs(
         dump_zoom,
         dump_center,
@@ -642,6 +671,7 @@ fn dump_production_recording_frame(
     let (game_resolver, content_admission) =
         crate::content_compatibility::bind_provider_content(provider.as_ref(), product_paths)
             .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    phases.mark("content_admission");
     let content_manifest = provider
         .content_manifest()
         .ok_or("portable playback has no admitted content manifest after binding")?;
@@ -657,6 +687,7 @@ fn dump_production_recording_frame(
     let frame = provider
         .world_frame_at(selected_hour)?
         .ok_or_else(|| map_viewer::refuse_missing_xmap00_authority("world_frame"))?;
+    phases.mark("hour_decode");
     let (map_width, map_height) =
         map_viewer::foundation_map_dimensions(&game_resolver, &content_admission)?;
     let camera = map_viewer::ViewerMapCameraState::from_admitted_content(
@@ -702,6 +733,7 @@ fn dump_production_recording_frame(
         DUMP_HEIGHT,
         provider.foundation_content(),
     )?;
+    phases.mark("render_setup");
     let ui_profile = crate::install_paths::playback_ui_profile_from_paths(
         product_paths,
         &game_resolver,
@@ -721,11 +753,13 @@ fn dump_production_recording_frame(
         false,
         ui_profile.key().gui_scale(),
     )?;
+    phases.mark("render_execute");
     let pixels = composition.read_target()?;
     if snapshot::sha256::Sha256::hex(&pixels) != receipt.final_pixels_sha256 {
         return Err("XMAP22 headless readback changed after the sealed composition".into());
     }
     write_bmp(out, DUMP_WIDTH, DUMP_HEIGHT, &pixels)?;
+    phases.mark("readback_and_write");
     let receipt_path = xmap22_receipt_path(out);
     let mut receipt_bytes = serde_json::to_vec_pretty(&receipt)?;
     receipt_bytes.push(b'\n');

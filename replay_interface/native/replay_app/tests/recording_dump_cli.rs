@@ -88,6 +88,62 @@ fn invalid_canonical_dump_hour_exits_nonzero_with_requested_hour_and_valid_range
 }
 
 
+/// Stack one map foundation frame preparation occupies, unoptimized. Measured in
+/// `extractor/native/runs/uy_tree_append/stack_frame_budget_fixed_build.txt`.
+const MEASURED_FRAME_PREPARE_STACK_BYTES: u64 = 1_014_080;
+
+/// The Windows default. It leaves the path 34,496 bytes for the runtime's entry
+/// frames and the allocator, which is where the dump ran out.
+const WINDOWS_DEFAULT_STACK_RESERVE_BYTES: u64 = 1_048_576;
+
+/// `SizeOfStackReserve` out of a PE32+ image's optional header.
+#[cfg(target_env = "msvc")]
+fn reserved_stack_bytes(path: &std::path::Path) -> u64 {
+    let image = std::fs::read(path).unwrap_or_else(|error| panic!("read {path:?}: {error}"));
+    let pe = u32::from_le_bytes(image[0x3c..0x40].try_into().expect("e_lfanew")) as usize;
+    assert_eq!(&image[pe..pe + 4], b"PE\0\0", "{path:?} is not a PE image");
+    let optional = pe + 24;
+    assert_eq!(
+        u16::from_le_bytes(image[optional..optional + 2].try_into().expect("magic")),
+        0x20b,
+        "{path:?} is not PE32+, so the header offsets below do not apply"
+    );
+    u64::from_le_bytes(
+        image[optional + 72..optional + 80]
+            .try_into()
+            .expect("SizeOfStackReserve"),
+    )
+}
+
+#[cfg(target_env = "msvc")]
+#[test]
+fn the_built_binary_reserves_more_stack_than_preparing_one_frame_costs() {
+    let path = PathBuf::from(env!("CARGO_BIN_EXE_replay_app"));
+    let reserve = reserved_stack_bytes(&path);
+
+    // The harness this runs in is linked from the same package, and
+    // `replay_app::app`'s own gated tests reach the same preparation, so it is
+    // held to the same reserve.
+    let harness = std::env::current_exe().expect("this test harness's own path");
+    assert!(
+        reserved_stack_bytes(&harness) > WINDOWS_DEFAULT_STACK_RESERVE_BYTES,
+        "the test harness {harness:?} takes the Windows default"
+    );
+
+    assert!(
+        reserve > WINDOWS_DEFAULT_STACK_RESERVE_BYTES,
+        "the built binary takes the {WINDOWS_DEFAULT_STACK_RESERVE_BYTES}-byte Windows default, \
+         which leaves the {MEASURED_FRAME_PREPARE_STACK_BYTES}-byte frame-prepare path too \
+         little for the runtime frames around it; the /STACK link argument in build.rs \
+         is not reaching the linker"
+    );
+    assert!(
+        reserve >= MEASURED_FRAME_PREPARE_STACK_BYTES * 4,
+        "reserved stack {reserve} leaves under four times the measured \
+         {MEASURED_FRAME_PREPARE_STACK_BYTES}-byte cost of preparing one frame"
+    );
+}
+
 const REFUSAL_MARKER: &str = "is blocked in production recording playback";
 
 struct BlockerRow {
