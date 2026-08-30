@@ -261,6 +261,169 @@ fn closes_closure_params(bytes: &[u8], bar: usize, from: usize) -> bool {
     true
 }
 
+/// The `|` that closes a closure's parameter list when the body brace carries
+/// a RETURN TYPE between the two: `|text: &str| -> Option<String> {`.
+///
+/// Without this, such a body is not blanked and every `return` in it is
+/// attributed to the enclosing test - a false green REPORT, which is the mirror
+/// of the false green this file exists to catch.
+///
+/// Walking left from the brace: a run of bytes a type may contain, then the
+/// arrow, then - modulo whitespace - the bar. `>` is itself a type byte, so the
+/// run swallows the one in `->` and the arrow is `bytes[i - 1] == b'-'` with
+/// `bytes[i] == b'>'`. Where the byte before the arrow is not a bar the walk
+/// CONTINUES left past it, so a return type that is itself a function type -
+/// `|| -> fn() -> u8 {` - reaches the outer arrow and then the bar.
+///
+/// Three things it deliberately does NOT match, all in the direction that
+/// reports rather than hides:
+///
+/// - a run whose angle brackets do not balance. The brace of the anonymous
+///   const in `|| -> Wrapper<{ 1 }> { .. }` sees `-> Wrapper<` to its left,
+///   which would otherwise blank a piece of the TYPE and leave the real body
+///   unrecognised.
+/// - a type containing `;`, such as `[u8; 1]`. Allowing it would let the walk
+///   cross a statement boundary into unrelated text. Such a closure is still
+///   REPORTED, which is a false positive and not a false green.
+/// - a brace that is a MACRO's delimiter. A macro invocation in type position -
+///   `|| -> ty!{ u8 } { .. }` - offers its own `{` first, and that token tree is
+///   part of the type.
+fn closure_return_type_bar(bytes: &[u8], before_brace: usize, from: usize) -> Option<usize> {
+    let type_byte = |b: u8| {
+        is_ident_byte(b)
+            || b.is_ascii_whitespace()
+            || matches!(
+                b,
+                b'<' | b'>'
+                    | b':'
+                    | b'&'
+                    | b'\''
+                    | b'('
+                    | b')'
+                    | b','
+                    | b'['
+                    | b']'
+                    | b'.'
+                    | b'*'
+                    | b'+'
+                    | b'!'
+            )
+    };
+    if macro_bang_before(bytes, before_brace, from) {
+        return None;
+    }
+    let mut scan_from = before_brace;
+    loop {
+        let mut i = scan_from;
+        while i > from && type_byte(bytes[i - 1]) {
+            i -= 1;
+        }
+        // the arrow, whose `>` the run above already passed
+        if i >= scan_from || i < from + 2 || bytes[i] != b'>' || bytes[i - 1] != b'-' {
+            return None;
+        }
+        // The type text runs from just after the arrow to the brace. Its angle
+        // brackets must balance, or the `{` is inside the type rather than the
+        // body it introduces.
+        let mut depth = 0i32;
+        for at in i + 1..before_brace {
+            match bytes[at] {
+                b'<' => depth += 1,
+                // the `>` of an inner arrow is not a closing bracket
+                b'>' if bytes[at - 1] != b'-' => depth -= 1,
+                _ => {}
+            }
+        }
+        if depth != 0 {
+            return None;
+        }
+        let mut bar = i - 1;
+        while bar > from && bytes[bar - 1].is_ascii_whitespace() {
+            bar -= 1;
+        }
+        if bar > from && bytes[bar - 1] == b'|' {
+            return Some(bar - 1);
+        }
+        // Not a bar: an inner arrow of a function type. Keep walking left.
+        scan_from = i - 1;
+        if scan_from <= from {
+            return None;
+        }
+    }
+}
+
+/// Whether the token before `at` is a MACRO's `!` rather than a negation: a
+/// macro name, or the tail of a path like `foo::bar!`, precedes the bang.
+///
+/// Neither gap is required to be empty. A macro invocation is a token sequence,
+/// so `hoist ! ( .. )` is one, and `strip_noise` has already turned any comment
+/// between the tokens into spaces. An earlier version required both to be
+/// byte-adjacent, and `hoist /* here */ ! (|x| -> () { return; })` walked past
+/// it into a blanked body - a false green.
+///
+/// A non-ASCII byte where the bang should be is UNSURE - Rust counts U+0085,
+/// U+200E, U+200F, U+2028 and U+2029 as whitespace - so it answers true, the
+/// direction that reports. The name side needs no such case: `is_ident_byte`
+/// already counts every byte at or above 0x80 as part of an identifier.
+fn macro_bang_before(bytes: &[u8], at: usize, from: usize) -> bool {
+    let mut bang = at;
+    while bang > from && bytes[bang - 1].is_ascii_whitespace() {
+        bang -= 1;
+    }
+    if bang == from {
+        return false;
+    }
+    if !bytes[bang - 1].is_ascii() {
+        return true;
+    }
+    if bytes[bang - 1] != b'!' {
+        return false;
+    }
+    let mut name = bang - 1;
+    while name > from && bytes[name - 1].is_ascii_whitespace() {
+        name -= 1;
+    }
+    name > from && (is_ident_byte(bytes[name - 1]) || bytes[name - 1] == b':')
+}
+
+/// Whether the byte at `open` is inside the token tree of a macro INVOCATION -
+/// `name!( .. )`, `name![ .. ]`, `name!{ .. }` - at any nesting depth within
+/// `[from, open)`.
+///
+/// A macro takes its argument as tokens and may expand them anywhere, so a
+/// closure-shaped token tree inside one is not a closure and its `return` is
+/// not the closure's. Blanking it would be a false GREEN. Where this is unsure
+/// it answers true, which reports rather than hides.
+///
+/// The walk goes left, counting `(`, `[` and `{` alike. Every unmatched opener
+/// it meets ENCLOSES `open`, so each one is tested for a macro bang and, when it
+/// is not one, the walk continues out through it. Only reaching `from` - the
+/// start of the test body, which bounds the walk - answers false. An earlier
+/// version stopped at the first unmatched `(`, and treated `{` and `;` as proof
+/// that no macro was open; `hoist!((..))` and `hoist! { .. }` both walked
+/// straight past it.
+fn inside_macro_invocation(bytes: &[u8], open: usize, from: usize) -> bool {
+    let mut depth = 0i32;
+    let mut i = open;
+    while i > from {
+        i -= 1;
+        match bytes[i] {
+            b')' | b']' | b'}' => depth += 1,
+            b'(' | b'[' | b'{' => {
+                if depth == 0 {
+                    if macro_bang_before(bytes, i, from) {
+                        return true;
+                    }
+                } else {
+                    depth -= 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Blank out closure bodies and nested `fn` bodies inside `[from, to)`, so a
 /// `return` belonging to them is not attributed to the enclosing test.
 fn blank_inner_bodies(bytes: &mut [u8], from: usize, to: usize) {
@@ -279,7 +442,21 @@ fn blank_inner_bodies(bytes: &mut [u8], from: usize, to: usize) {
             while j > from && bytes[j - 1].is_ascii_whitespace() {
                 j -= 1;
             }
-            j > from && bytes[j - 1] == b'|' && closes_closure_params(bytes, j - 1, from)
+            let bar = if j > from && bytes[j - 1] == b'|' {
+                Some(j - 1)
+            } else {
+                // The typed path only. The direct-bar path has blanked
+                // macro-argument closures since long before this fix, and
+                // narrowing it would report closures the workspace scan passes
+                // today - a separate change, not this one.
+                //
+                // The question is asked of the BRACE about to be blanked, not of
+                // the bar. `|| -> ty!(({ return })) { 1 }` has its bar outside
+                // the macro and the brace inside it.
+                closure_return_type_bar(bytes, j, from)
+                    .filter(|_| !inside_macro_invocation(bytes, i, from))
+            };
+            bar.is_some_and(|bar| closes_closure_params(bytes, bar, from))
         };
 
         let body_open = if is_fn_keyword {
@@ -504,9 +681,17 @@ fn scan_source(path: &Path, src: &str, out: &mut Vec<Offence>) {
             continue;
         };
 
+        // A test written INSIDE a macro invocation is macro TOKENS, and the
+        // macro may reorder or hoist them, so nothing in the body can be
+        // attributed to a closure or a nested `fn`. The ancestry has to be read
+        // here, against the whole file: the body is copied out below, and the
+        // opener is outside the copy.
+        let wrapped_in_macro = inside_macro_invocation(text.as_bytes(), brace, 0);
         let mut body: Vec<u8> = text.as_bytes()[brace..=end].to_vec();
         let len = body.len();
-        blank_inner_bodies(&mut body, 0, len);
+        if !wrapped_in_macro {
+            blank_inner_bodies(&mut body, 0, len);
+        }
         let body_text = String::from_utf8_lossy(&body).into_owned();
         let body_bytes = body_text.as_bytes();
         for (idx, _) in body_text.match_indices("return") {
@@ -564,6 +749,72 @@ fn scanner_rules_are_sound() {
         "    assert_eq!(f(1), 1);\n",
         "}\n",
         "#[test]\n",
+        "fn typed_closure_return_is_not_the_tests_own() {\n",
+        "    let f = |v: u8| -> u8 { return v; };\n",
+        "    assert_eq!(f(1), 1);\n",
+        "}\n",
+        "#[test]\n",
+        "fn a_function_typed_closure_return_is_not_the_tests_own() {\n",
+        "    let f = || -> fn() -> u8 { return helper; };\n",
+        "    assert_eq!(f()(), 3);\n",
+        "}\n",
+        "#[test]\n",
+        "fn a_brace_inside_the_return_type_is_not_the_body() {\n",
+        "    let f = || -> Wrapper<{ 1 }> { return Wrapper; };\n",
+        "    assert!(f().ok());\n",
+        "}\n",
+        "#[test]\n",
+        "fn a_closure_shaped_macro_argument_is_not_a_closure() {\n",
+        "    hoist!(|x| -> () { return; });\n",
+        "    assert!(false);\n",
+        "}\n",
+        "#[test]\n",
+        "fn an_anonymous_const_hides_nothing() {\n",
+        "    let f = || -> Wrapper<{ discard!(return) }> { Wrapper };\n",
+        "    assert!(f().ok());\n",
+        "}\n",
+        "#[test]\n",
+        "fn a_nested_macro_argument_is_not_a_closure() {\n",
+        "    hoist!((|x| -> () { return; }));\n",
+        "    assert!(false);\n",
+        "}\n",
+        "#[test]\n",
+        "fn a_brace_delimited_macro_argument_is_not_a_closure() {\n",
+        "    hoist!{ |x| -> () { return; } }\n",
+        "    assert!(false);\n",
+        "}\n",
+        "#[test]\n",
+        "fn a_spaced_macro_bang_is_still_a_macro() {\n",
+        "    hoist /* here */ ! (|x| -> () { return; });\n",
+        "    assert!(false);\n",
+        "}\n",
+        "#[test]\n",
+        "fn a_nested_brace_in_a_type_macro_is_not_the_body() {\n",
+        "    let f = || -> ty!(({ return })) { 1 };\n",
+        "    assert_eq!(f(), 1);\n",
+        "}\n",
+        "#[test]\n",
+        "fn a_spaced_type_macro_is_not_the_body() {\n",
+        "    let f = || -> ty /* here */ ! { discard!(return) } { 1 };\n",
+        "    assert_eq!(f(), 1);\n",
+        "}\n",
+        "#[test]\n",
+        "fn a_brace_delimited_type_macro_is_not_the_body() {\n",
+        "    let f = || -> ty!{ discard!(return) } { 1 };\n",
+        "    assert_eq!(f(), 1);\n",
+        "}\n",
+        "#[test]\n",
+        "fn a_negated_closure_is_still_a_closure() {\n",
+        "    let ok = !(|| -> bool { return false; })();\n",
+        "    assert!(ok);\n",
+        "}\n",
+        "#[test]\n",
+        "fn a_typed_closure_does_not_hide_the_tests_own_return() {\n",
+        "    let f = |v: u8| -> u8 { return v; };\n",
+        "    if f(1) == 1 { return; }\n",
+        "    assert!(false);\n",
+        "}\n",
+        "#[test]\n",
         "fn nested_fn_return_is_not_the_tests_own() {\n",
         "    fn helper() -> u8 { return 3; }\n",
         "    assert_eq!(helper(), 3);\n",
@@ -581,12 +832,75 @@ fn scanner_rules_are_sound() {
         "fn not_a_test() {\n",
         "    return;\n",
         "}\n",
+        "passthrough! {\n",
+        "#[test]\n",
+        "fn a_test_inside_a_macro_invocation_is_macro_tokens() {\n",
+        "    let f = || -> u8 { return 1; };\n",
+        "    assert_eq!(f(), 1);\n",
+        "}\n",
+        "}\n",
     );
     scan_source(Path::new("synthetic.rs"), src, &mut found);
     let names: BTreeSet<&str> = found.iter().map(|o| o.test.as_str()).collect();
     assert!(
         names.contains("owned_return_is_caught"),
         "an owned early return must be caught: {found:?}"
+    );
+    assert!(
+        names.contains("a_typed_closure_does_not_hide_the_tests_own_return"),
+        "blanking a typed closure must not swallow the test's own return: {found:?}"
+    );
+    assert!(
+        names.contains("a_brace_inside_the_return_type_is_not_the_body"),
+        "a closure whose return type carries a brace must not have its own return \
+         swallowed: {found:?}"
+    );
+    assert!(
+        names.contains("an_anonymous_const_hides_nothing"),
+        "the anonymous const in a return type is TYPE text, and a `return` token \
+         inside it must be reported rather than blanked away: {found:?}"
+    );
+    assert!(
+        names.contains("a_nested_macro_argument_is_not_a_closure"),
+        "an extra pair of parens must not carry a closure-shaped token tree out of \
+         its macro: {found:?}"
+    );
+    assert!(
+        names.contains("a_brace_delimited_macro_argument_is_not_a_closure"),
+        "a brace-delimited macro invocation is a macro invocation like any \
+         other: {found:?}"
+    );
+    assert!(
+        names.contains("a_spaced_macro_bang_is_still_a_macro"),
+        "a macro invocation is a token sequence, so whitespace - or a comment, \
+         which `strip_noise` leaves as whitespace - between the name, the bang \
+         and the delimiter changes nothing: {found:?}"
+    );
+    assert!(
+        names.contains("a_brace_delimited_type_macro_is_not_the_body"),
+        "the token tree of a macro in TYPE position is part of the type, not the \
+         body it precedes: {found:?}"
+    );
+    assert!(
+        names.contains("a_spaced_type_macro_is_not_the_body"),
+        "the same holds for a macro in type position: {found:?}"
+    );
+    assert!(
+        names.contains("a_test_inside_a_macro_invocation_is_macro_tokens"),
+        "a test written inside a macro invocation is macro TOKENS - the body is \
+         copied out before it is blanked, so the ancestry is read against the \
+         whole file or not at all: {found:?}"
+    );
+    assert!(
+        names.contains("a_nested_brace_in_a_type_macro_is_not_the_body"),
+        "a macro's token tree is not a body at ANY depth, and the brace about to \
+         be blanked is the thing to ask about - not the bar, which can sit \
+         outside the macro the brace is inside: {found:?}"
+    );
+    assert!(
+        names.contains("a_closure_shaped_macro_argument_is_not_a_closure"),
+        "a macro takes its argument as TOKENS and may expand them anywhere, so a \
+         closure-shaped one is not a closure and its return must not be blanked: {found:?}"
     );
     assert!(
         names.contains("value_return_is_caught"),
@@ -602,6 +916,9 @@ fn scanner_rules_are_sound() {
     );
     for benign in [
         "closure_return_is_not_the_tests_own",
+        "typed_closure_return_is_not_the_tests_own",
+        "a_function_typed_closure_return_is_not_the_tests_own",
+        "a_negated_closure_is_still_a_closure",
         "nested_fn_return_is_not_the_tests_own",
         "commented_and_quoted_returns_are_not_code",
         "not_a_test",
