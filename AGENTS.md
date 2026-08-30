@@ -86,6 +86,14 @@ $ReviewExitCode = $LASTEXITCODE
 - Review loop: run the review, fix the findings, re-review. Keep looping until
   Codex approves clean - no round limit. Any commit after an APPROVE needs one
   more confirmation round.
+- REVIEW SCOPE IS CODE (owner 2026-08-30, after a lane hit round 28): a
+  review finding is valid ONLY if it names code — production or test — whose
+  BEHAVIOR is wrong, unproven, or unsafe. Out of scope entirely: markdown,
+  run-dir artifacts, code comments and doc-comment wording, naming and style,
+  and the phrasing of claims. The review prompt must state this scope; a
+  finding outside it is DISCARDED without a fix and without a round. No round
+  may be spent arguing about prose. (The one wording pass below covers
+  anything worth tidying, once, at the end.)
 - Round discipline (owner 2026-08-29, after lanes hit 15-23 rounds):
   1. Every review prompt demands ALL blocking findings in one exhaustive pass —
      "report every defect you can find, ranked; do not stop at the first."
