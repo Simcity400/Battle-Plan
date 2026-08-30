@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const CONTRACT_JSON: &str =
     include_str!("../../../re_evidence/rendering_laws/XUI26/promotion_contract.json");
-const CONTRACT_SHA256: &str = "48f4d9a0707925d5627a4b9b7192148d0b50a1b2663f68427ccc0a6ef60571da";
+const CONTRACT_SHA256: &str = "dc08317ca30f726e725ef237e1c00b851b9736b17c302616432f0051e1c4714b";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,11 +32,23 @@ pub struct FrontendBindingSnapshot {
     complete: bool,
     frame_hour: Option<i64>,
     payload: FrontendBindingPayload,
-    element_semantics: BTreeMap<String, replay_core::Xui26ElementSemantic>,
     collections: Vec<replay_core::Xui26ReplayCollection>,
 }
 
 impl FrontendBindingSnapshot {
+    /// The payload field this snapshot carries but the panel cannot present,
+    /// or `None` when every field reaches it. A family whose snapshot answers
+    /// `Some` is not a panel the viewer can open.
+    pub fn unroutable_field(&self) -> Option<&'static str> {
+        self.payload.unroutable_field()
+    }
+
+    /// The hour's typed frontend DATA for one family.
+    ///
+    /// What the carrier no longer brings is presentation: no resolved element
+    /// semantics, no row template identity and no collection host id. Those are
+    /// derived at composition time from the effective `.gui` this same
+    /// admission already authenticates.
     pub fn from_replay_carrier(
         carrier: &replay_core::Xui26ReplayFamilyCarrier,
         admission: &ValidatedContentAdmission,
@@ -134,7 +146,6 @@ impl FrontendBindingSnapshot {
                 }
             }
         };
-        let element_semantics = carrier.element_semantics.clone();
         Ok(Self {
             slot_id: carrier.slot_id.clone(),
             authority: FrontendAuthority::ReplayPayload,
@@ -142,7 +153,6 @@ impl FrontendBindingSnapshot {
             complete: carrier.complete,
             frame_hour: Some(view.frame_hour),
             payload,
-            element_semantics,
             collections: carrier.collections.clone(),
         })
     }
@@ -259,7 +269,56 @@ pub enum FrontendBindingPayload {
     },
 }
 
+/// A dynamic slot whose payload carries a value the panel has no proven route
+/// for is UNAVAILABLE, and its reason code says which field. The alternative -
+/// admitting it - reports the slot as available while the recorded value goes
+/// nowhere and the authored placeholder stands in its place.
+pub const PAYLOAD_FIELD_HAS_NO_PRESENTATION_ROUTE: &str = "payload_field_has_no_presentation_route";
+
 impl FrontendBindingPayload {
+    /// The first payload field this layer can carry but cannot PRESENT, or
+    /// `None` when every field reaches the panel.
+    ///
+    /// A field reaches the panel only through a collection group whose authored
+    /// host and row template the XUI26 collection law proves. A digest is
+    /// provenance rather than something the panel shows, so it does not need a
+    /// route. Everything else - a selection, a step, a settings assignment set
+    /// with no authored group, a per-row country tag - has none today.
+    pub fn unroutable_field(&self) -> Option<&'static str> {
+        match self {
+            Self::ScenarioSetup { .. } => Some("scenario/bookmark/country selection"),
+            Self::TutorialState { .. } => Some("tutorial and step"),
+            Self::SettingsSnapshot { .. } => Some("settings assignments"),
+            Self::MessageSettingsSnapshot { .. } => Some("message settings assignments"),
+            Self::PlayerAiPreferences { .. } => Some("player AI preference assignments"),
+            Self::LiveLobby { .. } => Some("per-slot country tags"),
+            // The group is built from the assignment KEYS alone, so two
+            // recordings with the same keys and different values would present
+            // identically. The digests beside them are provenance and need no
+            // route; the values do, and have none.
+            Self::MessageFilterSnapshot { .. } => Some("message filter assignment values"),
+            Self::SavedGameRules { .. } => Some("saved game rule assignment values"),
+            // Wholly collection-shaped: the ordered id list IS the group.
+            Self::HotjoinState { .. }
+            | Self::MatchmakingChat { .. }
+            | Self::AiTraceRuntime { .. } => None,
+            // Not replay-payload authorities: `admit_frontend_composition`
+            // refuses them as nonshipping before this is consulted.
+            Self::AccountSummary { .. }
+            | Self::SessionDirectory { .. }
+            | Self::FriendsRoster { .. }
+            | Self::LoadProgress { .. }
+            | Self::AchievementState { .. }
+            | Self::BackendAccount { .. }
+            | Self::BrowserDocument { .. }
+            | Self::PopsLogin { .. }
+            | Self::SubscriptionState { .. }
+            | Self::MatchmakingState { .. }
+            | Self::NudgeRuntime { .. }
+            | Self::MusicPlayerState { .. } => None,
+        }
+    }
+
     fn slot_id(&self) -> &'static str {
         match self {
             Self::AccountSummary { .. } => "account_summary",
@@ -471,7 +530,6 @@ pub struct AdmittedFrontendBinding {
     pub slot_id: String,
     pub source_record_id: String,
     pub payload: FrontendBindingPayload,
-    pub element_semantics: BTreeMap<String, replay_core::Xui26ElementSemantic>,
     pub frame_hour: Option<i64>,
     pub collections: Vec<replay_core::Xui26ReplayCollection>,
 }
@@ -746,9 +804,23 @@ pub enum StaticFrontendPanelRejection {
     NotClassified,
     DynamicBindingsRequired,
     InvalidStaticSemantics,
-    InvalidDynamicSemantics,
 }
 
+/// THE ELEMENT SEMANTICS, DERIVED.
+///
+/// The panel's whole authored role set resolves out of the effective `.gui` and
+/// localisation the recording admitted - exact coverage by construction, since
+/// the map is built BY walking the authored roles. Nothing a producer asserted
+/// enters here: resolved per-element presentation is POV-local and outside
+/// capture scope, and asking a recorder for it is what made this layer
+/// unbuildable. What the recorded payload contributes is the CONTENT of the
+/// panel's collections - which rows exist, in what order, and the one runtime
+/// string per row - and that is applied by the collections law, not here.
+///
+/// A family with an unavailable dynamic binding still resolves its authored
+/// chrome; the missing slot is named by the disposition census rather than
+/// being turned into a whole-panel refusal, and no element is given a
+/// substitute value for it.
 pub fn admit_frontend_panel_presentation(
     surface: &crate::authored_role_index::AuthenticatedPanelSurface,
 ) -> Result<FrontendPanelPresentation, StaticFrontendPanelRejection> {
@@ -756,60 +828,11 @@ pub fn admit_frontend_panel_presentation(
         .frontend_composition()
         .family()
         .ok_or(StaticFrontendPanelRejection::NotClassified)?;
-    let mut semantics =
+    let semantics =
         crate::authenticated_semantic_provider::authenticated_static_panel_semantics(surface)
             .map_err(|_| StaticFrontendPanelRejection::InvalidStaticSemantics)?;
-    if family.admitted_bindings().len() > 1 || !family.unavailable_bindings().is_empty() {
+    if family.admitted_bindings().len() > 1 {
         return Err(StaticFrontendPanelRejection::DynamicBindingsRequired);
-    }
-    if let Some(binding) = family.admitted_bindings().first() {
-        let authored_ids = surface
-            .element_roles()
-            .iter()
-            .map(|role| role.element_id.as_str())
-            .collect::<BTreeSet<_>>();
-        if binding.element_semantics.len() != authored_ids.len()
-            || !binding
-                .element_semantics
-                .keys()
-                .all(|element_id| authored_ids.contains(element_id.as_str()))
-        {
-            return Err(StaticFrontendPanelRejection::InvalidDynamicSemantics);
-        }
-        for (element_id, source) in &binding.element_semantics {
-            let Some(value) = semantics.get_mut(element_id) else {
-                return Err(StaticFrontendPanelRejection::InvalidDynamicSemantics);
-            };
-            use replay_core::Xui26ElementSemantic as Source;
-            *value = match source {
-                Source::Hidden => ReplayAuthenticatedElementSemantic::Hidden,
-                Source::Structural => ReplayAuthenticatedElementSemantic::Structural,
-                Source::ReadOnlyButton { one_based_frame } => {
-                    ReplayAuthenticatedElementSemantic::ReadOnlyButton {
-                        one_based_frame: *one_based_frame,
-                        interaction: crate::runtime_graphics::ButtonVisualState::Up,
-                    }
-                }
-                Source::PassiveSprite { one_based_frame } => {
-                    ReplayAuthenticatedElementSemantic::PassiveSprite {
-                        one_based_frame: *one_based_frame,
-                    }
-                }
-                Source::Text { resolved_text } => ReplayAuthenticatedElementSemantic::Text {
-                    resolved_text: resolved_text.clone(),
-                },
-                Source::Progress {
-                    numerator,
-                    denominator,
-                } => ReplayAuthenticatedElementSemantic::Progress {
-                    fill: crate::widget_visual_state::ProgressFill {
-                        effect: crate::widget_visual_state::ProgressEffect::Linear,
-                        current_state: *numerator as f32 / *denominator as f32,
-                        circular_mix: None,
-                    },
-                },
-            };
-        }
     }
     let pointer_bindings = surface
         .element_roles()
@@ -885,7 +908,6 @@ pub fn revalidate_discovered_frontend_chrome(
                         complete: true,
                         frame_hour: binding.frame_hour,
                         payload: binding.payload.clone(),
-                        element_semantics: binding.element_semantics.clone(),
                         collections: binding.collections.clone(),
                     })
                 })
@@ -1131,14 +1153,6 @@ fn admit_frontend_composition(
         if !snapshot.payload.is_valid() {
             return Err(FrontendAdmissionError::InvalidBindingPayload);
         }
-        if snapshot.element_semantics.is_empty()
-            || snapshot
-                .element_semantics
-                .keys()
-                .any(|key| key.trim().is_empty())
-        {
-            return Err(FrontendAdmissionError::InvalidBindingPayload);
-        }
         if snapshot.authority == FrontendAuthority::ReplayPayload && snapshot.frame_hour.is_none() {
             return Err(FrontendAdmissionError::BindingProvenanceMismatch);
         }
@@ -1147,20 +1161,32 @@ fn admit_frontend_composition(
     let mut admitted_bindings = Vec::new();
     let mut unavailable_bindings = Vec::new();
     for rule in &family.dynamic_bindings {
-        if let Some(snapshot) = supplied.get(rule.slot_id.as_str()) {
-            admitted_bindings.push(AdmittedFrontendBinding {
+        // A payload whose fields do not all reach the panel is NOT admitted.
+        // Admitting it would report the slot as available while the recorded
+        // values it carries went nowhere and the panel drew authored
+        // placeholders in their place.
+        let unroutable = supplied
+            .get(rule.slot_id.as_str())
+            .and_then(|snapshot| snapshot.payload.unroutable_field());
+        match (supplied.get(rule.slot_id.as_str()), unroutable) {
+            (Some(snapshot), None) => admitted_bindings.push(AdmittedFrontendBinding {
                 slot_id: rule.slot_id.clone(),
                 source_record_id: snapshot.source_record_id.clone(),
                 payload: snapshot.payload.clone(),
-                element_semantics: snapshot.element_semantics.clone(),
                 frame_hour: snapshot.frame_hour,
                 collections: snapshot.collections.clone(),
-            });
-        } else {
-            unavailable_bindings.push(UnavailableFrontendBinding {
+            }),
+            (Some(_), Some(field)) => unavailable_bindings.push(UnavailableFrontendBinding {
+                slot_id: rule.slot_id.clone(),
+                reason_code: format!(
+                    "{}:{PAYLOAD_FIELD_HAS_NO_PRESENTATION_ROUTE}:{field}",
+                    rule.unavailable_reason_code
+                ),
+            }),
+            (None, _) => unavailable_bindings.push(UnavailableFrontendBinding {
                 slot_id: rule.slot_id.clone(),
                 reason_code: rule.unavailable_reason_code.clone(),
-            });
+            }),
         }
     }
     Ok(FrontendComposition {
@@ -1485,14 +1511,6 @@ mod tests {
             .sha256
     }
 
-    fn semantics() -> BTreeMap<String, replay_core::Xui26ElementSemantic> {
-        BTreeMap::from([(
-            "fixture:dynamic".into(),
-            replay_core::Xui26ElementSemantic::Text {
-                resolved_text: "measured".into(),
-            },
-        )])
-    }
 
     fn used(family_id: &str) -> UsedContentKey {
         let contract = contract().unwrap();
@@ -1672,33 +1690,148 @@ mod tests {
     #[test]
     fn exact_typed_snapshot_is_admitted() {
         let snapshot = FrontendBindingSnapshot {
-            slot_id: "scenario_setup".to_string(),
+            slot_id: "hotjoin_state".to_string(),
             authority: FrontendAuthority::ReplayPayload,
-            source_record_id: "replay:scenario:0".to_string(),
+            source_record_id: "replay:session:0".to_string(),
             complete: true,
             frame_hour: Some(0),
-            element_semantics: semantics(),
             collections: vec![],
-            payload: FrontendBindingPayload::ScenarioSetup {
-                scenario_id: "1936".into(),
-                bookmark_id: "gathering_storm".into(),
-                country_tag: "GER".into(),
-                game_rules_sha256: "a".repeat(64),
-                bookmark_ids_in_order: vec!["gathering_storm".into()],
-                country_tags_in_order: vec!["GER".into()],
-                game_rule_ids_in_order: vec![],
+            payload: FrontendBindingPayload::HotjoinState {
+                event_record_ids: vec!["session:event:0".into()],
             },
         };
         let expected_payload = snapshot.payload.clone();
-        let composition = admit_frontend_composition(
-            "frontend_game_setup",
-            &sha("frontend_game_setup"),
-            &[snapshot],
-        )
-        .unwrap();
+        let composition =
+            admit_frontend_composition("hotjoin", &sha("hotjoin"), &[snapshot]).unwrap();
         assert_eq!(composition.admitted_bindings.len(), 1);
         assert_eq!(composition.admitted_bindings[0].payload, expected_payload);
         assert!(composition.unavailable_bindings.is_empty());
+    }
+
+    /// kills: reporting a slot as AVAILABLE while the values its payload
+    /// carries have nowhere on the panel to go.
+    ///
+    /// A scenario setup carries three selections, a tutorial carries a step and
+    /// a settings snapshot carries assignments, and none of the three has an
+    /// authored group or a proven store to reach. Admitting them would draw the
+    /// panel's authored placeholders and call the slot available, so two
+    /// recordings with different values would present identically.
+    #[test]
+    fn a_payload_field_with_no_presentation_route_is_unavailable_and_names_itself() {
+        let cases = [
+            (
+                "frontend_game_setup",
+                "scenario_setup",
+                FrontendBindingPayload::ScenarioSetup {
+                    scenario_id: "1936".into(),
+                    bookmark_id: "gathering_storm".into(),
+                    country_tag: "GER".into(),
+                    game_rules_sha256: "a".repeat(64),
+                    bookmark_ids_in_order: vec!["gathering_storm".into()],
+                    country_tags_in_order: vec!["GER".into()],
+                    game_rule_ids_in_order: vec![],
+                },
+                "scenario/bookmark/country selection",
+            ),
+            (
+                "settings",
+                "settings_snapshot",
+                FrontendBindingPayload::SettingsSnapshot {
+                    settings_file_sha256: "a".repeat(64),
+                    assignments: BTreeMap::from([("fullscreen".to_string(), "yes".to_string())]),
+                },
+                "settings assignments",
+            ),
+            (
+                "ingame_lobby",
+                "live_lobby",
+                FrontendBindingPayload::LiveLobby {
+                    player_keys_in_slot_order: vec!["p0".into()],
+                    country_tags_in_slot_order: vec!["GER".into()],
+                },
+                "per-slot country tags",
+            ),
+            // The group is built from the assignment KEYS alone, so the VALUES
+            // reach nothing: two recordings with the same keys and different
+            // values would present identically.
+            (
+                "saved_game_rules",
+                "saved_game_rules",
+                FrontendBindingPayload::SavedGameRules {
+                    rules_sha256: "a".repeat(64),
+                    assignments: BTreeMap::from([("difficulty".to_string(), "on".to_string())]),
+                },
+                "saved game rule assignment values",
+            ),
+            (
+                "tutorial_screen",
+                "tutorial_state",
+                FrontendBindingPayload::TutorialState {
+                    tutorial_id: "basic".into(),
+                    step_id: "step_2".into(),
+                    completed_step_ids: vec!["step_1".into()],
+                },
+                "tutorial and step",
+            ),
+            (
+                "message_settings",
+                "message_settings_snapshot",
+                FrontendBindingPayload::MessageSettingsSnapshot {
+                    settings_file_sha256: "a".repeat(64),
+                    assignments: BTreeMap::from([("combat".to_string(), "popup".to_string())]),
+                },
+                "message settings assignments",
+            ),
+            (
+                "player_ai_preferences",
+                "player_ai_preferences",
+                FrontendBindingPayload::PlayerAiPreferences {
+                    assignments: BTreeMap::from([("GER".to_string(), "aggressive".to_string())]),
+                },
+                "player AI preference assignments",
+            ),
+            (
+                "message_filters",
+                "message_filter_snapshot",
+                FrontendBindingPayload::MessageFilterSnapshot {
+                    settings_file_sha256: "a".repeat(64),
+                    assignments: BTreeMap::from([("combat".to_string(), "popup".to_string())]),
+                },
+                "message filter assignment values",
+            ),
+        ];
+        for (family_id, slot_id, payload, field) in cases {
+            let composition = admit_frontend_composition(
+                family_id,
+                &sha(family_id),
+                &[FrontendBindingSnapshot {
+                    slot_id: slot_id.to_string(),
+                    authority: FrontendAuthority::ReplayPayload,
+                    source_record_id: "replay:0".to_string(),
+                    complete: true,
+                    frame_hour: Some(0),
+                    collections: vec![],
+                    payload,
+                }],
+            )
+            .unwrap();
+            assert!(
+                composition.admitted_bindings.is_empty(),
+                "{family_id} admitted a payload it cannot present"
+            );
+            let [unavailable] = composition.unavailable_bindings.as_slice() else {
+                panic!("{family_id} did not name one unavailable slot");
+            };
+            assert_eq!(unavailable.slot_id, slot_id);
+            assert!(
+                unavailable
+                    .reason_code
+                    .contains(PAYLOAD_FIELD_HAS_NO_PRESENTATION_ROUTE)
+                    && unavailable.reason_code.ends_with(field),
+                "{family_id} did not name the field: {}",
+                unavailable.reason_code
+            );
+        }
     }
 
     #[test]
@@ -1710,7 +1843,6 @@ mod tests {
             source_record_id: "replay:session:4".to_string(),
             complete: true,
             frame_hour: Some(4),
-            element_semantics: semantics(),
             collections: vec![],
             payload: FrontendBindingPayload::HotjoinState {
                 event_record_ids: vec!["session:event:4".into()],
@@ -1746,7 +1878,6 @@ mod tests {
             source_record_id: "bad:1".to_string(),
             complete: true,
             frame_hour: None,
-            element_semantics: semantics(),
             collections: vec![],
             payload: FrontendBindingPayload::AiTraceRuntime {
                 event_record_ids: vec![],
@@ -1766,7 +1897,6 @@ mod tests {
             source_record_id: "replay:scenario:0".into(),
             complete: true,
             frame_hour: Some(0),
-            element_semantics: semantics(),
             collections: vec![],
             payload: FrontendBindingPayload::TutorialState {
                 tutorial_id: "tutorial".into(),
@@ -1792,7 +1922,6 @@ mod tests {
             source_record_id: "replay-ui:loader:4".into(),
             complete: true,
             frame_hour: None,
-            element_semantics: semantics(),
             collections: vec![],
             payload: FrontendBindingPayload::LoadProgress {
                 stage_id: "parse_definitions".into(),
@@ -1814,7 +1943,6 @@ mod tests {
             source_record_id: "replay-ui:loader:parse-definitions".into(),
             complete: true,
             frame_hour: None,
-            element_semantics: semantics(),
             collections: vec![],
             payload: FrontendBindingPayload::LoadProgress {
                 stage_id: "parse_definitions".into(),
@@ -1836,7 +1964,6 @@ mod tests {
             source_record_id: "d57:hour:4".into(),
             complete: true,
             frame_hour: Some(4),
-            element_semantics: semantics(),
             collections: vec![],
             payload: FrontendBindingPayload::LiveLobby {
                 player_keys_in_slot_order: vec!["".into()],
@@ -1854,7 +1981,6 @@ mod tests {
             source_record_id: "manifest:settings".into(),
             complete: true,
             frame_hour: Some(0),
-            element_semantics: semantics(),
             collections: vec![],
             payload: FrontendBindingPayload::SettingsSnapshot {
                 settings_file_sha256: "A".repeat(64),
@@ -1939,4 +2065,6 @@ mod tests {
             );
         }
     }
+
+
 }

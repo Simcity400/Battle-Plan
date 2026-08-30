@@ -64,7 +64,7 @@
       "replay_core/src/xmap17_player_labels.rs:21": 1
     },
     "extractor/native/lanes/xui26_frontend/src/lib.rs": {
-      "replay_core/src/xui26_frontend.rs:14": 1
+      "replay_core/src/xui26_frontend.rs:8": 1
     },
     "extractor/native/recorder_host/src/world_fold.rs": {
       "attach_log.rs:30886-30891": 1,

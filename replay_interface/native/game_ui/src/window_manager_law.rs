@@ -1091,11 +1091,16 @@ pub struct ReplayAuthenticatedProductionLinesBinding {
 struct ReplayAuthenticatedFrontendCollectionRowBinding {
     input: replay_core::Xui26ReplayCollectionRow,
     template: StrictAuthoredPanelAdmission,
+    /// The row's resolved semantics, by child path: the template's authored
+    /// derivation with the one proven runtime text store overwritten.
+    semantics: BTreeMap<Vec<u32>, ReplayAuthenticatedElementSemantic>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct ReplayAuthenticatedFrontendCollectionBinding {
     input: replay_core::Xui26ReplayCollection,
+    /// DERIVED from the group's authored host law, not carried.
+    collection_element_id: String,
     collection_child_path: Vec<u32>,
     empty_template: StrictAuthoredPanelAdmission,
     rows: Vec<ReplayAuthenticatedFrontendCollectionRowBinding>,
@@ -1139,6 +1144,10 @@ fn xui26_frontend_collections_binding_digest(
 }
 
 impl ReplayAuthenticatedFrontendCollectionsBinding {
+    pub fn family_id(&self) -> &str {
+        &self.family_id
+    }
+
     pub fn set_scroll_offset_pixels(
         &mut self,
         element_id: &str,
@@ -1147,7 +1156,7 @@ impl ReplayAuthenticatedFrontendCollectionsBinding {
         let collection = self
             .collections
             .iter_mut()
-            .find(|collection| collection.input.collection_element_id == element_id)
+            .find(|collection| collection.collection_element_id == element_id)
             .ok_or_else(|| format!("XUI26 scroll outcome names foreign region {element_id:?}"))?;
         if offset_pixels < 0 {
             return Err("XUI26 scroll offset is negative".into());
@@ -1161,16 +1170,28 @@ impl ReplayAuthenticatedFrontendCollectionsBinding {
         &mut self,
         offsets: &BTreeMap<String, i32>,
     ) -> Result<(), String> {
-        if offsets.len() != self.collections.len()
-            || self
-                .collections
-                .iter()
-                .any(|collection| !offsets.contains_key(&collection.input.collection_element_id))
+        // A group the carrier measured EMPTY has no scroll region and so no
+        // composed offset: it holds no rows to move past its host. Every other
+        // group must have exactly one, and no offset may name a group that is
+        // not there - so a lost region is still caught, per group, by count.
+        let scrollable = self
+            .collections
+            .iter()
+            .filter(|collection| !collection.rows.is_empty())
+            .count();
+        if offsets.len() != scrollable
+            || self.collections.iter().any(|collection| {
+                offsets.contains_key(&collection.collection_element_id)
+                    == collection.rows.is_empty()
+            })
         {
             return Err("XUI26 composed scroll-offset census differs from carrier groups".into());
         }
         for collection in &mut self.collections {
-            let offset = offsets[&collection.input.collection_element_id];
+            let Some(offset) = offsets.get(&collection.collection_element_id).copied() else {
+                collection.scroll_offset_pixels = 0;
+                continue;
+            };
             if offset < 0 {
                 return Err("XUI26 composed scroll offset is negative".into());
             }
@@ -3584,59 +3605,120 @@ fn xui12_scrollbar_part(
     })
 }
 
-fn xui26_semantic(semantic: &replay_core::Xui26ElementSemantic) -> AuthenticatedElementSemantic {
-    use replay_core::Xui26ElementSemantic as Source;
-    match semantic {
-        Source::Hidden => AuthenticatedElementSemantic::Hidden,
-        Source::Structural => AuthenticatedElementSemantic::Structural,
-        Source::ReadOnlyButton { one_based_frame } => {
-            AuthenticatedElementSemantic::ReadOnlyButton {
-                one_based_frame: *one_based_frame,
-                interaction: crate::runtime_graphics::ButtonVisualState::Up,
-            }
-        }
-        Source::PassiveSprite { one_based_frame } => AuthenticatedElementSemantic::PassiveSprite {
-            one_based_frame: *one_based_frame,
-        },
-        Source::Text { resolved_text } => AuthenticatedElementSemantic::Text {
-            resolved_text: resolved_text.clone(),
-        },
-        Source::Progress {
-            numerator,
-            denominator,
-        } => AuthenticatedElementSemantic::Progress {
-            fill: ProgressFill {
-                effect: crate::widget_visual_state::ProgressEffect::Linear,
-                current_state: *numerator as f32 / *denominator as f32,
-                circular_mix: None,
-            },
-        },
-    }
-}
-
-fn xui26_template(
+/// The row template for a group, DERIVED: the one ADMITTED surface whose id
+/// the group's law names.
+///
+/// The template used to be a path, a digest and a surface id the producer
+/// supplied and this code checked against the same law. There is no producer of
+/// those: a recorder cannot know the replay's role-index identities, and the
+/// file identity it could know is already authenticated by the admission this
+/// lookup goes through. The search is over the whole admitted index rather than
+/// the owner panel's own source file because a shipped family authors its row
+/// template in a DIFFERENT file from its window - `ingame_lobby_window` is in
+/// `interface/ingamelobby.gui` and its `ingame_multiplayer_entry` is in
+/// `interface/playerlobby.gui`. Exactly one candidate must exist: a group whose
+/// law names three alternative row shapes and finds all three admitted leaves
+/// the choice undecidable, and choosing is what a substitute value is.
+fn xui26_row_template(
     index: &AuthenticatedGuiRoleIndex,
     catalog: &GuiDefinitionCatalog,
     admission: &ValidatedContentAdmission,
-    source_path: &str,
-    source_sha256: &str,
-    surface_id: &str,
+    law: &Xui26CollectionLaw,
 ) -> Result<StrictAuthoredPanelAdmission, String> {
-    if source_path != source_path.replace('\\', "/").to_ascii_lowercase()
-        || !source_path.starts_with("interface/")
-        || !source_path.ends_with(".gui")
-    {
-        return Err(
-            "XUI26 collection template path is not canonical effective-VFS identity".into(),
-        );
+    let mut candidates = index
+        .surfaces
+        .iter()
+        .filter(|surface| {
+            law.template_surface_ids
+                .iter()
+                .any(|id| surface.surface_id.eq_ignore_ascii_case(id))
+        })
+        .collect::<Vec<_>>();
+    let [candidate] = candidates.as_slice() else {
+        return Err(if candidates.is_empty() {
+            "XUI26 collection group has no admitted authored row template".to_string()
+        } else {
+            format!(
+                "XUI26 collection group has {} admitted authored row templates and cannot choose",
+                candidates.len()
+            )
+        });
+    };
+    let admitted = index.admit_surface(
+        catalog,
+        admission,
+        &candidate.source_content,
+        &candidate.surface_id,
+    )?;
+    candidates.clear();
+    Ok(admitted)
+}
+
+/// Whether this row element can be drawn TRUTHFULLY.
+///
+/// A row is instantiated once per recorded item, so its content is by
+/// construction the engine's per-item output; the owner panel's chrome is the
+/// same authored chrome the static-only families already present. An element
+/// the authored file does not fully decide, and that the group's payload does
+/// not supply, would be drawn at its authored default - the "FAILED" literal
+/// `ai_trace_entry` authors on every row, or the unchecked frame of a
+/// two-frame checkbox - which is a substituted value, not a late one.
+///
+/// So exactly two things pass: an element the proven store SUPPLIES, and an
+/// element the authored derivation PROVABLY draws nothing for. `Hidden` is not
+/// that proof: `static_authored_semantic` returns it both for a standard button
+/// it deliberately draws nothing for AND as its fallback for a presentation it
+/// could not determine - a direct-texture icon, a multi-sprite element, a
+/// font-bearing box with no authored text, an unresolved token. Admitting the
+/// fallback would draw those rows INVISIBLE without anything having recorded
+/// that they are invisible, so only the two arms the provider reaches
+/// deliberately are taken here: its `Structural` answer, and the standard-button
+/// arm, whose condition is read off the compositor's own `WidgetFamily`.
+fn xui26_row_element_is_determined(
+    role: &crate::authored_role_index::AuthoredElementRole,
+    authored: &crate::gui::GuiElement,
+    semantic: &ReplayAuthenticatedElementSemantic,
+    store_texts: Option<&BTreeSet<&str>>,
+) -> bool {
+    let Some(family) = WidgetFamily::from_element_type(&authored.element_type) else {
+        // A type the compositor does not know cannot be judged at all. The
+        // effective definition catalog refuses such a window before this, so
+        // this is defence in depth rather than a reachable arm.
+        return false;
+    };
+    if let Some(texts) = store_texts {
+        // The store is probed with THE STRINGS THIS GROUP MEASURED, not a
+        // stand-in: a literal probe proves only that some string would compose,
+        // and the row binds the measured one. An empty measured string binds
+        // `Hidden` instead and is not probed, because an empty string draws
+        // nothing whatever the element is. Judged by the COMPOSITOR'S own rule
+        // rather than a second copy of it.
+        return texts.iter().all(|text| {
+            crate::compose::validate_element_semantic(
+                role,
+                authored,
+                &AuthenticatedElementSemantic::Text {
+                    resolved_text: (*text).to_string(),
+                },
+            )
+            .is_ok()
+        });
     }
-    let source = admission
-        .require_used_content(source_path)
-        .map_err(|error| error.to_string())?;
-    if source.payload_sha256 != source_sha256 {
-        return Err("XUI26 collection template content digest differs from the carrier".into());
+    if family.standard_button_carrier() {
+        // The provider's deliberate draws-nothing arm, and its exact condition.
+        return role.sprites.len() == 1;
     }
-    index.admit_surface(catalog, admission, source, surface_id)
+    // Its other deliberate arm. The compositor is asked whether it would accept
+    // that answer for this element rather than a second copy of its rules being
+    // kept here: `Structural` is refused for a text-typed element, and only the
+    // compositor knows that.
+    matches!(semantic, ReplayAuthenticatedElementSemantic::Structural)
+        && crate::compose::validate_element_semantic(
+            role,
+            authored,
+            &AuthenticatedElementSemantic::Structural,
+        )
+        .is_ok()
 }
 
 #[derive(Clone, Copy)]
@@ -3645,18 +3727,31 @@ struct Xui26CollectionLaw {
     group_id: &'static str,
     host_authored_names: &'static [&'static str],
     template_surface_ids: &'static [&'static str],
+    /// The authored child of the row template that the engine writes the row's
+    /// one runtime string into, where that store is proven in the admitted
+    /// build. `None` means no such law is proven for this group, and a row
+    /// carrying text is then REFUSED rather than having an element picked for
+    /// it by shape.
+    row_text_authored_name: Option<&'static str>,
 }
 
 /// Exact semantic joins retained from the installed authored roots. Mods may
 /// replace the effective bytes at these paths and roots, but a renamed host or
 /// template is a different unproven semantic contract and remains unavailable
 /// instead of inheriting a group by position.
+///
+/// `row_text_authored_name` for `hotjoin_requests` is a729's own store:
+/// literal `"name"` (`lStack_48 = 0x656d616e`), resolves that child through the
+/// owner's text-element getter at vtable `+0x78`, and writes the item's string
+/// at `+0x100` into it. No other group's row store is read, so no other group
+/// names one.
 const XUI26_COLLECTION_LAWS: &[Xui26CollectionLaw] = &[
     Xui26CollectionLaw {
         family_id: "frontend_game_setup",
         group_id: "bookmarks",
         host_authored_names: &["bookmarks_grid"],
         template_surface_ids: &["bookmark_entry"],
+        row_text_authored_name: None,
     },
     Xui26CollectionLaw {
         family_id: "frontend_game_setup",
@@ -3667,54 +3762,63 @@ const XUI26_COLLECTION_LAWS: &[Xui26CollectionLaw] = &[
             "country_entry_medium",
             "country_entry_mini",
         ],
+        row_text_authored_name: None,
     },
     Xui26CollectionLaw {
         family_id: "frontend_game_setup",
         group_id: "game_rules",
         host_authored_names: &["game_rule_grid"],
         template_surface_ids: &["game_rule_window"],
+        row_text_authored_name: None,
     },
     Xui26CollectionLaw {
         family_id: "message_filters",
         group_id: "message_filters",
         host_authored_names: &["countries_listbox"],
         template_surface_ids: &["message_filters_entry"],
+        row_text_authored_name: None,
     },
     Xui26CollectionLaw {
         family_id: "saved_game_rules",
         group_id: "saved_game_rules",
         host_authored_names: &["savedgamerules_grid"],
         template_surface_ids: &["savedgamerules_item"],
+        row_text_authored_name: None,
     },
     Xui26CollectionLaw {
         family_id: "ingame_lobby",
         group_id: "players",
         host_authored_names: &["multiplayer_list"],
         template_surface_ids: &["ingame_multiplayer_entry"],
+        row_text_authored_name: None,
     },
     Xui26CollectionLaw {
         family_id: "player_lobby",
         group_id: "players",
         host_authored_names: &["multiplayer_list"],
         template_surface_ids: &["ingame_multiplayer_entry"],
+        row_text_authored_name: None,
     },
     Xui26CollectionLaw {
         family_id: "hotjoin",
         group_id: "hotjoin_requests",
         host_authored_names: &["requests_grid"],
         template_surface_ids: &["hotjoin_request_entry"],
+        row_text_authored_name: Some("name"),
     },
     Xui26CollectionLaw {
         family_id: "matchmaking_chat",
         group_id: "chat_messages",
         host_authored_names: &["chat"],
         template_surface_ids: &["matchmaking_chat_item"],
+        row_text_authored_name: None,
     },
     Xui26CollectionLaw {
         family_id: "ai_trace",
         group_id: "trace_entries",
         host_authored_names: &["entries"],
         template_surface_ids: &["ai_trace_entry"],
+        row_text_authored_name: None,
     },
 ];
 
@@ -3761,84 +3865,159 @@ pub fn derive_xui26_frontend_collections_binding(
     for collection in &binding.collections {
         let law = xui26_collection_law(family.family_id(), &collection.group_id)
             .ok_or("XUI26 collection group has no exact family-owned host/template law")?;
+        // THE HOST, DERIVED: the one authored collection widget of the owner
+        // panel whose name the group's law states. It used to be an element id
+        // the producer named and this code checked against the same law.
         let host_roles = owner
             .element_roles()
             .iter()
-            .filter(|role| role.element_id == collection.collection_element_id)
+            .filter(|role| {
+                owner.authored_element(&role.child_path).is_some_and(|host| {
+                    law.host_authored_names
+                        .iter()
+                        .any(|name| host.name.eq_ignore_ascii_case(name))
+                })
+            })
             .collect::<Vec<_>>();
         let [host_role] = host_roles.as_slice() else {
-            return Err("XUI26 collection host element identity is absent or ambiguous".into());
+            return Err(
+                "XUI26 collection group has no single authored host in the owner panel".into(),
+            );
         };
         let host = owner
             .authored_element(&host_role.child_path)
             .ok_or("XUI26 collection host tree is absent")?;
-        if !law
-            .host_authored_names
-            .iter()
-            .any(|name| host.name.eq_ignore_ascii_case(name))
-        {
-            return Err("XUI26 collection group is bound to the wrong authored host".into());
-        }
         if !matches!(
             host.element_type.to_ascii_lowercase().as_str(),
             "listboxtype" | "smoothlistboxtype" | "gridboxtype" | "overlappingelementsboxtype"
         ) {
             return Err("XUI26 collection host is not an exact authored collection widget".into());
         }
-        let empty_template = xui26_template(
-            index,
-            catalog,
-            admission,
-            &collection.empty_template_source_path,
-            &collection.empty_template_source_content_sha256,
-            &collection.empty_template_surface_id,
-        )?;
-        if !law
-            .template_surface_ids
-            .iter()
-            .any(|surface| empty_template.surface_id().eq_ignore_ascii_case(surface))
-        {
-            return Err("XUI26 measured-empty template is foreign to its family/group".into());
-        }
+        let template = xui26_row_template(index, catalog, admission, law)?;
+        // A MEASURED-EMPTY group instantiates no row, so nothing below it can
+        // be drawn and nothing below it is required: judging a template that
+        // will render nothing would turn a measured emptiness into an
+        // unavailability. Everything from here to the row loop is a ROW
+        // requirement and runs only when there are rows.
+        let (template_semantics, row_text_path) = if collection.rows.is_empty() {
+            (BTreeMap::new(), None)
+        } else {
+            // The row's own semantics come from the SAME authored derivation
+            // the owner panel's do, keyed by child path so a materialized
+            // instance can be addressed without an element-id join.
+            let template_semantics =
+            crate::authenticated_semantic_provider::authenticated_theatre_template_static_semantics(
+                index, admission, owner, &template,
+            )
+            .map_err(|error| format!("XUI26 row template semantics rejected: {error}"))?;
+            // THE STORE, by the authored NAME the engine's own refresh loads,
+            // and the SHAPE that refresh resolves: the text-element getter at
+            // vtable +0x78 returns a font-bearing text element, so a modded
+            // file that authors an icon or a button under the same name does
+            // not qualify. What that child can then hold is probed with the
+            // group's own measured strings through the compositor's validator.
+            let row_text_path = match law.row_text_authored_name {
+                Some(name) => {
+                    let mut paths = template
+                        .element_roles()
+                        .iter()
+                        .filter(|role| {
+                            template.authored_element(&role.child_path).is_some_and(|element| {
+                                element.name.eq_ignore_ascii_case(name)
+                                    && element.element_type.to_ascii_lowercase().contains("text")
+                                    && element.font.is_some()
+                            })
+                        })
+                        .map(|role| role.child_path.clone())
+                        .collect::<Vec<_>>();
+                    if paths.len() != 1 {
+                        return Err(
+                            "XUI26 row template has no single authored text child for its proven store"
+                                .into(),
+                        );
+                    }
+                    Some(paths.remove(0))
+                }
+                None => None,
+            };
+            // A row's runtime text is carried EXACTLY when its group proves a
+            // store for it: text with no store could only be placed by shape,
+            // and a store with no text would leave the engine's own slot
+            // holding whatever the authored file left there.
+            if collection
+                .rows
+                .iter()
+                .any(|row| row.row_text.is_some() != row_text_path.is_some())
+            {
+                return Err(
+                    "XUI26 collection row text does not match its group's proven authored store"
+                        .into(),
+                );
+            }
+            // EVERY element of the row, or none of them. An element the
+            // authored file does not decide and the payload does not supply
+            // would be drawn at its authored default.
+            // ALL of them, not the first: a template with three undecided
+            // elements is three separate authoring problems, and naming one
+            // sends the next reader back three times.
+            let mut undecided = Vec::new();
+            for role in template.element_roles() {
+                let authored = template
+                    .authored_element(&role.child_path)
+                    .ok_or("XUI26 row template element tree is absent")?;
+                let semantic = template_semantics
+                    .get(&role.child_path)
+                    .ok_or("XUI26 row template semantic census is short")?;
+                let store_texts = (row_text_path.as_deref() == Some(role.child_path.as_slice()))
+                    .then(|| {
+                        collection
+                            .rows
+                            .iter()
+                            .filter_map(|row| row.row_text.as_deref())
+                            .filter(|text| !text.is_empty())
+                            .collect::<BTreeSet<_>>()
+                    });
+                if !xui26_row_element_is_determined(role, authored, semantic, store_texts.as_ref()) {
+                    undecided.push(role.authored_name.clone());
+                }
+            }
+            if !undecided.is_empty() {
+                return Err(format!(
+                    "XUI26 row template elements {undecided:?} are neither decided by the authored file nor supplied by the payload"
+                ));
+            }
+            (template_semantics, row_text_path)
+        };
         let mut rows = Vec::with_capacity(collection.rows.len());
         for row in &collection.rows {
-            let template = xui26_template(
-                index,
-                catalog,
-                admission,
-                &row.template_source_path,
-                &row.template_source_content_sha256,
-                &row.template_surface_id,
-            )?;
-            if !law
-                .template_surface_ids
-                .iter()
-                .any(|surface| template.surface_id().eq_ignore_ascii_case(surface))
-            {
-                return Err("XUI26 row template is foreign to its family/group".into());
-            }
-            let role_ids = template
-                .element_roles()
-                .iter()
-                .map(|role| role.element_id.as_str())
-                .collect::<BTreeSet<_>>();
-            if role_ids.len() != row.element_semantics.len()
-                || !row
-                    .element_semantics
-                    .keys()
-                    .all(|element_id| role_ids.contains(element_id.as_str()))
-            {
-                return Err("XUI26 collection row semantic census is incomplete or foreign".into());
+            let mut semantics = template_semantics.clone();
+            if let (Some(text), Some(path)) = (&row.row_text, &row_text_path) {
+                // The engine writes whatever string it holds, and an EMPTY one
+                // draws as nothing. `Hidden` is that, exactly and losslessly;
+                // it is not an absence, because the row carried a measured
+                // string and this is what that string looks like.
+                semantics.insert(
+                    path.clone(),
+                    if text.is_empty() {
+                        ReplayAuthenticatedElementSemantic::Hidden
+                    } else {
+                        ReplayAuthenticatedElementSemantic::Text {
+                            resolved_text: text.clone(),
+                        }
+                    },
+                );
             }
             rows.push(ReplayAuthenticatedFrontendCollectionRowBinding {
                 input: row.clone(),
-                template,
+                template: template.clone(),
+                semantics,
             });
         }
         collections.push(ReplayAuthenticatedFrontendCollectionBinding {
             input: collection.clone(),
+            collection_element_id: host_role.element_id.clone(),
             collection_child_path: host_role.child_path.clone(),
-            empty_template,
+            empty_template: template,
             rows,
             scroll_offset_pixels: 0,
         });
@@ -3913,7 +4092,7 @@ fn build_xui26_frontend_materialization_plan(
         let semantic = ObserverSemanticCollection {
             collection_instance_token: format!(
                 "XUI26:{}:{}:{}",
-                binding.source_record_id, binding.family_id, collection.input.collection_element_id
+                binding.source_record_id, binding.family_id, collection.collection_element_id
             ),
             frame_hour: u64::try_from(binding.frame_hour).map_err(|_| reject())?,
             context_country: None,
@@ -3926,7 +4105,7 @@ fn build_xui26_frontend_materialization_plan(
                     Ok(ObserverSemanticRow {
                         stable_item_id: row.input.stable_item_id.clone(),
                         source_ordinal: u32::try_from(ordinal).map_err(|_| reject())?,
-                        subtype_id: row.input.subtype_id.clone(),
+                        subtype_id: row.template.surface_id().to_string(),
                     })
                 })
                 .collect::<Result<Vec<_>, ReplayWindowManagerRejection>>()?,
@@ -3936,7 +4115,7 @@ fn build_xui26_frontend_materialization_plan(
             .iter()
             .map(|row| AuthoredRowBinding {
                 stable_item_id: row.input.stable_item_id.as_str(),
-                subtype_id: row.input.subtype_id.as_str(),
+                subtype_id: row.template.surface_id(),
                 element_source_identity: row.template.surface_id(),
                 instance_token: row.input.stable_item_id.as_str(),
                 template: row
@@ -3965,7 +4144,7 @@ fn build_xui26_frontend_materialization_plan(
                 AuthoredCollectionSource {
                     owning_window_id: &owner_source_identity,
                     root_source_identity: &owner_source_identity,
-                    collection_element_id: &collection.input.collection_element_id,
+                    collection_element_id: &collection.collection_element_id,
                     collection_element: host,
                     effective_row_template_identity: Some(collection.empty_template.surface_id()),
                     effective_row_template: Some(empty_template_root),
@@ -4020,15 +4199,16 @@ fn build_xui26_frontend_materialization_plan(
                 .iter()
                 .find(|row| row.input.stable_item_id == planned.stable_item_id())
                 .ok_or_else(reject)?;
-            let mut semantics = BTreeMap::new();
-            for role in row.template.element_roles() {
-                let semantic = row
-                    .input
-                    .element_semantics
-                    .get(&role.element_id)
-                    .ok_or_else(reject)?;
-                semantics.insert(role.child_path.clone(), xui26_semantic(semantic));
-            }
+            let semantics = row
+                .semantics
+                .iter()
+                .map(|(path, semantic)| {
+                    (
+                        path.clone(),
+                        authenticated_element_semantic_from_replay(semantic),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
             let rect = planned.final_rect();
             let scrolled_y = rect
                 .y()
@@ -4038,7 +4218,7 @@ fn build_xui26_frontend_materialization_plan(
                 format!(
                     "{}:{}:{}",
                     binding.family_id,
-                    collection.input.collection_element_id,
+                    collection.collection_element_id,
                     row.input.stable_item_id
                 ),
                 u32::try_from(instances.len()).map_err(|_| reject())?,
@@ -4077,30 +4257,40 @@ fn build_xui26_frontend_materialization_plan(
             .map(|(_, height)| height)
             .filter(|height| *height > 0)
         })
-        .ok_or_else(reject)?;
+        .unwrap_or(0);
         let smooth_scrolling = match host.raw.first_scalar_ci("smooth_scrolling").map(str::trim) {
             None => false,
             Some(value) if value.eq_ignore_ascii_case("yes") => true,
             Some(value) if value.eq_ignore_ascii_case("no") => false,
             _ => return Err(reject()),
         };
-        collection_scroll_regions.push(AuthenticatedCollectionScrollRegionPlan {
-            element_id: collection.input.collection_element_id.clone(),
-            child_path: collection.collection_child_path.clone(),
-            viewport_rect: host_clip,
-            max_offset_pixels,
-            offset_pixels: effective_offset_pixels,
-            wheel_step_pixels,
-            smooth_scrolling,
-            geometry_source_record: format!(
-                "{}/family={}/group={}/host={}/carrier={}",
-                binding.source_record_id,
-                binding.family_id,
-                collection.input.group_id,
-                collection.input.collection_element_id,
-                binding.identity_sha256,
-            ),
-        });
+        // A MEASURED-EMPTY group has nothing to scroll, so it gets no scroll
+        // region: `max_offset_pixels` is zero, the wheel step is never applied,
+        // and demanding a positive one - or a positive extent from a template
+        // no row will instantiate - would turn a measured emptiness into a
+        // refusal at the materialization seal.
+        if !collection.rows.is_empty() {
+            if wheel_step_pixels <= 0 {
+                return Err(reject());
+            }
+            collection_scroll_regions.push(AuthenticatedCollectionScrollRegionPlan {
+                element_id: collection.collection_element_id.clone(),
+                child_path: collection.collection_child_path.clone(),
+                viewport_rect: host_clip,
+                max_offset_pixels,
+                offset_pixels: effective_offset_pixels,
+                wheel_step_pixels,
+                smooth_scrolling,
+                geometry_source_record: format!(
+                    "{}/family={}/group={}/host={}/carrier={}",
+                    binding.source_record_id,
+                    binding.family_id,
+                    collection.input.group_id,
+                    collection.collection_element_id,
+                    binding.identity_sha256,
+                ),
+            });
+        }
         let current = Rect::new(
             host_rect.x(),
             host_rect.y(),
@@ -9152,6 +9342,31 @@ mod replay_runtime_instance_tests {
             manager.persistent_geometry[0].scroll_regions[0].offset_pixels,
             -7
         );
+    }
+
+    /// kills: a proven row-text store that is not actually in the frozen
+    /// collection law, and a group claiming one whose family the contract does
+    /// not declare. The store is what turns a carrier's `row_text` into a
+    /// drawn string, so a wrong or invented one would put text on an element
+    /// a729 never writes.
+    #[test]
+    fn exactly_one_collection_group_proves_a_row_text_store() {
+        let proven = XUI26_COLLECTION_LAWS
+            .iter()
+            .filter_map(|law| {
+                law.row_text_authored_name
+                    .map(|name| (law.family_id, law.group_id, name))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(proven, vec![("hotjoin", "hotjoin_requests", "name")]);
+        // Each law is reached by its (family, group) pair, so two laws sharing
+        // one pair would make `xui26_collection_law` return whichever came
+        // first and silently apply the wrong store rule to the other group.
+        let pairs = XUI26_COLLECTION_LAWS
+            .iter()
+            .map(|law| (law.family_id, law.group_id))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(pairs.len(), XUI26_COLLECTION_LAWS.len());
     }
 }
 

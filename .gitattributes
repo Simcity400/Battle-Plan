@@ -40,9 +40,17 @@ replay_interface/re_evidence/air_disclosure/canonical_air_disclosure_envelope.sh
 # Pinned to LF, which is what the XUI27 machine authority already records for
 # these paths.
 replay_interface/re_evidence/rendering_laws/XUI08/*.json text eol=lf
+# XUI26's frozen promotion contract is the SAME defect as XUI08 above, missed
+# when it was promoted: `frontend_meta.rs` `include_str!`s it and hash-checks
+# it against CONTRACT_SHA256. The blob is LF and the pin was the CRLF digest,
+# so the contract loaded only on a checkout that expands CRLF; a clone with
+# core.autocrlf=false, or CI, reads the LF bytes and every XUI26 family
+# refuses as ContractInvalid. Pinned to LF, constant re-measured over LF.
+replay_interface/re_evidence/rendering_laws/XUI26/*.json text eol=lf
 # Exact-a729 shader fixture: source bytes intentionally retain shader-language
 # trailing whitespace and are hash-authenticated by XUI23 tests and receipts.
 replay_interface/native/replay_app/tests/fixtures/exact_a729/progress.shader text eol=lf whitespace=-trailing-space,-space-before-tab
+replay_interface/native/replay_app/tests/fixtures/exact_a729/text.shader text eol=lf whitespace=-trailing-space,-space-before-tab
 
 # These Python fixtures are byte-pinned by the offline save-oracle manifest.
 # Preserve their established checkout representation on every host.

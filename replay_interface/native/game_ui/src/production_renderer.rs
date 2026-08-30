@@ -577,7 +577,7 @@ pub const PROMOTED_EXTERNAL_DEPENDENCY_PACKETS: &[(&str, &str)] = &[
     ),
     (
         "XUI26",
-        "EIR-NE-015 complete same-hour XUI26 replay-payload family carriers with canonical record seal, source provenance, effective content, modset, language, typed domain payload, exact collection groups and final authored element semantics",
+        "EIR-NE-015 complete same-hour XUI26 replay-payload family carriers with canonical record seal, source provenance, effective content, modset, language, typed domain payload and exact collection groups, whose element semantics, row templates and collection hosts are derived at replay from the admitted authored GUI",
     ),
 ];
 

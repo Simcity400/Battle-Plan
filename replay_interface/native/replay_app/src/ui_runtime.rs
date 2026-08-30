@@ -3099,28 +3099,22 @@ impl ProductObserverUiRuntime {
                 semantic.theatre_mode,
                 semantic.theatre_settings_land_id,
             )?;
-            let (panels, late_xui12_rejection) = authored
-                .compose_open_panels_with_xui12_feature_local_retry(
+            let (panels, late_feature_local_rejection) = authored
+                .compose_open_panels_with_feature_local_retry(
                     &mut framebuffer,
                     &self.content_admission,
                     viewer_clock_micros,
                 )?;
             self.execute_lifecycle.mark_authored_candidate();
-            if let Some(error) = late_xui12_rejection {
-                production_lines_composited = false;
-                production_lines_available = false;
-                let gap = game_ui::production_renderer::ObserverUiGap {
-                    surface: "XUI12/production_lines",
-                    field: "late_materialization_or_compositor_capability",
-                    required_domain:
-                        "complete authenticated production materialization inside the atomic authored batch",
-                    reason: format!("XUI12 feature-local composition rejected: {error}"),
-                };
-                feature_local_gaps.push(format!(
-                    "XUI12:field={}:domain={}:unavailable={}",
-                    gap.field, gap.required_domain, gap.reason
-                ));
-                output_gaps.push(gap);
+            if let Some(rejection) = late_feature_local_rejection {
+                if rejection.production_lines.is_some() {
+                    production_lines_composited = false;
+                    production_lines_available = false;
+                }
+                for (line, gap) in rejection.observer_ui_gaps() {
+                    feature_local_gaps.push(line);
+                    output_gaps.push(gap);
+                }
             }
             if production_lines_composited {
                 production_lines_applied_scroll_offset =
@@ -4720,7 +4714,7 @@ impl ProductObserverUiRuntime {
         viewport_width: usize,
         viewport_height: usize,
         viewer_clock_micros: u64,
-    ) -> Result<Option<crate::gui_definition_admission::FrontendPanelRouteState>> {
+    ) -> Result<crate::gui_definition_admission::FrontendPanelRoute> {
         let authored = self
             .authored_observer_ui
             .as_mut()
@@ -7821,7 +7815,58 @@ mod tests {
             observer.contains(".prepare_observer_semantic_frame_with_xui12_and_xui22_producers(")
         );
         assert!(observer.contains(".bind_persistent_hud_roots("));
-        assert!(observer.contains(".compose_open_panels_with_xui12_feature_local_retry("));
+        assert!(observer.contains(".compose_open_panels_with_feature_local_retry("));
+        // A feature-local retry names the feature that WENT: an XUI26 frontend
+        // panel the compositor refused is not an XUI12 unavailability, and the
+        // XUI12 gap is emitted only when production lines were the drop.
+        let retry = observer
+            .find("let (panels, late_feature_local_rejection)")
+            .expect("the observer composes through the feature-local retry");
+        let retry_end = observer[retry..]
+            .find("authored_panel_draw_count")
+            .map(|offset| retry + offset)
+            .expect("feature-local retry handling boundary");
+        let region = &observer[retry..retry_end];
+        let branch = region
+            .find("if rejection.production_lines.is_some() {")
+            .expect("the XUI12 flags are conditional on XUI12 having gone");
+        let branch_end = region[branch..]
+            .find("
+                }")
+            .map(|offset| branch + offset)
+            .expect("XUI12 flag branch boundary");
+        for flag in [
+            "production_lines_composited = false;",
+            "production_lines_available = false;",
+        ] {
+            assert_eq!(
+                region.matches(flag).count(),
+                1,
+                "{flag} is set once in the retry handling, inside the XUI12 branch"
+            );
+            assert!(region[branch..branch_end].contains(flag), "{flag}");
+        }
+        // And the rejection is CONSUMED: the handler is entered from the retry
+        // call's own binding, and both halves of every gap it owes are pushed
+        // inside the loop that produces them.
+        assert_eq!(
+            region
+                .matches("if let Some(rejection) = late_feature_local_rejection {")
+                .count(),
+            1
+        );
+        let loop_start = region
+            .find("for (line, gap) in rejection.observer_ui_gaps() {")
+            .expect("every owed gap is emitted");
+        let loop_end = region[loop_start..]
+            .find("
+                }")
+            .map(|offset| loop_start + offset)
+            .expect("gap loop boundary");
+        for push in ["feature_local_gaps.push(line);", "output_gaps.push(gap);"] {
+            assert!(region[loop_start..loop_end].contains(push), "{push}");
+            assert_eq!(region.matches(push).count(), 1, "{push}");
+        }
         assert!(observer.contains(".compose_xui15_trade_surface("));
         assert!(observer.contains("apply_xui15_feature_local_composition("));
         assert!(observer.contains("xui15_pointer_press("));
@@ -7856,7 +7901,7 @@ mod tests {
             .expect("product observer execute boundary");
         let execute = &source[execute_start..execute_end];
         let panel_stage = execute
-            .find(".compose_open_panels_with_xui12_feature_local_retry(")
+            .find(".compose_open_panels_with_feature_local_retry(")
             .expect("authenticated panel staging");
         let pending_context = execute
             .find(".authenticated_pending_tooltip_context_at_cursor(")

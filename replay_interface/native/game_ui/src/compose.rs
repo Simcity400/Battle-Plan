@@ -1257,7 +1257,7 @@ pub(crate) fn seal_authenticated_panel_semantics(
     })
 }
 
-fn validate_element_semantic(
+pub(crate) fn validate_element_semantic(
     role: &crate::authored_role_index::AuthoredElementRole,
     authored: &GuiElement,
     semantic: &AuthenticatedElementSemantic,

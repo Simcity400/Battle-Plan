@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 use snapshot::sha256::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const XUI26_FRONTEND_CARRIER_SCHEMA: &str = "replay.xui26-frontend.v1";
+pub const XUI26_FRONTEND_CARRIER_SCHEMA: &str = "replay.xui26-frontend.v2";
 pub const XUI26_FRONTEND_CARRIER_KEY: &str = "_r2_xui26_frontend_v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,44 +222,36 @@ impl Xui26ReplayPayload {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum Xui26ElementSemantic {
-    Hidden,
-    Structural,
-    ReadOnlyButton { one_based_frame: u32 },
-    PassiveSprite { one_based_frame: u32 },
-    Text { resolved_text: String },
-    Progress { numerator: u64, denominator: u64 },
-}
-
+/// One row of a panel collection, as DATA.
+///
+/// It carries no template path, no template digest and no resolved element
+/// semantics. WHICH authored surface renders the row, and what every element of
+/// that surface resolves to, are derived at composition time from the effective
+/// `.gui` the recording already admits: resolved per-element presentation is
+/// POV-local and outside capture scope, and a recorder cannot know the replay's
+/// role-index identities in the first place.
+///
+/// `row_text` is the one runtime string the engine writes into a row that the
+/// authored file cannot supply. It is rendered only into the authored child the
+/// engine's own store names; a group with no proven store refuses a row that
+/// carries text rather than choosing an element by shape.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Xui26ReplayCollectionRow {
     pub stable_item_id: String,
-    pub subtype_id: String,
-    pub template_source_path: String,
-    pub template_source_content_sha256: String,
-    pub template_surface_id: String,
-    pub element_semantics: BTreeMap<String, Xui26ElementSemantic>,
+    pub row_text: Option<String>,
 }
 
 impl Xui26ReplayCollectionRow {
     fn is_valid(&self) -> bool {
         !self.stable_item_id.trim().is_empty()
-            && !self.subtype_id.trim().is_empty()
-            && !self.template_source_path.trim().is_empty()
-            && self.template_source_content_sha256.len() == 64
             && self
-                .template_source_content_sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            && !self.template_surface_id.trim().is_empty()
-            && !self.element_semantics.is_empty()
-            && self
-                .element_semantics
-                .iter()
-                .all(|(key, semantic)| !key.trim().is_empty() && semantic.is_valid())
+                // An EMPTY measured string is representable: the engine writes
+                // whatever it holds, and nothing proves it never holds "".
+                // Only a NUL is refused, which no engine string carries.
+                .row_text
+                .as_ref()
+                .is_none_or(|text| !text.contains('\0'))
     }
 }
 
@@ -267,11 +259,7 @@ impl Xui26ReplayCollectionRow {
 #[serde(deny_unknown_fields)]
 pub struct Xui26ReplayCollection {
     pub group_id: String,
-    pub collection_element_id: String,
     pub complete: bool,
-    pub empty_template_source_path: String,
-    pub empty_template_source_content_sha256: String,
-    pub empty_template_surface_id: String,
     pub rows: Vec<Xui26ReplayCollectionRow>,
 }
 
@@ -279,14 +267,6 @@ impl Xui26ReplayCollection {
     fn is_valid(&self) -> bool {
         self.complete
             && !self.group_id.trim().is_empty()
-            && !self.collection_element_id.trim().is_empty()
-            && !self.empty_template_source_path.trim().is_empty()
-            && self.empty_template_source_content_sha256.len() == 64
-            && self
-                .empty_template_source_content_sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            && !self.empty_template_surface_id.trim().is_empty()
             && self.rows.iter().all(Xui26ReplayCollectionRow::is_valid)
             && self
                 .rows
@@ -295,22 +275,6 @@ impl Xui26ReplayCollection {
                 .collect::<BTreeSet<_>>()
                 .len()
                 == self.rows.len()
-    }
-}
-
-impl Xui26ElementSemantic {
-    fn is_valid(&self) -> bool {
-        match self {
-            Self::ReadOnlyButton { one_based_frame } | Self::PassiveSprite { one_based_frame } => {
-                *one_based_frame > 0
-            }
-            Self::Text { resolved_text } => !resolved_text.contains('\0'),
-            Self::Progress {
-                numerator,
-                denominator,
-            } => *denominator > 0 && numerator <= denominator,
-            Self::Hidden | Self::Structural => true,
-        }
     }
 }
 
@@ -324,7 +288,6 @@ pub struct Xui26ReplayFamilyCarrier {
     pub complete: bool,
     pub record_sha256: String,
     pub payload: Xui26ReplayPayload,
-    pub element_semantics: BTreeMap<String, Xui26ElementSemantic>,
     pub collections: Vec<Xui26ReplayCollection>,
 }
 
@@ -347,13 +310,6 @@ impl Xui26ReplayFamilyCarrier {
         );
         let expected_collection_groups = self.payload.collection_groups();
         let collections_valid = self.collections.iter().all(Xui26ReplayCollection::is_valid)
-            && self
-                .collections
-                .iter()
-                .map(|collection| collection.collection_element_id.as_str())
-                .collect::<BTreeSet<_>>()
-                .len()
-                == self.collections.len()
             && self
                 .collections
                 .iter()
@@ -389,11 +345,6 @@ impl Xui26ReplayFamilyCarrier {
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
             && self.payload.is_valid()
-            && !self.element_semantics.is_empty()
-            && self
-                .element_semantics
-                .iter()
-                .all(|(key, semantic)| !key.trim().is_empty() && semantic.is_valid())
             && collections_valid
     }
 }
@@ -549,22 +500,10 @@ mod tests {
                 "source_record_id": "d57:hotjoin:7", "source_content_sha256": "b".repeat(64),
                 "complete": true, "record_sha256": "",
                 "payload": { "kind": "hotjoin_state", "event_record_ids": ["event:7"] },
-                "element_semantics": { "role:0": { "kind": "text", "resolved_text": "Joining" } },
                 "collections": [{
                     "group_id": "hotjoin_requests",
-                    "collection_element_id": "role:grid",
                     "complete": true,
-                    "empty_template_source_path": "interface/hotjoin.gui",
-                    "empty_template_source_content_sha256": "b".repeat(64),
-                    "empty_template_surface_id": "hotjoin_event_entry",
-                    "rows": [{
-                        "stable_item_id": "event:event:7",
-                        "subtype_id": "hotjoin_event",
-                        "template_source_path": "interface/hotjoin.gui",
-                        "template_source_content_sha256": "b".repeat(64),
-                        "template_surface_id": "hotjoin_event_entry",
-                        "element_semantics": { "row:0": { "kind": "text", "resolved_text": "Joining" } }
-                    }]
+                    "rows": [{ "stable_item_id": "event:event:7", "row_text": "Ada" }]
                 }]
             }]
         });
@@ -597,6 +536,40 @@ mod tests {
         );
     }
 
+    /// kills: admitting a v1 carrier, whose rows carried a producer-supplied
+    /// element-semantic census this layer no longer accepts from anyone. The
+    /// schema token moved with the shape, so an old producer is rejected as an
+    /// envelope rather than silently losing its extra fields.
+    #[test]
+    fn the_retired_producer_supplied_presentation_shape_is_refused() {
+        let mut v1 = valid();
+        v1["schema"] = json!("replay.xui26-frontend.v1");
+        let rest = Map::from_iter([(XUI26_FRONTEND_CARRIER_KEY.into(), v1)]);
+        let mut warnings = Vec::new();
+        assert_eq!(
+            build_xui26_frontend(&rest, 7, &mut warnings).status,
+            ViewStatus::DomainUnavailable
+        );
+
+        let mut with_semantics = valid();
+        with_semantics["carriers"][0]["element_semantics"] =
+            json!({ "role:0": { "kind": "text", "resolved_text": "Joining" } });
+        let rest = Map::from_iter([(XUI26_FRONTEND_CARRIER_KEY.into(), with_semantics)]);
+        let view = build_xui26_frontend(&rest, 7, &mut warnings);
+        assert_eq!(view.status, ViewStatus::Present);
+        assert!(
+            view.carriers.is_empty(),
+            "a carrier that still asserts resolved element semantics must not be admitted"
+        );
+
+        let mut row_semantics = valid();
+        row_semantics["carriers"][0]["collections"][0]["rows"][0]["element_semantics"] =
+            json!({ "row:0": { "kind": "structural" } });
+        let rest = Map::from_iter([(XUI26_FRONTEND_CARRIER_KEY.into(), row_semantics)]);
+        let view = build_xui26_frontend(&rest, 7, &mut warnings);
+        assert!(view.carriers.is_empty());
+    }
+
     #[test]
     fn complete_typed_carrier_is_present_and_invalid_family_is_rejected_locally() {
         let mut warnings = Vec::new();
@@ -609,12 +582,6 @@ mod tests {
             build_xui26_frontend(&rest, 8, &mut warnings).status,
             ViewStatus::DomainUnavailable
         );
-        let mut bad = valid();
-        bad["carriers"][0]["element_semantics"] = json!({});
-        let rest = Map::from_iter([(XUI26_FRONTEND_CARRIER_KEY.into(), bad)]);
-        let view = build_xui26_frontend(&rest, 7, &mut warnings);
-        assert_eq!(view.status, ViewStatus::Present);
-        assert!(view.carriers.is_empty());
 
         let mut tampered = valid();
         tampered["carriers"][0]["payload"]["event_record_ids"] = json!(["event:changed"]);
@@ -641,6 +608,51 @@ mod tests {
             vec!["hotjoin"]
         );
         assert!(warnings.iter().any(|warning| warning.contains("settings")));
+    }
+
+    /// kills: refusing a row whose measured string is empty, and admitting one
+    /// carrying a NUL.
+    ///
+    /// The engine writes whatever string its item holds; nothing proves it
+    /// never holds "". An empty one has to be REPRESENTABLE and distinct from
+    /// an absent one, or a hotjoin request with no name would have no truthful
+    /// shape at all - and the collection law draws it as nothing, which is
+    /// exactly what an empty string looks like.
+    #[test]
+    fn an_empty_row_text_is_representable_and_distinct_from_an_absent_one() {
+        let seal = |mut value: Value| {
+            let carrier: Xui26ReplayFamilyCarrier =
+                serde_json::from_value(value["carriers"][0].clone()).unwrap();
+            value["carriers"][0]["record_sha256"] =
+                json!(xui26_canonical_record_sha256(&carrier).unwrap());
+            Map::from_iter([(XUI26_FRONTEND_CARRIER_KEY.into(), value)])
+        };
+        let mut warnings = Vec::new();
+        let mut empty = valid();
+        empty["carriers"][0]["collections"][0]["rows"][0]["row_text"] = json!("");
+        let view = build_xui26_frontend(&seal(empty), 7, &mut warnings);
+        assert_eq!(
+            view.carriers["hotjoin"].collections[0].rows[0]
+                .row_text
+                .as_deref(),
+            Some("")
+        );
+
+        let mut absent = valid();
+        absent["carriers"][0]["collections"][0]["rows"][0]["row_text"] = Value::Null;
+        let view = build_xui26_frontend(&seal(absent), 7, &mut warnings);
+        assert!(view.carriers["hotjoin"].collections[0].rows[0]
+            .row_text
+            .is_none());
+
+        let mut nul = valid();
+        nul["carriers"][0]["collections"][0]["rows"][0]["row_text"] = json!("a\0b");
+        assert!(
+            build_xui26_frontend(&seal(nul), 7, &mut warnings)
+                .carriers
+                .is_empty(),
+            "a NUL is not a string any engine store holds"
+        );
     }
 
     #[test]
@@ -675,10 +687,9 @@ mod tests {
     fn scenario_collection_groups_cannot_be_swapped_behind_a_valid_seal() {
         let mut value = valid();
         let base_collection = value["carriers"][0]["collections"][0].clone();
-        let collection = |group: &str, host: &str, stable_id: &str| {
+        let collection = |group: &str, stable_id: &str| {
             let mut collection = base_collection.clone();
             collection["group_id"] = json!(group);
-            collection["collection_element_id"] = json!(host);
             collection["rows"][0]["stable_item_id"] = json!(stable_id);
             collection
         };
@@ -695,9 +706,9 @@ mod tests {
             "game_rule_ids_in_order": ["difficulty"]
         });
         value["carriers"][0]["collections"] = json!([
-            collection("bookmarks", "role:bookmarks", "bookmark:1936"),
-            collection("countries", "role:countries", "country:GER"),
-            collection("game_rules", "role:rules", "rule:difficulty")
+            collection("bookmarks", "bookmark:1936"),
+            collection("countries", "country:GER"),
+            collection("game_rules", "rule:difficulty")
         ]);
         let carrier: Xui26ReplayFamilyCarrier =
             serde_json::from_value(value["carriers"][0].clone()).unwrap();
