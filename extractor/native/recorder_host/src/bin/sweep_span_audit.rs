@@ -156,9 +156,15 @@ fn probe_units_from(units: &[DiagUnit]) -> ProbeUnits {
             "lw_bracketed_domains" => probe.bracketed_domains = Some(value),
             "lw_lother_wall_us" => probe.lanes_truncated = true,
             _ => {
+                // The contract's own prefix and suffix, not a second copy of
+                // them: this binary spelled `"lw_o"` and `"_us"` itself, so
+                // editing the table's `unit_prefix` renamed every span and
+                // left this looking for the old name (Codex round 32).
                 if let Some(code) = name
-                    .strip_prefix("lw_o")
-                    .and_then(|rest| rest.strip_suffix("_us"))
+                    .strip_prefix(
+                        compact_contract::diagnostic_channel::OUTSIDE_BUILD_UNIT_PREFIX)
+                    .and_then(|rest| rest.strip_suffix(
+                        compact_contract::diagnostic_channel::OUTSIDE_BUILD_UNIT_SUFFIX))
                     .and_then(|digits| digits.parse::<u16>().ok())
                 {
                     probe.outside.insert(code, value);

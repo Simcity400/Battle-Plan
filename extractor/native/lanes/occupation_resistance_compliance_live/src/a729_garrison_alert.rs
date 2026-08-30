@@ -67,8 +67,8 @@ const OCCUPATION_DATA_VTABLE_RVA: usize = 0x0296_dd00;
 const GARRISON_VTABLE_RVA: usize = 0x0296_dcb0;
 
 const GAME_STATE_HUMAN: usize = 0xa8;
-const GAME_STATE_COUNTRY_TABLE: usize = 0x310;
-const GAME_STATE_COUNTRY_COUNT: usize = 0x31c;
+const GAME_STATE_COUNTRY_TABLE: usize = compact_contract::build_profile::CGAMESTATE_COUNTRY_TABLE;
+const GAME_STATE_COUNTRY_COUNT: usize = compact_contract::build_profile::CGAMESTATE_COUNTRY_COUNT;
 const GAME_STATE_TAG_TO_COUNTRY_INDEX: usize = 0x340;
 const GAME_STATE_COUNTRY_RUNTIME_OWNER: usize = 0x3d8;
 const HUMAN_PLAYER_TAG: usize = 0x70;

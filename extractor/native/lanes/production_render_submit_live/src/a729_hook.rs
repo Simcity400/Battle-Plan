@@ -1600,24 +1600,20 @@ struct SelectedRenderReservationState {
     claimed: bool,
 }
 
+compact_contract::wire_coded_codes! {
+    no_discriminant HookInstallProfile: u32,
+    code = to_wire,
+    Some = from_wire(value) -> Option<Self> { None };
+
+    None = HookInstallProfile::NONE_WIRE,
+    BootstrapOnly = 1,
+}
+
 impl HookInstallProfile {
+    /// The stored profile before any install and after every uninstall. Named
+    /// because the static is reset to it from four sites that hold no profile
+    /// value of their own.
     const NONE_WIRE: u32 = 0;
-    const BOOTSTRAP_ONLY_WIRE: u32 = 1;
-
-    const fn to_wire(self) -> u32 {
-        match self {
-            Self::None => Self::NONE_WIRE,
-            Self::BootstrapOnly => Self::BOOTSTRAP_ONLY_WIRE,
-        }
-    }
-
-    fn from_wire(value: u32) -> Option<Self> {
-        match value {
-            Self::NONE_WIRE => Some(Self::None),
-            Self::BOOTSTRAP_ONLY_WIRE => Some(Self::BootstrapOnly),
-            _ => None,
-        }
-    }
 }
 
 fn active_hook_install_profile() -> Result<HookInstallProfile, String> {

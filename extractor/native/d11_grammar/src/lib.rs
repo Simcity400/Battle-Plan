@@ -7,6 +7,7 @@ extern crate alloc;
 
 pub mod deployment;
 pub mod encode;
+pub mod production_line_subtype;
 
 #[cfg(test)]
 mod tests;

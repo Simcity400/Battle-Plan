@@ -8,14 +8,14 @@ use compact_contract::{
 pub const DOMAIN_ID: u16 = 56;
 pub const DOMAIN_NAME: &str = "naval_missions_status_live";
 
-pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
-pub const COMPACT_RECORD_VERSION: u16 = 1;
-pub const COMPACT_RECORD_HEADER_LEN: usize = 32;
-pub const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = 1;
-pub const COMPACT_RECORD_TYPE_FRAME_END: u16 = 2;
-pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
-pub const DOMAIN_FRAME: u16 = 1000;
-pub const FRAME_END_PAYLOAD_LEN: usize = 32;
+pub const COMPACT_RECORD_MAGIC: &[u8; 4] = compact_contract::COMPACT_RECORD_MAGIC;
+pub const COMPACT_RECORD_VERSION: u16 = compact_contract::COMPACT_RECORD_VERSION;
+pub const COMPACT_RECORD_HEADER_LEN: usize = compact_contract::COMPACT_RECORD_HEADER_LEN;
+pub const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF;
+pub const COMPACT_RECORD_TYPE_FRAME_END: u16 = compact_contract::COMPACT_RECORD_TYPE_FRAME_END;
+pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA;
+pub const DOMAIN_FRAME: u16 = compact_contract::COMPACT_DOMAIN_FRAME;
+pub const FRAME_END_PAYLOAD_LEN: usize = compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN;
 
 pub const SCHEMA_VERSION: u32 = 1;
 pub const HEADER_LEN: usize = 44;

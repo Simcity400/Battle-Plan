@@ -3,13 +3,16 @@ pub const CAPTURE_TERMINATION_VERSION: u16 = 1;
 pub const CAPTURE_TERMINATION_HEADER_LEN: usize = 24;
 pub const CAPTURE_TERMINATION_MAX_DETAIL_LEN: usize = 2_048;
 
-pub const CAPTURE_TERMINATION_REASON_CAPTURE_LOOP_ABORTED: u16 = 1 << 0;
-pub const CAPTURE_TERMINATION_REASON_CLOCK_OBSERVER_PANICKED: u16 = 1 << 1;
-pub const CAPTURE_TERMINATION_REASON_CLOCK_OBSERVER_EXITED_EARLY: u16 = 1 << 2;
-pub const CAPTURE_TERMINATION_REASON_KNOWN_MASK: u16 =
-    CAPTURE_TERMINATION_REASON_CAPTURE_LOOP_ABORTED
-        | CAPTURE_TERMINATION_REASON_CLOCK_OBSERVER_PANICKED
-        | CAPTURE_TERMINATION_REASON_CLOCK_OBSERVER_EXITED_EARLY;
+crate::cause_tables::bit_flag_causes! {
+    repr = u16,
+    mask = pub CAPTURE_TERMINATION_REASON_KNOWN_MASK,
+    names = pub(crate) CAPTURE_TERMINATION_REASON_NAMES,
+    bit_prefix = "CAPTURE_TERMINATION_REASON_";
+
+    CAPTURE_TERMINATION_REASON_CAPTURE_LOOP_ABORTED = 0 => capture_loop_aborted,
+    CAPTURE_TERMINATION_REASON_CLOCK_OBSERVER_PANICKED = 1 => clock_observer_panicked,
+    CAPTURE_TERMINATION_REASON_CLOCK_OBSERVER_EXITED_EARLY = 2 => clock_observer_exited_early,
+}
 
 const CAPTURE_TERMINATION_FLAG_DETAIL_TRUNCATED: u16 = 1 << 0;
 const CAPTURE_TERMINATION_FLAG_KNOWN_MASK: u16 = CAPTURE_TERMINATION_FLAG_DETAIL_TRUNCATED;
@@ -40,17 +43,11 @@ impl CaptureTerminationReasons {
     }
 
     pub fn names(self) -> Vec<&'static str> {
-        let mut names = Vec::new();
-        if self.contains(CAPTURE_TERMINATION_REASON_CAPTURE_LOOP_ABORTED) {
-            names.push("capture_loop_aborted");
-        }
-        if self.contains(CAPTURE_TERMINATION_REASON_CLOCK_OBSERVER_PANICKED) {
-            names.push("clock_observer_panicked");
-        }
-        if self.contains(CAPTURE_TERMINATION_REASON_CLOCK_OBSERVER_EXITED_EARLY) {
-            names.push("clock_observer_exited_early");
-        }
-        names
+        CAPTURE_TERMINATION_REASON_NAMES
+            .iter()
+            .filter(|(reason, _)| self.contains(*reason))
+            .map(|(_, name)| *name)
+            .collect()
     }
 }
 

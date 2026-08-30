@@ -9,12 +9,12 @@ mod leaf_decode;
 pub const DOMAIN_ID: u16 = 43;
 pub const DOMAIN_NAME: &str = "market_trade_live";
 
-pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
-pub const COMPACT_RECORD_VERSION: u16 = 1;
-pub const COMPACT_RECORD_HEADER_LEN: usize = 32;
-pub const RECORD_TYPE_DOMAIN_PERF: u16 = 1;
-pub const RECORD_TYPE_FRAME_END: u16 = 2;
-pub const RECORD_TYPE_DOMAIN_DATA: u16 = 3;
+pub const COMPACT_RECORD_MAGIC: &[u8; 4] = compact_contract::COMPACT_RECORD_MAGIC;
+pub const COMPACT_RECORD_VERSION: u16 = compact_contract::COMPACT_RECORD_VERSION;
+pub const COMPACT_RECORD_HEADER_LEN: usize = compact_contract::COMPACT_RECORD_HEADER_LEN;
+pub const RECORD_TYPE_DOMAIN_PERF: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF;
+pub const RECORD_TYPE_FRAME_END: u16 = compact_contract::COMPACT_RECORD_TYPE_FRAME_END;
+pub const RECORD_TYPE_DOMAIN_DATA: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA;
 
 pub const STATUS_WORKER_PANIC: u32 = compact_contract::COMPACT_STATUS_WORKER_PANIC;
 pub const STATUS_BRIDGE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE;
@@ -1282,7 +1282,7 @@ pub fn encode_market_stockpile_trailer(
 }
 
 // @d43-payload-reader-region begin
-// @leaf-source-authority crate=d43_grammar root=extractor/native/d43_grammar files=8 sha256=d021f4ae49845a784c884219681ea513f864030f9c07c66133f7e5a1fdbf72ee
+// @leaf-source-authority crate=d43_grammar root=extractor/native/d43_grammar files=8 sha256=1c09d4e7cfb0eb8d9f6f15f471b36197031c998521e6a715747308ea59134748
 pub fn decode_payload(offset: usize, payload: &[u8]) -> MarketTradePayloadSummary {
     let report = d43_grammar::decode::decode_record(payload, leaf_decode::LANE_DECODE_CONTEXT);
     leaf_decode::project_decoded_payload(offset, &report)

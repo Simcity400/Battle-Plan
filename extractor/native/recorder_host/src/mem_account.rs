@@ -28,35 +28,23 @@ pub enum Component {
     CapturePipeReadBuffer = 9,
 }
 
+compact_contract::wire_coded_variants! {
+    dense Component: usize, all = pub ALL, count = pub COMPONENT_COUNT,
+    index = pub(crate) index, label = pub key;
+
+    SpoolWriter = 0 => "spool_writer",
+    DecoderFraming = 1 => "decoder_framing",
+    DecoderHourIndex = 2 => "decoder_hour_index",
+    InflightSnapshots = 3 => "inflight_snapshots",
+    CacheDeltaBase = 4 => "cache_delta_base",
+    CacheHourEntries = 5 => "cache_hour_entries",
+    ManifestGapLedger = 6 => "manifest_gap_ledger",
+    ManifestDocument = 7 => "manifest_document",
+    H4dgIndex = 8 => "h4dg_index",
+    CapturePipeReadBuffer = 9 => "capture_pipe_read_buffer",
+}
+
 impl Component {
-    pub const ALL: [Component; COMPONENT_COUNT] = [
-        Component::SpoolWriter,
-        Component::DecoderFraming,
-        Component::DecoderHourIndex,
-        Component::InflightSnapshots,
-        Component::CacheDeltaBase,
-        Component::CacheHourEntries,
-        Component::ManifestGapLedger,
-        Component::ManifestDocument,
-        Component::H4dgIndex,
-        Component::CapturePipeReadBuffer,
-    ];
-
-    pub const fn key(self) -> &'static str {
-        match self {
-            Component::SpoolWriter => "spool_writer",
-            Component::DecoderFraming => "decoder_framing",
-            Component::DecoderHourIndex => "decoder_hour_index",
-            Component::InflightSnapshots => "inflight_snapshots",
-            Component::CacheDeltaBase => "cache_delta_base",
-            Component::CacheHourEntries => "cache_hour_entries",
-            Component::ManifestGapLedger => "manifest_gap_ledger",
-            Component::ManifestDocument => "manifest_document",
-            Component::H4dgIndex => "h4dg_index",
-            Component::CapturePipeReadBuffer => "capture_pipe_read_buffer",
-        }
-    }
-
     pub const fn scaling(self) -> Scaling {
         match self {
             Component::SpoolWriter => Scaling::Fixed,
@@ -90,8 +78,6 @@ impl Scaling {
     }
 }
 
-pub const COMPONENT_COUNT: usize = 10;
-
 #[allow(clippy::declare_interior_mutable_const)]
 const ZERO: AtomicU64 = AtomicU64::new(0);
 
@@ -106,7 +92,7 @@ pub fn charge(component: Component, bytes: u64) {
     if bytes == 0 {
         return;
     }
-    let index = component as usize;
+    let index = component.index();
     let after = HELD[index].fetch_add(bytes, Ordering::Relaxed) + bytes;
     PEAK[index].fetch_max(after, Ordering::Relaxed);
 }
@@ -116,7 +102,7 @@ pub fn release(component: Component, bytes: u64) {
     if bytes == 0 {
         return;
     }
-    let index = component as usize;
+    let index = component.index();
     // `fetch_update` rather than `fetch_sub`: an unpaired release must be
     let outcome = HELD[index].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |held| {
         Some(held.saturating_sub(bytes))
@@ -137,15 +123,15 @@ pub fn resize(component: Component, from_bytes: u64, to_bytes: u64) {
 }
 
 pub fn held(component: Component) -> u64 {
-    HELD[component as usize].load(Ordering::Relaxed)
+    HELD[component.index()].load(Ordering::Relaxed)
 }
 
 pub fn peak(component: Component) -> u64 {
-    PEAK[component as usize].load(Ordering::Relaxed)
+    PEAK[component.index()].load(Ordering::Relaxed)
 }
 
 pub fn underflowed(component: Component) -> bool {
-    UNDERFLOWED[component as usize].load(Ordering::Relaxed)
+    UNDERFLOWED[component.index()].load(Ordering::Relaxed)
 }
 
 pub fn total_held() -> u64 {
@@ -445,7 +431,7 @@ mod tests {
         release(component, u64::MAX);
         assert_eq!(held(component), 0);
         assert!(underflowed(component));
-        UNDERFLOWED[component as usize].store(false, Ordering::Relaxed);
+        UNDERFLOWED[component.index()].store(false, Ordering::Relaxed);
     }
 
     #[test]

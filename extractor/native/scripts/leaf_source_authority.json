@@ -10,6 +10,7 @@
         "extractor/native/d11_grammar/src/encode.rs",
         "extractor/native/d11_grammar/src/family.rs",
         "extractor/native/d11_grammar/src/lib.rs",
+        "extractor/native/d11_grammar/src/production_line_subtype.rs",
         "extractor/native/d11_grammar/src/tests.rs",
         "extractor/native/d11_grammar/src/walk.rs"
       ]

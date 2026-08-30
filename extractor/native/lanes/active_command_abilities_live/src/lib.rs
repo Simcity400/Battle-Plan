@@ -26,6 +26,17 @@ pub enum SelectedContextKind {
     Other(u32),
 }
 
+/// The escape's flag bit and the payload domain beside it, named once.
+///
+/// `validate_frame` refuses a payload that reaches into the flag, which is
+/// what keeps `wire` injective over the frames this lane encodes (lane TV,
+/// row R11). That guard held the flag as a second literal, so moving the
+/// escape would have left the guard admitting a payload that then aliases
+/// onto another value's code -- the lane's own defect class, in the guard that
+/// closes it.
+const SELECTED_CONTEXT_ESCAPE_FLAG: u32 = 0x8000_0000;
+const SELECTED_CONTEXT_ESCAPE_PAYLOAD: u32 = !SELECTED_CONTEXT_ESCAPE_FLAG;
+
 compact_contract::wire_coded_codes! {
     no_discriminant SelectedContextKind: u32,
     code = pub(crate) wire,
@@ -37,7 +48,8 @@ compact_contract::wire_coded_codes! {
     FieldMarshal = 2,
     ArmyGroup = 3,
     Army = 4,
-    ; escape masked Other, flag = 0x8000_0000u32, payload = 0x7fff_ffffu32
+    ; escape masked Other, flag = SELECTED_CONTEXT_ESCAPE_FLAG,
+      payload = SELECTED_CONTEXT_ESCAPE_PAYLOAD
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,7 +167,10 @@ pub fn validate_frame(frame: &AbilityFrame) -> Result<(), AbilityError> {
     validate_nonempty(&frame.country_tag, "country_tag")?;
     validate_nonempty(&frame.selected_context_id, "selected_context_id")?;
     validate_nonempty(&frame.source_record_id, "source_record_id")?;
-    if matches!(frame.selected_context_kind, SelectedContextKind::Other(v) if v & 0x8000_0000 != 0)
+    if matches!(
+        frame.selected_context_kind,
+        SelectedContextKind::Other(v) if v & SELECTED_CONTEXT_ESCAPE_FLAG != 0
+    )
     {
         return invalid("selected context kind exceeds exact wire range");
     }

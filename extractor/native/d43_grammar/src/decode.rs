@@ -4690,10 +4690,7 @@ fn evaluate_lend_lease(
         if r.perspective_tag_db_id == r.counterpart_tag_db_id {
             emit(D43LaneRule::D43LaneLendLeaseSameParty, [0; 4], 23);
         }
-        if !LendLeaseDirection::ALL
-            .iter()
-            .any(|v| v.wire() == r.direction)
-        {
+        if LendLeaseDirection::from_wire(r.direction).is_none() {
             emit(
                 D43LaneRule::D43LaneLendLeaseDirection,
                 [r.direction as i64, 0, 0, 0],
@@ -4755,18 +4752,18 @@ fn evaluate_lend_lease(
         {
             emit(D43LaneRule::D43LaneLendLeaseDuplicateKey, [0; 4], 33);
         }
-        match r.direction {
-            1 => {
+        match LendLeaseDirection::from_wire(r.direction) {
+            Some(LendLeaseDirection::Outgoing) => {
                 computed[0] = computed[0].saturating_add(1);
                 let pair = per_contract.entry(r.contract_id).or_default();
                 pair.0 = pair.0.saturating_add(1);
             }
-            2 => {
+            Some(LendLeaseDirection::Incoming) => {
                 computed[1] = computed[1].saturating_add(1);
                 let pair = per_contract.entry(r.contract_id).or_default();
                 pair.1 = pair.1.saturating_add(1);
             }
-            _ => {}
+            None => {}
         }
         computed[2] = computed[2].saturating_add(u32::from(amount));
         computed[3] = computed[3].saturating_add(u32::from(price));

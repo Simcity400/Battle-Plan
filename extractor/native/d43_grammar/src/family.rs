@@ -2307,6 +2307,20 @@ impl LendLeaseDirection {
             LendLeaseDirection::Incoming => 2,
         }
     }
+
+    /// This taxonomy had no decoder, so `decode.rs` matched the raw `1`/`2` a
+    /// third time and a moved code left the counters on the other half of the
+    /// contract (lane TV, row R3).
+    pub(crate) const fn from_wire(value: u32) -> Option<LendLeaseDirection> {
+        let mut i = 0;
+        while i < LendLeaseDirection::ALL.len() {
+            if LendLeaseDirection::ALL[i].wire() == value {
+                return Some(LendLeaseDirection::ALL[i]);
+            }
+            i += 1;
+        }
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]

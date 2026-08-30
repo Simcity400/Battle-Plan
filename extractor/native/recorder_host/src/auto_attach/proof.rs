@@ -17,7 +17,6 @@ const COLLECTOR_HELLO_LEN: usize =
 const COLLECTOR_HELLO_WITH_CAPABILITIES_LEN: usize =
     compact_contract::control_transport::payloads::COLLECTOR_HELLO_WITH_CAPABILITIES_LEN;
 const HEARTBEAT_PROOF_LEN: usize = 32;
-const HEARTBEAT_STATE_PRODUCING: u16 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProofExpectation {
@@ -138,7 +137,7 @@ pub fn heartbeat_proof_payload(expectation: &ProofExpectation, sequence: u64) ->
         &compact_contract::control_transport::payloads::HeartbeatProofV1 {
             challenge: expectation.challenge,
             last_h4cr_sequence: sequence,
-            state: compact_contract::control_transport::payloads::HEARTBEAT_STATE_PRODUCING,
+            state: compact_contract::control_transport::payloads::HeartbeatState::Producing,
         },
     )
 }
@@ -151,7 +150,10 @@ pub fn validate_heartbeat_proof(
         || payload[0..2] != PAYLOAD_SCHEMA.to_le_bytes()
         || payload[2..4] != [0, 0]
         || payload[4..20] != expectation.challenge
-        || payload[28..30] != HEARTBEAT_STATE_PRODUCING.to_le_bytes()
+        || payload[28..30]
+            != compact_contract::control_transport::payloads::HeartbeatState::Producing
+                .code()
+                .to_le_bytes()
         || payload[30..32] != [0, 0]
     {
         return Err("invalid heartbeat/first-frame proof".to_string());

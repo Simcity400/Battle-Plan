@@ -5,8 +5,8 @@ pub const EXPECTED_SHA_870EBF: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 
 pub const CGAMESTATE_RVA: usize = 0x3316E90;
-pub const COUNTRY_TABLE: usize = 0x310;
-pub const COUNTRY_COUNT: usize = 0x31C;
+pub const COUNTRY_TABLE: usize = compact_contract::build_profile::CGAMESTATE_COUNTRY_TABLE;
+pub const COUNTRY_COUNT: usize = compact_contract::build_profile::CGAMESTATE_COUNTRY_COUNT;
 pub const COUNTRY_VTABLE_RVA: usize = 0x27D0E90;
 pub const COUNTRY_TAG_DB_ID: usize = 0x08;
 pub const COUNTRY_VARIABLES: usize = 0x218;

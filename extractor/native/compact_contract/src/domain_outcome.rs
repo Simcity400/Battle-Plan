@@ -6,71 +6,26 @@ use crate::status_flags_base::{
 
 // A predicate code is a DIAGNOSTIC ABI. Retained telemetry is read by build-
 
-pub const READ_PREDICATE_WORKER_COMPLETED: u32 = 0x0002_0001;
-pub const READ_PREDICATE_PAYLOAD_ENCODED: u32 = 0x0002_0002;
-pub const READ_PREDICATE_PAYLOAD_DECODED_EXACT: u32 = 0x0002_0003;
-pub const READ_PREDICATE_READER_RETURNED_ROWS: u32 = 0x0002_0004;
-pub const READ_PREDICATE_READ_COUNTER_PROBE: u32 = 0x0002_0005;
-pub const READ_PREDICATE_REJECTED_RECORDS_RESEQUENCED: u32 = 0x0002_0006;
-pub const READ_PREDICATE_FRAME_HOUR_READABLE: u32 = 0x0002_0007;
-pub const READ_PREDICATE_READ_AUTHORITY_VALID: u32 = 0x0002_0008;
-pub const READ_PREDICATE_ATTRIBUTION_PROBE_APPENDED: u32 = 0x0002_000A;
-pub const READ_PREDICATE_CAPTURED_FRAME_ADMISSIBLE: u32 = 0x0002_000B;
-pub const READ_PREDICATE_HOOK_RESERVATION_CUSTODY_TAKEN: u32 = 0x0002_000C;
-pub const READ_PREDICATE_PUBLISHED_PAYLOAD_CARRIES_ANSWER: u32 = 0x0002_000D;
-pub const READ_PREDICATE_CAPTURED_PAYLOAD_OFFERED: u32 = 0x0002_000E;
-pub const READ_PREDICATE_FRAME_STATUS_PERMITTED_READ: u32 = 0x0002_000F;
-pub const READ_PREDICATE_SOURCE_ANSWERED_EMPTY: u32 = 0x0002_0010;
-pub const READ_PREDICATE_OUTCOME_SUBSTANTIATED_FROM_RECORD: u32 = 0x0002_0011;
+crate::cause_tables::coded_cause_names! {
+    repr = u32, roster = pub READ_PREDICATES;
 
-pub const READ_PREDICATES: &[(u32, &str)] = &[
-    (READ_PREDICATE_WORKER_COMPLETED, "reader_worker_completed"),
-    (READ_PREDICATE_PAYLOAD_ENCODED, "domain_payload_encoded"),
-    (
-        READ_PREDICATE_PAYLOAD_DECODED_EXACT,
-        "domain_payload_decoded_exact",
-    ),
-    (READ_PREDICATE_READER_RETURNED_ROWS, "reader_returned_rows"),
-    (READ_PREDICATE_READ_COUNTER_PROBE, "read_counter_probe"),
-    (
-        READ_PREDICATE_REJECTED_RECORDS_RESEQUENCED,
-        "rejected_records_resequenced",
-    ),
-    (READ_PREDICATE_FRAME_HOUR_READABLE, "frame_hour_readable"),
-    (READ_PREDICATE_READ_AUTHORITY_VALID, "read_authority_valid"),
-    (
-        READ_PREDICATE_ATTRIBUTION_PROBE_APPENDED,
-        "attribution_probe_appended",
-    ),
-    (
-        READ_PREDICATE_CAPTURED_FRAME_ADMISSIBLE,
-        "captured_frame_admissible",
-    ),
-    (
-        READ_PREDICATE_HOOK_RESERVATION_CUSTODY_TAKEN,
-        "hook_reservation_custody_taken",
-    ),
-    (
-        READ_PREDICATE_PUBLISHED_PAYLOAD_CARRIES_ANSWER,
-        "published_payload_carries_answer",
-    ),
-    (
-        READ_PREDICATE_CAPTURED_PAYLOAD_OFFERED,
-        "captured_payload_offered",
-    ),
-    (
-        READ_PREDICATE_FRAME_STATUS_PERMITTED_READ,
-        "frame_status_permitted_read",
-    ),
-    (
-        READ_PREDICATE_SOURCE_ANSWERED_EMPTY,
-        "source_answered_empty",
-    ),
-    (
-        READ_PREDICATE_OUTCOME_SUBSTANTIATED_FROM_RECORD,
-        "outcome_substantiated_from_record",
-    ),
-];
+    READ_PREDICATE_WORKER_COMPLETED = 0x0002_0001 => "reader_worker_completed",
+    READ_PREDICATE_PAYLOAD_ENCODED = 0x0002_0002 => "domain_payload_encoded",
+    READ_PREDICATE_PAYLOAD_DECODED_EXACT = 0x0002_0003 => "domain_payload_decoded_exact",
+    READ_PREDICATE_READER_RETURNED_ROWS = 0x0002_0004 => "reader_returned_rows",
+    READ_PREDICATE_READ_COUNTER_PROBE = 0x0002_0005 => "read_counter_probe",
+    READ_PREDICATE_REJECTED_RECORDS_RESEQUENCED = 0x0002_0006 => "rejected_records_resequenced",
+    READ_PREDICATE_FRAME_HOUR_READABLE = 0x0002_0007 => "frame_hour_readable",
+    READ_PREDICATE_READ_AUTHORITY_VALID = 0x0002_0008 => "read_authority_valid",
+    READ_PREDICATE_ATTRIBUTION_PROBE_APPENDED = 0x0002_000A => "attribution_probe_appended",
+    READ_PREDICATE_CAPTURED_FRAME_ADMISSIBLE = 0x0002_000B => "captured_frame_admissible",
+    READ_PREDICATE_HOOK_RESERVATION_CUSTODY_TAKEN = 0x0002_000C => "hook_reservation_custody_taken",
+    READ_PREDICATE_PUBLISHED_PAYLOAD_CARRIES_ANSWER = 0x0002_000D => "published_payload_carries_answer",
+    READ_PREDICATE_CAPTURED_PAYLOAD_OFFERED = 0x0002_000E => "captured_payload_offered",
+    READ_PREDICATE_FRAME_STATUS_PERMITTED_READ = 0x0002_000F => "frame_status_permitted_read",
+    READ_PREDICATE_SOURCE_ANSWERED_EMPTY = 0x0002_0010 => "source_answered_empty",
+    READ_PREDICATE_OUTCOME_SUBSTANTIATED_FROM_RECORD = 0x0002_0011 => "outcome_substantiated_from_record",
+}
 
 pub fn read_predicate_name(code: u32) -> Option<&'static str> {
     READ_PREDICATES

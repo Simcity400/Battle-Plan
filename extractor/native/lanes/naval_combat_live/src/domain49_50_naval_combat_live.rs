@@ -4,12 +4,12 @@ use compact_contract::{
     parse_compact_record_header, validate_compact_record_semantics, RecordFramingError,
 };
 
-pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
-pub const COMPACT_RECORD_VERSION: u16 = 1;
-pub const COMPACT_RECORD_HEADER_LEN: usize = 32;
-pub const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = 1;
-pub const COMPACT_RECORD_TYPE_FRAME_END: u16 = 2;
-pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
+pub const COMPACT_RECORD_MAGIC: &[u8; 4] = compact_contract::COMPACT_RECORD_MAGIC;
+pub const COMPACT_RECORD_VERSION: u16 = compact_contract::COMPACT_RECORD_VERSION;
+pub const COMPACT_RECORD_HEADER_LEN: usize = compact_contract::COMPACT_RECORD_HEADER_LEN;
+pub const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF;
+pub const COMPACT_RECORD_TYPE_FRAME_END: u16 = compact_contract::COMPACT_RECORD_TYPE_FRAME_END;
+pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA;
 
 pub const DOMAIN_NAVAL_COMBAT_LIFECYCLE: u16 = 49;
 pub const DOMAIN_NAVAL_COMBAT_LIFECYCLE_NAME: &str = "naval_combat_lifecycle_live";

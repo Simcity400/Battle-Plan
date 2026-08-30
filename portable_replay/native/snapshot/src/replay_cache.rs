@@ -456,23 +456,17 @@ pub enum CacheIdentityMode {
     IdentityV1,
 }
 
-impl CacheIdentityMode {
-    fn encode(self) -> u8 {
-        match self {
-            Self::Legacy => 0,
-            Self::IdentityV1 => 1,
-        }
-    }
+portable_content_manifest::portable_wire_coded_codes! {
+    CacheIdentityMode: u8,
+    code = encode,
+    Ok = decode(value) -> Result<Self, ReplayCacheError> {
+        Err(ReplayCacheError::new(format!(
+            "unknown H4CR identity mode {value}"
+        )))
+    };
 
-    fn decode(value: u8) -> Result<Self, ReplayCacheError> {
-        match value {
-            0 => Ok(Self::Legacy),
-            1 => Ok(Self::IdentityV1),
-            _ => Err(ReplayCacheError::new(format!(
-                "unknown H4CR identity mode {value}"
-            ))),
-        }
-    }
+    Legacy = 0,
+    IdentityV1 = 1,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

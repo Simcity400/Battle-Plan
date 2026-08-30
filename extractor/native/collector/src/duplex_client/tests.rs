@@ -8,7 +8,7 @@ use std::time::Duration;
 use compact_contract::control_transport::payloads::{
     decode_collector_hello_with_capabilities, decode_heartbeat_proof, encode_heartbeat_challenge,
     encode_recorder_hello, HeartbeatChallengeV1, RecorderHelloV1,
-    COLLECTOR_HELLO_WITH_CAPABILITIES_LEN, HEARTBEAT_STATE_PRODUCING,
+    HeartbeatState, COLLECTOR_HELLO_WITH_CAPABILITIES_LEN,
 };
 use compact_contract::control_transport::{
     claim_session_capability, decode_frame, encode_frame, ControlCapabilities, ControlError,
@@ -1152,7 +1152,7 @@ fn handshake_heartbeat_and_first_frame_happy_path() {
         event,
         ClientEvent::HeartbeatServed {
             host_challenge_counter: 99,
-            reported_state: HEARTBEAT_STATE_PRODUCING,
+            reported_state: HeartbeatState::Producing.code(),
         }
     );
 
@@ -1183,7 +1183,7 @@ fn handshake_heartbeat_and_first_frame_happy_path() {
     let proof = decode_heartbeat_proof(&proof_frame.payload).unwrap();
     assert_eq!(proof.challenge, heartbeat_challenge);
     assert_eq!(proof.last_h4cr_sequence, 41);
-    assert_eq!(proof.state, HEARTBEAT_STATE_PRODUCING);
+    assert_eq!(proof.state, HeartbeatState::Producing);
 }
 
 #[test]
@@ -1210,10 +1210,7 @@ fn heartbeat_proof_reports_updated_production_progress() {
     let proof_frame = decode_frame(&backend.outbound[HELLO_WIRE_LEN..], session_id, 1).unwrap();
     let proof = decode_heartbeat_proof(&proof_frame.payload).unwrap();
     assert_eq!(proof.last_h4cr_sequence, 500);
-    assert_eq!(
-        proof.state,
-        compact_contract::control_transport::payloads::HEARTBEAT_STATE_WAITING_FOR_WORLD
-    );
+    assert_eq!(proof.state, HeartbeatState::WaitingForWorld);
 }
 
 #[test]

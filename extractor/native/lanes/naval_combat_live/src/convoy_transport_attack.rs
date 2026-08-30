@@ -56,7 +56,6 @@ pub const BATCH_VERSION: u16 = 10;
 pub const BATCH_HEADER_LEN: usize = 512;
 const V2_TELEMETRY_WORDS_OFF: usize = 32;
 const V3_TELEMETRY_WORDS_OFF: usize = 192;
-const V3_TELEMETRY_WORDS: usize = 8;
 // v5 appends the per-drain facts that exactness is now judged from. The v3/v4
 // lifetime counters stay on the wire verbatim as diagnostics; they no longer
 // decide anything (pw_gate_final: one early incident poisoned all 392 batches).
@@ -94,11 +93,42 @@ const V7_RESERVED_OFF: usize = V7_PRE_HOUR_ADDRESS_OVERFLOW_OFF + 8;
 /// is to this pin and to the version together.
 const _: () = assert!(
     BATCH_VERSION == 10
+        && BATCH_HEADER_LEN == 512
+        && BATCH_ROW_LEN == 120
+        && V2_TELEMETRY_WORDS_OFF == 32
+        && V2_TELEMETRY_WORDS == 15
+        && V3_TELEMETRY_WORDS_OFF == 192
+        && V3_TELEMETRY_WORDS == 8
+        && V5_PER_DRAIN_OFF == 256
+        && V5_SUBSITE_OFF == 280
         && V5_SUBSITE_WORDS == 6
+        && V5_RECEIPT_AHEAD_OFF == 328
+        && V5_LAG_BEYOND_OFF == 336
+        && V7_CAPTURE_ERROR_OFF == 344
         && V7_CAPTURE_ERROR_WORDS == 12
+        && V7_PRE_HOUR_ADDRESS_OVERFLOW_OFF == 440
         && V7_RESERVED_OFF == 448,
     "the CTA2 header layout moved; that is a new BATCH_VERSION, not an edit to v10",
 );
+
+/// The header's windows TILE it: each begins where the one before it ends, so
+/// a derived offset cannot be edited into a gap that wastes bytes or an overlap
+/// that gives one byte two meanings. The pin above fixes v10's numbers; this
+/// says the numbers are a partition at every version (Codex round 4, finding 1:
+/// adding 8 to `V5_RECEIPT_AHEAD_OFF` and giving `V5_LAG_BEYOND_OFF` the same
+/// value left `V7_RESERVED_OFF` at 448 and both counters on one byte).
+const _: () = {
+    assert!(V2_TELEMETRY_WORDS_OFF + V2_TELEMETRY_WORDS * 8 <= V3_TELEMETRY_WORDS_OFF);
+    assert!(V3_TELEMETRY_WORDS_OFF + V3_TELEMETRY_WORDS * 8 <= V5_PER_DRAIN_OFF);
+    assert!(V5_PER_DRAIN_OFF + 24 <= V5_SUBSITE_OFF);
+    assert!(V5_RECEIPT_AHEAD_OFF == V5_SUBSITE_OFF + V5_SUBSITE_WORDS * 8);
+    assert!(V5_LAG_BEYOND_OFF == V5_RECEIPT_AHEAD_OFF + 8);
+    assert!(V7_CAPTURE_ERROR_OFF == V5_LAG_BEYOND_OFF + 8);
+    assert!(
+        V7_PRE_HOUR_ADDRESS_OVERFLOW_OFF == V7_CAPTURE_ERROR_OFF + V7_CAPTURE_ERROR_WORDS * 8
+    );
+    assert!(V7_RESERVED_OFF == V7_PRE_HOUR_ADDRESS_OVERFLOW_OFF + 8);
+};
 
 /// v10's SUBSITE WINDOWS, slot by slot. NOTHING READS THESE.
 ///
@@ -132,6 +162,173 @@ const V10_CAPTURE_ERROR_SLOTS: [&str; V7_CAPTURE_ERROR_WORDS] = [
     "route_join",
     "route_key_mismatch",
 ];
+
+/// v10's FIXED-OFFSET SCALARS, field by field. NOTHING READS THIS.
+///
+/// `V10_HEADER_SCALARS` is generated from the declaration, so it moves with it
+/// and cannot refuse a change; this is the hand-written statement of what v10
+/// means, and the assert below is what makes exchanging two same-width scalars
+/// a compile error rather than a silent swap of two bytes' meanings (Codex
+/// round 5, finding 1). Same shape as `V10_CANDIDATE_SLOTS`.
+/// v10's HEADER FLAGS, bit by bit. NOTHING READS THIS.
+///
+/// The flag constants are three free bits and a mask built from them, so
+/// exchanging two compiled with the same known mask and turned bit 1 from
+/// "hook installed" into "resolver ever partial" in every existing v10 batch
+/// (Codex round 6, finding 1).
+const V10_BATCH_FLAG_MEANINGS: [(&str, u32); 3] = [
+    ("complete_exact_events", 1 << 0),
+    ("hook_installed", 1 << 1),
+    ("resolver_ever_partial", 1 << 2),
+];
+
+const _: () = {
+    assert!(BATCH_FLAG_COMPLETE_EXACT_EVENTS == V10_BATCH_FLAG_MEANINGS[0].1);
+    assert!(BATCH_FLAG_HOOK_INSTALLED == V10_BATCH_FLAG_MEANINGS[1].1);
+    assert!(BATCH_FLAG_RESOLVER_EVER_PARTIAL == V10_BATCH_FLAG_MEANINGS[2].1);
+    assert!(
+        BATCH_KNOWN_FLAGS
+            == V10_BATCH_FLAG_MEANINGS[0].1
+                | V10_BATCH_FLAG_MEANINGS[1].1
+                | V10_BATCH_FLAG_MEANINGS[2].1,
+        "a v10 header flag changed meaning; that is a new BATCH_VERSION",
+    );
+};
+
+/// v10's ROW layout, field by field. NOTHING READS THIS.
+///
+/// The D70 mutation fields sit at bare `base + N` offsets written once in the
+/// encoder and once in the decoder, the same shape the header scalars had.
+const V10_ROW_D70_MEANINGS: [(&str, usize); 6] = [
+    ("kind", 96),
+    ("ordinal", 100),
+    ("before_rows", 104),
+    ("after_rows", 108),
+    ("before_count", 112),
+    ("after_count", 116),
+];
+
+const _: () = {
+    assert!(ROW_D70_KIND_OFF == V10_ROW_D70_MEANINGS[0].1);
+    assert!(ROW_D70_ORDINAL_OFF == V10_ROW_D70_MEANINGS[1].1);
+    assert!(ROW_D70_BEFORE_ROWS_OFF == V10_ROW_D70_MEANINGS[2].1);
+    assert!(ROW_D70_AFTER_ROWS_OFF == V10_ROW_D70_MEANINGS[3].1);
+    assert!(ROW_D70_BEFORE_COUNT_OFF == V10_ROW_D70_MEANINGS[4].1);
+    assert!(
+        ROW_D70_AFTER_COUNT_OFF == V10_ROW_D70_MEANINGS[5].1,
+        "a v10 row field changed meaning; that is a new BATCH_VERSION",
+    );
+    // The carrier a v10 row embeds is CTA1 v4. A carrier version bump is a
+    // change to what a v10 row contains, so it is a CTA2 version bump too.
+    assert!(
+        crate::convoy_terminal_attribution::CARRIER_VERSION == 4,
+        "the embedded carrier moved; that is a new BATCH_VERSION",
+    );
+};
+
+/// The bytes byte 96 may carry, and what each one means. Pinning the offset is
+/// half a v10 row: exchanging the two discriminants keeps every offset, the
+/// macro's own discriminant assert and `BATCH_VERSION` intact while turning
+/// every recorded `IncrementExisting` into an `AppendFirstSeen`.
+const V10_ROW_D70_MUTATION_KIND_MEANINGS: [(&str, u8); 2] =
+    [("IncrementExisting", 1), ("AppendFirstSeen", 2)];
+
+const _: () = {
+    assert!(
+        ConvoyD70MutationKind::IncrementExisting.code() == V10_ROW_D70_MUTATION_KIND_MEANINGS[0].1
+    );
+    assert!(
+        ConvoyD70MutationKind::AppendFirstSeen.code() == V10_ROW_D70_MUTATION_KIND_MEANINGS[1].1,
+        "a v10 D70 mutation-kind byte changed meaning; that is a new BATCH_VERSION",
+    );
+};
+
+const ROW_D70_KIND_OFF: usize = 96;
+const ROW_D70_ORDINAL_OFF: usize = 100;
+const ROW_D70_BEFORE_ROWS_OFF: usize = 104;
+const ROW_D70_AFTER_ROWS_OFF: usize = 108;
+const ROW_D70_BEFORE_COUNT_OFF: usize = 112;
+const ROW_D70_AFTER_COUNT_OFF: usize = 116;
+
+const V10_HEADER_SCALAR_MEANINGS: [(&str, usize); V10_HEADER_SCALARS.len()] = [
+    ("drained_rows", 152),
+    ("remaining_events", 156),
+    ("active_callbacks", 160),
+    ("queue_drain_complete", 164),
+    ("resolver_publication_sequence", 168),
+    ("resolver_game_hour_raw", 176),
+    ("resolver_member_bindings", 180),
+    ("resolver_route_bindings", 184),
+    ("resolver_unbound_convoy_clients", 188),
+];
+
+const _: () = {
+    let mut slot = 0;
+    while slot < V10_HEADER_SCALARS.len() {
+        assert!(
+            compact_contract::diagnostic_channel::const_str_eq(
+                V10_HEADER_SCALARS[slot].0,
+                V10_HEADER_SCALAR_MEANINGS[slot].0,
+            ) && V10_HEADER_SCALARS[slot].1 == V10_HEADER_SCALAR_MEANINGS[slot].1,
+            "a v10 header scalar changed meaning; that is a new BATCH_VERSION",
+        );
+        slot += 1;
+    }
+};
+
+const V10_V2_TELEMETRY_SLOTS: [&str; V2_TELEMETRY_WORDS] = [
+    "callbacks_seen",
+    "original_calls",
+    "events_emitted",
+    "dropped_no_original",
+    "dropped_teardown",
+    "dropped_nested",
+    "dropped_capture_busy",
+    "dropped_hour_or_epoch",
+    "dropped_resolver",
+    "dropped_candidate",
+    "dropped_d70_pre",
+    "dropped_d70_post",
+    "dropped_d70_mutation",
+    "dropped_queue_busy",
+    "dropped_queue_full",
+];
+
+const V10_V3_TELEMETRY_SLOTS: [&str; V3_TELEMETRY_WORDS] = [
+    "dropped_pre_hour_unreadable",
+    "dropped_receipt_hour_mismatch",
+    "dropped_post_hour_unreadable",
+    "dropped_post_hour_changed",
+    "dropped_resolver_snapshot_absent",
+    "dropped_resolver_unpublished",
+    "receipt_hour_lag_max",
+    "receipt_hour_lead_max",
+];
+
+const _: () = {
+    let mut slot = 0;
+    while slot < V2_TELEMETRY_WORDS {
+        assert!(
+            compact_contract::diagnostic_channel::const_str_eq(
+                V2_TELEMETRY_FIELDS[slot],
+                V10_V2_TELEMETRY_SLOTS[slot],
+            ),
+            "a v10 telemetry slot changed meaning; that is a new BATCH_VERSION",
+        );
+        slot += 1;
+    }
+    let mut slot = 0;
+    while slot < V3_TELEMETRY_WORDS {
+        assert!(
+            compact_contract::diagnostic_channel::const_str_eq(
+                V3_TELEMETRY_FIELDS[slot],
+                V10_V3_TELEMETRY_SLOTS[slot],
+            ),
+            "a v10 telemetry slot changed meaning; that is a new BATCH_VERSION",
+        );
+        slot += 1;
+    }
+};
 
 const _: () = {
     let mut slot = 0;
@@ -241,10 +438,61 @@ pub struct ConvoyTransportAttackTelemetry {
     pub dropped_pre_hour_address_overflow: u64,
 }
 
+crate::convoy_wire_taxonomy::convoy_header_scalars! {
+    ConvoyTransportAttackWitness, pin = V10_HEADER_SCALARS,
+    write = write_header_scalars, read = read_header_scalars;
+
+    u32 drained_rows = 152,
+    u32 remaining_events = 156,
+    u32 active_callbacks = 160,
+    bool queue_drain_complete = 164,
+    u64 resolver_publication_sequence = 168,
+    i32 resolver_game_hour_raw = 176,
+    u32 resolver_member_bindings = 180,
+    u32 resolver_route_bindings = 184,
+    u32 resolver_unbound_convoy_clients = 188,
+}
+
+crate::convoy_wire_taxonomy::convoy_telemetry_window! {
+    ConvoyTransportAttackTelemetry, words = V2_TELEMETRY_WORDS, fields = V2_TELEMETRY_FIELDS,
+    read = v2_window, write = apply_v2_window;
+
+    callbacks_seen = 0,
+    original_calls = 1,
+    events_emitted = 2,
+    dropped_no_original = 3,
+    dropped_teardown = 4,
+    dropped_nested = 5,
+    dropped_capture_busy = 6,
+    dropped_hour_or_epoch = 7,
+    dropped_resolver = 8,
+    dropped_candidate = 9,
+    dropped_d70_pre = 10,
+    dropped_d70_post = 11,
+    dropped_d70_mutation = 12,
+    dropped_queue_busy = 13,
+    dropped_queue_full = 14,
+}
+
+crate::convoy_wire_taxonomy::convoy_telemetry_window! {
+    ConvoyTransportAttackTelemetry, words = V3_TELEMETRY_WORDS, fields = V3_TELEMETRY_FIELDS,
+    read = v3_window, write = apply_v3_window;
+
+    dropped_pre_hour_unreadable = 0,
+    dropped_receipt_hour_mismatch = 1,
+    dropped_post_hour_unreadable = 2,
+    dropped_post_hour_changed = 3,
+    dropped_resolver_snapshot_absent = 4,
+    dropped_resolver_unpublished = 5,
+    receipt_hour_lag_max = 6,
+    receipt_hour_lead_max = 7,
+}
+
 crate::convoy_wire_taxonomy::convoy_named_counters! {
     ConvoyTransportAttackTelemetry,
     prefix = "convoy_transport_attack_",
-    all = named_drops;
+    all = named_drops,
+    complete = every_field_is_rostered;
 
     /// The aggregates. `dropped_events` is their sum; a leaf is incremented
     /// BESIDE its aggregate, so summing leaves too would count one refusal
@@ -276,12 +524,11 @@ crate::convoy_wire_taxonomy::convoy_named_counters! {
         dropped_resolver_snapshot_absent,
         dropped_resolver_unpublished,
     }
-}
 
-crate::convoy_wire_taxonomy::convoy_named_counters! {
-    ConvoyTransportAttackTelemetry,
-    prefix = "convoy_transport_attack_";
+    ; outside
 
+    /// Counted, not lost: the rosters above partition the losses and this one
+    /// carries what the hook saw.
     named_gauges {
         callbacks_seen,
         original_calls,
@@ -499,48 +746,11 @@ pub fn encode_convoy_transport_attack_batch(
         | u32::from(witness.resolver_ever_partial) * BATCH_FLAG_RESOLVER_EVER_PARTIAL;
     write_u32(&mut out, 16, flags);
     write_u64(&mut out, 24, witness.producer_sequence_next);
-    let telemetry_values = [
-        witness.telemetry.callbacks_seen,
-        witness.telemetry.original_calls,
-        witness.telemetry.events_emitted,
-        witness.telemetry.dropped_no_original,
-        witness.telemetry.dropped_teardown,
-        witness.telemetry.dropped_nested,
-        witness.telemetry.dropped_capture_busy,
-        witness.telemetry.dropped_hour_or_epoch,
-        witness.telemetry.dropped_resolver,
-        witness.telemetry.dropped_candidate,
-        witness.telemetry.dropped_d70_pre,
-        witness.telemetry.dropped_d70_post,
-        witness.telemetry.dropped_d70_mutation,
-        witness.telemetry.dropped_queue_busy,
-        witness.telemetry.dropped_queue_full,
-    ];
-    for (index, value) in telemetry_values.into_iter().enumerate() {
+    for (index, value) in witness.telemetry.v2_window().into_iter().enumerate() {
         write_u64(&mut out, V2_TELEMETRY_WORDS_OFF + index * 8, value);
     }
-    write_u32(&mut out, 152, witness.drained_rows);
-    write_u32(&mut out, 156, witness.remaining_events);
-    write_u32(&mut out, 160, witness.active_callbacks);
-    write_u32(&mut out, 164, u32::from(witness.queue_drain_complete));
-    write_u64(&mut out, 168, witness.resolver_publication_sequence);
-    write_i32(&mut out, 176, witness.resolver_game_hour_raw);
-    write_u32(&mut out, 180, witness.resolver_member_bindings);
-    write_u32(&mut out, 184, witness.resolver_route_bindings);
-    write_u32(&mut out, 188, witness.resolver_unbound_convoy_clients);
-    for (index, value) in [
-        witness.telemetry.dropped_pre_hour_unreadable,
-        witness.telemetry.dropped_receipt_hour_mismatch,
-        witness.telemetry.dropped_post_hour_unreadable,
-        witness.telemetry.dropped_post_hour_changed,
-        witness.telemetry.dropped_resolver_snapshot_absent,
-        witness.telemetry.dropped_resolver_unpublished,
-        witness.telemetry.receipt_hour_lag_max,
-        witness.telemetry.receipt_hour_lead_max,
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    witness.write_header_scalars(&mut out);
+    for (index, value) in witness.telemetry.v3_window().into_iter().enumerate() {
         write_u64(&mut out, V3_TELEMETRY_WORDS_OFF + index * 8, value);
     }
     write_u64(&mut out, V5_PER_DRAIN_OFF, witness.events_seen_this_drain);
@@ -588,12 +798,12 @@ pub fn encode_convoy_transport_attack_batch(
         let carrier = row.carrier.encode();
         ConvoyTerminalAttributionCarrier::decode(&carrier)?;
         out[base..base + CARRIER_LEN].copy_from_slice(&carrier);
-        out[base + 96] = row.d70.kind.code();
-        write_u32(&mut out, base + 100, row.d70.ordinal);
-        write_u32(&mut out, base + 104, row.d70.before_rows);
-        write_u32(&mut out, base + 108, row.d70.after_rows);
-        write_u32(&mut out, base + 112, row.d70.before_count);
-        write_u32(&mut out, base + 116, row.d70.after_count);
+        out[base + ROW_D70_KIND_OFF] = row.d70.kind.code();
+        write_u32(&mut out, base + ROW_D70_ORDINAL_OFF, row.d70.ordinal);
+        write_u32(&mut out, base + ROW_D70_BEFORE_ROWS_OFF, row.d70.before_rows);
+        write_u32(&mut out, base + ROW_D70_AFTER_ROWS_OFF, row.d70.after_rows);
+        write_u32(&mut out, base + ROW_D70_BEFORE_COUNT_OFF, row.d70.before_count);
+        write_u32(&mut out, base + ROW_D70_AFTER_COUNT_OFF, row.d70.after_count);
     }
     Ok(out)
 }
@@ -643,12 +853,14 @@ pub fn decode_convoy_transport_attack_batch(
         return Err(BatchDecodeError::Length(bytes.len()));
     }
 
-    let telemetry_values = (0..15)
-        .map(|index| read_u64(bytes, V2_TELEMETRY_WORDS_OFF + index * 8))
-        .collect::<Result<Vec<_>, _>>()?;
-    let v3 = (0..V3_TELEMETRY_WORDS)
-        .map(|index| read_u64(bytes, V3_TELEMETRY_WORDS_OFF + index * 8))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut v2_values = [0u64; V2_TELEMETRY_WORDS];
+    for (index, value) in v2_values.iter_mut().enumerate() {
+        *value = read_u64(bytes, V2_TELEMETRY_WORDS_OFF + index * 8)?;
+    }
+    let mut v3_values = [0u64; V3_TELEMETRY_WORDS];
+    for (index, value) in v3_values.iter_mut().enumerate() {
+        *value = read_u64(bytes, V3_TELEMETRY_WORDS_OFF + index * 8)?;
+    }
     let read_u64_at = |offset: usize| read_u64(bytes, offset);
     let mut subsite_values = [0u64; V5_SUBSITE_WORDS];
     for (index, value) in subsite_values.iter_mut().enumerate() {
@@ -661,59 +873,27 @@ pub fn decode_convoy_transport_attack_batch(
     }
     let capture_error_subsites =
         ConvoyTransportAttackCaptureErrorSubsites::from_array(capture_error_values);
-    let witness = ConvoyTransportAttackWitness {
+    let mut telemetry = ConvoyTransportAttackTelemetry {
+        dropped_receipt_hour_ahead: read_u64_at(V5_RECEIPT_AHEAD_OFF)?,
+        dropped_receipt_lag_beyond: read_u64_at(V5_LAG_BEYOND_OFF)?,
+        dropped_pre_hour_address_overflow: read_u64_at(V7_PRE_HOUR_ADDRESS_OVERFLOW_OFF)?,
+        ..ConvoyTransportAttackTelemetry::default()
+    };
+    telemetry.apply_v2_window(v2_values);
+    telemetry.apply_v3_window(v3_values);
+    let mut witness = ConvoyTransportAttackWitness {
         hook_installed: flags & BATCH_FLAG_HOOK_INSTALLED != 0,
         resolver_ever_partial: flags & BATCH_FLAG_RESOLVER_EVER_PARTIAL != 0,
-        queue_drain_complete: match read_u32(bytes, 164)? {
-            0 => false,
-            1 => true,
-            _ => return Err(BatchDecodeError::Reserved),
-        },
         producer_sequence_next: read_u64(bytes, 24)?,
-        drained_rows: read_u32(bytes, 152)?,
-        remaining_events: read_u32(bytes, 156)?,
-        active_callbacks: read_u32(bytes, 160)?,
-        resolver_publication_sequence: read_u64(bytes, 168)?,
-        resolver_game_hour_raw: read_i32(bytes, 176)?,
-        resolver_member_bindings: read_u32(bytes, 180)?,
-        resolver_route_bindings: read_u32(bytes, 184)?,
-        resolver_unbound_convoy_clients: read_u32(bytes, 188)?,
         events_seen_this_drain: read_u64_at(V5_PER_DRAIN_OFF)?,
         events_emitted_this_drain: read_u64_at(V5_PER_DRAIN_OFF + 8)?,
         drops_this_drain: read_u64_at(V5_PER_DRAIN_OFF + 16)?,
         candidate_subsites,
         capture_error_subsites,
-        telemetry: ConvoyTransportAttackTelemetry {
-            callbacks_seen: telemetry_values[0],
-            original_calls: telemetry_values[1],
-            events_emitted: telemetry_values[2],
-            dropped_no_original: telemetry_values[3],
-            dropped_teardown: telemetry_values[4],
-            dropped_nested: telemetry_values[5],
-            dropped_capture_busy: telemetry_values[6],
-            dropped_hour_or_epoch: telemetry_values[7],
-            dropped_resolver: telemetry_values[8],
-            dropped_candidate: telemetry_values[9],
-            dropped_pre_hour_unreadable: v3[0],
-            dropped_receipt_hour_mismatch: v3[1],
-            dropped_post_hour_unreadable: v3[2],
-            dropped_post_hour_changed: v3[3],
-            dropped_resolver_snapshot_absent: v3[4],
-            dropped_resolver_unpublished: v3[5],
-            receipt_hour_lag_max: v3[6],
-            receipt_hour_lead_max: v3[7],
-            dropped_d70_pre: telemetry_values[10],
-            dropped_d70_post: telemetry_values[11],
-            dropped_d70_mutation: telemetry_values[12],
-            dropped_queue_busy: telemetry_values[13],
-            dropped_queue_full: telemetry_values[14],
-            dropped_receipt_hour_ahead: read_u64_at(V5_RECEIPT_AHEAD_OFF)?,
-            dropped_receipt_lag_beyond: read_u64_at(V5_LAG_BEYOND_OFF)?,
-            dropped_pre_hour_address_overflow: read_u64_at(
-                V7_PRE_HOUR_ADDRESS_OVERFLOW_OFF,
-            )?,
-        },
+        telemetry,
+        ..ConvoyTransportAttackWitness::default()
     };
+    witness.read_header_scalars(bytes)?;
 
     let mut rows = Vec::with_capacity(row_count);
     for index in 0..row_count {
@@ -724,12 +904,12 @@ pub fn decode_convoy_transport_attack_batch(
         let row = ConvoyTransportAttackRow {
             carrier: ConvoyTerminalAttributionCarrier::decode(&bytes[base..base + CARRIER_LEN])?,
             d70: ConvoyD70MutationProof {
-                kind: ConvoyD70MutationKind::decode(bytes[base + 96])?,
-                ordinal: read_u32(bytes, base + 100)?,
-                before_rows: read_u32(bytes, base + 104)?,
-                after_rows: read_u32(bytes, base + 108)?,
-                before_count: read_u32(bytes, base + 112)?,
-                after_count: read_u32(bytes, base + 116)?,
+                kind: ConvoyD70MutationKind::decode(bytes[base + ROW_D70_KIND_OFF])?,
+                ordinal: read_u32(bytes, base + ROW_D70_ORDINAL_OFF)?,
+                before_rows: read_u32(bytes, base + ROW_D70_BEFORE_ROWS_OFF)?,
+                after_rows: read_u32(bytes, base + ROW_D70_AFTER_ROWS_OFF)?,
+                before_count: read_u32(bytes, base + ROW_D70_BEFORE_COUNT_OFF)?,
+                after_count: read_u32(bytes, base + ROW_D70_AFTER_COUNT_OFF)?,
             },
         };
         validate_row(&row)?;
@@ -1299,7 +1479,7 @@ mod tests {
         values.sort_unstable();
         assert_eq!(
             values,
-            (1..=21).collect::<Vec<u64>>(),
+            (1..=named.len() as u64).collect::<Vec<u64>>(),
             "every drop field must appear exactly once, and no non-drop field may"
         );
         let mut names: Vec<&str> = named.iter().map(|(name, _)| *name).collect();

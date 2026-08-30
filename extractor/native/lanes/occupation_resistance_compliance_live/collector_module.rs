@@ -9,8 +9,10 @@ pub const EXPECTED_SHA256: &str =
 pub const CG_STATE_DATE_OFFSET: usize = 0x3316E90;
 pub const CGAMESTATE_CPROVINCE_ARRAY: usize = 0x2B0;
 pub const CGAMESTATE_CPROVINCE_COUNT: usize = 0x2BC;
-pub const CGAMESTATE_COUNTRY_TABLE: usize = 0x310;
-pub const CGAMESTATE_COUNTRY_COUNT: usize = 0x31C;
+pub const CGAMESTATE_COUNTRY_TABLE: usize =
+    compact_contract::build_profile::CGAMESTATE_COUNTRY_TABLE;
+pub const CGAMESTATE_COUNTRY_COUNT: usize =
+    compact_contract::build_profile::CGAMESTATE_COUNTRY_COUNT;
 
 pub const STATE_VTABLE_RVA: usize = 0x29206C0;
 pub const STATE_OFF_SID: usize = 0x58;

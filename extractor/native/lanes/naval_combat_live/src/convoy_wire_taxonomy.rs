@@ -341,17 +341,31 @@ macro_rules! convoy_route_refusal_causes {
 /// cannot name another field, and every consumer takes the array.
 macro_rules! convoy_named_counters {
     (
-        $struct:ident, prefix = $prefix:literal, all = $all_fn:ident;
+        $struct:ident, prefix = $prefix:literal, all = $all_fn:ident,
+        complete = $complete_fn:ident;
         $( $(#[$group_doc:meta])* $group_fn:ident { $( $field:ident, )+ } )+
+        ; outside
+        $( $(#[$outside_doc:meta])* $outside_fn:ident { $( $outside:ident, )+ } )+
     ) => {
         $crate::convoy_wire_taxonomy::convoy_named_counters! {
             $struct, prefix = $prefix;
             $( $(#[$group_doc])* $group_fn { $( $field, )+ } )+
+            $( $(#[$outside_doc])* $outside_fn { $( $outside, )+ } )+
         }
 
         impl $struct {
             pub fn $all_fn(&self) -> [(&'static str, u64); [$($(stringify!($field),)+)+].len()] {
                 [$($((concat!($prefix, stringify!($field)), self.$field),)+)+]
+            }
+
+            /// Every field of the struct belongs to one roster or another. A
+            /// counter added to the struct and declared to neither is E0027
+            /// here -- the omission half no runtime coverage test could see,
+            /// because a test builds the struct from the fields it knows
+            /// (lane TV, row R6).
+            #[allow(dead_code, unused_variables)]
+            fn $complete_fn(self) {
+                let Self { $($($field,)+)+ $($($outside,)+)+ } = self;
             }
         }
     };
@@ -379,7 +393,137 @@ macro_rules! convoy_named_counters {
     };
 }
 
+/// A CTA2 header WINDOW of telemetry words, and the field each slot carries.
+///
+/// The encoder built a positional array and the decoder assigned
+/// `values[n]` to a field by hand, so exchanging two fields in the encoder
+/// alone compiled and decoded each loss under the other cause -- and the
+/// coverage test could not see an omitted field, because it built the struct
+/// from a literal and expected the values it had just written (lane TV, row
+/// R6). A field is named ONCE now and both directions come off that name;
+/// the window's width is the declaration's own count.
+macro_rules! convoy_telemetry_window {
+    (
+        $struct:ident, words = $wvis:vis $words:ident, fields = $fvis:vis $fields:ident,
+        read = $read_fn:ident, write = $write_fn:ident;
+        $( $field:ident = $slot:literal, )+
+    ) => {
+        $wvis const $words: usize = [$($slot,)+].len();
+
+        $fvis const $fields: [&str; $words] = [$(stringify!($field),)+];
+
+        impl $struct {
+            fn $read_fn(&self) -> [u64; $words] {
+                [$(self.$field,)+]
+            }
+
+            fn $write_fn(&mut self, values: [u64; $words]) {
+                let [$($field,)+] = values;
+                $(self.$field = $field;)+
+            }
+        }
+
+        const _: () = {
+            // Both directions read the declaration in ORDER, so the order has
+            // to be the wire's. Writing each slot's index and holding it to its
+            // position is what refuses a same-width exchange of two fields,
+            // which the widths and the version pin cannot see (Codex round 1,
+            // finding 2).
+            let slots = [$($slot,)+];
+            let mut i = 0;
+            while i < slots.len() {
+                assert!(
+                    slots[i] == i,
+                    "a telemetry slot's declared index is not its place in the window",
+                );
+                i += 1;
+            }
+            assert!(
+                compact_contract::diagnostic_channel::const_names_are_distinct(&$fields),
+                "two telemetry slots carry one field",
+            );
+        };
+    };
+}
+
+/// The CTA2 header's FIXED-OFFSET scalar fields, one row each.
+///
+/// The windows above are addressed by a base offset and a slot; these nine are
+/// addressed by a bare byte offset written twice -- once in the encoder, once
+/// in the decoder. Exchanging two same-width fields symmetrically compiled,
+/// round-tripped, kept `BATCH_VERSION` at 10 and swapped what two existing v10
+/// bytes mean, and no width, slot or tiling guard could see it (lane TV, row
+/// R6; Codex round 5, finding 1). A field's offset is written once now and
+/// both directions come off that row.
+macro_rules! convoy_header_scalars {
+    (
+        $struct:ident, pin = $pvis:vis $pin:ident,
+        write = $write_fn:ident, read = $read_fn:ident;
+        $( $kind:ident $field:ident = $offset:literal, )+
+    ) => {
+        $pvis const $pin: [(&str, usize); [$($offset,)+].len()] =
+            [$((stringify!($field), $offset),)+];
+
+        impl $struct {
+            fn $write_fn(&self, out: &mut [u8]) {
+                $(crate::convoy_wire_taxonomy::convoy_header_scalars!(
+                    @write $kind, out, $offset, self.$field
+                );)+
+            }
+
+            fn $read_fn(&mut self, bytes: &[u8]) -> Result<(), BatchDecodeError> {
+                $(self.$field = crate::convoy_wire_taxonomy::convoy_header_scalars!(
+                    @read $kind, bytes, $offset
+                );)+
+                Ok(())
+            }
+        }
+
+        const _: () = {
+            let offsets = [$($offset,)+];
+            let mut i = 1;
+            while i < offsets.len() {
+                assert!(
+                    offsets[i - 1] < offsets[i],
+                    "the header scalars are not in offset order, so one overlaps another",
+                );
+                i += 1;
+            }
+            assert!(
+                compact_contract::diagnostic_channel::const_names_are_distinct(&[
+                    $(stringify!($field),)+
+                ]),
+                "two header scalars name one field",
+            );
+        };
+    };
+    (@write u32, $out:ident, $offset:literal, $value:expr) => {
+        write_u32($out, $offset, $value)
+    };
+    (@write i32, $out:ident, $offset:literal, $value:expr) => {
+        write_i32($out, $offset, $value)
+    };
+    (@write u64, $out:ident, $offset:literal, $value:expr) => {
+        write_u64($out, $offset, $value)
+    };
+    (@write bool, $out:ident, $offset:literal, $value:expr) => {
+        write_u32($out, $offset, u32::from($value))
+    };
+    (@read u32, $bytes:ident, $offset:literal) => { read_u32($bytes, $offset)? };
+    (@read i32, $bytes:ident, $offset:literal) => { read_i32($bytes, $offset)? };
+    (@read u64, $bytes:ident, $offset:literal) => { read_u64($bytes, $offset)? };
+    (@read bool, $bytes:ident, $offset:literal) => {
+        match read_u32($bytes, $offset)? {
+            0 => false,
+            1 => true,
+            _ => return Err(BatchDecodeError::Reserved),
+        }
+    };
+}
+
 pub(crate) use convoy_capture_error_subsites;
 pub(crate) use convoy_named_counters;
 pub(crate) use convoy_route_refusal_causes;
 pub(crate) use convoy_subsite_table;
+pub(crate) use convoy_header_scalars;
+pub(crate) use convoy_telemetry_window;

@@ -400,18 +400,25 @@ pub enum Authority {
 
 pub const AUTHORITY_LEN: usize = 12;
 
-impl Authority {
-    pub const fn kind_code(self) -> u16 {
-        match self {
-            Self::SelfDomain => 1,
-            Self::OtherDomain(_) => 2,
-            Self::Engine { .. } => 3,
-            Self::Host => 4,
-            Self::OffFrameWorker => 5,
-            Self::Undeclared => 0,
-        }
-    }
+crate::wire_coded_codes! {
+    payloads Authority: u16,
+    code = pub kind_code,
+    Ok = from_kind_code(kind) -> Result<Self, String> {
+        Err(format!("authority kind {kind} is not defined"))
+    };
 
+    SelfDomain = 1,
+    Host = 4,
+    OffFrameWorker = 5,
+    ; tuple
+    OtherDomain(domain: u16) = 2,
+    ; named
+    Engine { rva: u64 } = 3,
+    ; never
+    Undeclared = 0,
+}
+
+impl Authority {
     pub fn encode(self) -> [u8; AUTHORITY_LEN] {
         let mut out = [0u8; AUTHORITY_LEN];
         out[0..2].copy_from_slice(&self.kind_code().to_le_bytes());
@@ -437,14 +444,7 @@ impl Authority {
         let rva = u64::from_le_bytes([
             bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11],
         ]);
-        match kind {
-            1 => Ok(Self::SelfDomain),
-            2 => Ok(Self::OtherDomain(domain)),
-            3 => Ok(Self::Engine { rva }),
-            4 => Ok(Self::Host),
-            5 => Ok(Self::OffFrameWorker),
-            other => Err(format!("authority kind {other} is not defined")),
-        }
+        Self::from_kind_code(kind, domain, rva)
     }
 
     pub fn render(self) -> String {
@@ -1234,39 +1234,50 @@ pub const GAUGE_UNITS: &[&str] = &[
     "d78_hook_in_flight_callbacks",
 ];
 
-pub const OUTSIDE_BUILD_SEGMENTS: &[(u16, &str)] = &[
-    (0, "total"),
-    (1, "wait"),
-    (2, "identity"),
-    (3, "prepoll"),
-    (4, "prepub"),
-    (5, "complete"),
-    (6, "degnotice"),
-    (7, "deglog"),
-    (8, "openpub"),
-    (9, "a30insert"),
-    (10, "hookstage"),
-    (11, "tailinsert"),
-    (12, "buildtail_previous_frame"),
-];
+/// The segments of the time the build was NOT running, named.
+///
+/// The collector charges its accumulator by this type; the discriminant is the
+/// wire code and the slot the span is published in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum OutsideBuildSegment {
+    Total = 0,
+    Wait = 1,
+    Identity = 2,
+    Prepoll = 3,
+    Prepub = 4,
+    Complete = 5,
+    DegNotice = 6,
+    DegLog = 7,
+    OpenPub = 8,
+    A30Insert = 9,
+    HookStage = 10,
+    TailInsert = 11,
+    BuildTail = 12,
+}
 
-pub const OUTSIDE_BUILD_UNIT_NAMES: &[&str] = &[
-    "lw_o0_us",
-    "lw_o1_us",
-    "lw_o2_us",
-    "lw_o3_us",
-    "lw_o4_us",
-    "lw_o5_us",
-    "lw_o6_us",
-    "lw_o7_us",
-    "lw_o8_us",
-    "lw_o9_us",
-    "lw_o10_us",
-    "lw_o11_us",
-    "lw_o12_us",
-];
+crate::cause_tables::ordered_segments! {
+    OutsideBuildSegment,
+    segments = pub OUTSIDE_BUILD_SEGMENTS,
+    unit_names = pub OUTSIDE_BUILD_UNIT_NAMES,
+    count = pub OUTSIDE_BUILD_SEGMENT_COUNT,
+    unit_prefix = pub OUTSIDE_BUILD_UNIT_PREFIX = "lw_o",
+    unit_suffix = pub OUTSIDE_BUILD_UNIT_SUFFIX = "_us";
 
-pub const OUTSIDE_BUILD_SEGMENT_COUNT: usize = OUTSIDE_BUILD_SEGMENTS.len();
+    Total = 0 => "total",
+    Wait = 1 => "wait",
+    Identity = 2 => "identity",
+    Prepoll = 3 => "prepoll",
+    Prepub = 4 => "prepub",
+    Complete = 5 => "complete",
+    DegNotice = 6 => "degnotice",
+    DegLog = 7 => "deglog",
+    OpenPub = 8 => "openpub",
+    A30Insert = 9 => "a30insert",
+    HookStage = 10 => "hookstage",
+    TailInsert = 11 => "tailinsert",
+    BuildTail = 12 => "buildtail_previous_frame",
+}
 
 pub fn outside_build_segment_name(code: u16) -> Option<&'static str> {
     OUTSIDE_BUILD_SEGMENTS
@@ -1304,21 +1315,138 @@ pub fn outside_build_segment_name(code: u16) -> Option<&'static str> {
 /// first mark, and — because the last segment has no following segment to
 /// absorb it, unlike every other — the final close's own arithmetic and return
 /// plus the frame-time stamp.
-pub const FRAME_TAIL_SEGMENTS: &[(u16, &str)] = &[
-    (0, "derived_encode"),
-    (1, "country_publish"),
-    (2, "publish_early"),
-    (3, "d81_publish"),
-    (4, "publish_units"),
-    (5, "d47_publish"),
-    (6, "publish_late"),
+/// The frame tail's segments, named. The discriminant is the wire code, the
+/// slot the span is published in, and the bit the collector sets in
+/// [`FRAME_TAIL_MARKS_UNIT`] when it closes the segment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum FrameTailSegment {
+    /// The post-join encodes of the derived and presentation domains, which
+    /// take no reader permit and run on the build thread after the fan-out.
+    DerivedEncode = 0,
+    /// The country bundle's lane attribution plus the drain that publishes its
+    /// eight sub-reads.
+    CountryPublish = 1,
+    /// The publish blocks from D45's depth record to just before D81.
+    PublishEarly = 2,
+    /// D81 rail-replay-state's publish block, alone in its range.
+    D81Publish = 3,
+    /// The unit-shaped publish blocks: divisions, orders, ships, air.
+    PublishUnits = 4,
+    /// D47 characters/leaders/cabinet's publish block, alone in its range.
+    D47Publish = 5,
+    /// Everything from the air-variant reserve block to the frame-time close.
+    PublishLate = 6,
+}
+
+crate::cause_tables::ordered_segments! {
+    FrameTailSegment,
+    segments = pub FRAME_TAIL_SEGMENTS,
+    unit_names = pub FRAME_TAIL_UNIT_NAMES,
+    count = pub FRAME_TAIL_SEGMENT_COUNT,
+    unit_prefix = pub FRAME_TAIL_UNIT_PREFIX = "lw_t",
+    unit_suffix = pub FRAME_TAIL_UNIT_SUFFIX = "_us";
+
+    DerivedEncode = 0 => "derived_encode",
+    CountryPublish = 1 => "country_publish",
+    PublishEarly = 2 => "publish_early",
+    D81Publish = 3 => "d81_publish",
+    PublishUnits = 4 => "publish_units",
+    D47Publish = 5 => "d47_publish",
+    PublishLate = 6 => "publish_late",
+}
+
+/// EVERY numbered wire-unit family in this namespace, `(prefix, suffix)`.
+///
+/// The two segment tables were not the only families spelling a name from a
+/// prefix, a number and a suffix: the collector builds six more --
+/// `lw_l{lane}_wall_us`, `lw_l{lane}_busy_us`, `lw_d{tag}_crit_us`,
+/// `lw_d{tag}_inb_us`, `lw_d{tag}_post_us`, `lw_cb{tag}_us` -- and each was
+/// spelled from its own literal there. Guarding only the two tables against
+/// each other left the rest open: giving the outside-build table the lane
+/// family's prefix and suffix compiled, and the unchanged `lw_l3_wall_us`
+/// decoded as outside-build code 3 (Codex round 34). Declared once here, so
+/// the collector spells its names from these and the assertion below can see
+/// the whole namespace.
+pub const LANE_WALL_UNIT_PREFIX: &str = "lw_l";
+pub const LANE_WALL_UNIT_SUFFIX: &str = "_wall_us";
+pub const LANE_BUSY_UNIT_SUFFIX: &str = "_busy_us";
+pub const DOMAIN_CRIT_UNIT_PREFIX: &str = "lw_d";
+pub const DOMAIN_CRIT_UNIT_SUFFIX: &str = "_crit_us";
+pub const DOMAIN_INBOUND_UNIT_SUFFIX: &str = "_inb_us";
+pub const DOMAIN_POST_UNIT_SUFFIX: &str = "_post_us";
+pub const CALLBACK_UNIT_PREFIX: &str = "lw_cb";
+pub const CALLBACK_UNIT_SUFFIX: &str = "_us";
+
+/// Two numbered families ALIAS if one family's spelling can also be read as
+/// the other's: equal prefixes, or one prefix extending the other by DIGITS.
+///
+/// `lw_l` and `lw_o` cannot alias -- the character after `lw_` differs and is
+/// not a digit either way. `lw_l` and `lw_l` do, whatever their suffixes,
+/// because a number sits between and can absorb the difference.
+pub const fn const_families_cannot_alias(families: &[(&str, &str)]) -> bool {
+    let mut i = 0;
+    while i < families.len() {
+        let mut j = i + 1;
+        while j < families.len() {
+            let (a, b) = (families[i].0, families[j].0);
+            if const_str_eq(a, b) {
+                return false;
+            }
+            if const_str_starts_with(b, a) && const_extends_by_digit(b, a) {
+                return false;
+            }
+            if const_str_starts_with(a, b) && const_extends_by_digit(a, b) {
+                return false;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// `longer` continues `shorter` with an ASCII digit.
+const fn const_extends_by_digit(longer: &str, shorter: &str) -> bool {
+    let (l, s) = (longer.as_bytes(), shorter.as_bytes());
+    if l.len() <= s.len() {
+        return false;
+    }
+    l[s.len()] >= b'0' && l[s.len()] <= b'9'
+}
+
+/// Both tables spell their unit names from a one-letter prefix and a number,
+/// so `lw_t1_us` and `lw_o1_us` differ by one character. A `unit_prefix` edit
+/// that made them collide would fold tail time into the sweep-loop overhead
+/// the frame is measured against, and the record carries no second copy of
+/// either to disagree. Refused where the edit is written.
+const _: () = assert!(
+    const_no_name_is_shared(OUTSIDE_BUILD_UNIT_NAMES, FRAME_TAIL_UNIT_NAMES),
+    "the frame-tail and outside-build tables claim the same wire unit name",
+);
+
+/// The WHOLE namespace, checked against itself.
+pub const WIRE_UNIT_FAMILIES: &[(&str, &str)] = &[
+    (OUTSIDE_BUILD_UNIT_PREFIX, OUTSIDE_BUILD_UNIT_SUFFIX),
+    (FRAME_TAIL_UNIT_PREFIX, FRAME_TAIL_UNIT_SUFFIX),
+    (LANE_WALL_UNIT_PREFIX, LANE_WALL_UNIT_SUFFIX),
+    (LANE_WALL_UNIT_PREFIX, LANE_BUSY_UNIT_SUFFIX),
+    (DOMAIN_CRIT_UNIT_PREFIX, DOMAIN_CRIT_UNIT_SUFFIX),
+    (DOMAIN_CRIT_UNIT_PREFIX, DOMAIN_INBOUND_UNIT_SUFFIX),
+    (DOMAIN_CRIT_UNIT_PREFIX, DOMAIN_POST_UNIT_SUFFIX),
+    (CALLBACK_UNIT_PREFIX, CALLBACK_UNIT_SUFFIX),
 ];
 
-pub const FRAME_TAIL_UNIT_NAMES: &[&str] = &[
-    "lw_t0_us", "lw_t1_us", "lw_t2_us", "lw_t3_us", "lw_t4_us", "lw_t5_us", "lw_t6_us",
-];
-
-pub const FRAME_TAIL_SEGMENT_COUNT: usize = FRAME_TAIL_SEGMENTS.len();
+const _: () = assert!(
+    const_families_cannot_alias(&[
+        (OUTSIDE_BUILD_UNIT_PREFIX, OUTSIDE_BUILD_UNIT_SUFFIX),
+        (FRAME_TAIL_UNIT_PREFIX, FRAME_TAIL_UNIT_SUFFIX),
+        (LANE_WALL_UNIT_PREFIX, LANE_WALL_UNIT_SUFFIX),
+        (DOMAIN_CRIT_UNIT_PREFIX, DOMAIN_CRIT_UNIT_SUFFIX),
+        (CALLBACK_UNIT_PREFIX, CALLBACK_UNIT_SUFFIX),
+    ]),
+    "two numbered wire-unit families can spell the same name, so one      family's span would decode as another's code",
+);
 
 /// The unit carrying WHICH segments were actually closed on the frame this
 /// record describes: one bit per segment code, so a complete tail reads
@@ -1350,18 +1478,12 @@ pub fn frame_tail_segment_name(code: u16) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
-pub const POLL_GAP_BUCKET_MAX_US: [u64; 7] = [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000];
+crate::cause_tables::millisecond_buckets! {
+    bounds = pub POLL_GAP_BUCKET_MAX_US, names = pub POLL_GAP_BUCKET_UNIT_NAMES,
+    unit_prefix = "lw_poll_gap_";
 
-pub const POLL_GAP_BUCKET_UNIT_NAMES: [&str; POLL_GAP_BUCKET_MAX_US.len() + 1] = [
-    "lw_poll_gap_le1ms",
-    "lw_poll_gap_le2ms",
-    "lw_poll_gap_le4ms",
-    "lw_poll_gap_le8ms",
-    "lw_poll_gap_le16ms",
-    "lw_poll_gap_le32ms",
-    "lw_poll_gap_le64ms",
-    "lw_poll_gap_gt64ms",
-];
+    1, 2, 4, 8, 16, 32, last 64,
+}
 
 pub const POLL_GAP_BUCKET_COUNT: usize = POLL_GAP_BUCKET_UNIT_NAMES.len();
 
@@ -1935,6 +2057,79 @@ pub const fn const_names_are_distinct(names: &[&str]) -> bool {
     true
 }
 
+/// `name` SPELLS `variant`: the same letters in the same order, word breaks
+/// written as underscores, and any further word separated by one.
+///
+/// What binds a published name to the thing it names. A table of codes, names
+/// and variants can assert that each code is its own discriminant, that the
+/// codes are a bijection and that the names are distinct, and still let two
+/// `=> "name"` literals be exchanged: every assertion holds and each segment's
+/// span is published under the other's key.
+pub const fn const_name_spells_the_variant(name: &str, variant: &str) -> bool {
+    let (name, variant) = (name.as_bytes(), variant.as_bytes());
+    let (mut i, mut j) = (0, 0);
+    while j < variant.len() {
+        if i >= name.len() {
+            return false;
+        }
+        if name[i] == b'_' {
+            i += 1;
+            continue;
+        }
+        let lowered = if variant[j] >= b'A' && variant[j] <= b'Z' {
+            variant[j] + 32
+        } else {
+            variant[j]
+        };
+        if name[i] != lowered {
+            return false;
+        }
+        i += 1;
+        j += 1;
+    }
+    i == name.len() || name[i] == b'_'
+}
+
+/// `left` and `right` share no entry.
+pub const fn const_no_name_is_shared(left: &[&str], right: &[&str]) -> bool {
+    let mut i = 0;
+    while i < left.len() {
+        let mut j = 0;
+        while j < right.len() {
+            if const_str_eq(left[i], right[j]) {
+                return false;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// No spelling in `names` is a prefix of another, itself included.
+///
+/// What closes the one gap [`const_name_spells_the_variant`] leaves. It admits
+/// a name that carries further words, so two names COULD still be exchanged if
+/// one variant's spelling were a prefix of the other's -- each would go on
+/// spelling its new variant with the remainder read as a further word. Refuse
+/// the prefix and the exchange has nowhere to hide.
+pub const fn const_no_spelling_is_a_prefix_of_another(names: &[&str]) -> bool {
+    let mut i = 0;
+    while i < names.len() {
+        let mut j = i + 1;
+        while j < names.len() {
+            if const_str_starts_with(names[i], names[j])
+                || const_str_starts_with(names[j], names[i])
+            {
+                return false;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// `name` begins with `ordinal` as two zero-padded digits and an underscore.
 ///
 /// Wire spellings that carry their own ordinal are readable in a manifest and
@@ -2099,6 +2294,147 @@ pub const fn const_str_is_joined(name: &str, prefix: &str, first: &str, second: 
     }
     true
 }
+/// The EMITTED table's codes are their own positions.
+///
+/// Over `&[(u16, &str)]` rather than over the macro's arguments, because the
+/// arguments are not what ships. A macro that validates its inputs and emits
+/// something else has validated nothing: rewriting the emitted array to swap
+/// two names left every argument-side assertion true and published each
+/// segment under the other's key.
+pub const fn const_segment_codes_are_their_own_positions(
+    segments: &[(u16, &str)],
+) -> bool {
+    let mut i = 0;
+    while i < segments.len() {
+        if segments[i].0 as usize != i {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// No two entries of the EMITTED table are published under one name.
+pub const fn const_segment_names_are_distinct(segments: &[(u16, &str)]) -> bool {
+    let mut i = 0;
+    while i < segments.len() {
+        let mut j = i + 1;
+        while j < segments.len() {
+            if const_str_eq(segments[i].1, segments[j].1) {
+                return false;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// The EMITTED unit name for `code` is `prefix` + the code in decimal +
+/// `suffix`, and nothing else.
+///
+/// The wire name is what the host keys the published span by, and the guards
+/// all read `$segments` -- so an emitted `$units` built from the same prefix,
+/// code and suffix by any other expression shipped unchallenged.
+pub const fn const_unit_is_spelled(
+    unit: &str,
+    prefix: &str,
+    suffix: &str,
+    code: u16,
+) -> bool {
+    let (u, p, s) = (unit.as_bytes(), prefix.as_bytes(), suffix.as_bytes());
+    if u.len() < p.len() + s.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < p.len() {
+        if u[i] != p[i] {
+            return false;
+        }
+        i += 1;
+    }
+    let mut j = 0;
+    while j < s.len() {
+        if u[u.len() - s.len() + j] != s[j] {
+            return false;
+        }
+        j += 1;
+    }
+    let (start, stop) = (p.len(), u.len() - s.len());
+    if start >= stop {
+        return false;
+    }
+    if stop - start > 1 && u[start] == b'0' {
+        return false;
+    }
+    let mut value: u32 = 0;
+    let mut k = start;
+    while k < stop {
+        if u[k] < b'0' || u[k] > b'9' {
+            return false;
+        }
+        value = value * 10 + (u[k] - b'0') as u32;
+        k += 1;
+    }
+    value == code as u32
+}
+
+/// The EMITTED table's entry for `code` carries exactly `name`.
+///
+/// The direct binding between a row as written and the row that ships.
+/// Spelling the variant is not enough on its own: `concat!($name, "_wrong")`
+/// still spells it, because a published name is allowed to carry further
+/// words -- one of them is `buildtail_previous_frame`. This is what refuses an
+/// emitted table built from the rows by any expression that alters them.
+pub const fn const_segment_name_is(
+    segments: &[(u16, &str)],
+    code: u16,
+    name: &str,
+) -> bool {
+    let mut i = 0;
+    while i < segments.len() {
+        if segments[i].0 == code {
+            return const_str_eq(segments[i].1, name);
+        }
+        i += 1;
+    }
+    false
+}
+
+/// The EMITTED table's entry for `code` spells `variant`.
+pub const fn const_segment_spells_the_variant(
+    segments: &[(u16, &str)],
+    code: u16,
+    variant: &str,
+) -> bool {
+    let mut i = 0;
+    while i < segments.len() {
+        if segments[i].0 == code {
+            return const_name_spells_the_variant(segments[i].1, variant);
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Each index is its OWN POSITION in the list, not merely present in it.
+///
+/// A bijection is blind to ORDER, and order is what the wire carries here: the
+/// unit names are emitted in the order the rows are written and the collector
+/// pairs that order with accumulator slots, so exchanging two whole rows --
+/// variant, code and name together -- left every other assertion true and
+/// published slot 1's span under slot 2's name.
+pub const fn indices_are_their_own_positions(indices: &[usize]) -> bool {
+    let mut i = 0;
+    while i < indices.len() {
+        if indices[i] != i {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// Every index in `indices` is below `count` and appears once, so the indices
 /// and the slots `0..count` are the same set.
 ///

@@ -726,12 +726,19 @@ impl PlicVersion {
             PlicVersion::V2 => PLIC_V2_ITEM_LEN,
         }
     }
-    fn from_wire(value: u16) -> Option<PlicVersion> {
-        match value {
-            1 => Some(PlicVersion::V1),
-            2 => Some(PlicVersion::V2),
-            _ => None,
+    /// Read through `wire`, not beside it: a literal decoder was a second
+    /// copy of the same mapping, so moving a version's emitted code without
+    /// moving the decoder arm emitted a code this decoder refuses (lane TV,
+    /// row R2).
+    const fn from_wire(value: u16) -> Option<PlicVersion> {
+        let mut i = 0;
+        while i < PlicVersion::ALL.len() {
+            if PlicVersion::ALL[i].wire() == value {
+                return Some(PlicVersion::ALL[i]);
+            }
+            i += 1;
         }
+        None
     }
 }
 

@@ -3,9 +3,12 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use zstd::stream::raw::{DParameter, Decoder as RawDecoder, InBuffer, Operation, OutBuffer};
 
-const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
+// The magic and the window log are the compact stream's, not this reader's: the
+// producer writes the frame through `compact_stream` and a copy here that
+// drifted would refuse to recognise, or mis-window, the frames it writes.
+use compact_stream::{ZSTD_FRAME_MAGIC, ZSTD_WINDOW_LOG};
+
 const BUFFER_BYTES: usize = 1 << 20;
-const ZSTD_WINDOW_LOG: u32 = 27;
 
 pub(crate) fn open(file: &File) -> Result<Box<dyn Read>, ProductError> {
     let mut cloned = file
@@ -29,7 +32,7 @@ pub(crate) fn open(file: &File) -> Result<Box<dyn Read>, ProductError> {
         .seek(SeekFrom::Start(0))
         .map_err(|error| ProductError::new(format!("rewind retained H4CR file: {error}")))?;
     let buffered = BufReader::with_capacity(BUFFER_BYTES, cloned);
-    if filled == magic.len() && magic == ZSTD_MAGIC {
+    if filled == magic.len() && magic == ZSTD_FRAME_MAGIC {
         Ok(Box::new(StrictZstdReader::new(buffered).map_err(
             |error| ProductError::new(format!("open retained zstd H4CR: {error}")),
         )?))

@@ -17,6 +17,7 @@ pub mod a729_technology_badge_grid_hook;
 pub mod a729_technology_canvas;
 #[cfg(windows)]
 pub mod a729_technology_canvas_hook;
+pub(crate) mod standard_list;
 
 use std::collections::BTreeSet;
 

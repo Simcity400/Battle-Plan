@@ -498,12 +498,16 @@ impl SchemaVersion {
             SchemaVersion::V2 => 2,
         }
     }
+    /// Read through `wire`; see `PlicVersion::from_wire` for why (row R2).
     pub const fn from_wire(value: u32) -> Option<Self> {
-        match value {
-            1 => Some(SchemaVersion::V1),
-            2 => Some(SchemaVersion::V2),
-            _ => None,
+        let mut i = 0;
+        while i < SchemaVersion::ALL.len() {
+            if SchemaVersion::ALL[i].wire() == value {
+                return Some(SchemaVersion::ALL[i]);
+            }
+            i += 1;
         }
+        None
     }
     pub const fn archetype_present(self, equipment_flags: u32) -> bool {
         match self {

@@ -15,23 +15,7 @@ const PAYLOAD_SCHEMA: u16 = 1;
 const HEARTBEAT_CHALLENGE_LEN: usize = 28;
 const HEARTBEAT_PROOF_LEN: usize = 32;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u16)]
-pub enum HeartbeatState {
-    WaitingForWorld = 1,
-    Producing = 2,
-    PausedForControl = 3,
-}
-
-compact_contract::wire_coded_codes! {
-    HeartbeatState: u16,
-    code = pub code,
-    Ok = from_wire(value) -> Result<Self, HeartbeatError> { Err(HeartbeatError::UnknownState(value)) };
-
-    WaitingForWorld = 1,
-    Producing = 2,
-    PausedForControl = 3,
-}
+pub use compact_contract::control_transport::payloads::HeartbeatState;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HeartbeatChallenge {
@@ -151,7 +135,10 @@ pub fn decode_heartbeat_proof(payload: &[u8]) -> Result<HeartbeatProof, Heartbea
     Ok(HeartbeatProof {
         challenge,
         last_complete_h4cr_sequence: u64::from_le_bytes(payload[20..28].try_into().unwrap()),
-        state: HeartbeatState::from_wire(u16::from_le_bytes(payload[28..30].try_into().unwrap()))?,
+        state: {
+            let value = u16::from_le_bytes(payload[28..30].try_into().unwrap());
+            HeartbeatState::from_wire(value).ok_or(HeartbeatError::UnknownState(value))?
+        },
     })
 }
 

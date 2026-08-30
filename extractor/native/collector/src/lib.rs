@@ -6779,7 +6779,14 @@ mod tests {
             !declared.is_empty(),
             "parsed no cargo features; the [features] scan is broken, not the coverage"
         );
-        let named: Vec<&str> = F::FEATURE_NAMES.iter().map(|(_, name)| *name).collect();
+        // The DIAGNOSTIC bits, not the whole column: `DECLARED` is the
+        // presence flag that separates an empty feature set from a collector
+        // too old to answer, and no cargo feature carries it.
+        let named: Vec<&str> = F::FEATURE_NAMES
+            .iter()
+            .filter(|(bit, _)| bit & F::DIAGNOSTIC_MASK != 0)
+            .map(|(_, name)| *name)
+            .collect();
         for feature in &declared {
             assert!(
                 named.contains(feature),

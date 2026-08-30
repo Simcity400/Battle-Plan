@@ -19,9 +19,29 @@ pub const CAPTURE_READY_ACK_LEN: usize = 168;
 const CAPTURE_READY_AUTH_OFFSET: usize = CAPTURE_READY_LEN - 32;
 const CAPTURE_READY_ACK_AUTH_OFFSET: usize = CAPTURE_READY_ACK_LEN - 32;
 
-pub const HEARTBEAT_STATE_WAITING_FOR_WORLD: u16 = 1;
-pub const HEARTBEAT_STATE_PRODUCING: u16 = 2;
-pub const HEARTBEAT_STATE_PAUSED_FOR_CONTROL: u16 = 3;
+/// What the collector says it is doing, on the heartbeat.
+///
+/// The one code authority for it. The collector, the session decoder and the
+/// preflight proof each held their own copy of `1/2/3`, so exchanging two of
+/// them left a producing collector decoding as paused while preflight rejected
+/// the same heartbeat (lane TV, row R1).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u16)]
+pub enum HeartbeatState {
+    WaitingForWorld = 1,
+    Producing = 2,
+    PausedForControl = 3,
+}
+
+crate::wire_coded_codes! {
+    HeartbeatState: u16,
+    code = pub code,
+    Some = pub from_wire(value) -> Option<Self> { None };
+
+    WaitingForWorld = 1,
+    Producing = 2,
+    PausedForControl = 3,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PayloadError {
@@ -269,7 +289,7 @@ pub fn decode_heartbeat_challenge(payload: &[u8]) -> Result<HeartbeatChallengeV1
 pub struct HeartbeatProofV1 {
     pub challenge: [u8; 16],
     pub last_h4cr_sequence: u64,
-    pub state: u16,
+    pub state: HeartbeatState,
 }
 
 pub fn encode_heartbeat_proof(fields: &HeartbeatProofV1) -> Vec<u8> {
@@ -277,7 +297,7 @@ pub fn encode_heartbeat_proof(fields: &HeartbeatProofV1) -> Vec<u8> {
     push_prefix(&mut payload);
     payload.extend_from_slice(&fields.challenge);
     payload.extend_from_slice(&fields.last_h4cr_sequence.to_le_bytes());
-    payload.extend_from_slice(&fields.state.to_le_bytes());
+    payload.extend_from_slice(&fields.state.code().to_le_bytes());
     payload.extend_from_slice(&0u16.to_le_bytes());
     debug_assert_eq!(payload.len(), HEARTBEAT_PROOF_LEN);
     payload
@@ -293,14 +313,8 @@ pub fn decode_heartbeat_proof(payload: &[u8]) -> Result<HeartbeatProofV1, Payloa
         return Err(PayloadError::ZeroChallenge);
     }
     let state = read_u16(payload, PREFIX_LEN + 24);
-    if !matches!(
-        state,
-        HEARTBEAT_STATE_WAITING_FOR_WORLD
-            | HEARTBEAT_STATE_PRODUCING
-            | HEARTBEAT_STATE_PAUSED_FOR_CONTROL
-    ) {
-        return Err(PayloadError::UnknownHeartbeatState(state));
-    }
+    let state =
+        HeartbeatState::from_wire(state).ok_or(PayloadError::UnknownHeartbeatState(state))?;
     Ok(HeartbeatProofV1 {
         challenge,
         last_h4cr_sequence: read_u64(payload, PREFIX_LEN + 16),
@@ -390,18 +404,20 @@ impl CaptureReadyFlags {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CollectorFeatureBits(u32);
 
+crate::cause_tables::bit_flag_causes! {
+    associated CollectorFeatureBits, repr = u32,
+    mask = pub KNOWN_MASK, names = pub FEATURE_NAMES;
+
+    /// The build declared its feature set at all. Not a feature: it is what
+    /// separates an empty set from a collector too old to answer, which is why
+    /// [`CollectorFeatureBits::DIAGNOSTIC_MASK`] is the known set without it.
+    DECLARED = 0 => "declared",
+    TEST_SUPPORT = 1 => "test-support",
+    RANGE_TRACER = 2 => "range-tracer",
+}
+
 impl CollectorFeatureBits {
-    pub const DECLARED: u32 = 1 << 0;
-    pub const TEST_SUPPORT: u32 = 1 << 1;
-    pub const RANGE_TRACER: u32 = 1 << 2;
-    pub const KNOWN_MASK: u32 = Self::DECLARED | Self::TEST_SUPPORT | Self::RANGE_TRACER;
-
-    pub const DIAGNOSTIC_MASK: u32 = Self::TEST_SUPPORT | Self::RANGE_TRACER;
-
-    pub const FEATURE_NAMES: &'static [(u32, &'static str)] = &[
-        (Self::TEST_SUPPORT, "test-support"),
-        (Self::RANGE_TRACER, "range-tracer"),
-    ];
+    pub const DIAGNOSTIC_MASK: u32 = Self::KNOWN_MASK & !Self::DECLARED;
 
     pub const fn undeclared() -> Self {
         Self(0)
@@ -444,7 +460,7 @@ impl CollectorFeatureBits {
         Some(
             Self::FEATURE_NAMES
                 .iter()
-                .filter(|(bit, _)| self.0 & bit != 0)
+                .filter(|(bit, _)| self.0 & bit & Self::DIAGNOSTIC_MASK != 0)
                 .map(|(_, name)| *name)
                 .collect(),
         )
@@ -1045,7 +1061,7 @@ mod tests {
         let fields = HeartbeatProofV1 {
             challenge: [1; 16],
             last_h4cr_sequence: 123,
-            state: HEARTBEAT_STATE_PRODUCING,
+            state: HeartbeatState::Producing,
         };
         let wire = encode_heartbeat_proof(&fields);
         assert_eq!(wire.len(), HEARTBEAT_PROOF_LEN);
@@ -1360,19 +1376,7 @@ mod tests {
         let named = CollectorFeatureBits::FEATURE_NAMES
             .iter()
             .fold(0u32, |acc, (bit, _)| acc | bit);
-        assert_eq!(
-            named,
-            CollectorFeatureBits::KNOWN_MASK & !CollectorFeatureBits::DECLARED
-        );
-        let mut names: Vec<&str> = CollectorFeatureBits::FEATURE_NAMES
-            .iter()
-            .map(|(_, name)| *name)
-            .collect();
-        let count = names.len();
-        names.sort_unstable();
-        names.dedup();
-        assert_eq!(names.len(), count);
-        assert_eq!(CollectorFeatureBits::DIAGNOSTIC_MASK, named);
+        assert_eq!(named, CollectorFeatureBits::KNOWN_MASK);
 
         assert_eq!(
             CollectorFeatureBits::from_bits(1 << 31),

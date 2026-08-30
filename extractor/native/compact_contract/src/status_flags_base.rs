@@ -1,37 +1,27 @@
-pub const COMPACT_STATUS_STATE_UNAVAILABLE: u32 = 1 << 0;
-pub const COMPACT_STATUS_PROFILE_MISMATCH: u32 = 1 << 1;
-pub const COMPACT_STATUS_NO_CLOCK: u32 = 1 << 2;
-pub const COMPACT_STATUS_NO_SCALAR_SOURCE: u32 = 1 << 3;
-pub const COMPACT_STATUS_WAR_BRIDGE_APPLIED: u32 = 1 << 4;
-pub const COMPACT_STATUS_EXTRACTION_PERF_GATE: u32 = 1 << 5;
-pub const COMPACT_STATUS_WORKER_PANIC: u32 = 1 << 6;
-pub const COMPACT_STATUS_BRIDGE_UNAVAILABLE: u32 = 1 << 7;
-pub const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
-pub const COMPACT_STATUS_PARTIAL_DATA: u32 = 1 << 9;
-pub const COMPACT_STATUS_DELTA_DATA: u32 = 1 << 10;
-pub const COMPACT_STATUS_TRANSITION_BASELINE_RESET: u32 = 1 << 11;
-pub const COMPACT_STATUS_CONTROL_INVALID: u32 = 1 << 12;
-pub const COMPACT_STATUS_WAR_SEGMENT_ABSENT: u32 = 1 << 13;
-pub const COMPACT_STATUS_SOURCE_EMPTY: u32 = 1 << 14;
+crate::cause_tables::bit_flag_causes! {
+    classified repr = u32,
+    mask = pub COMPACT_STATUS_V1_KNOWN_MASK,
+    names = pub(crate) COMPACT_STATUS_V1_FLAG_NAMES,
+    failure_mask = pub COMPACT_STATUS_FAILURE_MASK,
+    bit_prefix = "COMPACT_STATUS_";
 
-pub const COMPACT_STATUS_BASELINE_CLEAR: u32 = 1 << 15;
-
-pub const COMPACT_STATUS_V1_KNOWN_MASK: u32 = COMPACT_STATUS_STATE_UNAVAILABLE
-    | COMPACT_STATUS_PROFILE_MISMATCH
-    | COMPACT_STATUS_NO_CLOCK
-    | COMPACT_STATUS_NO_SCALAR_SOURCE
-    | COMPACT_STATUS_WAR_BRIDGE_APPLIED
-    | COMPACT_STATUS_EXTRACTION_PERF_GATE
-    | COMPACT_STATUS_WORKER_PANIC
-    | COMPACT_STATUS_BRIDGE_UNAVAILABLE
-    | COMPACT_STATUS_SOURCE_UNAVAILABLE
-    | COMPACT_STATUS_PARTIAL_DATA
-    | COMPACT_STATUS_DELTA_DATA
-    | COMPACT_STATUS_TRANSITION_BASELINE_RESET
-    | COMPACT_STATUS_CONTROL_INVALID
-    | COMPACT_STATUS_WAR_SEGMENT_ABSENT
-    | COMPACT_STATUS_SOURCE_EMPTY
-    | COMPACT_STATUS_BASELINE_CLEAR;
+    COMPACT_STATUS_STATE_UNAVAILABLE = 0 => state_unavailable : failure,
+    COMPACT_STATUS_PROFILE_MISMATCH = 1 => profile_mismatch : failure,
+    COMPACT_STATUS_NO_CLOCK = 2 => no_clock : failure,
+    COMPACT_STATUS_NO_SCALAR_SOURCE = 3 => no_scalar_source : failure,
+    COMPACT_STATUS_WAR_BRIDGE_APPLIED = 4 => war_bridge_applied : informational,
+    COMPACT_STATUS_EXTRACTION_PERF_GATE = 5 => extraction_perf_gate : informational,
+    COMPACT_STATUS_WORKER_PANIC = 6 => worker_panic : failure,
+    COMPACT_STATUS_BRIDGE_UNAVAILABLE = 7 => bridge_unavailable : failure,
+    COMPACT_STATUS_SOURCE_UNAVAILABLE = 8 => source_unavailable : failure,
+    COMPACT_STATUS_PARTIAL_DATA = 9 => partial_data : failure,
+    COMPACT_STATUS_DELTA_DATA = 10 => delta_data : informational,
+    COMPACT_STATUS_TRANSITION_BASELINE_RESET = 11 => transition_baseline_reset : informational,
+    COMPACT_STATUS_CONTROL_INVALID = 12 => control_invalid : failure,
+    COMPACT_STATUS_WAR_SEGMENT_ABSENT = 13 => war_segment_absent : informational,
+    COMPACT_STATUS_SOURCE_EMPTY = 14 => source_empty : informational,
+    COMPACT_STATUS_BASELINE_CLEAR = 15 => baseline_clear : informational,
+}
 
 pub const fn compact_status_baseline_clear_is_contradictory(status_flags: u32) -> bool {
     (status_flags & COMPACT_STATUS_BASELINE_CLEAR) != 0

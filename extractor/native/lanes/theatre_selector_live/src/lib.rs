@@ -186,6 +186,7 @@ compact_contract::wire_coded_codes! {
     Mod = 4,
 }
 
+pub(crate) mod engine_abi;
 pub mod engine_localisation_provenance;
 pub mod engine_modset_provenance;
 

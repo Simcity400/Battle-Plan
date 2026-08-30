@@ -18,8 +18,7 @@ use compact_contract::campaign_rollover::{
 };
 use compact_contract::control_transport::payloads::{
     decode_heartbeat_challenge, encode_collector_hello_with_capabilities, encode_heartbeat_proof,
-    CollectorHelloV1, HeartbeatProofV1, PayloadError, HEARTBEAT_STATE_PAUSED_FOR_CONTROL,
-    HEARTBEAT_STATE_PRODUCING, HEARTBEAT_STATE_WAITING_FOR_WORLD,
+    CollectorHelloV1, HeartbeatProofV1, PayloadError,
 };
 use compact_contract::control_transport::{
     ControlCapabilities, ControlChannel, ControlError, ControlIo, EndpointRole, MessageKind,
@@ -378,22 +377,7 @@ impl Default for DuplexClientPolicy {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProductionState {
-    WaitingForWorld,
-    Producing,
-    PausedForControl,
-}
-
-impl ProductionState {
-    fn wire(self) -> u16 {
-        match self {
-            Self::WaitingForWorld => HEARTBEAT_STATE_WAITING_FOR_WORLD,
-            Self::Producing => HEARTBEAT_STATE_PRODUCING,
-            Self::PausedForControl => HEARTBEAT_STATE_PAUSED_FOR_CONTROL,
-        }
-    }
-}
+pub use compact_contract::control_transport::payloads::HeartbeatState as ProductionState;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClientPhase {
@@ -1705,12 +1689,12 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
                 let proof = encode_heartbeat_proof(&HeartbeatProofV1 {
                     challenge: challenge.challenge,
                     last_h4cr_sequence: self.last_h4cr_sequence,
-                    state: self.reported_state.wire(),
+                    state: self.reported_state,
                 });
                 self.send_frame(MessageKind::HeartbeatProof, &proof, deadline)?;
                 Ok(ClientEvent::HeartbeatServed {
                     host_challenge_counter: challenge.host_challenge_counter,
-                    reported_state: self.reported_state.wire(),
+                    reported_state: self.reported_state.code(),
                 })
             }
             MessageKind::FirstCompactFrameAck => {

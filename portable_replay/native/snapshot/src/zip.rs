@@ -14,7 +14,10 @@ const ZIP64_EXTRA_ID: u16 = 0x0001;
 pub const ZIP_METHOD_STORE: u16 = 0;
 pub const ZIP_METHOD_DEFLATE: u16 = 8;
 pub const ZIP_METHOD_ZSTD: u16 = 93;
-pub const ZSTD_WINDOW_LOG: u32 = 27;
+// The window log a zstd frame in this container was written with is the
+// compact stream's, not the zip reader's: a copy here that drifted below the
+// writer's would refuse frames this product itself produced.
+pub use compact_stream::ZSTD_WINDOW_LOG;
 
 pub const ZIP32_MAX_FIELD_VALUE: u64 = (u32::MAX as u64) - 1;
 pub const ZIP32_MAX_ENTRY_COUNT: usize = (u16::MAX as usize) - 1;

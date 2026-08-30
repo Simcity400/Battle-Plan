@@ -8,19 +8,19 @@ pub use deployment_queue::{
     DeploymentQueueSummary,
 };
 
-pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
-pub const COMPACT_RECORD_VERSION: u16 = 1;
-pub const COMPACT_RECORD_HEADER_LEN: usize = 32;
-pub const RECORD_TYPE_DOMAIN_PERF: u16 = 1;
-pub const RECORD_TYPE_FRAME_END: u16 = 2;
-pub const RECORD_TYPE_DOMAIN_DATA: u16 = 3;
+pub const COMPACT_RECORD_MAGIC: &[u8; 4] = compact_contract::COMPACT_RECORD_MAGIC;
+pub const COMPACT_RECORD_VERSION: u16 = compact_contract::COMPACT_RECORD_VERSION;
+pub const COMPACT_RECORD_HEADER_LEN: usize = compact_contract::COMPACT_RECORD_HEADER_LEN;
+pub const RECORD_TYPE_DOMAIN_PERF: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF;
+pub const RECORD_TYPE_FRAME_END: u16 = compact_contract::COMPACT_RECORD_TYPE_FRAME_END;
+pub const RECORD_TYPE_DOMAIN_DATA: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA;
 
 pub const DOMAIN_FUEL: u16 = 10;
 pub const DOMAIN_PRODUCTION: u16 = 11;
 pub const DOMAIN_STOCKPILE_VARIANT_DEFS: u16 = 37;
 pub const DOMAIN_STOCKPILE_VARIANT_UPGRADES: u16 = 40;
 pub const DOMAIN_GAP_BADGES: u16 = 611;
-pub const DOMAIN_FRAME: u16 = 1000;
+pub const DOMAIN_FRAME: u16 = compact_contract::COMPACT_DOMAIN_FRAME;
 const RC_PROBE_DOMAIN_ID: u16 = 250;
 
 pub const PROPOSED_DOMAIN_PRODUCTION_LINE_DEMAND: u16 = 612;
@@ -290,7 +290,7 @@ pub fn encode_fuel_payload(elapsed_wall_ms: u64, status_flags: u32, rows: &[Fuel
     payload
 }
 
-// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=cd0e1eed4d8767af23c3d745c2ff369f1fa78e514c9a77ab4f6ef9acdfc54631
+// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=9 sha256=cce6673c3c6f566a7eb6235c00f0d42cb115d5e49de3f90fe4f2c76a96b2c5a2
 pub fn encode_production_payload(
     elapsed_wall_ms: u64,
     status_flags: u32,

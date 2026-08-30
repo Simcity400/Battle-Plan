@@ -34,6 +34,7 @@ pub mod national_focus_presentation;
 pub mod naval_history;
 pub mod occupation_robin_hood;
 pub mod passive_ready;
+pub mod payload_source_kinds;
 pub mod payload_span_delta;
 pub mod pending_producer;
 pub mod pov_visibility;
@@ -198,16 +199,6 @@ pub fn compact_status_unassigned_bit_indices(unassigned_flags: u32) -> Vec<u32> 
         .collect()
 }
 
-pub const COMPACT_STATUS_FAILURE_MASK: u32 = COMPACT_STATUS_STATE_UNAVAILABLE
-    | COMPACT_STATUS_PROFILE_MISMATCH
-    | COMPACT_STATUS_NO_CLOCK
-    | COMPACT_STATUS_NO_SCALAR_SOURCE
-    | COMPACT_STATUS_WORKER_PANIC
-    | COMPACT_STATUS_BRIDGE_UNAVAILABLE
-    | COMPACT_STATUS_SOURCE_UNAVAILABLE
-    | COMPACT_STATUS_PARTIAL_DATA
-    | COMPACT_STATUS_CONTROL_INVALID;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompactBaselineClearAdmission {
     pub domain_id: CompactDomainId,
@@ -271,72 +262,16 @@ impl CompactStatusFlagSpec {
     }
 }
 
-pub const COMPACT_STATUS_V1_FLAG_SPECS: &[CompactStatusFlagSpec] = &[
-    CompactStatusFlagSpec {
-        bit: COMPACT_STATUS_STATE_UNAVAILABLE,
-        name: "state_unavailable",
-    },
-    CompactStatusFlagSpec {
-        bit: COMPACT_STATUS_PROFILE_MISMATCH,
-        name: "profile_mismatch",
-    },
-    CompactStatusFlagSpec {
-        bit: COMPACT_STATUS_NO_CLOCK,
-        name: "no_clock",
-    },
-    CompactStatusFlagSpec {
-        bit: COMPACT_STATUS_NO_SCALAR_SOURCE,
-        name: "no_scalar_source",
-    },
-    CompactStatusFlagSpec {
-        bit: COMPACT_STATUS_WAR_BRIDGE_APPLIED,
-        name: "war_bridge_applied",
-    },
-    CompactStatusFlagSpec {
-        bit: COMPACT_STATUS_EXTRACTION_PERF_GATE,
-        name: "extraction_perf_gate",
-    },
-    CompactStatusFlagSpec {
-        bit: COMPACT_STATUS_WORKER_PANIC,
-        name: "worker_panic",
-    },
-    CompactStatusFlagSpec {
-        bit: COMPACT_STATUS_BRIDGE_UNAVAILABLE,
-        name: "bridge_unavailable",
-    },
-    CompactStatusFlagSpec {
-        bit: COMPACT_STATUS_SOURCE_UNAVAILABLE,
-        name: "source_unavailable",
-    },
-    CompactStatusFlagSpec {
-        bit: COMPACT_STATUS_PARTIAL_DATA,
-        name: "partial_data",
-    },
-    CompactStatusFlagSpec {
-        bit: COMPACT_STATUS_DELTA_DATA,
-        name: "delta_data",
-    },
-    CompactStatusFlagSpec {
-        bit: COMPACT_STATUS_TRANSITION_BASELINE_RESET,
-        name: "transition_baseline_reset",
-    },
-    CompactStatusFlagSpec {
-        bit: COMPACT_STATUS_CONTROL_INVALID,
-        name: "control_invalid",
-    },
-    CompactStatusFlagSpec {
-        bit: COMPACT_STATUS_WAR_SEGMENT_ABSENT,
-        name: "war_segment_absent",
-    },
-    CompactStatusFlagSpec {
-        bit: COMPACT_STATUS_SOURCE_EMPTY,
-        name: "source_empty",
-    },
-    CompactStatusFlagSpec {
-        bit: COMPACT_STATUS_BASELINE_CLEAR,
-        name: "baseline_clear",
-    },
-];
+pub const COMPACT_STATUS_V1_FLAG_SPECS: &[CompactStatusFlagSpec] = &{
+    let mut specs = [CompactStatusFlagSpec { bit: 0, name: "" }; COMPACT_STATUS_V1_FLAG_NAMES.len()];
+    let mut index = 0;
+    while index < COMPACT_STATUS_V1_FLAG_NAMES.len() {
+        let (bit, name) = COMPACT_STATUS_V1_FLAG_NAMES[index];
+        specs[index] = CompactStatusFlagSpec { bit, name };
+        index += 1;
+    }
+    specs
+};
 
 pub fn compact_status_flag_names(status_flags: u32) -> Vec<&'static str> {
     COMPACT_STATUS_V1_FLAG_SPECS

@@ -14,14 +14,17 @@ pub const CONTENT_IDENTITY_CENSUS_MAX_PAYLOAD_LEN: usize = CONTENT_IDENTITY_CENS
     + 2 * CONTENT_IDENTITY_CENSUS_MAX_ROWS_PER_NAMESPACE * CONTENT_IDENTITY_CENSUS_ROW_LEN
     + CONTENT_IDENTITY_CENSUS_MAX_BLOB_LEN;
 
-pub const CONTENT_IDENTITY_STATUS_BUILDINGS_UNREADABLE: u16 = 1 << 0;
-pub const CONTENT_IDENTITY_STATUS_RESOURCES_UNREADABLE: u16 = 1 << 1;
-pub const CONTENT_IDENTITY_STATUS_BOUND_TRUNCATED: u16 = 1 << 2;
-pub const CONTENT_IDENTITY_STATUS_CONFLICT_DROPPED: u16 = 1 << 3;
-pub const CONTENT_IDENTITY_STATUS_KNOWN_MASK: u16 = CONTENT_IDENTITY_STATUS_BUILDINGS_UNREADABLE
-    | CONTENT_IDENTITY_STATUS_RESOURCES_UNREADABLE
-    | CONTENT_IDENTITY_STATUS_BOUND_TRUNCATED
-    | CONTENT_IDENTITY_STATUS_CONFLICT_DROPPED;
+crate::cause_tables::bit_flag_causes! {
+    repr = u16,
+    mask = pub CONTENT_IDENTITY_STATUS_KNOWN_MASK,
+    names = pub(crate) CONTENT_IDENTITY_STATUS_NAMES,
+    bit_prefix = "CONTENT_IDENTITY_STATUS_";
+
+    CONTENT_IDENTITY_STATUS_BUILDINGS_UNREADABLE = 0 => buildings_unreadable,
+    CONTENT_IDENTITY_STATUS_RESOURCES_UNREADABLE = 1 => resources_unreadable,
+    CONTENT_IDENTITY_STATUS_BOUND_TRUNCATED = 2 => bound_truncated,
+    CONTENT_IDENTITY_STATUS_CONFLICT_DROPPED = 3 => conflict_dropped,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u16)]
@@ -80,20 +83,11 @@ impl ContentIdentityCensusV1 {
     }
 
     pub fn status_names(&self) -> Vec<&'static str> {
-        let mut names = Vec::new();
-        if self.status & CONTENT_IDENTITY_STATUS_BUILDINGS_UNREADABLE != 0 {
-            names.push("buildings_unreadable");
-        }
-        if self.status & CONTENT_IDENTITY_STATUS_RESOURCES_UNREADABLE != 0 {
-            names.push("resources_unreadable");
-        }
-        if self.status & CONTENT_IDENTITY_STATUS_BOUND_TRUNCATED != 0 {
-            names.push("bound_truncated");
-        }
-        if self.status & CONTENT_IDENTITY_STATUS_CONFLICT_DROPPED != 0 {
-            names.push("conflict_dropped");
-        }
-        names
+        CONTENT_IDENTITY_STATUS_NAMES
+            .iter()
+            .filter(|(bit, _)| self.status & bit != 0)
+            .map(|(_, name)| *name)
+            .collect()
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, String> {
@@ -491,12 +485,7 @@ mod tests {
     #[test]
     fn every_way_of_losing_a_definition_makes_the_census_incomplete() {
         assert!(census().is_complete());
-        for status in [
-            CONTENT_IDENTITY_STATUS_BUILDINGS_UNREADABLE,
-            CONTENT_IDENTITY_STATUS_RESOURCES_UNREADABLE,
-            CONTENT_IDENTITY_STATUS_BOUND_TRUNCATED,
-            CONTENT_IDENTITY_STATUS_CONFLICT_DROPPED,
-        ] {
+        for (status, _) in CONTENT_IDENTITY_STATUS_NAMES.iter().copied() {
             let mut injured = census();
             injured.status = status;
             assert!(!injured.is_complete(), "status {status:#06x}");
