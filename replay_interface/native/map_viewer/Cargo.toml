@@ -32,6 +32,10 @@ winapi = { version = "0.3.9", features = [
 ] }
 
 [dev-dependencies]
+# The a729 bytes XMAP17's country-name substitution reproduces. Test-only: the
+# renderer implements the law, and the evidence is what holds the law to the
+# engine rather than to a comment.
+portable_engine_evidence = { path = "../../../portable_replay/native/engine_evidence" }
 # Waits out the Windows sharing violation a real-time scanner causes on a
 # freshly written file. Test-only: nothing this package ships calls it.
 portable_test_fs_retry = { path = "../../../portable_replay/native/test_fs_retry" }

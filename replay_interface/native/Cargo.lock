@@ -225,6 +225,7 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "portable_content_manifest",
+ "portable_engine_evidence",
  "portable_render_stream",
  "portable_replay_format",
  "portable_terrain_fixture",

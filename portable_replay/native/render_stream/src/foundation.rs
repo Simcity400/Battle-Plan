@@ -324,6 +324,12 @@ impl MapVisualFamily {
                 "player-label-country:co-op",
                 "player-label-country:shared-player-key",
                 "player-label-country:display-text-unrenderable",
+                // The country NAME layer's own country-grain cause: a729
+                // substitutes runtime variables into a country's display name
+                // out of that country's own overlord record, and an hour that
+                // binds no such operand leaves the name underivable. One
+                // country's label is excluded; a value is never fabricated.
+                "country-label-runtime-operand-unbound",
             ],
             Self::MapFurnitureIcons => &["control-leaf-unmeasured", "controller-outside-roster"],
             // NO WILDCARD. A family that emits no diagnostics says so by name, so adding a
