@@ -2339,6 +2339,19 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                     Ok(AcceptedRecordKind::CampaignIdentity) => {
                         validated_cid1 = validator.identity().cloned();
                         campaign_identity = validator.identity().map(FoldedCampaignIdentity::from);
+                        // The XMAP17 faction-label carrier is stamped with an
+                        // epoch over (campaign_id, CID1 payload digest) - the
+                        // same preimage the replay re-derives from the packaged
+                        // campaign identity. Stamped HERE because CID1 is
+                        // accepted before any ordinary record, so every hour
+                        // this fold writes carries it, and every strided fold of
+                        // the same stream computes it from the same bytes.
+                        if let Some(identity) = &campaign_identity {
+                            fold.set_xmap17_producer_epoch(
+                                &identity.campaign_id,
+                                &identity.cid1_payload_sha256,
+                            );
+                        }
                         off += record_len;
                         continue;
                     }
@@ -6370,4 +6383,83 @@ fn a_corrupted_repeat_refuses_by_name_while_the_hour_bytes_still_seal() {
         "the digest mismatch must be named in the published provenance"
     );
 }
+
+/// kills: deleting the CID1 -> `set_xmap17_producer_epoch` call. Every other
+/// XMAP17 test stamps the epoch by hand, so without this one the production
+/// wire between the stream validator and the fold is untested and its removal
+/// would be silent - the carrier would simply stop appearing in recordings.
+#[test]
+fn a_cid1_stream_stamps_the_xmap17_producer_epoch_the_replay_will_recompute() {
+    let raw = raw_for(HOUR_A);
+    let mut rows = diplomacy_intel_operatives_live::extractor::proof_fixture_rows();
+    rows.operation_anchors.clear();
+    rows.intel_map.clear();
+    rows.factions = vec![diplomacy_intel_operatives_live::compact::FactionRow {
+        faction_id: 2,
+        faction_type: 88,
+        name_hash: 2,
+        leader_tag_db_id: 1,
+        member_tag_db_ids: vec![1],
+        display_text: Some("Allies".into()),
+    }];
+    rows.faction_roster_complete = true;
+    let built = diplomacy_intel_operatives_live::extractor::build_domain53_payload(
+        rows,
+        diplomacy_intel_operatives_live::extractor::CURRENT_VALIDATED_SOURCE_PROOFS,
+    );
+    assert!(built.ok(), "{:?}", built.errors);
+
+    let mut stream = Vec::new();
+    push_identity_v1(&mut stream, raw);
+    push_record(
+        &mut stream,
+        1,
+        raw,
+        diplomacy_intel_operatives_live::DOMAIN_ID,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        &built.payload,
+    );
+    push_record(
+        &mut stream,
+        2,
+        raw,
+        COMPACT_DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(1, 1, 0, 0),
+    );
+
+    let mut fold = WorldFold::new("xmap17_cid1_epoch");
+    let total_len = stream.len() as u64;
+    let outcome = drive_fold_with_identity_mode(
+        Cursor::new(stream),
+        total_len,
+        &mut fold,
+        StreamIdentityMode::IdentityV1,
+    )
+    .expect("the identity-v1 stream folds");
+    let identity = outcome
+        .campaign_identity
+        .as_ref()
+        .expect("the CID1 record was accepted");
+
+    let snapshots = fold.finish();
+    assert_eq!(snapshots.len(), 1);
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&snapshots[0].2).expect("snapshot is json");
+    let carrier = snapshot
+        .get("_xmap17_faction_labels_exact")
+        .unwrap_or_else(|| panic!("the CID1 stream must publish the carrier: {snapshot:#}"));
+
+    // Recomputed here exactly as `replay_core::WorldTimeline::open` recomputes it
+    // from the packaged campaign identity.
+    let preimage = serde_json::to_vec(&(
+        "xmap17.producer_epoch.a729.v1",
+        identity.campaign_id.as_str(),
+        identity.cid1_payload_sha256.as_str(),
+    ))
+    .expect("preimage serializes");
+    let expected = to_hex(&Sha256::digest(&preimage));
+    assert_eq!(carrier["producer_epoch_sha256"].as_str(), Some(expected.as_str()));
+}
+
 }

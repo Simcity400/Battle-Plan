@@ -60,9 +60,6 @@
     "extractor/native/compact_contract/src/pending_producer.rs": {
       "replay_core/src/world.rs:1": 2
     },
-    "extractor/native/lanes/xmap17_labels/src/lib.rs": {
-      "replay_core/src/xmap17_player_labels.rs:21": 1
-    },
     "extractor/native/lanes/xui26_frontend/src/lib.rs": {
       "replay_core/src/xui26_frontend.rs:8": 1
     },

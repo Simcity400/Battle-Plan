@@ -80,7 +80,6 @@ focus_research_decisions_depth_live = { path = "../lanes/focus_research_decision
 # `PENDING_PRODUCER_SLOTS` reads each crate's declaration, so a crate deleted
 # here fails the collector's build rather than silently becoming unreachable.
 # This block is a single contiguous region, which is why all five land at once.
-xmap17_labels = { path = "../lanes/xmap17_labels" }
 xui26_frontend = { path = "../lanes/xui26_frontend" }
 xmap20_effects = { path = "../lanes/xmap20_effects" }
 victory_points = { path = "../lanes/victory_points" }

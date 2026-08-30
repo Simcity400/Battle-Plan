@@ -198,7 +198,6 @@ dependencies = [
  "theatre_selector_live_lane",
  "victory_points",
  "windows-sys",
- "xmap17_labels",
  "xmap20_effects",
  "xui26_frontend",
 ]
@@ -423,6 +422,7 @@ version = "0.1.0"
 dependencies = [
  "compact_contract",
  "inline_detour",
+ "map_passive_carriers_live_lane",
  "minhook_h4",
  "portable_render_stream",
  "serde",
@@ -965,6 +965,7 @@ dependencies = [
  "hub_motorization_live_lane",
  "hud_role_observer_live_lane",
  "land_combat_detail_events_live_lane",
+ "map_passive_carriers_live_lane",
  "mimalloc",
  "naval_combat_live_lane",
  "naval_missions_status_live_lane",
@@ -1364,13 +1365,6 @@ dependencies = [
  "sha2",
  "wire_format",
  "zstd",
-]
-
-[[package]]
-name = "xmap17_labels"
-version = "0.1.0"
-dependencies = [
- "compact_contract",
 ]
 
 [[package]]

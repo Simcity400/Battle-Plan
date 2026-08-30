@@ -115,7 +115,6 @@ fn frame() -> FrameIdentity {
     FrameIdentity {
         frame_hour: 9,
         producer_epoch_sha256: "2".repeat(64),
-        source_sequence: 7,
     }
 }
 
@@ -132,7 +131,6 @@ fn produced_bundle() -> Value {
         "_comment": "Lane HY joint-certification fixture. Producer half: extractor/native/lanes/map_passive_carriers_live/tests/joint_certification.rs. Consumer half: replay_interface/native/replay_core/src/xmap17_player_labels.rs. Regenerate with HY_WRITE_XMAP17_FIXTURE=1.",
         "frame_hour": frame().frame_hour,
         "producer_epoch_sha256": frame().producer_epoch_sha256,
-        "source_sequence": frame().source_sequence,
         "domain53_snapshot_payload_sha256": "a".repeat(64),
         "faction_members": roster(),
         "_xmap17_faction_labels_exact": serde_json::to_value(&carrier).expect("faction carrier"),

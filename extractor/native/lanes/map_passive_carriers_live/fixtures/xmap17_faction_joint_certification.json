@@ -32,11 +32,10 @@
     "passive_all_faction": true,
     "producer_complete": true,
     "producer_epoch_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
-    "record_sha256": "9747b8df4ed7e9a37458b0835f0ce23eafd78a69f4c6555896a1577a9b4534bf",
+    "record_sha256": "30bc71b2a5071d84cdc7dbb4e902354c638225a3cb9ba61346ff845600e20fb4",
     "recorder_pov_independent": true,
     "schema": "xmap17.faction_labels_exact.a729.v1",
     "source_job_token": "20260813T063548Z-hy-xmap17-faction-display-text-law-46056df8",
-    "source_sequence": 7,
     "ui_open_independent": true
   },
   "domain53_snapshot_payload_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -54,6 +53,5 @@
     ]
   },
   "frame_hour": 9,
-  "producer_epoch_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
-  "source_sequence": 7
+  "producer_epoch_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
 }
