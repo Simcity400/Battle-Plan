@@ -130,21 +130,21 @@ impl ProductionMapFeatureAdapter for Xmap15OrdersAdapter {
             prepared_weather: None,
             prepared_rivers_straits: None,
             prepared_water: None,
-            prepared_effects: None,
             prepared_units: None,
             prepared_combat: None,
             prepared_orders: None,
             prepared_rail_supply: None,
             prepared_map_modes: None,
-            prepared_map_furniture: None,
             element_diagnostics: Vec::new(),
             consumed_gap_ids: vec![XMAP15_AUTHORITY_GAP_ID.into()],
         };
 
         if semantic_value(context.world_frame).is_none() {
-            return Ok(unavailable(
-                "the unconditional current-hour XMAP15 semantic sidecar is absent",
-            ));
+            return Ok(unavailable(&format!(
+                "this recording carries no key {}: the unconditional current-hour XMAP15 \
+                 semantic sidecar is absent",
+                replay_core::XMAP15_ORDERS_FRONTS_MOVEMENT_SEMANTIC_PATH.join(".")
+            )));
         }
         let Some(units) = context.xmap15_units else {
             return Ok(unavailable(
@@ -207,13 +207,11 @@ impl ProductionMapFeatureAdapter for Xmap15OrdersAdapter {
             prepared_weather: None,
             prepared_rivers_straits: None,
             prepared_water: None,
-            prepared_effects: None,
             prepared_units: None,
             prepared_combat: None,
             prepared_orders: Some(prepared),
             prepared_rail_supply: None,
             prepared_map_modes: None,
-            prepared_map_furniture: None,
             element_diagnostics: Vec::new(),
             consumed_gap_ids: vec![XMAP15_AUTHORITY_GAP_ID.into()],
         })

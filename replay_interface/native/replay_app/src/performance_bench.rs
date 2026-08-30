@@ -1518,7 +1518,7 @@ mod tests {
             )
             .expect("recording benchmark product foundation includes XMAP21 execute");
 
-        let source = include_str!("performance_bench.rs");
+        let source = crate::source_scan::performance_bench_production();
         let start = source
             .find("pub(crate) fn run(")
             .expect("recording benchmark entry");

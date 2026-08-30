@@ -7025,8 +7025,9 @@ mod tests {
 
     #[test]
     fn xui19_shipping_input_and_tooltips_are_presented_only_and_read_only() {
-        let source = include_str!("ui_runtime.rs").replace("\r\n", "\n");
-        let production = &source[..source.find("mod tests {").expect("test module marker")];
+        let source = crate::source_scan::ui_runtime_production();
+        // `ui_runtime_production()` already ends at the test module.
+        let production = source.as_str();
         assert!(production.contains("self.xui19_presented = pending;"));
         assert!(
             production.contains("xui19_matching_presented(viewer, self.xui19_presented.as_ref())")
@@ -7074,8 +7075,9 @@ mod tests {
 
     #[test]
     fn xui20_shipping_route_is_present_transactional_and_history_bound() {
-        let source = include_str!("ui_runtime.rs");
-        let production = &source[..source.find("mod tests {").expect("test module marker")];
+        let source = crate::source_scan::ui_runtime_production();
+        // `ui_runtime_production()` already ends at the test module.
+        let production = source.as_str();
         assert!(production
             .contains("self.xui20_pending_viewer_checkpoint = Some(viewer.combat.clone())"));
         assert!(production.contains("self.renderer.compose_xui20_combat_surface("));
@@ -7088,7 +7090,7 @@ mod tests {
         assert!(production.contains("pub fn xui20_wheel_notches_at("));
         assert!(production.contains("pub fn xui20_pointer_press("));
         assert!(production.contains("compose_xui20_xui05_tooltip("));
-        let app = include_str!("app.rs");
+        let app = crate::source_scan::app_production();
         let execute_call = app
             .find("let outcome = match product_observer_ui.execute(")
             .expect("shipping observer execute match");
@@ -7147,7 +7149,7 @@ mod tests {
 
     #[test]
     fn xui20_execute_reconciles_the_authenticated_candidate_before_semantic_preflight() {
-        let production = include_str!("ui_runtime.rs").replace("\r\n", "\n");
+        let production = crate::source_scan::ui_runtime_production();
         let execute = production
             .find("    pub fn execute(\n        &mut self,\n        gfx: &Gfx,")
             .expect("product execute entry");
@@ -7395,7 +7397,7 @@ mod tests {
         assert!(country_reset.contains("viewer.politics.reset_frame_bound_state()"));
         assert!(country_reset.contains("self.xui11_history_anchor = None"));
         let reset_end = source[reset_start..]
-            .find("    /// Toggle the state-first politics panel")
+            .find("    pub fn toggle_xui11(")
             .map(|offset| reset_start + offset)
             .expect("seek reset boundary");
         let reset = &source[reset_start..reset_end];
@@ -7404,8 +7406,9 @@ mod tests {
 
     #[test]
     fn xui18_shipping_route_is_present_transactional_and_viewer_owned() {
-        let source = include_str!("ui_runtime.rs");
-        let production = &source[..source.find("mod tests {").expect("test module marker")];
+        let source = crate::source_scan::ui_runtime_production();
+        // `ui_runtime_production()` already ends at the test module.
+        let production = source.as_str();
         assert!(production.contains("compose_xui18_power_balance_surface("));
         assert!(production.contains("self.xui18_presented = self.xui18_pending.take()"));
         assert!(production.contains("self.xui18_pending_viewer_checkpoint = None"));
@@ -7427,7 +7430,7 @@ mod tests {
         assert!(production.contains("authenticated open panel produced no pixel surface"));
         assert!(production.contains("authenticated compositor rejected the exact surface"));
 
-        let app = include_str!("app.rs");
+        let app = crate::source_scan::app_production();
         assert!(app.contains("ObserverViewerActionDisposition::OpenPowerBalance"));
         assert!(app.contains("xui18_pointer_press("));
         assert!(app.contains("xui18_pointer_move("));
@@ -7447,8 +7450,9 @@ mod tests {
 
     #[test]
     fn xui21_shipping_route_is_present_transactional_and_read_only() {
-        let source = include_str!("ui_runtime.rs");
-        let production = &source[..source.find("mod tests {").expect("test module marker")];
+        let source = crate::source_scan::ui_runtime_production();
+        // `ui_runtime_production()` already ends at the test module.
+        let production = source.as_str();
         assert!(production.contains("compose_xui21_event_stack("));
         assert!(production.contains("begin_xui21_staged_candidate("));
         assert!(production.contains("stage_xui21_candidate("));
@@ -7721,18 +7725,16 @@ mod tests {
     }
 
     fn production_source() -> String {
-        let source = include_str!("ui_runtime.rs").replace("\r\n", "\n");
-        let marker = ["#[cfg(", "test)]"].concat();
-        let cut = source
-            .rfind(&marker)
-            .expect("this module has a test module to cut off");
-        source[..cut].to_string()
+        crate::source_scan::ui_runtime_production()
     }
 
     #[test]
     fn the_production_source_slice_actually_excludes_the_tests() {
         let production = production_source();
-        assert!(production.len() < include_str!("ui_runtime.rs").len());
+        // Against the STRIPPED whole file: the raw reader is private to the
+        // seam, and the cut is a prefix of what the seam hands out, so this is
+        // the comparison that says the cut removed something.
+        assert!(production.len() < crate::source_scan::ui_runtime().len());
         assert!(!production.contains('\r'));
         let test_only = [
             "the_production_source_slice_",
@@ -7782,7 +7784,7 @@ mod tests {
             .expect("shipping XUI23 reset boundary");
         assert!(!runtime[reset_start..reset_end].contains("self.xui23_pending = None"));
 
-        let app = include_str!("app.rs").replace("\r\n", "\n");
+        let app = crate::source_scan::app_production();
         assert!(app.contains("VK_X if pov.selected_ui_country().is_some()"));
         assert!(app.contains("product_observer_ui.cycle_xui23_context"));
         for seek in [
@@ -7807,7 +7809,7 @@ mod tests {
             .find("impl ProductObserverUiRuntime {")
             .expect("observer product runtime");
         let end = source[start..]
-            .find("/// Performance-only selected-Present stress adapter.")
+            .find("pub(crate) struct ProductSelectedPresentPerformanceRuntime {")
             .map(|offset| start + offset)
             .expect("observer runtime boundary");
         let observer = &source[start..end];
@@ -8145,7 +8147,7 @@ mod tests {
                 "missing XUI08 route: {required}"
             );
         }
-        let app = include_str!("app.rs");
+        let app = crate::source_scan::app_production();
         assert!(app.contains("VK_P if shift"));
         assert!(app.contains("close_xui08"));
         assert!(app.contains("xui08_blocks_lower_pointer_input"));
@@ -8193,7 +8195,7 @@ mod tests {
             );
         }
         let seek_reset_end = production[seek_reset_start..]
-            .find("    /// Toggle the state-first politics panel")
+            .find("    pub fn toggle_xui11(")
             .map(|offset| seek_reset_start + offset)
             .expect("seek reset boundary");
         let seek_reset = &production[seek_reset_start..seek_reset_end];
@@ -8324,8 +8326,8 @@ mod tests {
 
     #[test]
     fn xui09_shipping_route_is_presented_transactional_and_not_selected_present() {
-        let runtime = include_str!("ui_runtime.rs");
-        let app = include_str!("app.rs");
+        let runtime = crate::source_scan::ui_runtime_production();
+        let app = crate::source_scan::app_production();
         for required in [
             "observer_research_from_complete_frame(",
             "self.xui09_pending_staged = true",
@@ -9002,7 +9004,7 @@ mod tests {
 
     #[test]
     fn shipping_frame_transaction_begins_before_event_dispatch() {
-        let app = include_str!("app.rs");
+        let app = crate::source_scan::app_production();
         let begin = app
             .find("begin_observer_frame_transaction(&observer_viewer_ui)")
             .expect("pre-event transaction begin");

@@ -55,7 +55,11 @@ const STATIC_DIRS: [(&str, Option<&str>); 10] = [
 /// `mapmode.raids`, `mapmode.resource_deposits` and `diplomacy.pair_relations`
 /// were missing from the old list entirely; the accounting is only honest if it
 /// names every row the ledger assigns to this packet.
-const OWNED_AUTHORITY_INPUTS: [&str; 11] = [
+/// Visible to `production_foundation`'s owner-agreement test, which compares
+/// this list against what the owner table derives for XMAP18. The ledger only
+/// lists owner-PROVEN inputs, so the ledger comparison cannot see a
+/// disagreement about an unproven one; this list can (Codex review, round 11).
+pub(crate) const OWNED_AUTHORITY_INPUTS: [&str; 11] = [
     "diplomacy.faction_roster",
     "diplomacy.pair_relations",
     "mapmode.air_superiority",
@@ -673,13 +677,11 @@ impl ProductionMapFeatureAdapter for Xmap18MapModeAdapter {
             prepared_weather: None,
             prepared_rivers_straits: None,
             prepared_water: None,
-            prepared_effects: None,
             prepared_units: None,
             prepared_combat: None,
             prepared_orders: None,
             prepared_rail_supply: None,
             prepared_map_modes: Some(prepared),
-            prepared_map_furniture: None,
             element_diagnostics: Vec::new(),
             consumed_gap_ids,
         })

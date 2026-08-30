@@ -392,9 +392,33 @@ impl ProductionMapFeatureAdapter for Xmap16RailSupplyAdapter {
             .map(|gap| gap.input_id.clone())
             .collect::<Vec<_>>();
         if !owned_gaps.is_empty() {
+            // XMAP00's blocker rides along, and so does what THIS hour observed:
+            // naming the input alone sent a reader looking for a missing key,
+            // while `logistics.rail_hub_frames` is usually a declared absence
+            // inside a carrier the recording does hold. Which of the two it is
+            // on this hour is a per-hour fact and is read, never asserted.
+            let rail = context.world_frame.rail_replay();
+            let observed = format!(
+                "this hour's map.rail_replay_state_live is {:?} and its derived visual frames are \
+                 {:?}",
+                rail.status,
+                rail.derived_visual_frames_status()
+            );
             let reason = format!(
-                "XMAP16 exact state-first carrier unavailable: {}",
-                owned_gaps.join(", ")
+                "XMAP16 exact state-first carrier unavailable ({observed}): {}",
+                owned_gaps
+                    .iter()
+                    .map(|input| {
+                        let blocker = context
+                            .map_authority_gaps
+                            .iter()
+                            .find(|gap| &gap.input_id == input)
+                            .map(|gap| gap.reason.as_str())
+                            .unwrap_or("XMAP00 holds no blocker for this input");
+                        format!("{input}: {blocker}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
             );
             let gap_id = "XMAP16.state_first_input_unavailable".to_string();
             return Ok(FoundationFeatureOutput {
@@ -418,12 +442,10 @@ impl ProductionMapFeatureAdapter for Xmap16RailSupplyAdapter {
                 prepared_weather: None,
                 prepared_rivers_straits: None,
                 prepared_water: None,
-                prepared_effects: None,
                 prepared_units: None,
                 prepared_combat: None,
                 prepared_orders: None,
                 prepared_map_modes: None,
-                prepared_map_furniture: None,
                 element_diagnostics: Vec::new(),
                 consumed_gap_ids: owned_gaps,
             });
@@ -623,12 +645,10 @@ impl ProductionMapFeatureAdapter for Xmap16RailSupplyAdapter {
             prepared_weather: None,
             prepared_rivers_straits: None,
             prepared_water: None,
-            prepared_effects: None,
             prepared_units: None,
             prepared_combat: None,
             prepared_orders: None,
             prepared_map_modes: None,
-            prepared_map_furniture: None,
             element_diagnostics: Vec::new(),
             consumed_gap_ids: Vec::new(),
         })

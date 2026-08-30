@@ -533,6 +533,9 @@ impl Xmap10LuminanceDownsampleChainReceipt {
 #[serde(deny_unknown_fields)]
 pub struct Xmap10PostFxFrameReceipt {
     pub schema: String,
+    /// Which foundation envelope this frame drew. See
+    /// `Xmap10PostFxExecutionInput::foundation_envelope_sha256`.
+    pub foundation_envelope_sha256: String,
     pub hour_index: i64,
     pub content_manifest_sha256: String,
     pub foundation_content_operation_sha256: String,
@@ -554,6 +557,7 @@ pub struct Xmap10PostFxFrameReceipt {
 impl Xmap10PostFxFrameReceipt {
     #[allow(clippy::too_many_arguments)]
     pub fn seal(
+        foundation_envelope_sha256: String,
         hour_index: i64,
         content_manifest_sha256: String,
         foundation_content_operation_sha256: String,
@@ -584,6 +588,7 @@ impl Xmap10PostFxFrameReceipt {
             .ok_or("XMAP10 post-FX frame has no RestoreScene receipt")?;
         let mut receipt = Self {
             schema: XMAP10_POSTFX_FRAME_RECEIPT_SCHEMA.into(),
+            foundation_envelope_sha256,
             hour_index,
             content_manifest_sha256,
             foundation_content_operation_sha256,
@@ -624,6 +629,7 @@ impl Xmap10PostFxFrameReceipt {
             return Err("XMAP10 post-FX frame identity is invalid".into());
         }
         for value in [
+            &self.foundation_envelope_sha256,
             &self.content_manifest_sha256,
             &self.foundation_content_operation_sha256,
             &self.viewer_state_sha256,
@@ -713,6 +719,14 @@ impl Xmap10PostFxFrameReceipt {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Xmap10PostFxExecutionInput {
+    /// The foundation envelope this draw belongs to.
+    ///
+    /// The four values below identify a replay hour, its content and the viewer
+    /// state; two DIFFERENT envelopes can agree on all four, so on their own
+    /// they let a receipt produced for one frame be accepted into another
+    /// frame's bundle (Codex review, round 14). The envelope digest is what
+    /// says which frame.
+    pub foundation_envelope_sha256: String,
     pub content_manifest_sha256: String,
     pub foundation_content_operation_sha256: String,
     pub viewer_state_sha256: String,
@@ -743,6 +757,7 @@ impl Xmap10PostFxExecutionInput {
             );
         }
         for value in [
+            &self.foundation_envelope_sha256,
             &self.content_manifest_sha256,
             &self.foundation_content_operation_sha256,
             &self.viewer_state_sha256,
@@ -2099,6 +2114,7 @@ mod native {
                 restore_pass,
             ];
             let postfx_frame = Xmap10PostFxFrameReceipt::seal(
+                postfx_input.foundation_envelope_sha256.clone(),
                 frame.hour_index,
                 postfx_input.content_manifest_sha256.clone(),
                 postfx_input.foundation_content_operation_sha256.clone(),

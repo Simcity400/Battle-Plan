@@ -19,6 +19,14 @@ pub const XMAP20_OPERATION_NAME: &str = "particles.effects.draw";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Xmap20SharedExecutionIdentities {
+    /// The foundation envelope this draw belongs to.
+    ///
+    /// The hour, content manifest, foundation content operation and viewer
+    /// state identify a replay hour and what is being looked at; two DIFFERENT
+    /// envelopes can agree on all four, so on their own they let a receipt
+    /// produced for one frame be accepted into another frame's bundle (Codex
+    /// review, round 14). The envelope digest is what says which frame.
+    pub foundation_envelope_sha256: String,
     pub content_manifest_sha256: String,
     pub foundation_content_operation_sha256: String,
     pub viewer_state_sha256: String,
@@ -32,6 +40,7 @@ pub struct Xmap20SharedExecutionIdentities {
 impl Xmap20SharedExecutionIdentities {
     pub fn validate(&self) -> Result<()> {
         for digest in [
+            &self.foundation_envelope_sha256,
             &self.content_manifest_sha256,
             &self.foundation_content_operation_sha256,
             &self.viewer_state_sha256,
@@ -53,6 +62,9 @@ impl Xmap20SharedExecutionIdentities {
 #[serde(deny_unknown_fields)]
 pub struct Xmap20ExecutionReceipt {
     pub schema: String,
+    /// Which foundation envelope this draw belongs to. See
+    /// `Xmap20SharedExecutionIdentities::foundation_envelope_sha256`.
+    pub foundation_envelope_sha256: String,
     pub hour_index: i64,
     pub operation_id: String,
     pub topology_sha256: String,
@@ -93,6 +105,7 @@ impl Xmap20ExecutionReceipt {
         }
         for digest in [
             &self.admission_sha256,
+            &self.foundation_envelope_sha256,
             &self.topology_sha256,
             &self.assignment_sha256,
             &self.content_manifest_sha256,
@@ -168,6 +181,7 @@ impl Xmap20ExecutionReceipt {
             || self.operation_id != assigned_stage.operation_name
             || self.topology_sha256 != assigned_stage.topology_sha256
             || self.assignment_sha256 != assigned_stage.assignment_sha256
+            || self.foundation_envelope_sha256 != shared.foundation_envelope_sha256
             || self.content_manifest_sha256 != prepared.content_manifest_sha256
             || self.content_manifest_sha256 != shared.content_manifest_sha256
             || self.foundation_content_operation_sha256
@@ -307,6 +321,7 @@ pub unsafe fn execute_xmap20_effects(
     let executed_particle_order_sha256 = particle_order_sha256(prepared)?;
     let mut receipt = Xmap20ExecutionReceipt {
         schema: XMAP20_EXECUTION_RECEIPT_SCHEMA.into(),
+        foundation_envelope_sha256: shared.foundation_envelope_sha256.clone(),
         hour_index: prepared.admission.hour_index,
         operation_id: assigned_stage.operation_name.clone(),
         topology_sha256: assigned_stage.topology_sha256.clone(),

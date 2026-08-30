@@ -171,7 +171,8 @@ impl ProductMapFoundationSession {
 // The per-placement building visual is DERIVED, never carried: lane OJ proved the family
 // owes zero wire bytes, and lane OO landed the derivation (shared-spawn-point occupant law
 // plus the destroyed-mesh selector). There is no `xmap12_building_visual` world input.
-pub(crate) const XMAP12_FIXED_RUNTIME_WORLD_INPUT_KEY: &str = "xmap12_fixed_runtime";
+pub(crate) const XMAP12_FIXED_RUNTIME_WORLD_INPUT_KEY: &str =
+    map_viewer::Xmap12FixedRuntimeState::WORLD_INPUT_KEY;
 
 pub(crate) struct AuthenticatedXmap12FrameInputs {
     pub(crate) fixed_runtime: Option<map_viewer::Xmap12FixedRuntimeState>,

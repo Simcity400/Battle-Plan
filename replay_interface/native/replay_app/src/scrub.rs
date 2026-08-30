@@ -388,32 +388,39 @@ mod tests {
 
     #[test]
     fn every_link_that_carries_the_stop_switch_to_a_reader_delegates() {
+        // Bound first: the seam returns owned source, and a temporary cannot
+        // outlive the array that borrows it.
+        let timeline = crate::source_scan::timeline_production();
+        let world = crate::source_scan::replay_core_world_production();
+        let core_source = crate::source_scan::replay_core_source_production();
+        let recording_open = crate::source_scan::recording_open_production();
         let links: [(&str, &str, &str); 4] = [
             (
-                include_str!("timeline.rs"),
+                timeline.as_str(),
                 "OwnerProvider for RecordingTimeline",
                 "self.timeline.set_scrub_interrupt(",
             ),
             (
-                include_str!("../../replay_core/src/world.rs"),
+                world.as_str(),
                 "WorldTimeline",
                 "self.source.set_scrub_interrupt(",
             ),
             (
-                include_str!("../../replay_core/src/source.rs"),
+                core_source.as_str(),
                 "ReplaySource for IndexedReplaySource",
                 "self.cache.set_scrub_interrupt(",
             ),
             (
-                include_str!("recording_open.rs"),
+                recording_open.as_str(),
                 "ReplaySource for ProductReplaySource",
                 "self.inner.set_scrub_interrupt(",
             ),
         ];
         for (source, who, delegation) in links {
-            let source = source.replace("
-", "
-");
+            // No re-normalising here: the seam already did it. What stood here
+            // was a replace whose two arguments were both a real newline -- a
+            // lost backslash-r escape that compiled, did nothing, and left the
+            // CRLF handling it stood for undone.
             assert!(
                 source.contains("fn set_scrub_interrupt("),
                 "{who} must implement set_scrub_interrupt"
@@ -524,9 +531,7 @@ mod tests {
 
     #[test]
     fn the_failed_spawn_path_gives_the_switch_back_too() {
-        let source = include_str!("scrub.rs").replace("
-", "
-");
+        let source = crate::source_scan::scrub_production();
         let start = source
             .find("let worker = std::thread::Builder::new()")
             .expect("the spawn must exist; this test's anchor moved");

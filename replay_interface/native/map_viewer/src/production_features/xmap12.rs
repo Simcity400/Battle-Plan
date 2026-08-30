@@ -69,8 +69,13 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
         if context.world_frame.d48_buildings_status() != ViewStatus::Present {
             missing.push("the present D48 building domain");
         }
+        let fixed_runtime_missing = format!(
+            "the authenticated ambient/fixed lifecycle carrier (world-input key {}, which no \
+             recorder build emits)",
+            crate::Xmap12FixedRuntimeState::WORLD_INPUT_KEY
+        );
         if fixed_runtime.is_none() {
-            missing.push("the authenticated ambient/fixed lifecycle carrier");
+            missing.push(fixed_runtime_missing.as_str());
         }
         if !missing.is_empty() {
             let reason = format!(
@@ -205,13 +210,11 @@ fn empty_output(
         prepared_weather: None,
         prepared_rivers_straits: None,
         prepared_water: None,
-        prepared_effects: None,
         prepared_units: None,
         prepared_combat: None,
         prepared_orders: None,
         prepared_rail_supply: None,
         prepared_map_modes: None,
-        prepared_map_furniture: None,
         consumed_gap_ids,
         element_diagnostics: Vec::new(),
     }

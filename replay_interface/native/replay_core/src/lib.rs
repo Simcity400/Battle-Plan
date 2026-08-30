@@ -272,6 +272,7 @@ pub use portable_admission::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub use portable_admission::{RAW_DATE_MAX, RAW_DATE_MIN};
 pub use world::{
     alert_icon_frame_for_type, coalesce_same_hour_ended_combats, weather_visual_lifecycle_digest,
+    XMAP15_ORDERS_FRONTS_MOVEMENT_SEMANTIC_PATH,
     xui11_effective_controller_identity_sha256, xui11_effective_root_identity_sha256, AceExactRow,
     AceLifecycleState, AceRosterExactView, ActiveAlertRow, ActiveRulerExactRow,
     AdvisorRosterExactRow, AirBaseAnchor, AirCombatLossRow, AirDisclosureThreshold,

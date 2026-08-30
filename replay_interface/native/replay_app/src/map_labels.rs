@@ -1719,7 +1719,7 @@ kernings count=0
 
     #[test]
     fn product_draw_binds_the_typed_xmap10_main_scene_not_the_swapchain() {
-        let source = include_str!("map_labels.rs");
+        let source = crate::source_scan::map_labels_production();
         let start = source
             .find("pub unsafe fn draw_prepared_product(")
             .expect("product label executor");

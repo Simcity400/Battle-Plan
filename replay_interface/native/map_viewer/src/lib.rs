@@ -358,12 +358,14 @@ pub use map_icon_runtime::{
     MapFurnitureResourceFlagAssetDescriptor, MapFurnitureRgbaImage, MapFurnitureSharedIdentities,
     MapFurnitureSpriteAsset, MapFurnitureTarget, MapIconChildGeometry, MapIconContainerGeometry,
     MapIconRootGeometry, MapIconTextGeometry, MapModeFurnitureSelection,
-    PreparedMapFurniturePacket, ProjectedMapFurnitureIcon, ProjectedRaidFurnitureIcon,
+    xmap21_derivation_owed, xmap21_owed_refusal, PreparedMapFurniturePacket, ProjectedMapFurnitureIcon,
+    ProjectedRaidFurnitureIcon, Xmap21FurnitureKind,
     ProjectedResourceFurnitureIcon, RaidMapIconGeometry, ScreenRect, Xmap21ResourceTextBatch,
     Xmap21ResourceTextOperation, Xmap21VpCapitalTextBatch, Xmap21VpCapitalTextOperation,
     RAID_MAP_ICON_DRAW_DISTANCE_MAX_KEY, RAID_MAP_ICON_DRAW_DISTANCE_MAX_RAID_MAP_MODE_KEY,
     RAID_MAP_ICON_DRAW_DISTANCE_MIN_KEY, RESOURCE_MAP_ICON_TEXT_CUTOFF_KEY,
-    XMAP21_A729_EXECUTABLE_SHA256, XMAP21_ALIGNMENT_BITS, XMAP21_EXECUTE_OPERATION_NAME,
+    XMAP21_A729_EXECUTABLE_SHA256, XMAP21_ALIGNMENT_BITS, XMAP21_CAPITAL_DERIVATION_OWED,
+    XMAP21_EXECUTE_OPERATION_NAME, XMAP21_OWED_DERIVATIONS,
     XMAP21_EXECUTE_STAGE_NAME, XMAP21_PREPARED_PACKET_SCHEMA, XMAP21_PREPARE_OPERATION_NAME,
     XMAP21_PREPARE_RECEIPT_SCHEMA, XMAP21_PREPARE_STAGE_NAME, XMAP21_RAID_ALIGNMENT_BITS,
     XMAP21_RAID_GFX_SOURCES, XMAP21_RAID_MODE_ID, XMAP21_RAID_VIEWER_TOKEN,
@@ -614,7 +616,9 @@ pub use production_features::xmap19::{
 #[cfg(windows)]
 pub use production_foundation::execute_foundation_content_preflight;
 pub use production_foundation::{
+    map_authority_inputs_owned_by, map_authority_owner_packet, map_authority_set_identity,
     foundation_map_dimensions, prepare_foundation_frame,
+    MAP_AUTHORITY_OWNER_UNCLASSIFIED, MAP_AUTHORITY_SET_IDENTITY_A729,
     product_feature_adapters_with_assigned_stage_schedule,
     product_foundation_assigned_stage_topology, require_fresh_foundation_frame,
     FamilyContentRefusal, FoundationContentExecutionReceipt, FoundationFeatureContext,
@@ -821,10 +825,13 @@ pub use production_features::xmap20::{
     prepare_xmap20_effects, PreparedXmap20Frame, Xmap20EffectsAdapter,
     Xmap20ProductionTriggerProvider, Xmap20TriggerProvider, Xmap20TriggerReceipt,
     XMAP20_ASSIGNED_OPERATION_NAME, XMAP20_ASSIGNED_STAGE_NAME, XMAP20_CARRIER_ABSENT_GAP_ID,
+    XMAP20_EFFECT_DRAW_CONTRACT, XMAP20_EFFECT_LIFECYCLE_INPUT, XMAP20_EFFECT_LIFECYCLE_WIRE_KEY,
     XMAP20_OPEN_CARRIER_GATES, XMAP20_PREPARED_FRAME_SCHEMA, XMAP20_TRIGGER_RECEIPT_SCHEMA,
 };
 pub use production_features::xmap21::{
-    Xmap21MapFurnitureAdapter, XMAP21_FURNITURE_ABSENT_GAP_ID, XMAP21_REQUIRED_AUTHORITY_INPUTS,
+    xmap21_required_authority_inputs, Xmap21MapFurnitureAdapter,
+    XMAP21_DERIVATIONS_OWED_GAP_ID, XMAP21_FURNITURE_ABSENT_GAP_ID,
+    XMAP21_FURNITURE_DRAW_CONTRACT,
 };
 pub use restore_scene_law::{restore_scene_pixel_rgb, RestoreSceneColorCube32, RestoreSceneGrade};
 pub use shader_compile::{
@@ -933,6 +940,8 @@ pub use types::IndexImage;
 pub use underwater_pass::{UNDERWATER_EFFECT_NAME, UNDERWATER_SHADER_SOURCE};
 pub use unit_counter_assets::{
     army_badge_progress_bars_from_resolver, counter_fonts_from_resolver,
+    progress_bar_axis_for_sprite, require_horizontal_progress_bar, HorizontalProgressBar,
+    ProgressAxis,
     division_template_counter_layout_from_resolver,
     map_counter_code_textured_sprites_from_resolver, map_counter_sprites_from_resolver,
     nato_text_icon_sprites_from_resolver, on_map_division_counter_inventory_from_resolver,

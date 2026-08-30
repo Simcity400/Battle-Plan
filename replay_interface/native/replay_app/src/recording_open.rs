@@ -1395,7 +1395,7 @@ mod tests {
         };
 
         let trait_source =
-            include_str!("../../replay_core/src/source.rs").replace("\r\n", "\n");
+            crate::source_scan::replay_core_source_production();
         let trait_block = extract(&trait_source, "pub trait ReplaySource: Send + Sync {");
         let accessors = trait_block
             .lines()
@@ -1409,7 +1409,7 @@ mod tests {
              would silently check nothing"
         );
 
-        let source = include_str!("recording_open.rs").replace("\r\n", "\n");
+        let source = crate::source_scan::recording_open_production();
         let block = extract(&source, "impl ReplaySource for ProductReplaySource {");
         for accessor in &accessors {
             assert!(

@@ -970,13 +970,11 @@ impl ProductionMapFeatureAdapter for Xmap07WaterAdapter {
             prepared_rivers_straits: None,
             prepared_lighting: None,
             prepared_weather: None,
-            prepared_effects: None,
             prepared_units: None,
             prepared_combat: None,
             prepared_orders: None,
             prepared_rail_supply: None,
             prepared_map_modes: None,
-            prepared_map_furniture: None,
             element_diagnostics: Vec::new(),
             consumed_gap_ids,
         })

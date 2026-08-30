@@ -9,6 +9,15 @@ use map_viewer::{
 };
 use replay_core::{open_recording, open_recording_game, Leaf, ViewStatus, WorldFrame, WorldTimeline};
 
+/// Which packet owns one authority input, asked of the product's own owner
+/// table so a reader of this artifact never has to keep a second copy, and so a
+/// packet nobody has written down anywhere still answers.
+fn owner_of(input: &str) -> String {
+    map_viewer::map_authority_owner_packet(input)
+        .unwrap_or(map_viewer::MAP_AUTHORITY_OWNER_UNCLASSIFIED)
+        .to_string()
+}
+
 const USAGE: &str =
     "usage: dump_xmap00_authority <recording-path> [--game ID] [--hours N] [--json]";
 
@@ -438,6 +447,10 @@ fn run() -> Result<(), String> {
     let mut roll: BTreeMap<&str, BTreeMap<&'static str, usize>> = BTreeMap::new();
     let mut per_hour_lines: Vec<String> = Vec::new();
     let mut warning_roll: BTreeMap<String, usize> = BTreeMap::new();
+    // The owner of each input, printed beside it. A reader who wants "what does
+    // packet X own" must otherwise keep its own copy of the owner table, and a
+    // copy that drifts reports a census of the wrong set.
+    let mut owners: BTreeMap<&str, String> = BTreeMap::new();
 
     for hour in &hours {
         let frame = timeline.frame(*hour).map_err(|error| error.to_string())?;
@@ -453,6 +466,7 @@ fn run() -> Result<(), String> {
                 .copied()
                 .find(|known| *known == row.input_id)
                 .ok_or_else(|| format!("projection carried unknown input {}", row.input_id))?;
+            owners.entry(key).or_insert_with(|| owner_of(key));
             *roll.entry(key).or_default().entry(word).or_default() += 1;
         }
         for (head, count) in dropped_row_warnings(&frame) {
@@ -515,14 +529,24 @@ fn run() -> Result<(), String> {
         hours.len()
     );
     println!();
-    println!("== XMAP00 disposition roll-up (hours per disposition) ==");
+    // The exact (input, owner) set this roll-up is a census OF, as one digest,
+    // computed by the product rather than restated here.
+    let census_identity = map_viewer::map_authority_set_identity();
+    println!(
+        "== XMAP00 disposition roll-up ({} inputs, identity {census_identity}, hours per disposition) ==",
+        MAP_AUTHORITY_REQUIRED_INPUTS.len()
+    );
     for input in MAP_AUTHORITY_REQUIRED_INPUTS {
         let counts = roll.get(input).cloned().unwrap_or_default();
         let rendered: Vec<String> = ["admitted", "unavailable", "absent"]
             .iter()
             .filter_map(|word| counts.get(word).map(|count| format!("{word}={count}")))
             .collect();
-        println!("  {input}: {}", rendered.join(" "));
+        let owner = owners
+            .get(input)
+            .map(String::as_str)
+            .unwrap_or("owner-unclassified");
+        println!("  {input} [{owner}]: {}", rendered.join(" "));
     }
     println!();
     println!("== dropped-row coverage warnings (census -> total occurrences) ==");

@@ -1182,12 +1182,10 @@ impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
             prepared_lighting: Some(prepared),
             prepared_rail_supply: None,
             prepared_weather: None,
-            prepared_effects: None,
             prepared_units: None,
             prepared_combat: None,
             prepared_orders: None,
             prepared_map_modes: None,
-            prepared_map_furniture: None,
             consumed_gap_ids,
             element_diagnostics: Vec::new(),
         })

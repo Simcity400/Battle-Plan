@@ -203,6 +203,9 @@ impl MapFurnitureBucketPhaseReceipt {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct MapFurnitureExecutionReceipt {
     pub(crate) schema: String,
+    /// Which foundation envelope this draw belongs to. See
+    /// `map_viewer::MapFurnitureSharedIdentities::foundation_envelope_sha256`.
+    pub(crate) foundation_envelope_sha256: String,
     pub(crate) update_index: u64,
     pub(crate) content_manifest_sha256: String,
     pub(crate) foundation_content_operation_sha256: String,
@@ -343,6 +346,10 @@ impl MapFurnitureExecutionReceipt {
             }
         }
         for (value, role) in [
+            (
+                &self.foundation_envelope_sha256,
+                "execution foundation envelope",
+            ),
             (&self.content_manifest_sha256, "execution content manifest"),
             (
                 &self.foundation_content_operation_sha256,
@@ -1317,6 +1324,7 @@ impl FurnitureRenderPass {
         )?;
         let mut receipt = MapFurnitureExecutionReceipt {
             schema: MAP_FURNITURE_EXECUTION_SCHEMA.into(),
+            foundation_envelope_sha256: packet.shared.foundation_envelope_sha256.clone(),
             update_index: packet.update_index,
             content_manifest_sha256: packet.shared.content_manifest_sha256.clone(),
             foundation_content_operation_sha256: packet

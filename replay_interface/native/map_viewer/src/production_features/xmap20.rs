@@ -213,47 +213,118 @@ pub const XMAP20_OPEN_CARRIER_GATES: [&str; 4] = [
     "XMAP20-G7-unsourced-required-wire-fields",
 ];
 
+/// No recorder build emitted the key at all.
 pub const XMAP20_CARRIER_ABSENT_GAP_ID: &str = "XMAP20.effect_lifecycle_carrier_absent";
 
-/// Registration sites build their adapter set once, before any frame exists,
-/// so this adapter cannot demand an already-prepared frame at construction.
-/// `CarrierAbsent` is what production registers today: it makes the family
-/// report its real blocker to the readiness graph instead of being invisible
-/// to it.
-pub enum Xmap20EffectsAdapter {
-    Prepared(Box<PreparedXmap20Frame>),
-    CarrierAbsent,
-}
+/// The key reached the WorldFrame and XMAP00 still would not admit it - a
+/// typed null, an unreadable payload, or a law the census failed.
+///
+/// A separate id because "carrier absent" is a statement about the RECORDER
+/// and this one is a statement about the hour; a reader routed by the id
+/// alone must not be sent to build a producer that already exists.
+pub const XMAP20_CARRIER_UNUSABLE_GAP_ID: &str =
+    "XMAP20.effect_lifecycle_authority_unavailable";
+
+/// The XMAP00 authority input this family owns, and the wire key that feeds it.
+///
+/// Both are named in the refusal so a reader is told which recording input is
+/// missing, not merely that "a carrier" is.
+pub const XMAP20_EFFECT_LIFECYCLE_INPUT: &str = "effects.semantic_lifecycle";
+pub const XMAP20_EFFECT_LIFECYCLE_WIRE_KEY: &str =
+    replay_core::WorldFrame::XMAP20_EFFECT_LIFECYCLE_WIRE_KEY;
+
+/// What the draw path must present before a frame that deferred XMAP20 may seal.
+pub const XMAP20_EFFECT_DRAW_CONTRACT: &str = "XMAP20.effect_frame_receipt";
+
+/// XMAP20 answers at DRAW time, and only for a recording that carries the
+/// effect-lifecycle carrier.
+///
+/// Nothing about the answer is computable once per hour: an effect packet's
+/// operation identity binds the live D3D main-scene resource identity, the
+/// pre-particle compositor receipt and XMAP09's completed light/depth execution,
+/// none of which exist at foundation time. So the family reports what it CAN
+/// decide here — whether the recording admits `effects.semantic_lifecycle` at
+/// all — and defers the rest under [`XMAP20_EFFECT_DRAW_CONTRACT`], which
+/// `seal_readiness` will not let the frame skip.
+pub struct Xmap20EffectsAdapter;
 
 impl Xmap20EffectsAdapter {
-    pub fn new(prepared: PreparedXmap20Frame) -> Result<Self> {
-        prepared.validate()?;
-        Ok(Self::Prepared(Box::new(prepared)))
+    pub(crate) fn producer_registration_sha256() -> String {
+        Sha256::hex(
+            format!(
+                "XMAP20\0{XMAP20_PREPARED_FRAME_SCHEMA}\0{XMAP20_EXECUTABLE_SHA256}\0{XMAP20_PARTICLE_DEFINITION_LOOKUP_RVA:08x}\0{XMAP20_PARTICLE_REGISTRY_RVA:08x}\0{XMAP20_PARTICLE_SUBMIT_BOUNDARY_RVA:08x}"
+            )
+            .as_bytes(),
+        )
     }
 
-    /// No effect-lifecycle carrier exists on the wire, so the family refuses
-    /// and says exactly which gates hold it shut.
-    pub fn carrier_absent() -> Self {
-        Self::CarrierAbsent
-    }
-
-    pub(crate) fn carrier_absent_output(hour: i64) -> FoundationFeatureOutput {
+    /// This recording does not admit the effect-lifecycle carrier for this hour.
+    ///
+    /// `authority_blocker` is XMAP00's own words for the input, so the refusal
+    /// distinguishes "the recorder never emitted the key" from "the key is there
+    /// and unusable" without this module restating either.
+    pub(crate) fn carrier_absent_output(
+        hour: i64,
+        disposition: crate::map_authority::MapAuthorityRequirementDisposition,
+        authority_blocker: &str,
+        consumed_gap_ids: Vec<String>,
+    ) -> Result<FoundationFeatureOutput> {
+        use crate::map_authority::MapAuthorityRequirementDisposition as Disposition;
+        let (gap_id, what) = match disposition {
+            Disposition::Absent => (
+                XMAP20_CARRIER_ABSENT_GAP_ID,
+                "carries no key {key} at all (root scope)",
+            ),
+            Disposition::Unavailable => (
+                XMAP20_CARRIER_UNUSABLE_GAP_ID,
+                "carries key {key} (root scope) and XMAP00 will not admit it",
+            ),
+            // The projection files a row as a gap only when it is Absent or
+            // Unavailable, so this is a contradiction in the caller and not a
+            // fact about the recording. Minting an Unavailable row that says
+            // "is Admitted" would file the defect as an outcome.
+            Disposition::Admitted => {
+                return Err(format!(
+                    "XMAP20 was asked to refuse {XMAP20_EFFECT_LIFECYCLE_INPUT} while the \
+                     projection reports it Admitted"
+                )
+                .into())
+            }
+        };
+        let what = what.replace("{key}", XMAP20_EFFECT_LIFECYCLE_WIRE_KEY);
         let reason = format!(
-            "no effect-lifecycle carrier exists on the wire: the XMAP20 producer is held by {}",
+            "this recording {what}, so XMAP20 authority input \
+             {XMAP20_EFFECT_LIFECYCLE_INPUT} is {disposition:?}: {authority_blocker}; the producer \
+             is held by {}",
             XMAP20_OPEN_CARRIER_GATES.join(", ")
         );
-        let witness_sha256 = Sha256::hex(
-            format!("{XMAP20_CARRIER_ABSENT_GAP_ID}\n{hour}\n{hour}\n{reason}").as_bytes(),
-        );
-        FoundationFeatureOutput::without_payload(
+        let witness_sha256 =
+            Sha256::hex(format!("{gap_id}\n{hour}\n{hour}\n{reason}").as_bytes());
+        Ok(FoundationFeatureOutput::without_payload(
             FamilyDisposition::Unavailable {
                 gap: portable_render_stream::FoundationGap {
-                    gap_id: XMAP20_CARRIER_ABSENT_GAP_ID.into(),
+                    gap_id: gap_id.into(),
                     first_unavailable_hour: hour,
                     last_unavailable_hour: hour,
                     witness_sha256,
                     reason,
                 },
+            },
+            consumed_gap_ids,
+        ))
+    }
+
+    pub(crate) fn deferred_to_draw_output() -> FoundationFeatureOutput {
+        FoundationFeatureOutput::without_payload(
+            FamilyDisposition::DeferredToDraw {
+                producer_registration_sha256: Self::producer_registration_sha256(),
+                draw_contract_id: XMAP20_EFFECT_DRAW_CONTRACT.into(),
+                reason: format!(
+                    "the recording admits {XMAP20_EFFECT_LIFECYCLE_INPUT}, but an effect packet's \
+                     operation identity binds the live main-scene resource identity, the \
+                     pre-particle compositor receipt and XMAP09's completed light/depth \
+                     execution, none of which exist at foundation time"
+                ),
             },
             Vec::new(),
         )
@@ -266,102 +337,30 @@ impl ProductionMapFeatureAdapter for Xmap20EffectsAdapter {
     }
 
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput> {
-        let Self::Prepared(prepared) = self else {
-            return Ok(Self::carrier_absent_output(
-                context.world_frame.hour_index(),
-            ));
-        };
-        let prepared = prepared.as_ref();
-        prepared.validate()?;
-        // Derivation join: every prepared packet must join its authoritative
-        // definition through the recorded census laws (identity equality,
-        // FNV-1a-32 registration hash, definition digest, one setup per
-        // definition identity, single gfx/fx/particle.shader program path).
-        // The setup fields stay KEEP inside the authoritative carrier; this
-        // gate requires every executed packet to present the lawful census
-        // join before its content may run.
-        let derivation_authority = super::xmap20_derive::Xmap20DefinitionAuthority::from_census(
-            &prepared.admission.active_effects,
-            &prepared.ordered_particles,
+        // Owned inputs come from the XMAP00 owner table, not from a literal
+        // here: a family that keeps its own list can silently disagree with the
+        // table the global accounting uses.
+        let owned = crate::production_foundation::map_authority_inputs_owned_by("XMAP20");
+        let consumed_gap_ids = crate::account_owned_map_authority_inputs(
+            "XMAP20",
+            &owned,
+            context.map_authority_gaps,
+            context.map_authority_admitted,
         )?;
-        for packet in &prepared.ordered_particles {
-            derivation_authority.derive_packet_draw_setup(packet)?;
+        if consumed_gap_ids.is_empty() {
+            return Ok(Self::deferred_to_draw_output());
         }
-        if context.world_frame.hour_index() != prepared.admission.hour_index {
-            return Err("XMAP20 prepared effects belong to a different game hour".into());
-        }
-        let gap_id = "effects.semantic_lifecycle";
-        if !context
+        let gap = context
             .map_authority_gaps
             .iter()
-            .any(|gap| gap.input_id == gap_id)
-        {
-            return Err("XMAP20 semantic-lifecycle authority gap is absent".into());
-        }
-        let assigned = context
-            .require_assigned_stage(XMAP20_ASSIGNED_STAGE_NAME, XMAP20_ASSIGNED_OPERATION_NAME)?;
-        let producer_registration_sha256 = Sha256::hex(
-            format!(
-                "XMAP20\0{XMAP20_PREPARED_FRAME_SCHEMA}\0{XMAP20_EXECUTABLE_SHA256}\0{XMAP20_PARTICLE_DEFINITION_LOOKUP_RVA:08x}\0{XMAP20_PARTICLE_REGISTRY_RVA:08x}\0{XMAP20_PARTICLE_SUBMIT_BOUNDARY_RVA:08x}"
-            )
-            .as_bytes(),
-        );
-        let disposition = if prepared.admission.active_effects.is_empty()
-            && prepared.ordered_particles.is_empty()
-        {
-            FamilyDisposition::AuthenticatedEmpty {
-                producer_registration_sha256,
-                enumerator_witness_sha256: prepared
-                    .admission
-                    .complete_enumeration_sha256
-                    .clone(),
-            }
-        } else {
-            let program_sha256 = Sha256::hex(&serde_json::to_vec(
-                &prepared
-                    .ordered_particles
-                    .iter()
-                    .map(|packet| &packet.shader_program)
-                    .collect::<Vec<_>>(),
-            )?);
-            let ordered_resources_sha256 = Sha256::hex(&serde_json::to_vec(&(
-                &prepared.trigger_receipts,
-                &prepared.ordered_used_content,
-                &prepared.admission.ordered_particle_submissions,
-                &prepared.ordered_particles,
-            ))?);
-            let operation = assigned.foundation_operation_identity(
-                program_sha256,
-                ordered_resources_sha256,
-                prepared.admission.provider_receipts_sha256.clone(),
-            )?;
-            FamilyDisposition::Present {
-                payload_schema: XMAP20_PREPARED_FRAME_SCHEMA.into(),
-                producer_registration_sha256,
-                payload_sha256: prepared.deterministic_sha256.clone(),
-                ordered_operations: vec![operation],
-                ordered_used_content: prepared.ordered_used_content.clone(),
-            }
-        };
-        Ok(FoundationFeatureOutput {
-            disposition,
-            prepared_terrain: None,
-            prepared_political: None,
-            prepared_thin_borders: None,
-            prepared_rivers_straits: None,
-            prepared_water: None,
-            prepared_lighting: None,
-            prepared_weather: None,
-            prepared_effects: Some(prepared.clone()),
-            prepared_units: None,
-            prepared_combat: None,
-            prepared_orders: None,
-            prepared_rail_supply: None,
-            prepared_map_modes: None,
-            prepared_map_furniture: None,
-            element_diagnostics: Vec::new(),
-            consumed_gap_ids: vec![gap_id.into()],
-        })
+            .find(|gap| gap.input_id == XMAP20_EFFECT_LIFECYCLE_INPUT)
+            .ok_or("XMAP20 owned-input accounting reported a gap the projection does not hold")?;
+        Self::carrier_absent_output(
+            context.world_frame.hour_index(),
+            gap.disposition,
+            &gap.reason,
+            consumed_gap_ids,
+        )
     }
 }
 
@@ -749,28 +748,208 @@ mod tests {
 mod carrier_tests {
     use super::*;
 
-    // kills: reporting XMAP20 as a generic unpromoted adapter instead of naming
-    // the gates that actually hold the producer shut, and silently dropping a
-    // gate from the list as gates are closed. The count is deliberately not
-    // written here — it has changed once already (five to four) and a number in
-    // a comment is a second place for it to go stale.
+    /// The one seam that decides XMAP20's row, driven through `prepare()`.
+    ///
+    /// kills: registering a constructor-shaped standing refusal again (a
+    /// recording that carries the carrier would never get past it); reporting a
+    /// generic unpromoted-adapter gap instead of naming the input; silently
+    /// dropping a gate from the list as gates are closed; and vouching at
+    /// foundation time, where the effect operation identity's live D3D inputs do
+    /// not exist. The gate count is deliberately not written here - it has
+    /// changed once already (five to four) and a number in a comment is a second
+    /// place for it to go stale.
     #[test]
-    fn the_refusal_names_every_open_carrier_gate() {
-        let output = Xmap20EffectsAdapter::carrier_absent_output(11);
+    fn the_row_follows_the_recording_and_names_the_input_when_it_is_missing() {
+        use crate::map_authority::{
+            MapAuthorityAdmittedInput, MapAuthorityGap, MapAuthorityRequirementDisposition,
+        };
+        use crate::production_features::xmap15::Xmap15ViewerSelection;
+        use crate::production_foundation::{FoundationFeatureContext, ViewerOwnedMapState};
+        use replay_core::{RawFrame, ReplaySource, SourceError, WorldTimeline};
+
+        struct EmptySource;
+        impl ReplaySource for EmptySource {
+            fn game_id(&self) -> &str {
+                "xmap20-carrier-seam"
+            }
+            fn hours(&self) -> &[i64] {
+                &[11, 12]
+            }
+            fn warnings(&self) -> &[String] {
+                &[]
+            }
+            fn frame(&self, hour_index: i64) -> std::result::Result<RawFrame, SourceError> {
+                Ok(RawFrame {
+                    hour_index,
+                    date: None,
+                    save_version: None,
+                    schema_version: None,
+                    rest: serde_json::Map::new(),
+                })
+            }
+        }
+
+        let timeline = WorldTimeline::open(Box::new(EmptySource)).expect("timeline");
+        let viewer = ViewerOwnedMapState {
+            viewport_width: 16,
+            viewport_height: 16,
+            camera: None,
+            observer_country_id: None,
+            map_mode_id: "not_a_mode".to_string(),
+            map_mode_selection_epoch: 0,
+            selected_object_ids: Vec::new(),
+            input_revision: 0,
+            animation_time_f32_bits: 0,
+            frame_delta_seconds_f32_bits: 0,
+        };
+        let selection = Xmap15ViewerSelection {
+            selected_plan: None,
+        };
+        let gapped = vec![MapAuthorityGap {
+            input_id: XMAP20_EFFECT_LIFECYCLE_INPUT.to_string(),
+            disposition: MapAuthorityRequirementDisposition::Absent,
+            reason: "the recorder emitted no key for this hour".to_string(),
+        }];
+        let admitted = vec![MapAuthorityAdmittedInput {
+            input_id: XMAP20_EFFECT_LIFECYCLE_INPUT.to_string(),
+            owner_packet: "XMAP20".to_string(),
+            payload_schema: "test".to_string(),
+            cadence: "hourly".to_string(),
+            identity_order: "test".to_string(),
+        }];
+
+        // Arm 1 - the recording does NOT admit the input: refuse, and name the
+        // input, the wire key, XMAP00's own blocker and every open gate.
+        let frame = timeline.frame(11).expect("frame");
+        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
+            &frame,
+            &viewer,
+            &gapped,
+            &[],
+            &selection,
+        );
+        let output = Xmap20EffectsAdapter.prepare(&context).expect("row");
         let FamilyDisposition::Unavailable { gap } = &output.disposition else {
-            panic!("XMAP20 must refuse while no carrier exists");
+            panic!("XMAP20 must refuse while the recording does not admit its input");
         };
         assert_eq!(gap.gap_id, XMAP20_CARRIER_ABSENT_GAP_ID);
+        assert!(gap.reason.contains("carries no key"), "{}", gap.reason);
         assert!(!gap.gap_id.contains("adapter_unimplemented"));
+        assert!(gap.reason.contains(XMAP20_EFFECT_LIFECYCLE_INPUT), "{}", gap.reason);
+        assert!(gap.reason.contains(XMAP20_EFFECT_LIFECYCLE_WIRE_KEY), "{}", gap.reason);
+        assert!(gap.reason.contains("the recorder emitted no key"), "{}", gap.reason);
         for gate in XMAP20_OPEN_CARRIER_GATES {
             assert!(gap.reason.contains(gate), "reason omitted {gate}");
         }
-        assert!(output.prepared_effects.is_none());
-        assert!(output.consumed_gap_ids.is_empty());
-        let other = Xmap20EffectsAdapter::carrier_absent_output(12);
+        assert_eq!(
+            output.consumed_gap_ids,
+            vec![XMAP20_EFFECT_LIFECYCLE_INPUT.to_string()]
+        );
+        assert_eq!(gap.first_unavailable_hour, 11);
+        assert_eq!(gap.last_unavailable_hour, 11);
+
+        // The witness must bind the hour, or two hours would share one receipt.
+        let later = timeline.frame(12).expect("frame");
+        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
+            &later,
+            &viewer,
+            &gapped,
+            &[],
+            &selection,
+        );
+        let other = Xmap20EffectsAdapter.prepare(&context).expect("row");
         let FamilyDisposition::Unavailable { gap: other_gap } = &other.disposition else {
             unreachable!()
         };
         assert_ne!(gap.witness_sha256, other_gap.witness_sha256);
+
+        // Arm 1b - the key IS on the wire and XMAP00 still will not admit it.
+        // That is a different defect class from "no recorder emits the key", and
+        // a reader routed by the gap id alone must not be sent to build a
+        // producer that already exists (Codex review, round 1).
+        let unusable = vec![MapAuthorityGap {
+            input_id: XMAP20_EFFECT_LIFECYCLE_INPUT.to_string(),
+            disposition: MapAuthorityRequirementDisposition::Unavailable,
+            reason: "the hour's payload failed the census law".to_string(),
+        }];
+        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
+            &frame,
+            &viewer,
+            &unusable,
+            &[],
+            &selection,
+        );
+        let output = Xmap20EffectsAdapter.prepare(&context).expect("row");
+        let FamilyDisposition::Unavailable { gap } = &output.disposition else {
+            panic!("an unusable carrier must still refuse");
+        };
+        assert_eq!(gap.gap_id, XMAP20_CARRIER_UNUSABLE_GAP_ID);
+        assert_ne!(gap.gap_id, XMAP20_CARRIER_ABSENT_GAP_ID);
+        assert!(gap.reason.contains("will not admit it"), "{}", gap.reason);
+        assert!(
+            gap.reason.contains("the hour's payload failed the census law"),
+            "{}",
+            gap.reason
+        );
+
+        // ...and an Admitted input is a contradiction in the caller, not a row.
+        let contradiction = match Xmap20EffectsAdapter::carrier_absent_output(
+            11,
+            MapAuthorityRequirementDisposition::Admitted,
+            "unreachable",
+            Vec::new(),
+        ) {
+            Ok(_) => panic!("refusing an admitted input must abort"),
+            Err(error) => error.to_string(),
+        };
+        assert!(contradiction.contains("reports it Admitted"), "{contradiction}");
+
+        // Arm 2 - the recording DOES admit the input: the family stops refusing
+        // and defers under its draw contract. This is the arm the old
+        // constructor-shaped adapter could never reach.
+        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
+            &frame,
+            &viewer,
+            &[],
+            &admitted,
+            &selection,
+        );
+        let output = Xmap20EffectsAdapter.prepare(&context).expect("row");
+        let FamilyDisposition::DeferredToDraw {
+            draw_contract_id,
+            reason,
+            producer_registration_sha256,
+        } = &output.disposition
+        else {
+            panic!("an admitted carrier must defer, not refuse: {:?}", output.disposition);
+        };
+        assert_eq!(draw_contract_id, XMAP20_EFFECT_DRAW_CONTRACT);
+        assert_eq!(
+            producer_registration_sha256,
+            &Xmap20EffectsAdapter::producer_registration_sha256()
+        );
+        assert!(reason.contains("main-scene resource identity"), "{reason}");
+        assert!(output.consumed_gap_ids.is_empty());
+
+        // Arm 3 - a row that is both admitted and gapped is a contradiction the
+        // adapter must abort on rather than pick a side.
+        let mut both = gapped.clone();
+        both.push(MapAuthorityGap {
+            input_id: XMAP20_EFFECT_LIFECYCLE_INPUT.to_string(),
+            disposition: MapAuthorityRequirementDisposition::Unavailable,
+            reason: "second opinion".to_string(),
+        });
+        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
+            &frame,
+            &viewer,
+            &both,
+            &admitted,
+            &selection,
+        );
+        let error = match Xmap20EffectsAdapter.prepare(&context) {
+            Ok(_) => panic!("a double-booked input must abort"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("both admitted and gapped"), "{error}");
     }
 }

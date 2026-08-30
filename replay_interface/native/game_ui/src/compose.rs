@@ -7157,23 +7157,21 @@ fn validate_xui23_scrolling_add_animation(value: &Value, owner: &str) -> Result<
     Ok(())
 }
 
-fn progress_bar_horizontal(sprite: &SpriteDefinition) -> Result<bool> {
-    let values = sprite.raw.values_ci("horizontal").collect::<Vec<_>>();
-    match values.as_slice() {
-        [] => Ok(true),
-        [value] => match value.as_scalar().map(str::trim) {
-            Some(value) if value.eq_ignore_ascii_case("yes") => Ok(true),
-            Some(value) if value.eq_ignore_ascii_case("no") => Ok(false),
-            _ => Err(GameUiError::parse(format!(
-                "progress bar {} horizontal is not an authored yes/no scalar",
-                sprite.name
-            ))),
-        },
-        _ => Err(GameUiError::parse(format!(
-            "progress bar {} repeats horizontal",
-            sprite.name
-        ))),
-    }
+/// The orientation rule lives in `map_viewer` because XMAP14 reads the same
+/// `.gfx` key from its own parser; two copies disagreed about the omitted case
+/// and one of them refused a whole map family over it.
+///
+/// It answers with a `ProgressAxis`, which only the law can mint, and the two
+/// drawing helpers take one. That is what stops this call from being replaced
+/// with `let horizontal = true`: there would be nothing to draw with (Codex
+/// review, round 7).
+///
+/// It hands over the SPRITE, not a slice of authored values. The slice-taking
+/// law is `pub(crate)` to `map_viewer`, so this caller cannot pass `&["yes"]`
+/// and mint a valid answer about a sprite it never read (Codex review, round
+/// 9).
+fn progress_bar_horizontal(sprite: &SpriteDefinition) -> Result<map_viewer::ProgressAxis> {
+    map_viewer::progress_bar_axis_for_sprite(sprite).map_err(GameUiError::parse)
 }
 
 fn image_pixel_f32(image: &RgbaImage, x: usize, y: usize) -> RgbaF32 {
@@ -7391,8 +7389,9 @@ fn draw_progress_normal_axis(
     target_w: usize,
     target_h: usize,
     current_state: f32,
-    horizontal: bool,
+    axis: map_viewer::ProgressAxis,
 ) {
+    let horizontal = axis.is_horizontal();
     if target_w == 0
         || target_h == 0
         || front.width == 0
@@ -7459,8 +7458,9 @@ fn draw_progress_minmax_axis(
     target_w: usize,
     target_h: usize,
     current_state: f32,
-    horizontal: bool,
+    axis: map_viewer::ProgressAxis,
 ) {
+    let horizontal = axis.is_horizontal();
     if target_w == 0
         || target_h == 0
         || front.width == 0
@@ -8802,6 +8802,110 @@ mod tests {
         assert!(!options.xui23_require_scoped_progress);
     }
 
+    /// A VERTICAL axis, minted the only way anything outside `map_viewer` can:
+    /// by parsing a sprite that authors `horizontal = no` and asking the law.
+    fn vertical_axis() -> map_viewer::ProgressAxis {
+        let mut registry = SpriteRegistry::new();
+        registry.add_document(
+            "interface/vertical_probe.gfx",
+            &crate::paradox_text::parse_bytes(
+                br#"
+spriteTypes = {
+    progressbartype = {
+        name = "GFX_vertical_probe"
+        horizontal = no
+        textureFile1 = "gfx/a.dds"
+        textureFile2 = "gfx/b.dds"
+    }
+}
+"#,
+            ),
+        );
+        progress_bar_horizontal(registry.get("GFX_vertical_probe").expect("parsed"))
+            .expect("an authored no decides")
+    }
+
+    /// The compositor's own orientation step, driven on real authored `.gfx`
+    /// text.
+    ///
+    /// The drawing helpers take a `ProgressAxis`, which only the law can mint,
+    /// so a caller cannot invent an orientation. What a caller CAN still do is
+    /// ask the law about values the sprite did not author - hard-coding
+    /// `&["yes"]` mints a valid token while deciding nothing (Codex review,
+    /// round 8). Only reading a parsed sprite catches that, so this parses four
+    /// progressbartypes and drives the compositor's step over each.
+    ///
+    /// kills: hard-coding the authored slice; reading only the FIRST authored
+    /// `horizontal`, which would define the repeat away; and answering an
+    /// orientation for a sprite that omits the key.
+    #[test]
+    fn the_compositor_reads_each_sprites_own_authored_horizontal() {
+        let source = br#"
+spriteTypes = {
+    progressbartype = {
+        name = "GFX_authored_yes"
+        horizontal = yes
+        textureFile1 = "gfx/a.dds"
+        textureFile2 = "gfx/b.dds"
+    }
+    progressbartype = {
+        name = "GFX_authored_no"
+        horizontal = no
+        textureFile1 = "gfx/a.dds"
+        textureFile2 = "gfx/b.dds"
+    }
+    progressbartype = {
+        name = "GFX_omits"
+        textureFile1 = "gfx/a.dds"
+        textureFile2 = "gfx/b.dds"
+    }
+    progressbartype = {
+        name = "GFX_repeats"
+        horizontal = yes
+        horizontal = no
+        textureFile1 = "gfx/a.dds"
+        textureFile2 = "gfx/b.dds"
+    }
+}
+"#;
+        let mut registry = SpriteRegistry::new();
+        let document = crate::paradox_text::parse_bytes(source);
+        registry.add_document("interface/orientation_probe.gfx", &document);
+
+        let sprite = |name: &str| {
+            registry
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} must parse out of the fixture"))
+        };
+
+        assert!(
+            progress_bar_horizontal(sprite("GFX_authored_yes"))
+                .expect("an authored yes decides")
+                .is_horizontal(),
+            "the compositor read something other than this sprite's authored yes"
+        );
+        assert!(
+            !progress_bar_horizontal(sprite("GFX_authored_no"))
+                .expect("an authored no decides")
+                .is_horizontal(),
+            "the compositor read something other than this sprite's authored no"
+        );
+
+        // The two shapes the law refuses, reached THROUGH the compositor, so a
+        // caller that stopped passing the sprite's own values could not keep
+        // them refusing.
+        let omitted = progress_bar_horizontal(sprite("GFX_omits"))
+            .expect_err("an omitted key has no established engine default");
+        assert!(format!("{omitted:?}").contains("GFX_omits"), "{omitted:?}");
+
+        let repeated = progress_bar_horizontal(sprite("GFX_repeats"))
+            .expect_err("a repeated key is not a decision");
+        assert!(
+            format!("{repeated:?}").contains("repeats horizontal"),
+            "{repeated:?}"
+        );
+    }
+
     #[test]
     fn xui23_normal_progress_selects_one_texture_and_transposes_vertical_sampling() {
         let front = RgbaImage {
@@ -8825,7 +8929,19 @@ mod tests {
             height: 4,
             pixels: [7, 11, 13, 17].repeat(8),
         };
-        draw_progress_normal_axis(&mut destination, &front, &back, 0, 0, 2, 4, 0.5, false);
+        draw_progress_normal_axis(
+            &mut destination,
+            &front,
+            &back,
+            0,
+            0,
+            2,
+            4,
+            0.5,
+            // Through the law, so this test cannot assert about an orientation
+            // no authored content could produce.
+            vertical_axis(),
+        );
         let expected_sources = [
             [10, 0, 0, 128],
             [50, 0, 0, 128],
@@ -8866,7 +8982,17 @@ mod tests {
             height: 4,
             pixels: vec![0; 32],
         };
-        draw_progress_minmax_axis(&mut destination, &front, &back, 0, 0, 2, 4, 0.75, false);
+        draw_progress_minmax_axis(
+            &mut destination,
+            &front,
+            &back,
+            0,
+            0,
+            2,
+            4,
+            0.75,
+            vertical_axis(),
+        );
         assert_eq!(
             destination.pixels,
             vec![

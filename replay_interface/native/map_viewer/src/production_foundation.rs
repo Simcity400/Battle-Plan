@@ -270,13 +270,11 @@ pub struct FoundationFeatureOutput {
     pub prepared_weather: Option<crate::PreparedXmap19WeatherFrame>,
     pub prepared_rivers_straits: Option<crate::PreparedRiversStraitsFrame>,
     pub prepared_water: Option<crate::PreparedWaterFrame>,
-    pub prepared_effects: Option<crate::PreparedXmap20Frame>,
     pub prepared_units: Option<crate::PreparedXmap13Frame>,
     pub prepared_combat: Option<crate::PreparedXmap14Frame>,
     pub prepared_orders: Option<crate::production_features::xmap15::PreparedXmap15Frame>,
     pub prepared_rail_supply: Option<crate::PreparedXmap16Frame>,
     pub prepared_map_modes: Option<crate::PreparedMapModeFrame>,
-    pub prepared_map_furniture: Option<crate::PreparedMapFurniturePacket>,
     /// Per-element doubts this family raised while preparing, at element grain.
     ///
     /// This is the additive counterpart of `consumed_gap_ids`. A gap says the RECORDING
@@ -308,13 +306,11 @@ impl FoundationFeatureOutput {
             prepared_weather: None,
             prepared_rivers_straits: None,
             prepared_water: None,
-            prepared_effects: None,
             prepared_units: None,
             prepared_combat: None,
             prepared_orders: None,
             prepared_rail_supply: None,
             prepared_map_modes: None,
-            prepared_map_furniture: None,
             element_diagnostics: Vec::new(),
             consumed_gap_ids,
         }
@@ -613,20 +609,17 @@ fn foundation_feature_adapter_core(
     adapters.register(Box::new(
         crate::production_features::xmap18::Xmap18MapModeAdapter::new(resolver, admission)?,
     ))?;
-    // The last three families used to have no adapter at all, so the readiness
-    // graph reported them as "the packet never promoted an adapter" -- which was
-    // false for all three: each one executes at draw time and already produces a
-    // draw receipt. Registering them makes the graph report the REAL state:
-    // XMAP10 defers its answer to draw time, and XMAP20/XMAP21 name the exact
-    // blocker that keeps them from vouching at all.
+    // The last three families all execute at draw time and already produce a
+    // draw receipt, so registering them makes the readiness graph report the
+    // REAL state instead of "the packet never promoted an adapter".
     adapters.register(Box::new(
         crate::production_features::xmap10::Xmap10GradingPostFxAdapter,
     ))?;
     adapters.register(Box::new(
-        crate::production_features::xmap20::Xmap20EffectsAdapter::carrier_absent(),
+        crate::production_features::xmap20::Xmap20EffectsAdapter,
     ))?;
     adapters.register(Box::new(
-        crate::production_features::xmap21::Xmap21MapFurnitureAdapter::authority_absent(),
+        crate::production_features::xmap21::Xmap21MapFurnitureAdapter,
     ))?;
     Ok(adapters)
 }
@@ -826,14 +819,12 @@ pub struct PreparedFoundationFrame {
     pub weather: Option<crate::PreparedXmap19WeatherFrame>,
     pub rivers_straits: Option<crate::PreparedRiversStraitsFrame>,
     pub water: crate::PreparedWaterFrame,
-    pub effects: Option<crate::PreparedXmap20Frame>,
     pub units: Option<crate::PreparedXmap13Frame>,
     pub combat: Option<crate::PreparedXmap14Frame>,
     pub orders: Option<crate::production_features::xmap15::PreparedXmap15Frame>,
     pub rail_supply: Option<crate::PreparedXmap16Frame>,
     pub map_modes: crate::PreparedMapModeFrame,
     pub labels: Option<crate::PreparedMapLabelFrame>,
-    pub map_furniture: Option<crate::PreparedMapFurniturePacket>,
 }
 
 pub enum Xmap16FoundationState<'a> {
@@ -1116,14 +1107,12 @@ fn prepare_foundation_frame_inner(
     let mut prepared_xmap12_building_visual = None;
     let mut prepared_weather = None;
     let mut prepared_water = None;
-    let mut prepared_effects = None;
     let mut prepared_units = None;
     let mut prepared_combat = None;
     let mut prepared_orders = None;
     let mut prepared_rail_supply = None;
     let mut prepared_labels = None;
     let mut prepared_map_modes = None;
-    let mut prepared_map_furniture = None;
     for family in MapVisualFamily::ALL {
         let context = FoundationFeatureContext {
             world_frame,
@@ -1385,20 +1374,21 @@ fn prepare_foundation_frame_inner(
                     {
                         return Err("present WaterIce family omitted its executable payload".into());
                     }
-                    if let Some(effects) = output.prepared_effects {
-                        if family != MapVisualFamily::ParticlesEffects
-                            || prepared_effects.replace(effects).is_some()
-                        {
-                            return Err(
-                            "foundation adapter produced duplicate or non-XMAP20 effects payload"
-                                .into(),
-                        );
-                        }
-                    } else if family == MapVisualFamily::ParticlesEffects
-                        && matches!(&output.disposition, FamilyDisposition::Present { .. })
+                    // XMAP20 has no foundation-time payload to carry: an effect
+                    // packet's operation identity binds live D3D scene state, so
+                    // the family either defers under its draw contract or refuses.
+                    // Vouching here would be a claim it cannot have checked.
+                    if family == MapVisualFamily::ParticlesEffects
+                        && matches!(
+                            &output.disposition,
+                            FamilyDisposition::Present { .. }
+                                | FamilyDisposition::AuthenticatedEmpty { .. }
+                        )
                     {
                         return Err(
-                            "present ParticlesEffects family omitted its executable payload".into(),
+                            "ParticlesEffects vouched at foundation time, where its draw-time \
+                             inputs do not exist"
+                                .into(),
                         );
                     }
                     if let Some(units) = output.prepared_units {
@@ -1489,16 +1479,10 @@ fn prepare_foundation_frame_inner(
                     {
                         return Err("present MapModes family omitted its executable payload".into());
                     }
-                    if let Some(map_furniture) = output.prepared_map_furniture {
-                        if family != MapVisualFamily::MapFurnitureIcons
-                            || prepared_map_furniture.replace(map_furniture).is_some()
-                        {
-                            return Err(
-                                "foundation adapter produced duplicate or non-XMAP21 furniture payload"
-                                    .into(),
-                            );
-                        }
-                    } else if family == MapVisualFamily::MapFurnitureIcons
+                    // XMAP21 has no foundation-time payload either: every
+                    // furniture icon is projected through the live camera and
+                    // viewport.
+                    if family == MapVisualFamily::MapFurnitureIcons
                         && matches!(
                             &output.disposition,
                             FamilyDisposition::Present { .. }
@@ -1506,7 +1490,8 @@ fn prepare_foundation_frame_inner(
                         )
                     {
                         return Err(
-                            "present/authenticated-empty MapFurnitureIcons family omitted its executable payload"
+                            "MapFurnitureIcons vouched at foundation time, where its camera and \
+                             viewport do not exist"
                                 .into(),
                         );
                     }
@@ -1901,14 +1886,12 @@ fn prepare_foundation_frame_inner(
         weather: prepared_weather,
         rivers_straits: prepared_rivers_straits,
         water,
-        effects: prepared_effects,
         units: prepared_units,
         combat: prepared_combat,
         orders: prepared_orders,
         rail_supply: prepared_rail_supply,
         labels,
         map_modes,
-        map_furniture: prepared_map_furniture,
     })
 }
 
@@ -1982,6 +1965,63 @@ fn collect_element_diagnostics(
     portable_render_stream::collapse_element_diagnostics(rows).map_err(Into::into)
 }
 
+/// Which packet owns one authority input, straight from the owner table.
+///
+/// Public so a reader never has to keep a second copy of the packet universe:
+/// an input assigned to a packet nobody wrote down still answers here.
+pub fn map_authority_owner_packet(input_id: &str) -> Option<&'static str> {
+    owner_packet_for_authority_gap(input_id)
+}
+
+/// What an authority artifact prints where an owner would go when the table
+/// assigns none, so a reader can recognise the case instead of guessing.
+pub const MAP_AUTHORITY_OWNER_UNCLASSIFIED: &str = "owner-unclassified";
+
+/// The identity of the WHOLE authority set: every required input paired with the
+/// packet that owns it, in the product's own order, as one digest.
+///
+/// One definition, so the digest an artifact declares and the digest a reader
+/// pins are the same fact rather than two hand-kept copies. A reader that
+/// recomputes it over the rows it actually parsed cannot be handed a truncated
+/// artifact, a repeated row, or a row whose owner was edited, and then write a
+/// census over a set nobody measured.
+pub fn map_authority_set_identity() -> String {
+    let mut preimage = String::new();
+    for input in crate::map_authority::MAP_AUTHORITY_REQUIRED_INPUTS {
+        preimage.push_str(input);
+        preimage.push('\t');
+        preimage
+            .push_str(map_authority_owner_packet(input).unwrap_or(MAP_AUTHORITY_OWNER_UNCLASSIFIED));
+        preimage.push('\n');
+    }
+    Sha256::hex(preimage.as_bytes())
+}
+
+/// The identity of the shipped a729 authority set, pinned.
+///
+/// The lane's per-family recording-input census carries this same digest and
+/// refuses an artifact that is a census of any other set. Growing or re-owning
+/// [`crate::map_authority::MAP_AUTHORITY_REQUIRED_INPUTS`] must move this
+/// constant, which is what makes that reader's pin honest rather than stale.
+pub const MAP_AUTHORITY_SET_IDENTITY_A729: &str =
+    "2d8e802a5ae4259bb04fcc6340ab45fc1d380b03e5943d6dce786daec88c7cfd";
+
+/// Every XMAP00 authority input one packet owns, derived from the owner table
+/// rather than restated.
+///
+/// A family that keeps its own list of owned inputs can silently disagree
+/// with the table the global accounting uses: XMAP21 listed two of the four
+/// inputs the table assigns it and then reported that the recording "admits
+/// every XMAP21 authority input" on an hour where `mapmode.resource_deposits`
+/// was unavailable.
+pub fn map_authority_inputs_owned_by(packet: &str) -> Vec<&'static str> {
+    crate::map_authority::MAP_AUTHORITY_REQUIRED_INPUTS
+        .iter()
+        .copied()
+        .filter(|input| owner_packet_for_authority_gap(input) == Some(packet))
+        .collect()
+}
+
 fn owner_packet_for_authority_gap(input_id: &str) -> Option<&'static str> {
     if input_id.starts_with("combat.") {
         Some("XMAP14")
@@ -1992,10 +2032,24 @@ fn owner_packet_for_authority_gap(input_id: &str) -> Option<&'static str> {
     {
         Some("XMAP05")
     } else if input_id == "country.current_capital_state"
-        || input_id == "mapmode.raids"
-        || input_id == "mapmode.resource_deposits"
         || input_id.starts_with("map_furniture.")
     {
+        // NOT `mapmode.raids` or `mapmode.resource_deposits`. This table claimed
+        // both for XMAP21 while the LEDGER
+        // (`MAP_AUTHORITY_OWNER_PROVEN_INPUTS`) records `mapmode.raids` as
+        // XMAP18's, and XMAP18's own owned list claims both. XMAP21 read this
+        // table for its owned set, so once its adapter stopped being a standing
+        // refusal and began consuming its gaps, two families claimed one gap
+        // and the whole frame refused:
+        //
+        //   MapFurnitureIcons claimed an unknown or already-consumed authority
+        //   gap mapmode.resource_deposits
+        //
+        // which is what the r4 dump printed. XMAP21 READS raids and resource
+        // deposits to place icons; the AUTHORITY over a `mapmode.*` input is
+        // XMAP18's, and reading is not owning.
+        // `the_owner_table_and_the_ledger_name_the_same_owner` keeps the two
+        // from drifting again.
         Some("XMAP21")
     } else if input_id == "mapmode.supply_state" {
         Some("XMAP16")
@@ -2306,14 +2360,232 @@ mod tests {
         }
     }
 
-    /// Two families are registered in a constructor that can never vouch, so no
-    /// frame this product composes can seal, on any recording or hour.
+    /// The two places that name an input's owner must name the SAME owner.
     ///
-    /// kills: gaining a third standing refusal unnoticed; changing either gap
-    /// id out from under the readiness graph. Promoting either family is meant
-    /// to fail this test - the count and the gap ids are what get re-stated.
+    /// There were two: this file's `owner_packet_for_authority_gap`, which the
+    /// global gap accounting and every family's owned-input derivation read, and
+    /// `MAP_AUTHORITY_OWNER_PROVEN_INPUTS` in `map_authority`, which is the
+    /// ledger. They disagreed about `mapmode.raids` from 2026-08-06 until the r4
+    /// frame dump refused a whole frame over it, because nothing compared them:
+    /// the table said XMAP21, the ledger says XMAP18, and XMAP18's own owned
+    /// list said XMAP18 too. It stayed invisible while XMAP21's adapter was a
+    /// standing refusal that consumed no gaps.
+    ///
+    /// kills: reintroducing an owner in either place that the other does not
+    /// agree with. A gap has exactly one consumer, so two owners is a frame that
+    /// cannot seal.
     #[test]
-    fn the_shipped_adapter_set_carries_exactly_two_standing_refusals() {
+    fn the_owner_table_and_the_ledger_name_the_same_owner() {
+        let mut compared = 0usize;
+        for proven in crate::map_authority::MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
+            let table = map_authority_owner_packet(proven.input_id).unwrap_or_else(|| {
+                panic!(
+                    "the owner table assigns no packet to {}, which the ledger owner-proves",
+                    proven.input_id
+                )
+            });
+            assert_eq!(
+                table, proven.owner_packet,
+                "the owner table says {} owns {} and the ledger says {}",
+                table, proven.input_id, proven.owner_packet
+            );
+            compared += 1;
+        }
+        assert!(
+            compared >= 20,
+            "only {compared} owner-proven inputs were compared; the ledger cannot have \
+             shrunk this far without someone noticing"
+        );
+
+        // The ledger only lists owner-PROVEN inputs, so the loop above cannot
+        // see a disagreement about an unproven one - and
+        // `mapmode.resource_deposits`, half of the original defect, is exactly
+        // that. The other half of the partition is each family's own declared
+        // list. XMAP18's is the only hand-written one left; XMAP21 derives from
+        // the table, and no other family keeps one (Codex review, round 11).
+        assert_eq!(
+            crate::production_features::xmap18::OWNED_AUTHORITY_INPUTS.to_vec(),
+            map_authority_inputs_owned_by("XMAP18"),
+            "XMAP18's declared owned-input list and the owner table disagree"
+        );
+
+        // And every required input has exactly ONE owner that lists it back. A
+        // gap has one consumer; an input the table cannot place has none, and
+        // whichever family reached it first would consume a gap nobody assigned.
+        for input in crate::map_authority::MAP_AUTHORITY_REQUIRED_INPUTS {
+            let owner = map_authority_owner_packet(input)
+                .unwrap_or_else(|| panic!("the owner table places no packet on {input}"));
+            assert!(
+                map_authority_inputs_owned_by(owner).contains(input),
+                "{input} is owned by {owner}, which does not list it back"
+            );
+        }
+
+        // THE WHOLE PARTITION, WRITTEN OUT. Everything above compares the table
+        // with something derived from the table, or with the ledger, which
+        // covers only the owner-PROVEN two thirds. Re-owning an unproven input
+        // and re-pinning the identity passes all of it, because every consumer
+        // reads the same changed table (Codex review, round 11). This is the
+        // independent statement: 44 rows, written here, compared with the
+        // table's answer for each. Moving an owner means editing this list, on
+        // purpose, in a diff a reader can see.
+        const EXPECTED_OWNERS: [(&str, &str); 44] = [
+            ("combat.land_active_epoch", "XMAP14"),
+            ("combat.land_terminal_detail", "XMAP14"),
+            ("combat.naval_air_epoch", "XMAP14"),
+            ("control.controller_by_province", "XMAP05"),
+            ("control.controller_by_state", "XMAP05"),
+            ("control.owner_by_state", "XMAP05"),
+            ("country.current_capital_state", "XMAP21"),
+            ("country.d18_complete_roster", "XMAP05"),
+            ("country.presentation_identity", "XMAP05"),
+            ("diplomacy.faction_roster", "XMAP18"),
+            ("diplomacy.pair_relations", "XMAP18"),
+            ("effects.semantic_lifecycle", "XMAP20"),
+            ("fog.province_visibility_by_pov", "XMAP05"),
+            ("fog.spotted_land_by_pov", "XMAP05"),
+            ("fog.spotted_taskforces_by_pov", "XMAP05"),
+            ("fog.spotted_wings_by_pov", "XMAP05"),
+            ("lighting.point_light_lifecycle", "XMAP09"),
+            ("logistics.rail_hub_frames", "XMAP16"),
+            ("logistics.rail_topology_state", "XMAP16"),
+            ("map_furniture.current_victory_points", "XMAP21"),
+            ("mapmode.air_superiority", "XMAP18"),
+            ("mapmode.infrastructure_state", "XMAP18"),
+            ("mapmode.intelligence", "XMAP18"),
+            ("mapmode.naval_supremacy", "XMAP18"),
+            ("mapmode.occupation_resistance_compliance", "XMAP18"),
+            ("mapmode.raids", "XMAP18"),
+            ("mapmode.resource_deposits", "XMAP18"),
+            ("mapmode.scripted_inputs", "XMAP18"),
+            ("mapmode.supply_state", "XMAP16"),
+            ("objects.building_state_damage", "XMAP12"),
+            ("objects.city_population", "XMAP12"),
+            ("objects.generic_population_lifecycle", "XMAP12"),
+            ("orders.army_battleplans_semantic", "XMAP15"),
+            ("orders.theatre_army_hierarchy", "XMAP13"),
+            ("session.player_country_set", "XMAP18"),
+            ("terrain.snow_mud_semantic", "XMAP07"),
+            ("units.air_base_location", "XMAP13"),
+            ("units.divisions", "XMAP13"),
+            ("units.taskforces_fleets", "XMAP13"),
+            ("units.wings", "XMAP13"),
+            ("weather.province_snow_accumulator", "XMAP07"),
+            ("weather.region_gameplay", "XMAP19"),
+            ("weather.visual_membership_lifecycle", "XMAP19"),
+            ("world.calendar_time", "XMAP09"),
+        ];
+        let expected: std::collections::BTreeMap<&str, &str> =
+            EXPECTED_OWNERS.into_iter().collect();
+        assert_eq!(
+            expected.len(),
+            EXPECTED_OWNERS.len(),
+            "the written-out partition repeats an input"
+        );
+        let shipped: std::collections::BTreeSet<&str> =
+            crate::map_authority::MAP_AUTHORITY_REQUIRED_INPUTS
+                .iter()
+                .copied()
+                .collect();
+        assert_eq!(
+            shipped,
+            expected.keys().copied().collect::<std::collections::BTreeSet<_>>(),
+            "the written-out partition is not over the shipped input set"
+        );
+        for (input, owner) in expected {
+            assert_eq!(
+                map_authority_owner_packet(input),
+                Some(owner),
+                "{input} moved owner without this list moving with it"
+            );
+        }
+    }
+
+    /// The pinned authority-set identity is the identity of the set the product
+    /// actually ships.
+    ///
+    /// The identity is what lets a reader of an authority artifact refuse a
+    /// census over a set nobody measured - but only while the pin it compares
+    /// against is current. An artifact edited in both its rows AND its declared
+    /// identity agrees with itself; the pin is the independent half, and a pin
+    /// nothing keeps honest goes stale the first time an input is added or
+    /// re-owned.
+    ///
+    /// kills: growing or re-owning `MAP_AUTHORITY_REQUIRED_INPUTS` while the
+    /// pinned digest stays put, which would leave every reader written against
+    /// the old set silently accepting the new one.
+    #[test]
+    fn the_pinned_authority_identity_is_the_shipped_set() {
+        // The preimage, built HERE rather than by asking the function under
+        // test. Comparing `map_authority_set_identity()` with the pin alone is
+        // tautological the moment the function is reimplemented to return the
+        // pin: the set could then be re-owned freely (Codex review, round 6).
+        // This is the independent oracle; the production function is compared
+        // to IT, and the pin is compared to it too.
+        let independent = {
+            let mut preimage = String::new();
+            for input in crate::map_authority::MAP_AUTHORITY_REQUIRED_INPUTS {
+                preimage.push_str(input);
+                preimage.push('\t');
+                preimage.push_str(match owner_packet_for_authority_gap(input) {
+                    Some(owner) => owner,
+                    None => MAP_AUTHORITY_OWNER_UNCLASSIFIED,
+                });
+                preimage.push('\n');
+            }
+            Sha256::hex(preimage.as_bytes())
+        };
+
+        assert_eq!(
+            crate::map_authority::MAP_AUTHORITY_REQUIRED_INPUTS.len(),
+            44,
+            "the authority set changed size; re-pin MAP_AUTHORITY_SET_IDENTITY_A729 and every \
+             reader written against it"
+        );
+        assert_eq!(
+            independent, MAP_AUTHORITY_SET_IDENTITY_A729,
+            "the shipped (input, owner) set no longer hashes to the pinned identity; re-pin it \
+             and every reader written against it"
+        );
+        assert_eq!(
+            map_authority_set_identity(),
+            independent,
+            "the product's own identity function no longer describes the set it ships"
+        );
+
+        // The identity is a function of the OWNERS too, not just the input
+        // names: re-owning one input alone has to move it, or an artifact whose
+        // owner column was edited would still pass a reader's recomputation.
+        let mut reowned = String::new();
+        for input in crate::map_authority::MAP_AUTHORITY_REQUIRED_INPUTS {
+            reowned.push_str(input);
+            reowned.push('\t');
+            reowned.push_str(if **input == *"country.current_capital_state" {
+                "XMAP20"
+            } else {
+                map_authority_owner_packet(input).unwrap_or(MAP_AUTHORITY_OWNER_UNCLASSIFIED)
+            });
+            reowned.push('\n');
+        }
+        assert_ne!(
+            Sha256::hex(reowned.as_bytes()),
+            independent,
+            "a re-owned input must not hash to the shipped identity"
+        );
+    }
+
+    /// No shipped adapter carries a STANDING refusal any more.
+    ///
+    /// XMAP20 and XMAP21 used to be registered through constructors
+    /// (`carrier_absent()` / `authority_absent()`) that could never vouch, so no
+    /// frame this product composed could seal on ANY recording or hour. Both now
+    /// decide from the recording in `prepare()`, which is what lets a recording
+    /// that carries the inputs get past them.
+    ///
+    /// kills: reintroducing a constructor-shaped refusal in the shipped set, and
+    /// letting either family's blocker stop being owner-scoped or lose its cause.
+    #[test]
+    fn no_shipped_adapter_carries_a_standing_refusal() {
         // The shipped set is built in two halves, and both register adapters.
         let source = include_str!("production_foundation.rs");
         let after_core = source
@@ -2336,48 +2608,50 @@ mod tests {
         );
         assert_eq!(
             core.matches("_absent()").count(),
-            2,
-            "the shipped adapter set's standing refusals are no longer the two this test states"
+            0,
+            "a shipped adapter is registered through a constructor that can never vouch"
         );
-        assert_eq!(core.matches("carrier_absent()").count(), 1);
-        assert_eq!(core.matches("authority_absent()").count(), 1);
-        // XMAP14's is CONDITIONAL - it refuses only when this install's content
-        // cannot build the layer - so it is not a standing refusal and is
+        // XMAP14's refusal is CONDITIONAL - it refuses only when this install's
+        // content cannot build the layer - so it is not a standing refusal and is
         // counted separately.
         assert_eq!(core.matches("new_or_unavailable(").count(), 1);
 
+        // Both former standing refusals still refuse with an owner-scoped,
+        // caused gap when their inputs are missing - the refusal moved into
+        // prepare(), it did not disappear.
         let hour = 17_030_998i64;
-        let standing = [
+        let refusals = [
             (
                 MapVisualFamily::ParticlesEffects,
                 "XMAP20.effect_lifecycle_carrier_absent",
                 crate::production_features::xmap20::Xmap20EffectsAdapter::carrier_absent_output(
                     hour,
-                ),
+                    crate::map_authority::MapAuthorityRequirementDisposition::Absent,
+                    "the recorder emitted no key",
+                    vec!["effects.semantic_lifecycle".into()],
+                )
+                .expect("an Absent input yields a row"),
             ),
             (
                 MapVisualFamily::MapFurnitureIcons,
-                "XMAP21.map_furniture_authority_absent",
-                crate::production_features::xmap21::Xmap21MapFurnitureAdapter::authority_absent_output(
+                "XMAP21.map_furniture_engine_derivations_owed",
+                crate::production_features::xmap21::Xmap21MapFurnitureAdapter::derivation_owed_output(
                     hour,
                 ),
             ),
         ];
-        let mut refusing = Vec::new();
-        for (family, gap_id, output) in &standing {
+        for (family, gap_id, output) in &refusals {
             match &output.disposition {
                 FamilyDisposition::Unavailable { gap } => {
                     assert_eq!(&gap.gap_id, gap_id, "{family:?}");
                     assert!(!gap.reason.trim().is_empty(), "{family:?} refuses silently");
-                    refusing.push(*family);
                 }
-                other => panic!("{family:?} is no longer a standing refusal: {other:?}"),
+                other => panic!("{family:?} must still be able to refuse: {other:?}"),
             }
         }
-        assert_eq!(refusing.len(), 2);
 
         // Every OTHER family vouching does not rescue the frame, and the seal
-        // says which two stopped it.
+        // says which one stopped it.
         let envelope = FoundationRenderEnvelope {
             schema: FOUNDATION_RENDER_SCHEMA.into(),
             hour_index: hour,
@@ -2390,9 +2664,9 @@ mod tests {
                 .map(|family| FamilyCoverageRow {
                     family,
                     owner_packet: family.owner_packet().into(),
-                    disposition: standing
+                    disposition: refusals
                         .iter()
-                        .find(|(standing_family, _, _)| *standing_family == family)
+                        .find(|(refusing_family, _, _)| *refusing_family == family)
                         .map(|(_, _, output)| output.disposition.clone())
                         .unwrap_or(FamilyDisposition::AuthenticatedEmpty {
                             producer_registration_sha256: "5".repeat(64),
@@ -2993,16 +3267,30 @@ mod tests {
         }
     }
 
+    /// The two map-mode inputs XMAP21 READS are owned by XMAP18.
+    ///
+    /// This test used to assert the opposite, and that is why the defect
+    /// survived: the table said XMAP21, the ledger and XMAP18's own list said
+    /// XMAP18, and the only test that looked pinned the table's answer instead
+    /// of comparing the two. It stayed green for the whole time XMAP21's
+    /// adapter was a standing refusal that consumed no gaps, and the r4 frame
+    /// dump was what finally refused a frame over it:
+    ///
+    ///   MapFurnitureIcons claimed an unknown or already-consumed authority gap
+    ///   mapmode.resource_deposits
+    ///
+    /// kills: giving either input back to XMAP21. XMAP21 reads raids and
+    /// resource deposits to place icons; authority over a `mapmode.*` input is
+    /// XMAP18's, and reading is not owning.
     #[test]
-    fn resource_and_raid_authority_remains_xmap21_owned() {
-        assert_eq!(
-            owner_packet_for_authority_gap("mapmode.raids"),
-            Some("XMAP21")
-        );
-        assert_eq!(
-            owner_packet_for_authority_gap("mapmode.resource_deposits"),
-            Some("XMAP21")
-        );
+    fn the_two_map_mode_inputs_xmap21_reads_are_owned_by_xmap18() {
+        for input in ["mapmode.raids", "mapmode.resource_deposits"] {
+            assert_eq!(
+                owner_packet_for_authority_gap(input),
+                Some("XMAP18"),
+                "{input} is a map-mode input"
+            );
+        }
     }
 
     #[test]
@@ -3063,8 +3351,8 @@ pub fn ")
             .0;
         for registration in [
             "xmap10::Xmap10GradingPostFxAdapter",
-            "xmap20::Xmap20EffectsAdapter::carrier_absent()",
-            "xmap21::Xmap21MapFurnitureAdapter::authority_absent()",
+            "xmap20::Xmap20EffectsAdapter",
+            "xmap21::Xmap21MapFurnitureAdapter",
         ] {
             assert!(
                 core.contains(registration),
@@ -3080,11 +3368,11 @@ pub fn ")
                 MapVisualFamily::GradingPostFx,
             ),
             (
-                &crate::production_features::xmap20::Xmap20EffectsAdapter::CarrierAbsent,
+                &crate::production_features::xmap20::Xmap20EffectsAdapter,
                 MapVisualFamily::ParticlesEffects,
             ),
             (
-                &crate::production_features::xmap21::Xmap21MapFurnitureAdapter::AuthorityAbsent,
+                &crate::production_features::xmap21::Xmap21MapFurnitureAdapter,
                 MapVisualFamily::MapFurnitureIcons,
             ),
         ];
@@ -3116,13 +3404,21 @@ pub fn ")
         let dispositions = [
             (
                 MapVisualFamily::ParticlesEffects,
-                crate::production_features::xmap20::Xmap20EffectsAdapter::carrier_absent_output(hour)
-                    .disposition,
+                crate::production_features::xmap20::Xmap20EffectsAdapter::carrier_absent_output(
+                    hour,
+                    crate::map_authority::MapAuthorityRequirementDisposition::Absent,
+                    "the recorder emitted no key",
+                    vec!["effects.semantic_lifecycle".into()],
+                )
+                .expect("an Absent input yields a row")
+                .disposition,
             ),
             (
                 MapVisualFamily::MapFurnitureIcons,
-                crate::production_features::xmap21::Xmap21MapFurnitureAdapter::authority_absent_output(hour)
-                    .disposition,
+                crate::production_features::xmap21::Xmap21MapFurnitureAdapter::derivation_owed_output(
+                    hour,
+                )
+                .disposition,
             ),
         ];
         for (family, disposition) in dispositions {

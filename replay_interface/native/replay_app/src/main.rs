@@ -27,6 +27,8 @@ mod recorded_ui_owner;
 mod recording_open;
 mod recording_reach;
 mod scrub;
+#[cfg(test)]
+mod source_scan;
 mod special_projects_runtime;
 mod timeline;
 mod tooltip_runtime;

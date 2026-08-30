@@ -1418,9 +1418,9 @@ mod tests {
     /// envelope a refusing hour leaves behind, or records it too late.
     #[test]
     fn the_dump_path_publishes_the_account_and_claims_its_outcome() {
-        let source = include_str!("headless.rs");
+        let source = crate::source_scan::headless_production();
         let flatten = |body: &str| body.split_whitespace().collect::<Vec<_>>().join(" ");
-        let production = flatten(function_body(source, "fn dump_production_recording_frame("));
+        let production = flatten(function_body(&source, "fn dump_production_recording_frame("));
         assert!(
             production.contains(concat!(
                 "Err(error) => { return Err(frame_dump_refusal_error( out, selected_hour,",
@@ -1433,7 +1433,7 @@ mod tests {
             ("the production dump", &production),
             (
                 "the debug dump",
-                &flatten(function_body(source, "fn dump_debug_frame(")),
+                &flatten(function_body(&source, "fn dump_debug_frame(")),
             ),
         ] {
             assert_eq!(
@@ -1478,12 +1478,12 @@ mod tests {
         // Each preparation clears the previous hour's account as its FIRST
         // statement and records between the family loop and the playback
         // admission that rejects a refusing hour.
-        let session = include_str!("validate.rs");
+        let session = crate::source_scan::validate_production();
         for method in [
             "pub(crate) fn prepare_with_xmap12_inputs(",
             "pub(crate) fn prepare_with_xmap12_and_xmap15_inputs(",
         ] {
-            let raw = function_body(session, method);
+            let raw = function_body(&session, method);
             let prepare = flatten(raw);
             let at = |needle: &str| {
                 prepare
@@ -1997,7 +1997,7 @@ mod tests {
             )
             .expect("headless product foundation includes XMAP21 execute");
 
-        let source = include_str!("headless.rs").replace("\r\n", "\n");
+        let source = crate::source_scan::headless_production();
         let start = source
             .find("fn dump_production_recording_frame(")
             .expect("production recording dump function");

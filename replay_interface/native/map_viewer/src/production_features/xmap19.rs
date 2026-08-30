@@ -562,12 +562,10 @@ impl ProductionMapFeatureAdapter for Xmap19WeatherAdapter {
                 prepared_lighting: None,
                 prepared_rail_supply: None,
                 prepared_weather: None,
-                prepared_effects: None,
                 prepared_units: None,
                 prepared_combat: None,
                 prepared_orders: None,
                 prepared_map_modes: None,
-                prepared_map_furniture: None,
                 element_diagnostics: Vec::new(),
                 consumed_gap_ids: owned_gaps(context),
             });
@@ -611,12 +609,10 @@ impl ProductionMapFeatureAdapter for Xmap19WeatherAdapter {
             prepared_lighting: None,
             prepared_rail_supply: None,
             prepared_weather: Some(prepared),
-            prepared_effects: None,
             prepared_units: None,
             prepared_combat: None,
             prepared_orders: None,
             prepared_map_modes: None,
-            prepared_map_furniture: None,
             element_diagnostics: Vec::new(),
             consumed_gap_ids: Vec::new(),
         })
@@ -1280,12 +1276,68 @@ fn owned_gaps(context: &FoundationFeatureContext<'_>) -> Vec<String> {
         .collect()
 }
 
+/// The two recording inputs XMAP19 reads, each with the WorldFrame status that
+/// answers for it.
+///
+/// Naming BOTH with their observed status is the point: a refusal that said only
+/// "XMAP19 requires Present D24 weather gameplay and the lifecycle carrier" left
+/// a reader unable to tell which one this recording is missing, and on
+/// `captures/rc_vanilla7` hour 17030998 it is exactly one of them.
+fn observed_weather_inputs(
+    context: &FoundationFeatureContext<'_>,
+) -> [(&'static str, ViewStatus); 2] {
+    [
+        ("weather.region_gameplay", context.world_frame.weather_status()),
+        (
+            "weather.visual_membership_lifecycle",
+            context.world_frame.weather_visual_lifecycle().status,
+        ),
+    ]
+}
+
 fn unavailable_gap(context: &FoundationFeatureContext<'_>) -> FoundationGap {
     let gap_id = "XMAP19.weather_inputs_unavailable".to_string();
-    let reason = format!(
-        "XMAP19 requires Present D24 weather gameplay and the exact presentation-independent {} carrier; selected Present is not an authority",
+    let observed = observed_weather_inputs(context);
+    let missing = observed
+        .iter()
+        .filter(|(_, status)| *status != ViewStatus::Present)
+        .map(|(input, status)| {
+            let blocker = crate::map_authority::map_authority_requirement_metadata(input)
+                .map(|metadata| metadata.blocker)
+                .unwrap_or("XMAP00 holds no blocker for this input");
+            format!("{input} has WorldFrame status {status:?}: {blocker}")
+        })
+        .collect::<Vec<_>>();
+    let present = observed
+        .iter()
+        .filter(|(_, status)| *status == ViewStatus::Present)
+        .map(|(input, _)| *input)
+        .collect::<Vec<_>>();
+    // `prepare()` reaches this only when at least one input is not Present, so
+    // the empty arm is a contract violation and says so rather than rendering a
+    // refusal with nothing after the colon.
+    let mut reason = if missing.is_empty() {
+        "XMAP19 refused with both weather inputs Present, which is a defect in the caller rather \
+         than a statement about the recording"
+            .to_string()
+    } else {
+        format!(
+            "XMAP19 requires both weather inputs Present and {} of them is not Present on this \
+             hour: {}",
+            missing.len(),
+            missing.join("; ")
+        )
+    };
+    if !present.is_empty() {
+        reason.push_str(&format!(
+            "; {} has WorldFrame status Present, so it is not what this hour lacks",
+            present.join(", ")
+        ));
+    }
+    reason.push_str(&format!(
+        "; the lifecycle carrier's payload schema is {}",
         replay_core::WEATHER_VISUAL_LIFECYCLE_SCHEMA
-    );
+    ));
     let hour = context.world_frame.hour_index();
     let witness_sha256 = Sha256::hex(
         format!(
@@ -1378,6 +1430,150 @@ mod tests {
     #[test]
     fn effective_namespace_decode_preserves_clausewitz_single_byte_text() {
         let decoded = crate::latin1_bytes_to_string(&[b'n', b'a', b'm', b'e', b'=', 0xe9]);
-        assert_eq!(decoded, "name=é");
+        assert_eq!(decoded, "name=\u{e9}");
+    }
+
+    /// The refusal must separate the two weather inputs, because a recording can
+    /// carry one and not the other. `captures/rc_vanilla7` hour 17030998 is that
+    /// shape: 305 measured weather regions on the WorldFrame, and
+    /// `_r2_weather_visual_lifecycle` a typed null. (Both of XMAP19's XMAP00
+    /// AUTHORITY rows are Unavailable on that hour, which is the stricter
+    /// question and a different one - a view being Present does not admit the
+    /// authority input that reads it.)
+    ///
+    /// kills: going back to a reason that names both inputs as requirements and
+    /// neither as the one this recording is missing, and dropping XMAP00's own
+    /// cause for the missing input.
+    #[test]
+    fn the_refusal_names_the_weather_input_the_recording_is_missing() {
+        use crate::production_features::xmap15::Xmap15ViewerSelection;
+        use crate::production_foundation::{FoundationFeatureContext, ViewerOwnedMapState};
+        use replay_core::{RawFrame, ReplaySource, SourceError, WorldTimeline};
+
+        // Region gameplay Present, visual lifecycle typed-null: the shape every
+        // product capture has today.
+        struct GameplayOnlySource;
+        impl ReplaySource for GameplayOnlySource {
+            fn game_id(&self) -> &str {
+                "xmap19-weather-input-seam"
+            }
+            fn hours(&self) -> &[i64] {
+                &[17_030_998]
+            }
+            fn warnings(&self) -> &[String] {
+                &[]
+            }
+            fn frame(&self, hour_index: i64) -> std::result::Result<RawFrame, SourceError> {
+                let mut rest = serde_json::Map::new();
+                let mut regions = serde_json::Map::new();
+                for region in 0..305u32 {
+                    regions.insert(
+                        region.to_string(),
+                        serde_json::json!({
+                            "weather_kind": "clear",
+                            "intensity_raw": 0,
+                            "flags_raw": 0,
+                            "transition_expiry_game_hour": hour_index + 1,
+                        }),
+                    );
+                }
+                rest.insert(
+                    "map".into(),
+                    serde_json::json!({
+                        "_r2_weather_live": {
+                            "source": "weather_live",
+                            "scale_raw": 100_000,
+                            "regions": regions,
+                        },
+                        "_r2_weather_visual_lifecycle": serde_json::Value::Null,
+                    }),
+                );
+                Ok(RawFrame {
+                    hour_index,
+                    date: None,
+                    save_version: None,
+                    schema_version: None,
+                    rest,
+                })
+            }
+        }
+
+        let timeline = WorldTimeline::open(Box::new(GameplayOnlySource)).expect("timeline");
+        let frame = timeline.frame(17_030_998).expect("frame");
+        let viewer = ViewerOwnedMapState {
+            viewport_width: 16,
+            viewport_height: 16,
+            camera: None,
+            observer_country_id: None,
+            map_mode_id: "not_a_mode".to_string(),
+            map_mode_selection_epoch: 0,
+            selected_object_ids: Vec::new(),
+            input_revision: 0,
+            animation_time_f32_bits: 0,
+            frame_delta_seconds_f32_bits: 0,
+        };
+        let selection = Xmap15ViewerSelection {
+            selected_plan: None,
+        };
+        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
+            &frame,
+            &viewer,
+            &[],
+            &[],
+            &selection,
+        );
+
+        // The lifecycle carrier is the one this recording lacks, whatever the
+        // gameplay side does - assert against the observed statuses so the test
+        // states the separation rather than a fixture's luck.
+        let observed = observed_weather_inputs(&context);
+        assert_eq!(observed[1].0, "weather.visual_membership_lifecycle");
+        assert_ne!(
+            observed[1].1,
+            ViewStatus::Present,
+            "the fixture must leave the lifecycle carrier unavailable"
+        );
+
+        let gap = unavailable_gap(&context);
+        assert_eq!(gap.gap_id, "XMAP19.weather_inputs_unavailable");
+        assert!(
+            gap.reason
+                .contains("weather.visual_membership_lifecycle has WorldFrame status"),
+            "{}",
+            gap.reason
+        );
+        assert!(
+            gap.reason.contains("map._r2_weather_visual_lifecycle"),
+            "the refusal dropped XMAP00's own cause: {}",
+            gap.reason
+        );
+        assert!(
+            !gap.reason.contains("selected Present is not an authority"),
+            "the pre-lane text is back: {}",
+            gap.reason
+        );
+        // A typed-null carrier IS carried; saying the recording "does not carry"
+        // it repeats the absent-versus-unavailable conflation this lane fixed
+        // elsewhere (Codex review, round 1).
+        assert!(
+            !gap.reason.contains("does not carry"),
+            "the refusal conflates a typed null with an absent key: {}",
+            gap.reason
+        );
+        assert!(
+            gap.reason.contains("is not Present on this hour"),
+            "{}",
+            gap.reason
+        );
+        for (input, status) in observed {
+            if status == ViewStatus::Present {
+                assert!(
+                    gap.reason
+                        .contains(&format!("{input} has WorldFrame status Present")),
+                    "a carried input is not reported as carried: {}",
+                    gap.reason
+                );
+            }
+        }
     }
 }
