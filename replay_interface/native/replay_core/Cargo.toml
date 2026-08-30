@@ -35,6 +35,10 @@ portable_admission = { path = "../../../portable_replay/native/admission" }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+# Self dev-dependency, features only: it turns on this crate's own
+# `test_support` seam for its integration tests (which link the lib as an
+# external crate and so cannot see `cfg(test)`). Normal builds are unaffected.
+replay_core = { path = ".", features = ["test_support"] }
 # Waits out the Windows sharing violation a real-time scanner causes on a
 # freshly written file. Test-only: nothing this package ships calls it.
 portable_test_fs_retry = { path = "../../../portable_replay/native/test_fs_retry" }

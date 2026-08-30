@@ -93,13 +93,7 @@ fn apply_exact_nuke_stockpile(
     frame: &WorldFrame,
     scalars: &TopbarScalars,
 ) {
-    let d18_resolved = frame
-        .raw()
-        .get("tag_db_id_index")
-        .and_then(serde_json::Value::as_object)
-        .and_then(|index| index.get("resolved"))
-        .and_then(serde_json::Value::as_bool)
-        == Some(true);
+    let d18_resolved = frame.tag_db_id_index_resolved() == Some(true);
     binding.nukes = exact_nuke_display_value(
         d18_resolved,
         frame.nuke_stockpile_exact(),

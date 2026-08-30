@@ -27,6 +27,7 @@ pub mod production_map_content_index;
 pub mod production_vfs_winner_binding;
 pub mod runtime_dlc_roster;
 pub mod scientist_source_report;
+pub mod sharing_violation_holders;
 pub mod spool_trim;
 pub mod static_artifact_epoch;
 pub mod static_bundle_gate;

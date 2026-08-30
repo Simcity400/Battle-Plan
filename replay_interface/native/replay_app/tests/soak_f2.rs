@@ -55,7 +55,11 @@ fn gate_b_shrunken_cache_seek_equals_play_to() {
         for &h in &hours {
             let a = timeline.seek(h).expect("seek shrunken");
             let b = reference.seek(h).expect("seek reference");
-            assert_eq!(a.raw(), b.raw(), "cap {cap} content diverged @ {h}");
+            assert_eq!(
+                a.raw_for_consumer_tests(),
+                b.raw_for_consumer_tests(),
+                "cap {cap} content diverged @ {h}"
+            );
             assert_eq!(
                 a.owner_by_state(),
                 b.owner_by_state(),
@@ -88,7 +92,7 @@ fn scrub_and_measure(hour_count: usize, seeks: usize, cap: usize) -> (usize, usi
         let h = first + (rng.next_u64() as i64).rem_euclid(span + 1);
         match (timeline.seek(h), timeline.play_to(h)) {
             (Ok(s), Ok(p)) => {
-                if s.hour_index() != p.hour_index() || s.raw() != p.raw() {
+                if s.hour_index() != p.hour_index() || s.raw_for_consumer_tests() != p.raw_for_consumer_tests() {
                     errors += 1;
                 }
             }

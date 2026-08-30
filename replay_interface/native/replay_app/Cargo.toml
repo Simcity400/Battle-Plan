@@ -17,6 +17,10 @@ replay_test_gates = { path = "../replay_test_gates" }
 # freshly written file. Test-only: nothing this package ships calls it.
 portable_test_fs_retry = { path = "../../../portable_replay/native/test_fs_retry" }
 replay_test_gates = { path = "../replay_test_gates" }
+# Turns on replay_core's `test_support` seam so the soak tests can compare whole
+# frames. Product code reads typed accessors only; the v2 resolver keeps a
+# dev-dependency feature out of the normal build.
+replay_core = { path = "../replay_core", features = ["test_support"] }
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

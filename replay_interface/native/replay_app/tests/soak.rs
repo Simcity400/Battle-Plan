@@ -25,7 +25,7 @@ fn scrub_and_measure(hour_count: usize, seeks: usize) -> (usize, usize) {
         let h = first + (rng.next_u64() as i64).rem_euclid(span + 1);
         match (timeline.seek(h), timeline.play_to(h)) {
             (Ok(s), Ok(p)) => {
-                if s.hour_index() != p.hour_index() || s.raw() != p.raw() {
+                if s.hour_index() != p.hour_index() || s.raw_for_consumer_tests() != p.raw_for_consumer_tests() {
                     errors += 1;
                 }
             }

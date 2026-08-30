@@ -809,14 +809,9 @@ fn validate_xui12_payload_shape(
 pub fn xui12_replay_frame_identity_sha256(
     frame: &replay_core::WorldFrame,
 ) -> Result<String, Xui12CanvasLayoutRejection> {
-    snapshot::replay_frame_identity::base_frame_identity_sha256(
-        snapshot::replay_frame_identity::XUI12_BASE_FRAME_IDENTITY_DOMAIN,
-        frame.hour_index(),
-        frame.date(),
-        frame.save_version(),
-        frame.raw(),
-    )
-    .map_err(|_| Xui12CanvasLayoutRejection::InvalidProducerAuthority)
+    frame
+        .base_frame_identity_sha256(snapshot::replay_frame_identity::XUI12_BASE_FRAME_IDENTITY_DOMAIN)
+        .map_err(|_| Xui12CanvasLayoutRejection::InvalidProducerAuthority)
 }
 
 fn digest_field(bytes: &mut Vec<u8>, value: &[u8]) {

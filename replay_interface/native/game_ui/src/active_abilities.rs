@@ -894,14 +894,9 @@ pub fn admit_observer_ability_frame(
 pub fn observer_ability_replay_frame_identity_sha256(
     frame: &replay_core::WorldFrame,
 ) -> std::result::Result<String, ActiveAbilityRejection> {
-    snapshot::replay_frame_identity::base_frame_identity_sha256(
-        snapshot::replay_frame_identity::XUI23_BASE_FRAME_IDENTITY_DOMAIN,
-        frame.hour_index(),
-        frame.date(),
-        frame.save_version(),
-        frame.raw(),
-    )
-    .map_err(|error| ActiveAbilityRejection(error.reason()))
+    frame
+        .base_frame_identity_sha256(snapshot::replay_frame_identity::XUI23_BASE_FRAME_IDENTITY_DOMAIN)
+        .map_err(|error| ActiveAbilityRejection(error.reason()))
 }
 
 fn digest_observer_ability_field(bytes: &mut Vec<u8>, value: &[u8]) {
@@ -2256,7 +2251,7 @@ mod tests {
         let mut tampered = payload.replay_authority_record();
         tampered["payload"]["snapshots"][0]["rows"][0]["available"] =
             serde_json::Value::Bool(true);
-        let mut rest = frame.raw().clone();
+        let mut rest = frame.raw_for_consumer_tests().clone();
         rest.insert(
             XUI23_PRODUCER_AUTHORITY_FIELD.into(),
             tampered,
@@ -2274,7 +2269,7 @@ mod tests {
     #[test]
     fn shipping_ingress_requires_exact_ordered_d18_country_census() {
         let (mut payload, frame) = authenticated_observer_payload();
-        let mut rest = frame.raw().clone();
+        let mut rest = frame.raw_for_consumer_tests().clone();
         rest.remove(XUI23_PRODUCER_AUTHORITY_FIELD);
         rest.insert(
             "countries".into(),

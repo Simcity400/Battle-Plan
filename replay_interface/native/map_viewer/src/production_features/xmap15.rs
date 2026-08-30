@@ -16,11 +16,6 @@ use serde::{Deserialize, Serialize};
 use snapshot::sha256::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const XMAP15_SEMANTIC_RAW_PATH: [&str; 3] = [
-    "order_of_battle",
-    "extra",
-    "xmap15_orders_fronts_movement_semantic",
-];
 pub const XMAP15_MAPARROWS_PATH: &str = "gfx/maparrows/maparrows.txt";
 pub const XMAP15_MAPARROW_SHADER_PATH: &str = "gfx/FX/maparrow.shader";
 pub const XMAP15_MOVEMENT_DEFINITIONS_PATH: &str = "interface/arrows.gfx";
@@ -1351,13 +1346,7 @@ fn xmap15_unavailable_gap(
 }
 
 fn semantic_value(world: &WorldFrame) -> Option<&serde_json::Value> {
-    world
-        .raw()
-        .get(XMAP15_SEMANTIC_RAW_PATH[0])
-        .and_then(|value| value.as_object())
-        .and_then(|value| value.get(XMAP15_SEMANTIC_RAW_PATH[1]))
-        .and_then(|value| value.as_object())
-        .and_then(|value| value.get(XMAP15_SEMANTIC_RAW_PATH[2]))
+    world.xmap15_orders_fronts_movement_semantic()
 }
 
 fn semantic_frame(world: &WorldFrame) -> Result<Xmap15SemanticFrame> {

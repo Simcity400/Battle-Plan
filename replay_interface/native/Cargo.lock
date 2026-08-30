@@ -376,6 +376,7 @@ dependencies = [
  "portable_render_stream",
  "portable_replay_format",
  "portable_test_fs_retry",
+ "replay_core",
  "serde",
  "serde_json",
  "sha2",

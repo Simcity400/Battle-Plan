@@ -482,6 +482,46 @@ fn open_share_read(
     }
 }
 
+/// The ancestor component a retained open was refused on, and the refusal.
+///
+/// Carried as the wrapped error's payload because `io::Error::new` keeps
+/// neither the OS code nor the path: a caller that wants to name the holder of
+/// the refused component can recover both by downcasting.
+#[derive(Debug)]
+pub struct RetainedAncestorRefusal {
+    path: PathBuf,
+    source: std::io::Error,
+}
+
+impl RetainedAncestorRefusal {
+    pub fn new(path: PathBuf, source: std::io::Error) -> Self {
+        Self { path, source }
+    }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+    pub fn raw_os_error(&self) -> Option<i32> {
+        self.source.raw_os_error()
+    }
+}
+
+impl std::fmt::Display for RetainedAncestorRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "replay container ancestor {} could not be retained: {}",
+            self.path.display(),
+            self.source
+        )
+    }
+}
+
+impl std::error::Error for RetainedAncestorRefusal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
 fn open_retained_container_file(path: &Path) -> std::io::Result<File> {
     #[cfg(windows)]
     {
@@ -568,10 +608,7 @@ fn open_retained_container_file(path: &Path) -> std::io::Result<File> {
             .map_err(|error| {
                 Error::new(
                     error.kind(),
-                    format!(
-                        "replay container ancestor {} could not be retained: {error}",
-                        cursor.display()
-                    ),
+                    RetainedAncestorRefusal::new(cursor.clone(), error),
                 )
             })?;
             let metadata = directory.metadata()?;
@@ -3750,6 +3787,34 @@ mod tests {
             assert!(
                 text.contains(&dir.0.display().to_string()),
                 "the refusal must name the ancestor that was held, got {text}"
+            );
+        }
+
+        /// The refused ancestor and its OS code survive the wrap, so a caller
+        /// can name the holder of the component that actually refused. The
+        /// text the wrap produces is unchanged by carrying them.
+        #[test]
+        fn an_ancestor_refusal_carries_the_path_and_the_os_code() {
+            let (dir, path) = container_in_its_own_directory("retained_ancestor_payload");
+            let _holder = delete_holder(&dir.0);
+            let Err(ContainerError::Io(error)) =
+                Container::open(&path, &ExpectedIdentity::default())
+            else {
+                panic!("a held ancestor must refuse with an io error");
+            };
+            let refusal = error
+                .get_ref()
+                .and_then(|payload| payload.downcast_ref::<RetainedAncestorRefusal>())
+                .expect("the ancestor refusal is carried structurally");
+            assert_eq!(refusal.path(), dir.0.as_path());
+            assert_eq!(refusal.raw_os_error(), Some(ERROR_SHARING_VIOLATION));
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "replay container ancestor {} could not be retained: {}",
+                    dir.0.display(),
+                    std::io::Error::from_raw_os_error(ERROR_SHARING_VIOLATION)
+                )
             );
         }
 

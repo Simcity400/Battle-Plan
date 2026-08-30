@@ -130,8 +130,13 @@ pub fn publish_registered_rollover_stitches(
     let package_set_path = run_dir.join(PACKAGE_SET_DESCRIPTOR_FILE);
     let package_set = read_strict_json(&package_set_path)?;
     let source_descriptor_path = run_dir.join("logical-streams").join(SET_DESCRIPTOR_FILE);
-    let source_descriptor_bytes = fs::read(&source_descriptor_path)
-        .map_err(|error| format!("read rollover source descriptor for stitch failed: {error}"))?;
+    let source_descriptor_bytes = fs::read(&source_descriptor_path).map_err(|error| {
+        crate::sharing_violation_holders::with_holder(
+            format!("read rollover source descriptor for stitch failed: {error}"),
+            &error,
+            &source_descriptor_path,
+        )
+    })?;
     if source_descriptor_bytes.len() > MAX_CONTROL_BYTES {
         return Err("rollover source descriptor exceeds 16 MiB".into());
     }
@@ -276,7 +281,13 @@ fn compose_and_publish(
         let raw = inspect_registered_raw(&raw_path, entry)?;
         let (container, package_bytes, package_sha256) =
             Container::open_strict_with_file_receipt(&package_path, &ExpectedIdentity::default())
-                .map_err(|error| format!("open registered standalone replay failed: {error}"))?;
+                .map_err(|error| {
+                    crate::sharing_violation_holders::with_container_holder(
+                        format!("open registered standalone replay failed: {error}"),
+                        &error,
+                        &package_path,
+                    )
+                })?;
         if package_bytes == 0 || package_sha256 != entry.package_sha256 {
             return Err("opened standalone replay differs from its registry receipt".into());
         }
@@ -464,9 +475,13 @@ fn verify_registered_rebuilt_wire_authority(
     )
     .map_err(|error| format!("reauthenticate registered province catalog failed: {error}"))?;
     let raw_file = File::open(raw_path).map_err(|error| {
-        format!(
-            "retain registered D81 source {} for semantic verification: {error}",
-            raw_path.display()
+        crate::sharing_violation_holders::with_holder(
+            format!(
+                "retain registered D81 source {} for semantic verification: {error}",
+                raw_path.display()
+            ),
+            &error,
+            raw_path,
         )
     })?;
     let session = wire_product::H4crSession {
@@ -881,7 +896,13 @@ fn open_retained_raw(path: &Path) -> Result<File, String> {
             .share_mode(FILE_SHARE_READ)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)
-            .map_err(|error| format!("open registered raw source failed: {error}"))?;
+            .map_err(|error| {
+                crate::sharing_violation_holders::with_holder(
+                    format!("open registered raw source failed: {error}"),
+                    &error,
+                    path,
+                )
+            })?;
         let metadata = file
             .metadata()
             .map_err(|error| format!("stat registered raw source failed: {error}"))?;
@@ -1401,9 +1422,13 @@ fn load_campaign_entries(
 ) -> Result<Vec<RegistryEntry>, String> {
     let dir = campaign_registry_dir(product_root, campaign_hex);
     let mut entries = Vec::new();
-    for candidate in fs::read_dir(&dir)
-        .map_err(|error| format!("read campaign stitch registry failed: {error}"))?
-    {
+    for candidate in fs::read_dir(&dir).map_err(|error| {
+        crate::sharing_violation_holders::with_holder(
+            format!("read campaign stitch registry failed: {error}"),
+            &error,
+            &dir,
+        )
+    })? {
         let candidate =
             candidate.map_err(|error| format!("read registry entry failed: {error}"))?;
         let metadata = candidate
@@ -1549,21 +1574,39 @@ fn campaign_registry_dir(product_root: &Path, campaign_hex: &str) -> PathBuf {
 
 fn machine_scope(product_root: &Path) -> Result<String, String> {
     let root = product_root.join("stitching");
-    fs::create_dir_all(&root)
-        .map_err(|error| format!("create product stitch root failed: {error}"))?;
+    fs::create_dir_all(&root).map_err(|error| {
+        crate::sharing_violation_holders::with_holder(
+            format!("create product stitch root failed: {error}"),
+            &error,
+            &root,
+        )
+    })?;
     let path = root.join(MACHINE_SCOPE_FILE);
-    match fs::read(&path) {
+    let existing = fs::read(&path).map_err(|error| {
+        (
+            error.kind(),
+            crate::sharing_violation_holders::with_holder(
+                format!("read machine stitch scope failed: {error}"),
+                &error,
+                &path,
+            ),
+        )
+    });
+    match existing {
         Ok(bytes) => validate_machine_scope(&bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err((kind, _)) if kind == std::io::ErrorKind::NotFound => {
             let secret = crate::auto_attach::staging::generate_secret_128()?;
             write_immutable_bytes(&path, &secret)?;
-            validate_machine_scope(
-                &fs::read(&path).map_err(|error| {
-                    format!("read persisted machine stitch scope failed: {error}")
-                })?,
-            )
+            let written = fs::read(&path).map_err(|error| {
+                crate::sharing_violation_holders::with_holder(
+                    format!("read persisted machine stitch scope failed: {error}"),
+                    &error,
+                    &path,
+                )
+            })?;
+            validate_machine_scope(&written)
         }
-        Err(error) => Err(format!("read machine stitch scope failed: {error}")),
+        Err((_, message)) => Err(message),
     }
 }
 
@@ -1981,9 +2024,13 @@ fn hex_nibble(value: u8) -> Result<u8, String> {
 
 fn verify_file_sha(path: &Path, expected: &str) -> Result<(), String> {
     let mut file = File::open(path).map_err(|error| {
-        format!(
-            "read registered stitch input {} failed: {error}",
-            path.display()
+        crate::sharing_violation_holders::with_holder(
+            format!(
+                "read registered stitch input {} failed: {error}",
+                path.display()
+            ),
+            &error,
+            path,
         )
     })?;
     let mut hasher = Sha256::new();
@@ -2010,8 +2057,13 @@ fn verify_file_sha(path: &Path, expected: &str) -> Result<(), String> {
 }
 
 fn read_strict_json(path: &Path) -> Result<Value, String> {
-    let bytes = fs::read(path)
-        .map_err(|error| format!("read stitch control {} failed: {error}", path.display()))?;
+    let bytes = fs::read(path).map_err(|error| {
+        crate::sharing_violation_holders::with_holder(
+            format!("read stitch control {} failed: {error}", path.display()),
+            &error,
+            path,
+        )
+    })?;
     if bytes.len() > MAX_CONTROL_BYTES {
         return Err(format!("stitch control {} exceeds 16 MiB", path.display()));
     }
@@ -2031,8 +2083,13 @@ fn write_immutable_json<T: Serialize>(path: &Path, value: &T) -> Result<(), Stri
 
 fn write_immutable_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("create immutable stitch directory failed: {error}"))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            crate::sharing_violation_holders::with_holder(
+                format!("create immutable stitch directory failed: {error}"),
+                &error,
+                parent,
+            )
+        })?;
     }
     if path.exists() {
         return compare_immutable(path, bytes);
@@ -2049,7 +2106,13 @@ fn write_immutable_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
         let mut file = match OpenOptions::new().write(true).create_new(true).open(&temp) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(format!("create immutable stitch temp failed: {error}")),
+            Err(error) => {
+                return Err(crate::sharing_violation_holders::with_holder(
+                    format!("create immutable stitch temp failed: {error}"),
+                    &error,
+                    &temp,
+                ))
+            }
         };
         if let Err(error) = file.write_all(bytes).and_then(|_| file.sync_all()) {
             drop(file);
@@ -2064,8 +2127,14 @@ fn write_immutable_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
                 return compare_immutable(path, bytes);
             }
             Err(error) => {
+                // Either side of a rename can be the held one.
+                let refusal = crate::sharing_violation_holders::with_holders(
+                    format!("publish immutable stitch control failed: {error}"),
+                    &error,
+                    &[&temp, path],
+                );
                 let _ = fs::remove_file(&temp);
-                return Err(format!("publish immutable stitch control failed: {error}"));
+                return Err(refusal);
             }
         }
     }
@@ -2117,8 +2186,13 @@ fn rename_new_durable(source: &Path, destination: &Path) -> std::io::Result<()> 
 }
 
 fn compare_immutable(path: &Path, expected: &[u8]) -> Result<(), String> {
-    let existing =
-        fs::read(path).map_err(|error| format!("read immutable stitch control failed: {error}"))?;
+    let existing = fs::read(path).map_err(|error| {
+        crate::sharing_violation_holders::with_holder(
+            format!("read immutable stitch control failed: {error}"),
+            &error,
+            path,
+        )
+    })?;
     if existing == expected {
         Ok(())
     } else {

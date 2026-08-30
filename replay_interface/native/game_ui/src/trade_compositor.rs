@@ -850,14 +850,9 @@ pub fn xui15_completeness_record_sha256(
 pub fn xui15_replay_frame_identity_sha256(
     frame: &WorldFrame,
 ) -> std::result::Result<String, Xui15ProducerRejection> {
-    snapshot::replay_frame_identity::base_frame_identity_sha256(
-        snapshot::replay_frame_identity::XUI15_BASE_FRAME_IDENTITY_DOMAIN,
-        frame.hour_index(),
-        frame.date(),
-        frame.save_version(),
-        frame.raw(),
-    )
-    .map_err(|_| Xui15ProducerRejection::InvalidAuthority)
+    frame
+        .base_frame_identity_sha256(snapshot::replay_frame_identity::XUI15_BASE_FRAME_IDENTITY_DOMAIN)
+        .map_err(|_| Xui15ProducerRejection::InvalidAuthority)
 }
 
 fn xui15_viewer_identity_sha256(viewer: &CountryTradeViewerState) -> String {

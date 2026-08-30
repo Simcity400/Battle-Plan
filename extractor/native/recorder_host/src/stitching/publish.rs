@@ -27,9 +27,13 @@ impl StitchedRebuiltWireSource {
         identity_mode: compact_contract::stream_validator::StreamIdentityMode,
     ) -> Result<Self, String> {
         let file = File::open(&file_path).map_err(|error| {
-            format!(
-                "retain stitched rebuilt-wire source {}: {error}",
-                file_path.display()
+            crate::sharing_violation_holders::with_holder(
+                format!(
+                    "retain stitched rebuilt-wire source {}: {error}",
+                    file_path.display()
+                ),
+                &error,
+                &file_path,
             )
         })?;
         Ok(Self {
@@ -933,9 +937,13 @@ fn prepare_retained_entries<S: RetainedStitchedPayloadSource>(
             .map_err(|error| format!("prepared rebuilt-wire bundle is invalid: {error}"))?;
         for artifact in product.bundle.entries() {
             let file = File::open(&artifact.file_path).map_err(|error| {
-                format!(
-                    "retain prepared rebuilt-wire artifact {}: {error}",
-                    artifact.file_path.display()
+                crate::sharing_violation_holders::with_holder(
+                    format!(
+                        "retain prepared rebuilt-wire artifact {}: {error}",
+                        artifact.file_path.display()
+                    ),
+                    &error,
+                    &artifact.file_path,
                 )
             })?;
             let (bytes, sha256) = hash_retained_file_sha256(&file, &artifact.file_path)?;
@@ -1208,14 +1216,25 @@ fn publish_stitched_container_retained_impl<S: RetainedStitchedPayloadSource>(
     let entries = prepare_retained_entries(plan, source, rebuilt_wire)?;
     let parent = dest.parent().filter(|path| !path.as_os_str().is_empty());
     if let Some(parent) = parent {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("create output directory failed: {error}"))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            crate::sharing_violation_holders::with_holder(
+                format!("create output directory failed: {error}"),
+                &error,
+                parent,
+            )
+        })?;
     }
     let file_name = dest
         .file_name()
         .ok_or_else(|| "stitched publication destination has no file name".to_string())?;
-    let canonical_parent = fs::canonicalize(parent.unwrap_or_else(|| Path::new(".")))
-        .map_err(|error| format!("anchor stitched output directory failed: {error}"))?;
+    let anchor = parent.unwrap_or_else(|| Path::new("."));
+    let canonical_parent = fs::canonicalize(anchor).map_err(|error| {
+        crate::sharing_violation_holders::with_holder(
+            format!("anchor stitched output directory failed: {error}"),
+            &error,
+            anchor,
+        )
+    })?;
     let anchored_dest = canonical_parent.join(file_name);
     reject_reparse_destination(&anchored_dest)?;
     let destination_guard = RetainedPublishDirectory::open(&canonical_parent)?;
@@ -1423,7 +1442,11 @@ fn publish_stitched_container_retained_impl<S: RetainedStitchedPayloadSource>(
         drop(file);
         let cleanup = fs::remove_file(&temp);
         return Err(with_cleanup_note(
-            format!("atomic publish (rename) failed: {error}"),
+            crate::sharing_violation_holders::with_holder(
+                format!("atomic publish (rename) failed: {error}"),
+                &error,
+                &anchored_dest,
+            ),
             &temp,
             cleanup,
         ));
@@ -1469,9 +1492,13 @@ impl RetainedPublishDirectory {
                     .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
                     .open(&current)
                     .map_err(|error| {
-                        format!(
-                            "retain stitched output directory {} failed: {error}",
-                            current.display()
+                        crate::sharing_violation_holders::with_holder(
+                            format!(
+                                "retain stitched output directory {} failed: {error}",
+                                current.display()
+                            ),
+                            &error,
+                            &current,
                         )
                     })?;
                 let metadata = file.metadata().map_err(|error| {
@@ -1621,7 +1648,13 @@ fn create_unique_sibling_temp(dest: &Path) -> Result<(PathBuf, fs::File), String
         {
             Ok(file) => return Ok((temp, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(format!("create unique stitched temp failed: {error}")),
+            Err(error) => {
+                return Err(crate::sharing_violation_holders::with_holder(
+                    format!("create unique stitched temp failed: {error}"),
+                    &error,
+                    &temp,
+                ))
+            }
         }
     }
     Err("could not allocate a unique stitched temp after 128 attempts".into())
@@ -1648,7 +1681,13 @@ fn create_unique_sibling_temp(dest: &Path) -> Result<(PathBuf, fs::File), String
         {
             Ok(file) => return Ok((temp, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(format!("create unique stitched temp failed: {error}")),
+            Err(error) => {
+                return Err(crate::sharing_violation_holders::with_holder(
+                    format!("create unique stitched temp failed: {error}"),
+                    &error,
+                    &temp,
+                ))
+            }
         }
     }
     Err("could not allocate a unique stitched temp after 128 attempts".into())

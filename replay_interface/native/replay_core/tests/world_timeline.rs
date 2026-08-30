@@ -1236,7 +1236,7 @@ fn assert_frames_equal(a: &WorldFrame, b: &WorldFrame) {
     assert_eq!(a.hour_index(), b.hour_index());
     assert_eq!(a.date(), b.date());
     assert_eq!(a.save_version(), b.save_version());
-    assert_eq!(a.raw(), b.raw());
+    assert_eq!(a.raw_for_consumer_tests(), b.raw_for_consumer_tests());
     assert_eq!(a.owner_by_state(), b.owner_by_state());
     assert_eq!(a.owner_by_state_source(), b.owner_by_state_source());
     assert_eq!(a.owner_by_state_status(), b.owner_by_state_status());
@@ -4242,14 +4242,22 @@ fn frame_cache_budget_is_content_neutral() {
                 let got = timeline.seek(hour).unwrap();
                 let want = reference.seek(hour).unwrap();
                 assert_eq!(got.hour_index(), want.hour_index(), "cap {cap} @ {hour}");
-                assert_eq!(got.raw(), want.raw(), "cap {cap} raw content @ {hour}");
+                assert_eq!(
+                    got.raw_for_consumer_tests(),
+                    want.raw_for_consumer_tests(),
+                    "cap {cap} raw content @ {hour}"
+                );
                 assert_eq!(
                     got.owner_by_state(),
                     want.owner_by_state(),
                     "cap {cap} owner view @ {hour}"
                 );
                 let played = timeline.play_to(hour).unwrap();
-                assert_eq!(played.raw(), got.raw(), "cap {cap} seek==play_to @ {hour}");
+                assert_eq!(
+                    played.raw_for_consumer_tests(),
+                    got.raw_for_consumer_tests(),
+                    "cap {cap} seek==play_to @ {hour}"
+                );
             }
         }
     }

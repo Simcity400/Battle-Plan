@@ -1618,7 +1618,11 @@ fn assert_state_equal(a: &WorldFrame, b: &WorldFrame, ctx: &str) {
     assert_eq!(a.hour_index(), b.hour_index(), "{ctx}: hour");
     assert_eq!(a.date(), b.date(), "{ctx}: date");
     assert_eq!(a.save_version(), b.save_version(), "{ctx}: save_version");
-    assert_eq!(a.raw(), b.raw(), "{ctx}: raw domain map");
+    assert_eq!(
+        a.raw_for_consumer_tests(),
+        b.raw_for_consumer_tests(),
+        "{ctx}: raw domain map"
+    );
     assert_eq!(
         a.owner_by_state(),
         b.owner_by_state(),

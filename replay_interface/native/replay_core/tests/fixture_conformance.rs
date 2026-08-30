@@ -625,7 +625,7 @@ fn read_recording(path: &Path) -> Result<RecordingReading, String> {
             ),
         ];
         for (label, resolved) in &routes {
-            for (key, value) in resolved.raw() {
+            for (key, value) in resolved.raw_for_consumer_tests() {
                 timeline_domains.push((hour, format!("{label}.{key}"), Some(value.clone())));
             }
             typed_views.push((hour, format!("{label} {}", typed_views_debug(resolved))));

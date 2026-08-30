@@ -118,7 +118,11 @@ pub fn assert_seek_eq_play(tl: &WorldTimeline, hour: i64) {
     let s: Arc<WorldFrame> = tl.seek(hour).expect("seek");
     let p: Arc<WorldFrame> = tl.play_to(hour).expect("play_to");
     assert_eq!(s.hour_index(), p.hour_index(), "hour mismatch @ {hour}");
-    assert_eq!(s.raw(), p.raw(), "raw-frame mismatch @ {hour}");
+    assert_eq!(
+        s.raw_for_consumer_tests(),
+        p.raw_for_consumer_tests(),
+        "raw-frame mismatch @ {hour}"
+    );
     assert_eq!(
         s.owner_by_state(),
         p.owner_by_state(),
