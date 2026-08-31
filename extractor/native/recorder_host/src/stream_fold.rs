@@ -6401,6 +6401,7 @@ fn a_cid1_stream_stamps_the_xmap17_producer_epoch_the_replay_will_recompute() {
         leader_tag_db_id: 1,
         member_tag_db_ids: vec![1],
         display_text: Some("Allies".into()),
+        display_text_engine_cached: false,
     }];
     rows.faction_roster_complete = true;
     let built = diplomacy_intel_operatives_live::extractor::build_domain53_payload(

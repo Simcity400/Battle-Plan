@@ -10,8 +10,8 @@ mod engine {
     use map_passive_carriers_live_lane::anchor::GAMESTATE_SINGLETON_RVA;
     use map_passive_carriers_live_lane::memory::SliceMemory;
     use map_passive_carriers_live_lane::xmap17::{
-        FACTION_FALLBACK_HOLDER_OFFSET, FACTION_OWN_TEXT_OFFSET, FACTION_PACKED_IDENTITY_OFFSET,
-        FACTION_TYPE_EXPECTED, FALLBACK_HOLDER_TEXT_OFFSET,
+        FACTION_CACHED_LABEL_OFFSET, FACTION_FALLBACK_HOLDER_OFFSET, FACTION_OWN_TEXT_OFFSET,
+        FACTION_PACKED_IDENTITY_OFFSET, FACTION_TYPE_EXPECTED, FALLBACK_HOLDER_TEXT_OFFSET,
     };
 
     pub const MODULE_BASE: u64 = 0x1_4000_0000;
@@ -65,11 +65,15 @@ mod engine {
         );
         put_inline(&mut memory, FACTION_AXIS + FACTION_OWN_TEXT_OFFSET, "");
         memory.put_u64(FACTION_AXIS + FACTION_FALLBACK_HOLDER_OFFSET, AXIS_HOLDER);
+        // The holder carries the localisation KEY the engine resolves; the
+        // resolved name is what the engine stores back on the faction. The
+        // carrier must publish the second.
         put_inline(
             &mut memory,
             AXIS_HOLDER + FALLBACK_HOLDER_TEXT_OFFSET,
-            "Axis",
+            "FACTION_AXIS",
         );
+        put_inline(&mut memory, FACTION_AXIS + FACTION_CACHED_LABEL_OFFSET, "Axis");
         put_heap(
             &mut memory,
             FACTION_COMINTERN + FACTION_OWN_TEXT_OFFSET,
@@ -141,7 +145,7 @@ fn produced_bundle() -> Value {
 fn the_faction_evidence_manifest_hash_is_the_committed_manifests_own_hash() {
     use sha2::{Digest, Sha256};
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../runs/hy_map_producers/xmap17_faction_law_manifest.json");
+        .join("../../runs/wn_recorder_sourcing/xmap17_faction_law_manifest.json");
     let bytes = std::fs::read(&manifest).unwrap_or_else(|error| {
         panic!(
             "the XMAP17 faction evidence manifest {} is missing ({error}); it is the artifact the \
@@ -160,6 +164,21 @@ fn the_faction_evidence_manifest_hash_is_the_committed_manifests_own_hash() {
         text.contains("140d77360"),
         "the manifest must cover the function the producer implements"
     );
+    assert!(
+        text.contains("140b4a0d0"),
+        "the manifest must cover the pass that fills CFaction+0x38, which is where the producer \
+         reads the localisation-resolve arm's answer"
+    );
+    for address in ["0x140d77360", "0x140b4a0d0"] {
+        assert!(
+            parsed["seed_resolution"]
+                .as_array()
+                .expect("seed_resolution is an array")
+                .iter()
+                .any(|seed| seed["function_entry"] == address),
+            "{address} must be a SEED of the pinned job, not merely a name that appears in it"
+        );
+    }
     assert!(
         text.contains("870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"),
         "the manifest must carry the pinned a729 binary identity"
