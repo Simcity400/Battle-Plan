@@ -517,7 +517,10 @@ function New-RecorderArgumentPlan {
         $plan += $entry.Key
         $plan += $entry.Value
     }
-    if ($SkipHostFold) { $plan += '--skip-host-fold' }
+    if ($SkipHostFold) {
+        $plan += '--skip-host-fold'
+        $plan += '--package-raw-stream'
+    }
     if ($KeepSpoolAfterSeal) { $plan += '--keep-spool-after-seal' }
     # Emitted unrolled, NOT as `,$plan`. Every caller wraps the result in `@()`,
     # which restores the array; returning a wrapped array instead makes that

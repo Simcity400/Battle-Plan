@@ -249,6 +249,62 @@ pub const PINNED_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpecV1] = &[
         "a9855541571204160bc4ac78dcf6f1dbdfa112496234e84540406a71c37d2fb3"
     ),
     pinned_rva!(
+        "gameplay.d47.advisor_bulk_copy",
+        0xF8B8A0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "a3fc1bc11ed54d08c681803bb5adb57f80ed265f7e6038fbed7d2d750c6573bd"
+    ),
+    pinned_rva!(
+        "gameplay.d47.advisor_erase_effect",
+        0x35C330,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "910387d611f5f9c79f433b80b3e779542995d6b5cc399da69b3b45f860bce871"
+    ),
+    pinned_rva!(
+        "gameplay.d47.advisor_insert",
+        0xF8D380,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "8c2cc6ec72b71cd0e73fbd64d46a0af11cfab6a6e882d041b072ff5e40b0789d"
+    ),
+    pinned_rva!(
+        "gameplay.d47.advisor_replace_effect",
+        0x347DF0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "df215d9ac1ac169c81c801a38fcc707a57116f008fc1edb3775f7023fdda0000"
+    ),
+    pinned_rva!(
+        "gameplay.d47.character_definition_build",
+        0xF8DF60,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "ae793f49175312a6780acc9002f7a3066007a56b8dd90e2d9b11946be9fcf067"
+    ),
+    pinned_rva!(
+        "gameplay.d47.character_role_parser",
+        0xF8FF30,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "e60bc0f195cdfb5bdceee7a57cba744caf60efcdbff835911fb66eb15946246c"
+    ),
+    pinned_rva!(
+        "gameplay.d47.role_tree_destructor",
+        0xF8A000,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "f26d705d4431c52d4c2e191dd7545585d104c60250ca05aa1bfd2a0dd595731a"
+    ),
+    pinned_rva!(
+        "gameplay.d47.role_tree_merge",
+        0xF8BE70,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "61b6873e73e27f32610783eae5d8126b06e5b4182f5c83703c2782f92ca5f35f"
+    ),
+    pinned_rva!(
         "gameplay.d55.active_damage_loss_writer",
         0xC7BFC0,
         5,
@@ -549,7 +605,7 @@ pub const PINNED_PRODUCTION_IMPORT_HOOK_COUNT_V1: u16 = {
     count
 };
 pub const PINNED_PRODUCTION_HOOK_ALLOWLIST_SHA256_V1: [u8; 32] =
-    digest_from_hex("850961e91b1e89ce931e32784bcbe11aa748448dcb8fcc90c6f12ab9259d579e");
+    digest_from_hex("598e0d5dc0c0b636eadf2e698a76c9bb997d8b8d14f20485d7c43ad9846b5660");
 
 pub fn pinned_production_hook_count_v1() -> Result<u16, PassiveReadyDigestError> {
     u16::try_from(PINNED_PRODUCTION_HOOK_SPECS_V1.len())

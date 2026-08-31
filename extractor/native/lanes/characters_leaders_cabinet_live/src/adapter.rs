@@ -339,6 +339,60 @@ impl CachedWalk {
     }
 }
 
+#[derive(Clone, Copy)]
+struct CachedWalkView<'a> {
+    walk: &'a CachedWalk,
+    families: u32,
+}
+
+impl CachedWalkView<'_> {
+    fn serves(self, family: u32) -> bool {
+        self.families & family != 0 && self.walk.serves(family)
+    }
+
+    fn is_full(self) -> bool {
+        self.families & self.walk.families == self.walk.families
+    }
+
+    fn knows(self, key: &(u32, u32)) -> bool {
+        if self.is_full() {
+            return self.walk.knows(key);
+        }
+        (self.serves(compact::FAMILY_CHARACTER)
+            && self
+                .walk
+                .characters
+                .iter()
+                .any(|row| (row.country_tag_db_id, row.char_id) == *key))
+            || (self.serves(compact::FAMILY_UNIT_LEADER)
+                && self
+                    .walk
+                    .unit_leaders
+                    .iter()
+                    .any(|row| (row.country_tag_db_id, row.char_id) == *key))
+            || (self.serves(compact::FAMILY_COUNTRY_LEADER_ROLE)
+                && self
+                    .walk
+                    .country_leader_roles
+                    .iter()
+                    .any(|row| (row.country_tag_db_id, row.char_id) == *key))
+            || (self.serves(compact::FAMILY_ADVISOR_ROSTER)
+                && self
+                    .walk
+                    .advisor_roster
+                    .iter()
+                    .any(|row| (row.country_tag_db_id, row.char_id) == *key))
+    }
+}
+
+impl std::ops::Deref for CachedWalkView<'_> {
+    type Target = CachedWalk;
+
+    fn deref(&self) -> &Self::Target {
+        self.walk
+    }
+}
+
 pub fn build_lane_frame_from_adapter_input<M: LaneMemory>(
     mem: &M,
     roots: &ResolvedTypeRoots,
@@ -361,16 +415,34 @@ pub fn build_lane_frame_reusing_walk<M: LaneMemory>(
     input: &AdapterInputRef<'_>,
     cached: &CachedWalk,
 ) -> AdapterBuildResult {
-    build_lane_frame_inner(mem, roots, input, Some(cached))
+    build_lane_frame_reusing_walk_families(mem, roots, input, cached, cached.families)
+}
+
+pub fn build_lane_frame_reusing_walk_families<M: LaneMemory>(
+    mem: &M,
+    roots: &ResolvedTypeRoots,
+    input: &AdapterInputRef<'_>,
+    cached: &CachedWalk,
+    families: u32,
+) -> AdapterBuildResult {
+    build_lane_frame_inner(
+        mem,
+        roots,
+        input,
+        Some(CachedWalkView {
+            walk: cached,
+            families,
+        }),
+    )
 }
 
 fn build_lane_frame_inner<M: LaneMemory>(
     mem: &M,
     roots: &ResolvedTypeRoots,
     input: &AdapterInputRef<'_>,
-    cached: Option<&CachedWalk>,
+    cached: Option<CachedWalkView<'_>>,
 ) -> AdapterBuildResult {
-    let served = |family: u32| cached.map_or(false, |c| c.serves(family));
+    let served = |family: u32| cached.is_some_and(|c| c.serves(family));
     let mut frame = LaneFrame::new(input.elapsed_wall_ms);
     frame.status_flags = input.status_flags;
     let mut stats = AdapterBuildStats::default();
@@ -571,7 +643,7 @@ fn build_lane_frame_inner<M: LaneMemory>(
             Ok(mut row) => {
                 let key = (row.country_tag_db_id, row.char_id);
                 let identity = match cached_characters {
-                    Some(cached) => cached.character(&key),
+                    Some(cached) => cached.walk.character(&key),
                     None => character_identity.get(&key).map(|i| &frame.characters[*i]),
                 };
                 if let Some(identity) = identity {
@@ -657,7 +729,7 @@ fn build_lane_frame_inner<M: LaneMemory>(
     mem.walk_family(compact::FAMILY_APPOINTED_ADVISOR);
     let roster: &[AdvisorRecord] = match cached.filter(|c| c.serves(compact::FAMILY_ADVISOR_ROSTER))
     {
-        Some(cached) => &cached.advisor_roster,
+        Some(cached) => &cached.walk.advisor_roster,
         None => &frame.advisor_roster,
     };
     stats.active_idea_tokens_seen = input
@@ -675,7 +747,8 @@ fn build_lane_frame_inner<M: LaneMemory>(
     stats.portrait_inputs_seen = input.portraits.len().min(u32::MAX as usize) as u32;
     let phase_started = std::time::Instant::now();
     mem.walk_family(compact::FAMILY_CHARACTER_PORTRAIT);
-    let (portrait_rejections, _portrait_arm) = portrait_phase(
+    let portrait_cached = cached.filter(|c| c.is_full());
+    let (portrait_rejections, _portrait_arm) = portrait_phase_view(
         input.portraits,
         cached,
         &known_characters,
@@ -683,7 +756,7 @@ fn build_lane_frame_inner<M: LaneMemory>(
     );
     stats.rejected_roots = stats.rejected_roots.saturating_add(portrait_rejections);
     stats.portrait_rows = if frame.character_portraits.is_empty() {
-        cached.map_or(0, |c| c.character_portraits.len())
+        portrait_cached.map_or(0, |c| c.character_portraits.len())
     } else {
         frame.character_portraits.len()
     }
@@ -736,9 +809,27 @@ pub enum PortraitPhaseArm {
     Scan,
 }
 
+#[cfg(test)]
 fn portrait_phase(
     portraits: &[CharacterPortraitInput],
     cached: Option<&CachedWalk>,
+    known_characters: &BTreeSet<(u32, u32)>,
+    out: &mut Vec<CharacterPortraitRecord>,
+) -> (u32, PortraitPhaseArm) {
+    portrait_phase_view(
+        portraits,
+        cached.map(|walk| CachedWalkView {
+            walk,
+            families: walk.families,
+        }),
+        known_characters,
+        out,
+    )
+}
+
+fn portrait_phase_view(
+    portraits: &[CharacterPortraitInput],
+    cached: Option<CachedWalkView<'_>>,
     known_characters: &BTreeSet<(u32, u32)>,
     out: &mut Vec<CharacterPortraitRecord>,
 ) -> (u32, PortraitPhaseArm) {
@@ -747,7 +838,8 @@ fn portrait_phase(
     // nothing instead of a `knows` binary search over every input row. The
     // length test is the belt-and-braces half of the licence.
     let index = cached
-        .and_then(|c| c.portrait_index.as_ref())
+        .filter(|c| c.is_full())
+        .and_then(|c| c.walk.portrait_index.as_ref())
         .filter(|index| index.portrait_input_rows as usize == portraits.len());
     let live_only_admitted = match index {
         Some(index) => index
@@ -778,7 +870,7 @@ fn portrait_phase(
     };
     for portrait in portraits {
         let key = (portrait.country_tag_db_id, portrait.char_id);
-        let cached_key = cached.map_or(false, |c| c.knows(&key));
+        let cached_key = cached.is_some_and(|c| c.is_full() && c.knows(&key));
         if cached_key && !live_only_admitted {
             continue;
         }
@@ -1931,7 +2023,10 @@ mod tests {
             ExtractError::RegistryMismatch(String::new()),
             ExtractError::AddressOverflow("f"),
             ExtractError::NullPointer("f"),
-            ExtractError::MissingRead { addr: 1, field: "f" },
+            ExtractError::MissingRead {
+                addr: 1,
+                field: "f",
+            },
             ExtractError::BadVtable {
                 addr: 1,
                 field: "f",
@@ -2024,13 +2119,19 @@ mod tests {
         let (leader_row, trait_rows, missing) =
             read_unit_leader(&mem, &roots(), &root, &empty).expect("leader reads");
         assert_eq!(trait_rows.len(), 0);
-        assert_eq!(missing, 0, "an empty map reports nothing missing: the vector is never read");
+        assert_eq!(
+            missing, 0,
+            "an empty map reports nothing missing: the vector is never read"
+        );
         assert_eq!(leader_row.trait_count, 0);
         // CONTROL: a non-empty map over the same bytes decodes the trait.
         let mut tokens: BTreeMap<u64, &str> = BTreeMap::new();
         tokens.insert(trait_def, "old_guard");
         let (leader_row, trait_rows, missing) =
             read_unit_leader(&mem, &roots(), &root, &tokens).expect("leader reads");
-        assert_eq!((trait_rows.len(), missing, leader_row.trait_count), (1, 0, 1));
+        assert_eq!(
+            (trait_rows.len(), missing, leader_row.trait_count),
+            (1, 0, 1)
+        );
     }
 }

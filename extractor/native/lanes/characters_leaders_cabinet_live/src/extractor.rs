@@ -318,28 +318,45 @@ impl LaneFrame {
         &'a self,
         cached: Option<&'a crate::adapter::CachedWalk>,
     ) -> impl Iterator<Item = compact::CharacterLaneRow<'a>> + 'a {
+        self.compact_row_iter_over_families(cached, crate::adapter::CACHEABLE_WALK_FAMILIES)
+    }
+
+    pub fn compact_row_iter_over_families<'a>(
+        &'a self,
+        cached: Option<&'a crate::adapter::CachedWalk>,
+        reuse_families: u32,
+    ) -> impl Iterator<Item = compact::CharacterLaneRow<'a>> + 'a {
+        let serves = |cached: &crate::adapter::CachedWalk, family: u32| {
+            reuse_families & family != 0 && cached.serves(family)
+        };
         let characters: &[CharacterRecord] = match cached {
-            Some(c) if c.serves(compact::FAMILY_CHARACTER) => &c.characters,
+            Some(c) if serves(c, compact::FAMILY_CHARACTER) => &c.characters,
             _ => &self.characters,
         };
         let unit_leaders: &[UnitLeaderRecord] = match cached {
-            Some(c) if c.serves(compact::FAMILY_UNIT_LEADER) => &c.unit_leaders,
+            Some(c) if serves(c, compact::FAMILY_UNIT_LEADER) => &c.unit_leaders,
             _ => &self.unit_leaders,
         };
         let unit_leader_traits: &[UnitLeaderTraitRecord] = match cached {
-            Some(c) if c.serves(compact::FAMILY_UNIT_LEADER) => &c.unit_leader_traits,
+            Some(c) if serves(c, compact::FAMILY_UNIT_LEADER) => &c.unit_leader_traits,
             _ => &self.unit_leader_traits,
         };
         let country_leader_roles: &[CountryLeaderRoleRecord] = match cached {
-            Some(c) if c.serves(compact::FAMILY_COUNTRY_LEADER_ROLE) => &c.country_leader_roles,
+            Some(c) if serves(c, compact::FAMILY_COUNTRY_LEADER_ROLE) => &c.country_leader_roles,
             _ => &self.country_leader_roles,
         };
         let advisor_roster: &[AdvisorRecord] = match cached {
-            Some(c) if c.serves(compact::FAMILY_ADVISOR_ROSTER) => &c.advisor_roster,
+            Some(c) if serves(c, compact::FAMILY_ADVISOR_ROSTER) => &c.advisor_roster,
             _ => &self.advisor_roster,
         };
         let cached_portraits: &[CharacterPortraitRecord] = if self.character_portraits.is_empty() {
-            cached.map_or(&[], |c| c.character_portraits.as_slice())
+            cached.map_or(&[], |c| {
+                if reuse_families & c.families == c.families {
+                    c.character_portraits.as_slice()
+                } else {
+                    &[]
+                }
+            })
         } else {
             &[]
         };
@@ -521,6 +538,14 @@ pub fn encode_frame_payload_over(
     frame: &LaneFrame,
     cached: Option<&crate::adapter::CachedWalk>,
 ) -> Vec<u8> {
+    encode_frame_payload_over_families(frame, cached, crate::adapter::CACHEABLE_WALK_FAMILIES)
+}
+
+pub fn encode_frame_payload_over_families(
+    frame: &LaneFrame,
+    cached: Option<&crate::adapter::CachedWalk>,
+    reuse_families: u32,
+) -> Vec<u8> {
     // Straight off the iterator (lane SB): the encoder walks the sequence
     // once, so the ~4 MiB `Vec` `compact_rows_over` used to build here was
     // allocated, filled and dropped for a single pass.
@@ -529,7 +554,7 @@ pub fn encode_frame_payload_over(
         frame.status_flags,
         frame.schema_flags,
         frame.known_families,
-        frame.compact_row_iter_over(cached),
+        frame.compact_row_iter_over_families(cached, reuse_families),
     )
 }
 

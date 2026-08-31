@@ -45,6 +45,12 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
          it, so there is no half to roll back",
     ),
     (
+        "rail_replay_state_live_snapshot",
+        "d81 preallocated snapshot plan, carried across the reset unconditionally by its \
+         explicit carve-out; it owns reusable buffers and plan refusal state, not a \
+         published-hour delta, while each changed hour re-arms and validates its own copy",
+    ),
+    (
         "acceptance_weather_fault_injected",
         "session-local one-shot, not a per-domain read product",
     ),
@@ -673,6 +679,13 @@ fn domain_scoped_tracker_allowlist_matches_the_borrow_sites() {
     for (field, expected_tag) in &table {
         match derived.get(*field) {
             Some(tags) if tags.as_slice() == [expected_tag.to_string()] => {}
+            Some(tags)
+                if *field == "diplomacy_intel_operatives_live"
+                    && tags.len() == 2
+                    && tags.contains(&expected_tag.to_string())
+                    && tags
+                        .iter()
+                        .any(|tag| tag.starts_with("OUTSIDE-EVERY-READER-CALL")) => {}
             Some(tags) => disagreements.push(format!(
                 "{field}: table says [{expected_tag}], source says {tags:?}"
             )),
@@ -728,6 +741,23 @@ fn domain_scoped_tracker_allowlist_matches_the_borrow_sites() {
         "these tracker fields are in neither the domain-scoped allowlist nor \
          BLANKET_RESET_TRACKER_FIELDS: {unclassified:?}"
     );
+}
+
+#[test]
+fn d53s_outside_bracket_borrow_is_only_the_snapshot_armer() {
+    let source = attach_log_source();
+    let body = frame_builder_body(&source);
+    let arm = body
+        .find("let snapshot_arm = arm_compact_diplomacy_intel_operatives_live_snapshot(")
+        .expect("d53 snapshot plan is armed before its bracket");
+    let spawn = body[arm..]
+        .find("spawn_gated_finishing(")
+        .map(|at| arm + at)
+        .expect("d53 bracket follows its armer");
+    assert!(arm < spawn);
+
+    assert!(source.contains("snapshot_plan: self.snapshot_plan.take(),"));
+    assert!(source.contains("self.snapshot_plan = carried.snapshot_plan;"));
 }
 
 #[test]

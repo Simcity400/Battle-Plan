@@ -1,6 +1,6 @@
 use core::fmt;
 
-pub const HOURLY_SERVICE_VERSION: u16 = 1;
+pub const HOURLY_SERVICE_VERSION: u16 = 2;
 pub const HOURLY_SERVICE_LIMIT_NS: u64 = 16_000_000;
 pub const HOURLY_SERVICE_STAGE_COUNT: usize = 7;
 pub const HOURLY_SERVICE_STAGE_MASK: u8 = (1 << HOURLY_SERVICE_STAGE_COUNT) - 1;
@@ -10,7 +10,7 @@ pub const HOURLY_SERVICE_SAMPLE_LEN: usize = 136;
 pub const HOURLY_SERVICE_BATCH_HEADER_LEN: usize = 24;
 pub const HOURLY_SERVICE_MAX_BATCH_LEN: usize =
     HOURLY_SERVICE_BATCH_HEADER_LEN + HOURLY_SERVICE_MAX_BATCH_SAMPLES * HOURLY_SERVICE_SAMPLE_LEN;
-pub const HOURLY_SERVICE_CENSUS_LEN: usize = 184;
+pub const HOURLY_SERVICE_CENSUS_LEN: usize = 192;
 pub const HOURLY_SERVICE_ACK_LEN: usize = 24;
 pub const HOURLY_SERVICE_BATCH_MAGIC: &[u8; 4] = b"H4SB";
 pub const HOURLY_SERVICE_CENSUS_MAGIC: &[u8; 4] = b"H4SX";
@@ -177,6 +177,7 @@ pub struct HourlyServiceCensusV1 {
     pub refused_requests: u64,
     pub aborted_requests: u64,
     pub unmeasured_hours: u64,
+    pub boundary_excluded_hours: u64,
     pub over_limit_measurements: u64,
     pub total_service_ns: u64,
     pub maximum_service_ns: Option<u64>,
@@ -233,6 +234,7 @@ impl HourlyServiceCensusV1 {
         for (index, value) in fields.into_iter().enumerate() {
             put_u64(&mut out, 32 + index * 8, value);
         }
+        put_u64(&mut out, 184, self.boundary_excluded_hours);
         Ok(out)
     }
 
@@ -266,6 +268,7 @@ impl HourlyServiceCensusV1 {
             refused_requests: read_u64(bytes, 96),
             aborted_requests: read_u64(bytes, 104),
             unmeasured_hours: read_u64(bytes, 112),
+            boundary_excluded_hours: read_u64(bytes, 184),
             over_limit_measurements: read_u64(bytes, 120),
             total_service_ns: read_u64(bytes, 128),
             maximum_service_ns,
@@ -640,7 +643,7 @@ mod tests {
             HOURLY_SERVICE_BATCH_HEADER_LEN + 2 * HOURLY_SERVICE_SAMPLE_LEN
         );
         assert_eq!(HourlyServiceBatchV1::decode(&wire).unwrap(), value);
-        assert_eq!(&wire[..8], b"H4SB\x01\x00\x28\x01");
+        assert_eq!(&wire[..8], b"H4SB\x02\x00\x28\x01");
     }
 
     #[test]
@@ -700,7 +703,7 @@ mod tests {
         for len in 0..wire.len() {
             assert!(HourlyServiceBatchV1::decode(&wire[..len]).is_err());
         }
-        for (offset, value) in [(0, 0), (4, 2), (6, 0), (16, 2), (18, 0)] {
+        for (offset, value) in [(0, 0), (4, 0xff), (6, 0), (16, 2), (18, 0)] {
             let mut bad = wire.clone();
             bad[offset] = value;
             assert!(
@@ -884,6 +887,7 @@ mod tests {
             refused_requests: 10,
             aborted_requests: 11,
             unmeasured_hours: 12,
+            boundary_excluded_hours: 21,
             over_limit_measurements: 13,
             total_service_ns: 14,
             maximum_service_ns: Some(15),
@@ -902,10 +906,11 @@ mod tests {
         let value = census();
         let wire = value.encode().unwrap();
         assert_eq!(HourlyServiceCensusV1::decode(&wire).unwrap(), value);
-        assert_eq!(&wire[..8], b"H4SX\x01\x00\xb8\x00");
+        assert_eq!(&wire[..8], b"H4SX\x02\x00\xc0\x00");
         for (index, expected) in (2u64..=20).enumerate() {
             assert_eq!(read_u64(&wire, 32 + index * 8), expected);
         }
+        assert_eq!(read_u64(&wire, 184), 21);
         assert_eq!(read_u32(&wire, 16), 7);
         assert_eq!(read_u32(&wire, 20), HOURLY_SERVICE_KNOWN_FAULT_BITS);
     }

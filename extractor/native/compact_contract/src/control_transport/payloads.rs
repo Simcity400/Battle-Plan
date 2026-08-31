@@ -1158,14 +1158,14 @@ mod tests {
             // while nine sealed domains left, then lane RO's five
             // gameplay.d13.* change-gate sites joined (48 -> 53) and the
             // allowlist digest moved with them; 2026-08-25: lane SN's three
-            // gameplay.d81.* rail write-tap sites joined (53 -> 56) under the
+            // gameplay.d47.* advisor write-tap sites joined (56 -> 64) under the
             // structural-perf ruling of 2026-08-27, and the digest moved
             // again. These are HAND-PINNED on purpose -- deriving them from
             // `PINNED_PRODUCTION_HOOK_COUNT_V1` would let the roster grow
             // without this vector noticing, and the point of a rebuild vector
             // is that a harness outside this crate can reproduce it.
-            allowed_hook_count: 56,
-            active_hook_count: 56,
+            allowed_hook_count: 64,
+            active_hook_count: 64,
             install_freeze_count,
             clock_hour_raw: 60_831_264,
             clock_observation_ordinal: 12,
@@ -1176,7 +1176,7 @@ mod tests {
                 "18883f3ad61d796d13e406b28869e764efca61863928150fbe08cdcb23bb07b8",
             ),
             hook_allowlist_sha256: hex32(
-                "850961e91b1e89ce931e32784bcbe11aa748448dcb8fcc90c6f12ab9259d579e",
+                "598e0d5dc0c0b636eadf2e698a76c9bb997d8b8d14f20485d7c43ad9846b5660",
             ),
             hook_outcomes_sha256: hex32(
                 "416db3019bcd56f982a9e11978bcc47a0b9dc06d23147935d56dbbf30907951b",
@@ -1220,7 +1220,7 @@ mod tests {
         assert_eq!(read_u16(&thirteen, 50), 13);
         assert_eq!(
             to_hex32(&capture_ready_payload_sha256(&thirteen)),
-            "1b025d21a6fc3516feb700fddb5b7e041dd502c163e4ead0caa2308c412e4363"
+            "34bb109d4159a123d8cf49ef51f39210a0ef4dff7ee71c43ed24a80f385ec80c"
         );
         let thousand = t63_ready_fields(1000)
             .encode_authenticated(token)
@@ -1228,7 +1228,7 @@ mod tests {
         assert_eq!(read_u16(&thousand, 50), 1000);
         assert_eq!(
             to_hex32(&capture_ready_payload_sha256(&thousand)),
-            "24b135351bb3b9023c4f169e15b5f9f458b0ec3e7300249b5b025fac91049867"
+            "9d18d6c4ce93c9eb1f1bd7047def213fd20b2847aeccd93a4297b1059cab7e91"
         );
         assert_ne!(thirteen, thousand);
     }
@@ -1365,7 +1365,7 @@ mod tests {
         };
         let wire = ack.encode_authenticated(token).unwrap();
         assert_eq!(read_u32(&wire, 12), 3);
-        assert_eq!(to_hex32(&capture_ready_payload_sha256(&wire)), "b99cde438b571002fbff86a0d4b8671aefe0a3092eabf9e7f8efa9b4b9b60b82");
+        assert_eq!(to_hex32(&capture_ready_payload_sha256(&wire)), "365499fc84677e1835be2c6567248ca5e85daabd51f23911110f738ee6d327ad");
         assert_eq!(CaptureReadyAckV2::decode_authenticated(&wire, token).unwrap(), ack);
         for flags in [0u32, 1, 2] {
             let expected = PayloadError::MissingRequiredStatusFlags { required: 3, observed: flags };

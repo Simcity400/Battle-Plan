@@ -673,7 +673,7 @@ fn boundary_service_scope_retains_shutdown_and_pending_buffer_disposal() {
         .0;
     let boundary = code_only(boundary);
     let unowned = boundary
-        .find("let _boundary_service = hourly_service_capture::unowned();")
+        .find("let _boundary_service = hourly_service_capture::pause();")
         .unwrap();
     let scope = boundary
         .find("let mut pending_service_disposal = pending_scheduler_frame.as_ref()")
@@ -706,8 +706,9 @@ fn publication_result_storage_is_dropped_inside_original_owner_scope() {
         .0;
     let resolver = code_only(resolver);
     let body = resolver.split_once(") -> Result<(), String> {").unwrap().1;
-    let guard = "let _results_service = staged_publication_phase(staged).1;";
+    let guard = "let _results_storage = hourly_service_capture::pause();";
     assert!(body.trim_start().starts_with(guard));
     assert!(body.find(guard).unwrap() < body.find("let mut results = results.into_iter();").unwrap());
-    assert!(!body.contains("drop(_results_service)"));
+    assert!(body.contains("Some(owner) => hourly_service_capture::phase(owner, ServiceStage::Commit)"));
+    assert!(!body.contains("hourly_service_capture::unowned()"));
 }

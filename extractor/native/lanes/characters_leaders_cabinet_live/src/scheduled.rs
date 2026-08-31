@@ -2,15 +2,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::adapter::{
-    build_lane_frame_from_adapter_input_ref, build_lane_frame_reusing_walk, AdapterBuildStats,
-    AdapterInput, AdapterInputRef, AdvisorRoot, CachedPortraitIndex, CachedWalk,
+    build_lane_frame_from_adapter_input_ref, build_lane_frame_reusing_walk_families,
+    AdapterBuildStats, AdapterInput, AdapterInputRef, AdvisorRoot, CachedPortraitIndex, CachedWalk,
     CharacterPortraitInput, CharacterRoot, CountryLeaderRoleRoot, CountryPoliticsRoot,
     TraitDefinitionRoot, UnitLeaderRoot, CACHEABLE_WALK_FAMILIES,
 };
 use crate::domain47_characters_leaders_cabinet_live as compact;
 use crate::extractor::{
-    encode_frame_payload, encode_frame_payload_over, LaneFrame, LaneMemory, ResolvedTypeRoots,
-    DOMAIN_ID, DOMAIN_NAME,
+    encode_frame_payload, encode_frame_payload_over_families, LaneFrame, LaneMemory,
+    ResolvedTypeRoots, DOMAIN_ID, DOMAIN_NAME,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,6 +101,7 @@ pub struct NativeScheduledObservation {
     stats: AdapterBuildStats,
     observe: Duration,
     cached: Option<Arc<CachedWalk>>,
+    reused_families: u32,
 }
 
 impl NativeScheduledObservation {
@@ -212,11 +213,12 @@ impl NativeScheduledObservation {
         });
         let cached = Arc::new(cached);
         self.cached = Some(cached.clone());
+        self.reused_families = families;
         Some(cached)
     }
 
     pub fn reused_walk_families(&self) -> u32 {
-        self.cached.as_ref().map_or(0, |c| c.families)
+        self.reused_families
     }
 
     /// Lane MX: unit-leader trait pointers this walk could not resolve to a
@@ -240,13 +242,31 @@ pub fn observe_native_scheduled_frame_reusing<M: LaneMemory>(
     frame_input: NativeFrameInput,
     cached: Option<Arc<CachedWalk>>,
 ) -> NativeScheduledObservation {
+    observe_native_scheduled_frame_reusing_families(
+        mem,
+        cache,
+        frame_input,
+        cached,
+        CACHEABLE_WALK_FAMILIES,
+    )
+}
+
+pub fn observe_native_scheduled_frame_reusing_families<M: LaneMemory>(
+    mem: &M,
+    cache: &NativeRootCache,
+    frame_input: NativeFrameInput,
+    cached: Option<Arc<CachedWalk>>,
+    reuse_families: u32,
+) -> NativeScheduledObservation {
     let started = Instant::now();
-    let (frame, stats, cached) = observe_native_scheduled_parts(mem, cache, frame_input, cached);
+    let (frame, stats, cached, reused_families) =
+        observe_native_scheduled_parts(mem, cache, frame_input, cached, reuse_families);
     NativeScheduledObservation {
         frame,
         stats,
         observe: started.elapsed(),
         cached,
+        reused_families,
     }
 }
 
@@ -323,9 +343,10 @@ pub fn finish_native_scheduled_read_timed(
         stats,
         observe,
         cached,
+        reused_families,
     } = observation;
     let compute_started = Instant::now();
-    let payload = encode_frame_payload_over(&frame, cached.as_deref());
+    let payload = encode_frame_payload_over_families(&frame, cached.as_deref(), reused_families);
     let encode_elapsed = compute_started.elapsed();
     let gate = compact::decode_payload(0, &payload);
     let compute_elapsed = compute_started.elapsed();
@@ -374,21 +395,28 @@ fn observe_native_scheduled_parts<M: LaneMemory>(
     cache: &NativeRootCache,
     frame_input: NativeFrameInput,
     cached: Option<Arc<CachedWalk>>,
-) -> (LaneFrame, AdapterBuildStats, Option<Arc<CachedWalk>>) {
+    reuse_families: u32,
+) -> (LaneFrame, AdapterBuildStats, Option<Arc<CachedWalk>>, u32) {
     if cache.has_stable_roots() && rowless_outcome_is_already_decided(cache, &frame_input) {
         (
             rowless_partial_frame(frame_input.elapsed_wall_ms, frame_input.status_flags),
             AdapterBuildStats::default(),
             None,
+            0,
         )
     } else if cache.has_stable_roots() {
         let adapter_input = adapter_input_ref_from_cache(cache, &frame_input);
         let roots = &cache.roots.expect("checked by has_stable_roots");
-        let cached = cached.filter(|c| c.families != 0);
+        let reuse_families = reuse_families & CACHEABLE_WALK_FAMILIES;
+        let cached = cached.filter(|c| c.families & reuse_families != 0);
         let mut adapter_result = match cached.as_deref() {
-            Some(cached_walk) => {
-                build_lane_frame_reusing_walk(mem, roots, &adapter_input, cached_walk)
-            }
+            Some(cached_walk) => build_lane_frame_reusing_walk_families(
+                mem,
+                roots,
+                &adapter_input,
+                cached_walk,
+                reuse_families,
+            ),
             None => build_lane_frame_from_adapter_input_ref(mem, roots, &adapter_input),
         };
         adapter_result.frame.known_families =
@@ -403,15 +431,24 @@ fn observe_native_scheduled_parts<M: LaneMemory>(
             frame.status_flags = adapter_input.status_flags
                 | compact::STATUS_SOURCE_UNAVAILABLE
                 | compact::STATUS_PARTIAL_DATA;
-            (frame, adapter_result.stats, None)
+            (frame, adapter_result.stats, None, 0)
         } else {
-            (adapter_result.frame, adapter_result.stats, cached)
+            let reused_families = cached
+                .as_ref()
+                .map_or(0, |walk| walk.families & reuse_families);
+            (
+                adapter_result.frame,
+                adapter_result.stats,
+                cached,
+                reused_families,
+            )
         }
     } else {
         (
             rowless_partial_frame(frame_input.elapsed_wall_ms, frame_input.status_flags),
             AdapterBuildStats::default(),
             None,
+            0,
         )
     }
 }
@@ -1296,7 +1333,12 @@ mod tests {
     }
 
     #[test]
-    fn reused_walk_matches_full_walk() {
+    fn signal_skip_matches_forced_walk_and_a_proven_mutator_forces_the_next_walk() {
+        use d47_character_change_gate::gate::{CharacterChangeGate, ProvenMutatorSite, WalkReason};
+
+        let signal = CharacterChangeGate::new();
+        let baseline = signal.witness();
+        assert_eq!(signal.open_hour(true, Some(baseline)), Ok(baseline));
         let (mem, cache, frame_input) = borrowed_input_fixture();
         let mut input = frame_input;
         input.skipped_input_rows = 0;
@@ -1329,6 +1371,18 @@ mod tests {
         assert_eq!(reused_read.row_count, full_read.row_count);
         assert_eq!(reused_read.status_flags, full_read.status_flags);
         assert!(reused_read.parse_errors.is_empty());
+        signal.mark_proven_mutator_enter(ProvenMutatorSite::AdvisorReplaceEffect);
+        signal.mark_exit();
+        assert_eq!(
+            signal.open_hour(true, Some(baseline)),
+            Err(WalkReason::Mutated)
+        );
+        let forced_after_signal = observe_native_scheduled_frame(&mem, &cache, input_again.clone());
+        assert_eq!(forced_after_signal.reused_walk_families(), 0);
+        assert_eq!(
+            finish_native_scheduled_read(forced_after_signal).payload,
+            plain_read.payload
+        );
         let without_timings = |mut stats: AdapterBuildStats| {
             stats.walk_characters_us = 0;
             stats.walk_unit_leaders_us = 0;
@@ -1350,20 +1404,16 @@ mod tests {
             Some(Arc::new(CachedWalk::default())),
         );
         assert_eq!(none.reused_walk_families(), 0);
-        let mut partial = plain.clone();
-        let cached_partial = partial
-            .adopt_cached_walk(compact::FAMILY_ADVISOR_ROSTER)
-            .expect("advisor roster caches");
-        assert_eq!(cached_partial.families, compact::FAMILY_ADVISOR_ROSTER);
-        assert_eq!(
-            finish_native_scheduled_read(partial.clone()).payload,
-            plain_read.payload
-        );
-        let reused_partial = observe_native_scheduled_frame_reusing(
+        let reused_partial = observe_native_scheduled_frame_reusing_families(
             &mem,
             &cache,
             input_again.clone(),
-            Some(cached_partial),
+            Some(cached.clone()),
+            compact::FAMILY_ADVISOR_ROSTER,
+        );
+        assert_eq!(
+            reused_partial.reused_walk_families(),
+            compact::FAMILY_ADVISOR_ROSTER
         );
         assert_eq!(
             finish_native_scheduled_read(reused_partial).payload,
@@ -1396,6 +1446,33 @@ mod tests {
         });
         let plain_two = observe_native_scheduled_frame(&mem2, &cache_two, input_again.clone());
         let plain_two_read = finish_native_scheduled_read(plain_two.clone());
+        let mut advisor_only_identity = cache_two.clone();
+        advisor_only_identity
+            .characters
+            .retain(|root| root.char_id != 7);
+        let isolated_plain =
+            observe_native_scheduled_frame(&mem2, &advisor_only_identity, input_again.clone());
+        let isolated_plain_read = finish_native_scheduled_read(isolated_plain.clone());
+        let mut isolated_adopting = isolated_plain;
+        let isolated_cached = isolated_adopting
+            .adopt_cached_walk(CACHEABLE_WALK_FAMILIES)
+            .expect("the advisor-only identity walk caches");
+        assert_eq!(
+            finish_native_scheduled_read(isolated_adopting).payload,
+            isolated_plain_read.payload
+        );
+        let isolated_masked = observe_native_scheduled_frame_reusing_families(
+            &mem2,
+            &advisor_only_identity,
+            input_again.clone(),
+            Some(isolated_cached),
+            compact::FAMILY_ADVISOR_ROSTER,
+        );
+        assert_eq!(
+            finish_native_scheduled_read(isolated_masked).payload,
+            isolated_plain_read.payload,
+            "the masked cache carries advisor identity into the portrait phase"
+        );
         assert_eq!(
             plain_two.frame.character_portraits.len(),
             2,

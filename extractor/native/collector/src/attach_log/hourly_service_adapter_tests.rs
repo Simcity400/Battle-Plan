@@ -77,6 +77,7 @@ fn failed_staged_sink_closes_original_request_and_restores_current_owner() {
         2,
         0,
         0,
+        0,
         Some((current_owner, ServiceOutcome::Aborted, None)),
     )
     .unwrap();
@@ -130,7 +131,7 @@ fn partial_staged_data_keeps_sink_interval_and_committed_sequence_bounds() {
     dispose_staged_publications(&mut frames, closes);
     assert!(frames.is_empty());
     assert_eq!(hourly_service_capture::closed_requests_for_tests(), 1);
-    let report = hourly_service_capture::finish_with_scheduler(1, 0, 0).unwrap();
+    let report = hourly_service_capture::finish_with_scheduler(1, 0, 0, 0).unwrap();
     transport.finish().unwrap();
     let actual = std::fs::read(&path).unwrap();
     portable_test_fs_retry::remove_file(&path).unwrap();
@@ -172,7 +173,7 @@ fn missing_publisher_result_retains_an_incomplete_aborted_service_sample() {
     .is_err());
     assert!(closes.entries.iter().all(Option::is_none));
     dispose_staged_publications(&mut frames, closes);
-    let report = hourly_service_capture::finish_with_scheduler(1, 0, 0).unwrap();
+    let report = hourly_service_capture::finish_with_scheduler(1, 0, 0, 0).unwrap();
     assert_eq!(report.samples.len(), 1);
     assert_eq!(report.samples[0].owner.game_hour_raw, 100);
     assert_eq!(report.samples[0].outcome, HourlyServiceOutcomeV1::Aborted);
@@ -198,7 +199,7 @@ fn missing_logical_stream_does_not_admit_a_synthetic_service_owner() {
     let _session = hourly_service_capture::start();
     begin_hourly_service(request(100, 8), None);
     assert_eq!(hourly_service_capture::current_owner(), None);
-    let report = hourly_service_capture::finish_with_scheduler(1, 0, 0).unwrap();
+    let report = hourly_service_capture::finish_with_scheduler(1, 0, 0, 0).unwrap();
     assert_eq!(report.census.admitted_requests, 0);
     assert_eq!(report.census.unmeasured_hours, 1);
     assert_ne!(
@@ -251,6 +252,7 @@ fn refused_pending_disposal_preserves_error_drop_order_and_successor() {
         2,
         0,
         0,
+        0,
         Some((current, ServiceOutcome::Aborted, None)),
     )
     .unwrap();
@@ -280,7 +282,7 @@ fn current_disposal_closes_after_buffers_and_returns_timing_to_setup() {
     assert!(dropped.load(Ordering::SeqCst));
     assert_eq!(hourly_service_capture::current_owner(), None);
     assert_eq!(hourly_service_capture::closed_requests_for_tests(), 1);
-    let report = hourly_service_capture::finish_with_scheduler(1, 0, 0).unwrap();
+    let report = hourly_service_capture::finish_with_scheduler(1, 0, 0, 0).unwrap();
     assert_eq!(report.samples[0].outcome, HourlyServiceOutcomeV1::Aborted);
 }
 
@@ -305,7 +307,7 @@ fn boundary_error_before_outcome_never_invents_a_disposal_completion() {
     assert_eq!(result, Err("original boundary failure"));
     assert!(dropped.load(Ordering::SeqCst));
     assert_eq!(hourly_service_capture::closed_requests_for_tests(), 0);
-    let report = hourly_service_capture::finish_with_scheduler(1, 0, 0).unwrap();
+    let report = hourly_service_capture::finish_with_scheduler(1, 0, 0, 0).unwrap();
     assert_eq!(report.samples[0].outcome, HourlyServiceOutcomeV1::Aborted);
     assert_ne!(
         report.samples[0].fault_bits
@@ -315,7 +317,7 @@ fn boundary_error_before_outcome_never_invents_a_disposal_completion() {
 }
 
 #[test]
-fn committed_data_survives_later_gap_failure_and_mixed_disposal_is_explicitly_incomplete() {
+fn committed_data_survives_later_gap_failure_without_falsely_missing_a_stage() {
     let path = std::env::temp_dir().join(format!(
         "hourly_service_mixed_{}_{}.bin",
         std::process::id(),
@@ -360,27 +362,27 @@ fn committed_data_survives_later_gap_failure_and_mixed_disposal_is_explicitly_in
     assert_eq!(sequence.get(), 3);
     assert_eq!(hourly_service_capture::closed_requests_for_tests(), 0);
     dispose_staged_publications(&mut frames, closes);
-    let report = hourly_service_capture::finish_with_scheduler(1, 0, 0).unwrap();
+    let report = hourly_service_capture::finish_with_scheduler(1, 0, 0, 0).unwrap();
     transport.finish().unwrap();
     let actual = std::fs::read(&path).unwrap();
     portable_test_fs_retry::remove_file(&path).unwrap();
     assert_eq!(actual, expected);
     assert_eq!(report.samples[0].outcome, HourlyServiceOutcomeV1::Complete);
     assert_eq!(report.samples[0].data_sequence, Some((1, 2)));
-    assert_ne!(
+    assert_eq!(
         report.samples[0].fault_bits
             & (1 << hourly_service_capture::TimingFault::MissingStages as u8),
         0,
     );
     assert!(report.samples[0].stage_ns[ServiceStage::Commit as usize].is_some());
-    assert!(report.census.unattributed_service_ns > 0);
-    assert_ne!(
+    assert_eq!(report.census.unattributed_service_ns, 0);
+    assert_eq!(
         report.census.fault_bits
             & (1 << hourly_service_capture::TimingFault::UnmeasuredHours as u8),
         0
     );
-    assert_eq!(report.census.complete_measurements, 0);
-    assert_eq!(report.census.incomplete_measurements, 1);
+    assert_eq!(report.census.complete_measurements, 1);
+    assert_eq!(report.census.incomplete_measurements, 0);
 }
 
 #[test]
@@ -400,6 +402,7 @@ fn stale_current_disposal_cannot_suspend_a_successor_session() {
         1,
         0,
         0,
+        0,
         Some((current, ServiceOutcome::Aborted, None)),
     )
     .unwrap();
@@ -409,7 +412,7 @@ fn stale_current_disposal_cannot_suspend_a_successor_session() {
 }
 
 #[test]
-fn multiple_staged_data_owners_are_named_without_charging_the_successor() {
+fn multiple_staged_data_owners_each_close_their_complete_commit_stage() {
     let path = std::env::temp_dir().join(format!(
         "hourly_service_two_{}_{}.bin",
         std::process::id(),
@@ -460,6 +463,7 @@ fn multiple_staged_data_owners_are_named_without_charging_the_successor() {
         3,
         0,
         0,
+        0,
         Some((current_owner, ServiceOutcome::Aborted, None)),
     )
     .unwrap();
@@ -477,7 +481,7 @@ fn multiple_staged_data_owners_are_named_without_charging_the_successor() {
             sample.data_sequence,
             Some((index as u64 + 1, index as u64 + 2))
         );
-        assert_ne!(
+        assert_eq!(
             sample.fault_bits & (1 << hourly_service_capture::TimingFault::MissingStages as u8),
             0,
         );
@@ -505,7 +509,7 @@ fn staged_close_without_matching_data_keeps_missing_disposal_fault() {
     let mut closes = PendingStagedServiceCloses::default();
     closes.push(Some(owner), ServiceOutcome::Complete, Some((1, 2)));
     dispose_staged_publications(&mut frames, closes);
-    let report = hourly_service_capture::finish_with_scheduler(1, 0, 0).unwrap();
+    let report = hourly_service_capture::finish_with_scheduler(1, 0, 0, 0).unwrap();
     assert_eq!(report.samples.len(), 1);
     assert_ne!(
         report.samples[0].fault_bits

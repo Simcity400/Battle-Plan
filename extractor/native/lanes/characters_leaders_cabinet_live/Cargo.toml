@@ -14,3 +14,6 @@ path = "src/lib.rs"
 
 [dependencies]
 compact_contract = { path = "../../compact_contract" }
+
+[dev-dependencies]
+d47_character_change_gate = { path = "../d47_character_change_gate" }

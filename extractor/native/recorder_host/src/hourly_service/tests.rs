@@ -198,6 +198,18 @@ fn final_hour_is_certified_without_a_later_data_frame() {
 }
 
 #[test]
+fn unstarted_teardown_boundary_is_reported_without_faulting_the_population() {
+    let samples = [sample(100, 1, 1)];
+    let mut terminal = census(&samples);
+    terminal.boundary_excluded_hours = 1;
+    let value = report(&samples, Some(terminal), &data_frame(100, 1, 0));
+    assert_eq!(value["schema"], "hoi4.hourly_service.v2");
+    assert_eq!(value["timing_population_complete"], true, "{value}");
+    assert_eq!(value["census"]["unmeasured_hours"], 0);
+    assert_eq!(value["census"]["boundary_excluded_hours"], 1);
+}
+
+#[test]
 fn one_nanosecond_over_limit_is_not_rounded_down() {
     let samples = [sample(100, 1, SERVICE_LIMIT_NS + 1)];
     let value = report(&samples, Some(census(&samples)), &data_frame(100, 1, 0));

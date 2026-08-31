@@ -402,6 +402,31 @@ mod tests {
         mark_exit();
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn the_proven_set_railway_detour_signals_around_its_mutation() {
+        unsafe extern "system" fn mutate(info: usize, _neighbour: i32, level: u32) {
+            unsafe { (info as *mut u32).write(level) };
+        }
+
+        let _g = lock();
+        fresh();
+        let before = witness();
+        let mut value = 0u32;
+        unsafe {
+            crate::hooks_windows::call_set_railway_tapped(
+                mutate,
+                (&mut value as *mut u32) as usize,
+                17,
+                4,
+            )
+        };
+        let after = witness();
+        assert_eq!(value, 4);
+        assert!(after.quiet);
+        assert_eq!(after.epoch, before.epoch + 2);
+    }
+
     /// Fresh state with a baseline already seeded.
     fn fresh() {
         reset_for_install();

@@ -47,6 +47,7 @@ struct Runtime {
     samples: Vec<HourlyServiceSampleV1>,
     unattributed_ns: u64,
     retired_scheduled: u64,
+    retired_boundary: u64,
     retired_overrun: u64,
     retired_unknown: u64,
 }
@@ -70,6 +71,7 @@ impl Runtime {
             samples,
             unattributed_ns: 0,
             retired_scheduled: 0,
+            retired_boundary: 0,
             retired_overrun: 0,
             retired_unknown: 0,
         }
@@ -309,22 +311,36 @@ impl Runtime {
             .and_then(|value| value.checked_add(ns));
         self.mark = end;
     }
-    fn retire_scheduler(&mut self, scheduled: u64, overrun: u64, unknown: u64) {
+    fn retire_scheduler(
+        &mut self,
+        scheduled: u64,
+        boundary: u64,
+        overrun: u64,
+        unknown: u64,
+    ) {
         self.retired_scheduled = self.checked_add(self.retired_scheduled, scheduled);
+        self.retired_boundary = self.checked_add(self.retired_boundary, boundary);
         self.retired_overrun = self.checked_add(self.retired_overrun, overrun);
         self.retired_unknown = self.checked_add(self.retired_unknown, unknown);
     }
-    fn report(mut self, scheduled: u64, overrun: u64, unknown: u64, now: Instant) -> Report {
+    fn report(
+        mut self,
+        scheduled: u64,
+        boundary: u64,
+        overrun: u64,
+        unknown: u64,
+        now: Instant,
+    ) -> Report {
         let report_started = Instant::now();
         self.flush(now);
-        for index in 0..self.setup_len {
-            let (start, end) = self.setup[index];
-            self.unowned_ns(start, end);
-        }
         self.setup_len = 0;
-        self.retire_scheduler(scheduled, overrun, unknown);
+        self.retire_scheduler(scheduled, boundary, overrun, unknown);
         let admitted = self.timing.census().admitted_requests;
-        match self.retired_scheduled.checked_sub(admitted) {
+        match self
+            .retired_scheduled
+            .checked_sub(self.retired_boundary)
+            .and_then(|scheduled| scheduled.checked_sub(admitted))
+        {
             Some(missed) => self.timing.note_unmeasured_hours(missed),
             None => self.timing.note_fault(TimingFault::CounterOverflow),
         }
@@ -349,6 +365,7 @@ impl Runtime {
             refused_requests: local.refused_requests,
             aborted_requests: local.aborted_requests,
             unmeasured_hours: local.unmeasured_hours,
+            boundary_excluded_hours: self.retired_boundary,
             active_requests: local.active_requests as u64,
             pending_delivery: local.pending_delivery as u64,
             unattributed_service_ns: self.unattributed_ns,
@@ -624,14 +641,25 @@ pub(crate) fn close(
         }
     });
 }
-pub(crate) fn note_scheduler_retired(scheduled: u64, overrun: u64, unknown: u64) {
-    with_runtime(|runtime| runtime.retire_scheduler(scheduled, overrun, unknown));
+pub(crate) fn note_scheduler_retired(
+    scheduled: u64,
+    boundary: u64,
+    overrun: u64,
+    unknown: u64,
+) {
+    with_runtime(|runtime| runtime.retire_scheduler(scheduled, boundary, overrun, unknown));
 }
-pub(crate) fn finish_with_scheduler(scheduled: u64, overrun: u64, unknown: u64) -> Option<Report> {
-    finish_with_scheduler_and_close(scheduled, overrun, unknown, None)
+pub(crate) fn finish_with_scheduler(
+    scheduled: u64,
+    boundary: u64,
+    overrun: u64,
+    unknown: u64,
+) -> Option<Report> {
+    finish_with_scheduler_and_close(scheduled, boundary, overrun, unknown, None)
 }
 pub(crate) fn finish_with_scheduler_and_close(
     scheduled: u64,
+    boundary: u64,
     overrun: u64,
     unknown: u64,
     final_close: Option<(ServiceOwner, RequestOutcome, Option<(u64, u64)>)>,
@@ -653,7 +681,7 @@ pub(crate) fn finish_with_scheduler_and_close(
                 cutoff = end;
             }
         }
-        Some(runtime.report(scheduled, overrun, unknown, cutoff))
+        Some(runtime.report(scheduled, boundary, overrun, unknown, cutoff))
     })
 }
 
@@ -702,7 +730,7 @@ mod tests {
         runtime.switch(Phase::Setup, at(now, 1_010));
         runtime.begin_at(owner(1), None, at(now, 1_020));
         runtime.close_at(owner(1), RequestOutcome::Refused, None, at(now, 1_030));
-        let report = runtime.report(1, 0, 0, at(now, 1_030));
+        let report = runtime.report(1, 0, 0, 0, at(now, 1_030));
         assert_eq!(report.samples[0].observed_service_ns, Some(30));
         assert_eq!(report.samples[0].stage_ns[0], Some(30));
         assert_eq!(report.samples[0].edge_to_completion_ns, None);
@@ -723,7 +751,7 @@ mod tests {
         runtime.close_at(owner(1), RequestOutcome::Aborted, None, at(now, 60));
         runtime.switch(Phase::Owned(owner(2), ServiceStage::Finish), at(now, 60));
         runtime.close_at(owner(2), RequestOutcome::Refused, None, at(now, 70));
-        let report = runtime.report(2, 0, 0, at(now, 70));
+        let report = runtime.report(2, 0, 0, 0, at(now, 70));
         assert_eq!(report.samples[0].owner.game_hour_raw, 1);
         assert_eq!(report.samples[0].observed_service_ns, Some(60));
         assert_eq!(report.samples[1].owner.game_hour_raw, 2);
@@ -736,7 +764,7 @@ mod tests {
         let mut runtime = Runtime::new(now);
         published(&mut runtime, owner(1), 0, SERVICE_LIMIT_NS);
         runtime.add_close_cost(0, at(now, SERVICE_LIMIT_NS), at(now, SERVICE_LIMIT_NS + 1));
-        let report = runtime.report(1, 0, 0, at(now, SERVICE_LIMIT_NS + 1));
+        let report = runtime.report(1, 0, 0, 0, at(now, SERVICE_LIMIT_NS + 1));
         assert_eq!(
             report.samples[0].observed_service_ns,
             Some(SERVICE_LIMIT_NS + 1)
@@ -755,8 +783,8 @@ mod tests {
         let now = Instant::now();
         let mut runtime = Runtime::new(now);
         published(&mut runtime, owner(1), 0, 10);
-        runtime.retire_scheduler(2, 3, 4);
-        let report = runtime.report(5, 6, 7, at(now, 10));
+        runtime.retire_scheduler(2, 0, 3, 4);
+        let report = runtime.report(5, 0, 6, 7, at(now, 10));
         assert_eq!(report.census.unmeasured_hours, 26);
         assert_ne!(
             report.census.fault_bits & (1 << TimingFault::UnmeasuredHours as u8),
@@ -764,11 +792,23 @@ mod tests {
         );
         let mut invalid = Runtime::new(now);
         published(&mut invalid, owner(1), 0, 10);
-        let report = invalid.report(0, 0, 0, at(now, 10));
+        let report = invalid.report(0, 0, 0, 0, at(now, 10));
         assert_ne!(
             report.census.fault_bits & (1 << TimingFault::CounterOverflow as u8),
             0
         );
+    }
+
+    #[test]
+    fn capture_runtime_excludes_the_unstarted_teardown_boundary_from_loss() {
+        let now = Instant::now();
+        let mut runtime = Runtime::new(now);
+        published(&mut runtime, owner(1), 0, 10);
+        let report = runtime.report(2, 1, 0, 0, at(now, 10));
+        assert_eq!(report.census.complete_measurements, 1);
+        assert_eq!(report.census.unmeasured_hours, 0);
+        assert_eq!(report.census.boundary_excluded_hours, 1);
+        assert_eq!(report.census.fault_bits, 0);
     }
 
     #[test]
@@ -784,6 +824,7 @@ mod tests {
         assert_eq!(runtime.samples.capacity(), capacity);
         let report = runtime.report(
             SAMPLE_CAPACITY as u64 + 1,
+            0,
             0,
             0,
             at(now, SAMPLE_CAPACITY as u64 + 1),
@@ -803,7 +844,7 @@ mod tests {
         let now = Instant::now();
         let mut runtime = Runtime::new(now);
         runtime.begin_at(owner(1), None, now);
-        let report = runtime.report(1, 0, 0, at(now, 50));
+        let report = runtime.report(1, 0, 0, 0, at(now, 50));
         assert_eq!(report.samples.len(), 1);
         assert_eq!(report.samples[0].outcome, HourlyServiceOutcomeV1::Aborted);
         assert_eq!(report.samples[0].observed_service_ns, Some(50));
@@ -819,7 +860,7 @@ mod tests {
         let mut runtime = Runtime::new(now);
         published(&mut runtime, owner(1), 0, 10);
         runtime.switch(Phase::Unattributed, at(now, 10));
-        let report = runtime.report(1, 0, 0, at(now, 15));
+        let report = runtime.report(1, 0, 0, 0, at(now, 15));
         assert_eq!(report.census.unattributed_service_ns, 5);
         assert_ne!(report.census.fault_bits, 0);
     }
@@ -834,11 +875,11 @@ mod tests {
             drop(outer);
         }
         assert_eq!(current_owner(), None);
-        let report = finish_with_scheduler(1, 0, 0).unwrap();
+        let report = finish_with_scheduler(1, 0, 0, 0).unwrap();
         assert_eq!(report.samples.len(), 1);
         assert_eq!(report.samples[0].fault_bits, 0);
         drop(session);
-        assert!(finish_with_scheduler(0, 0, 0).is_none());
+        assert!(finish_with_scheduler(0, 0, 0, 0).is_none());
     }
     #[test]
     fn capture_runtime_clock_failure_taints_owner_despite_later_valid_stages() {
@@ -861,7 +902,7 @@ mod tests {
             runtime.switch(Phase::Owned(owner(1), stage), now);
         }
         runtime.close_at(owner(1), RequestOutcome::Complete, Some((1, 2)), now);
-        let report = runtime.report(1, 0, 0, now);
+        let report = runtime.report(1, 0, 0, 0, now);
         assert_ne!(
             report.samples[0].fault_bits & (1 << TimingFault::ClockReversed as u8),
             0
@@ -882,7 +923,7 @@ mod tests {
         let old_session = start();
         begin(owner(1), None);
         let old_phase = pause();
-        finish_with_scheduler(1, 0, 0).unwrap();
+        finish_with_scheduler(1, 0, 0, 0).unwrap();
         let new_session = start();
         begin(owner(2), None);
         drop(old_phase);
@@ -890,6 +931,7 @@ mod tests {
         assert_eq!(current_owner(), Some(owner(2)));
         let report = finish_with_scheduler_and_close(
             1,
+            0,
             0,
             0,
             Some((owner(2), RequestOutcome::Refused, None)),
@@ -908,7 +950,7 @@ mod tests {
         runtime.begin_at(owner(1), Some(now), now);
         runtime.interval(owner(1), ServiceStage::Sink, now, at(now, 10));
         runtime.close_at(owner(1), RequestOutcome::Refused, None, at(now, 10));
-        let report = runtime.report(1, 0, 0, at(now, 10));
+        let report = runtime.report(1, 0, 0, 0, at(now, 10));
         assert_eq!(report.samples[0].edge_to_publication_ns, None);
         assert_eq!(report.samples[0].edge_to_completion_ns, Some(10));
     }
@@ -922,7 +964,7 @@ mod tests {
         runtime.switch(Phase::Owned(owner(1), ServiceStage::Terminal), at(now, 40));
         runtime.claim_setup(owner(1), ServiceStage::Terminal);
         runtime.close_at(owner(1), RequestOutcome::Refused, None, at(now, 50));
-        let report = runtime.report(1, 0, 0, at(now, 50));
+        let report = runtime.report(1, 0, 0, 0, at(now, 50));
         assert_eq!(report.samples[0].observed_service_ns, Some(50));
         assert_eq!(
             report.samples[0].stage_ns[ServiceStage::Terminal as usize],
@@ -939,7 +981,7 @@ mod tests {
         runtime.begin_at(owner(1), None, now);
         runtime.close_at(owner(1), RequestOutcome::Refused, None, now);
         assert_eq!(runtime.samples.capacity(), 0);
-        let report = runtime.report(1, 0, 0, now);
+        let report = runtime.report(1, 0, 0, 0, now);
         assert_eq!(report.census.closed_requests, 1);
         assert_eq!(report.census.lost_measurements, 1);
         assert_eq!(report.census.active_requests, 0);
@@ -958,6 +1000,7 @@ mod tests {
         assert_eq!(closed_requests_for_tests(), 0);
         let report = finish_with_scheduler_and_close(
             1,
+            0,
             0,
             0,
             Some((owner(2), RequestOutcome::Aborted, None)),
@@ -1001,7 +1044,7 @@ mod tests {
             SERVICE_LIMIT_NS + 2_000_000,
         );
         runtime.switch(Phase::Unattributed, at(now, SERVICE_LIMIT_NS + 2_000_000));
-        let report = runtime.report(2, 0, 0, at(now, SERVICE_LIMIT_NS + 3_000_000));
+        let report = runtime.report(2, 0, 0, 0, at(now, SERVICE_LIMIT_NS + 3_000_000));
         assert_eq!(
             report.samples[0].observed_service_ns,
             Some(SERVICE_LIMIT_NS + 1_000_000)
@@ -1060,7 +1103,7 @@ mod tests {
                 Some((1, 2)),
                 at(now, admitted + 60),
             );
-            let report = runtime.report(1, 0, 0, at(now, admitted + 60));
+            let report = runtime.report(1, 0, 0, 0, at(now, admitted + 60));
             let sample = report.samples[0];
             assert_eq!(sample.observed_service_ns, Some(fragments as u64 * 5 + 60));
             assert_eq!(
@@ -1091,7 +1134,7 @@ mod tests {
             None,
             at(now, admitted + 10),
         );
-        let report = runtime.report(1, 0, 0, at(now, admitted + 10));
+        let report = runtime.report(1, 0, 0, 0, at(now, admitted + 10));
         assert_eq!(
             report.samples[0].observed_service_ns,
             Some(SETUP_CAPACITY as u64 * 5 + 10)
@@ -1137,7 +1180,7 @@ mod tests {
                 .then_some((index as u64 * 10 + 1, index as u64 * 10 + 3));
             runtime.close_at(who, outcome, data, at(now, base + 7));
         }
-        let report = runtime.report(5, 1, 1, at(now, 80));
+        let report = runtime.report(5, 0, 1, 1, at(now, 80));
         assert_eq!(report.samples.len(), 4);
         assert_eq!(
             report
@@ -1233,7 +1276,7 @@ mod tests {
                 let _sink = phase(owner(1), ServiceStage::Sink);
             }
             close(owner(1), RequestOutcome::Refused, None);
-            finish_with_scheduler(1, 0, 0).unwrap()
+            finish_with_scheduler(1, 0, 0, 0).unwrap()
         });
         assert_eq!(allocations, 0);
         assert_eq!(report.samples.len(), 1);

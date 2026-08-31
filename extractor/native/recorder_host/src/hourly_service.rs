@@ -97,7 +97,7 @@ impl HourlyServiceReceiver {
             samples: 0,
             census_seen: false,
         };
-        receiver.append(json!({"kind":"binding", "schema":"hoi4.hourly_service_receipt.v1", "binding":receiver.binding}));
+        receiver.append(json!({"kind":"binding", "schema":"hoi4.hourly_service_receipt.v2", "binding":receiver.binding}));
         receiver
     }
 
@@ -266,7 +266,7 @@ fn load_receipt(path: &Path, expected: &HourlyServiceBinding) -> Receipt {
                 .cloned()
                 .and_then(|value| serde_json::from_value::<HourlyServiceBinding>(value).ok());
             if row["kind"] != "binding"
-                || row["schema"] != "hoi4.hourly_service_receipt.v1"
+                || row["schema"] != "hoi4.hourly_service_receipt.v2"
                 || binding.as_ref() != Some(expected)
             {
                 problem(
@@ -850,13 +850,14 @@ fn census_json(census: &HourlyServiceCensusV1) -> Value {
         "closed_requests":census.closed_requests,"queued_measurements":census.queued_measurements,"lost_measurements":census.lost_measurements,
         "complete_measurements":census.complete_measurements,"incomplete_measurements":census.incomplete_measurements,"partial_requests":census.partial_requests,
         "refused_requests":census.refused_requests,"aborted_requests":census.aborted_requests,"unmeasured_hours":census.unmeasured_hours,
+        "boundary_excluded_hours":census.boundary_excluded_hours,
         "over_limit_measurements":census.over_limit_measurements,"total_service_ns":census.total_service_ns,"maximum_service_ns":census.maximum_service_ns,
         "active_requests":census.active_requests,"pending_delivery":census.pending_delivery,"unattributed_service_ns":census.unattributed_service_ns,
         "diagnostic_transport_ns":census.diagnostic_transport_ns,"terminal_lifecycle_ns":census.terminal_lifecycle_ns,"fault_bits":census.fault_bits,"sealed":census.sealed})
 }
 
 pub fn unavailable_report(cause: &str) -> Value {
-    json!({"schema":"hoi4.hourly_service.v1","available":false,"timing_population_complete":false,"complete_capture":false,"passes_16ms":false,
+    json!({"schema":"hoi4.hourly_service.v2","available":false,"timing_population_complete":false,"complete_capture":false,"passes_16ms":false,
         "ceiling_ns":SERVICE_LIMIT_NS,"timing_within_16ms":false,"terminal_lifecycle_ns":null,"problems":[cause],"legacy_frame_and_lane_timings_are_separate":true})
 }
 
@@ -910,7 +911,7 @@ pub fn report_for_capture(
             )
         })
         .collect::<Vec<_>>();
-    json!({"schema":"hoi4.hourly_service.v1","available":receipt.census.is_some(),"binding":expected,"receipt_file":RECEIPT_FILE_NAME,"receipt_sha256":receipt.sha256,
+    json!({"schema":"hoi4.hourly_service.v2","available":receipt.census.is_some(),"binding":expected,"receipt_file":RECEIPT_FILE_NAME,"receipt_sha256":receipt.sha256,
         "timing_population_complete":timing_complete,"complete_capture":complete_capture,"timing_within_16ms":timing_within_limit,"passes_16ms":passes,"ceiling_ns":SERVICE_LIMIT_NS,
         "service":timing_summary(&values),"stages":stages,"stage_order":["capture","finish","build_tail","publication_prepare","sink","commit","terminal"],"census":receipt.census.as_ref().map(census_json),"edge_to_publication":timing_summary(&receipt.samples.iter().filter_map(|sample|sample.edge_to_publication_ns).collect::<Vec<_>>()),
         "edge_to_completion":timing_summary(&receipt.samples.iter().filter_map(|sample|sample.edge_to_completion_ns).collect::<Vec<_>>()),

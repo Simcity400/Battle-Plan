@@ -21,6 +21,7 @@ pub mod cipher_controller;
 pub mod decoder_gate;
 pub mod extractor;
 pub mod replay_verify;
+pub mod snapshot_memory;
 pub mod stream_gate;
 
 pub use compact::DOMAIN_ID_PROPOSED as DOMAIN_ID;

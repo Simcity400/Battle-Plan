@@ -1516,7 +1516,8 @@ fn the_d81_deferred_copy_carries_the_hour_it_was_observed_in() {
         .0;
     assert!(
         d81_spawn.contains("spawn_gated_split(")
-            && d81_spawn.contains("d81_finish_rail_replay_state(observation, d81_geometry_gate)"),
+            && d81_spawn.contains("capture_compact_rail_replay_state_snapshot(")
+            && d81_spawn.contains("finish_compact_rail_replay_state_snapshot("),
         "and production must actually spawn d81 through the split, or the two \
          halves exist and the bracket still covers both"
     );

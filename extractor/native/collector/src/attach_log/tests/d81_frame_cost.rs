@@ -503,9 +503,15 @@ fn d81_reaches_the_map_walk_only_through_the_frame_cache() {
         reader
             .matches("build_compact_map_control_topology(state)")
             .count(),
-        1,
-        "d81 must reach the map walk from ONE place, the cache's Rebuild arm; \
-         a second call is a second traversal of every province in the game"
+        2,
+        "d81 has one live cache Rebuild and one snapshot-memory rebuild; any \
+         third call is another traversal of every province in the game"
+    );
+    assert!(
+        reader.contains("if d81_memory_override_active() {")
+            && reader.contains("match build_compact_map_control_topology(state)"),
+        "the private rebuild is allowed only while the decoder is confined to \
+         the captured bytes"
     );
     assert!(
         reader.contains("topology_cache.accepted_build(state)"),
