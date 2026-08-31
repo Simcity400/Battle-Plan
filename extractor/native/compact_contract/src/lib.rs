@@ -821,8 +821,7 @@ pub const EARLY_LAUNCH_ONLY_PRODUCERS: &[EarlyLaunchOnlyProducer] = &[
             },
             AttachCaptureGate {
                 id: "bootstrap_only_admits_no_staged_hook",
-                enforced_by: "lanes/production_render_submit_live/src/a729_hook.rs::\
-                              bootstrap_only_install_is_admissible",
+                enforced_by: "lanes/production_render_submit_live/src/a729_hook.rs::bootstrap_only_install_is_admissible",
             },
         ],
     },

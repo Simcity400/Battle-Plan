@@ -2645,6 +2645,12 @@
       "lanes/decision_panel_live/src/lib.rs::timeout": "deliberately names a function-local binding: this registry field documents locals that are NOT counters, and locals are invisible to the definition scanner by design; the string is data consumed by the census, not a navigable citation.",
       "lanes/resolved_tooltip_instances_live/src/a729_hook.rs::index": "deliberately names a function-local binding: this registry field documents locals that are NOT counters, and locals are invisible to the definition scanner by design; the string is data consumed by the census, not a navigable citation.",
       "lanes/design_catalog_context_live/src/lib.rs::i": "deliberately names a function-local binding: this registry field documents locals that are NOT counters, and locals are invisible to the definition scanner by design; the string is data consumed by the census, not a navigable citation."
+    },
+    "extractor/native/compact_contract/src/lib.rs": {
+      "path.rs::name": "format-string placeholder in the gate validator's own error message (`must cite a free function as path.rs::name`); a shape description, not a citation.",
+      "collector/../../../evil/src/lib.rs::install": "hostile fixture in the gate-site validator's test: a citation-shaped string the validator is asserted to REJECT; making it non-citation-shaped would defeat the test.",
+      "../compact_contract/src/lib.rs::install": "hostile fixture in the gate-site validator's test: a citation-shaped string the validator is asserted to REJECT; making it non-citation-shaped would defeat the test.",
+      "collector/src/attach_log.rs::Type::method": "hostile fixture in the gate-site validator's test: a citation-shaped string the validator is asserted to REJECT; making it non-citation-shaped would defeat the test."
     }
   }
 }
