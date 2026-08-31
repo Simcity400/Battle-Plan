@@ -58,6 +58,23 @@ members = [
     # split -- shared so the recorder and the independent wire port cannot drift
     # on byte boundaries while keeping their separate semantic projections.
     "d48_grammar",
+    # D34's air-base-status grammar (lane UT, Codex round 41). The three
+    # ANCHOR KINDS were declared four times, in four crates that cannot see
+    # each other, and each was checked only against itself: renumbering the
+    # collector's `STATE` compiled and every consumer went on reading the old
+    # code, so an ordinary state-anchored air base was refused as unknown.
+    "d34_grammar",
+    # D28's OOB-command grammar (lane UT, Codex round 42). Same defect as
+    # d34: the four command KINDS, the row shape and the row flags were
+    # written out in four crates that cannot see each other, so renumbering
+    # the collector's `KIND_ARMY` compiled and every consumer discarded a
+    # real army row as an invalid kind.
+    "d28_grammar",
+    # D29's ship-row grammar (lane UT, Codex round 43). Same defect once
+    # more: the four ship row flags were written out in four crates, and
+    # exchanging two of them in any one left every mask assertion true
+    # while a genuine owner-only row was refused for an empty definition.
+    "d29_grammar",
     "snapshot",
     "collector",
     "recorder_host",

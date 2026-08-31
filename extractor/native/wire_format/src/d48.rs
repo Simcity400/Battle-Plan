@@ -2,9 +2,9 @@
 //! per-location building levels/damage, per-state resources, and the RLC1
 //! railway-construction trailer.
 //!
-//! Derived from `world_fold.rs:29359`-`:29713`
+//! Derived from `world_fold.rs:29408`-`:29762`
 //! (`fold_construction_buildings_state_damage`), its accumulator type at
-// @world-fold-authority domain=48 functions=fold_construction_buildings_state_damage lines=29359-29713 sha256=5046f91a2e5576a17a9460e36f586711536684f78e5334eb243af05cc3d2f75b closure=0d459d83534ae01050c2222d53bbd2367d86636b147f2b325d389d85cc7193d2
+// @world-fold-authority domain=48 functions=fold_construction_buildings_state_damage lines=29408-29762 sha256=5046f91a2e5576a17a9460e36f586711536684f78e5334eb243af05cc3d2f75b closure=8f6472da989e70bfaafe1d5ee87bdcf5276dc1d8626fae81662908c094599c1b
 //! `:2123`-`:2131` and its key helpers at `:25681`-`:25696`; the row grammar is
 //! the lane crate `extractor/native/lanes/construction_buildings_state_damage_live/src/lib.rs`
 //! (`decode_lane_frame` at `:365`, `gate_decoded_frame` at `:1413`, the row

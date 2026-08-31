@@ -12,6 +12,14 @@ crate-type = ["cdylib", "rlib"]
 cc = "1"
 
 [dependencies]
+# D34's air-base-status byte grammar (lane UT). Dependency-free leaf: the
+# anchor kinds and row shape live in one place so this crate and the three
+# others that read them cannot drift on what a coded anchor MEANS.
+d34_grammar = { path = "../d34_grammar" }
+# D28's OOB-command byte grammar (lane UT). Same shape, same reason.
+d28_grammar = { path = "../d28_grammar" }
+# D29's ship-row byte grammar (lane UT). Same shape, same reason.
+d29_grammar = { path = "../d29_grammar" }
 compact_contract = { path = "../compact_contract" }
 # D11's base and all ten trailers are emitted through this leaf.
 d11_grammar = { path = "../d11_grammar" }

@@ -17,6 +17,14 @@ evidence-client-driving = []
 mem-alloc-trace = []
 
 [dependencies]
+# D34's air-base-status byte grammar (lane UT). Dependency-free leaf: the
+# anchor kinds and row shape live in one place so this crate and the three
+# others that read them cannot drift on what a coded anchor MEANS.
+d34_grammar = { path = "../d34_grammar" }
+# D28's OOB-command byte grammar (lane UT). Same shape, same reason.
+d28_grammar = { path = "../d28_grammar" }
+# D29's ship-row byte grammar (lane UT). Same shape, same reason.
+d29_grammar = { path = "../d29_grammar" }
 compact_stream = { path = "../compact_stream" }
 # D11's base payload, ten trailer families and nested PDQ1 codec. Like the
 # other domain grammar leaves below, it has no dependencies so every writer

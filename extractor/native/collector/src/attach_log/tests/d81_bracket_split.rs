@@ -1524,13 +1524,25 @@ fn the_d81_deferred_copy_carries_the_hour_it_was_observed_in() {
 
 #[test]
 fn the_split_units_are_appended_beside_the_existing_lane_wall_units() {
-    let names = lw_domain_split_unit_names(81);
-    assert_eq!(names, &["lw_d81_inb_us", "lw_d81_post_us"]);
-    assert_ne!(names[0], lw_domain_crit_unit_name(81));
-    assert_ne!(names[1], lw_domain_crit_unit_name(81));
-    assert_eq!(
-        lw_domain_split_unit_names(81).as_ptr(),
-        names.as_ptr(),
+    // BY SUFFIX, from the contract's pairing of each value's TYPE to the
+    // family that means it: the two names were a positional array here, and
+    // exchanging the emitter's two slots published each half of the split as
+    // the other with every name assertion still true (Codex round 40).
+    let [(inb_suffix, inb), (post_suffix, post)] =
+        compact_contract::diagnostic_channel::domain_bracket_units(
+            compact_contract::diagnostic_channel::InBracketMicros(10),
+            compact_contract::diagnostic_channel::PostBracketMicros(90),
+        );
+    assert_eq!((inb, post), (10, 90));
+    assert_eq!(lw_domain_unit_name(81, inb_suffix), "lw_d81_inb_us");
+    assert_eq!(lw_domain_unit_name(81, post_suffix), "lw_d81_post_us");
+    assert_ne!(lw_domain_unit_name(81, inb_suffix), lw_domain_crit_unit_name(81));
+    assert_ne!(lw_domain_unit_name(81, post_suffix), lw_domain_crit_unit_name(81));
+    assert!(
+        std::ptr::eq(
+            lw_domain_unit_name(81, inb_suffix),
+            lw_domain_unit_name(81, inb_suffix)
+        ),
         "a name rebuilt per frame leaks per frame"
     );
 

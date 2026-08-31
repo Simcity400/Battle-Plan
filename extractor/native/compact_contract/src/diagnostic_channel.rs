@@ -1261,6 +1261,7 @@ crate::cause_tables::ordered_segments! {
     segments = pub OUTSIDE_BUILD_SEGMENTS,
     unit_names = pub OUTSIDE_BUILD_UNIT_NAMES,
     count = pub OUTSIDE_BUILD_SEGMENT_COUNT,
+    roster = crate::diagnostic_channel::WIRE_UNIT_FAMILIES,
     unit_prefix = pub OUTSIDE_BUILD_UNIT_PREFIX = "lw_o",
     unit_suffix = pub OUTSIDE_BUILD_UNIT_SUFFIX = "_us";
 
@@ -1344,6 +1345,7 @@ crate::cause_tables::ordered_segments! {
     segments = pub FRAME_TAIL_SEGMENTS,
     unit_names = pub FRAME_TAIL_UNIT_NAMES,
     count = pub FRAME_TAIL_SEGMENT_COUNT,
+    roster = crate::diagnostic_channel::WIRE_UNIT_FAMILIES,
     unit_prefix = pub FRAME_TAIL_UNIT_PREFIX = "lw_t",
     unit_suffix = pub FRAME_TAIL_UNIT_SUFFIX = "_us";
 
@@ -1387,21 +1389,90 @@ pub const CALLBACK_UNIT_SUFFIX: &str = "_us";
 pub const fn const_families_cannot_alias(families: &[(&str, &str)]) -> bool {
     let mut i = 0;
     while i < families.len() {
+        // A suffix must begin with a NON-DIGIT. That is what makes the
+        // same-prefix case below decidable: `p + digits + s1` and
+        // `p + digits + s2` can only be equal if the digit runs are equal, so
+        // the suffixes decide -- but only while no suffix can start with a
+        // digit and absorb one.
+        let s = families[i].1.as_bytes();
+        if s.is_empty() || (s[0] >= b'0' && s[0] <= b'9') {
+            return false;
+        }
         let mut j = i + 1;
         while j < families.len() {
-            let (a, b) = (families[i].0, families[j].0);
-            if const_str_eq(a, b) {
-                return false;
-            }
-            if const_str_starts_with(b, a) && const_extends_by_digit(b, a) {
-                return false;
-            }
-            if const_str_starts_with(a, b) && const_extends_by_digit(a, b) {
+            let (pa, sa) = families[i];
+            let (pb, sb) = families[j];
+            // The SUFFIX is half the spelling. Comparing prefixes alone made
+            // the three families that share a prefix and differ only by
+            // suffix unassertable, so they were left out of the check
+            // entirely and `_busy_us` could be set to `_wall_us` (Codex round
+            // 35, finding 1).
+            if const_str_eq(pa, pb) {
+                if const_str_eq(sa, sb) {
+                    return false;
+                }
+            } else if (const_str_starts_with(pb, pa) && const_extends_by_digit(pb, pa))
+                || (const_str_starts_with(pa, pb) && const_extends_by_digit(pa, pb))
+            {
                 return false;
             }
             j += 1;
         }
         i += 1;
+    }
+    true
+}
+
+/// No generated family can spell a name in `fixed`.
+///
+/// The namespace holds FIXED keys as well as numbered families --
+/// `lw_d47_enc_us` is one -- and a family whose suffix became `_enc_us` would
+/// spell it for tag 47, giving two meanings one diagnostic key (Codex round
+/// 35, finding 2).
+pub const fn const_no_family_spells_a_fixed_name(
+    families: &[(&str, &str)],
+    fixed: &[&str],
+) -> bool {
+    let mut i = 0;
+    while i < families.len() {
+        let mut j = 0;
+        while j < fixed.len() {
+            if const_family_spells(families[i].0, families[i].1, fixed[j]) {
+                return false;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// `name` is `prefix`, then at least one digit, then `suffix`.
+const fn const_family_spells(prefix: &str, suffix: &str, name: &str) -> bool {
+    let (p, s, n) = (prefix.as_bytes(), suffix.as_bytes(), name.as_bytes());
+    if n.len() <= p.len() + s.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < p.len() {
+        if n[i] != p[i] {
+            return false;
+        }
+        i += 1;
+    }
+    let mut k = 0;
+    while k < s.len() {
+        if n[n.len() - s.len() + k] != s[k] {
+            return false;
+        }
+        k += 1;
+    }
+    let mut d = p.len();
+    while d < n.len() - s.len() {
+        if n[d] < b'0' || n[d] > b'9' {
+            return false;
+        }
+        d += 1;
     }
     true
 }
@@ -1426,6 +1497,15 @@ const _: () = assert!(
 );
 
 /// The WHOLE namespace, checked against itself.
+///
+/// ONE ROSTER, and every check below reads it. There were two lists -- this
+/// one and a second literal array passed straight to the alias check -- and a
+/// family in one was covered by the checks the other list fed, which is how
+/// the poll-gap families were aliased against each other and against nothing
+/// else. Every table that mints names now asserts its own family is IN here
+/// (`const_roster_declares`, checked inside `ordered_segments!` and
+/// `millisecond_buckets!`), so a new table cannot be published outside the
+/// namespace's checks the way rounds 34 through 37 each found one had been.
 pub const WIRE_UNIT_FAMILIES: &[(&str, &str)] = &[
     (OUTSIDE_BUILD_UNIT_PREFIX, OUTSIDE_BUILD_UNIT_SUFFIX),
     (FRAME_TAIL_UNIT_PREFIX, FRAME_TAIL_UNIT_SUFFIX),
@@ -1435,18 +1515,389 @@ pub const WIRE_UNIT_FAMILIES: &[(&str, &str)] = &[
     (DOMAIN_CRIT_UNIT_PREFIX, DOMAIN_INBOUND_UNIT_SUFFIX),
     (DOMAIN_CRIT_UNIT_PREFIX, DOMAIN_POST_UNIT_SUFFIX),
     (CALLBACK_UNIT_PREFIX, CALLBACK_UNIT_SUFFIX),
+    (POLL_GAP_LE_PREFIX, POLL_GAP_UNIT_SUFFIX),
+    (POLL_GAP_GT_PREFIX, POLL_GAP_UNIT_SUFFIX),
+];
+
+/// The roster carries exactly this `(prefix, suffix)` family.
+///
+/// What a name-minting table asserts about itself, so joining the roster is a
+/// condition of compiling rather than a step someone remembers.
+pub const fn const_roster_declares(
+    roster: &[(&str, &str)],
+    prefix: &str,
+    suffix: &str,
+) -> bool {
+    let mut i = 0;
+    while i < roster.len() {
+        if const_str_eq(roster[i].0, prefix) && const_str_eq(roster[i].1, suffix) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// EXACTLY ONE roster family spells `name`.
+///
+/// Both halves matter. Fewer than one means the name on the wire is modelled
+/// by no declared family, so the alias and fixed-key checks are comparing a
+/// shape that is not what ships -- the round-37 defect, where a declared
+/// prefix was broader than the emitted one. More than one means the name's
+/// meaning depends on which decoder reads it first.
+pub const fn const_roster_spells_exactly_once(roster: &[(&str, &str)], name: &str) -> bool {
+    let mut i = 0;
+    let mut hits = 0;
+    while i < roster.len() {
+        if const_family_spells(roster[i].0, roster[i].1, name) {
+            hits += 1;
+        }
+        i += 1;
+    }
+    hits == 1
+}
+
+const _: () = assert!(
+    const_families_cannot_alias(WIRE_UNIT_FAMILIES),
+    "two numbered wire-unit families can spell the same name, so one      family's span would decode as another's code",
+);
+
+/// The FIXED keys that share this namespace with the numbered families.
+///
+/// `lw_d47_enc_us` is `lw_d` + a number + `_enc_us`, so a family whose suffix
+/// became `_enc_us` would spell it for tag 47 and give encode time and
+/// critical-path time one diagnostic key (Codex round 35, finding 2). These
+/// are the tails no family may take.
+pub const RESERVED_FIXED_UNIT_NAMES: &[&str] = &[
+    "lw_d13_completed_us",
+    "lw_d13_completed_visits",
+    "lw_d13_countries",
+    "lw_d13_ptrvec_ns",
+    "lw_d13_research_us",
+    "lw_d13_states_us",
+    "lw_d13_states_visits",
+    "lw_d13_witness_us",
+    "lw_d47_dec_us",
+    "lw_d47_disc_full_us",
+    "lw_d47_disc_reused_us",
+    "lw_d47_disc_us",
+    "lw_d47_enc_us",
+    "lw_d47_full_frames",
+    "lw_d47_reused_frames",
 ];
 
 const _: () = assert!(
-    const_families_cannot_alias(&[
-        (OUTSIDE_BUILD_UNIT_PREFIX, OUTSIDE_BUILD_UNIT_SUFFIX),
-        (FRAME_TAIL_UNIT_PREFIX, FRAME_TAIL_UNIT_SUFFIX),
-        (LANE_WALL_UNIT_PREFIX, LANE_WALL_UNIT_SUFFIX),
-        (DOMAIN_CRIT_UNIT_PREFIX, DOMAIN_CRIT_UNIT_SUFFIX),
-        (CALLBACK_UNIT_PREFIX, CALLBACK_UNIT_SUFFIX),
-    ]),
-    "two numbered wire-unit families can spell the same name, so one      family's span would decode as another's code",
+    const_no_family_spells_a_fixed_name(
+        WIRE_UNIT_FAMILIES, RESERVED_FIXED_UNIT_NAMES),
+    "a numbered wire-unit family spells a FIXED diagnostic key, so two      meanings would share one name",
 );
+
+/// The POLL-GAP buckets are a numbered family too. `millisecond_buckets!`
+/// spells `lw_poll_gap_le{ms}ms` and `lw_poll_gap_gt{ms}ms`, and leaving them
+/// out of the namespace let the frame-tail table be given `lw_poll_gap_le` and
+/// `ms` -- so a genuine bucket COUNT decoded as frame-tail microseconds,
+/// because the frame-tail decoder runs first (Codex round 36, finding 2).
+pub const POLL_GAP_LE_PREFIX: &str = "lw_poll_gap_le";
+
+/// And the bucket names the macro actually emits must be spelled by one of the
+/// two, so the constants above cannot drift from the table they describe.
+const _: () = {
+    let mut i = 0;
+    while i < POLL_GAP_BUCKET_UNIT_NAMES.len() {
+        // The WHOLE spelling -- prefix, then digits, then suffix -- not a
+        // `starts_with` and an `ends_with` that a BROADER prefix also
+        // satisfies. `lw_poll_gap_` passes both halves of that pair while
+        // modelling `lw_poll_gap_{digits}ms`, which is not the family the
+        // macro emits, and the alias check then compared the wrong shape
+        // (Codex round 37).
+        assert!(
+            const_family_spells(
+                POLL_GAP_LE_PREFIX, POLL_GAP_UNIT_SUFFIX,
+                POLL_GAP_BUCKET_UNIT_NAMES[i])
+                || const_family_spells(
+                    POLL_GAP_GT_PREFIX, POLL_GAP_UNIT_SUFFIX,
+                    POLL_GAP_BUCKET_UNIT_NAMES[i]),
+            "a declared poll-gap family does not spell the bucket name the              macro emits, so the alias check is comparing a shape that is not              on the wire",
+        );
+        i += 1;
+    }
+};
+pub const POLL_GAP_GT_PREFIX: &str = "lw_poll_gap_gt";
+pub const POLL_GAP_UNIT_SUFFIX: &str = "ms";
+
+/// EVERY NAME THIS CRATE PUBLISHES INTO THE NAMESPACE, against the one roster.
+///
+/// The roster is what the alias and fixed-key checks are computed over; this
+/// is what says the roster describes the names that actually ship. Each table
+/// asserts its own family is declared and each declared family is checked
+/// against every other, but neither says the emitted array holds the shape its
+/// family models -- and that gap is exactly what let a broader poll-gap prefix
+/// be checked while a narrower one was on the wire (round 37). Read off the
+/// emitted arrays, so a table whose names stop matching its family fails here
+/// even if every row-level assertion still holds.
+const _: () = {
+    let mut i = 0;
+    while i < OUTSIDE_BUILD_UNIT_NAMES.len() {
+        assert!(
+            const_roster_spells_exactly_once(
+                WIRE_UNIT_FAMILIES, OUTSIDE_BUILD_UNIT_NAMES[i]),
+            "a published outside-build unit name is spelled by no declared \
+             family, or by two",
+        );
+        i += 1;
+    }
+    let mut i = 0;
+    while i < FRAME_TAIL_UNIT_NAMES.len() {
+        assert!(
+            const_roster_spells_exactly_once(
+                WIRE_UNIT_FAMILIES, FRAME_TAIL_UNIT_NAMES[i]),
+            "a published frame-tail unit name is spelled by no declared family, \
+             or by two",
+        );
+        i += 1;
+    }
+    let mut i = 0;
+    while i < POLL_GAP_BUCKET_UNIT_NAMES.len() {
+        assert!(
+            const_roster_spells_exactly_once(
+                WIRE_UNIT_FAMILIES, POLL_GAP_BUCKET_UNIT_NAMES[i]),
+            "a published poll-gap bucket name is spelled by no declared family, \
+             or by two",
+        );
+        i += 1;
+    }
+    // And the fixed keys are the other half of the namespace: none of them may
+    // be spelled by a family. `const_no_family_spells_a_fixed_name` above says
+    // that over the roster; this says the reserved list carries the fixed keys
+    // this crate itself declares, which a constant beside it could otherwise
+    // leave out.
+    assert!(
+        const_names_contain(RESERVED_FIXED_UNIT_NAMES, FRAME_TAIL_MARKS_UNIT)
+            || !const_name_has_a_digit(FRAME_TAIL_MARKS_UNIT),
+        "the frame-tail marks key carries a digit run and is not reserved, so a \
+         family could take it",
+    );
+};
+
+/// A lane's WALL span: last end minus first start, so it includes the gaps.
+///
+/// TYPED SO THE PAIR CANNOT BE PUBLISHED THE WRONG WAY ROUND. Wall and busy
+/// were two `u64`s beside a two-element array of names, joined by position at
+/// the emitter: exchanging `names[0]` and `names[1]` compiled, published each
+/// lane's busy time as its wall time and its wall time as its busy time, and
+/// left every name check, every roster check and the whole namespace census
+/// true -- the emitted NAMES were unchanged (Codex round 40, findings 4 and
+/// 5). The meaning rides in the type now, and the suffix that spells it is
+/// chosen from the type by [`lane_span_units`], so the exchange does not
+/// compile.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LaneWallMicros(pub u64);
+
+/// A lane's BUSY span: the sum of its span durations, so it excludes the gaps.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LaneBusyMicros(pub u64);
+
+/// A split reader's time INSIDE the clock bracket -- the span that has to fall.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InBracketMicros(pub u64);
+
+/// A split reader's time AFTER its bracket closed: the compute half.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PostBracketMicros(pub u64);
+
+/// A `(prefix, suffix)` pair the ROSTER declares -- and the only thing a
+/// producer can spell a numbered unit name from.
+///
+/// UNFORGEABLE ON PURPOSE. The producers were handed a prefix and a suffix as
+/// two `&str`s, so any pair could be minted: `lw_numbered_unit_name("lw_d", 47,
+/// "_enc_us")` compiles, spells the RESERVED key `lw_d47_enc_us`, and adds a
+/// lane figure to the consumer's D47 encode time -- while the contract, whose
+/// checks are all about the roster, is untouched and the cross-crate census
+/// sees only two unrelated string fragments (Codex round 41, finding 2). The
+/// fields are private and the only values are the constants below, each
+/// asserted to be in the roster where it is declared, so a producer cannot
+/// name a unit outside the namespace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WireUnitFamily {
+    prefix: &'static str,
+    suffix: &'static str,
+}
+
+impl WireUnitFamily {
+    pub const fn prefix(self) -> &'static str {
+        self.prefix
+    }
+
+    pub const fn suffix(self) -> &'static str {
+        self.suffix
+    }
+}
+
+/// The one constructor, private to this module -- and it REFUSES a pair the
+/// roster does not declare.
+///
+/// A private constructor is not a closed universe on its own: another `pub
+/// const` in this module could build `family(DOMAIN_CRIT_UNIT_PREFIX,
+/// "_enc_us")`, hand it to a producer, and mint the reserved key
+/// `lw_d47_enc_us` -- the roster assertions iterated `PRODUCER_FAMILIES` and
+/// nothing said that list held every constructed value (Codex round 42,
+/// finding 3). The check is here instead, so it holds for every value that
+/// exists rather than for the ones a list remembers, and it fires at compile
+/// time because every caller is a `const`.
+const fn family(prefix: &'static str, suffix: &'static str) -> WireUnitFamily {
+    assert!(
+        const_roster_declares(WIRE_UNIT_FAMILIES, prefix, suffix),
+        "a wire-unit family was built from a pair the roster does not declare,          so a producer could spell a name no check in this namespace covers",
+    );
+    WireUnitFamily { prefix, suffix }
+}
+
+pub const LANE_WALL_FAMILY: WireUnitFamily =
+    family(LANE_WALL_UNIT_PREFIX, LANE_WALL_UNIT_SUFFIX);
+pub const LANE_BUSY_FAMILY: WireUnitFamily =
+    family(LANE_WALL_UNIT_PREFIX, LANE_BUSY_UNIT_SUFFIX);
+pub const DOMAIN_CRIT_FAMILY: WireUnitFamily =
+    family(DOMAIN_CRIT_UNIT_PREFIX, DOMAIN_CRIT_UNIT_SUFFIX);
+pub const DOMAIN_INBOUND_FAMILY: WireUnitFamily =
+    family(DOMAIN_CRIT_UNIT_PREFIX, DOMAIN_INBOUND_UNIT_SUFFIX);
+pub const DOMAIN_POST_FAMILY: WireUnitFamily =
+    family(DOMAIN_CRIT_UNIT_PREFIX, DOMAIN_POST_UNIT_SUFFIX);
+pub const CALLBACK_FAMILY: WireUnitFamily =
+    family(CALLBACK_UNIT_PREFIX, CALLBACK_UNIT_SUFFIX);
+
+/// Every family a producer can be handed is one the roster declares.
+pub const PRODUCER_FAMILIES: &[WireUnitFamily] = &[
+    LANE_WALL_FAMILY,
+    LANE_BUSY_FAMILY,
+    DOMAIN_CRIT_FAMILY,
+    DOMAIN_INBOUND_FAMILY,
+    DOMAIN_POST_FAMILY,
+    CALLBACK_FAMILY,
+];
+
+const _: () = {
+    let mut i = 0;
+    while i < PRODUCER_FAMILIES.len() {
+        assert!(
+            const_roster_declares(
+                WIRE_UNIT_FAMILIES,
+                PRODUCER_FAMILIES[i].prefix,
+                PRODUCER_FAMILIES[i].suffix,
+            ),
+            "a family a producer can spell names from is not in the wire-unit              roster, so the namespace checks do not cover what it mints",
+        );
+        i += 1;
+    }
+};
+
+/// The two units a lane publishes: each FAMILY beside the value it means.
+///
+/// The producer names the unit by asking the family for its spelling, so
+/// nothing at the emitter chooses which of two names a value gets.
+pub fn lane_span_units(
+    wall: LaneWallMicros,
+    busy: LaneBusyMicros,
+) -> [(WireUnitFamily, u64); 2] {
+    [(LANE_WALL_FAMILY, wall.0), (LANE_BUSY_FAMILY, busy.0)]
+}
+
+/// The CRITICAL-PATH lane's two spans, under their own fixed keys.
+pub const CRIT_LANE_WALL_UNIT: &str = "lw_crit_wall_us";
+pub const CRIT_LANE_BUSY_UNIT: &str = "lw_crit_busy_us";
+
+/// The critical lane's two units, each name beside the value it means.
+///
+/// Same defect, same shape, fixed keys instead of a family: two `u64` fields
+/// published under two literal names, joined by nothing.
+pub fn crit_lane_units(wall: LaneWallMicros, busy: LaneBusyMicros) -> [(&'static str, u64); 2] {
+    [
+        (CRIT_LANE_WALL_UNIT, wall.0),
+        (CRIT_LANE_BUSY_UNIT, busy.0),
+    ]
+}
+
+/// The two units a split reader publishes: each SUFFIX beside the value it
+/// means. See [`lane_span_units`].
+pub fn domain_bracket_units(
+    in_bracket: InBracketMicros,
+    post_bracket: PostBracketMicros,
+) -> [(WireUnitFamily, u64); 2] {
+    [
+        (DOMAIN_INBOUND_FAMILY, in_bracket.0),
+        (DOMAIN_POST_FAMILY, post_bracket.0),
+    ]
+}
+
+/// Each published name beside the value at ITS OWN slot.
+///
+/// THE JOIN, IN ONE PLACE. The collector zipped the name array against its
+/// accumulator and the host zipped the same names against the counts it had
+/// read back -- separate joins in crates that cannot see each other, each free
+/// to reverse or offset on its own. Reversing the collector's zip published a
+/// 900 us gap as `lw_poll_gap_gt64ms` with every name, bound, roster and
+/// census assertion still true, because nothing observed the join (Codex round
+/// 40, finding 3). Producers and consumers pair through this.
+fn slot_units<'a>(
+    names: &'static [&'static str],
+    values: &'a [u64],
+) -> impl Iterator<Item = (&'static str, u64)> + 'a {
+    names.iter().copied().zip(values.iter().copied())
+}
+
+/// The outside-build spans as published: name and value from the same slot.
+pub fn outside_build_units(values: &[u64]) -> impl Iterator<Item = (&'static str, u64)> + '_ {
+    slot_units(OUTSIDE_BUILD_UNIT_NAMES, values)
+}
+
+/// The frame-tail spans as published: name and value from the same slot.
+pub fn frame_tail_units(values: &[u64]) -> impl Iterator<Item = (&'static str, u64)> + '_ {
+    slot_units(FRAME_TAIL_UNIT_NAMES, values)
+}
+
+/// The poll-gap histogram as published: name and count from the same slot.
+pub fn poll_gap_units(counts: &[u64]) -> impl Iterator<Item = (&'static str, u64)> + '_ {
+    slot_units(&POLL_GAP_BUCKET_UNIT_NAMES, counts)
+}
+
+/// The one roster family that spells `name`, and the number it carries.
+///
+/// THE DECODE SIDE. Every producer mints a name from a roster family; this
+/// reads one back to the family that minted it and the id, lane, code or bound
+/// between them. `None` when no declared family spells the name, or -- which
+/// `const_families_cannot_alias` refuses where the roster is written, so it
+/// cannot happen while that assertion holds -- when two do.
+pub fn wire_unit_family_of(name: &str) -> Option<((&'static str, &'static str), u128)> {
+    let mut found = None;
+    for (prefix, suffix) in WIRE_UNIT_FAMILIES {
+        if !const_family_spells(prefix, suffix, name) {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        let digits = &name[prefix.len()..name.len() - suffix.len()];
+        found = Some(((*prefix, *suffix), digits.parse::<u128>().ok()?));
+    }
+    found
+}
+
+/// `name` holds an ASCII digit.
+///
+/// A family is a prefix, AT LEAST ONE DIGIT and a suffix, so a fixed key with
+/// no digit in it cannot be spelled by any family, present or future, and
+/// needs no reservation. That is what makes the reserved list finite: it holds
+/// the digit-carrying keys, not every key.
+pub const fn const_name_has_a_digit(name: &str) -> bool {
+    let b = name.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] >= b'0' && b[i] <= b'9' {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
 
 /// The unit carrying WHICH segments were actually closed on the frame this
 /// record describes: one bit per segment code, so a complete tail reads
@@ -1480,7 +1931,8 @@ pub fn frame_tail_segment_name(code: u16) -> Option<&'static str> {
 
 crate::cause_tables::millisecond_buckets! {
     bounds = pub POLL_GAP_BUCKET_MAX_US, names = pub POLL_GAP_BUCKET_UNIT_NAMES,
-    unit_prefix = "lw_poll_gap_";
+    roster = crate::diagnostic_channel::WIRE_UNIT_FAMILIES,
+    unit_prefix = "lw_poll_gap_", unit_suffix = "ms";
 
     1, 2, 4, 8, 16, 32, last 64,
 }
@@ -3828,6 +4280,221 @@ mod tests {
         for class in Accumulation::ALL {
             assert_eq!(class.fold(None, 42), 42);
         }
+    }
+
+    /// EVERY PUBLISHED NAME, DECODED BACK TO THE SLOT THAT MINTED IT, IN ONE
+    /// PLACE.
+    ///
+    /// THE CLASS. Rounds 34 to 39 each found the same defect in a different
+    /// table: the meaning of a published unit name was bound to its slot
+    /// positionally or by convention -- a family declared but not rostered, a
+    /// declared shape broader than the emitted one, a polarity that followed
+    /// position, a bound the name only spelled through a literal the emission
+    /// no longer used. Each fix guarded one table, and the next table was the
+    /// next round.
+    ///
+    /// This is the whole namespace at once and from the wire side: for every
+    /// name the contract publishes, the family that spells it is looked up in
+    /// the roster and the number it carries is required to be the slot,
+    /// code or bound that produced it -- and for the poll-gap buckets, the
+    /// classifier that assigns values is required to AGREE with what the name
+    /// says, at the bound and one microsecond past it. The last assertion is
+    /// what stops the treadmill: every declared family must be round-tripped
+    /// here, either by a published table or as a generated id, so a family
+    /// that joins the roster -- which a new table must do to compile -- fails
+    /// this test until its names are checked too.
+    #[test]
+    fn every_published_wire_unit_name_decodes_to_its_own_slot() {
+        let mut witnessed = BTreeSet::new();
+
+        for (names, segments) in [
+            (OUTSIDE_BUILD_UNIT_NAMES, OUTSIDE_BUILD_SEGMENTS),
+            (FRAME_TAIL_UNIT_NAMES, FRAME_TAIL_SEGMENTS),
+        ] {
+            assert_eq!(names.len(), segments.len());
+            for (slot, name) in names.iter().enumerate() {
+                let (family, number) = wire_unit_family_of(name)
+                    .unwrap_or_else(|| panic!("{name} is spelled by no declared family"));
+                witnessed.insert(family);
+                assert_eq!(
+                    number,
+                    slot as u128,
+                    "{name} is published at slot {slot}, so a decoder reading its                      number gets a different segment"
+                );
+                assert_eq!(
+                    usize::from(segments[slot].0),
+                    slot,
+                    "the segment at slot {slot} does not carry code {slot}, so the                      name and the accumulator disagree"
+                );
+            }
+        }
+
+        for (slot, bound) in POLL_GAP_BUCKET_MAX_US.iter().enumerate() {
+            let name = POLL_GAP_BUCKET_UNIT_NAMES[slot];
+            let (family, number) = wire_unit_family_of(name)
+                .unwrap_or_else(|| panic!("{name} is spelled by no declared family"));
+            witnessed.insert(family);
+            assert_eq!(
+                family.0, POLL_GAP_LE_PREFIX,
+                "slot {slot} holds a BOUNDED bucket and must be published as `le`"
+            );
+            assert_eq!(
+                number as u64 * crate::cause_tables::MICROSECONDS_PER_MILLISECOND,
+                *bound,
+                "{name} does not spell the bound the emitted table holds for its                  own slot"
+            );
+            assert_eq!(
+                poll_gap_bucket(*bound),
+                slot,
+                "a gap AT the bound {name} names does not land in {name}'s slot"
+            );
+            assert_eq!(
+                poll_gap_bucket(bound + 1),
+                slot + 1,
+                "a gap PAST the bound {name} names still lands in {name}'s slot"
+            );
+            // THE PRODUCTION DECODER, not a second reading of the name. The
+            // host keys a bucket's count by this and stores it at the slot it
+            // returns; reversing it published every bucket under another
+            // bucket's name with all of the above still true, because nothing
+            // here called it (Codex round 40, finding 2).
+            assert_eq!(
+                poll_gap_bucket_of_unit(name),
+                Some(slot),
+                "{name} does not decode back to the slot it is published at"
+            );
+        }
+
+        let overflow = POLL_GAP_BUCKET_COUNT - 1;
+        let name = POLL_GAP_BUCKET_UNIT_NAMES[overflow];
+        let (family, number) = wire_unit_family_of(name)
+            .unwrap_or_else(|| panic!("{name} is spelled by no declared family"));
+        witnessed.insert(family);
+        let last_bound = POLL_GAP_BUCKET_MAX_US[POLL_GAP_BUCKET_MAX_US.len() - 1];
+        assert_eq!(
+            family.0, POLL_GAP_GT_PREFIX,
+            "the overflow slot must be published as `gt`, not `le`"
+        );
+        assert_eq!(
+            number as u64 * crate::cause_tables::MICROSECONDS_PER_MILLISECOND,
+            last_bound,
+            "the overflow name does not spell the last EMITTED bound"
+        );
+        assert_eq!(poll_gap_bucket(last_bound + 1), overflow);
+        assert_eq!(poll_gap_bucket(u64::MAX), overflow);
+        assert_eq!(poll_gap_bucket_of_unit(name), Some(overflow));
+        assert_eq!(
+            poll_gap_bucket_of_unit("lw_poll_gap_le999ms"),
+            None,
+            "a name no bucket is published under must not resolve to a slot"
+        );
+
+        // The families the collector mints per lane, per domain tag and per
+        // callback tag: no published array here, so a generated name is
+        // round-tripped instead.
+        let generated: BTreeSet<(&str, &str)> = [
+            (LANE_WALL_UNIT_PREFIX, LANE_WALL_UNIT_SUFFIX),
+            (LANE_WALL_UNIT_PREFIX, LANE_BUSY_UNIT_SUFFIX),
+            (DOMAIN_CRIT_UNIT_PREFIX, DOMAIN_CRIT_UNIT_SUFFIX),
+            (DOMAIN_CRIT_UNIT_PREFIX, DOMAIN_INBOUND_UNIT_SUFFIX),
+            (DOMAIN_CRIT_UNIT_PREFIX, DOMAIN_POST_UNIT_SUFFIX),
+            (CALLBACK_UNIT_PREFIX, CALLBACK_UNIT_SUFFIX),
+        ]
+        .into_iter()
+        .collect();
+        for (prefix, suffix) in &generated {
+            for id in [0u128, 7, 13, 47, 200] {
+                let minted = format!("{prefix}{id}{suffix}");
+                assert_eq!(
+                    wire_unit_family_of(&minted),
+                    Some(((*prefix, *suffix), id)),
+                    "{minted} does not read back as its own family and id"
+                );
+            }
+        }
+
+        let declared: BTreeSet<(&str, &str)> =
+            WIRE_UNIT_FAMILIES.iter().map(|f| (f.0, f.1)).collect();
+        assert_eq!(
+            witnessed.union(&generated).copied().collect::<BTreeSet<_>>(),
+            declared,
+            "a declared wire-unit family is round-tripped by neither a published              table nor a generated id, so its names are not checked against the              slots that mint them"
+        );
+    }
+
+    /// EVERY PAIRING, DRIVEN: the name a producer publishes carries the value
+    /// from its OWN slot.
+    ///
+    /// The other half of the class. Round 40 found three surviving joins that
+    /// no name check could see, because they do not change a name: the
+    /// collector zipped the bucket names against its counts, the host zipped
+    /// them against the counts it had read back, and both two-element name
+    /// arrays were indexed at the emitter. Reversing any of them published a
+    /// real value under another slot's name with every roster, spelling, bound
+    /// and census assertion still true. Producers pair through the functions
+    /// below now, and this is what says those functions pair correctly.
+    #[test]
+    fn every_published_pairing_joins_a_name_to_its_own_value() {
+        // Distinct per slot, so a reversal or an offset cannot land on an
+        // equal value.
+        let sentinels: Vec<u64> = (0..64).map(|i| 1_000 + i as u64).collect();
+
+        for (names, paired) in [
+            (
+                OUTSIDE_BUILD_UNIT_NAMES,
+                outside_build_units(&sentinels[..OUTSIDE_BUILD_UNIT_NAMES.len()])
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                FRAME_TAIL_UNIT_NAMES,
+                frame_tail_units(&sentinels[..FRAME_TAIL_UNIT_NAMES.len()]).collect::<Vec<_>>(),
+            ),
+            (
+                &POLL_GAP_BUCKET_UNIT_NAMES,
+                poll_gap_units(&sentinels[..POLL_GAP_BUCKET_COUNT]).collect::<Vec<_>>(),
+            ),
+        ] {
+            assert_eq!(
+                paired.len(),
+                names.len(),
+                "a published table pairs fewer units than it has names"
+            );
+            for (slot, (name, value)) in paired.into_iter().enumerate() {
+                assert_eq!(name, names[slot], "slot {slot} paired the wrong name");
+                assert_eq!(
+                    value, sentinels[slot],
+                    "{name} carries the value from another slot"
+                );
+            }
+        }
+
+        assert_eq!(
+            lane_span_units(LaneWallMicros(800), LaneBusyMicros(300)),
+            [(LANE_WALL_FAMILY, 800), (LANE_BUSY_FAMILY, 300)],
+            "a lane's wall and busy spans are published under each other's names"
+        );
+        // And every family a producer can be handed spells a name the roster
+        // owns, for a number a producer actually uses.
+        for family in PRODUCER_FAMILIES {
+            for number in [0u128, 7, 13, 47, 200] {
+                let minted = format!("{}{number}{}", family.prefix(), family.suffix());
+                assert_eq!(
+                    wire_unit_family_of(&minted),
+                    Some(((family.prefix(), family.suffix()), number)),
+                    "{minted} is not read back as the family that spelled it"
+                );
+            }
+        }
+        assert_eq!(
+            crit_lane_units(LaneWallMicros(800), LaneBusyMicros(300)),
+            [(CRIT_LANE_WALL_UNIT, 800), (CRIT_LANE_BUSY_UNIT, 300)],
+            "the critical lane's wall and busy spans are published under each              other's names"
+        );
+        assert_eq!(
+            domain_bracket_units(InBracketMicros(10), PostBracketMicros(90)),
+            [(DOMAIN_INBOUND_FAMILY, 10), (DOMAIN_POST_FAMILY, 90)],
+            "the two halves of a split read are published under each other's names"
+        );
     }
 
     #[test]

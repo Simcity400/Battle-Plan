@@ -1,8 +1,8 @@
 //! d29 `ships_live` — one row per live ship instance.
 //!
-//! Derived from `world_fold.rs:22286`-`:22418`
+//! Derived from `world_fold.rs:22335`-`:22467`
 //! (`fold_ships`), its payload constants at `:973`-`:974` and `:1039`-`:1045`, the
-// @world-fold-authority domain=29 functions=fold_ships lines=22286-22418 sha256=e8bba8e1d6cc0e37c5bab4d911f65646bb03ceb0e371030a1bf14ca42c7717f1 closure=3bdd4c5100d8d0c58baf13b81ef9d8ae3951f9a0065c566f4ad9ad1c42869486
+// @world-fold-authority domain=29 functions=fold_ships lines=22335-22467 sha256=e8bba8e1d6cc0e37c5bab4d911f65646bb03ceb0e371030a1bf14ca42c7717f1 closure=7f364a8b3c8d57d0f55f5c2a85f3e56742e1a199ce9d028c25c07eea20d47bab
 //! render path that consumes the folded state (`:8620`-`:8634`, `:8539`-`:8573`),
 //! and the collector read that produces the presence flags
 //! (`extractor/native/collector/src/attach_log.rs:47977`-`:48031`,
@@ -178,6 +178,21 @@ pub const FLAG_OWNER: u32 = 1 << 3;
 /// `SHIP_KNOWN_FLAGS`, `world_fold.rs::SHIP_KNOWN_FLAGS`. Any other bit is a hard error
 /// (`:14593`) — an unrecognised flag word means the row is not this grammar.
 pub const KNOWN_FLAGS: u32 = FLAG_DELETED | FLAG_TASK_FORCE | FLAG_DEFINITION | FLAG_OWNER;
+
+// PINNED TO THE SHARED GRAMMAR. This port's independent declarations are what
+// make it a check on the producer; a value it can move ALONE is not a check
+// (Codex round 43, finding 5).
+const _: () = {
+    assert!(HEADER_LEN == d29_grammar::HEADER_LEN);
+    assert!(PAYLOAD_VERSION == d29_grammar::PAYLOAD_VERSION);
+    assert!(FIXED_ROW_LEN == d29_grammar::FIXED_ROW_LEN);
+    assert!(DEFINITION_LEN_PREFIX == d29_grammar::DEFINITION_LEN_PREFIX);
+    assert!(FLAG_DELETED == d29_grammar::ROW_FLAG_DELETED);
+    assert!(FLAG_TASK_FORCE == d29_grammar::ROW_FLAG_TASK_FORCE);
+    assert!(FLAG_DEFINITION == d29_grammar::ROW_FLAG_DEFINITION);
+    assert!(FLAG_OWNER == d29_grammar::ROW_FLAG_OWNER);
+    assert!(KNOWN_FLAGS == d29_grammar::KNOWN_ROW_FLAGS);
+};
 
 /// `FIXED_SCALE`, `world_fold.rs::FIXED_SCALE`. The header's `scale_raw` is asserted equal
 /// to it (`:14578`).

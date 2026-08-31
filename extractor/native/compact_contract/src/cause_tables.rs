@@ -720,16 +720,19 @@ macro_rules! coded_cause_names {
 macro_rules! millisecond_buckets {
     (
         bounds = $bvis:vis $bounds:ident, names = $nvis:vis $names:ident,
-        unit_prefix = $prefix:literal;
+        roster = $roster:path,
+        unit_prefix = $prefix:literal, unit_suffix = $suffix:literal;
         $( $ms:literal, )* last $last_ms:literal,
     ) => {
-        $bvis const $bounds: [u64; [$($ms,)* $last_ms,].len()] =
-            [$($ms * 1_000,)* $last_ms * 1_000];
+        $bvis const $bounds: [u64; [$($ms,)* $last_ms,].len()] = [
+            $($ms * crate::cause_tables::MICROSECONDS_PER_MILLISECOND,)*
+            $last_ms * crate::cause_tables::MICROSECONDS_PER_MILLISECOND,
+        ];
 
         $nvis const $names: [&str; $bounds.len() + 1] = [
-            $(concat!($prefix, "le", stringify!($ms), "ms"),)*
-            concat!($prefix, "le", stringify!($last_ms), "ms"),
-            concat!($prefix, "gt", stringify!($last_ms), "ms"),
+            $(concat!($prefix, "le", stringify!($ms), $suffix),)*
+            concat!($prefix, "le", stringify!($last_ms), $suffix),
+            concat!($prefix, "gt", stringify!($last_ms), $suffix),
         ];
 
         const _: () = {
@@ -742,12 +745,88 @@ macro_rules! millisecond_buckets {
                 i += 1;
             }
             assert!(
+                $names.len() == $bounds.len() + 1,
+                "the published names are not one per bound plus the overflow",
+            );
+            assert!(
                 crate::diagnostic_channel::const_names_are_distinct(&$names),
                 "two buckets are published under the same name",
+            );
+            // THE ROSTER, NOT A CONVENTION. A table whose families are not in
+            // the namespace roster is covered by none of the roster's checks:
+            // it cannot be tested for aliasing against the other families, and
+            // nothing stops it spelling a fixed key. Every round from 34 to 37
+            // found a family that had been added without joining the roster,
+            // one at a time. A table that does not name a roster carrying both
+            // of its families does not compile.
+            assert!(
+                crate::diagnostic_channel::const_roster_declares(
+                    $roster, concat!($prefix, "le"), $suffix)
+                    && crate::diagnostic_channel::const_roster_declares(
+                        $roster, concat!($prefix, "gt"), $suffix),
+                "this bucket table's `le`/`gt` families are not both declared in \
+                 the wire-unit roster, so the namespace checks do not cover them",
+            );
+            // POLARITY AND BOUND BOUND TO SLOT, AGAINST THE EMITTED ARRAY.
+            // The collector publishes these slots POSITIONALLY, so the name at
+            // slot `i` must say what slot `i` holds: `le` its OWN bound and,
+            // for the last slot, `gt` the last one. Read off `$bounds` rather
+            // than the row literals: the emitted bound is the literal times a
+            // scale, and comparing names to the literals left the SCALE
+            // unbound -- changing it alone moved every bound with every
+            // assertion still true and the old numbers still on the wire
+            // (Codex round 39).
+            let mut slot = 0;
+            while slot < $bounds.len() {
+                assert!(
+                    $bounds[slot] % crate::cause_tables::MICROSECONDS_PER_MILLISECOND == 0,
+                    "a bucket bound is not a whole number of milliseconds, so no \
+                     name in milliseconds can spell it",
+                );
+                let ms = $bounds[slot] / crate::cause_tables::MICROSECONDS_PER_MILLISECOND;
+                assert!(
+                    ms <= u16::MAX as u64,
+                    "a bucket bound in milliseconds is past the range a unit name \
+                     is checked over",
+                );
+                assert!(
+                    crate::diagnostic_channel::const_unit_is_spelled(
+                        $names[slot], concat!($prefix, "le"), $suffix, ms as u16),
+                    "a bounded bucket is not published as `le` its own EMITTED bound",
+                );
+                slot += 1;
+            }
+            assert!(
+                crate::diagnostic_channel::const_unit_is_spelled(
+                    $names[$bounds.len()],
+                    concat!($prefix, "gt"),
+                    $suffix,
+                    ($bounds[$bounds.len() - 1]
+                        / crate::cause_tables::MICROSECONDS_PER_MILLISECOND) as u16,
+                ),
+                "the overflow bucket is not published as `gt` the last EMITTED bound",
             );
         };
     };
 }
+
+/// The one scale between a bucket's declared bound and the microseconds it is
+/// compared against. Used by the emission and by the assertion that the name
+/// spells the emitted bound, so the scale cannot move under the names.
+///
+/// PINNED TO THE UNIT ITSELF, not left as a number both sides agree on. The
+/// emission multiplies by this and the name assertion divides by it, so the
+/// two agreed for any value: setting it to `2_000` compiled and put a 1500 us
+/// gap in `lw_poll_gap_le1ms` with every assertion still true (Codex round 40,
+/// finding 1). `Duration` is the external authority on what a millisecond is.
+pub const MICROSECONDS_PER_MILLISECOND: u64 = 1_000;
+
+const _: () = assert!(
+    MICROSECONDS_PER_MILLISECOND
+        == core::time::Duration::from_millis(1).as_micros() as u64,
+    "the bucket scale is not the number of microseconds in a millisecond, so \
+     every bound is off by that factor while the names still spell the rows",
+);
 
 /// A span taxonomy whose code, semantic name and positional unit name were
 /// three tables on two sides of the contract/collector boundary.
@@ -767,6 +846,7 @@ macro_rules! ordered_segments {
     (
         $enum:ident, segments = $svis:vis $segments:ident,
         unit_names = $uvis:vis $units:ident, count = $cvis:vis $count:ident,
+        roster = $roster:path,
         unit_prefix = $pvis:vis $prefix_name:ident = $prefix:literal,
         unit_suffix = $svis2:vis $suffix_name:ident = $suffix:literal;
         $( $variant:ident = $code:literal => $name:literal, )+
@@ -849,6 +929,15 @@ macro_rules! ordered_segments {
                 ),
                 "one variant's spelling is a prefix of another's, so their names \
                  could be exchanged and still spell them",
+            );
+            // THE ROSTER, NOT A CONVENTION. See `millisecond_buckets`: a
+            // table whose family is not in the namespace roster is checked
+            // against no other family and may spell a fixed key.
+            assert!(
+                crate::diagnostic_channel::const_roster_declares(
+                    $roster, $prefix_name, $suffix_name),
+                "this segment table's unit family is not declared in the \
+                 wire-unit roster, so the namespace checks do not cover it",
             );
         };
     };

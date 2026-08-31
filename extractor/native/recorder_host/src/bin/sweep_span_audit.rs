@@ -169,20 +169,26 @@ fn probe_units_from(units: &[DiagUnit]) -> ProbeUnits {
                 {
                     probe.outside.insert(code, value);
                 } else if let Some(tag) = name
-                    .strip_prefix("lw_d")
-                    .and_then(|rest| rest.strip_suffix("_crit_us"))
+                    .strip_prefix(
+                        compact_contract::diagnostic_channel::DOMAIN_CRIT_UNIT_PREFIX)
+                    .and_then(|rest| rest.strip_suffix(
+                        compact_contract::diagnostic_channel::DOMAIN_CRIT_UNIT_SUFFIX))
                     .and_then(|digits| digits.parse::<u16>().ok())
                 {
                     probe.crit_domains.push((tag, value));
                 } else if let Some(lane) = name
-                    .strip_prefix("lw_l")
-                    .and_then(|rest| rest.strip_suffix("_wall_us"))
+                    .strip_prefix(
+                        compact_contract::diagnostic_channel::LANE_WALL_UNIT_PREFIX)
+                    .and_then(|rest| rest.strip_suffix(
+                        compact_contract::diagnostic_channel::LANE_WALL_UNIT_SUFFIX))
                     .and_then(|digits| digits.parse::<u16>().ok())
                 {
                     upsert_lane(&mut probe.lanes, lane).1 = value;
                 } else if let Some(lane) = name
-                    .strip_prefix("lw_l")
-                    .and_then(|rest| rest.strip_suffix("_busy_us"))
+                    .strip_prefix(
+                        compact_contract::diagnostic_channel::LANE_WALL_UNIT_PREFIX)
+                    .and_then(|rest| rest.strip_suffix(
+                        compact_contract::diagnostic_channel::LANE_BUSY_UNIT_SUFFIX))
                     .and_then(|digits| digits.parse::<u16>().ok())
                 {
                     upsert_lane(&mut probe.lanes, lane).2 = value;

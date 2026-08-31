@@ -1,8 +1,8 @@
 //! d34 `air_base_status` — per-air-base capacity, level and basing occupancy.
 //!
-//! Derived from `world_fold.rs:23033`-`:23149`
+//! Derived from `world_fold.rs:23082`-`:23198`
 //! (`fold_air_base_status`), its payload constants at `:985`-`:986`, `:758` and
-// @world-fold-authority domain=34 functions=fold_air_base_status lines=23033-23149 sha256=0f7047afd891bf9477e921027b7c458e2b1f69471564da364ae7342d79e3a9da closure=447dc356860d2a7454678155509c023f98c2c126e7e8c46f6e9fcafa9be9abad
+// @world-fold-authority domain=34 functions=fold_air_base_status lines=23082-23198 sha256=0f7047afd891bf9477e921027b7c458e2b1f69471564da364ae7342d79e3a9da closure=6879cdbc278cb36541cc51ac5fc1d4e28f161deaa3abce65c0cab24faa76da9f
 //! `:499`, the accumulator it folds into (`:1870`), the two consumers of that
 //! accumulator (`:8169`-`:8219`, `:8926`-`:8962`), and the collector read and
 //! payload writer that produce the rows
@@ -181,29 +181,34 @@ pub mod field {
 
 // --- Payload grammar, from `world_fold.rs:985`-`:986`, `:758`, `:499`. --------
 
-/// `AIR_BASE_STATUS_HEADER_LEN`, `world_fold.rs::AIR_BASE_STATUS_HEADER_LEN`.
-pub const HEADER_LEN: usize = 36;
-/// `AIR_BASE_STATUS_ROW_LEN`, `world_fold.rs::AIR_BASE_STATUS_ROW_LEN`. Fixed; no legacy form.
-pub const ROW_LEN: usize = 44;
+// FROM THE SHARED GRAMMAR, and this port keeps its own semantic projection,
+// schema and refusals. `d34_grammar` is a dependency-free leaf -- the same
+// shape as `d48_grammar` and `id_set_codec` -- so it carries no recorder or
+// capture-lane policy and does not widen the `compact_contract` allow-list.
+// It exists because these words WERE written out here and in three other
+// crates that cannot see each other, so a producer-side renumbering compiled
+// and this port went on decoding the old codes (Codex round 41, finding 3).
+pub use d34_grammar::HEADER_LEN;
+pub use d34_grammar::ROW_LEN;
 
-/// `AIR_BASE_STATUS_PAYLOAD_VERSION`, `world_fold.rs::AIR_BASE_STATUS_PAYLOAD_VERSION`,
-/// in the header word that used to be `reserved`. A payload declaring any other
-/// version is refused rather than reinterpreted.
-pub const PAYLOAD_VERSION: u32 = 1;
+/// `d34_grammar/src/lib.rs::PAYLOAD_VERSION`, in the header word that used to
+/// be `reserved`. A payload declaring any other version is refused rather than
+/// reinterpreted.
+pub use d34_grammar::PAYLOAD_VERSION;
 
-/// `world_fold.rs::AIR_BASE_ANCHOR_KIND_STATE`. Reached through the per-state
+/// `d34_grammar/src/lib.rs::ANCHOR_KIND_STATE`. Reached through the per-state
 /// air-base table; `province_id` is the base's own.
-pub const ANCHOR_KIND_STATE: u32 = 0;
-/// `world_fold.rs::AIR_BASE_ANCHOR_KIND_HOST`. Reached through the manager's
+pub use d34_grammar::ANCHOR_KIND_STATE;
+/// `d34_grammar/src/lib.rs::ANCHOR_KIND_HOST`. Reached through the manager's
 /// stateless vector; the host handle is the only placement the base has.
-pub const ANCHOR_KIND_HOST: u32 = 1;
-/// `world_fold.rs::AIR_BASE_ANCHOR_KIND_POOL_OBSERVED_UNRESOLVED`. The wing-pool
+pub use d34_grammar::ANCHOR_KIND_HOST;
+/// `d34_grammar/src/lib.rs::ANCHOR_KIND_POOL_OBSERVED_UNRESOLVED`. The wing-pool
 /// walk named this id and no `CAirBase` walk reached it.
-pub const ANCHOR_KIND_POOL_OBSERVED_UNRESOLVED: u32 = 2;
+pub use d34_grammar::ANCHOR_KIND_POOL_OBSERVED_UNRESOLVED;
 
 /// `ROW_FLAG_DELETED_LOW_BIT`, `world_fold.rs::ROW_FLAG_DELETED_LOW_BIT`. The **only** legal flag bit:
 /// `flags & !ROW_FLAG_DELETED_LOW_BIT != 0` is a hard error (`:15178`-`:15180`).
-pub const ROW_FLAG_DELETED: u32 = 1;
+pub use d34_grammar::ROW_FLAG_DELETED;
 
 /// `SUPPLY_MAX_PROVINCE_ID`, `world_fold.rs::SUPPLY_MAX_PROVINCE_ID`. A row whose province id
 /// exceeds this is rejected (`:15185`-`:15187`) — checked **before** the delete

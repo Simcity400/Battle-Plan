@@ -1,0 +1,10 @@
+[package]
+name = "d34_grammar"
+version = "0.1.0"
+edition = "2021"
+description = "D34's air-base-status byte grammar: the header and row lengths, the payload version, the row flag, and the three anchor kinds. Shared by the recorder lane, the host fold and the independent wire reference so they cannot drift on what a coded anchor MEANS."
+
+# No dependencies. This crate decides byte boundaries and coded meanings, never
+# what a frame is used for, so depending on it reverses no direction: it is not
+# a recorder or capture-lane edge and carries no policy.
+[dependencies]

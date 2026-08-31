@@ -1,0 +1,9 @@
+[package]
+name = "d28_grammar"
+version = "0.1.0"
+edition = "2021"
+description = "D28's OOB-command byte grammar: the header and row lengths, the payload version, the four command KINDS, and the row flags. Shared by the recorder lane, the host's two consumers and the independent wire reference so they cannot drift on what a coded kind MEANS."
+
+# No dependencies. Byte boundaries and coded meanings only: no recorder,
+# capture-lane or contract policy, so depending on it reverses no direction.
+[dependencies]

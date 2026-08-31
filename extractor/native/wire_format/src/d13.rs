@@ -1,8 +1,8 @@
 //! d13 `tech_live` — per-country research census and per-slot active research.
 //!
-//! Derived from `world_fold.rs:19928`-`:20331`
+//! Derived from `world_fold.rs:19977`-`:20380`
 //! (`fold_tech`), its scale constants at `:154`-`:155`, the collector packer
-// @world-fold-authority domain=13 functions=fold_tech lines=19928-20331 sha256=a94c63198c17782a1ee46a63deb97a42c20544d636d7dc268ad8ecce6a0fdd03 closure=b0c5832c2cbd97f1a9622c989806d1fd9df3f9f0cd6835ed89eb2c968d00b397
+// @world-fold-authority domain=13 functions=fold_tech lines=19977-20380 sha256=a94c63198c17782a1ee46a63deb97a42c20544d636d7dc268ad8ecce6a0fdd03 closure=c3de2d9aeac57c00e56ca3430bba6040df91f8608db2d047a5e189e5e6e6374b
 // The structural half of that fold no longer lives in `world_fold.rs`: it is the
 // shared leaf `d13_grammar`, which this port EXECUTES rather than transcribes.
 // The closure above cannot follow it across the crate boundary, so the leaf's

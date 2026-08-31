@@ -154,6 +154,9 @@ dependencies = [
  "d13_grammar",
  "d13_tech_change_gate",
  "d24_grammar",
+ "d28_grammar",
+ "d29_grammar",
+ "d34_grammar",
  "d43_grammar",
  "d68_grammar",
  "d74_grammar",
@@ -337,6 +340,18 @@ dependencies = [
 
 [[package]]
 name = "d24_grammar"
+version = "0.1.0"
+
+[[package]]
+name = "d28_grammar"
+version = "0.1.0"
+
+[[package]]
+name = "d29_grammar"
+version = "0.1.0"
+
+[[package]]
+name = "d34_grammar"
 version = "0.1.0"
 
 [[package]]
@@ -953,6 +968,9 @@ dependencies = [
  "d11_grammar",
  "d13_grammar",
  "d24_grammar",
+ "d28_grammar",
+ "d29_grammar",
+ "d34_grammar",
  "d43_grammar",
  "d68_grammar",
  "d74_grammar",
@@ -1344,6 +1362,9 @@ dependencies = [
  "d11_grammar",
  "d13_grammar",
  "d24_grammar",
+ "d28_grammar",
+ "d29_grammar",
+ "d34_grammar",
  "d48_grammar",
  "d64_grammar",
  "d68_grammar",

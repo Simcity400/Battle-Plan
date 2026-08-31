@@ -62,13 +62,13 @@ fn lane_assignment_reporting_matches_execution() {
         .filter(|s| s.lane == crit_lane)
         .map(|s| s.end_us - s.start_us)
         .sum();
-    assert_eq!(summary.crit_busy_us, manual_crit_busy);
+    assert_eq!(summary.crit_busy_us, LaneBusyMicros(manual_crit_busy));
     assert_eq!(
         summary.crit_domains.iter().map(|&(_, b)| b).sum::<u64>(),
         manual_crit_busy,
         "critical-path attribution must cover the whole critical lane"
     );
-    assert!(summary.crit_busy_us <= summary.crit_wall_us);
+    assert!(summary.crit_busy_us.0 <= summary.crit_wall_us.0);
 }
 
 #[test]
@@ -100,11 +100,17 @@ fn summarize_lane_spans_hand_built_exact() {
         },
     ];
     let summary = summarize_lane_spans(&spans);
-    assert_eq!(summary.lanes, vec![(0, 200, 180), (1, 40, 40)]);
+    assert_eq!(
+        summary.lanes,
+        vec![
+            (0, LaneWallMicros(200), LaneBusyMicros(180)),
+            (1, LaneWallMicros(40), LaneBusyMicros(40)),
+        ]
+    );
     assert_eq!(summary.main_wall_us, 40);
     assert_eq!(summary.crit_lane, Some(0));
-    assert_eq!(summary.crit_wall_us, 200);
-    assert_eq!(summary.crit_busy_us, 180);
+    assert_eq!(summary.crit_wall_us, LaneWallMicros(200));
+    assert_eq!(summary.crit_busy_us, LaneBusyMicros(180));
     assert_eq!(summary.crit_domains, vec![(20, 100), (21, 80)]);
 }
 
@@ -126,7 +132,7 @@ fn summarize_lane_spans_tie_prefers_lowest_lane() {
     ];
     let summary = summarize_lane_spans(&spans);
     assert_eq!(summary.crit_lane, Some(1));
-    assert_eq!(summary.crit_wall_us, 90);
+    assert_eq!(summary.crit_wall_us, LaneWallMicros(90));
 }
 
 #[test]
@@ -137,10 +143,21 @@ fn summarize_lane_spans_empty_is_zero() {
 
 #[test]
 fn lw_unit_names_are_stable_and_formatted() {
-    let names = lw_lane_unit_names(3);
-    assert_eq!(names[0], "lw_l3_wall_us");
-    assert_eq!(names[1], "lw_l3_busy_us");
-    assert!(std::ptr::eq(names, lw_lane_unit_names(3)));
+    // BY SUFFIX, and the suffix comes from the contract's own pairing of the
+    // value's type to the family that means it -- so this asserts what the
+    // emitter actually does, not a name array it might index either way.
+    let [(wall_suffix, wall), (busy_suffix, busy)] =
+        compact_contract::diagnostic_channel::lane_span_units(
+            LaneWallMicros(800),
+            LaneBusyMicros(300),
+        );
+    assert_eq!(lw_lane_unit_name(3, wall_suffix), "lw_l3_wall_us");
+    assert_eq!(lw_lane_unit_name(3, busy_suffix), "lw_l3_busy_us");
+    assert_eq!((wall, busy), (800, 300));
+    assert!(std::ptr::eq(
+        lw_lane_unit_name(3, wall_suffix),
+        lw_lane_unit_name(3, wall_suffix)
+    ));
     assert_eq!(lw_domain_crit_unit_name(48), "lw_d48_crit_us");
     assert_eq!(
         lw_domain_crit_unit_name(LW_TAG_COUNTRY_BUNDLE),
@@ -150,17 +167,33 @@ fn lw_unit_names_are_stable_and_formatted() {
 
 #[test]
 fn lane_wall_probe_record_is_wellformed_probe_domain_perf() {
+    // PAIRWISE-DISTINCT BY CONSTRUCTION. Each lane gets a GAP, so its wall and
+    // its busy span differ: with one span per lane the two were equal and an
+    // exchange of the two units passed unnoticed, which is the same defect
+    // this file's other tests exist to refuse (Codex round 44, finding 1).
     let spans = [
         LaneSpan {
             tag: 48,
             lane: 0,
             start_us: 0,
+            end_us: 500,
+        },
+        LaneSpan {
+            tag: 48,
+            lane: 0,
+            start_us: 600,
             end_us: 800,
         },
         LaneSpan {
             tag: LW_TAG_COUNTRY_BUNDLE,
             lane: 1,
             start_us: 0,
+            end_us: 100,
+        },
+        LaneSpan {
+            tag: LW_TAG_COUNTRY_BUNDLE,
+            lane: 1,
+            start_us: 150,
             end_us: 300,
         },
         LaneSpan {
@@ -183,7 +216,27 @@ fn lane_wall_probe_record_is_wellformed_probe_domain_perf() {
         FrameHourAge::default(),
         &[],
         &BTreeSet::new(),
-        MapTopologyShareCounts::default(),
+        // EVERY COUNTER A DIFFERENT NUMBER. Every fixture passed
+        // `MapTopologyShareCounts::default()`, so all fifteen units carried
+        // zero and exchanging any two of them changed nothing a test could see
+        // (Codex round 45, finding 3).
+        MapTopologyShareCounts {
+            accepted: 101,
+            builder_kept_own: 102,
+            rebuilt: 103,
+            failed_through: 104,
+            builds: 105,
+            rejected_no_bracket: 106,
+            rejected_different_hour: 107,
+            rejected_straddled: 108,
+            rejected_label_unusable: 109,
+            rejected_hour_label: 110,
+            rejected_close_unreadable: 111,
+            rejected_array_changed: 112,
+            build_clock_unreadable: 113,
+            build_failed: 114,
+            shared_rows_unreadable: 115,
+        },
         130,
         700,
         0,
@@ -203,25 +256,68 @@ fn lane_wall_probe_record_is_wellformed_probe_domain_perf() {
     );
     let payload = &out[compact_contract::COMPACT_RECORD_HEADER_LEN..];
     assert_eq!(payload.len(), header.payload_len);
-    let text = String::from_utf8_lossy(payload);
-    for name in [
-        "lw_frames",
-        "lw_worker_span_us",
-        "lw_prewarm_us",
-        "lw_hour_label_skew_abs",
-        "lw_hour_label_skew_missing",
-        "lw_crit_wall_us",
-        "lw_crit_busy_us",
-        "lw_lmain_wall_us",
-        "lw_l0_wall_us",
-        "lw_l0_busy_us",
-        "lw_l1_wall_us",
-        "lw_l1_busy_us",
-        "lw_d48_crit_us",
-        "lw_prefetch_dist_relation",
-        "lw_prefetch_dist_candidates",
+    let trailer = &payload[compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN..];
+    assert_eq!(
+        &trailer[..4],
+        compact_contract::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC
+    );
+    let (units, _) = compact_contract::diagnostic_channel::decode_units(&trailer[6..])
+        .expect("the probe's own trailer must decode");
+    // EACH NAME WITH THE VALUE IT MEANS, and the arguments above are pairwise
+    // distinct. Asserting only that the names OCCUR let two fixed keys be
+    // exchanged at the emitter with this test unchanged: the host then read the
+    // prewarm total as the worker span and the worker span as prewarm time,
+    // under names no numbered-family check looks at (Codex round 44, finding 1).
+    for (name, expected) in [
+        ("lw_frames", 1u64),
+        ("lw_worker_span_us", 900),
+        ("lw_prewarm_us", 125),
+        ("lw_hour_label_skew_abs", 2),
+        ("lw_hour_label_skew_missing", 0),
+        ("lw_crit_wall_us", 800),
+        ("lw_crit_busy_us", 700),
+        ("lw_lmain_wall_us", 50),
+        ("lw_l0_wall_us", 800),
+        ("lw_l0_busy_us", 700),
+        ("lw_l1_wall_us", 300),
+        ("lw_l1_busy_us", 250),
+        ("lw_d48_crit_us", 700),
+        ("lw_ft_us", 92_000),
+        ("lw_pub_start_us", 130),
+        ("lw_pub_end_us", 700),
+        // The two applied prefetch distances, each against ITS OWN getter --
+        // the defaults are 8 and 32, so exchanging the two emissions fails
+        // here rather than passing because both names occur (Codex round 45,
+        // finding 1).
+        (
+            "lw_prefetch_dist_relation",
+            diplomacy53::extractor::effective_prefetch_dist_relation() as u64,
+        ),
+        (
+            "lw_prefetch_dist_candidates",
+            diplomacy53::extractor::effective_prefetch_dist_candidates() as u64,
+        ),
+        ("lw_map_topo_builds", 105),
+        ("lw_map_topo_shared_accepts", 101),
+        ("lw_map_topo_builder_kept_own", 102),
+        ("lw_map_topo_fallback_rebuilds", 103),
+        ("lw_map_topo_rej_no_bracket", 106),
+        ("lw_map_topo_rej_different_hour", 107),
+        ("lw_map_topo_rej_straddled", 108),
+        ("lw_map_topo_rej_label_unusable", 109),
+        ("lw_map_topo_rej_hour_label", 110),
+        ("lw_map_topo_rej_close_unreadable", 111),
+        ("lw_map_topo_rej_array_changed", 112),
+        ("lw_map_topo_failed_through", 104),
+        ("lw_map_topo_build_clock_unreadable", 113),
+        ("lw_map_topo_build_failed", 114),
+        ("lw_map_topo_shared_rows_unreadable", 115),
     ] {
-        assert!(text.contains(name), "missing unit {name}");
+        let unit = units
+            .iter()
+            .find(|unit| unit.name == name)
+            .unwrap_or_else(|| panic!("missing unit {name}"));
+        assert_eq!(unit.value, expected, "unit {name} carries the wrong value");
     }
 }
 
@@ -301,14 +397,31 @@ fn country_bundle_sub_reads_are_attributed_under_their_own_units() {
         &summary,
         FrameCpuSplit::default(),
     );
-    let text =
-        String::from_utf8_lossy(&out[compact_contract::COMPACT_RECORD_HEADER_LEN..]).into_owned();
-    for name in ["lw_cb10_us", "lw_cb12_us", "lw_cb14_us"] {
-        assert!(text.contains(name), "missing unit {name}");
+    let payload = &out[compact_contract::COMPACT_RECORD_HEADER_LEN..];
+    let trailer = &payload[compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN..];
+    let (units, _) = compact_contract::diagnostic_channel::decode_units(&trailer[6..])
+        .expect("the probe's own trailer must decode");
+    // EACH SUB-READ'S OWN DURATION, not merely its name. Checking that the
+    // three names occur left the emitter free to publish the domain TAG in
+    // place of the read time, and the three tags are small numbers no other
+    // assertion would have questioned (Codex round 45, finding 4).
+    for (name, expected) in [
+        ("lw_cb10_us", 4_100u64),
+        ("lw_cb12_us", 91_000),
+        ("lw_cb14_us", 130),
+    ] {
+        let unit = units
+            .iter()
+            .find(|unit| unit.name == name)
+            .unwrap_or_else(|| panic!("missing unit {name}"));
+        assert_eq!(unit.value, expected, "unit {name} carries the wrong value");
     }
-    assert!(text.contains("lw_d200_crit_us"));
+    assert!(units.iter().any(|unit| unit.name == "lw_d200_crit_us"));
     for name in ["lw_d10_crit_us", "lw_d12_crit_us", "lw_d14_crit_us"] {
-        assert!(!text.contains(name), "sub-read leaked into {name}");
+        assert!(
+            !units.iter().any(|unit| unit.name == name),
+            "sub-read leaked into {name}"
+        );
     }
 }
 
