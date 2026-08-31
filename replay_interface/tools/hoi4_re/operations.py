@@ -557,6 +557,7 @@ class Broker:
             inputs.get("receiver_pointee_qword_offsets"),
             inputs.get("receiver_pointer_chains"),
             inputs.get("skip_hits"),
+            inputs.get("capture_return_address"),
         )
 
     def _emulate_function(self, inputs: dict[str, Any], _job_id: str, _job_dir: Path) -> dict[str, Any]:

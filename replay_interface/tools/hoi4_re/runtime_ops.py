@@ -144,7 +144,48 @@ def observe_runtime(
             }
 
 
+_MODULE_ADDRESS_HELPER = """function moduleAddress(value) {
+  const pointer = hx(value);
+  if (pointer === null) return {pointer: null, rva: null, in_module: false};
+  try {
+    if (value.compare(module.base) >= 0 && value.compare(module.base.add(module.size)) < 0) {
+      return {pointer: pointer, rva: hx(value.sub(module.base)), in_module: true};
+    }
+    return {pointer: pointer, rva: null, in_module: false};
+  } catch (_) {
+    return {pointer: pointer, rva: null, in_module: false};
+  }
+}
+"""
+
+# The caller, when a target asks for it. `Interceptor.attach` installs its own
+# frame, so the qword at [rsp] on entry is the trampoline's return address and
+# NOT the caller's; `this.returnAddress` is Frida's accessor for the real one.
+# One pointer, read only, resolved to a module RVA by the same range compare the
+# vtable-slot reader already uses.
+_RETURN_ADDRESS_FIELD = """,
+        return_address: target.capture_return_address
+          ? moduleAddress(this.returnAddress) : null"""
+
+
+def _trace_schema(targets: list[dict[str, Any]]) -> str:
+    """The trace schema tag for a target list.
+
+    The hit shape changes only when a target asked for the caller, so the tag
+    moves only then: a trace whose enter records can carry `return_address` is
+    v2, and one that cannot is the v1 it has always been.
+    """
+    if any(target.get("capture_return_address") for target in targets):
+        return "hoi4-re-frida-call-trace-v2"
+    return "hoi4-re-frida-call-trace-v1"
+
+
 def _trace_script(targets: list[dict[str, Any]], max_hits: int) -> str:
+    # Emitted ONLY when some target asked. A spec written before this knob
+    # existed therefore injects a byte-identical script into a shared process.
+    wants_return_address = any(target.get("capture_return_address") for target in targets)
+    module_address_helper = _MODULE_ADDRESS_HELPER if wants_return_address else ""
+    return_address_field = _RETURN_ADDRESS_FIELD if wants_return_address else ""
     return f"""
 'use strict';
 const module = Process.getModuleByName('hoi4.exe');
@@ -167,7 +208,7 @@ function receiver(value) {{
     return {{pointer: pointer, readable: false}};
   }}
 }}
-function receiverQwords(value, offsets) {{
+{module_address_helper}function receiverQwords(value, offsets) {{
   const rows = [];
   for (const offset of offsets) {{
     try {{
@@ -313,7 +354,7 @@ for (const target of targets) {{
           this.context.rcx, target.receiver_pointee_qword_offsets),
         receiver_pointer_chains: receiverPointerChains(
           this.context.rcx, target.receiver_pointer_chains),
-        argument_pointer_arrays: argumentPointerArrays(this.context, target.argument_pointer_arrays)
+        argument_pointer_arrays: argumentPointerArrays(this.context, target.argument_pointer_arrays){return_address_field}
       }});
     }},
     onLeave(retval) {{
@@ -331,51 +372,25 @@ send({{type: 'ready', targets: targets.length}});
 """
 
 
-def trace_calls(
-    registry: Registry, workspace: Path, build_identifier: str,
-    symbol_ids: list[str], duration_s: float, max_hits: int,
-    lease_path: Path, partial_path: Path,
-    receiver_vtable_rvas: dict[str, list[str | int]] | None = None,
-    receiver_qword_offsets: dict[str, list[str | int]] | None = None,
-    argument_pointer_arrays: dict[str, list[dict[str, Any]]] | None = None,
-    receiver_pointee_qword_offsets: dict[str, list[dict[str, Any]]] | None = None,
-    receiver_pointer_chains: dict[str, list[dict[str, Any]]] | None = None,
-    skip_hits: dict[str, int] | None = None,
-) -> dict[str, Any]:
-    if not isinstance(symbol_ids, list) or not symbol_ids or len(symbol_ids) > 32:
-        raise ValueError("symbol_ids must contain 1..32 logical symbol IDs")
-    if not isinstance(duration_s, (int, float)) or not 0.1 <= float(duration_s) <= 30.0:
-        raise ValueError("duration_s must be from 0.1 through 30.0")
-    if not isinstance(max_hits, int) or not 1 <= max_hits <= 64:
-        raise ValueError("max_hits must be from 1 through 64")
-    import frida
+def _build_targets(
+    registry: Registry, build_id: str, symbol_ids: list[str], max_hits: int,
+    raw_filters: dict, raw_offsets: dict, raw_arrays: dict, raw_pointee_offsets: dict,
+    raw_pointer_chains: dict, raw_skip_hits: dict, raw_return_addresses: dict,
+) -> list[dict[str, Any]]:
+    """The per-symbol target list, and the capture budgets it has to fit.
 
-    build = registry.get_build(build_identifier)
-    raw_filters = receiver_vtable_rvas or {}
-    if not isinstance(raw_filters, dict) or any(key not in symbol_ids for key in raw_filters):
-        raise ValueError("receiver_vtable_rvas keys must be requested symbol IDs")
-    raw_offsets = receiver_qword_offsets or {}
-    if not isinstance(raw_offsets, dict) or any(key not in symbol_ids for key in raw_offsets):
-        raise ValueError("receiver_qword_offsets keys must be requested symbol IDs")
-    raw_arrays = argument_pointer_arrays or {}
-    if not isinstance(raw_arrays, dict) or any(key not in symbol_ids for key in raw_arrays):
-        raise ValueError("argument_pointer_arrays keys must be requested symbol IDs")
-    raw_pointee_offsets = receiver_pointee_qword_offsets or {}
-    if not isinstance(raw_pointee_offsets, dict) or any(key not in symbol_ids for key in raw_pointee_offsets):
-        raise ValueError("receiver_pointee_qword_offsets keys must be requested symbol IDs")
-    raw_pointer_chains = receiver_pointer_chains or {}
-    if not isinstance(raw_pointer_chains, dict) or any(key not in symbol_ids for key in raw_pointer_chains):
-        raise ValueError("receiver_pointer_chains keys must be requested symbol IDs")
-    raw_skip_hits = skip_hits or {}
-    if not isinstance(raw_skip_hits, dict) or any(key not in symbol_ids for key in raw_skip_hits):
-        raise ValueError("skip_hits keys must be requested symbol IDs")
+    Extracted from `trace_calls` so a test can drive the REAL construction
+    rather than a hand-built copy of it. What an old job spec records in its
+    artifact and injects into a shared process is decided here, so this is
+    the function that has to stay byte-compatible.
+    """
     targets = []
     total_pointer_items = 0
     total_pointer_qwords = 0
     total_pointee_qwords = 0
     total_chain_qwords = 0
     for symbol_id in symbol_ids:
-        instance = registry.resolve_symbol(symbol_id, build["build_id"])
+        instance = registry.resolve_symbol(symbol_id, build_id)
         skip_value = raw_skip_hits.get(symbol_id, 0)
         if not isinstance(skip_value, int) or skip_value < 0 or skip_value > 65535:
             raise ValueError("skip_hits values must be integers from 0 through 65535")
@@ -515,7 +530,8 @@ def trace_calls(
                 "item_qword_offsets": item_qwords,
                 "item_vtable_slot_offsets": slots,
             })
-        targets.append({
+        wants_return_address = raw_return_addresses.get(symbol_id, False)
+        target = {
             "symbol_id": symbol_id,
             "rva": f"0x{int(instance['rva']):x}",
             "receiver_vtable_rvas": parsed_filters,
@@ -524,7 +540,13 @@ def trace_calls(
             "receiver_pointer_chains": parsed_chains,
             "argument_pointer_arrays": parsed_arrays,
             "skip_hits": skip_value,
-        })
+        }
+        # ABSENT rather than false when unasked, so a job spec written before
+        # this knob existed produces a byte-identical target list, a
+        # byte-identical injected script, and the same schema tag.
+        if wants_return_address:
+            target["capture_return_address"] = True
+        targets.append(target)
     if total_pointer_items * max_hits > 8192:
         raise ValueError("argument pointer array capture exceeds the 8192-item trace budget")
     if total_pointer_qwords * max_hits > 8192:
@@ -533,6 +555,66 @@ def trace_calls(
         raise ValueError("receiver pointee qword capture exceeds the 4096-qword trace budget")
     if total_chain_qwords * max_hits > 4096:
         raise ValueError("receiver pointer-chain qword capture exceeds the 4096-qword trace budget")
+    return targets
+
+
+
+def trace_calls(
+    registry: Registry, workspace: Path, build_identifier: str,
+    symbol_ids: list[str], duration_s: float, max_hits: int,
+    lease_path: Path, partial_path: Path,
+    receiver_vtable_rvas: dict[str, list[str | int]] | None = None,
+    receiver_qword_offsets: dict[str, list[str | int]] | None = None,
+    argument_pointer_arrays: dict[str, list[dict[str, Any]]] | None = None,
+    receiver_pointee_qword_offsets: dict[str, list[dict[str, Any]]] | None = None,
+    receiver_pointer_chains: dict[str, list[dict[str, Any]]] | None = None,
+    skip_hits: dict[str, int] | None = None,
+    capture_return_address: dict[str, bool] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(symbol_ids, list) or not symbol_ids or len(symbol_ids) > 32:
+        raise ValueError("symbol_ids must contain 1..32 logical symbol IDs")
+    if not isinstance(duration_s, (int, float)) or not 0.1 <= float(duration_s) <= 30.0:
+        raise ValueError("duration_s must be from 0.1 through 30.0")
+    if not isinstance(max_hits, int) or not 1 <= max_hits <= 64:
+        raise ValueError("max_hits must be from 1 through 64")
+    # Validated up here, BEFORE the Frida import, so a malformed request fails
+    # with the reason rather than with ModuleNotFoundError on a machine that has
+    # no Frida. `is None` rather than `or {}`: an empty list or 0 is a malformed
+    # request, not an absent one. The knobs below keep their existing `or {}`
+    # because changing their behaviour is not this lane's to make.
+    raw_return_addresses = {} if capture_return_address is None else capture_return_address
+    if not isinstance(raw_return_addresses, dict) or any(
+        key not in symbol_ids for key in raw_return_addresses
+    ):
+        raise ValueError("capture_return_address keys must be requested symbol IDs")
+    if any(value is not True and value is not False for value in raw_return_addresses.values()):
+        raise ValueError("capture_return_address values must be booleans")
+    import frida
+
+    build = registry.get_build(build_identifier)
+    raw_filters = receiver_vtable_rvas or {}
+    if not isinstance(raw_filters, dict) or any(key not in symbol_ids for key in raw_filters):
+        raise ValueError("receiver_vtable_rvas keys must be requested symbol IDs")
+    raw_offsets = receiver_qword_offsets or {}
+    if not isinstance(raw_offsets, dict) or any(key not in symbol_ids for key in raw_offsets):
+        raise ValueError("receiver_qword_offsets keys must be requested symbol IDs")
+    raw_arrays = argument_pointer_arrays or {}
+    if not isinstance(raw_arrays, dict) or any(key not in symbol_ids for key in raw_arrays):
+        raise ValueError("argument_pointer_arrays keys must be requested symbol IDs")
+    raw_pointee_offsets = receiver_pointee_qword_offsets or {}
+    if not isinstance(raw_pointee_offsets, dict) or any(key not in symbol_ids for key in raw_pointee_offsets):
+        raise ValueError("receiver_pointee_qword_offsets keys must be requested symbol IDs")
+    raw_pointer_chains = receiver_pointer_chains or {}
+    if not isinstance(raw_pointer_chains, dict) or any(key not in symbol_ids for key in raw_pointer_chains):
+        raise ValueError("receiver_pointer_chains keys must be requested symbol IDs")
+    raw_skip_hits = skip_hits or {}
+    if not isinstance(raw_skip_hits, dict) or any(key not in symbol_ids for key in raw_skip_hits):
+        raise ValueError("skip_hits keys must be requested symbol IDs")
+    targets = _build_targets(
+        registry, build['build_id'], symbol_ids, max_hits,
+        raw_filters, raw_offsets, raw_arrays, raw_pointee_offsets,
+        raw_pointer_chains, raw_skip_hits, raw_return_addresses,
+    )
     winmem = _load_winmem(workspace)
     with RuntimeLease(lease_path):
         process = winmem.open_process("hoi4.exe", "hoi4.exe")
@@ -571,7 +653,7 @@ def trace_calls(
             except Exception as error:
                 cleanup_errors.append(f"session.detach: {type(error).__name__}: {error}")
         result = {
-            "schema": "hoi4-re-frida-call-trace-v1",
+            "schema": _trace_schema(targets),
             "mode": "hook-based observational instrumentation",
             "build_id": build["build_id"],
             "exe_sha256": build["sha256"],

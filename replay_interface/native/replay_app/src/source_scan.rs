@@ -23,8 +23,8 @@
 //! removed a comment needs the version that still has it, so the seam's own
 //! tests -- which live here -- are the only things that can ask for it.
 //!
-//! WHAT IS ENFORCED, exactly. `a_routed_file_cannot_read_source_around_the_seam` reads the seven routed files THROUGH the seam and refuses a direct
-//! source read of a `.rs` path in any of them. That is a tripwire over seven
+//! WHAT IS ENFORCED, exactly. `a_routed_file_cannot_read_source_around_the_seam` reads the nine routed files THROUGH the seam and refuses a direct
+//! source read of a `.rs` path in any of them. That is a tripwire over nine
 //! named files, not a proof of exclusivity, and the difference matters:
 //!
 //! * The crate's INTEGRATION tests under `tests/` cannot use this seam at all:
@@ -37,14 +37,15 @@
 //!   places read at all, so
 //!   `the_reads_outside_the_seam_are_the_ones_named_here` pins the count of
 //!   reader call sites across all four.
-//! * `world_audio.rs` and `world_audio_law.rs` still read their own source
-//!   directly; another lane is editing them, so they are named rather than
-//!   routed.
+//! * `world_audio.rs` and `world_audio_law.rs` WERE named rather than routed,
+//!   because lane WD was editing them when this seam landed. Lane WD has since
+//!   routed all four of their reads, so they are inside the tripwire and the
+//!   routed set is nine.
 //! * A path built at run time, or assembled by `concat!`, is invisible to any
 //!   text matcher, this one included. None occurs today.
 //!
 //! The claim is therefore the narrow one, and it is the whole claim: within
-//! those seven files, a source read that skips the stripping and the
+//! those nine files, a source read that skips the stripping and the
 //! production cut fails a test. Everywhere else, the tests above pin what
 //! exists so it cannot change unnoticed. Neither is a proof that no test
 //! anywhere can read source another way, and this module does not say it is.
@@ -272,6 +273,22 @@ pub(crate) fn ui_runtime_production() -> String {
         .rfind(&marker)
         .expect("ui_runtime.rs has a test module to cut off");
     all[..cut].to_owned()
+}
+
+pub(crate) fn world_audio() -> String {
+    code(include_str!("world_audio.rs"))
+}
+
+pub(crate) fn world_audio_law() -> String {
+    code(include_str!("world_audio_law.rs"))
+}
+
+pub(crate) fn world_audio_production() -> String {
+    production_of(world_audio(), &test_module_marker())
+}
+
+pub(crate) fn world_audio_law_production() -> String {
+    production_of(world_audio_law(), &test_module_marker())
 }
 
 pub(crate) fn map_labels() -> String {
@@ -569,7 +586,7 @@ mod tests {
     /// with any spacing or raw-string prefix, to any routed file.
     #[test]
     fn a_routed_file_cannot_read_source_around_the_seam() {
-        let routed: [(&str, String); 7] = [
+        let routed: [(&str, String); 9] = [
             ("app.rs", app()),
             ("ui_runtime.rs", ui_runtime()),
             ("headless.rs", headless()),
@@ -577,6 +594,8 @@ mod tests {
             ("map_labels.rs", map_labels()),
             ("recording_open.rs", recording_open()),
             ("scrub.rs", scrub()),
+            ("world_audio.rs", world_audio()),
+            ("world_audio_law.rs", world_audio_law()),
         ];
         for (name, source) in &routed {
             assert!(
@@ -624,19 +643,12 @@ mod tests {
     /// fourth source read to the integration tests without saying so.
     #[test]
     fn the_reads_outside_the_seam_are_the_ones_named_here() {
-        for (name, source) in [
-            ("world_audio.rs", code(include_str!("world_audio.rs"))),
-            (
-                "world_audio_law.rs",
-                code(include_str!("world_audio_law.rs")),
-            ),
-        ] {
-            assert!(
-                !direct_source_reads(&source).is_empty(),
-                "{name} no longer reads source directly: route it through the seam and \
-                 remove it from this list and from the module doc"
-            );
-        }
+        // The two audio files USED to be named here as unrouted. Lane WD routed
+        // their three `include_str!` scans, so they sit in the tripwire's routed
+        // set instead and nothing is named here any more. Their one remaining
+        // `read_to_string` is PRODUCTION - it loads a game file at run time and
+        // carries no `.rs` literal - so `direct_source_reads` does not see it,
+        // and routing it would be wrong: it is behaviour, not a source scan.
 
         // The integration tests are a separate crate and cannot reach this
         // seam: `replay_app` is a binary, so there is nothing to import.
