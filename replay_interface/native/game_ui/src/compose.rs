@@ -8891,12 +8891,15 @@ spriteTypes = {
             "the compositor read something other than this sprite's authored no"
         );
 
-        // The two shapes the law refuses, reached THROUGH the compositor, so a
-        // caller that stopped passing the sprite's own values could not keep
-        // them refusing.
-        let omitted = progress_bar_horizontal(sprite("GFX_omits"))
-            .expect_err("an omitted key has no established engine default");
-        assert!(format!("{omitted:?}").contains("GFX_omits"), "{omitted:?}");
+        // An omitted key is the engine's constructor default, reached THROUGH
+        // the compositor so a caller that stopped passing the sprite's own
+        // values could not keep the answer right.
+        assert_eq!(
+            progress_bar_horizontal(sprite("GFX_omits"))
+                .expect("an omitted key takes the engine's constructor default")
+                .is_horizontal(),
+            portable_engine_evidence::xmap14_progressbar_orientation::HORIZONTAL_DEFAULT
+        );
 
         let repeated = progress_bar_horizontal(sprite("GFX_repeats"))
             .expect_err("a repeated key is not a decision");
