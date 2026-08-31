@@ -347,7 +347,9 @@ pub use map_furniture::{
     VP_STRIP_FRAME_COUNT, VP_STRIP_SPRITE_NAME, VP_STRIP_SPRITE_TEXTURE,
 };
 pub use map_icon_runtime::{
-    admit_victory_point_furniture_icons, admit_raid_furniture_icons, admit_resource_furniture_icons,
+    admit_capital_furniture_icons, admit_victory_point_furniture_icons,
+    admit_raid_furniture_icons, admit_resource_furniture_icons, capital_icon_targets,
+    raid_icon_province_grouping, CapitalIconTarget, DerivedCapitalIcons, RaidMapIconVariant,
     exact_vp_file_anchors, hit_test_map_furniture, hit_test_prepared_map_furniture,
     load_map_furniture_sprite_assets, load_vp_strip_asset, prepare_map_furniture_packet,
     project_map_furniture_icons, project_raid_furniture, project_resource_furniture,

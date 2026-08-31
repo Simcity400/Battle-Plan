@@ -14,7 +14,14 @@ replay_interface/re_evidence/rendering_laws/XMAP20/effect_census_authority.json.
 G7 alone names three REQUIRED wire fields with no engine source \
 (field_sourcing_census): authored_event_index, authored_effect_index and lifecycle \
 elapsed_f32_bits - validate_event accepts zero for each, so a producer landing today \
-would emit invented zeros indistinguishable from measurements. Also open under that \
+would emit invented zeros indistinguishable from measurements. G7's own named closing \
+step for the first two - the writer census for owner+0x3b0 / owner+0x3bc - is \
+PERFORMED. Its outcome and every bound on it are deliberately not restated \
+here; they are stated in \
+portable_engine_evidence::xmap20_particle_queue_producer::G7_ROUTE_REFUTATION and \
+::WHAT_THIS_DOES_NOT_SETTLE. \
+elapsed_f32_bits is untouched and still has its own \
+closing steps. Also open under that \
 census: effect_instance_id has no proven stable identity keying (needs_design; the \
 (pointer, registration_hash_u32) key detects most but not all address reuse), and \
 EffectOperation is only partly derivable (Reparent has no discriminator; StopEmission \
@@ -54,6 +61,49 @@ pub fn install() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE G7 OUTCOME IS NOT RESTATED IN THIS CRATE. Rounds 7 through 13 of
+    /// adversarial review each found a copy of that text drifting out of step
+    /// with the original, and this string was one of the copies. It may now
+    /// carry only the pointer.
+    ///
+    /// This checks THIS string against the identifiers and outcome sentences
+    /// that actually drifted into it. It is a regression guard over those, not
+    /// a proof that no paraphrase could be written here.
+    ///
+    /// kills: a future edit that re-states the engine finding here, which is
+    /// the exact defect seven consecutive rounds found.
+    #[test]
+    fn the_blocked_on_text_points_at_the_g7_finding_and_does_not_restate_it() {
+        let text = PENDING.blocked_on;
+        for engine_identifier in [
+            "CSdlEvents",
+            "SDL_DROPFILE",
+            "SDL_DropEvent",
+            "14234ddb0",
+            "14234cf00",
+            "1420a42b0",
+            "142089670",
+            "1422e3280",
+            "drag-and-drop",
+            // Not just identifiers: the OUTCOME sentence is a restatement too,
+            // and it is what survived three sweeps (Codex review, round 14).
+            "sources neither index",
+            "sources nothing",
+            "SOURCES NOTHING",
+        ] {
+            assert!(
+                !text.contains(engine_identifier),
+                "the pending-producer text restates the G7 finding ({engine_identifier}); it must \
+                 point at portable_engine_evidence::xmap20_particle_queue_producer instead"
+            );
+        }
+        assert!(
+            text.contains("xmap20_particle_queue_producer::G7_ROUTE_REFUTATION")
+                && text.contains("WHAT_THIS_DOES_NOT_SETTLE"),
+            "the pending-producer text no longer points at the constants that carry the finding"
+        );
+    }
 
     #[test]
     fn an_unbuilt_producer_refuses_installation_by_name() {
