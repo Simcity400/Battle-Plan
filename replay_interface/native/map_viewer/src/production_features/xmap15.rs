@@ -140,10 +140,17 @@ impl ProductionMapFeatureAdapter for Xmap15OrdersAdapter {
         };
 
         if semantic_value(context.world_frame).is_none() {
+            // WHY the key is absent is the recorder's answer. A recording made
+            // by a recorder that has the XMAP15 producer carries the gate
+            // beside where the key would be, and that gate is the hour's own
+            // account: how much of the plan census the producer minted, against
+            // how many visual d54 orders, and which of its recorded inputs the
+            // hour did not carry.
             return Ok(unavailable(&format!(
                 "this recording carries no key {}: the unconditional current-hour XMAP15 \
-                 semantic sidecar is absent",
-                replay_core::XMAP15_ORDERS_FRONTS_MOVEMENT_SEMANTIC_PATH.join(".")
+                 semantic sidecar is absent; {}",
+                replay_core::XMAP15_ORDERS_FRONTS_MOVEMENT_SEMANTIC_PATH.join("."),
+                xmap15_unavailable_account(context.world_frame)
             )));
         }
         let Some(units) = context.xmap15_units else {
@@ -1347,6 +1354,37 @@ fn semantic_value(world: &WorldFrame) -> Option<&serde_json::Value> {
     world.xmap15_orders_fronts_movement_semantic()
 }
 
+/// The gate text for a recording that carries one, and for one that does not.
+///
+/// Split out so it can be exercised without a `WorldFrame`: composing this
+/// sentence is the only thing the absent arm does that a test can be wrong
+/// about.
+fn xmap15_account_from_gate(gate: Option<&serde_json::Value>, hour_index: i64) -> String {
+    let usable = gate
+        .and_then(|raw| {
+            serde_json::from_value::<portable_render_stream::Xmap15ProducerGate>(raw.clone()).ok()
+        })
+        .filter(|gate| gate.validate().is_ok() && gate.hour_index == hour_index);
+    match usable {
+        Some(gate) => gate.unavailable_reason(),
+        None => format!(
+            "this recording carries no usable XMAP15 producer gate, so it says nothing about what \
+             could have been minted this hour; {} mandatory leaves have no source in any capture",
+            portable_render_stream::xmap15_contract_gate_leaves().len()
+        ),
+    }
+}
+
+/// The hour's own account of why XMAP15 is unavailable, from the recorder's
+/// gate where the recording carries a usable one.
+///
+/// A gate for a DIFFERENT hour is refused rather than quoted: the fold writes
+/// one per hour, and a mismatched index means the value was carried across an
+/// hour boundary, so its counts describe an hour that is not this one.
+fn xmap15_unavailable_account(world: &WorldFrame) -> String {
+    xmap15_account_from_gate(world.xmap15_producer_gate(), world.hour_index())
+}
+
 fn semantic_frame(world: &WorldFrame) -> Result<Xmap15SemanticFrame> {
     let value =
         semantic_value(world).ok_or("XMAP15 unconditional semantic sidecar is unavailable")?;
@@ -2140,5 +2178,49 @@ mod tests {
 
         file.pixel_stage.samplers[2].mip_filter = Some("Point".into());
         assert!(validate_xmap15_movement_effect_file_contract(&file).is_err());
+    }
+
+    /// kills: the absent-carrier arm saying only that the key is missing.
+    ///
+    /// "This recording carries no key X" is true of a recorder that never ran
+    /// the producer AND of an hour whose inputs it could not read, and the two
+    /// send a reader at different work. The recording's own gate separates
+    /// them, and a gate stamped with another hour is refused rather than
+    /// quoted, because its counts describe an hour that is not this one.
+    #[test]
+    fn the_absent_carrier_arm_quotes_the_recordings_own_gate_and_refuses_another_hours() {
+        let gate = portable_render_stream::Xmap15ProducerGate {
+            schema: portable_render_stream::XMAP15_PRODUCER_GATE_SCHEMA.into(),
+            hour_index: 17,
+            minted_plan_rows: 3,
+            visual_d54_orders: 3,
+            hour_gates: vec![portable_render_stream::Xmap15HourGate {
+                recorded_input: "units.divisions".into(),
+                recorded_state: "the recording carries an explicit null for this section".into(),
+            }],
+        };
+        let value = serde_json::to_value(&gate).expect("the gate serializes");
+        let quoted = xmap15_account_from_gate(Some(&value), 17);
+        assert!(quoted.contains("3 plan rows against 3 visual"), "{quoted}");
+        assert!(quoted.contains("units.divisions"), "{quoted}");
+        assert!(quoted.contains("false claim"), "{quoted}");
+
+        let wrong_hour = xmap15_account_from_gate(Some(&value), 18);
+        assert!(wrong_hour.contains("no usable XMAP15 producer gate"), "{wrong_hour}");
+        assert_ne!(wrong_hour, quoted);
+
+        let malformed = serde_json::json!({"schema": "something else"});
+        assert!(xmap15_account_from_gate(Some(&malformed), 17)
+            .contains("no usable XMAP15 producer gate"));
+
+        // With no gate at all the constant half still reaches the reader.
+        let absent = xmap15_account_from_gate(None, 17);
+        assert!(
+            absent.contains(&format!(
+                "{} mandatory leaves",
+                portable_render_stream::xmap15_contract_gate_leaves().len()
+            )),
+            "{absent}"
+        );
     }
 }

@@ -134,6 +134,27 @@ pub enum ObjectKind {
     AirWing = 8,
 }
 
+/// The wire token for each object kind.
+///
+/// Here rather than at the fold that writes it, because a SECOND reader now
+/// exists: the XMAP13 producer selects army-group rows out of the published
+/// theatre selector by this exact string. A renamed token that only the writer
+/// knew about would leave that reader matching nothing and minting an empty
+/// army-group census, which presents as a formation-census mismatch at the
+/// viewer rather than as a renamed token.
+pub const fn kind_token(kind: ObjectKind) -> &'static str {
+    match kind {
+        ObjectKind::LandTheatre => "land_theatre",
+        ObjectKind::NavyTheatre => "navy_theatre",
+        ObjectKind::AirTheatre => "air_theatre",
+        ObjectKind::Army => "army",
+        ObjectKind::ArmyGroup => "army_group",
+        ObjectKind::Fleet => "fleet",
+        ObjectKind::AirGroup => "air_group",
+        ObjectKind::AirWing => "air_wing",
+    }
+}
+
 compact_contract::wire_coded_codes! {
     ObjectKind: u8,
     code = pub code,

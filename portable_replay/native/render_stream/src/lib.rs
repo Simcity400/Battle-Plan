@@ -107,6 +107,44 @@ pub use xmap20_effects::{
     XMAP20_PARTICLE_SUBMIT_BOUNDARY_RVA,
 };
 
+mod carrier_producer_contract;
+pub use carrier_producer_contract::{
+    carrier_leaf_source_text, validate_carrier_contract_table, CarrierGateOwner, CarrierHourGate,
+    CarrierLeafSource,
+};
+
+mod xmap13_producer_contract;
+pub use xmap13_producer_contract::{
+    validate_xmap13_producer_contract,
+    xmap13_classify_envelope_leaf, xmap13_classify_row_leaf,
+    xmap13_canonical_air_wing_id, xmap13_canonical_division_id, xmap13_canonical_task_force_id,
+    xmap13_wing_anchor_province, Xmap13AirBaseAnchor, Xmap13WingAnchorRefusal,
+    XMAP13_SHIP_HANDLE_TYPE,
+    XMAP13_MANAGER_ARMY_ROW_FIELDS, XMAP13_MANAGER_FIELDS_V1, XMAP13_MANAGER_FIELDS_V2,
+    XMAP13_MANAGER_MAX_ARMY_ID, XMAP13_MANAGER_MAX_COHESION_TYPE,
+    XMAP13_MANAGER_MAX_LEADER_PROXIMITY, XMAP13_MANAGER_MAX_REGISTERED_ENTRY_COUNT,
+    XMAP13_ORDERS_GROUP_MANAGER_AUTHORITY,
+    xmap13_classify_task_force_member_leaf, xmap13_contract_gate_leaves, xmap13_minted_row_leaves,
+    xmap13_row_contract_gate_leaves,
+        Xmap13ProducerGate, XMAP13_CARRIER_WIRE_KEY, XMAP13_ENTRIES_WITH_A_MEMBER_TABLE,
+    XMAP13_ENVELOPE_CONTRACT, XMAP13_PRODUCER_CONTRACT_SCHEMA, XMAP13_PRODUCER_GATE_SCHEMA,
+    XMAP13_IDENTITY_KIND_AIR_WING, XMAP13_IDENTITY_KIND_DIVISION, XMAP13_IDENTITY_KIND_TASK_FORCE,
+    XMAP13_PRODUCER_GATE_WIRE_KEY, XMAP13_RECORDED_INPUTS, XMAP13_ROW_CONTRACT,
+    XMAP13_TASK_FORCE_MEMBER_CONTRACT,
+};
+
+mod xmap15_producer_contract;
+pub use xmap15_producer_contract::{
+    validate_xmap15_producer_contract, xmap15_classify_envelope_leaf,
+    xmap15_classify_movement_leaf, xmap15_classify_plan_leaf, xmap15_contract_gate_leaves,
+    xmap15_minted_plan_leaves, Xmap15HourGate, Xmap15ProducerGate, XMAP15_BLOCKING_DOMAIN_ID,
+    XMAP15_CARRIER_WIRE_PATH, XMAP15_D54_MAX_ARMY_ID, XMAP15_D54_MAX_MAP_ID,
+    XMAP15_D54_MAX_ORDER_INSTANCE_ID, XMAP15_D54_ORDER_ROW_FIELDS, XMAP15_D54_SLOT_INDEX_COUNT,
+    XMAP15_ENVELOPE_CONTRACT, XMAP15_MOVEMENT_ROW_CONTRACT,
+    XMAP15_PLAN_ROW_CONTRACT, XMAP15_PRODUCER_CONTRACT_SCHEMA, XMAP15_PRODUCER_GATE_SCHEMA,
+    XMAP15_PRODUCER_GATE_WIRE_PATH, XMAP15_RECORDED_INPUTS, XMAP15_SUBMITTED_MESH_LEAVES,
+};
+
 mod c07_trees;
 pub use c07_trees::{
     C07TreeBucketCarrier, C07TreeCellOrdinalRange, C07TreeContentLibrary, C07TreeContentSelection,

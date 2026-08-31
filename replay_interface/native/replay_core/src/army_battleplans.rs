@@ -3,9 +3,12 @@ use crate::{ViewStatus, WorldFrame};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 
-const MAX_ARMY_ID: u32 = i32::MAX as u32;
-const MAX_ORDER_INSTANCE_ID: u32 = 100_000_000;
-const MAX_MAP_ID: u32 = 65_535;
+// Spelled once, in shared ground: the XMAP15 producer's plan census must EQUAL
+// the visual set this view yields, and the two live in workspaces that cannot
+// depend on each other. See portable_render_stream::XMAP15_D54_ORDER_ROW_FIELDS.
+const MAX_ARMY_ID: u32 = portable_render_stream::XMAP15_D54_MAX_ARMY_ID;
+const MAX_ORDER_INSTANCE_ID: u32 = portable_render_stream::XMAP15_D54_MAX_ORDER_INSTANCE_ID;
+const MAX_MAP_ID: u32 = portable_render_stream::XMAP15_D54_MAX_MAP_ID;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ArmyBattleplanOwnerKind {
@@ -262,25 +265,7 @@ fn parse_army_battleplans(
 }
 
 fn parse_order(row: &Map<String, Value>, _index: usize) -> Option<ArmyBattleplanOrderExact> {
-    const FIELDS: [&str; 17] = [
-        "army_id",
-        "engine_order_instance_id",
-        "generation",
-        "slot_index",
-        "order_type",
-        "target_states",
-        "path_provinces",
-        "target_declared_count",
-        "target_status",
-        "geometry_status",
-        "execution_status",
-        "assigned_division_ids",
-        "assigned_units_status",
-        "order_linkage_status",
-        "active",
-        "active_status",
-        "stance_status",
-    ];
+    const FIELDS: [&str; 17] = portable_render_stream::XMAP15_D54_ORDER_ROW_FIELDS;
     let has_base_fields = FIELDS.iter().all(|field| row.contains_key(*field))
         && row.contains_key("aggressiveness_status");
     let legacy = row.len() == FIELDS.len() + 1
@@ -322,7 +307,7 @@ fn parse_order(row: &Map<String, Value>, _index: usize) -> Option<ArmyBattleplan
         || owner.id > MAX_ARMY_ID
         || engine_order_instance_id == 0
         || engine_order_instance_id > MAX_ORDER_INSTANCE_ID
-        || slot_index >= 64
+        || slot_index >= portable_render_stream::XMAP15_D54_SLOT_INDEX_COUNT
         || row.get("execution_status")?.as_str()? != "exact"
         || row.get("assigned_units_status")?.as_str()? != "exact"
         || row.get("order_linkage_status")?.as_str()? != "exact"
@@ -507,6 +492,78 @@ mod tests {
             ArmyBattleplanGeometry::PathProvinces(vec![101, 102])
         );
         assert!(!order.active);
+    }
+
+    /// kills: this view's admission boundary drifting off the constants the
+    /// XMAP15 producer builds its census from.
+    ///
+    /// `map_viewer/src/production_features/xmap15.rs::cross_check_d54_and_units`
+    /// requires the producer's plan count to EQUAL this view's visual set, and
+    /// the producer lives in a workspace that cannot depend on this one, so the
+    /// bounds are declared once in `portable_render_stream`. Both sides reading
+    /// one constant is not enough on its own: this pins the BEHAVIOUR to it, so
+    /// a bound moved in shared ground without moving the check here fails.
+    #[test]
+    fn the_admission_boundary_is_exactly_the_shared_producer_constants() {
+        for (field, bound) in [
+            (
+                "engine_order_instance_id",
+                portable_render_stream::XMAP15_D54_MAX_ORDER_INSTANCE_ID,
+            ),
+            ("army_id", portable_render_stream::XMAP15_D54_MAX_ARMY_ID),
+        ] {
+            // The manager admits both spellings of the owner, so what the two
+            // cases below differ on is the bound and nothing else.
+            let mut census = manager();
+            census.armies.push(ArmyOrdersGroupScalarExact {
+                army_id: portable_render_stream::XMAP15_D54_MAX_ARMY_ID,
+                execution_type: 2,
+                cohesion_type: 3,
+                leader_proximity: 4,
+            });
+            census.registered_entry_count = Some(2);
+            let mut at_bound = line_order();
+            at_bound[field] = json!(bound);
+            assert_eq!(
+                parse_army_battleplans(&raw(at_bound.clone()), &census).status,
+                ViewStatus::Present,
+                "{field} at the bound is admitted"
+            );
+            let mut past = at_bound;
+            past[field] = json!(u64::from(bound) + 1);
+            assert_eq!(
+                parse_army_battleplans(&raw(past), &census).status,
+                ViewStatus::DomainUnavailable,
+                "{field} one past the bound costs the whole view"
+            );
+        }
+
+        let mut at_bound = line_order();
+        at_bound["path_provinces"] = json!([portable_render_stream::XMAP15_D54_MAX_MAP_ID]);
+        assert_eq!(
+            parse_army_battleplans(&raw(at_bound), &manager()).status,
+            ViewStatus::Present
+        );
+        let mut past = line_order();
+        past["path_provinces"] =
+            json!([u64::from(portable_render_stream::XMAP15_D54_MAX_MAP_ID) + 1]);
+        assert_eq!(
+            parse_army_battleplans(&raw(past), &manager()).status,
+            ViewStatus::DomainUnavailable
+        );
+
+        let mut at_bound = line_order();
+        at_bound["slot_index"] = json!(portable_render_stream::XMAP15_D54_SLOT_INDEX_COUNT - 1);
+        assert_eq!(
+            parse_army_battleplans(&raw(at_bound), &manager()).status,
+            ViewStatus::Present
+        );
+        let mut past = line_order();
+        past["slot_index"] = json!(portable_render_stream::XMAP15_D54_SLOT_INDEX_COUNT);
+        assert_eq!(
+            parse_army_battleplans(&raw(past), &manager()).status,
+            ViewStatus::DomainUnavailable
+        );
     }
 
     #[test]

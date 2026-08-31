@@ -3,12 +3,18 @@ use crate::{ViewStatus, WorldFrame};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 
-pub const ORDERS_GROUP_MANAGER_AUTHORITY: &str = "registered_reference_type_53";
+// Spelled once, in shared ground: this census is what XMAP13's formation rows
+// must cover exactly and what every d54 order's owner is admitted against, and
+// the producer that mints both lives in a workspace that cannot depend on this
+// one. See portable_render_stream::XMAP13_ORDERS_GROUP_MANAGER_AUTHORITY.
+pub const ORDERS_GROUP_MANAGER_AUTHORITY: &str =
+    portable_render_stream::XMAP13_ORDERS_GROUP_MANAGER_AUTHORITY;
 pub const MAX_TYPED_EXECUTION_TYPE: u32 = 2;
-pub const MAX_COHESION_TYPE: u32 = 3;
-pub const MAX_LEADER_PROXIMITY: u32 = 4;
-const MAX_ARMY_ID: u32 = i32::MAX as u32;
-const MAX_REGISTERED_ENTRY_COUNT: u32 = 262_144;
+pub const MAX_COHESION_TYPE: u32 = portable_render_stream::XMAP13_MANAGER_MAX_COHESION_TYPE;
+pub const MAX_LEADER_PROXIMITY: u32 = portable_render_stream::XMAP13_MANAGER_MAX_LEADER_PROXIMITY;
+const MAX_ARMY_ID: u32 = portable_render_stream::XMAP13_MANAGER_MAX_ARMY_ID;
+const MAX_REGISTERED_ENTRY_COUNT: u32 =
+    portable_render_stream::XMAP13_MANAGER_MAX_REGISTERED_ENTRY_COUNT;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArmyExecutionMode {
@@ -150,23 +156,8 @@ fn parse_orders_group_manager(raw: &Map<String, Value>) -> ArmyOrdersGroupManage
             "orders_group_manager is not an object".into(),
         ));
     };
-    const MANAGER_FIELDS_V1: [&str; 6] = [
-        "known",
-        "complete",
-        "source",
-        "registered_entry_count",
-        "army_group_count",
-        "armies",
-    ];
-    const MANAGER_FIELDS_V2: [&str; 7] = [
-        "known",
-        "complete",
-        "source",
-        "registered_entry_count",
-        "army_group_count",
-        "armies",
-        "army_group_ids",
-    ];
+    const MANAGER_FIELDS_V1: [&str; 6] = portable_render_stream::XMAP13_MANAGER_FIELDS_V1;
+    const MANAGER_FIELDS_V2: [&str; 7] = portable_render_stream::XMAP13_MANAGER_FIELDS_V2;
     let is_v1 = manager.len() == MANAGER_FIELDS_V1.len()
         && MANAGER_FIELDS_V1
             .iter()
@@ -302,12 +293,7 @@ fn parse_orders_group_manager(raw: &Map<String, Value>) -> ArmyOrdersGroupManage
                 "orders-group manager army row {index} is not an object"
             )));
         };
-        const ROW_FIELDS: [&str; 4] = [
-            "army_id",
-            "execution_type",
-            "cohesion_type",
-            "leader_proximity",
-        ];
+        const ROW_FIELDS: [&str; 4] = portable_render_stream::XMAP13_MANAGER_ARMY_ROW_FIELDS;
         if row.len() != ROW_FIELDS.len()
             || ROW_FIELDS.iter().any(|field| !row.contains_key(*field))
         {
@@ -442,6 +428,127 @@ mod tests {
         assert!(view.owner_identities_complete);
         assert!(view.has_army_group(23));
         assert_eq!(view.army_group_ids, vec![23, 24]);
+    }
+
+    /// kills: this view's admission boundary drifting off the constants the
+    /// XMAP13 producer builds its formation census from.
+    ///
+    /// The producer must cover this census EXACTLY
+    /// (`xmap13.rs::validate_formation_census`) and XMAP15 admits every d54
+    /// order owner against it, and both live in a workspace that cannot depend
+    /// on this one - so the bounds are declared once in
+    /// `portable_render_stream`. Both sides reading one constant is not enough
+    /// on its own: this pins the BEHAVIOUR to it.
+    #[test]
+    fn the_admission_boundary_is_exactly_the_shared_producer_constants() {
+        fn manager(mutate: impl Fn(&mut Value)) -> ViewStatus {
+            let mut manager = json!({
+                "known": true,
+                "complete": true,
+                "source": ORDERS_GROUP_MANAGER_AUTHORITY,
+                "registered_entry_count": 2,
+                "army_group_count": 1,
+                "armies": [
+                    {"army_id": 17, "execution_type": 0, "cohesion_type": 1, "leader_proximity": 2}
+                ],
+                "army_group_ids": [23]
+            });
+            mutate(&mut manager);
+            parse_orders_group_manager(&raw(json!({
+                "order_of_battle": {"extra": {"army_battleplans_depth_live": {
+                    "known": true,
+                    "orders_group_manager": manager
+                }}}
+            })))
+            .status
+        }
+
+        for (key, bound) in [
+            (
+                "cohesion_type",
+                portable_render_stream::XMAP13_MANAGER_MAX_COHESION_TYPE,
+            ),
+            (
+                "leader_proximity",
+                portable_render_stream::XMAP13_MANAGER_MAX_LEADER_PROXIMITY,
+            ),
+        ] {
+            assert_eq!(
+                manager(|value| value["armies"][0][key] = json!(bound)),
+                ViewStatus::Present,
+                "{key} at the bound is admitted"
+            );
+            assert_eq!(
+                manager(|value| value["armies"][0][key] = json!(u64::from(bound) + 1)),
+                ViewStatus::DomainUnavailable,
+                "{key} one past the bound costs the manager"
+            );
+        }
+
+        // Each identity kind AT the bound, one case each: they may not collide,
+        // so the kind under test takes the bound and the other the value below
+        // it. Testing only one of them let a `>` become a `>=` on the other.
+        let max_id = portable_render_stream::XMAP13_MANAGER_MAX_ARMY_ID;
+        assert_eq!(
+            manager(|value| {
+                value["armies"][0]["army_id"] = json!(max_id);
+                value["army_group_ids"] = json!([max_id - 1]);
+            }),
+            ViewStatus::Present,
+            "an army id at the bound is admitted"
+        );
+        assert_eq!(
+            manager(|value| {
+                value["armies"][0]["army_id"] = json!(max_id - 1);
+                value["army_group_ids"] = json!([max_id]);
+            }),
+            ViewStatus::Present,
+            "an army-group id at the bound is admitted"
+        );
+        assert_eq!(
+            manager(|value| value["armies"][0]["army_id"] = json!(u64::from(max_id) + 1)),
+            ViewStatus::DomainUnavailable
+        );
+        assert_eq!(
+            manager(|value| value["army_group_ids"] = json!([u64::from(max_id) + 1])),
+            ViewStatus::DomainUnavailable
+        );
+
+        // The registered count AT its bound is a census only the v1 shape can
+        // state, because v2 would have to enumerate that many identities.
+        let max_entries = portable_render_stream::XMAP13_MANAGER_MAX_REGISTERED_ENTRY_COUNT;
+        for (label, registered, expected) in [
+            ("at the bound", u64::from(max_entries), ViewStatus::Present),
+            (
+                "one past it",
+                u64::from(max_entries) + 1,
+                ViewStatus::DomainUnavailable,
+            ),
+        ] {
+            assert_eq!(
+                manager(|value| {
+                    value
+                        .as_object_mut()
+                        .expect("manager")
+                        .remove("army_group_ids");
+                    value["registered_entry_count"] = json!(registered);
+                    value["army_group_count"] = json!(registered - 1);
+                }),
+                expected,
+                "the registered count {label}"
+            );
+        }
+
+        // The authority word and the two canonical field sets are the same
+        // spelling on both sides too.
+        assert_eq!(
+            ORDERS_GROUP_MANAGER_AUTHORITY,
+            portable_render_stream::XMAP13_ORDERS_GROUP_MANAGER_AUTHORITY
+        );
+        assert_eq!(
+            manager(|value| value["source"] = json!("registered_reference_type_54")),
+            ViewStatus::DomainUnavailable
+        );
     }
 
     #[test]

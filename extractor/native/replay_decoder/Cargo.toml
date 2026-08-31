@@ -45,7 +45,12 @@ compact_stream = { path = "../compact_stream" }
 compact_contract = { path = "../compact_contract" }
 recorder_host = { path = "../recorder_host" }
 snapshot = { path = "../snapshot" }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
+portable_render_stream = { path = "../../../portable_replay/native/render_stream" }
+# Lane WO's one-fold instrument mints from a folded hour through the
+# producers' own projection, so a count of minted rows is backed by rows.
+map_unit_presentation = { path = "../lanes/map_unit_presentation" }
+xmap15_orders_semantic = { path = "../lanes/xmap15_orders_semantic" }
 sha2 = { version = "0.10", optional = true }
 collector = { path = "../collector", optional = true }
 
@@ -113,4 +118,12 @@ required-features = ["pv-repeat-gate"]
 [[bin]]
 name = "pv_hour_dump"
 path = "src/bin/pv_hour_dump.rs"
+required-features = ["pv-repeat-gate"]
+
+# Lane WO: one fold, one row per hour, of what the XMAP13 producer minted and
+# what it could not. Behind the same diagnostic feature as the other one-fold
+# instruments so the shipped decoder does not carry it.
+[[bin]]
+name = "wo_xmap13_gate_scan"
+path = "src/bin/wo_xmap13_gate_scan.rs"
 required-features = ["pv-repeat-gate"]

@@ -77,6 +77,14 @@ hud_role_observer_live_lane = { path = "../lanes/hud_role_observer_live" }
 character_presentation_live_lane = { path = "../lanes/character_presentation_live" }
 nuke_stockpile_live_lane = { path = "../lanes/nuke_stockpile_live" }
 theatre_selector_live_lane = { path = "../lanes/theatre_selector_live" }
+# The XMAP13 producer. The fold writes its carrier and its per-hour gate, and
+# the producer reads the fold's own published sections rather than its
+# accumulators, so it can only claim what the recording carries.
+map_unit_presentation = { path = "../lanes/map_unit_presentation" }
+# The XMAP15 producer. Its plan owners take their country from XMAP13's
+# formation census, so the fold hands one producer's output to the other rather
+# than letting two readings of the same sections disagree.
+xmap15_orders_semantic = { path = "../lanes/xmap15_orders_semantic" }
 country_army_upgrade_requests_live_lane = { path = "../lanes/country_army_upgrade_requests_live" }
 sunk_ship_history_live_lane = { path = "../lanes/sunk_ship_history_live" }
 decision_panel_live_lane = { path = "../lanes/decision_panel_live" }
