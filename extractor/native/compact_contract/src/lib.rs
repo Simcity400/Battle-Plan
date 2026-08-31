@@ -631,13 +631,200 @@ pub struct EarlyLaunchOnlyProducer {
     pub id: CompactDomainId,
     pub recorded_on: &'static str,
     pub reason: &'static str,
+    /// Every INDEPENDENT gate, each with the site that enforces it. A reason is
+    /// prose and can under-state; this list is what a caller counts.
+    pub gates: &'static [AttachCaptureGate],
+}
+
+/// One code-level reason a built producer cannot mint on an ordinary attach
+/// capture, named by the site that enforces it.
+///
+/// Independence is the property that matters: lifting one gate does not open
+/// the domain, so a lane that closes a single gate and unreserves the domain
+/// ships a scheduled producer that gaps every hour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttachCaptureGate {
+    pub id: &'static str,
+    pub enforced_by: &'static str,
+}
+
+impl AttachCaptureGate {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.id.trim().is_empty() || self.id.chars().any(char::is_whitespace) {
+            return Err(format!(
+                "attach-capture gate id {:?} is empty or not a single token",
+                self.id
+            ));
+        }
+        if !pending_producer::citation_is_well_formed(self.enforced_by) {
+            return Err(format!(
+                "attach-capture gate {} cites {:?}, which is not a source citation",
+                self.id, self.enforced_by
+            ));
+        }
+        let (path, item) = self.enforced_by.split_once(".rs::").ok_or_else(|| {
+            format!(
+                "attach-capture gate {} must cite a free function as path.rs::name",
+                self.id
+            )
+        })?;
+        // `citation_is_well_formed` allows `.` inside a path segment, so `..`
+        // is syntactically legal there. A gate resolves its path against the
+        // workspace, and a traversal would let it point outside the tree the
+        // gate is about.
+        if path.split('/').any(|segment| segment == "..") || path.starts_with('/') {
+            return Err(format!(
+                "attach-capture gate {} cites {:?}, which leaves extractor/native",
+                self.id, self.enforced_by
+            ));
+        }
+        // The owning crate binds this name to a real item (see
+        // `enforced_by_bindings` on each gate's own crate). That binding is
+        // only possible for a free function, so an associated-item spelling is
+        // a citation nothing can bind.
+        if item.contains("::") {
+            return Err(format!(
+                "attach-capture gate {} cites the associated item {:?}; a gate names the free \
+                 function its crate can bind",
+                self.id, item
+            ));
+        }
+        Ok(())
+    }
+
+    /// The `path.rs` half of the citation, workspace-relative to
+    /// `extractor/native`, and the free function it names.
+    pub fn resolved(&self) -> Option<(String, &'static str)> {
+        self.enforced_by
+            .split_once(".rs::")
+            .map(|(path, item)| (format!("{path}.rs"), item))
+    }
+}
+
+/// Every `(gate id, workspace-relative path, item)` an attach-capture gate
+/// cites, across every producer.
+///
+/// The collector compares this against the union of the sites the owning crates
+/// BIND, so a gate added anywhere is uncovered until some crate binds it. The
+/// gate id travels with the pair because without it two real citations can be
+/// swapped between two gates and the set is unchanged.
+pub fn declared_attach_capture_gate_sites() -> Vec<(&'static str, String, &'static str)> {
+    EARLY_LAUNCH_ONLY_PRODUCERS
+        .iter()
+        .flat_map(|producer| producer.gates.iter())
+        .filter_map(|gate| {
+            gate.resolved()
+                .map(|(path, item)| (gate.id, path, item))
+        })
+        .collect()
+}
+
+/// Bind one cited gate site to the item it names, and yield
+/// `(gate id, this file, item)`.
+///
+/// NOTHING here is a free-hand string about where the code lives: the path is
+/// `file!()`, so it is the file the invocation is compiled from, and the item is
+/// `stringify!`d from the same identifier the `let` type-checks. A site
+/// therefore cannot claim a file it is not in, and cannot name a function that
+/// does not exist with that signature. The collector's coverage test is what
+/// makes every declared gate have one of these.
+///
+/// `file!()` is workspace-relative under this workspace's cargo invocation and
+/// uses the host separator, which the replace normalises to the citation form.
+#[macro_export]
+macro_rules! bound_attach_capture_gate_site {
+    ($gate_id:expr, $item:ident, $signature:ty) => {{
+        // Three properties, and each closed a way the citation could be true of
+        // nothing. `self::` and not a bare `$item`: a bare path resolves
+        // against local scope first, so a `let install_with_profile = other;`
+        // would satisfy it. The zero-size assertion: a function ITEM is a ZST,
+        // while a `const install_with_profile: fn(..) -> ..` bound to some
+        // other function is a pointer and is not, so the cited name must be
+        // the function rather than a value wearing its name. And the type
+        // ascription: it must be THAT function's signature. A
+        // `#[cfg(..)]`-disabled item contributes no name to the module
+        // namespace at all, so it cannot satisfy any of the three.
+        assert_eq!(
+            ::core::mem::size_of_val(&self::$item),
+            0,
+            concat!(
+                stringify!($item),
+                " is not a function item: an attach-capture gate cites a function, not a value \
+                 bound to its name"
+            )
+        );
+        // Where the function is DEFINED, not where the name was resolved. A
+        // `use decoy::install_with_profile;` puts a zero-sized item of the
+        // right signature in the module namespace under the cited name while
+        // the enforcing body lives elsewhere; the fn item's type carries its
+        // defining path, so the decoy's extra module segment is visible. The
+        // defining module must be this module or an ancestor of it -- the
+        // collector's binding sits in a test submodule of the file that defines
+        // its function, which is why this is a prefix test and not equality.
+        fn gate_site_defining_path<T>(_: &T) -> &'static str {
+            ::core::any::type_name::<T>()
+        }
+        let defining_path = gate_site_defining_path(&self::$item);
+        let cited_tail = concat!("::", stringify!($item));
+        assert!(
+            defining_path.ends_with(cited_tail),
+            "{defining_path} is not a definition of {}",
+            stringify!($item)
+        );
+        let defining_module = &defining_path[..defining_path.len() - cited_tail.len()];
+        // On the `::` boundary, not a bare prefix: a SIBLING module whose name
+        // merely starts with the defining module's name is not a descendant of
+        // it, and a bare `starts_with` accepted one.
+        assert!(
+            module_path!()
+                .strip_prefix(defining_module)
+                .is_some_and(|below| below.is_empty() || below.starts_with("::")),
+            "{} cites {}, which is defined in {defining_module} rather than in this module or an \
+             ancestor of it",
+            module_path!(),
+            stringify!($item)
+        );
+        let _: $signature = self::$item;
+        (
+            $gate_id as &'static str,
+            file!().replace('\\', "/"),
+            stringify!($item),
+        )
+    }};
 }
 
 pub const EARLY_LAUNCH_ONLY_PRODUCERS: &[EarlyLaunchOnlyProducer] = &[
     EarlyLaunchOnlyProducer {
         id: 77,
         recorded_on: "2026-08-27",
-        reason: "production_render_submits_live: built (lane production_render_submit_live,                  world_fold.rs::fold_production_render,                  collector/src/attach_log.rs::insert_production_render_record_before_frame_end)                  and gated on the render session, which run_early_render_startup opens only when                  control.early_render_capture_v1 is set — and recorder_host/src/main.rs sets that                  word iff cfg.early_launch.is_some(). An attach capture never has it, so no                  product capture can mint the domain or the wave-2 carrier that folds from it",
+        reason: "production_render_submits_live: built (lane production_render_submit_live, \
+                 world_fold.rs::fold_production_render, \
+                 collector/src/attach_log.rs::insert_production_render_record_before_frame_end) \
+                 and held off an attach capture by the three INDEPENDENT gates in `gates`: the \
+                 early_render_capture_v1 control word, which recorder_host sets iff \
+                 cfg.early_launch.is_some(); the shipped bootstrap install, which observes the \
+                 render device by swapping the D3D11CreateDevice and D3DCompile IMPORT SLOTS, \
+                 both already called by a game that is already running; and the same install's \
+                 refusal to admit any staged hook, which leaves the weather-membership state \
+                 the XMAP19 wave-2 carrier folds from with no writer at all. Closing the control \
+                 word alone leaves the other two, so unreserving on it would schedule a domain \
+                 that gaps every hour",
+        gates: &[
+            AttachCaptureGate {
+                id: "early_render_control_word",
+                enforced_by: "collector/src/attach_log.rs::run_early_render_startup",
+            },
+            AttachCaptureGate {
+                id: "bootstrap_observes_startup_import_slots_only",
+                enforced_by:
+                    "lanes/production_render_submit_live/src/a729_hook.rs::install_with_profile",
+            },
+            AttachCaptureGate {
+                id: "bootstrap_only_admits_no_staged_hook",
+                enforced_by: "lanes/production_render_submit_live/src/a729_hook.rs::\
+                              bootstrap_only_install_is_admissible",
+            },
+        ],
     },
 ];
 
@@ -2582,6 +2769,30 @@ mod tests {
                 "json early_launch_only_reason drift for domain {}",
                 descriptor.id
             );
+            // The reason is prose; the gate LIST is what a reader counts, so
+            // the mirror carries the ids and drifts loudly when one is added or
+            // silently dropped.
+            assert_eq!(
+                domain.get("attach_capture_gates").map(|value| {
+                    value
+                        .as_array()
+                        .expect("attach_capture_gates is an array")
+                        .iter()
+                        .map(|gate| {
+                            gate.as_str()
+                                .expect("each attach-capture gate is a string id")
+                                .to_owned()
+                        })
+                        .collect::<Vec<_>>()
+                }),
+                early_launch_only.map(|producer| producer
+                    .gates
+                    .iter()
+                    .map(|gate| gate.id.to_owned())
+                    .collect::<Vec<_>>()),
+                "json attach_capture_gates drift for domain {}",
+                descriptor.id
+            );
         }
 
         assert!(
@@ -2627,6 +2838,112 @@ mod tests {
                 producer.reason.contains("early_launch"),
                 "d{}'s reason must name the gate, not merely restate the status",
                 producer.id
+            );
+        }
+    }
+
+    /// kills: unreserving d77 on the control word alone. The gate list is the
+    /// counted form of "what still holds this domain off an attach capture", so
+    /// a lane that opens one gate has to delete its entry here, and deleting an
+    /// entry it did not close fails the site-citation and count assertions
+    /// rather than passing quietly.
+    #[test]
+    fn every_attach_capture_gate_names_the_site_that_enforces_it() {
+        for producer in EARLY_LAUNCH_ONLY_PRODUCERS {
+            let mut ids = producer
+                .gates
+                .iter()
+                .map(|gate| gate.id)
+                .collect::<Vec<_>>();
+            let declared = ids.len();
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(
+                ids.len(),
+                declared,
+                "d{} declares the same attach-capture gate twice",
+                producer.id
+            );
+            assert!(
+                declared > 0,
+                "d{} is cannot-mint-on-attach with no gate naming why",
+                producer.id
+            );
+            for gate in producer.gates {
+                gate.validate()
+                    .unwrap_or_else(|error| panic!("d{}: {error}", producer.id));
+                // A syntactically valid citation is not evidence. This half
+                // proves the FILE is in the tree; the other half -- the one
+                // that closes the fabricated-site class -- is that each gate's
+                // own crate binds the named item to a function pointer at
+                // compile time, so a renamed or deleted function fails to
+                // build. See `enforced_by_bindings` in the collector and in
+                // production_render_submit_live.
+                let (relative, item) = gate
+                    .resolved()
+                    .unwrap_or_else(|| {
+                        panic!("d{} gate {} is not a path::item citation", producer.id, gate.id)
+                    });
+                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("compact_contract sits inside extractor/native")
+                    .join(&relative);
+                let source = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+                    panic!(
+                        "d{} gate {} cites {}, which does not exist under extractor/native: \
+                         {error}",
+                        producer.id, gate.id, relative
+                    )
+                });
+                assert!(
+                    source.contains(&format!("fn {item}(")),
+                    "d{} gate {} cites {}::{item}, which declares no such function",
+                    producer.id,
+                    gate.id,
+                    relative
+                );
+            }
+        }
+        assert_eq!(
+            early_launch_only_producer(77)
+                .expect("d77 is cannot-mint-on-attach")
+                .gates
+                .iter()
+                .map(|gate| gate.id)
+                .collect::<Vec<_>>(),
+            vec![
+                "early_render_control_word",
+                "bootstrap_observes_startup_import_slots_only",
+                "bootstrap_only_admits_no_staged_hook",
+            ],
+            "d77's attach-capture gates changed without the registry mirror and the enforcing \
+             sites moving with them"
+        );
+    }
+
+    /// kills: a gate citation that escapes the workspace or names something no
+    /// crate can bind. Both were live holes: `citation_is_well_formed` accepts
+    /// `.` inside a path segment, so `..` was syntactically legal, and an
+    /// associated-item spelling can never be bound to a function pointer by the
+    /// owning crate, which is what makes the citation checkable at all.
+    #[test]
+    fn a_gate_citation_may_not_traverse_out_or_name_an_associated_item() {
+        let gate = |enforced_by| AttachCaptureGate {
+            id: "example",
+            enforced_by,
+        };
+        gate("collector/src/attach_log.rs::run_early_render_startup")
+            .validate()
+            .expect("a free function inside the workspace is a citable site");
+        for bad in [
+            "collector/../../../evil/src/lib.rs::install",
+            "../compact_contract/src/lib.rs::install",
+            "/absolute/src/lib.rs::install",
+            "collector/src/attach_log.rs::Type::method",
+        ] {
+            assert!(
+                gate(bad).validate().is_err(),
+                "{bad:?} must not validate as a gate citation"
             );
         }
     }

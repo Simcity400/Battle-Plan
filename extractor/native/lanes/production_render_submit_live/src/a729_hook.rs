@@ -3796,6 +3796,42 @@ fn staged_hook_set_receipt_sha256(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// The d77 attach-capture gate sites this crate owns, each bound to its item.
+///
+/// The collector requires the union of every crate's bound sites to EQUAL
+/// `compact_contract::declared_attach_capture_gate_sites()`, so a gate citing
+/// this file is uncovered until it appears here, and it cannot appear here
+/// without the named function existing with the given signature.
+pub fn bound_attach_capture_gate_sites() -> [(&'static str, String, &'static str); 2] {
+    [
+        compact_contract::bound_attach_capture_gate_site!(
+            "bootstrap_observes_startup_import_slots_only",
+            install_with_profile,
+            fn(HookInstallProfile) -> Result<HookInstallation, String>
+        ),
+        compact_contract::bound_attach_capture_gate_site!(
+            "bootstrap_only_admits_no_staged_hook",
+            bootstrap_only_install_is_admissible,
+            fn(HookInstallProfile, u32) -> bool
+        ),
+    ]
+}
+
+/// The shipped render profile's whole admission rule, as a value.
+///
+/// It is the second of domain 77's recorded attach-capture gates
+/// (`compact_contract::EARLY_LAUNCH_ONLY_PRODUCERS`): the shipped install
+/// admits the bootstrap import-slot swaps and NOTHING staged, which is why no
+/// inline detour -- the weather producer's included -- runs in a product
+/// capture. Extracted from [`install_bootstrap_only`] so the rule can be
+/// exercised without patching a live import table.
+pub(crate) fn bootstrap_only_install_is_admissible(
+    profile: HookInstallProfile,
+    staged_hook_count: u32,
+) -> bool {
+    profile == HookInstallProfile::BootstrapOnly && staged_hook_count == 0
+}
+
 pub fn install_bootstrap_only() -> Result<BootstrapOnlyInstallReceipt, String> {
     let installed = install_with_profile(HookInstallProfile::BootstrapOnly)?;
     let staged_hook_count = STAGED_HOOK_TARGETS
@@ -3808,7 +3844,7 @@ pub fn install_bootstrap_only() -> Result<BootstrapOnlyInstallReceipt, String> {
         })
         .unwrap_or(0);
     let profile = active_hook_install_profile()?;
-    if profile != HookInstallProfile::BootstrapOnly || staged_hook_count != 0 {
+    if !bootstrap_only_install_is_admissible(profile, staged_hook_count) {
         let cleanup = uninstall()
             .err()
             .map(|error| format!("; bootstrap invariant rollback failed: {error}"))
@@ -14232,6 +14268,99 @@ mod tests {
     use super::*;
     use std::sync::{mpsc, Mutex};
     use std::thread;
+
+    /// kills: dropping either of d77's two SHIPPED attach-capture gates from
+    /// `compact_contract::EARLY_LAUNCH_ONLY_PRODUCERS` while the code that
+    /// enforces them is unchanged -- which is how "unreserve d77" turns into a
+    /// scheduled domain that gaps every hour. Both facts live here: the shipped
+    /// profile observes the render device by swapping two IMPORT SLOTS a
+    /// running game has already called, and the weather producer detour that
+    /// stamps an XMAP19 visual epoch is in the STAGED set that same profile
+    /// admits none of.
+    #[test]
+    fn the_shipped_render_profile_enforces_its_two_recorded_attach_capture_gates() {
+        let gates = compact_contract::early_launch_only_producer(77)
+            .expect("d77 is recorded as cannot-mint-on-attach")
+            .gates;
+        for id in [
+            "bootstrap_observes_startup_import_slots_only",
+            "bootstrap_only_admits_no_staged_hook",
+        ] {
+            assert!(
+                gates.iter().any(|gate| gate.id == id),
+                "d77 no longer records the gate {id}, but this crate still enforces it"
+            );
+        }
+        assert_eq!(BOOTSTRAP_HOOK_COUNT, 2);
+        assert_eq!(
+            BOOTSTRAP_HOOK_IDENTITIES.map(|(label, _, _)| label),
+            [
+                "d3d11.dll!D3D11CreateDevice",
+                "d3dcompiler_47.dll!D3DCompile"
+            ],
+            "the shipped bootstrap set is what makes the observation start-of-process only"
+        );
+        assert_ne!(
+            PRODUCTION_STAGED_HOOK_GROUP_MASK & STAGED_HOOK_GROUP_WEATHER_SEED,
+            0,
+            "the weather producer detour is a STAGED hook; if it ever stops being one, the \
+             second gate has moved and its record must move with it"
+        );
+        assert!(STAGED_HOOK_COUNT > 0);
+        // The gate is the RULE, not the constants: exercise the predicate
+        // `install_bootstrap_only` actually applies. It admits the shipped
+        // profile with nothing staged and refuses every other combination, so a
+        // change that let one staged detour through fails here.
+        assert!(bootstrap_only_install_is_admissible(
+            HookInstallProfile::BootstrapOnly,
+            0
+        ));
+        for staged in [1, 2, STAGED_HOOK_COUNT as u32] {
+            assert!(
+                !bootstrap_only_install_is_admissible(HookInstallProfile::BootstrapOnly, staged),
+                "the shipped profile must refuse an install carrying {staged} staged hook(s)"
+            );
+        }
+        assert!(!bootstrap_only_install_is_admissible(
+            HookInstallProfile::None,
+            0
+        ));
+        // WHICH gate cites WHICH function, asserted beside the behaviour each
+        // one is about. The set-level coverage test in the collector cannot see
+        // a swap between two real citations, because the set is unchanged; this
+        // can, and the two facts above are what make the mapping meaningful.
+        let bound = bound_attach_capture_gate_sites();
+        let site = |gate_id: &str| -> &'static str {
+            bound
+                .iter()
+                .find(|(id, _, _)| *id == gate_id)
+                .map(|(_, _, item)| *item)
+                .unwrap_or_else(|| panic!("this crate binds no site for gate {gate_id}"))
+        };
+        assert_eq!(
+            site("bootstrap_observes_startup_import_slots_only"),
+            "install_with_profile",
+            "the import-slot gate is about what the install SWAPS"
+        );
+        assert_eq!(
+            site("bootstrap_only_admits_no_staged_hook"),
+            "bootstrap_only_install_is_admissible",
+            "the staged-hook gate is about what the install ADMITS"
+        );
+        // Every site this crate binds is a site the contract cites. The
+        // converse -- every cited site is bound by SOME crate -- is the
+        // collector's coverage test, because only a crate that depends on all
+        // of them can count it.
+        let declared = compact_contract::declared_attach_capture_gate_sites();
+        for (gate_id, path, item) in bound {
+            assert!(
+                declared.iter().any(|(cited_gate, cited_path, cited_item)| {
+                    *cited_gate == gate_id && *cited_path == path && *cited_item == item
+                }),
+                "this crate binds {gate_id} -> {path}::{item}, which no attach-capture gate cites"
+            );
+        }
+    }
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 

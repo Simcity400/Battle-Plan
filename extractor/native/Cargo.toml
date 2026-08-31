@@ -143,6 +143,7 @@ members = [
     # five concurrent new-producer lanes would collide here even though their
     # own sources never overlap.
     "lanes/map_unit_presentation",
+    "lanes/xmap15_orders_semantic",
     "lanes/xmap20_effects",
     "lanes/xui26_frontend",
     "lanes/victory_points",

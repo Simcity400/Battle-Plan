@@ -1,0 +1,19 @@
+[package]
+name = "xmap15_orders_semantic"
+version = "0.1.0"
+edition = "2021"
+description = "Pending capture-side XMAP15 orders/fronts/movement semantic sidecar producer"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+compact_contract = { path = "../../compact_contract" }
+
+# Test-only. The declaration classifies every mandatory field of the two
+# semantic row types, and the classification is compared against the SERIALIZED
+# schema, so the portable crate must be reachable from the tests and must NOT be
+# reachable from anything the collector links.
+[dev-dependencies]
+portable_render_stream = { path = "../../../../portable_replay/native/render_stream" }
+serde_json = "1"

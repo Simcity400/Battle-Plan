@@ -90,6 +90,8 @@ focus_research_decisions_depth_live = { path = "../lanes/focus_research_decision
 # This block is a single contiguous region, which is why all five land at once.
 xui26_frontend = { path = "../lanes/xui26_frontend" }
 xmap20_effects = { path = "../lanes/xmap20_effects" }
+map_unit_presentation = { path = "../lanes/map_unit_presentation" }
+xmap15_orders_semantic = { path = "../lanes/xmap15_orders_semantic" }
 victory_points = { path = "../lanes/victory_points" }
 portable_render_stream = { path = "../../../portable_replay/native/render_stream" }
 serde = "1"
