@@ -568,8 +568,7 @@ Assert-Policy `
 $namedRefusalFunctions = @(
     'Assert-PassiveReadySourceContractParity',
     'Assert-PassiveProducerFragment',
-    'Get-PassiveControlTransportPayloadSource',
-    'Get-PassiveCollectorFeatureAuthorityFromSource'
+    'Get-PassiveCollectorFeatureAuthorityFromJson'
 )
 foreach ($functionName in $namedRefusalFunctions) {
     $definition = @(
@@ -585,9 +584,8 @@ foreach ($functionName in $namedRefusalFunctions) {
     Assert-Policy `
         -Condition ($definition.Count -eq 1) `
         -Message "Expected exactly one definition of '$functionName'; found $($definition.Count)."
-    # Recursive on purpose: Get-PassiveCollectorFeatureMask is defined INSIDE
-    # Get-PassiveCollectorFeatureAuthorityFromSource, and its mask refusals are
-    # the ones a drifting KNOWN_MASK produces.
+    # Recursive on purpose: a refusal nested inside one of these functions is
+    # still a refusal the harness has to be able to name.
     $throws = @(
         $definition[0].FindAll(
             {
@@ -652,31 +650,72 @@ Assert-Policy `
 #       declaration out of a copy of the real payloads.rs. Nothing is written to
 #       disk and the real file is untouched -- the function takes its source as
 #       a parameter precisely so this is possible.
-$payloadSource = Get-PassiveControlTransportPayloadSource
+#       The mutated declaration is the macro header that GENERATES KNOWN_MASK.
+#       The collector feature authority is no longer PARSED out of Rust text at
+#       all -- text scanning is not lexing, and every repair of that scanner
+#       exposed another way the two differ (lane WM, 2026-08-31). The contract
+#       emits its compiled constants as JSON and this file reads them, so what a
+#       drift probe has to exercise now is the READER's fail-closed behaviour on
+#       a vocabulary it must not admit, not a regex against source text.
+$authorityJson = '{"schema":"hoi4-collector-feature-authority-v1","declared_bit":1,' +
+    '"known_mask":7,"diagnostic_mask":6,"feature_names":' +
+    '[{"bit":2,"cargo_name":"test-support"},{"bit":4,"cargo_name":"range-tracer"}]}'
 Assert-Policy `
-    -Condition ($payloadSource.Contains('pub const KNOWN_MASK: u32')) `
-    -Message 'The collector feature authority no longer declares KNOWN_MASK; this drift probe is testing nothing.'
-$driftedPayload = $payloadSource -replace `
-    'pub const KNOWN_MASK: u32', 'pub const KNOWN_MASK_RENAMED: u32'
-$driftRefusal = $null
-try {
-    [void](Get-PassiveCollectorFeatureAuthorityFromSource $driftedPayload)
-} catch {
-    $driftRefusal = New-PassiveReadyRefusalRecord `
-        -ErrorRecord $_ `
-        -CustodyEstablished $false `
-        -Stage 'ready_validation'
+    -Condition ($null -ne (Get-PassiveCollectorFeatureAuthorityFromJson $authorityJson)) `
+    -Message 'The collector feature authority reader rejects a well-formed vocabulary; this drift probe is testing nothing.'
+
+#       Each of these is a vocabulary the reader MUST refuse, and each is a way a
+#       truncated or edited emission could otherwise narrow the mask and make a
+#       real feature bit look unknown -- or make a diagnostic build look clean.
+$driftCases = @(
+    @{ Field = 'DIAGNOSTIC_MASK'
+       Json  = $authorityJson.Replace('"diagnostic_mask":6', '"diagnostic_mask":4') },
+    @{ Field = 'FEATURE_NAMES coverage'
+       Json  = $authorityJson.Replace(',{"bit":4,"cargo_name":"range-tracer"}', '') },
+    @{ Field = 'DECLARED'
+       Json  = $authorityJson.Replace('"declared_bit":1', '"declared_bit":2') },
+    # Shapes ConvertFrom-Json will happily hand back but the emitter cannot
+    # produce. Each one would otherwise be read as a legal vocabulary.
+    @{ Field = 'feature_names[].bit'
+       Json  = $authorityJson.Replace(
+                 '[{"bit":2,"cargo_name":"test-support"},{"bit":4,"cargo_name":"range-tracer"}]',
+                 '[{"bit":6,"cargo_name":"both"}]') },
+    @{ Field = 'feature_names'
+       Json  = $authorityJson.Replace(
+                 '[{"bit":2,"cargo_name":"test-support"},{"bit":4,"cargo_name":"range-tracer"}]',
+                 '{"bit":2,"cargo_name":"test-support"}') },
+    @{ Field = 'feature_names[].cargo_name'
+       Json  = $authorityJson.Replace('"cargo_name":"range-tracer"', '"cargo_name":4') },
+    @{ Field = 'known_mask'
+       Json  = $authorityJson.Replace('"known_mask"', '"KNOWN_MASK"') },
+    @{ Field = 'collector_feature_authority output'
+       Json  = '[' + $authorityJson + ']' }
+)
+$singleClauseDrift = $null
+foreach ($driftCase in $driftCases) {
+    $driftRefusal = $null
+    try {
+        [void](Get-PassiveCollectorFeatureAuthorityFromJson $driftCase.Json)
+    } catch {
+        $driftRefusal = New-PassiveReadyRefusalRecord `
+            -ErrorRecord $_ `
+            -CustodyEstablished $false `
+            -Stage 'ready_validation'
+    }
+    Assert-Policy `
+        -Condition ($null -ne $driftRefusal) `
+        -Message "A collector feature vocabulary that drifted $($driftCase.Field) was ACCEPTED by the reader."
+    Assert-Policy `
+        -Condition ([string]$driftRefusal.class -ceq 'collector_feature_dialect') `
+        -Message "A drifted collector feature vocabulary was classified '$($driftRefusal.class)', not 'collector_feature_dialect'."
+    Assert-Policy `
+        -Condition (@($driftRefusal.clauses).Count -eq 1 -and
+            [string]@($driftRefusal.clauses)[0].field -ceq $driftCase.Field) `
+        -Message "A drifted collector feature vocabulary did not name $($driftCase.Field) as the field: $(@($driftRefusal.clauses) | ForEach-Object { $_.field })"
+    # Kept for the JSON round-trip check below, chosen BY NAME rather than by
+    # being whichever case the loop happened to run last.
+    if ($driftCase.Field -ceq 'DECLARED') { $singleClauseDrift = $driftRefusal }
 }
-Assert-Policy `
-    -Condition ($null -ne $driftRefusal) `
-    -Message 'A collector feature dialect that dropped KNOWN_MASK was ACCEPTED by the mirror.'
-Assert-Policy `
-    -Condition ([string]$driftRefusal.class -ceq 'collector_feature_dialect') `
-    -Message "A drifted collector feature dialect was classified '$($driftRefusal.class)', not 'collector_feature_dialect'."
-Assert-Policy `
-    -Condition (@($driftRefusal.clauses).Count -eq 1 -and
-        [string]@($driftRefusal.clauses)[0].field -ceq 'KNOWN_MASK') `
-    -Message "A drifted collector feature dialect did not name KNOWN_MASK as the field: $(@($driftRefusal.clauses) | ForEach-Object { $_.field })"
 
 #    c2) A RECEIPT WITHOUT `install_freeze_count` IS REFUSED BY NAME.
 #
@@ -825,10 +864,12 @@ Assert-Policy `
         [string]$serialisedClauses[0].side -ceq 'custody' -and
         [string]@($serialisedRefusal)[0].class -ceq 'receipt_admission') `
     -Message 'A refusal record does not survive the JSON round trip the refusal receipt performs.'
-$serialisedDrift = @($driftRefusal) | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+# The DECLARED case specifically, captured by name in the loop above, so adding
+# a drift case cannot silently change what this round trip is checking.
+$serialisedDrift = @($singleClauseDrift) | ConvertTo-Json -Depth 8 | ConvertFrom-Json
 Assert-Policy `
     -Condition (@(@($serialisedDrift)[0].clauses).Count -eq 1 -and
-        [string]@(@($serialisedDrift)[0].clauses)[0].field -ceq 'KNOWN_MASK') `
+        [string]@(@($serialisedDrift)[0].clauses)[0].field -ceq 'DECLARED') `
     -Message 'A single-clause refusal loses its clause list when serialised into the refusal receipt.'
 
 #    e) THERE IS NO UNNAMED ROUTE. Anything the classifier cannot recognise --

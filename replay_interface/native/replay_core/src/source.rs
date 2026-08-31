@@ -2943,7 +2943,34 @@ fn validate_recorder_content_manifest_join(
                         .to_string(),
                 ),
             ]);
-            if container_manifest.recorder_local_settings != expected_settings {
+            // `recorder_local_settings` is a PARTITION, not a display record.
+            // `portable_content_manifest::is_recorder_local_settings` also
+            // admits the province-sidecar pin, which states what the CAPTURE
+            // machine's own roots held and so has no display variant to be
+            // derived from. Comparing the whole map against the display-derived
+            // set refused every recording the current recorder writes; the
+            // fixture below had no sidecar keys, so nothing caught it.
+            let mut derived: BTreeMap<String, String> = BTreeMap::new();
+            for (key, value) in &container_manifest.recorder_local_settings {
+                if expected_settings.contains_key(key) {
+                    derived.insert(key.clone(), value.clone());
+                    continue;
+                }
+                // Carried, not checked: the container holds no second copy of
+                // the sidecar pin to check it against, and `game_file_ledger`
+                // is what names it at open. Everything else is still refused,
+                // so an unknown key cannot ride in as "recorder-local".
+                if !matches!(
+                    key.as_str(),
+                    portable_content_manifest::MAP_SIDECAR_CAPTURE_KEY
+                        | portable_content_manifest::MAP_SIDECAR_CAPTURE_PROBE_KEY
+                ) {
+                    return Err(SourceError::Open(format!(
+                        "recorder-local setting {key:?} is not one this admission can account for"
+                    )));
+                }
+            }
+            if derived != expected_settings {
                 return Err(SourceError::Open(
                     "recorder display variant disagrees with the portable content manifest's                      recorder-local settings"
                         .into(),
@@ -5773,6 +5800,18 @@ mod tests {
                 ("display_mode".into(), "borderless_fullscreen".into()),
                 ("settings_file_sha256".into(), "e".repeat(64)),
                 ("settings_authority".into(), "pre_launch_bracketed".into()),
+                // The real producer writes these two unconditionally
+                // (recorder_host::portable_content_manifest). Without them the
+                // fixture was a shape no recorder emits, and the admission
+                // check could reject every real recording while staying green.
+                (
+                    portable_content_manifest::MAP_SIDECAR_CAPTURE_KEY.into(),
+                    "absent".into(),
+                ),
+                (
+                    portable_content_manifest::MAP_SIDECAR_CAPTURE_PROBE_KEY.into(),
+                    "complete".into(),
+                ),
             ]),
             required_content: Vec::new(),
             manifest_digest_sha256: None,
@@ -5855,6 +5894,81 @@ mod tests {
         let error = validate_recorder_content_manifest_join(&recorder, None)
             .expect_err("recorder-only authority must fail closed");
         assert!(error.to_string().contains("container manifest omits"));
+    }
+
+    /// The province-sidecar pin rides in `recorder_local_settings` and has no
+    /// display variant to be derived from, so the admission must CARRY it --
+    /// rc_vanilla8 refused to open on the machine that recorded it because the
+    /// whole map was compared against the display-derived set. Anything else
+    /// unaccounted-for must still fail closed, which is the half that keeps
+    /// carrying the pin from becoming "ignore what you do not recognise".
+    #[test]
+    fn recorder_local_settings_carry_the_sidecar_pin_and_refuse_what_is_unaccounted_for() {
+        let mut container = portable_content_manifest_fixture();
+        assert!(
+            container
+                .recorder_local_settings
+                .contains_key(portable_content_manifest::MAP_SIDECAR_CAPTURE_KEY),
+            "the fixture must carry the pin the real recorder writes, or this proves nothing"
+        );
+        let recorder = json!({
+            "portable_content_manifest": serde_json::to_value(&container).unwrap(),
+            "modset": {
+                "game": {"exe_sha256": container.source_game.executable_sha256.clone()},
+                "settings_binding": {
+                    "authority": "pre_launch_bracketed",
+                    "launch_proven": true,
+                    "errors": [],
+                    "language": container.localisation_language.clone(),
+                    "display_variant": {
+                        "physical_width": 1920,
+                        "physical_height": 1080,
+                        "min_gui_width": 1920,
+                        "min_gui_height": 1080,
+                        "gui_scale_f32_bits": 1.0f32.to_bits(),
+                        "refresh_rate_hz": 60,
+                        "max_refresh_rate_hz": null,
+                        "fullscreen": false,
+                        "borderless": true,
+                        "display_mode": "borderless_fullscreen",
+                    },
+                    "attach_settings_sha256": "e".repeat(64),
+                    "seal_settings_sha256": null,
+                    "endpoint_semantics_equal": null
+                },
+            }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        validate_recorder_content_manifest_join(&recorder, Some(&container))
+            .expect("a recording carrying the sidecar pin must open");
+
+        // `input_variant` is INSIDE the partition -- `ContentManifest::validate`
+        // admits it as a playback-local presentation setting -- but no display
+        // variant produces it, so this admission cannot account for it. That is
+        // the case worth pinning: a key from outside the partition is already
+        // refused by `validate`, and would prove nothing about this check.
+        container
+            .recorder_local_settings
+            .insert("input_variant".into(), "keyboard".into());
+        container.manifest_digest_sha256 = None;
+        container.source_profile.selection_sha256 =
+            container.computed_selection_sha256().unwrap();
+        let container = container.with_computed_digest().unwrap();
+        let recorder = json!({
+            "portable_content_manifest": serde_json::to_value(&container).unwrap(),
+            "modset": recorder.get("modset").unwrap().clone(),
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let error = validate_recorder_content_manifest_join(&recorder, Some(&container))
+            .expect_err("an unaccounted-for recorder-local setting must fail closed");
+        assert!(
+            error.to_string().contains("input_variant"),
+            "the refusal must name the key it could not account for: {error}"
+        );
     }
 
     #[test]

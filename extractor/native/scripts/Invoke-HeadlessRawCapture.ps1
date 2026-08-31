@@ -1278,6 +1278,13 @@ $rosterTool = Join-Path $releaseRoot 'domain_roster.exe'
 if (-not (Test-Path -LiteralPath $rosterTool -PathType Leaf)) {
     throw "Production roster tool is missing: $rosterTool (cargo build --release -p recorder_host)"
 }
+# Read HERE rather than at ready validation. The recorder host's own feature
+# vocabulary is what admits the CaptureReadyV2 receipt, so a host that cannot
+# state it would otherwise launch the game, settle, inject, and only then
+# refuse -- which is how rc_vanilla8's first attempt burned 11 minutes. It is
+# the same `$collectorRecord` this attempt is about to run, so there is no
+# second artifact to go stale.
+[void](Get-PassiveCollectorFeatureAuthority -RecorderHostPath $collectorRecord)
 if ($ScheduledDomainOverride.Count -gt 0) {
     # `powershell -File` binds a comma-joined argument as ONE literal string —
     # it never gets PowerShell's array splitting. The 2026-07-26 crash trials

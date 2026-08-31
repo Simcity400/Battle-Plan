@@ -767,299 +767,482 @@ function Get-PassivePinnedHookAllowlistAuthorityFromSource {
     }
 }
 
-# The collector's compile-time feature vocabulary, PARSED from the Rust
-# contract rather than restated here.
+# The collector's compile-time feature vocabulary, STATED BY THE CONTRACT rather
+# than parsed out of it.
 #
 # The word at CaptureReadyV2 offset 20 was reserved-must-be-zero until lane EH
 # gave it to `CollectorFeatureBits`. This file did not follow, and every part of
-# it that touches offset 20 was then wrong at once: the encoder mirror below
-# still demanded the literal `&0u32.to_le_bytes();`, the payload rebuild still
-# wrote a zero there, and the receipt's two new properties failed the closed
-# property set. Run t36's READY receipt was therefore refused before a single
-# admission clause ran -- which took its CUSTODY authority with it, so the
-# recorder's teardown receipt (57 of 57 pinned sites restored to baseline) could
-# not be authenticated, the graded window never closed, the settings guard
-# stayed applied and the game was left running.
+# it that touches offset 20 was then wrong at once. Run t36's READY receipt was
+# refused before a single admission clause ran -- which took its CUSTODY
+# authority with it, so the recorder's teardown receipt could not be
+# authenticated, the graded window never closed, the settings guard stayed
+# applied and the game was left running.
 #
-# Restating the bit assignments as PowerShell literals would have set the same
-# trap for the next feature bit. They are read out of the contract instead, so a
-# bit added in Rust is known here without an edit, and a bit this file cannot
-# parse is a loud failure rather than a silently narrower mask.
-function Get-PassiveCollectorFeatureAuthorityFromSource {
-    param([Parameter(Mandatory = $true)][string]$PayloadSource)
+# WHY THIS IS NO LONGER A PARSER. The fix for that was to read the bit
+# assignments out of `payloads.rs` instead of restating them here, and it worked
+# until the contract moved them into a `bit_flag_causes!` macro: the scan then
+# matched nothing, reported "declares no bits", and refused EVERY capture on the
+# tree (lane WM, rc_vanilla8, 2026-08-31). Repairing the scan produced a
+# recurring class rather than a fix -- comments splicing two identifiers into
+# one, string escapes, nested block comments, a commented-out copy of the macro
+# outranking the live one -- because text scanning is not lexing and never
+# becomes lexing by adding cases.
+#
+# So the contract states its vocabulary itself. `collector_feature_authority`
+# (extractor/native/recorder_host/src/bin/collector_feature_authority.rs) prints
+# the COMPILED constants as JSON and this reads them. Nothing is restated, and
+# there is no Rust left to parse.
+#
+# The checks below are on the transport, not on a derivation: a truncated or
+# garbled emission must not become a narrower mask.
+# Duplicate object keys, found in the RAW TEXT.
+#
+# ConvertFrom-Json keeps only the LAST of two identically named keys and reports
+# nothing, so a property census taken after parsing can never see a duplicate --
+# a check written that way is vacuous (Codex round 4, finding 3). This walks the
+# text instead, tracking string literals and their escapes, and returns the
+# duplicated key names per object scope.
+function Get-PassiveJsonDuplicateKeys {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Json)
 
-    $start = $PayloadSource.IndexOf('impl CollectorFeatureBits {')
-    $end = $PayloadSource.IndexOf('pub struct CaptureReadyV2 {', [Math]::Max($start, 0))
-    if ($start -lt 0 -or $end -le $start) {
+    # An ORDINAL set, deduplicated as it is filled. A second pass with
+    # `Sort-Object -Unique` cannot do this job: even with -CaseSensitive it is a
+    # CULTURE-AWARE comparison, so a composed `e-acute` and the same letter
+    # written as `e` plus a combining accent compare equal and one real
+    # duplicate identity would vanish from the diagnostic (Codex round 7).
+    $duplicates = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $scopes = [Collections.Generic.Stack[object]]::new()
+    $pendingKey = $null
+    $index = 0
+    while ($index -lt $Json.Length) {
+        $ch = $Json[$index]
+        if ($ch -eq '"') {
+            $sb = [Text.StringBuilder]::new()
+            $index++
+            while ($index -lt $Json.Length) {
+                $c = $Json[$index]
+                if ($c -eq '\') {
+                    # DECODED, not preserved. `known_mask` and `known_mask`
+                    # are the same JSON key: ConvertFrom-Json collapses them, so
+                    # a scanner comparing raw spellings would call them distinct
+                    # and miss exactly the duplicate it exists to catch.
+                    $esc = if ($index + 1 -lt $Json.Length) { $Json[$index + 1] } else { [char]0 }
+                    switch ($esc) {
+                        '"'  { [void]$sb.Append('"');       $index += 2 }
+                        '\'  { [void]$sb.Append('\');       $index += 2 }
+                        '/'  { [void]$sb.Append('/');       $index += 2 }
+                        'b'  { [void]$sb.Append([char]8);   $index += 2 }
+                        'f'  { [void]$sb.Append([char]12);  $index += 2 }
+                        'n'  { [void]$sb.Append([char]10);  $index += 2 }
+                        'r'  { [void]$sb.Append([char]13);  $index += 2 }
+                        't'  { [void]$sb.Append([char]9);   $index += 2 }
+                        'u'  {
+                            if ($index + 5 -lt $Json.Length) {
+                                $hex = $Json.Substring($index + 2, 4)
+                                $code = 0
+                                if ([int]::TryParse(
+                                        $hex,
+                                        [Globalization.NumberStyles]::HexNumber,
+                                        [Globalization.CultureInfo]::InvariantCulture,
+                                        [ref]$code)) {
+                                    [void]$sb.Append([char]$code)
+                                    $index += 6
+                                } else {
+                                    [void]$sb.Append($esc); $index += 2
+                                }
+                            } else {
+                                [void]$sb.Append($esc); $index += 2
+                            }
+                        }
+                        default { [void]$sb.Append($esc); $index += 2 }
+                    }
+                    continue
+                }
+                if ($c -eq '"') { break }
+                [void]$sb.Append($c)
+                $index++
+            }
+            $pendingKey = $sb.ToString()
+            $index++
+            continue
+        }
+        if ($ch -eq ':') {
+            if ($null -ne $pendingKey -and $scopes.Count -gt 0) {
+                $seen = $scopes.Peek()
+                $isRepeat = -not $seen.Ordinal.Add($pendingKey)
+                $collides = -not $seen.Folded.Add($pendingKey)
+                if ($isRepeat -or $collides) { [void]$duplicates.Add($pendingKey) }
+            }
+            $pendingKey = $null
+            $index++
+            continue
+        }
+        if ($ch -eq '{') {
+            # TWO sets per object, because two different things can go wrong.
+            # Ordinal catches a true repeat. Case-insensitive catches a pair
+            # like `schema`/`Schema`: those are DISTINCT JSON keys, but
+            # ConvertFrom-Json matches property names case-insensitively and
+            # keeps only the last, so the other one vanishes before any census
+            # can refuse it as an unknown field (Codex round 6, finding 1).
+            # The emitter writes five lower-case keys, so either is impossible
+            # from it.
+            $scopes.Push([pscustomobject]@{
+                Ordinal = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+                Folded  = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            })
+            $pendingKey = $null; $index++; continue
+        }
+        if ($ch -eq '}') { if ($scopes.Count -gt 0) { [void]$scopes.Pop() }; $pendingKey = $null; $index++; continue }
+        if ($ch -eq ',') { $pendingKey = $null; $index++; continue }
+        $index++
+    }
+    # Ordered ordinally for a stable diagnostic; the set has already done the
+    # deduplication, so nothing here can drop an identity.
+    $ordered = [string[]]@($duplicates)
+    [Array]::Sort($ordered, [StringComparer]::Ordinal)
+    return @($ordered)
+}
+
+function Get-PassiveCollectorFeatureAuthorityFromJson {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Json)
+
+    $duplicateKeys = @(Get-PassiveJsonDuplicateKeys -Json $Json)
+    if ($duplicateKeys.Count -ne 0) {
         throw (New-PassiveReadyContractMismatch `
             -Class 'collector_feature_dialect' `
-            -Field 'impl CollectorFeatureBits' `
-            -Expected 'the feature impl opens before the CaptureReadyV2 struct' `
-            -Observed "impl_at=$start struct_at=$end" `
-            -Message 'Collector feature-bit authority boundary is unavailable.')
+            -Field 'collector_feature_authority output' `
+            -Expected 'every object names each key once' `
+            -Observed "duplicated: $($duplicateKeys -join ',')" `
+            -Message 'Collector feature-bit authority repeated a JSON key.')
     }
-    $implSource = $PayloadSource.Substring($start, $end - $start)
-
-    $bits = [ordered]@{}
-    foreach ($match in [regex]::Matches(
-        $implSource,
-        'pub const ([A-Z0-9_]+): u32 = 1 << (\d+);'
-    )) {
-        $shift = [int]$match.Groups[2].Value
-        if ($shift -lt 0 -or $shift -gt 31) {
+    $parsed = $null
+    try {
+        $parsed = $Json | ConvertFrom-Json
+    } catch {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'collector_feature_authority output' `
+            -Expected 'one JSON object' `
+            -Observed "unparseable: $($_.Exception.Message)" `
+            -Message 'Collector feature-bit authority did not emit JSON.')
+    }
+    # ONE OBJECT. Windows PowerShell 5.1 unrolls a top-level JSON array, and a
+    # singleton array collapses to its element -- so `[{...}]` would otherwise be
+    # read as the object it contains, and a multi-element array would silently
+    # take the first.
+    if ($parsed -is [array]) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'collector_feature_authority output' `
+            -Expected 'one JSON object' `
+            -Observed "a JSON array of $(@($parsed).Count) element(s)" `
+            -Message 'Collector feature-bit authority emitted an array, not an object.')
+    }
+    if ($null -eq $parsed -or $parsed -isnot [psobject] -or
+        $parsed -is [string] -or $parsed -is [valuetype]) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'collector_feature_authority output' `
+            -Expected 'one JSON object' `
+            -Observed $(if ($null -eq $parsed) { 'null' } else { $parsed.GetType().FullName }) `
+            -Message 'Collector feature-bit authority did not emit a JSON object.')
+    }
+    # EXACT-CASE, EXACTLY ONCE. `-notcontains` is case-insensitive and
+    # ConvertFrom-Json keeps only the last of duplicate keys, so `"KNOWN_MASK"`
+    # or a repeated `"known_mask"` could satisfy a loose check while meaning
+    # something the emitter never wrote.
+    $present = @($parsed.PSObject.Properties.Name)
+    foreach ($field in @('schema', 'declared_bit', 'known_mask', 'diagnostic_mask', 'feature_names')) {
+        $matched = @($present | Where-Object { $_ -ceq $field })
+        if ($matched.Count -ne 1) {
             throw (New-PassiveReadyContractMismatch `
                 -Class 'collector_feature_dialect' `
-                -Field $match.Groups[1].Value `
-                -Expected 'a shift in 0..31' `
-                -Observed "1 << $shift" `
-                -Message "Collector feature bit '$($match.Groups[1].Value)' is not a u32 bit.")
+                -Field $field `
+                -Expected 'present exactly once, exact case' `
+                -Observed "occurrences=$($matched.Count) fields: $($present -join ',')" `
+                -Message "Collector feature-bit authority does not name '$field' exactly once.")
         }
-        $bits[$match.Groups[1].Value] = [uint32](1 -shl $shift)
     }
-    if ($bits.Count -eq 0) {
+    $unexpected = @($present | Where-Object {
+        $_ -cnotin @('schema', 'declared_bit', 'known_mask', 'diagnostic_mask', 'feature_names')
+    })
+    if ($unexpected.Count -ne 0) {
         throw (New-PassiveReadyContractMismatch `
             -Class 'collector_feature_dialect' `
-            -Field 'CollectorFeatureBits bit constants' `
-            -Expected 'at least one `pub const NAME: u32 = 1 << n;`' `
-            -Observed 'none' `
-            -Message 'Collector feature-bit authority declares no bits.')
+            -Field 'collector_feature_authority output' `
+            -Expected 'exactly the five declared fields' `
+            -Observed "also carries: $($unexpected -join ',')" `
+            -Message 'Collector feature-bit authority emitted an unknown field.')
     }
-    if (-not $bits.Contains('DECLARED') -or [uint32]$bits['DECLARED'] -ne [uint32]1) {
+    if ([string]$parsed.schema -cne 'hoi4-collector-feature-authority-v1') {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'schema' `
+            -Expected 'hoi4-collector-feature-authority-v1' `
+            -Observed ([string]$parsed.schema) `
+            -Message 'Collector feature-bit authority speaks an unknown schema.')
+    }
+
+    $declaredBit = ConvertTo-PassiveReceiptInteger $parsed.declared_bit u32 'declared_bit'
+    $knownMask = ConvertTo-PassiveReceiptInteger $parsed.known_mask u32 'known_mask'
+    $diagnosticMask = ConvertTo-PassiveReceiptInteger $parsed.diagnostic_mask u32 'diagnostic_mask'
+
+    if ($declaredBit -ne [uint32]1) {
         throw (New-PassiveReadyContractMismatch `
             -Class 'collector_feature_dialect' `
             -Field 'DECLARED' `
             -Expected '1' `
-            -Observed $(
-                if ($bits.Contains('DECLARED')) {
-                    [string][uint32]$bits['DECLARED']
-                } else {
-                    'not declared'
-                }
-            ) `
+            -Observed ([string]$declaredBit) `
             -Message 'Collector feature-bit authority does not put DECLARED in bit 0.')
     }
-
-    function Get-PassiveCollectorFeatureMask {
-        param(
-            [Parameter(Mandatory = $true)][string]$ImplSource,
-            [Parameter(Mandatory = $true)][object]$Bits,
-            [Parameter(Mandatory = $true)][string]$MaskName
-        )
-
-        $maskMatch = [regex]::Match(
-            $ImplSource,
-            ('pub const ' + $MaskName + ': u32 = ([^;]+);'),
-            [Text.RegularExpressions.RegexOptions]::Singleline
-        )
-        if (-not $maskMatch.Success) {
-            throw (New-PassiveReadyContractMismatch `
-                -Class 'collector_feature_dialect' `
-                -Field $MaskName `
-                -Expected "pub const ${MaskName}: u32 = ...;" `
-                -Observed 'not declared' `
-                -Message "Collector feature-bit authority does not declare $MaskName.")
-        }
-        $mask = [uint32]0
-        $expression = $maskMatch.Groups[1].Value
-        $members = [regex]::Matches($expression, 'Self::([A-Z0-9_]+)')
-        if ($members.Count -eq 0) {
-            throw (New-PassiveReadyContractMismatch `
-                -Class 'collector_feature_dialect' `
-                -Field $MaskName `
-                -Expected 'at least one Self::NAME member' `
-                -Observed $expression.Trim() `
-                -Message "Collector feature-bit authority declares an empty $MaskName.")
-        }
-        foreach ($member in $members) {
-            $name = $member.Groups[1].Value
-            if (-not $Bits.Contains($name)) {
-                throw (New-PassiveReadyContractMismatch `
-                    -Class 'collector_feature_dialect' `
-                    -Field "$MaskName member $name" `
-                    -Expected 'a bit constant this verifier already parsed' `
-                    -Observed "known bits: $(@($Bits.Keys) -join ',')" `
-                    -Message "Collector feature mask $MaskName names unknown bit '$name'.")
-            }
-            $mask = [uint32]($mask -bor [uint32]$Bits[$name])
-        }
-        # THE WHOLE EXPRESSION, OR NOTHING. Scanning for `Self::NAME` and
-        # ignoring what is left silently narrows the mask the moment a term is
-        # written any other way: spelling one member as the literal `1 << 2`
-        # instead of `Self::RANGE_TRACER` is identical Rust, and a mask term
-        # written that way once left this file believing KNOWN_MASK was 31 while
-        # the collector used 63 -- so a receipt declaring that feature would
-        # have been refused as unknown. Everything except the members and the
-        # `|` that joins them has to be whitespace.
-        $residue = ([regex]::Replace($expression, 'Self::[A-Z0-9_]+', '') `
-            -replace '\|', '').Trim()
-        if ($residue -ne '') {
-            throw (New-PassiveReadyContractMismatch `
-                -Class 'collector_feature_dialect' `
-                -Field $MaskName `
-                -Expected 'only Self::NAME members joined by |' `
-                -Observed $residue `
-                -Message (
-                    "Collector feature mask $MaskName has terms this verifier " +
-                    "cannot read: '$residue'."
-                ))
-        }
-        return $mask
-    }
-
-    $knownMask = Get-PassiveCollectorFeatureMask `
-        -ImplSource $implSource -Bits $bits -MaskName 'KNOWN_MASK'
-    $diagnosticMask = Get-PassiveCollectorFeatureMask `
-        -ImplSource $implSource -Bits $bits -MaskName 'DIAGNOSTIC_MASK'
-
-    $namesStart = $implSource.IndexOf('pub const FEATURE_NAMES:')
-    $namesEnd = $implSource.IndexOf('];', [Math]::Max($namesStart, 0))
-    if ($namesStart -lt 0 -or $namesEnd -le $namesStart) {
+    if (($knownMask -band $declaredBit) -eq 0) {
         throw (New-PassiveReadyContractMismatch `
             -Class 'collector_feature_dialect' `
-            -Field 'FEATURE_NAMES' `
-            -Expected 'pub const FEATURE_NAMES: [...] = [ .. ];' `
-            -Observed "declaration_at=$namesStart terminator_at=$namesEnd" `
-            -Message 'Collector feature-bit authority does not declare FEATURE_NAMES.')
+            -Field 'KNOWN_MASK' `
+            -Expected "contains DECLARED 0x$($declaredBit.ToString('x8'))" `
+            -Observed "0x$($knownMask.ToString('x8'))" `
+            -Message 'Collector KNOWN_MASK does not contain DECLARED.')
     }
-    $namesSource = $implSource.Substring($namesStart, $namesEnd - $namesStart)
+    # DIAGNOSTIC_MASK is `KNOWN_MASK & !DECLARED` in the contract; restating the
+    # relation here is what catches a truncated or edited emission.
+    $expectedDiagnostic = [uint32]($knownMask -band (-bnot $declaredBit))
+    if ($diagnosticMask -ne $expectedDiagnostic) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'DIAGNOSTIC_MASK' `
+            -Expected "0x$($expectedDiagnostic.ToString('x8'))" `
+            -Observed "0x$($diagnosticMask.ToString('x8'))" `
+            -Message 'Collector DIAGNOSTIC_MASK is not KNOWN_MASK without DECLARED.')
+    }
+
+    # ORDER IS LOAD-BEARING and is preserved exactly as emitted. The collector
+    # builds `collector_build.features` with
+    # `CollectorFeatureBits::feature_names()`, which walks FEATURE_NAMES in macro
+    # declaration order, and the admission below compares that list element for
+    # element. Sorting here would agree only while the entries happen to be
+    # declared in ascending shift order, which the macro does not require.
+    # A JSON ARRAY, not something array-shaped. `@(...)` wraps a bare object into
+    # a one-element array just as happily, so a `feature_names` that is a single
+    # object -- or a string -- would read as a legal one-entry list.
+    if ($parsed.feature_names -isnot [array]) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'feature_names' `
+            -Expected 'a JSON array' `
+            -Observed $(if ($null -eq $parsed.feature_names) { 'null' } else { $parsed.feature_names.GetType().FullName }) `
+            -Message 'Collector feature-bit authority did not emit feature_names as an array.')
+    }
     $featureNames = [Collections.Generic.List[object]]::new()
     $namedMask = [uint32]0
-    foreach ($match in [regex]::Matches(
-        $namesSource,
-        'Self::([A-Z0-9_]+)\s*,\s*"([^"]+)"',
-        [Text.RegularExpressions.RegexOptions]::Singleline
-    )) {
-        $name = $match.Groups[1].Value
-        if (-not $bits.Contains($name)) {
+    $seenNames = @{}
+    foreach ($entry in @($parsed.feature_names)) {
+        if ($null -eq $entry -or $entry -isnot [psobject] -or
+            $entry -is [array] -or $entry -is [string] -or $entry -is [valuetype]) {
             throw (New-PassiveReadyContractMismatch `
                 -Class 'collector_feature_dialect' `
-                -Field "FEATURE_NAMES entry $name" `
-                -Expected 'a bit constant this verifier already parsed' `
-                -Observed "known bits: $(@($bits.Keys) -join ',')" `
-                -Message "Collector FEATURE_NAMES names unknown bit '$name'.")
+                -Field 'feature_names[]' `
+                -Expected 'every entry is a JSON object' `
+                -Observed $(if ($null -eq $entry) { 'null' } else { $entry.GetType().FullName }) `
+                -Message 'Collector feature-bit authority emitted a feature entry that is not an object.')
         }
-        $bit = [uint32]$bits[$name]
+        $entryFields = @($entry.PSObject.Properties.Name)
+        foreach ($field in @('bit', 'cargo_name')) {
+            $matched = @($entryFields | Where-Object { $_ -ceq $field })
+            if ($matched.Count -ne 1) {
+                throw (New-PassiveReadyContractMismatch `
+                    -Class 'collector_feature_dialect' `
+                    -Field "feature_names[].$field" `
+                    -Expected 'present exactly once, exact case' `
+                    -Observed "occurrences=$($matched.Count) fields: $($entryFields -join ',')" `
+                    -Message "Collector feature-bit authority emitted a nameless feature entry.")
+            }
+        }
+        # Closed, like the top-level object. An entry carrying a field the
+        # emitter never writes is a vocabulary from something else.
+        $unexpectedEntryFields = @($entryFields | Where-Object { $_ -cnotin @('bit', 'cargo_name') })
+        if ($unexpectedEntryFields.Count -ne 0) {
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'collector_feature_dialect' `
+                -Field 'feature_names[]' `
+                -Expected 'exactly the two declared entry fields' `
+                -Observed "also carries: $($unexpectedEntryFields -join ',')" `
+                -Message 'Collector feature-bit authority emitted an unknown feature-entry field.')
+        }
+        $bit = ConvertTo-PassiveReceiptInteger $entry.bit u32 'feature_names[].bit'
+        # ONE BIT PER NAME. The macro assigns `1 << shift`, and
+        # `feature_names()` emits one name per SET bit, so a combined value like
+        # 6 is a vocabulary the collector cannot produce -- and it would make the
+        # coverage check below pass while mapping two different features to one
+        # name, so the expected receipt list would be wrong for either of them.
+        if ($bit -eq 0 -or ($bit -band ($bit - 1)) -ne 0) {
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'collector_feature_dialect' `
+                -Field 'feature_names[].bit' `
+                -Expected 'exactly one bit set' `
+                -Observed "0x$($bit.ToString('x8'))" `
+                -Message 'Collector feature-bit authority named a value that is not a single bit.')
+        }
+        if ($entry.cargo_name -isnot [string]) {
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'collector_feature_dialect' `
+                -Field 'feature_names[].cargo_name' `
+                -Expected 'a JSON string' `
+                -Observed $(if ($null -eq $entry.cargo_name) { 'null' } else { $entry.cargo_name.GetType().FullName }) `
+                -Message 'Collector feature-bit authority named a feature with a non-string.')
+        }
+        $cargoName = [string]$entry.cargo_name
+        if ($cargoName -eq '') {
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'collector_feature_dialect' `
+                -Field 'feature_names[].cargo_name' `
+                -Expected 'a nonempty cargo name' `
+                -Observed "bit 0x$($bit.ToString('x8')) has an empty name" `
+                -Message 'Collector feature-bit authority named a feature with an empty string.')
+        }
+        if (($bit -band $diagnosticMask) -eq 0) {
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'collector_feature_dialect' `
+                -Field "feature_names entry $cargoName" `
+                -Expected "inside DIAGNOSTIC_MASK 0x$($diagnosticMask.ToString('x8'))" `
+                -Observed "0x$($bit.ToString('x8'))" `
+                -Message "Collector feature '$cargoName' is not a diagnostic feature bit.")
+        }
         if (($namedMask -band $bit) -ne 0) {
             throw (New-PassiveReadyContractMismatch `
                 -Class 'collector_feature_dialect' `
-                -Field "FEATURE_NAMES entry $name" `
+                -Field "feature_names entry $cargoName" `
                 -Expected 'each bit named exactly once' `
-                -Observed 'named a second time' `
-                -Message "Collector FEATURE_NAMES names bit '$name' twice.")
+                -Observed "0x$($bit.ToString('x8')) named a second time" `
+                -Message "Collector FEATURE_NAMES names bit 0x$($bit.ToString('x8')) twice.")
         }
+        if ($seenNames.ContainsKey($cargoName)) {
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'collector_feature_dialect' `
+                -Field "feature_names entry $cargoName" `
+                -Expected 'each cargo name used by one bit' `
+                -Observed 'used a second time' `
+                -Message "Collector FEATURE_NAMES gives '$cargoName' to two bits.")
+        }
+        $seenNames[$cargoName] = $true
         $namedMask = [uint32]($namedMask -bor $bit)
-        $featureNames.Add([pscustomobject]@{
-            Bit = $bit
-            CargoName = $match.Groups[2].Value
-        })
+        $featureNames.Add([pscustomobject]@{ Bit = $bit; CargoName = $cargoName })
     }
     if ($featureNames.Count -eq 0) {
         throw (New-PassiveReadyContractMismatch `
             -Class 'collector_feature_dialect' `
             -Field 'FEATURE_NAMES' `
-            -Expected 'at least one (Self::NAME, "cargo-name") entry' `
+            -Expected 'at least one diagnostic feature bit to name' `
             -Observed 'none' `
-            -Message 'Collector FEATURE_NAMES is empty.')
+            -Message 'Collector FEATURE_NAMES names no cargo feature.')
     }
-    # EVERY ENTRY, OR NONE. The same failure as the mask residue above, one
-    # level down: an entry whose bit is written as a literal rather than
-    # `Self::NAME` matches nothing and is dropped without a word, leaving a
-    # compiled feature with no name to report. The cargo-name string literals
-    # are counted independently of how the bit is spelled, so a dropped entry
-    # shows up as a mismatch.
-    $quotedNames = [regex]::Matches($namesSource, '"[^"]*"').Count
-    if ($quotedNames -ne $featureNames.Count) {
-        throw (New-PassiveReadyContractMismatch `
-            -Class 'collector_feature_dialect' `
-            -Field 'FEATURE_NAMES' `
-            -Expected "$quotedNames entries bound to a readable bit" `
-            -Observed "$($featureNames.Count) bound" `
-            -Message (
-                "Collector FEATURE_NAMES declares $quotedNames cargo names but " +
-                "$($featureNames.Count) of them are bound to a bit this verifier " +
-                'can read.'
-            ))
-    }
-    # Every bit the contract DECLARES has to be inside KNOWN_MASK. Without
-    # this, a bit constant left out of the mask expression is simply invisible
-    # here while the collector can still set it, and this file would refuse the
-    # resulting receipt as carrying an unknown bit.
-    foreach ($entry in $bits.GetEnumerator()) {
-        if (([uint32]$entry.Value -band $knownMask) -eq 0) {
-            throw (New-PassiveReadyContractMismatch `
-                -Class 'collector_feature_dialect' `
-                -Field $entry.Key `
-                -Expected "inside KNOWN_MASK 0x$($knownMask.ToString('x8'))" `
-                -Observed "0x$(([uint32]$entry.Value).ToString('x8'))" `
-                -Message (
-                    "Collector feature bit '$($entry.Key)' is declared but is not " +
-                    'in KNOWN_MASK.'
-                ))
-        }
-    }
-    # DECLARED is not a cargo feature and must not be spelled as one; every
-    # other known bit must be, or a set bit would have no name to report.
-    if (($namedMask -band [uint32]$bits['DECLARED']) -ne 0) {
-        throw (New-PassiveReadyContractMismatch `
-            -Class 'collector_feature_dialect' `
-            -Field 'FEATURE_NAMES/DECLARED' `
-            -Expected 'DECLARED absent from FEATURE_NAMES' `
-            -Observed 'DECLARED spelled as a cargo feature' `
-            -Message 'Collector FEATURE_NAMES spells DECLARED as a cargo feature.')
-    }
-    if ([uint32]($namedMask -bor [uint32]$bits['DECLARED']) -ne $knownMask) {
+    # Every diagnostic bit must be named, or a set bit would have no name to
+    # report and a diagnostic build would describe itself as clean.
+    if ($namedMask -ne $diagnosticMask) {
         throw (New-PassiveReadyContractMismatch `
             -Class 'collector_feature_dialect' `
             -Field 'FEATURE_NAMES coverage' `
-            -Expected "0x$($knownMask.ToString('x8'))" `
-            -Observed "0x$(([uint32]($namedMask -bor [uint32]$bits['DECLARED'])).ToString('x8'))" `
-            -Message 'Collector FEATURE_NAMES does not cover every known feature bit.')
+            -Expected "0x$($diagnosticMask.ToString('x8'))" `
+            -Observed "0x$($namedMask.ToString('x8'))" `
+            -Message 'Collector FEATURE_NAMES does not cover every diagnostic feature bit.')
     }
-    if (($diagnosticMask -band [uint32]$bits['DECLARED']) -ne 0) {
-        throw (New-PassiveReadyContractMismatch `
-            -Class 'collector_feature_dialect' `
-            -Field 'DIAGNOSTIC_MASK' `
-            -Expected 'DECLARED excluded' `
-            -Observed "0x$($diagnosticMask.ToString('x8'))" `
-            -Message 'Collector DIAGNOSTIC_MASK includes DECLARED.')
-    }
-    if (($diagnosticMask -band (-bnot $knownMask)) -ne 0) {
-        throw (New-PassiveReadyContractMismatch `
-            -Class 'collector_feature_dialect' `
-            -Field 'DIAGNOSTIC_MASK' `
-            -Expected "a subset of KNOWN_MASK 0x$($knownMask.ToString('x8'))" `
-            -Observed "0x$($diagnosticMask.ToString('x8'))" `
-            -Message 'Collector DIAGNOSTIC_MASK is not a subset of KNOWN_MASK.')
-    }
-    $ordered = @(
-        $featureNames | Sort-Object -Property { [uint32]$_.Bit }
-    )
+
     return [pscustomobject]@{
-        DeclaredBit = [uint32]$bits['DECLARED']
-        KnownMask = [uint32]$knownMask
-        DiagnosticMask = [uint32]$diagnosticMask
-        FeatureNames = $ordered
+        DeclaredBit = $declaredBit
+        KnownMask = $knownMask
+        DiagnosticMask = $diagnosticMask
+        FeatureNames = @($featureNames)
     }
 }
 
-function Get-PassiveControlTransportPayloadSource {
-    $nativeRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-    $payloadPath = Join-Path `
-        $nativeRoot 'compact_contract\src\control_transport\payloads.rs'
-    if (-not (Test-Path -LiteralPath $payloadPath -PathType Leaf)) {
-        throw (New-PassiveReadyContractMismatch `
-            -Class 'producer_sources' `
-            -Field 'control_transport/payloads.rs' `
-            -Expected 'readable at the canonical path' `
-            -Observed "missing: $payloadPath" `
-            -Message 'Passive READY canonical Rust producer sources are unavailable.')
-    }
-    return (Get-Content -LiteralPath $payloadPath -Raw)
-}
-
+# Ask THE RECORDER HOST for its own feature vocabulary.
+#
+# `collector_record.exe` and not a tool of its own: the harness must not be able
+# to read one build's vocabulary while admitting another build's receipt. A
+# separate binary sits outside `Invoke-ReleaseManual.ps1`'s build set and outside
+# the artifact attestation, so a stale copy could survive beside freshly attested
+# artifacts and still be believed (Codex review 01a0569f, round 3 finding 1).
+# The recorder host is the binary the harness already requires, already attests,
+# and is about to launch, which makes "same build" structural rather than hoped
+# for.
 function Get-PassiveCollectorFeatureAuthority {
-    return (Get-PassiveCollectorFeatureAuthorityFromSource `
-        (Get-PassiveControlTransportPayloadSource))
+    param(
+        [string]$RecorderHostPath = '',
+        # Where the child writes its vocabulary. Overridable ONLY so a probe
+        # can point it at a directory whose name contains spaces and thereby
+        # exercise THIS function's quoting rather than reproducing it
+        # (Codex round 5, finding 2). Production never passes it.
+        [string]$OutputDirectory = ''
+    )
+
+    if ([string]::IsNullOrEmpty($RecorderHostPath)) {
+        $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
+        $RecorderHostPath = Join-Path $repoRoot '.cargo-target\release\collector_record.exe'
+    }
+    if (-not (Test-Path -LiteralPath $RecorderHostPath -PathType Leaf)) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'collector_feature_dialect' `
+            -Field 'collector_record.exe' `
+            -Expected 'the recorder host is built and readable' `
+            -Observed "missing: $RecorderHostPath" `
+            -Message ('Collector feature-bit authority is unavailable ' +
+                      '(cargo build --release -p recorder_host).'))
+    }
+    # A FILE, AND `Start-Process -Wait`, because the recorder host is linked
+    # /SUBSYSTEM:WINDOWS. A console-less child has no stdout for the pipeline to
+    # capture: `& $host --flag` returned NOTHING here and did not even surface
+    # the child's exit code, so a stdout transport would have read an empty
+    # vocabulary as a contract failure on every run. Naming an output path and
+    # waiting on the process makes both the payload and the exit code real.
+    if ([string]::IsNullOrEmpty($OutputDirectory)) { $OutputDirectory = [IO.Path]::GetTempPath() }
+    $outPath = Join-Path $OutputDirectory ("hoi4_cfa_{0}.json" -f [guid]::NewGuid().ToString('N'))
+    $text = ''
+    try {
+        $process = $null
+        try {
+            # QUOTED. Start-Process joins -ArgumentList with spaces and does not
+            # add quotes of its own, so an output path under a profile like
+            # `C:\Users\Example Doe\...` would arrive as two arguments and the
+            # child would write the prefix instead of the file.
+            $process = Start-Process -FilePath $RecorderHostPath `
+                -ArgumentList @('--print-collector-feature-authority', ('"' + $outPath + '"')) `
+                -Wait -PassThru -NoNewWindow -ErrorAction Stop
+        } catch {
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'collector_feature_dialect' `
+                -Field 'collector_record.exe' `
+                -Expected 'the recorder host runs and states its feature vocabulary' `
+                -Observed (([string]$_.Exception.Message) -replace '\s+', ' ').Trim() `
+                -Message 'Collector feature-bit authority could not be run.')
+        }
+        if ($null -eq $process -or $process.ExitCode -ne 0) {
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'collector_feature_dialect' `
+                -Field 'collector_record.exe' `
+                -Expected 'exit code 0' `
+                -Observed $(
+                    if ($null -eq $process) {
+                        'the recorder host exposed no process object'
+                    } else {
+                        "exit=$($process.ExitCode)"
+                    }
+                ) `
+                -Message 'Collector feature-bit authority run failed.')
+        }
+        if (-not (Test-Path -LiteralPath $outPath -PathType Leaf)) {
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'collector_feature_dialect' `
+                -Field 'collector_record.exe' `
+                -Expected 'the recorder host wrote its feature vocabulary' `
+                -Observed "no file at $outPath" `
+                -Message 'Collector feature-bit authority wrote nothing.')
+        }
+        $text = (Get-Content -LiteralPath $outPath -Raw)
+    } finally {
+        if (Test-Path -LiteralPath $outPath -PathType Leaf) {
+            Remove-Item -LiteralPath $outPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+    return (Get-PassiveCollectorFeatureAuthorityFromJson $text)
 }
 
 # The producer's feature word as it rides the wire at CaptureReadyV2 offset 20.
@@ -1457,10 +1640,11 @@ function Assert-PassiveReadySourceContractParity {
             -Class 'wire_fragment' `
             -Message "Passive READY wire verifier/producer parity failed: missing '$fragment'."
     }
-    # Parsed here so a contract this file cannot read is a source-parity
+    # Read here so a feature vocabulary this file cannot admit is a source-parity
     # failure, reported before a capture opens a graded window, rather than a
-    # surprise in the middle of receipt admission.
-    [void](Get-PassiveCollectorFeatureAuthorityFromSource $payload)
+    # surprise in the middle of receipt admission. It comes from the contract's
+    # own emitter now, not from $payload -- there is no Rust text left to parse.
+    [void](Get-PassiveCollectorFeatureAuthority)
     $readyEncoderStart = $payload.IndexOf('impl CaptureReadyV2 {')
     $readyEncoderEnd = $payload.IndexOf(
         'pub struct CaptureReadyAckFlags',
