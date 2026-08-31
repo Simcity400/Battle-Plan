@@ -3965,6 +3965,204 @@ mod tests {
         }
     }
 
+    fn exercise_terminal_h4fd_custody(poison_d75: bool) {
+        use compact_contract::frame_degraded::{
+            FrameDegradedDiagnosis, FrameDegradedDomain, FrameDegradedRecordV2,
+        };
+        let _test_runtime = TEST_RUNTIME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let base = unsafe {
+            VirtualAlloc(
+                ptr::null_mut(),
+                0x0160_0000,
+                MEM_RESERVE | MEM_COMMIT,
+                PAGE_EXECUTE_READWRITE,
+            ) as *mut u8
+        };
+        assert!(!base.is_null());
+        unsafe { a729_inline_hook::seed_exact_test_image(base) };
+        install_a729_event_runtime(base as usize, Arc::new(CompleteBridge), 8).unwrap();
+        let sink_authority = take_authoritative_terminal_sink_authority().unwrap();
+        if poison_d75 {
+            let runtime = runtime_slot().lock().unwrap().as_ref().unwrap().clone();
+            runtime.ledger.note_shadow_mismatch();
+        }
+        register_a19_delayed_event_dispatch_observer(delayed_dispatch_observer).unwrap();
+        bind_test_d64_authority();
+        unregister_a19_delayed_event_dispatch_observer().unwrap();
+        let mut custody =
+            seal_and_reserve_a729_terminal_custody([0x61; 32], 1, 2, Duration::from_millis(250))
+                .unwrap();
+        assert_eq!(custody.snapshot().frame.fired_events_complete, !poison_d75);
+        assert_eq!(custody.snapshot().frame.telemetry.zero_gap(), !poison_d75);
+        assert_eq!(
+            custody.snapshot().frame.telemetry.fired_ledger_shadow_mismatches,
+            u64::from(poison_d75),
+        );
+        assert_eq!(custody.snapshot().frame.rows.len(), 1);
+        let d64_receipt = custody
+            .confirm_dispatch_observer_detached_before_final_d64()
+            .unwrap()
+            .run_final_d64_drain()
+            .unwrap();
+        custody.bind_final_d64_drain_receipt(&d64_receipt).unwrap();
+        let terminal_payload = custody.snapshot().encode_payload().unwrap();
+        let mut frame = test_terminal_frame(
+            1,
+            &terminal_payload,
+            custody.d64_terminal_lifecycle_envelope_sha256.unwrap(),
+            d64_receipt.terminal_del2(),
+        );
+        if poison_d75 {
+            let status_offset = compact_contract::COMPACT_RECORD_HEADER_LEN + 32;
+            frame[status_offset..status_offset + 4]
+                .copy_from_slice(&compact_contract::COMPACT_STATUS_PARTIAL_DATA.to_le_bytes());
+        }
+        let end_len = compact_contract::COMPACT_RECORD_HEADER_LEN
+            + compact_contract::COMPACT_FRAME_END_PAYLOAD_LEN;
+        let mut frame_end = frame.split_off(frame.len() - end_len);
+        let mut next_sequence = 13u64;
+        let mut d64_perf = vec![0u8; 40];
+        for offset in [16usize, 20, 24, 28] {
+            d64_perf[offset..offset + 4].copy_from_slice(&1u32.to_le_bytes());
+        }
+        append_test_h4cr_record(
+            &mut frame,
+            next_sequence,
+            1,
+            64,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &d64_perf,
+        );
+        next_sequence += 1;
+        if !poison_d75 {
+            let mut degraded_perf = vec![0u8; 40];
+            degraded_perf[32..36]
+                .copy_from_slice(&compact_contract::COMPACT_STATUS_PARTIAL_DATA.to_le_bytes());
+            append_test_h4cr_record(
+                &mut frame,
+                next_sequence,
+                1,
+                29,
+                compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                0,
+                &degraded_perf,
+            );
+            next_sequence += 1;
+        }
+        let emitted_domains = if poison_d75 { 2u32 } else { 3u32 };
+        frame_end[8..16].copy_from_slice(&(next_sequence + 1).to_le_bytes());
+        let frame_end_payload = compact_contract::COMPACT_RECORD_HEADER_LEN;
+        frame_end[frame_end_payload + 16..frame_end_payload + 20]
+            .copy_from_slice(&emitted_domains.to_le_bytes());
+        frame_end[frame_end_payload + 20..frame_end_payload + 24]
+            .copy_from_slice(&emitted_domains.to_le_bytes());
+        let reason = "terminal_fixture_loss=1";
+        let notice = FrameDegradedRecordV2 {
+            degraded_hour: 1,
+            domains: vec![FrameDegradedDomain::from_status(
+                if poison_d75 { crate::DOMAIN_ID } else { 29 },
+                compact_contract::COMPACT_STATUS_PARTIAL_DATA,
+                FrameDegradedDiagnosis::undeclared(
+                    compact_contract::diagnostic_channel::Authority::SelfDomain,
+                    reason,
+                ),
+            )
+            .unwrap()],
+        }
+        .encode()
+        .unwrap();
+        append_test_h4cr_record(
+            &mut frame,
+            next_sequence,
+            1,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            compact_contract::COMPACT_RECORD_TYPE_FRAME_DEGRADED,
+            0,
+            &notice,
+        );
+        frame.extend_from_slice(&frame_end);
+        let permit = custody.take_terminal_publication_permit(&frame).unwrap();
+        let mut changed = frame.clone();
+        let reason_start = changed
+            .windows(reason.len())
+            .position(|bytes| bytes == reason.as_bytes())
+            .unwrap();
+        changed[reason_start + reason.len() - 1] = b'2';
+        let mut sink_bytes = Vec::new();
+        let mut sink = permit
+            .bind_authoritative_sink(sink_authority, &mut sink_bytes)
+            .unwrap();
+        let failure = expect_refusal(
+            publish_terminal_h4cr_to_authoritative_sink(permit, &changed, &mut sink),
+            "post-permit H4FD mutation",
+        );
+        assert!(failure.message().contains("pre-authorized frame"));
+        assert!(!failure.sink_state_indeterminate());
+        let permit = failure.into_retry_permit().unwrap();
+        let acceptance =
+            publish_terminal_h4cr_to_authoritative_sink(permit, &frame, &mut sink).unwrap();
+        drop(sink);
+        assert_eq!(sink_bytes, frame);
+        assert_eq!(acceptance.terminal_frame_end_sequence(), next_sequence + 1);
+        if poison_d75 {
+            let error = commit_a729_terminal_custody_and_uninstall(
+                &mut custody,
+                &acceptance,
+                Duration::from_millis(250),
+            )
+            .unwrap_err();
+            assert_eq!(
+                error,
+                "XUI21 terminal D75 telemetry is completeness-poisoned; abort is required",
+            );
+            assert!(custody.runtime.is_some());
+            assert!(custody.runtime.as_ref().unwrap().hooks.lock().unwrap().is_some());
+            let receipt = abort_a729_terminal_custody_and_uninstall(
+                &mut custody,
+                Duration::from_millis(250),
+            )
+            .unwrap();
+            assert!(!receipt.custody_successful);
+            assert!(!receipt.publication_committed);
+            assert!(receipt.completeness_poisoned);
+            assert_eq!(receipt.row_count, 1);
+            assert_eq!(receipt.semantic_hook_release_receipts.len(), 3);
+        } else {
+            let receipt = commit_a729_terminal_custody_and_uninstall(
+                &mut custody,
+                &acceptance,
+                Duration::from_millis(250),
+            )
+            .unwrap();
+            assert!(receipt.custody_successful);
+            assert!(receipt.publication_committed);
+            assert!(!receipt.completeness_poisoned);
+            assert_eq!(receipt.row_count, 1);
+            assert_eq!(receipt.semantic_hook_release_receipts.len(), 3);
+        }
+        assert!(installed_source().is_none());
+        for site in a729_inline_hook::FULL_EVIDENCE_SITES {
+            assert_eq!(
+                unsafe { std::slice::from_raw_parts(base.add(site.rva), site.expected.len()) },
+                site.expected,
+            );
+        }
+        unsafe { VirtualFree(base.cast(), 0, MEM_RELEASE) };
+    }
+
+    #[test]
+    fn terminal_h4fd_preserves_complete_d75_custody_and_rejects_mutation() {
+        exercise_terminal_h4fd_custody(false);
+    }
+
+    #[test]
+    fn terminal_h4fd_does_not_authorize_poisoned_d75_custody_commit() {
+        exercise_terminal_h4fd_custody(true);
+    }
+
     #[test]
     fn complete_install_terminal_publication_and_three_site_release_are_atomic() {
         let _test_runtime = TEST_RUNTIME_LOCK

@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::control_transport::{
-    ControlCancellation, ControlCapabilities, ControlDeadline, ControlFrame, ControlPeerIdentity,
-    DeadlineControlChannel, DeadlineControlInputReadiness, DeadlineControlIo, EndpointRole,
-    MessageKind,
+    ControlCancellation, ControlCapabilities, ControlDeadline, ControlError, ControlFrame,
+    ControlPeerIdentity, DeadlineControlChannel, DeadlineControlInputReadiness, DeadlineControlIo,
+    EndpointRole, MessageKind,
 };
 use crate::duplex_session::identity_control::{
     AcknowledgedFirstCompactRecord, AcknowledgedIdentityFailure, IdentityDurableCandidateSink,
@@ -17,6 +17,7 @@ use crate::duplex_session::rollover_control::{
 };
 use crate::duplex_session::rollover_fs::FilesystemRolloverStore;
 use crate::duplex_session::{HeartbeatError, HeartbeatProof, HeartbeatState, RecorderHeartbeat};
+use crate::hourly_service::{HourlyServiceBinding, HourlyServiceReceiver};
 use crate::transport_status::{decode_sink_failure, SinkFailureReport, SinkStatusError};
 use crate::windows_control_pipe::{
     prepare_control_listener, ControlPipeBackend, ControlPipeError, ListenerReadyProof,
@@ -977,6 +978,10 @@ pub struct DuplexWorkerSession<I: DeadlineControlIo> {
     failure: Option<String>,
     sink_failure: Option<SinkFailureReport>,
     required_capabilities: ControlCapabilities,
+    authenticated_session_id: Option<[u8; 16]>,
+    hourly_service_receiver: Option<HourlyServiceReceiver>,
+    hourly_service_census_received: bool,
+    hourly_service_ack_error: Option<ControlError>,
 }
 
 impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
@@ -1037,11 +1042,179 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
             failure: None,
             sink_failure: None,
             required_capabilities,
+            authenticated_session_id: None,
+            hourly_service_receiver: None,
+            hourly_service_census_received: false,
+            hourly_service_ack_error: None,
         }
     }
 
     pub fn state(&self) -> DuplexWorkerState {
         self.state
+    }
+
+    pub fn hourly_service_binding(&self) -> Option<HourlyServiceBinding> {
+        let session_id = self.authenticated_session_id?;
+        let peer = self.channel.peer();
+        Some(HourlyServiceBinding::new(
+            session_id,
+            peer.pid,
+            peer.creation_filetime,
+            self.collector_hello_expectation.dll_sha256,
+        ))
+    }
+
+    pub fn install_hourly_service_receiver(&mut self, receiver: HourlyServiceReceiver) {
+        self.hourly_service_receiver = Some(receiver);
+    }
+
+    pub fn record_hourly_service_transport_failure(&mut self, error: &str) {
+        if let Some(receiver) = self.hourly_service_receiver.as_mut() {
+            receiver.transport_failed(error);
+        }
+    }
+
+    fn service_hourly_service_frame(
+        &mut self,
+        frame: &ControlFrame,
+        deadline: ControlDeadline,
+    ) -> bool {
+        if !crate::hourly_service::is_hourly_service_kind(frame.kind) {
+            return false;
+        }
+        if frame.kind == MessageKind::HourlyServiceCensus {
+            self.hourly_service_census_received = true;
+        }
+        let acknowledgement = match self.hourly_service_receiver.as_mut() {
+            Some(receiver) => receiver.receive(frame),
+            None => crate::hourly_service::rejected_ack(frame),
+        };
+        if let Some(acknowledgement) = acknowledgement {
+            match acknowledgement.encode() {
+                Ok(payload) => {
+                    if let Err(error) = self.channel.send_until(
+                        MessageKind::HourlyServiceAck,
+                        &payload,
+                        deadline,
+                        &self.transport_cancellation,
+                    ) {
+                        self.record_hourly_service_transport_failure(&error.to_string());
+                        self.hourly_service_ack_error = Some(error);
+                    }
+                }
+                Err(error) => self.record_hourly_service_transport_failure(&error.to_string()),
+            }
+        }
+        true
+    }
+
+    fn recv_non_hourly_service_until(
+        &mut self,
+        deadline: ControlDeadline,
+    ) -> Result<ControlFrame, ControlError> {
+        loop {
+            let frame = self
+                .channel
+                .recv_until(deadline, &self.transport_cancellation)?;
+            if !self.service_hourly_service_frame(&frame, deadline) {
+                return Ok(frame);
+            }
+        }
+    }
+
+    fn terminal_control_error(&mut self, error: ControlError) -> DuplexWorkerError {
+        let diagnostic_only = matches!(
+            error,
+            ControlError::DeadlineExpired
+                | ControlError::Cancelled
+                | ControlError::Io(_)
+                | ControlError::Truncated
+        );
+        let error = DuplexWorkerError::Transport(error.to_string());
+        if !diagnostic_only {
+            self.fail(error.to_string());
+        }
+        error
+    }
+
+    pub fn terminal_timing_until(
+        &mut self,
+        deadline: ControlDeadline,
+    ) -> Result<(), DuplexWorkerError>
+    where
+        I: DeadlineControlInputReadiness,
+    {
+        self.terminal_timing_with_challenges_until(deadline, super::staging::generate_secret_128)
+    }
+
+    fn terminal_timing_with_challenges_until<F>(
+        &mut self,
+        deadline: ControlDeadline,
+        mut challenge: F,
+    ) -> Result<(), DuplexWorkerError>
+    where
+        I: DeadlineControlInputReadiness,
+        F: FnMut() -> Result<[u8; 16], String>,
+    {
+        let mut next_challenge_due = Instant::now();
+        let mut challenge_pending = false;
+        loop {
+            if self.channel.is_poisoned() {
+                let error = self.hourly_service_ack_error.take().unwrap_or(ControlError::Poisoned);
+                return Err(self.terminal_control_error(error));
+            }
+            if self.hourly_service_census_received {
+                return Ok(());
+            }
+            if deadline.is_expired() {
+                return Err(DuplexWorkerError::GracefulStopExpired);
+            }
+            if self.transport_cancellation.is_cancelled() {
+                return Err(DuplexWorkerError::Transport(ControlError::Cancelled.to_string()));
+            }
+            let now = Instant::now();
+            if !challenge_pending && now >= next_challenge_due {
+                if let Err(error) = self.heartbeat.send_challenge(
+                    &mut self.channel,
+                    challenge().map_err(DuplexWorkerError::Transport)?,
+                    deadline,
+                    &self.transport_cancellation,
+                ) {
+                    if !matches!(error, HeartbeatError::Transport(_)) {
+                        self.fail(error.to_string());
+                    }
+                    return Err(DuplexWorkerError::Heartbeat(error));
+                }
+                challenge_pending = true;
+                next_challenge_due = now.checked_add(Duration::from_millis(policy::HEARTBEAT_INTERVAL_MS))
+                    .ok_or_else(|| DuplexWorkerError::Transport("terminal heartbeat schedule overflow".into()))?;
+            }
+            let available = self.channel.input_bytes_available_until(deadline, &self.transport_cancellation)
+                .map_err(|error| self.terminal_control_error(error))?;
+            if available != 0 {
+                let frame = self.channel.recv_until(deadline, &self.transport_cancellation)
+                    .map_err(|error| self.terminal_control_error(error))?;
+                if self.service_hourly_service_frame(&frame, deadline) {
+                    continue;
+                }
+                if matches!(frame.kind, MessageKind::SinkSetupFailure | MessageKind::SinkTerminalFailure) {
+                    return Err(self.consume_sink_failure(frame));
+                }
+                if let Err(error) = self.heartbeat.accept_proof_frame(&mut self.channel, frame) {
+                    self.fail(error.to_string());
+                    return Err(DuplexWorkerError::Heartbeat(error));
+                }
+                challenge_pending = false;
+                continue;
+            }
+            let mut sleep_for = deadline.remaining()
+                .ok_or(DuplexWorkerError::GracefulStopExpired)?
+                .min(Duration::from_millis(25));
+            if !challenge_pending {
+                sleep_for = sleep_for.min(next_challenge_due.saturating_duration_since(Instant::now()));
+            }
+            std::thread::sleep(sleep_for);
+        }
     }
 
     pub fn graceful_stop_token(&self) -> GracefulStopToken {
@@ -1108,6 +1281,7 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
             self.fail(error.to_string());
             return Err(error);
         }
+        self.authenticated_session_id = Some(*frame.session_id.as_bytes());
         self.state = DuplexWorkerState::WaitingForWorld;
         self.last_proven_alive = Some(observed_at);
         self.waiting_for_world_since = Some(observed_at);
@@ -1175,13 +1349,25 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
         &mut self,
         identity: &mut RecorderIdentityControlDispatcher<S>,
         deadline: ControlDeadline,
-    ) -> Result<AcknowledgedIdentityFailure, DuplexWorkerError> {
+    ) -> Result<Option<AcknowledgedIdentityFailure>, DuplexWorkerError> {
         self.require_state(
             DuplexWorkerState::WaitingForWorld,
             "acknowledge startup identity failure",
         )?;
-        match identity.receive_and_dispatch_identity_failure(
+        let frame = match self.channel.recv_until(deadline, &self.transport_cancellation) {
+            Ok(frame) => frame,
+            Err(error) => {
+                let error = DuplexWorkerError::IdentityControl(error.to_string());
+                self.fail(error.to_string());
+                return Err(error);
+            }
+        };
+        if self.service_hourly_service_frame(&frame, deadline) {
+            return Ok(None);
+        }
+        match identity.dispatch_identity_failure_frame(
             &mut self.channel,
+            frame,
             deadline,
             &self.transport_cancellation,
         ) {
@@ -1191,7 +1377,7 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
                     "collector identity failed before CID1: reason={:?} attempt_id={} logical_id={:?}",
                     failure.reason, failure.attempt_id, failure.current_logical_id
                 ));
-                Ok(acknowledged)
+                Ok(Some(acknowledged))
             }
             Err(error) => {
                 let error = DuplexWorkerError::IdentityControl(error.to_string());
@@ -1287,8 +1473,7 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
                 )
                 .map_err(DuplexWorkerError::Heartbeat)?;
             let frame = self
-                .channel
-                .recv_until(deadline, &self.transport_cancellation)
+                .recv_non_hourly_service_until(deadline)
                 .map_err(|error| DuplexWorkerError::Transport(error.to_string()))?;
             if matches!(
                 frame.kind,
@@ -1357,8 +1542,7 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
             let mut acknowledged_identity_failures = Vec::new();
             loop {
                 let frame = self
-                    .channel
-                    .recv_until(deadline, &self.transport_cancellation)
+                    .recv_non_hourly_service_until(deadline)
                     .map_err(|error| DuplexWorkerError::Transport(error.to_string()))?;
                 if matches!(
                     frame.kind,
@@ -1441,8 +1625,7 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
             let mut acknowledged_identity_failures = Vec::new();
             let proof = loop {
                 let frame = self
-                    .channel
-                    .recv_until(deadline, &self.transport_cancellation)
+                    .recv_non_hourly_service_until(deadline)
                     .map_err(|error| DuplexWorkerError::Transport(error.to_string()))?;
                 if matches!(
                     frame.kind,
@@ -1469,8 +1652,7 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
             };
             let rollover_proposal = if proof.state == HeartbeatState::PausedForControl {
                 let frame = self
-                    .channel
-                    .recv_until(deadline, &self.transport_cancellation)
+                    .recv_non_hourly_service_until(deadline)
                     .map_err(|error| DuplexWorkerError::Transport(error.to_string()))?;
                 let proposal = rollover
                     .receive_frame_drain_seal_open_and_ack(
@@ -1538,9 +1720,18 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
         if self.required_capabilities != ControlCapabilities::auto_attach_duplex_rollover_v1() {
             return Err(DuplexWorkerError::ActivationDisabled);
         }
-        let proposal = match coordinator.receive_drain_seal_open_and_ack(
+        let frame = match self.recv_non_hourly_service_until(deadline) {
+            Ok(frame) => frame,
+            Err(error) => {
+                let error = DuplexWorkerError::RolloverControl(error.to_string());
+                self.fail(error.to_string());
+                return Err(error);
+            }
+        };
+        let proposal = match coordinator.receive_frame_drain_seal_open_and_ack(
             &mut self.channel,
             store,
+            frame,
             deadline,
             &self.transport_cancellation,
         ) {
@@ -1669,10 +1860,7 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
         &mut self,
         deadline: ControlDeadline,
     ) -> Result<(), DuplexWorkerError> {
-        let frame = match self
-            .channel
-            .recv_until(deadline, &self.transport_cancellation)
-        {
+        let frame = match self.recv_non_hourly_service_until(deadline) {
             Ok(frame) => frame,
             Err(error) => {
                 self.fail(error.to_string());
@@ -1806,15 +1994,17 @@ mod tests {
     struct MockIo {
         inbound: VecDeque<u8>,
         outbound: Vec<u8>,
+        deadlines: Vec<Instant>,
     }
 
     impl DeadlineControlIo for MockIo {
         fn send_all_until(
             &mut self,
             bytes: &[u8],
-            _deadline: ControlDeadline,
+            deadline: ControlDeadline,
             cancellation: &ControlCancellation,
         ) -> io::Result<()> {
+            self.deadlines.push(deadline.instant());
             if cancellation.is_cancelled() {
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
             }
@@ -1825,9 +2015,10 @@ mod tests {
         fn recv_exact_until(
             &mut self,
             bytes: &mut [u8],
-            _deadline: ControlDeadline,
+            deadline: ControlDeadline,
             cancellation: &ControlCancellation,
         ) -> io::Result<()> {
+            self.deadlines.push(deadline.instant());
             if cancellation.is_cancelled() {
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
             }
@@ -1838,6 +2029,12 @@ mod tests {
                     .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "mock EOF"))?;
             }
             Ok(())
+        }
+    }
+
+    impl DeadlineControlInputReadiness for MockIo {
+        fn input_bytes_available(&self) -> io::Result<usize> {
+            Ok(self.inbound.len())
         }
     }
 
@@ -2073,6 +2270,7 @@ mod tests {
             io: Some(MockIo {
                 inbound: inbound.into(),
                 outbound: Vec::new(),
+                deadlines: Vec::new(),
             }),
             created: false,
         };
@@ -2134,6 +2332,366 @@ mod tests {
             .unwrap()
     }
 
+    fn session_with_control_messages(
+        messages: &[(MessageKind, Vec<u8>)],
+    ) -> DuplexWorkerSession<MockIo> {
+        let session_bytes = unique_test_session_bytes();
+        let session_id = SessionId::from_bytes(session_bytes).unwrap();
+        let mut inbound = encode_frame(
+            session_id,
+            0,
+            MessageKind::CollectorHello,
+            &super::super::proof::collector_hello_with_capabilities_payload(
+                &expectation(),
+                worker_capabilities(),
+            ),
+        )
+        .unwrap();
+        for (index, (kind, payload)) in messages.iter().enumerate() {
+            inbound.extend_from_slice(
+                &encode_frame(session_id, index as u64 + 1, *kind, payload).unwrap(),
+            );
+        }
+        accept(prepared_with_inbound(session_bytes, inbound))
+    }
+
+    fn hourly_routing_heartbeat_payload(challenge: [u8; 16]) -> Vec<u8> {
+        encode_heartbeat_proof(HeartbeatProof {
+            challenge,
+            last_complete_h4cr_sequence: 7,
+            state: HeartbeatState::Producing,
+        })
+        .unwrap()
+        .to_vec()
+    }
+
+    #[test]
+    fn hourly_service_malformed_payloads_do_not_replace_a_heartbeat_proof() {
+        let challenge = [0x61; 16];
+        let mut session = session_with_control_messages(&[
+            (MessageKind::HourlyServiceBatch, Vec::new()),
+            (MessageKind::HourlyServiceCensus, vec![0xAA; 5]),
+            (MessageKind::HeartbeatProof, hourly_routing_heartbeat_payload(challenge)),
+        ]);
+        assert!(session.hourly_service_binding().is_none());
+        session.receive_collector_hello(Instant::now()).unwrap();
+        assert_eq!(session.hourly_service_binding(), Some(HourlyServiceBinding::new(
+            session.authenticated_session_id.unwrap(),
+            expectation().pid,
+            expectation().creation_filetime,
+            expectation().dll_sha256,
+        )));
+        let proof = session.heartbeat_cycle(
+            challenge,
+            ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+        ).unwrap();
+        assert_eq!(proof.last_complete_h4cr_sequence, 7);
+        assert_eq!(session.state(), DuplexWorkerState::WaitingForWorld);
+        assert!(!session.channel.is_poisoned());
+    }
+
+    #[test]
+    fn hourly_service_malformed_payloads_do_not_fail_identity_heartbeat() {
+        let challenge = [0x62; 16];
+        let mut session = session_with_control_messages(&[
+            (MessageKind::HourlyServiceBatch, vec![1]),
+            (MessageKind::HourlyServiceCensus, Vec::new()),
+            (MessageKind::HeartbeatProof, hourly_routing_heartbeat_payload(challenge)),
+        ]);
+        session.receive_collector_hello(Instant::now()).unwrap();
+        let mut identity = RecorderIdentityControlDispatcher::new(
+            crate::duplex_session::durable_fs::FilesystemIdentityDurableSink::new(
+                PathBuf::from("unused-hourly-routing-test-identity-journal"),
+            ),
+        );
+        let outcome = session.heartbeat_cycle_with_identity(
+            &mut identity,
+            challenge,
+            ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+        ).unwrap();
+        assert_eq!(outcome.proof().last_complete_h4cr_sequence, 7);
+        assert!(outcome.acknowledged_identity_failures().is_empty());
+        assert_eq!(session.state(), DuplexWorkerState::WaitingForWorld);
+    }
+
+    #[test]
+    fn hourly_service_startup_arbitration_returns_after_one_timing_frame() {
+        let mut session = session_with_control_messages(&[
+            (MessageKind::HourlyServiceBatch, Vec::new()),
+        ]);
+        session.receive_collector_hello(Instant::now()).unwrap();
+        let mut identity = RecorderIdentityControlDispatcher::new(
+            crate::duplex_session::durable_fs::FilesystemIdentityDurableSink::new(
+                PathBuf::from("unused-hourly-routing-test-startup-journal"),
+            ),
+        );
+        let outcome = session.acknowledge_startup_identity_failure(
+            &mut identity,
+            ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+        ).unwrap();
+        assert!(outcome.is_none());
+        assert!(session.channel.io().inbound.is_empty());
+        assert!(!session.channel.is_poisoned());
+        assert!(!identity.is_poisoned());
+        assert_eq!(session.state(), DuplexWorkerState::WaitingForWorld);
+    }
+
+    #[test]
+    fn hourly_service_without_a_receiver_is_nacked_under_the_original_deadline() {
+        use compact_contract::hourly_service::{
+            HourlyServiceAckKindV1, HourlyServiceAckV1, HourlyServiceBatchV1,
+            HourlyServiceCensusV1, HourlyServiceOutcomeV1, HourlyServiceOwnerV1,
+            HourlyServiceSampleV1, HOURLY_SERVICE_ACK_LEN, HOURLY_SERVICE_STAGE_COUNT,
+        };
+        let batch = HourlyServiceBatchV1 {
+            batch_id: 3,
+            samples: vec![HourlyServiceSampleV1 {
+                owner: HourlyServiceOwnerV1 {
+                    logical_stream_id: 0,
+                    epoch: 1,
+                    game_hour_raw: compact_contract::calendar::DATE_EPOCH_CONST,
+                    observation_ordinal: 1,
+                },
+                outcome: HourlyServiceOutcomeV1::Refused,
+                data_sequence: None,
+                observed_service_ns: None,
+                stage_ns: [None; HOURLY_SERVICE_STAGE_COUNT],
+                observed_stages: 0,
+                closed_stages: 0,
+                not_applicable_stages: 0,
+                edge_to_publication_ns: None,
+                edge_to_completion_ns: None,
+                fault_bits: 0,
+            }],
+        };
+        let census = HourlyServiceCensusV1 { last_batch_id: 3, ..Default::default() };
+        let mut session = session_with_control_messages(&[
+            (MessageKind::HourlyServiceBatch, batch.encode().unwrap()),
+            (MessageKind::HourlyServiceCensus, census.encode().unwrap()),
+            (MessageKind::HeartbeatProof, hourly_routing_heartbeat_payload([0x63; 16])),
+        ]);
+        session.receive_collector_hello(Instant::now()).unwrap();
+        let before = session.channel.io().deadlines.len();
+        let deadline = ControlDeadline::after(Duration::from_secs(1)).unwrap();
+        let frame = session.recv_non_hourly_service_until(deadline).unwrap();
+        assert_eq!(frame.kind, MessageKind::HeartbeatProof);
+        let io = session.channel.io();
+        assert!(io.deadlines[before..].iter().all(|at| *at == deadline.instant()));
+        let frame_len = crate::control_transport::CONTROL_HEADER_LEN + HOURLY_SERVICE_ACK_LEN;
+        assert_eq!(io.outbound.len(), frame_len * 2);
+        let session_id = SessionId::from_bytes(session.authenticated_session_id.unwrap()).unwrap();
+        for (index, kind) in [HourlyServiceAckKindV1::Batch, HourlyServiceAckKindV1::Census]
+            .into_iter().enumerate()
+        {
+            let frame = crate::control_transport::decode_frame(
+                &io.outbound[index * frame_len..(index + 1) * frame_len],
+                session_id,
+                index as u64,
+            ).unwrap();
+            assert_eq!(frame.kind, MessageKind::HourlyServiceAck);
+            assert_eq!(HourlyServiceAckV1::decode(&frame.payload).unwrap(), HourlyServiceAckV1 {
+                kind,
+                batch_id: 3,
+                accepted_count: 0,
+            });
+        }
+        assert!(!session.channel.is_poisoned());
+    }
+
+    #[test]
+    fn hourly_service_receipt_open_failure_does_not_fail_heartbeat() {
+        let challenge = [0x64; 16];
+        let census = compact_contract::hourly_service::HourlyServiceCensusV1::default();
+        let mut session = session_with_control_messages(&[
+            (MessageKind::HourlyServiceCensus, census.encode().unwrap()),
+            (MessageKind::HeartbeatProof, hourly_routing_heartbeat_payload(challenge)),
+        ]);
+        session.receive_collector_hello(Instant::now()).unwrap();
+        session.install_hourly_service_receiver(HourlyServiceReceiver::new(
+            std::path::Path::new(""),
+            session.hourly_service_binding().unwrap(),
+        ));
+        let proof = session.heartbeat_cycle(
+            challenge,
+            ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+        ).unwrap();
+        assert_eq!(proof.last_complete_h4cr_sequence, 7);
+        assert_eq!(session.state(), DuplexWorkerState::WaitingForWorld);
+        assert!(!session.channel.is_poisoned());
+    }
+
+    #[test]
+    fn hourly_service_routing_preserves_terminal_sink_failure() {
+        let report = terminal_sink_failure();
+        let mut session = session_with_control_messages(&[
+            (MessageKind::HourlyServiceBatch, Vec::new()),
+            (MessageKind::HourlyServiceCensus, Vec::new()),
+            (MessageKind::SinkTerminalFailure, encode_sink_failure(&report).unwrap().to_vec()),
+        ]);
+        session.receive_collector_hello(Instant::now()).unwrap();
+        let result = session.receive_terminal_sink_status(
+            ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+        );
+        assert!(matches!(result, Err(DuplexWorkerError::SinkFailure(observed)) if observed == report));
+        assert_eq!(session.sink_failure(), Some(&report));
+        assert_eq!(session.state(), DuplexWorkerState::Failed);
+    }
+
+    #[test]
+    fn hourly_service_terminal_census_closes_without_a_later_heartbeat_proof() {
+        let census = compact_contract::hourly_service::HourlyServiceCensusV1::default();
+        let mut session = session_with_control_messages(&[
+            (MessageKind::HourlyServiceBatch, Vec::new()),
+            (MessageKind::HourlyServiceCensus, census.encode().unwrap()),
+        ]);
+        session.receive_collector_hello(Instant::now()).unwrap();
+        let before = session.channel.io().deadlines.len();
+        let deadline = ControlDeadline::after(Duration::from_secs(1)).unwrap();
+        let mut challenges = 0;
+        session.terminal_timing_with_challenges_until(deadline, || {
+            challenges += 1;
+            Ok([0x66; 16])
+        }).unwrap();
+        assert_eq!(challenges, 1);
+        assert!(session.hourly_service_census_received);
+        assert!(session.channel.io().inbound.is_empty());
+        assert!(session.channel.io().deadlines[before..].iter().all(|at| *at == deadline.instant()));
+        assert_eq!(session.state(), DuplexWorkerState::WaitingForWorld);
+    }
+
+    #[test]
+    fn hourly_service_terminal_drain_accepts_an_interleaved_heartbeat_proof() {
+        let challenge = [0x67; 16];
+        let census = compact_contract::hourly_service::HourlyServiceCensusV1::default();
+        let mut session = session_with_control_messages(&[
+            (MessageKind::HeartbeatProof, hourly_routing_heartbeat_payload(challenge)),
+            (MessageKind::HourlyServiceCensus, census.encode().unwrap()),
+        ]);
+        session.receive_collector_hello(Instant::now()).unwrap();
+        let deadline = ControlDeadline::after(Duration::from_secs(1)).unwrap();
+        let mut challenges = 0;
+        session.terminal_timing_with_challenges_until(deadline, || {
+            challenges += 1;
+            Ok(challenge)
+        }).unwrap();
+        assert_eq!(challenges, 1);
+        assert!(session.hourly_service_census_received);
+        assert_eq!(session.heartbeat.last_proven_sequence(), Some(7));
+    }
+
+    #[test]
+    fn hourly_service_terminal_drain_does_not_wait_again_for_an_observed_census() {
+        let challenge = [0x68; 16];
+        let census = compact_contract::hourly_service::HourlyServiceCensusV1::default();
+        let mut session = session_with_control_messages(&[
+            (MessageKind::HourlyServiceCensus, census.encode().unwrap()),
+            (MessageKind::HeartbeatProof, hourly_routing_heartbeat_payload(challenge)),
+        ]);
+        session.receive_collector_hello(Instant::now()).unwrap();
+        let deadline = ControlDeadline::after(Duration::from_secs(1)).unwrap();
+        session.heartbeat_cycle(challenge, deadline).unwrap();
+        let outbound_before = session.channel.io().outbound.len();
+        session.terminal_timing_with_challenges_until(deadline, || {
+            panic!("a consumed census must not require another heartbeat")
+        }).unwrap();
+        assert_eq!(session.channel.io().outbound.len(), outbound_before);
+        assert!(!session.channel.is_poisoned());
+    }
+
+    #[test]
+    fn hourly_service_terminal_deadline_expiry_does_not_fail_recording_state() {
+        let mut session = session_with_control_messages(&[]);
+        session.receive_collector_hello(Instant::now()).unwrap();
+        let result = session.terminal_timing_with_challenges_until(
+            ControlDeadline::at(Instant::now()),
+            || panic!("expired drain must not send a heartbeat"),
+        );
+        assert!(matches!(result, Err(DuplexWorkerError::GracefulStopExpired)));
+        assert_eq!(session.state(), DuplexWorkerState::WaitingForWorld);
+        assert!(!session.channel.is_poisoned());
+    }
+
+    #[test]
+    fn hourly_service_terminal_corruption_is_fatal_but_missing_delivery_is_diagnostic() {
+        for corrupt_checksum in [false, true] {
+            let session_bytes = unique_test_session_bytes();
+            let session_id = SessionId::from_bytes(session_bytes).unwrap();
+            let mut inbound = encode_frame(
+                session_id,
+                0,
+                MessageKind::CollectorHello,
+                &super::super::proof::collector_hello_with_capabilities_payload(
+                    &expectation(),
+                    worker_capabilities(),
+                ),
+            ).unwrap();
+            let mut timing = encode_frame(
+                session_id, 1, MessageKind::HourlyServiceBatch, &[0xA5],
+            ).unwrap();
+            if corrupt_checksum {
+                *timing.last_mut().unwrap() ^= 1;
+            } else {
+                timing.pop();
+            }
+            inbound.extend_from_slice(&timing);
+            let mut session = accept(prepared_with_inbound(session_bytes, inbound));
+            session.receive_collector_hello(Instant::now()).unwrap();
+            let result = session.terminal_timing_with_challenges_until(
+                ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+                || Ok([0x71; 16]),
+            );
+            assert!(matches!(result, Err(DuplexWorkerError::Transport(_))));
+            assert_eq!(session.state(), if corrupt_checksum {
+                DuplexWorkerState::Failed
+            } else {
+                DuplexWorkerState::WaitingForWorld
+            });
+            assert!(session.channel.is_poisoned());
+        }
+    }
+
+    #[test]
+    fn hourly_service_terminal_invalid_heartbeat_still_fails_recording() {
+        let mut session = session_with_control_messages(&[
+            (MessageKind::HeartbeatProof, hourly_routing_heartbeat_payload([0x69; 16])),
+        ]);
+        session.receive_collector_hello(Instant::now()).unwrap();
+        let result = session.terminal_timing_with_challenges_until(
+            ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+            || Ok([0x70; 16]),
+        );
+        assert!(matches!(result, Err(DuplexWorkerError::Heartbeat(HeartbeatError::ChallengeMismatch))));
+        assert_eq!(session.state(), DuplexWorkerState::Failed);
+        assert!(session.channel.is_poisoned());
+    }
+
+    #[test]
+    fn hourly_service_routing_preserves_authenticated_transport_failure() {
+        let session_bytes = unique_test_session_bytes();
+        let session_id = SessionId::from_bytes(session_bytes).unwrap();
+        let mut inbound = encode_frame(
+            session_id,
+            0,
+            MessageKind::CollectorHello,
+            &super::super::proof::collector_hello_with_capabilities_payload(
+                &expectation(),
+                worker_capabilities(),
+            ),
+        ).unwrap();
+        let mut corrupt = encode_frame(session_id, 1, MessageKind::HourlyServiceBatch, &[0xA5]).unwrap();
+        *corrupt.last_mut().unwrap() ^= 1;
+        inbound.extend_from_slice(&corrupt);
+        let mut session = accept(prepared_with_inbound(session_bytes, inbound));
+        session.receive_collector_hello(Instant::now()).unwrap();
+        let result = session.heartbeat_cycle(
+            [0x65; 16],
+            ControlDeadline::after(Duration::from_secs(1)).unwrap(),
+        );
+        assert!(matches!(result, Err(DuplexWorkerError::Transport(_))));
+        assert_eq!(session.state(), DuplexWorkerState::Failed);
+        assert!(session.channel.is_poisoned());
+    }
+
     #[test]
     fn combined_authority_creates_both_listeners_before_injection_and_never_splits_tuple() {
         let events = Rc::new(RefCell::new(Vec::<String>::new()));
@@ -2169,6 +2727,7 @@ mod tests {
                 io: Some(MockIo {
                     inbound: inbound.into(),
                     outbound: Vec::new(),
+                    deadlines: Vec::new(),
                 }),
             },
             PairTargetMonitor {

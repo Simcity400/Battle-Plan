@@ -16,6 +16,78 @@ pub mod private_heap;
 #[cfg(all(windows, not(test), not(feature = "test-support")))]
 #[global_allocator]
 static COLLECTOR_PRIVATE_HEAP: private_heap::PrivateHeap = private_heap::PrivateHeap;
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATION_COUNTER: test_allocation_counter::AllocationCounter =
+    test_allocation_counter::AllocationCounter;
+#[cfg(test)]
+pub(crate) mod test_allocation_counter {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        static ACTIVE: Cell<bool> = const { Cell::new(false) };
+        static COUNT: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) struct AllocationCounter;
+
+    unsafe impl GlobalAlloc for AllocationCounter {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let pointer = unsafe { System.alloc(layout) };
+            if !pointer.is_null() {
+                record();
+            }
+            pointer
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            let pointer = unsafe { System.alloc_zeroed(layout) };
+            if !pointer.is_null() {
+                record();
+            }
+            pointer
+        }
+
+        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(pointer, layout) };
+        }
+
+        unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+            let pointer = unsafe { System.realloc(pointer, layout, size) };
+            if !pointer.is_null() {
+                record();
+            }
+            pointer
+        }
+    }
+
+    fn record() {
+        ACTIVE.with(|active| {
+            if active.get() {
+                COUNT.with(|count| count.set(count.get().saturating_add(1)));
+            }
+        });
+    }
+
+    struct ActiveGuard;
+
+    impl Drop for ActiveGuard {
+        fn drop(&mut self) {
+            ACTIVE.with(|active| active.set(false));
+        }
+    }
+
+    pub(crate) fn measure<T>(f: impl FnOnce() -> T) -> (T, usize) {
+        COUNT.with(|count| count.set(0));
+        ACTIVE.with(|active| active.set(true));
+        let guard = ActiveGuard;
+        let value = f();
+        drop(guard);
+        let count = COUNT.with(Cell::get);
+        (value, count)
+    }
+}
 pub mod custody_shadow;
 pub mod domain_repeat_gate;
 #[cfg(windows)]

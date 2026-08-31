@@ -542,7 +542,7 @@ fn a_resolved_publication_slot_is_emptied_before_the_loop_can_break() {
         .0;
     let resolve_block = code_only(resolve_block);
     let clear_at = resolve_block
-        .find("staged_publications.clear();")
+        .find("dispose_staged_publications(&mut staged_publications, service_closes);")
         .expect("the slot is emptied after the resolve");
     let break_at = resolve_block
         .find("break 'capture;")
@@ -554,7 +554,7 @@ fn a_resolved_publication_slot_is_emptied_before_the_loop_can_break() {
     );
     assert_eq!(
         resolve_block
-            .matches("staged_publications.clear();")
+            .matches("dispose_staged_publications(&mut staged_publications, service_closes);")
             .count(),
         1,
         "cleared once, unconditionally -- a clear inside either match arm covers one ending only"
@@ -660,4 +660,54 @@ fn the_attach_worker_joins_the_sweep_thread_on_every_capture_outcome() {
         !between.contains("return ") && !between.contains("?;"),
         "nothing between the capture and the join may exit first"
     );
+}
+
+#[test]
+fn boundary_service_scope_retains_shutdown_and_pending_buffer_disposal() {
+    let boundary = COLLECTOR_SOURCE
+        .split_once("fn finalize_scheduler_before_identity_boundary(")
+        .unwrap()
+        .1
+        .split_once("fn stamp_record_bound_sequence(")
+        .unwrap()
+        .0;
+    let boundary = code_only(boundary);
+    let unowned = boundary
+        .find("let _boundary_service = hourly_service_capture::unowned();")
+        .unwrap();
+    let scope = boundary
+        .find("let mut pending_service_disposal = pending_scheduler_frame.as_ref()")
+        .unwrap();
+    let claim = boundary
+        .find("hourly_service_capture::claim_setup(owner, ServiceStage::Terminal);")
+        .unwrap();
+    let take = boundary.find("read_only_scheduler_runtime.take()").unwrap();
+    let shutdown = boundary
+        .find("runtime.shutdown_at_identity_boundary_and_flush_latest_pending()")
+        .unwrap();
+    let pending = boundary.find("pending_scheduler_frame.take()").unwrap();
+    let dispose = boundary.find("drop(pending_service_disposal);").unwrap();
+    let gaps = boundary
+        .find("runtime.flush_remaining_and_reserve_control_gaps()")
+        .unwrap();
+    assert!(unowned < scope && scope < claim && claim < take && take < shutdown);
+    assert!(shutdown < pending && pending < dispose && dispose < gaps);
+    assert_eq!(boundary.matches("drop(pending_service_disposal);").count(), 1);
+}
+
+#[test]
+fn publication_result_storage_is_dropped_inside_original_owner_scope() {
+    let resolver = COLLECTOR_SOURCE
+        .split_once("fn resolve_staged_publications(")
+        .unwrap()
+        .1
+        .split_once("fn commit_published_frame(")
+        .unwrap()
+        .0;
+    let resolver = code_only(resolver);
+    let body = resolver.split_once(") -> Result<(), String> {").unwrap().1;
+    let guard = "let _results_service = staged_publication_phase(staged).1;";
+    assert!(body.trim_start().starts_with(guard));
+    assert!(body.find(guard).unwrap() < body.find("let mut results = results.into_iter();").unwrap());
+    assert!(!body.contains("drop(_results_service)"));
 }

@@ -373,6 +373,7 @@ impl CaptureReadyFlags {
     pub const OUTPUT_PIPE_CONNECTED: u32 = 1 << 6;
     pub const ZERO_MUTATION_POLICY_ENFORCED: u32 = 1 << 7;
     pub const IDENTITY_V1_STREAM: u32 = 1 << 8;
+    pub const HOURLY_SERVICE_TRANSPORT: u32 = 1 << 9;
     pub const REQUIRED_PASSIVE_CAPTURE: u32 = Self::TARGET_IDENTITY_VALIDATED
         | Self::DLL_IDENTITY_VALIDATED
         | Self::HOOK_ALLOWLIST_VALIDATED
@@ -380,7 +381,8 @@ impl CaptureReadyFlags {
         | Self::READ_ONLY_CLOCK_VALIDATED
         | Self::BOUNDED_SCHEDULER_ALLOCATED
         | Self::OUTPUT_PIPE_CONNECTED
-        | Self::ZERO_MUTATION_POLICY_ENFORCED;
+        | Self::ZERO_MUTATION_POLICY_ENFORCED
+        | Self::HOURLY_SERVICE_TRANSPORT;
     pub const KNOWN_MASK: u32 = Self::REQUIRED_PASSIVE_CAPTURE | Self::IDENTITY_V1_STREAM;
 
     pub fn from_bits(bits: u32) -> Result<Self, PayloadError> {
@@ -592,7 +594,9 @@ pub struct CaptureReadyAckFlags(u32);
 
 impl CaptureReadyAckFlags {
     pub const HOST_VALIDATED: u32 = 1 << 0;
-    pub const KNOWN_MASK: u32 = Self::HOST_VALIDATED;
+    pub const HOURLY_SERVICE_TRANSPORT: u32 = 1 << 1;
+    pub const REQUIRED_HOST_VALIDATION: u32 = Self::HOST_VALIDATED | Self::HOURLY_SERVICE_TRANSPORT;
+    pub const KNOWN_MASK: u32 = Self::REQUIRED_HOST_VALIDATION;
 
     pub fn from_bits(bits: u32) -> Result<Self, PayloadError> {
         let unknown = bits & !Self::KNOWN_MASK;
@@ -792,9 +796,9 @@ fn validate_ready_token_binding(value: &CaptureReadyV2, token: &[u8]) -> Result<
 
 fn validate_ready_ack(value: &CaptureReadyAckV2) -> Result<(), PayloadError> {
     CaptureReadyAckFlags::from_bits(value.flags.bits())?;
-    if value.flags.bits() != CaptureReadyAckFlags::HOST_VALIDATED {
+    if value.flags.bits() != CaptureReadyAckFlags::REQUIRED_HOST_VALIDATION {
         return Err(PayloadError::MissingRequiredStatusFlags {
-            required: CaptureReadyAckFlags::HOST_VALIDATED,
+            required: CaptureReadyAckFlags::REQUIRED_HOST_VALIDATION,
             observed: value.flags.bits(),
         });
     }
@@ -1216,7 +1220,7 @@ mod tests {
         assert_eq!(read_u16(&thirteen, 50), 13);
         assert_eq!(
             to_hex32(&capture_ready_payload_sha256(&thirteen)),
-            "b1c3dcfe275cd7138596281ebbee864f4b5474f7c300ee56707c83c908af5e91"
+            "1b025d21a6fc3516feb700fddb5b7e041dd502c163e4ead0caa2308c412e4363"
         );
         let thousand = t63_ready_fields(1000)
             .encode_authenticated(token)
@@ -1224,7 +1228,7 @@ mod tests {
         assert_eq!(read_u16(&thousand, 50), 1000);
         assert_eq!(
             to_hex32(&capture_ready_payload_sha256(&thousand)),
-            "5610ee3a3ff331569ccfdee6002112592fdc49645651c6f1c0fb924eb058379b"
+            "24b135351bb3b9023c4f169e15b5f9f458b0ec3e7300249b5b025fac91049867"
         );
         assert_ne!(thirteen, thousand);
     }
@@ -1306,9 +1310,74 @@ mod tests {
         ));
 
         assert!(matches!(
-            CaptureReadyFlags::from_bits(CaptureReadyFlags::KNOWN_MASK | (1 << 9)),
+            CaptureReadyFlags::from_bits(CaptureReadyFlags::KNOWN_MASK | (1 << 10)),
             Err(PayloadError::UnknownStatusFlags(_))
         ));
+    }
+
+    #[test]
+    fn capture_ready_hourly_transport_is_required_and_unknown_bits_fail_authenticated_decode() {
+        let token = b"per-attach CSPRNG token";
+        assert_eq!(CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE, 767);
+        assert_eq!(CaptureReadyFlags::KNOWN_MASK, 1023);
+        let wire = ready_fields().encode_authenticated(token).unwrap();
+        for flags in [255u32, 511] {
+            let expected = PayloadError::MissingRequiredStatusFlags {
+                required: CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE, observed: flags,
+            };
+            let mut fields = ready_fields();
+            fields.flags = CaptureReadyFlags::from_bits(flags).unwrap();
+            assert_eq!(fields.encode_authenticated(token), Err(expected.clone()));
+            let mut mutated = wire.clone();
+            mutated[12..16].copy_from_slice(&flags.to_le_bytes());
+            let tag = hmac_sha256(token, &mutated[..CAPTURE_READY_AUTH_OFFSET]);
+            mutated[CAPTURE_READY_AUTH_OFFSET..].copy_from_slice(&tag);
+            assert_eq!(CaptureReadyV2::decode_authenticated(&mutated, token), Err(expected));
+        }
+        let mut unknown = wire;
+        unknown[12..16].copy_from_slice(&(767u32 | (1 << 10)).to_le_bytes());
+        let tag = hmac_sha256(token, &unknown[..CAPTURE_READY_AUTH_OFFSET]);
+        unknown[CAPTURE_READY_AUTH_OFFSET..].copy_from_slice(&tag);
+        assert_eq!(CaptureReadyV2::decode_authenticated(&unknown, token),
+            Err(PayloadError::UnknownStatusFlags(1 << 10)));
+    }
+
+    #[test]
+    fn capture_ready_ack_hourly_transport_is_required_and_pins_the_harness_vector() {
+        let token = b"f743c8f124d2572ad18b99db033554ba";
+        assert_eq!(CaptureReadyAckFlags::REQUIRED_HOST_VALIDATION, 3);
+        assert_eq!(CaptureReadyAckFlags::KNOWN_MASK, 3);
+        assert!(CaptureReadyAckFlags::from_bits(CaptureReadyAckFlags::HOST_VALIDATED)
+            .unwrap().host_validated());
+        assert!(!CaptureReadyAckFlags::from_bits(CaptureReadyAckFlags::HOURLY_SERVICE_TRANSPORT)
+            .unwrap().host_validated());
+        let ready = t63_ready_fields(13);
+        let ready_wire = ready.encode_authenticated(token).unwrap();
+        let ack = CaptureReadyAckV2 {
+            flags: CaptureReadyAckFlags::from_bits(CaptureReadyAckFlags::REQUIRED_HOST_VALIDATION).unwrap(),
+            pid: ready.pid,
+            process_creation_filetime_utc: ready.process_creation_filetime_utc,
+            requested_duration_ms: ready.requested_duration_ms,
+            validated_domain_count: ready.validated_domain_count,
+            ready_sha256: capture_ready_payload_sha256(&ready_wire),
+            public_receipt_core_sha256: [8; 32],
+            session_id_sha256: ready.session_id_sha256,
+        };
+        let wire = ack.encode_authenticated(token).unwrap();
+        assert_eq!(read_u32(&wire, 12), 3);
+        assert_eq!(to_hex32(&capture_ready_payload_sha256(&wire)), "b99cde438b571002fbff86a0d4b8671aefe0a3092eabf9e7f8efa9b4b9b60b82");
+        assert_eq!(CaptureReadyAckV2::decode_authenticated(&wire, token).unwrap(), ack);
+        for flags in [0u32, 1, 2] {
+            let expected = PayloadError::MissingRequiredStatusFlags { required: 3, observed: flags };
+            let mut fields = ack;
+            fields.flags = CaptureReadyAckFlags::from_bits(flags).unwrap();
+            assert_eq!(fields.encode_authenticated(token), Err(expected.clone()));
+            let mut mutated = wire.clone();
+            mutated[12..16].copy_from_slice(&flags.to_le_bytes());
+            let tag = hmac_sha256(token, &mutated[..CAPTURE_READY_ACK_AUTH_OFFSET]);
+            mutated[CAPTURE_READY_ACK_AUTH_OFFSET..].copy_from_slice(&tag);
+            assert_eq!(CaptureReadyAckV2::decode_authenticated(&mutated, token), Err(expected));
+        }
     }
 
     #[test]
@@ -1516,7 +1585,7 @@ mod tests {
         let token = b"per-attach CSPRNG token";
         let ready = ready_fields().encode_authenticated(token).unwrap();
         let ack = CaptureReadyAckV2 {
-            flags: CaptureReadyAckFlags::from_bits(CaptureReadyAckFlags::HOST_VALIDATED).unwrap(),
+            flags: CaptureReadyAckFlags::from_bits(CaptureReadyAckFlags::REQUIRED_HOST_VALIDATION).unwrap(),
             pid: 42,
             process_creation_filetime_utc: 0x0102_0304_0506_0708,
             requested_duration_ms: 60_000,
@@ -1536,19 +1605,19 @@ mod tests {
         );
 
         let mut unknown_flag = wire.clone();
-        unknown_flag[12..16].copy_from_slice(&2u32.to_le_bytes());
+        unknown_flag[12..16].copy_from_slice(&4u32.to_le_bytes());
         let tag = hmac_sha256(token, &unknown_flag[..CAPTURE_READY_ACK_AUTH_OFFSET]);
         unknown_flag[CAPTURE_READY_ACK_AUTH_OFFSET..].copy_from_slice(&tag);
         assert_eq!(
             CaptureReadyAckV2::decode_authenticated(&unknown_flag, token),
-            Err(PayloadError::UnknownStatusFlags(2))
+            Err(PayloadError::UnknownStatusFlags(4))
         );
         let mut missing_flags = ack;
         missing_flags.flags = CaptureReadyAckFlags::from_bits(0).unwrap();
         assert_eq!(
             missing_flags.encode_authenticated(token),
             Err(PayloadError::MissingRequiredStatusFlags {
-                required: CaptureReadyAckFlags::HOST_VALIDATED,
+                required: CaptureReadyAckFlags::REQUIRED_HOST_VALIDATION,
                 observed: 0,
             })
         );
@@ -1634,7 +1703,7 @@ mod tests {
 
         let ready = ready_fields().encode_authenticated(token).unwrap();
         let ack_fields = || CaptureReadyAckV2 {
-            flags: CaptureReadyAckFlags::from_bits(CaptureReadyAckFlags::HOST_VALIDATED).unwrap(),
+            flags: CaptureReadyAckFlags::from_bits(CaptureReadyAckFlags::REQUIRED_HOST_VALIDATION).unwrap(),
             pid: 42,
             process_creation_filetime_utc: 0x0102_0304_0506_0708,
             requested_duration_ms: 60_000,

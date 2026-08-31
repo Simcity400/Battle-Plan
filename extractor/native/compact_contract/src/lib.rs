@@ -29,6 +29,7 @@ pub mod frame_degraded;
 pub mod frame_refusal;
 pub mod freeze_census_record;
 pub mod gap_record;
+pub mod hourly_service;
 pub mod identity_control;
 pub mod national_focus_presentation;
 pub mod naval_history;

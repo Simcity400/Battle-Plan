@@ -59,6 +59,7 @@ type Prepared = PreparedControlListener<WindowsPipeBackend>;
 
 pub enum EarlyRenderServiceOutcome {
     CaptureTeardown,
+    ControlEndedBeforeTimingCensus,
     SinkFailure(SinkFailureReport),
     StartupFailure(AuthenticatedEarlyRenderStartupFailure),
 }
@@ -228,6 +229,7 @@ pub struct PreparedEarlyRenderHostChannel {
     launch_bind_sha256: Option<[u8; 32]>,
     startup_failure: Option<AuthenticatedEarlyRenderStartupFailure>,
     timeout_ms: u32,
+    hourly_service: Option<crate::hourly_service::HourlyServiceReceiver>,
 }
 
 impl PreparedEarlyRenderHostChannel {
@@ -322,6 +324,7 @@ impl PreparedEarlyRenderHostChannel {
             launch_bind_sha256: None,
             startup_failure: None,
             timeout_ms,
+            hourly_service: None,
         })
     }
 
@@ -362,14 +365,7 @@ impl PreparedEarlyRenderHostChannel {
         }
         let observed = decode_collector_hello_capabilities(&frame.payload, &self.expectation)
             .map_err(|error| format!("decode early H4CT hello: {error}"))?;
-        let required = ControlCapabilities::from_bits(
-            ControlCapabilities::HEARTBEAT
-                | ControlCapabilities::FIRST_COMPACT_ACK
-                | ControlCapabilities::TRANSPORT_STATUS
-                | ControlCapabilities::CAMPAIGN_IDENTITY
-                | ControlCapabilities::EARLY_RENDER,
-        )
-        .map_err(|error| error.to_string())?;
+        let required = ControlCapabilities::early_render_duplex_v1();
         channel
             .admit_decoded_hello_capabilities(required, observed)
             .map_err(|error| format!("admit early H4CT capabilities: {error}"))?;
@@ -507,6 +503,18 @@ impl PreparedEarlyRenderHostChannel {
         Ok(())
     }
 
+    pub fn retain_hourly_service_receipts(&mut self, path: &std::path::Path) {
+        self.hourly_service = Some(crate::hourly_service::HourlyServiceReceiver::new(
+            path,
+            crate::hourly_service::HourlyServiceBinding::new(
+                self.session_id,
+                self.expectation.pid,
+                self.expectation.creation_filetime,
+                self.expectation.dll_sha256,
+            ),
+        ));
+    }
+
     pub fn cancellation_handle(&self) -> ControlCancellation {
         self.cancellation.clone()
     }
@@ -521,6 +529,7 @@ impl PreparedEarlyRenderHostChannel {
         let capture_teardown_deadline =
             ControlDeadline::after(Duration::from_millis(capture_teardown_timeout_ms))
                 .map_err(|error| format!("early H4CT VFS service deadline: {error}"))?;
+        let mut terminal_timing_received = false;
         loop {
             let frame = match self
                 .channel
@@ -532,10 +541,37 @@ impl PreparedEarlyRenderHostChannel {
                 Err(ControlError::Cancelled) => {
                     return Ok(EarlyRenderServiceOutcome::CaptureTeardown)
                 }
+                Err(error) if timing_end_allows_control_close(terminal_timing_received, &error) => {
+                    return Ok(EarlyRenderServiceOutcome::CaptureTeardown);
+                }
+                Err(ControlError::Io(std::io::ErrorKind::BrokenPipe)) => {
+                    if let Some(receiver) = self.hourly_service.as_mut() {
+                        receiver.transport_failed("control peer disconnected before terminal timing; DATA finalization remains authoritative");
+                    }
+                    return Ok(EarlyRenderServiceOutcome::ControlEndedBeforeTimingCensus);
+                }
                 Err(error) => {
                     return Err(format!("receive early H4CT VFS payload request: {error}"));
                 }
             };
+            if crate::hourly_service::is_hourly_service_kind(frame.kind) {
+                let acknowledgement = match self.hourly_service.as_mut() {
+                    Some(receiver) => receiver.receive(&frame),
+                    None => crate::hourly_service::rejected_ack(&frame),
+                };
+                terminal_timing_received |= acknowledgement.is_some();
+                if let Some(acknowledgement) = acknowledgement {
+                    let result = acknowledgement.encode().map_err(|error| error.to_string())
+                        .and_then(|payload| self.channel.as_mut().ok_or_else(|| "early timing control channel missing".to_string())?
+                            .send_until(MessageKind::HourlyServiceAck, &payload, capture_teardown_deadline, &self.cancellation)
+                            .map_err(|error| error.to_string()));
+                    if let Err(error) = result {
+                        if let Some(receiver) = self.hourly_service.as_mut() { receiver.acknowledge_send_failed(&error); }
+                        return Ok(EarlyRenderServiceOutcome::CaptureTeardown);
+                    }
+                }
+                continue;
+            }
             if matches!(
                 frame.kind,
                 MessageKind::SinkSetupFailure | MessageKind::SinkTerminalFailure
@@ -829,6 +865,10 @@ fn startup_failure_description(failure: &AuthenticatedEarlyRenderStartupFailure)
         hex(&failure.report.detail_sha256),
         failure.report.detail
     )
+}
+
+fn timing_end_allows_control_close(typed_timing_received: bool, error: &ControlError) -> bool {
+    typed_timing_received && matches!(error, ControlError::Io(std::io::ErrorKind::BrokenPipe) | ControlError::Truncated)
 }
 
 impl Drop for PreparedEarlyRenderHostChannel {
@@ -1218,6 +1258,15 @@ fn hex_bytes(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn final_timing_census_allows_control_eof_without_hiding_authentication_errors() {
+        use super::{timing_end_allows_control_close, ControlError};
+        assert!(timing_end_allows_control_close(true, &ControlError::Io(std::io::ErrorKind::BrokenPipe)));
+        assert!(timing_end_allows_control_close(true, &ControlError::Truncated));
+        assert!(!timing_end_allows_control_close(false, &ControlError::Truncated));
+        assert!(!timing_end_allows_control_close(true, &ControlError::ChecksumMismatch { expected: 1, actual: 2 }));
+    }
+
     use super::*;
     use crate::early_render_launch::{EarlyHookCompleteness, EffectiveRuntimeDlcReceipt};
     use compact_contract::early_render_control::{
@@ -1721,6 +1770,7 @@ mod tests {
             launch_bind_sha256: Some(launch_bind_sha256),
             startup_failure: None,
             timeout_ms: 1000,
+            hourly_service: None,
         };
         for (request_index, (winner_index, offset, count, expected)) in [
             (0usize, 2u64, 7u64, b"chive-p".as_slice()),

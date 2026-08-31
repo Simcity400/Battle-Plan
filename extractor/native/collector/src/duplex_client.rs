@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod rollover;
+mod hourly_service;
 
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
@@ -1557,6 +1558,56 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
         Ok(())
     }
 
+    pub fn send_hourly_service_report(
+        &mut self,
+        samples: &[compact_contract::hourly_service::HourlyServiceSampleV1],
+        census: &mut compact_contract::hourly_service::HourlyServiceCensusV1,
+        deadline: MonotonicDeadline,
+    ) -> Result<(), String> {
+        if !matches!(self.phase, ClientPhase::Attached | ClientPhase::Producing) {
+            return Err("hourly_service_control_not_usable".into());
+        }
+        hourly_service::send_report(self, samples, census, deadline)
+    }
+
+    fn receive_hourly_service_ack(
+        &mut self,
+        expected_kind: compact_contract::hourly_service::HourlyServiceAckKindV1,
+        expected_batch: u64,
+        expected_count: u16,
+        deadline: MonotonicDeadline,
+    ) -> Result<(), String> {
+        loop {
+            hourly_service::require_deadline(&self.clock, deadline)?;
+            let frame = self.recv_frame(deadline).map_err(|error| format!("hourly_service_receipt:{error:?}"))?
+                .ok_or("hourly_service_receipt_eof")?;
+            hourly_service::require_deadline(&self.clock, deadline)?;
+            if frame.kind == MessageKind::HeartbeatChallenge {
+                let challenge = match decode_heartbeat_challenge(&frame.payload) {
+                    Ok(challenge) => challenge,
+                    Err(error) => return self.fail::<()>(ClientError::Payload(error))
+                        .map_err(|error| format!("hourly_service_heartbeat:{error:?}")),
+                };
+                let proof = encode_heartbeat_proof(&HeartbeatProofV1 {
+                    challenge: challenge.challenge, last_h4cr_sequence: self.last_h4cr_sequence,
+                    state: self.reported_state,
+                });
+                self.send_frame(MessageKind::HeartbeatProof, &proof, deadline)
+                    .map_err(|error| format!("hourly_service_heartbeat_send:{error:?}"))?;
+                continue;
+            }
+            if frame.kind != MessageKind::HourlyServiceAck {
+                return Err(format!("hourly_service_receipt_kind:{:?}", frame.kind));
+            }
+            let ack = compact_contract::hourly_service::HourlyServiceAckV1::decode(&frame.payload)
+                .map_err(|error| format!("hourly_service_receipt_codec:{error}"))?;
+            if ack.kind != expected_kind || ack.batch_id != expected_batch || ack.accepted_count != expected_count {
+                return Err("hourly_service_receipt_binding".into());
+            }
+            return Ok(());
+        }
+    }
+
     pub fn report_identity_failure(
         &mut self,
         failure: &IdentityFailureV1,
@@ -2153,9 +2204,26 @@ mod win32 {
 
     pub struct CaptureReadyControlSession {
         io: Win32OverlappedControlIo,
+        hourly_service: super::hourly_service::DirectAuthority,
     }
 
     impl CaptureReadyControlSession {
+        pub fn bind_hourly_service(&mut self, session_id: Option<[u8; 16]>) {
+            self.hourly_service.authorize(session_id);
+        }
+
+        pub fn send_hourly_service_report(
+            &mut self,
+            samples: &[compact_contract::hourly_service::HourlyServiceSampleV1],
+            census: &mut compact_contract::hourly_service::HourlyServiceCensusV1,
+            deadline: MonotonicDeadline,
+        ) -> Result<(), String> {
+            let session = self.hourly_service.take()?;
+            let io = super::hourly_service::BorrowedIo(&mut self.io);
+            let mut client = super::hourly_service::DirectClient::new(io, super::SystemClock, session);
+            client.send_report(samples, census, deadline)
+        }
+
         pub fn stop_requested(&self) -> Result<bool, DuplexIoError> {
             let mut available = 0u32;
             let ok = unsafe {
@@ -2245,7 +2313,7 @@ mod win32 {
         io.recv_exact(&mut ack, deadline)?;
         Ok(CaptureReadyExchange {
             ack,
-            session: CaptureReadyControlSession { io },
+            session: CaptureReadyControlSession { io, hourly_service: super::hourly_service::DirectAuthority::default() },
         })
     }
 

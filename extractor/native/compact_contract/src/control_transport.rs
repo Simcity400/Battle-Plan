@@ -93,6 +93,7 @@ impl ControlCapabilities {
     pub const CAMPAIGN_IDENTITY: u32 = 1 << 5;
     pub const EARLY_RENDER: u32 = 1 << 6;
     pub const CAPTURE_READY: u32 = 1 << 7;
+    pub const HOURLY_SERVICE: u32 = 1 << 8;
     pub const KNOWN_MASK: u32 = Self::HEARTBEAT
         | Self::FIRST_COMPACT_ACK
         | Self::ROLLOVER
@@ -100,7 +101,8 @@ impl ControlCapabilities {
         | Self::TRANSPORT_STATUS
         | Self::CAMPAIGN_IDENTITY
         | Self::EARLY_RENDER
-        | Self::CAPTURE_READY;
+        | Self::CAPTURE_READY
+        | Self::HOURLY_SERVICE;
 
     pub fn from_bits(bits: u32) -> Result<Self, ControlError> {
         let unknown = bits & !Self::KNOWN_MASK;
@@ -127,7 +129,8 @@ impl ControlCapabilities {
         | Self::FIRST_COMPACT_ACK
         | Self::TRANSPORT_STATUS
         | Self::CAMPAIGN_IDENTITY
-        | Self::CAPTURE_READY;
+        | Self::CAPTURE_READY
+        | Self::HOURLY_SERVICE;
 
     pub fn auto_attach_duplex_v1() -> Self {
         Self::from_bits(Self::AUTO_ATTACH_DUPLEX_V1).expect("closed auto-attach capability set")
@@ -311,6 +314,9 @@ pub enum MessageKind {
     EarlyRenderStartupFailure = 33,
     CaptureReady = 34,
     CaptureReadyAck = 35,
+    HourlyServiceBatch = 36,
+    HourlyServiceCensus = 37,
+    HourlyServiceAck = 38,
 }
 
 crate::wire_coded_codes! {
@@ -353,6 +359,9 @@ crate::wire_coded_codes! {
     EarlyRenderStartupFailure = 33,
     CaptureReady = 34,
     CaptureReadyAck = 35,
+    HourlyServiceBatch = 36,
+    HourlyServiceCensus = 37,
+    HourlyServiceAck = 38,
 }
 
 impl MessageKind {
@@ -391,8 +400,10 @@ impl MessageKind {
             | Self::EarlyRenderDiagnosticLivenessResponse
             | Self::EarlyRenderVfsPayloadRequest
             | Self::EarlyRenderStartupFailure
-            | Self::CaptureReady => EndpointRole::Collector,
-            Self::CaptureReadyAck => EndpointRole::Recorder,
+            | Self::CaptureReady
+            | Self::HourlyServiceBatch
+            | Self::HourlyServiceCensus => EndpointRole::Collector,
+            Self::CaptureReadyAck | Self::HourlyServiceAck => EndpointRole::Recorder,
         }
     }
 
@@ -431,6 +442,9 @@ impl MessageKind {
             | Self::EarlyRenderDiagnosticEnd
             | Self::EarlyRenderStartupFailure => ControlCapabilities::EARLY_RENDER,
             Self::CaptureReady | Self::CaptureReadyAck => ControlCapabilities::CAPTURE_READY,
+            Self::HourlyServiceBatch | Self::HourlyServiceCensus | Self::HourlyServiceAck => {
+                ControlCapabilities::HOURLY_SERVICE
+            }
         }
     }
 
@@ -1649,7 +1663,7 @@ mod tests {
         assert!(channel.is_poisoned());
     }
 
-    fn capability_kinds() -> [(MessageKind, EndpointRole, u32); 33] {
+    fn capability_kinds() -> [(MessageKind, EndpointRole, u32); 36] {
         [
             (
                 MessageKind::HeartbeatChallenge,
@@ -1816,6 +1830,21 @@ mod tests {
                 EndpointRole::Recorder,
                 ControlCapabilities::CAPTURE_READY,
             ),
+            (
+                MessageKind::HourlyServiceBatch,
+                EndpointRole::Collector,
+                ControlCapabilities::HOURLY_SERVICE,
+            ),
+            (
+                MessageKind::HourlyServiceCensus,
+                EndpointRole::Collector,
+                ControlCapabilities::HOURLY_SERVICE,
+            ),
+            (
+                MessageKind::HourlyServiceAck,
+                EndpointRole::Recorder,
+                ControlCapabilities::HOURLY_SERVICE,
+            ),
         ]
     }
 
@@ -1857,8 +1886,11 @@ mod tests {
             MessageKind::EarlyRenderStartupFailure,
             MessageKind::CaptureReady,
             MessageKind::CaptureReadyAck,
+            MessageKind::HourlyServiceBatch,
+            MessageKind::HourlyServiceCensus,
+            MessageKind::HourlyServiceAck,
         ];
-        for (wire, kind) in (1u16..=35).zip(registry) {
+        for (wire, kind) in (1u16..=38).zip(registry) {
             assert_eq!(kind as u16, wire);
             assert_eq!(MessageKind::from_wire(wire).unwrap(), kind);
         }
@@ -1887,6 +1919,9 @@ mod tests {
         assert_eq!(MessageKind::EarlyRenderStartupFailure as u16, 33);
         assert_eq!(MessageKind::CaptureReady as u16, 34);
         assert_eq!(MessageKind::CaptureReadyAck as u16, 35);
+        assert_eq!(MessageKind::HourlyServiceBatch as u16, 36);
+        assert_eq!(MessageKind::HourlyServiceCensus as u16, 37);
+        assert_eq!(MessageKind::HourlyServiceAck as u16, 38);
     }
 
     fn wrong_capability(required: u32) -> u32 {
@@ -1899,6 +1934,7 @@ mod tests {
             ControlCapabilities::CAMPAIGN_IDENTITY => ControlCapabilities::TRANSPORT_STATUS,
             ControlCapabilities::EARLY_RENDER => ControlCapabilities::CAMPAIGN_IDENTITY,
             ControlCapabilities::CAPTURE_READY => ControlCapabilities::EARLY_RENDER,
+            ControlCapabilities::HOURLY_SERVICE => ControlCapabilities::CAPTURE_READY,
             _ => unreachable!(),
         }
     }
