@@ -1167,7 +1167,9 @@ mod tests {
 
     #[test]
     fn capture_timer_hot_path_has_zero_locks_zero_growth_and_three_clock_reads_max() {
-        let source = include_str!("hourly_service_capture.rs");
+        // include_str! carries the checkout's line endings verbatim, so the
+        // split anchor must survive a CRLF working copy.
+        let source = include_str!("hourly_service_capture.rs").replace("\r\n", "\n");
         let production = source.split_once("\n#[cfg(test)]\nmod tests {").unwrap().0;
         for forbidden in [
             "Mutex",
