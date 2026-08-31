@@ -547,7 +547,7 @@ impl ProductionMapFeatureAdapter for Xmap19WeatherAdapter {
     }
 
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput> {
-        if context.world_frame.weather_status() != ViewStatus::Present
+        if weather_gameplay_status(context) != ViewStatus::Present
             || context.world_frame.weather_visual_lifecycle().status != ViewStatus::Present
         {
             return Ok(FoundationFeatureOutput {
@@ -1276,6 +1276,18 @@ fn owned_gaps(context: &FoundationFeatureContext<'_>) -> Vec<String> {
         .collect()
 }
 
+/// The XMAP00 row's status, not the raw `weather_status` under it: the accessor
+/// also reports Present for the legacy route, which measures no phenomenon. An
+/// input XMAP00 does not owner-prove has no admissible weather at all, so the
+/// missing-row arm refuses rather than falling back to that accessor.
+fn weather_gameplay_status(context: &FoundationFeatureContext<'_>) -> ViewStatus {
+    crate::map_authority::map_authority_proven_input_status(
+        context.world_frame,
+        "weather.region_gameplay",
+    )
+    .unwrap_or(ViewStatus::DomainUnavailable)
+}
+
 /// The two recording inputs XMAP19 reads, each with the WorldFrame status that
 /// answers for it.
 ///
@@ -1287,7 +1299,7 @@ fn observed_weather_inputs(
     context: &FoundationFeatureContext<'_>,
 ) -> [(&'static str, ViewStatus); 2] {
     [
-        ("weather.region_gameplay", context.world_frame.weather_status()),
+        ("weather.region_gameplay", weather_gameplay_status(context)),
         (
             "weather.visual_membership_lifecycle",
             context.world_frame.weather_visual_lifecycle().status,
@@ -1342,7 +1354,7 @@ fn unavailable_gap(context: &FoundationFeatureContext<'_>) -> FoundationGap {
     let witness_sha256 = Sha256::hex(
         format!(
             "{gap_id}\n{hour}\n{:?}\n{:?}\n{reason}",
-            context.world_frame.weather_status(),
+            weather_gameplay_status(context),
             context.world_frame.weather_visual_lifecycle().status
         )
         .as_bytes(),
@@ -1575,5 +1587,98 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// kills: writing `weather_gameplay_status` as
+    /// `context.world_frame.weather_status()`, or letting its missing-row arm
+    /// fall back to that accessor. The frame below takes `build_weather`'s
+    /// legacy route, which reports the accessor Present while measuring no
+    /// phenomenon at all -- so the mutation renders XMAP19 from an unmeasured
+    /// weather view and tells the reader the gameplay input "is not what this
+    /// hour lacks".
+    #[test]
+    fn the_legacy_weather_route_is_not_a_gameplay_input() {
+        use crate::production_features::xmap15::Xmap15ViewerSelection;
+        use crate::production_foundation::{FoundationFeatureContext, ViewerOwnedMapState};
+        use replay_core::{RawFrame, ReplaySource, SourceError, WorldTimeline};
+
+        struct LegacyWeatherSource;
+        impl ReplaySource for LegacyWeatherSource {
+            fn game_id(&self) -> &str {
+                "xmap19-legacy-weather-route"
+            }
+            fn hours(&self) -> &[i64] {
+                &[17_030_998]
+            }
+            fn warnings(&self) -> &[String] {
+                &[]
+            }
+            fn frame(&self, hour_index: i64) -> std::result::Result<RawFrame, SourceError> {
+                let mut rest = serde_json::Map::new();
+                rest.insert(
+                    "weather".into(),
+                    serde_json::json!({
+                        "by_region": {"0": {"weather_kind": "rain_light", "intensity": 1.0}}
+                    }),
+                );
+                Ok(RawFrame {
+                    hour_index,
+                    date: None,
+                    save_version: None,
+                    schema_version: None,
+                    rest,
+                })
+            }
+        }
+
+        let timeline = WorldTimeline::open(Box::new(LegacyWeatherSource)).expect("timeline");
+        let frame = timeline.frame(17_030_998).expect("frame");
+        assert_eq!(
+            frame.weather_status(),
+            ViewStatus::Present,
+            "the legacy route must still report the raw accessor Present, or this proves nothing"
+        );
+        let viewer = ViewerOwnedMapState {
+            viewport_width: 16,
+            viewport_height: 16,
+            camera: None,
+            observer_country_id: None,
+            map_mode_id: "not_a_mode".to_string(),
+            map_mode_selection_epoch: 0,
+            selected_object_ids: Vec::new(),
+            input_revision: 0,
+            animation_time_f32_bits: 0,
+            frame_delta_seconds_f32_bits: 0,
+        };
+        let selection = Xmap15ViewerSelection {
+            selected_plan: None,
+        };
+        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
+            &frame,
+            &viewer,
+            &[],
+            &[],
+            &selection,
+        );
+
+        assert_ne!(
+            weather_gameplay_status(&context),
+            ViewStatus::Present,
+            "XMAP19 accepted the legacy weather route as a gameplay input"
+        );
+        let gap = unavailable_gap(&context);
+        assert!(
+            gap.reason
+                .contains("weather.region_gameplay has WorldFrame status"),
+            "the refusal does not name the gameplay input as missing: {}",
+            gap.reason
+        );
+        assert!(
+            !gap.reason.contains(
+                "weather.region_gameplay has WorldFrame status Present"
+            ),
+            "the refusal calls an unmeasured weather view carried: {}",
+            gap.reason
+        );
     }
 }

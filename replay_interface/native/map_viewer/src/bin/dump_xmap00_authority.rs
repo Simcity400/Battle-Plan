@@ -391,9 +391,7 @@ fn observations(frame: &WorldFrame) -> Vec<Observation> {
                 }
             }),
         },
-        // What the eight XMAP05 rows WOULD do if the XMAP00 ledger promoted them
-        // from `unavailable_until_owner_proves`. That promotion is the owner's
-        // call; this is the evidence it needs.
+        // The frame-pure half of XMAP05's admission, for checking a refusing hour.
         Observation {
             label: "xmap05 admission verdict",
             status: None,

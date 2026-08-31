@@ -1033,24 +1033,13 @@ impl ProductionMapFeatureAdapter for Xmap05FowAdapter {
 ///
 /// # Why this is public API and not a probe
 ///
-/// All eight XMAP05 rows in the XMAP00 ledger
-/// (`non_ui_visual_input_ledger_20260730.tsv`) carry the disposition
-/// `unavailable_until_owner_proves`, so promoting them to owner-proven is the
-/// owner's decision, not a lane's. What a lane owes that decision is the
-/// evidence: on a real recording, how many hours would actually admit, and for
-/// the ones that would not, what is missing.
+/// Exactly the half of [`admitted_epoch_keying`] that reads only the
+/// `WorldFrame`, which is the half a `MapAuthorityOwnerProvenAdmission::status`
+/// function may use; the four control/identity rows' status functions call it.
 ///
-/// This is that predicate. It is exactly the half of [`admitted_epoch_keying`]
-/// that reads only the `WorldFrame` - which is the half a
-/// `MapAuthorityOwnerProvenAdmission::status` function is allowed to use, since
-/// `RequirementProjector` holds nothing else. If the rows are promoted, the
-/// status functions call this; until then it is what measures whether they
-/// could be.
-///
-/// It does NOT cover the fog-of-war half of the family: reading one POV's
-/// vector needs the province count from `map/provinces.bmp`, so it is not
-/// derivable from a frame alone. The POV-census half that IS frame-pure is
-/// reported separately.
+/// It does NOT cover the fog-of-war half: reading one POV's vector needs the
+/// province count from `map/provinces.bmp`, so it is not frame-derivable. The
+/// three fog rows have their own predicates in `map_authority`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Xmap05AdmissionVerdict {
     /// Roster countries whose presentation identity this hour certified.
@@ -1060,9 +1049,13 @@ pub struct Xmap05AdmissionVerdict {
     pub excluded_countries: Vec<String>,
     pub states: usize,
     pub in_state_provinces: usize,
-    /// Whether the visibility POV census equals the complete D18 roster, which
-    /// is the frame-pure precondition of the four `fog.*` rows. `None` when the
-    /// visibility root is not Present at all.
+    /// Whether the visibility POV census equals the complete D18 roster. `None`
+    /// when the visibility root is not Present at all.
+    ///
+    /// AN OBSERVATION, NOT A PRECONDITION: the engine computes fog for the
+    /// country its process is playing, so `false` is the ordinary case for a
+    /// client recording and neither [`Xmap05VisibilityMode`] arm reads more than
+    /// one vector.
     pub visibility_povs_match_roster: Option<bool>,
     /// The emitted `countries` keys this hour's D18 read could not name. Empty
     /// on an ordinary hour; on `captures/oz_tip` it is `["367"]` for 469 hours.
