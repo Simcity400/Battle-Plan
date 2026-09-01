@@ -387,7 +387,8 @@ function Invoke-ShippingTests {
         'hr_truncated_prefix',         # hr-truncated-prefix
         'pv_repeat_gate_reencode',     # pv-repeat-gate
         'pv_repeat_diag',              # pv-repeat-gate
-        'pv_hour_dump'                 # pv-repeat-gate
+        'pv_hour_dump',                # pv-repeat-gate
+        'wo_xmap13_gate_scan'          # pv-repeat-gate (lane WO, 2026-09-01)
     )
     $plans = @()
     foreach ($root in $Topology.Roots) {
