@@ -2124,9 +2124,6 @@
       "replay_core\\src\\world.rs:33586": 1,
       "replay_core\\src\\world.rs:33715": 1
     },
-    "replay_interface/native/map_viewer/src/map_authority.rs": {
-      "wire_format/src/d81.rs:6-11": 1
-    },
     "replay_interface/native/map_viewer/tests/xmap00_map_authority.rs": {
       "world_fold.rs:9560": 1
     },
@@ -2144,10 +2141,10 @@
       "world_fold.rs:7319-7323": 1
     },
     "replay_interface/native/replay_core/src/world.rs": {
-      "compact_contract/src/rail_replay.rs:57-61": 2,
+      "compact_contract/src/rail_replay.rs:57-61": 1,
       "compact_contract/src/rail_replay.rs:591": 1,
       "compact_contract/src/rail_replay.rs:596-737": 1,
-      "compact_contract/src/rail_replay.rs:613-614": 3,
+      "compact_contract/src/rail_replay.rs:613-614": 2,
       "compact_contract/src/rail_replay.rs:62-73": 1,
       "compact_contract/src/rail_replay.rs:717-733": 1,
       "compact_contract/src/rail_replay.rs:723-731": 1,
@@ -2160,7 +2157,6 @@
       "recorder_host/src/world_fold.rs:9386": 1,
       "tactic_weight_fold.rs:21-24": 1,
       "tech_sharing.rs:67-83": 1,
-      "wire_format/src/d81.rs:419-462": 1,
       "wire_format/src/d81.rs:6-11": 1,
       "world.rs:12872-12877": 1,
       "world_fold.rs:10023": 1,
