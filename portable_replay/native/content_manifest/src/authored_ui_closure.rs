@@ -124,7 +124,7 @@ pub fn emit_effective_vfs_authored_ui_closure(
     {
         refuse_destructive_text_decode(file, "authored GFX")?;
         let document = parse_bytes(&file.bytes);
-        if !document.recoveries.is_empty() && !engine_tolerated_outer_eof(&document, &file.bytes) {
+        if !document.recoveries.is_empty() && !engine_tolerated_outer_eof(&document) {
             return Err(format!(
                 "authored GFX parse required recovery in {}",
                 file.logical_path
@@ -866,8 +866,7 @@ mod tests {
 
     #[test]
     fn gfx_relying_on_the_engine_tolerated_eof_close_still_closes_the_authored_namespace() {
-        // kills: dropping the `&& !engine_tolerated_outer_eof(&document,
-        // &file.bytes)` guard from the authored-GFX gate in
+        // kills: dropping the `&& !engine_tolerated_outer_eof(&document)` guard from the authored-GFX gate in
         // emit_effective_vfs_authored_ui_closure re-refuses the whole
         // namespace on powerbalance-shaped input.
         let root = temp_root();

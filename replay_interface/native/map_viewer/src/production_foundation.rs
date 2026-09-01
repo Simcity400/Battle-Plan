@@ -497,7 +497,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
         map_admission: &MapAuthorityAdmission,
         content_receipt: &FoundationContentExecutionReceipt,
         previous_building_visual: Option<&crate::Xmap12BuildingVisualFrame>,
-        fixed_runtime: Option<&crate::Xmap12FixedRuntimeState>,
+        previous_fixed_runtime: Option<&crate::Xmap12FixedRuntimeState>,
     ) -> Result<PreparedFoundationFrame> {
         let selection = crate::production_features::xmap15::Xmap15ViewerSelection::default();
         prepare_foundation_frame_inner(
@@ -508,7 +508,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
             content_receipt,
             self,
             previous_building_visual,
-            fixed_runtime,
+            previous_fixed_runtime,
             &selection,
         )
     }
@@ -521,7 +521,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
         map_admission: &MapAuthorityAdmission,
         content_receipt: &FoundationContentExecutionReceipt,
         previous_building_visual: Option<&crate::Xmap12BuildingVisualFrame>,
-        fixed_runtime: Option<&crate::Xmap12FixedRuntimeState>,
+        previous_fixed_runtime: Option<&crate::Xmap12FixedRuntimeState>,
         selection: &crate::production_features::xmap15::Xmap15ViewerSelection,
     ) -> Result<PreparedFoundationFrame> {
         prepare_foundation_frame_inner(
@@ -532,7 +532,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
             content_receipt,
             self,
             previous_building_visual,
-            fixed_runtime,
+            previous_fixed_runtime,
             selection,
         )
     }
@@ -816,6 +816,10 @@ pub struct PreparedFoundationFrame {
     /// frame's `previous_building_visual`: it is the destroyed-mesh selector's previous-frame
     /// memory, the engine's `slot+0x3a`.
     pub xmap12_building_visual: Option<crate::Xmap12BuildingVisualFrame>,
+    /// This frame's derived ambient/fixed lifecycle. The caller carries it into
+    /// the next frame the way it carries the building visual: an ambient object
+    /// the viewer's camera has spawned stays spawned.
+    pub xmap12_fixed_runtime: Option<crate::Xmap12FixedRuntimeState>,
     pub weather: Option<crate::PreparedXmap19WeatherFrame>,
     pub rivers_straits: Option<crate::PreparedRiversStraitsFrame>,
     pub water: crate::PreparedWaterFrame,
@@ -1076,7 +1080,7 @@ fn prepare_foundation_frame_inner(
     content_receipt: &FoundationContentExecutionReceipt,
     adapters: &ProductionMapFeatureAdapters<'_>,
     xmap12_previous_building_visual: Option<&crate::Xmap12BuildingVisualFrame>,
-    xmap12_fixed_runtime: Option<&crate::Xmap12FixedRuntimeState>,
+    xmap12_previous_fixed_runtime: Option<&crate::Xmap12FixedRuntimeState>,
     xmap15_selection: &crate::production_features::xmap15::Xmap15ViewerSelection,
 ) -> Result<PreparedFoundationFrame> {
     viewer.validate()?;
@@ -1105,6 +1109,7 @@ fn prepare_foundation_frame_inner(
     let mut prepared_trees = None;
     let mut prepared_xmap12 = None;
     let mut prepared_xmap12_building_visual = None;
+    let mut prepared_xmap12_fixed_runtime = None;
     let mut prepared_weather = None;
     let mut prepared_water = None;
     let mut prepared_units = None;
@@ -1155,7 +1160,7 @@ fn prepare_foundation_frame_inner(
                 Some(adapter) => prepared_or_refusal!(adapter.prepare(
                     &context,
                     xmap12_previous_building_visual,
-                    xmap12_fixed_runtime,
+                    xmap12_previous_fixed_runtime,
                 )),
                 None => None,
             }
@@ -1227,19 +1232,39 @@ fn prepare_foundation_frame_inner(
         } else {
             match (xmap12_preparation, generic_preparation) {
                 (Some(xmap12), _) => {
-                    prepared_xmap12_building_visual = xmap12.building_visual;
-                    if let Some(payload) = xmap12.prepared {
-                        if prepared_xmap12.replace(payload).is_some() {
+                    // A present frame owes its payload AND both carried states,
+                    // and an absent one owes none of them. The adapter answers
+                    // with one field holding all three, so the only thing left
+                    // to check here is that the answer agrees with the
+                    // disposition beside it.
+                    if !xmap12.disposition_agrees_with_payload() {
+                        return Err(
+                            "CitiesBuildingsMapObjects disposition and prepared payload disagree"
+                                .into(),
+                        );
+                    }
+                    if let Some(prepared) = xmap12.present {
+                        // The two inputs this layer HANDS the adapter, checked
+                        // against the answer that came back. Both fail silently
+                        // when they go missing on the way through, and neither
+                        // shows up as an error anywhere else.
+                        let supplied_dlc_names = context
+                            .world_frame
+                            .session_metadata()
+                            .active_dlcs
+                            .measured()
+                            .cloned()
+                            .unwrap_or_default();
+                        crate::xmap12_fixed_runtime_consumed_its_inputs(
+                            xmap12_previous_fixed_runtime,
+                            &supplied_dlc_names,
+                            &prepared.fixed_runtime,
+                        )?;
+                        prepared_xmap12_building_visual = Some(prepared.building_visual);
+                        prepared_xmap12_fixed_runtime = Some(prepared.fixed_runtime);
+                        if prepared_xmap12.replace(prepared.prepared).is_some() {
                             return Err("foundation produced duplicate XMAP12 payload".into());
                         }
-                    } else if matches!(
-                        &xmap12.output.disposition,
-                        FamilyDisposition::Present { .. }
-                    ) {
-                        return Err(
-                        "present CitiesBuildingsMapObjects family omitted its executable payload"
-                            .into(),
-                    );
                     }
                     let output = xmap12.output;
                     adapter_element_diagnostics.extend(output.element_diagnostics);
@@ -1883,6 +1908,7 @@ fn prepare_foundation_frame_inner(
         trees: prepared_trees,
         xmap12: prepared_xmap12,
         xmap12_building_visual: prepared_xmap12_building_visual,
+        xmap12_fixed_runtime: prepared_xmap12_fixed_runtime,
         weather: prepared_weather,
         rivers_straits: prepared_rivers_straits,
         water,

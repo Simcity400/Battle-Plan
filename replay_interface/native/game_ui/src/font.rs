@@ -627,7 +627,7 @@ pub fn authored_bitmap_font_registry_paths_for_language(
         }
         let document = crate::paradox_text::parse_bytes(&bytes);
         if !document.recoveries.is_empty()
-            && !crate::paradox_text::engine_tolerated_outer_eof(&document, &bytes)
+            && !crate::paradox_text::engine_tolerated_outer_eof(&document)
         {
             return Err(GameUiError::parse(format!(
                 "{source}: bitmap-font registry parse required recovery"

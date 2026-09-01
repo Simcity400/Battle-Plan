@@ -228,7 +228,7 @@ pub fn load_scripted_gui_registry(resolver: &AssetResolver) -> Result<ScriptedGu
             ));
         }
         let document = parse_bytes(&bytes);
-        let tolerated_eof_close = engine_tolerated_outer_eof(&document, &bytes);
+        let tolerated_eof_close = engine_tolerated_outer_eof(&document);
         if tolerated_eof_close {
             let recovery = &document.recoveries[0];
             engine_tolerated_eof_closures.push(format!(

@@ -68,7 +68,7 @@ pub fn emit_effective_vfs_hud_role_index(
         validate_resolved(&file, &rel, source_inventory_sha256)?;
         record_decode_damage(&mut decode_damaged, &file);
         let document = parse_bytes(&file.bytes);
-        if !document.recoveries.is_empty() && !engine_tolerated_outer_eof(&document, &file.bytes) {
+        if !document.recoveries.is_empty() && !engine_tolerated_outer_eof(&document) {
             gui_parse_failed.insert(rel, decode_text(&file.bytes).to_ascii_lowercase());
             continue;
         }
@@ -89,7 +89,7 @@ pub fn emit_effective_vfs_hud_role_index(
         validate_resolved(&file, &rel, source_inventory_sha256)?;
         record_decode_damage(&mut decode_damaged, &file);
         let document = parse_bytes(&file.bytes);
-        if !document.recoveries.is_empty() && !engine_tolerated_outer_eof(&document, &file.bytes) {
+        if !document.recoveries.is_empty() && !engine_tolerated_outer_eof(&document) {
             gfx_parse_failed.insert(rel, decode_text(&file.bytes).to_ascii_lowercase());
             continue;
         }
@@ -577,7 +577,7 @@ pub(crate) fn authored_bitmap_font_dependency_registry_paths(
         validate_resolved(&file, &source, authority)?;
         record_decode_damage(decode_damaged, &file);
         let document = parse_bytes(&file.bytes);
-        if !document.recoveries.is_empty() && !engine_tolerated_outer_eof(&document, &file.bytes) {
+        if !document.recoveries.is_empty() && !engine_tolerated_outer_eof(&document) {
             return Err(format!(
                 "{source}: bitmap-font registry parse required recovery"
             ));
@@ -872,7 +872,7 @@ fn bitmap_font_dependency_paths(
             .ok_or_else(|| format!("font {symbolic_name} has no descriptor or core.gfx alias"))?;
         validate_resolved(&core, "interface/core.gfx", authority)?;
         let document = parse_bytes(&core.bytes);
-        if !document.recoveries.is_empty() && !engine_tolerated_outer_eof(&document, &core.bytes) {
+        if !document.recoveries.is_empty() && !engine_tolerated_outer_eof(&document) {
             return Err("core.gfx font alias parse required recovery".into());
         }
         let resolved_language = canonical_localisation_language(localisation_language)?;
@@ -1667,8 +1667,7 @@ mod tests {
 
     #[test]
     fn gfx_relying_on_the_engine_tolerated_eof_close_still_binds_sprite_and_texture() {
-        // kills: dropping the `&& !engine_tolerated_outer_eof(&document,
-        // &file.bytes)` guard from the interface/**/*.gfx sprite-scan gate in
+        // kills: dropping the `&& !engine_tolerated_outer_eof(&document)` guard from the interface/**/*.gfx sprite-scan gate in
         // emit_effective_vfs_hud_role_index re-blackholes the tolerated file.
         let vfs = MapVfs::new(&[
             (

@@ -6,6 +6,13 @@ use std::path::Path;
 pub struct Document {
     pub root: Value,
     pub recoveries: Vec<Recovery>,
+    /// Whether the LAST significant token the reader saw was a structural `}`.
+    ///
+    /// The reader's own answer, not a scan of the file's trailing bytes. A `}`
+    /// inside a comment or a quoted value is text, and a suffix scan that
+    /// counted it as a closing brace would call a truncated file tolerated -- the
+    /// exact scanner disagreement this module exists to prevent.
+    pub ends_on_structural_close: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -131,16 +138,16 @@ pub const ENGINE_TOLERATED_EOF_CLOSE_RECOVERY: &str =
 
 /// True when the document's only recovery is an end-of-file block closure the
 /// engine itself tolerates: one open brace closed by EOF on a file whose last
-/// non-whitespace byte is the closing brace of its final block. The parsed
-/// tree loses nothing, so consumers may treat the file as parsed instead of
-/// damaged.
-pub fn engine_tolerated_outer_eof(document: &Document, bytes: &[u8]) -> bool {
+/// significant TOKEN is the closing brace of its final block. The parsed tree
+/// loses nothing, so consumers may treat the file as parsed instead of damaged.
+///
+/// The last-token test comes from the reader, not from the file's trailing
+/// bytes. A file ending `... }` newline `# }` has a `}` as its last non-blank
+/// byte and no closing token at all, and a byte scan called it tolerated.
+pub fn engine_tolerated_outer_eof(document: &Document) -> bool {
     document.recoveries.len() == 1
         && document.recoveries[0].message == ENGINE_TOLERATED_EOF_CLOSE_RECOVERY
-        && bytes
-            .iter()
-            .rfind(|byte| !byte.is_ascii_whitespace())
-            .is_some_and(|byte| *byte == b'}')
+        && document.ends_on_structural_close
 }
 
 pub const MAX_TEXT_DECODE_DIAGNOSTICS: usize = 256;
@@ -255,6 +262,56 @@ impl std::fmt::Display for TextDecodeLoss {
 #[must_use = "byte-level decode damage must be recorded, not dropped"]
 pub fn decode_text_diagnosed(bytes: &[u8]) -> (String, Vec<TextDecodeLoss>) {
     (decode_text(bytes), diagnose_text_decode(bytes))
+}
+
+/// The parsed root, or the FIRST recovery that is not one the engine itself
+/// tolerates.
+///
+/// `parse_str` recovers, and a consumer that reads what it recovered from
+/// answers questions from text the reader could not follow. But not every
+/// recovery is damage: [`engine_tolerated_outer_eof`] names the one the engine
+/// accepts on shipped files -- a single outer block closed by end of file, on a
+/// file whose last non-whitespace byte is its final `}` -- and the parsed tree
+/// loses nothing there.
+///
+/// WHICH recoveries are tolerated is decided here, in one place, so no consumer
+/// reclassifies the reader's diagnostics for itself.
+pub fn parse_str_strict(text: &str) -> std::result::Result<Value, Recovery> {
+    let document = parse_str(text);
+    match document.recoveries.first() {
+        None => Ok(document.root),
+        Some(recovery) => {
+            let recovery = recovery.clone();
+            if engine_tolerated_outer_eof(&document) {
+                Ok(document.root)
+            } else {
+                Err(recovery)
+            }
+        }
+    }
+}
+
+/// The decoded text, or the FIRST loss that discarded input.
+///
+/// `decode_text` recovers, and a consumer that reads what it recovered from
+/// answers questions about content the file does not hold: an invalid byte
+/// inside a quoted token becomes `U+FFFD`, an unpaired UTF-16 surrogate becomes
+/// the same character, and a truncated UTF-16 unit is dropped outright. This is
+/// for consumers that will not read damage.
+///
+/// The Latin-1 fallback is NOT a loss here. It discards nothing -- every byte
+/// becomes the character with its value -- and it is how Paradox text files that
+/// are not UTF-8 are read.
+///
+/// The variant test is [`TextDecodeLoss::discards_input`] and it lives in ONE
+/// place, so that a consumer never samples the destructive variants itself and
+/// never misses one.
+pub fn decode_text_strict(bytes: &[u8]) -> std::result::Result<String, TextDecodeLoss> {
+    let (text, losses) = decode_text_diagnosed(bytes);
+    match losses.into_iter().find(TextDecodeLoss::discards_input) {
+        Some(loss) => Err(loss),
+        None => Ok(text),
+    }
 }
 
 pub fn diagnose_text_decode(bytes: &[u8]) -> Vec<TextDecodeLoss> {
@@ -440,6 +497,7 @@ struct Parser<'a> {
     column: usize,
     pushed: Option<Token>,
     recoveries: Vec<Recovery>,
+    ends_on_close: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -451,6 +509,7 @@ impl<'a> Parser<'a> {
             column: 1,
             pushed: None,
             recoveries: Vec::new(),
+            ends_on_close: false,
         }
     }
 
@@ -459,6 +518,7 @@ impl<'a> Parser<'a> {
         Document {
             root,
             recoveries: self.recoveries,
+            ends_on_structural_close: self.ends_on_close,
         }
     }
 
@@ -589,6 +649,10 @@ impl<'a> Parser<'a> {
             '"' => TokenKind::Quoted(self.read_quoted(line, column)),
             _ => TokenKind::Atom(self.read_atom(ch)),
         };
+        // Recorded HERE, where comments and quoted values have already been
+        // resolved, so that "the file ends on a closing brace" is a fact about
+        // the token stream and not about the last byte.
+        self.ends_on_close = matches!(kind, TokenKind::Close);
         Token { kind, line, column }
     }
 
@@ -683,6 +747,110 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// A file-scoped `@name` reference that could not be expanded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VariableExpansion {
+    /// The file reads `@name` and defines no `@name`.
+    Undefined { reference: String, undefined: String },
+    /// The definitions lead back to a name already on the chain.
+    Cyclic { reference: String },
+}
+
+impl std::fmt::Display for VariableExpansion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VariableExpansion::Undefined {
+                reference,
+                undefined,
+            } => write!(f, "{reference} reads {undefined}, which the file does not define"),
+            VariableExpansion::Cyclic { reference } => {
+                write!(f, "{reference} is defined in terms of itself")
+            }
+        }
+    }
+}
+
+/// Expand every file-scoped `@name` reference in `root`, IN PLACE.
+///
+/// Clausewitz files may define `@name = value` at the top level and then read
+/// `@name` wherever a value is expected. This expands a reference to the
+/// SCALAR its definition holds, kind and all: `@font = "hoi_16mbs"` read as
+/// `font = @font` yields a QUOTED scalar, because a consumer that tells a
+/// quoted value from a bare one -- as authored map content does -- would
+/// otherwise see a different type from the one the file authored.
+///
+/// Only a BARE scalar is a reference; a quoted one is text. A chain is followed
+/// until it reaches a non-reference, and a name that leads back onto its own
+/// chain, or one nothing defines, is REFUSED rather than left in place: a
+/// consumer that received `@name` as a literal would parse it as content.
+///
+/// This is deliberately separate from `parse_str`, so no existing consumer's
+/// reading changes by adding it.
+pub fn expand_file_scoped_variables(root: &mut Value) -> std::result::Result<(), VariableExpansion> {
+    let definitions = root
+        .fields()
+        .iter()
+        .filter_map(|entry| {
+            let name = entry.key.as_deref()?.strip_prefix('@')?;
+            let Value::Scalar(scalar) = &entry.value else {
+                return None;
+            };
+            (!name.trim().is_empty()).then(|| (format!("@{name}"), scalar.clone()))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let Value::Object(entries) = root else {
+        return expand_into(root, &definitions);
+    };
+    for entry in entries.iter_mut() {
+        // A definition is the ENVIRONMENT, not content. Expanding it in place
+        // would report a cycle or an undefined name against the definition
+        // rather than against the content that reads it, and each definition's
+        // own chain is followed anyway when a reference reaches it.
+        if entry.key.as_deref().is_some_and(|key| key.starts_with('@')) {
+            continue;
+        }
+        expand_into(&mut entry.value, &definitions)?;
+    }
+    Ok(())
+}
+
+fn expand_into(
+    value: &mut Value,
+    definitions: &std::collections::BTreeMap<String, Scalar>,
+) -> std::result::Result<(), VariableExpansion> {
+    match value {
+        Value::Scalar(Scalar::Bare(token)) if token.starts_with('@') => {
+            let reference = token.clone();
+            let mut seen = std::collections::BTreeSet::new();
+            let mut current = Scalar::Bare(reference.clone());
+            while let Scalar::Bare(name) = &current {
+                if !name.starts_with('@') {
+                    break;
+                }
+                if !seen.insert(name.clone()) {
+                    return Err(VariableExpansion::Cyclic { reference });
+                }
+                let Some(next) = definitions.get(name) else {
+                    return Err(VariableExpansion::Undefined {
+                        reference,
+                        undefined: name.clone(),
+                    });
+                };
+                current = next.clone();
+            }
+            *value = Value::Scalar(current);
+            Ok(())
+        }
+        Value::Scalar(_) => Ok(()),
+        Value::Object(entries) => {
+            for entry in entries.iter_mut() {
+                expand_into(&mut entry.value, definitions)?;
+            }
+            Ok(())
+        }
+    }
+}
+
 pub fn required_object<'a>(value: &'a Value, label: &str) -> Result<&'a [Entry]> {
     value
         .as_object()
@@ -692,6 +860,137 @@ pub fn required_object<'a>(value: &'a Value, label: &str) -> Result<&'a [Entry]>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The strict parse accepts the one recovery the engine itself tolerates
+    /// and refuses every other.
+    ///
+    /// kills: a consumer that treats every recovery as damage, which refuses a
+    /// file the game reads; and one that treats the tolerance as covering more
+    /// than the single outer end-of-file closure.
+    #[test]
+    fn the_strict_parse_tolerates_only_the_engines_own_eof_closure() {
+        let tolerated = "type = { name = \"a\" object = { name = \"o\" }";
+        let root = parse_str_strict(tolerated).expect("the engine reads this file");
+        let declared = root.first_value_ci("type").expect("the type survives");
+        assert_eq!(declared.first_scalar_ci("name"), Some("a"));
+        assert!(declared.first_value_ci("object").is_some());
+        // Two unclosed blocks are not the tolerated shape.
+        assert!(parse_str_strict("a = { b = { c = 1").is_err());
+        // A closing brace inside a COMMENT is text, not the file's last token,
+        // and a file that ends there is truncated.
+        assert!(parse_str_strict("a = { b = 1 # }").is_err());
+        assert!(parse_str_strict("a = { b = 1 #").is_err());
+        // The same brace inside a quoted value is text too.
+        assert!(parse_str_strict("a = { b = \"}\"").is_err());
+        assert!(!parse_str("a = { b = 1 # }").ends_on_structural_close);
+        assert!(parse_str("a = { b = 1 }").ends_on_structural_close);
+        // Neither is a file that does not end on its final closing brace.
+        assert!(parse_str_strict("a = { b = 1 } c = { d = 2").is_err());
+        // Nor any other recovery.
+        assert!(parse_str_strict("} a = 1").is_err());
+        assert!(parse_str_strict("a = \"unterminated").is_err());
+    }
+
+    /// The strict decoder refuses EVERY destructive loss and accepts the two
+    /// that discard nothing.
+    ///
+    /// kills: a consumer that samples the destructive variants itself and misses
+    /// one -- an unpaired surrogate inside a quoted token then decodes to
+    /// `U+FFFD` and is read as the authored value.
+    #[test]
+    fn the_strict_decoder_refuses_every_loss_that_discards_input() {
+        let utf16le = |text: &str, injected: Option<u16>| {
+            let mut bytes = vec![0xffu8, 0xfe];
+            for unit in text.encode_utf16() {
+                bytes.extend_from_slice(&unit.to_le_bytes());
+            }
+            if let Some(unit) = injected {
+                bytes.extend_from_slice(&unit.to_le_bytes());
+            }
+            bytes
+        };
+        // Invalid UTF-8 after a byte-order mark.
+        assert!(matches!(
+            decode_text_strict(b"\xef\xbb\xbfname = \"a\xe2\x82\""),
+            Err(TextDecodeLoss::InvalidUtf8 { .. })
+        ));
+        // An unpaired UTF-16 surrogate.
+        assert!(matches!(
+            decode_text_strict(&utf16le("name = ", Some(0xd800))),
+            Err(TextDecodeLoss::UnpairedUtf16Surrogate { .. })
+        ));
+        // A truncated UTF-16 code unit.
+        assert!(matches!(
+            decode_text_strict(b"\xff\xfea\x00b"),
+            Err(TextDecodeLoss::TruncatedUtf16Unit { .. })
+        ));
+        // Every variant `discards_input` reports is one of the three above plus
+        // `Suppressed`, and this is what says so if a variant is ever added.
+        assert!(TextDecodeLoss::Suppressed { count: 1 }.discards_input());
+        assert!(!TextDecodeLoss::NonUtf8DecodedAsLatin1 {
+            byte_offset: 0,
+            line: 1,
+            column: 1
+        }
+        .discards_input());
+        // The two that discard nothing.
+        assert_eq!(
+            decode_text_strict(b"name = \"caf\xe9\"").as_deref(),
+            Ok("name = \"caf\u{e9}\"")
+        );
+        assert_eq!(
+            decode_text_strict(b"\xef\xbb\xbfname = \"a\"").as_deref(),
+            Ok("name = \"a\"")
+        );
+        assert_eq!(decode_text_strict(&utf16le("name = 1", None)).as_deref(), Ok("name = 1"));
+    }
+
+    #[test]
+    fn file_scoped_variables_expand_to_the_definitions_own_scalar_kind() {
+        let mut doc = parse_str(
+            r#"
+            @font = "hoi_16mbs"
+            @alias = @font
+            @size = 4
+            root = { font = @alias size = @size literal = "@font" }
+            "#,
+        );
+        assert!(doc.recoveries.is_empty());
+        expand_file_scoped_variables(&mut doc.root).expect("every reference is defined");
+        let root = doc.root.first_value_ci("root").unwrap();
+        assert_eq!(
+            root.first_value_ci("font"),
+            Some(&Value::Scalar(Scalar::Quoted("hoi_16mbs".into())))
+        );
+        assert_eq!(
+            root.first_value_ci("size"),
+            Some(&Value::Scalar(Scalar::Bare("4".into())))
+        );
+        // A quoted value is text, not a reference.
+        assert_eq!(
+            root.first_value_ci("literal"),
+            Some(&Value::Scalar(Scalar::Quoted("@font".into())))
+        );
+    }
+
+    #[test]
+    fn an_undefined_or_cyclic_variable_is_refused_rather_than_left_in_place() {
+        let mut doc = parse_str("root = { size = @missing }");
+        assert_eq!(
+            expand_file_scoped_variables(&mut doc.root),
+            Err(VariableExpansion::Undefined {
+                reference: "@missing".into(),
+                undefined: "@missing".into()
+            })
+        );
+        let mut doc = parse_str("@a = @b\n@b = @a\nroot = { size = @a }");
+        assert_eq!(
+            expand_file_scoped_variables(&mut doc.root),
+            Err(VariableExpansion::Cyclic {
+                reference: "@a".into()
+            })
+        );
+    }
 
     #[test]
     fn keeps_repeated_keys_and_unassigned_block_values() {
@@ -1013,7 +1312,7 @@ mod tests {
             doc.recoveries[0].message,
             ENGINE_TOLERATED_EOF_CLOSE_RECOVERY
         );
-        assert!(engine_tolerated_outer_eof(&doc, bytes));
+        assert!(engine_tolerated_outer_eof(&doc));
     }
 
     #[test]
@@ -1024,12 +1323,12 @@ mod tests {
             2,
             "two open braces closed by EOF are not the tolerated single closure"
         );
-        assert!(!engine_tolerated_outer_eof(&doc, b"a = { b = { c = 1\n"));
+        assert!(!engine_tolerated_outer_eof(&doc));
 
         let no_final_brace = b"a = { b = 1\ntrailing\n";
         let doc = parse_bytes(no_final_brace);
         assert_eq!(doc.recoveries.len(), 1);
-        assert!(!engine_tolerated_outer_eof(&doc, no_final_brace));
+        assert!(!engine_tolerated_outer_eof(&doc));
 
         let damaged = b"a = { b = 1 } }\n";
         let doc = parse_bytes(damaged);
@@ -1038,11 +1337,11 @@ mod tests {
             doc.recoveries[0].message,
             ENGINE_TOLERATED_EOF_CLOSE_RECOVERY
         );
-        assert!(!engine_tolerated_outer_eof(&doc, damaged));
+        assert!(!engine_tolerated_outer_eof(&doc));
 
         let clean = b"a = { b = 1 }\n";
         let doc = parse_bytes(clean);
         assert!(doc.recoveries.is_empty());
-        assert!(!engine_tolerated_outer_eof(&doc, clean));
+        assert!(!engine_tolerated_outer_eof(&doc));
     }
 }

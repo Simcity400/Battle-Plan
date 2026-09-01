@@ -284,7 +284,7 @@ pub fn emit_effective_vfs_hud_role_index(
                 record_decode_damage(&mut decode_damaged, &rel, &bytes)?;
                 let document = parse_bytes(&bytes);
                 if !document.recoveries.is_empty()
-                    && !engine_tolerated_outer_eof(&document, &bytes)
+                    && !engine_tolerated_outer_eof(&document)
                 {
                     gfx_parse_failed.insert(rel, folded_file_text(&path));
                     continue;

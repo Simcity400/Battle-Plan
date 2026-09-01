@@ -171,33 +171,14 @@ impl ProductMapFoundationSession {
 // The per-placement building visual is DERIVED, never carried: lane OJ proved the family
 // owes zero wire bytes, and lane OO landed the derivation (shared-spawn-point occupant law
 // plus the destroyed-mesh selector). There is no `xmap12_building_visual` world input.
-pub(crate) const XMAP12_FIXED_RUNTIME_WORLD_INPUT_KEY: &str =
-    map_viewer::Xmap12FixedRuntimeState::WORLD_INPUT_KEY;
-
-pub(crate) struct AuthenticatedXmap12FrameInputs {
-    pub(crate) fixed_runtime: Option<map_viewer::Xmap12FixedRuntimeState>,
-}
-
-pub(crate) fn authenticated_xmap12_frame_inputs(
-    frame: &replay_core::WorldFrame,
-) -> crate::Result<AuthenticatedXmap12FrameInputs> {
-    let replay_frame_identity_sha256 = map_viewer::xmap04_replay_frame_identity_sha256(frame)?;
-    let fixed_runtime = frame
-        .domain(XMAP12_FIXED_RUNTIME_WORLD_INPUT_KEY)
-        .map(|value| {
-            serde_json::from_value::<map_viewer::Xmap12FixedRuntimeState>(value.clone()).map_err(
-                |error| -> Box<dyn std::error::Error> {
-                    format!("authenticated {XMAP12_FIXED_RUNTIME_WORLD_INPUT_KEY} payload: {error}")
-                        .into()
-                },
-            )
-        })
-        .transpose()?;
-    if let Some(value) = &fixed_runtime {
-        value.validate_for_replay(&replay_frame_identity_sha256)?;
-    }
-    Ok(AuthenticatedXmap12FrameInputs { fixed_runtime })
-}
+//
+// The ambient/fixed lifecycle is derived too, and used not to be: this file read it out of
+// `WorldFrame::domain("xmap12_fixed_runtime")` as a recorded world input while XMAP12's own
+// authority (`re_evidence/rendering_laws/XMAP12/authority.json`,
+// `production_contract.population`) assigned it to the viewer and `map_authority.rs` refused a
+// recorded carrier for the rows it feeds. No recorder ever emitted the key. The mint now lives
+// in `map_viewer::mint_xmap12_fixed_runtime`, so there is no world input to authenticate and
+// no `AuthenticatedXmap12FrameInputs` to carry one.
 
 #[cfg(windows)]
 pub(crate) fn prepare_product_map_foundation(
@@ -208,7 +189,6 @@ pub(crate) fn prepare_product_map_foundation(
     manifest: &replay_core::ContentManifest,
     terrain_options: map_viewer::TerrainLodCullOptions,
 ) -> crate::Result<map_viewer::PreparedFoundationFrame> {
-    let inputs = authenticated_xmap12_frame_inputs(frame)?;
     // A single-frame entry point has no previous frame, which is the engine's own cold start
     // for a freshly created map-building render slot.
     ProductMapFoundationSession::start(
@@ -218,7 +198,7 @@ pub(crate) fn prepare_product_map_foundation(
         terrain_options,
         None,
     )?
-    .prepare_with_xmap12_inputs(frame, viewer, manifest, None, inputs.fixed_runtime.as_ref())
+    .prepare_with_xmap12_inputs(frame, viewer, manifest, None, None)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

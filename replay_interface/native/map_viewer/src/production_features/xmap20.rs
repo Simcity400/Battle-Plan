@@ -748,16 +748,20 @@ mod tests {
 mod carrier_tests {
     use super::*;
 
-    /// The one seam that decides XMAP20's row, driven through `prepare()`.
+    /// XMAP20's own authority record, read at test time.
     ///
-    /// kills: registering a constructor-shaped standing refusal again (a
-    /// recording that carries the carrier would never get past it); reporting a
-    /// generic unpromoted-adapter gap instead of naming the input; silently
-    /// dropping a gate from the list as gates are closed; and vouching at
-    /// foundation time, where the effect operation identity's live D3D inputs do
-    /// not exist. The gate count is deliberately not written here - it has
-    /// changed once already (five to four) and a number in a comment is a second
-    /// place for it to go stale.
+    /// The blocker is checked against THIS, not against the production constant
+    /// beside it: a constant compared with itself accepts any pair of edits that
+    /// agree, which is exactly how a gate the authority excludes would get into
+    /// the refusal.
+    fn xmap20_effect_census_authority() -> serde_json::Value {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../re_evidence/rendering_laws/XMAP20/effect_census_authority.json");
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        serde_json::from_slice(&bytes).expect("XMAP20 authority record is JSON")
+    }
+
     #[test]
     fn the_row_follows_the_recording_and_names_the_input_when_it_is_missing() {
         use crate::map_authority::{
@@ -805,10 +809,19 @@ mod carrier_tests {
         let selection = Xmap15ViewerSelection {
             selected_plan: None,
         };
+        // The projection fills a gap's reason from the requirement's own
+        // blocker (map_authority.rs, the Absent/Unavailable arm), so the fixture
+        // carries the REAL blocker. A stand-in string here would prove the
+        // format slot passes something through and nothing about what the wire
+        // actually says.
+        let authority_blocker =
+            crate::map_authority::map_authority_requirement_metadata(XMAP20_EFFECT_LIFECYCLE_INPUT)
+                .expect("XMAP20 owns this authority input")
+                .blocker;
         let gapped = vec![MapAuthorityGap {
             input_id: XMAP20_EFFECT_LIFECYCLE_INPUT.to_string(),
             disposition: MapAuthorityRequirementDisposition::Absent,
-            reason: "the recorder emitted no key for this hour".to_string(),
+            reason: authority_blocker.to_string(),
         }];
         let admitted = vec![MapAuthorityAdmittedInput {
             input_id: XMAP20_EFFECT_LIFECYCLE_INPUT.to_string(),
@@ -837,7 +850,6 @@ mod carrier_tests {
         assert!(!gap.gap_id.contains("adapter_unimplemented"));
         assert!(gap.reason.contains(XMAP20_EFFECT_LIFECYCLE_INPUT), "{}", gap.reason);
         assert!(gap.reason.contains(XMAP20_EFFECT_LIFECYCLE_WIRE_KEY), "{}", gap.reason);
-        assert!(gap.reason.contains("the recorder emitted no key"), "{}", gap.reason);
         for gate in XMAP20_OPEN_CARRIER_GATES {
             assert!(gap.reason.contains(gate), "reason omitted {gate}");
         }
@@ -847,6 +859,72 @@ mod carrier_tests {
         );
         assert_eq!(gap.first_unavailable_hour, 11);
         assert_eq!(gap.last_unavailable_hour, 11);
+
+        // The blocker the refusal quotes states the EXACT missing inputs, and no
+        // retired one, and the refusal on the wire CARRIES it whole.
+        //
+        // kills: a refusal that keeps demanding effect randomness - owner ruling
+        // 2026-08-22 assigned it to the viewer, XMAP20-G4 is RESOLVED, and the
+        // carrier records no RNG state, so a reader routed by this text would be
+        // sent to produce something nobody owes; a blocker that names a gate
+        // which does NOT hold the carrier shut, which sends a producer to close
+        // something the authority excludes (G1 is open and blocks a join, not
+        // the carrier); one that names G7 without naming the three fields, which
+        // says a gate is open but not what to go and measure; and dropping the
+        // blocker from the refusal's own format string, after which the wire
+        // says only that four gates exist and none of what they ask for.
+        let blocker = authority_blocker;
+        assert!(gap.reason.contains(blocker), "{}", gap.reason);
+
+        // The AUTHORITY decides which gates hold the carrier shut and what each
+        // asks for. The WHOLE blocker is composed from it and compared EQUAL,
+        // not merely searched: a containment test passes any text that keeps the
+        // required substrings, including "the producer that would is NOT held
+        // by ..." and any extra sentence appended after them.
+        let authority = xmap20_effect_census_authority();
+        let carrier_gates = &authority["open_carrier_gates"];
+        let authoritative_ids = carrier_gates["ids"]
+            .as_array()
+            .expect("open_carrier_gates.ids is an array")
+            .iter()
+            .map(|id| id.as_str().expect("gate id is a string").to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            XMAP20_OPEN_CARRIER_GATES.to_vec(),
+            authoritative_ids,
+            "the production gate constant disagrees with the authority record"
+        );
+        let clauses = carrier_gates["carrier_blocker_clauses"]
+            .as_object()
+            .expect("open_carrier_gates.carrier_blocker_clauses is an object");
+        let rendered = authoritative_ids
+            .iter()
+            .map(|id| {
+                let clause = clauses[id]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("the authority record has no clause for {id}"));
+                format!("{id} ({clause})")
+            })
+            .collect::<Vec<_>>();
+        let (last, leading) = rendered
+            .split_last()
+            .expect("the carrier is held by at least one gate");
+        let composed = format!(
+            "{}{}{}{last}",
+            clauses["preamble"]
+                .as_str()
+                .expect("the authority record carries the blocker preamble"),
+            leading.join(", "),
+            if leading.is_empty() { "" } else { " and " },
+        );
+        assert_eq!(blocker, composed);
+        // The retired obligation, by every name it goes under, checked on the
+        // AUTHORITY's own words so the evidence record cannot reintroduce it
+        // either.
+        let lowered = composed.to_ascii_lowercase();
+        for retired in ["seed", "rng", "random", "prng", "g4"] {
+            assert!(!lowered.contains(retired), "the blocker demands {retired:?}");
+        }
 
         // The witness must bind the hour, or two hours would share one receipt.
         let later = timeline.frame(12).expect("frame");
