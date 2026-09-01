@@ -40,6 +40,7 @@ pub mod transport_status;
 pub mod windows_control_pipe;
 pub mod world_fold;
 pub mod xmap02_foundation_producer;
+pub mod xmap14_combat_indicator_producer;
 
 pub const SESSION_MANIFEST_SCHEMA: &str = "native_collector_session_v1";
 

@@ -565,12 +565,14 @@ pub use production_features::xmap13::{
 pub use production_features::xmap14::{
     PreparedXmap14CounterDraw, PreparedXmap14Draw, PreparedXmap14Frame, PreparedXmap14HitTarget,
     PreparedXmap14Indicator, PreparedXmap14ProgressDraw, PreparedXmap14SpriteDraw,
-    PreparedXmap14TextDraw, Xmap14CombatEnvelope, Xmap14ExecutionReceipt, Xmap14IndicatorIdentity,
-    Xmap14LandCarrier, Xmap14LandComposition, Xmap14LandTint, Xmap14NativeDrawClosure,
-    Xmap14NavalCarrier,
-    Xmap14NavalCategoryCounts, Xmap14NavalResultCarrier, Xmap14NavalResultMember,
-    Xmap14NavalResultSubtype, Xmap14PreparedKind, Xmap14ViewerSide, XMAP14_COMBAT_OPERATION_NAME,
-    XMAP14_COMBAT_STAGE_NAME, XMAP14_NATIVE_RECEIPT_SCHEMA,
+    PreparedXmap14TextDraw, Xmap14ClassCensus, Xmap14CombatEnvelope, Xmap14ExecutionReceipt,
+    Xmap14IndicatorIdentity, Xmap14LandCarrier, Xmap14LandComposition, Xmap14LandTint,
+    Xmap14MissingOperand, Xmap14NativeDrawClosure, Xmap14NavalCarrier, Xmap14NavalCategoryCounts,
+    Xmap14NavalResultAdmission, Xmap14NavalResultCarrier, Xmap14NavalResultMember,
+    Xmap14NavalResultPovOperands, Xmap14NavalResultSubtype, Xmap14PreparedKind,
+    Xmap14UnplacedIndicator, Xmap14ViewerSide, XMAP14_COMBAT_OPERATION_NAME,
+    XMAP14_COMBAT_STAGE_NAME, XMAP14_ENGINE_SHA256, XMAP14_INPUT_SCHEMA,
+    XMAP14_NATIVE_RECEIPT_SCHEMA, XMAP14_PREPARED_SCHEMA,
 };
 pub use production_features::xmap15::{
     prepare_xmap15_frame, xmap15_viewer_selection, PreparedXmap15Frame,

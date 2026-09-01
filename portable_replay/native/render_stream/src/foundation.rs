@@ -301,10 +301,9 @@ impl MapVisualFamily {
                 // type can name an entity the effective content set does not describe.
                 "ambient-entity-token-unknown-to-content",
             ],
-            Self::CombatMarkers => &[
-                "naval-result-pov-operands-unrecorded",
-                "land-air-frame-display-config-unrecorded",
-            ],
+            // Declared ONCE, beside the operands themselves, so a hole XMAP14
+            // learns to name reaches this vocabulary by being named there.
+            Self::CombatMarkers => &crate::xmap14_combat_indicators::COMBAT_MARKER_CAUSE_IDS,
             Self::LabelsMapText => &[
                 "state-label-localisation-missing",
                 // A resolved localisation token is not a promise that the map

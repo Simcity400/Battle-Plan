@@ -82,6 +82,12 @@ pub use xmap07_snow_mud::{
     XMAP07_SNOW_MUD_SCENE_COPY_RVA, XMAP07_SNOW_MUD_TILE_EDGE,
 };
 
+/// The EIR-CW-XMAP14 combat-indicator carrier the recorder writes and the
+/// XMAP14 adapter reads. Public as a MODULE, not flattened: eleven of its names
+/// are generic enough (`LandCarrier`, `MissingOperand`) that a re-export would
+/// read as this crate's own vocabulary rather than XMAP14's.
+pub mod xmap14_combat_indicators;
+
 mod assigned_stage;
 pub use assigned_stage::{
     AssignedStage, AssignedStageEdge, AssignedStageIdentity, AssignedStageSchedule,
