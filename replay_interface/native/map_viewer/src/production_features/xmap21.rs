@@ -275,6 +275,8 @@ mod tests {
                     payload_schema: "test".to_string(),
                     cadence: "hourly".to_string(),
                     identity_order: "test".to_string(),
+                    source: crate::MapAuthorityAdmissionSource::RecordedCarrier,
+                    derivation: None,
                 },
             )
             .collect()

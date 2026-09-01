@@ -126,8 +126,10 @@ pub mod xmap13_counter_control_law;
 pub mod xmap13_counter_grouping_law;
 mod xmap15_d3d_handoff;
 mod xmap16_d3d_handoff;
+pub mod xmap16_hub_derivation;
 mod xmap16_hub_handoff;
 mod xmap16_supply_arrow_handoff;
+pub mod xmap19_weather_lifecycle;
 mod xn13_unit_presentation;
 mod xmap20_direct_visual_law;
 mod xmap20_entity_presentation_law;
@@ -310,13 +312,17 @@ pub use map_authority::{
     account_owned_map_authority_inputs, admit_map_authority_json, admit_map_authority_projection,
     map_authority_observed_status_label, map_authority_owner_proven_admission,
     map_authority_projection_from_world_frame, map_authority_proven_input_status,
-    map_authority_requirement_metadata, player_country_set_leaf_status,
+    map_authority_requirement_metadata, map_authority_viewer_derived_admission,
+    player_country_set_leaf_status,
     refuse_missing_xmap00_authority,
     refuse_product_map_until_xmap01, require_promoted_xmap01_renderer, MapAuthorityAdmission,
-    MapAuthorityAdmittedInput, MapAuthorityGap, MapAuthorityOwnerProvenAdmission,
+    MapAuthorityAdmissionSource, MapAuthorityAdmittedInput, MapAuthorityGap,
+    MapAuthorityOwnerProvenAdmission,
     MapAuthorityProjection, MapAuthorityRequirement, MapAuthorityRequirementDisposition,
-    MapAuthorityRequirementMetadata, Xmap01ProductMapRefusal, MAP_AUTHORITY_INPUT_SCHEMA,
+    MapAuthorityRequirementMetadata, MapAuthorityViewerDerivedAdmission,
+    Xmap01ProductMapRefusal, MAP_AUTHORITY_INPUT_SCHEMA,
     MAP_AUTHORITY_OWNER_PROVEN_INPUTS, MAP_AUTHORITY_REQUIRED_INPUTS,
+    MAP_AUTHORITY_VIEWER_DERIVED_INPUTS,
 };
 pub use map_furniture::{
     associate_naval_spawns_to_provinces, base_icon_defines_from_resolver, base_icon_frame,
@@ -576,7 +582,8 @@ pub use production_features::xmap15::{
 };
 pub use production_features::xmap16::{
     PreparedXmap16Frame, PreparedXmap16RailProgram, PreparedXmap16RailSampler,
-    XMAP16_HUB_OPERATION_NAME, XMAP16_HUB_STAGE_NAME, XMAP16_RAIL_SUPPLY_SCHEMA,
+    XMAP16_DERIVED_VISUAL_GAP_ID, XMAP16_HUB_OPERATION_NAME, XMAP16_HUB_STAGE_NAME,
+    XMAP16_RAIL_SUPPLY_SCHEMA,
 };
 /// Why each XMAP17 grouped-label layer is dark this hour, as `(layer, cause)`
 /// pairs, empty when both build.
@@ -722,6 +729,10 @@ pub use shadow_pass_plan::{
 pub use xmap12_building_law::*;
 pub use xmap12_d3d_handoff::*;
 pub use xmap12_pdxmesh::*;
+pub use xmap19_weather_lifecycle::{
+    weather_gameplay_visual_law, xmap19_viewer_local_session_seed, Xmap19DerivedWeatherEpoch,
+    Xmap19DerivedWeatherFrame, Xmap19WeatherVisualDerivation, XMAP19_STRATEGIC_REGION_COUNT,
+};
 pub use xmap12_population::*;
 #[cfg(windows)]
 pub use xmap15_d3d_handoff::{NativeXmap15DrawInputs, NativeXmap15Handoff};
@@ -986,7 +997,7 @@ pub use weather_law::{
     weather_effects_from_resolver, weather_effects_from_source,
     weather_emitters_from_resolver, weather_emitters_from_source,
     weather_fade_defines_from_resolver, weather_fade_defines_from_source,
-    derive_region_weather_membership, weather_epoch_join_law,
+    derive_region_weather_membership, weather_emitter_candidates,
     weather_membership_producer_instance_id, weather_selected_candidate_index,
     weather_selection_word, weather_type_for_airborne_code, weather_visibility_law,
     CloudRenderLaw, DerivedRegionWeatherMembership, DerivedWeatherPositionSelection, ParticleBlend,
@@ -1114,6 +1125,14 @@ pub use xmap16_d3d_handoff::{
     Xmap16RailTargetBoundDrawReceipt, Xmap16RailTargetIdentity, XMAP16_EXTERNAL_PIXEL_RESOURCES,
     XMAP16_RAIL_DIAGNOSTIC_MANIFEST_SHA256, XMAP16_RAIL_OPERATION_ID, XMAP16_RAIL_PIPELINE_STATE,
     XMAP16_RAIL_STAGE_NAME,
+};
+pub use xmap16_hub_derivation::{
+    derive_xmap16_hub_effective_cutoffs, derive_xmap16_hub_frames, render_hub_frames,
+    xmap16_hub_simulation_rows, Xmap16DerivedHubFrames, Xmap16HubViewerInputs,
+    xmap16_hub_supply_terms, xmap16_hub_visibility_cutoff_class, Xmap16HubSupplyTerms,
+    XMAP16_HUB_CLASS_NEVER_ASSIGNED,
+    XMAP16_STATE_FIRST_HUB_ELIGIBILITY_GATES, XMAP16_STATE_FIRST_HUB_UNDERIVED_OPERANDS,
+    XMAP16_SUPPLY_SCALE_RAW,
 };
 pub use xmap16_hub_handoff::{
     prepare_xmap16_hub_gui_packet, D18Xmap16HubViewerSelectionProvider, PreparedXmap16HubGuiPacket,

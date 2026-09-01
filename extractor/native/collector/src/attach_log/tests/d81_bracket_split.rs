@@ -1398,6 +1398,131 @@ fn the_snapshot_budget_refuses_under_its_own_assigned_reason() {
     );
 }
 
+/// THE POST-BRACKET HALF MAY READ ONLY WHAT THE BRACKET COPIED.
+///
+/// Perf wave 1 changed the SHAPE this law is about and not the law. The bracket
+/// used to carry the whole guarded read; it now carries only the bulk copy
+/// (`capture_compact_rail_replay_state_snapshot`), and the decode runs after it
+/// against the copied regions, under `with_d81_memory_override`. What the law
+/// means in that shape is this: a decode read that leaves the copied regions
+/// must refuse the WHOLE FRAME, because after the bracket closes nothing is
+/// inside the span the clock witnesses vouch for.
+///
+/// It is not the override that this watches. An installed override already
+/// fails such a read rather than falling through to the engine - that is wave
+/// 1's, and its own tests own it (Codex round 43). What is left, and what this
+/// owns, is what the frame does with that failed read: a read outside the copy
+/// must end the frame as `SnapshotRegionMiss` with the short plan evicted and
+/// nothing published, rather than being carried as one more absent field into a
+/// frame that files itself under the hour anyway.
+///
+/// This drives it rather than reading it. The plan below copies memory the
+/// decode never asks for, so the decode's first read is a miss, and the refusal
+/// must be `SnapshotRegionMiss` with the plan dropped - not a frame assembled
+/// from whatever the live process happened to hold.
+///
+/// Wave 1 owns the two halves either side of this one: the view's own bounds
+/// (`d81_snapshot_memory::tests`) and the lexical scoping of the decode calls
+/// (`d81_snapshot::the_outside_bracket_decoder_is_scoped_to_snapshot_memory`).
+/// Nothing owned the WIRING between them, which is where a miss becomes a
+/// refusal, and that is this.
+///
+/// kills: dropping the `view.first_miss()` check, or answering with `decoded`
+/// anyway, either of which publishes a frame partly built outside the bracket.
+#[test]
+fn a_post_bracket_decode_that_leaves_the_copied_regions_refuses_instead_of_answering() {
+    use crate::attach_log::d81_snapshot_memory::{
+        Domain81Memory, Domain81SnapshotPlan, Domain81TracingMemory,
+    };
+
+    /// Sixteen bytes at an address no decode reads. A low page is never a
+    /// map-control heap pointer, so nothing the fixture stages can collide.
+    struct Elsewhere;
+    const ELSEWHERE: u64 = 0x1000;
+    impl Domain81Memory for Elsewhere {
+        fn read_into(&self, address: u64, out: &mut [u8]) -> bool {
+            if address != ELSEWHERE || out.len() != 16 {
+                return false;
+            }
+            out.fill(0x5a);
+            true
+        }
+    }
+
+    page_cache_new_frame();
+    let fixture = super::shared_map_topology::staged_map_fixture();
+    let mut state = fixture.collector_state();
+    state.daily_match = true;
+    state.long_string_match = true;
+    let cache = super::shared_map_topology::cache_for(
+        &state,
+        super::state_fixture::fixture_game_hour_raw(),
+    );
+
+    let tracing = Domain81TracingMemory::new(&Elsewhere);
+    let mut probe = [0u8; 16];
+    assert!(
+        tracing.read_into(ELSEWHERE, &mut probe),
+        "the plan must be built from a read that succeeded, or it holds no region at all"
+    );
+    let plan = Domain81SnapshotPlan::from_trace(tracing.into_trace()).expect("a bounded plan");
+    let tracker = CompactD81SnapshotTracker::default();
+    tracker.state().plan = Some(plan);
+
+    let capture = D81SnapshotCapture {
+        receipt: crate::attach_log::d81_snapshot_memory::Domain81SnapshotCaptureReceipt {
+            region_count: 1,
+            byte_count: 16,
+            copied_region_count: 1,
+            copied_byte_count: 16,
+            failure_region_ordinal: None,
+        },
+        // The shipped cause while the mutator census is open, so this is the
+        // arm production actually takes.
+        cause: D81SnapshotCaptureCause::MutatorCoverageIncomplete,
+        opening: None,
+        quiet_epoch: 7,
+        plan_refusal: None,
+        arm_us: 0,
+        arm_trace_reads: 0,
+    };
+    let read = finish_compact_rail_replay_state_snapshot(
+        capture,
+        &tracker,
+        &state,
+        0,
+        &cache,
+        false,
+        &mut crate::attach_log::d81_geometry_gate::D81GeometryGate::default(),
+    );
+
+    let failure = read
+        .first_failure
+        .expect("a decode outside the copied regions must refuse");
+    assert_eq!(
+        failure.reason,
+        D81FailureReason::SnapshotRegionMiss,
+        "the post-bracket decode answered from something other than the copy"
+    );
+    assert_eq!(
+        read.plan.bulk_snapshot_region_miss, 1,
+        "the miss must be counted where a reader of the wire can see it"
+    );
+    assert!(
+        read.hub_simulation.is_none() && read.provinces.is_empty(),
+        "a refused snapshot must publish no rows at all"
+    );
+    assert!(
+        tracker.state().plan.is_none(),
+        "a plan that missed must be dropped, or the next hour decodes against the same short copy"
+    );
+    assert_eq!(
+        read.status_flags & COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        "the refusal must reach the wire as source-unavailable"
+    );
+}
+
 #[test]
 fn the_post_bracket_half_performs_no_guarded_read() {
     const PRIMITIVES: [&str; 8] = [
@@ -1417,6 +1542,14 @@ fn the_post_bracket_half_performs_no_guarded_read() {
         "fn d81_hub_foreign_source_into<",
         "fn maximum_excluding_controller(",
         "impl D81RowTable {",
+        // Wave 1's post-bracket members. The decode they run reads through the
+        // snapshot override, which is the whole point of the copy; what these
+        // four must not do is reach the engine THEMSELVES, outside the override
+        // and outside the bracket.
+        "fn finish_compact_rail_replay_state_snapshot(",
+        "fn d81_apply_outer_snapshot_receipt(",
+        "fn d81_snapshot_failure(",
+        "fn d81_snapshot_bracket_refused(",
     ] {
         let body = source
             .split_once(name)
@@ -2235,4 +2368,873 @@ fn the_emission_depends_on_the_plans_key_order() {
          finds; if it does not, neither the sort nor this test is doing \
          anything",
     );
+}
+
+/// The two supply words D81 records are the two the engine's own supply provider
+/// reads off a node, at the same offsets.
+///
+/// 870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad) returns
+/// `max(node+0x38, foreign)` and `node+0x38 - node+0x40`, and the replay side
+/// derives XMAP16's supply-hub visibility class from exactly those two terms out
+/// of `available_raw` and `consumed_raw`
+/// (`portable_engine_evidence::xmap16_hub_visibility`,
+/// `map_viewer::xmap16_hub_supply_terms`).
+///
+/// That binding is THIS side's arithmetic: the window base plus the slice offset
+/// the decode reads. A replay-side test may not open a path under `extractor/` -
+/// `game_ui/tests/replay_dependency_boundary.rs` fails on that reach - so the
+/// guard has to live here, and without it the producer could move either offset
+/// and leave the whole replay-side class law silently classifying the wrong pair
+/// (Codex review of lane WK, round 6).
+///
+/// It drives `d81_decode_node_state`, the function PRODUCTION calls, over the
+/// constants production reads with. An earlier version asserted test-local
+/// constants and called the read helpers itself, which is a duplicate decoder
+/// and would have stayed green through production moving either offset (round 7).
+///
+/// kills: changing the window base or either slice offset without noticing that
+/// a consumer in the other tree is pinned to what they add up to.
+#[test]
+fn the_recorded_supply_words_are_the_engine_providers_two_node_fields() {
+    // EVERY OFFSET IS ASSERTED AS A NUMBER, and the fixture below is written at
+    // LITERAL offsets rather than through the constants.
+    //
+    // Writing the sentinel through the same constant the decode reads is
+    // circular: change `D81_NODE_KIND_SLICE_OFF` from 0x00 to 0x08 and both
+    // sides move together, so production reads `node+0x10` and the test still
+    // passes (Codex round 15). Numbers on the left, numbers in the fixture.
+    assert_eq!(D81_NODE_WINDOW_OFF, 0x08);
+    assert_eq!(D81_NODE_WINDOW_LEN, 0x40);
+    assert_eq!(D81_NODE_STRIDE, 0xE8);
+    assert_eq!(D81_NODE_HEADER_BASE_OFF, 0x00);
+    assert_eq!(D81_NODE_KIND_SLICE_OFF, 0x00);
+    assert_eq!(D81_NODE_FLAG_SLICE_OFF, 0x04);
+    assert_eq!(D81_NODE_AVAILABLE_SLICE_OFF, 0x30);
+    assert_eq!(D81_NODE_CONSUMED_SLICE_OFF, 0x38);
+
+    // What those offsets ARE in the node's own frame. This is the whole
+    // cross-tree claim: the replay side reads these as the provider's +0x38 and
+    // +0x40.
+    assert_eq!(D81_NODE_WINDOW_OFF + D81_NODE_AVAILABLE_SLICE_OFF, 0x38);
+    assert_eq!(D81_NODE_WINDOW_OFF + D81_NODE_CONSUMED_SLICE_OFF, 0x40);
+    // Both i64s are inside the window the decode actually copies.
+    assert!(D81_NODE_CONSUMED_SLICE_OFF + 8 <= D81_NODE_WINDOW_LEN);
+
+    // And PRODUCTION's decode reads them THERE: a window whose fields are
+    // distinct sentinels, written at the literal offsets, decodes to those
+    // sentinels in that order.
+    let mut node = vec![0u8; 0x40];
+    node[0x00..0x04].copy_from_slice(&7u32.to_le_bytes());
+    node[0x04] = 3;
+    node[0x30..0x38].copy_from_slice(&1_234_500_000i64.to_le_bytes());
+    node[0x38..0x40].copy_from_slice(&(-567_800_000i64).to_le_bytes());
+    assert_eq!(
+        d81_decode_node_state(&node),
+        Some((7u32, 3u8, 1_234_500_000i64, -567_800_000i64))
+    );
+
+    // The two are not interchangeable: swapping the sentinels IN THE WINDOW
+    // swaps what production decodes, so a producer reading the other pair could
+    // not pass this by accident.
+    let mut swapped = node.clone();
+    swapped[0x30..0x38].copy_from_slice(&(-567_800_000i64).to_le_bytes());
+    swapped[0x38..0x40].copy_from_slice(&1_234_500_000i64.to_le_bytes());
+    assert_eq!(
+        d81_decode_node_state(&swapped),
+        Some((7u32, 3u8, -567_800_000i64, 1_234_500_000i64))
+    );
+
+    // A window too short for the last read decodes to nothing rather than to a
+    // short answer.
+    assert_eq!(d81_decode_node_state(&node[..0x3F]), None);
+
+    // The offsets are DISTINCT, so a mutation collapsing the two i64 reads onto
+    // one field fails here rather than silently halving the pair.
+    assert_ne!(D81_NODE_AVAILABLE_SLICE_OFF, D81_NODE_CONSUMED_SLICE_OFF);
+}
+
+/// The window the hub reads is at the node's own base plus the window offset,
+/// so the two i64 slice offsets ARE the provider's `node+0x38` and `node+0x40`.
+///
+/// The decode guard proves what the four offsets mean inside a window; this
+/// proves where the window starts. Together they are the whole cross-tree
+/// identity, and this half is the one an adjustment after the arithmetic - a
+/// `wrapping_add(8)` on the formed offset - would break silently (Codex review
+/// of lane WK, round 9).
+///
+/// kills: changing the stride, the window base, or the order of the two checked
+/// steps; losing either overflow's own reason.
+#[test]
+fn the_window_the_hub_reads_starts_at_the_nodes_own_base() {
+    // The first node's window is the node base plus the window offset, and the
+    // n-th is n strides further on.
+    assert_eq!(d81_node_window_offset(0), Ok(0x08));
+    assert_eq!(d81_node_window_offset(1), Ok(0xE8 + 0x08));
+    assert_eq!(d81_node_window_offset(37), Ok(37 * 0xE8 + 0x08));
+
+    // WHICH IS THE CROSS-TREE CLAIM: the two i64s land at the provider's
+    // +0x38 and +0x40 of the node they belong to, for every node.
+    for node_index in [0u32, 1, 2, 3, 4, 5, 37, 1_000] {
+        let base = (node_index as usize) * 0xE8;
+        let window = d81_node_window_offset(node_index).expect("window offset");
+        // Literal offsets, not the constants: writing both sides through the
+        // same constant proves nothing about either (Codex round 15).
+        assert_eq!(window + 0x30, base + 0x38);
+        assert_eq!(window + 0x38, base + 0x40);
+    }
+
+    // Consecutive windows are one stride apart and never overlap, so no node's
+    // recorded pair can be another node's.
+    for node_index in [0u32, 1, 36, 999, u32::MAX - 1] {
+        let here = d81_node_window_offset(node_index).expect("window offset");
+        let next = d81_node_window_offset(node_index + 1).expect("next window offset");
+        assert_eq!(next - here, 0xE8);
+        assert!(here + D81_NODE_WINDOW_LEN <= next);
+    }
+}
+
+/// The array base is the engine's pointer as read, with no arithmetic on it.
+///
+/// The base is the terminus of the address chain, so it is the one value that
+/// must be provably unadjusted. Driven with a sentinel: whatever pointer the
+/// header window carries is what the readers use.
+///
+/// kills: folding an adjustment into the base read; reading the pointer at any
+/// other offset in the header window.
+#[test]
+fn the_array_base_is_the_pointer_the_header_carries() {
+    let mut header = vec![0u8; 16];
+    header[..8].copy_from_slice(&0x0000_1F2E_3D4C_5B6Au64.to_le_bytes());
+    // The rest of the header is the capacity and the count; neither may reach
+    // the base.
+    header[8..].copy_from_slice(&0xDEAD_BEEF_FEED_FACEu64.to_le_bytes());
+    assert_eq!(d81_node_array_base(&header), Ok(0x0000_1F2E_3D4C_5B6A));
+
+    // A different pointer gives a different base, unshifted, including zero.
+    header[..8].copy_from_slice(&0u64.to_le_bytes());
+    assert_eq!(d81_node_array_base(&header), Ok(0));
+    header[..8].copy_from_slice(&u64::MAX.to_le_bytes());
+    assert_eq!(d81_node_array_base(&header), Ok(u64::MAX as usize));
+
+    // A header too short for the pointer refuses under the read's own reason.
+    assert_eq!(
+        d81_node_array_base(&header[..7]),
+        Err(D81FailureReason::Unreadable)
+    );
+}
+
+/// Every production source in this crate, comment lines dropped.
+///
+/// The tree is WALKED rather than named, so a file added tomorrow is covered
+/// the day it lands - `attach_log`'s child modules see its private items
+/// through `super::*`, so a second call site can be added from any of them
+/// (Codex round 15).
+///
+/// AND A FILE IS EXCLUDED ONLY WHEN THE CRATE ITSELF SAYS IT IS A TEST. Skipping
+/// by filename was a hole: a module called `wk_mutator_tests` declared WITHOUT
+/// `#[cfg(test)]` compiles into the recorder and was invisible to every census
+/// (Codex round 21). So the declarations are read instead - `mod x;` with
+/// `#[cfg(test)]` on it - and a file is skipped only if its own module, or a
+/// module it sits under, is declared that way.
+fn crate_production_sources() -> Vec<(String, String)> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut all: Vec<(String, String)> = Vec::new();
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("the crate's own src tree") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if !name.ends_with(".rs") {
+                continue;
+            }
+            let shown = path.to_string_lossy().replace('\\', "/");
+            let text = std::fs::read_to_string(&path).expect("a source file");
+            let stripped = text
+                .replace("\r\n", "\n")
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            all.push((shown, stripped));
+        }
+    }
+
+    // Which file-backed modules the crate declares under `#[cfg(test)]`.
+    let mut test_gated = std::collections::BTreeSet::new();
+    for (_, text) in &all {
+        let lines = text.lines().collect::<Vec<_>>();
+        for (at, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            let head = trimmed.trim_start_matches("#[cfg(test)]").trim_start();
+            let declares_file_module = head.ends_with(';')
+                && head
+                    .trim_start_matches("pub(crate) ")
+                    .trim_start_matches("pub(super) ")
+                    .trim_start_matches("pub ")
+                    .starts_with("mod ");
+            if !declares_file_module {
+                continue;
+            }
+            let module = head.trim_end_matches(';').rsplit(' ').next().unwrap_or("");
+            if trimmed.starts_with("#[cfg(test)]") {
+                test_gated.insert(module.to_string());
+                continue;
+            }
+            // Otherwise the attribute is on the nearest preceding line that is
+            // not blank (comments are already gone).
+            let mut back = at;
+            while back > 0 {
+                back -= 1;
+                let previous = lines[back].trim();
+                if previous.is_empty() {
+                    continue;
+                }
+                if previous == "#[cfg(test)]" {
+                    test_gated.insert(module.to_string());
+                }
+                break;
+            }
+        }
+    }
+
+    all.retain(|(shown, _)| {
+        let relative = shown.rsplit("/src/").next().unwrap_or(shown);
+        relative
+            .trim_end_matches(".rs")
+            .split('/')
+            .all(|part| !test_gated.contains(part))
+    });
+
+    assert!(
+        test_gated.contains("tests"),
+        "no module in this crate is declared under #[cfg(test)], which cannot be right"
+    );
+    // A floor, only so a walk that found nothing cannot make every census
+    // below vacuous. Not a count of the crate: files come and go.
+    assert!(
+        all.len() >= 25,
+        "the crate walk found only {} production sources",
+        all.len()
+    );
+    assert!(
+        all.iter().any(|(path, _)| path.ends_with("/src/attach_log.rs")),
+        "the crate walk did not reach the file this guard is about"
+    );
+    all
+}
+
+/// One pinned region's span in `attach_log.rs`'s comment-stripped text.
+///
+/// A SPAN and not a string, because membership is a question about WHERE a line
+/// is, not about whether its text occurs somewhere. Accepting any line whose
+/// text appears in some region let a mutation outside every region be admitted
+/// on the strength of a line that reads the same (Codex round 21).
+fn pinned_span(code: &str, opener: &str, closer: &str) -> (usize, usize) {
+    assert_eq!(
+        code.matches(opener).count(),
+        1,
+        "`{opener}` occurs {} times, so pinning one of them proves nothing",
+        code.matches(opener).count()
+    );
+    let found = code
+        .find(opener)
+        .unwrap_or_else(|| panic!("the read path no longer contains `{opener}`"));
+    // WHAT STANDS ABOVE A PINNED OPENER IS PART OF THE REGION - and this stops
+    // trying to recognise it.
+    //
+    // The question is one thing: `#[cfg(test)]` above the POV loop compiles the
+    // whole read out of production while the opener is untouched. Six rules were
+    // tried that all worked by IDENTIFYING an attribute, and every one had a
+    // layout that slipped past it: a line-prefix rule missed a multi-line
+    // attribute (Codex round 23); starting at the nearest `;`, `{` or `}` was
+    // defeated by a comment containing a brace (round 24); a bracket balance by
+    // a comment containing a bracket (round 25); a naive comment cut by a slash
+    // pair inside a string (round 26); counting brackets inside strings by a
+    // bracket inside one (round 27); and a string scanner by a RAW string whose
+    // contents contain a quote (round 28). Each fix was correct and each was
+    // one lexical form behind.
+    //
+    // So the region starts a FIXED NUMBER OF LINES above the opener, and
+    // whatever is written there is compared like the rest of it. Nothing is
+    // recognised, so no lexical form matters: any insertion above the opener
+    // shifts those lines and changes the text. The cost is that a change to the
+    // code just above a pinned opener updates the baseline - which is the same
+    // cost the region pin already has, and the same intent.
+    const LINES_ABOVE_A_PINNED_OPENER: usize = 3;
+    let line_start = |at: usize| code[..at].rfind('\n').map_or(0, |line| line + 1);
+    let mut at = line_start(found);
+    for _ in 0..LINES_ABOVE_A_PINNED_OPENER {
+        if at == 0 {
+            break;
+        }
+        at = line_start(at - 1);
+    }
+
+    let block_end = |from: usize| -> usize {
+        // From the OPENER, so an attribute above it cannot supply the brace.
+        let from = from.max(found);
+        let bytes = code.as_bytes();
+        let mut depth = 0usize;
+        let mut i = code[from..]
+            .find('{')
+            .unwrap_or_else(|| panic!("`{opener}` opens no block"))
+            + from;
+        loop {
+            match bytes[i] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break i + 1;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+    };
+    let end = if closer.is_empty() {
+        block_end(found)
+    } else {
+        let m = found
+            + code[found..]
+                .find(closer)
+                .unwrap_or_else(|| panic!("`{opener}` no longer reaches `{closer}`"));
+        if closer.ends_with('{') {
+            block_end(m)
+        } else {
+            m + closer.len()
+        }
+    };
+    (at, end)
+}
+
+/// Runs of whitespace collapsed, so indentation is not the thing being pinned.
+fn collapse(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The recorded node states are named only where this guard watches.
+///
+/// The regions pin their own text, but nothing stopped a NEW function
+/// elsewhere in the crate from taking the plan and rewriting the pair. This
+/// closes that by counting: `node_states` - the vector that carries every
+/// recorded (kind, flag, available, consumed) from the decode to the wire row -
+/// may not be named in the crate's production sources anywhere outside the
+/// pinned regions.
+///
+/// kills: adding a reader or writer of the recorded node states anywhere the
+/// pinned text does not cover.
+/// Nothing outside this guard's regions may name what D81 records.
+///
+/// One census, five names, and it is the instrument the last three rounds kept
+/// getting past:
+///
+///   * counting the CARRIER (`node_states`) stops at the wire row, where the
+///     row's own fields can be rewritten (Codex round 18);
+///   * counting the row's FIELDS cannot see `*row = source;`, which names none
+///     of them (round 19);
+///   * counting the row VECTOR (`hub_simulation`) with a `contains` exemption
+///     for the unrelated `read_compact_rail_hub_simulation` lets a mutation
+///     name its own variable so the exemption swallows the line (round 20).
+///
+/// So: occurrences are matched as WHOLE IDENTIFIERS, never substrings, and the
+/// exemptions are EXACT LINES rather than fragments - lines that cannot forge a
+/// value, being a refusal to `None`, a field declaration, an import, or the two
+/// lines of an unrelated function that merely reads alike. Everything else must
+/// sit inside a pinned region.
+///
+/// kills: any production code anywhere in this crate that reads, copies,
+/// rewrites or re-carries the recorded pair outside the pinned path, whatever
+/// it calls itself and whether or not it names a field.
+#[test]
+fn nothing_outside_the_pinned_path_names_what_d81_records() {
+    // (the identifier, the exact lines that may name it outside a region)
+    const CENSUS: &[(&str, &[&str])] = &[
+        ("node_states", &[]),
+        ("available_raw", &[]),
+        ("consumed_raw", &[]),
+        (
+            "hub_simulation",
+            &[
+                "hub_simulation: None,",
+                "hub_simulation: Option<Vec<RailHubSimulationState>>,",
+            ],
+        ),
+        (
+            "RailHubSimulationState",
+            &[
+                "self, RailHubSimulationState, RailNeighborState, RailProvinceState,",
+                "hub_simulation: Option<Vec<RailHubSimulationState>>,",
+                ") -> Result<Vec<RailHubSimulationState>, D81FirstFailure> {",
+            ],
+        ),
+    ];
+
+    let sources = crate_production_sources();
+    // The regions all live in one file, and membership is by POSITION in it.
+    let (pinned_path, pinned_code) = sources
+        .iter()
+        .find(|(path, _)| path.ends_with("/src/attach_log.rs"))
+        .expect("the file the regions live in");
+    let spans = READ_PATH_REGIONS
+        .iter()
+        .map(|(_, opener, closer, _)| pinned_span(pinned_code, opener, closer))
+        .collect::<Vec<_>>();
+
+    // Whole identifiers only: `read_compact_rail_hub_simulation` is not
+    // `hub_simulation`, and neither is a variable named to look like it.
+    let names_it = |line: &str, name: &str| -> bool {
+        let bytes = line.as_bytes();
+        line.match_indices(name).any(|(at, _)| {
+            let before = at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_');
+            let after_at = at + name.len();
+            let after = after_at == bytes.len()
+                || !(bytes[after_at].is_ascii_alphanumeric() || bytes[after_at] == b'_');
+            before && after
+        })
+    };
+
+    for (name, allowed) in CENSUS {
+        let mut seen = 0usize;
+        for (path, text) in &sources {
+            let mut offset = 0usize;
+            for line in text.split('\n') {
+                let start = offset;
+                offset += line.len() + 1;
+                if !names_it(line, name) {
+                    continue;
+                }
+                seen += 1;
+                let trimmed = line.trim();
+                // EXACT lines, not fragments: an exemption that is a substring
+                // test can be satisfied by naming a variable after it.
+                if allowed.iter().any(|form| trimmed == *form) {
+                    continue;
+                }
+                // AND MEMBERSHIP IS BY POSITION. A line in another file is
+                // outside by definition; a line in this one must fall inside a
+                // region's span.
+                let inside = path == pinned_path
+                    && spans.iter().any(|(from, to)| start >= *from && start < *to);
+                assert!(
+                    inside,
+                    "{path} names {name} outside every pinned region: {trimmed}"
+                );
+            }
+        }
+        assert!(seen > 0, "no production source names {name} at all");
+    }
+}
+
+
+/// EVERY PLACE THE RECORDED NODE FIELDS PASS THROUGH, as contiguous regions of
+/// production's own text.
+///
+/// The region used to stop where the read stopped, which left everything the
+/// read HANDS ITS RESULT TO free: `D81HubPovPlan::new` can rewrite the pair on
+/// its way into the plan - `*available_raw = *consumed_raw;` before the sort -
+/// and the guard saw nothing, because the enumeration only watched names
+/// beginning `d81_` and the constructor's own test uses equal sentinels (Codex
+/// round 17). So the pin follows the VALUE, not the read: the POV body, the
+/// five functions that decide what is read at a node, the plan that carries the
+/// states, everything that plan does with them, and the emission that turns one
+/// into a wire row.
+///
+/// `the_recorded_node_states_are_named_only_where_this_guard_watches` makes
+/// that closure checkable rather than asserted: `node_states` may not be named
+/// anywhere in the crate's production sources except inside these regions.
+///
+/// The baseline is the text Codex certified: rounds 8 through 17 each probed
+/// this path and each confirmed current production reads the correct window at
+/// the correct address through the tested decoder. What the pin does is make
+/// any later change to it deliberate. It is not a semantic proof; the
+/// sentinel-driven tests above are that half.
+///
+/// Each row is (what the region is, its opener, its closer - "" for the
+/// brace-balanced block the opener starts, or a closer ending in `{` for the
+/// block that closer starts - and the text it must have).
+const READ_PATH_REGIONS: &[(&str, &str, &str, &str)] = &[
+    (
+        "the whole POV read, from the companion's header window to the plan it hands on",
+        "for (&pov_country_id, authority) in &country_authority {",
+        "",
+        "let mut controller_witnesses: Vec<D81BytesWitness> = Vec::new(); D81PhaseAccum::bump(&phases.hub_pov_count, country_authority.len() as u64); for (&pov_country_id, authority) in &country_authority { let country = authority.country; let country_system = authority.country_system; let companion = authority.companion; let raw_handle = authority.raw_handle; let mut pov_witnesses = vec![ D81BytesWitness::new(country, authority.country_window.clone()), D81BytesWitness::new(country_system, authority.country_system_window.clone()), ]; d81_admit_pov_country_windows( pov_country_id, authority, expected_country_vtable, expected_vtable0, expected_vtable1, supply_system, equivalence_id(raw_handle), )?; let node_header_addr = companion .checked_add(NODE_DATA_OFF) .ok_or_else(|| failure(D81FailureReason::AddressOverflow))?; let node_header = d81_read_stable_bytes(node_header_addr, 16, D81FailureStage::HubHeader, &mut scratch)?; let node_data = d81_node_array_base(&node_header).map_err(|reason| failure(reason))?; let node_capacity = read_u32_from_slice(&node_header, NODE_CAPACITY_OFF - NODE_DATA_OFF) .ok_or_else(|| failure(D81FailureReason::Unreadable).index(1))?; let node_count = read_u32_from_slice(&node_header, NODE_COUNT_OFF - NODE_DATA_OFF) .ok_or_else(|| failure(D81FailureReason::Unreadable).index(2))?; pov_witnesses.push(D81BytesWitness::new(node_header_addr, node_header)); if node_count > node_capacity || node_count as usize > rail_replay::MAX_HUB_SIMULATION_ROWS || (node_count != 0 && !is_map_control_heap_pointer(node_data)) { return Err(failure(D81FailureReason::HeaderInvalid).subject(pov_country_id)); } D81PhaseAccum::bump(&phases.hub_node_slots, u64::from(node_count)); let routes_mark = Instant::now(); let (mut route_witnesses, subtype0_direct) = d81_read_route_map(companion, ROUTE_SUBTYPE0_OFF, node_count, &mut scratch)?; let (subtype1_witnesses, subtype1_direct) = d81_read_route_map(companion, ROUTE_SUBTYPE1_OFF, node_count, &mut scratch)?; let (fallback_witnesses, fallback) = d81_read_route_map(companion, ROUTE_FALLBACK_OFF, node_count, &mut scratch)?; route_witnesses.extend(subtype1_witnesses); route_witnesses.extend(fallback_witnesses); D81PhaseAccum::bump( &phases.hub_route_pairs, (subtype0_direct.len() + subtype1_direct.len() + fallback.len()) as u64, ); let relationship_ptr_addr = companion .checked_add(0xD0) .ok_or_else(|| failure(D81FailureReason::AddressOverflow))?; let relationship_ptr = read_u64_stable(relationship_ptr_addr) .ok_or_else(|| failure(D81FailureReason::Unreadable))? as usize; if !is_map_control_heap_pointer(relationship_ptr) { return Err(failure(D81FailureReason::InvalidPointer) .subject(pov_country_id) .raw(relationship_ptr as u64)); } let relationship = d81_read_stable_bytes( relationship_ptr, country_count as usize, D81FailureStage::HubClosure, &mut scratch, )?; pov_witnesses.push(D81BytesWitness::new( relationship_ptr_addr, (relationship_ptr as u64).to_le_bytes().to_vec(), )); pov_witnesses.push(D81BytesWitness::new(relationship_ptr, relationship.clone())); let candidate_provinces = subtype0_direct .iter() .chain(&subtype1_direct) .chain(&fallback) .map(|route| route.province_id) .collect::<BTreeSet<_>>(); let fallback_provinces = fallback .iter() .map(|route| route.province_id) .collect::<BTreeSet<_>>(); let mut controller_by_province: Vec<(u32, (u32, u32))> = Vec::with_capacity(candidate_provinces.len()); let mut related_by_province = BTreeMap::new(); let mut fallback_eligible_by_province = BTreeMap::new(); let mut fallback_gate_by_controller = BTreeMap::new(); D81PhaseAccum::bump( &phases.hub_candidate_provinces, candidate_provinces.len() as u64, ); phases.close(&phases.hub_routes_ns, routes_mark); let candidates_mark = Instant::now(); for province_id in candidate_provinces { let province_ptr = topology.province_ptr(province_id).ok_or_else(|| { failure(D81FailureReason::MissingEndpoint) .subject(province_id) .related(pov_country_id) })?; let (controller_raw_handle, controller_country_id) = d81_resolve_province_controller( province_ptr, province_id, &related_authority, &mut controller_by_province_frame, &mut controller_witnesses, phases, )?; let related = relationship .get(controller_country_id as usize) .copied() .ok_or_else(|| { failure(D81FailureReason::OutOfBounds) .subject(province_id) .raw(u64::from(controller_country_id)) })? != 0; controller_by_province.push((province_id, (controller_raw_handle, controller_country_id))); related_by_province.insert(province_id, related); let fallback_eligible = if related || !fallback_provinces.contains(&province_id) { false } else { let gate = if let Some(gate) = fallback_gate_by_controller.get(&controller_country_id) { *gate } else { let controller_country = *country_object_by_canonical .get(&controller_country_id) .ok_or_else(|| { failure(D81FailureReason::IdentityMismatch) .subject(province_id) .raw(u64::from(controller_country_id)) })?; let gate = d81_read_fallback_gate(controller_country, pov_country_id)?; fallback_gate_by_controller.insert(controller_country_id, gate); gate }; gate.resolved != 0 }; fallback_eligible_by_province.insert(province_id, fallback_eligible); } phases.close(&phases.hub_candidates_ns, candidates_mark); let subtype0_routes = d81_select_routes( &subtype0_direct, &fallback, &related_by_province, &fallback_eligible_by_province, ) .ok_or_else(|| failure(D81FailureReason::IdentityMismatch))?; let subtype1_routes = d81_select_routes( &subtype1_direct, &fallback, &related_by_province, &fallback_eligible_by_province, ) .ok_or_else(|| failure(D81FailureReason::IdentityMismatch))?; let needed_node_indices = subtype0_routes .iter() .chain(&subtype1_routes) .map(|(route, _)| route.node_index) .collect::<BTreeSet<_>>(); let mut node_states: Vec<(u32, (u32, u8, i64, i64))> = Vec::with_capacity(needed_node_indices.len()); let mut node_witnesses = Vec::new(); D81PhaseAccum::bump(&phases.hub_node_reads, needed_node_indices.len() as u64); if let (Some(&low), Some(&high)) = ( needed_node_indices.iter().next(), needed_node_indices.iter().next_back(), ) { D81PhaseAccum::bump( &phases.hub_node_index_span, u64::from(high - low).saturating_add(1), ); } let nodes_mark = Instant::now(); D81PhaseAccum::bump(&phases.hub_node_arrays_considered, 1); let node_array = match d81_node_array_admission( node_count, needed_node_indices.len(), node_array_retained_bytes, ) { D81NodeArrayAdmission::Empty => { D81PhaseAccum::bump(&phases.hub_node_arrays_empty, 1); None } D81NodeArrayAdmission::Sparse => { D81PhaseAccum::bump(&phases.hub_node_arrays_sparse, 1); None } D81NodeArrayAdmission::OverBudget => { D81PhaseAccum::bump(&phases.hub_node_arrays_over_budget, 1); None } D81NodeArrayAdmission::Copy => { let copied = d81_copy_node_array(node_data, node_count, &mut scratch); if let Some(bytes) = copied.as_ref() { node_array_retained_bytes = node_array_retained_bytes.saturating_add(bytes.len()); D81PhaseAccum::bump(&phases.hub_node_arrays, 1); D81PhaseAccum::bump(&phases.hub_node_array_bytes, bytes.len() as u64); } copied } }; let mut node_array_consumed: Vec<u32> = Vec::new(); for node_index in needed_node_indices { let node_offset = d81_node_window_offset(node_index).map_err(|reason| failure(reason))?; let node_address = node_data .checked_add(node_offset) .ok_or_else(|| failure(D81FailureReason::AddressOverflow))?; let served = node_array .as_ref() .and_then(|bytes| bytes.get(node_offset..node_offset + D81_NODE_WINDOW_LEN)); let node = match served { Some(window) => window.to_vec(), None => d81_read_stable_bytes( node_address, D81_NODE_WINDOW_LEN, D81FailureStage::HubObject, &mut scratch, )?, }; let node_state = d81_decode_node_state(&node) .ok_or_else(|| failure(D81FailureReason::Unreadable))?; if served.is_some() { node_array_consumed.push(node_offset as u32); } else { node_witnesses.push(D81BytesWitness::new(node_address, node)); } node_states.push((node_index, node_state)); } let pov_node_array = match node_array { Some(bytes) if !node_array_consumed.is_empty() => Some(D81NodeArrayWitness { base: node_data, bytes, consumed: node_array_consumed, }), _ => None, }; phases.close(&phases.hub_nodes_ns, nodes_mark); let foreign_mark = Instant::now(); let foreign_source = d81_read_foreign_source( supply_system, pov_country_id, country_count, &related_authority, foreign_table_cache, budget, &mut scratch, phases, ); phases.close(&phases.hub_foreign_ns, foreign_mark); let mut foreign_plan = foreign_source?; let plan = D81HubPovPlan::new( pov_country_id, subtype0_routes, subtype1_routes, controller_by_province, node_states, std::mem::take(&mut foreign_plan.related), ); if let Err(used) = budget.charge(plan.owned_bytes()) { return Err(failure(D81FailureReason::SnapshotBudgetExhausted) .subject(pov_country_id) .raw(used)); } povs.push(plan); pov_witnesses.extend(route_witnesses); pov_witnesses.extend(node_witnesses); final_node_arrays.extend(pov_node_array); pov_witnesses.extend(foreign_plan.witnesses); final_witnesses.extend(pov_witnesses); final_fallback_gates.extend( fallback_gate_by_controller .into_values() .map(|gate| (pov_country_id, gate)), ); }",
+    ),
+    (
+        "the array base it reads out of that header",
+        "fn d81_node_array_base(",
+        "",
+        "const D81_NODE_HEADER_BASE_OFF: usize = 0x00; fn d81_node_array_base(node_header: &[u8]) -> Result<usize, D81FailureReason> { read_u64_from_slice(node_header, D81_NODE_HEADER_BASE_OFF) .map(|base| base as usize) .ok_or(D81FailureReason::Unreadable) }",
+    ),
+    (
+        "the window offset every node is read at",
+        "fn d81_node_window_offset(",
+        "",
+        ".ok_or(D81FailureReason::Unreadable) } fn d81_node_window_offset(node_index: u32) -> Result<usize, D81FailureReason> { (node_index as usize) .checked_mul(D81_NODE_STRIDE) .ok_or(D81FailureReason::LengthOverflow)? .checked_add(D81_NODE_WINDOW_OFF) .ok_or(D81FailureReason::AddressOverflow) }",
+    ),
+    (
+        "the decode of one window's four fields",
+        "fn d81_decode_node_state(",
+        "",
+        "const D81_PROVINCE_CONTROLLER_OFF: usize = 0x188; const D81_NODE_WINDOW_LEN: usize = 0x40; fn d81_decode_node_state(node: &[u8]) -> Option<(u32, u8, i64, i64)> { Some(( read_u32_from_slice(node, D81_NODE_KIND_SLICE_OFF)?, *node.get(D81_NODE_FLAG_SLICE_OFF)?, read_i64_from_slice(node, D81_NODE_AVAILABLE_SLICE_OFF)?, read_i64_from_slice(node, D81_NODE_CONSUMED_SLICE_OFF)?, )) }",
+    ),
+    (
+        "the choice between the bulk copy and the live reads",
+        "fn d81_node_array_admission(",
+        "",
+        "OverBudget, } fn d81_node_array_admission( node_count: u32, needed: usize, retained_bytes: usize, ) -> D81NodeArrayAdmission { let slots = u64::from(node_count); if slots == 0 || needed == 0 { return D81NodeArrayAdmission::Empty; } if (needed as u64).saturating_mul(D81_NODE_ARRAY_MIN_DENSITY_DEN) < slots.saturating_mul(D81_NODE_ARRAY_MIN_DENSITY_NUM) { return D81NodeArrayAdmission::Sparse; } match (node_count as usize).checked_mul(D81_NODE_STRIDE) { None => D81NodeArrayAdmission::Copy, Some(len) if len > D81_BATCH_MAX_EXTENT_BYTES => D81NodeArrayAdmission::Copy, Some(len) if retained_bytes.saturating_add(len) > D81_NODE_ARRAY_FRAME_BUDGET_BYTES => { D81NodeArrayAdmission::OverBudget } Some(_) => D81NodeArrayAdmission::Copy, } }",
+    ),
+    (
+        "the bulk copy itself",
+        "fn d81_copy_node_array(",
+        "",
+        "const D81_NODE_ARRAY_MIN_DENSITY_NUM: u64 = 1; const D81_NODE_ARRAY_MIN_DENSITY_DEN: u64 = 3; fn d81_copy_node_array( node_data: usize, node_count: u32, scratch: &mut Vec<u8>, ) -> Option<Vec<u8>> { let len = (node_count as usize).checked_mul(D81_NODE_STRIDE)?; if len == 0 || len > D81_BATCH_MAX_EXTENT_BYTES { return None; } node_data.checked_add(len)?; let first = read_bytes(node_data, len)?; if scratch.len() < len { scratch.resize(len, 0); } let second = &mut scratch[..len]; if !read_into(node_data, second) || first.as_slice() != &*second { return None; } Some(first) }",
+    ),
+    (
+        "the plan the read hands its node states to",
+        "struct D81HubPovPlan {",
+        "",
+        "} #[derive(Clone, Debug, Default, PartialEq, Eq)] struct D81HubPovPlan { pov_country_id: u32, subtype0_routes: Vec<(D81RoutePair, bool)>, subtype1_routes: Vec<(D81RoutePair, bool)>, controller_by_province: Vec<(u32, (u32, u32))>, node_states: Vec<(u32, (u32, u8, i64, i64))>, foreign_related: Vec<(u32, u32, usize)>, }",
+    ),
+    (
+        "everything that plan does with them",
+        "impl D81HubPovPlan {",
+        "",
+        "foreign_related: Vec<(u32, u32, usize)>, } impl D81HubPovPlan { fn new( pov_country_id: u32, subtype0_routes: Vec<(D81RoutePair, bool)>, subtype1_routes: Vec<(D81RoutePair, bool)>, mut controller_by_province: Vec<(u32, (u32, u32))>, mut node_states: Vec<(u32, (u32, u8, i64, i64))>, foreign_related: Vec<(u32, u32, usize)>, ) -> Self { controller_by_province.sort_unstable_by_key(|&(province_id, _)| province_id); node_states.sort_unstable_by_key(|&(node_index, _)| node_index); Self { pov_country_id, subtype0_routes, subtype1_routes, controller_by_province, node_states, foreign_related, } } fn owned_bytes(&self) -> usize { self.subtype0_routes .len() .saturating_add(self.subtype1_routes.len()) .saturating_add(self.foreign_related.len()) .saturating_mul(D81_SNAPSHOT_VEC_ENTRY_BYTES) .saturating_add( self.controller_by_province .len() .saturating_add(self.node_states.len()) .saturating_mul(D81_SNAPSHOT_MAP_ENTRY_BYTES), ) } }",
+    ),
+    (
+        "the emission that turns a node state into a wire row",
+        "fn d81_compute_rail_hub_rows(",
+        "",
+        ")); } fn d81_compute_rail_hub_rows( observation: &D81HubObservation, phases: &D81PhaseAccum, ) -> Result<Vec<RailHubSimulationState>, D81FirstFailure> { let failure = |reason| D81FirstFailure::new(D81FailureStage::HubRoot, reason); let expected_rows = observation .povs .iter() .map(|plan| plan.subtype0_routes.len() + plan.subtype1_routes.len()) .sum::<usize>() .min(rail_replay::MAX_HUB_SIMULATION_ROWS + 1); let mut rows: Vec<RailHubSimulationState> = Vec::with_capacity(expected_rows); let mut foreign_source = D81ForeignSource::default(); let mut answered: Vec<(u32, i64)> = Vec::new(); for plan in &observation.povs { let pov_country_id = plan.pov_country_id; d81_hub_foreign_source_into( plan, &observation.foreign_tables, &mut foreign_source.related, ); answered.clear(); let emit_mark = Instant::now(); for (pass, (subtype, route_class, selected_routes)) in [ (0u8, 2u8, &plan.subtype0_routes), (1u8, 1u8, &plan.subtype1_routes), ] .into_iter() .enumerate() { if pass == 1 { answered.sort_unstable_by_key(|&(province_id, _)| province_id); } for &(route, fallback_record) in selected_routes { let (controller_raw_handle, controller_country_id) = plan .controller_by_province .binary_search_by_key(&route.province_id, |&(province_id, _)| province_id) .map(|at| plan.controller_by_province[at].1) .map_err(|_| { failure(D81FailureReason::IdentityMismatch).subject(route.province_id) })?; let province_owner_country_id = if fallback_record { pov_country_id } else if controller_country_id != 0 { controller_country_id } else { return Err( failure(D81FailureReason::IdentityMismatch).subject(route.province_id) ); }; let (node_kind, node_flag, available_raw, consumed_raw) = plan .node_states .binary_search_by_key(&route.node_index, |&(node_index, _)| node_index) .map(|at| plan.node_states[at].1) .map_err(|_| { failure(D81FailureReason::OutOfBounds).index(route.node_index as usize) })?; let memoised = (pass == 1) .then(|| { answered .binary_search_by_key(&route.province_id, |&(province_id, _)| { province_id }) .ok() .map(|at| answered[at].1) }) .flatten(); let foreign_max_raw = match memoised { Some(answer) => { D81PhaseAccum::bump(&phases.hub_query_memo_hits, 1); answer } None => { let answer = foreign_source.maximum_excluding_controller( phases, route.province_id, controller_raw_handle, controller_country_id, ); if pass == 0 { answered.push((route.province_id, answer)); } answer } }; rows.push(RailHubSimulationState { pov_country_id, province_id: route.province_id, province_owner_country_id, subtype, route_class, node_kind, node_flag, available_raw, consumed_raw, foreign_max_raw, foreign_route: fallback_record, fallback_record, }); if rows.len() > rail_replay::MAX_HUB_SIMULATION_ROWS { return Err(failure(D81FailureReason::OutOfBounds).raw(rows.len() as u64)); } } } phases.close(&phases.hub_emit_ns, emit_mark); } if let Some(read_failure) = observation.read_failure { return Err(read_failure); } rows.sort_unstable_by_key(|row| (row.pov_country_id, row.province_id, row.subtype)); let closure_refused = rows.windows(2).any(|pair| { (pair[0].pov_country_id, pair[0].province_id, pair[0].subtype) >= (pair[1].pov_country_id, pair[1].province_id, pair[1].subtype) }) || observation.reread_refused.unwrap_or(false); if closure_refused { return Err(failure(D81FailureReason::ClosureChanged)); } Ok(rows) }",
+    ),
+    (
+        "the emission's result on its way into the read it is published from",
+        "let hub_result = d81_compute_rail_hub_rows(&hub, &phases);",
+        "observed_neighbors: observed_neighbors as u32,",
+        "drop(by_id); phases.close(&phases.reciprocity_ns, reciprocity_mark); let hub_mark = Instant::now(); let hub_result = d81_compute_rail_hub_rows(&hub, &phases); let hub_closed = Instant::now(); phases.add(&phases.hub_ns, hub_mark, hub_closed); phases.add(&phases.hub_compute_ns, hub_mark, hub_closed); if provinces.is_empty() { return fail( status_flags, D81FirstFailure::new( D81FailureStage::FullClosure, D81FailureReason::EmptySnapshot, ), ); } if provinces.len() > rail_replay::MAX_PROVINCES || observed_neighbors > u32::MAX as usize { return fail( status_flags, D81FirstFailure::new(D81FailureStage::FullClosure, D81FailureReason::OutOfBounds).raw( ((provinces.len().min(u32::MAX as usize) as u64) << 32) | observed_neighbors.min(u32::MAX as usize) as u64, ), ); } if let Some(failure) = closure_failure { return fail(status_flags, failure); } let (hub_simulation, first_failure) = match hub_result { Ok(frames) => (Some(frames), None), Err(failure) => (None, Some(failure)), }; CompactRailReplayRead { plan, equality, provinces, hub_simulation, observed_neighbors: observed_neighbors as u32,",
+    ),
+    (
+        "the encode that hands those rows to the wire crate",
+        "fn encode_compact_rail_replay_production(",
+        "",
+        "diagnostic_units: Vec<CompactDomainPerfDiagnosticUnit>, } fn encode_compact_rail_replay_production( read: &mut CompactRailReplayRead, elapsed_wall_ms: u64, ) -> Option<Vec<u8>> { let observed_provinces = read.provinces.len().min(u32::MAX as usize) as u32; let Some(hub_simulation) = read.hub_simulation.as_deref() else { read.status_flags |= COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_SOURCE_UNAVAILABLE; return None; }; match rail_replay::encode_payload_with_hub_simulation( &read.provinces, hub_simulation, elapsed_wall_ms, read.status_flags, observed_provinces, read.observed_neighbors, ) { Ok(payload) => Some(payload), Err(_) => { read.first_failure.get_or_insert_with(|| { D81FirstFailure::new(D81FailureStage::Encode, D81FailureReason::EncodeRejected) }); read.provinces.clear(); read.hub_simulation = None; read.observed_neighbors = 0; read.status_flags |= COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_SOURCE_UNAVAILABLE; None } } }",
+    ),
+];
+
+/// Everything the read region calls out to that this project owns, and what
+/// each one is.
+///
+/// `d81_*` AND `D81*`: the constructor that rewrote the pair was reached
+/// through a type name, which a `d81_`-only filter never saw (Codex round 17).
+const READ_REGION_CALLS: &[(&str, &str)] = &[
+    ("D81BytesWitness::new", "holds the bytes the closing gate re-reads"),
+    ("D81HubPovPlan::new", "pinned whole below"),
+    ("D81PhaseAccum::bump", "counts the read; touches no recorded field"),
+    ("d81_admit_pov_country_windows", "establishes the POV object itself; at or above `companion`"),
+    ("d81_copy_node_array", "pinned whole below"),
+    ("d81_decode_node_state", "pinned whole below"),
+    ("d81_node_array_admission", "pinned whole below"),
+    ("d81_node_array_base", "pinned whole below"),
+    ("d81_node_window_offset", "pinned whole below"),
+    ("d81_read_fallback_gate", "selects WHICH node indices are needed, not what is read at one"),
+    ("d81_read_foreign_source", "reads the foreign supply table, a different field of the row"),
+    ("d81_read_route_map", "selects WHICH node indices are needed, not what is read at one"),
+    ("d81_read_stable_bytes", "the recorder's shared guarded read; not this claim's subject"),
+    ("d81_resolve_province_controller", "selects WHICH node indices are needed, not what is read at one"),
+    ("d81_select_routes", "selects WHICH node indices are needed, not what is read at one"),
+];
+
+/// The declarations the whole claim rests on, as they must read.
+///
+/// Asserting the VALUES inside a test says what the test sees, and a constant
+/// can be made to say one thing under `cfg!(test)` and another in production -
+/// `if cfg!(test) { 0x08 } else { 0x10 }` reads every node sixteen bytes in
+/// while every fixture passes (Codex round 16). So the declarations themselves
+/// are pinned, and each name may be declared only once in the crate.
+const OFFSET_DECLARATIONS: &[&str] = &[
+    "const D81_NODE_STRIDE: usize = 0xE8;",
+    "const D81_NODE_WINDOW_OFF: usize = 0x08;",
+    "const D81_NODE_WINDOW_LEN: usize = 0x40;",
+    "const D81_NODE_HEADER_BASE_OFF: usize = 0x00;",
+    "const D81_NODE_KIND_SLICE_OFF: usize = 0x00;",
+    "const D81_NODE_FLAG_SLICE_OFF: usize = 0x04;",
+    "const D81_NODE_AVAILABLE_SLICE_OFF: usize = 0x30;",
+    "const D81_NODE_CONSUMED_SLICE_OFF: usize = 0x38;",
+];
+
+/// And PRODUCTION'S HUB DECODE IS THE TESTED DECODER, at the address this
+/// guard's arithmetic describes.
+///
+/// The test above proves what `d81_decode_node_state` reads. It does NOT prove
+/// the hub decode calls it: replacing the call site with four inline reads of
+/// some other pair leaves the function and its constants intact, and every
+/// assertion above stays green (Codex review of lane WK, round 8). The whole
+/// cross-tree claim - that XMAP16's supply-hub class is derived from the engine
+/// provider's `node+0x38` and `node+0x40` - rests on the call site, so the call
+/// site is what has to be bound.
+///
+/// The hub decode itself is not drivable from a test: it sits inside the live
+/// per-POV read, behind process reads, a budget and a witness ledger. So this
+/// binds it structurally instead, over production's own source: the decoder has
+/// exactly one call site, nothing else in the file produces a `node_state`, the
+/// window address is formed exactly once out of the stride and the window base,
+/// and the four slice offsets are named exactly where they are defined and
+/// where the decoder reads them.
+///
+/// kills: bypassing, duplicating or re-implementing the node decode; reading a
+/// window at any other address; adding a second reader at those offsets.
+#[test]
+fn the_hub_decode_reads_its_node_through_the_tested_decoder() {
+    // Production's own text. Comment lines are dropped so that prose naming a
+    // constant cannot satisfy - or break - a count over the code.
+    const PRODUCTION: &str = include_str!("../../attach_log.rs");
+    let code = PRODUCTION
+        .replace("\r\n", "\n")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // One definition, one call, and the call is the hub decode's, verbatim.
+    assert_eq!(
+        code.matches("fn d81_decode_node_state(node: &[u8]) -> Option<(u32, u8, i64, i64)> {")
+            .count(),
+        1,
+        "the tested decoder is not defined once"
+    );
+    assert_eq!(
+        code.matches("d81_decode_node_state").count(),
+        2,
+        "the decoder has other mentions than its definition and its one call site"
+    );
+
+    // Nothing else in the file produces one, so an inline duplicate of the
+    // decode cannot stand beside the call and pass.
+    assert_eq!(
+        code.matches("node_state =").count(),
+        1,
+        "something other than the tested decoder assigns a node state"
+    );
+    assert_eq!(
+        code.matches("node_states.push((node_index, node_state));").count(),
+        1,
+        "the decoded state reaches the plan by more than one path"
+    );
+
+    // The ADDRESS is bound the same way the decode is: one function, one call,
+    // one assignment, and both consumers naming that assignment. An adjustment
+    // of the offset after it is formed - `node_offset.wrapping_add(8)`, which
+    // shifts every field this frame records - is a second assignment and fails
+    // here (Codex round 9).
+    assert_eq!(
+        code.matches("fn d81_node_window_offset(node_index: u32) -> Result<usize, D81FailureReason> {")
+            .count(),
+        1,
+        "the tested window-offset function is not defined once"
+    );
+    assert_eq!(
+        code.matches("d81_node_window_offset").count(),
+        2,
+        "the window offset has other mentions than its definition and its one call site"
+    );
+    assert_eq!(
+        code.matches("node_offset =").count(),
+        1,
+        "the window offset is assigned somewhere other than the tested function"
+    );
+
+    // AND THE READ PATH IS PINNED AS WHOLE REGIONS, not as statements.
+    //
+    // A statement pin binds what each statement says and nothing about what
+    // stands between them; Rust shadowing turns an inserted statement into a
+    // rebinding, so a rotation of the window slid in front of the decode leaves
+    // every statement intact (Codex round 12). Contiguous text has no gaps to
+    // slide into.
+    let region = |opener: &str, closer: &str| -> String {
+        let (from, to) = pinned_span(&code, opener, closer);
+        collapse(&code[from..to])
+    };
+    for (what, opener, closer, expected) in READ_PATH_REGIONS {
+        assert_eq!(
+            &region(opener, closer),
+            expected,
+            "{what}: this region is not the text this guard is about"
+        );
+    }
+    // The read itself is the first row; the rest are the functions it calls.
+    let region_text = READ_PATH_REGIONS[0].3;
+
+    // THE ONE-CALL CLAIM IS ABOUT THE WHOLE CRATE, not about this file.
+    //
+    // `attach_log`'s child modules see its private items through `super::*`, so
+    // a second call site can be added from another production file without
+    // touching the scanned text at all (Codex round 15). So the counts below
+    // are taken over every production source in the crate - the tree walked
+    // here rather than named, so a new file is covered the day it is added.
+    let crate_sources = crate_production_sources();
+    // THE OFFSETS ARE PINNED AS DECLARATIONS, not just asserted as values: a
+    // value assertion reports what the TEST sees, and a `cfg!(test)` constant
+    // says one thing to the test and another to production (Codex round 16).
+    for declaration in OFFSET_DECLARATIONS {
+        let name = declaration
+            .trim_start_matches("const ")
+            .split(':')
+            .next()
+            .expect("a declaration names a constant");
+        let declared = crate_sources
+            .iter()
+            .map(|(_, text)| text.matches(*declaration).count())
+            .sum::<usize>();
+        assert_eq!(
+            declared, 1,
+            "{declaration} is not the crate's one declaration of that offset"
+        );
+        let any = crate_sources
+            .iter()
+            .map(|(_, text)| text.matches(&format!("const {name}")).count())
+            .sum::<usize>();
+        assert_eq!(any, 1, "{name} is declared more than once in the crate");
+    }
+
+
+    // EVERYTHING THE REGION CALLS OUT TO IS ACCOUNTED FOR, and each of the five
+    // that decide what is read at a node has exactly one definition and one
+    // call - so the pinned body is the one production reaches.
+    let mut calls = std::collections::BTreeSet::new();
+    let bytes = region_text.as_bytes();
+    for (i, _) in region_text.match_indices('(') {
+        let mut start = i;
+        while start > 0
+            && (bytes[start - 1].is_ascii_alphanumeric()
+                || bytes[start - 1] == b'_'
+                || bytes[start - 1] == b':')
+        {
+            start -= 1;
+        }
+        // Paths too, not bare identifiers: the constructor that rewrote
+        // the pair was reached as `D81HubPovPlan::new`, which a walk that
+        // stopped at `:` recorded as `new` (Codex round 17).
+        let name = region_text[start..i].trim_start_matches(':');
+        if name.starts_with("d81_") || name.starts_with("D81") {
+            calls.insert(name);
+        }
+    }
+    let named = READ_REGION_CALLS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        calls, named,
+        "the read region calls something this guard has not accounted for"
+    );
+    // The emission is not called from the POV region, so the enumeration above
+    // never saw it; it is nonetheless a function whose one call site carries the
+    // recorded pair, and its result is pinned on its way into the read.
+    assert_eq!(
+        crate_sources
+            .iter()
+            .map(|(_, text)| text.matches("d81_compute_rail_hub_rows").count())
+            .sum::<usize>(),
+        2,
+        "the emission has other mentions than its definition and its one call site"
+    );
+
+    for (name, disposition) in READ_REGION_CALLS {
+        if *disposition == "pinned whole below" {
+            // A free function is pinned by its own `fn` block; an associated
+            // one - `D81HubPovPlan::new` - by the block that defines its type.
+            let owner = name.split("::").next().expect("a call names something");
+            assert!(
+                READ_PATH_REGIONS
+                    .iter()
+                    .any(|(_, opener, _, _)| opener.contains(owner)),
+                "{name} is filed as pinned and no region pins it"
+            );
+            if name.contains("::") {
+                // Its one definition lives inside a pinned block, and that
+                // block's text is compared in full; counting `Type::method`
+                // across the crate would count call sites only.
+                continue;
+            }
+            let across = crate_sources
+                .iter()
+                .map(|(_, text)| text.matches(*name).count())
+                .sum::<usize>();
+            assert_eq!(
+                across, 2,
+                "{name} has other mentions across the crate than its definition and \
+                 its one call site"
+            );
+        }
+    }
+
+    // The bulk copy takes its two adjacent reads at that same base.
+    assert_eq!(
+        code.matches("let first = read_bytes(node_data, len)?;").count(),
+        1,
+        "the array copy's first read is not taken at the base"
+    );
+    assert_eq!(
+        code.matches("if !read_into(node_data, second)").count(),
+        1,
+        "the array copy's second read is not taken at the base"
+    );
+
+    // AND THE BASE THOSE OFFSETS ARE MEASURED FROM. Both readers take the window
+    // out of `node_data`, so shifting THAT shifts every recorded field just as
+    // surely as shifting the offset does, and neither the offset function nor
+    // the predicates above see it (Codex round 10).
+    //
+    // This is where the chain terminates, and it terminates because the base is
+    // not computed: it is the engine's own pointer field, read once out of the
+    // companion's header window at +0xB8 and never adjusted. A mutation past
+    // this point is no longer "read the array at the wrong address" but "read a
+    // different object", which is what the POV's authority and vtable checks
+    // above are for and is not an offset question.
+    assert_eq!(
+        code.matches("const NODE_DATA_OFF: usize = 0xB8;").count(),
+        1,
+        "the header the array base is read from is no longer at the named offset"
+    );
+    assert_eq!(
+        code.matches("node_header_addr =").count(),
+        1,
+        "the header address is assigned more than once"
+    );
+    assert_eq!(
+        code.matches("node_header =").count(),
+        1,
+        "the header window is assigned more than once"
+    );
+    assert_eq!(
+        code.matches("node_data =").count(),
+        1,
+        "the array base is adjusted or re-assigned after it is read"
+    );
+
+    // And the four offsets are named exactly twice each: where they are defined
+    // and where the decoder reads them. A second reader at those offsets - the
+    // shape this whole guard exists to catch - is a third mention.
+    for name in [
+        "D81_NODE_KIND_SLICE_OFF",
+        "D81_NODE_FLAG_SLICE_OFF",
+        "D81_NODE_AVAILABLE_SLICE_OFF",
+        "D81_NODE_CONSUMED_SLICE_OFF",
+    ] {
+        assert_eq!(
+            code.matches(name).count(),
+            2,
+            "{name} is read somewhere other than the tested decoder"
+        );
+    }
 }

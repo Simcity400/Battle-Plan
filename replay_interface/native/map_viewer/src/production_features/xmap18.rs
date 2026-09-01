@@ -3659,6 +3659,8 @@ mod tests {
                 payload_schema: "test".to_string(),
                 cadence: "hourly".to_string(),
                 identity_order: "test".to_string(),
+                source: crate::MapAuthorityAdmissionSource::RecordedCarrier,
+                derivation: None,
             })
             .collect();
         let gaps: Vec<MapAuthorityGap> = OWNED_AUTHORITY_INPUTS
@@ -3773,6 +3775,8 @@ mod tests {
             payload_schema: "test".to_string(),
             cadence: "hourly".to_string(),
             identity_order: "test".to_string(),
+            source: crate::MapAuthorityAdmissionSource::RecordedCarrier,
+            derivation: None,
         }];
         let gaps: Vec<MapAuthorityGap> = OWNED_AUTHORITY_INPUTS
             .iter()

@@ -829,6 +829,8 @@ mod carrier_tests {
             payload_schema: "test".to_string(),
             cadence: "hourly".to_string(),
             identity_order: "test".to_string(),
+            source: crate::MapAuthorityAdmissionSource::RecordedCarrier,
+            derivation: None,
         }];
 
         // Arm 1 - the recording does NOT admit the input: refuse, and name the

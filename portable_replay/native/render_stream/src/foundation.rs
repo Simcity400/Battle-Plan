@@ -289,6 +289,17 @@ impl MapVisualFamily {
                 "built-candidate-order-undecided",
                 "spawn-point-scope-ambiguous",
                 "damage-level-unresolved-mesh-choice",
+                // The ambient/fixed-object lifecycle is VIEWER-OWNED: no recording
+                // carries it, because it advances on a renderer clock. Two operands of
+                // the engine's own frame law are not decoded on this build, and each is
+                // a standing family exception rather than an hour's missing data - the
+                // layer is right everywhere else, and refusing the whole population over
+                // them would lose far more truth than it protects.
+                "ambient-presentation-gate-underived",
+                "ambient-spawn-frustum-grain",
+                // And the one content condition underneath them: an authored ambient
+                // type can name an entity the effective content set does not describe.
+                "ambient-entity-token-unknown-to-content",
             ],
             Self::CombatMarkers => &[
                 "naval-result-pov-operands-unrecorded",
@@ -332,6 +343,13 @@ impl MapVisualFamily {
                 "country-label-runtime-operand-unbound",
             ],
             Self::MapFurnitureIcons => &["control-leaf-unmeasured", "controller-outside-roster"],
+            // The weather VISUALS are viewer-generated. The recording carries the semantic
+            // weather; which authored variant each emitter instantiates is drawn from a
+            // seed the engine itself takes from QueryPerformanceCounter per client, so no
+            // two clients ever agreed on it and no recording can carry it. The layer is
+            // exact everywhere else, and this is the standing exception rather than an
+            // hour's missing data.
+            Self::WeatherAtmosphere => &["weather-variant-seed-viewer-local"],
             // NO WILDCARD. A family that emits no diagnostics says so by name, so adding a
             // family is a compile error until someone decides what it may report - rather
             // than it silently inheriting an empty vocabulary and refusing every row its
@@ -348,7 +366,6 @@ impl MapVisualFamily {
             | Self::OrdersFrontsArrows
             | Self::RailSupply
             | Self::MapModes
-            | Self::WeatherAtmosphere
             | Self::ParticlesEffects => &[],
         }
     }

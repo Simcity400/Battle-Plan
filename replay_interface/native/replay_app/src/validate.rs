@@ -168,6 +168,8 @@ impl ProductMapFoundationSession {
     }
 }
 
+// XMAP12 reads NO world input. Both halves of the family are derived.
+//
 // The per-placement building visual is DERIVED, never carried: lane OJ proved the family
 // owes zero wire bytes, and lane OO landed the derivation (shared-spawn-point occupant law
 // plus the destroyed-mesh selector). There is no `xmap12_building_visual` world input.
@@ -176,8 +178,10 @@ impl ProductMapFoundationSession {
 // `WorldFrame::domain("xmap12_fixed_runtime")` as a recorded world input while XMAP12's own
 // authority (`re_evidence/rendering_laws/XMAP12/authority.json`,
 // `production_contract.population`) assigned it to the viewer and `map_authority.rs` refused a
-// recorded carrier for the rows it feeds. No recorder ever emitted the key. The mint now lives
-// in `map_viewer::mint_xmap12_fixed_runtime`, so there is no world input to authenticate and
+// recorded carrier for the rows it feeds. No recorder ever emitted the key, and one that did
+// would be publishing one client's frame-rate-local presentation as world state: the lifecycle
+// advances on the viewer's own renderer clock. The mint now lives in
+// `map_viewer::mint_xmap12_fixed_runtime`, so there is no world input to authenticate and
 // no `AuthenticatedXmap12FrameInputs` to carry one.
 
 #[cfg(windows)]

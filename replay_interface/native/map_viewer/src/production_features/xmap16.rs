@@ -5,6 +5,11 @@ use crate::rail_files::{
     GRAPHICS_DEFINES_SOURCE, RAIL_HEIGHTMAP_SOURCE, RAIL_SHADER_SOURCE, RAIL_TEXTURE_SOURCE,
     SUPPLY_GFX_SOURCE, SUPPLY_MAPICONS_GUI_SOURCE,
 };
+use crate::production_features::xmap06::XMAP06_SELECTED_PROVINCE_ID_PREFIX;
+use crate::xmap16_hub_derivation::{
+    derive_xmap16_hub_effective_cutoffs, derive_xmap16_hub_frames, Xmap16HubViewerInputs,
+    XMAP16_STATE_FIRST_HUB_ELIGIBILITY_GATES, XMAP16_STATE_FIRST_HUB_UNDERIVED_OPERANDS,
+};
 use crate::{
     prepare_exact_rail_replay_carrier, AssignedStage, ExactRailReplayCarrier,
     FoundationFeatureContext, FoundationFeatureOutput, GameFileResolver,
@@ -293,6 +298,10 @@ pub(crate) struct Xmap16RailSupplyAdapter {
     ordered_used_content: Vec<UsedContentKey>,
     program: Arc<PreparedXmap16RailProgram>,
     rail_defines: RailGeometryDefines,
+    /// The effective `00_graphics.lua` the supply-icon cutoffs are read from.
+    /// Held so the derived cutoff table names the exact content it came from,
+    /// the same way the retired carrier's `graphics_defines_content` did.
+    graphics_defines_content: UsedContentKey,
     hub_content: Arc<SupplyHubContentIdentity>,
     supply_definitions: Arc<[crate::PreparedXmap16SupplyArrowDefinition]>,
     supply_program: Arc<crate::PreparedXmap16SupplyArrowProgram>,
@@ -362,11 +371,20 @@ impl Xmap16RailSupplyAdapter {
             map_height,
         )?);
         let rail_defines = crate::rail_geometry_defines_from_resolver(resolver)?;
+        let graphics_defines_content = admission
+            .require_used_content(GRAPHICS_DEFINES_SOURCE)
+            .map(Clone::clone)
+            .map_err(|error| {
+                format!(
+                    "XMAP16 requires admitted effective content {GRAPHICS_DEFINES_SOURCE}: {error}"
+                )
+            })?;
         Ok(Self {
             resolver: resolver.clone(),
             ordered_used_content,
             program,
             rail_defines,
+            graphics_defines_content,
             hub_content,
             supply_definitions: supply_definitions.into(),
             supply_program: Arc::new(supply_program),
@@ -376,6 +394,187 @@ impl Xmap16RailSupplyAdapter {
                 last_rail: None,
             }),
         })
+    }
+}
+
+/// The gap id XMAP16 refuses under when its own DERIVED visual family cannot be
+/// completed.
+///
+/// Distinct from `XMAP16.state_first_input_unavailable`, which is the id for an hour
+/// whose XMAP00 inputs are missing. Sharing one id made a viewer-side derivation gap
+/// read as a recording gap, which is the exact confusion this lane closed.
+pub const XMAP16_DERIVED_VISUAL_GAP_ID: &str = "XMAP16.derived_visual_family_incomplete";
+
+/// The two viewer-local words the supply-hub frame law reads, plus the perspective the
+/// hub census is keyed by.
+struct Xmap16HubDerivationInputs {
+    perspective_country_id: u32,
+    law: Xmap16HubViewerInputs,
+}
+
+/// Read the hub law's viewer-local operands out of the viewer's own state.
+///
+/// The outer `Result` is a contract violation; the inner `Err(String)` is a named
+/// viewer-state condition the family reports as a gap rather than an error, because a
+/// viewer that has selected no country is a legitimate viewer state and not a defect.
+fn xmap16_hub_viewer_inputs(
+    context: &FoundationFeatureContext<'_>,
+) -> Result<std::result::Result<Xmap16HubDerivationInputs, String>> {
+    let Some(tag) = context.viewer.observer_country_id.as_deref() else {
+        return Ok(Err(
+            "the supply-hub frame law compares the hub's owner with the country the viewer is \
+             watching, and this viewer has selected none"
+                .into(),
+        ));
+    };
+    // PARTIAL: one country's identity, not a census. A country the recorder could not
+    // name this hour does not make the watched one less named; the excluded keys ride
+    // the refusal so "absent from D18" and "in the frame but unnameable" stay apart.
+    // An hour whose D18 roster cannot be read is a SHORT recording, not a defect in this
+    // layer: it is the same shape of absence as a viewer that has selected no country, and
+    // it is refused the same way. Raising it would take the whole composed frame down over
+    // one family's missing input.
+    let roster = context.world_frame.d18_country_roster();
+    let partial = match roster.partial() {
+        Ok(partial) => partial,
+        Err(refusal) => {
+            return Ok(Err(format!(
+                "the supply-hub frame law compares the hub's owner with the country the viewer is \
+                 watching, and this hour's D18 country roster cannot name either: {refusal}"
+            )))
+        }
+    };
+    let Some(perspective_country_id) = partial
+        .resolved
+        .iter()
+        .find(|entry| entry.tag == tag)
+        .map(|entry| entry.tag_db_id)
+    else {
+        let unnamed = if partial.excluded.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " ({} emitted country key(s) carry no D18 identity this hour: {})",
+                partial.excluded.len(),
+                partial.excluded.join(",")
+            )
+        };
+        return Ok(Err(format!(
+            "the viewer is watching {tag}, which is absent from this hour's D18 roster{unnamed}, \
+             so the hub frame law has no canonical identity to compare owners with"
+        )));
+    };
+    let mut selected = Vec::new();
+    for id in &context.viewer.selected_object_ids {
+        let Some(raw) = id.strip_prefix(XMAP06_SELECTED_PROVINCE_ID_PREFIX) else {
+            continue;
+        };
+        let province = raw.parse::<u32>().map_err(|error| {
+            format!("XMAP16 viewer selection {id:?} has no province id: {error}")
+        })?;
+        if province == 0 {
+            return Err(format!("XMAP16 viewer selection {id:?} names province 0").into());
+        }
+        selected.push(province);
+    }
+    selected.sort_unstable();
+    selected.dedup();
+    // The engine's law has ONE selected province and no answer for two. Picking one of
+    // them, or treating the set as a membership test, would both be viewer choices the
+    // engine never makes, so a multi-province selection is named rather than resolved.
+    let selected_province_id = match selected.len() {
+        0 => None,
+        1 => Some(selected[0]),
+        count => {
+            return Ok(Err(format!(
+                "the supply-hub frame law admits at most one selected province and this viewer \
+                 holds {count}"
+            )))
+        }
+    };
+    Ok(Ok(Xmap16HubDerivationInputs {
+        perspective_country_id,
+        law: Xmap16HubViewerInputs {
+            selected_province_id,
+            effective_country_id: perspective_country_id,
+        },
+    }))
+}
+
+impl Xmap16RailSupplyAdapter {
+    /// Refuse the family for a DERIVED-side reason, with the reason named.
+    ///
+    /// It consumes no XMAP00 gap id on purpose: nothing the map authority refused is
+    /// what stopped this frame, and claiming one would report a recording gap that does
+    /// not exist.
+    fn derived_family_unavailable(
+        &self,
+        context: &FoundationFeatureContext<'_>,
+        this_frame: Option<String>,
+        derived_hub_frame_count: Option<usize>,
+    ) -> FoundationFeatureOutput {
+        let hour = context.world_frame.hour_index();
+        let applied = match derived_hub_frame_count {
+            Some(count) => format!(
+                "the hub frame law is applied and produced {count} frame(s) for the viewer's own \
+                 perspective"
+            ),
+            None => "the hub frame law was not reached this frame".into(),
+        };
+        let this_frame = this_frame
+            .map(|reason| format!("{reason}; "))
+            .unwrap_or_default();
+        let gates = XMAP16_STATE_FIRST_HUB_ELIGIBILITY_GATES
+            .iter()
+            .map(|(id, why)| format!("{id} ({why})"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let reason = format!(
+            "XMAP16 derived visual family is incomplete: {this_frame}{applied}. The hub \
+             visibility law IS decoded -- its cutoff class is the engine's own arithmetic \
+             over two supply terms (map_viewer::xmap16_hub_visibility_cutoff_class, pinned \
+             in portable_engine_evidence::xmap16_hub_visibility) -- and what is left is \
+             named rather than deferred. First, that law applies to the terms the engine \
+             RESOLVES for a province, and which of D81's subtype rows it resolves to is \
+             undecoded. Second, the two eligibility flags {}: their law is decoded and the \
+             arms do NOT share a second disjunct -- the railway arm is (mode == 5 || scope) \
+             and the supply arm is (mode == 5 || (presentation_word && scope && \
+             country_context)) -- so the map mode and the scope are the viewer's own while \
+             the supply arm carries two further operands, one of them a country context \
+             whose viewer-locality is unproven. Every undecoded value is one gate -- \
+             {gates}. Third, the rail ribbon needs the engine-selected connector, tangent \
+             lane did not read, and the supply-arrow layer needs the sealed state-first \
+             arrow frame, which lane RL adjudicated as requiring its own a729 proof before \
+             any viewer work starts",
+            XMAP16_STATE_FIRST_HUB_UNDERIVED_OPERANDS.join(" and "),
+        );
+        FoundationFeatureOutput {
+            disposition: FamilyDisposition::Unavailable {
+                gap: FoundationGap {
+                    gap_id: XMAP16_DERIVED_VISUAL_GAP_ID.into(),
+                    first_unavailable_hour: hour,
+                    last_unavailable_hour: hour,
+                    witness_sha256: Sha256::hex(
+                        format!("{XMAP16_DERIVED_VISUAL_GAP_ID}\n{hour}\n{reason}").as_bytes(),
+                    ),
+                    reason,
+                },
+            },
+            prepared_terrain: None,
+            prepared_political: None,
+            prepared_thin_borders: None,
+            prepared_lighting: None,
+            prepared_rail_supply: None,
+            prepared_weather: None,
+            prepared_rivers_straits: None,
+            prepared_water: None,
+            prepared_units: None,
+            prepared_combat: None,
+            prepared_orders: None,
+            prepared_map_modes: None,
+            element_diagnostics: Vec::new(),
+            consumed_gap_ids: Vec::new(),
+        }
     }
 }
 
@@ -394,15 +593,16 @@ impl ProductionMapFeatureAdapter for Xmap16RailSupplyAdapter {
         if !owned_gaps.is_empty() {
             // XMAP00's blocker rides along, and so does what THIS hour observed:
             // naming the input alone sent a reader looking for a missing key,
-            // while `logistics.rail_hub_frames` is usually a declared absence
-            // inside a carrier the recording does hold. Which of the two it is
-            // on this hour is a per-hour fact and is read, never asserted.
+            // while `logistics.rail_hub_frames` is a DERIVED family whose
+            // measured input is the supply-hub census inside a carrier the
+            // recording usually does hold. Which of the two it is on this hour
+            // is a per-hour fact and is read, never asserted.
             let rail = context.world_frame.rail_replay();
             let observed = format!(
-                "this hour's map.rail_replay_state_live is {:?} and its derived visual frames are \
-                 {:?}",
+                "this hour's map.rail_replay_state_live is {:?} and the measured inputs its \
+                 derived visual frames are built from are {:?}",
                 rail.status,
-                rail.derived_visual_frames_status()
+                rail.derived_visual_frame_inputs_status()
             );
             let reason = format!(
                 "XMAP16 exact state-first carrier unavailable ({observed}): {}",
@@ -452,12 +652,51 @@ impl ProductionMapFeatureAdapter for Xmap16RailSupplyAdapter {
         }
 
         let view = context.world_frame.rail_replay();
-        if view.status != ViewStatus::Present
-            || !view.pair_transitions_complete
+        if view.status != ViewStatus::Present {
+            return Err("XMAP16 map authority admitted an absent rail replay view".into());
+        }
+
+        // ---- The hub visual family, DERIVED here ----
+        //
+        // The frames a hub draws with are a function of one measured simulation
+        // row plus viewer-local inputs, so they are this layer's to compute and
+        // no recording carries them. Everything the derivation needs is either
+        // in the admitted D81 carrier or in the viewer's own state.
+        let hub_effective_cutoffs = derive_xmap16_hub_effective_cutoffs(
+            &self.rail_defines,
+            self.graphics_defines_content.clone(),
+        )?;
+        let hub_inputs = match xmap16_hub_viewer_inputs(context)? {
+            Ok(inputs) => inputs,
+            Err(reason) => {
+                return Ok(self.derived_family_unavailable(context, Some(reason), None))
+            }
+        };
+        let derived_hub_frames =
+            match derive_xmap16_hub_frames(view, hub_inputs.perspective_country_id, hub_inputs.law)
+            {
+                Ok(derived) => derived,
+                Err(reason) => {
+                    return Ok(self.derived_family_unavailable(context, Some(reason), None))
+                }
+            };
+
+        // ---- What is still owed, and to whom ----
+        //
+        // These three are the rest of the derived visual family. None of them
+        // is a recorder gap: the recording is correct to carry no rendered
+        // frame. Each is a viewer derivation that cannot be written because an
+        // engine law this build has not decoded chooses its operands. The
+        // refusal names them so a reader is not sent looking for a missing key.
+        if !view.pair_transitions_complete
             || !view.supply_arrows_complete
             || !view.hub_visual_states_complete
         {
-            return Err("XMAP16 map authority admitted an incomplete rail replay view".into());
+            return Ok(self.derived_family_unavailable(
+                context,
+                None,
+                Some(derived_hub_frames.frames.len()),
+            ));
         }
         let pair_transitions = view
             .pair_transitions
@@ -489,11 +728,6 @@ impl ProductionMapFeatureAdapter for Xmap16RailSupplyAdapter {
                 "XMAP16 supply-arrow map width disagrees with effective map/provinces.bmp".into(),
             );
         }
-        let hub_effective_cutoffs = view
-            .hub_effective_cutoffs
-            .as_ref()
-            .ok_or("XMAP16 state-first hub cutoff table is absent")?
-            .clone();
         let hub_visual_states = view
             .hub_visual_states
             .as_ref()
@@ -539,11 +773,26 @@ impl ProductionMapFeatureAdapter for Xmap16RailSupplyAdapter {
             .runtime
             .lock()
             .map_err(|_| "XMAP16 runtime state mutex is poisoned")?;
+        // The cached-hour arm reuses the previous frame's geometry but NOT its
+        // hub visuals: the frame law reads the viewer's selected province and
+        // effective country, both of which change between frames inside one
+        // recorded hour, so a cached hub visual would be another frame's.
         let rail = if runtime.last_hour_index == Some(context.world_frame.hour_index()) {
             let mut rail = runtime
                 .last_rail
                 .clone()
                 .ok_or("XMAP16 cached hour omitted its exact rail carrier")?;
+            rail.hub_visuals = derived_hub_frames
+                .frames
+                .iter()
+                .map(|((province_id, subtype), row)| crate::ExactRailHubVisualState {
+                    province_id: *province_id,
+                    subtype: *subtype,
+                    background_button_frame: row.background_button_frame,
+                    common_icon_frame: row.common_icon_frame,
+                    naval_overlay_visible: row.naval_overlay_visible,
+                })
+                .collect();
             rail.railway_alpha = crate::railway_alpha_step(
                 runtime.previous_alpha,
                 context.viewer.frame_delta_seconds(),
@@ -560,6 +809,7 @@ impl ProductionMapFeatureAdapter for Xmap16RailSupplyAdapter {
                 view,
                 context.world_frame.production_by_country(),
                 &pair_transitions,
+                &derived_hub_frames.frames,
                 runtime.previous_alpha,
                 context.viewer.frame_delta_seconds(),
                 camera.current_eye()[1],
@@ -686,6 +936,19 @@ fn prepared_digest(prepared: &PreparedXmap16Frame) -> String {
         identity.extend_from_slice(&draw.first_vertex.to_le_bytes());
         identity.extend_from_slice(&draw.vertex_count.to_le_bytes());
         identity.extend_from_slice(&draw.effective_level.to_le_bytes());
+    }
+    // The DERIVED hub frames are part of this payload and so are part of its identity.
+    // They change between frames of one recorded hour -- the frame law reads the viewer's
+    // selected province and effective country -- so leaving them out would report an
+    // unchanged payload for a frame that draws different hubs.
+    for hub in &prepared.rail.hub_visuals {
+        identity.extend_from_slice(&hub.province_id.to_le_bytes());
+        identity.extend_from_slice(&[
+            hub.subtype,
+            hub.background_button_frame,
+            hub.common_icon_frame,
+            hub.naval_overlay_visible as u8,
+        ]);
     }
     identity.extend_from_slice(
         Sha256::hex(&serde_json::to_vec(&prepared.supply_arrows).unwrap_or_default()).as_bytes(),
@@ -1204,6 +1467,96 @@ mod tests {
         let mut wrong_level = program;
         wrong_level.ordered_draws[1].effective_level = 3;
         assert!(validate_rail_draw_program(&records, &wrong_level).is_err());
+    }
+
+    fn cutoff_defines() -> RailGeometryDefines {
+        RailGeometryDefines {
+            y_offset: 0.5,
+            camera_cutoff: 100.0,
+            camera_cutoff_speed: 2.0,
+            railway_icon_cutoff: 90.0,
+            supply_icon_cutoff: 80.0,
+            supply_icon_unused_cutoff: 70.0,
+            supply_icon_disconnected_cutoff: 60.0,
+            supply_icon_ok_cutoff: 50.0,
+            supply_icon_numbers_cutoff: 40.0,
+            supply_icon_end_cutoff: 30.0,
+            bridge_width: 1.0,
+            bridge_large_width: 2.0,
+            bridge_gap_width: 0.5,
+            bridge_gap_large_width: 1.0,
+            arrow_thin_threshold: 1.0,
+            arrow_medium_threshold: 2.0,
+            arrow_thick_threshold: 3.0,
+            supply_icon_shift: [0.0, 0.0, 0.0],
+        }
+    }
+
+    fn defines_content() -> UsedContentKey {
+        UsedContentKey {
+            effective_vfs_manifest_sha256: "1".repeat(64),
+            normalized_game_relative_path: GRAPHICS_DEFINES_SOURCE.into(),
+            winning_layer_ordinal: 0,
+            layer_kind: ContentLayerKind::Base,
+            layer_id: "base".into(),
+            source_sha256: "2".repeat(64),
+            payload_sha256: "2".repeat(64),
+            payload_bytes: 1,
+        }
+    }
+
+    /// The DERIVED cutoff table is exactly what the frame validator demands.
+    ///
+    /// The table used to arrive as a `hub_effective_cutoffs` carrier no producer ever
+    /// wrote, and the validator compared its words with the effective `00_graphics.lua`.
+    /// Now the same words are derived from the same file, and this asserts the two sides
+    /// still agree word for word rather than merely looking similar -- a derivation that
+    /// read a different define would be caught here and nowhere else.
+    ///
+    /// kills: reading the railway icon cutoff (a separate define) as the supply icon one,
+    /// and swapping any two of the six classes.
+    #[test]
+    fn the_derived_hub_cutoffs_are_the_effective_graphics_defines() {
+        let defines = cutoff_defines();
+        let derived =
+            crate::xmap16_hub_derivation::derive_xmap16_hub_effective_cutoffs(
+                &defines,
+                defines_content(),
+            )
+            .expect("derived cutoffs");
+        assert_eq!(derived.graphics_defines_content, defines_content());
+        validate_hub_cutoffs(&derived, &BTreeMap::new(), &defines)
+            .expect("the derived table must satisfy the frame validator");
+
+        for (carried, expected) in [
+            (derived.supply_icon, defines.supply_icon_cutoff),
+            (derived.unused, defines.supply_icon_unused_cutoff),
+            (derived.disconnected, defines.supply_icon_disconnected_cutoff),
+            (derived.ok, defines.supply_icon_ok_cutoff),
+            (derived.numbers, defines.supply_icon_numbers_cutoff),
+            (derived.end, defines.supply_icon_end_cutoff),
+        ] {
+            assert_eq!(carried.value_bits, expected.to_bits());
+            assert_eq!(carried.value.to_bits(), expected.to_bits());
+        }
+        // The railway icon cutoff is a different define and must not appear.
+        assert!([
+            derived.supply_icon,
+            derived.unused,
+            derived.disconnected,
+            derived.ok,
+            derived.numbers,
+            derived.end,
+        ]
+        .iter()
+        .all(|row| row.value_bits != defines.railway_icon_cutoff.to_bits()));
+
+        let mut drifted = defines;
+        drifted.supply_icon_ok_cutoff = 999.0;
+        assert!(
+            validate_hub_cutoffs(&derived, &BTreeMap::new(), &drifted).is_err(),
+            "a cutoff table built from other defines must be refused"
+        );
     }
 
     fn control(name: &str) -> GuiControlLayout {

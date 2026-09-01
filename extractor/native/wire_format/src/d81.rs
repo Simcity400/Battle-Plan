@@ -7,8 +7,14 @@
 //! Public schema v4 deliberately carries no GUI object, selected-country, or
 //! effective-country state.  The first three collections retain the exact
 //! engine-selected anchors, ordered directed adjacency, and `active_terminal`
-//! byte law.  [`HUB_SIMULATION`] carries only authoritative simulation rows;
-//! replay applies [`render_hub_frames`] with its own viewer-local inputs.
+//! byte law.  [`HUB_SIMULATION`] carries only authoritative simulation rows.
+//!
+//! The frames a supply hub DRAWS with are a function of one such row plus
+//! viewer-local inputs -- which province the viewer selected, which country it
+//! is watching -- so they are the replay layer's to derive per viewer and this
+//! crate deliberately holds no copy of that law.  Lane WK moved the selector
+//! law and its cases to the replay tree, where the derivation runs; leaving a
+//! second copy here would have been a law with two homes and one consumer.
 
 use crate::body::{key, Key};
 use crate::record::Record;
@@ -392,74 +398,6 @@ fn require_canonical_schema(supplied: &Schema) -> Result<(), String> {
     Ok(())
 }
 
-/// Replay-only inputs. These values are never part of a D81 payload or public
-/// collection.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct HubViewerInputs {
-    pub selected_province_id: Option<u32>,
-    /// Canonical D18 country identity after the authenticated
-    /// `CGameState+0x340` equivalence collapse.
-    pub effective_country_id: u32,
-}
-
-/// Deterministic GUI outputs mechanically derived at replay time.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct HubRenderedFrames {
-    pub background_button_frame: u8,
-    pub common_icon_frame: u8,
-    pub naval_overlay_visible: bool,
-}
-
-/// Apply the exact a729 supply-hub visual law to one simulation row.
-///
-/// `selected` means the viewer selected this row's province;
-/// `same_owner` compares canonical country identities. The collector collapses
-/// not raw engine-handle equality.
-pub fn render_hub_frames(
-    row: &compact::RailHubSimulationState,
-    viewer: HubViewerInputs,
-) -> HubRenderedFrames {
-    let selected = viewer.selected_province_id == Some(row.province_id);
-    let same_owner = viewer.effective_country_id == row.province_owner_country_id;
-
-    let background_selector = if row.node_flag != 0 {
-        3 + u8::from(selected)
-    } else if selected {
-        2
-    } else if same_owner {
-        1
-    } else {
-        0
-    };
-
-    let delta = i128::from(row.available_raw) - i128::from(row.consumed_raw);
-    let scale = 100_000i128;
-    let ceil_delta = delta.div_euclid(scale) + i128::from(delta.rem_euclid(scale) != 0);
-    let zero_delta = ceil_delta == 0 && !row.foreign_route;
-    let common_selector = if !zero_delta || row.node_flag != 0 {
-        2
-    } else if row.foreign_max_raw > row.available_raw || selected {
-        3
-    } else if !same_owner {
-        1
-    } else {
-        0
-    };
-    let common_icon_frame = match common_selector {
-        0 => 1,
-        1 => 3,
-        2 => 2,
-        3 => 4,
-        _ => unreachable!("exact selector law yields 0..=3"),
-    };
-
-    HubRenderedFrames {
-        background_button_frame: background_selector + 1,
-        common_icon_frame,
-        naval_overlay_visible: matches!(row.node_kind, 3 | 5),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,74 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn rendering_law_covers_owner_selection_delta_and_naval_cases() {
-        let row = sim();
-        assert_eq!(
-            render_hub_frames(
-                &row,
-                HubViewerInputs {
-                    selected_province_id: None,
-                    effective_country_id: 2,
-                }
-            ),
-            HubRenderedFrames {
-                background_button_frame: 2,
-                common_icon_frame: 1,
-                naval_overlay_visible: true,
-            }
-        );
-        assert_eq!(
-            render_hub_frames(
-                &row,
-                HubViewerInputs {
-                    selected_province_id: Some(10),
-                    effective_country_id: 2,
-                }
-            ),
-            HubRenderedFrames {
-                background_button_frame: 3,
-                common_icon_frame: 4,
-                naval_overlay_visible: true,
-            }
-        );
-        let mut flagged = row;
-        flagged.node_flag = 1;
-        assert_eq!(
-            render_hub_frames(
-                &flagged,
-                HubViewerInputs {
-                    selected_province_id: Some(10),
-                    effective_country_id: 2,
-                }
-            ),
-            HubRenderedFrames {
-                background_button_frame: 5,
-                common_icon_frame: 2,
-                naval_overlay_visible: true,
-            }
-        );
-        let mut nonzero = row;
-        nonzero.available_raw = i64::MAX;
-        nonzero.consumed_raw = i64::MIN;
-        nonzero.node_kind = 4;
-        assert_eq!(
-            render_hub_frames(
-                &nonzero,
-                HubViewerInputs {
-                    selected_province_id: None,
-                    effective_country_id: 99,
-                }
-            ),
-            HubRenderedFrames {
-                background_button_frame: 1,
-                common_icon_frame: 2,
-                naval_overlay_visible: false,
-            }
-        );
-    }
-
-    #[test]
-    fn viewer_inputs_do_not_change_simulation_record_or_key() {
+    fn the_public_hub_row_carries_simulation_words_only() {
         let mut symbols = SymbolManifestBuilder::from_base([
             "country/tag/GER",
             "country/tag/FRA",
@@ -609,24 +480,12 @@ mod tests {
             .unwrap();
         let row = sim();
         let mapped = map_simulation_row(&row, &symbols).unwrap();
-        let mut before = Vec::new();
+        let mut encoded = Vec::new();
         mapped
             .1
-            .encode(&schema().collections[HUB_SIMULATION_INDEX], &mut before)
+            .encode(&schema().collections[HUB_SIMULATION_INDEX], &mut encoded)
             .unwrap();
-        let _ = render_hub_frames(
-            &row,
-            HubViewerInputs {
-                selected_province_id: Some(10),
-                effective_country_id: 2,
-            },
-        );
-        let mut after = Vec::new();
-        mapped
-            .1
-            .encode(&schema().collections[HUB_SIMULATION_INDEX], &mut after)
-            .unwrap();
-        assert_eq!(before, after);
+        assert!(!encoded.is_empty());
         assert_eq!(
             mapped.1.values,
             vec![

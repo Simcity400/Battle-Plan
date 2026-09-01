@@ -1584,6 +1584,8 @@ mod tests {
             payload_schema: "test".to_string(),
             cadence: "test".to_string(),
             identity_order: "test".to_string(),
+        source: crate::MapAuthorityAdmissionSource::RecordedCarrier,
+        derivation: None,
         }
     }
 
