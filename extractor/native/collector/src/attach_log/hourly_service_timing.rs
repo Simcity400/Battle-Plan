@@ -158,6 +158,9 @@ pub(crate) enum RequestOutcome {
     Partial,
     Refused,
     Aborted,
+    /// The request the capture teardown cut: closed by the terminal close
+    /// itself, never by the loop. A boundary hour, not a lost one.
+    TeardownCut,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -596,7 +599,12 @@ impl HourlyServiceTiming {
             if active.observed_stages & stage.bit() != 0 {
                 let _ = active.finish_stage(stage);
             } else if stage == ServiceStage::Terminal
-                || matches!(outcome, RequestOutcome::Refused | RequestOutcome::Aborted)
+                || matches!(
+                    outcome,
+                    RequestOutcome::Refused
+                        | RequestOutcome::Aborted
+                        | RequestOutcome::TeardownCut
+                )
             {
                 let _ = active.stage_not_applicable(stage);
             }
@@ -678,7 +686,7 @@ impl HourlyServiceTiming {
                     &mut self.census.faults,
                 );
             }
-            RequestOutcome::Aborted => {
+            RequestOutcome::Aborted | RequestOutcome::TeardownCut => {
                 add_count(
                     &mut self.census.aborted_requests,
                     1,

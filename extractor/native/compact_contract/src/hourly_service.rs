@@ -36,6 +36,9 @@ pub enum HourlyServiceOutcomeV1 {
     Partial = 2,
     Refused = 3,
     Aborted = 4,
+    /// The request the capture teardown cut: closed by the terminal close,
+    /// never by the loop; publishes nothing. A boundary hour.
+    TeardownCut = 5,
 }
 
 impl HourlyServiceOutcomeV1 {
@@ -49,6 +52,7 @@ impl HourlyServiceOutcomeV1 {
             2 => Ok(Self::Partial),
             3 => Ok(Self::Refused),
             4 => Ok(Self::Aborted),
+            5 => Ok(Self::TeardownCut),
             _ => Err(HourlyServiceCodecError::UnknownOutcome(code)),
         }
     }
@@ -102,6 +106,9 @@ impl HourlyServiceSampleV1 {
             ),
             (HourlyServiceOutcomeV1::Refused, Some(_)) => Err(
                 HourlyServiceCodecError::InvalidField("refused_outcome_with_data"),
+            ),
+            (HourlyServiceOutcomeV1::TeardownCut, Some(_)) => Err(
+                HourlyServiceCodecError::InvalidField("teardown_cut_outcome_with_data"),
             ),
             _ => Ok(()),
         }
@@ -759,7 +766,7 @@ mod tests {
                 Err(HourlyServiceCodecError::UnknownFlags(_))
             ));
         }
-        for outcome in [0, 5, u8::MAX] {
+        for outcome in [0, 6, u8::MAX] {
             let mut bad = wire.clone();
             bad[start + 20] = outcome;
             assert_eq!(
@@ -849,6 +856,7 @@ mod tests {
         for outcome in [
             HourlyServiceOutcomeV1::Refused,
             HourlyServiceOutcomeV1::Aborted,
+            HourlyServiceOutcomeV1::TeardownCut,
         ] {
             let value = HourlyServiceSampleV1 {
                 outcome,
@@ -858,6 +866,32 @@ mod tests {
             };
             assert!(value.validate().is_ok());
         }
+    }
+
+    /// Lane PF: the teardown cut is its own outcome code so a reader can
+    /// tell the hour the terminal close cut from an hour the loop lost, and
+    /// it can never claim a published DATA span.
+    #[test]
+    fn the_teardown_cut_is_its_own_code_and_publishes_nothing() {
+        assert_eq!(HourlyServiceOutcomeV1::TeardownCut.code(), 5);
+        assert_eq!(
+            HourlyServiceOutcomeV1::from_code(5).unwrap(),
+            HourlyServiceOutcomeV1::TeardownCut
+        );
+        let cut = HourlyServiceSampleV1 {
+            outcome: HourlyServiceOutcomeV1::TeardownCut,
+            data_sequence: None,
+            ..sample()
+        };
+        assert!(cut.validate().is_ok());
+        let published = HourlyServiceSampleV1 {
+            data_sequence: Some((1, 3)),
+            ..cut
+        };
+        assert_eq!(
+            published.validate().unwrap_err(),
+            HourlyServiceCodecError::InvalidField("teardown_cut_outcome_with_data")
+        );
     }
 
     #[test]

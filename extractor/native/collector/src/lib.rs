@@ -6784,6 +6784,9 @@ unsafe fn _caller_buffer<'a>(ptr: *mut u8, len: usize) -> Option<&'a mut [u8]> {
 pub(crate) mod attach_log;
 
 #[cfg(windows)]
+pub use attach_log::COLLECTOR_MODULE_RETENTION_POLICY;
+
+#[cfg(windows)]
 #[no_mangle]
 pub unsafe extern "system" fn DllMain(
     module: *mut core::ffi::c_void,

@@ -245,6 +245,7 @@ impl Runtime {
                 RequestOutcome::Partial => HourlyServiceOutcomeV1::Partial,
                 RequestOutcome::Refused => HourlyServiceOutcomeV1::Refused,
                 RequestOutcome::Aborted => HourlyServiceOutcomeV1::Aborted,
+                RequestOutcome::TeardownCut => HourlyServiceOutcomeV1::TeardownCut,
             },
             data_sequence: data,
             observed_service_ns: closed.observed_service_ns,
@@ -355,6 +356,16 @@ impl Runtime {
             self.queue(closed, None, now);
         }
         let local = self.timing.census();
+        // The TEARDOWN CUT is the request the terminal close itself closed: it
+        // never completed and its terminal stage is teardown work, not
+        // service. It stays in the samples for the record and counts as a
+        // boundary hour, never as a measurement. An ABORTED request is not
+        // that -- the loop lost it -- and stays a measured hour.
+        let cut_samples = self
+            .samples
+            .iter()
+            .filter(|sample| sample.outcome == HourlyServiceOutcomeV1::TeardownCut)
+            .count() as u64;
         let mut census = HourlyServiceCensusV1 {
             offered_requests: local.offered_requests,
             admitted_requests: local.admitted_requests,
@@ -365,7 +376,7 @@ impl Runtime {
             refused_requests: local.refused_requests,
             aborted_requests: local.aborted_requests,
             unmeasured_hours: local.unmeasured_hours,
-            boundary_excluded_hours: self.retired_boundary,
+            boundary_excluded_hours: self.retired_boundary.saturating_add(cut_samples),
             active_requests: local.active_requests as u64,
             pending_delivery: local.pending_delivery as u64,
             unattributed_service_ns: self.unattributed_ns,
@@ -375,7 +386,7 @@ impl Runtime {
         };
         for sample in &self.samples {
             census.fault_bits |= sample.fault_bits;
-            if sample.fault_bits == 0 {
+            if sample.fault_bits == 0 && sample.outcome != HourlyServiceOutcomeV1::TeardownCut {
                 if let Some(ns) = sample.observed_service_ns {
                     census.complete_measurements += 1;
                     match census.total_service_ns.checked_add(ns) {
@@ -1159,6 +1170,7 @@ mod tests {
             RequestOutcome::Partial,
             RequestOutcome::Refused,
             RequestOutcome::Aborted,
+            RequestOutcome::TeardownCut,
         ];
         for (index, outcome) in outcomes.into_iter().enumerate() {
             let who = owner(index as i32 + 1);
@@ -1180,8 +1192,8 @@ mod tests {
                 .then_some((index as u64 * 10 + 1, index as u64 * 10 + 3));
             runtime.close_at(who, outcome, data, at(now, base + 7));
         }
-        let report = runtime.report(5, 0, 1, 1, at(now, 80));
-        assert_eq!(report.samples.len(), 4);
+        let report = runtime.report(6, 0, 1, 1, at(now, 100));
+        assert_eq!(report.samples.len(), 5);
         assert_eq!(
             report
                 .samples
@@ -1193,14 +1205,29 @@ mod tests {
                 HourlyServiceOutcomeV1::Partial,
                 HourlyServiceOutcomeV1::Refused,
                 HourlyServiceOutcomeV1::Aborted,
+                HourlyServiceOutcomeV1::TeardownCut,
             ],
         );
-        assert_eq!(report.census.admitted_requests, 4);
-        assert_eq!(report.census.closed_requests, 4);
-        assert_eq!(report.census.complete_measurements, 4);
+        assert_eq!(report.census.admitted_requests, 5);
+        assert_eq!(report.census.closed_requests, 5);
+        assert_eq!(
+            report.census.complete_measurements, 4,
+            "the teardown cut is a boundary, not a measurement; the mid-run abort \
+             is still a measured hour"
+        );
+        assert_eq!(report.census.incomplete_measurements, 1);
+        assert_eq!(report.census.boundary_excluded_hours, 1);
         assert_eq!(report.census.partial_requests, 1);
         assert_eq!(report.census.refused_requests, 1);
-        assert_eq!(report.census.aborted_requests, 1);
+        assert_eq!(report.census.aborted_requests, 2, "the cut is counted with the aborts");
+        assert_eq!(
+            report.census.total_service_ns,
+            report.samples[..4]
+                .iter()
+                .map(|sample| sample.observed_service_ns.unwrap())
+                .sum::<u64>(),
+            "the cut sample's service does not enter the population totals"
+        );
         assert_eq!(report.census.unmeasured_hours, 3);
         assert_ne!(
             report.census.fault_bits & (1 << TimingFault::UnmeasuredHours as u8),

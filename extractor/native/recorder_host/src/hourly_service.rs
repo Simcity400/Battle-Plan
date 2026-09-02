@@ -713,7 +713,11 @@ fn service_values(samples: &[HourlyServiceSampleV1], problems: &mut Vec<String>)
                         "hourly service union is inconsistent with the stage unions",
                     );
                 }
-                values.push(value);
+                // The teardown-cut hour is a boundary, not a service
+                // observation; its stages stay on the record above.
+                if sample.outcome != HourlyServiceOutcomeV1::TeardownCut {
+                    values.push(value);
+                }
             }
             None => problem(
                 problems,
@@ -785,13 +789,31 @@ fn validate_census(
     problems: &mut Vec<String>,
 ) {
     let count = samples.len() as u64;
+    // The teardown cut is the one closed request that is a boundary, not a
+    // measurement: the collector's census counts it under aborted_requests
+    // and boundary_excluded_hours and leaves it out of the population, and
+    // this check holds it to exactly that.
+    let cut = samples
+        .iter()
+        .filter(|sample| sample.outcome == HourlyServiceOutcomeV1::TeardownCut)
+        .count() as u64;
+    let aborted = samples
+        .iter()
+        .filter(|sample| {
+            matches!(
+                sample.outcome,
+                HourlyServiceOutcomeV1::Aborted | HourlyServiceOutcomeV1::TeardownCut
+            )
+        })
+        .count() as u64;
     if !census.sealed
         || census.offered_requests != count
         || census.admitted_requests != count
         || census.closed_requests != count
         || census.queued_measurements != count
-        || census.complete_measurements != count
-        || census.incomplete_measurements != 0
+        || census.complete_measurements != count - cut
+        || census.incomplete_measurements != cut
+        || census.boundary_excluded_hours < cut
         || census.lost_measurements != 0
         || census.unmeasured_hours != 0
         || census.active_requests != 0
@@ -809,16 +831,12 @@ fn validate_census(
         .iter()
         .filter(|sample| sample.outcome == HourlyServiceOutcomeV1::Refused)
         .count() as u64;
-    let aborted = samples
-        .iter()
-        .filter(|sample| sample.outcome == HourlyServiceOutcomeV1::Aborted)
-        .count() as u64;
     let mut complete = 0u64;
     let mut total = Some(0u64);
     let mut maximum = None;
     let mut over = 0u64;
     for sample in samples {
-        if sample.fault_bits != 0 {
+        if sample.fault_bits != 0 || sample.outcome == HourlyServiceOutcomeV1::TeardownCut {
             continue;
         }
         let Some(value) = sample.observed_service_ns else {
@@ -843,6 +861,22 @@ fn validate_census(
             "terminal census totals or outcome counts differ from the raw received samples",
         );
     }
+}
+
+/// The one non-complete sample a complete capture may carry: the request the
+/// collector's terminal close cut (its own outcome code, written by that close
+/// and nothing else). It is the newest observation, it published nothing, and
+/// it is the only cut. An ABORTED hour is a loss, not a boundary.
+fn is_the_teardown_cut(sample: &HourlyServiceSampleV1, samples: &[HourlyServiceSampleV1]) -> bool {
+    sample.outcome == HourlyServiceOutcomeV1::TeardownCut
+        && sample.data_sequence.is_none()
+        && samples.iter().all(|other| {
+            other.outcome != HourlyServiceOutcomeV1::TeardownCut
+                || std::ptr::eq(other, sample)
+        })
+        && samples
+            .iter()
+            .all(|other| other.owner.observation_ordinal <= sample.owner.observation_ordinal)
 }
 
 fn census_json(census: &HourlyServiceCensusV1) -> Value {
@@ -893,19 +927,25 @@ pub fn report_for_capture(
         && join.gap_only_frames == 0
         && join.refused_frames == 0
         && join.partial_frames == 0
-        && receipt
-            .samples
-            .iter()
-            .all(|sample| sample.outcome == HourlyServiceOutcomeV1::Complete);
+        && receipt.samples.iter().all(|sample| {
+            sample.outcome == HourlyServiceOutcomeV1::Complete
+                || is_the_teardown_cut(sample, &receipt.samples)
+        });
     let timing_within_limit =
         timing_complete && values.iter().all(|value| *value <= SERVICE_LIMIT_NS);
     let passes = timing_within_limit && complete_capture;
+    // The teardown-cut hour is a boundary: it is outside the service, stage
+    // and edge populations alike (its stages stay on the receipt record).
+    let measured = || {
+        receipt
+            .samples
+            .iter()
+            .filter(|sample| sample.outcome != HourlyServiceOutcomeV1::TeardownCut)
+    };
     let stages = (0..7)
         .map(|index| {
             timing_summary(
-                &receipt
-                    .samples
-                    .iter()
+                &measured()
                     .filter_map(|sample| sample.stage_ns[index])
                     .collect::<Vec<_>>(),
             )
@@ -913,8 +953,9 @@ pub fn report_for_capture(
         .collect::<Vec<_>>();
     json!({"schema":"hoi4.hourly_service.v2","available":receipt.census.is_some(),"binding":expected,"receipt_file":RECEIPT_FILE_NAME,"receipt_sha256":receipt.sha256,
         "timing_population_complete":timing_complete,"complete_capture":complete_capture,"timing_within_16ms":timing_within_limit,"passes_16ms":passes,"ceiling_ns":SERVICE_LIMIT_NS,
-        "service":timing_summary(&values),"stages":stages,"stage_order":["capture","finish","build_tail","publication_prepare","sink","commit","terminal"],"census":receipt.census.as_ref().map(census_json),"edge_to_publication":timing_summary(&receipt.samples.iter().filter_map(|sample|sample.edge_to_publication_ns).collect::<Vec<_>>()),
-        "edge_to_completion":timing_summary(&receipt.samples.iter().filter_map(|sample|sample.edge_to_completion_ns).collect::<Vec<_>>()),
+        "service":timing_summary(&values),"stages":stages,"stage_order":["capture","finish","build_tail","publication_prepare","sink","commit","terminal"],"census":receipt.census.as_ref().map(census_json),"edge_to_publication":timing_summary(&measured().filter_map(|sample|sample.edge_to_publication_ns).collect::<Vec<_>>()),
+        "edge_to_completion":timing_summary(&measured().filter_map(|sample|sample.edge_to_completion_ns).collect::<Vec<_>>()),
+        "summaries_exclude_teardown_cut":true,
         "raw_data_frames":join.data_frames,"raw_gap_only_frames":join.gap_only_frames,"raw_refused_frames":join.refused_frames,"raw_partial_frames":join.partial_frames,
         "raw_joined_samples":join.joined_samples.len(),"raw_streams":join.streams,"problems":receipt.problems,
         "diagnostic_transport_ns":receipt.census.as_ref().map(|census|census.diagnostic_transport_ns),

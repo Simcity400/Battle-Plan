@@ -2560,7 +2560,7 @@ function Test-PassiveCaptureTeardownReceipt {
     if ($teardown.schema -isnot [string] -or
         [string]$teardown.schema -cne 'hoi4-capture-teardown-v2' -or
         $teardown.status -isnot [string] -or
-        ([string]$teardown.status -cne 'collector-retained-pinned' -and
+        ([string]$teardown.status -cne 'collector-retained' -and
          [string]$teardown.status -cne 'collector-unloaded') -or
         $teardown.capture_policy -isnot [string] -or
         [string]$teardown.capture_policy -cne 'passive-observer-only' -or
@@ -2575,15 +2575,15 @@ function Test-PassiveCaptureTeardownReceipt {
         $teardown.hook_lease_released_after_eof -isnot [bool] -or
         -not [bool]$teardown.hook_lease_released_after_eof -or
         $teardown.collector_module_disposition -isnot [string] -or
-        ([string]$teardown.collector_module_disposition -cne 'retained-pinned' -and
+        ([string]$teardown.collector_module_disposition -cne 'retained' -and
          [string]$teardown.collector_module_disposition -cne 'unloaded') -or
-        ([string]$teardown.status -ceq 'collector-retained-pinned' -and
-         [string]$teardown.collector_module_disposition -cne 'retained-pinned') -or
+        ([string]$teardown.status -ceq 'collector-retained' -and
+         [string]$teardown.collector_module_disposition -cne 'retained') -or
         ([string]$teardown.status -ceq 'collector-unloaded' -and
          [string]$teardown.collector_module_disposition -cne 'unloaded') -or
         $teardown.collector_module_retention_policy -isnot [string] -or
         [string]$teardown.collector_module_retention_policy -cne
-            'inline-detour.module.process-lifetime.v1' -or
+            'inline-detour.module.quiescence-lease.v1' -or
         $teardown.target_process_epoch_revalidated -isnot [bool] -or
         -not [bool]$teardown.target_process_epoch_revalidated -or
         $teardown.target_code_temporarily_instrumented -isnot [bool] -or

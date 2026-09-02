@@ -12,6 +12,9 @@ pub mod freeze_census;
 #[cfg(windows)]
 pub mod release_ledger;
 
+#[cfg(windows)]
+pub mod unload_barrier;
+
 #[cfg(all(test, windows))]
 mod fault_tests;
 
@@ -29,15 +32,17 @@ mod windows_impl {
     use minhook::{MinHook, MinHookLock, MH_STATUS};
     use std::fmt;
     use std::ptr;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use windows_sys::Win32::Foundation::GetLastError;
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    use windows_sys::Win32::Foundation::{FreeLibrary, GetLastError};
     use windows_sys::Win32::System::LibraryLoader::{
         GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN,
     };
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum InlineDetourEnableError {
-        ModulePinRefused(u32),
+        ModuleLeaseRefused(u32),
+        /// Teardown closed the unload gate; no patch may be written after it.
+        ModuleUnloading,
         FreezeRefused(FreezeRefusal),
         MinHook(MH_STATUS),
         BatchApplyRefused {
@@ -50,10 +55,15 @@ mod windows_impl {
     impl fmt::Display for InlineDetourEnableError {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self {
-                Self::ModulePinRefused(code) => write!(
+                Self::ModuleLeaseRefused(code) => write!(
                     f,
-                    "inline detour refused: containing module could not be pinned \
+                    "inline detour refused: containing module could not be leased \
                      against unload (GetLastError {code})"
+                ),
+                Self::ModuleUnloading => write!(
+                    f,
+                    "inline detour refused: the containing module is being unloaded; no \
+                     patch may be written after the unload gate closed"
                 ),
                 Self::FreezeRefused(refusal) => write!(f, "inline detour {refusal}"),
                 Self::MinHook(status) => write!(f, "{status}"),
@@ -115,16 +125,19 @@ mod windows_impl {
         pub fn minhook_status(self) -> Option<MH_STATUS> {
             match self {
                 Self::MinHook(status) | Self::BatchApplyRefused { status, .. } => Some(status),
-                Self::ModulePinRefused(_) | Self::FreezeRefused(_) => None,
+                Self::ModuleLeaseRefused(_) | Self::ModuleUnloading | Self::FreezeRefused(_) => {
+                    None
+                }
             }
         }
 
         pub fn freeze_refusal(self) -> Option<FreezeRefusal> {
             match self {
                 Self::FreezeRefused(refusal) => Some(refusal),
-                Self::ModulePinRefused(_) | Self::MinHook(_) | Self::BatchApplyRefused { .. } => {
-                    None
-                }
+                Self::ModuleLeaseRefused(_)
+                | Self::ModuleUnloading
+                | Self::MinHook(_)
+                | Self::BatchApplyRefused { .. } => None,
             }
         }
 
@@ -192,53 +205,143 @@ mod windows_impl {
         }
     }
 
+    /// The permanent loader pin (`GET_MODULE_HANDLE_EX_FLAG_PIN`), taken only by
+    /// [`pin_module_now`]: Windows offers no unpin, so a module that took it
+    /// stays mapped until the process ends.
     static MODULE_PINNED: AtomicBool = AtomicBool::new(false);
+    /// The RELEASABLE loader reference every enable takes before it patches:
+    /// one ordinary `GetModuleHandleExW` reference (no PIN flag), held in this
+    /// slot as the HMODULE until [`release_module_lease`] balances it with
+    /// `FreeLibrary`. Zero == not held.
+    static MODULE_LEASE: AtomicUsize = AtomicUsize::new(0);
+    /// Teardown's one-way gate. Once closed no enable path writes a patch:
+    /// it is checked before the freeze AND inside every frozen window, so an
+    /// enable that was waiting on the freeze lock while the quiescence census
+    /// ran cannot patch after the census and before the unload.
+    static MODULE_UNLOADING: AtomicBool = AtomicBool::new(false);
     static ENABLED_DETOURS: AtomicU64 = AtomicU64::new(0);
     static RETAINED_DETOURS: AtomicU64 = AtomicU64::new(0);
 
     #[inline(never)]
     extern "system" fn residency_anchor() {}
 
-    fn pin_containing_module() -> Result<(), u32> {
-        if MODULE_PINNED.load(Ordering::Acquire) {
-            return Ok(());
-        }
+    fn containing_module(flags: u32) -> Result<*mut c_void, u32> {
         let mut module = ptr::null_mut();
-        let pinned = unsafe {
+        let found = unsafe {
             GetModuleHandleExW(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | flags,
                 residency_anchor as *const () as *const u16,
                 &mut module,
             )
         };
-        if pinned == 0 || module.is_null() {
+        if found == 0 || module.is_null() {
             return Err(unsafe { GetLastError() });
         }
+        Ok(module)
+    }
+
+    fn pin_containing_module() -> Result<(), u32> {
+        if MODULE_PINNED.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        containing_module(GET_MODULE_HANDLE_EX_FLAG_PIN)?;
         MODULE_PINNED.store(true, Ordering::Release);
         Ok(())
     }
 
-    pub(crate) fn run_pinned<T, E>(
-        pin: impl FnOnce() -> Result<(), u32>,
+    /// A poised thread can be inside a detour body in this module for as long
+    /// as any detour is enabled, so the module must not be unloaded under it.
+    /// The reference taken here keeps it mapped; unlike the pin it can be
+    /// given back once teardown has PROVEN no thread executes or will return
+    /// into the module (`unload_barrier::drain_module_execution`).
+    fn lease_containing_module() -> Result<(), u32> {
+        if MODULE_LEASE.load(Ordering::Acquire) != 0 {
+            return Ok(());
+        }
+        let module = containing_module(0)?;
+        if MODULE_LEASE
+            .compare_exchange(0, module as usize, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            // Lost the race to another enable: give this extra reference back.
+            unsafe { FreeLibrary(module) };
+        }
+        Ok(())
+    }
+
+    /// Whether an enable has taken the releasable loader reference and nothing
+    /// has released it.
+    pub fn module_lease_held() -> bool {
+        MODULE_LEASE.load(Ordering::Acquire) != 0
+    }
+
+    /// Close the unload gate. One-way: teardown calls it before the
+    /// quiescence drain, and a module retained afterwards keeps it closed.
+    pub fn begin_module_unload() {
+        MODULE_UNLOADING.store(true, Ordering::Release);
+    }
+
+    pub fn module_unloading() -> bool {
+        MODULE_UNLOADING.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn patch_permitted_by(gate: &AtomicBool) -> Result<(), InlineDetourEnableError> {
+        if gate.load(Ordering::Acquire) {
+            Err(InlineDetourEnableError::ModuleUnloading)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Give back the loader reference every enable took. `Ok(true)` when a
+    /// lease was held and `FreeLibrary` accepted it, `Ok(false)` when none was
+    /// held, `Err(os_error)` when the loader refused (the lease stays held).
+    ///
+    /// # Safety
+    ///
+    /// The caller must have proven that no thread executes in this module or
+    /// holds a return address into it, and must itself hold another loader
+    /// reference: this may be the last one, and the module unmaps under the
+    /// caller otherwise.
+    pub unsafe fn release_module_lease() -> Result<bool, u32> {
+        let module = MODULE_LEASE.swap(0, Ordering::AcqRel);
+        if module == 0 {
+            return Ok(false);
+        }
+        if unsafe { FreeLibrary(module as *mut c_void) } == 0 {
+            let error = unsafe { GetLastError() };
+            MODULE_LEASE.store(module, Ordering::Release);
+            return Err(error);
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn run_leased<T, E>(
+        lease: impl FnOnce() -> Result<(), u32>,
         op: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, InlineDetourEnableError>
     where
         E: Into<InlineDetourEnableError>,
     {
-        pin().map_err(InlineDetourEnableError::ModulePinRefused)?;
+        patch_permitted_by(&MODULE_UNLOADING)?;
+        lease().map_err(InlineDetourEnableError::ModuleLeaseRefused)?;
         op().map_err(Into::into)
     }
 
     pub unsafe fn enable(target: *mut c_void) -> Result<(), InlineDetourEnableError> {
-        run_pinned(pin_containing_module, || {
+        run_leased(lease_containing_module, || {
             let mut frozen = freeze_other_threads()?;
             // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
             frozen.note_entry(FreezeEntryPoint::Enable, "", 1);
-            let outcome = match frozen.refuse_if_a_thread_is_in(core::iter::once(target), false) {
+            let outcome = match patch_permitted_by(&MODULE_UNLOADING).and_then(|()| {
+                frozen
+                    .refuse_if_a_thread_is_in(core::iter::once(target), false)
+                    .map_err(InlineDetourEnableError::FreezeRefused)
+            }) {
                 Ok(()) => frozen
                     .time_minhook(|lock| unsafe { MinHook::enable_hook(lock, target) })
                     .map_err(InlineDetourEnableError::MinHook),
-                Err(refusal) => Err(InlineDetourEnableError::FreezeRefused(refusal)),
+                Err(refusal) => Err(refusal),
             };
             drop(frozen);
             outcome
@@ -247,12 +350,15 @@ mod windows_impl {
         Ok(())
     }
 
+    /// The PERMANENT pin, for a caller that wants the module resident for the
+    /// rest of the process (terrain_capture's disarm). Nothing in the enable
+    /// path takes it.
     pub fn pin_module_now() -> Result<(), InlineDetourEnableError> {
-        pin_containing_module().map_err(InlineDetourEnableError::ModulePinRefused)
+        pin_containing_module().map_err(InlineDetourEnableError::ModuleLeaseRefused)
     }
 
     pub unsafe fn queue_enable(target: *mut c_void) -> Result<(), InlineDetourEnableError> {
-        run_pinned(pin_containing_module, || {
+        run_leased(lease_containing_module, || {
             let lock = MinHookLock::acquire()?;
             unsafe { MinHook::queue_enable_hook(&lock, target) }
         })
@@ -265,15 +371,19 @@ mod windows_impl {
     }
 
     fn apply_queued_without_counting() -> Result<(), InlineDetourEnableError> {
-        run_pinned(pin_containing_module, || {
+        run_leased(lease_containing_module, || {
             let mut frozen = freeze_other_threads()?;
             // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
             frozen.note_entry(FreezeEntryPoint::ApplyQueued, "", 0);
-            let outcome = match frozen.refuse_if_a_thread_is_in_a_queued_patch() {
+            let outcome = match patch_permitted_by(&MODULE_UNLOADING).and_then(|()| {
+                frozen
+                    .refuse_if_a_thread_is_in_a_queued_patch()
+                    .map_err(InlineDetourEnableError::FreezeRefused)
+            }) {
                 Ok(()) => frozen
                     .time_minhook(|lock| unsafe { MinHook::apply_queued(lock) })
                     .map_err(InlineDetourEnableError::MinHook),
-                Err(refusal) => Err(InlineDetourEnableError::FreezeRefused(refusal)),
+                Err(refusal) => Err(refusal),
             };
             drop(frozen);
             outcome
@@ -515,11 +625,13 @@ mod windows_impl {
             }
             return BatchEnableReport::sealed(outcomes, None, &[], false, 0);
         }
-        if let Err(pin) = pin_module_now() {
+        if let Err(lease) = patch_permitted_by(&MODULE_UNLOADING).and_then(|()| {
+            lease_containing_module().map_err(InlineDetourEnableError::ModuleLeaseRefused)
+        }) {
             for &(name, _) in targets {
-                outcomes.push((name, Err(pin)));
+                outcomes.push((name, Err(lease)));
             }
-            return BatchEnableReport::sealed(outcomes, Some(pin), &[], false, 0);
+            return BatchEnableReport::sealed(outcomes, Some(lease), &[], false, 0);
         }
         // thread holding the allocator's lock makes that a permanent deadlock.
         let mut statuses: Vec<Result<(), MH_STATUS>> = Vec::with_capacity(targets.len());
@@ -528,6 +640,7 @@ mod windows_impl {
         let mut live_now: Vec<bool> = Vec::with_capacity(targets.len());
         let mut apply_refusal = None;
         let mut parked_refusal = None;
+        let mut gate_refusal: Option<InlineDetourEnableError> = None;
         let rolled_back;
         let mut attempted_rollback = false;
         match freeze_other_threads() {
@@ -538,12 +651,18 @@ mod windows_impl {
                     targets[0].0,
                     targets.len() as u32,
                 );
+                // A closed unload gate queues nothing: every target's outcome
+                // below names the gate, and the window still ends at its one
+                // `drop(frozen)`.
+                gate_refusal = patch_permitted_by(&MODULE_UNLOADING).err();
                 for &(_, target) in targets {
-                    statuses
-                        .push(unsafe { MinHook::queue_enable_hook(frozen.minhook_lock(), target) });
+                    statuses.push(match gate_refusal {
+                        Some(_) => Ok(()),
+                        None => unsafe { MinHook::queue_enable_hook(frozen.minhook_lock(), target) },
+                    });
                 }
                 for status in statuses.iter() {
-                    queued_ok.push(status.is_ok());
+                    queued_ok.push(status.is_ok() && gate_refusal.is_none());
                 }
                 let mut queued_any = queued_ok.iter().any(|queued| *queued);
                 if queued_any {
@@ -598,7 +717,7 @@ mod windows_impl {
                         queued_ok[index] && queued_any && !undo
                     };
                     live_now.push(enabled_now);
-                    if !enabled_now {
+                    if !enabled_now && gate_refusal.is_none() {
                         let _ =
                             unsafe { MinHook::queue_disable_hook(frozen.minhook_lock(), target) };
                     }
@@ -621,11 +740,15 @@ mod windows_impl {
                 );
             }
         }
+        if let Some(gate) = gate_refusal {
+            apply_refusal = Some(gate);
+        }
         let mut enabled = 0u64;
         for (index, &(name, _)) in targets.iter().enumerate() {
-            let outcome = match parked_refusal {
-                Some(refusal) => Err(InlineDetourEnableError::FreezeRefused(refusal)),
-                None => statuses[index].map_err(InlineDetourEnableError::MinHook),
+            let outcome = match (gate_refusal, parked_refusal) {
+                (Some(gate), _) => Err(gate),
+                (None, Some(refusal)) => Err(InlineDetourEnableError::FreezeRefused(refusal)),
+                (None, None) => statuses[index].map_err(InlineDetourEnableError::MinHook),
             };
             if live_now[index] {
                 enabled += 1;
@@ -1102,6 +1225,8 @@ mod windows_impl {
         RETAINED_DETOURS.load(Ordering::Acquire)
     }
 
+    /// The PERMANENT pin only ([`pin_module_now`]); the enable path's lease is
+    /// reported by [`module_lease_held`].
     pub fn module_pinned_against_unload() -> bool {
         MODULE_PINNED.load(Ordering::Acquire)
     }
@@ -1123,15 +1248,17 @@ pub use release_ledger::{
 pub use freeze::{
     freeze_attempts, freeze_attempts_on_this_thread, freeze_passes_spent, freeze_process,
     freeze_refusals, suspend_failures_deferred_to_a_later_pass,
-    suspend_failures_excused_as_terminated, FreezeRefusal, ProcessFreeze,
+    suspend_failures_excused_as_terminated, FreezeRefusal, ModuleReferenceCensus, ProcessFreeze,
 };
 
-#[cfg(windows)]
-pub(crate) use windows_impl::run_pinned;
+#[cfg(all(windows, test))]
+pub(crate) use windows_impl::{patch_permitted_by, run_leased};
 #[cfg(windows)]
 pub use windows_impl::{
+    begin_module_unload, module_unloading,
     apply_queued, disable, disable_batch, enable, enable_batch, enabled_detour_count,
-    module_pinned_against_unload, pin_module_now, queue_enable, remove, remove_batch,
+    module_lease_held, module_pinned_against_unload, pin_module_now, queue_enable,
+    release_module_lease, remove, remove_batch,
     retained_detour_count, BatchEnableReport, BatchOutcome, BatchReleaseReport,
     InlineDetourEnableError, InlineDetourReleaseError,
 };
@@ -1499,7 +1626,7 @@ mod tests {
 
     /// a build that dropped it would silently reopen the use-after-free the
     #[test]
-    fn enabling_a_detour_pins_the_containing_module_first() {
+    fn enabling_a_detour_leases_the_containing_module_first() {
         // this order, everywhere, so two tests cannot deadlock on them.
         let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let _serialised = crate::freeze::os_suspend_state_guard();
@@ -1510,27 +1637,107 @@ mod tests {
             "the refusal must come from MinHook, not from the pin: {refusal}"
         );
         assert!(
-            module_pinned_against_unload(),
-            "the module must be pinned before any patch is attempted"
+            module_lease_held(),
+            "the module must be leased before any patch is attempted"
         );
     }
 
     #[test]
     fn every_entry_point_funnels_through_the_ordering_helper() {
         let source = include_str!("lib.rs");
-        let needle = concat!("run_pinned(", "pin_containing_module");
+        let needle = concat!("run_leased(", "lease_containing_module");
         let funnelled = source.matches(needle).count();
         assert_eq!(
             funnelled, 3,
-            "enable, queue_enable and apply_queued must each go through              run_pinned; found {funnelled} call(s), so one of them patches              without the pin ordering"
+            "enable, queue_enable and apply_queued must each go through              run_leased; found {funnelled} call(s), so one of them patches              without the lease ordering"
+        );
+        assert!(
+            !source.contains(concat!("run_leased(", "pin_containing_module")),
+            "the enable path must take the releasable lease, never the permanent pin"
+        );
+        // The batch installer has its own funnel: it must take the same
+        // releasable lease and never the permanent pin (Codex round 1, F1).
+        let source = source.replace("\r\n", "\n");
+        let start = source
+            .find("fn enable_batch_once(")
+            .expect("the batch installer");
+        let body = &source[start..];
+        let end = ["\n    fn ", "\n    pub ", "\n    #["]
+            .iter()
+            .filter_map(|marker| body[1..].find(marker))
+            .min()
+            .map_or(body.len(), |offset| offset + 1);
+        let body = &body[..end];
+        assert!(
+            body.contains("lease_containing_module()"),
+            "the batch installer must take the releasable lease"
+        );
+        assert!(
+            !body.contains(concat!("pin_module", "_now()")),
+            "the batch installer must not take the permanent pin"
+        );
+    }
+
+    /// Codex round 1, F2: the census and the unload are not one atomic
+    /// step, so the gate that separates them is checked twice -- before the
+    /// freeze, and again INSIDE every frozen window that writes a patch, so an
+    /// enable that was waiting on the freeze lock while the census ran cannot
+    /// patch between the accepted census and the unload.
+    #[test]
+    fn the_unload_gate_refuses_a_patch_before_and_inside_the_freeze() {
+        let gate = std::sync::atomic::AtomicBool::new(false);
+        assert!(patch_permitted_by(&gate).is_ok());
+        gate.store(true, std::sync::atomic::Ordering::Release);
+        assert_eq!(
+            patch_permitted_by(&gate).unwrap_err(),
+            InlineDetourEnableError::ModuleUnloading
+        );
+        // The marker comment names `drop(frozen)` itself, so the closer is the
+        // statement; every needle is split so this test's own text is never a
+        // window.
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
+        let marker = concat!("// FROZEN WI", "NDOW:");
+        let closer = concat!("drop(fro", "zen);");
+        let entries = [
+            concat!("FreezeEntryPoint::", "Enable,"),
+            concat!("FreezeEntryPoint::", "ApplyQueued"),
+            concat!("FreezeEntryPoint::", "EnableBatch"),
+        ];
+        let gate_check = concat!("patch_permitted_by(&", "MODULE_UNLOADING)");
+        let mut patching_windows = 0;
+        for window in source.split(marker).skip(1) {
+            let window = &window[..window
+                .find(closer)
+                .expect("every frozen window closes with the drop statement")];
+            if !entries.iter().any(|entry| window.contains(entry)) {
+                continue;
+            }
+            patching_windows += 1;
+            assert!(
+                window.contains(gate_check),
+                "a frozen window that patches must re-check the unload gate inside the freeze:\n{window}"
+            );
+        }
+        assert_eq!(patching_windows, 3, "enable, apply_queued and the batch");
+        let funnel = source
+            .split_once(concat!("fn run_", "leased<"))
+            .expect("the funnel")
+            .1;
+        let before_lease = funnel
+            .split_once(concat!("lease().map_", "err("))
+            .expect("the lease call")
+            .0;
+        assert!(
+            before_lease.contains(gate_check),
+            "the funnel checks the gate before it takes the lease"
         );
     }
 
     #[test]
-    fn a_refused_pin_means_the_patch_never_runs() {
+    fn a_refused_lease_means_the_patch_never_runs() {
         use std::cell::Cell;
         let ran = Cell::new(false);
-        let outcome = super::run_pinned(
+        let outcome = super::run_leased(
             || Err(5u32),
             || {
                 ran.set(true);
@@ -1539,28 +1746,28 @@ mod tests {
         );
         assert!(
             !ran.get(),
-            "the patch must not run when the pin was refused"
+            "the patch must not run when the lease was refused"
         );
         assert_eq!(
             outcome.unwrap_err(),
-            InlineDetourEnableError::ModulePinRefused(5),
-            "and the refusal must name the pin, not MinHook"
+            InlineDetourEnableError::ModuleLeaseRefused(5),
+            "and the refusal must name the lease, not MinHook"
         );
 
         let ran = Cell::new(false);
-        let outcome = super::run_pinned(
+        let outcome = super::run_leased(
             || Ok(()),
             || {
                 ran.set(true);
                 Ok::<(), minhook::MH_STATUS>(())
             },
         );
-        assert!(ran.get(), "an accepted pin must let the patch run");
+        assert!(ran.get(), "an accepted lease must let the patch run");
         assert!(outcome.is_ok());
     }
 
     #[test]
-    fn the_queued_path_pins_before_it_applies() {
+    fn the_queued_path_leases_before_it_applies() {
         let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let _serialised = crate::freeze::os_suspend_state_guard();
         let queued = unsafe { queue_enable(0x3000 as *mut core::ffi::c_void) };
@@ -1569,13 +1776,13 @@ mod tests {
             "no hook exists at this address, so MinHook must be the refuser"
         );
         assert!(
-            module_pinned_against_unload(),
-            "queuing must pin: a queue that is later applied patches the target"
+            module_lease_held(),
+            "queuing must lease: a queue that is later applied patches the target"
         );
 
         let applied = unsafe { apply_queued() };
         let _ = applied;
-        assert!(module_pinned_against_unload());
+        assert!(module_lease_held());
     }
 
     #[test]
@@ -1600,13 +1807,13 @@ mod tests {
 
     #[test]
     fn the_two_refusals_are_distinguishable() {
-        let pin = InlineDetourEnableError::ModulePinRefused(5);
+        let pin = InlineDetourEnableError::ModuleLeaseRefused(5);
         assert!(pin.minhook_status().is_none());
-        assert!(pin.to_string().contains("could not be pinned"));
+        assert!(pin.to_string().contains("could not be leased"));
         assert!(pin.to_string().contains('5'));
         let hook = InlineDetourEnableError::MinHook(minhook::MH_STATUS::MH_ERROR_NOT_CREATED);
         assert!(hook.minhook_status().is_some());
-        assert!(!hook.to_string().contains("could not be pinned"));
+        assert!(!hook.to_string().contains("could not be leased"));
         assert_ne!(pin.to_string(), hook.to_string());
     }
 
@@ -1687,7 +1894,7 @@ mod tests {
         assert!(refusal.minhook_status().is_none());
         assert!(refusal.freeze_refusal().is_some());
         assert!(refusal.to_string().contains("no target byte was touched"));
-        assert!(InlineDetourEnableError::ModulePinRefused(5)
+        assert!(InlineDetourEnableError::ModuleLeaseRefused(5)
             .freeze_refusal()
             .is_none());
     }

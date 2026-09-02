@@ -27,6 +27,9 @@ use windows_sys::Win32::System::Diagnostics::Debug::{
     GetThreadContext, CONTEXT, CONTEXT_CONTROL_AMD64,
 };
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+use windows_sys::Win32::System::Memory::{
+    VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS,
+};
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId, GetThreadId, ResumeThread,
     SuspendThread, WaitForSingleObject, THREAD_GET_CONTEXT, THREAD_QUERY_INFORMATION,
@@ -343,7 +346,58 @@ pub struct ProcessFreeze {
     _minhook_lock: minhook::MinHookLock,
     passes: u32,
     timing: Option<FreezeTiming>,
+    /// `NtQueryInformationThread`, resolved BEFORE the first suspension:
+    /// `GetProcAddress` takes the loader lock, which a held thread may own.
+    query_thread: NtQueryInformationThreadFn,
 }
+
+/// What a frozen process's threads still hold of one module's image: an
+/// instruction pointer inside it, or a pointer-sized word inside it anywhere
+/// on the live stack (a return address into a detour body, a callback frame
+/// below one). A module none of them references can be unmapped under them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModuleReferenceCensus {
+    pub threads_scanned: u32,
+    pub threads_executing_in_module: u32,
+    pub threads_with_stack_references: u32,
+    /// Threads whose live stack bounds could not be established from the TEB
+    /// or from `VirtualQuery`; counted as referencing, fail closed.
+    pub threads_with_unbounded_stacks: u32,
+    pub stack_words_scanned: u64,
+    pub stack_references: u64,
+    /// The first thread found referencing the module (0 == none).
+    pub first_referencing_thread: u32,
+}
+
+impl ModuleReferenceCensus {
+    pub fn is_quiescent(&self) -> bool {
+        self.threads_executing_in_module == 0
+            && self.threads_with_stack_references == 0
+            && self.threads_with_unbounded_stacks == 0
+    }
+}
+
+type NtQueryInformationThreadFn =
+    unsafe extern "system" fn(HANDLE, u32, *mut c_void, u32, *mut u32) -> i32;
+
+const THREAD_BASIC_INFORMATION: u32 = 0;
+
+#[repr(C)]
+struct ThreadBasicInformation {
+    exit_status: i32,
+    teb_base_address: *mut c_void,
+    client_id: [usize; 2],
+    affinity_mask: usize,
+    priority: i32,
+    base_priority: i32,
+}
+
+/// `NT_TIB.StackBase` / `StackLimit` inside the TEB.
+const TEB_STACK_BASE_OFFSET: usize = 0x08;
+const TEB_STACK_LIMIT_OFFSET: usize = 0x10;
+/// The most live stack one thread is scanned for; a stack larger than this
+/// is treated as unbounded (fail closed) rather than walked.
+const MAX_STACK_SCAN_BYTES: usize = 64 * 1024 * 1024;
 
 struct AccountedThread {
     id: u32,
@@ -517,6 +571,13 @@ impl ProcessFreeze {
     }
 
     fn read_held_contexts(&self, mut visit: impl FnMut(usize)) -> Result<(), FreezeRefusal> {
+        self.read_held_control_contexts(|_, context| visit(context.Rip as usize))
+    }
+
+    fn read_held_control_contexts(
+        &self,
+        mut visit: impl FnMut(&AccountedThread, &CONTEXT),
+    ) -> Result<(), FreezeRefusal> {
         for entry in self.accounted.iter().filter(|entry| entry.suspended) {
             let mut context: AlignedContext = unsafe { std::mem::zeroed() };
             context.0.ContextFlags = CONTEXT_CONTROL_AMD64;
@@ -531,10 +592,133 @@ impl ProcessFreeze {
                     },
                 });
             }
-            visit(context.0.Rip as usize);
+            visit(entry, &context.0);
         }
         Ok(())
     }
+
+    /// Census every held thread against one module image `[start, end)`.
+    ///
+    /// FROZEN WINDOW: reads contexts, TEBs and committed stack pages through
+    /// plain loads and two syscalls (`NtQueryInformationThread`, `VirtualQuery`);
+    /// allocates nothing and takes no lock.
+    pub fn module_reference_census(
+        &self,
+        image: (usize, usize),
+    ) -> Result<ModuleReferenceCensus, FreezeRefusal> {
+        let mut census = ModuleReferenceCensus::default();
+        let query_thread = self.query_thread;
+        self.read_held_control_contexts(|entry, context| {
+            census.threads_scanned = census.threads_scanned.saturating_add(1);
+            let rip = context.Rip as usize;
+            let rsp = context.Rsp as usize;
+            let mut references = false;
+            if rip >= image.0 && rip < image.1 {
+                census.threads_executing_in_module =
+                    census.threads_executing_in_module.saturating_add(1);
+                references = true;
+            }
+            match live_stack_span(query_thread, entry.handle, rsp) {
+                Some((start, end)) => {
+                    let (words, hits) = count_words_in_range(start, end, image);
+                    census.stack_words_scanned = census.stack_words_scanned.saturating_add(words);
+                    census.stack_references = census.stack_references.saturating_add(hits);
+                    if hits != 0 {
+                        census.threads_with_stack_references =
+                            census.threads_with_stack_references.saturating_add(1);
+                        references = true;
+                    }
+                }
+                None => {
+                    census.threads_with_unbounded_stacks =
+                        census.threads_with_unbounded_stacks.saturating_add(1);
+                    references = true;
+                }
+            }
+            if references && census.first_referencing_thread == 0 {
+                census.first_referencing_thread = entry.id;
+            }
+        })?;
+        Ok(census)
+    }
+}
+
+/// `[rsp, stack base)` of a held thread: the TEB's own bounds when `rsp` lies
+/// inside them, else the committed region `VirtualQuery` reports around `rsp`
+/// (a fiber stack), else `None`.
+fn live_stack_span(
+    query_thread: NtQueryInformationThreadFn,
+    handle: HANDLE,
+    rsp: usize,
+) -> Option<(usize, usize)> {
+    if rsp == 0 {
+        return None;
+    }
+    let mut information: ThreadBasicInformation = unsafe { core::mem::zeroed() };
+    let status = unsafe {
+        query_thread(
+            handle,
+            THREAD_BASIC_INFORMATION,
+            (&mut information) as *mut ThreadBasicInformation as *mut c_void,
+            core::mem::size_of::<ThreadBasicInformation>() as u32,
+            core::ptr::null_mut(),
+        )
+    };
+    if status == 0 && !information.teb_base_address.is_null() {
+        let teb = information.teb_base_address as usize;
+        let base = unsafe { core::ptr::read_volatile((teb + TEB_STACK_BASE_OFFSET) as *const usize) };
+        let limit =
+            unsafe { core::ptr::read_volatile((teb + TEB_STACK_LIMIT_OFFSET) as *const usize) };
+        if limit <= rsp && rsp < base && base - rsp <= MAX_STACK_SCAN_BYTES {
+            return Some((rsp, base));
+        }
+    }
+    let mut region: MEMORY_BASIC_INFORMATION = unsafe { core::mem::zeroed() };
+    let written = unsafe {
+        VirtualQuery(
+            rsp as *const c_void,
+            &mut region,
+            core::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+        )
+    };
+    if written == 0
+        || region.State != MEM_COMMIT
+        || region.Protect & (PAGE_NOACCESS | PAGE_GUARD) != 0
+    {
+        return None;
+    }
+    let region_end = (region.BaseAddress as usize).checked_add(region.RegionSize)?;
+    if region_end <= rsp || region_end - rsp > MAX_STACK_SCAN_BYTES {
+        return None;
+    }
+    Some((rsp, region_end))
+}
+
+#[cfg(test)]
+pub(crate) fn count_words_in_range_for_tests(
+    start: usize,
+    end: usize,
+    image: (usize, usize),
+) -> (u64, u64) {
+    count_words_in_range(start, end, image)
+}
+
+/// Pointer-aligned words in `[start, end)` and how many of them fall inside
+/// `image`.
+fn count_words_in_range(start: usize, end: usize, image: (usize, usize)) -> (u64, u64) {
+    const WORD: usize = core::mem::size_of::<usize>();
+    let mut at = (start + WORD - 1) & !(WORD - 1);
+    let mut words = 0u64;
+    let mut hits = 0u64;
+    while at + WORD <= end {
+        let word = unsafe { core::ptr::read_volatile(at as *const usize) };
+        words += 1;
+        if word >= image.0 && word < image.1 {
+            hits += 1;
+        }
+        at += WORD;
+    }
+    (words, hits)
 }
 
 impl Drop for ProcessFreeze {
@@ -590,6 +774,7 @@ pub(crate) struct ThreadWalk {
     next: NtGetNextThreadFn,
     query: NtQueryObjectFn,
     roster: NtQuerySystemInformationFn,
+    query_thread: NtQueryInformationThreadFn,
     process: HANDLE,
 }
 
@@ -631,7 +816,20 @@ impl ThreadWalk {
                 os_error: unsafe { GetLastError() },
             });
         };
+        let query_thread =
+            unsafe { GetProcAddress(module, c"NtQueryInformationThread".as_ptr().cast()) };
+        let Some(query_thread) = query_thread else {
+            return Err(FreezeRefusal::EnumeratorUnavailable {
+                os_error: unsafe { GetLastError() },
+            });
+        };
         Ok(Self {
+            query_thread: unsafe {
+                core::mem::transmute::<
+                    unsafe extern "system" fn() -> isize,
+                    NtQueryInformationThreadFn,
+                >(query_thread)
+            },
             next: unsafe {
                 core::mem::transmute::<unsafe extern "system" fn() -> isize, NtGetNextThreadFn>(
                     next,
@@ -1054,6 +1252,7 @@ fn freeze_other_threads_inner() -> Result<ProcessFreeze, FreezeRefusal> {
         _minhook_lock: minhook_lock,
         passes: 0,
         timing: None,
+        query_thread: walk.query_thread,
     };
 
     let current_thread_id = unsafe { GetCurrentThreadId() };

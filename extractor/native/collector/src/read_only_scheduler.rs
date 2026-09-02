@@ -92,6 +92,11 @@ pub struct SchedulerTelemetry {
     /// Admitted hours released by [`ReadOnlyScheduler::reject_request`]. These
     pub refused_hours: u64,
     pub evicted_pending_hours: u64,
+    /// The subset of `evicted_pending_hours` evicted before ANY request was
+    /// taken: hours the clock scheduled while the capture loop was still
+    /// setting up. A start-boundary loss, named apart from a mid-run eviction
+    /// (which is the loop failing to keep pace).
+    pub evicted_before_first_take_hours: u64,
     pub abandoned_hours: u64,
     pub flushed_pending_hours: u64,
     pub unobserved_overrun_hours: u64,
@@ -178,6 +183,8 @@ pub struct ReadOnlyScheduler {
     untrusted_clock_recoveries: VecDeque<UntrustedClockRecovery>,
     telemetry: SchedulerTelemetry,
     shadow: CustodyShadow,
+    /// Set by the first take; evictions before it are start-boundary losses.
+    any_request_taken: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -255,6 +262,7 @@ impl ReadOnlyScheduler {
             next_epoch: 0,
             force_baseline: true,
             clock_unknown: false,
+            any_request_taken: false,
             clock_unknown_events: 0,
             clock_unreadable_intervals: VecDeque::new(),
             untrusted_clock_recoveries: VecDeque::new(),
@@ -593,6 +601,7 @@ impl ReadOnlyScheduler {
             slot.latest_pending = None;
             slot.in_flight = Some(request);
         }
+        self.any_request_taken = true;
         self.shadow
             .note_dispatch((request.stamp.epoch, request.stamp.hour_raw));
         Some(request)
@@ -639,6 +648,7 @@ impl ReadOnlyScheduler {
         }
         let request = slot.latest_pending.take()?;
         slot.in_flight = Some(request);
+        self.any_request_taken = true;
         Some(request)
     }
 
@@ -878,6 +888,10 @@ impl ReadOnlyScheduler {
                 if index == 0 {
                     self.telemetry.evicted_pending_hours =
                         self.telemetry.evicted_pending_hours.saturating_add(1);
+                    if !self.any_request_taken {
+                        self.telemetry.evicted_before_first_take_hours =
+                            self.telemetry.evicted_before_first_take_hours.saturating_add(1);
+                    }
                     evicted = Some((replaced.stamp.epoch, replaced.stamp.hour_raw));
                 }
                 self.push_gap(domain, replaced.stamp, GapKind::Backpressure);
@@ -1275,6 +1289,31 @@ mod tests {
                 .map(|gap| i64::from(gap.last_hour_raw) - i64::from(gap.first_hour_raw) + 1)
                 .sum::<i64>(),
             6
+        );
+    }
+
+    /// Lane PF: hours the clock schedules before the capture loop takes its
+    /// first request are a start boundary, named apart from a mid-run
+    /// eviction. P4 lost 3 of its 4 unmeasured hours this way.
+    #[test]
+    fn evictions_before_the_first_take_are_a_start_boundary() {
+        let mut s = scheduler(&[10], 1, 64);
+        s.observe_stable(1, 1);
+        s.observe_stable(2, 2);
+        s.observe_stable(3, 3);
+        let before = s.telemetry();
+        assert_eq!(before.evicted_pending_hours, 2, "hours 1 and 2");
+        assert_eq!(before.evicted_before_first_take_hours, 2);
+
+        let taken = s.take_current_request().expect("hour 3 is takeable");
+        assert_eq!(taken.stamp.hour_raw, 3);
+        s.observe_stable(4, 4);
+        s.observe_stable(5, 5);
+        let after = s.telemetry();
+        assert_eq!(after.evicted_pending_hours, 3, "hour 4 was a mid-run eviction");
+        assert_eq!(
+            after.evicted_before_first_take_hours, 2,
+            "an eviction after the first take is the loop failing to keep pace, not a boundary"
         );
     }
 

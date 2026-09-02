@@ -896,7 +896,7 @@ def grade_passive_lifecycle(
     require(
         teardown.get("schema") == "hoi4-capture-teardown-v2"
         and teardown.get("status")
-        in ("collector-retained-pinned", "collector-unloaded")
+        in ("collector-retained", "collector-unloaded")
         and teardown.get("capture_policy") == "passive-observer-only"
         and teardown.get("pid") == expected_pid
         and teardown.get("process_creation_filetime_utc") == expected_creation
@@ -905,11 +905,11 @@ def grade_passive_lifecycle(
         and teardown.get("data_pipe_eof_observed") is True
         and teardown.get("hook_lease_released_after_eof") is True
         and teardown.get("collector_module_disposition")
-        in ("retained-pinned", "unloaded")
-        and (teardown.get("collector_module_disposition") == "retained-pinned")
-        == (teardown.get("status") == "collector-retained-pinned")
+        in ("retained", "unloaded")
+        and (teardown.get("collector_module_disposition") == "retained")
+        == (teardown.get("status") == "collector-retained")
         and teardown.get("collector_module_retention_policy")
-        == "inline-detour.module.process-lifetime.v1"
+        == "inline-detour.module.quiescence-lease.v1"
         and teardown.get("target_process_epoch_revalidated") is True
         and teardown.get("target_code_temporarily_instrumented") is True
         and teardown.get("pinned_hook_target_code_restored") is True

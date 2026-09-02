@@ -497,8 +497,19 @@ fn no_d53_arm_can_badge_a_bare_partial_without_declaring() {
             );
         }
     }
+    // BOUNDED TO THE FUNCTION: the whole-file needle it replaced matched a
+    // PARTIAL arm in an unrelated lane's status function on an LF checkout
+    // and nothing on a CRLF one.
+    let success = source
+        .find("fn domain53_success_status_flags(")
+        .expect("the success status function");
+    let success_end = source[success + 1..]
+        .find("
+fn ")
+        .map(|offset| success + 1 + offset)
+        .expect("the function after it");
     assert!(
-        !source.contains("status_flags | COMPACT_STATUS_PARTIAL_DATA\n    }\n}"),
+        !source[success..success_end].contains("COMPACT_STATUS_PARTIAL_DATA"),
         "domain53_success_status_flags must not have a PARTIAL arm"
     );
 }

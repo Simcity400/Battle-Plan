@@ -48,13 +48,19 @@ fn sample(hour: i32, first: u64, ns: u64) -> HourlyServiceSampleV1 {
 }
 
 fn census(samples: &[HourlyServiceSampleV1]) -> HourlyServiceCensusV1 {
+    let measured = |sample: &&HourlyServiceSampleV1| {
+        sample.outcome != HourlyServiceOutcomeV1::TeardownCut
+    };
+    let cut = samples.len() as u64 - samples.iter().filter(measured).count() as u64;
     HourlyServiceCensusV1 {
         last_batch_id: 1,
         offered_requests: samples.len() as u64,
         admitted_requests: samples.len() as u64,
         closed_requests: samples.len() as u64,
         queued_measurements: samples.len() as u64,
-        complete_measurements: samples.len() as u64,
+        complete_measurements: samples.len() as u64 - cut,
+        incomplete_measurements: cut,
+        boundary_excluded_hours: cut,
         partial_requests: samples
             .iter()
             .filter(|sample| sample.outcome == HourlyServiceOutcomeV1::Partial)
@@ -65,10 +71,16 @@ fn census(samples: &[HourlyServiceSampleV1]) -> HourlyServiceCensusV1 {
             .count() as u64,
         aborted_requests: samples
             .iter()
-            .filter(|sample| sample.outcome == HourlyServiceOutcomeV1::Aborted)
+            .filter(|sample| {
+                matches!(
+                    sample.outcome,
+                    HourlyServiceOutcomeV1::Aborted | HourlyServiceOutcomeV1::TeardownCut
+                )
+            })
             .count() as u64,
         over_limit_measurements: samples
             .iter()
+            .filter(measured)
             .filter(|sample| {
                 sample
                     .observed_service_ns
@@ -77,10 +89,12 @@ fn census(samples: &[HourlyServiceSampleV1]) -> HourlyServiceCensusV1 {
             .count() as u64,
         total_service_ns: samples
             .iter()
+            .filter(measured)
             .filter_map(|sample| sample.observed_service_ns)
             .sum(),
         maximum_service_ns: samples
             .iter()
+            .filter(measured)
             .filter_map(|sample| sample.observed_service_ns)
             .max(),
         sealed: true,
@@ -207,6 +221,92 @@ fn unstarted_teardown_boundary_is_reported_without_faulting_the_population() {
     assert_eq!(value["timing_population_complete"], true, "{value}");
     assert_eq!(value["census"]["unmeasured_hours"], 0);
     assert_eq!(value["census"]["boundary_excluded_hours"], 1);
+}
+
+/// Lane PF: the hour the terminal close cuts carries its own outcome code and
+/// its stages on the record; it is a boundary hour, so its service (P4: 535
+/// ms, mostly the Terminal stage) does not enter the population or the 16 ms
+/// verdict.
+#[test]
+fn the_teardown_cut_hour_is_a_boundary_not_a_service_value() {
+    let mut cut = sample(101, 3, SERVICE_LIMIT_NS * 30);
+    cut.outcome = HourlyServiceOutcomeV1::TeardownCut;
+    cut.data_sequence = None;
+    let samples = [sample(100, 1, 1), cut];
+    let value = report(&samples, Some(census(&samples)), &data_frame(100, 1, 0));
+    assert_eq!(value["timing_population_complete"], true, "{value}");
+    assert_eq!(value["passes_16ms"], true, "{value}");
+    assert_eq!(value["service"]["max_us_ceil"], 1);
+    assert_eq!(value["service"]["over_16ms_count"], 0);
+    // The same population everywhere: the cut's stages and edges are on the
+    // record but outside the stage and edge summaries too (Codex (c)+(d)
+    // round 1, minor 2).
+    assert_eq!(value["summaries_exclude_teardown_cut"], true);
+    assert_eq!(value["stages"][0]["count"], 1, "{value}");
+    assert_eq!(value["stages"][0]["max_us_ceil"], 1);
+    assert_eq!(value["edge_to_publication"]["count"], 1);
+    assert_eq!(value["edge_to_completion"]["max_us_ceil"], 1);
+    assert_eq!(value["census"]["boundary_excluded_hours"], 1);
+    assert_eq!(value["census"]["aborted_requests"], 1);
+
+    let mut counted = census(&samples);
+    counted.complete_measurements = 2;
+    counted.incomplete_measurements = 0;
+    let value = report(&samples, Some(counted), &data_frame(100, 1, 0));
+    assert_eq!(
+        value["timing_population_complete"], false,
+        "a census that counts the cut hour as measured is refused: {value}"
+    );
+}
+
+/// A lost hour is never dressed as the cut: an ABORTED hour (the loop lost
+/// it, whatever its position) fails the capture and stays in the population;
+/// a cut that is not the newest observation, or a second cut, fails it too.
+#[test]
+fn an_aborted_hour_that_is_not_the_teardown_cut_fails_the_capture() {
+    let mut lost = sample(100, 1, SERVICE_LIMIT_NS * 30);
+    lost.outcome = HourlyServiceOutcomeV1::Aborted;
+    lost.data_sequence = None;
+    let samples = [lost, sample(101, 1, 1)];
+    let value = report(&samples, Some(census(&samples)), &data_frame(101, 1, 0));
+    assert_eq!(value["timing_population_complete"], true, "{value}");
+    assert_eq!(value["complete_capture"], false, "{value}");
+    assert_eq!(value["passes_16ms"], false, "{value}");
+    assert_eq!(
+        value["service"]["over_16ms_count"], 1,
+        "a lost hour's service stays in the population: {value}"
+    );
+
+    let mut last_lost = sample(101, 3, SERVICE_LIMIT_NS * 30);
+    last_lost.outcome = HourlyServiceOutcomeV1::Aborted;
+    last_lost.data_sequence = None;
+    let samples = [sample(100, 1, 1), last_lost];
+    let value = report(&samples, Some(census(&samples)), &data_frame(100, 1, 0));
+    assert_eq!(
+        value["complete_capture"], false,
+        "the newest aborted hour is still a loss, not the cut: {value}"
+    );
+    assert_eq!(value["passes_16ms"], false, "{value}");
+
+    let mut early_cut = sample(100, 1, 1);
+    early_cut.outcome = HourlyServiceOutcomeV1::TeardownCut;
+    early_cut.data_sequence = None;
+    let samples = [early_cut, sample(101, 1, 1)];
+    let value = report(&samples, Some(census(&samples)), &data_frame(101, 1, 0));
+    assert_eq!(
+        value["complete_capture"], false,
+        "a cut older than the newest observation is not the teardown: {value}"
+    );
+
+    let mut first = sample(101, 3, 1);
+    first.outcome = HourlyServiceOutcomeV1::TeardownCut;
+    first.data_sequence = None;
+    let mut second = sample(102, 5, 1);
+    second.outcome = HourlyServiceOutcomeV1::TeardownCut;
+    second.data_sequence = None;
+    let samples = [sample(100, 1, 1), first, second];
+    let value = report(&samples, Some(census(&samples)), &data_frame(100, 1, 0));
+    assert_eq!(value["complete_capture"], false, "two cuts: {value}");
 }
 
 #[test]

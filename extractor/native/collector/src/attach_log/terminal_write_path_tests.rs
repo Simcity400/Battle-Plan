@@ -635,7 +635,7 @@ fn the_attach_worker_joins_the_sweep_thread_on_every_capture_outcome() {
         .split_once("unsafe extern \"system\" fn attach_worker(")
         .expect("attach worker")
         .1
-        .split_once("/// Whether this module may still be unloaded.")
+        .split_once("/// Whether this module may now be unloaded, deciding it the only way that can")
         .expect("attach worker terminator")
         .0;
     let capture = worker
