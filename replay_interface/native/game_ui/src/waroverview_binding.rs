@@ -1,4 +1,5 @@
 
+use replay_core::NamedCountry;
 use replay_core::{
     DiplomacyView, Leaf, ViewStatus, WarObjectRow, WarParticipantOverviewRow, WorldFrame,
 };
@@ -391,9 +392,11 @@ fn pov_belligerents(view: &DiplomacyView, pov_tag: &str) -> Vec<String> {
     set.into_iter().collect()
 }
 
-pub fn war_overview_from_frame(frame: &WorldFrame, pov_tag: &str) -> WarOverviewBinding {
+pub fn war_overview_from_frame(frame: &WorldFrame, pov_tag: NamedCountry<'_>) -> WarOverviewBinding {
     let view = frame.diplomacy();
-    if view.status != ViewStatus::Present {
+    // The caller's selector is not a country when the census says two ids reach
+    // it, and a belligerent list for one is a claim about nobody.
+    if frame.country_key_is_contended(pov_tag.tag()) || view.status != ViewStatus::Present {
         return WarOverviewBinding {
             pov_tag: pov_tag.to_string(),
             available: false,
@@ -403,7 +406,7 @@ pub fn war_overview_from_frame(frame: &WorldFrame, pov_tag: &str) -> WarOverview
     let war_relations = war_relation_summaries(view);
     let war_objects = war_object_summaries(view);
     let belligerents = belligerents(view, &war_relations, &war_objects);
-    let pov_belligerents = pov_belligerents(view, pov_tag);
+    let pov_belligerents = pov_belligerents(view, pov_tag.tag());
     WarOverviewBinding {
         pov_tag: pov_tag.to_string(),
         available: true,

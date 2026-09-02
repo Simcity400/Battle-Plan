@@ -1,5 +1,6 @@
 
 use crate::readonly_design_peace::DesignerViewKind;
+use replay_core::NamedCountry;
 use replay_core::{
     ObserverDesignerCandidate, ObserverDesignerCountryFilterRow, ObserverDesignerFamily,
     WorldFrame,
@@ -164,7 +165,7 @@ pub enum ObserverDesignerViewRejection {
 
 pub fn resolve_observer_designer_view_state(
     frame: &WorldFrame,
-    owner_tag: &str,
+    owner_tag: NamedCountry<'_>,
     viewer: &ObserverDesignerViewState,
 ) -> Result<
     (ObserverDesignerViewState, AdmittedObserverDesignerView),
@@ -173,7 +174,7 @@ pub fn resolve_observer_designer_view_state(
     let context_is_current = viewer.anchor_catalogue_hour == frame.hour_index()
         && viewer
             .anchor_catalogue_owner_tag
-            .eq_ignore_ascii_case(owner_tag)
+            .eq_ignore_ascii_case(owner_tag.tag())
         && viewer.anchor_catalogue_family == viewer.family;
     let mut resolved = viewer.clone();
     if !context_is_current {
@@ -199,11 +200,22 @@ pub fn resolve_observer_designer_view_state(
 
 pub fn admit_observer_designer_view(
     frame: &WorldFrame,
-    owner_tag: &str,
+    owner_tag: NamedCountry<'_>,
     viewer: &ObserverDesignerViewState,
 ) -> Result<AdmittedObserverDesignerView, ObserverDesignerViewRejection> {
     if owner_tag.trim().is_empty() {
         return Err(ObserverDesignerViewRejection::EmptyOwnerTag);
+    }
+    // The viewer's own selection, which the recording never vouched for: a key
+    // two ids reach anchors no catalogue, and `resolve_observer_designer_view_state`
+    // reaches this on both of its paths.
+    if frame.country_key_is_contended(owner_tag.tag()) {
+        return Err(ObserverDesignerViewRejection::CatalogueUnavailable {
+            hour: frame.hour_index(),
+            reason: format!(
+                "owner tag {owner_tag:?} is a contended key this hour, so it names no country"
+            ),
+        });
     }
     let family = match viewer.family {
         DesignerViewKind::Ship => ObserverDesignerFamily::Ship,
@@ -228,7 +240,7 @@ pub fn admit_observer_designer_view(
         .observer_designer_catalog_at_hour(
             hour,
             &viewer.anchor_design_id,
-            owner_tag,
+            owner_tag.tag(),
             family,
             viewer.our_filter_enabled,
             viewer.foreign_filter_enabled,

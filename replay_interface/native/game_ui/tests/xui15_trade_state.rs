@@ -211,6 +211,7 @@ fn view() -> TradeView {
         ]),
         market_stockpile_complete: Leaf::Measured(true),
         production_license_agreements: Leaf::Measured(vec![ProductionLicenseAgreementRow {
+            parties_withheld: [None, None, None, None],
             agreement_id: Leaf::Measured("licence:7:1:60000000".into()),
             visible_order: Leaf::Measured(0),
             owner: Leaf::Measured("GER".into()),

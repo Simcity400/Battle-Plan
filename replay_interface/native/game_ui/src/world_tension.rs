@@ -1,3 +1,4 @@
+use replay_core::NamedCountry;
 use replay_core::{ViewStatus, WorldFrame};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,12 +74,12 @@ pub struct WorldTensionConsumerBinding {
     pub popup: WorldTensionPopupBinding,
 }
 
-pub fn binding_from_frame(frame: &WorldFrame, pov_tag: &str) -> Option<WorldTensionConsumerBinding> {
+pub fn binding_from_frame(frame: &WorldFrame, pov_tag: NamedCountry<'_>) -> Option<WorldTensionConsumerBinding> {
     let view = frame.world_tension_presentation();
     if view.status != ViewStatus::Present {
         return None;
     }
-    let country = view.countries.get(pov_tag)?;
+    let country = view.countries.get(pov_tag.tag())?;
     let current_fixed5 = view.current_fixed5?;
     let prior_fixed5 = view.prior_fixed5?;
     let increased = view.increased?;

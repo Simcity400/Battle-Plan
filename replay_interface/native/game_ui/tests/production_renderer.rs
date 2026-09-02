@@ -879,7 +879,18 @@ fn frame_owned_xui23_carrier_reaches_the_actual_production_renderer() {
                 date: None,
                 save_version: None,
                 schema_version: None,
-                rest: self.rest.clone(),
+                rest: {
+                    let mut rest = self.rest.clone();
+                    if replay_core::COUNTRY_COMPOSED_MEMBERS
+                        .iter()
+                        .any(|member| rest.contains_key(*member))
+                    {
+                        rest.entry("tag_db_id_index").or_insert_with(
+                            || serde_json::json!({"country_composition_version": 2}),
+                        );
+                    }
+                    rest
+                },
             })
         }
     }
@@ -1054,6 +1065,7 @@ fn installed_xui21_shipping_renderer_admits_complete_event_namespace_and_compose
         AdmittedFiredEvent {
             source_file: "events/LowCountries.txt".into(),
             event_id: "low.1".into(),
+            recipient_tag_db_id: 1,
             recipient_tag: "HOL".into(),
             fire_date: "1936.1.1".into(),
             fire_hour: 100,
@@ -1107,15 +1119,48 @@ fn installed_xui21_shipping_renderer_admits_complete_event_namespace_and_compose
         }
     })
     .collect::<Vec<_>>();
-    let route = ObserverEventRoute {
-        country_tag: Some("HOL".into()),
-        admitted_history: Some(events),
-        event_tick: Some(100),
-        visible_sequences: vec![1, 2, 3, 4, 5],
-        focused_sequence: Some(5),
-        measured_empty: false,
-        gaps: Vec::new(),
-    };
+    // The identity has to come FROM A FRAME: there is no constructor that
+    // takes an id, so this route names HOL only because this frame does.
+    #[derive(Clone)]
+    struct HolFrame;
+    impl ReplaySource for HolFrame {
+        fn game_id(&self) -> &str {
+            "xui21-shipping-compositor"
+        }
+        fn hours(&self) -> &[i64] {
+            &[100]
+        }
+        fn warnings(&self) -> &[String] {
+            &[]
+        }
+        fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
+            Ok(RawFrame {
+                hour_index,
+                date: None,
+                save_version: None,
+                schema_version: None,
+                rest: serde_json::json!({
+                    "countries": { "HOL": { "_r2_tag_db_id": 1 } },
+                    "tag_db_id_index": { "country_composition_version": 2 },
+                })
+                .as_object()
+                .expect("frame object")
+                .clone(),
+            })
+        }
+    }
+    let timeline = WorldTimeline::open(Box::new(HolFrame)).expect("timeline");
+    let frame = timeline.frame(100).expect("frame");
+    let mut route = ObserverEventRoute::authenticated_for_selection(&frame, Some("HOL"));
+    assert_eq!(
+        route.country_tag_db_id(),
+        Some(1),
+        "the frame authenticates HOL as country 1"
+    );
+    route.admitted_history = Some(events);
+    route.event_tick = Some(100);
+    route.visible_sequences = vec![1, 2, 3, 4, 5];
+    route.focused_sequence = Some(5);
 
     let outputs = renderer
         .compose_xui21_event_stack(&route, PRODUCTION_UI_WIDTH, PRODUCTION_UI_HEIGHT)
@@ -1166,7 +1211,18 @@ fn xui12_shipping_consumer_requires_the_detached_passive_all_country_carrier() {
                 date: None,
                 save_version: None,
                 schema_version: None,
-                rest: self.rest.clone(),
+                rest: {
+                    let mut rest = self.rest.clone();
+                    if replay_core::COUNTRY_COMPOSED_MEMBERS
+                        .iter()
+                        .any(|member| rest.contains_key(*member))
+                    {
+                        rest.entry("tag_db_id_index").or_insert_with(
+                            || serde_json::json!({"country_composition_version": 2}),
+                        );
+                    }
+                    rest
+                },
             })
         }
     }

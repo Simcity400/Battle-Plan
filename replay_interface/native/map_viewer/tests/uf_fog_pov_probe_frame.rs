@@ -69,6 +69,10 @@ fn frame_recording_one_pov() -> std::sync::Arc<WorldFrame> {
             RECORDED_POV: {"_r2_tag_db_id": RECORDED_POV_ID},
             OTHER_POV: {"_r2_tag_db_id": 7},
         },
+        // The per-id country account is MANDATORY for a frame to name a
+        // country: without it every identity is withheld and the visibility
+        // view this fixture exists to carry never becomes Present.
+        "tag_db_id_index": {"country_composition_version": 2},
         "visibility": {
             "authority": fow1_authority(),
             "povs": {

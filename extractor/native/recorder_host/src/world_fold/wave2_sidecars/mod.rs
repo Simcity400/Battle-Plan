@@ -939,7 +939,7 @@ mod tests {
     /// carrier declared a contract its own consumer refuses. Each carrier is now
     /// pinned to its own version, so a producer that bumps `SCHEMA_VERSION`
     /// without telling this table fails here -- which is exactly what it did
-    /// when XMAP05 went from MAPC1 v2 to v3.
+    /// when XMAP05 went from MAPC1 v2 to v3, and again at v3 to v4.
     #[test]
     fn the_map_carriers_record_the_schema_token_their_integer_version_does_not_carry() {
         assert_eq!(xmap05_control_authority::REQUIRED_SCHEMA_TOKEN, "MAPC1");
@@ -948,7 +948,7 @@ mod tests {
             "hoi4.weather-visual-lifecycle.a729.v1"
         );
         let expected_version = |wire_key: &str| match wire_key {
-            "_r2_xmap05_control_authority" => Some(3),
+            "_r2_xmap05_control_authority" => Some(4),
             _ => Some(1),
         };
         let mut map_carriers = 0;

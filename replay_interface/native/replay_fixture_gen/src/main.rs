@@ -68,9 +68,9 @@ fn generate(out_dir: &Path, seed: u64) -> Result<()> {
     let positive_dir = out_dir.join("positive");
     let negative_dir = out_dir.join("negative");
     let anomaly_dir = out_dir.join("anomaly");
-    reset_dir(&positive_dir)?;
-    reset_dir(&negative_dir)?;
-    reset_dir(&anomaly_dir)?;
+    reset_dir(out_dir, &positive_dir)?;
+    reset_dir(out_dir, &negative_dir)?;
+    reset_dir(out_dir, &anomaly_dir)?;
 
     let mut positive_manifest = Vec::new();
     for scenario in positive_scenarios(seed) {
@@ -140,9 +140,27 @@ fn generate(out_dir: &Path, seed: u64) -> Result<()> {
     Ok(())
 }
 
-fn reset_dir(path: &Path) -> Result<()> {
+/// Fixture-root-relative paths this generator does not produce.
+const EXTERNAL_FIXTURES: &[&str] = &[
+    "positive/fx_naval_invasion_paradrop_orders.battleplan",
+    "xmap17_faction_joint_certification.json",
+    "xmap19_weather_visual_lifecycle_joint_certification.json",
+    "xui09_research_joint_certification.json",
+];
+
+fn reset_dir(out_dir: &Path, path: &Path) -> Result<()> {
     if path.exists() {
-        fs::remove_dir_all(path)?;
+        for entry in fs::read_dir(path)? {
+            let entry = entry?.path();
+            if EXTERNAL_FIXTURES.contains(&rel_slash(&entry, out_dir).as_str()) {
+                continue;
+            }
+            if entry.is_dir() {
+                fs::remove_dir_all(&entry)?;
+            } else {
+                fs::remove_file(&entry)?;
+            }
+        }
     }
     fs::create_dir_all(path)?;
     Ok(())
@@ -1905,6 +1923,7 @@ fn base_snapshot(
         "date": date,
         "hour_index": hour_index,
         "save_version": "fixture-build-1",
+        "tag_db_id_index": {"country_composition_version": 2},
         "provenance": {
             "collector": {
                 "captured": true,
@@ -2622,16 +2641,10 @@ mod tests {
         expected: &BTreeMap<String, Vec<u8>>,
         actual: &BTreeMap<String, Vec<u8>>,
     ) {
-        const EXTERNAL_FIXTURES: &[&str] = &[
-            "positive/fx_naval_invasion_paradrop_orders.battleplan",
-            "xmap17_faction_joint_certification.json",
-            "xmap19_weather_visual_lifecycle_joint_certification.json",
-            "xui09_research_joint_certification.json",
-        ];
         let mut differences = Vec::new();
         for path in expected.keys().chain(actual.keys()) {
             if label == "committed replay_interface/fixtures corpus"
-                && EXTERNAL_FIXTURES.contains(&path.as_str())
+                && super::EXTERNAL_FIXTURES.contains(&path.as_str())
             {
                 continue;
             }

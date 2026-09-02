@@ -26,6 +26,7 @@ use crate::readonly_design_peace::{designer_chrome, DesignerViewKind};
 use crate::topbar::{flag_candidates_for_size, FlagSizeFolder};
 use crate::widget_layout::gridbox_layout;
 use crate::{GameUiError, Result};
+use replay_core::NamedCountry;
 use replay_core::{Leaf, WorldFrame};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -136,7 +137,7 @@ impl ObserverDesignerChromeCatalog {
     pub fn effective_country_filter_tags(
         &self,
         frame: &WorldFrame,
-        owner_tag: &str,
+        owner_tag: NamedCountry<'_>,
         viewer: &ObserverDesignerViewState,
     ) -> Result<Vec<String>> {
         let (_, admitted) = resolve_observer_designer_view_state(frame, owner_tag, viewer)
@@ -144,7 +145,7 @@ impl ObserverDesignerChromeCatalog {
                 GameUiError::missing(format!("XUI13 catalogue admission rejected: {error:?}"))
             })?;
         Ok(self
-            .effective_country_filter_rows(&admitted, owner_tag)?
+            .effective_country_filter_rows(&admitted, owner_tag.tag())?
             .into_iter()
             .map(|(tag, _source_file)| tag)
             .collect())
@@ -153,7 +154,7 @@ impl ObserverDesignerChromeCatalog {
     pub fn effective_membership(
         &self,
         frame: &WorldFrame,
-        owner_tag: &str,
+        owner_tag: NamedCountry<'_>,
         viewer: &ObserverDesignerViewState,
     ) -> Result<ObserverDesignerEffectiveMembership> {
         let (_, admitted) = resolve_observer_designer_view_state(frame, owner_tag, viewer)
@@ -165,7 +166,7 @@ impl ObserverDesignerChromeCatalog {
             if designer_window_witness(
                 &self.effective_windows,
                 &candidate.designer_window_tokens,
-                owner_tag,
+                owner_tag.tag(),
             )?
             .is_some()
             {
@@ -173,7 +174,7 @@ impl ObserverDesignerChromeCatalog {
             }
         }
         let country_filter_tags = self
-            .effective_country_filter_rows(&admitted, owner_tag)?
+            .effective_country_filter_rows(&admitted, owner_tag.tag())?
             .into_iter()
             .map(|(tag, _source_file)| tag)
             .collect();
@@ -212,7 +213,7 @@ impl ObserverDesignerChromeCatalog {
         registry: &SpriteRegistry,
         localisation: &Localisation,
         frame: &WorldFrame,
-        owner_tag: &str,
+        owner_tag: NamedCountry<'_>,
         viewer: &ObserverDesignerViewState,
         asset_cache: &mut UiAssetCache,
         viewport_width: usize,
@@ -256,7 +257,7 @@ impl ObserverDesignerChromeCatalog {
             if let Some(source) = designer_window_witness(
                 &self.effective_windows,
                 &candidate.designer_window_tokens,
-                owner_tag,
+                owner_tag.tag(),
             )? {
                 membership_source_files.insert(source.to_string());
                 controller_rows.push(candidate);
@@ -486,7 +487,7 @@ impl ObserverDesignerChromeCatalog {
         merge_report(&mut output.report, rows.output.report);
         output.debug_rects.extend(rows.output.debug_rects);
 
-        let effective_country_rows = self.effective_country_filter_rows(&admitted, owner_tag)?;
+        let effective_country_rows = self.effective_country_filter_rows(&admitted, owner_tag.tag())?;
         let mut country_tags = Vec::with_capacity(effective_country_rows.len());
         for (tag, source_file) in effective_country_rows {
             membership_source_files.insert(source_file);
@@ -1095,6 +1096,15 @@ pub fn validate_complete_designer_report(report: &ComposeReport) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// A TAG this frame's census admits. A test that means to name a country says
+    /// so here; a test about a contended key asks `named_country` and gets `None`.
+    fn named<'tag>(
+        frame: &replay_core::WorldFrame,
+        tag: &'tag str,
+    ) -> replay_core::NamedCountry<'tag> {
+        frame.named_country(tag).expect("census-admitted tag")
+    }
+
     use super::*;
     use crate::production_renderer::ProductionUiRenderer;
     use map_viewer::{GameFileResolver, PlaybackEnvironment};
@@ -1147,7 +1157,18 @@ mod tests {
                 date: None,
                 save_version: None,
                 schema_version: None,
-                rest: self.rest.clone(),
+                rest: {
+                    let mut rest = self.rest.clone();
+                    if replay_core::COUNTRY_COMPOSED_MEMBERS
+                        .iter()
+                        .any(|member| rest.contains_key(*member))
+                    {
+                        rest.entry("tag_db_id_index").or_insert_with(
+                            || serde_json::json!({"country_composition_version": 2}),
+                        );
+                    }
+                    rest
+                },
             })
         }
     }
@@ -1601,7 +1622,7 @@ mod tests {
             country_scroll_wheel_steps: 0,
         };
         let (resolved_900, admitted_900) =
-            resolve_observer_designer_view_state(&timeline.frame(900).unwrap(), "GER", &viewer)
+            resolve_observer_designer_view_state(&timeline.frame(900).unwrap(), named(&timeline.frame(900).unwrap(), "GER"), &viewer)
                 .unwrap();
         assert_eq!(resolved_900.anchor_design_id, "7:70");
         assert_eq!(admitted_900.ordered()[0].record.design_id, "7:70");
@@ -1609,7 +1630,7 @@ mod tests {
         viewer = resolved_900;
         viewer.selected_design_id = Some("7:70".into());
         let (resolved_901, admitted_901) =
-            resolve_observer_designer_view_state(&timeline.frame(901).unwrap(), "GER", &viewer)
+            resolve_observer_designer_view_state(&timeline.frame(901).unwrap(), named(&timeline.frame(901).unwrap(), "GER"), &viewer)
                 .unwrap();
         assert_eq!(resolved_901.anchor_design_id, "8:70");
         assert_eq!(resolved_901.anchor_catalogue_hour, 901);
@@ -1637,13 +1658,13 @@ mod tests {
             country_scroll_wheel_steps: 0,
         };
         let (resolved, _) =
-            resolve_observer_designer_view_state(&frame, "GER", &tank).unwrap();
+            resolve_observer_designer_view_state(&frame, named(&frame, "GER"), &tank).unwrap();
         assert_eq!(resolved.anchor_design_id, "7:70");
         assert_eq!(resolved.anchor_catalogue_hour, 900);
         let surface = renderer
             .compose_xui13_designer_surface(
                 &frame,
-                "GER",
+                named(&frame, "GER"),
                 &tank,
                 160,
                 120,
@@ -1669,7 +1690,7 @@ mod tests {
         let measured_empty = renderer
             .compose_xui13_designer_surface(
                 &frame,
-                "GER",
+                named(&frame, "GER"),
                 &tank,
                 160,
                 120,
@@ -1684,7 +1705,7 @@ mod tests {
             Some("interface/designer_window.gui"),
         );
         let omitted = missing_window
-            .compose_xui13_designer_surface(&frame, "GER", &resolved, 160, 120)
+            .compose_xui13_designer_surface(&frame, named(&frame, "GER"), &resolved, 160, 120)
             .unwrap();
         assert!(omitted.ordered_design_ids.is_empty());
         assert!(omitted.visible_design_ids.is_empty());
@@ -1703,7 +1724,7 @@ mod tests {
         .unwrap();
         let unsupported = admitted_production_renderer(&root.0, None);
         let rejection = unsupported
-            .compose_xui13_designer_surface(&frame, "GER", &resolved, 160, 120)
+            .compose_xui13_designer_surface(&frame, named(&frame, "GER"), &resolved, 160, 120)
             .unwrap_err();
         let rejection = format!("{rejection:?}");
         assert!(rejection.contains("designer_window.gui"), "{rejection}");
@@ -1743,9 +1764,9 @@ mod tests {
             scroll_wheel_steps: 0,
             country_scroll_wheel_steps: 0,
         };
-        let (resolved, _) = resolve_observer_designer_view_state(&frame, "GER", &viewer).unwrap();
+        let (resolved, _) = resolve_observer_designer_view_state(&frame, named(&frame, "GER"), &viewer).unwrap();
         let rejection = renderer
-            .compose_xui13_designer_surface(&frame, "GER", &resolved, 160, 120)
+            .compose_xui13_designer_surface(&frame, named(&frame, "GER"), &resolved, 160, 120)
             .unwrap_err();
         let rejection = format!("{rejection:?}");
         assert!(

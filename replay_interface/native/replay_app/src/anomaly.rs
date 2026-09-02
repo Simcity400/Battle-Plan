@@ -566,17 +566,25 @@ mod tests {
             &[]
         }
         fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
-            let obj = self
+            let mut rest = self
                 .frames
                 .get(&hour_index)
                 .and_then(JsonValue::as_object)
-                .ok_or_else(|| SourceError::Open(format!("no frame at hour {hour_index}")))?;
+                .ok_or_else(|| SourceError::Open(format!("no frame at hour {hour_index}")))?
+                .clone();
+            if replay_core::COUNTRY_COMPOSED_MEMBERS
+                .iter()
+                .any(|member| rest.contains_key(*member))
+            {
+                rest.entry("tag_db_id_index")
+                    .or_insert_with(|| serde_json::json!({"country_composition_version": 2}));
+            }
             Ok(RawFrame {
                 hour_index,
                 date: None,
                 save_version: None,
                 schema_version: None,
-                rest: obj.clone(),
+                rest,
             })
         }
     }

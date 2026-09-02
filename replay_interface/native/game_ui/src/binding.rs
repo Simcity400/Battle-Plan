@@ -6,6 +6,7 @@ use crate::topbar::{
     flag_candidates_for_size, format_percent, month_name_english, FactoryCounts, FlagSizeFolder,
     TopbarBinding,
 };
+use replay_core::NamedCountry;
 use replay_core::world::FactionRosterStatus;
 use replay_core::{
     CountryIdentity, DiplomacyView, Leaf, SubjectAutonomyDirection, TopbarRatios, TopbarScalars,
@@ -227,43 +228,55 @@ pub fn topbar_flag_identity_from_frame(frame: &WorldFrame, pov_tag: &str) -> Top
     } else {
         None
     };
+    // A key two ids reach names no country, so it is not the name of the one
+    // being shown either. Replay refuses it, and every one of these three
+    // routes used to spell it back out of the POV string it was handed --
+    // which is exactly where the refusal gets undone, because a flag or a
+    // topbar is rendered FROM this field (Codex round 29).
+    let country_tag = (!frame.country_key_is_contended(pov_tag)).then(|| pov_tag.to_string());
     TopbarFlagIdentity {
-        country_tag: Some(pov_tag.to_string()),
+        country_tag,
         country_ideology,
         flag_texture: None,
     }
 }
 
-pub fn topbar_binding_from_frame(frame: &WorldFrame, pov_tag: &str) -> TopbarBinding {
+pub fn topbar_binding_from_frame(frame: &WorldFrame, pov_tag: NamedCountry<'_>) -> TopbarBinding {
     let mut binding = TopbarBinding::default();
+    // A key two ids reach names no country, so it is not the name of the one
+    // being shown either. Replay refuses it, and every one of these three
+    // routes used to spell it back out of the POV string it was handed --
+    // which is exactly where the refusal gets undone, because a flag or a
+    // topbar is rendered FROM this field (Codex round 29).
+    let spelled = |tag: &str| (!frame.country_key_is_contended(tag)).then(|| tag.to_string());
 
     if frame.country_identities_status() == ViewStatus::Present {
-        if let Some(identity) = frame.country_identity(pov_tag) {
-            apply_identity(&mut binding, pov_tag, identity);
+        if let Some(identity) = frame.country_identity(pov_tag.tag()) {
+            apply_identity(&mut binding, pov_tag.tag(), identity);
         } else {
-            binding.country_tag = Some(pov_tag.to_string());
+            binding.country_tag = spelled(pov_tag.tag());
         }
     } else {
-        binding.country_tag = Some(pov_tag.to_string());
+        binding.country_tag = spelled(pov_tag.tag());
     }
 
     if frame.topbar_status() == ViewStatus::Present {
-        if let Some(scalars) = frame.topbar_scalars(pov_tag) {
+        if let Some(scalars) = frame.topbar_scalars(pov_tag.tag()) {
             apply_scalars(&mut binding, scalars);
             apply_exact_nuke_stockpile(&mut binding, frame, scalars);
         }
     }
 
     if frame.topbar_extras_status() == ViewStatus::Present {
-        if let Some(ratios) = frame.topbar_ratios(pov_tag) {
+        if let Some(ratios) = frame.topbar_ratios(pov_tag.tag()) {
             apply_ratios(&mut binding, ratios);
         }
-        if let Some(alerts) = frame.topbar_alerts(pov_tag) {
+        if let Some(alerts) = frame.topbar_alerts(pov_tag.tag()) {
             apply_alerts(&mut binding, alerts);
         }
     }
 
-    apply_exact_decision_alerts(&mut binding, frame, pov_tag);
+    apply_exact_decision_alerts(&mut binding, frame, pov_tag.tag());
 
     binding
 }
@@ -372,22 +385,28 @@ pub const OBSERVER_TOPBAR_BASE_GAPS: &[ObserverTopbarGap] = &[
 
 pub fn topbar_binding_from_observer_frame(
     frame: &WorldFrame,
-    country_tag: &str,
+    country_tag: NamedCountry<'_>,
 ) -> ObserverTopbarBinding {
     let mut binding = TopbarBinding::default();
+    // A key two ids reach names no country, so it is not the name of the one
+    // being shown either. Replay refuses it, and every one of these three
+    // routes used to spell it back out of the POV string it was handed --
+    // which is exactly where the refusal gets undone, because a flag or a
+    // topbar is rendered FROM this field (Codex round 29).
+    let spelled = |tag: &str| (!frame.country_key_is_contended(tag)).then(|| tag.to_string());
 
     if frame.country_identities_status() == ViewStatus::Present {
-        if let Some(identity) = frame.country_identity(country_tag) {
-            apply_identity(&mut binding, country_tag, identity);
+        if let Some(identity) = frame.country_identity(country_tag.tag()) {
+            apply_identity(&mut binding, country_tag.tag(), identity);
         } else {
-            binding.country_tag = Some(country_tag.to_string());
+            binding.country_tag = spelled(country_tag.tag());
         }
     } else {
-        binding.country_tag = Some(country_tag.to_string());
+        binding.country_tag = spelled(country_tag.tag());
     }
 
     if frame.topbar_status() == ViewStatus::Present {
-        if let Some(scalars) = frame.topbar_scalars(country_tag) {
+        if let Some(scalars) = frame.topbar_scalars(country_tag.tag()) {
             apply_scalars(&mut binding, scalars);
             apply_exact_nuke_stockpile(&mut binding, frame, scalars);
         }
@@ -397,7 +416,7 @@ pub fn topbar_binding_from_observer_frame(
 
     let runtime_rows = match frame.runtime_text() {
         Ok(Leaf::Measured(catalog)) => {
-            exact_observer_topbar_text(&catalog, frame.hour_index(), country_tag)
+            exact_observer_topbar_text(&catalog, frame.hour_index(), country_tag.tag())
         }
         Ok(Leaf::Absent | Leaf::Unobtained) | Err(_) => BTreeMap::new(),
     };
@@ -548,7 +567,7 @@ pub fn topbar_binding_from_observer_frame(
     .collect();
 
     let prototype_total = if frame.special_project_programs_status() == ViewStatus::Present {
-        match frame.special_project_programs(country_tag) {
+        match frame.special_project_programs(country_tag.tag()) {
             Leaf::Measured(programs) => programs.iter().try_fold(0u64, |sum, row| {
                 sum.checked_add(u64::from(row.unread_prototype_rewards))
             }),
@@ -626,7 +645,7 @@ pub fn topbar_binding_from_observer_frame(
 
 pub fn world_tension_consumers_from_frame(
     frame: &WorldFrame,
-    pov_tag: &str,
+    pov_tag: NamedCountry<'_>,
 ) -> Option<crate::world_tension::WorldTensionConsumerBinding> {
     crate::world_tension::binding_from_frame(frame, pov_tag)
 }
@@ -705,11 +724,24 @@ fn owner_is(owner: &Leaf<String>, pov_tag: &str) -> bool {
     matches!(owner, Leaf::Measured(tag) if tag == pov_tag)
 }
 
-pub fn outliner_unit_lists_from_frame(frame: &WorldFrame, pov_tag: &str) -> OutlinerUnitLists {
+pub fn outliner_unit_lists_from_frame(frame: &WorldFrame, pov_tag: NamedCountry<'_>) -> OutlinerUnitLists {
+    // ...and the outliner is the same claim in list form: no army, no navy, no
+    // air for a POV that names no country.
+    if frame.country_key_is_contended(pov_tag.tag()) {
+        return OutlinerUnitLists {
+            pov_tag: pov_tag.to_string(),
+            army: Vec::new(),
+            navy: Vec::new(),
+            air: Vec::new(),
+            army_status: ViewStatus::DomainUnavailable,
+            navy_status: ViewStatus::DomainUnavailable,
+            air_status: ViewStatus::DomainUnavailable,
+        };
+    }
     let army = frame
         .division_units()
         .iter()
-        .filter(|d| owner_is(&d.owner, pov_tag))
+        .filter(|d| owner_is(&d.owner, pov_tag.tag()))
         .map(|d| OutlinerUnitRow {
             uid: d.div_uid.clone(),
             icon_sprite: OUTLINER_ARMY_ICON.to_string(),
@@ -718,7 +750,7 @@ pub fn outliner_unit_lists_from_frame(frame: &WorldFrame, pov_tag: &str) -> Outl
     let navy = frame
         .fleets()
         .iter()
-        .filter(|f| owner_is(&f.owner, pov_tag))
+        .filter(|f| owner_is(&f.owner, pov_tag.tag()))
         .map(|f| OutlinerUnitRow {
             uid: f.task_force_uid.clone(),
             icon_sprite: OUTLINER_NAVY_ICON.to_string(),
@@ -727,7 +759,7 @@ pub fn outliner_unit_lists_from_frame(frame: &WorldFrame, pov_tag: &str) -> Outl
     let air = frame
         .wings()
         .iter()
-        .filter(|w| owner_is(&w.owner, pov_tag))
+        .filter(|w| owner_is(&w.owner, pov_tag.tag()))
         .map(|w| OutlinerUnitRow {
             uid: w.wing_uid.clone(),
             icon_sprite: OUTLINER_AIR_ICON.to_string(),
@@ -759,7 +791,10 @@ pub fn outliner_binding_from_lists(lists: &OutlinerUnitLists) -> OutlinerBinding
     }
 }
 
-pub fn outliner_binding_from_frame(frame: &WorldFrame, pov_tag: &str) -> OutlinerBinding {
+pub fn outliner_binding_from_frame(
+    frame: &WorldFrame,
+    pov_tag: NamedCountry<'_>,
+) -> OutlinerBinding {
     outliner_binding_from_lists(&outliner_unit_lists_from_frame(frame, pov_tag))
 }
 
@@ -885,6 +920,13 @@ fn resolve_pov_numeric_identity(
     {
         return Some(id);
     }
+    // THE CENSUS FIRST. A key two ids reach names no country, however it is
+    // spelled, and the three checks below cannot see that: the typed maps
+    // refuse a contended key by design, so all three go false and the
+    // numeric branch parses the refusal itself into an identity.
+    if frame.country_key_is_contended(pov_tag) {
+        return None;
+    }
     let recorded_tag = view.countries.contains_key(pov_tag)
         || frame.politics_detail(pov_tag).is_some()
         || frame.countries().contains_key(pov_tag);
@@ -947,16 +989,21 @@ fn subject_autonomy_rows(
     (true, projected)
 }
 
-pub fn diplomacy_panel_from_frame(frame: &WorldFrame, pov_tag: &str) -> DiplomacyPanelBinding {
+pub fn diplomacy_panel_from_frame(frame: &WorldFrame, pov_tag: NamedCountry<'_>) -> DiplomacyPanelBinding {
     let view = frame.diplomacy();
-    if view.status != ViewStatus::Present {
+    // A POV IS A COUNTRY, and the selector arrives from the CALLER rather than
+    // from the recording -- the one entry way the taxonomy did not name (Codex
+    // round 48). A key two ids reach is neither country, so this panel is not
+    // available: `available: true` with an empty relation list is a claim that
+    // the selected country has no relations.
+    if frame.country_key_is_contended(pov_tag.tag()) || view.status != ViewStatus::Present {
         return DiplomacyPanelBinding {
             pov_tag: pov_tag.to_string(),
             available: false,
             ..DiplomacyPanelBinding::default()
         };
     }
-    let relations = relation_rows(view, pov_tag);
+    let relations = relation_rows(view, pov_tag.tag());
     let wars = relations
         .iter()
         .filter(|r| r.at_war == Some(true))
@@ -965,8 +1012,8 @@ pub fn diplomacy_panel_from_frame(frame: &WorldFrame, pov_tag: &str) -> Diplomac
     let (faction_roster_status, factions) = faction_rows(view);
     let (subject_autonomy_available, subject_autonomy) = subject_autonomy_rows(
         view,
-        pov_tag,
-        resolve_pov_numeric_identity(frame, view, pov_tag),
+        pov_tag.tag(),
+        resolve_pov_numeric_identity(frame, view, pov_tag.tag()),
     );
     DiplomacyPanelBinding {
         pov_tag: pov_tag.to_string(),
@@ -1110,6 +1157,15 @@ pub fn state_tooltip_from_frame(frame: &WorldFrame, state_id: u32) -> StateToolt
 
 #[cfg(test)]
 mod tests {
+    /// A TAG this frame's census admits. A test that means to name a country says
+    /// so here; a test about a contended key asks `named_country` and gets `None`.
+    fn named<'tag>(
+        frame: &replay_core::WorldFrame,
+        tag: &'tag str,
+    ) -> replay_core::NamedCountry<'tag> {
+        frame.named_country(tag).expect("census-admitted tag")
+    }
+
     use super::*;
 
     /// kills: re-pointing the two intel alert gaps at d53. Lane UJ proved the
@@ -1599,7 +1655,7 @@ mod tests {
             &self,
             hour_index: i64,
         ) -> Result<replay_core::RawFrame, replay_core::SourceError> {
-            let rest = self
+            let mut rest = self
                 .frames
                 .get(&hour_index)
                 .and_then(serde_json::Value::as_object)
@@ -1607,6 +1663,13 @@ mod tests {
                 .ok_or_else(|| {
                     replay_core::SourceError::Open(format!("no frame at {hour_index}"))
                 })?;
+            if replay_core::COUNTRY_COMPOSED_MEMBERS
+                .iter()
+                .any(|member| rest.contains_key(*member))
+            {
+                rest.entry("tag_db_id_index")
+                    .or_insert_with(|| serde_json::json!({"country_composition_version": 2}));
+            }
             Ok(replay_core::RawFrame {
                 hour_index,
                 date: None,
@@ -1623,6 +1686,399 @@ mod tests {
             frames: [(0, rest)].into_iter().collect(),
         };
         replay_core::WorldTimeline::open(Box::new(source)).expect("open memory timeline")
+    }
+
+    /// A CONTENDED key is not an identity, however it is spelled.
+    ///
+    /// The numeric branch below exists for a POV key the frame does not carry
+    /// as a country: the spelling IS the id. A contended key is absent from
+    /// every typed map ON PURPOSE -- that is what the census does with a key
+    /// two ids reach -- so all three "is it recorded" checks go false and the
+    /// spelling gets parsed. The census's own refusal became an identity.
+    ///
+    /// kills: asking the typed maps before asking the census.
+    /// The three topbar routes do not spell a refused key back out.
+    ///
+    /// Each was handed a POV string and wrote `Some(pov_tag)` into
+    /// `country_tag` whenever Replay had no identity for it -- which is exactly
+    /// the state the census puts a contended key in. A flag and a topbar are
+    /// rendered FROM that field, so the refusal was undone at the last step
+    /// (Codex round 29).
+    /// The one selector path a TYPE cannot carry: a country selection stored in
+    /// app state.
+    ///
+    /// Every consumer that takes a caller-supplied selector now takes
+    /// `NamedCountry`, so the census is asked by the compiler at the call site
+    /// and there is nothing left for a scan to detect. A selection kept in
+    /// viewer state is an owned `String` on a struct the app carries between
+    /// frames -- no parameter, no type, nothing the compiler can require -- and
+    /// `UiRuntime::execute` published `viewer.selected_country` into an XUI11
+    /// candidate that the closed-panel branch then announced as available
+    /// (Codex round 50). So the one remaining rule is about the READ: a
+    /// function that holds a `&WorldFrame` and reads a stored selection asks
+    /// this hour's census about it. Published or not -- the question is not
+    /// whether the read is published, which is the judgement three rounds of
+    /// scans could not make; it is whether the census was asked.
+    #[test]
+    fn every_stored_country_selection_is_asked_about() {
+        /// The fields an app keeps a country selection in, read off `viewer`.
+        const STATE_SELECTOR_FIELDS: &[&str] = &[
+            "selected_country",
+            "pov_tag",
+            "viewer_country",
+            "selected_country_tag",
+        ];
+
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut sources: Vec<(String, String)> = Vec::new();
+        for crate_dir in ["src", "../map_viewer/src", "../replay_app/src"] {
+            let root = manifest.join(crate_dir);
+            let mut stack = vec![root];
+            while let Some(dir) = stack.pop() {
+                let listing = std::fs::read_dir(&dir).expect("a source directory");
+                for entry in listing.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                        let name = path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        sources.push((name, std::fs::read_to_string(&path).expect("source")));
+                    }
+                }
+            }
+        }
+        assert!(sources.len() > 40, "this scan read {} files", sources.len());
+
+        // The RECEIVER is not part of the rule: `state.selected_country` and
+        // `self.viewer.pov_tag` are the same read as `viewer.selected_country`,
+        // and a rule that spelled the receiver could not see them (Codex round
+        // 51). What IS part of the rule is where the field name ENDS, so
+        // `.selected_country_filter_ids` is a different field and not a read.
+        // The body is flattened first, because these arrive broken across
+        // lines as `viewer` / `.selected_country`.
+        let stored_selection_reads = |body: &str| -> usize {
+            let flattened: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+            let flattened = flattened.replace(" . ", ".").replace(". ", ".").replace(" .", ".");
+            STATE_SELECTOR_FIELDS
+                .iter()
+                .map(|field| {
+                    let needle = format!(".{field}");
+                    flattened
+                        .match_indices(&needle)
+                        .filter(|(at, _)| {
+                            flattened[at + needle.len()..]
+                                .chars()
+                                .next()
+                                .is_none_or(|next| !next.is_alphanumeric() && next != '_')
+                        })
+                        .count()
+                })
+                .sum()
+        };
+
+        let mut readers = 0usize;
+        let mut reads = 0usize;
+        let mut unasked: Vec<String> = Vec::new();
+        for (file, source) in &sources {
+            let lines: Vec<&str> = source.lines().collect();
+            let production = lines
+                .iter()
+                .position(|line| line.trim_start().starts_with("mod tests"))
+                .unwrap_or(lines.len());
+            let mut at = 0usize;
+            while at < production {
+                let trimmed = lines[at].trim_start();
+                // Visibility and `async` are PREFIXES, not spellings to
+                // enumerate: an `async fn` declaration was invisible to the
+                // three this rule knew (Codex round 51).
+                // `pub`, `pub(crate)`, `pub(super)`, `pub(in path)` -- the
+                // visibility is `pub` and OPTIONALLY a parenthesised scope, not
+                // a list of the two spellings this rule happened to know
+                // (Codex round 53 walked in through `pub(super)`).
+                let head_of = match trimmed.strip_prefix("pub") {
+                    Some(rest) => match rest.strip_prefix('(') {
+                        Some(scoped) => match scoped.split_once(") ") {
+                            Some((_, after)) => after,
+                            None => trimmed,
+                        },
+                        None => rest.strip_prefix(' ').unwrap_or(trimmed),
+                    },
+                    None => trimmed,
+                };
+                let head_of = head_of.strip_prefix("async ").unwrap_or(head_of);
+                let declared = head_of.strip_prefix("fn ");
+                let Some(rest) = declared else {
+                    at += 1;
+                    continue;
+                };
+                // METHODS TOO: the body ends at the closing brace on the
+                // declaration's own indent (Codex round 49).
+                let indent = lines[at].len() - lines[at].trim_start().len();
+                let closing = format!("{}}}", " ".repeat(indent));
+                let name = rest.split(['(', '<', ' ']).next().unwrap_or("").to_string();
+                let end = (at + 1..lines.len())
+                    .find(|index| lines[*index] == closing)
+                    .unwrap_or(lines.len() - 1);
+                let body = lines[at..=end].join("\n");
+                let head = body.split('{').next().unwrap_or_default().to_string();
+                let body_reads = if head.contains("WorldFrame") {
+                    stored_selection_reads(&body)
+                } else {
+                    0
+                };
+                if body_reads > 0 {
+                    readers += 1;
+                    reads += body_reads;
+                    if !body.contains("named_country") && !body.contains("country_key_is_contended")
+                    {
+                        unasked.push(format!("{file}: {name}"));
+                    }
+                }
+                at = end + 1;
+            }
+        }
+
+        assert!(
+            unasked.is_empty(),
+            "these functions hold a frame and read a stored country selection \
+             without asking that frame's census about it. Call \
+             `frame.named_country(..)` and carry the answer in the type:\n{}",
+            unasked.join("\n")
+        );
+        assert_eq!(
+            readers, 9,
+            "the number of functions reading a stored country selection moved; \
+             every one of them asks the census, and a new one has to as well"
+        );
+        // ...and the READS, not just the functions. The rule above is per
+        // FUNCTION, so a function that asks about one stored selection can
+        // publish a SECOND one unasked and stay green -- Codex round 52
+        // demonstrated that by putting `viewer.selected_country.clone()` back
+        // into the XUI15 trade surface's `country_tag` inside
+        // `prepare_observer_semantic_frame_with_xui12_and_xui22_producers`,
+        // which asks elsewhere. A per-READ rule is not reachable: 42 of these
+        // 57 reads are neither a comparison nor a statement-local ask -- a
+        // tooltip POV, a viewer-state reconcile, a `?`-terminated bind -- and
+        // every rule that admits them is the spelling list rounds 48-50 walked
+        // past. So the COUNT is the instrument, as it is for every other entry
+        // way this lane closed: a new read has to be justified by moving it.
+        assert_eq!(
+            reads, 57,
+            "the number of stored-country-selection READS moved. A new one is              either an ask, a comparison, or a publication -- say which, and              move this number"
+        );
+    }
+
+    /// A `NamedCountry` cannot be built for a key two ids reach.
+    ///
+    /// This is the whole of the caller-supplied-selector entry way now: the
+    /// constructor is the gate, and `diplomacy_panel_from_frame` and the 32
+    /// other converted signatures cannot be CALLED with a contended key (Codex
+    /// rounds 48-50 each found a new way to spell publication past a scan;
+    /// none of them can be spelled past a type).
+    #[test]
+    fn a_contended_key_has_no_named_country() {
+        let contended = frame_from_json(serde_json::json!({
+            "countries": { "ENG": { "_r2_tag_db_id": 12 } },
+            "tag_db_id_index": {
+                "country_composition_version": 2,
+                "withheld_countries": {
+                    "contended_keys": { "DUP": { "tag_db_ids": [441, 442] } }
+                },
+            },
+        }));
+        let frame = contended.frame(0).expect("frame");
+        assert!(
+            frame.country_key_is_contended("DUP"),
+            "the census must be carried"
+        );
+        assert!(
+            frame.named_country("DUP").is_none(),
+            "a key two ids reach names no country, so no consumer can be handed one"
+        );
+        // THE CONTROL: an uncontended key still names a country, or the
+        // assertion above would pass on a constructor that refuses everything.
+        assert_eq!(
+            frame.named_country("ENG").map(|country| country.tag()),
+            Some("ENG"),
+            "an uncontended key is still a country, or this proves nothing"
+        );
+    }
+
+    /// A `NamedCountry` proves the census was asked, not WHICH FRAME answered.
+    ///
+    /// The type is a borrowed tag with a promise attached; it does not borrow the
+    /// frame that made the promise, and a viewer carries a selection from one hour
+    /// into the next. So the panels keep asking their own frame, and this is the
+    /// test those guards die without: a name another hour admits, handed to an
+    /// hour whose census refuses it.
+    #[test]
+    fn a_panel_re_asks_its_own_frame_about_a_name_another_frame_admitted() {
+        let world = |index: serde_json::Value| {
+            frame_from_json(serde_json::json!({
+                "countries": { "ENG": { "_r2_tag_db_id": 12 } },
+                "diplomacy_world": { "relations": {} },
+                "tag_db_id_index": index,
+            }))
+        };
+        let contended = world(serde_json::json!({
+            "country_composition_version": 2,
+            "withheld_countries": {
+                "contended_keys": { "DUP": { "tag_db_ids": [441, 442] } }
+            },
+        }));
+        let frame = contended.frame(0).expect("frame");
+        assert!(
+            frame.country_key_is_contended("DUP"),
+            "the census must be carried"
+        );
+        assert!(
+            frame.named_country("DUP").is_none(),
+            "this frame cannot name it, so no caller of its own can spell it here"
+        );
+
+        // The other hour, where the same key IS a country and hands out the
+        // name the panels below are handed.
+        let elsewhere = world(serde_json::json!({ "country_composition_version": 2 }));
+        let elsewhere = elsewhere.frame(0).expect("frame");
+        let dup = elsewhere
+            .named_country("DUP")
+            .expect("the other hour admits it");
+
+        let panel = diplomacy_panel_from_frame(&frame, dup);
+        assert!(
+            !panel.available,
+            "a panel whose POV names neither claimant is not available: an empty \
+             relation list under that name says the country has no relations"
+        );
+        let overview = crate::waroverview_binding::war_overview_from_frame(&frame, dup);
+        assert!(
+            !overview.available,
+            "and neither is a war overview for nobody"
+        );
+        let outliner = outliner_unit_lists_from_frame(&frame, dup);
+        assert_eq!(
+            (
+                outliner.army.len(),
+                outliner.navy.len(),
+                outliner.air.len(),
+                outliner.army_status,
+            ),
+            (0, 0, 0, replay_core::ViewStatus::DomainUnavailable),
+            "an outliner for a contended POV states that it could not be built, \
+             rather than showing that country as having no units"
+        );
+
+        // THE CONTROL, and it is the cost rule: an uncontended POV the frame
+        // carries is still served.
+        let plain = world(serde_json::json!({ "country_composition_version": 2 }));
+        let frame = plain.frame(0).expect("frame");
+        assert!(
+            diplomacy_panel_from_frame(&frame, named(&frame, "ENG")).available
+                && crate::waroverview_binding::war_overview_from_frame(&frame, named(&frame, "ENG")).available,
+            "an uncontended POV still gets its panels, or this proves nothing"
+        );
+        assert_eq!(
+            outliner_unit_lists_from_frame(&frame, named(&frame, "ENG")).army_status,
+            frame.division_units_status(),
+            "and its outliner reports the frame's own status"
+        );
+    }
+
+    #[test]
+    fn no_topbar_route_spells_a_contended_key_back_out() {
+        let contended = frame_from_json(serde_json::json!({
+            "countries": {},
+            "tag_db_id_index": {
+                "country_composition_version": 2,
+                "withheld_countries": {
+                    "contended_keys": { "DUP": { "tag_db_ids": [441, 442] } }
+                },
+            },
+        }));
+        let frame = contended.frame(0).expect("frame");
+        assert!(frame.country_key_is_contended("DUP"), "the census must be carried");
+        // The name comes from an hour that CAN name it, so what is under test
+        // is each route's own question rather than the constructor's.
+        let elsewhere = frame_from_json(serde_json::json!({
+            "countries": {},
+            "tag_db_id_index": { "country_composition_version": 2 },
+        }));
+        let elsewhere = elsewhere.frame(0).expect("frame");
+        let dup = elsewhere
+            .named_country("DUP")
+            .expect("the other hour admits it");
+        assert_eq!(
+            [
+                topbar_flag_identity_from_frame(&frame, "DUP").country_tag,
+                topbar_binding_from_frame(&frame, dup).country_tag,
+                topbar_binding_from_observer_frame(&frame, dup).binding.country_tag,
+            ],
+            [None, None, None],
+            "no route may name a key two ids reach"
+        );
+
+        // The control: an ordinary POV the frame also has no identity for is
+        // still spelled, so the assertion above is about contention and not
+        // about missing identities.
+        let plain = frame_from_json(serde_json::json!({
+            "countries": {},
+            "tag_db_id_index": { "country_composition_version": 2 },
+        }));
+        let frame = plain.frame(0).expect("frame");
+        assert_eq!(
+            [
+                topbar_flag_identity_from_frame(&frame, "GER").country_tag,
+                topbar_binding_from_frame(&frame, named(&frame, "GER")).country_tag,
+                topbar_binding_from_observer_frame(&frame, named(&frame, "GER")).binding.country_tag,
+            ],
+            [
+                Some("GER".to_string()),
+                Some("GER".to_string()),
+                Some("GER".to_string())
+            ],
+            "an uncontended POV is still named, or this proves nothing"
+        );
+    }
+
+    #[test]
+    fn a_contended_numeric_pov_key_is_not_parsed_into_an_identity() {
+        // The control: the same numeric key, uncontended and unrecorded, still
+        // resolves by spelling. Without it this test would pass on a frame
+        // where the numeric branch simply never fires.
+        let timeline = frame_from_json(serde_json::json!({
+            "countries": {},
+            "tag_db_id_index": { "country_composition_version": 2 },
+        }));
+        let frame = timeline.frame(0).expect("frame");
+        assert_eq!(
+            resolve_pov_numeric_identity(&frame, frame.diplomacy(), "123"),
+            Some(123),
+            "an unrecorded numeric key is still its own id, or this proves nothing"
+        );
+
+        let timeline = frame_from_json(serde_json::json!({
+            "countries": {},
+            "tag_db_id_index": {
+                "country_composition_version": 2,
+                "withheld_countries": {
+                    "contended_keys": { "123": { "tag_db_ids": [441, 442] } }
+                },
+            },
+        }));
+        let frame = timeline.frame(0).expect("frame");
+        assert!(
+            frame.country_key_is_contended("123"),
+            "the frame must carry the census, or the assertion below is vacuous"
+        );
+        assert_eq!(
+            resolve_pov_numeric_identity(&frame, frame.diplomacy(), "123"),
+            None,
+            "a key the census says two ids reach names no country to be the POV"
+        );
     }
 
     #[test]

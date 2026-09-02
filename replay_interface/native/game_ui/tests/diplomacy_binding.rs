@@ -7,6 +7,15 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// A TAG this frame's census admits. A test that means to name a country says
+/// so here; a test about a contended key asks `named_country` and gets `None`.
+fn named<'tag>(
+    frame: &replay_core::WorldFrame,
+    tag: &'tag str,
+) -> replay_core::NamedCountry<'tag> {
+    frame.named_country(tag).expect("census-admitted tag")
+}
+
 fn fixture(name: &str) -> WorldTimeline {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/positive")
@@ -36,11 +45,11 @@ fn faction_matrix_flips_at_change_hour() {
     let hours = tl.hours().to_vec();
     assert_eq!(hours.len(), 12);
 
-    let before = diplomacy_panel_from_frame(&tl.frame(hours[2]).unwrap(), "GER");
+    let before = diplomacy_panel_from_frame(&tl.frame(hours[2]).unwrap(), named(&tl.frame(hours[2]).unwrap(), "GER"));
     assert!(before.available);
     assert!(before.factions.is_empty(), "no factions before tick 3");
 
-    let after = diplomacy_panel_from_frame(&tl.frame(hours[3]).unwrap(), "GER");
+    let after = diplomacy_panel_from_frame(&tl.frame(hours[3]).unwrap(), named(&tl.frame(hours[3]).unwrap(), "GER"));
     assert_eq!(
         after.factions,
         vec![
@@ -49,7 +58,7 @@ fn faction_matrix_flips_at_change_hour() {
         ]
     );
 
-    let last = diplomacy_panel_from_frame(&tl.frame(hours[11]).unwrap(), "SOV");
+    let last = diplomacy_panel_from_frame(&tl.frame(hours[11]).unwrap(), named(&tl.frame(hours[11]).unwrap(), "SOV"));
     assert_eq!(
         last.factions,
         vec![
@@ -65,14 +74,14 @@ fn war_rows_flip_at_change_hour_per_pov() {
     let tl = fixture("fx_war_faction_matrix");
     let hours = tl.hours().to_vec();
 
-    let ger_before = diplomacy_panel_from_frame(&tl.frame(hours[6]).unwrap(), "GER");
-    let eng_before = diplomacy_panel_from_frame(&tl.frame(hours[6]).unwrap(), "ENG");
+    let ger_before = diplomacy_panel_from_frame(&tl.frame(hours[6]).unwrap(), named(&tl.frame(hours[6]).unwrap(), "GER"));
+    let eng_before = diplomacy_panel_from_frame(&tl.frame(hours[6]).unwrap(), named(&tl.frame(hours[6]).unwrap(), "ENG"));
     assert!(ger_before.wars.is_empty(), "GER no wars @tick6");
     assert!(eng_before.wars.is_empty(), "ENG no wars @tick6");
     assert_eq!(rel(&ger_before.relations, "ENG").at_war, None);
 
-    let ger = diplomacy_panel_from_frame(&tl.frame(hours[7]).unwrap(), "GER");
-    let eng = diplomacy_panel_from_frame(&tl.frame(hours[7]).unwrap(), "ENG");
+    let ger = diplomacy_panel_from_frame(&tl.frame(hours[7]).unwrap(), named(&tl.frame(hours[7]).unwrap(), "GER"));
+    let eng = diplomacy_panel_from_frame(&tl.frame(hours[7]).unwrap(), named(&tl.frame(hours[7]).unwrap(), "ENG"));
     assert_eq!(ger.wars, vec!["ENG".to_string()], "GER belligerents @tick7");
     assert_eq!(
         eng.wars,
@@ -90,7 +99,7 @@ fn war_rows_flip_at_change_hour_per_pov() {
 fn relation_row_flags_are_fail_closed() {
     let tl = fixture("fx_war_faction_matrix");
     let hours = tl.hours().to_vec();
-    let ger = diplomacy_panel_from_frame(&tl.frame(hours[7]).unwrap(), "GER");
+    let ger = diplomacy_panel_from_frame(&tl.frame(hours[7]).unwrap(), named(&tl.frame(hours[7]).unwrap(), "GER"));
 
     let ita = rel(&ger.relations, "ITA");
     assert_eq!(ita.same_faction, Some(true));
@@ -112,7 +121,7 @@ fn relation_row_flags_are_fail_closed() {
 fn absent_pov_renders_fail_closed_panel() {
     let tl = fixture("fx_war_faction_matrix");
     let hours = tl.hours().to_vec();
-    let usa = diplomacy_panel_from_frame(&tl.frame(hours[7]).unwrap(), "USA");
+    let usa = diplomacy_panel_from_frame(&tl.frame(hours[7]).unwrap(), named(&tl.frame(hours[7]).unwrap(), "USA"));
 
     assert!(usa.available);
     assert_eq!(usa.factions.len(), 2);
@@ -155,7 +164,7 @@ fn faction_roster_binding_timeline() -> (PathBuf, WorldTimeline) {
             (None, Some(_)) => unreachable!("faction rows require a roster status"),
         };
         let snapshot = format!(
-            r#"{{"schema_version":"1","game_id":"{game}","date":"1936.1.1.{}","hour_index":{hour},"countries":{countries},"diplomacy_world":{{"domain53_extra":{extra}}}}}"#,
+            r#"{{"schema_version":"1","game_id":"{game}","date":"1936.1.1.{}","hour_index":{hour},"tag_db_id_index":{{"country_composition_version":2}},"countries":{countries},"diplomacy_world":{{"domain53_extra":{extra}}}}}"#,
             hour - 30
         );
         let file = format!("{hour:012}.snapshot.json");
@@ -205,7 +214,7 @@ fn non_nonempty_roster_status_suppresses_country_faction_rows() {
     ];
 
     for (hour, expected_status, expected_available, label) in cases {
-        let panel = diplomacy_panel_from_frame(&timeline.frame(hour).unwrap(), "GER");
+        let panel = diplomacy_panel_from_frame(&timeline.frame(hour).unwrap(), named(&timeline.frame(hour).unwrap(), "GER"));
         assert!(panel.available, "other diplomacy leaves remain available");
         assert_eq!(panel.faction_roster_status, expected_status, "{label}");
         assert_eq!(panel.factions_available, expected_available, "{label}");
@@ -249,7 +258,7 @@ fn measured_nonempty_committed_fold_without_country_names_keeps_d53_roster() {
         "the typed view must retain the reviewed folded D53 member identities"
     );
 
-    let nonempty = diplomacy_panel_from_frame(&frame, "1");
+    let nonempty = diplomacy_panel_from_frame(&frame, named(&frame, "1"));
     assert!(nonempty.factions_available);
     assert_eq!(
         nonempty.faction_roster_status,
@@ -281,6 +290,7 @@ fn a16_current_autonomy_is_available_to_both_country_panel_sides() {
           "game_id":"a16_binding",
           "date":"1940.2.14.20",
           "hour_index":900,
+          "tag_db_id_index":{"country_composition_version":2},
           "countries":{
             "GER":{"_r2_tag_db_id":1},
             "BUL":{"_r2_tag_db_id":22}
@@ -319,7 +329,7 @@ fn a16_current_autonomy_is_available_to_both_country_panel_sides() {
 
     let timeline = WorldTimeline::open(open_recording(&root).unwrap()).unwrap();
     let frame = timeline.frame(900).unwrap();
-    let ger = diplomacy_panel_from_frame(&frame, "GER");
+    let ger = diplomacy_panel_from_frame(&frame, named(&frame, "GER"));
     assert!(ger.subject_autonomy_available);
     assert_eq!(ger.subject_autonomy.len(), 1);
     assert!(ger.subject_autonomy[0].pov_is_overlord);
@@ -330,13 +340,13 @@ fn a16_current_autonomy_is_available_to_both_country_panel_sides() {
         Some(SubjectAutonomyDirection::TowardNext)
     );
 
-    let bul = diplomacy_panel_from_frame(&frame, "BUL");
+    let bul = diplomacy_panel_from_frame(&frame, named(&frame, "BUL"));
     assert!(bul.subject_autonomy_available);
     assert_eq!(bul.subject_autonomy.len(), 1);
     assert!(!bul.subject_autonomy[0].pov_is_overlord);
     assert_eq!(bul.subject_autonomy[0].counterpart.as_deref(), Some("GER"));
 
-    let unrelated = diplomacy_panel_from_frame(&frame, "ENG");
+    let unrelated = diplomacy_panel_from_frame(&frame, named(&frame, "ENG"));
     assert!(unrelated.subject_autonomy_available);
     assert!(unrelated.subject_autonomy.is_empty());
     drop(frame);

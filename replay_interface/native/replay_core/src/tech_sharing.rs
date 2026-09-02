@@ -24,7 +24,11 @@ pub struct TechnologySharingRuntimeGroup {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TechnologySharingRuntimeMember {
     pub member_tag_db_id: u32,
-    pub country_tag: String,
+    /// WITHHELD when the frame's census says two ids reach this key: the
+    /// member is identified by `member_tag_db_id`, and a name that points at
+    /// neither country is not a smaller fact about the member -- it is a
+    /// wrong one (Codex round 39).
+    pub country_tag: Option<String>,
     pub dynamic_bonus_raw_fixed5: i64,
     pub dynamic_bonus: f64,
 }
@@ -91,14 +95,17 @@ pub fn technology_sharing_runtime(
             groups: Leaf::Unobtained,
         });
     }
-    parse_runtime_value(value)
+    parse_runtime_value(value, frame.contended_census())
         .map(|groups| TechnologySharingRuntimeView {
             groups: Leaf::Measured(groups),
         })
         .map_err(|reason| TechnologySharingRuntimeError { reason })
 }
 
-fn parse_runtime_value(value: &Value) -> Result<Vec<TechnologySharingRuntimeGroup>, String> {
+fn parse_runtime_value(
+    value: &Value,
+    contended_keys: &impl crate::world::ContendedKeys,
+) -> Result<Vec<TechnologySharingRuntimeGroup>, String> {
     let root: RuntimeRoot = serde_json::from_value(value.clone())
         .map_err(|error| format!("D69 tech_sharing_group has invalid shape: {error}"))?;
     if root.dynamic_bonus_fixed5_scale != TECH_SHARING_BONUS_FIXED5_SCALE {
@@ -176,7 +183,8 @@ fn parse_runtime_value(value: &Value) -> Result<Vec<TechnologySharingRuntimeGrou
                 }
                 members.push(TechnologySharingRuntimeMember {
                     member_tag_db_id: member.member_tag_db_id,
-                    country_tag: member.country_tag.clone(),
+                    country_tag: Some(member.country_tag.clone())
+                        .filter(|tag| !contended_keys.holds(tag.as_str())),
                     dynamic_bonus_raw_fixed5: member.dynamic_bonus_raw_fixed5,
                     dynamic_bonus: member.dynamic_bonus,
                 });
@@ -217,7 +225,8 @@ mod tests {
 
     #[test]
     fn tsg3_definition_id_is_measured_without_reinterpreting_ordinal() {
-        let rows = parse_runtime_value(&group(json!("commonwealth_research"))).unwrap();
+        let rows = parse_runtime_value(&group(json!("commonwealth_research")), &BTreeSet::<String>::new())
+            .unwrap();
         assert_eq!(rows[0].runtime_ordinal, 17);
         assert_eq!(
             rows[0].definition_id,
@@ -227,7 +236,7 @@ mod tests {
 
     #[test]
     fn legacy_tsg2_definition_id_remains_unobtained() {
-        let rows = parse_runtime_value(&group(Value::Null)).unwrap();
+        let rows = parse_runtime_value(&group(Value::Null), &BTreeSet::<String>::new()).unwrap();
         assert_eq!(rows[0].definition_id, Leaf::Unobtained);
     }
 
@@ -238,7 +247,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("definition_id");
-        assert!(parse_runtime_value(&value)
+        assert!(parse_runtime_value(&value, &BTreeSet::<String>::new())
             .unwrap_err()
             .contains("invalid shape"));
     }
@@ -247,7 +256,7 @@ mod tests {
     fn dynamic_bonus_must_match_fixed5_authority() {
         let mut value = group(json!("commonwealth_research"));
         value["groups"][0]["member_bonuses"][0]["dynamic_bonus"] = json!(0.10001);
-        assert!(parse_runtime_value(&value)
+        assert!(parse_runtime_value(&value, &BTreeSet::<String>::new())
             .unwrap_err()
             .contains("fixed5 authority"));
     }

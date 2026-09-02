@@ -97,7 +97,7 @@
 //! **The fold's own flag asymmetry is mirrored in behaviour, not in semantics.**
 //! `fold_ships` folds `task_force_id` as an `Option` (`:14637`) but folds a clear
 //! owner gate to the sentinel `owner_tag_db_id = 0` (`:14644`-`:14648`), and
-//! `ship_owner_key` (`:8606`) then reads that `0` as *unowned* and drops the ship
+//! The fold then reads that `0` as *unowned* and drops the ship
 //! from its per-country counts. `0` is not a legal tag
 //! (`valid_division_owner_tag_db_id` requires `> 0`, `attach_log.rs:16689`), so
 //! the sentinel is at least unambiguous — but collapsing "unreadable" into

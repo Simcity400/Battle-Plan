@@ -977,6 +977,13 @@ fn admit_exact_pixels<'a>(
             "XUI16 viewer country/month/sort is invalid".into(),
         ));
     }
+    // A STORED SELECTION outlives the frame that vouched for it: this hour's
+    // census decides whether it names a country at all.
+    if frame.named_country(&viewer.selected_country).is_none() {
+        return Err(OccupationPixelRejection::ViewerInput(
+            "XUI16 viewer country is a key two D18 ids reach, which names no country".into(),
+        ));
+    }
 
     let view = frame.occupation_ui_supplement_exact();
     if view.status != ViewStatus::Present {

@@ -8,6 +8,15 @@ use game_ui::topbar::{compose_topbar, FactoryCounts};
 use replay_core::{open_recording, WorldTimeline};
 use std::path::PathBuf;
 
+/// A TAG this frame's census admits. A test that means to name a country says
+/// so here; a test about a contended key asks `named_country` and gets `None`.
+fn named<'tag>(
+    frame: &replay_core::WorldFrame,
+    tag: &'tag str,
+) -> replay_core::NamedCountry<'tag> {
+    frame.named_country(tag).expect("census-admitted tag")
+}
+
 fn fixture(name: &str) -> WorldTimeline {
     fixture_in("positive", name)
 }
@@ -45,7 +54,7 @@ fn topbar_scalar_sweep_renders_generator_values() {
         let frame = tl.frame(hour).unwrap();
         for tag in ["GER", "ENG", "SOV"] {
             let base = base_for(tag);
-            let b = topbar_binding_from_frame(&frame, tag);
+            let b = topbar_binding_from_frame(&frame, named(&frame, tag));
 
             assert_eq!(
                 b.political_power.as_deref(),
@@ -151,7 +160,7 @@ fn topbar_scalar_sweep_renders_generator_values() {
 fn absent_pov_renders_fail_closed_binding() {
     let tl = fixture("fx_topbar_scalars_sweep");
     let frame = tl.frame(tl.first_hour()).unwrap();
-    let b = topbar_binding_from_frame(&frame, "USA");
+    let b = topbar_binding_from_frame(&frame, named(&frame, "USA"));
     assert_eq!(b.country_tag.as_deref(), Some("USA"));
     assert_eq!(b.political_power, None);
     assert_eq!(b.manpower, None);
@@ -170,7 +179,7 @@ fn absent_world_frame_data_is_omitted_by_topbar_composition() {
     let root = game_root();
     let tl = fixture("fx_topbar_scalars_sweep");
     let frame = tl.frame(tl.first_hour()).unwrap();
-    let binding = topbar_binding_from_frame(&frame, "USA");
+    let binding = topbar_binding_from_frame(&frame, named(&frame, "USA"));
     let resolver = AssetResolver::new(vec![root]);
     let (registry, _) = parse_gfx_files(&resolver).expect("parse GFX");
     let rendered = compose_topbar(&resolver, &registry, &binding).expect("compose absent topbar");
@@ -254,7 +263,7 @@ fn unobtained_world_frame_leaf_is_selectively_omitted_by_topbar_composition() {
     let tl = fixture_in("anomaly", "fx_anomaly_type_flip");
     let crossing_hour = tl.hours()[6];
     let frame = tl.frame(crossing_hour).unwrap();
-    let binding = topbar_binding_from_frame(&frame, "GER");
+    let binding = topbar_binding_from_frame(&frame, named(&frame, "GER"));
     assert_eq!(binding.political_power, None);
     assert!(
         frame
@@ -295,7 +304,7 @@ fn ideology_flip_rekeys_flag_and_name_at_flip_hour() {
 
     for (t, &hour) in hours.iter().enumerate() {
         let frame = tl.frame(hour).unwrap();
-        let b = topbar_binding_from_frame(&frame, "GER");
+        let b = topbar_binding_from_frame(&frame, named(&frame, "GER"));
         let (ideology, cosmetic) = ideology_at(t);
 
         assert_eq!(

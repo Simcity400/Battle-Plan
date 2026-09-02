@@ -49,6 +49,7 @@ fn snapshot_100() -> Value {
         "game_id": GAME,
         "date": "1936.1.5.4",
         "hour_index": 100,
+        "tag_db_id_index": {"country_composition_version": 2},
         "save_version": null,
         "provenance": {
             "collector": {
@@ -205,6 +206,7 @@ fn snapshot_101() -> Value {
         "game_id": GAME,
         "date": "1936.1.5.5",
         "hour_index": 101,
+        "tag_db_id_index": {"country_composition_version": 2},
         "save_version": null,
         "provenance": {
             "collector": {
@@ -271,6 +273,7 @@ fn snapshot_103() -> Value {
         "game_id": GAME,
         "date": "1936.1.5.7",
         "hour_index": 103,
+        "tag_db_id_index": {"country_composition_version": 2},
         "save_version": null,
         "provenance": {
             "collector": {
@@ -473,7 +476,8 @@ fn write_unit_census_problem_store(root: &Path) {
         "schema_version": "1",
         "game_id": game,
         "date": "1936.1.2.6",
-        "hour_index": 30
+        "hour_index": 30,
+        "tag_db_id_index": {"country_composition_version": 2}
     });
     for (key, value) in absent_task_forces.as_object().unwrap() {
         hour_30[key] = value.clone();
@@ -488,6 +492,7 @@ fn write_unit_census_problem_store(root: &Path) {
         "game_id": game,
         "date": "1936.1.2.7",
         "hour_index": 31,
+        "tag_db_id_index": {"country_composition_version": 2},
         "provenance": {
             "collector": {
                 "domain_problems": [
@@ -508,7 +513,8 @@ fn write_unit_census_problem_store(root: &Path) {
         "schema_version": "1",
         "game_id": game,
         "date": "1936.1.2.8",
-        "hour_index": 32
+        "hour_index": 32,
+        "tag_db_id_index": {"country_composition_version": 2}
     });
     for (key, value) in units(json!({})).as_object().unwrap() {
         hour_32[key] = value.clone();
@@ -640,6 +646,7 @@ fn write_faction_roster_status_store(root: &Path) {
             "game_id": game,
             "date": format!("1936.1.1.{}", hour - 20),
             "hour_index": hour,
+            "tag_db_id_index": {"country_composition_version": 2},
             "countries": {},
             "diplomacy_world": { "domain53_extra": extra }
         });
@@ -681,6 +688,7 @@ fn write_legacy_faction_roster_store(root: &Path) {
             "game_id": game,
             "date": format!("1936.1.1.{}", hour - 30),
             "hour_index": hour,
+            "tag_db_id_index": {"country_composition_version": 2},
             "countries": {}
         });
         if let Some(legacy) = legacy {

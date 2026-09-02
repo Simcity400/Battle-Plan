@@ -658,6 +658,9 @@ impl<M: A729Memory, R: A729DefinitionRegistry> ExactA729CollectorBridge<M, R> {
         let popup_subtype = runtime_popup_subtype(self.memory.as_ref(), event, definition.class)?;
         Ok(FireInput {
             event_id: definition.event_id,
+            // The id the engine handed the hook, KEPT: two ids can resolve to
+            // one TAG, so the TAG alone cannot name the recipient.
+            recipient_tag_db_id: recipient_tag_id,
             recipient_tag: self.tag_string(recipient_tag_id)?,
             fire_date: decode_datehour(fire_tick as i32)
                 .ok_or_else(|| "XUI21 fire date is outside the authenticated range".to_string())?,

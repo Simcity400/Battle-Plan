@@ -6,6 +6,15 @@ use game_ui::binding::{
 use replay_core::{open_recording, ViewStatus, WorldTimeline};
 use std::path::PathBuf;
 
+/// A TAG this frame's census admits. A test that means to name a country says
+/// so here; a test about a contended key asks `named_country` and gets `None`.
+fn named<'tag>(
+    frame: &replay_core::WorldFrame,
+    tag: &'tag str,
+) -> replay_core::NamedCountry<'tag> {
+    frame.named_country(tag).expect("census-admitted tag")
+}
+
 fn fixture(name: &str) -> WorldTimeline {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/positive")
@@ -28,23 +37,23 @@ fn army_rows_owner_filtered_per_pov() {
     for &hour in &hours {
         let frame = tl.frame(hour).unwrap();
 
-        let ger = outliner_unit_lists_from_frame(&frame, "GER");
+        let ger = outliner_unit_lists_from_frame(&frame, named(&frame, "GER"));
         assert_eq!(ger.army_status, ViewStatus::Present);
         assert_eq!(uids(&ger.army), vec!["101:1"], "GER army @h{hour}");
         assert!(ger.navy.is_empty(), "GER navy @h{hour}");
         assert!(ger.air.is_empty(), "GER air @h{hour}");
 
-        let sov = outliner_unit_lists_from_frame(&frame, "SOV");
+        let sov = outliner_unit_lists_from_frame(&frame, named(&frame, "SOV"));
         assert_eq!(uids(&sov.army), vec!["201:1"], "SOV army @h{hour}");
         assert!(sov.navy.is_empty(), "SOV navy @h{hour}");
         assert!(sov.air.is_empty(), "SOV air @h{hour}");
 
-        let eng = outliner_unit_lists_from_frame(&frame, "ENG");
+        let eng = outliner_unit_lists_from_frame(&frame, named(&frame, "ENG"));
         assert!(eng.army.is_empty(), "ENG army @h{hour}");
     }
 
     let frame = tl.frame(hours[0]).unwrap();
-    let ger = outliner_unit_lists_from_frame(&frame, "GER");
+    let ger = outliner_unit_lists_from_frame(&frame, named(&frame, "GER"));
     assert_eq!(ger.army[0].icon_sprite, OUTLINER_ARMY_ICON);
 }
 
@@ -57,21 +66,21 @@ fn navy_air_rows_owner_filtered_per_pov() {
     for &hour in &hours {
         let frame = tl.frame(hour).unwrap();
 
-        let eng = outliner_unit_lists_from_frame(&frame, "ENG");
+        let eng = outliner_unit_lists_from_frame(&frame, named(&frame, "ENG"));
         assert_eq!(eng.navy_status, ViewStatus::Present);
         assert_eq!(eng.air_status, ViewStatus::Present);
         assert_eq!(uids(&eng.navy), vec!["501"], "ENG navy @h{hour}");
         assert_eq!(uids(&eng.air), vec!["800"], "ENG air @h{hour}");
         assert!(eng.army.is_empty(), "ENG army @h{hour}");
 
-        let ger = outliner_unit_lists_from_frame(&frame, "GER");
+        let ger = outliner_unit_lists_from_frame(&frame, named(&frame, "GER"));
         assert_eq!(uids(&ger.army), vec!["101:1"], "GER army @h{hour}");
         assert!(ger.navy.is_empty(), "GER navy @h{hour}");
         assert!(ger.air.is_empty(), "GER air @h{hour}");
     }
 
     let frame = tl.frame(hours[0]).unwrap();
-    let eng = outliner_unit_lists_from_frame(&frame, "ENG");
+    let eng = outliner_unit_lists_from_frame(&frame, named(&frame, "ENG"));
     assert_eq!(eng.navy[0].icon_sprite, OUTLINER_NAVY_ICON);
     assert_eq!(eng.air[0].icon_sprite, OUTLINER_AIR_ICON);
 }
@@ -80,7 +89,7 @@ fn navy_air_rows_owner_filtered_per_pov() {
 fn flat_binding_orders_army_navy_air_with_uid_text() {
     let tl = fixture("fx_naval_air_activity");
     let frame = tl.frame(tl.first_hour()).unwrap();
-    let binding = outliner_binding_from_frame(&frame, "ENG");
+    let binding = outliner_binding_from_frame(&frame, named(&frame, "ENG"));
 
     let rows: Vec<(&str, &str, Option<f32>)> = binding
         .rows
@@ -96,7 +105,7 @@ fn flat_binding_orders_army_navy_air_with_uid_text() {
     );
     assert!(!binding.collapsed);
 
-    let ger = outliner_binding_from_frame(&frame, "GER");
+    let ger = outliner_binding_from_frame(&frame, named(&frame, "GER"));
     let ger_rows: Vec<(&str, &str)> = ger
         .rows
         .iter()

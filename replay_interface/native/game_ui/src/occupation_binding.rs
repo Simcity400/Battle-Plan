@@ -1471,6 +1471,19 @@ fn occupation_observer_collections(
     selected_country: &str,
     supplement: &OccupationD66ControllerSupplement,
 ) -> std::result::Result<OccupationObserverCollections, OccupationAssemblyGap> {
+    // The selector is the CALLER's, and a key two ids reach is neither country.
+    // The join below -- the occupier tag on a state row -- cannot stand in for
+    // the census here: the census WITHHOLDS that name, so a contended selector
+    // matches no row and the collection would be published for nobody rather
+    // than refused (Codex round 49).
+    if frame.country_key_is_contended(selected_country) {
+        return Err(OccupationAssemblyGap {
+            code: "XUI16_SELECTED_COUNTRY_IS_A_CONTENDED_KEY",
+            detail: format!(
+                "{selected_country:?} is a contended key this hour, so it names no country"
+            ),
+        });
+    }
     if frame.occupation_status() != ViewStatus::Present {
         return Err(OccupationAssemblyGap {
             code: "XUI16_OCCUPATION_STATE_UNAVAILABLE",

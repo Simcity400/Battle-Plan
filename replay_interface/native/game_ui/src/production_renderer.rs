@@ -39,6 +39,7 @@ use crate::variant_admission::{
 };
 use crate::widget_layout::gridbox_layout;
 use crate::{GameUiError, Result};
+use replay_core::NamedCountry;
 use replay_core::{
     Leaf, ValidatedContentAdmission, WorldFrame,
 };
@@ -1252,7 +1253,7 @@ fn derive_combat_log_icon(
 fn admit_observer_theatre_surface(
     frame: &WorldFrame,
     content_admission: &ValidatedContentAdmission,
-    country_tag: &str,
+    country_tag: NamedCountry<'_>,
 ) -> std::result::Result<ObserverTheatreSurface, ObserverUiGap> {
     // COMPLETE, not partial: the selected country's identity is only half of
     // what this surface needs - `require_exact_d18_d98_country_census` below
@@ -1270,7 +1271,7 @@ fn admit_observer_theatre_surface(
     };
     let entry = roster_entries
         .iter()
-        .find(|entry| entry.tag == country_tag)
+        .find(|entry| entry.tag == country_tag.tag())
         .cloned()
         .ok_or_else(|| {
             theatre_gap(
@@ -1318,7 +1319,7 @@ fn admit_observer_theatre_surface(
     }
     // Owner ruling option A: derive the icon, but ONLY from proven state (see
     // `derive_combat_log_icon` for the fail-closed carrier law).
-    let combat_log_icon_shown = derive_combat_log_icon(frame, country_tag)?;
+    let combat_log_icon_shown = derive_combat_log_icon(frame, country_tag.tag())?;
     Ok(ObserverTheatreSurface {
         country_tag: country_tag.to_string(),
         owner_tag_db_id: entry.tag_db_id,
@@ -1425,6 +1426,16 @@ impl ObserverFocusRoute {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObserverEventRoute {
     pub country_tag: Option<String>,
+    /// What the selected TAG denotes on THIS frame, from
+    /// `WorldFrame::country_identity_for_tag`, which asks the contention census
+    /// before it counts roster entries.
+    ///
+    /// PRIVATE, and only `prepare_xui21_event_route` sets it. It is the one
+    /// field here that is an AUTHENTICATED claim about the frame rather than a
+    /// request from the viewer: a route built by hand could otherwise name any
+    /// id, from any frame or none, and the compositor would render events
+    /// against it. Read it with `country_tag_db_id()`.
+    country_tag_db_id: Option<i64>,
     pub admitted_history: Option<Vec<crate::event_chrome::AdmittedFiredEvent>>,
     pub event_tick: Option<i64>,
     pub visible_sequences: Vec<i64>,
@@ -1432,6 +1443,61 @@ pub struct ObserverEventRoute {
     pub measured_empty: bool,
     pub gaps: Vec<ObserverUiGap>,
 }
+
+impl ObserverEventRoute {
+    /// The identity `prepare_xui21_event_route` authenticated against the
+    /// frame, or `None` when the frame named none.
+    pub fn country_tag_db_id(&self) -> Option<i64> {
+        self.country_tag_db_id
+    }
+
+    /// Build a route whose identity is AUTHENTICATED by `frame`.
+    ///
+    /// The only way to obtain a route with an identity, in or out of this
+    /// crate. There is no constructor that takes an id: the caller supplies
+    /// the TAG it selected and the FRAME decides what that names, so a route
+    /// cannot carry an id from another frame or from nowhere.
+    pub fn authenticated_for_selection(
+        frame: &WorldFrame,
+        selected_country: Option<&str>,
+    ) -> Self {
+        let identity = selected_country.map(|tag| frame.country_identity_for_tag(tag));
+        // The refusal travels WITH the route. Dropping it left the caller a
+        // route that renders nothing and says nothing, and no way to recover
+        // the reason short of resolving the identity a second time.
+        let mut gaps = Vec::new();
+        if let (Some(tag), Some(Err(detail))) = (selected_country, identity.as_ref()) {
+            gaps.push(ObserverUiGap {
+                surface: "XUI21/events",
+                field: "selected_country_tag_db_id",
+                required_domain: "a d18 identity for the selected TAG that the                                   contention census does not refuse",
+                reason: format!(
+                    "fired events are joined by engine identity, and {tag:?} has none                      on this frame: {detail}"
+                ),
+            });
+        }
+        Self {
+            // The NAME goes with the identity. A route that spells the caller's
+            // selector back out is what a surface renders from, and round 29
+            // settled that for the topbar: a key the census refuses is not a
+            // country to name, gap or no gap (Codex round 49).
+            country_tag: selected_country
+                .filter(|tag| !frame.country_key_is_contended(tag))
+                .map(str::to_string),
+            country_tag_db_id: match &identity {
+                Some(Ok(id)) => Some(i64::from(*id)),
+                _ => None,
+            },
+            admitted_history: None,
+            event_tick: None,
+            visible_sequences: Vec::new(),
+            focused_sequence: None,
+            measured_empty: false,
+            gaps,
+        }
+    }
+}
+
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObserverUiSemanticFrame {
@@ -1738,7 +1804,7 @@ impl ProductionUiRenderer {
     pub fn compose_xui09_research_surface(
         &self,
         frame: &WorldFrame,
-        selected_country: &str,
+        selected_country: NamedCountry<'_>,
         catalog: &crate::static_research::StaticResearchUiCatalog,
         viewer: &crate::research_compositor::ResearchViewerState,
         viewport_width: usize,
@@ -1928,7 +1994,7 @@ impl ProductionUiRenderer {
     pub fn compose_xui11_politics_surface(
         &self,
         frame: &WorldFrame,
-        selected_country: &str,
+        selected_country: NamedCountry<'_>,
         catalog: &crate::static_research::StaticResearchUiCatalog,
         power_balance_launcher: Option<&crate::power_balance::PowerBalancePresentation>,
         viewer: &crate::politics_state::PoliticsViewerState,
@@ -1949,7 +2015,7 @@ impl ProductionUiRenderer {
         }
         let presentation = crate::politics_state::admit_politics_presentation(
             frame,
-            selected_country,
+            selected_country.tag(),
             catalog,
             self.content_admission.manifest_digest_sha256(),
         )
@@ -2137,7 +2203,7 @@ impl ProductionUiRenderer {
     pub fn compose_xui19_decision_surface<F>(
         &self,
         frame: &WorldFrame,
-        selected_country: &str,
+        selected_country: NamedCountry<'_>,
         decision_catalog: &DecisionStaticCatalog,
         collapsed_categories: &BTreeSet<String>,
         scroll_px: i32,
@@ -2189,7 +2255,7 @@ impl ProductionUiRenderer {
                 carrier.localisation_language, expected_language
             )));
         }
-        let country = view.country(selected_country).ok_or_else(|| {
+        let country = view.country(selected_country.tag()).ok_or_else(|| {
             ProductionUiRejection::IncompleteComposition(format!(
                 "XUI19 complete country census lacks selected country {selected_country}"
             ))
@@ -3221,7 +3287,7 @@ impl ProductionUiRenderer {
     pub fn compose_xui14_intelligence_surface(
         &self,
         frame: &WorldFrame,
-        selected_country: &str,
+        selected_country: NamedCountry<'_>,
         viewer: &crate::intelligence_presentation::IntelligenceViewerState,
         viewport_width: usize,
         viewport_height: usize,
@@ -3242,7 +3308,7 @@ impl ProductionUiRenderer {
         let (carrier, presentation) =
             crate::intelligence_presentation::admit_intelligence_presentation(
                 frame,
-                selected_country,
+                selected_country.tag(),
                 viewer,
                 self.content_admission.manifest_digest_sha256(),
             )
@@ -3583,7 +3649,7 @@ impl ProductionUiRenderer {
     pub fn compose_xui13_designer_surface(
         &self,
         frame: &WorldFrame,
-        selected_country: &str,
+        selected_country: NamedCountry<'_>,
         viewer: &crate::design_catalog::ObserverDesignerViewState,
         viewport_width: usize,
         viewport_height: usize,
@@ -3630,7 +3696,7 @@ impl ProductionUiRenderer {
     pub fn xui13_effective_membership(
         &self,
         frame: &WorldFrame,
-        selected_country: &str,
+        selected_country: NamedCountry<'_>,
         viewer: &crate::design_catalog::ObserverDesignerViewState,
     ) -> std::result::Result<
         crate::designer_observer::ObserverDesignerEffectiveMembership,
@@ -4415,6 +4481,11 @@ impl ProductionUiRenderer {
         viewport_width: usize,
         viewport_height: usize,
     ) -> std::result::Result<Option<ProductionXui16Output>, ProductionUiRejection> {
+        // A STORED SELECTION outlives the frame that vouched for it, so it is
+        // asked about here rather than trusted: a key two ids reach names
+        // neither country, and this route publishes the name (Codex round 50).
+        let selection = Some(viewer.selected_country.as_str())
+            .and_then(|tag| frame.named_country(tag));
         if viewer.panel == crate::occupation_compositor::OccupationPanel::Closed {
             return Ok(None);
         }
@@ -4458,7 +4529,7 @@ impl ProductionUiRenderer {
             image: composed.image,
             report: ProductionUiReport {
                 viewport: [viewport_width, viewport_height],
-                pov_tag: Some(viewer.selected_country.clone()),
+                pov_tag: selection.map(|tag| tag.tag().to_owned()),
                 promoted_packets: PROMOTED_XUI_PACKETS
                     .iter()
                     .map(|value| (*value).to_string())
@@ -4991,15 +5062,22 @@ impl ProductionUiRenderer {
         frame: &WorldFrame,
         viewer: &ObserverViewerUiState,
     ) -> ObserverAbilityRoute {
+        // A STORED SELECTION outlives the frame that vouched for it, so it is
+        // asked about here rather than trusted: a key two ids reach names
+        // neither country, and this route publishes the name (Codex round 50).
+        let selection = viewer
+            .selected_country
+            .as_deref()
+            .and_then(|tag| frame.named_country(tag));
         let mut route = ObserverAbilityRoute {
-            country_tag: viewer.selected_country.clone(),
+            country_tag: selection.map(|tag| tag.tag().to_owned()),
             source_record_id: None,
             admitted: None,
             selected_context: viewer.abilities.selected_context.clone(),
             measured_empty: false,
             gaps: Vec::new(),
         };
-        let Some(country_tag) = viewer.selected_country.as_deref() else {
+        let Some(country_tag) = selection else {
             route.gaps.push(ObserverUiGap {
                 surface: "XUI23/command_abilities",
                 field: "selected_country",
@@ -5084,8 +5162,15 @@ impl ProductionUiRenderer {
         viewer: &ObserverViewerUiState,
         content: &crate::static_focus_defs::AdmittedStaticFocusUiContent,
     ) -> ObserverFocusRoute {
+        // A STORED SELECTION outlives the frame that vouched for it, so it is
+        // asked about here rather than trusted: a key two ids reach names
+        // neither country, and this route publishes the name (Codex round 50).
+        let selection = viewer
+            .selected_country
+            .as_deref()
+            .and_then(|tag| frame.named_country(tag));
         let mut route = ObserverFocusRoute {
-            country_tag: viewer.selected_country.clone(),
+            country_tag: selection.map(|tag| tag.tag().to_owned()),
             semantic: None,
             scene: None,
             measured_empty: false,
@@ -5101,7 +5186,7 @@ impl ProductionUiRenderer {
             });
             return route;
         }
-        let Some(country_tag) = viewer.selected_country.as_deref() else {
+        let Some(country_tag) = selection else {
             route.gaps.push(ObserverUiGap {
                 surface: "XUI10/national_focus",
                 field: "selected_country",
@@ -5110,7 +5195,7 @@ impl ProductionUiRenderer {
             });
             return route;
         };
-        let Some(focus) = frame.focus(country_tag) else {
+        let Some(focus) = frame.focus(country_tag.tag()) else {
             route.gaps.push(ObserverUiGap {
                 surface: "XUI10/national_focus",
                 field: "d12_focus_state",
@@ -5163,13 +5248,20 @@ impl ProductionUiRenderer {
         catalog: &crate::national_focus::FocusCatalog,
         content_manifest_digest_sha256: &str,
     ) -> ObserverFocusRoute {
+        // A STORED SELECTION outlives the frame that vouched for it, so it is
+        // asked about here rather than trusted: a key two ids reach names
+        // neither country, and this route publishes the name (Codex round 50).
+        let selection = viewer
+            .selected_country
+            .as_deref()
+            .and_then(|tag| frame.named_country(tag));
         let semantic = match crate::national_focus::admit_observer_national_focus_presentation(
             focus, topology, catalog,
         ) {
             Ok(semantic) => semantic,
             Err(error) => {
                 return ObserverFocusRoute {
-                    country_tag: viewer.selected_country.clone(),
+                    country_tag: selection.map(|tag| tag.tag().to_owned()),
                     semantic: None,
                     scene: None,
                     measured_empty: false,
@@ -5183,13 +5275,13 @@ impl ProductionUiRenderer {
             }
         };
         let mut route = ObserverFocusRoute {
-            country_tag: viewer.selected_country.clone(),
+            country_tag: selection.map(|tag| tag.tag().to_owned()),
             measured_empty: semantic.nodes.is_empty(),
             semantic: None,
             scene: None,
             gaps: Vec::new(),
         };
-        let Some(country_tag) = viewer.selected_country.as_deref() else {
+        let Some(country_tag) = selection else {
             route.gaps.push(ObserverUiGap {
                 surface: "XUI10/national_focus",
                 field: "selected_country",
@@ -5232,7 +5324,7 @@ impl ProductionUiRenderer {
             });
             return route;
         }
-        let Some(row) = carrier.rows.iter().find(|row| row.country_tag == country_tag) else {
+        let Some(row) = carrier.rows.iter().find(|row| row.country_tag == country_tag.tag()) else {
             route.semantic = Some(semantic);
             route.gaps.push(ObserverUiGap {
                 surface: "XUI10/national_focus",
@@ -5303,7 +5395,7 @@ impl ProductionUiRenderer {
             &semantic,
             &evaluated,
             u64::try_from(frame.hour_index()).unwrap_or(u64::MAX),
-            country_tag,
+            country_tag.tag(),
             content_manifest_digest_sha256,
             &carrier.authored_gui_sha256,
         ) {
@@ -5410,16 +5502,27 @@ impl ProductionUiRenderer {
         frame: &WorldFrame,
         viewer: &ObserverViewerUiState,
     ) -> ObserverEventRoute {
-        let mut route = ObserverEventRoute {
-            country_tag: viewer.selected_country.clone(),
-            admitted_history: None,
-            event_tick: None,
-            visible_sequences: Vec::new(),
-            focused_sequence: None,
-            measured_empty: false,
-            gaps: Vec::new(),
-        };
-        let Some(country_tag) = viewer.selected_country.as_deref() else {
+        // `country_identity_for_tag` asks the frame's own contention census
+        // before it counts roster entries, and keeps the reason when it says no.
+        let mut route = ObserverEventRoute::authenticated_for_selection(
+            frame,
+            viewer.selected_country.as_deref(),
+        );
+        let country_tag_db_id = route.country_tag_db_id();
+        // A stored selection this hour's census cannot name is not a
+        // recipient; the route above already carries the reason why.
+        if viewer
+            .selected_country
+            .as_deref()
+            .and_then(|tag| frame.named_country(tag))
+            .is_none()
+        {
+            return route;
+        }
+        // No id, no join. A TAG the current roster cannot resolve to exactly one
+        // country cannot be the recipient of anything.
+        // The constructor already recorded the frame's own reason.
+        let Some(country_tag_db_id) = country_tag_db_id else {
             return route;
         };
         let definitions = match self.event_definitions.as_ref() {
@@ -5501,7 +5604,7 @@ impl ProductionUiRenderer {
                 event
                     .popup_suppression
                     .filter(|reason| !reason.is_measured_no_popup())
-                    .filter(|_| event.lifecycle_open_at(country_tag, tick))
+                    .filter(|_| event.lifecycle_open_at(country_tag_db_id, tick))
                     .map(|reason| format!("{}:{reason:?}", event.event_sequence))
             })
             .collect::<Vec<_>>();
@@ -5526,7 +5629,7 @@ impl ProductionUiRenderer {
         }
         let (visible, focused) = crate::event_chrome::visible_event_popup_stack(
             &admitted,
-            country_tag,
+            country_tag_db_id,
             tick,
             &viewer.events,
         );
@@ -5613,7 +5716,9 @@ impl ProductionUiRenderer {
         viewport_width: usize,
         viewport_height: usize,
     ) -> std::result::Result<Vec<ProductionXui21Output>, ProductionUiRejection> {
-        let Some(country_tag) = route.country_tag.as_deref() else {
+        // The route resolves the POV to an ENGINE id; the TAG it displays is
+        // not what the events are joined on.
+        let Some(country_tag_db_id) = route.country_tag_db_id() else {
             return Ok(Vec::new());
         };
         let Some(history) = route.admitted_history.as_ref() else {
@@ -5649,7 +5754,12 @@ impl ProductionUiRenderer {
                     ))
                 })?;
             let presentation =
-                crate::event_chrome::event_popup_presentation(event, layouts, country_tag, tick)
+                crate::event_chrome::event_popup_presentation(
+                    event,
+                    layouts,
+                    country_tag_db_id,
+                    tick,
+                )
                     .map_err(|error| {
                         ProductionUiRejection::IncompleteComposition(format!(
                             "XUI21 popup {sequence} presentation rejected: {error:?}"
@@ -5770,6 +5880,13 @@ impl ProductionUiRenderer {
         xui22_catalog: Option<&crate::definition_admission::GuiDefinitionCatalog>,
         xui22_panel: Option<&crate::observer_panels::ScriptedGuiObserverPanel>,
     ) -> std::result::Result<ObserverUiSemanticFrame, ProductionUiRejection> {
+        // A STORED SELECTION outlives the frame that vouched for it, so it is
+        // asked about here rather than trusted: a key two ids reach names
+        // neither country, and this route publishes the name (Codex round 50).
+        let selection = viewer
+            .selected_country
+            .as_deref()
+            .and_then(|tag| frame.named_country(tag));
         if viewport_width
             != usize::try_from(playback.variant_key.physical_viewport.width).unwrap_or(usize::MAX)
             || viewport_height
@@ -5822,7 +5939,7 @@ impl ProductionUiRenderer {
             ..HudBinding::default()
         };
         let mut theatre = None;
-        if let Some(country_tag) = viewer.selected_country.as_deref() {
+        if let Some(country_tag) = selection {
             let observer_topbar = topbar_binding_from_observer_frame(frame, country_tag);
             hud_binding.topbar = observer_topbar.binding;
             gaps.extend(observer_topbar.gaps.into_iter().map(|gap| ObserverUiGap {
@@ -5854,7 +5971,7 @@ impl ProductionUiRenderer {
             let mut screen = None;
             let mut canvas = None;
             let mut measured_empty = false;
-            match viewer.selected_country.as_deref() {
+            match selection {
                 None => surface_gaps.push(ObserverUiGap {
                     surface: "XUI15/trade",
                     field: "selected_country",
@@ -5875,8 +5992,8 @@ impl ProductionUiRenderer {
                     } else {
                         let admitted = admit_trade_screen(
                             frame.trade_status(),
-                            country_tag,
-                            frame.trade(country_tag),
+                            country_tag.tag(),
+                            frame.trade(country_tag.tag()),
                         );
                         if let AdmittedTradeScreen::Visible(presentation) = &admitted {
                             match crate::trade_compositor::xui15_producer_payload_from_frame(frame) {
@@ -5930,7 +6047,7 @@ impl ProductionUiRenderer {
             }
             gaps.extend(surface_gaps.iter().cloned());
             Some(ObserverTradeSurface {
-                country_tag: viewer.selected_country.clone(),
+                country_tag: selection.map(|tag| tag.tag().to_owned()),
                 screen,
                 authored_root: "countrytradeview",
                 canvas,
@@ -5942,7 +6059,7 @@ impl ProductionUiRenderer {
         };
 
         let decisions = if viewer.decision_panel_open {
-            let country_tag = viewer.selected_country.as_deref().ok_or_else(|| {
+            let country_tag = selection.ok_or_else(|| {
                 ProductionUiRejection::IncompleteComposition(
                     "viewer opened XUI19 without selecting a country".into(),
                 )
@@ -6067,7 +6184,7 @@ impl ProductionUiRenderer {
         let production_lines = if viewer.production_lines.panel_open {
             let mut surface_gaps = Vec::new();
             let mut canvas = None;
-            let route = match viewer.selected_country.as_deref() {
+            let route = match selection {
                 None => {
                     surface_gaps.push(ObserverUiGap {
                         surface: "XUI12/production_lines",
@@ -6084,7 +6201,7 @@ impl ProductionUiRenderer {
                             payload.clone(),
                             frame,
                             &self.content_admission,
-                            country_tag,
+                            country_tag.tag(),
                             &viewer.production_lines,
                         ) {
                             Ok(sealed) => canvas = Some(sealed),
@@ -6122,7 +6239,7 @@ impl ProductionUiRenderer {
             };
             gaps.extend(surface_gaps.iter().cloned());
             Some(ObserverProductionLinesSurface {
-                country_tag: viewer.selected_country.clone(),
+                country_tag: selection.map(|tag| tag.tag().to_owned()),
                 route,
                 canvas,
                 gaps: surface_gaps,
@@ -6135,7 +6252,7 @@ impl ProductionUiRenderer {
             let mut surface_gaps = Vec::new();
             let mut resolved_viewer = None;
             let mut measured_empty = false;
-            match viewer.selected_country.as_deref() {
+            match selection {
                 None => surface_gaps.push(ObserverUiGap {
                     surface: "XUI13/designer",
                     field: "selected_country",
@@ -6166,7 +6283,7 @@ impl ProductionUiRenderer {
             }
             gaps.extend(surface_gaps.iter().cloned());
             Some(ObserverDesignerRoute {
-                country_tag: viewer.selected_country.clone(),
+                country_tag: selection.map(|tag| tag.tag().to_owned()),
                 viewer: resolved_viewer,
                 measured_empty,
                 gaps: surface_gaps,
@@ -6180,7 +6297,7 @@ impl ProductionUiRenderer {
         {
             let mut surface_gaps = Vec::new();
             let mut model = None;
-            match viewer.selected_country.as_deref() {
+            match selection {
                 None => surface_gaps.push(ObserverUiGap {
                     surface: "XUI17/characters",
                     field: "selected_country",
@@ -6189,7 +6306,7 @@ impl ProductionUiRenderer {
                 }),
                 Some(country_tag) => match self.admit_xui17_character_model(
                     frame,
-                    country_tag,
+                    country_tag.tag(),
                     &viewer.character_selection,
                 ) {
                     Err(error) => surface_gaps.push(ObserverUiGap {
@@ -6220,7 +6337,7 @@ impl ProductionUiRenderer {
             }
             gaps.extend(surface_gaps.iter().cloned());
             Some(ObserverCharacterSurface {
-                country_tag: viewer.selected_country.clone(),
+                country_tag: selection.map(|tag| tag.tag().to_owned()),
                 model,
                 gaps: surface_gaps,
             })
@@ -6465,6 +6582,15 @@ pub(crate) fn validate_complete_compose_report(
 
 #[cfg(test)]
 mod tests {
+    /// A TAG this frame's census admits. A test that means to name a country says
+    /// so here; a test about a contended key asks `named_country` and gets `None`.
+    fn named<'tag>(
+        frame: &replay_core::WorldFrame,
+        tag: &'tag str,
+    ) -> replay_core::NamedCountry<'tag> {
+        frame.named_country(tag).expect("census-admitted tag")
+    }
+
     use super::*;
 
     #[test]
@@ -6946,7 +7072,18 @@ mod tests {
                     date: None,
                     save_version: None,
                     schema_version: None,
-                    rest: self.rest.clone(),
+                    rest: {
+                        let mut rest = self.rest.clone();
+                        if replay_core::COUNTRY_COMPOSED_MEMBERS
+                            .iter()
+                            .any(|member| rest.contains_key(*member))
+                        {
+                            rest.entry("tag_db_id_index").or_insert_with(
+                                || serde_json::json!({"country_composition_version": 2}),
+                            );
+                        }
+                        rest
+                    },
                 })
             }
         }
@@ -7306,7 +7443,7 @@ mod tests {
             );
             observer_test_frame(rest)
         };
-        let gap = admit_observer_theatre_surface(&unnameable_frame, &content_admission(&[]), "GER")
+        let gap = admit_observer_theatre_surface(&unnameable_frame, &content_admission(&[]), named(&unnameable_frame, "GER"))
             .expect_err("an incomplete D18 roster must refuse this surface");
         assert_eq!(gap.field, "selected_country_identity");
         assert!(
@@ -7328,7 +7465,7 @@ mod tests {
             );
             observer_test_frame(rest)
         };
-        let later = admit_observer_theatre_surface(&nameable_frame, &content_admission(&[]), "GER")
+        let later = admit_observer_theatre_surface(&nameable_frame, &content_admission(&[]), named(&nameable_frame, "GER"))
             .expect_err("this fixture carries no D98 selector, so it still refuses");
         assert_ne!(
             later.field, "selected_country_identity",
@@ -8102,19 +8239,122 @@ mod tests {
             playback_variant_key: None,
             asset_cache: Mutex::new(UiAssetCache::default()),
         };
-        let route = ObserverEventRoute {
-            country_tag: Some("ENG".into()),
-            admitted_history: Some(Vec::new()),
-            event_tick: Some(900),
-            visible_sequences: Vec::new(),
-            focused_sequence: None,
-            measured_empty: true,
-            gaps: Vec::new(),
-        };
+        // AUTHENTICATED, not stamped: even in-crate, an identity comes from a
+        // frame. A struct literal here would be the one forge the private
+        // field exists to prevent.
+        #[derive(Clone)]
+        struct EngFrame;
+        impl replay_core::ReplaySource for EngFrame {
+            fn game_id(&self) -> &str {
+                "xui21-measured-empty"
+            }
+            fn hours(&self) -> &[i64] {
+                &[900]
+            }
+            fn warnings(&self) -> &[String] {
+                &[]
+            }
+            fn frame(
+                &self,
+                hour_index: i64,
+            ) -> std::result::Result<replay_core::RawFrame, replay_core::SourceError> {
+                Ok(replay_core::RawFrame {
+                    hour_index,
+                    date: None,
+                    save_version: None,
+                    schema_version: None,
+                    rest: serde_json::json!({
+                        "countries": { "ENG": { "_r2_tag_db_id": 3 } },
+                        "tag_db_id_index": { "country_composition_version": 2 },
+                    })
+                    .as_object()
+                    .expect("frame object")
+                    .clone(),
+                })
+            }
+        }
+        let timeline =
+            replay_core::WorldTimeline::open(Box::new(EngFrame)).expect("timeline");
+        let frame = timeline.frame(900).expect("frame");
+        let mut route = ObserverEventRoute::authenticated_for_selection(&frame, Some("ENG"));
+        assert_eq!(route.country_tag_db_id(), Some(3), "the frame names ENG");
+        route.admitted_history = Some(Vec::new());
+        route.event_tick = Some(900);
+        route.measured_empty = true;
         assert!(renderer
             .compose_xui21_event_stack(&route, PRODUCTION_UI_WIDTH, PRODUCTION_UI_HEIGHT)
             .expect("measured-empty history is a successful zero-surface composition")
             .is_empty());
+    }
+
+    /// The XUI21 route keeps the RAW selector, and the REASON with it.
+    ///
+    /// `authenticated_for_selection` decides admission -- that is its job -- so
+    /// it takes `&str` rather than `NamedCountry`: a contended selection has to
+    /// REACH it to become a gap that names the census, and a route built from
+    /// `None` would say only that nothing was selected. The scan that used to
+    /// prove this went with the newtype, so the behaviour is asserted here.
+    ///
+    /// kills: the census filter on `country_tag`, and the gap beside it.
+    #[test]
+    fn the_xui21_route_refuses_to_name_a_contended_selection_and_says_why() {
+        let frame = observer_test_frame(
+            serde_json::json!({
+                "countries": { "ENG": { "_r2_tag_db_id": 3 } },
+                "tag_db_id_index": {
+                    "country_composition_version": 2,
+                    "withheld_countries": {
+                        "contended_keys": { "DUP": { "tag_db_ids": [441, 442] } }
+                    },
+                },
+            })
+            .as_object()
+            .expect("frame object")
+            .clone(),
+        );
+        assert!(
+            frame.country_key_is_contended("DUP"),
+            "the census must be carried"
+        );
+        assert!(
+            frame.named_country("DUP").is_none(),
+            "and no consumer can be handed that name"
+        );
+
+        let route = ObserverEventRoute::authenticated_for_selection(&frame, Some("DUP"));
+        assert_eq!(
+            (route.country_tag.as_deref(), route.country_tag_db_id()),
+            (None, None),
+            "a key two ids reach is not a country to name, id or no id"
+        );
+        // The REASON, not just the field: a gap whose text is generic tells
+        // the caller nothing the missing country_tag had not already said
+        // (Codex round 51).
+        let gap = route
+            .gaps
+            .iter()
+            .find(|gap| gap.field == "selected_country_tag_db_id")
+            .unwrap_or_else(|| panic!("the route must carry the reason: {:?}", route.gaps));
+        assert!(
+            gap.reason.contains("DUP") && gap.reason.contains("has none"),
+            "the reason must name the key it refused and why: {}",
+            gap.reason
+        );
+        assert!(
+            gap.required_domain.contains("contention census"),
+            "and the domain it needed: {}",
+            gap.required_domain
+        );
+
+        // THE CONTROL: a selection the census admits is still named, or the
+        // assertions above would pass on a route that refuses everything.
+        let route = ObserverEventRoute::authenticated_for_selection(&frame, Some("ENG"));
+        assert_eq!(
+            (route.country_tag.as_deref(), route.country_tag_db_id()),
+            (Some("ENG"), Some(3)),
+            "an admitted selection is still named, or this proves nothing"
+        );
+        assert!(route.gaps.is_empty(), "{:?}", route.gaps);
     }
 
     #[test]
@@ -8291,7 +8531,18 @@ mod tests {
                     date: None,
                     save_version: None,
                     schema_version: None,
-                    rest: self.rest.clone(),
+                    rest: {
+                        let mut rest = self.rest.clone();
+                        if replay_core::COUNTRY_COMPOSED_MEMBERS
+                            .iter()
+                            .any(|member| rest.contains_key(*member))
+                        {
+                            rest.entry("tag_db_id_index").or_insert_with(
+                                || serde_json::json!({"country_composition_version": 2}),
+                            );
+                        }
+                        rest
+                    },
                 })
             }
         }

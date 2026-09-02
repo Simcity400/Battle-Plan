@@ -16,7 +16,12 @@ pub mod a729_runtime;
 pub const DOMAIN_ID: u16 = 75;
 pub const DOMAIN_NAME: &str = "fired_event_popups_live";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"FEV1");
-pub const SCHEMA_VERSION: u32 = 4;
+// 5, NOT 4. Two lanes bumped v3 -> v4 independently -- one adding the
+// capture-start block, one adding the per-row recipient identity -- and this
+// tree is their merge, so it carries BOTH and is a THIRD layout. Leaving it at
+// 4 would let a payload from either parent pass the header check at
+// `decode_payload` and then be read with the wrong field order.
+pub const SCHEMA_VERSION: u32 = 5;
 pub const AUTHORITY_A729_INLINE_HOOKS: u32 = 1;
 pub const MAX_ROWS: usize = 1_000_000;
 pub const MAX_CAPTURE_START_FIRED_IDS: usize = 1_000_000;
@@ -59,6 +64,13 @@ pub struct OptionRuntimeTextContext {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FiredEventRow {
     pub event_id: String,
+    /// The engine identity of the recipient, carried BESIDE its TAG.
+    ///
+    /// The TAG is display text and two countries can share it, so a row that
+    /// carried only the TAG could not say which country the event was addressed
+    /// to. The bridge already observes this id (`A19DelayedEventDispatchObservation
+    /// .recipient_tag_id`) and used to spend it resolving the TAG and drop it.
+    pub recipient_tag_db_id: u32,
     pub recipient_tag: String,
     pub fire_date: String,
     pub fire_hour: u64,
@@ -198,6 +210,7 @@ struct LedgerState {
 #[derive(Clone, Debug)]
 pub struct FireInput {
     pub event_id: String,
+    pub recipient_tag_db_id: u32,
     pub recipient_tag: String,
     pub fire_date: String,
     pub fire_hour: u64,
@@ -348,6 +361,7 @@ impl A729EventLedger {
         }
         let row = FiredEventRow {
             event_id: input.event_id,
+            recipient_tag_db_id: input.recipient_tag_db_id,
             recipient_tag: input.recipient_tag,
             fire_date: input.fire_date,
             fire_hour: input.fire_hour,
@@ -543,6 +557,9 @@ pub fn validate_frame(frame: &FiredEventFrame) -> Result<(), CarrierError> {
     let mut identities = BTreeSet::new();
     for row in &frame.rows {
         nonempty(&row.event_id, "event id")?;
+        if row.recipient_tag_db_id == 0 {
+            return invalid("recipient tag_db_id is zero");
+        }
         tag(&row.recipient_tag)?;
         nonempty(&row.fire_date, "fire date")?;
         if !identities.insert(row.event_sequence) {
@@ -640,6 +657,7 @@ pub fn encode_payload(frame: &FiredEventFrame) -> Result<Vec<u8>, CarrierError> 
     u32v(&mut out, frame.rows.len() as u32);
     for row in &frame.rows {
         string(&mut out, &row.event_id)?;
+        u32v(&mut out, row.recipient_tag_db_id);
         string(&mut out, &row.recipient_tag)?;
         string(&mut out, &row.fire_date)?;
         u64v(&mut out, row.fire_hour);
@@ -703,6 +721,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<FiredEventFrame, CarrierError> {
     let mut rows = Vec::with_capacity(count);
     for _ in 0..count {
         let event_id = r.string()?;
+        let recipient_tag_db_id = r.u32()?;
         let recipient_tag = r.string()?;
         let fire_date = r.string()?;
         let fire_hour = r.u64()?;
@@ -744,6 +763,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<FiredEventFrame, CarrierError> {
         }
         rows.push(FiredEventRow {
             event_id,
+            recipient_tag_db_id,
             recipient_tag,
             fire_date,
             fire_hour,
@@ -995,6 +1015,7 @@ mod tests {
     fn row() -> FiredEventRow {
         FiredEventRow {
             event_id: "germany.1".into(),
+            recipient_tag_db_id: 1,
             recipient_tag: "GER".into(),
             fire_date: "1936.1.1.12".into(),
             fire_hour: 0,
@@ -1028,6 +1049,42 @@ mod tests {
         let b = encode_payload(&f).unwrap();
         assert_eq!(decode_payload(&b).unwrap(), f);
         assert_eq!(encode_payload(&decode_payload(&b).unwrap()).unwrap(), b)
+    }
+
+    /// A payload from EITHER parent's v4 is refused at the version boundary.
+    ///
+    /// Two lanes bumped v3 -> v4 independently and this tree is their merge, so
+    /// three distinct layouts have existed and two of them called themselves 4.
+    /// The header check is the only thing standing between a parent's bytes and
+    /// a decode that reads the wrong field order, so it is asserted here on the
+    /// exact 12-byte prologue each parent wrote.
+    #[test]
+    fn a_v4_payload_from_either_parent_is_refused_not_reinterpreted() {
+        let mut authentic = encode_payload(&FiredEventFrame {
+            elapsed_wall_ms: 1,
+            frame_hour: 16_959_360,
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+            telemetry: telemetry(),
+            fired_events_complete: true,
+            capture_start_fired_event_ids: Some(Vec::new()),
+            rows: vec![row()],
+        })
+        .expect("encode");
+        assert!(decode_payload(&authentic).is_ok(), "the control decodes");
+
+        // The prologue is MAGIC | SCHEMA_VERSION | AUTHORITY, three LE u32s.
+        for stale in [3u32, 4] {
+            authentic[4..8].copy_from_slice(&stale.to_le_bytes());
+            assert!(
+                matches!(
+                    decode_payload(&authentic),
+                    Err(CarrierError::UnauthenticatedSource)
+                ),
+                "a v{stale} header must be refused, never read with v{SCHEMA_VERSION} field order"
+            );
+        }
+        authentic[4..8].copy_from_slice(&SCHEMA_VERSION.to_le_bytes());
+        assert!(decode_payload(&authentic).is_ok(), "and restored, it decodes");
     }
 
     #[test]
@@ -1206,6 +1263,7 @@ mod tests {
         for sequence in [10, 11] {
             ledger.record_fire(FireInput {
                 event_id: "germany.1".into(),
+                recipient_tag_db_id: 1,
                 recipient_tag: "GER".into(),
                 fire_date: "1936.1.1.12".into(),
                 fire_hour: 0,
@@ -1303,6 +1361,7 @@ mod tests {
         for sequence in [11, 10] {
             ledger.record_fire(FireInput {
                 event_id: "germany.1".into(),
+                recipient_tag_db_id: 1,
                 recipient_tag: "GER".into(),
                 fire_date: "1936.1.1.12".into(),
                 fire_hour: 0,

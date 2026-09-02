@@ -352,7 +352,11 @@ fn required_target_keys(kind: &str) -> Option<&'static [&'static str]> {
     }
 }
 
-fn parse_targets(value: &Value, path: &str) -> Result<Vec<FrdDecisionTarget>, String> {
+fn parse_targets(
+    value: &Value,
+    path: &str,
+    contended_keys: &impl crate::world::ContendedKeys,
+) -> Result<Vec<FrdDecisionTarget>, String> {
     let rows = value
         .as_array()
         .ok_or_else(|| format!("{path}: expected array"))?;
@@ -470,7 +474,14 @@ fn parse_targets(value: &Value, path: &str) -> Result<Vec<FrdDecisionTarget>, St
         out.push(FrdDecisionTarget {
             decision: wire.decision,
             target_kind,
-            target_country,
+            // WITHHELD at the publish, after the checks above read the name
+            // the producer sent. The row is identified by `target_id`; the
+            // NAME is what a key two ids reach cannot supply. The outer map
+            // key was filtered in round 38 and this inner one was not, so an
+            // uncontended country published a contended target (Codex round
+            // 39).
+            target_country: target_country
+                .filter(|tag| !contended_keys.holds(tag.as_str())),
             target_id,
             flags: wire.flags,
             source_kind: wire.source_kind,
@@ -488,11 +499,12 @@ fn target_leaf(
     object: &Map<String, Value>,
     key: &str,
     path: &str,
+    contended_keys: &impl crate::world::ContendedKeys,
 ) -> Result<(bool, FrdDepthLeaf<Vec<FrdDecisionTarget>>), String> {
     match object.get(key) {
         None => Ok((false, FrdDepthLeaf::Absent)),
         Some(Value::Null) => Ok((true, FrdDepthLeaf::Unobtained)),
-        Some(value) => parse_targets(value, &format!("{path}.{key}"))
+        Some(value) => parse_targets(value, &format!("{path}.{key}"), contended_keys)
             .map(|rows| (true, FrdDepthLeaf::Measured(rows))),
     }
 }
@@ -500,6 +512,7 @@ fn target_leaf(
 fn parse_country(
     tag: &str,
     country: &Map<String, Value>,
+    contended_keys: &impl crate::world::ContendedKeys,
 ) -> Result<Option<FrdCountryDepth>, String> {
     let mut seen = false;
     let empty = Map::new();
@@ -559,6 +572,7 @@ fn parse_country(
         decisions,
         "_r2_depth_targets",
         &format!("countries.{tag}.decisions"),
+        contended_keys,
     )?;
     seen |= present;
     let (present, decision_events): (_, FrdDepthLeaf<Vec<FrdDecisionEvent>>) = leaf(
@@ -643,6 +657,7 @@ fn parse_country(
 
 pub(crate) fn build_frd_depth_annotations(
     rest: &Map<String, Value>,
+    contended_keys: &impl crate::world::ContendedKeys,
     warnings: &mut Vec<String>,
 ) -> FrdDepthAnnotationsView {
     let result = (|| -> Result<FrdDepthAnnotationsView, String> {
@@ -655,7 +670,7 @@ pub(crate) fn build_frd_depth_annotations(
                 let Some(country) = value.as_object() else {
                     continue;
                 };
-                if let Some(depth) = parse_country(tag, country)? {
+                if let Some(depth) = parse_country(tag, country, contended_keys)? {
                     view.countries.insert(tag.clone(), depth);
                 }
             }
@@ -678,6 +693,11 @@ pub(crate) fn build_frd_depth_annotations(
                 }
             }
         }
+        // PUBLISHED, not WALKED, and before the status is decided: the walk
+        // above read and validated every country entry the producer sent, and
+        // a key two ids reach is not a country to file a depth annotation
+        // under (Codex round 38).
+        view.countries.retain(|tag, _| !contended_keys.holds(tag.as_str()));
         if !view.countries.is_empty() || view.badges != FrdDepthLeaf::Absent {
             view.status = ViewStatus::Present;
         }
@@ -750,7 +770,11 @@ mod tests {
             }]}}
         });
         let mut warnings = Vec::new();
-        let view = build_frd_depth_annotations(rest.as_object().unwrap(), &mut warnings);
+        let view = build_frd_depth_annotations(
+            rest.as_object().unwrap(),
+            &BTreeSet::<String>::new(),
+            &mut warnings,
+        );
         assert_eq!(view.status, ViewStatus::Present);
         assert!(warnings.is_empty());
         assert!(matches!(
@@ -758,6 +782,52 @@ mod tests {
             FrdDepthLeaf::Unobtained
         ));
         assert!(matches!(view.badges, FrdDepthLeaf::Measured(ref rows) if rows.len() == 1));
+    }
+
+    /// The INNER country reference: an uncontended country's decision target.
+    ///
+    /// Round 38 filtered the outer map key -- the country the annotation hangs
+    /// under -- and a decision target names a country of its own. GER is an
+    /// ordinary country and its decision pointed at a key two ids reach, so the
+    /// row published a target country that names neither (Codex round 39). The
+    /// target is identified by `target_id`, so the row and its identity stay
+    /// and the NAME is what goes.
+    #[test]
+    fn a_contended_decision_target_is_named_by_nobody() {
+        let rest = json!({"countries": {"GER": {"decisions": {
+            "_r2_depth_targets": [{
+                "decision": "country_decision", "target_kind": "country",
+                "target": "DUP", "target_tag_db_id": 441, "flags": 3,
+                "source_kind": 2,
+                "source": "CDecisionStatus+0x100 record+0x20",
+                "lifecycle_state": 1, "lifecycle_state_name": "active",
+                "ignore": false, "days": 3
+            }]
+        }}}});
+        let rest = rest.as_object().expect("the fixture is an object");
+        let mut warnings = Vec::new();
+
+        let control =
+            build_frd_depth_annotations(rest, &BTreeSet::<String>::new(), &mut warnings);
+        let FrdDepthLeaf::Measured(targets) = &control.countries["GER"].decision_targets else {
+            panic!("the control measures the target, or this proves nothing");
+        };
+        assert_eq!(targets[0].target_country.as_deref(), Some("DUP"));
+
+        let census = BTreeSet::from(["DUP".to_string()]);
+        let view = build_frd_depth_annotations(rest, &census, &mut warnings);
+        assert!(
+            view.countries.contains_key("GER"),
+            "GER is an ordinary country and keeps its annotation"
+        );
+        let FrdDepthLeaf::Measured(targets) = &view.countries["GER"].decision_targets else {
+            panic!("the row stays: it is identified by target_id");
+        };
+        assert_eq!(
+            targets[0].target_country, None,
+            "a key two ids reach is not a country to point a decision at"
+        );
+        assert_eq!(targets[0].target_id, 441, "and the id it points at stays");
     }
 
     #[test]
@@ -787,7 +857,11 @@ mod tests {
             ]
         }}}});
         let mut warnings = Vec::new();
-        let view = build_frd_depth_annotations(rest.as_object().unwrap(), &mut warnings);
+        let view = build_frd_depth_annotations(
+            rest.as_object().unwrap(),
+            &BTreeSet::<String>::new(),
+            &mut warnings,
+        );
         let FrdDepthLeaf::Measured(targets) = &view.countries["GER"].decision_targets else {
             panic!("targets must be measured");
         };
@@ -808,7 +882,11 @@ mod tests {
             }]
         }}}});
         let mut warnings = Vec::new();
-        let view = build_frd_depth_annotations(rest.as_object().unwrap(), &mut warnings);
+        let view = build_frd_depth_annotations(
+            rest.as_object().unwrap(),
+            &BTreeSet::<String>::new(),
+            &mut warnings,
+        );
         assert_eq!(view.status, ViewStatus::DomainUnavailable);
         assert!(view.countries.is_empty());
         assert_eq!(warnings.len(), 1);
@@ -831,7 +909,11 @@ mod tests {
             }]}
         }}});
         let mut warnings = Vec::new();
-        let view = build_frd_depth_annotations(rest.as_object().unwrap(), &mut warnings);
+        let view = build_frd_depth_annotations(
+            rest.as_object().unwrap(),
+            &BTreeSet::<String>::new(),
+            &mut warnings,
+        );
         assert_eq!(view.status, ViewStatus::Present);
         assert!(warnings.is_empty());
     }

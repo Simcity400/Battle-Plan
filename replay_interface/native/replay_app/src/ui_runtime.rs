@@ -1,5 +1,6 @@
 
 use game_ui::assets::AssetResolver;
+use replay_core::NamedCountry;
 use replay_core::{ArmyBattleplanOrderKey, WorldFrame};
 use std::sync::{Arc, Mutex};
 
@@ -84,7 +85,11 @@ pub struct ProductObserverOccupationRuntime {
 #[derive(Clone)]
 struct OccupationOutcomeCacheEntry {
     frame: Arc<WorldFrame>,
-    selected_country: Option<String>,
+    /// The selector this outcome was computed FOR, verbatim. A cache key is
+    /// compared, never published, so it is not an identity and is not asked
+    /// about -- and folding a contended selection into `None` here made one
+    /// entry answer for two different selections (Codex round 51).
+    cache_key_country: Option<String>,
     outcome: ObserverOccupationOutcome,
 }
 
@@ -101,7 +106,7 @@ fn cached_occupation_outcome(
                 .as_ref()
                 .filter(|entry| {
                     Arc::ptr_eq(&entry.frame, frame)
-                        && entry.selected_country.as_deref() == selected_country
+                        && entry.cache_key_country.as_deref() == selected_country
                 })
                 .cloned()
         })
@@ -188,7 +193,7 @@ impl ProductObserverOccupationRuntime {
         if let Ok(mut cache) = self.last_outcome.lock() {
             *cache = Some(OccupationOutcomeCacheEntry {
                 frame: Arc::clone(frame),
-                selected_country: selected_country.map(str::to_owned),
+                cache_key_country: selected_country.map(str::to_owned),
                 outcome: outcome.clone(),
             });
         }
@@ -1167,14 +1172,88 @@ fn xui19_matching_presented<'a>(
     presented.filter(|frame| viewer.selected_country.as_deref() == Some(frame.country_tag.as_str()))
 }
 
+/// The XUI11 passive candidate, out of `execute` so the census question it has
+/// to ask is a function a test can call.
+///
+/// Codex round 51 demonstrated the false green that put it here: the
+/// stored-selection scan asks whether the FUNCTION consults the census, and
+/// `execute` is large enough that deleting this one ask left the scan green
+/// while `viewer.selected_country` went straight into `country_tag` -- which is
+/// the round-50 defect, exactly. A 40-line function with one selector read
+/// cannot hide an unasked one, and
+/// `a_contended_selection_yields_no_xui11_candidate` is what this ask dies
+/// without.
+fn xui11_passive_candidate(
+    frame: &WorldFrame,
+    viewer: &game_ui::production_renderer::ObserverViewerUiState,
+    history_anchor: Option<&Xui11HistoryAnchor>,
+    viewport: [usize; 2],
+    feature_local_gaps: &mut Vec<String>,
+) -> Option<Xui11PresentedFrame> {
+    let presentation = frame.politics_presentation_exact();
+    let carrier = presentation.presentation.as_ref()?;
+    let continuity_ok = history_anchor.is_none_or(|prior| {
+        prior.accepts(
+            carrier.frame_hour,
+            carrier.capture_sequence,
+            carrier.previous_record_sha256.as_deref(),
+            &carrier.record_sha256,
+        )
+    });
+    if !continuity_ok {
+        feature_local_gaps.push(
+            "XUI11:field=history:domain=_r2_politics_presentation_exact:unavailable=NON_CONTIGUOUS_OR_REWRITTEN_PASSIVE_RECORD"
+                .into(),
+        );
+        return None;
+    }
+    // THE SELECTOR IS APP STATE HERE, not a parameter, and it outlives the
+    // frame that vouched for it: a viewer whose selection is a key two ids
+    // reach must not be handed an XUI11 candidate naming it, and the
+    // closed-panel branch publishes that name into a semantic receipt and marks
+    // the surface available (Codex round 50).
+    let selected = viewer.selected_country.as_deref().unwrap_or_default();
+    let Some(selected) = frame.named_country(selected) else {
+        feature_local_gaps.push(
+            "XUI11:field=country_tag:domain=contention_census:unavailable=SELECTED_COUNTRY_IS_A_CONTENDED_KEY"
+                .into(),
+        );
+        return None;
+    };
+    Some(Xui11PresentedFrame {
+        country_tag: selected.tag().to_owned(),
+        frame_hour: carrier.frame_hour,
+        capture_sequence: carrier.capture_sequence,
+        record_sha256: carrier.record_sha256.clone(),
+        input_region: None,
+        presentation: None,
+        viewport,
+        tooltip_targets: Vec::new(),
+    })
+}
+
+/// The XUI19 passive candidate, and the census question it has to ask.
+///
+/// The ask lives HERE rather than at the call site because the panel closes
+/// either way and a closed panel that says nothing is indistinguishable from no
+/// selection at all: Codex round 53 deleted the caller's gap and every gate
+/// stayed green. `a_contended_xui19_selection_yields_no_candidate_and_names_why`
+/// is what this ask and this gap die without.
 fn xui19_passive_candidate(
     frame: &WorldFrame,
     selected_country: Option<&str>,
+    contention_gap: &mut Option<String>,
 ) -> Option<Xui19PresentedFrame> {
     let selected_country = selected_country?;
+    let Some(selected_country) = frame.named_country(selected_country) else {
+        *contention_gap = Some(format!(
+            "XUI19:field=selected_country:domain=contention_census:unavailable=CONTENDED_KEY_{selected_country}"
+        ));
+        return None;
+    };
     let view = frame.decision_evaluation_exact();
     let carrier = view.carrier.as_ref()?;
-    view.country(selected_country)?;
+    view.country(selected_country.tag())?;
     Some(Xui19PresentedFrame {
         country_tag: selected_country.to_string(),
         frame_hour: carrier.frame_hour,
@@ -2217,8 +2296,11 @@ impl ProductObserverUiRuntime {
             viewer.collapsed_decision_categories.clone(),
         ));
         let mut xui19_preflight_gap = None;
-        let mut xui19_candidate =
-            xui19_passive_candidate(world_frame, viewer.selected_country.as_deref());
+        let mut xui19_candidate = xui19_passive_candidate(
+            world_frame,
+            viewer.selected_country.as_deref(),
+            &mut xui19_preflight_gap,
+        );
         if xui19_candidate.as_ref().is_some_and(|candidate| {
             self.xui19_history_anchor
                 .as_ref()
@@ -2435,21 +2517,30 @@ impl ProductObserverUiRuntime {
             viewer.selected_country.as_deref(),
             self.scripted_gui_registry.as_ref(),
         ) {
-            (Some(country), Some(registry)) => {
-                match game_ui::observer_panels::admit_scripted_gui_observer_panel(
-                    registry,
-                    world_frame,
-                    country,
-                ) {
-                    Ok(panel) => Some(panel),
-                    Err(error) => {
-                        xui22_preflight_gap = Some(format!(
-                            "XUI22:field=d84_effective_provider_join:domain=scripted_gui_runtime+effective_files:unavailable={error}"
-                        ));
-                        None
+            (Some(country), Some(registry)) => match world_frame.named_country(country) {
+                Some(country) => {
+                    match game_ui::observer_panels::admit_scripted_gui_observer_panel(
+                        registry,
+                        world_frame,
+                        country,
+                    ) {
+                        Ok(panel) => Some(panel),
+                        Err(error) => {
+                            xui22_preflight_gap = Some(format!(
+                                "XUI22:field=d84_effective_provider_join:domain=scripted_gui_runtime+effective_files:unavailable={error}"
+                            ));
+                            None
+                        }
                     }
                 }
-            }
+                None => {
+                    xui22_preflight_gap = Some(
+                        "XUI22:field=selected_country:domain=contention_census:unavailable=SELECTED_COUNTRY_IS_A_CONTENDED_KEY"
+                            .to_string(),
+                    );
+                    None
+                }
+            },
             (Some(_), None) => {
                 xui22_preflight_gap = Some(
                     "XUI22:field=effective_scripted_gui_registry:domain=effective common/scripted_guis/*.txt:unavailable=REGISTRY_NOT_ADMITTED"
@@ -2668,6 +2759,13 @@ impl ProductObserverUiRuntime {
         let mut research_input_region = None;
         let mut research_node_hit_targets = Vec::new();
         let xui09_candidate = viewer.selected_country.as_deref().and_then(|country| {
+            let Some(country) = world_frame.named_country(country) else {
+                feature_local_gaps.push(
+                    "XUI09:field=selected_country:domain=contention_census:unavailable=SELECTED_COUNTRY_IS_A_CONTENDED_KEY"
+                        .to_string(),
+                );
+                return None;
+            };
             let available_folders = match self
                 .renderer
                 .xui09_available_folders(self.static_research_catalog.as_ref())
@@ -2806,40 +2904,13 @@ impl ProductObserverUiRuntime {
         let mut power_balance_panel_region = None;
         let mut combat_available = false;
         let mut combat_input_region = None;
-        let xui11_candidate = world_frame
-            .politics_presentation_exact()
-            .presentation
-            .as_ref()
-            .and_then(|carrier| {
-                let continuity_ok = self
-                    .xui11_history_anchor
-                    .as_ref()
-                    .is_none_or(|prior| {
-                        prior.accepts(
-                            carrier.frame_hour,
-                            carrier.capture_sequence,
-                            carrier.previous_record_sha256.as_deref(),
-                            &carrier.record_sha256,
-                        )
-                    });
-                if !continuity_ok {
-                    feature_local_gaps.push(
-                        "XUI11:field=history:domain=_r2_politics_presentation_exact:unavailable=NON_CONTIGUOUS_OR_REWRITTEN_PASSIVE_RECORD"
-                            .into(),
-                    );
-                    return None;
-                }
-                Some(Xui11PresentedFrame {
-                    country_tag: viewer.selected_country.clone().unwrap_or_default(),
-                    frame_hour: carrier.frame_hour,
-                    capture_sequence: carrier.capture_sequence,
-                    record_sha256: carrier.record_sha256.clone(),
-                    input_region: None,
-                    presentation: None,
-                    viewport: [gfx.width as usize, gfx.height as usize],
-                    tooltip_targets: Vec::new(),
-                })
-            });
+        let xui11_candidate = xui11_passive_candidate(
+            world_frame,
+            viewer,
+            self.xui11_history_anchor.as_ref(),
+            [gfx.width as usize, gfx.height as usize],
+            &mut feature_local_gaps,
+        );
         if xui11_candidate.is_none() {
             feature_local_gaps.push(format!(
                 "XUI11:field=passive_all_country_presentation:domain=_r2_politics_presentation_exact:unavailable={:?}",
@@ -2978,10 +3049,21 @@ impl ProductObserverUiRuntime {
             ));
         }
         if viewer.research.panel_open {
+            'xui09: {
             let selected_country = viewer
                 .selected_country
                 .as_deref()
                 .ok_or("XUI09 research panel is open without an observer-selected country")?;
+            // A contended selection is DATA, not a broken viewer: it costs this
+            // surface and names why, exactly where the renderer's own refusal
+            // used to land. Escalating it would cost the whole frame's UI.
+            let Some(selected_country) = world_frame.named_country(selected_country)
+            else {
+                feature_local_gaps.push(format!(
+                    "XUI09:field=selected_country:domain=contention_census:unavailable=CONTENDED_KEY_{selected_country}"
+                ));
+                break 'xui09;
+            };
             if self.xui09_pending.is_some() {
                 match self.renderer.compose_xui09_research_surface(
                     world_frame,
@@ -3041,6 +3123,7 @@ impl ProductObserverUiRuntime {
                     "XUI09:field=pixel_surface:domain=authenticated_xui09_compositor:unavailable=ADMISSION_REJECTED_CANDIDATE"
                         .into(),
                 );
+            }
             }
         } else if let Some(pending) = self.xui09_pending.as_ref() {
             semantic_receipts.push(format!(
@@ -3212,11 +3295,22 @@ impl ProductObserverUiRuntime {
             semantic_receipts.push("XUI08:viewer-closed:active-conference-available".into());
         }
         if politics_open {
+            'xui11: {
             let selected_country = viewer
                 .selected_country
                 .as_deref()
                 .ok_or("XUI11 politics panel is open without an observer-selected country")?;
-            if viewer.politics.country_tag.as_deref() != Some(selected_country) {
+            // A contended selection is DATA, not a broken viewer: it costs this
+            // surface and names why, exactly where the renderer's own refusal
+            // used to land. Escalating it would cost the whole frame's UI.
+            let Some(selected_country) = world_frame.named_country(selected_country)
+            else {
+                feature_local_gaps.push(format!(
+                    "XUI11:field=selected_country:domain=contention_census:unavailable=CONTENDED_KEY_{selected_country}"
+                ));
+                break 'xui11;
+            };
+            if viewer.politics.country_tag.as_deref() != Some(selected_country.tag()) {
                 return Err("XUI11 viewer country differs from observer-selected country".into());
             }
             if self.xui11_pending.is_some() {
@@ -3232,7 +3326,7 @@ impl ProductObserverUiRuntime {
                         (Ok(catalog), Ok(decisions)) => {
                             crate::power_balance_runtime::admit_country_power_balance_ui(
                                 world_frame,
-                                selected_country,
+                                selected_country.tag(),
                                 catalog,
                                 decisions,
                                 self.renderer.content_manifest_digest_sha256(),
@@ -3304,6 +3398,7 @@ impl ProductObserverUiRuntime {
                     "XUI11:field=pixel_surface:domain=authenticated_xui11_compositor:unavailable=HISTORY_REJECTED_CANDIDATE"
                         .into(),
                 );
+            }
             }
         } else if let Some(pending) = self.xui11_pending.as_ref() {
             politics_available = true;
@@ -3402,11 +3497,22 @@ impl ProductObserverUiRuntime {
             });
         }
         if viewer.intelligence.panel_open {
+            'xui14: {
             let selected_country = viewer
                 .selected_country
                 .as_deref()
                 .ok_or("XUI14 intelligence panel is open without an observer-selected country")?;
-            if viewer.intelligence.country_tag.as_deref() != Some(selected_country) {
+            // A contended selection is DATA, not a broken viewer: it costs this
+            // surface and names why, exactly where the renderer's own refusal
+            // used to land. Escalating it would cost the whole frame's UI.
+            let Some(selected_country) = world_frame.named_country(selected_country)
+            else {
+                feature_local_gaps.push(format!(
+                    "XUI14:field=selected_country:domain=contention_census:unavailable=CONTENDED_KEY_{selected_country}"
+                ));
+                break 'xui14;
+            };
+            if viewer.intelligence.country_tag.as_deref() != Some(selected_country.tag()) {
                 return Err("XUI14 viewer country differs from observer-selected country".into());
             }
             if self.xui14_pending.is_some() {
@@ -3446,6 +3552,7 @@ impl ProductObserverUiRuntime {
                     "XUI14:field=pixel_surface:domain=authenticated_xui14_compositor:unavailable=HISTORY_REJECTED_CANDIDATE"
                         .into(),
                 );
+            }
             }
         } else if let Some(pending) = self.xui14_pending.as_ref() {
             semantic_receipts.push(format!(
@@ -3655,9 +3762,13 @@ impl ProductObserverUiRuntime {
             ));
         }
         if let Some(surface) = semantic.designer.as_ref() {
-            if let (Some(country_tag), Some(designer_viewer)) =
-                (surface.country_tag.as_deref(), surface.viewer.as_ref())
-            {
+            if let (Some(country_tag), Some(designer_viewer)) = (
+                surface
+                    .country_tag
+                    .as_deref()
+                    .and_then(|tag| world_frame.named_country(tag)),
+                surface.viewer.as_ref(),
+            ) {
                 designer_available = apply_xui13_feature_local_composition(
                     self.renderer.compose_xui13_designer_surface(
                         world_frame,
@@ -3667,7 +3778,7 @@ impl ProductObserverUiRuntime {
                         gfx.height as usize,
                     ),
                     &mut framebuffer,
-                    country_tag,
+                    country_tag.tag(),
                     surface.measured_empty,
                     &mut authored_panel_draw_count,
                     &mut semantic_receipts,
@@ -4479,38 +4590,56 @@ impl ProductObserverUiRuntime {
                     decisions.gaps.len(),
                 ));
             }
-            match game_ui::observer_panels::admit_politics_observer_panel(
-                world_frame,
-                country,
-                self.static_research_catalog.as_ref(),
-            ) {
-                Ok(panel) => semantic_receipts.push(format!(
-                    "XUI11:country={country}:presentation={:?}",
-                    panel.presentation
-                )),
-                Err(error) => feature_local_gaps.push(format!("XUI11:{error}")),
+            let named = world_frame.named_country(country);
+            if named.is_none() {
+                feature_local_gaps.push(format!(
+                    "XUI11:field=selected_country:domain=contention_census:unavailable=CONTENDED_KEY_{country}"
+                ));
+                feature_local_gaps.push(format!(
+                    "XUI18:field=selected_country:domain=contention_census:unavailable=CONTENDED_KEY_{country}"
+                ));
+                if self.scripted_gui_registry.is_some() {
+                    feature_local_gaps.push(format!(
+                        "XUI22:field=selected_country:domain=contention_census:unavailable=CONTENDED_KEY_{country}"
+                    ));
+                }
             }
-            match game_ui::observer_panels::admit_power_balance_observer_panel(world_frame, country)
-            {
-                Ok(panel) => semantic_receipts.push(format!(
-                    "XUI18:country={country}:rows={}:presentation={:?}",
-                    panel.applicable.len(),
-                    panel.presentation
-                )),
-                Err(error) => feature_local_gaps.push(format!("XUI18:{error}")),
-            }
-            if let Some(registry) = self.scripted_gui_registry.as_ref() {
-                match game_ui::observer_panels::admit_scripted_gui_observer_panel(
-                    registry,
+            if let Some(country) = named {
+                match game_ui::observer_panels::admit_politics_observer_panel(
+                    world_frame,
+                    country,
+                    self.static_research_catalog.as_ref(),
+                ) {
+                    Ok(panel) => semantic_receipts.push(format!(
+                        "XUI11:country={country}:presentation={:?}",
+                        panel.presentation
+                    )),
+                    Err(error) => feature_local_gaps.push(format!("XUI11:{error}")),
+                }
+                match game_ui::observer_panels::admit_power_balance_observer_panel(
                     world_frame,
                     country,
                 ) {
                     Ok(panel) => semantic_receipts.push(format!(
-                        "XUI22:country={country}:rows={}:presentation={:?}",
-                        panel.rows.len(),
+                        "XUI18:country={country}:rows={}:presentation={:?}",
+                        panel.applicable.len(),
                         panel.presentation
                     )),
-                    Err(error) => feature_local_gaps.push(format!("XUI22:{error}")),
+                    Err(error) => feature_local_gaps.push(format!("XUI18:{error}")),
+                }
+                if let Some(registry) = self.scripted_gui_registry.as_ref() {
+                    match game_ui::observer_panels::admit_scripted_gui_observer_panel(
+                        registry,
+                        world_frame,
+                        country,
+                    ) {
+                        Ok(panel) => semantic_receipts.push(format!(
+                            "XUI22:country={country}:rows={}:presentation={:?}",
+                            panel.rows.len(),
+                            panel.presentation
+                        )),
+                        Err(error) => feature_local_gaps.push(format!("XUI22:{error}")),
+                    }
                 }
             }
         }
@@ -4674,7 +4803,7 @@ impl ProductObserverUiRuntime {
     pub fn designer_effective_membership(
         &self,
         frame: &WorldFrame,
-        selected_country: &str,
+        selected_country: NamedCountry<'_>,
         viewer: &game_ui::design_catalog::ObserverDesignerViewState,
     ) -> Result<game_ui::designer_observer::ObserverDesignerEffectiveMembership> {
         self.renderer
@@ -6971,6 +7100,123 @@ mod tests {
             .expect("test frame materializes")
     }
 
+    /// A frame whose census says two D18 ids reach "DUP".
+    ///
+    /// replay_app had no contended fixture at all, so every contention refusal
+    /// in this crate was untested and deleting one was a false green (Codex
+    /// round 53, mutations 2 and 5).
+    fn contended_test_world_frame(hour: i64) -> std::sync::Arc<WorldFrame> {
+        struct ContendedSource {
+            hour: i64,
+        }
+        impl ReplaySource for ContendedSource {
+            fn game_id(&self) -> &str {
+                "ub-contended-census"
+            }
+            fn hours(&self) -> &[i64] {
+                std::slice::from_ref(&self.hour)
+            }
+            fn warnings(&self) -> &[String] {
+                &[]
+            }
+            fn frame(&self, hour_index: i64) -> std::result::Result<RawFrame, SourceError> {
+                let mut rest = Map::new();
+                rest.insert(
+                    "countries".into(),
+                    serde_json::json!({ "GER": { "_r2_tag_db_id": 12 } }),
+                );
+                rest.insert(
+                    "tag_db_id_index".into(),
+                    serde_json::json!({
+                        "country_composition_version": 2,
+                        "withheld_countries": {
+                            "contended_keys": { "DUP": { "tag_db_ids": [441, 442] } }
+                        },
+                    }),
+                );
+                Ok(RawFrame {
+                    hour_index,
+                    date: None,
+                    save_version: None,
+                    schema_version: None,
+                    rest,
+                })
+            }
+        }
+        WorldTimeline::open(Box::new(ContendedSource { hour }))
+            .expect("contended test timeline opens")
+            .state_at(hour)
+            .expect("contended test frame materializes")
+    }
+
+    /// XUI19 does not close in silence on a key two ids reach.
+    ///
+    /// kills: the contention gap, and the ask that produces it.
+    #[test]
+    fn a_contended_xui19_selection_yields_no_candidate_and_names_why() {
+        let frame = contended_test_world_frame(900);
+        assert!(
+            frame.country_key_is_contended("DUP"),
+            "the census must be carried"
+        );
+
+        let mut gap = None;
+        assert!(
+            xui19_passive_candidate(&frame, Some("DUP"), &mut gap).is_none(),
+            "a key two ids reach is not a country to build a decision panel for"
+        );
+        let gap = gap.expect("the refusal must name its cause");
+        assert!(
+            gap.contains("contention_census") && gap.contains("DUP"),
+            "the gap must name the census and the key: {gap}"
+        );
+
+        // THE CONTROL: a selection the census admits produces no contention gap
+        // -- this fixture carries no decision carrier, so the candidate is
+        // `None` for a different, named reason.
+        let mut gap = None;
+        assert!(xui19_passive_candidate(&frame, Some("GER"), &mut gap).is_none());
+        assert_eq!(
+            gap, None,
+            "an admitted selection is not a contention refusal, or this proves nothing"
+        );
+        let mut gap = None;
+        assert!(xui19_passive_candidate(&frame, None, &mut gap).is_none());
+        assert_eq!(gap, None, "and neither is no selection at all");
+    }
+
+    /// The XUI16 outcome cache is keyed by the selector it was computed FOR.
+    ///
+    /// kills: folding a contended selection back into `None` on the way into
+    /// the cache, which made one entry answer for two different selections.
+    #[test]
+    fn a_contended_selection_does_not_share_a_cache_entry_with_no_selection() {
+        let frame = contended_test_world_frame(900);
+        let runtime = ProductObserverOccupationRuntime {
+            assembler: None,
+            initialization_error: Some("cache key test".into()),
+            last_outcome: Mutex::new(None),
+        };
+        let outcome = ObserverOccupationOutcome {
+            surface: None,
+            unavailable_reason: Some("cache key test".into()),
+        };
+        runtime.store_cached_outcome(&frame, Some("DUP"), &outcome);
+
+        assert_eq!(
+            cached_occupation_outcome(&runtime.last_outcome, &frame, None),
+            None,
+            "an outcome computed for a contended selection is not the outcome \
+             for no selection at all"
+        );
+        assert_eq!(
+            cached_occupation_outcome(&runtime.last_outcome, &frame, Some("DUP")),
+            Some(outcome),
+            "and the entry still answers for the selection it was computed for, \
+             or this proves nothing"
+        );
+    }
+
     fn xui19_presented(
         frame_hour: i64,
         source_sequence: u64,
@@ -7145,6 +7391,48 @@ mod tests {
         );
         reconcile_xui20_viewer_to_candidate(&mut viewer, Some(&candidate), 21);
         assert!(viewer.panel.is_none(), "disappeared identity must close");
+    }
+
+    /// An open panel whose selection is contended costs THAT PANEL, not the
+    /// frame.
+    ///
+    /// `execute` takes a live `&Gfx`, so there is no behavioural harness for it
+    /// in this crate; the instrument the crate already uses for an
+    /// `execute`-internal ordering invariant is a read of its own source
+    /// (`xui20_execute_reconciles_the_authenticated_candidate_before_semantic_preflight`),
+    /// and this is the same instrument. Codex round 53 turned each of these
+    /// `break`s back into `return Err(..)` -- the whole-frame escalation this
+    /// change was fixed to remove -- and all 642 replay_app tests stayed green.
+    ///
+    /// kills: escalating a contended selection out of its own panel.
+    #[test]
+    fn a_contended_open_panel_selection_costs_its_panel_and_not_the_frame() {
+        let production = crate::source_scan::ui_runtime_production();
+        let execute = production
+            .find("    pub fn execute(
+        &mut self,
+        gfx: &Gfx,")
+            .expect("product execute entry");
+        let tail = &production[execute..];
+        for label in ["xui09", "xui11", "xui14"] {
+            let open = tail
+                .find(&format!("'{label}: {{"))
+                .unwrap_or_else(|| panic!("{label} open-panel block"));
+            let block = &tail[open..];
+            let gap = block
+                .find("domain=contention_census:unavailable=CONTENDED_KEY_")
+                .unwrap_or_else(|| panic!("{label} contention gap"));
+            let out = block[gap..]
+                .find(&format!("break '{label};"))
+                .unwrap_or_else(|| {
+                    panic!("{label} contention arm must leave its own block, not the frame")
+                });
+            let escalation = block[gap..gap + out].find("return Err");
+            assert_eq!(
+                escalation, None,
+                "the {label} contention arm returns an error out of execute,                  which costs every other surface this frame"
+            );
+        }
     }
 
     #[test]
@@ -7996,7 +8284,7 @@ mod tests {
         };
         let cache = Mutex::new(Some(OccupationOutcomeCacheEntry {
             frame: Arc::clone(&frame),
-            selected_country: Some("GER".into()),
+            cache_key_country: Some("GER".into()),
             outcome: expected.clone(),
         }));
         assert_eq!(

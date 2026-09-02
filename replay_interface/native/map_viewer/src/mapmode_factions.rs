@@ -357,6 +357,7 @@ NDefines = {
                 "game_id": game,
                 "date": format!("1936.1.1.{}", hour - 40),
                 "hour_index": hour,
+                "tag_db_id_index": {"country_composition_version": 2},
                 "countries": {},
                 "diplomacy_world": { "domain53_extra": extra }
             });

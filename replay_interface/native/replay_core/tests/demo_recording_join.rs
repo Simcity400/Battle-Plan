@@ -85,6 +85,20 @@ fn generated_demo_binds_all_owners_and_exposes_controller_flips() {
             STATE_COUNT as usize,
             "controller rows at step {step}"
         );
+        // The COUNTRY the generator emits, not only the states. Deleting the
+        // generator's whole `countries` and `diplomacy_world` payload left this
+        // gate green (Codex round 54): the viewer nulls both for a fold with no
+        // per-id account, so the demo shipped carrying no country and nothing
+        // here looked.
+        assert!(
+            frame.country_identity("GER").is_some(),
+            "the generated demo must name the country it emits, at step {step}"
+        );
+        assert!(
+            matches!(frame.topbar_scalars("GER"), Some(scalars)
+                if scalars.stability.is_measured()),
+            "and carry its measured politics, at step {step}"
+        );
         assert!(
             frame.owner_by_state().values().all(Leaf::is_measured),
             "all generated owners must bind at step {step}"

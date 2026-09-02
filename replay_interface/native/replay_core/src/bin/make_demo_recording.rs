@@ -392,7 +392,12 @@ fn build_snapshot(
                 "SYNTHETIC DEMO RECORDING: real 1936 owners from the map bundle, scripted flips; not captured game state",
             ],
         },
-        "countries": { "GER": { "politics": politics } },
+        // The per-id country account, without which the viewer nulls every
+        // country-composed member this generator emits and the demo arrives
+        // carrying no country at all. This generator composes per tag_db_id by
+        // construction: it writes exactly one country.
+        "tag_db_id_index": { "country_composition_version": 2 },
+        "countries": { "GER": { "_r2_tag_db_id": 1, "politics": politics } },
         "states": states,
         "provinces": {},
         "divisions": divisions,

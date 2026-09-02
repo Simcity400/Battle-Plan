@@ -353,6 +353,7 @@ pub fn admit_decision_evaluation(
     raw: &Map<String, Value>,
     expected_hour: i64,
     roster: &D18CountryRosterView,
+    contended_keys: &impl crate::world::ContendedKeys,
 ) -> DecisionEvaluationExactView {
     let Some(value) = raw.get(XUI19_CARRIER_KEY) else {
         return DecisionEvaluationExactView::absent();
@@ -361,6 +362,15 @@ pub fn admit_decision_evaluation(
         return DecisionEvaluationExactView::unavailable(
             "XUI19 passive decision carrier was explicitly unobtained",
         );
+    }
+    // The roster this carrier is compared against EXCLUDES a contended key,
+    // so the country rows are covered by `roster.complete()`. A decision
+    // TARGET is a country reference of its own and was joined to nothing
+    // (Codex round 40).
+    if let Some(tag) = crate::world::carrier_names_a_contended_country(value, contended_keys) {
+        return DecisionEvaluationExactView::unavailable(format!(
+            "XUI19 passive decision carrier names {tag:?}, a key two ids reach"
+        ));
     }
     let carrier: DecisionEvaluationExactV1 = match serde_json::from_value(value.clone()) {
         Ok(value) => value,
@@ -636,7 +646,7 @@ mod tests {
 
     #[test]
     fn admits_exact_census_and_preserves_measured_empty() {
-        let admitted = admit_decision_evaluation(&raw(&carrier()), 900, &roster());
+        let admitted = admit_decision_evaluation(&raw(&carrier()), 900, &roster(), &BTreeSet::<String>::new());
         assert_eq!(admitted.status, ViewStatus::Present);
         assert_eq!(admitted.country("GER").unwrap().visible_card_count, 1);
 
@@ -648,7 +658,7 @@ mod tests {
         empty.countries[0].source_record_sha256 =
             country_record_sha256(&empty.countries[0]).unwrap();
         empty.record_sha256 = carrier_record_sha256(&empty).unwrap();
-        let admitted = admit_decision_evaluation(&raw(&empty), 900, &roster());
+        let admitted = admit_decision_evaluation(&raw(&empty), 900, &roster(), &BTreeSet::<String>::new());
         assert_eq!(admitted.status, ViewStatus::Present);
         assert!(admitted.country("GER").unwrap().categories.is_empty());
     }
@@ -656,7 +666,7 @@ mod tests {
     #[test]
     fn rejects_wrong_hour_partial_roster_and_hash_forgery() {
         assert_eq!(
-            admit_decision_evaluation(&raw(&carrier()), 901, &roster()).status,
+            admit_decision_evaluation(&raw(&carrier()), 901, &roster(), &BTreeSet::<String>::new()).status,
             ViewStatus::DomainUnavailable
         );
         let bigger = D18CountryRosterView::present(
@@ -673,7 +683,7 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(
-            admit_decision_evaluation(&raw(&carrier()), 900, &bigger).status,
+            admit_decision_evaluation(&raw(&carrier()), 900, &bigger, &BTreeSet::<String>::new()).status,
             ViewStatus::DomainUnavailable
         );
 
@@ -689,7 +699,7 @@ mod tests {
             }],
             vec!["367".into()],
         );
-        let view = admit_decision_evaluation(&raw(&carrier()), 900, &incomplete);
+        let view = admit_decision_evaluation(&raw(&carrier()), 900, &incomplete, &BTreeSet::<String>::new());
         assert_eq!(view.status, ViewStatus::DomainUnavailable);
         assert!(
             view.diagnostic
@@ -701,7 +711,7 @@ mod tests {
         let mut forged = carrier();
         forged.countries[0].categories[0].cards[0].name_text = "forged".into();
         assert_eq!(
-            admit_decision_evaluation(&raw(&forged), 900, &roster()).status,
+            admit_decision_evaluation(&raw(&forged), 900, &roster(), &BTreeSet::<String>::new()).status,
             ViewStatus::DomainUnavailable
         );
 
@@ -709,7 +719,7 @@ mod tests {
         wrong_census_hash.d18_roster_sha256 = "9".repeat(64);
         wrong_census_hash.record_sha256 = carrier_record_sha256(&wrong_census_hash).unwrap();
         assert_eq!(
-            admit_decision_evaluation(&raw(&wrong_census_hash), 900, &roster()).status,
+            admit_decision_evaluation(&raw(&wrong_census_hash), 900, &roster(), &BTreeSet::<String>::new()).status,
             ViewStatus::DomainUnavailable
         );
 
@@ -719,7 +729,7 @@ mod tests {
             country_record_sha256(&wrong_counts.countries[0]).unwrap();
         wrong_counts.record_sha256 = carrier_record_sha256(&wrong_counts).unwrap();
         assert_eq!(
-            admit_decision_evaluation(&raw(&wrong_counts), 900, &roster()).status,
+            admit_decision_evaluation(&raw(&wrong_counts), 900, &roster(), &BTreeSet::<String>::new()).status,
             ViewStatus::DomainUnavailable
         );
     }
@@ -772,7 +782,7 @@ mod tests {
             country_record_sha256(&contradictory.countries[0]).unwrap();
         contradictory.record_sha256 = carrier_record_sha256(&contradictory).unwrap();
         assert_eq!(
-            admit_decision_evaluation(&raw(&contradictory), 900, &roster()).status,
+            admit_decision_evaluation(&raw(&contradictory), 900, &roster(), &BTreeSet::<String>::new()).status,
             ViewStatus::DomainUnavailable
         );
     }

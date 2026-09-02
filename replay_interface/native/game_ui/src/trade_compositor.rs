@@ -18,6 +18,7 @@ use crate::trade_state::{
     TradePresentation, TRADE_RESOURCE_ORDER,
 };
 use crate::{GameUiError, Result};
+use replay_core::NamedCountry;
 use replay_core::{Leaf, ViewStatus, WorldFrame};
 use snapshot::sha256::Sha256;
 use std::collections::BTreeSet;
@@ -309,7 +310,7 @@ impl AuthenticatedXui15Producer {
         frame: &WorldFrame,
         resolver: &AssetResolver,
         localisation: &Localisation,
-        selected_country: &str,
+        selected_country: NamedCountry<'_>,
         presentation: &TradePresentation,
         viewer: &CountryTradeViewerState,
     ) -> std::result::Result<StrictXui15PanelInput, Xui15ProducerRejection> {
@@ -322,9 +323,9 @@ impl AuthenticatedXui15Producer {
             .payload
             .catalogues
             .iter()
-            .find(|catalogue| catalogue.country_tag == selected_country)
+            .find(|catalogue| catalogue.country_tag == selected_country.tag())
             .ok_or(Xui15ProducerRejection::IncompleteCountryCatalogue)?;
-        validate_complete_selected_country_trade(presentation, selected_country)?;
+        validate_complete_selected_country_trade(presentation, selected_country.tag())?;
         if viewer.selected_resource_index >= TRADE_RESOURCE_ORDER.len() {
             return Err(Xui15ProducerRejection::StaleViewer);
         }
@@ -453,7 +454,7 @@ pub fn seal_xui15_producer_panel_for_frame_and_viewer(
     resolver: &AssetResolver,
     localisation: &Localisation,
     content_admission: &replay_core::ValidatedContentAdmission,
-    selected_country: &str,
+    selected_country: NamedCountry<'_>,
     presentation: &TradePresentation,
     viewer: &CountryTradeViewerState,
 ) -> std::result::Result<StrictXui15PanelInput, Xui15ProducerRejection> {
@@ -1501,6 +1502,16 @@ fn merge_report(target: &mut ComposeReport, source: ComposeReport) -> Result<()>
 }
 
 #[cfg(test)]
+/// A TAG this frame's census admits. A test that means to name a country says
+/// so here; a test about a contended key asks `named_country` and gets `None`.
+fn named<'tag>(
+    frame: &replay_core::WorldFrame,
+    tag: &'tag str,
+) -> replay_core::NamedCountry<'tag> {
+    frame.named_country(tag).expect("census-admitted tag")
+}
+
+#[cfg(test)]
 #[path = "gp_f10_coexistence.rs"]
 mod gp_f10_coexistence;
 
@@ -1556,7 +1567,18 @@ mod producer_tests {
                 date: None,
                 save_version: None,
                 schema_version: None,
-                rest: self.rest.clone(),
+                rest: {
+                    let mut rest = self.rest.clone();
+                    if replay_core::COUNTRY_COMPOSED_MEMBERS
+                        .iter()
+                        .any(|member| rest.contains_key(*member))
+                    {
+                        rest.entry("tag_db_id_index").or_insert_with(
+                            || serde_json::json!({"country_composition_version": 2}),
+                        );
+                    }
+                    rest
+                },
             })
         }
     }

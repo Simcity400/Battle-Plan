@@ -171,6 +171,7 @@ fn positive_event_popup_reaches_the_shipping_compositor_with_shipped_assets() {
         let event = AdmittedFiredEvent {
             source_file: "events/xui21_positive_compositor_evidence.txt".into(),
             event_id: format!("xui21.positive.{index}"),
+            recipient_tag_db_id: 3,
             recipient_tag: "ENG".into(),
             fire_date: "1936.1.1.12".into(),
             fire_hour: 12,
@@ -221,7 +222,7 @@ fn positive_event_popup_reaches_the_shipping_compositor_with_shipped_assets() {
             }),
             popup_suppression: None,
         };
-        let presentation = event_popup_presentation(&event, &layout, "ENG", 120)
+        let presentation = event_popup_presentation(&event, &layout, 3, 120)
             .expect("all exact event subtypes reach presentation");
         let composed = compose_event_popup_surface(
             &resolver,

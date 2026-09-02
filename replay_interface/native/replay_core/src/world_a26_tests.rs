@@ -50,7 +50,13 @@ fn tti2_preserves_final_blob_and_measured_empty() {
         exact_root(&selected),
     );
     let mut warnings = Vec::new();
-    let view = build_resolved_tooltip_exact(&rest, 900, Some(&selected), &mut warnings);
+    let view = build_resolved_tooltip_exact(
+        &rest,
+        900,
+        Some(&selected),
+        &BTreeSet::<String>::new(),
+        &mut warnings,
+    );
     assert_eq!(view.status, ViewStatus::Present);
     assert_eq!(
         view.frame.as_ref().unwrap().instances[0].final_resolved_text,
@@ -59,7 +65,13 @@ fn tti2_preserves_final_blob_and_measured_empty() {
 
     rest["_r2_resolved_tooltip_instances_live"]["expected_instance_count"] = serde_json::json!(0);
     rest["_r2_resolved_tooltip_instances_live"]["instances"] = serde_json::json!([]);
-    let view = build_resolved_tooltip_exact(&rest, 900, Some(&selected), &mut warnings);
+    let view = build_resolved_tooltip_exact(
+        &rest,
+        900,
+        Some(&selected),
+        &BTreeSet::<String>::new(),
+        &mut warnings,
+    );
     assert_eq!(view.status, ViewStatus::Present);
     assert!(view.frame.unwrap().instances.is_empty());
 }
@@ -72,6 +84,12 @@ fn tti2_rejects_torn_selected_present_join() {
     let mut rest = Map::new();
     rest.insert("_r2_resolved_tooltip_instances_live".into(), root);
     let mut warnings = Vec::new();
-    let view = build_resolved_tooltip_exact(&rest, 900, Some(&selected), &mut warnings);
+    let view = build_resolved_tooltip_exact(
+        &rest,
+        900,
+        Some(&selected),
+        &BTreeSet::<String>::new(),
+        &mut warnings,
+    );
     assert_eq!(view.status, ViewStatus::DomainUnavailable);
 }

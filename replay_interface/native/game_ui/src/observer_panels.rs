@@ -10,6 +10,7 @@ use crate::scripted_gui_runtime::{
 };
 use crate::static_research::{PoliticsIdeaCatalogLabels, StaticResearchUiCatalog};
 use crate::{GameUiError, Result};
+use replay_core::NamedCountry;
 use replay_core::{
     ContentLayerKind, Leaf, PoliticsDetailView, ScriptedGuiView, UsedContentKey, ViewStatus,
     WorldFrame,
@@ -59,7 +60,7 @@ pub struct PoliticsObserverPanel {
 
 pub fn admit_politics_observer_panel(
     frame: &WorldFrame,
-    viewer_country: &str,
+    viewer_country: NamedCountry<'_>,
     static_catalog: &StaticResearchUiCatalog,
 ) -> Result<PoliticsObserverPanel> {
     if viewer_country.trim().is_empty() {
@@ -72,7 +73,7 @@ pub fn admit_politics_observer_panel(
             "XUI11 complete country identity domain is unavailable",
         ));
     }
-    if frame.country_identity(viewer_country).is_none() {
+    if frame.country_identity(viewer_country.tag()).is_none() {
         return Err(GameUiError::missing(format!(
             "XUI11 viewer-selected country {viewer_country:?} is absent from the complete identity domain"
         )));
@@ -83,7 +84,7 @@ pub fn admit_politics_observer_panel(
         ));
     }
     let detail = frame
-        .politics_detail(viewer_country)
+        .politics_detail(viewer_country.tag())
         .ok_or_else(|| {
             GameUiError::missing(format!(
                 "XUI11 politics detail is absent for viewer-selected country {viewer_country:?}"
@@ -132,7 +133,7 @@ pub struct PowerBalanceObserverPanel {
 
 pub fn admit_power_balance_observer_panel(
     frame: &WorldFrame,
-    viewer_country: &str,
+    viewer_country: NamedCountry<'_>,
 ) -> Result<PowerBalanceObserverPanel> {
     if viewer_country.trim().is_empty() {
         return Err(GameUiError::parse(
@@ -140,7 +141,7 @@ pub fn admit_power_balance_observer_panel(
         ));
     }
     if frame.country_identities_status() != ViewStatus::Present
-        || frame.country_identity(viewer_country).is_none()
+        || frame.country_identity(viewer_country.tag()).is_none()
     {
         return Err(GameUiError::missing(
             "XUI18 viewer-selected country is absent from the complete identity domain",
@@ -178,7 +179,7 @@ pub fn admit_power_balance_observer_panel(
     let country = state
         .countries
         .iter()
-        .find(|country| country.country_tag == viewer_country)
+        .find(|country| country.country_tag == viewer_country.tag())
         .ok_or_else(|| GameUiError::missing("XUI18 selected country is absent from d74 roster"))?;
     let selected = state
         .records
@@ -188,7 +189,7 @@ pub fn admit_power_balance_observer_panel(
     let presented = presentation
         .balances
         .iter()
-        .find(|row| row.country_tag == viewer_country);
+        .find(|row| row.country_tag == viewer_country.tag());
     if selected.is_none() && presented.is_none() {
         return Ok(PowerBalanceObserverPanel {
             country_tag: viewer_country.to_string(),
@@ -260,7 +261,7 @@ pub enum ScriptedGuiRuntimeAuthorityState {
 pub fn admit_scripted_gui_observer_panel(
     admitted_registry: &Interpreted<ScriptedGuiRegistry>,
     frame: &WorldFrame,
-    viewer_country: &str,
+    viewer_country: NamedCountry<'_>,
 ) -> Result<ScriptedGuiObserverPanel> {
     if viewer_country.trim().is_empty() {
         return Err(GameUiError::parse(
@@ -268,7 +269,7 @@ pub fn admit_scripted_gui_observer_panel(
         ));
     }
     if frame.country_identities_status() != ViewStatus::Present
-        || frame.country_identity(viewer_country).is_none()
+        || frame.country_identity(viewer_country.tag()).is_none()
     {
         return Err(GameUiError::missing(
             "XUI22 viewer-selected country is absent from the complete identity domain",
@@ -357,7 +358,7 @@ pub fn admit_scripted_gui_observer_panel(
     for manager in authority
         .manager_order
         .iter()
-        .filter(|row| row.country_tag == viewer_country)
+        .filter(|row| row.country_tag == viewer_country.tag())
     {
         if !gui_ids.insert(manager.gui_id.as_str()) {
             return Err(GameUiError::parse(format!(
@@ -372,7 +373,7 @@ pub fn admit_scripted_gui_observer_panel(
             ))
         })?;
         let captured =
-            captured_inputs_for(view, viewer_country, &manager.gui_id).ok_or_else(|| {
+            captured_inputs_for(view, viewer_country.tag(), &manager.gui_id).ok_or_else(|| {
                 GameUiError::missing(format!(
                     "XUI22 manager row has no runtime payload for {:?}",
                     manager.gui_id
@@ -407,7 +408,7 @@ pub fn admit_scripted_gui_observer_panel(
                 manager.gui_id
             )));
         }
-        let evaluation = evaluate_registered_gui(registry, view, viewer_country, &manager.gui_id)?;
+        let evaluation = evaluate_registered_gui(registry, view, viewer_country.tag(), &manager.gui_id)?;
         let presentation = if evaluation_complete(&evaluation) {
             ExactPresentationState::Ready
         } else {

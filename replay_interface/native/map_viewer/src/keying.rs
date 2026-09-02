@@ -101,7 +101,14 @@ mod tests {
         for snap in snaps {
             let hour = snap["hour_index"].as_i64().expect("hour_index");
             hours.push(hour);
-            let rest: Map<String, Value> = snap.as_object().expect("obj").clone();
+            let mut rest: Map<String, Value> = snap.as_object().expect("obj").clone();
+            if replay_core::COUNTRY_COMPOSED_MEMBERS
+                .iter()
+                .any(|member| rest.contains_key(*member))
+            {
+                rest.entry("tag_db_id_index")
+                    .or_insert_with(|| serde_json::json!({"country_composition_version": 2}));
+            }
             frames.insert(
                 hour,
                 replay_core::RawFrame {

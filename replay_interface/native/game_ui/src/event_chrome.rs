@@ -765,6 +765,11 @@ impl PopupSuppression {
 pub struct AdmittedFiredEvent {
     pub source_file: String,
     pub event_id: String,
+    /// The recipient's ENGINE identity. Carried through rather than spent
+    /// resolving the TAG: two ids can share a display TAG, and an admitted
+    /// history accumulates rows across hours, so the TAG alone cannot say which
+    /// country an event was addressed to.
+    pub recipient_tag_db_id: i64,
     pub recipient_tag: String,
     pub fire_date: String,
     pub fire_hour: i64,
@@ -784,8 +789,15 @@ pub struct AdmittedFiredEvent {
 }
 
 impl AdmittedFiredEvent {
-    pub fn lifecycle_open_at(&self, recipient_tag: &str, tick: i64) -> bool {
-        if self.recipient_tag != recipient_tag || tick < self.fire_tick {
+    /// Open for the country whose ENGINE identity is `recipient_tag_db_id`.
+    ///
+    /// By id, not by TAG. A TAG is display text and what it denotes can change
+    /// between hours, so a pending event recorded against `DUP/441` must not
+    /// reach 442 on a later hour where `DUP` denotes 442. The admitted history
+    /// proving one TAG per id within itself is not enough: it never sees the
+    /// id the TAG denotes NOW.
+    pub fn lifecycle_open_at(&self, recipient_tag_db_id: i64, tick: i64) -> bool {
+        if self.recipient_tag_db_id != recipient_tag_db_id || tick < self.fire_tick {
             return false;
         }
         let close_tick = self.resolved_tick.map_or(self.timeout_tick, |resolved| {
@@ -794,8 +806,8 @@ impl AdmittedFiredEvent {
         tick < close_tick
     }
 
-    pub fn visible_at(&self, recipient_tag: &str, tick: i64) -> bool {
-        self.popup.is_some() && self.lifecycle_open_at(recipient_tag, tick)
+    pub fn visible_at(&self, recipient_tag_db_id: i64, tick: i64) -> bool {
+        self.popup.is_some() && self.lifecycle_open_at(recipient_tag_db_id, tick)
     }
 }
 
@@ -833,14 +845,14 @@ pub enum EventPresentationRejection {
 pub fn event_popup_presentation(
     event: &AdmittedFiredEvent,
     layout: &LayoutSet,
-    recipient_tag: &str,
+    recipient_tag_db_id: i64,
     tick: i64,
 ) -> std::result::Result<EventPopupPresentation, EventPresentationRejection> {
     let popup = event
         .popup
         .as_ref()
         .ok_or(EventPresentationRejection::NotMaterialised)?;
-    if !event.visible_at(recipient_tag, tick) {
+    if !event.visible_at(recipient_tag_db_id, tick) {
         return Err(EventPresentationRejection::NotVisible);
     }
     let chrome = event_window_chrome(layout, popup.window_name)
@@ -947,7 +959,7 @@ pub fn current_event_tick(
 
 pub fn visible_event_popup_stack<'a>(
     events: &'a [AdmittedFiredEvent],
-    recipient_tag: &str,
+    recipient_tag_db_id: i64,
     tick: i64,
     viewer: &EventPopupViewerState,
 ) -> (Vec<&'a AdmittedFiredEvent>, Option<&'a AdmittedFiredEvent>) {
@@ -957,7 +969,7 @@ pub fn visible_event_popup_stack<'a>(
             !viewer
                 .dismissed_event_sequences
                 .contains(&event.event_sequence)
-                && event.visible_at(recipient_tag, tick)
+                && event.visible_at(recipient_tag_db_id, tick)
         })
         .collect::<Vec<_>>();
     let focused = viewer
@@ -1515,8 +1527,23 @@ pub fn admit_event_history(
     let mut prior_sequence = None;
     let mut prior_tick = None;
     let mut identities = BTreeSet::new();
+    // ONE TAG, ONE COUNTRY, across the WHOLE admitted history. `replay_core`
+    // refuses a single frame whose rows fuse two ids under one TAG; this is the
+    // same rule over the ACCUMULATED history, where two hours could each be
+    // internally consistent and still disagree about who "DUP" is. The join
+    // below is by TAG, so this is what makes that join sound.
+    let mut recipient_id_by_tag: BTreeMap<String, i64> = BTreeMap::new();
     for row in rows {
         let admitted = admit_fired_event(row, &request)?;
+        if recipient_id_by_tag
+            .insert(
+                admitted.recipient_tag.clone(),
+                admitted.recipient_tag_db_id,
+            )
+            .is_some_and(|seen| seen != admitted.recipient_tag_db_id)
+        {
+            return Err(EventHistoryRejection::InvalidIdentity);
+        }
         if prior_sequence.is_some_and(|value| value >= admitted.event_sequence)
             || prior_tick.is_some_and(|value| value > admitted.fire_tick)
             || !identities.insert(admitted.event_sequence)
@@ -1538,6 +1565,11 @@ fn admit_fired_event(
         measured_nonempty(&row.event_id).ok_or(EventHistoryRejection::InvalidIdentity)?;
     let recipient_tag =
         measured_nonempty(&row.recipient_tag).ok_or(EventHistoryRejection::InvalidIdentity)?;
+    let recipient_tag_db_id = *row
+        .recipient_tag_db_id
+        .measured()
+        .filter(|id| **id > 0)
+        .ok_or(EventHistoryRejection::InvalidIdentity)?;
     let fire_date =
         measured_nonempty(&row.fire_date).ok_or(EventHistoryRejection::InvalidIdentity)?;
     let fire_hour =
@@ -1633,6 +1665,7 @@ fn admit_fired_event(
     Ok(AdmittedFiredEvent {
         source_file: def.source_file.clone(),
         event_id: event_id.to_string(),
+        recipient_tag_db_id,
         recipient_tag: recipient_tag.to_string(),
         fire_date: fire_date.to_string(),
         fire_hour,
@@ -2272,6 +2305,7 @@ mod tests {
     fn rich_row() -> RecordedFiredEventRow {
         RecordedFiredEventRow {
             event_id: Leaf::Measured("generic.1".into()),
+            recipient_tag_db_id: Leaf::Measured(1),
             recipient_tag: Leaf::Measured("GER".into()),
             fire_date: Leaf::Measured("1936.1.1.12".into()),
             fire_hour: Leaf::Measured(12),
@@ -2754,9 +2788,9 @@ mod tests {
         row.resolved_tick = Leaf::Measured(2_500);
         let admitted = admit_fixture(row, def, &loc, &sprites, &runtime);
         assert_eq!(admitted.popup_suppression, None);
-        assert!(admitted.visible_at("GER", 1_511));
-        assert!(!admitted.visible_at("GER", 1_512));
-        assert!(!admitted.visible_at("GER", 2_499));
+        assert!(admitted.visible_at(1, 1_511));
+        assert!(!admitted.visible_at(1, 1_512));
+        assert!(!admitted.visible_at(1, 2_499));
     }
 
     #[test]
@@ -2843,10 +2877,57 @@ mod tests {
         assert_eq!(popup.options[0].definition_ordinal, 0);
         assert!(!popup.options[0].selected);
         assert!(popup.options[1].selected);
-        assert!(event.visible_at("GER", 1200));
-        assert!(event.visible_at("GER", 1209));
-        assert!(!event.visible_at("GER", 1210));
-        assert!(!event.visible_at("SOV", 1205));
+        assert!(event.visible_at(1, 1200));
+        assert!(event.visible_at(1, 1209));
+        assert!(!event.visible_at(1, 1210));
+        assert!(!event.visible_at(2, 1205));
+        assert_eq!(
+            event.recipient_tag_db_id, 1,
+            "the recipient identity reaches the UI rather than being spent on the TAG"
+        );
+
+        // THE CROSS-HOUR CASE, which the accumulated-history check cannot see.
+        // The event was recorded against "GER"/1. On a later hour "GER" may
+        // denote country 2 -- the history holds only one (TAG, id) pair, so it
+        // admits, and a by-TAG join would show 1's event to 2. The join is by
+        // id, so it does not.
+        assert!(
+            !event.visible_at(2, 1200),
+            "an event addressed to country 1 is not shown to country 2, whatever              TAG either displays now"
+        );
+        assert!(event.visible_at(1, 1200), "and its own country still sees it");
+        assert_eq!(
+            event.recipient_tag_db_id, 1,
+            "the recipient identity reaches the UI rather than being spent on the TAG"
+        );
+
+        // TWO IDS, ONE TAG, across the accumulated history. The join below is by
+        // TAG, and each hour on its own is internally consistent, so this is the
+        // check that makes the join sound: the whole history is refused rather
+        // than showing one country's event to the other.
+        let mut second = rich_row();
+        second.recipient_tag_db_id = Leaf::Measured(2);
+        second.event_sequence = Leaf::Measured(9);
+        let fused = FiredEventsView {
+            events: Leaf::Measured(vec![rich_row(), second]),
+            history_complete: Leaf::Measured(true),
+            hook_coverage_complete: Leaf::Measured(true),
+            prior_to_capture: Leaf::Measured(Vec::new()),
+        };
+        assert!(
+            matches!(
+                admit_event_history(EventHistoryRequest {
+                    source_record_id: "record:1",
+                    history: &fused,
+                    definitions: &definitions,
+                    localisation: &loc,
+                    sprites: &sprites,
+                    runtime_text: &BTreeMap::new(),
+                }),
+                Err(EventHistoryRejection::InvalidIdentity)
+            ),
+            "one TAG reached by two ids is two countries, not one recipient"
+        );
 
         let mut layout = LayoutSet::default();
         layout.add_document(
@@ -2875,7 +2956,7 @@ mod tests {
                 }"#,
             ),
         );
-        let presentation = event_popup_presentation(event, &layout, "GER", 1205)
+        let presentation = event_popup_presentation(event, &layout, 1, 1205)
             .expect("compose-ready popup presentation");
         assert_eq!(
             presentation.chrome.options_slot_size,
@@ -2888,7 +2969,7 @@ mod tests {
         );
         assert_eq!(presentation.popup.options.len(), 2);
         assert_eq!(
-            event_popup_presentation(event, &layout, "GER", 1210),
+            event_popup_presentation(event, &layout, 1, 1210),
             Err(EventPresentationRejection::NotVisible)
         );
     }
@@ -3068,7 +3149,7 @@ mod tests {
         assert!(admitted.iter().all(|event| event.popup.is_none()));
         assert_eq!(admitted[1].chosen_option_ordinal, Some(1));
         assert_eq!(
-            event_popup_presentation(&admitted[1], &LayoutSet::default(), "GER", 1205),
+            event_popup_presentation(&admitted[1], &LayoutSet::default(), 1, 1205),
             Err(EventPresentationRejection::NotMaterialised)
         );
     }
@@ -3378,9 +3459,9 @@ mod tests {
             Some(PopupSuppression::VisibleOptionOrdinalsAbsent)
         );
         assert_eq!(admitted[0].popup, None);
-        assert!(!admitted[0].visible_at("GER", 1700));
+        assert!(!admitted[0].visible_at(1, 1700));
         assert_eq!(
-            event_popup_presentation(&admitted[0], &LayoutSet::default(), "GER", 1700),
+            event_popup_presentation(&admitted[0], &LayoutSet::default(), 1, 1700),
             Err(EventPresentationRejection::NotMaterialised)
         );
 
@@ -3388,7 +3469,7 @@ mod tests {
         let popup = admitted[0].popup.as_ref().expect("materialised popup");
         assert_eq!(popup.selected_desc_key, "der3.1.d_a");
         assert_eq!(popup.options.len(), 2);
-        assert!(admitted[0].visible_at("GER", 1700));
+        assert!(admitted[0].visible_at(1, 1700));
 
         let mut missing_visible = materialised();
         missing_visible.visible_option_ordinals = Leaf::Absent;
@@ -3643,7 +3724,7 @@ mod tests {
                 "#,
             ),
         );
-        let presentation = event_popup_presentation(&admitted[0], &layout, "GER", 1205)
+        let presentation = event_popup_presentation(&admitted[0], &layout, 1, 1205)
             .expect("pictureless event joins to authored chrome");
         assert_eq!(
             presentation
@@ -3677,7 +3758,7 @@ mod tests {
             ),
         );
         assert_eq!(
-            event_popup_presentation(&admitted[0], &missing_picture_slot, "GER", 1205),
+            event_popup_presentation(&admitted[0], &missing_picture_slot, 1, 1205),
             Err(EventPresentationRejection::MissingPictureSlot)
         );
 
@@ -3706,7 +3787,7 @@ mod tests {
             ),
         );
         assert_eq!(
-            event_popup_presentation(&admitted[0], &missing_default_sprite, "GER", 1205),
+            event_popup_presentation(&admitted[0], &missing_default_sprite, 1, 1205),
             Err(EventPresentationRejection::MissingDefaultPictureSprite)
         );
     }

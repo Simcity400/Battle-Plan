@@ -936,6 +936,8 @@ fn rt_player_countries_from_world_scenario_players() {
                     let obj = entry.as_object().expect("player entry object");
                     PlayerCountry {
                         tag: exp_string(obj.get("tag")),
+                        // The legacy shapes carry no engine id.
+                        tag_db_id: Leaf::Absent,
                         player_name: exp_string(obj.get("label")),
                     }
                 })

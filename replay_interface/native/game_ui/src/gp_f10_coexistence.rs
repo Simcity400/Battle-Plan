@@ -47,7 +47,17 @@ impl ReplaySource for CoexistenceSource {
             date: Some("1936.1.2.12".into()),
             save_version: Some("1.19.2".into()),
             schema_version: None,
-            rest: self.rest.clone(),
+            rest: {
+                let mut rest = self.rest.clone();
+                if replay_core::COUNTRY_COMPOSED_MEMBERS
+                    .iter()
+                    .any(|member| rest.contains_key(*member))
+                {
+                    rest.entry("tag_db_id_index")
+                        .or_insert_with(|| serde_json::json!({"country_composition_version": 2}));
+                }
+                rest
+            },
         })
     }
 }
@@ -458,7 +468,7 @@ fn all_three_identity_bearing_carriers_coexist_and_admit_in_one_frame() {
         full.as_ref(),
         hour.admission.manifest_digest_sha256(),
         &xui23_catalog(),
-        "GER",
+        named(full.as_ref(), "GER"),
     )
     .expect("XUI23 admits with XUI12 and XUI15 present");
     assert_eq!(admitted.country_tag, "GER");
@@ -504,7 +514,7 @@ fn every_consumer_refuses_a_payload_sealed_against_a_different_base_frame() {
         stale.as_ref(),
         hour.admission.manifest_digest_sha256(),
         &xui23_catalog(),
-        "GER",
+        named(stale.as_ref(), "GER"),
     )
     .expect_err("XUI23 must refuse a payload sealed against another base frame");
     assert!(
@@ -536,7 +546,7 @@ fn every_consumer_refuses_a_payload_sealed_against_a_different_base_frame() {
         rehosted_frame.as_ref(),
         rehosted.admission.manifest_digest_sha256(),
         &xui23_catalog(),
-        "GER",
+        named(rehosted_frame.as_ref(), "GER"),
     )
     .expect("XUI23 admits against the base frame it was sealed for");
     let _ = &rehosted.xui23;
@@ -592,7 +602,7 @@ fn an_unrelated_registered_sidecar_landing_does_not_move_any_identity() {
         crowded.as_ref(),
         hour.admission.manifest_digest_sha256(),
         &xui23_catalog(),
-        "GER",
+        named(crowded.as_ref(), "GER"),
     )
     .expect("XUI23 still admits beside every other registered sidecar");
 }

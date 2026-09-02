@@ -137,12 +137,19 @@ impl replay_core::ReplaySource for MemorySource {
         &self,
         hour_index: i64,
     ) -> Result<replay_core::RawFrame, replay_core::SourceError> {
-        let rest = self
+        let mut rest = self
             .frames
             .get(&hour_index)
             .and_then(serde_json::Value::as_object)
             .cloned()
             .ok_or_else(|| replay_core::SourceError::Open(format!("no frame {hour_index}")))?;
+        if replay_core::COUNTRY_COMPOSED_MEMBERS
+            .iter()
+            .any(|member| rest.contains_key(*member))
+        {
+            rest.entry("tag_db_id_index")
+                .or_insert_with(|| serde_json::json!({"country_composition_version": 2}));
+        }
         Ok(replay_core::RawFrame {
             hour_index,
             date: None,

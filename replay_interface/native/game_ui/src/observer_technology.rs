@@ -1,4 +1,5 @@
 
+use replay_core::NamedCountry;
 use replay_core::{Leaf, ViewStatus, WorldFrame};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -47,7 +48,7 @@ impl ObserverTechnologyColoring {
 
 pub fn observer_technology_coloring(
     frame: &WorldFrame,
-    country: &str,
+    country: NamedCountry<'_>,
     authored_order: &[String],
 ) -> ObserverTechnologyColoring {
     if authored_order.is_empty()
@@ -55,7 +56,7 @@ pub fn observer_technology_coloring(
         || authored_order.iter().collect::<BTreeSet<_>>().len() != authored_order.len()
     {
         return ObserverTechnologyColoring::unavailable(
-            country,
+            country.tag(),
             authored_order,
             ObserverTechnologyGap::InvalidAuthoredTechnologyOrder,
         );
@@ -71,13 +72,13 @@ pub fn observer_technology_coloring(
         Ok(partial) => partial,
         Err(refusal) => {
             return ObserverTechnologyColoring::unavailable(
-                country,
+                country.tag(),
                 authored_order,
                 ObserverTechnologyGap::D18RosterUnavailable(refusal.detail),
             )
         }
     };
-    if !partial.resolved.iter().any(|entry| entry.tag == country) {
+    if !partial.resolved.iter().any(|entry| entry.tag == country.tag()) {
         // NAMED, and deliberately NOT by trying to match the selection against
         // the excluded list. `excluded` holds raw emitted keys -- for a country
         // this hour could not name, the numeric tag_db_id -- while `country` is
@@ -86,7 +87,7 @@ pub fn observer_technology_coloring(
         // not among the countries this hour could name, and that the recording
         // carries N keys it could not name at all; both go in the gap.
         return ObserverTechnologyColoring::unavailable(
-            country,
+            country.tag(),
             authored_order,
             if partial.excluded.is_empty() {
                 ObserverTechnologyGap::CountryNotInD18Roster(country.to_string())
@@ -102,35 +103,35 @@ pub fn observer_technology_coloring(
     }
     if frame.research_status() != ViewStatus::Present {
         return ObserverTechnologyColoring::unavailable(
-            country,
+            country.tag(),
             authored_order,
             ObserverTechnologyGap::ResearchDomainUnavailable(frame.research_status()),
         );
     }
-    let Some(research) = frame.research(country) else {
+    let Some(research) = frame.research(country.tag()) else {
         return ObserverTechnologyColoring::unavailable(
-            country,
+            country.tag(),
             authored_order,
             ObserverTechnologyGap::CountryResearchUnavailable(country.to_string()),
         );
     };
     let Leaf::Measured(completed_rows) = &research.technologies else {
         return ObserverTechnologyColoring::unavailable(
-            country,
+            country.tag(),
             authored_order,
             ObserverTechnologyGap::CompletedTechnologyVectorUnavailable,
         );
     };
     let Leaf::Measured(completed_count) = &research.tech_count else {
         return ObserverTechnologyColoring::unavailable(
-            country,
+            country.tag(),
             authored_order,
             ObserverTechnologyGap::CompletedTechnologyCountMismatch,
         );
     };
     if *completed_count < 0 || *completed_count as usize != completed_rows.len() {
         return ObserverTechnologyColoring::unavailable(
-            country,
+            country.tag(),
             authored_order,
             ObserverTechnologyGap::CompletedTechnologyCountMismatch,
         );
@@ -145,7 +146,7 @@ pub fn observer_technology_coloring(
     for row in completed_rows {
         let Leaf::Measured(id) = &row.name else {
             return ObserverTechnologyColoring::unavailable(
-                country,
+                country.tag(),
                 authored_order,
                 ObserverTechnologyGap::InvalidCompletedTechnologyIdentity,
             );
@@ -153,7 +154,7 @@ pub fn observer_technology_coloring(
         if id.trim().is_empty() || !authored.contains(id.as_str()) || !completed.insert(id.as_str())
         {
             return ObserverTechnologyColoring::unavailable(
-                country,
+                country.tag(),
                 authored_order,
                 ObserverTechnologyGap::InvalidCompletedTechnologyIdentity,
             );
@@ -165,7 +166,7 @@ pub fn observer_technology_coloring(
 
     let Leaf::Measured(active_rows) = &research.in_progress_live else {
         return ObserverTechnologyColoring::unavailable(
-            country,
+            country.tag(),
             authored_order,
             ObserverTechnologyGap::ActiveResearchUnavailable,
         );
@@ -174,7 +175,7 @@ pub fn observer_technology_coloring(
     for row in active_rows {
         let Leaf::Measured(id) = &row.tech_name else {
             return ObserverTechnologyColoring::unavailable(
-                country,
+                country.tag(),
                 authored_order,
                 ObserverTechnologyGap::InvalidActiveTechnologyIdentity,
             );
@@ -185,7 +186,7 @@ pub fn observer_technology_coloring(
             || completed.contains(id.as_str())
         {
             return ObserverTechnologyColoring::unavailable(
-                country,
+                country.tag(),
                 authored_order,
                 ObserverTechnologyGap::InvalidActiveTechnologyIdentity,
             );

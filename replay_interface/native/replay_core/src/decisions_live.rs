@@ -159,6 +159,7 @@ fn parse_timed_live(value: &Value, path: &str) -> Result<Vec<DecisionTimedLiveRo
 
 pub(crate) fn build_decisions_live(
     rest: &Map<String, Value>,
+    contended_keys: &impl crate::world::ContendedKeys,
     warnings: &mut Vec<String>,
 ) -> DecisionsLiveView {
     let result = (|| -> Result<DecisionsLiveView, String> {
@@ -248,6 +249,12 @@ pub(crate) fn build_decisions_live(
             );
         }
 
+        // PUBLISHED, not WALKED: every entry the producer sent was read and
+        // typed above -- `carried_any_d16_leaf` is a claim about the WHOLE
+        // object -- and only now does a key two ids reach come out of the map.
+        // It is keyed by TAG, so a contended key would hand one country's
+        // decisions to whoever asked for either (Codex round 38).
+        view.countries.retain(|tag, _| !contended_keys.holds(tag.as_str()));
         if carried_any_d16_leaf {
             view.status = ViewStatus::Present;
         } else {
@@ -271,11 +278,16 @@ pub(crate) fn build_decisions_live(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::BTreeSet;
 
     fn build(value: Value) -> (DecisionsLiveView, Vec<String>) {
         let mut warnings = Vec::new();
         let view =
-            build_decisions_live(value.as_object().expect("test root object"), &mut warnings);
+            build_decisions_live(
+                value.as_object().expect("test root object"),
+                &BTreeSet::<String>::new(),
+                &mut warnings,
+            );
         (view, warnings)
     }
 

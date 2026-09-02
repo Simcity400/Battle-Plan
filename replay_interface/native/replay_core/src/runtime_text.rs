@@ -121,16 +121,27 @@ impl std::error::Error for RuntimeTextAdmissionError {}
 
 impl WorldFrame {
     pub fn runtime_text(&self) -> Result<Leaf<RuntimeTextCatalog>, RuntimeTextAdmissionError> {
-        admit_runtime_text(self.domain("runtime_text"))
+        admit_runtime_text(self.domain("runtime_text"), self.contended_census())
     }
 }
 
 pub fn admit_runtime_text(
     value: Option<&Value>,
+    contended_keys: &impl crate::world::ContendedKeys,
 ) -> Result<Leaf<RuntimeTextCatalog>, RuntimeTextAdmissionError> {
     let Some(value) = value else {
         return Ok(Leaf::Absent);
     };
+    // A CATALOG IS ADMITTED WHOLE, so it is refused whole. Each context is
+    // scoped to a country POV -- `pov_country_or_global` -- and the UI joins
+    // that scope to the country it is rendering, so a key two ids reach
+    // scopes text to neither of them (Codex round 43).
+    if let Some(tag) = crate::world::carrier_names_a_contended_country(value, contended_keys) {
+        return Err(RuntimeTextAdmissionError::new(
+            "runtime_text",
+            format!("names {tag:?}, a key two ids reach"),
+        ));
+    }
     let envelope: WireEnvelope = WireEnvelope::deserialize(value).map_err(|error| {
         RuntimeTextAdmissionError::new("runtime_text", format!("invalid envelope: {error}"))
     })?;
@@ -724,6 +735,7 @@ enum WireIdentitySource {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use super::*;
     use serde_json::json;
 
@@ -784,12 +796,44 @@ mod tests {
         value
     }
 
+    /// A runtime-text context is SCOPED to a country POV, and the UI joins that
+    /// scope to the country it is rendering.
+    ///
+    /// `pov_country_or_global` is a country name in a serde wire type, admitted
+    /// by a spelling -- `WireEnvelope::deserialize` -- that the crate's carrier
+    /// scan could not see (Codex round 43). A key two ids reach scopes this text
+    /// to neither of them, and a catalog is admitted whole, so it is refused
+    /// whole.
+    #[test]
+    fn a_contended_runtime_text_pov_is_not_a_country_scope() {
+        let value = json!({
+            "schema": RUNTIME_TEXT_SCHEMA,
+            "state": "measured",
+            "contexts_complete": true,
+            "contexts": [row("52% stability")]
+        });
+
+        let control = admit_runtime_text(Some(&value), &BTreeSet::<String>::new())
+            .expect("the control admits the catalog");
+        let Leaf::Measured(catalog) = &control else {
+            panic!("the control measures the catalog, or this proves nothing: {control:?}");
+        };
+        assert_eq!(catalog.contexts["rt:1"].pov_country_or_global.as_str(), "FRA");
+
+        let census = BTreeSet::from(["FRA".to_string()]);
+        let refused = admit_runtime_text(Some(&value), &census);
+        assert!(
+            refused.is_err(),
+            "a context scoped to a key two ids reach is scoped to neither: {refused:?}"
+        );
+    }
+
     #[test]
     fn distinguishes_absent_unobtained_and_measured_empty() {
-        assert_eq!(admit_runtime_text(None).unwrap(), Leaf::Absent);
+        assert_eq!(admit_runtime_text(None, &BTreeSet::<String>::new()).unwrap(), Leaf::Absent);
         let unobtained = json!({"schema": RUNTIME_TEXT_SCHEMA, "state": "unobtained"});
         assert_eq!(
-            admit_runtime_text(Some(&unobtained)).unwrap(),
+            admit_runtime_text(Some(&unobtained), &BTreeSet::<String>::new()).unwrap(),
             Leaf::Unobtained
         );
         let empty = json!({
@@ -798,7 +842,7 @@ mod tests {
             "contexts_complete": true,
             "contexts": []
         });
-        let Leaf::Measured(catalog) = admit_runtime_text(Some(&empty)).unwrap() else {
+        let Leaf::Measured(catalog) = admit_runtime_text(Some(&empty), &BTreeSet::<String>::new()).unwrap() else {
             panic!("expected measured catalog")
         };
         assert!(catalog.contexts_complete);
@@ -813,7 +857,7 @@ mod tests {
             "contexts_complete": true,
             "contexts": [row("\u{11}R17.62M\u{11}!")]
         });
-        let Leaf::Measured(catalog) = admit_runtime_text(Some(&value)).unwrap() else {
+        let Leaf::Measured(catalog) = admit_runtime_text(Some(&value), &BTreeSet::<String>::new()).unwrap() else {
             panic!("expected measured catalog")
         };
         let admitted = &catalog.contexts["rt:1"];
@@ -830,7 +874,7 @@ mod tests {
                 "contexts_complete": true,
                 "contexts": [row(text)]
             });
-            assert!(admit_runtime_text(Some(&value)).is_err());
+            assert!(admit_runtime_text(Some(&value), &BTreeSet::<String>::new()).is_err());
         }
 
         let value = json!({
@@ -839,7 +883,7 @@ mod tests {
             "contexts_complete": true,
             "contexts": [captured_row("cost £political_power")]
         });
-        assert!(admit_runtime_text(Some(&value)).is_ok());
+        assert!(admit_runtime_text(Some(&value), &BTreeSet::<String>::new()).is_ok());
     }
 
     #[test]
@@ -850,7 +894,7 @@ mod tests {
             "contexts_complete": true,
             "contexts": [row("52%")]
         });
-        let Leaf::Measured(catalog) = admit_runtime_text(Some(&value)).unwrap() else {
+        let Leaf::Measured(catalog) = admit_runtime_text(Some(&value), &BTreeSet::<String>::new()).unwrap() else {
             panic!("expected measured catalog")
         };
         let record = &catalog.contexts["rt:1"];
@@ -962,7 +1006,7 @@ mod tests {
             "contexts_complete": true,
             "contexts": [captured_row("A!")]
         });
-        let Leaf::Measured(catalog) = admit_runtime_text(Some(&value)).unwrap() else {
+        let Leaf::Measured(catalog) = admit_runtime_text(Some(&value), &BTreeSet::<String>::new()).unwrap() else {
             panic!("expected measured catalog")
         };
         let RuntimeTextLayout::CapturedRuntime(layout) = &catalog.contexts["rt:1"].layout else {
@@ -980,7 +1024,7 @@ mod tests {
             "contexts_complete": true,
             "contexts": [no_clip]
         });
-        let Leaf::Measured(catalog) = admit_runtime_text(Some(&value)).unwrap() else {
+        let Leaf::Measured(catalog) = admit_runtime_text(Some(&value), &BTreeSet::<String>::new()).unwrap() else {
             panic!("expected measured catalog")
         };
         let RuntimeTextLayout::CapturedRuntime(layout) = &catalog.contexts["rt:1"].layout else {
@@ -1005,7 +1049,7 @@ mod tests {
                 "contexts_complete": true,
                 "contexts": [invalid]
             });
-            assert!(admit_runtime_text(Some(&value)).is_err());
+            assert!(admit_runtime_text(Some(&value), &BTreeSet::<String>::new()).is_err());
         }
     }
 
@@ -1039,7 +1083,7 @@ mod tests {
                 "contexts": [invalid]
             });
             assert!(
-                admit_runtime_text(Some(&value)).is_err(),
+                admit_runtime_text(Some(&value), &BTreeSet::<String>::new()).is_err(),
                 "invalid captured run was admitted: {case}"
             );
         }
@@ -1068,7 +1112,7 @@ mod tests {
                 "contexts": [invalid]
             });
             assert!(
-                admit_runtime_text(Some(&value)).is_err(),
+                admit_runtime_text(Some(&value), &BTreeSet::<String>::new()).is_err(),
                 "layout-kind mismatch was admitted: {case}"
             );
         }
@@ -1086,7 +1130,7 @@ mod tests {
             "contexts_complete": true,
             "contexts": [authored]
         });
-        let Leaf::Measured(catalog) = admit_runtime_text(Some(&value)).unwrap() else {
+        let Leaf::Measured(catalog) = admit_runtime_text(Some(&value), &BTreeSet::<String>::new()).unwrap() else {
             panic!("expected measured catalog")
         };
         assert_eq!(
@@ -1103,7 +1147,7 @@ mod tests {
             "contexts_complete": true,
             "contexts": [caller]
         });
-        let Leaf::Measured(catalog) = admit_runtime_text(Some(&value)).unwrap() else {
+        let Leaf::Measured(catalog) = admit_runtime_text(Some(&value), &BTreeSet::<String>::new()).unwrap() else {
             panic!("expected measured catalog")
         };
         assert_eq!(
@@ -1119,7 +1163,7 @@ mod tests {
             "contexts_complete": true,
             "contexts": [zero]
         });
-        assert!(admit_runtime_text(Some(&invalid)).is_err());
+        assert!(admit_runtime_text(Some(&invalid), &BTreeSet::<String>::new()).is_err());
 
         let mut missing = row("55%");
         missing["source"] = json!({"kind": "setter_caller_rva", "rva": 0x0188_A0DEu32});
@@ -1130,7 +1174,7 @@ mod tests {
             "contexts_complete": true,
             "contexts": [missing]
         });
-        assert!(admit_runtime_text(Some(&invalid)).is_err());
+        assert!(admit_runtime_text(Some(&invalid), &BTreeSet::<String>::new()).is_err());
     }
 
     #[test]
@@ -1143,7 +1187,7 @@ mod tests {
             "contexts_complete": true,
             "contexts": [bad]
         });
-        assert!(admit_runtime_text(Some(&value)).is_err());
+        assert!(admit_runtime_text(Some(&value), &BTreeSet::<String>::new()).is_err());
 
         let one = row("52%");
         let mut two = row("53%");
@@ -1154,6 +1198,6 @@ mod tests {
             "contexts_complete": true,
             "contexts": [one, two]
         });
-        assert!(admit_runtime_text(Some(&duplicate)).is_err());
+        assert!(admit_runtime_text(Some(&duplicate), &BTreeSet::<String>::new()).is_err());
     }
 }

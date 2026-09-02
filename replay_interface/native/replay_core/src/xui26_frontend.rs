@@ -381,6 +381,7 @@ struct Envelope {
 pub(crate) fn build_xui26_frontend(
     rest: &Map<String, Value>,
     frame_hour: i64,
+    contended_keys: &impl crate::world::ContendedKeys,
     warnings: &mut Vec<String>,
 ) -> Xui26FrontendView {
     let Some(raw) = rest.get(XUI26_FRONTEND_CARRIER_KEY) else {
@@ -393,6 +394,20 @@ pub(crate) fn build_xui26_frontend(
         };
     };
     if raw.is_null() {
+        return Xui26FrontendView {
+            status: ViewStatus::DomainUnavailable,
+            frame_hour,
+            product_modset_sha256: None,
+            localisation_language: None,
+            carriers: BTreeMap::new(),
+        };
+    }
+    // The frontend carriers name countries in a scenario and a lobby, and
+    // the game UI clones those straight out (Codex round 40).
+    if let Some(tag) = crate::world::carrier_names_a_contended_country(raw, contended_keys) {
+        warnings.push(format!(
+            "{XUI26_FRONTEND_CARRIER_KEY}: names {tag:?}, a key two ids reach"
+        ));
         return Xui26FrontendView {
             status: ViewStatus::DomainUnavailable,
             frame_hour,
@@ -446,6 +461,17 @@ pub(crate) fn build_xui26_frontend(
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
             .map(str::to_owned);
+        // Each family carrier names countries of its own -- a scenario, a lobby
+        // -- and the envelope gate above is about the envelope (Codex round 41).
+        if let Some(tag) =
+            crate::world::carrier_names_a_contended_country(&raw_carrier, contended_keys)
+        {
+            warnings.push(format!(
+                "{XUI26_FRONTEND_CARRIER_KEY}: a family carrier names {tag:?}, a key \
+                 two ids reach"
+            ));
+            continue;
+        }
         let parsed = serde_json::from_value::<Xui26ReplayFamilyCarrier>(raw_carrier);
         let Ok(carrier) = parsed else {
             if let Some(family) = family_hint {
@@ -518,12 +544,12 @@ mod tests {
     fn missing_empty_and_malformed_remain_distinct() {
         let mut warnings = Vec::new();
         assert_eq!(
-            build_xui26_frontend(&Map::new(), 7, &mut warnings).status,
+            build_xui26_frontend(&Map::new(), 7, &BTreeSet::<String>::new(), &mut warnings).status,
             ViewStatus::DomainAbsent
         );
         let mut rest = Map::from_iter([(XUI26_FRONTEND_CARRIER_KEY.into(), Value::Null)]);
         assert_eq!(
-            build_xui26_frontend(&rest, 7, &mut warnings).status,
+            build_xui26_frontend(&rest, 7, &BTreeSet::<String>::new(), &mut warnings).status,
             ViewStatus::DomainUnavailable
         );
         rest.insert(
@@ -531,7 +557,7 @@ mod tests {
             json!({"schema": "wrong"}),
         );
         assert_eq!(
-            build_xui26_frontend(&rest, 7, &mut warnings).status,
+            build_xui26_frontend(&rest, 7, &BTreeSet::<String>::new(), &mut warnings).status,
             ViewStatus::DomainUnavailable
         );
     }
@@ -547,7 +573,7 @@ mod tests {
         let rest = Map::from_iter([(XUI26_FRONTEND_CARRIER_KEY.into(), v1)]);
         let mut warnings = Vec::new();
         assert_eq!(
-            build_xui26_frontend(&rest, 7, &mut warnings).status,
+            build_xui26_frontend(&rest, 7, &BTreeSet::<String>::new(), &mut warnings).status,
             ViewStatus::DomainUnavailable
         );
 
@@ -555,7 +581,7 @@ mod tests {
         with_semantics["carriers"][0]["element_semantics"] =
             json!({ "role:0": { "kind": "text", "resolved_text": "Joining" } });
         let rest = Map::from_iter([(XUI26_FRONTEND_CARRIER_KEY.into(), with_semantics)]);
-        let view = build_xui26_frontend(&rest, 7, &mut warnings);
+        let view = build_xui26_frontend(&rest, 7, &BTreeSet::<String>::new(), &mut warnings);
         assert_eq!(view.status, ViewStatus::Present);
         assert!(
             view.carriers.is_empty(),
@@ -566,7 +592,7 @@ mod tests {
         row_semantics["carriers"][0]["collections"][0]["rows"][0]["element_semantics"] =
             json!({ "row:0": { "kind": "structural" } });
         let rest = Map::from_iter([(XUI26_FRONTEND_CARRIER_KEY.into(), row_semantics)]);
-        let view = build_xui26_frontend(&rest, 7, &mut warnings);
+        let view = build_xui26_frontend(&rest, 7, &BTreeSet::<String>::new(), &mut warnings);
         assert!(view.carriers.is_empty());
     }
 
@@ -575,18 +601,18 @@ mod tests {
         let mut warnings = Vec::new();
         let rest = Map::from_iter([(XUI26_FRONTEND_CARRIER_KEY.into(), valid())]);
         assert_eq!(
-            build_xui26_frontend(&rest, 7, &mut warnings).status,
+            build_xui26_frontend(&rest, 7, &BTreeSet::<String>::new(), &mut warnings).status,
             ViewStatus::Present
         );
         assert_eq!(
-            build_xui26_frontend(&rest, 8, &mut warnings).status,
+            build_xui26_frontend(&rest, 8, &BTreeSet::<String>::new(), &mut warnings).status,
             ViewStatus::DomainUnavailable
         );
 
         let mut tampered = valid();
         tampered["carriers"][0]["payload"]["event_record_ids"] = json!(["event:changed"]);
         let rest = Map::from_iter([(XUI26_FRONTEND_CARRIER_KEY.into(), tampered)]);
-        let view = build_xui26_frontend(&rest, 7, &mut warnings);
+        let view = build_xui26_frontend(&rest, 7, &BTreeSet::<String>::new(), &mut warnings);
         assert_eq!(view.status, ViewStatus::Present);
         assert!(view.carriers.is_empty());
     }
@@ -601,7 +627,7 @@ mod tests {
         value["carriers"] = json!([malformed, valid_row]);
         let rest = Map::from_iter([(XUI26_FRONTEND_CARRIER_KEY.into(), value)]);
         let mut warnings = Vec::new();
-        let view = build_xui26_frontend(&rest, 7, &mut warnings);
+        let view = build_xui26_frontend(&rest, 7, &BTreeSet::<String>::new(), &mut warnings);
         assert_eq!(view.status, ViewStatus::Present);
         assert_eq!(
             view.carriers.keys().cloned().collect::<Vec<_>>(),
@@ -630,7 +656,7 @@ mod tests {
         let mut warnings = Vec::new();
         let mut empty = valid();
         empty["carriers"][0]["collections"][0]["rows"][0]["row_text"] = json!("");
-        let view = build_xui26_frontend(&seal(empty), 7, &mut warnings);
+        let view = build_xui26_frontend(&seal(empty), 7, &BTreeSet::<String>::new(), &mut warnings);
         assert_eq!(
             view.carriers["hotjoin"].collections[0].rows[0]
                 .row_text
@@ -640,7 +666,7 @@ mod tests {
 
         let mut absent = valid();
         absent["carriers"][0]["collections"][0]["rows"][0]["row_text"] = Value::Null;
-        let view = build_xui26_frontend(&seal(absent), 7, &mut warnings);
+        let view = build_xui26_frontend(&seal(absent), 7, &BTreeSet::<String>::new(), &mut warnings);
         assert!(view.carriers["hotjoin"].collections[0].rows[0]
             .row_text
             .is_none());
@@ -648,7 +674,7 @@ mod tests {
         let mut nul = valid();
         nul["carriers"][0]["collections"][0]["rows"][0]["row_text"] = json!("a\0b");
         assert!(
-            build_xui26_frontend(&seal(nul), 7, &mut warnings)
+            build_xui26_frontend(&seal(nul), 7, &BTreeSet::<String>::new(), &mut warnings)
                 .carriers
                 .is_empty(),
             "a NUL is not a string any engine store holds"
@@ -666,7 +692,7 @@ mod tests {
             json!(xui26_canonical_record_sha256(&carrier).unwrap());
         let rest = Map::from_iter([(XUI26_FRONTEND_CARRIER_KEY.into(), out_of_order)]);
         let mut warnings = Vec::new();
-        assert!(build_xui26_frontend(&rest, 7, &mut warnings)
+        assert!(build_xui26_frontend(&rest, 7, &BTreeSet::<String>::new(), &mut warnings)
             .carriers
             .is_empty());
 
@@ -678,7 +704,7 @@ mod tests {
         measured_empty["carriers"][0]["record_sha256"] =
             json!(xui26_canonical_record_sha256(&carrier).unwrap());
         let rest = Map::from_iter([(XUI26_FRONTEND_CARRIER_KEY.into(), measured_empty)]);
-        let view = build_xui26_frontend(&rest, 7, &mut warnings);
+        let view = build_xui26_frontend(&rest, 7, &BTreeSet::<String>::new(), &mut warnings);
         assert_eq!(view.carriers["hotjoin"].collections.len(), 1);
         assert!(view.carriers["hotjoin"].collections[0].rows.is_empty());
     }
@@ -728,7 +754,7 @@ mod tests {
             json!(xui26_canonical_record_sha256(&swapped).unwrap());
         let rest = Map::from_iter([(XUI26_FRONTEND_CARRIER_KEY.into(), value)]);
         let mut warnings = Vec::new();
-        assert!(build_xui26_frontend(&rest, 7, &mut warnings)
+        assert!(build_xui26_frontend(&rest, 7, &BTreeSet::<String>::new(), &mut warnings)
             .carriers
             .is_empty());
     }

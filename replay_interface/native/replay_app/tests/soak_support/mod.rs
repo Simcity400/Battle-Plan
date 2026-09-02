@@ -93,9 +93,20 @@ impl ReplaySource for SyntheticSource {
         }
         let mut rest = Map::new();
         rest.insert("states".to_string(), Value::Object(states));
+        // The per-id country account: without it the viewer nulls `countries`
+        // on every synthetic frame and this payload never reaches the typed
+        // view the soak claims to exercise (Codex round 54).
+
+        // The per-id country account: without it the viewer nulls `countries`
+        // on every synthetic frame and this payload never reaches the typed
+        // view the soak claims to exercise (Codex round 54).
+        rest.insert(
+            "tag_db_id_index".to_string(),
+            json!({ "country_composition_version": 2 }),
+        );
         rest.insert(
             "countries".to_string(),
-            json!({ "GER": { "politics": { "stability": (hour_index % 100) as f64 / 100.0 } } }),
+            json!({ "GER": { "_r2_tag_db_id": 1, "politics": { "stability": (hour_index % 100) as f64 / 100.0 } } }),
         );
         if self.pad_repeats > 0 {
             rest.insert(
@@ -127,6 +138,23 @@ pub fn assert_seek_eq_play(tl: &WorldTimeline, hour: i64) {
         s.owner_by_state(),
         p.owner_by_state(),
         "owner view mismatch @ {hour}"
+    );
+    // The TYPED country view, not only the raw frame and the state owners. The
+    // synthetic source emits a GER politics payload that the viewer nulls for a
+    // fold with no per-id account, so the soak ran for its whole length over a
+    // country that was never there and nothing here looked (Codex round 54).
+    assert!(
+        s.country_identity("GER").is_some(),
+        "the synthetic country must be named @ {hour}"
+    );
+    assert!(
+        matches!(s.topbar_scalars("GER"), Some(scalars) if scalars.stability.is_measured()),
+        "and carry its measured stability @ {hour}"
+    );
+    assert_eq!(
+        s.topbar_scalars("GER").map(|scalars| scalars.stability.clone()),
+        p.topbar_scalars("GER").map(|scalars| scalars.stability.clone()),
+        "typed country view mismatch @ {hour}"
     );
 }
 

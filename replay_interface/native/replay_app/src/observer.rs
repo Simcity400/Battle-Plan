@@ -343,22 +343,45 @@ fn povs_from_session_and_header(
         &session_picker,
         &header.player,
     ) {
+        // A local player whose TAG the census WITHHELD carries no name to
+        // match a choice against, and no name to offer as one. The picker is
+        // a list of countries to look through the eyes of, so a key two ids
+        // reach cannot be on it -- and the D68 row still names the player by
+        // `tag_db_id`, which is why the row itself is kept.
+        (_, PovPicker::Available { .. }, Leaf::Measured(player))
+            if player.country_tag.is_none() =>
+        {
+            PovPicker::Unavailable(
+                "the D68 local player is a country key more than one id reaches, \
+                 so it names no country to view from"
+                    .into(),
+            )
+        }
         (_, PovPicker::Available { choices, .. }, Leaf::Measured(player))
-            if !choices.iter().any(|choice| choice.tag == player.country_tag) =>
+            if !choices
+                .iter()
+                .any(|choice| Some(&choice.tag) == player.country_tag.as_ref()) =>
         {
             PovPicker::Unavailable(format!(
-                "D68 local player {} is absent from the measured D57 player-country roster",
-                player.country_tag
+                "D68 local player {:?} is absent from the measured D57 player-country roster",
+                player.country_tag.as_deref().unwrap_or_default()
             ))
         }
         (_, PovPicker::Available { .. }, _) => session_picker,
         (Leaf::Absent, PovPicker::Unavailable(_), Leaf::Measured(player)) => {
-            PovPicker::Available {
-                choices: vec![CountryChoice {
-                    tag: player.country_tag.clone(),
-                    label: None,
-                }],
-                unnameable: Vec::new(),
+            match &player.country_tag {
+                Some(tag) => PovPicker::Available {
+                    choices: vec![CountryChoice {
+                        tag: tag.clone(),
+                        label: None,
+                    }],
+                    unnameable: Vec::new(),
+                },
+                None => PovPicker::Unavailable(
+                    "the D68 local player is a country key more than one id \
+                     reaches, so it names no country to view from"
+                        .into(),
+                ),
             }
         }
         (_, PovPicker::Unavailable(_), _) => session_picker,
@@ -617,14 +640,17 @@ mod tests {
         let list = vec![
             PlayerCountry {
                 tag: Leaf::Measured("GER".into()),
+                tag_db_id: Leaf::Absent,
                 player_name: Leaf::Measured("Alice".into()),
             },
             PlayerCountry {
                 tag: Leaf::Measured("SOV".into()),
+                tag_db_id: Leaf::Absent,
                 player_name: Leaf::Absent,
             },
             PlayerCountry {
                 tag: Leaf::Unobtained,
+                tag_db_id: Leaf::Absent,
                 player_name: Leaf::Measured("Ghost".into()),
             },
         ];
@@ -660,7 +686,7 @@ mod tests {
     fn picker_uses_exact_d68_player_when_multiplayer_roster_is_absent() {
         let header = session_header(Leaf::Measured(SessionHeaderPlayer {
             tag_db_id: 368,
-            country_tag: "D04".into(),
+            country_tag: Some("D04".into()),
         }));
         match povs_from_session_and_header(&session(Leaf::Absent), &header) {
             PovPicker::Available { choices, .. } => {
@@ -676,7 +702,7 @@ mod tests {
     fn picker_does_not_hide_an_unobtained_d57_roster_with_d68() {
         let header = session_header(Leaf::Measured(SessionHeaderPlayer {
             tag_db_id: 368,
-            country_tag: "D04".into(),
+            country_tag: Some("D04".into()),
         }));
         match povs_from_session_and_header(&session(Leaf::Unobtained), &header) {
             PovPicker::Unavailable(reason) => {
@@ -690,15 +716,16 @@ mod tests {
     fn picker_rejects_d57_d68_player_disagreement() {
         let header = session_header(Leaf::Measured(SessionHeaderPlayer {
             tag_db_id: 368,
-            country_tag: "D04".into(),
+            country_tag: Some("D04".into()),
         }));
         let roster = vec![PlayerCountry {
             tag: Leaf::Measured("GER".into()),
+            tag_db_id: Leaf::Absent,
             player_name: Leaf::Measured("Alice".into()),
         }];
         match povs_from_session_and_header(&session(Leaf::Measured(roster)), &header) {
             PovPicker::Unavailable(reason) => {
-                assert!(reason.contains("D68 local player D04"));
+                assert!(reason.contains("D68 local player \"D04\""));
                 assert!(reason.contains("D57 player-country roster"));
             }
             other => panic!("expected fail-closed D57/D68 disagreement, got {other:?}"),

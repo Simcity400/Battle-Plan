@@ -634,7 +634,14 @@ mod tests {
                 "contexts": contexts
             }
         });
-        let rest: Map<String, Value> = root.as_object().unwrap().clone();
+        let mut rest: Map<String, Value> = root.as_object().unwrap().clone();
+        if replay_core::COUNTRY_COMPOSED_MEMBERS
+            .iter()
+            .any(|member| rest.contains_key(*member))
+        {
+            rest.entry("tag_db_id_index")
+                .or_insert_with(|| serde_json::json!({"country_composition_version": 2}));
+        }
         let source = OneFrameSource {
             frame: RawFrame {
                 hour_index: 900,

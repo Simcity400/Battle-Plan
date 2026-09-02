@@ -6,6 +6,7 @@ use crate::gui::{parse_gui_document, GuiElement, Measure, MeasurePair};
 use crate::loc::Localisation;
 use crate::paradox_text::{parse_file_refusing_decode_damage, Document, Value};
 use crate::{GameUiError, Result as UiResult};
+use replay_core::NamedCountry;
 use replay_core::{CommandAbilityTimer, CommandAbilityTimerKind};
 use snapshot::sha256::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
@@ -792,7 +793,7 @@ pub fn admit_observer_ability_frame(
     frame: &replay_core::WorldFrame,
     admitted_manifest_sha256: &str,
     catalog: &AdmittedAbilityCatalog,
-    expected_country: &str,
+    expected_country: NamedCountry<'_>,
 ) -> std::result::Result<AdmittedObserverAbilityFrame, ActiveAbilityRejection> {
     let decoded = frame
         .domain(XUI23_PRODUCER_AUTHORITY_FIELD)
@@ -805,6 +806,13 @@ pub fn admit_observer_ability_frame(
                 )
             })
         })?;
+    // The caller says which country this frame is for. A key two ids reach is
+    // not one, and every snapshot below is attributed to it.
+    if frame.country_key_is_contended(expected_country.tag()) {
+        return Err(ActiveAbilityRejection(format!(
+            "XUI23 expected country {expected_country:?} is a contended key this hour, so it names no country"
+        )));
+    }
     let payload = &decoded.payload;
     let frame_identity = observer_ability_replay_frame_identity_sha256(frame)?;
     if decoded.schema != XUI23_PRODUCER_AUTHORITY_SCHEMA
@@ -873,7 +881,7 @@ pub fn admit_observer_ability_frame(
             &snapshot.country_tag,
             frame.hour_index(),
         )?;
-        if snapshot.country_tag == expected_country {
+        if snapshot.country_tag == expected_country.tag() {
             selected = Some((snapshot.clone(), rows));
         }
     }
@@ -1346,6 +1354,15 @@ fn rename_ability_tree(element: &mut GuiElement, suffix: &str) {
 
 #[cfg(test)]
 mod tests {
+    /// A TAG this frame's census admits. A test that means to name a country says
+    /// so here; a test about a contended key asks `named_country` and gets `None`.
+    fn named<'tag>(
+        frame: &replay_core::WorldFrame,
+        tag: &'tag str,
+    ) -> replay_core::NamedCountry<'tag> {
+        frame.named_country(tag).expect("census-admitted tag")
+    }
+
     use super::*;
     use crate::paradox_text::parse_str;
     use replay_core::{RawFrame, ReplaySource, SourceError, WorldTimeline};
@@ -1438,7 +1455,18 @@ mod tests {
                 date: None,
                 save_version: None,
                 schema_version: None,
-                rest: self.rest.clone(),
+                rest: {
+                    let mut rest = self.rest.clone();
+                    if replay_core::COUNTRY_COMPOSED_MEMBERS
+                        .iter()
+                        .any(|member| rest.contains_key(*member))
+                    {
+                        rest.entry("tag_db_id_index").or_insert_with(
+                            || serde_json::json!({"country_composition_version": 2}),
+                        );
+                    }
+                    rest
+                },
             })
         }
     }
@@ -2231,7 +2259,7 @@ mod tests {
             frame.as_ref(),
             &"cd".repeat(32),
             &observer_catalog(),
-            "GER",
+            named(&frame.as_ref(), "GER"),
         )
         .expect("frame-owned XUI23 authority");
         assert_eq!(admitted.country_tag, "GER");
@@ -2243,7 +2271,7 @@ mod tests {
             absent.as_ref(),
             &"cd".repeat(32),
             &observer_catalog(),
-            "GER",
+            named(&absent.as_ref(), "GER"),
         )
         .expect_err("ordinary frame must expose the exact external residual");
         assert_eq!(error.0, XUI23_PASSIVE_CARRIER_UNAVAILABLE_REASON);
@@ -2261,7 +2289,7 @@ mod tests {
             tampered_frame.as_ref(),
             &"cd".repeat(32),
             &observer_catalog(),
-            "GER",
+            named(&tampered_frame.as_ref(), "GER"),
         )
         .is_err());
     }
@@ -2290,7 +2318,7 @@ mod tests {
             mismatched.as_ref(),
             &"cd".repeat(32),
             &observer_catalog(),
-            "GER",
+            named(&mismatched.as_ref(), "GER"),
         )
         .expect_err("producer self-attestation cannot replace the D18 census");
         assert!(error.0.contains("ordered D18 census"));
@@ -2313,7 +2341,7 @@ mod tests {
             frame.as_ref(),
             &"cd".repeat(32),
             &observer_catalog(),
-            "GER",
+            named(&frame.as_ref(), "GER"),
         )
         .expect("admitted synthetic canonical carrier");
         let mut cache = UiAssetCache::default();
@@ -2370,7 +2398,7 @@ mod tests {
             frame.as_ref(),
             &"cd".repeat(32),
             &observer_catalog(),
-            "GER",
+            named(&frame.as_ref(), "GER"),
         )
         .unwrap();
         let error = compose_observer_ability_surface(
@@ -2418,7 +2446,7 @@ mod tests {
             frame.as_ref(),
             &"cd".repeat(32),
             &observer_catalog(),
-            "GER",
+            named(&frame.as_ref(), "GER"),
         )
         .unwrap();
         let error = compose_observer_ability_surface(
@@ -2473,7 +2501,7 @@ mod tests {
             frame.as_ref(),
             &"cd".repeat(32),
             &observer_catalog(),
-            "GER",
+            named(&frame.as_ref(), "GER"),
         )
         .unwrap();
         let surface = compose_observer_ability_surface(
@@ -2514,7 +2542,7 @@ mod tests {
             frame.as_ref(),
             &"cd".repeat(32),
             &observer_catalog(),
-            "GER",
+            named(&frame.as_ref(), "GER"),
         )
         .unwrap();
         let surface = compose_observer_ability_surface(
@@ -2581,7 +2609,7 @@ mod tests {
                 frame.as_ref(),
                 &"cd".repeat(32),
                 &observer_catalog(),
-                "GER",
+                named(&frame.as_ref(), "GER"),
             )
             .unwrap();
             let error = compose_observer_ability_surface(
@@ -2625,7 +2653,7 @@ mod tests {
             frame.as_ref(),
             &"cd".repeat(32),
             &observer_catalog(),
-            "GER",
+            named(&frame.as_ref(), "GER"),
         )
         .unwrap();
         let error = compose_observer_ability_surface(
@@ -2669,7 +2697,7 @@ mod tests {
             frame.as_ref(),
             &"cd".repeat(32),
             &observer_catalog(),
-            "GER",
+            named(&frame.as_ref(), "GER"),
         )
         .unwrap();
         let error = compose_observer_ability_surface(

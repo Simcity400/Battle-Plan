@@ -10,7 +10,7 @@
     },
     {
       "path": "faction_roster_production_fold/000016959360.snapshot.json",
-      "canonical_json_sha256": "fd6369818e4de12c276582f86e843abbd3ead04daac11c06835f5ba905c682f0"
+      "canonical_json_sha256": "937891980d96f828b16e4e952a929d91f5589aa1e666d8d93e456321d192bcc6"
     }
   ],
   "derivation_sources": [
@@ -47,6 +47,7 @@
       3,
       22
     ],
+    "country_composition_version": 2,
     "faction_roster_status": "measured_nonempty",
     "identity_disposition": "With no D18 identity rows, country references remain the exact numeric strings 1, 3, and 22; faction names remain absent rather than fabricated."
   },

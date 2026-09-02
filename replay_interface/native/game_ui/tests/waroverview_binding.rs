@@ -5,6 +5,15 @@ use game_ui::waroverview_binding::{war_overview_from_frame, WarRelationSummary};
 use replay_core::{open_recording, Leaf, WorldTimeline};
 use std::path::{Path, PathBuf};
 
+/// A TAG this frame's census admits. A test that means to name a country says
+/// so here; a test about a contended key asks `named_country` and gets `None`.
+fn named<'tag>(
+    frame: &replay_core::WorldFrame,
+    tag: &'tag str,
+) -> replay_core::NamedCountry<'tag> {
+    frame.named_country(tag).expect("census-admitted tag")
+}
+
 fn game_root() -> PathBuf {
     replay_test_gates::require_vanilla_game_root()
 }
@@ -108,7 +117,7 @@ fn war_overview_flips_at_change_hour() {
     let hours = tl.hours().to_vec();
     assert_eq!(hours.len(), 12);
 
-    let before = war_overview_from_frame(&tl.frame(hours[6]).unwrap(), "GER");
+    let before = war_overview_from_frame(&tl.frame(hours[6]).unwrap(), named(&tl.frame(hours[6]).unwrap(), "GER"));
     assert!(before.available, "diplomacy present @tick6");
     assert!(
         before.war_relations.measured().is_none(),
@@ -117,7 +126,7 @@ fn war_overview_flips_at_change_hour() {
     assert!(before.belligerents.is_empty(), "no belligerents @tick6");
     assert!(before.pov_belligerents.is_empty(), "GER no wars @tick6");
 
-    let after = war_overview_from_frame(&tl.frame(hours[7]).unwrap(), "GER");
+    let after = war_overview_from_frame(&tl.frame(hours[7]).unwrap(), named(&tl.frame(hours[7]).unwrap(), "GER"));
     assert!(after.available);
     assert_eq!(
         after.war_relations,
@@ -156,8 +165,8 @@ fn war_overview_flips_at_change_hour() {
 fn belligerent_set_is_global_pov_belligerents_are_per_pov() {
     let tl = fixture("fx_war_faction_matrix");
     let hours = tl.hours().to_vec();
-    let ger = war_overview_from_frame(&tl.frame(hours[7]).unwrap(), "GER");
-    let eng = war_overview_from_frame(&tl.frame(hours[7]).unwrap(), "ENG");
+    let ger = war_overview_from_frame(&tl.frame(hours[7]).unwrap(), named(&tl.frame(hours[7]).unwrap(), "GER"));
+    let eng = war_overview_from_frame(&tl.frame(hours[7]).unwrap(), named(&tl.frame(hours[7]).unwrap(), "ENG"));
 
     assert_eq!(ger.belligerents, eng.belligerents);
     assert_eq!(ger.war_relations, eng.war_relations);
@@ -171,7 +180,7 @@ fn belligerent_set_is_global_pov_belligerents_are_per_pov() {
 fn absent_pov_sees_global_wars_only() {
     let tl = fixture("fx_war_faction_matrix");
     let hours = tl.hours().to_vec();
-    let usa = war_overview_from_frame(&tl.frame(hours[7]).unwrap(), "USA");
+    let usa = war_overview_from_frame(&tl.frame(hours[7]).unwrap(), named(&tl.frame(hours[7]).unwrap(), "USA"));
     assert!(usa.available);
     assert_eq!(
         usa.war_relations.measured().expect("measured feed").len(),

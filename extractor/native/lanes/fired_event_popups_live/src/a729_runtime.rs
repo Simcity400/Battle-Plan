@@ -3919,6 +3919,7 @@ mod tests {
                 complete: true,
                 rows: vec![FireInput {
                     event_id: "germany.1".into(),
+                    recipient_tag_db_id: 1,
                     recipient_tag: "GER".into(),
                     fire_date: "1936.1.1.12".into(),
                     fire_hour: 0,

@@ -218,6 +218,12 @@ extractor/native/runs/sr_tf_id_space/out/*.decompile.c text eol=lf whitespace=-t
 # and XUI19 precedent) - one digest, and a checkout reproduces it.
 extractor/native/runs/tt_controller_authority/evidence/* -text -diff
 
+# Lane UB pins `world_fold.rs` by SHA-256 in
+# extractor/native/runs/ub_per_id_keying/projection_sweep.json, and the XUI09
+# fixture by SHA-256 in game_ui's research observer. Keep their checkout bytes
+# stable on Windows instead of letting core.autocrlf move them.
+extractor/native/recorder_host/src/world_fold.rs text eol=lf
+replay_interface/fixtures/xui09_research_joint_certification.json text eol=lf
 # Lane UF evidence: byte-stable both ways, so quoted hashes hold.
 extractor/native/runs/uf_pdxmesh_frame_image/** -text
 
