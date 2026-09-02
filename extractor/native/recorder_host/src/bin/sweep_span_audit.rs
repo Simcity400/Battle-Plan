@@ -18,6 +18,13 @@ use std::path::PathBuf;
 const RC_PROBE_DOMAIN_ID: u16 = 250;
 const TAIL_DEPTH: usize = 12;
 const DOMAIN_TABLE_LIMIT: usize = 24;
+/// The retired lane-wall tag of the country bundle's gated parent (lane PS,
+/// 2026-09-02, unbundled the eight children into gated workers under their own
+/// domain ids). A stream recorded before that carries the parent's critical
+/// busy time under this tag and nothing under the children's; counting it as
+/// country critical time is what makes `country_crit_us` comparable across the
+/// change.
+const RETIRED_COUNTRY_PARENT_TAG: u16 = 200;
 
 fn main() {
     if let Err(error) = run() {
@@ -137,6 +144,8 @@ struct ProbeUnits {
     lanes: Vec<(u16, u64, u64)>,
     outside: BTreeMap<u16, u64>,
     crit_domains: Vec<(u16, u64)>,
+    /// `lw_cb{tag}_us`: each country child's own read time, by domain id.
+    country_reads: Vec<(u16, u64)>,
     lanes_truncated: bool,
 }
 
@@ -176,6 +185,13 @@ fn probe_units_from(units: &[DiagUnit]) -> ProbeUnits {
                     .and_then(|digits| digits.parse::<u16>().ok())
                 {
                     probe.crit_domains.push((tag, value));
+                } else if let Some(tag) = name
+                    .strip_prefix(compact_contract::diagnostic_channel::CALLBACK_UNIT_PREFIX)
+                    .and_then(|rest| rest.strip_suffix(
+                        compact_contract::diagnostic_channel::CALLBACK_UNIT_SUFFIX))
+                    .and_then(|digits| digits.parse::<u16>().ok())
+                {
+                    probe.country_reads.push((tag, value));
                 } else if let Some(lane) = name
                     .strip_prefix(
                         compact_contract::diagnostic_channel::LANE_WALL_UNIT_PREFIX)
@@ -228,6 +244,14 @@ struct FrameSpan {
     bracketed_domains: u64,
     outside_total_us: u64,
     outside_wait_us: u64,
+    /// The country children this frame read (one `lw_cb{tag}_us` each), the
+    /// sum and the maximum of their own read times, and the critical-lane busy
+    /// time the frame charged to country tags -- the children's own domain
+    /// ids, or the retired parent tag on a stream recorded before lane PS.
+    country_child_count: u64,
+    country_read_sum_us: u64,
+    country_read_max_us: u64,
+    country_crit_us: u64,
     lanes_truncated: bool,
 }
 
@@ -249,6 +273,7 @@ struct ScanState {
     lane_wall_us: BTreeMap<u16, Vec<u64>>,
     crit_domain_us: BTreeMap<u16, Vec<u64>>,
     outside_us: BTreeMap<u16, Vec<u64>>,
+    country_read_us: BTreeMap<u16, Vec<u64>>,
     inspect_domain: Option<u16>,
     inspect_units: BTreeMap<String, Vec<u64>>,
     inspect_read_us: Vec<u64>,
@@ -453,6 +478,22 @@ fn derive_frame_span(probe: &ProbeUnits, perf_by_sequence: &[PerfRow]) -> Option
     } else {
         lane_busy_sum_us / lane_count
     };
+    let country_read_sum_us: u64 = probe.country_reads.iter().map(|(_, us)| *us).sum();
+    let country_read_max_us = probe
+        .country_reads
+        .iter()
+        .map(|(_, us)| *us)
+        .max()
+        .unwrap_or(0);
+    let country_crit_us: u64 = probe
+        .crit_domains
+        .iter()
+        .filter(|(tag, _)| {
+            *tag == RETIRED_COUNTRY_PARENT_TAG
+                || probe.country_reads.iter().any(|(read_tag, _)| read_tag == tag)
+        })
+        .map(|(_, us)| *us)
+        .sum();
     Some(FrameSpan {
         span_us,
         prewarm_us: probe.prewarm_us.unwrap_or(0),
@@ -475,6 +516,10 @@ fn derive_frame_span(probe: &ProbeUnits, perf_by_sequence: &[PerfRow]) -> Option
         bracketed_domains: probe.bracketed_domains.unwrap_or(0),
         outside_total_us: probe.outside.get(&0).copied().unwrap_or(0),
         outside_wait_us: probe.outside.get(&1).copied().unwrap_or(0),
+        country_child_count: probe.country_reads.len() as u64,
+        country_read_sum_us,
+        country_read_max_us,
+        country_crit_us,
         lanes_truncated: probe.lanes_truncated,
     })
 }
@@ -503,6 +548,9 @@ fn finalize_frame(state: &mut ScanState) {
     }
     for (&code, &value) in &probe.outside {
         state.outside_us.entry(code).or_default().push(value);
+    }
+    for &(tag, read_us) in &probe.country_reads {
+        state.country_read_us.entry(tag).or_default().push(read_us);
     }
 
     let mut sorted = frame.perf.clone();
@@ -638,6 +686,17 @@ struct Report {
     lanes: Vec<LaneCost>,
     outside_segments: Vec<OutsideSegment>,
     crit_domains: Vec<DomainCost>,
+    /// Per country domain: that child's own read time (`lw_cb{tag}_us`).
+    country_reads: Vec<DomainCost>,
+    /// Per frame: children read, the sum and maximum of their read times, and
+    /// the critical-lane busy time charged to country tags (children's own
+    /// ids, or the retired parent tag 200 on an older stream).
+    country_child_count: Stats,
+    country_read_sum_us: Stats,
+    country_read_max_us: Stats,
+    country_crit_us: Stats,
+    /// Frames in which any country tag was on the critical lane.
+    country_crit_frames: u64,
     inspect_domain: Option<u16>,
     inspect_read_time_us: Stats,
     inspect_units: Vec<InspectUnit>,
@@ -735,6 +794,21 @@ impl ScanState {
                 us: stats(samples),
             })
             .collect();
+        let mut country_reads: Vec<DomainCost> = self
+            .country_read_us
+            .iter()
+            .map(|(&domain_id, samples)| DomainCost {
+                domain_id,
+                read_time_us: stats(samples),
+                tail_positions: Vec::new(),
+            })
+            .collect();
+        country_reads.sort_by(|a, b| b.read_time_us.p50.cmp(&a.read_time_us.p50));
+        let country_crit_frames = self
+            .frames
+            .iter()
+            .filter(|frame| frame.country_crit_us != 0)
+            .count() as u64;
         Report {
             collector_build: recorder_host::build_declaration::summary_json(
                 &recorder_host::build_declaration::for_stream(std::path::Path::new(&input_path)),
@@ -774,6 +848,12 @@ impl ScanState {
             lanes,
             outside_segments,
             crit_domains,
+            country_reads,
+            country_child_count: column(|frame| frame.country_child_count),
+            country_read_sum_us: column(|frame| frame.country_read_sum_us),
+            country_read_max_us: column(|frame| frame.country_read_max_us),
+            country_crit_us: column(|frame| frame.country_crit_us),
+            country_crit_frames,
             inspect_domain: self.inspect_domain,
             inspect_read_time_us: stats(&self.inspect_read_us),
             inspect_units: self
@@ -909,6 +989,24 @@ fn print_report(report: &Report) {
     for domain in report.crit_domains.iter().take(DOMAIN_TABLE_LIMIT) {
         println!(
             "  d{:<3} frames={:<5} p50={:<8} p90={:<8} max={}",
+            domain.domain_id,
+            domain.read_time_us.count,
+            domain.read_time_us.p50,
+            domain.read_time_us.p90,
+            domain.read_time_us.max
+        );
+    }
+    println!(
+        "\n-- country children (lw_cb{{tag}}_us; crit charged to country tags in {} frames) --",
+        report.country_crit_frames
+    );
+    line("children per frame", &report.country_child_count);
+    line("read sum", &report.country_read_sum_us);
+    line("read max", &report.country_read_max_us);
+    line("country crit busy", &report.country_crit_us);
+    for domain in &report.country_reads {
+        println!(
+            "  cb{:<3} n={:<5} p50={:<8} p90={:<8} max={}",
             domain.domain_id,
             domain.read_time_us.count,
             domain.read_time_us.p50,
@@ -1077,6 +1175,65 @@ mod tests {
         lanes.sort_by_key(|entry| entry.0);
         assert_eq!(lanes[0], (0, 30_000, 25_000));
         assert_eq!(lanes[1], (1, 20_000, 18_000));
+    }
+
+    #[test]
+    fn country_read_units_fold_into_the_frames_country_columns() {
+        // A frame after lane PS: eight children under their own domain ids,
+        // tech on the critical lane.
+        let units = vec![
+            DiagUnit::counter("lw_frames", 1),
+            DiagUnit::counter("lw_worker_span_us", 60_000),
+            DiagUnit::counter("lw_l0_wall_us", 40_000),
+            DiagUnit::counter("lw_l0_busy_us", 40_000),
+            DiagUnit::counter("lw_cb10_us", 700),
+            DiagUnit::counter("lw_cb13_us", 14_000),
+            DiagUnit::counter("lw_cb14_us", 10_000),
+            DiagUnit::counter("lw_d13_crit_us", 14_500),
+            DiagUnit::counter("lw_d43_crit_us", 25_500),
+        ];
+        let probe = probe_units_from(&units);
+        assert_eq!(probe.country_reads, vec![(10, 700), (13, 14_000), (14, 10_000)]);
+        assert_eq!(probe.crit_domains, vec![(13, 14_500), (43, 25_500)]);
+        assert_eq!(probe.lanes, vec![(0, 40_000, 40_000)]);
+        let derived = derive_frame_span(&probe, &[]).expect("decomposes");
+        assert_eq!(derived.country_child_count, 3);
+        assert_eq!(derived.country_read_sum_us, 24_700);
+        assert_eq!(derived.country_read_max_us, 14_000);
+        assert_eq!(
+            derived.country_crit_us, 14_500,
+            "only the country child's critical busy time, not d43's"
+        );
+
+        // A frame before lane PS: the parent on the critical lane under the
+        // retired tag, the children reporting their reads under lw_cb.
+        let units = vec![
+            DiagUnit::counter("lw_frames", 1),
+            DiagUnit::counter("lw_worker_span_us", 60_000),
+            DiagUnit::counter("lw_cb13_us", 14_000),
+            DiagUnit::counter("lw_cb14_us", 10_000),
+            DiagUnit::counter("lw_d200_crit_us", 57_000),
+        ];
+        let derived = derive_frame_span(&probe_units_from(&units), &[]).expect("decomposes");
+        assert_eq!(derived.country_crit_us, 57_000);
+        assert_eq!(derived.country_read_sum_us, 24_000);
+
+        let mut state = ScanState::default();
+        state.frames.push(derived);
+        for &(tag, read_us) in &probe_units_from(&units).country_reads {
+            state.country_read_us.entry(tag).or_default().push(read_us);
+        }
+        let report = state.finish("fixture".to_string());
+        assert_eq!(report.country_crit_frames, 1);
+        assert_eq!(report.country_crit_us.max, 57_000);
+        assert_eq!(
+            report
+                .country_reads
+                .iter()
+                .map(|domain| (domain.domain_id, domain.read_time_us.max))
+                .collect::<Vec<_>>(),
+            vec![(13, 14_000), (14, 10_000)]
+        );
     }
 
     #[test]

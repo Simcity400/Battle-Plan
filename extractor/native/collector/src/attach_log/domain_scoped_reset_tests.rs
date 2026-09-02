@@ -207,7 +207,6 @@ fn reader_call_spans(body: &str) -> Vec<ReaderCallSpan> {
         // parenthesis immediately after the name. Same argument index again --
         // `scope, gate, lanes, tag, observe, finish`.
         ("spawn_gated_finishing(", 3usize),
-        ("spawn_gated_lane_only(", 3usize),
         ("lane_time_main(", 1usize),
     ] {
         let mut from = 0usize;
@@ -312,9 +311,10 @@ fn derive_field_tags_from_source(body: &str) -> BTreeMap<String, Vec<String>> {
 
     let mut derived: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
-    assert!(
-        spans.iter().any(|span| span.tag == "LW_TAG_COUNTRY_BUNDLE"),
-        "the country bundle reader call is present"
+    assert_eq!(
+        body.matches("spawn_compact_country_children(").count(),
+        1,
+        "the frame builder spawns the country children exactly once"
     );
     let child_tags = country_child_bracket_tags();
     for line in body.lines() {
@@ -324,8 +324,8 @@ fn derive_field_tags_from_source(body: &str) -> BTreeMap<String, Vec<String>> {
                 if !lhs.contains(' ') && !rhs.contains(' ') {
                     let tag = child_tags.get(rhs).unwrap_or_else(|| {
                         panic!(
-                            "country tracker field `{rhs}` is handed to the country bundle but no \
-                             `country_child_bracket` call in this crate takes its local"
+                            "country tracker field `{rhs}` is handed to the country children but \
+                             no `spawn_gated_country_child` call in this crate takes its local"
                         )
                     });
                     derived
@@ -420,11 +420,15 @@ fn table() -> BTreeMap<&'static str, &'static str> {
     table
 }
 
+/// `(tracker field, bracket tag)` for the eight country children, derived from
+/// the fan-out's own text: the tracker local each field is destructured into,
+/// and the `spawn_gated_country_child(scope, gate, lanes, TAG, ...)` call whose
+/// read closure takes that local.
 fn country_child_bracket_tags() -> BTreeMap<String, String> {
     let source = attach_log_source();
     let destructure_start = source
         .find("let CompactCountryGateTrackers {")
-        .expect("the parallel bundle destructures its tracker set");
+        .expect("the country fan-out destructures its tracker set");
     let destructure_end = source[destructure_start..]
         .find("} = trackers;")
         .expect("the destructuring is closed")
@@ -443,52 +447,55 @@ fn country_child_bracket_tags() -> BTreeMap<String, String> {
     assert_eq!(
         local_of_field.len(),
         8,
-        "the country bundle destructures eight trackers, parsed {local_of_field:?}"
+        "the country fan-out destructures eight trackers, parsed {local_of_field:?}"
     );
 
     let mut tag_of_local: BTreeMap<String, String> = BTreeMap::new();
-    let needle = "country_child_bracket(";
+    let needle = "spawn_gated_country_child(";
     let mut search = 0usize;
     let mut calls = 0usize;
     while let Some(at) = source[search..].find(needle) {
         let open = search + at + needle.len() - 1;
         search = open + 1;
-        if source[..open]
-            .trim_end()
-            .ends_with("fn country_child_bracket")
-        {
-            continue;
-        }
         let Some(close) = matching_paren(&source, open) else {
             continue;
         };
-        let call = &source[open + 1..close];
-        let mut args = call.splitn(3, ',');
-        let _lanes = args.next().unwrap_or("").trim();
-        let Some(tag) = args.next().map(str::trim) else {
+        let args = split_top_level_args(&source[open + 1..close]);
+        // `scope, gate, lanes, tag, before_bracket, read, encode`
+        let Some(tag) = args.get(3) else {
             continue;
         };
-        let call_body = args.next().unwrap_or("");
+        let call_body = args[4..].join(",");
         calls += 1;
         for local in local_of_field.values() {
-            let hit = call_body
-                .lines()
-                .any(|line| line.trim().trim_end_matches(',') == local.as_str());
+            let mut from = 0usize;
+            let mut hit = false;
+            while let Some(at) = call_body[from..].find(local.as_str()) {
+                let use_at = from + at;
+                from = use_at + local.len();
+                if is_word_boundary(&call_body, use_at, local.len()) {
+                    hit = true;
+                    break;
+                }
+            }
             if hit {
-                tag_of_local.insert(local.clone(), tag.to_string());
+                tag_of_local.insert(local.clone(), tag.clone());
             }
         }
     }
     assert_eq!(
         calls, 8,
-        "each of the eight country children holds its own bracket, found {calls}"
+        "each of the eight country children is spawned through the gated child helper, \
+         found {calls}"
     );
 
     local_of_field
         .into_iter()
         .map(|(field, local)| {
             let tag = tag_of_local.get(&local).unwrap_or_else(|| {
-                panic!("no `country_child_bracket` call takes the country tracker local `{local}`")
+                panic!(
+                    "no `spawn_gated_country_child` call takes the country tracker local `{local}`"
+                )
             });
             (field, tag.clone())
         })
@@ -1371,12 +1378,12 @@ fn a_published_frame_commits_unless_the_domain_was_degraded() {
 }
 
 #[test]
-fn a_parent_panic_brackets_only_the_scheduled_and_uncovered_children() {
+fn a_pre_guard_panic_brackets_only_the_joined_and_uncovered_children() {
     let lanes = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
-    let scheduled: BTreeSet<u16> = [LW_TAG_COUNTRY_FUEL, LW_TAG_COUNTRY_DECISIONS]
+    let scheduled: BTreeSet<u16> = [COMPACT_DOMAIN_FUEL, COMPACT_DOMAIN_DECISIONS]
         .into_iter()
         .collect();
-    lanes.record_clock_bracket(LW_TAG_COUNTRY_FUEL, None, None, false);
+    lanes.record_clock_bracket(COMPACT_DOMAIN_FUEL, None, None, false);
     lanes.record_worker_panicked_country_brackets(&scheduled);
 
     let brackets = lanes.take_clock_brackets();
@@ -1387,8 +1394,8 @@ fn a_parent_panic_brackets_only_the_scheduled_and_uncovered_children() {
         .collect();
     assert_eq!(
         synthesized,
-        vec![LW_TAG_COUNTRY_DECISIONS],
-        "only the scheduled child that left no bracket may be synthesized; fuel already          recorded one and the five unscheduled children attempted nothing"
+        vec![COMPACT_DOMAIN_DECISIONS],
+        "only the joined child that left no bracket may be synthesized; fuel already          recorded one and the six children the join did not name attempted nothing"
     );
     let mut covered = Vec::new();
     for bracket in &brackets {
@@ -1403,7 +1410,7 @@ fn a_parent_panic_brackets_only_the_scheduled_and_uncovered_children() {
 }
 
 #[test]
-fn a_parent_panic_over_the_split_focus_and_tech_children_brackets_tech_alone() {
+fn a_pre_guard_panic_over_the_focus_and_tech_children_brackets_tech_alone() {
     let lanes = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
     let scheduled: BTreeSet<u16> = [COMPACT_DOMAIN_FOCUS, COMPACT_DOMAIN_TECH]
         .into_iter()

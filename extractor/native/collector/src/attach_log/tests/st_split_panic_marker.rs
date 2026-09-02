@@ -17,14 +17,16 @@
 //   * `spawn_gated_split`, the older one, with three users -- d81
 //     (`rail_replay_state_live`), d47 (`characters_leaders_cabinet_live`) and
 //     d101 (`map_furniture_victory_points_live`);
-//   * `country_child_bracket`, whose eight callers encode their publication
-//     records after the guard closes (lane RU moved that encode onto the child).
-//     Codex round 1 found this one, against an earlier version of this file that
-//     classified the helper by its own body and missed that its CALLERS defer.
-//     For seven of the eight children a panic there was only a wrong cause on
-//     the wire; for the TECH child it also advanced d13's wire baseline inside
-//     `country_bundle_publication_records` and then published an empty badged
-//     record over it.
+//   * the country children, whose publication records are encoded after the
+//     guard closes (lane RU moved that encode onto the child). Codex round 1
+//     found this one, against an earlier version of this file that classified
+//     the then-helper `country_child_bracket` by its own body and missed that
+//     its CALLERS deferred. For seven of the eight children a panic there was
+//     only a wrong cause on the wire; for the TECH child it also advanced d13's
+//     wire baseline inside `country_bundle_publication_records` and then
+//     published an empty badged record over it. Lane PS folded the eight
+//     callers into one gated helper, `spawn_gated_country_child`, which owns
+//     the encode and the marker.
 //
 // This lane arms the same marker in both.
 //
@@ -32,16 +34,15 @@
 // its_guard_is_classified` derives the left-hand column from the source and
 // enforces the right-hand one; this table is the reading of it, not its source.
 //
-//   helper                  | bracket held over      | panic past the bracket
-//                           |                        | OLD          -> NEW
-//   ------------------------+------------------------+-----------------------
-//   spawn_gated             | the whole worker body  | (nothing is past it)
-//   spawn_gated_lane_only   | opens NO bracket       | (there is no bracket)
-//   spawn_gated_publishing  | read + bookkeeping     | caught, cannot unwind
-//   spawn_gated_split       | observe only           | CLEAN -> panicked
-//   spawn_gated_finishing   | observe only           | panicked (lane SQ)
-//   country_child_bracket   | the read only          | CLEAN -> panicked
-//   lane_time_main          | the whole call         | (nothing is past it)
+//   helper                    | bracket held over      | panic past the bracket
+//                             |                        | OLD          -> NEW
+//   --------------------------+------------------------+-----------------------
+//   spawn_gated               | the whole worker body  | (nothing is past it)
+//   spawn_gated_publishing    | read + bookkeeping     | caught, cannot unwind
+//   spawn_gated_split         | observe only           | CLEAN -> panicked
+//   spawn_gated_finishing     | observe only           | panicked (lane SQ)
+//   spawn_gated_country_child | the read only          | CLEAN -> panicked
+//   lane_time_main            | the whole call         | (nothing is past it)
 //
 // WHY MAIN-THREAD BRACKETS ARE NOT IN THE CLASS, even where a serial reader
 // defers work past its guard. The marker exists because a WORKER's panic is
@@ -263,13 +264,13 @@ fn function_items(blanked: &str) -> Vec<(String, &str)> {
 /// answered for the six: does anything run after the guard's `Drop`, and if so,
 /// what tells the closed bracket about a panic in it? An earlier version of this
 /// test enumerated `fn spawn_*` instead, and Codex round 1 was right that the
-/// narrower roster is what let `country_child_bracket`'s deferred publish encode
-/// stay in the defect class: the helper's OWN body holds its guard to the end,
-/// and the deferral lives one level up in its eight callers. That is why the
-/// classification below is `defers` computed over the helper AND
+/// narrower roster is what let the country children's deferred publish encode
+/// stay in the defect class: the then-helper's OWN body held its guard to the
+/// end, and the deferral lived one level up in its eight callers. That is why
+/// the classification below is `defers` computed over the helper AND
 /// `no_scoped_worker_opens_a_bracket_outside_the_classified_helpers` over the
-/// callers, and why `country_child_bracket` now takes its callers' tail as a
-/// parameter instead of leaving it outside.
+/// callers, and why `spawn_gated_country_child` owns the encode instead of
+/// leaving it to its callers.
 ///
 /// SPLIT.md section 10's rule -- a new spawn helper spelling must also be added
 /// to the reader-call spelling table in `domain_scoped_reset_tests.rs` -- is the
@@ -293,8 +294,7 @@ fn function_items(blanked: &str) -> Vec<(String, &str)> {
 /// kills: deleting the marker from any of the three helpers that need one;
 /// adding a bracket-opening function without deciding this; dropping
 /// `spawn_gated_publishing`'s `catch_unwind` (the arm below then demands a marker
-/// it does not have); giving `spawn_gated`, `spawn_gated_lane_only` or
-/// `lane_time_main` a deferred half.
+/// it does not have); giving `spawn_gated` or `lane_time_main` a deferred half.
 #[test]
 fn every_bracket_helper_that_defers_work_past_its_guard_is_classified() {
     let source = super::collector_source_lf();
@@ -330,9 +330,9 @@ fn every_bracket_helper_that_defers_work_past_its_guard_is_classified() {
         names,
         vec![
             "build_compact_extraction_gate_records",
-            "country_child_bracket",
             "lane_time_main",
             "spawn_gated",
+            "spawn_gated_country_child",
             "spawn_gated_finishing",
             "spawn_gated_publishing",
             "spawn_gated_split",
@@ -346,7 +346,7 @@ fn every_bracket_helper_that_defers_work_past_its_guard_is_classified() {
         ("spawn_gated_publishing", true, false),
         ("spawn_gated_split", true, true),
         ("spawn_gated_finishing", true, true),
-        ("country_child_bracket", true, true),
+        ("spawn_gated_country_child", true, true),
         ("lane_time_main", false, false),
     ];
     for (name, defers, arms_marker) in expected {
@@ -374,19 +374,6 @@ fn every_bracket_helper_that_defers_work_past_its_guard_is_classified() {
             );
         }
     }
-
-    // `spawn_gated_lane_only` opens no bracket at all, which is why it is absent
-    // from the roster above rather than classified in it. Asserted rather than
-    // left implicit: giving it a bracket would put a parent span with no domain
-    // back into `frame_boundary_position`'s straddle counters.
-    let (_, lane_only) = items
-        .iter()
-        .find(|(name, _)| name == "spawn_gated_lane_only")
-        .expect("the lane-only helper must exist");
-    assert!(
-        !lane_only.contains("ReaderClockBracketGuard"),
-        "the lane-only helper must stay bracket-free",
-    );
 }
 
 /// No SCOPED WORKER opens a clock bracket except through a helper this file
@@ -395,7 +382,7 @@ fn every_bracket_helper_that_defers_work_past_its_guard_is_classified() {
 /// THIS IS WHAT THE ROSTER TEST CANNOT SEE, and the gap Codex round 1 found. A
 /// helper can hold its guard to the end of its own body and still leave the
 /// defect open, because the work that runs after the bracket lives in the CALLER
-/// -- which is exactly what `country_child_bracket`'s eight workers did with
+/// -- which is exactly what the country children's eight workers once did with
 /// lane RU's publish encode. So the callers are enumerated too: every
 /// `scope.spawn(` in the file, with the bracket-opening spellings its worker body
 /// uses.
@@ -419,8 +406,8 @@ fn every_bracket_helper_that_defers_work_past_its_guard_is_classified() {
 /// roster's callees to create one, and the roster test is where that lands.
 ///
 /// kills: a new `scope.spawn` worker that opens its own `ReaderClockBracketGuard`
-/// inline; a country child that stops going through `country_child_bracket`; a
-/// worker pool inside a reader that starts holding a bracket per child; a new
+/// inline; a country child that stops going through `spawn_gated_country_child`;
+/// a worker pool inside a reader that starts holding a bracket per child; a new
 /// bracket helper called from a worker.
 #[test]
 fn no_scoped_worker_opens_a_bracket_outside_the_classified_helpers() {
@@ -439,20 +426,27 @@ fn no_scoped_worker_opens_a_bracket_outside_the_classified_helpers() {
     }
 
     // (enclosing function, bracket-opening spelling the worker body uses)
+    //
+    // TWO SPAWN SPELLINGS. `spawn_gated_country_child` creates its worker through
+    // `thread::Builder::spawn_scoped(scope, ..)` so a refused thread is an `Err`
+    // rather than a panic on the collector thread (lane PS); a scan that knew only
+    // `scope.spawn(` would have stopped seeing that worker's bracket.
     let mut found: Vec<(String, String)> = Vec::new();
     for (name, body) in &items {
         let bytes = body.as_bytes();
-        let mut from = 0usize;
-        while let Some(at) = body[from..].find("scope.spawn(") {
-            let open = from + at + "scope.spawn(".len() - 1;
-            from = open + 1;
-            let Some(close) = matching_delimiter(bytes, open, b'(', b')') else {
-                continue;
-            };
-            let worker = &body[open + 1..close];
-            for spelling in &spellings {
-                if worker.contains(spelling.as_str()) {
-                    found.push((name.clone(), spelling.clone()));
+        for spawn_spelling in ["scope.spawn(", "spawn_scoped(scope, "] {
+            let mut from = 0usize;
+            while let Some(at) = body[from..].find(spawn_spelling) {
+                let open = from + at + spawn_spelling.find('(').expect("a call spelling") ;
+                from = open + 1;
+                let Some(close) = matching_delimiter(bytes, open, b'(', b')') else {
+                    continue;
+                };
+                let worker = &body[open + 1..close];
+                for spelling in &spellings {
+                    if worker.contains(spelling.as_str()) {
+                        found.push((name.clone(), spelling.clone()));
+                    }
                 }
             }
         }
@@ -465,17 +459,14 @@ fn no_scoped_worker_opens_a_bracket_outside_the_classified_helpers() {
         "spawn_gated_publishing",
         "spawn_gated_split",
         "spawn_gated_finishing",
+        // The eight country children run through this one helper's worker;
+        // `every_country_child_publishes_through_the_gated_child_helper` pins
+        // that the fan-out spawns nothing any other way.
+        "spawn_gated_country_child",
     ] {
         expected.push((
             helper.to_string(),
             "ReaderClockBracketGuard::new".to_string(),
-        ));
-    }
-    // The eight country children, each through the helper that arms the marker.
-    for _ in 0..8 {
-        expected.push((
-            "read_compact_country_domain_bundles_parallel".to_string(),
-            "country_child_bracket(".to_string(),
         ));
     }
     expected.sort();
@@ -504,60 +495,157 @@ fn matching_delimiter(bytes: &[u8], open: usize, opener: u8, closer: u8) -> Opti
     None
 }
 
-/// Every country child hands its publish encode to `country_child_bracket` as
-/// the post-bracket tail, rather than running it as the worker's next statement.
+/// Every country child is spawned through `spawn_gated_country_child`, and the
+/// publication encode is assigned ONCE, inside that helper, under its marker.
 ///
 /// WHY THE SHAPE MATTERS AND NOT JUST THE MARKER. Arming a marker at each of the
 /// eight sites would work and would be wrong: the tag would be repeated by hand
 /// eight times, and a mistyped one marks ANOTHER domain's bracket -- a silent
-/// gap on a domain that read cleanly. Handing the tail to the helper makes the
-/// marker's tag the guard's tag by construction.
+/// gap on a domain that read cleanly. One helper makes the marker's tag the
+/// guard's tag by construction, and one assignment site means no child can
+/// publish past the marker.
 ///
-/// kills: a ninth child added the old way; any child that assigns
-/// `published_records` outside the helper's tail closure.
+/// kills: a ninth child spawned any other way; a child that assigns
+/// `published_records` itself; the helper assigning it before the marker.
 #[test]
-fn every_country_child_publishes_through_the_bracket_helper() {
+fn every_country_child_publishes_through_the_gated_child_helper() {
     let source = super::collector_source_lf();
     let blanked = blank_comments_and_literals(&source);
     let items = function_items(&blanked);
-    let (_, parallel) = items
+    let (_, fan_out) = items
         .iter()
-        .find(|(name, _)| name == "read_compact_country_domain_bundles_parallel")
+        .find(|(name, _)| name == "spawn_compact_country_children")
         .expect("the country fan-out must exist");
 
-    let calls = parallel.matches("country_child_bracket(").count();
     assert_eq!(
-        calls, 8,
-        "each of the eight country children holds its own bracket through the helper",
+        fan_out.matches("spawn_gated_country_child(").count(),
+        8,
+        "each of the eight country children is spawned through the helper",
     );
-    let publishes = parallel
-        .matches("read.published_records = Some(records);")
-        .count();
     assert_eq!(
-        publishes, 8,
-        "and each publishes exactly once, from inside the helper's tail closure",
+        fan_out.matches("scope.spawn(").count() + fan_out.matches("spawn_scoped(").count(),
+        0,
+        "and none is spawned any other way",
     );
-    // THE TAIL IS INSIDE THE CALL. Every `published_records` assignment must fall
-    // between a `country_child_bracket(` and its matching `)`, which is what
-    // makes the marker cover it.
-    let bytes = parallel.as_bytes();
-    let mut covered = 0usize;
-    let mut from = 0usize;
-    while let Some(at) = parallel[from..].find("country_child_bracket(") {
-        let open = from + at + "country_child_bracket(".len() - 1;
-        from = open + 1;
-        let Some(close) = matching_delimiter(bytes, open, b'(', b')') else {
-            panic!("a `country_child_bracket(` call must close");
-        };
-        covered += parallel[open..close]
-            .matches("read.published_records = Some(records);")
-            .count();
+    assert_eq!(
+        fan_out
+            .matches("CountryChildOutcome::from_spawn(spawn_gated_country_child(")
+            .count(),
+        8,
+        "every site maps the helper's result through `from_spawn`",
+    );
+    assert_eq!(
+        fan_out.matches(".unwrap(").count() + fan_out.matches(".expect(").count(),
+        0,
+        "and no site unwraps a refusal into a panic on the collector thread (Codex round 4)",
+    );
+    assert_eq!(
+        fan_out.matches("published_records").count(),
+        0,
+        "no child touches its publication slot; the helper owns it",
+    );
+
+    let assignment = "read.published_records = Some(encode(&read));";
+    let sites: Vec<&str> = items
+        .iter()
+        .filter(|(_, body)| body.contains(assignment))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(
+        sites,
+        vec!["spawn_gated_country_child"],
+        "the publication encode is assigned in exactly one place",
+    );
+    let (_, helper) = items
+        .iter()
+        .find(|(name, _)| name == "spawn_gated_country_child")
+        .expect("the gated child helper must exist");
+    let marker_at = helper
+        .find("let _panic_marker = ClosedBracketPanicMarker { lanes, tag };")
+        .expect("the helper arms the marker");
+    let assign_at = helper.find(assignment).expect("the helper assigns the encode");
+    assert!(
+        marker_at < assign_at,
+        "the encode must run while the marker is alive",
+    );
+
+    // THE THREAD IS CREATED THROUGH A BUILDER, WHICH RETURNS A REFUSAL RATHER
+    // THAN PANICKING ON THE COLLECTOR THREAD (Codex round 1 finding 1, round 2).
+    // `Ok(scope.spawn(..))` would satisfy the signature and restore the lost
+    // frame; the spelling is pinned so it cannot.
+    assert_eq!(
+        helper.matches("builder.spawn_scoped(scope, ").count(),
+        1,
+        "the helper must create its worker through the builder it was handed",
+    );
+    assert_eq!(
+        helper.matches("thread::Builder::new()").count()
+            + helper.matches(".unwrap(").count()
+            + helper.matches(".expect(").count(),
+        0,
+        "the builder comes from the caller and its refusal is returned, never unwrapped",
+    );
+    assert_eq!(
+        helper.matches("scope.spawn(").count(),
+        0,
+        "and never through `Scope::spawn`, which panics on a refused thread",
+    );
+    let signature = &helper[..helper.find('{').expect("the helper has a body")];
+    assert!(
+        signature.contains("-> std::io::Result<thread::ScopedJoinHandle<"),
+        "the refusal must reach the caller as an `Err`; signature: {signature}",
+    );
+}
+
+/// The gated child helper arms its marker with NOTHING between the guarded
+/// block's close and the marker, and every later statement -- the permit
+/// release, the lane span, the encode, the split pair -- runs under it.
+///
+/// Same claim and same exact-slice comparison as
+/// `nothing_runs_between_the_split_guards_drop_and_the_panic_marker`, for the
+/// same reason: `close < marker < encode` admits any statement inserted in the
+/// gap, which is the defect itself, re-openable.
+///
+/// kills: constructing the marker after `bracket_closed`; moving the encode or
+/// the permit release above it; inserting any statement between the guarded
+/// block and the marker.
+#[test]
+fn nothing_runs_between_the_country_childs_guard_and_the_panic_marker() {
+    let source = super::collector_source_lf();
+    let helper = item_body(&source, "fn spawn_gated_country_child<");
+    let open = helper
+        .find("let mut read = {")
+        .expect("the guarded block must be bound to `read`");
+    let close = helper[open..]
+        .find("\n        };")
+        .map(|at| open + at)
+        .expect("the guarded block must close");
+    let marker = "let _panic_marker = ClosedBracketPanicMarker { lanes, tag };";
+    let marker_at = helper
+        .find(marker)
+        .expect("the closed-bracket panic marker must be armed");
+    assert!(
+        marker_at > close,
+        "the marker must be armed after the guarded block, not inside it",
+    );
+    let between = code_only(&helper[close + "\n        };".len()..marker_at]);
+    assert!(
+        between.is_empty(),
+        "nothing may run between the guard's drop and the panic marker; found:\n{between}",
+    );
+    for later in [
+        "let bracket_closed = lanes.origin.elapsed();",
+        "lane_cost_observe(tag, duration_micros_u64(bracket_closed.saturating_sub(start)));",
+        "drop(permit);",
+        "lanes.record(tag, lane, start, bracket_closed);",
+        "read.published_records = Some(encode(&read));",
+        "lanes.record_bracket_split(",
+    ] {
+        assert!(
+            helper.find(later).is_some_and(|at| at > marker_at),
+            "`{later}` must run while the marker is still alive",
+        );
     }
-    assert_eq!(
-        covered, 8,
-        "every child's publish encode must run inside the helper's call, where the panic \
-         marker covers it -- not after it, where the guard has closed and nothing does",
-    );
 }
 
 /// The marker is armed with NOTHING between it and the split guard's drop, and
@@ -1192,14 +1280,14 @@ fn the_split_helper_serves_exactly_d47_d81_d101_and_d102() {
 ///
 /// PRODUCTION CHANGE THAT WOULD MAKE THIS FAIL: deleting
 /// `let _panic_marker = ClosedBracketPanicMarker { lanes, tag };` from
-/// `country_child_bracket`, moving it below the `after_bracket` call, or
-/// carrying `tech_country_delta` through the reset.
+/// `spawn_gated_country_child`, moving it below the encode, or carrying
+/// `tech_country_delta` through the reset.
 ///
-/// kills: the marker deleted or moved in `country_child_bracket`; the tail
-/// hoisted back into the caller (which
-/// `every_country_child_publishes_through_the_bracket_helper` also catches);
-/// `tech_country_delta` added to a carry-over list; `COMPACT_DOMAIN_TECH` given
-/// a covered-domain arm that names another domain.
+/// kills: the marker deleted or moved in `spawn_gated_country_child`; the
+/// encode hoisted out of the helper (which
+/// `every_country_child_publishes_through_the_gated_child_helper` also
+/// catches); `tech_country_delta` added to a carry-over list;
+/// `COMPACT_DOMAIN_TECH` given a covered-domain arm that names another domain.
 #[test]
 fn a_panic_in_the_tech_childs_publish_tail_gaps_d13_and_takes_its_baseline() {
     use compact_contract::domain_gap::DomainGapReason;
@@ -1212,23 +1300,25 @@ fn a_panic_in_the_tech_childs_publish_tail_gaps_d13_and_takes_its_baseline() {
 
     let joined = thread::scope(|scope| {
         let tech_delta = &mut trackers.tech_country_delta;
-        scope
-            .spawn(|| {
-                country_child_bracket(
-                    &lanes,
-                    COMPACT_DOMAIN_TECH,
-                    || 1u32,
-                    |_read: &mut u32| {
-                        // WHAT THE ENCODE DOES BEFORE IT CAN FAIL. D13's pin
-                        // advances once per frame during the payload build; this
-                        // is that advance, standing in for the whole of
-                        // `country_bundle_publication_records`.
-                        tech_delta.baseline_seeded = true;
-                        panic!("a latent bug in the publication encode, after the pin advanced");
-                    },
-                )
-            })
-            .join()
+        spawn_gated_country_child(
+            scope,
+            None,
+            &lanes,
+            COMPACT_DOMAIN_TECH,
+            thread::Builder::new(),
+            || {},
+            empty_bundle_read,
+            move |_read| {
+                // WHAT THE ENCODE DOES BEFORE IT CAN FAIL. D13's pin advances
+                // once per frame during the payload build; this is that
+                // advance, standing in for the whole of
+                // `country_bundle_publication_records`.
+                tech_delta.baseline_seeded = true;
+                panic!("a latent bug in the publication encode, after the pin advanced");
+            },
+        )
+        .expect("the OS spawned the child")
+        .join()
     });
     assert!(
         joined.is_err(),
@@ -1305,34 +1395,83 @@ fn a_panic_in_the_tech_childs_publish_tail_gaps_d13_and_takes_its_baseline() {
     );
 }
 
-/// And a country child that completes leaves its bracket clean.
+/// A country read with nothing in it, for driving the gated child helper
+/// without an engine.
+fn empty_bundle_read() -> CompactBundleRead {
+    CompactBundleRead {
+        worker_panic_reason: None,
+        specs: Vec::new(),
+        rows: Vec::new(),
+        read_time_us: 0,
+        row_count: 0,
+        status_flags: 0,
+        technology_ids: Arc::new(TechnologyIdDictionary::default()),
+        published_records: None,
+    }
+}
+
+/// And a country child that completes leaves its bracket clean, with the
+/// encode's records in the read it hands back.
 ///
 /// The other half of the marker's contract at this site: a `Drop` that marked
 /// unconditionally would gap all eight country domains in every frame of every
 /// capture.
 ///
 /// kills: `ClosedBracketPanicMarker::drop` marking without testing
-/// `std::thread::panicking()`; `country_child_bracket` losing its tail call.
+/// `std::thread::panicking()`; `spawn_gated_country_child` losing its encode
+/// call or dropping its result; the split pair recorded as zeros, or the two
+/// halves exchanged (Codex round 1, finding 4) -- the read below holds the
+/// bracket for at least 6 ms and the encode runs for at least 2 ms, the
+/// in-bracket half must equal the lane span exactly (both are `bracket_closed
+/// - start`), and the post half must be at least the encode's duration.
 #[test]
 fn a_clean_country_child_leaves_its_bracket_unmarked() {
-    const TAG: u16 = 0xC14;
+    // Below 213, because the helper opens an `RcDomainScope` on its tag and the
+    // gate-arming tests assert on slots 213..=219 (see the RC sink's note).
+    const TAG: u16 = 193;
+    const READ_HOLD: Duration = Duration::from_millis(6);
+    const ENCODE_HOLD: Duration = Duration::from_millis(2);
     let lanes = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
     let out = thread::scope(|scope| {
-        scope
-            .spawn(|| {
-                country_child_bracket(
-                    &lanes,
-                    TAG,
-                    || 1u32,
-                    |read: &mut u32| {
-                        *read += 41;
-                    },
-                )
-            })
-            .join()
-            .expect("a clean child joins cleanly")
+        spawn_gated_country_child(
+            scope,
+            None,
+            &lanes,
+            TAG,
+            thread::Builder::new(),
+            || {},
+            || {
+                thread::sleep(READ_HOLD);
+                CompactBundleRead {
+                    read_time_us: 41,
+                    ..empty_bundle_read()
+                }
+            },
+            |read| {
+                thread::sleep(ENCODE_HOLD);
+                vec![PrebuiltCountryRecord {
+                    domain_id: TAG,
+                    record_type: compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                    flags: 0,
+                    is_data_record: false,
+                    payload: read.read_time_us.to_le_bytes().to_vec(),
+                }]
+            },
+        )
+        .expect("the OS spawned the child")
+        .join()
+        .expect("a clean child joins cleanly")
     });
-    assert_eq!(out, 42, "the tail's mutation is what the child returns");
+    let records = out
+        .published_records
+        .as_ref()
+        .expect("the helper stores the encode's records on the read");
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].payload,
+        41u64.to_le_bytes().to_vec(),
+        "the encode ran over the read the bracket produced",
+    );
     let brackets = lanes.take_clock_brackets();
     let ours = brackets
         .iter()
@@ -1341,5 +1480,36 @@ fn a_clean_country_child_leaves_its_bracket_unmarked() {
     assert!(
         !ours.worker_panicked,
         "a child that completed must not be reported as panicked",
+    );
+    let splits = lanes.take_bracket_splits();
+    let (_, in_bracket, post_bracket) = splits
+        .iter()
+        .find(|(tag, _, _)| *tag == TAG)
+        .expect("the split pair must be recorded, or `lw_d*_inb_us` never reaches a capture");
+    let spans = lanes.take_spans();
+    let ours: Vec<&LaneSpan> = spans.iter().filter(|span| span.tag == TAG).collect();
+    assert_eq!(
+        ours.len(),
+        1,
+        "one lane span per child, for the lane-wall instrument to price",
+    );
+    // Within a microsecond: the lane span subtracts two stamps each truncated
+    // to whole microseconds, the split half truncates their difference.
+    let span_us = ours[0].end_us.saturating_sub(ours[0].start_us);
+    assert!(
+        in_bracket.0.abs_diff(span_us) <= 1,
+        "the in-bracket half IS the lane span: both are `bracket_closed - start`; \
+         got {} vs {span_us}",
+        in_bracket.0,
+    );
+    assert!(
+        in_bracket.0 >= duration_micros_u64(READ_HOLD),
+        "the in-bracket half must cover the read; got {} us",
+        in_bracket.0,
+    );
+    assert!(
+        post_bracket.0 >= duration_micros_u64(ENCODE_HOLD),
+        "the post half must cover the encode; got {} us",
+        post_bracket.0,
     );
 }

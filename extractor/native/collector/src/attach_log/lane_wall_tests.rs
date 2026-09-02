@@ -160,8 +160,8 @@ fn lw_unit_names_are_stable_and_formatted() {
     ));
     assert_eq!(lw_domain_crit_unit_name(48), "lw_d48_crit_us");
     assert_eq!(
-        lw_domain_crit_unit_name(LW_TAG_COUNTRY_BUNDLE),
-        "lw_d200_crit_us"
+        lw_domain_crit_unit_name(COMPACT_DOMAIN_TECH),
+        "lw_d13_crit_us"
     );
 }
 
@@ -185,13 +185,13 @@ fn lane_wall_probe_record_is_wellformed_probe_domain_perf() {
             end_us: 800,
         },
         LaneSpan {
-            tag: LW_TAG_COUNTRY_BUNDLE,
+            tag: COMPACT_DOMAIN_TECH,
             lane: 1,
             start_us: 0,
             end_us: 100,
         },
         LaneSpan {
-            tag: LW_TAG_COUNTRY_BUNDLE,
+            tag: COMPACT_DOMAIN_TECH,
             lane: 1,
             start_us: 150,
             end_us: 300,
@@ -369,7 +369,7 @@ fn country_bundle_sub_reads_are_attributed_under_their_own_units() {
     ));
 
     let mut summary = summarize_lane_spans(&[LaneSpan {
-        tag: LW_TAG_COUNTRY_BUNDLE,
+        tag: COMPACT_DOMAIN_TECH,
         lane: 0,
         start_us: 0,
         end_us: 95_000,
@@ -416,7 +416,7 @@ fn country_bundle_sub_reads_are_attributed_under_their_own_units() {
             .unwrap_or_else(|| panic!("missing unit {name}"));
         assert_eq!(unit.value, expected, "unit {name} carries the wrong value");
     }
-    assert!(units.iter().any(|unit| unit.name == "lw_d200_crit_us"));
+    assert!(units.iter().any(|unit| unit.name == "lw_d13_crit_us"));
     for name in ["lw_d10_crit_us", "lw_d12_crit_us", "lw_d14_crit_us"] {
         assert!(
             !units.iter().any(|unit| unit.name == name),
