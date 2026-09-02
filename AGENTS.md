@@ -50,7 +50,7 @@ Read `PROJECT.md` before changing product behaviour, formats, or architecture.
 $OutPath = Join-Path ([IO.Path]::GetTempPath()) ("cdx_{0}.txt" -f [guid]::NewGuid().ToString("N"))
 $EventsPath = Join-Path ([IO.Path]::GetTempPath()) ("cdx_{0}.jsonl" -f [guid]::NewGuid().ToString("N"))
 $Prompt | & codex exec --json -s danger-full-access -c approval_policy=never `
-  --skip-git-repo-check -m gpt-5.6-sol -c model_reasoning_effort=high `
+  --skip-git-repo-check -m gpt-5.6-sol -c model_reasoning_effort=xhigh `
   -o $OutPath - | Set-Content -LiteralPath $EventsPath -Encoding utf8
 $ReviewExitCode = $LASTEXITCODE
 ```
