@@ -1,14 +1,15 @@
 //! City population is regenerated from admitted effective installed content.
 
 use crate::{
-    prepare_xmap12_buildings, prepare_xmap12_cities, prepare_xmap12_fixed_objects,
-    prepare_xmap12_render_frame, resolve_xmap12_entity_chain, FoundationFeatureContext,
-    FoundationFeatureOutput, GameFileResolver, PreparedXmap12RenderFrame, Result,
-    Xmap12BuildingVisualFrame, Xmap12FixedRuntimeState, XMAP12_RENDER_FRAME_SCHEMA,
-    XMAP12_VIEWER_MAP_OBJECT_PRESENTATION_ENABLED,
+    admit_xmap12_ambient_lifecycle, prepare_xmap12_buildings, prepare_xmap12_cities,
+    prepare_xmap12_fixed_objects, prepare_xmap12_render_frame, resolve_xmap12_entity_chain,
+    FoundationFeatureContext, FoundationFeatureOutput, GameFileResolver,
+    PreparedXmap12RenderFrame, Result, Xmap12BuildingVisualFrame, Xmap12FixedRuntimeState,
+    XMAP12_RENDER_FRAME_SCHEMA,
 };
+use crate::map_authority::AmbientLifecycleRefusal;
 use portable_render_stream::{FamilyDisposition, FoundationGap};
-use replay_core::{Leaf, UsedContentKey, ValidatedContentAdmission, ViewStatus};
+use replay_core::{UsedContentKey, ValidatedContentAdmission, ViewStatus};
 use snapshot::sha256::Sha256;
 use std::collections::BTreeSet;
 
@@ -106,12 +107,19 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
         if context.world_frame.d48_buildings_status() != ViewStatus::Present {
             missing.push("the present D48 building domain");
         }
-        let session_dlcs = &context.world_frame.session_metadata().active_dlcs;
-        let dlc_missing = unmeasured_session_dlc_cause(session_dlcs);
+        // THE ADMISSION GATES, THEN THE DERIVATION READS. The lifecycle's one
+        // recorded operand - the session DLC set - reaches
+        // `prepare_xmap12_fixed_objects` only as the token its XMAP00 row mints,
+        // so an hour the row refuses cannot reach the derivation at all, and
+        // there is no second read of the leaf here for the two to disagree over.
+        let lifecycle = admit_xmap12_ambient_lifecycle(context);
+        let dlc_missing = lifecycle
+            .as_ref()
+            .err()
+            .map(|refused| unmeasured_session_dlc_cause(*refused));
         if let Some(cause) = &dlc_missing {
             missing.push(cause.as_str());
         }
-        let enabled_dlc_names = session_dlcs.measured().cloned();
         if !missing.is_empty() {
             let reason = format!(
                 "XMAP12 cannot prepare cities/buildings/map objects because {} is unavailable; Replay will not reuse a prior hour or synthesize ambient lifecycle",
@@ -133,8 +141,8 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
             .camera
             .as_ref()
             .ok_or("XMAP12 exact input admission lost the XMAP03 viewer camera")?;
-        let enabled_dlc_names =
-            enabled_dlc_names.ok_or("XMAP12 exact input admission lost the session DLC set")?;
+        let lifecycle =
+            lifecycle.map_err(|_| "XMAP12 exact input admission lost the session DLC set")?;
         let replay_frame_identity_sha256 =
             crate::xmap04_replay_frame_identity_sha256(context.world_frame)?;
         let cities = prepare_xmap12_cities(&self.resolver, &self.admission, camera)?;
@@ -152,7 +160,7 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
             previous_fixed_runtime,
             &replay_frame_identity_sha256,
             context.viewer.animation_time_f32_bits,
-            &enabled_dlc_names,
+            lifecycle,
         )?;
         let [fow_noise_path, fow_height_path, environment_map_path] =
             static_content_paths(self.texture_quality)?;
@@ -213,22 +221,28 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
 }
 
 /// Why the session's DLC set cannot answer the ambient `dlc_allowed` trigger,
-/// or `None` when it can.
+/// from the lifecycle row's own refusal.
 ///
-/// The two unmeasured states are different facts and say so: the key was never
-/// written, or it was written as an explicit non-reading. Neither is an empty
-/// DLC set, which is a measurement.
-fn unmeasured_session_dlc_cause(active_dlcs: &Leaf<Vec<String>>) -> Option<String> {
-    let state = match active_dlcs {
-        Leaf::Measured(_) => return None,
-        Leaf::Absent => "and this frame carries no such key",
-        Leaf::Unobtained => "and this frame carries it as an explicit unobtained",
+/// The three states are different facts and say so: the key was never written,
+/// it was written as an explicit non-reading, or it was measured with a blank
+/// name the trigger cannot be matched against. None is an empty DLC set, which
+/// is a measurement.
+fn unmeasured_session_dlc_cause(refused: AmbientLifecycleRefusal) -> String {
+    let state = match refused {
+        AmbientLifecycleRefusal::Absent => "and this frame carries no such key".to_string(),
+        AmbientLifecycleRefusal::Unobtained => {
+            "and this frame carries it as an explicit unobtained".to_string()
+        }
+        AmbientLifecycleRefusal::BlankName { index } => format!(
+            "and this frame carries it with a blank name at index {index}, which no dlc_allowed \
+             trigger can be matched against"
+        ),
     };
-    Some(format!(
+    format!(
         "the measured session DLC set (WorldFrame session.active_dlcs, which the container's own \
          modset binds onto every frame, {state}), without which the ambient dlc_allowed trigger \
          cannot be answered"
-    ))
+    )
 }
 
 fn static_content_paths(texture_quality: u8) -> Result<[String; 3]> {
@@ -281,11 +295,32 @@ fn empty_output(
     }
 }
 
+/// The map-authority rows this family owns, and may therefore consume a gap for.
+///
+/// An explicit list, not an `objects.` prefix. The prefix said "every input whose
+/// id begins with objects." and MEANT "the three XMAP12 owns", and those stopped
+/// being the same statement the moment a fourth could be added under that prefix
+/// by another family. Consuming another family's gap is not a cosmetic error:
+/// the foundation counts each gap as consumed exactly once, so the family that
+/// really owns it would then be told its own gap was already claimed.
+///
+/// Two of the three are viewer derivations. `objects.city_population` can no
+/// longer BE a gap - it has no recorded operand, so the authority admits it on
+/// every hour - and it stays in the list because the list says what this family
+/// owns, not what happens to be refused today. `objects.generic_population_lifecycle`
+/// still can: its one recorded operand is the session DLC set, and an hour that
+/// did not measure it is filed as this family's gap and consumed here.
+pub(crate) const XMAP12_OWNED_AUTHORITY_INPUTS: [&str; 3] = [
+    "objects.building_state_damage",
+    "objects.city_population",
+    "objects.generic_population_lifecycle",
+];
+
 fn owned_gap_ids(context: &FoundationFeatureContext<'_>) -> Vec<String> {
     context
         .map_authority_gaps
         .iter()
-        .filter(|gap| gap.input_id.starts_with("objects."))
+        .filter(|gap| XMAP12_OWNED_AUTHORITY_INPUTS.contains(&gap.input_id.as_str()))
         .map(|gap| gap.input_id.clone())
         .collect()
 }
@@ -369,6 +404,83 @@ fn ordered_used_content(
 mod tests {
     use super::*;
 
+    /// The family owns exactly the `objects.` rows, and the promotion means two
+    /// of the three can never be gaps.
+    ///
+    /// kills: claiming an `objects.` gap another family owns - the foundation
+    /// counts each gap consumed once, so the real owner would be told its gap
+    /// was already claimed; and letting the owned list drift away from the
+    /// authority's own `objects.` census in either direction.
+    #[test]
+    fn the_family_owns_exactly_the_object_rows_and_two_of_them_can_never_gap() {
+        use crate::map_authority::{
+            map_authority_owner_proven_admission, map_authority_viewer_derived_admission,
+            MapAuthorityGap, MapAuthorityRequirementDisposition, MAP_AUTHORITY_REQUIRED_INPUTS,
+        };
+
+        let census: Vec<&str> = MAP_AUTHORITY_REQUIRED_INPUTS
+            .iter()
+            .copied()
+            .filter(|id| id.starts_with("objects."))
+            .collect();
+        assert_eq!(
+            census,
+            XMAP12_OWNED_AUTHORITY_INPUTS.to_vec(),
+            "the owned list and the authority's objects. census disagree"
+        );
+
+        // The two promoted rows are viewer derivations; the third is not. The
+        // city row has no recorded operand, so it can never be a gap; the
+        // lifecycle row's one recorded operand can be unmeasured, so it can.
+        for promoted in [
+            "objects.city_population",
+            "objects.generic_population_lifecycle",
+        ] {
+            let derived = map_authority_viewer_derived_admission(promoted)
+                .unwrap_or_else(|| panic!("{promoted} is no longer a viewer derivation"));
+            assert_eq!(derived.owner_packet, "XMAP12", "{promoted}");
+            assert!(map_authority_owner_proven_admission(promoted).is_none(), "{promoted}");
+        }
+        assert!(map_authority_viewer_derived_admission("objects.building_state_damage").is_none());
+        assert!(!map_authority_viewer_derived_admission("objects.city_population")
+            .unwrap()
+            .can_report_absent);
+        assert!(
+            map_authority_viewer_derived_admission("objects.generic_population_lifecycle")
+                .unwrap()
+                .can_report_absent
+        );
+
+        // A gap belonging to another family under the same prefix is NOT claimed,
+        // and this family's own - the recorded carrier AND the lifecycle whose
+        // DLC operand went unmeasured - still are.
+        let gap = |input_id: &str| MapAuthorityGap {
+            input_id: input_id.to_string(),
+            disposition: MapAuthorityRequirementDisposition::Absent,
+            reason: "a stated cause".to_string(),
+        };
+        let gaps = [
+            gap("objects.building_state_damage"),
+            gap("objects.generic_population_lifecycle"),
+            gap("objects.some_other_familys_row"),
+        ];
+        let viewer = crate::test_support::bare_viewer();
+        let selection = crate::production_features::xmap15::Xmap15ViewerSelection {
+            selected_plan: None,
+        };
+        let frame = crate::test_support::frame_with_rest(serde_json::json!({}));
+        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
+            &frame, &viewer, &gaps, &[], &selection,
+        );
+        assert_eq!(
+            owned_gap_ids(&context),
+            vec![
+                "objects.building_state_damage".to_string(),
+                "objects.generic_population_lifecycle".to_string(),
+            ]
+        );
+    }
+
     /// kills: collapsing the two unmeasured leaf states onto one cause, which
     /// would tell a reader an hour "has no DLC set" when the recording
     /// explicitly said it did not read one - and admitting an unmeasured leaf as
@@ -376,16 +488,133 @@ mod tests {
     /// type instead of refusing the frame.
     #[test]
     fn an_unmeasured_session_dlc_set_names_which_unmeasured_state_it_is() {
-        let absent = unmeasured_session_dlc_cause(&Leaf::Absent).expect("absent is a cause");
-        let unobtained =
-            unmeasured_session_dlc_cause(&Leaf::Unobtained).expect("unobtained is a cause");
+        let absent = unmeasured_session_dlc_cause(AmbientLifecycleRefusal::Absent);
+        let unobtained = unmeasured_session_dlc_cause(AmbientLifecycleRefusal::Unobtained);
+        let blank = unmeasured_session_dlc_cause(AmbientLifecycleRefusal::BlankName { index: 2 });
         assert_ne!(absent, unobtained);
+        assert_ne!(unobtained, blank);
         assert!(absent.contains("no such key"), "{absent}");
         assert!(unobtained.contains("explicit unobtained"), "{unobtained}");
-        for cause in [&absent, &unobtained] {
+        assert!(blank.contains("blank name at index 2"), "{blank}");
+        for cause in [&absent, &unobtained, &blank] {
             assert!(cause.contains("session.active_dlcs"), "{cause}");
         }
-        assert_eq!(unmeasured_session_dlc_cause(&Leaf::Measured(Vec::new())), None);
+    }
+
+    /// The lifecycle's admission IS its XMAP00 row's status, and the token
+    /// carries the set the status certified.
+    ///
+    /// kills: minting from a status the mint did not read - a row that says
+    /// Present while the token is built off a second read of the leaf, or the
+    /// reverse; refusing an EMPTY measured set as if it were unmeasured, which
+    /// would refuse every vanilla-only session; admitting a measured set the
+    /// derivation then refuses (a blank name), which would hard-fail the frame
+    /// behind an admitted row; and letting the city row, which has no recorded
+    /// operand, follow the lifecycle's refusal.
+    #[test]
+    fn the_lifecycle_admission_is_the_rows_own_status_and_carries_its_measured_set() {
+        use crate::map_authority::map_authority_viewer_derived_input_status;
+        use crate::test_support::{bare_viewer, frame_with_rest};
+        use crate::xmap12_population::xmap12_canonical_dlc_names;
+        const LIFECYCLE: &str = "objects.generic_population_lifecycle";
+        const CITY: &str = "objects.city_population";
+
+        let cases: [(&str, serde_json::Value, ViewStatus, Option<Vec<&str>>); 7] = [
+            ("no session key at all", serde_json::json!({}), ViewStatus::DomainAbsent, None),
+            (
+                "an explicit non-reading",
+                serde_json::json!({"session": {"active_dlcs": null}}),
+                ViewStatus::DomainUnavailable,
+                None,
+            ),
+            (
+                "a measured set with a blank name",
+                serde_json::json!({"session": {"active_dlcs": ["Together for Victory", ""]}}),
+                ViewStatus::DomainUnavailable,
+                None,
+            ),
+            (
+                "a measured set with a whitespace name",
+                serde_json::json!({"session": {"active_dlcs": [" "]}}),
+                ViewStatus::DomainUnavailable,
+                None,
+            ),
+            (
+                "a measured empty set",
+                serde_json::json!({"session": {"active_dlcs": []}}),
+                ViewStatus::Present,
+                Some(Vec::new()),
+            ),
+            (
+                "a measured set",
+                serde_json::json!({"session": {"active_dlcs": ["Together for Victory", "Waking the Tiger"]}}),
+                ViewStatus::Present,
+                Some(vec!["Together for Victory", "Waking the Tiger"]),
+            ),
+            (
+                "an unsorted, duplicated set, carried canonical",
+                serde_json::json!({"session": {"active_dlcs": ["Waking the Tiger", "Together for Victory", "Waking the Tiger"]}}),
+                ViewStatus::Present,
+                Some(vec!["Together for Victory", "Waking the Tiger"]),
+            ),
+        ];
+        for (label, rest, expected_status, expected_names) in cases {
+            let frame = frame_with_rest(rest);
+            let viewer = bare_viewer();
+            let selection = crate::production_features::xmap15::Xmap15ViewerSelection {
+                selected_plan: None,
+            };
+            let context = FoundationFeatureContext::new_for_owned_accounting_tests(
+                &frame, &viewer, &[], &[], &selection,
+            );
+            let row_status = map_authority_viewer_derived_input_status(&frame, LIFECYCLE)
+                .expect("the lifecycle is a viewer derivation");
+            assert_eq!(row_status, expected_status, "{label}");
+            // What the admission certifies is exactly what the derivation
+            // canonicalizes: a measured set is admitted if and only if the
+            // derivation's own canonical form exists for it.
+            let measured = frame.session_metadata().active_dlcs.measured();
+            match admit_xmap12_ambient_lifecycle(&context) {
+                Ok(admitted) => {
+                    assert_eq!(row_status, ViewStatus::Present, "{label}");
+                    let names: Vec<&str> = admitted
+                        .canonical_dlc_names()
+                        .iter()
+                        .map(String::as_str)
+                        .collect();
+                    assert_eq!(Some(names), expected_names, "{label}");
+                    // The token carries the canonicalizer's own answer for the
+                    // recorded list, already canonical.
+                    assert_eq!(
+                        xmap12_canonical_dlc_names(measured.expect("an admitted set is measured")),
+                        Ok(admitted.canonical_dlc_names().to_vec()),
+                        "{label}: the token does not carry the canonicalizer's answer"
+                    );
+                }
+                Err(refused) => {
+                    assert_eq!(refused.status(), row_status, "{label}");
+                    assert_eq!(expected_names, None, "{label}");
+                    let cause = unmeasured_session_dlc_cause(refused);
+                    assert!(cause.contains("session.active_dlcs"), "{label}: {cause}");
+                    if let Some(names) = measured {
+                        let AmbientLifecycleRefusal::BlankName { index } = refused else {
+                            panic!("{label}: a measured set was refused as {refused:?}");
+                        };
+                        assert_eq!(
+                            xmap12_canonical_dlc_names(names),
+                            Err(index),
+                            "{label}: the admission refused a set the canonicalizer accepts"
+                        );
+                        assert!(cause.contains("blank name"), "{label}: {cause}");
+                    }
+                }
+            }
+            assert_eq!(
+                map_authority_viewer_derived_input_status(&frame, CITY),
+                Some(ViewStatus::Present),
+                "{label}: the city row has no recorded operand to refuse on"
+            );
+        }
     }
 
     /// kills: a present XMAP12 frame that carries its draws and drops the

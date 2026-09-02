@@ -108,13 +108,12 @@ impl ProductMapFoundationSession {
         // Cleared FIRST: a failure before the family loop must not leave the
         // previous hour's account standing as this one's.
         self.last_candidate_envelope = None;
-        let projection = map_viewer::map_authority_projection_from_world_frame(frame, manifest)?;
-        let admission = map_viewer::admit_map_authority_projection(&projection)?;
+        // The map authority is derived inside the preparation, from this frame
+        // and manifest: there is no admission to hand it beside them.
         let candidate = self.adapters.prepare_with_xmap12_inputs(
             frame,
             viewer,
             manifest,
-            &admission,
             &self.content_receipt,
             building_visual,
             fixed_runtime,
@@ -143,13 +142,11 @@ impl ProductMapFoundationSession {
         // Cleared FIRST: a failure before the family loop must not leave the
         // previous hour's account standing as this one's.
         self.last_candidate_envelope = None;
-        let projection = map_viewer::map_authority_projection_from_world_frame(frame, manifest)?;
-        let admission = map_viewer::admit_map_authority_projection(&projection)?;
+        // As above: the preparation derives its own map authority.
         let candidate = self.adapters.prepare_with_xmap12_and_xmap15_inputs(
             frame,
             viewer,
             manifest,
-            &admission,
             &self.content_receipt,
             building_visual,
             fixed_runtime,

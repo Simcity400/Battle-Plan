@@ -1,5 +1,5 @@
 
-use crate::{MapAuthorityAdmission, MapAuthorityAdmittedInput, MapAuthorityGap, Result};
+use crate::{MapAuthorityAdmittedInput, MapAuthorityGap, Result};
 use portable_render_stream::{
     FamilyCoverageRow, FamilyDisposition, FoundationGap, FoundationRenderEnvelope, MapVisualFamily,
     FOUNDATION_RENDER_SCHEMA,
@@ -494,7 +494,6 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
         world_frame: &WorldFrame,
         viewer: &ViewerOwnedMapState,
         manifest: &ContentManifest,
-        map_admission: &MapAuthorityAdmission,
         content_receipt: &FoundationContentExecutionReceipt,
         previous_building_visual: Option<&crate::Xmap12BuildingVisualFrame>,
         previous_fixed_runtime: Option<&crate::Xmap12FixedRuntimeState>,
@@ -504,7 +503,6 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
             world_frame,
             viewer,
             manifest,
-            map_admission,
             content_receipt,
             self,
             previous_building_visual,
@@ -518,7 +516,6 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
         world_frame: &WorldFrame,
         viewer: &ViewerOwnedMapState,
         manifest: &ContentManifest,
-        map_admission: &MapAuthorityAdmission,
         content_receipt: &FoundationContentExecutionReceipt,
         previous_building_visual: Option<&crate::Xmap12BuildingVisualFrame>,
         previous_fixed_runtime: Option<&crate::Xmap12FixedRuntimeState>,
@@ -528,7 +525,6 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
             world_frame,
             viewer,
             manifest,
-            map_admission,
             content_receipt,
             self,
             previous_building_visual,
@@ -990,7 +986,6 @@ pub fn prepare_foundation_frame(
     world_frame: &WorldFrame,
     viewer: &ViewerOwnedMapState,
     manifest: &ContentManifest,
-    map_admission: &MapAuthorityAdmission,
     content_receipt: &FoundationContentExecutionReceipt,
     adapters: &ProductionMapFeatureAdapters<'_>,
 ) -> Result<PreparedFoundationFrame> {
@@ -999,7 +994,6 @@ pub fn prepare_foundation_frame(
         world_frame,
         viewer,
         manifest,
-        map_admission,
         content_receipt,
         adapters,
         None,
@@ -1076,7 +1070,6 @@ fn prepare_foundation_frame_inner(
     world_frame: &WorldFrame,
     viewer: &ViewerOwnedMapState,
     manifest: &ContentManifest,
-    map_admission: &MapAuthorityAdmission,
     content_receipt: &FoundationContentExecutionReceipt,
     adapters: &ProductionMapFeatureAdapters<'_>,
     xmap12_previous_building_visual: Option<&crate::Xmap12BuildingVisualFrame>,
@@ -1095,6 +1088,19 @@ fn prepare_foundation_frame_inner(
     {
         return Err("foundation content receipt belongs to different replay content".into());
     }
+    // The map authority is derived HERE, from the frame and manifest this
+    // preparation was handed and from nothing a caller could hand it beside
+    // them. It used to arrive as a parameter, which let an admission derived
+    // from another frame reach the family loop - a gap filed for a row this
+    // frame measures, or an admitted row this frame does not carry - and a
+    // family gating on the frame (XMAP12's lifecycle token, XMAP19's weather
+    // token) would then disagree with the gaps it was told to consume. The
+    // content receipt above is bound to the manifest by comparison; this is
+    // bound to the frame by construction.
+    let map_authority_projection =
+        crate::map_authority::map_authority_projection_from_world_frame(world_frame, manifest)?;
+    let map_admission =
+        crate::map_authority::admit_map_authority_projection(&map_authority_projection)?;
     let viewer_state_sha256 = Sha256::hex(&serde_json::to_vec(viewer)?);
 
     let mut consumed = BTreeSet::new();
@@ -1248,13 +1254,21 @@ fn prepare_foundation_frame_inner(
                         // against the answer that came back. Both fail silently
                         // when they go missing on the way through, and neither
                         // shows up as an error anywhere else.
-                        let supplied_dlc_names = context
-                            .world_frame
-                            .session_metadata()
-                            .active_dlcs
-                            .measured()
-                            .cloned()
-                            .unwrap_or_default();
+                        //
+                        // The DLC set is read through the lifecycle row's own
+                        // decision, the one the adapter's admission token was
+                        // minted from: a present payload on an hour that row
+                        // refuses is a defect, not an empty set to compare
+                        // against.
+                        let supplied_dlc_names =
+                            crate::map_authority::ambient_lifecycle_session_dlcs(
+                                context.world_frame,
+                            )
+                            .map_err(|refused| {
+                                format!(
+                                    "present XMAP12 lifecycle on an hour whose session DLC set is {refused:?}"
+                                )
+                            })?;
                         crate::xmap12_fixed_runtime_consumed_its_inputs(
                             xmap12_previous_fixed_runtime,
                             &supplied_dlc_names,
@@ -2707,6 +2721,61 @@ mod tests {
             .seal_readiness(&std::collections::BTreeSet::new())
             .unwrap_err();
         assert!(refusal.contains("ParticlesEffects"), "{refusal}");
+    }
+
+    /// The map authority the family loop reads is derived from the frame being
+    /// prepared, inside the preparation, and no entry takes one from a caller.
+    ///
+    /// kills: reintroducing an admission parameter on any preparation entry -
+    /// the seam by which an admission derived from another frame reached the
+    /// family loop and disagreed with the frame-gated tokens (Codex round 1,
+    /// lane WP3) - and deriving the admission from anything but the frame and
+    /// manifest the preparation was handed.
+    #[test]
+    fn the_map_authority_is_derived_from_the_frame_being_prepared_and_never_handed_in() {
+        let source = include_str!("production_foundation.rs").replace("\r\n", "\n");
+        let inner = source
+            .split_once("fn prepare_foundation_frame_inner(")
+            .expect("the inner preparation must exist")
+            .1;
+        let (signature, body) = inner
+            .split_once(") -> Result<PreparedFoundationFrame> {")
+            .expect("the inner preparation must have a signature");
+        assert!(
+            !signature.contains("MapAuthorityAdmission"),
+            "prepare_foundation_frame_inner takes an admission it did not derive"
+        );
+        let before_loop = body
+            .split_once("for family in MapVisualFamily::ALL {")
+            .expect("the family loop must exist")
+            .0;
+        assert!(
+            before_loop.contains(
+                "map_authority_projection_from_world_frame(world_frame, manifest)?"
+            ),
+            "the projection is not derived from the frame and manifest being prepared"
+        );
+        assert!(
+            before_loop.contains("admit_map_authority_projection(&map_authority_projection)?"),
+            "the admission is not derived from that projection"
+        );
+        for entry in [
+            "pub fn prepare_with_xmap12_inputs(",
+            "pub fn prepare_with_xmap12_and_xmap15_inputs(",
+            "pub fn prepare_foundation_frame(",
+        ] {
+            let signature = source
+                .split_once(entry)
+                .unwrap_or_else(|| panic!("{entry} must exist"))
+                .1
+                .split_once(") -> Result<PreparedFoundationFrame> {")
+                .unwrap_or_else(|| panic!("{entry} must have a signature"))
+                .0;
+            assert!(
+                !signature.contains("MapAuthorityAdmission"),
+                "{entry} takes an admission it did not derive"
+            );
+        }
     }
 
     /// kills: routing a fifth adapter preparation around the accounting, and

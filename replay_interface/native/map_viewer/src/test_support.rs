@@ -29,6 +29,59 @@ pub(crate) fn assert_unit_vec3(actual: Vec3) {
     );
 }
 
+/// A one-hour `WorldFrame` whose raw snapshot is exactly `rest`, for tests that
+/// drive a frame-keyed admission from a shape they chose.
+pub(crate) fn frame_with_rest(rest: serde_json::Value) -> std::sync::Arc<replay_core::WorldFrame> {
+    let rest = rest.as_object().expect("a snapshot object").clone();
+    replay_core::WorldTimeline::open(Box::new(RestSource(rest)))
+        .expect("timeline")
+        .frame(0)
+        .expect("frame")
+}
+
+/// A viewer-owned map state that validates and selects nothing: no camera, no
+/// selection, a mode no family answers to.
+pub(crate) fn bare_viewer() -> ViewerOwnedMapState {
+    ViewerOwnedMapState {
+        viewport_width: 16,
+        viewport_height: 16,
+        camera: None,
+        observer_country_id: None,
+        map_mode_id: "not_a_mode".to_string(),
+        map_mode_selection_epoch: 0,
+        selected_object_ids: Vec::new(),
+        input_revision: 0,
+        animation_time_f32_bits: 0,
+        frame_delta_seconds_f32_bits: 0,
+    }
+}
+
+struct RestSource(serde_json::Map<String, serde_json::Value>);
+
+impl replay_core::ReplaySource for RestSource {
+    fn game_id(&self) -> &str {
+        "test-support-rest-frame"
+    }
+    fn hours(&self) -> &[i64] {
+        &[0]
+    }
+    fn warnings(&self) -> &[String] {
+        &[]
+    }
+    fn frame(
+        &self,
+        hour_index: i64,
+    ) -> std::result::Result<replay_core::RawFrame, replay_core::SourceError> {
+        Ok(replay_core::RawFrame {
+            hour_index,
+            date: None,
+            save_version: None,
+            schema_version: None,
+            rest: self.0.clone(),
+        })
+    }
+}
+
 pub(crate) fn identity4() -> [[f32; 4]; 4] {
     [
         [1.0, 0.0, 0.0, 0.0],

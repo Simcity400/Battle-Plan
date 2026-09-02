@@ -310,12 +310,14 @@ pub use m01_runtime_admission::{
 };
 pub use map_authority::{
     account_owned_map_authority_inputs, admit_map_authority_json, admit_map_authority_projection,
-    map_authority_observed_status_label, map_authority_owner_proven_admission,
-    map_authority_projection_from_world_frame, map_authority_proven_input_status,
-    map_authority_requirement_metadata, map_authority_viewer_derived_admission,
+    ambient_lifecycle_session_dlcs, map_authority_observed_status_label,
+    map_authority_owner_proven_admission, map_authority_projection_from_world_frame,
+    map_authority_proven_input_status, map_authority_requirement_metadata,
+    map_authority_viewer_derived_admission, map_authority_viewer_derived_input_status,
     player_country_set_leaf_status,
     refuse_missing_xmap00_authority,
-    refuse_product_map_until_xmap01, require_promoted_xmap01_renderer, MapAuthorityAdmission,
+    refuse_product_map_until_xmap01, require_promoted_xmap01_renderer, AmbientLifecycleRefusal,
+    MapAuthorityAdmission,
     MapAuthorityAdmissionSource, MapAuthorityAdmittedInput, MapAuthorityGap,
     MapAuthorityOwnerProvenAdmission,
     MapAuthorityProjection, MapAuthorityRequirement, MapAuthorityRequirementDisposition,
