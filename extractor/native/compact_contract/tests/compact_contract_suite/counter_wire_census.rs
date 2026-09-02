@@ -4307,7 +4307,6 @@ fn the_collector_brings_in_production_source_only_the_closure_can_follow() {
     observed_macros.sort();
     const COLLECTOR_MACROS: &[&str] = &[
         "collector/src/attach_log.rs::carry_over_surviving_tracker 4ecd8c79a21a10f1",
-        "collector/src/attach_log.rs::collect_scheduled_child_tag 8223a8ffddbcff96",
         "collector/src/attach_log.rs::commit_one_country_tracker f30293bce5ac6398",
         "collector/src/attach_log.rs::d86_refusal_code_names 44a616ebc421f4f0",
         "collector/src/attach_log.rs::declare_country_child_bracket_tags f4233d35466e3e89",
@@ -4315,7 +4314,7 @@ fn the_collector_brings_in_production_source_only_the_closure_can_follow() {
         "collector/src/attach_log.rs::declare_domain_scoped_tracker_table 00346ea173170d3c",
         "collector/src/attach_log.rs::domain47_wire_code_enum ae801aeb8ad250e1",
         "collector/src/attach_log.rs::fail_early_render_startup 7741a71b07138f7f",
-        "collector/src/attach_log.rs::for_each_country_scoped_tracker 679cb76ac93978c7",
+        "collector/src/attach_log.rs::for_each_country_scoped_tracker d012121803dfefcd",
         "collector/src/attach_log.rs::for_each_domain_scoped_tracker 437287b042e714fd",
         "collector/src/attach_log.rs::pair_fail 4adb4e29be243ce3",
         "collector/src/attach_log.rs::read_or_unreadable 882cbc700abc610d",
