@@ -415,7 +415,7 @@ fn replay(corpus: &Corpus) -> ReplayResult {
         if !rejected.is_empty() {
             reset_trackers_after_rejected_bracket(&mut trackers, &rejected);
         }
-        commit_delta_pin_transactions(&mut trackers);
+        commit_delta_pin_transactions(&mut trackers, &mut Vec::new());
     }
 
     result.final_air_wing_keys = wing_fold.keys.len();

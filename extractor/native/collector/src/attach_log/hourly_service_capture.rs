@@ -50,6 +50,9 @@ struct Runtime {
     retired_boundary: u64,
     retired_overrun: u64,
     retired_unknown: u64,
+    /// Nanoseconds taken out of the owned phase by [`exclude_wait`]: the
+    /// sweep thread's blocked time on a publisher that outlived its readers.
+    excluded_wait_ns: u64,
 }
 
 impl Runtime {
@@ -74,6 +77,7 @@ impl Runtime {
             retired_boundary: 0,
             retired_overrun: 0,
             retired_unknown: 0,
+            excluded_wait_ns: 0,
         }
     }
     fn stamp(&mut self, mark: Instant) -> Option<u64> {
@@ -632,12 +636,29 @@ pub(crate) fn record_unowned_interval(start: Instant, end: Instant) {
 pub(crate) fn exclude_wait(start: Instant, end: Instant) {
     with_runtime(|runtime| {
         runtime.flush(start);
-        if elapsed_ns(start, end).is_err() {
-            runtime.clock_fault(TimingFault::ClockReversed);
-            return;
-        }
+        let excluded = match elapsed_ns(start, end) {
+            Ok(ns) => ns,
+            Err(_) => {
+                runtime.clock_fault(TimingFault::ClockReversed);
+                return;
+            }
+        };
+        runtime.excluded_wait_ns = runtime.excluded_wait_ns.saturating_add(excluded);
         runtime.mark = end;
     });
+}
+/// What [`exclude_wait`] has taken out of the session so far, for a driven
+/// frame to check the wait it excluded against the marks it published.
+#[cfg(test)]
+pub(super) fn excluded_wait_ns_for_tests() -> u64 {
+    with_runtime(|runtime| runtime.excluded_wait_ns).unwrap_or(0)
+}
+/// The session's own origin -- the instant every interval it records is
+/// measured from -- so a driven frame can begin its owner with an edge the
+/// timer's accounting starts at exactly, with no slack for a test's clock.
+#[cfg(test)]
+pub(super) fn session_origin_for_tests() -> Option<Instant> {
+    with_runtime(|runtime| runtime.origin)
 }
 pub(crate) fn close(
     owner: ServiceOwner,

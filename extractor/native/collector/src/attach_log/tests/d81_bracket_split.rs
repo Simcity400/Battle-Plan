@@ -1161,7 +1161,7 @@ fn a_refused_frames_measurements_survive_both_discard_sites() {
         bracket_observed_hour_raw: None,
         diagnostics_provenance: D81DiagnosticsProvenance::Measured,
     };
-    let torn = std::thread::scope(|scope| {
+    let (torn, ()) = std::thread::scope(|scope| {
         crate::attach_log::spawn_gated_split(
             scope,
             None,
@@ -1178,6 +1178,7 @@ fn a_refused_frames_measurements_survive_both_discard_sites() {
             d81_preserve_measurement,
             |refusal, observed| d81_bracket_refused_outcome(refusal, observed, 0),
             d81_stamp_bracket_observation,
+            |_read| (),
         )
         .join()
         .expect("the worker must not panic")

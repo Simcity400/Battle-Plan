@@ -126,7 +126,7 @@ fn a_rejected_bracket_drops_this_frames_staged_baseline_but_not_the_committed_on
     // ...and then its record is replaced with a gap.
     let rejected: BTreeSet<u16> = [COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE].into_iter().collect();
     reset_trackers_after_rejected_bracket(&mut trackers, &rejected);
-    commit_delta_pin_transactions(&mut trackers);
+    commit_delta_pin_transactions(&mut trackers, &mut Vec::new());
 
     assert_eq!(
         trackers
@@ -185,7 +185,7 @@ fn a_rejected_bracket_on_a_cold_domain_rolls_the_cadence_mark_back_to_none() {
     // ...and then its record is replaced with a gap.
     let rejected: BTreeSet<u16> = [COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE].into_iter().collect();
     reset_trackers_after_rejected_bracket(&mut trackers, &rejected);
-    commit_delta_pin_transactions(&mut trackers);
+    commit_delta_pin_transactions(&mut trackers, &mut Vec::new());
 
     assert!(
         trackers
@@ -212,7 +212,7 @@ fn a_surviving_frame_commits_its_staged_baseline_and_advances_the_cadence() {
     trackers
         .xmap07_snow_mud_wire_baseline
         .stage(vec![1u8; 64], [0x44; 32], true, 60_830_824);
-    commit_delta_pin_transactions(&mut trackers);
+    commit_delta_pin_transactions(&mut trackers, &mut Vec::new());
     let first_keyframe_hour = compact_contract::calendar::hour_index_from_raw(60_830_824);
     assert_eq!(
         trackers
@@ -224,7 +224,7 @@ fn a_surviving_frame_commits_its_staged_baseline_and_advances_the_cadence() {
     trackers
         .xmap07_snow_mud_wire_baseline
         .stage(vec![2u8; 64], [0x55; 32], false, 60_830_824 + 1);
-    commit_delta_pin_transactions(&mut trackers);
+    commit_delta_pin_transactions(&mut trackers, &mut Vec::new());
 
     assert_eq!(
         trackers

@@ -623,6 +623,20 @@ fn the_guarded_block_is_the_gated_worker_body_with_two_identifiers_renamed() {
         "the guarded block must be `spawn_gated`'s worker body with `f`/`out` \
          spelled `read` and `end` spelled `read_end`, and nothing else",
     );
+    // THE PREPARING HELPER IS HELD TO THE SAME BAR (lane PT, 2026-09-02): its
+    // guarded block is the publishing helper's, so the bracket it closes is the
+    // one `spawn_gated` would have closed.
+    let preparing = region(
+        helper_body(&source, "fn spawn_gated_preparing<"),
+        "let _clock_guard = ReaderClockBracketGuard::new(lanes, tag);",
+        "\n            read\n",
+    );
+    assert_eq!(
+        statements(preparing, true),
+        gated_statements,
+        "the preparing helper's guarded block must be `spawn_gated`'s worker body \
+         with the same two identifiers renamed, and nothing else",
+    );
 }
 
 /// The encode is after the block, after the permit, and the split's boundary is

@@ -1106,6 +1106,8 @@ fn the_hold_disposition_reaches_the_wire_as_a_summable_per_frame_unit() {
             130,
             700,
             0,
+            0,
+            0,
             &OutsideBuildSpans::default(),
             92_000,
             &FrameTailSegments::default(),

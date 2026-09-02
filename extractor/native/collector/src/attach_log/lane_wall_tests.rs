@@ -239,6 +239,8 @@ fn lane_wall_probe_record_is_wellformed_probe_domain_perf() {
         },
         130,
         700,
+        640,
+        650,
         0,
         &OutsideBuildSpans::default(),
         92_000,
@@ -283,6 +285,8 @@ fn lane_wall_probe_record_is_wellformed_probe_domain_perf() {
         ("lw_l1_busy_us", 250),
         ("lw_d48_crit_us", 700),
         ("lw_ft_us", 92_000),
+        ("lw_readers_done_us", 640),
+        ("lw_scope_joined_us", 650),
         ("lw_pub_start_us", 130),
         ("lw_pub_end_us", 700),
         // The two applied prefetch distances, each against ITS OWN getter --
@@ -319,6 +323,224 @@ fn lane_wall_probe_record_is_wellformed_probe_domain_perf() {
             .unwrap_or_else(|| panic!("missing unit {name}"));
         assert_eq!(unit.value, expected, "unit {name} carries the wrong value");
     }
+}
+
+/// The readers' close and the scope join are on every probed frame, publisher
+/// or not; the publication offsets are the only pair that is absent when the
+/// frame published nothing.
+///
+/// kills: the scope marks emitted under the publication's `!= 0` guard; a zero
+/// standing in for either mark on a quiet frame; the two marks exchanged
+/// (Codex round 3, finding 2).
+#[test]
+fn the_scope_marks_are_emitted_on_a_frame_that_published_nothing() {
+    let spans = [
+        LaneSpan {
+            tag: 48,
+            lane: 0,
+            start_us: 0,
+            end_us: 500,
+        },
+        LaneSpan {
+            tag: 63,
+            lane: LW_MAIN_LANE,
+            start_us: 810,
+            end_us: 860,
+        },
+    ];
+    let summary = summarize_lane_spans(&spans);
+    let mut out = Vec::new();
+    append_compact_lane_wall_probe_record(
+        &mut out,
+        7,
+        123,
+        5,
+        900,
+        125,
+        Some(2),
+        FrameHourAge::default(),
+        &[],
+        &BTreeSet::new(),
+        MapTopologyShareCounts::default(),
+        0,
+        0,
+        640,
+        650,
+        0,
+        &OutsideBuildSpans::default(),
+        92_000,
+        &FrameTailSegments::default(),
+        &summary,
+        FrameCpuSplit::default(),
+    );
+    let units = compact_perf_diagnostic_units(&out[compact_contract::COMPACT_RECORD_HEADER_LEN..]);
+    let value = |name: &str| {
+        units
+            .iter()
+            .find(|unit| unit.name == name)
+            .map(|unit| unit.value)
+    };
+    assert_eq!(value("lw_readers_done_us"), Some(640));
+    assert_eq!(value("lw_scope_joined_us"), Some(650));
+    assert_eq!(
+        value("lw_pub_start_us"),
+        None,
+        "a frame that published nothing carries no publication start"
+    );
+    assert_eq!(
+        value("lw_pub_end_us"),
+        None,
+        "a frame that published nothing carries no publication end"
+    );
+}
+
+/// The two scope stamps sit on the scope's own boundary. The scope closure's
+/// body is ONE consumed inner closure, called and dropped before the readers'
+/// close is stamped -- every local it declared and every capture it took by
+/// value, consumed by a spawn or not, is gone by then -- and the join is the
+/// first statement after the scope returns. The wire carries those two
+/// instants, on the fan-out origin, through the emission site unchanged, and
+/// the timer excludes the same two instants through the gated `exclude_wait`
+/// (the driven frames in state_fixture check the excluded amount against the
+/// marks and against the owner's observed service; Codex rounds 5-7).
+///
+/// kills: any statement of the fan-out outside the inner closure (a local or
+/// a capture that would drop after the stamp); the stamp inside the inner
+/// closure or anywhere but right after it; a second writer of the readers'
+/// close; any statement between the scope's close and the join stamp; the
+/// wire fed from another instant, or through a conditional, at the emission
+/// site.
+#[test]
+fn the_scope_stamps_sit_on_the_scope_boundary_and_feed_the_wire_directly() {
+    // include_str! carries the checkout's line endings verbatim.
+    let source = include_str!("../attach_log.rs").replace("\r\n", "\n");
+    const SCOPE_OPEN: &str =
+        "let span_delta_producer = &trackers.payload_span_delta;\n    thread::scope(|scope| {";
+    const BODY_OPEN: &str = "(|| {";
+    const BODY_CLOSE: &str = "})();";
+    const READERS_STAMP: &str = "service_readers_joined_at = Some(Instant::now());";
+    const JOIN_STAMP: &str = "let service_scope_joined_at = Instant::now();";
+    fn executable(text: &str) -> Vec<&str> {
+        text.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with("//"))
+            .collect()
+    }
+    assert_eq!(source.matches(SCOPE_OPEN).count(), 1, "one fan-out scope");
+    assert_eq!(source.matches(READERS_STAMP).count(), 1, "one readers' close, one writer");
+    assert_eq!(source.matches(JOIN_STAMP).count(), 1, "one join stamp");
+    let open_at = source.find(SCOPE_OPEN).expect("the scope") + SCOPE_OPEN.len();
+    let join_at = source.find(JOIN_STAMP).expect("the join stamp");
+    assert!(open_at < join_at, "the join stamp follows the scope");
+    let closure = &source[open_at..join_at];
+    let lines = executable(closure);
+    assert_eq!(
+        lines.first().copied(),
+        Some(BODY_OPEN),
+        "the body closure opens as the scope closure's first statement"
+    );
+    // The body closure's call is the one `})();` at the closure's indentation
+    // between the scope's open and the join stamp; the readers' close is the
+    // only statement after it inside the scope closure; the scope's own close
+    // is the one `});` at the function's indentation, and the join stamp is
+    // the first statement after it.
+    assert_eq!(
+        closure.lines().filter(|line| *line == "        })();").count(),
+        1,
+        "one body closure call at the scope closure's depth"
+    );
+    assert_eq!(
+        closure.lines().filter(|line| *line == "    });").count(),
+        1,
+        "one scope close at function depth"
+    );
+    let tail: Vec<&str> = lines.iter().rev().take(3).rev().copied().collect();
+    assert_eq!(
+        tail,
+        [BODY_CLOSE, READERS_STAMP, "});"],
+        "the body closure returns, the readers' close is stamped, the scope closes, the join is \
+         stamped -- in that order and with nothing between"
+    );
+    // The wire and the timer are fed from these two instants and no other.
+    for needle in [
+        "let publisher_outlived_readers = service_has_deferred_work\n        && deferred_publication_end_us.load(Ordering::Acquire) > readers_done_us;",
+        "if let Some(readers_done) = service_readers_joined_at.filter(|_| publisher_outlived_readers) {",
+        "hourly_service_capture::exclude_wait(readers_done, service_scope_joined_at);",
+        "let readers_done_us = service_readers_joined_at.map_or(0, |at| {\n        duration_micros_u64(at.saturating_duration_since(worker_read_started))\n    });",
+        "let scope_joined_us =\n        duration_micros_u64(service_scope_joined_at.saturating_duration_since(worker_read_started));",
+        "        readers_done_us,\n        scope_joined_us,\n        fanout_origin_us,\n",
+    ] {
+        assert_eq!(source.matches(needle).count(), 1, "wiring: {needle:?}");
+    }
+}
+
+/// One value per name. The audit refuses a probe that repeats a fixed name
+/// and the fixture fails on it; this is the emitter's side: nothing it pushes
+/// shares a name with anything else it pushes, publisher and lanes included
+/// (Codex round 5, finding 2).
+#[test]
+fn the_probe_publishes_every_unit_name_once() {
+    let spans = [
+        LaneSpan {
+            tag: 48,
+            lane: 0,
+            start_us: 0,
+            end_us: 500,
+        },
+        LaneSpan {
+            tag: 10,
+            lane: 1,
+            start_us: 0,
+            end_us: 100,
+        },
+        LaneSpan {
+            tag: 63,
+            lane: LW_MAIN_LANE,
+            start_us: 810,
+            end_us: 860,
+        },
+    ];
+    let mut summary = summarize_lane_spans(&spans);
+    summary.crit_domains = vec![(48, 500)];
+    let mut out = Vec::new();
+    append_compact_lane_wall_probe_record(
+        &mut out,
+        7,
+        123,
+        5,
+        900,
+        125,
+        Some(2),
+        FrameHourAge::default(),
+        &[],
+        &BTreeSet::new(),
+        MapTopologyShareCounts::default(),
+        130,
+        700,
+        640,
+        650,
+        0,
+        &OutsideBuildSpans::default(),
+        92_000,
+        &FrameTailSegments::default(),
+        &summary,
+        FrameCpuSplit::default(),
+    );
+    let units = compact_perf_diagnostic_units(&out[compact_contract::COMPACT_RECORD_HEADER_LEN..]);
+    let mut names: Vec<&str> = units.iter().map(|unit| unit.name.as_str()).collect();
+    let total = names.len();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(
+        names.len(),
+        total,
+        "a name repeats in the probe: {:?}",
+        units.iter().map(|unit| unit.name.as_str()).collect::<Vec<_>>()
+    );
+    assert!(
+        names.contains(&"lw_scope_joined_us") && names.contains(&"lw_pub_end_us"),
+        "the scope marks and the publication offsets are among the {total} units"
+    );
 }
 
 #[test]
@@ -390,6 +612,8 @@ fn country_bundle_sub_reads_are_attributed_under_their_own_units() {
         MapTopologyShareCounts::default(),
         130,
         700,
+        0,
+        0,
         0,
         &OutsideBuildSpans::default(),
         92_000,
@@ -589,6 +813,8 @@ fn the_cpu_split_units_reach_the_probe() {
         0,
         0,
         0,
+        0,
+        0,
         &OutsideBuildSpans::default(),
         92_000,
         &FrameTailSegments::default(),
@@ -646,6 +872,8 @@ fn every_outside_build_segment_reaches_the_probe_under_its_own_name() {
         130,
         700,
         0,
+        0,
+        0,
         &outside,
         92_000,
         &FrameTailSegments::default(),
@@ -690,6 +918,8 @@ fn a_zero_outside_build_segment_is_stated_rather_than_omitted() {
         MapTopologyShareCounts::default(),
         130,
         700,
+        0,
+        0,
         0,
         &OutsideBuildSpans::default(),
         92_000,
@@ -788,6 +1018,8 @@ fn a_tail_that_was_never_measured_says_so_on_the_wire() {
             130,
             700,
             0,
+            0,
+            0,
             &OutsideBuildSpans::default(),
             61_234,
             tail,
@@ -871,6 +1103,8 @@ fn every_frame_tail_segment_reaches_the_probe_under_its_own_name() {
         130,
         700,
         0,
+        0,
+        0,
         &OutsideBuildSpans::default(),
         61_234,
         &tail,
@@ -928,6 +1162,8 @@ fn a_zero_frame_tail_segment_is_stated_rather_than_omitted() {
         MapTopologyShareCounts::default(),
         130,
         700,
+        0,
+        0,
         0,
         &OutsideBuildSpans::default(),
         0,

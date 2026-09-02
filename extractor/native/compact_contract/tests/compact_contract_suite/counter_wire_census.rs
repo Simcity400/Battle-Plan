@@ -3990,7 +3990,7 @@ fn ".len();
     // family, rather than recognising one more spelling (owner ruling
     // 2026-08-29: close the class, do not run another round).
     const RECORD_TYPE_ARGUMENTS: &[(&str, usize, &str)] = &[
-        ("COMPACT_RECORD_TYPE_DOMAIN_DATA", 82, "a domain's data record"),
+        ("COMPACT_RECORD_TYPE_DOMAIN_DATA", 83, "a domain's data record"),
         ("COMPACT_RECORD_TYPE_DOMAIN_PERF", 1, "THE PERF RECORD, whose writers are pinned below"),
         ("COMPACT_RECORD_TYPE_FRAME_END", 1, "the frame terminator"),
         ("COMPACT_RECORD_TYPE_STREAM_HEADER", 1, "the stream's own header"),

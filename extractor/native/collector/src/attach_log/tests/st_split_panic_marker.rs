@@ -334,6 +334,7 @@ fn every_bracket_helper_that_defers_work_past_its_guard_is_classified() {
             "spawn_gated",
             "spawn_gated_country_child",
             "spawn_gated_finishing",
+            "spawn_gated_preparing",
             "spawn_gated_publishing",
             "spawn_gated_split",
         ],
@@ -341,9 +342,12 @@ fn every_bracket_helper_that_defers_work_past_its_guard_is_classified() {
     );
 
     // (function, defers work past its guard, arms the marker)
-    let expected: [(&str, bool, bool); 6] = [
+    let expected: [(&str, bool, bool); 7] = [
         ("spawn_gated", false, false),
         ("spawn_gated_publishing", true, false),
+        // Lane PT's preparing helper defers like the publishing one and is
+        // caught the same way.
+        ("spawn_gated_preparing", true, false),
         ("spawn_gated_split", true, true),
         ("spawn_gated_finishing", true, true),
         ("spawn_gated_country_child", true, true),
@@ -400,7 +404,7 @@ fn every_bracket_helper_that_defers_work_past_its_guard_is_classified() {
 /// LIMIT, STATED. The scan sees one step -- the guard, or a call to a function
 /// that opens one. A worker that reached a bracket through TWO hops (calling a
 /// function that calls an opener) would not be caught here. Today there is no
-/// such path: the roster is seven functions and every one of them is either a
+/// such path: the roster is eight functions and every one of them is either a
 /// bracket helper called directly by a worker or the main-thread frame builder,
 /// which no worker calls. A new intermediate would have to be added to the
 /// roster's callees to create one, and the roster test is where that lands.
@@ -457,6 +461,7 @@ fn no_scoped_worker_opens_a_bracket_outside_the_classified_helpers() {
     for helper in [
         "spawn_gated",
         "spawn_gated_publishing",
+        "spawn_gated_preparing",
         "spawn_gated_split",
         "spawn_gated_finishing",
         // The eight country children run through this one helper's worker;
@@ -773,6 +778,7 @@ fn brackets_after_a_panicking_compute_half(
             |observed: &u32| *observed,
             |_refusal, _observed| REFUSAL_SENTINEL,
             |out, _observed_hour_raw| out,
+            |_out: &u32| (),
         )
         .join()
     });
@@ -812,9 +818,11 @@ fn the_staged_fixture_reaches_the_split_helpers_compute_arm() {
             |observed: &u32| *observed,
             |_refusal, _observed| REFUSAL_SENTINEL,
             |out, _observed_hour_raw| out,
+            |_out: &u32| (),
         )
         .join()
         .expect("a clean worker joins cleanly")
+        .0
     });
     assert_eq!(
         out, 42,
@@ -1122,9 +1130,11 @@ fn an_unmarked_bracket_rejects_nothing_which_is_what_the_marker_repairs() {
             |observed: &u32| *observed,
             |_refusal, _observed| REFUSAL_SENTINEL,
             |out, _observed_hour_raw| out,
+            |_out: &u32| (),
         )
         .join()
         .expect("a clean worker joins cleanly")
+        .0
     });
     assert_eq!(out, 3, "the coherent arm ran");
     let clean = lanes.take_clock_brackets();

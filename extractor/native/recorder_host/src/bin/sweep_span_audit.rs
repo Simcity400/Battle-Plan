@@ -1,5 +1,7 @@
 use compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;
-use compact_contract::diagnostic_channel::{decode_units, DiagUnit, OUTSIDE_BUILD_SEGMENTS};
+use compact_contract::diagnostic_channel::{
+    decode_units, DiagUnit, FRAME_TAIL_SEGMENTS, OUTSIDE_BUILD_SEGMENTS,
+};
 #[cfg(test)]
 use compact_contract::COMPACT_RECORD_TYPE_FRAME_REFUSED;
 use compact_contract::{
@@ -141,19 +143,35 @@ struct ProbeUnits {
     main_wall_us: Option<u64>,
     mismatch_domains: Option<u64>,
     bracketed_domains: Option<u64>,
+    frame_time_us: Option<u64>,
+    pub_start_us: Option<u64>,
+    pub_end_us: Option<u64>,
+    readers_done_us: Option<u64>,
+    scope_joined_us: Option<u64>,
     lanes: Vec<(u16, u64, u64)>,
     outside: BTreeMap<u16, u64>,
+    frame_tail: BTreeMap<u16, u64>,
     crit_domains: Vec<(u16, u64)>,
     /// `lw_cb{tag}_us`: each country child's own read time, by domain id.
     country_reads: Vec<(u16, u64)>,
     lanes_truncated: bool,
+    /// Unit names that occurred more than once -- ANY name, the fixed ones
+    /// and the `lw_o*` / `lw_t*` / `lw_l*` / `lw_d*` families alike. A probe
+    /// is one record with one value per name; a second occurrence is a
+    /// malformed probe, and the frame is refused rather than read last-wins
+    /// (Codex rounds 5 and 6).
+    duplicated_units: Vec<String>,
 }
 
 fn probe_units_from(units: &[DiagUnit]) -> ProbeUnits {
     let mut probe = ProbeUnits::default();
+    let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for unit in units {
         let name = unit.name.as_str();
         let value = unit.value;
+        if !seen.insert(name) {
+            probe.duplicated_units.push(name.to_string());
+        }
         match name {
             "lw_worker_span_us" => probe.worker_span_us = Some(value),
             "lw_prewarm_us" => probe.prewarm_us = Some(value),
@@ -163,6 +181,11 @@ fn probe_units_from(units: &[DiagUnit]) -> ProbeUnits {
             "lw_lmain_wall_us" => probe.main_wall_us = Some(value),
             "lw_hour_label_mismatch_domains" => probe.mismatch_domains = Some(value),
             "lw_bracketed_domains" => probe.bracketed_domains = Some(value),
+            "lw_ft_us" => probe.frame_time_us = Some(value),
+            "lw_pub_start_us" => probe.pub_start_us = Some(value),
+            "lw_pub_end_us" => probe.pub_end_us = Some(value),
+            "lw_readers_done_us" => probe.readers_done_us = Some(value),
+            "lw_scope_joined_us" => probe.scope_joined_us = Some(value),
             "lw_lother_wall_us" => probe.lanes_truncated = true,
             _ => {
                 // The contract's own prefix and suffix, not a second copy of
@@ -177,6 +200,14 @@ fn probe_units_from(units: &[DiagUnit]) -> ProbeUnits {
                     .and_then(|digits| digits.parse::<u16>().ok())
                 {
                     probe.outside.insert(code, value);
+                } else if let Some(code) = name
+                    .strip_prefix(
+                        compact_contract::diagnostic_channel::FRAME_TAIL_UNIT_PREFIX)
+                    .and_then(|rest| rest.strip_suffix(
+                        compact_contract::diagnostic_channel::FRAME_TAIL_UNIT_SUFFIX))
+                    .and_then(|digits| digits.parse::<u16>().ok())
+                {
+                    probe.frame_tail.insert(code, value);
                 } else if let Some(tag) = name
                     .strip_prefix(
                         compact_contract::diagnostic_channel::DOMAIN_CRIT_UNIT_PREFIX)
@@ -252,6 +283,32 @@ struct FrameSpan {
     country_read_sum_us: u64,
     country_read_max_us: u64,
     country_crit_us: u64,
+    frame_time_us: u64,
+    /// `lw_ft_us - lw_fanout_origin_us - lw_worker_span_us`: the serial tail
+    /// between the SPAN close and the frame-time close -- the interval the
+    /// seven `lw_t*_us` marks partition, by a different instrument. The span
+    /// closes after the scope join AND the post-scope main-thread reads, which
+    /// `post_scope_main_us` carries separately.
+    serial_tail_us: u64,
+    frame_tail_sum_us: u64,
+    deferred_publication_us: u64,
+    /// `lw_readers_done_us` / `lw_scope_joined_us`: when the last reader
+    /// joined and when the scope (readers plus the previous hour's publisher)
+    /// joined, on the lane origin. Absent on streams recorded before the units
+    /// existed.
+    readers_done_us: Option<u64>,
+    scope_joined_us: Option<u64>,
+    /// `lw_worker_span_us - lw_scope_joined_us`: the main-thread reads between
+    /// the scope join and the span close. Not a wait, and not in any `lw_t*`.
+    post_scope_main_us: Option<u64>,
+    /// `lw_scope_joined_us - lw_readers_done_us` on a frame that ran a
+    /// publisher: what the sweep thread waited after its readers for the scope
+    /// to join the previous hour's publisher. `None` when no publisher ran --
+    /// the same interval is then the join's own overhead, not a wait.
+    publisher_wait_us: Option<u64>,
+    /// `lw_pub_end_us - lw_readers_done_us`: how far the previous hour's sink
+    /// write outlived this frame's readers. Zero when it finished inside them.
+    deferred_publication_beyond_readers_us: Option<u64>,
     lanes_truncated: bool,
 }
 
@@ -266,6 +323,7 @@ struct ScanState {
     frames: Vec<FrameSpan>,
     frames_seen: u64,
     frames_without_probe: u64,
+    frames_with_duplicate_units: u64,
     domain_read_us: BTreeMap<u16, Vec<u64>>,
     tail_rank_counts: BTreeMap<u16, BTreeMap<usize, u64>>,
     bundle_groups: BTreeMap<Vec<u16>, u64>,
@@ -274,6 +332,7 @@ struct ScanState {
     crit_domain_us: BTreeMap<u16, Vec<u64>>,
     outside_us: BTreeMap<u16, Vec<u64>>,
     country_read_us: BTreeMap<u16, Vec<u64>>,
+    frame_tail_us: BTreeMap<u16, Vec<u64>>,
     inspect_domain: Option<u16>,
     inspect_units: BTreeMap<String, Vec<u64>>,
     inspect_read_us: Vec<u64>,
@@ -494,6 +553,31 @@ fn derive_frame_span(probe: &ProbeUnits, perf_by_sequence: &[PerfRow]) -> Option
         })
         .map(|(_, us)| *us)
         .sum();
+    let frame_time_us = probe.frame_time_us.unwrap_or(0);
+    let fanout_origin_us = probe.fanout_origin_us.unwrap_or(0);
+    let frame_tail_sum_us: u64 = probe
+        .frame_tail
+        .values()
+        .fold(0u64, |acc, value| acc.saturating_add(*value));
+    let deferred_publication_us = match (probe.pub_start_us, probe.pub_end_us) {
+        (Some(start), Some(end)) => end.saturating_sub(start),
+        _ => 0,
+    };
+    let readers_done_us = probe.readers_done_us;
+    let scope_joined_us = probe.scope_joined_us;
+    let post_scope_main_us = scope_joined_us.map(|joined| span_us.saturating_sub(joined));
+    // The wait is the join interval only when the publisher outlived the
+    // readers' close; a publisher that had already ended was not waited for,
+    // and the interval is then the sweep thread's own cleanup (Codex round 5).
+    let publisher_wait_us = match (readers_done_us, scope_joined_us, probe.pub_end_us) {
+        (Some(done), Some(joined), Some(end)) if end > done => Some(joined.saturating_sub(done)),
+        (Some(_), Some(_), Some(_)) => Some(0),
+        _ => None,
+    };
+    let deferred_publication_beyond_readers_us = match (readers_done_us, probe.pub_end_us) {
+        (Some(done), Some(end)) => Some(end.saturating_sub(done)),
+        _ => None,
+    };
     Some(FrameSpan {
         span_us,
         prewarm_us: probe.prewarm_us.unwrap_or(0),
@@ -520,6 +604,17 @@ fn derive_frame_span(probe: &ProbeUnits, perf_by_sequence: &[PerfRow]) -> Option
         country_read_sum_us,
         country_read_max_us,
         country_crit_us,
+        frame_time_us,
+        serial_tail_us: frame_time_us
+            .saturating_sub(fanout_origin_us)
+            .saturating_sub(span_us),
+        frame_tail_sum_us,
+        deferred_publication_us,
+        readers_done_us,
+        scope_joined_us,
+        post_scope_main_us,
+        publisher_wait_us,
+        deferred_publication_beyond_readers_us,
         lanes_truncated: probe.lanes_truncated,
     })
 }
@@ -538,6 +633,14 @@ fn finalize_frame(state: &mut ScanState) {
         state.frames_without_probe = state.frames_without_probe.saturating_add(1);
         return;
     }
+    if !probe.duplicated_units.is_empty() {
+        state.frames_with_duplicate_units = state.frames_with_duplicate_units.saturating_add(1);
+        state.parse_errors.push(format!(
+            "frame {}: the lane-wall probe carries {:?} more than once; refused rather than read last-wins",
+            state.frames_seen, probe.duplicated_units
+        ));
+        return;
+    }
 
     for &(lane, wall, busy) in &probe.lanes {
         state.lane_busy_us.entry(lane).or_default().push(busy);
@@ -551,6 +654,9 @@ fn finalize_frame(state: &mut ScanState) {
     }
     for &(tag, read_us) in &probe.country_reads {
         state.country_read_us.entry(tag).or_default().push(read_us);
+    }
+    for (&code, &value) in &probe.frame_tail {
+        state.frame_tail_us.entry(code).or_default().push(value);
     }
 
     let mut sorted = frame.perf.clone();
@@ -659,6 +765,7 @@ struct Report {
     parse_errors: Vec<String>,
     frames_seen: u64,
     frames_without_probe: u64,
+    frames_with_duplicate_units: u64,
     frames_analysed: u64,
     frames_with_truncated_lanes: u64,
     span_us: Stats,
@@ -681,10 +788,24 @@ struct Report {
     outside_total_us: Stats,
     outside_wait_us: Stats,
     gap_above_lower_bound_us: Stats,
+    frame_time_us: Stats,
+    serial_tail_us: Stats,
+    frame_tail_sum_us: Stats,
+    deferred_publication_us: Stats,
+    /// Frames whose probe carried the scope marks (`lw_readers_done_us` and
+    /// `lw_scope_joined_us`), and among them the frames that ran a publisher;
+    /// `post_scope_main_us` is over the former, the two wait columns over the
+    /// latter.
+    frames_with_scope_marks: u64,
+    frames_with_publisher: u64,
+    post_scope_main_us: Stats,
+    publisher_wait_us: Stats,
+    deferred_publication_beyond_readers_us: Stats,
     domains: Vec<DomainCost>,
     bundle_groups: Vec<BundleGroup>,
     lanes: Vec<LaneCost>,
     outside_segments: Vec<OutsideSegment>,
+    frame_tail_segments: Vec<OutsideSegment>,
     crit_domains: Vec<DomainCost>,
     /// Per country domain: that child's own read time (`lw_cb{tag}_us`).
     country_reads: Vec<DomainCost>,
@@ -809,6 +930,19 @@ impl ScanState {
             .iter()
             .filter(|frame| frame.country_crit_us != 0)
             .count() as u64;
+        let frame_tail_segments: Vec<OutsideSegment> = self
+            .frame_tail_us
+            .iter()
+            .map(|(&code, samples)| OutsideSegment {
+                code,
+                name: FRAME_TAIL_SEGMENTS
+                    .iter()
+                    .find(|(segment_code, _)| *segment_code == code)
+                    .map(|(_, name)| (*name).to_string())
+                    .unwrap_or_else(|| format!("code{code}")),
+                us: stats(samples),
+            })
+            .collect();
         Report {
             collector_build: recorder_host::build_declaration::summary_json(
                 &recorder_host::build_declaration::for_stream(std::path::Path::new(&input_path)),
@@ -821,6 +955,7 @@ impl ScanState {
             parse_errors: self.parse_errors.clone(),
             frames_seen: self.frames_seen,
             frames_without_probe: self.frames_without_probe,
+            frames_with_duplicate_units: self.frames_with_duplicate_units,
             frames_analysed: self.frames.len() as u64,
             span_us: column(|frame| frame.span_us),
             prewarm_us: column(|frame| frame.prewarm_us),
@@ -843,10 +978,46 @@ impl ScanState {
             outside_total_us: column(|frame| frame.outside_total_us),
             outside_wait_us: column(|frame| frame.outside_wait_us),
             gap_above_lower_bound_us: stats(&gap_above_lower_bound),
+            frame_time_us: column(|frame| frame.frame_time_us),
+            serial_tail_us: column(|frame| frame.serial_tail_us),
+            frame_tail_sum_us: column(|frame| frame.frame_tail_sum_us),
+            deferred_publication_us: column(|frame| frame.deferred_publication_us),
+            frames_with_scope_marks: self
+                .frames
+                .iter()
+                .filter(|frame| frame.readers_done_us.is_some() && frame.scope_joined_us.is_some())
+                .count() as u64,
+            frames_with_publisher: self
+                .frames
+                .iter()
+                .filter(|frame| frame.publisher_wait_us.is_some())
+                .count() as u64,
+            post_scope_main_us: stats(
+                &self
+                    .frames
+                    .iter()
+                    .filter_map(|frame| frame.post_scope_main_us)
+                    .collect::<Vec<_>>(),
+            ),
+            publisher_wait_us: stats(
+                &self
+                    .frames
+                    .iter()
+                    .filter_map(|frame| frame.publisher_wait_us)
+                    .collect::<Vec<_>>(),
+            ),
+            deferred_publication_beyond_readers_us: stats(
+                &self
+                    .frames
+                    .iter()
+                    .filter_map(|frame| frame.deferred_publication_beyond_readers_us)
+                    .collect::<Vec<_>>(),
+            ),
             domains,
             bundle_groups,
             lanes,
             outside_segments,
+            frame_tail_segments,
             crit_domains,
             country_reads,
             country_child_count: column(|frame| frame.country_child_count),
@@ -888,10 +1059,11 @@ fn print_report(report: &Report) {
         report.records_seen, report.bytes_consumed
     );
     println!(
-        "frames                   seen={} analysed={} without_probe={} lane_truncated={}",
+        "frames                   seen={} analysed={} without_probe={} duplicate_units={} lane_truncated={}",
         report.frames_seen,
         report.frames_analysed,
         report.frames_without_probe,
+        report.frames_with_duplicate_units,
         report.frames_with_truncated_lanes
     );
     if report.frames_with_truncated_lanes != 0 {
@@ -937,6 +1109,25 @@ fn print_report(report: &Report) {
             &segment.us,
         );
     }
+    println!("\n-- serial tail (span close -> frame-time close; the lw_t* partition) --");
+    line("frame_time (lw_ft_us)", &report.frame_time_us);
+    line("post_scope_main (span-scope_joined)", &report.post_scope_main_us);
+    line("serial_tail (ft-org-span)", &report.serial_tail_us);
+    line("frame_tail_sum (lw_t*)", &report.frame_tail_sum_us);
+    for segment in &report.frame_tail_segments {
+        line(
+            &format!("  t{} {}", segment.code, segment.name),
+            &segment.us,
+        );
+    }
+    println!("\n-- overlapped publication (previous hour's sink beside this fan-out) --");
+    line("deferred_publication", &report.deferred_publication_us);
+    println!(
+        "frames_with_scope_marks {} / frames_with_publisher {} (the two lines below are over the publisher frames; absent on streams without lw_readers_done_us + lw_scope_joined_us)",
+        report.frames_with_scope_marks, report.frames_with_publisher
+    );
+    line("  publisher_wait (scope_joined-readers_done; 0 if pub_end<=readers_done)", &report.publisher_wait_us);
+    line("  beyond_readers (pub_end-readers_done)", &report.deferred_publication_beyond_readers_us);
     println!("\n-- lanes --");
     for lane in &report.lanes {
         println!(
@@ -1099,6 +1290,177 @@ mod tests {
                 "{label}: {:?}",
                 state.parse_errors
             );
+        }
+    }
+
+    #[test]
+    fn the_serial_tail_and_the_overlapped_publication_are_derived_from_the_probe() {
+        use compact_contract::diagnostic_channel::{UnitPresence, UnitRole};
+        // kills: the `lw_t*` family decoded under the outside-build prefix (one
+        // letter apart); `lw_ft_us` ignored; the serial tail derived from the
+        // segment sum instead of from `lw_ft_us` (the sum is a tautology, the
+        // subtraction is the cross-instrument check); the publisher wait
+        // derived from `pub_end - span` (zero by construction: the span closes
+        // after the scope joins the publisher) or from `span - readers_done`
+        // (inflated by the post-scope main-thread reads, and positive with no
+        // publisher at all) instead of from the two scope marks; a wait
+        // reported for a frame that ran no publisher.
+        //
+        // A PRODUCTION-POSSIBLE TUPLE: readers_done <= pub_end <= scope_joined
+        // <= span, which is the only order the producer can emit; the 15 ms
+        // between the join and the span close are the post-scope reads.
+        let units: Vec<DiagUnit> = [
+            ("lw_frames", 1u64),
+            ("lw_worker_span_us", 135_000),
+            ("lw_fanout_origin_us", 2_000),
+            ("lw_ft_us", 144_500),
+            ("lw_t0_us", 400),
+            ("lw_t1_us", 300),
+            ("lw_t2_us", 350),
+            ("lw_t3_us", 900),
+            ("lw_t4_us", 600),
+            ("lw_t5_us", 2_600),
+            ("lw_t6_us", 2_100),
+            ("lw_readers_done_us", 80_000),
+            ("lw_scope_joined_us", 120_000),
+            ("lw_pub_start_us", 50),
+            ("lw_pub_end_us", 119_950),
+            ("lw_o0_us", 10),
+            ("lw_o1_us", 5),
+        ]
+        .into_iter()
+        .map(|(name, value)| DiagUnit::new(name, value, UnitRole::Undeclared, UnitPresence::Undeclared))
+        .collect();
+        let probe = probe_units_from(&units);
+        assert_eq!(probe.frame_time_us, Some(144_500));
+        assert_eq!(probe.frame_tail.len(), 7);
+        assert_eq!(probe.frame_tail.get(&6), Some(&2_100));
+        assert_eq!(probe.outside.len(), 2, "the two families must not alias");
+        let span = derive_frame_span(&probe, &[]).expect("a probed frame");
+        assert_eq!(span.serial_tail_us, 7_500);
+        assert_eq!(span.frame_tail_sum_us, 7_250);
+        assert_eq!(span.deferred_publication_us, 119_900);
+        assert_eq!(span.post_scope_main_us, Some(15_000));
+        assert_eq!(
+            span.publisher_wait_us,
+            Some(40_000),
+            "scope_joined - readers_done: the 15 ms of post-scope reads are not in it"
+        );
+        assert_eq!(span.deferred_publication_beyond_readers_us, Some(39_950));
+
+        // A publisher that ended before the readers' close was not waited for:
+        // the join interval is the sweep thread's own cleanup, and the wait is
+        // zero -- not the interval (Codex round 5).
+        for ended_us in [79_000, 80_000] {
+            let mut early = probe.clone();
+            early.pub_end_us = Some(ended_us);
+            let early_span = derive_frame_span(&early, &[]).expect("a probed frame");
+            assert_eq!(
+                early_span.publisher_wait_us,
+                Some(0),
+                "a publisher that ended at {ended_us}us was not waited for past the readers' \
+                 close at 80_000us -- the same microsecond included (Codex round 6)"
+            );
+            assert_eq!(early_span.deferred_publication_beyond_readers_us, Some(0));
+            assert_eq!(early_span.post_scope_main_us, Some(15_000));
+        }
+
+        // No publisher on this frame: the join interval is not a wait.
+        let mut quiet = probe.clone();
+        quiet.pub_start_us = None;
+        quiet.pub_end_us = None;
+        let quiet_span = derive_frame_span(&quiet, &[]).expect("a probed frame");
+        assert_eq!(quiet_span.publisher_wait_us, None);
+        assert_eq!(quiet_span.deferred_publication_beyond_readers_us, None);
+        assert_eq!(quiet_span.post_scope_main_us, Some(15_000));
+
+        // Without the scope marks everything derived from them is UNKNOWN,
+        // not zero.
+        let mut older = probe.clone();
+        older.readers_done_us = None;
+        older.scope_joined_us = None;
+        let older_span = derive_frame_span(&older, &[]).expect("a probed frame");
+        assert_eq!(older_span.publisher_wait_us, None);
+        assert_eq!(older_span.deferred_publication_beyond_readers_us, None);
+        assert_eq!(older_span.post_scope_main_us, None);
+
+        let mut state = ScanState::default();
+        state.current.probe = Some(older);
+        finalize_frame(&mut state);
+        state.current.probe = Some(quiet);
+        finalize_frame(&mut state);
+        state.current.probe = Some(probe);
+        finalize_frame(&mut state);
+        let report = state.finish("probe".to_string());
+        let late = report
+            .frame_tail_segments
+            .iter()
+            .find(|segment| segment.code == 6)
+            .expect("publish_late is reported");
+        assert_eq!(late.name, "publish_late");
+        assert_eq!(late.us.max, 2_100);
+        assert_eq!(report.serial_tail_us.max, 7_500);
+        assert_eq!(report.frames_analysed, 3);
+        assert_eq!(report.frames_with_scope_marks, 2);
+        assert_eq!(report.frames_with_publisher, 1);
+        assert_eq!(report.post_scope_main_us.count, 2);
+        assert_eq!(report.publisher_wait_us.count, 1);
+        assert_eq!(report.publisher_wait_us.max, 40_000);
+        assert_eq!(report.deferred_publication_beyond_readers_us.max, 39_950);
+    }
+
+    /// A probe is one value per name. A second `lw_scope_joined_us` carrying
+    /// the span close would otherwise be read last-wins here while every
+    /// first-wins reader saw the true value (Codex round 5, finding 2): the
+    /// frame is refused and counted, and the duplicate is named.
+    #[test]
+    fn a_probe_that_repeats_a_unit_is_refused_rather_than_read_last_wins() {
+        use compact_contract::diagnostic_channel::{UnitPresence, UnitRole};
+        let units: Vec<DiagUnit> = [
+            ("lw_frames", 1u64),
+            ("lw_worker_span_us", 135_000),
+            ("lw_readers_done_us", 80_000),
+            ("lw_scope_joined_us", 120_000),
+            ("lw_scope_joined_us", 135_000),
+        ]
+        .into_iter()
+        .map(|(name, value)| DiagUnit::new(name, value, UnitRole::Undeclared, UnitPresence::Undeclared))
+        .collect();
+        let probe = probe_units_from(&units);
+        assert_eq!(probe.duplicated_units, vec!["lw_scope_joined_us".to_string()]);
+        let mut state = ScanState::default();
+        state.current.probe = Some(probe);
+        finalize_frame(&mut state);
+        assert_eq!(state.frames_seen, 1);
+        assert_eq!(state.frames_with_duplicate_units, 1);
+        assert!(state.frames.is_empty(), "a malformed probe derives nothing");
+        assert_eq!(state.parse_errors.len(), 1);
+        assert!(state.parse_errors[0].contains("lw_scope_joined_us"), "{:?}", state.parse_errors);
+        // The same names once each: nothing to refuse.
+        let clean: Vec<DiagUnit> = units[..4].to_vec();
+        let mut state = ScanState::default();
+        state.current.probe = Some(probe_units_from(&clean));
+        finalize_frame(&mut state);
+        assert_eq!(state.frames_with_duplicate_units, 0);
+        assert_eq!(state.frames.len(), 1);
+        // EVERY name, not the thirteen fixed ones: a repeated segment, lane or
+        // frame count is the same malformed probe (Codex round 6, finding 3).
+        for repeated in ["lw_o0_us", "lw_t0_us", "lw_l0_wall_us", "lw_d48_crit_us", "lw_frames"] {
+            let mut repeated_units = clean.clone();
+            repeated_units.push(DiagUnit::new(repeated, 7, UnitRole::Undeclared, UnitPresence::Undeclared));
+            repeated_units.push(DiagUnit::new(repeated, 8, UnitRole::Undeclared, UnitPresence::Undeclared));
+            let probe = probe_units_from(&repeated_units);
+            assert!(
+                !probe.duplicated_units.is_empty()
+                    && probe.duplicated_units.iter().all(|name| name == repeated),
+                "{repeated} more than once is a duplicate: {:?}",
+                probe.duplicated_units
+            );
+            let mut state = ScanState::default();
+            state.current.probe = Some(probe);
+            finalize_frame(&mut state);
+            assert_eq!(state.frames_with_duplicate_units, 1, "{repeated}");
+            assert!(state.frames.is_empty(), "{repeated}: refused, not read last-wins");
         }
     }
 

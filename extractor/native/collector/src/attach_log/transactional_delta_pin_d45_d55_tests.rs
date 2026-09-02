@@ -614,7 +614,7 @@ fn settle(trackers: &mut CompactPerfGateTrackers, rejected: &[u16]) {
     if !rejected.is_empty() {
         reset_trackers_after_rejected_bracket(trackers, &rejected);
     }
-    commit_delta_pin_transactions(trackers);
+    commit_delta_pin_transactions(trackers, &mut Vec::new());
 }
 
 fn frd_focus(completed: u32, current: &str) -> CountryFocusRow {

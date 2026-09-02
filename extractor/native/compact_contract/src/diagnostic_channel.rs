@@ -1222,6 +1222,8 @@ pub const GAUGE_UNITS: &[&str] = &[
     "domain53_sweep_age_ms",
     "lw_pub_start_us",
     "lw_pub_end_us",
+    "lw_readers_done_us",
+    "lw_scope_joined_us",
     "d43_contract_scope_countries",
     "d43_contract_snapshot_countries",
     "d43_contract_outer_count",
@@ -1255,6 +1257,13 @@ pub enum OutsideBuildSegment {
     HookStage = 10,
     TailInsert = 11,
     BuildTail = 12,
+    /// The four parts of `BuildTail` (lane PT): three adjacent in-build marks
+    /// from the frame-time stamp to FRAME_END, and the return/drop remainder
+    /// only the caller can measure. Carried by the NEXT frame's probe like it.
+    BuildProbes = 13,
+    BuildReseq = 14,
+    BuildSeal = 15,
+    BuildReturn = 16,
 }
 
 crate::cause_tables::ordered_segments! {
@@ -1279,6 +1288,10 @@ crate::cause_tables::ordered_segments! {
     HookStage = 10 => "hookstage",
     TailInsert = 11 => "tailinsert",
     BuildTail = 12 => "buildtail_previous_frame",
+    BuildProbes = 13 => "buildprobes_previous_frame",
+    BuildReseq = 14 => "buildreseq_previous_frame",
+    BuildSeal = 15 => "buildseal_previous_frame",
+    BuildReturn = 16 => "buildreturn_previous_frame",
 }
 
 pub fn outside_build_segment_name(code: u16) -> Option<&'static str> {

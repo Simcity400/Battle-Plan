@@ -88,7 +88,7 @@ fn settle(trackers: &mut CompactPerfGateTrackers, rejected: &[u16]) {
     if !rejected.is_empty() {
         reset_trackers_after_rejected_bracket(trackers, &rejected);
     }
-    commit_delta_pin_transactions(trackers);
+    commit_delta_pin_transactions(trackers, &mut Vec::new());
 }
 
 fn apply(consumer: &mut psd::PayloadSpanDeltaConsumer, published: &Published) -> Vec<u8> {
@@ -410,6 +410,7 @@ fn d47s_emission_site_wraps_through_the_real_appender_and_the_consumer_reconstru
         1,
         FIRST_HOUR,
         &read_for(first.clone()),
+        None,
     );
     settle(&mut trackers, &[]);
     let published = parse_one(&out);
@@ -429,6 +430,7 @@ fn d47s_emission_site_wraps_through_the_real_appender_and_the_consumer_reconstru
         2,
         FIRST_HOUR + 1,
         &read_for(second.clone()),
+        None,
     );
     settle(&mut trackers, &[]);
     let published = parse_one(&out);
@@ -448,6 +450,7 @@ fn d47s_emission_site_wraps_through_the_real_appender_and_the_consumer_reconstru
         3,
         FIRST_HOUR + 2,
         &read_for(unchanged.clone()),
+        None,
     );
     settle(&mut trackers, &[]);
     let published = parse_one(&out);

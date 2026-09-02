@@ -44,7 +44,7 @@ fn settle_frame(trackers: &mut CompactPerfGateTrackers, frame_rejected_domains: 
     if !frame_rejected_domains.is_empty() {
         reset_trackers_after_rejected_bracket(trackers, frame_rejected_domains);
     }
-    commit_delta_pin_transactions(trackers);
+    commit_delta_pin_transactions(trackers, &mut Vec::new());
 }
 
 fn deleted_ids(rows: &[CompactShipRow]) -> Vec<u32> {
@@ -266,7 +266,7 @@ fn the_frame_builder_commits_the_delta_pin_transactions_after_the_reset() {
     let source = super::tests::collector_source_lf();
     let reset_call =
         "\n        reset_trackers_after_rejected_bracket(trackers, &rejected_domains);\n    }\n";
-    let commit_call = "\n    commit_delta_pin_transactions(trackers);\n";
+    let commit_call = "\n    commit_delta_pin_transactions(trackers, &mut buffers.retired);\n";
 
     let reset_at = source
         .find(reset_call)
@@ -671,11 +671,11 @@ fn d31_asks_for_a_resync_after_its_own_bracket_was_rejected() {
         0,
     );
     assert_eq!(rows.len(), 2);
-    commit_delta_pin_transactions(&mut trackers);
+    commit_delta_pin_transactions(&mut trackers, &mut Vec::new());
 
     let rejected: BTreeSet<u16> = [D31].into_iter().collect();
     reset_trackers_after_rejected_bracket(&mut trackers, &rejected);
-    commit_delta_pin_transactions(&mut trackers);
+    commit_delta_pin_transactions(&mut trackers, &mut Vec::new());
     assert!(
         trackers.air_region_activity.baseline_published,
         "frame 1 published, so the fold holds a d31 baseline"
@@ -725,7 +725,7 @@ fn a_first_d31_record_is_a_keyframe_and_not_a_resync() {
     );
     let rejected: BTreeSet<u16> = [D31].into_iter().collect();
     reset_trackers_after_rejected_bracket(&mut trackers, &rejected);
-    commit_delta_pin_transactions(&mut trackers);
+    commit_delta_pin_transactions(&mut trackers, &mut Vec::new());
     assert!(
         !trackers.air_region_activity.baseline_published,
         "a rejected record reached nothing, so it published nothing"
@@ -750,7 +750,7 @@ fn an_empty_post_gap_d31_payload_still_asks_for_the_resync() {
 
     let rejected: BTreeSet<u16> = [D31].into_iter().collect();
     reset_trackers_after_rejected_bracket(&mut trackers, &rejected);
-    commit_delta_pin_transactions(&mut trackers);
+    commit_delta_pin_transactions(&mut trackers, &mut Vec::new());
     assert!(trackers.air_region_activity.resync_owed);
 
     let status = d31_status_after_read(&mut trackers, Vec::new());
@@ -770,11 +770,11 @@ fn an_unrelated_rejection_does_not_make_d31_owe_a_resync() {
         vec![d31_bucket(88, 100)],
         0,
     );
-    commit_delta_pin_transactions(&mut trackers);
+    commit_delta_pin_transactions(&mut trackers, &mut Vec::new());
 
     let rejected: BTreeSet<u16> = [COMPACT_DOMAIN_WEATHER].into_iter().collect();
     reset_trackers_after_rejected_bracket(&mut trackers, &rejected);
-    commit_delta_pin_transactions(&mut trackers);
+    commit_delta_pin_transactions(&mut trackers, &mut Vec::new());
 
     assert!(
         !trackers.air_region_activity.resync_owed,
@@ -800,7 +800,7 @@ fn d31_status_after_read(
         status_flags |= compact_contract::COMPACT_STATUS_BASELINE_CLEAR;
         tracker.resync_owed = false;
     }
-    commit_delta_pin_transactions(trackers);
+    commit_delta_pin_transactions(trackers, &mut Vec::new());
     status_flags
 }
 

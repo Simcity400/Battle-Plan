@@ -542,7 +542,7 @@ fn a_resolved_publication_slot_is_emptied_before_the_loop_can_break() {
         .0;
     let resolve_block = code_only(resolve_block);
     let clear_at = resolve_block
-        .find("dispose_staged_publications(&mut staged_publications, service_closes);")
+        .find("dispose_staged_publications(&mut staged_publications, service_closes, &mut frame_buffers);")
         .expect("the slot is emptied after the resolve");
     let break_at = resolve_block
         .find("break 'capture;")
@@ -554,7 +554,7 @@ fn a_resolved_publication_slot_is_emptied_before_the_loop_can_break() {
     );
     assert_eq!(
         resolve_block
-            .matches("dispose_staged_publications(&mut staged_publications, service_closes);")
+            .matches("dispose_staged_publications(&mut staged_publications, service_closes, &mut frame_buffers);")
             .count(),
         1,
         "cleared once, unconditionally -- a clear inside either match arm covers one ending only"

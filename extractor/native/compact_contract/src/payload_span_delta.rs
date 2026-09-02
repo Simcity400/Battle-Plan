@@ -1508,10 +1508,18 @@ impl PayloadSpanDeltaBaselines {
             .map(|(_, baseline)| baseline)
     }
 
-    pub fn set(&mut self, domain_id: u16, baseline: PayloadSpanDeltaBaseline) {
+    /// Retain `baseline` for the domain, handing back the one it displaces.
+    pub fn set(
+        &mut self,
+        domain_id: u16,
+        baseline: PayloadSpanDeltaBaseline,
+    ) -> Option<PayloadSpanDeltaBaseline> {
         match self.entries.iter_mut().find(|(id, _)| *id == domain_id) {
-            Some(slot) => slot.1 = baseline,
-            None => self.entries.push((domain_id, baseline)),
+            Some(slot) => Some(std::mem::replace(&mut slot.1, baseline)),
+            None => {
+                self.entries.push((domain_id, baseline));
+                None
+            }
         }
     }
 
@@ -1588,6 +1596,32 @@ pub struct PayloadSpanDeltaProducer {
     /// affected every delta-enabled domain, because this counter is shared.
     last_keyframe_hour_index: Vec<(u16, i64)>,
     staged_last_keyframe_hour_index: Vec<(u16, Option<i64>)>,
+}
+
+/// One payload wrapped by [`PayloadSpanDeltaProducer::prepare`] and not yet
+/// staged: the envelope with a placeholder sequence, the baseline advance it
+/// implies, and the two facts about the producer it was built against that
+/// [`PayloadSpanDeltaProducer::stage_prepared`] re-checks before applying it.
+#[derive(Clone, Debug)]
+pub struct PreparedSpanDelta {
+    domain_id: u16,
+    game_hour_raw: i32,
+    keyframe_due: bool,
+    observed_baseline_sha256: Option<[u8; 32]>,
+    keyframe: bool,
+    wrapped: Vec<u8>,
+    next_baseline: Option<PayloadSpanDeltaBaseline>,
+}
+
+impl PreparedSpanDelta {
+    pub fn domain_id(&self) -> u16 {
+        self.domain_id
+    }
+
+    /// The envelope as prepared, sequence still the zero placeholder.
+    pub fn wrapped_len(&self) -> usize {
+        self.wrapped.len()
+    }
 }
 
 impl PayloadSpanDeltaProducer {
@@ -1674,11 +1708,36 @@ impl PayloadSpanDeltaProducer {
         identity: PayloadSpanDeltaIdentity,
         payload: &[u8],
     ) -> Result<Vec<u8>, String> {
-        let domain_id = identity.domain_id;
-        let body = if self.keyframe_due(domain_id, identity.game_hour_raw) {
+        let prepared = self.prepare(identity.domain_id, identity.game_hour_raw, payload)?;
+        self.stage_prepared(prepared, identity.source_sequence)
+    }
+
+    /// The read-only half of [`Self::wrap`]: choose the body, build the
+    /// envelope and the next baseline against the baselines this producer
+    /// holds NOW, without staging anything.
+    ///
+    /// This is what lets the collector wrap a domain's payload on the worker
+    /// that produced it, beside the other readers, instead of on the frame's
+    /// serial tail: a worker holds the producer by shared reference only, and
+    /// everything that costs time here -- the digest, the delta scan, the
+    /// baseline copy -- needs nothing more. The H4CR sequence is not known
+    /// until the tail appends the record, so the envelope carries a zero
+    /// placeholder that [`Self::stage_prepared`] stamps; the sequence sits in
+    /// the envelope's own header outside every digest, which is the same
+    /// argument [`stamp_source_sequence`] makes for a resequenced record.
+    pub fn prepare(
+        &self,
+        domain_id: u16,
+        game_hour_raw: i32,
+        payload: &[u8],
+    ) -> Result<PreparedSpanDelta, String> {
+        let keyframe_due = self.keyframe_due(domain_id, game_hour_raw);
+        let current = self.current(domain_id);
+        let observed_baseline_sha256 = current.map(|baseline| baseline.basis_sha256);
+        let body = if keyframe_due {
             PayloadSpanDeltaBody::Keyframe
         } else {
-            choose_wire_body(payload, self.current(domain_id))
+            choose_wire_body(payload, current)
         };
         // A NO-CHANGE HOUR COSTS ONE COMPARISON AND NOTHING ELSE.
         //
@@ -1708,7 +1767,56 @@ impl PayloadSpanDeltaProducer {
             (_, Some(baseline)) => baseline.basis_sha256,
             (_, None) => unreachable!("only a no-change body skips the new baseline"),
         };
+        let identity = PayloadSpanDeltaIdentity {
+            domain_id,
+            source_sequence: 0,
+            game_hour_raw,
+        };
         let wrapped = encode_payload_with_basis_digest(identity, payload, basis_sha256, &body)?;
+        Ok(PreparedSpanDelta {
+            domain_id,
+            game_hour_raw,
+            keyframe_due,
+            observed_baseline_sha256,
+            keyframe: matches!(body, PayloadSpanDeltaBody::Keyframe),
+            wrapped,
+            next_baseline,
+        })
+    }
+
+    /// The staging half of [`Self::wrap`]: stamp the record's sequence into a
+    /// prepared envelope and stage the advance it describes.
+    ///
+    /// Refuses a preparation built against baselines this producer no longer
+    /// holds -- another wrap for the same domain, a commit, a rollback or a
+    /// reset in between -- because its body names a baseline the fold will not
+    /// be holding. The caller then wraps again from the payload it still has.
+    pub fn stage_prepared(
+        &mut self,
+        prepared: PreparedSpanDelta,
+        source_sequence: u64,
+    ) -> Result<Vec<u8>, String> {
+        let PreparedSpanDelta {
+            domain_id,
+            game_hour_raw,
+            keyframe_due,
+            observed_baseline_sha256,
+            keyframe,
+            mut wrapped,
+            next_baseline,
+        } = prepared;
+        if self.keyframe_due(domain_id, game_hour_raw) != keyframe_due
+            || self
+                .current(domain_id)
+                .map(|baseline| baseline.basis_sha256)
+                != observed_baseline_sha256
+        {
+            return Err(format!(
+                "PSD1 preparation for domain {domain_id} was built against baselines this \
+                 producer no longer holds"
+            ));
+        }
+        stamp_source_sequence(&mut wrapped, source_sequence)?;
         // STAGE THE PREVIOUS VALUE ONCE PER FRAME, so a rollback restores what
         // the fold's mirror actually holds. `None` is a real staged value here
         // -- a domain that had never keyframed before this frame must roll back
@@ -1726,8 +1834,8 @@ impl PayloadSpanDeltaProducer {
         // Deltas and no-change records leave it alone, so the next record's
         // "elapsed since the last keyframe" is measured from the keyframe and
         // not from whatever last happened to be emitted.
-        if matches!(body, PayloadSpanDeltaBody::Keyframe) {
-            let hour = crate::calendar::hour_index_from_raw(identity.game_hour_raw);
+        if keyframe {
+            let hour = crate::calendar::hour_index_from_raw(game_hour_raw);
             self.set_last_keyframe_hour_index(domain_id, hour);
         }
         if let Some(baseline) = next_baseline {
@@ -1738,12 +1846,21 @@ impl PayloadSpanDeltaProducer {
 
     /// The frame survived: what was staged is what the fold holds.
     pub fn commit(&mut self) {
+        self.commit_retiring(&mut Vec::new());
+    }
+
+    /// [`commit`](Self::commit), handing the displaced committed bases to
+    /// `retired` instead of freeing them here: the caller decides where a
+    /// d53-sized free runs (lane PT, 2026-09-02).
+    pub fn commit_retiring(&mut self, retired: &mut Vec<Vec<u8>>) {
         // MOVED, NOT CLONED. Cloning each staged basis here meant that for the
         // duration of the commit the producer held THREE copies of a d53-sized
         // baseline -- committed, staged, and the clone in flight -- which is a
         // transient peak nothing accounted for (Codex review round 4, finding 2).
         for (domain_id, baseline) in self.staged.drain() {
-            self.committed.set(domain_id, baseline);
+            if let Some(displaced) = self.committed.set(domain_id, baseline) {
+                retired.push(displaced.basis);
+            }
         }
         self.staged_last_keyframe_hour_index.clear();
     }
@@ -2954,5 +3071,131 @@ mod tests {
         for domain_id in DELTA_ENABLED_DOMAINS {
             assert!(is_delta_enabled_domain(*domain_id));
         }
+    }
+
+    /// The hours a producer walks through every body kind: a first keyframe,
+    /// a delta, a no-change hour, a second delta, and the cadence keyframe.
+    fn every_body_kind_hours() -> Vec<(i32, Vec<u8>)> {
+        let base = basis_of_len(16_384, 5);
+        let mut changed = base.clone();
+        changed[4_000..4_100].fill(0xAB);
+        let mut hours = vec![
+            (60_830_824, payload_of(base.clone(), 10)),
+            (60_830_825, payload_of(changed.clone(), 20)),
+            (60_830_826, payload_of(changed.clone(), 30)),
+            (60_830_827, payload_of(base.clone(), 40)),
+        ];
+        hours.push((
+            60_830_824 + KEYFRAME_CADENCE_HOURS as i32,
+            payload_of(base, 50),
+        ));
+        hours
+    }
+
+    #[test]
+    fn a_prepared_wrap_stages_to_the_bytes_and_state_a_direct_wrap_produces() {
+        // kills: `prepare` mutating the producer (the second producer would
+        // drift from the first on the next hour); `stage_prepared` skipping the
+        // keyframe mark or the staged baseline (the cadence keyframe and the
+        // no-change hour would differ); the placeholder sequence left unstamped
+        // (the direct wrap's header would differ at SOURCE_SEQUENCE_OFFSET).
+        let mut direct = PayloadSpanDeltaProducer::new();
+        let mut split = PayloadSpanDeltaProducer::new();
+        for (index, (hour, payload)) in every_body_kind_hours().into_iter().enumerate() {
+            let sequence = 100 + index as u64;
+            let expected = direct.wrap(identity(hour, sequence), &payload).unwrap();
+            let before = format!("{split:?}");
+            let prepared = split.prepare(D53, hour, &payload).unwrap();
+            assert_eq!(
+                format!("{split:?}"),
+                before,
+                "hour {index}: preparing must not touch the producer"
+            );
+            assert_eq!(prepared.domain_id(), D53);
+            assert_eq!(prepared.wrapped_len(), expected.len());
+            let staged = split.stage_prepared(prepared, sequence).unwrap();
+            assert_eq!(staged, expected, "hour {index}: the two paths must agree byte for byte");
+            assert_eq!(
+                decode_payload(&staged).unwrap().identity,
+                identity(hour, sequence),
+                "hour {index}: the stamped sequence is the record's"
+            );
+            assert_eq!(
+                format!("{split:?}"),
+                format!("{direct:?}"),
+                "hour {index}: the staged state must match the direct wrap's"
+            );
+            direct.commit();
+            split.commit();
+        }
+    }
+
+    #[test]
+    fn a_retiring_commit_hands_back_exactly_the_bases_a_plain_commit_frees() {
+        // kills: a commit that still frees the displaced basis itself (the bin
+        // stays empty); one that retires the NEW basis (the retired bytes would
+        // be this hour's, not the previous one's); a `set` that pushes a second
+        // slot instead of replacing (the committed state diverges).
+        let mut plain = PayloadSpanDeltaProducer::new();
+        let mut retiring = PayloadSpanDeltaProducer::new();
+        let mut retired = Vec::new();
+        let mut displacing_hours = 0usize;
+        for (index, (hour, payload)) in every_body_kind_hours().into_iter().enumerate() {
+            let sequence = 200 + index as u64;
+            plain.wrap(identity(hour, sequence), &payload).unwrap();
+            let prepared = retiring.prepare(D53, hour, &payload).unwrap();
+            let stages_a_baseline = prepared.next_baseline.is_some();
+            let before = retiring.current(D53).cloned();
+            retiring.stage_prepared(prepared, sequence).unwrap();
+            plain.commit();
+            retiring.commit_retiring(&mut retired);
+            let expected: Vec<Vec<u8>> = match (stages_a_baseline, before) {
+                (true, Some(previous)) => vec![previous.basis],
+                _ => Vec::new(),
+            };
+            assert_eq!(
+                retired, expected,
+                "hour {index}: the retired bytes are the displaced basis and nothing else"
+            );
+            displacing_hours += usize::from(!retired.is_empty());
+            retired.clear();
+            assert_eq!(
+                format!("{retiring:?}"),
+                format!("{plain:?}"),
+                "hour {index}: the committed state must match a plain commit's"
+            );
+        }
+        assert!(
+            displacing_hours >= 2,
+            "the walk must displace a basis more than once, or this proves nothing about deltas"
+        );
+    }
+
+    #[test]
+    fn a_stale_preparation_is_refused_and_the_producer_is_left_alone() {
+        // kills: a `stage_prepared` that applies whatever it is handed. A
+        // preparation built against the committed baseline, staged after a
+        // later wrap moved that baseline, would name a base the fold does not
+        // hold; the check must refuse it and leave the producer where the
+        // later wrap put it.
+        let hours = every_body_kind_hours();
+        let mut producer = PayloadSpanDeltaProducer::new();
+        producer.wrap(identity(hours[0].0, 1), &hours[0].1).unwrap();
+        producer.commit();
+        let stale = producer.prepare(D53, hours[1].0, &hours[1].1).unwrap();
+        producer.wrap(identity(hours[1].0, 2), &hours[1].1).unwrap();
+        let after_second_wrap = format!("{producer:?}");
+        let refused = producer.stage_prepared(stale, 3);
+        assert!(refused.is_err(), "a preparation against a moved baseline is stale");
+        assert_eq!(format!("{producer:?}"), after_second_wrap);
+
+        // AND THE OTHER STALENESS: a keyframe becoming due. Prepared while the
+        // domain had never keyframed, staged after a rollback cleared it -- the
+        // baseline is gone too, so both checks fire; either alone must.
+        let mut fresh = PayloadSpanDeltaProducer::new();
+        fresh.wrap(identity(hours[0].0, 1), &hours[0].1).unwrap();
+        let prepared = fresh.prepare(D53, hours[1].0, &hours[1].1).unwrap();
+        fresh.roll_back(D53);
+        assert!(fresh.stage_prepared(prepared, 2).is_err());
     }
 }

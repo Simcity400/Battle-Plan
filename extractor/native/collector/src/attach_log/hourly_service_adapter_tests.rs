@@ -55,7 +55,7 @@ fn failed_staged_sink_closes_original_request_and_restores_current_owner() {
         logical_stream_tail_record_type: None,
     };
     let mut results = Vec::new();
-    run_staged_publications(&mut transport, &frames, &mut results, &mut 0);
+    run_staged_publications(&mut transport, &frames, &mut results, &mut 0, &[]);
     assert_eq!(results.len(), 1);
     let observed_sink_ns = results[0]
         .sink_finished
@@ -69,7 +69,7 @@ fn failed_staged_sink_closes_original_request_and_restores_current_owner() {
     );
     assert_eq!(hourly_service_capture::closed_requests_for_tests(), 0);
     assert!(!frames[0].bytes.is_empty());
-    dispose_staged_publications(&mut frames, closes);
+    dispose_staged_publications(&mut frames, closes, &mut FrameBuffers::default());
     assert_eq!(hourly_service_capture::closed_requests_for_tests(), 1);
     assert_eq!(sequence.get(), 1);
     assert_eq!(hourly_service_capture::current_owner(), Some(current_owner));
@@ -118,7 +118,7 @@ fn partial_staged_data_keeps_sink_interval_and_committed_sequence_bounds() {
     append_compact_frame_end_record(&mut bytes, 1, 100, 0, 0, 0, 0, 0);
     let mut frames = vec![staged(request, owner, true, bytes.clone())];
     let mut results = Vec::new();
-    run_staged_publications(&mut transport, &frames, &mut results, &mut 0);
+    run_staged_publications(&mut transport, &frames, &mut results, &mut 0, &[]);
     let observed_sink_ns = results[0]
         .sink_finished
         .duration_since(results[0].sink_started)
@@ -128,7 +128,7 @@ fn partial_staged_data_keeps_sink_interval_and_committed_sequence_bounds() {
     resolve_staged_publications(&frames, results, &mut sequence, None, None, &mut closes).unwrap();
     assert_eq!(hourly_service_capture::closed_requests_for_tests(), 0);
     assert_eq!(frames[0].bytes, bytes);
-    dispose_staged_publications(&mut frames, closes);
+    dispose_staged_publications(&mut frames, closes, &mut FrameBuffers::default());
     assert!(frames.is_empty());
     assert_eq!(hourly_service_capture::closed_requests_for_tests(), 1);
     let report = hourly_service_capture::finish_with_scheduler(1, 0, 0, 0).unwrap();
@@ -172,7 +172,7 @@ fn missing_publisher_result_retains_an_incomplete_aborted_service_sample() {
     )
     .is_err());
     assert!(closes.entries.iter().all(Option::is_none));
-    dispose_staged_publications(&mut frames, closes);
+    dispose_staged_publications(&mut frames, closes, &mut FrameBuffers::default());
     let report = hourly_service_capture::finish_with_scheduler(1, 0, 0, 0).unwrap();
     assert_eq!(report.samples.len(), 1);
     assert_eq!(report.samples[0].owner.game_hour_raw, 100);
@@ -349,7 +349,7 @@ fn committed_data_survives_later_gap_failure_without_falsely_missing_a_stage() {
         },
     ];
     let mut results = Vec::new();
-    run_staged_publications(&mut transport, &frames, &mut results, &mut 0);
+    run_staged_publications(&mut transport, &frames, &mut results, &mut 0, &[]);
     let mut sequence = PublishedSequence::start_on(None);
     let mut closes = PendingStagedServiceCloses::default();
     let error =
@@ -361,7 +361,7 @@ fn committed_data_survives_later_gap_failure_without_falsely_missing_a_stage() {
     );
     assert_eq!(sequence.get(), 3);
     assert_eq!(hourly_service_capture::closed_requests_for_tests(), 0);
-    dispose_staged_publications(&mut frames, closes);
+    dispose_staged_publications(&mut frames, closes, &mut FrameBuffers::default());
     let report = hourly_service_capture::finish_with_scheduler(1, 0, 0, 0).unwrap();
     transport.finish().unwrap();
     let actual = std::fs::read(&path).unwrap();
@@ -448,12 +448,12 @@ fn multiple_staged_data_owners_each_close_their_complete_commit_stage() {
     let mut frames = vec![staged(first, first_owner, false, data), second_frame];
     let capacity = frames.capacity();
     let mut results = Vec::new();
-    run_staged_publications(&mut transport, &frames, &mut results, &mut 0);
+    run_staged_publications(&mut transport, &frames, &mut results, &mut 0, &[]);
     let mut sequence = PublishedSequence::start_on(None);
     let mut closes = PendingStagedServiceCloses::default();
     resolve_staged_publications(&frames, results, &mut sequence, None, None, &mut closes).unwrap();
     assert_eq!(hourly_service_capture::closed_requests_for_tests(), 0);
-    dispose_staged_publications(&mut frames, closes);
+    dispose_staged_publications(&mut frames, closes, &mut FrameBuffers::default());
     assert_eq!(hourly_service_capture::current_owner(), Some(current_owner));
     assert_eq!(hourly_service_capture::closed_requests_for_tests(), 2);
     assert!(frames.is_empty());
@@ -508,7 +508,7 @@ fn staged_close_without_matching_data_keeps_missing_disposal_fault() {
     }];
     let mut closes = PendingStagedServiceCloses::default();
     closes.push(Some(owner), ServiceOutcome::Complete, Some((1, 2)));
-    dispose_staged_publications(&mut frames, closes);
+    dispose_staged_publications(&mut frames, closes, &mut FrameBuffers::default());
     let report = hourly_service_capture::finish_with_scheduler(1, 0, 0, 0).unwrap();
     assert_eq!(report.samples.len(), 1);
     assert_ne!(

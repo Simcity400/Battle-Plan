@@ -320,20 +320,33 @@ impl FrameOutcome {
         );
     }
 
+    /// The ONE value a domain published under `name` this frame. A name that
+    /// occurs twice is a malformed record, and a reader that took the first
+    /// would disagree with one that took the last (the audit refuses such a
+    /// probe; Codex round 5, finding 2), so it is a failure here, not a pick.
     pub(super) fn diagnostic_unit(&self, domain_id: u16, name: &str) -> Option<u64> {
-        self.records
+        let values: Vec<u64> = self
+            .records
             .iter()
             .filter(|record| {
                 record.domain_id == domain_id
                     && record.record_type == COMPACT_RECORD_TYPE_DOMAIN_PERF
             })
-            .find_map(|record| {
+            .flat_map(|record| {
                 DomainPerfView::parse(&record.payload)
                     .diagnostics
                     .into_iter()
-                    .find(|(unit, _)| unit == name)
+                    .filter(|(unit, _)| unit == name)
                     .map(|(_, value)| value)
+                    .collect::<Vec<_>>()
             })
+            .collect();
+        assert!(
+            values.len() <= 1,
+            "domain {domain_id} publishes {name} {} times in one frame: {values:?}",
+            values.len()
+        );
+        values.first().copied()
     }
 
     pub(super) fn frame_end(&self) -> &FrameRecord {
@@ -366,6 +379,19 @@ pub(super) fn drive_compact_frame(
     game_hour_raw: i32,
     elapsed_wall_ms: u64,
 ) -> FrameOutcome {
+    drive_compact_frame_with_deferred_work(state, control, game_hour_raw, elapsed_wall_ms, None)
+}
+
+/// [`drive_compact_frame`] with the in-frame publisher's work supplied, so a
+/// test can put a publication beside the readers and read what the probe says
+/// about it.
+pub(super) fn drive_compact_frame_with_deferred_work(
+    state: Option<&CollectorState>,
+    control: &CollectorControl,
+    game_hour_raw: i32,
+    elapsed_wall_ms: u64,
+    deferred_work: Option<InFrameDeferredWork<'_>>,
+) -> FrameOutcome {
     let mut trackers = CompactPerfGateTrackers::default();
     let _rc_counters = super::super::lock_rc_counters();
     page_cache_new_frame();
@@ -382,8 +408,9 @@ pub(super) fn drive_compact_frame(
         None,
         &mut trackers,
         None,
-        None,
+        deferred_work,
         &mut OutsideBuildSpans::default(),
+        &mut FrameBuffers::default(),
     );
 
     let mut records = Vec::new();
@@ -1037,6 +1064,409 @@ fn a_driven_frame_records_each_workers_spawn_to_return_wall_and_outcome() {
     assert!(
         last_return_us <= worker_span_us,
         "a worker returned at {last_return_us}us, after the published worker          span of {worker_span_us}us"
+    );
+}
+
+/// The scope marks of a driven frame, read back from the lane-wall probe with
+/// the spans they are measured against (lane PT).
+struct ScopeMarks {
+    readers_done_us: u64,
+    scope_joined_us: u64,
+    span_us: u64,
+    /// `(lw_pub_start_us, lw_pub_end_us)`; absent when the frame ran no
+    /// publisher.
+    publication: Option<(u64, u64)>,
+    /// The last GATED reader's return. The main lane's spans are the reads
+    /// after the scope, not readers.
+    last_reader_return_us: u64,
+    /// d54's read: on the main thread, after the scope joined and before the
+    /// span closed.
+    post_scope_read: LaneSpan,
+}
+
+/// Ships and the OOB command tree as readers, d54 as the main-thread read that
+/// follows the scope (its dependencies d27/d28 join the fan-out).
+fn scope_marks_control() -> CollectorControl {
+    compact_control_scheduling(&[
+        RAW_SHIPS_DOMAIN,
+        RAW_OOB_COMMAND_DOMAIN,
+        RAW_ARMY_BATTLEPLANS_DEPTH_LIVE_DOMAIN,
+    ])
+}
+
+fn scope_marks(outcome: &FrameOutcome) -> ScopeMarks {
+    let unit = |name: &str| {
+        outcome
+            .diagnostic_unit(RC_PROBE_DOMAIN_ID, name)
+            .unwrap_or_else(|| panic!("the lane-wall probe publishes {name}"))
+    };
+    let publication = match (
+        outcome.diagnostic_unit(RC_PROBE_DOMAIN_ID, "lw_pub_start_us"),
+        outcome.diagnostic_unit(RC_PROBE_DOMAIN_ID, "lw_pub_end_us"),
+    ) {
+        (Some(start), Some(end)) => Some((start, end)),
+        (None, None) => None,
+        (start, end) => panic!("the publication offsets come as a pair: {start:?}..{end:?}"),
+    };
+    let post_scope_read = *outcome
+        .lane_span(COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE)
+        .expect("d54 reads on the main thread after the scope");
+    assert_eq!(
+        post_scope_read.lane, LW_MAIN_LANE,
+        "d54 is a main-thread read, not a gated worker"
+    );
+    ScopeMarks {
+        readers_done_us: unit("lw_readers_done_us"),
+        scope_joined_us: unit("lw_scope_joined_us"),
+        span_us: unit("lw_worker_span_us"),
+        publication,
+        last_reader_return_us: outcome
+            .timing
+            .lane_spans
+            .iter()
+            .filter(|span| span.lane != LW_MAIN_LANE)
+            .map(|span| span.end_us)
+            .max()
+            .expect("at least one reader ran"),
+        post_scope_read,
+    }
+}
+
+/// What every driven frame's marks obey, publisher or not: the readers return,
+/// their close is stamped, the scope joins, the main-thread reads run, the span
+/// closes. Each stamp is pinned by what it must follow and by what must follow
+/// it, so neither can be a zero or the span close (Codex rounds 3 and 4). The
+/// stamps' placement on the scope's own boundary is a source pin
+/// (lane_wall_tests::the_scope_stamps_sit_on_the_scope_boundary_and_feed_the_wire_directly):
+/// a duration bound across a thread exit and a join is not a law under load.
+fn assert_scope_marks_bracket_the_join(marks: &ScopeMarks) {
+    let ScopeMarks {
+        readers_done_us,
+        scope_joined_us,
+        span_us,
+        last_reader_return_us,
+        post_scope_read,
+        ..
+    } = *marks;
+    assert!(
+        0 < last_reader_return_us && last_reader_return_us <= readers_done_us,
+        "the readers' close ({readers_done_us}us) follows the last reader's return \
+         ({last_reader_return_us}us)"
+    );
+    assert!(
+        readers_done_us <= scope_joined_us,
+        "the scope join ({scope_joined_us}us) follows the readers' close ({readers_done_us}us)"
+    );
+    // d54's read is a main-lane span on the same origin, after the scope
+    // joined and before the span closed. A join stamped at the span close --
+    // or anywhere after this read began -- puts the read before the join,
+    // which no ordering of the code allows.
+    assert!(
+        scope_joined_us <= post_scope_read.start_us && post_scope_read.end_us <= span_us,
+        "the post-scope main-thread read ({}..{}us) lies between the scope join \
+         ({scope_joined_us}us) and the span close ({span_us}us)",
+        post_scope_read.start_us,
+        post_scope_read.end_us
+    );
+    // The main-thread reads after the scope are NOT the wait (Codex round 2);
+    // the fixture's are well under 10 ms.
+    assert!(
+        span_us - scope_joined_us < 10_000,
+        "the post-scope main-thread reads ({}us) are outside the wait",
+        span_us - scope_joined_us
+    );
+}
+
+/// The OS orders the publisher's thread against the readers'; the fixture
+/// cannot. So a test that needs one ordering drives frames until the scheduler
+/// produces it -- the ordering is the SHAPE under test, and the law is then
+/// asserted on that frame, unconditionally. Under 20 spinning hogs on 16 cores
+/// the readers of one frame took up to 385 ms and an instant publisher's first
+/// slice came 6 ms late; a single frame with a fixed publisher length is not a
+/// law there, eight attempts are.
+const SHAPE_ATTEMPTS: usize = 8;
+
+/// One driven frame with a publisher that sleeps `publisher_ms` (0 = returns at
+/// once) and then sets a flag; panics if the publisher did not run.
+fn drive_frame_with_publisher_ms(
+    state: &CollectorState,
+    control: &CollectorControl,
+    publisher_ms: u64,
+) -> FrameOutcome {
+    let published = std::sync::atomic::AtomicBool::new(false);
+    let outcome = drive_compact_frame_with_deferred_work(
+        Some(state),
+        control,
+        fixture_game_hour_raw(),
+        7,
+        Some(Box::new(|| {
+            if publisher_ms > 0 {
+                std::thread::sleep(Duration::from_millis(publisher_ms));
+            }
+            published.store(true, Ordering::Release);
+        })),
+    );
+    assert!(
+        published.load(Ordering::Acquire),
+        "the publisher runs inside the build, beside the readers"
+    );
+    outcome
+}
+
+/// One driven frame under its OWN owned timer session: the owner is begun
+/// with the session's own origin as its edge, the frame is driven, the owner
+/// is closed, and the session's report is read back. What the frame's service
+/// looked like to the timer, beside what the frame published.
+struct TimedFrame {
+    outcome: FrameOutcome,
+    /// What `exclude_wait` took out during this frame.
+    excluded_ns: u64,
+    /// The owner's observed service, every stage, as the report carries it.
+    observed_service_ns: u64,
+    /// The report's edge -> close, both on the timer's own instants: the edge
+    /// IS the session's origin, so everything the timer attributed to the
+    /// owner (the setup claimed at begin, every stage, the close) lies inside
+    /// it with no slack for this test's clock. Observed service + excluded
+    /// wait can never exceed it; a wait charged as service does (Codex rounds
+    /// 6 and 7).
+    edge_to_completion_ns: u64,
+}
+
+fn drive_timed_frame(
+    state: &CollectorState,
+    control: &CollectorControl,
+    publisher_ms: Option<u64>,
+    ordinal: u64,
+) -> TimedFrame {
+    let session = hourly_service_capture::start();
+    let edge = hourly_service_capture::session_origin_for_tests().expect("the session is open");
+    let owner = hourly_service_capture::ServiceOwner {
+        logical_stream_id: 1,
+        epoch: 1,
+        game_hour_raw: fixture_game_hour_raw(),
+        observation_ordinal: ordinal,
+    };
+    hourly_service_capture::begin(owner, Some(edge));
+    let outcome = match publisher_ms {
+        Some(ms) => drive_frame_with_publisher_ms(state, control, ms),
+        None => drive_compact_frame(Some(state), control, fixture_game_hour_raw(), 7),
+    };
+    hourly_service_capture::close(owner, hourly_service_capture::RequestOutcome::Complete, None);
+    let excluded_ns = hourly_service_capture::excluded_wait_ns_for_tests();
+    let report =
+        hourly_service_capture::finish_with_scheduler(1, 0, 0, 0).expect("the session reports");
+    drop(session);
+    let sample = report
+        .samples
+        .iter()
+        .find(|sample| sample.owner.observation_ordinal == ordinal)
+        .expect("the owner's sample");
+    TimedFrame {
+        outcome,
+        excluded_ns,
+        observed_service_ns: sample
+            .observed_service_ns
+            .expect("a closed owner has an observed service"),
+        edge_to_completion_ns: sample
+            .edge_to_completion_ns
+            .expect("the owner was begun with an edge"),
+    }
+}
+
+/// The wait the timer excluded for ONE driven frame, checked against the
+/// marks the same frame published and against the timer's own report: the
+/// timer excludes exactly the join interval when the publisher outlived the
+/// readers' close and nothing otherwise, and what it excluded is OUT of the
+/// owner's observed service -- observed + excluded fits inside edge -> close,
+/// which a wait charged as service overflows (Codex rounds 5 and 6).
+fn assert_excluded_wait_matches_the_marks(frame: &TimedFrame, marks: &ScopeMarks) {
+    let excluded_ns = frame.excluded_ns;
+    assert!(
+        frame.observed_service_ns + excluded_ns <= frame.edge_to_completion_ns,
+        "observed service ({}ns) + excluded wait ({excluded_ns}ns) exceeds the owner's edge -> \
+         close ({}ns): the wait was charged as service",
+        frame.observed_service_ns,
+        frame.edge_to_completion_ns
+    );
+    let waited_us = marks.scope_joined_us - marks.readers_done_us;
+    match marks.publication {
+        Some((_, pub_end_us)) if pub_end_us > marks.readers_done_us => {
+            let excluded_us = excluded_ns / 1_000;
+            assert!(
+                excluded_us.abs_diff(waited_us) <= 1,
+                "the publisher outlived the readers' close, so the timer excluded the join \
+                 interval: excluded {excluded_us}us, scope_joined - readers_done {waited_us}us"
+            );
+        }
+        _ => assert_eq!(
+            excluded_ns, 0,
+            "no publisher was waited for, so nothing is excluded: the {waited_us}us between \
+             the readers' close and the join is this thread's own cleanup, and it is service"
+        ),
+    }
+}
+
+/// A frame that ran no publisher: both scope marks are present and bracket
+/// the join, no publication offsets are published, and nothing was waited for.
+///
+/// kills: either mark missing or zero when there is no publisher (Codex round
+/// 3, finding 2); the span close emitted as the join on a quiet frame (Codex
+/// round 4, finding 1); a wait between the readers' close and the join.
+#[test]
+fn a_frame_that_ran_no_publisher_stamps_the_scope_join_between_its_readers_and_its_main_thread_reads(
+) {
+    let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
+    let (_arena, state, _image) = naval_frame_fixture();
+    let frame = drive_timed_frame(&state, &scope_marks_control(), None, 1);
+    let marks = scope_marks(&frame.outcome);
+    assert_eq!(
+        marks.publication, None,
+        "no publisher ran, so the publication offsets are absent"
+    );
+    assert_scope_marks_bracket_the_join(&marks);
+    assert_excluded_wait_matches_the_marks(&frame, &marks);
+    // With no publisher there is nothing to wait for: the scope returns to the
+    // main thread as soon as its closure does.
+    assert!(
+        marks.scope_joined_us - marks.readers_done_us < 5_000,
+        "no publisher, no wait: readers done {}us, scope joined {}us",
+        marks.readers_done_us,
+        marks.scope_joined_us
+    );
+}
+
+/// A publisher that ended before the readers: the common shape, where the sink
+/// finishes inside the fan-out. The scope has nothing left to join when the
+/// readers close, so the wait is nil and the join still follows the close.
+///
+/// kills: the publication's end emitted as the join (Codex round 4, finding
+/// 2: on this ordering that puts the join before the readers' close, and the
+/// audit then counts reader time as post-scope reads); a wait between the
+/// readers' close and the join.
+#[test]
+fn a_publisher_that_ended_before_the_readers_leaves_no_wait_between_their_close_and_the_join() {
+    let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
+    let (_arena, state, _image) = naval_frame_fixture();
+    let control = scope_marks_control();
+    // The publisher is spawned before the first reader and does nothing but
+    // set a flag, so its end lands in the first moments of the fan-out while
+    // the readers' close needs every reader spawned, run and joined. THE SHAPE:
+    // the publisher's end precedes the readers' close. Every attempt, shaped
+    // or not, excluded exactly what its own marks say.
+    let mut shaped = None;
+    let mut last = None;
+    for attempt in 0..SHAPE_ATTEMPTS {
+        let frame = drive_timed_frame(&state, &control, Some(0), attempt as u64 + 1);
+        let marks = scope_marks(&frame.outcome);
+        assert_excluded_wait_matches_the_marks(&frame, &marks);
+        let (_, pub_end_us) = marks.publication.expect("the frame ran a publisher");
+        if pub_end_us <= marks.readers_done_us {
+            shaped = Some(marks);
+            break;
+        }
+        last = Some((pub_end_us, marks.readers_done_us));
+    }
+    let marks = shaped.unwrap_or_else(|| {
+        panic!(
+            "in {SHAPE_ATTEMPTS} frames the instant publisher never ended before the readers' \
+             close (last: publisher ended {}us, readers done {}us)",
+            last.map_or(0, |(end, _)| end),
+            last.map_or(0, |(_, done)| done)
+        )
+    });
+    let (pub_start_us, pub_end_us) = marks.publication.expect("the frame ran a publisher");
+    assert!(
+        pub_start_us <= pub_end_us && pub_end_us <= marks.readers_done_us,
+        "the instant publisher ({pub_start_us}..{pub_end_us}us) ended before the readers' \
+         close ({}us)",
+        marks.readers_done_us
+    );
+    assert_scope_marks_bracket_the_join(&marks);
+    // A publisher that had already ended is not waited for: the scope returns
+    // to the main thread as soon as its closure does.
+    assert!(
+        marks.scope_joined_us - marks.readers_done_us < 5_000,
+        "no wait on a publisher that had ended: readers done {}us, scope joined {}us",
+        marks.readers_done_us,
+        marks.scope_joined_us
+    );
+}
+
+/// A publisher that outlives the readers: the wait the audit derives,
+/// `lw_scope_joined_us - lw_readers_done_us`, covers its overrun, and the join
+/// follows its end by the thread exit alone.
+///
+/// kills: `lw_readers_done_us` stamped after the join (it would then equal
+/// the join, and the publisher below could not be seen past the readers); the
+/// readers' stamp taken before the last reader joined; the join stamped at the
+/// span close, or after a wait inserted past the scope's return (Codex round
+/// 3).
+#[test]
+fn a_publisher_that_outlived_the_readers_is_the_wait_between_their_close_and_the_join() {
+    let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
+    let (_arena, state, _image) = naval_frame_fixture();
+    let control = scope_marks_control();
+    // THE SHAPE: the publisher's end follows the readers' close by at least
+    // half the publisher's length. The publisher doubles each attempt (30 ms,
+    // 60, ...), so a fan-out stretched by load is outlived on a later frame.
+    // Every attempt, shaped or not, excluded exactly what its own marks say.
+    let mut shaped = None;
+    let mut last = None;
+    for attempt in 0..SHAPE_ATTEMPTS {
+        let publisher_ms = 30u64 << attempt;
+        let frame = drive_timed_frame(&state, &control, Some(publisher_ms), attempt as u64 + 1);
+        let marks = scope_marks(&frame.outcome);
+        assert_excluded_wait_matches_the_marks(&frame, &marks);
+        let (_, pub_end_us) = marks.publication.expect("the frame ran a publisher");
+        if pub_end_us >= marks.readers_done_us + publisher_ms * 1_000 / 2 {
+            shaped = Some((publisher_ms, marks));
+            break;
+        }
+        last = Some((publisher_ms, pub_end_us, marks.readers_done_us));
+    }
+    let (publisher_ms, marks) = shaped.unwrap_or_else(|| {
+        panic!(
+            "in {SHAPE_ATTEMPTS} frames the publisher never outlived the readers' close by \
+             half its length (last: {}ms publisher ended {}us, readers done {}us)",
+            last.map_or(0, |(ms, _, _)| ms),
+            last.map_or(0, |(_, end, _)| end),
+            last.map_or(0, |(_, _, done)| done)
+        )
+    });
+    let (pub_start_us, pub_end_us) = marks.publication.expect("the frame ran a publisher");
+    assert!(
+        pub_end_us.saturating_sub(pub_start_us) >= publisher_ms * 1_000,
+        "the publisher ran {publisher_ms} ms: {pub_start_us}..{pub_end_us}"
+    );
+    assert!(
+        pub_end_us >= marks.readers_done_us + publisher_ms * 1_000 / 2,
+        "the publisher outlived the readers' close: readers done {}us, publisher ended \
+         {pub_end_us}us -- a close stamped after the join cannot show this",
+        marks.readers_done_us
+    );
+    assert_scope_marks_bracket_the_join(&marks);
+    assert!(
+        pub_end_us <= marks.scope_joined_us,
+        "the scope joins after the publisher: publisher ended {pub_end_us}us, scope joined {}us",
+        marks.scope_joined_us
+    );
+    let waited_us = marks.scope_joined_us - marks.readers_done_us;
+    assert!(
+        waited_us + 2_000 >= pub_end_us - marks.readers_done_us,
+        "the wait between the readers' close and the join ({waited_us}us) covers the \
+         publisher's overrun ({}us)",
+        pub_end_us - marks.readers_done_us
+    );
+    // The publisher is the LAST thread in the scope here, so the join follows
+    // its end by the thread's exit alone. A stamp taken later -- after a wait,
+    // or after anything else the builder does past the scope -- inflates the
+    // wait by that much. (The stamp's adjacency to the scope is pinned in
+    // lane_wall_tests, where a wait too short for this bound is caught.)
+    assert!(
+        marks.scope_joined_us - pub_end_us < 10_000,
+        "the scope join ({}us) follows the publisher's end ({pub_end_us}us) by the thread \
+         exit alone, not by later work",
+        marks.scope_joined_us
     );
 }
 

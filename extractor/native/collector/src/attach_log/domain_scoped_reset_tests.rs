@@ -207,6 +207,12 @@ fn reader_call_spans(body: &str) -> Vec<ReaderCallSpan> {
         // parenthesis immediately after the name. Same argument index again --
         // `scope, gate, lanes, tag, observe, finish`.
         ("spawn_gated_finishing(", 3usize),
+        // THE PREPARING READER IS A READER CALL TOO (lane PT, 2026-09-02): d43
+        // and d93 spawn through `spawn_gated_preparing`, each handing its own
+        // tracker to the read half. Same argument index -- `scope, gate,
+        // lanes, tag, read, prepare`.
+        ("spawn_gated_preparing(", 3usize),
+        ("spawn_gated_lane_only(", 3usize),
         ("lane_time_main(", 1usize),
     ] {
         let mut from = 0usize;

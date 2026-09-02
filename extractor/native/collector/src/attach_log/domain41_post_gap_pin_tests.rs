@@ -104,7 +104,7 @@ fn settle_frame(trackers: &mut CompactPerfGateTrackers, frame_rejected_domains: 
     if !frame_rejected_domains.is_empty() {
         reset_trackers_after_rejected_bracket(trackers, frame_rejected_domains);
     }
-    commit_delta_pin_transactions(trackers);
+    commit_delta_pin_transactions(trackers, &mut Vec::new());
 }
 
 struct Emitted {
