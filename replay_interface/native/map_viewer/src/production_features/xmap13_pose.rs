@@ -130,9 +130,9 @@ pub(crate) struct Xmap13DerivedPose {
 /// The game-relative path of a clip an animation table declares.
 ///
 /// The table's `file` is a bare name and the engine opens it beside the table's
-/// own file: across the whole install every one of the 1,762 declared clips is
-/// authored without a directory and resolves in the declaring table's own
-/// directory of the effective VFS
+/// own file: across the whole install every declared clip is authored without a
+/// directory and resolves in the declaring table's own directory of the
+/// effective VFS
 /// (`building_files.rs::the_shipped_entity_states_select_their_clips_through_the_shipped_registries`).
 pub(crate) fn authored_clip_logical_path(table_logical_path: &str, file: &str) -> String {
     let table = table_logical_path.replace('\\', "/");
@@ -201,10 +201,17 @@ pub(crate) fn authored_state_variants(
             )),
             Some(animation_name) => match tables.get(animation_name) {
                 Some(animation_file) => Ok((animation_name.clone(), animation_file.clone())),
+                // What was searched is NAMED because a mod may author its
+                // table outside it: without that a clip that never arrives
+                // reads as broken content. The sentence is written from the
+                // declared read set itself
+                // (`xmap13.rs::xmap13_clip_table_read_set`), so it can never
+                // describe a search this viewer no longer makes.
                 None => Err(format!(
                     "the pdxmesh maps animation id {:?} to clip {animation_name:?}, which no \
-                     authored animation table declares",
-                    state.animation
+                     animation table declares among {}",
+                    state.animation,
+                    super::xmap13::xmap13_clip_table_read_set()
                 )),
             },
         },
@@ -2309,6 +2316,58 @@ mod tests {
         assert!(both.0 > 0 && both.1 > 0, "the default group is still a pick: {both:?}");
     }
 
+    /// kills: a clip that never arrives because a table was not read looking
+    /// like broken content, and the cause naming a number instead of a place.
+    ///
+    /// A mod may author its `animation = { name file }` table outside the two
+    /// trees this viewer reads, and then a state's id reaches a clip name no
+    /// table here declares. The cause says WHICH TREES were read - a count of
+    /// admitted `.asset` files would say nothing about which of them holds a
+    /// table - so the reader looks where the answer is.
+    #[test]
+    fn a_clip_no_read_table_declares_names_the_trees_that_were_read() {
+        let pose = BuildingEntityPose {
+            entity_name: "e".into(),
+            pdxmesh: Some("m".into()),
+            default_state: None,
+            states: vec![BuildingEntityState {
+                name: "attack".into(),
+                animation: "swing".into(),
+                animation_speed: None,
+                chance: None,
+            }],
+        };
+        let mesh_clips = BTreeMap::from([("swing".to_owned(), "mod_swing".to_owned())]);
+        let tables = BTreeMap::new();
+        let cause = || {
+            match authored_state_variants(&pose, "attack", &mesh_clips, &tables) {
+                Xmap13StateVariants::Declared { variants, .. } => match &variants[0].clip {
+                    Err(cause) => cause.clone(),
+                    Ok(clip) => panic!("no table declares it: {clip:?}"),
+                },
+                other => panic!("the state is declared: {other:?}"),
+            }
+        };
+        let named = cause();
+        assert!(named.contains("mod_swing"), "{named}");
+        // The sentence IS the declared read set's own, so it cannot describe a
+        // search this viewer does not make - including the subtree it skips.
+        assert!(
+            named.contains(&super::super::xmap13::xmap13_clip_table_read_set()),
+            "the cause names the declared read set: {named}"
+        );
+        for root in super::super::xmap13::XMAP13_CLIP_TABLE_ROOTS {
+            assert!(named.contains(root), "{root} is not named: {named}");
+        }
+        for skipped in super::super::xmap13::XMAP13_CLIP_TABLE_EXCLUDED_SUBTREES {
+            assert!(
+                named.contains(skipped),
+                "the {skipped} subtree is skipped and the cause must say so: {named}"
+            );
+        }
+        assert!(named.contains("admitted"), "and that the set is the recording's: {named}");
+    }
+
     /// kills: a state the files leave unresolved being posed by a made-up pick,
     /// and a cause that does not say which of the four it was.
     #[test]
@@ -2443,7 +2502,11 @@ mod tests {
         let Xmap13AuthoredClip::Unanimated { cause } = &orphan.clip else {
             panic!("a clip no table declares selects nothing: {:?}", orphan.clip);
         };
-        assert!(cause.contains("wagon_1_orphan") && cause.contains("no authored"), "{cause}");
+        assert!(cause.contains("wagon_1_orphan"), "{cause}");
+        assert!(
+            cause.contains(&super::super::xmap13::xmap13_clip_table_read_set()),
+            "the cause names the declared read set: {cause}"
+        );
         assert_eq!(orphan.animation_speed, 3.0);
 
         // No such state and no default: unanimated, at the rate nothing
