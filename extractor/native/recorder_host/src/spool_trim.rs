@@ -169,6 +169,25 @@ pub fn require_whole_spool(stream_path: &Path, consumer: &str) -> Result<(), Str
 
 /// This is the whole authority for a release, so it never takes a caller's
 ///   already been released. (On Windows that helper is a documented no-op:
+/// Whole-file read that reports progress per chunk, so the finalize waiter
+/// sees the verification of a multi-gigabyte checkpoint cache moving.
+fn read_ticking(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut file = fs::File::open(path)?;
+    let capacity = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut chunk = vec![0u8; 1 << 20];
+    loop {
+        let read = file.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        crate::finalize_progress::tick(read as u64);
+    }
+    Ok(bytes)
+}
+
 pub fn verify_durable_receipt(
     receipt: &DurableHourReceipt,
 ) -> Result<VerifiedDurableHours, String> {
@@ -191,7 +210,7 @@ pub fn verify_durable_receipt(
                 path.display()
             ));
         }
-        let bytes = fs::read(path)
+        let bytes = read_ticking(path)
             .map_err(|error| format!("read durable {label} {}: {error}", path.display()))?;
         if bytes.len() as u64 != metadata.len() {
             return Err(format!(

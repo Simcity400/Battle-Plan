@@ -73,7 +73,7 @@ fn validate_frame_end_seal_fields(payload: &[u8]) -> Result<(u32, u32), String> 
     Ok((emitted_domains, scheduled_domains))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExcludedDomainDataRecord {
     pub stream_offset: u64,
     pub game_hour_raw: i32,

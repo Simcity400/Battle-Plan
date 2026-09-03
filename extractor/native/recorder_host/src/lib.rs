@@ -3,6 +3,7 @@ pub mod auto_attach;
 pub mod build_declaration;
 pub mod campaign_identity;
 pub mod compact_domain_registry;
+pub mod content_census_cache;
 pub mod control_transport;
 pub mod direct_hourly_service;
 pub mod domain_data_authority;

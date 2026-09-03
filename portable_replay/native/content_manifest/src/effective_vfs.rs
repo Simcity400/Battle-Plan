@@ -30,10 +30,46 @@ pub struct EffectiveVfsResolvedFile {
     pub bytes: Vec<u8>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct EffectiveVfsWalkStats {
-    pub files: u64,
-    pub payload_bytes: u64,
+/// What one enumeration pass reported about an effective file, enough to tell
+/// a later pass whether the bytes behind it can have changed without reading
+/// them: a directory file is its exact local path, length and modification
+/// instant; an archive member is content-keyed by the archive digest the mount
+/// already verified against the recorded source-container digest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EffectiveVfsEntryFacts {
+    File {
+        local_path: PathBuf,
+        len: u64,
+        modified_unix_secs: i64,
+        modified_nanos: u32,
+    },
+    ArchiveMember {
+        archive_sha256: String,
+        entry_name: String,
+    },
+}
+
+/// One path the layered VFS resolves, with the layer that wins it. Produced by
+/// [`EffectiveVfs::effective_entries`] under the same replace-path law
+/// [`EffectiveVfs::resolve`] applies, so the winner recorded here is the layer
+/// `resolve` would read from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EffectiveVfsEntry {
+    pub logical_path: String,
+    pub layer_kind: ContentLayerKind,
+    layer: usize,
+    pub facts: EffectiveVfsEntryFacts,
+}
+
+/// A file one directory enumeration reported: its path spelling as stored and
+/// the facts the enumeration itself carried (no second stat).
+#[derive(Clone, Debug)]
+struct ListedFile {
+    path: String,
+    local_path: PathBuf,
+    len: u64,
+    modified_unix_secs: i64,
+    modified_nanos: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -231,32 +267,115 @@ impl EffectiveVfs {
         Ok(resolved)
     }
 
-    pub fn walk_content_keys(
-        &self,
-        mut sink: impl FnMut(&str, UsedContentKey) -> Result<(), String>,
-    ) -> Result<EffectiveVfsWalkStats, String> {
-        let mut effective = BTreeMap::<String, String>::new();
-        for layer in &self.layers {
+    /// Every path this VFS resolves, in ascending case-folded order, each with
+    /// the layer that wins it. Winner law is `resolve`'s: a layer's file
+    /// shadows every lower spelling of the same path, and a layer that
+    /// replaces a directory drops every lower file under it.
+    pub fn effective_entries(&self) -> Result<Vec<EffectiveVfsEntry>, String> {
+        let mut effective = BTreeMap::<String, EffectiveVfsEntry>::new();
+        for (layer_index, layer) in self.layers.iter().enumerate() {
             if !layer.replace_paths.is_empty() {
-                effective.retain(|_, path| !layer.replace_paths.contains(&logical_parent(path)));
+                effective.retain(|_, entry| {
+                    !layer
+                        .replace_paths
+                        .contains(&logical_parent(&entry.logical_path))
+                });
             }
-            for path in list_layer_files(layer, "", None)? {
-                effective.insert(path.to_ascii_lowercase(), path);
+            for listed in list_layer_entries(layer, "", None)? {
+                let facts = match layer.storage_kind {
+                    LayerStorageKind::Directory => EffectiveVfsEntryFacts::File {
+                        local_path: listed.local_path,
+                        len: listed.len,
+                        modified_unix_secs: listed.modified_unix_secs,
+                        modified_nanos: listed.modified_nanos,
+                    },
+                    LayerStorageKind::ZipArchive => EffectiveVfsEntryFacts::ArchiveMember {
+                        archive_sha256: layer
+                            .source_container_sha256
+                            .clone()
+                            .ok_or("effective VFS archive layer has no source digest")?,
+                        entry_name: listed.path.clone(),
+                    },
+                };
+                effective.insert(
+                    listed.path.to_ascii_lowercase(),
+                    EffectiveVfsEntry {
+                        logical_path: listed.path,
+                        layer_kind: layer.layer_kind,
+                        layer: layer_index,
+                        facts,
+                    },
+                );
             }
         }
-        let mut stats = EffectiveVfsWalkStats::default();
-        for path in effective.into_values() {
-            let file = self
-                .resolve(&path)?
-                .ok_or_else(|| format!("effective VFS winner disappeared for {path}"))?;
-            stats.files = stats.files.saturating_add(1);
-            stats.payload_bytes = stats
-                .payload_bytes
-                .checked_add(file.content.payload_bytes)
-                .ok_or_else(|| "effective VFS walk byte count overflowed".to_string())?;
-            sink(&file.logical_path, file.content)?;
-        }
-        Ok(stats)
+        Ok(effective.into_values().collect())
+    }
+
+    /// The bytes behind one entry, read from its winning layer. A directory
+    /// file is re-resolved through the same literal-path law `resolve` uses,
+    /// so a path that has become a reparse point or stopped being a regular
+    /// file between the listing and this read is refused, never followed.
+    pub fn read_entry(&self, entry: &EffectiveVfsEntry) -> Result<Vec<u8>, String> {
+        let layer = self
+            .layers
+            .get(entry.layer)
+            .ok_or("effective VFS entry names a layer this VFS does not mount")?;
+        read_layer_file(layer, &entry.logical_path)?.ok_or_else(|| {
+            format!(
+                "effective VFS winner disappeared for {}",
+                entry.logical_path
+            )
+        })
+    }
+
+    /// Streams one winning entry through SHA-256 without holding the whole
+    /// payload: directory files are read in 1 MiB chunks through `buffer`,
+    /// archive members are copied straight out of the member reader.
+    pub fn hash_entry(
+        &self,
+        entry: &EffectiveVfsEntry,
+        buffer: &mut Vec<u8>,
+        progress: &mut dyn FnMut(usize),
+    ) -> Result<(u64, String), String> {
+        let layer = self
+            .layers
+            .get(entry.layer)
+            .ok_or("effective VFS entry names a layer this VFS does not mount")?;
+        hash_layer_file(layer, &entry.logical_path, buffer, progress)?.ok_or_else(|| {
+            format!(
+                "effective VFS winner disappeared for {}",
+                entry.logical_path
+            )
+        })
+    }
+
+    /// The content key `resolve` would attach to this entry, given the digest
+    /// and length of the bytes `read_entry` returned.
+    pub fn content_key(
+        &self,
+        entry: &EffectiveVfsEntry,
+        payload_sha256: String,
+        payload_bytes: u64,
+    ) -> Result<UsedContentKey, String> {
+        let layer = self
+            .layers
+            .get(entry.layer)
+            .ok_or("effective VFS entry names a layer this VFS does not mount")?;
+        let content = UsedContentKey {
+            effective_vfs_manifest_sha256: self.authority_manifest_sha256.clone(),
+            normalized_game_relative_path: normalize_game_relative_path(&entry.logical_path)?,
+            winning_layer_ordinal: layer.ordinal,
+            layer_kind: layer.layer_kind,
+            layer_id: layer.layer_id.clone(),
+            source_sha256: layer
+                .source_container_sha256
+                .clone()
+                .unwrap_or_else(|| payload_sha256.clone()),
+            payload_sha256,
+            payload_bytes,
+        };
+        content.validate()?;
+        Ok(content)
     }
 
     pub fn list_all(
@@ -310,6 +429,80 @@ impl EffectiveVfs {
             bytes,
         })
     }
+}
+
+/// `progress` is called with the byte count of every chunk hashed, so a
+/// caller can report a multi-gigabyte file as moving while it is read.
+fn hash_layer_file(
+    layer: &MountedLayer,
+    logical_path: &str,
+    buffer: &mut Vec<u8>,
+    progress: &mut dyn FnMut(usize),
+) -> Result<Option<(u64, String)>, String> {
+    use sha2::Digest;
+    const CHUNK: usize = 1 << 20;
+    if buffer.len() < CHUNK {
+        buffer.resize(CHUNK, 0);
+    }
+    let mut hasher = sha2::Sha256::new();
+    let mut total = 0u64;
+    match layer.storage_kind {
+        LayerStorageKind::Directory => {
+            match resolve_literal_layer_path(&layer.local_source, logical_path)? {
+                Some((path, facts)) if facts.is_file => {
+                    let canonical = fs::canonicalize(&path).map_err(|error| {
+                        format!("canonicalize effective VFS file failed: {error}")
+                    })?;
+                    if !canonical.starts_with(&layer.local_source) {
+                        return Err("effective VFS file escaped its layer root".into());
+                    }
+                    let mut file = fs::File::open(canonical)
+                        .map_err(|error| format!("open effective VFS file failed: {error}"))?;
+                    loop {
+                        let read = file
+                            .read(&mut buffer[..CHUNK])
+                            .map_err(|error| format!("read effective VFS file failed: {error}"))?;
+                        if read == 0 {
+                            break;
+                        }
+                        hasher.update(&buffer[..read]);
+                        total += read as u64;
+                        progress(read);
+                    }
+                }
+                Some(_) | None => return Ok(None),
+            }
+        }
+        LayerStorageKind::ZipArchive => {
+            let index = layer
+                .zip_index
+                .as_ref()
+                .ok_or("effective VFS archive layer is missing its mount-time index")?;
+            let Some((_, entry_index)) = index.entries.get(&logical_path.to_ascii_lowercase())
+            else {
+                return Ok(None);
+            };
+            let mut archive = index
+                .archive
+                .lock()
+                .map_err(|_| "effective VFS archive handle is poisoned".to_string())?;
+            let mut entry = archive
+                .by_index(*entry_index)
+                .map_err(|error| format!("read effective VFS archive entry failed: {error}"))?;
+            loop {
+                let read = entry
+                    .read(&mut buffer[..CHUNK])
+                    .map_err(|error| format!("read effective VFS archive payload failed: {error}"))?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+                total += read as u64;
+                progress(read);
+            }
+        }
+    }
+    Ok(Some((total, format!("{:x}", hasher.finalize()))))
 }
 
 fn read_layer_file(layer: &MountedLayer, logical_path: &str) -> Result<Option<Vec<u8>>, String> {
@@ -632,7 +825,18 @@ fn list_layer_files(
     prefix: &str,
     extension: Option<&str>,
 ) -> Result<Vec<String>, String> {
-    let mut paths = BTreeMap::<String, String>::new();
+    Ok(list_layer_entries(layer, prefix, extension)?
+        .into_iter()
+        .map(|listed| listed.path)
+        .collect())
+}
+
+fn list_layer_entries(
+    layer: &MountedLayer,
+    prefix: &str,
+    extension: Option<&str>,
+) -> Result<Vec<ListedFile>, String> {
+    let mut paths = BTreeMap::<String, ListedFile>::new();
     match layer.storage_kind {
         LayerStorageKind::Directory => {
             let start = if prefix.is_empty() {
@@ -652,7 +856,16 @@ fn list_layer_files(
                 .ok_or("effective VFS archive layer is missing its mount-time index")?;
             for (path, _) in index.entries.values() {
                 if path_is_under(path, prefix) && extension_matches(path, extension) {
-                    paths.insert(path.to_ascii_lowercase(), path.clone());
+                    paths.insert(
+                        path.to_ascii_lowercase(),
+                        ListedFile {
+                            path: path.clone(),
+                            local_path: layer.local_source.clone(),
+                            len: 0,
+                            modified_unix_secs: 0,
+                            modified_nanos: 0,
+                        },
+                    );
                 }
             }
         }
@@ -660,11 +873,69 @@ fn list_layer_files(
     Ok(paths.into_values().collect())
 }
 
+/// The facts a directory enumeration carries for one entry. On Windows the
+/// find data behind `DirEntry::metadata` already holds them, so this is no
+/// extra system call per file; the attribute word is what `stat_ordinary`
+/// reads, so a reparse point of ANY tag is refused here exactly as `resolve`
+/// refuses it, and a listing can stand in for a read on that question.
+fn listed_facts(entry: &fs::DirEntry) -> Result<(bool, bool, u64, i64, u32), String> {
+    let metadata = entry
+        .metadata()
+        .map_err(|error| format!("inspect effective VFS entry failed: {error}"))?;
+    #[cfg(windows)]
+    let (is_dir, is_file, is_reparse_point) = {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        const FILE_ATTRIBUTE_NOT_REGULAR: u32 = 0x1040;
+        let attributes = metadata.file_attributes();
+        let is_dir = attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
+        (
+            is_dir,
+            !is_dir && attributes & FILE_ATTRIBUTE_NOT_REGULAR == 0,
+            attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+        )
+    };
+    #[cfg(not(windows))]
+    let (is_dir, is_file, is_reparse_point) = {
+        let file_type = metadata.file_type();
+        (
+            file_type.is_dir(),
+            file_type.is_file(),
+            file_type.is_symlink(),
+        )
+    };
+    if is_reparse_point {
+        return Err(format!(
+            "effective VFS refuses content reached through a reparse point: {}",
+            entry.path().display()
+        ));
+    }
+    let (secs, nanos) = match metadata.modified() {
+        Ok(modified) => match modified.duration_since(std::time::UNIX_EPOCH) {
+            Ok(since) => (i64::try_from(since.as_secs()).unwrap_or(i64::MAX), since.subsec_nanos()),
+            Err(before) => {
+                let before = before.duration();
+                (
+                    i64::try_from(before.as_secs()).map(|s| -s).unwrap_or(i64::MIN),
+                    before.subsec_nanos(),
+                )
+            }
+        },
+        Err(error) => {
+            return Err(format!(
+                "inspect effective VFS entry modification time failed: {error}"
+            ))
+        }
+    };
+    Ok((is_dir, is_file, metadata.len(), secs, nanos))
+}
+
 fn walk_directory(
     root: &Path,
     directory: &Path,
     extension: Option<&str>,
-    out: &mut BTreeMap<String, String>,
+    out: &mut BTreeMap<String, ListedFile>,
 ) -> Result<(), String> {
     let metadata = fs::symlink_metadata(directory)
         .map_err(|error| format!("inspect effective VFS directory failed: {error}"))?;
@@ -681,24 +952,30 @@ fn walk_directory(
         crate::authored_ui::engine_recursive_path_cmp(&left, &right)
     });
     for entry in entries {
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("inspect effective VFS entry failed: {error}"))?;
-        if file_type.is_symlink() {
-            return Err("effective VFS refuses symlinked content".into());
-        }
-        if file_type.is_dir() {
+        let (is_dir, is_file, len, modified_unix_secs, modified_nanos) = listed_facts(&entry)?;
+        if is_dir {
             walk_directory(root, &entry.path(), extension, out)?;
-        } else if file_type.is_file() {
-            let relative = entry
-                .path()
+        } else if is_file {
+            let local_path = entry.path();
+            let relative = local_path
                 .strip_prefix(root)
                 .map_err(|_| "effective VFS file escaped its layer root")?
                 .to_string_lossy()
                 .replace('\\', "/");
             let path = normalize_game_relative_path_preserve_case(&relative)?;
             if extension_matches(&path, extension)
-                && out.insert(path.to_ascii_lowercase(), path).is_some()
+                && out
+                    .insert(
+                        path.to_ascii_lowercase(),
+                        ListedFile {
+                            path,
+                            local_path,
+                            len,
+                            modified_unix_secs,
+                            modified_nanos,
+                        },
+                    )
+                    .is_some()
             {
                 return Err("effective VFS directory repeats a case-insensitive path".into());
             }

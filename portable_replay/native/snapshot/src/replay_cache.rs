@@ -118,6 +118,87 @@ pub const PUBLISHED_COVERAGE_SCHEMA: &str = "battle-plan-published-coverage-v1";
 pub const DEFAULT_CHECKPOINT_INTERVAL_HOURS: u32 = 744;
 pub const MAX_CHECKPOINT_INTERVAL_HOURS: u32 = 24 * 31;
 
+/// Phase timers for the cache encode and the seal-time parity verify, enabled
+/// by the same `FOLD_PROFILE` environment variable as `world_fold::foldprof`.
+/// Off, every site costs one branch on a `OnceLock<bool>`; nothing here can
+/// change a produced byte.
+pub mod cacheprof {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
+
+    pub static PARSE_NS: AtomicU64 = AtomicU64::new(0);
+    pub static JSON_HASH_NS: AtomicU64 = AtomicU64::new(0);
+    pub static DIFF_NS: AtomicU64 = AtomicU64::new(0);
+    pub static ENCODE_PATCH_NS: AtomicU64 = AtomicU64::new(0);
+    pub static APPLY_NS: AtomicU64 = AtomicU64::new(0);
+    pub static CHECKPOINT_ENCODE_NS: AtomicU64 = AtomicU64::new(0);
+    pub static RECORD_HASH_NS: AtomicU64 = AtomicU64::new(0);
+    pub static WRITE_NS: AtomicU64 = AtomicU64::new(0);
+    pub static VERIFY_DECODE_NS: AtomicU64 = AtomicU64::new(0);
+    pub static VERIFY_APPLY_NS: AtomicU64 = AtomicU64::new(0);
+    pub static VERIFY_PROJECT_NS: AtomicU64 = AtomicU64::new(0);
+    pub static VERIFY_HASH_NS: AtomicU64 = AtomicU64::new(0);
+    pub static HOURS: AtomicU64 = AtomicU64::new(0);
+    pub static JSON_BYTES: AtomicU64 = AtomicU64::new(0);
+    pub static CACHE_BYTES: AtomicU64 = AtomicU64::new(0);
+    pub static TEXT_MEMO_HITS: AtomicU64 = AtomicU64::new(0);
+    pub static TEXT_MEMO_MISSES: AtomicU64 = AtomicU64::new(0);
+    pub static TEXT_MEMO_MISS_BYTES: AtomicU64 = AtomicU64::new(0);
+
+    #[inline]
+    pub fn enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os("FOLD_PROFILE").is_some())
+    }
+
+    #[inline]
+    pub fn timed<T>(counter: &AtomicU64, f: impl FnOnce() -> T) -> T {
+        if enabled() {
+            let t = Instant::now();
+            let out = f();
+            counter.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            out
+        } else {
+            f()
+        }
+    }
+
+    #[inline]
+    pub fn add(counter: &AtomicU64, n: u64) {
+        if enabled() {
+            counter.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
+    pub fn report() -> Option<String> {
+        if !enabled() {
+            return None;
+        }
+        let ms = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e6;
+        Some(format!(
+            "cache phase breakdown (ms): parse={:.1} json_hash={:.1} diff={:.1} encode_patch={:.1} apply={:.1} checkpoint_encode={:.1} record_hash={:.1} write={:.1} | verify: decode={:.1} apply={:.1} project={:.1} hash={:.1} | hours={} json_bytes={} cache_bytes={} | text memo: hits={} misses={} miss_bytes={}",
+            ms(&PARSE_NS),
+            ms(&JSON_HASH_NS),
+            ms(&DIFF_NS),
+            ms(&ENCODE_PATCH_NS),
+            ms(&APPLY_NS),
+            ms(&CHECKPOINT_ENCODE_NS),
+            ms(&RECORD_HASH_NS),
+            ms(&WRITE_NS),
+            ms(&VERIFY_DECODE_NS),
+            ms(&VERIFY_APPLY_NS),
+            ms(&VERIFY_PROJECT_NS),
+            ms(&VERIFY_HASH_NS),
+            HOURS.load(Ordering::Relaxed),
+            JSON_BYTES.load(Ordering::Relaxed),
+            CACHE_BYTES.load(Ordering::Relaxed),
+            TEXT_MEMO_HITS.load(Ordering::Relaxed),
+            TEXT_MEMO_MISSES.load(Ordering::Relaxed),
+            TEXT_MEMO_MISS_BYTES.load(Ordering::Relaxed),
+        ))
+    }
+}
+
 const INDEX_MAGIC: &[u8; 4] = b"H4IX";
 const CACHE_MAGIC: &[u8; 4] = b"H4CP";
 /// Version 4 carries a PER-RECORD digest on every served row, so damage to the
@@ -1436,6 +1517,8 @@ pub struct CanonicalWorldHour {
     /// it. Carried so the encoder can price its retained delta base without
     /// walking a million-node tree once per game hour.
     value_heap_bytes: u64,
+    /// Length of the canonical world JSON the digest was taken over.
+    json_len: u64,
 }
 
 impl CanonicalWorldHour {
@@ -1459,18 +1542,44 @@ impl CanonicalWorldHour {
     /// `world_json` is consumed: its digest is taken here and the bytes are
     /// released, so the caller's copy does not outlive the parse.
     pub fn parse(world_json: Vec<u8>, hour_index: i64) -> Result<Self, ReplayCacheError> {
-        let (value, value_heap_bytes) = CanonValue::parse_counted(&world_json).map_err(|error| {
+        let (value, value_heap_bytes) = cacheprof::timed(&cacheprof::PARSE_NS, || {
+            CanonValue::parse_counted(&world_json)
+        })
+        .map_err(|error| {
             ReplayCacheError::new(format!(
                 "hour {hour_index} is not strict canonical world JSON: {error}"
             ))
         })?;
-        let world_json_sha256 = Sha256::hex(&world_json);
+        let world_json_sha256 =
+            cacheprof::timed(&cacheprof::JSON_HASH_NS, || Sha256::hex(&world_json));
+        cacheprof::add(&cacheprof::JSON_BYTES, world_json.len() as u64);
+        cacheprof::add(&cacheprof::HOURS, 1);
+        let json_len = world_json.len() as u64;
         drop(world_json);
         Ok(Self {
             world_json_sha256,
             value,
             value_heap_bytes,
+            json_len,
         })
+    }
+
+    /// Build the hour from the fold's own document tree instead of its text.
+    ///
+    /// `previous` is the last hour this producer built: every subtree equal
+    /// to its counterpart there is SHARED with it rather than rebuilt, so the
+    /// encoder's diff recognises it by pointer and the text memo carries over.
+    /// The digest is taken over exactly the canonical text the value model
+    /// spells, which is byte-for-byte what `serde_json` writes for the same
+    /// tree (see [`crate::canon_convert`]), so it equals the digest
+    /// [`Self::parse`] takes over that text.
+    pub fn from_shared_value(value: &serde_json::Value, previous: Option<&CanonValue>) -> Self {
+        UnhashedWorldHour::from_shared_value(value, previous).hashed()
+    }
+
+    /// Length of the canonical world JSON this hour digests.
+    pub fn json_len(&self) -> u64 {
+        self.json_len
     }
 
     /// What the parsed tree owns on the heap.
@@ -1486,6 +1595,53 @@ impl CanonicalWorldHour {
     /// The digest of the canonical world JSON this value was parsed from.
     pub fn world_json_sha256(&self) -> &str {
         &self.world_json_sha256
+    }
+}
+
+/// An hour converted from the fold's tree but not yet digested: the producer
+/// thread builds it, the encoder thread takes the digest (see
+/// [`Self::hashed`]), so the SHA-256 over the canonical text sits on the side
+/// of the pipeline that has the time for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnhashedWorldHour {
+    value: CanonValue,
+    value_heap_bytes: u64,
+}
+
+impl UnhashedWorldHour {
+    /// See [`CanonicalWorldHour::from_shared_value`]: the conversion half.
+    pub fn from_shared_value(value: &serde_json::Value, previous: Option<&CanonValue>) -> Self {
+        let value = cacheprof::timed(&cacheprof::PARSE_NS, || {
+            crate::canon_convert::from_value_shared(value, previous)
+        });
+        let value_heap_bytes = value.heap_bytes();
+        Self {
+            value,
+            value_heap_bytes,
+        }
+    }
+
+    pub fn value(&self) -> &CanonValue {
+        &self.value
+    }
+
+    pub fn value_heap_bytes(&self) -> u64 {
+        self.value_heap_bytes
+    }
+
+    /// Take the digest over exactly the canonical text the value model spells,
+    /// streamed through the per-node text memo.
+    pub fn hashed(self) -> CanonicalWorldHour {
+        let (world_json_sha256, json_len) =
+            cacheprof::timed(&cacheprof::JSON_HASH_NS, || self.value.json_sha256_hex());
+        cacheprof::add(&cacheprof::JSON_BYTES, json_len);
+        cacheprof::add(&cacheprof::HOURS, 1);
+        CanonicalWorldHour {
+            world_json_sha256,
+            value: self.value,
+            value_heap_bytes: self.value_heap_bytes,
+            json_len,
+        }
     }
 }
 
@@ -1737,6 +1893,7 @@ impl<W: Write> ReplayCacheEncoder<W> {
             world_json_sha256,
             value,
             value_heap_bytes,
+            json_len: _,
         } = prepared;
         // `meta` used to be re-wrapped into a `CacheBuildHour` so it could
         // carry the body alongside; with the body gone there is nothing to wrap
@@ -1756,25 +1913,33 @@ impl<W: Write> ReplayCacheEncoder<W> {
             // again: the record itself spells every name in full and a reader
             // that seeks here has read nothing before it.
             self.names = NameDictionary::default();
-            (RECORD_CHECKPOINT, encode_value(&value)?, 0)
+            (
+                RECORD_CHECKPOINT,
+                cacheprof::timed(&cacheprof::CHECKPOINT_ENCODE_NS, || encode_value(&value))?,
+                0,
+            )
         } else {
             let previous = self
                 .previous
                 .as_mut()
                 .expect("a non-checkpoint cache record has a previous hour");
-            let patch = diff_value(
-                previous,
-                &value,
-                self.revive_enabled.then_some(&self.shadow),
-                0,
-            )?;
+            let patch = cacheprof::timed(&cacheprof::DIFF_NS, || {
+                diff_value(
+                    previous,
+                    &value,
+                    self.revive_enabled.then_some(&self.shadow),
+                    0,
+                )
+            })?;
             // THE NAME TABLE MOVES ONLY WHEN THE RECORD DOES. Everything from
             // here to the write is fallible, no record is written if any of it
             // fails, and the hour stays retryable -- so a name introduced by a
             // failed attempt has to be forgotten again, or the retry spells it
             // as an id whose literal no reader ever saw.
             let mark = self.names.mark();
-            let payload = match encode_patch(&patch, &mut self.names) {
+            let payload = match cacheprof::timed(&cacheprof::ENCODE_PATCH_NS, || {
+                encode_patch(&patch, &mut self.names)
+            }) {
                 Ok(payload) => payload,
                 Err(error) => {
                     self.names.rollback(mark);
@@ -1785,9 +1950,9 @@ impl<W: Write> ReplayCacheEncoder<W> {
             // the reader's own function, over the previous hour this encoder is
             // about to drop anyway. It costs a walk of what CHANGED -- not a
             // clone of the world, which is what the note below refuses.
-            if let Err(error) =
+            if let Err(error) = cacheprof::timed(&cacheprof::APPLY_NS, || {
                 apply_patch(previous, &patch, &mut self.shadow, &mut self.shadow_budget, 0)
-            {
+            }) {
                 self.names.rollback(mark);
                 return Err(error);
             }
@@ -1831,10 +1996,15 @@ impl<W: Write> ReplayCacheEncoder<W> {
         // one extra SHA-256 sweep per finalize, measured in
         // `runs/ha_entry_confinement/`.
         let mut record_digest = Sha256::new();
-        record_digest.update(&header);
-        record_digest.update(&payload);
-        self.write_hashed(&header)?;
-        self.write_hashed(&payload)?;
+        cacheprof::timed(&cacheprof::RECORD_HASH_NS, || {
+            record_digest.update(&header);
+            record_digest.update(&payload);
+        });
+        cacheprof::timed(&cacheprof::WRITE_NS, || -> Result<(), ReplayCacheError> {
+            self.write_hashed(&header)?;
+            self.write_hashed(&payload)
+        })?;
+        cacheprof::add(&cacheprof::CACHE_BYTES, payload_len);
         self.write_failed = false;
         let record_len = self.offset - record_offset;
         self.entries.push(ReplayHourEntry {
@@ -2751,9 +2921,18 @@ impl CertifiedReplayCache {
     /// See [`ReplayCacheReader::verify_every_hour`]. Identical proof, over
     /// whichever backing this cache was opened with.
     pub fn verify_every_hour(&self) -> Result<u32, ReplayCacheError> {
+        self.verify_every_hour_observed(&mut || {})
+    }
+
+    /// [`Self::verify_every_hour`], calling `on_hour` after each hour is
+    /// proved, so a supervisor can see the proof advancing.
+    pub fn verify_every_hour_observed(
+        &self,
+        on_hour: &mut dyn FnMut(),
+    ) -> Result<u32, ReplayCacheError> {
         refuse_confinement_in_a_total_proof(&self.confined)?;
         self.cache
-            .with_records(|records| verify_every_hour_from(&self.index, records))
+            .with_records(|records| verify_every_hour_from(&self.index, records, on_hour))
     }
 }
 
@@ -2863,13 +3042,14 @@ impl<'a> ReplayCacheReader<'a> {
     /// it asks for ~54,000 patch applications where ~640 carry the same proof.
     pub fn verify_every_hour(&self) -> Result<u32, ReplayCacheError> {
         refuse_confinement_in_a_total_proof(&self.confined)?;
-        verify_every_hour_from(&self.index, &SliceCache(self.cache))
+        verify_every_hour_from(&self.index, &SliceCache(self.cache), &mut || {})
     }
 }
 
 fn verify_every_hour_from(
     index: &ReplayHourIndex,
     cache: &dyn CacheRecords,
+    on_hour: &mut dyn FnMut(),
 ) -> Result<u32, ReplayCacheError> {
     let mut value: Option<CanonValue> = None;
     let mut shadow = Shadow::default();
@@ -2886,7 +3066,9 @@ fn verify_every_hour_from(
         }
         match (kind, entry.delta_steps) {
             (RECORD_CHECKPOINT, 0) => {
-                value = Some(decode_value_exact(payload.as_ref())?);
+                value = Some(cacheprof::timed(&cacheprof::VERIFY_DECODE_NS, || {
+                    decode_value_exact(payload.as_ref())
+                })?);
                 shadow = Shadow::default();
                 budget = ShadowBudget::default();
                 names = NameDictionary::default();
@@ -2895,13 +3077,12 @@ fn verify_every_hour_from(
                 let running = value.as_mut().ok_or_else(|| {
                     ReplayCacheError::new("a delta record precedes its checkpoint")
                 })?;
-                apply_patch(
-                    running,
-                    &decode_patch_record(payload.as_ref(), &mut names)?,
-                    &mut shadow,
-                    &mut budget,
-                    0,
-                )?;
+                let patch = cacheprof::timed(&cacheprof::VERIFY_DECODE_NS, || {
+                    decode_patch_record(payload.as_ref(), &mut names)
+                })?;
+                cacheprof::timed(&cacheprof::VERIFY_APPLY_NS, || {
+                    apply_patch(running, &patch, &mut shadow, &mut budget, 0)
+                })?;
             }
             _ => {
                 return Err(ReplayCacheError::new(format!(
@@ -2912,13 +3093,16 @@ fn verify_every_hour_from(
         drop(payload);
         let running = value.as_ref().expect("a value exists once a checkpoint decoded");
         validate_world_identity(running, entry.hour_index, &entry.date)?;
-        if Sha256::hex(&running.to_json_bytes()) != entry.world_json_sha256 {
+        let (projected_sha256, _) =
+            cacheprof::timed(&cacheprof::VERIFY_HASH_NS, || running.json_sha256_hex());
+        if projected_sha256 != entry.world_json_sha256 {
             return Err(ReplayCacheError::new(format!(
                 "reconstructed hour {} does not byte-match replay_decoder parity hash",
                 entry.hour_index
             )));
         }
         max_seek_deltas = max_seek_deltas.max(entry.delta_steps);
+        on_hour();
     }
     if max_seek_deltas >= index.checkpoint_interval_hours {
         return Err(ReplayCacheError::new(
@@ -4952,6 +5136,18 @@ impl<'a> PatchReaders<'a> {
 /// So the rule stays what it has always been -- the flat grammar's own byte
 /// count -- stated here once, arithmetically, as the definition rather than as
 /// a measurement of a second encoder.
+/// H4CP v3 prototype instrument: price ONE section's v2 delta with the
+/// production encoder, so the journal-versus-patch byte question is answered by
+/// the real [`diff_value`] and [`encode_patch`] rather than a reimplementation.
+#[cfg(feature = "dq-v3-prototype")]
+pub fn measure_section_patch_bytes(
+    old: &CanonValue,
+    new: &CanonValue,
+) -> Result<usize, ReplayCacheError> {
+    let patch = diff_value(old, new, None, 0)?;
+    grammar_cost(&patch, 0)
+}
+
 fn grammar_cost(patch: &Patch, depth: usize) -> Result<usize, ReplayCacheError> {
     require_depth(depth)?;
     Ok(match patch {

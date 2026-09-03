@@ -254,6 +254,7 @@ dependencies = [
  "portable_test_fs_retry",
  "serde",
  "serde_json",
+ "sha2",
  "unicode-normalization",
  "windows-sys",
  "zstd",

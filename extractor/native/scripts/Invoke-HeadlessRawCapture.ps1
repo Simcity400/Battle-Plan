@@ -224,6 +224,19 @@ param(
     # diagnostics), so a trimmed measurement run cannot be audited afterward.
     [switch]$KeepSpoolAfterSeal,
 
+    # Where the recorder keeps the attach-time content census digest memo
+    # across captures. Empty derives `<repo>\captures\.content_census_cache`
+    # (captures/ is gitignored); the memo is validated per file and re-hashed
+    # on any disagreement, so sharing one across captures costs nothing but
+    # the 305 s a fresh install hash costs without it.
+    [string]$ContentCensusCacheDir = '',
+
+    # Where the recorder keeps the content-keyed fold cache (one certified
+    # fold per spool sha256 and fold source fingerprint). Empty derives
+    # `<repo>\captures\.fold_cache`; the recorder publishes every sealed fold
+    # there and adopts a valid entry instead of re-folding the same spool.
+    [string]$FoldCacheDir = '',
+
     # Restrict BOTH hoi4.exe and collector_record to this many PHYSICAL cores,
     # so a capture on this machine approximates the core count of the 4c/8 GB
     # ship machine the capture floor targets. 0 -- the default -- applies no
@@ -485,7 +498,14 @@ function New-RecorderArgumentPlan {
         [Parameter(Mandatory = $true)]
         [System.Collections.Specialized.OrderedDictionary]$StaticCatalogs,
         [bool]$SkipHostFold = $false,
-        [bool]$KeepSpoolAfterSeal = $false
+        [bool]$KeepSpoolAfterSeal = $false,
+        # The attach-time content census digest memo. Empty means the recorder
+        # re-hashes the whole install (305 s on rc_vanilla8) every capture.
+        [string]$ContentCensusCacheDirectory = '',
+        # The content-keyed fold cache: the certified fold of each spool, kept
+        # once per (spool sha256, fold source fingerprint) for re-finalizes and
+        # hour dumps. Empty means finalize neither adopts nor publishes one.
+        [string]$FoldCacheDirectory = ''
     )
 
     if (@($ScheduledDomains).Count -eq 0) {
@@ -522,6 +542,14 @@ function New-RecorderArgumentPlan {
         $plan += '--package-raw-stream'
     }
     if ($KeepSpoolAfterSeal) { $plan += '--keep-spool-after-seal' }
+    if (-not [string]::IsNullOrWhiteSpace($ContentCensusCacheDirectory)) {
+        $plan += '--content-census-cache-dir'
+        $plan += $ContentCensusCacheDirectory
+    }
+    if (-not [string]::IsNullOrWhiteSpace($FoldCacheDirectory)) {
+        $plan += '--fold-cache-dir'
+        $plan += $FoldCacheDirectory
+    }
     # Emitted unrolled, NOT as `,$plan`. Every caller wraps the result in `@()`,
     # which restores the array; returning a wrapped array instead makes that
     # `@()` a one-element array whose single element is the plan, and
@@ -1339,6 +1367,14 @@ $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 if ([string]::IsNullOrWhiteSpace($OutDir)) {
     $OutDir = Join-Path $repoRoot "extractor\native\runs\headless_raw_$stamp"
 }
+if ([string]::IsNullOrWhiteSpace($ContentCensusCacheDir)) {
+    $ContentCensusCacheDir = Join-Path $repoRoot 'captures\.content_census_cache'
+}
+$ContentCensusCacheDir = [System.IO.Path]::GetFullPath($ContentCensusCacheDir)
+if ([string]::IsNullOrWhiteSpace($FoldCacheDir)) {
+    $FoldCacheDir = Join-Path $repoRoot 'captures\.fold_cache'
+}
+$FoldCacheDir = [System.IO.Path]::GetFullPath($FoldCacheDir)
 $OutDir = [System.IO.Path]::GetFullPath($OutDir)
 if (Test-Path -LiteralPath $OutDir) {
     if (@(Get-ChildItem -LiteralPath $OutDir -Force).Count -ne 0) {
@@ -2121,6 +2157,34 @@ $harnessPolicy | ConvertTo-Json -Depth 8 |
 #
 # Absence is not failure. A recorder that predates the receipt, or one whose
 # publisher could not start, simply keeps the fixed budget it has today.
+# The one spelling of a stall, shared by the grant function and the terminal
+# reason so the two cannot name the same receipt differently. A receipt whose
+# work never moved since its first sample is a finalize that NEVER STARTED, which
+# is a different diagnosis from one that advanced and then stopped; the stage the
+# recorder publishes says where.
+function Get-RecorderFinalizeStallReason {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Fields,
+        [Parameter(Mandatory = $true)][int64]$UnchangedMs
+    )
+    $seconds = [Math]::Floor($UnchangedMs / 1000)
+    $neverAdvanced = $false
+    if ($null -ne $Fields['work_changed_ordinal']) {
+        try { $neverAdvanced = ([int64]$Fields['work_changed_ordinal'] -eq 0) } catch { }
+    }
+    $reason = if ($neverAdvanced) {
+        "finalize_never_advanced_for_${seconds}s"
+    } else {
+        "no_progress_for_${seconds}s"
+    }
+    $stage = [string]$Fields['stage']
+    if (-not [string]::IsNullOrWhiteSpace($stage)) {
+        $reason += "_in_$($stage -replace '[^A-Za-z0-9_]', '_')"
+    }
+    return $reason
+}
+
 function Update-RecorderFinalizeDeadline {
     [CmdletBinding()]
     param(
@@ -2260,7 +2324,23 @@ function Update-RecorderFinalizeDeadline {
             $candidate = $sampleUtc.AddSeconds($ExitGraceSeconds)
         } else {
             if ($unchangedMs -ge ([int64]$NoProgressSeconds * 1000)) {
-                $Reason.Value = "no_progress_for_$([Math]::Floor($unchangedMs / 1000))s"
+                # A PROVEN STALL CUTS THE DEADLINE TO NOW. Declining to extend
+                # was not enough: the launch/READY budget was still standing,
+                # so a finalize that never advanced was waited out to that
+                # clock -- 531 s on rc_vanilla8's refused attempt, on a receipt
+                # that had said "no progress" since its first sample. Every
+                # finalize stage now reports work units (census files, folded
+                # hours, proved hours) beside the bytes it writes, so a receipt
+                # that stops moving is a recorder that stopped, and the cut
+                # names the stage it stopped in. Termination stays gated on the
+                # hooks being provably released; the cut only ends the wait.
+                $Reason.Value = Get-RecorderFinalizeStallReason `
+                    -Fields $fields -UnchangedMs $unchangedMs
+                $now = [DateTime]::UtcNow
+                if ($now -lt $Deadline.Value) {
+                    $Deadline.Value = $now
+                    return $true
+                }
                 return $false
             }
             $lastProgressUtc = $sampleUtc.AddMilliseconds(-$unchangedMs)
@@ -2360,7 +2440,7 @@ function Get-RecorderFinalizeTerminalReason {
             }
         }
         if ($effectiveUnchangedMs -ge ([int64]$NoProgressSeconds * 1000)) {
-            return "no_progress_for_$([Math]::Floor($effectiveUnchangedMs / 1000))s"
+            return (Get-RecorderFinalizeStallReason -Fields $fields -UnchangedMs $effectiveUnchangedMs)
         }
         $unchangedMs = $effectiveUnchangedMs
         # Still advancing by its own account, and yet out of time: the only way
@@ -3543,7 +3623,9 @@ $recorderArgs = @(New-RecorderArgumentPlan `
     -ScheduledDomains $scheduledDomains `
     -StaticCatalogs $staticCatalogs `
     -SkipHostFold ([bool]$SkipHostFold) `
-    -KeepSpoolAfterSeal ([bool]$KeepSpoolAfterSeal))
+    -KeepSpoolAfterSeal ([bool]$KeepSpoolAfterSeal) `
+    -ContentCensusCacheDirectory $ContentCensusCacheDir `
+    -FoldCacheDirectory $FoldCacheDir)
 
 ($recorderArgs -join "`n") | Set-Content -LiteralPath (Join-Path $OutDir 'recorder_args.txt') -Encoding UTF8
 

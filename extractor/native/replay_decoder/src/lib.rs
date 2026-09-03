@@ -33,6 +33,71 @@ use snapshot::sha256::{to_hex, Sha256};
 
 const CHUNK: usize = 8 * 1024 * 1024;
 
+pub mod fold_cache;
+/// H4CP v3 prototype driver (lanes DQ/EE/GE; restored by lane PR).
+#[cfg(feature = "dq-v3-prototype")]
+pub mod dq_v3_prototype;
+/// H4CP v3 density census (lane EE; restored by lane PR).
+#[cfg(feature = "dq-v3-prototype")]
+pub mod dq_v3_census;
+
+/// Stage timers for `build_certified_replay_artifacts`, enabled by the same
+/// `FOLD_PROFILE` environment variable as `world_fold::foldprof` and
+/// `snapshot::replay_cache::cacheprof`. Off, each site is one branch on a
+/// `OnceLock<bool>`; nothing here can change a produced byte.
+pub mod finprof {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
+
+    /// Fold thread: inside `HourCursor::next_hour` (apply + build + serialize).
+    pub static NEXT_HOUR_NS: AtomicU64 = AtomicU64::new(0);
+    /// Fold thread: blocked handing a finished hour to the encode worker.
+    pub static SEND_WAIT_NS: AtomicU64 = AtomicU64::new(0);
+    /// Encode worker: inside `emit_cache_hour` (parse + render blobs + encode).
+    pub static EMIT_NS: AtomicU64 = AtomicU64::new(0);
+    pub static RENDER_BLOB_NS: AtomicU64 = AtomicU64::new(0);
+    pub static ENCODER_FINISH_NS: AtomicU64 = AtomicU64::new(0);
+    pub static PARITY_OPEN_NS: AtomicU64 = AtomicU64::new(0);
+    pub static PARITY_VERIFY_NS: AtomicU64 = AtomicU64::new(0);
+    pub static TOTAL_NS: AtomicU64 = AtomicU64::new(0);
+
+    #[inline]
+    pub fn enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os("FOLD_PROFILE").is_some())
+    }
+
+    #[inline]
+    pub fn timed<T>(counter: &AtomicU64, f: impl FnOnce() -> T) -> T {
+        if enabled() {
+            let t = Instant::now();
+            let out = f();
+            counter.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            out
+        } else {
+            f()
+        }
+    }
+
+    pub fn report() -> Option<String> {
+        if !enabled() {
+            return None;
+        }
+        let ms = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e6;
+        Some(format!(
+            "finalize stage breakdown (ms): total={:.1} | fold thread: next_hour={:.1} send_wait={:.1} | encode worker: emit={:.1} render_blobs={:.1} | encoder_finish={:.1} parity_open={:.1} parity_verify={:.1}",
+            ms(&TOTAL_NS),
+            ms(&NEXT_HOUR_NS),
+            ms(&SEND_WAIT_NS),
+            ms(&EMIT_NS),
+            ms(&RENDER_BLOB_NS),
+            ms(&ENCODER_FINISH_NS),
+            ms(&PARITY_OPEN_NS),
+            ms(&PARITY_VERIFY_NS),
+        ))
+    }
+}
+
 const fn round_up_to_chunk(bytes: usize) -> usize {
     match bytes.checked_add(CHUNK - 1) {
         Some(raised) => (raised / CHUNK) * CHUNK,
@@ -466,6 +531,10 @@ pub struct WorldHour {
     pub hour_index: i64,
     pub date: String,
     pub snapshot: Vec<u8>,
+    /// The hour as a canonical tree, when the fold emitted one (production
+    /// finalize): `snapshot` is then empty and the encoder thread takes the
+    /// digest, so the text length is accounted there rather than here.
+    canonical: Option<snapshot::UnhashedWorldHour>,
     pub domain_data_counts: BTreeMap<u16, u64>,
     snapshot_charge: recorder_host::mem_account::Charge,
 }
@@ -473,14 +542,18 @@ pub struct WorldHour {
 impl Clone for WorldHour {
     fn clone(&self) -> Self {
         let snapshot = self.snapshot.clone();
+        let canonical = self.canonical.clone();
         let snapshot_charge = recorder_host::mem_account::Charge::new(
             recorder_host::mem_account::Component::InflightSnapshots,
-            snapshot.capacity() as u64,
+            canonical
+                .as_ref()
+                .map_or(snapshot.capacity() as u64, |prepared| prepared.value_heap_bytes()),
         );
         Self {
             hour_index: self.hour_index,
             date: self.date.clone(),
             snapshot,
+            canonical,
             domain_data_counts: self.domain_data_counts.clone(),
             snapshot_charge,
         }
@@ -492,6 +565,7 @@ impl PartialEq for WorldHour {
         self.hour_index == other.hour_index
             && self.date == other.date
             && self.snapshot == other.snapshot
+            && self.canonical == other.canonical
             && self.domain_data_counts == other.domain_data_counts
     }
 }
@@ -499,20 +573,41 @@ impl PartialEq for WorldHour {
 impl Eq for WorldHour {}
 
 impl WorldHour {
-    fn into_charged_snapshot(self) -> (Vec<u8>, recorder_host::mem_account::Charge) {
-        (self.snapshot, self.snapshot_charge)
+    fn into_charged_body(self) -> (HourBody, recorder_host::mem_account::Charge) {
+        match self.canonical {
+            Some(prepared) => (HourBody::Canonical(prepared), self.snapshot_charge),
+            None => (HourBody::Json(self.snapshot), self.snapshot_charge),
+        }
     }
 
+    /// The world JSON text, when the fold emitted text; empty for an hour the
+    /// fold emitted as a canonical tree (see [`Self::canonical`]).
     pub fn snapshot_bytes(&self) -> &[u8] {
         &self.snapshot
     }
 
+    pub fn canonical(&self) -> Option<&snapshot::UnhashedWorldHour> {
+        self.canonical.as_ref()
+    }
+
+    /// Length of the world JSON text this hour carries; zero for a canonical
+    /// hour, whose length the encoder thread accounts when it digests it.
+    pub fn json_len(&self) -> u64 {
+        self.snapshot.len() as u64
+    }
+
     pub fn to_json(&self) -> Result<serde_json::Value, serde_json::Error> {
-        serde_json::from_slice(&self.snapshot)
+        match &self.canonical {
+            Some(prepared) => serde_json::from_slice(&prepared.value().to_json_bytes()),
+            None => serde_json::from_slice(&self.snapshot),
+        }
     }
 
     pub fn snapshot_sha256(&self) -> String {
-        to_hex(&Sha256::digest(&self.snapshot))
+        match &self.canonical {
+            Some(prepared) => prepared.value().json_sha256_hex().0,
+            None => to_hex(&Sha256::digest(&self.snapshot)),
+        }
     }
 }
 
@@ -932,12 +1027,19 @@ pub struct CertifiedReplayArtifacts {
 
 type ReplayCacheEncoderFile = snapshot::ReplayCacheEncoder<fs::File>;
 
+/// What an hour arrives at the encoder as: the text the fold serialized, or
+/// the canonical tree it built directly.
+enum HourBody {
+    Json(Vec<u8>),
+    Canonical(snapshot::UnhashedWorldHour),
+}
+
 struct CacheEmitHour {
     hour_index: i64,
     date: String,
     start_offset: u64,
     end_offset: u64,
-    world_json: Vec<u8>,
+    body: HourBody,
     snapshot_charge: recorder_host::mem_account::Charge,
 }
 
@@ -951,6 +1053,9 @@ struct ChargedCacheEncoder {
     encoder: ReplayCacheEncoderFile,
     delta_base: recorder_host::mem_account::Charge,
     hour_entries: recorder_host::mem_account::Charge,
+    /// Canonical text bytes of the hours that arrived as trees, accounted
+    /// here because their length is only known once digested.
+    canonical_json_bytes: u64,
 }
 
 impl ChargedCacheEncoder {
@@ -965,6 +1070,7 @@ impl ChargedCacheEncoder {
                 recorder_host::mem_account::Component::CacheHourEntries,
                 0,
             ),
+            canonical_json_bytes: 0,
         }
     }
 
@@ -979,13 +1085,13 @@ impl CacheEmitJob {
     fn from_hour(hour: WorldHour, start_offset: u64, end_offset: u64) -> Self {
         let hour_index = hour.hour_index;
         let date = hour.date.clone();
-        let (world_json, snapshot_charge) = hour.into_charged_snapshot();
+        let (body, snapshot_charge) = hour.into_charged_body();
         Self::Hour(CacheEmitHour {
             hour_index,
             date,
             start_offset,
             end_offset,
-            world_json,
+            body,
             snapshot_charge,
         })
     }
@@ -1043,9 +1149,10 @@ fn lower_current_thread_priority() {
 
 fn emit_cache_hour(
     output_dir: &Path,
-    cache_encoder: &mut ReplayCacheEncoderFile,
+    charged: &mut ChargedCacheEncoder,
     job: CacheEmitJob,
 ) -> Result<(), OpenError> {
+    let cache_encoder = &mut charged.encoder;
     let hour = match job {
         CacheEmitJob::Hole(hole) => {
             return cache_encoder
@@ -1060,16 +1167,33 @@ fn emit_cache_hour(
         date,
         start_offset,
         end_offset,
-        world_json,
+        body,
         snapshot_charge,
     } = hour;
-    let prepared = snapshot::CanonicalWorldHour::parse(world_json, hour_index)
-        .map_err(|error| OpenError::Certification(error.to_string()))?;
+    let prepared = match body {
+        HourBody::Json(world_json) => snapshot::CanonicalWorldHour::parse(world_json, hour_index)
+            .map_err(|error| OpenError::Certification(error.to_string()))?,
+        HourBody::Canonical(unhashed) => {
+            let prepared = unhashed.hashed();
+            recorder_host::world_fold::foldprof::add_bytes(prepared.json_len() as usize);
+            charged.canonical_json_bytes = charged
+                .canonical_json_bytes
+                .checked_add(prepared.json_len())
+                .ok_or_else(|| {
+                    OpenError::Certification(
+                        "canonical JSON byte accounting overflowed u64".to_string(),
+                    )
+                })?;
+            prepared
+        }
+    };
     drop(snapshot_charge);
-    recorder_host::world_fold::preserve_production_render_blobs_from_canon(
-        output_dir,
-        prepared.value(),
-    )?;
+    finprof::timed(&finprof::RENDER_BLOB_NS, || {
+        recorder_host::world_fold::preserve_production_render_blobs_from_canon(
+            output_dir,
+            prepared.value(),
+        )
+    })?;
     cache_encoder
         .push_prepared(
             snapshot::CacheBuildHourMeta {
@@ -1169,8 +1293,10 @@ pub fn build_certified_replay_artifacts(
             canonical_path: raw_h4cr_path.to_string_lossy().into_owned(),
         }),
     );
+    cursor.set_emit_canonical(true);
 
     recorder_host::mem_account::mark("finalize.cursor_open");
+    let finalize_started = std::time::Instant::now();
 
     let (jobs_tx, jobs_rx) = mpsc::sync_channel::<CacheEmitJob>(FINALIZE_PIPELINE_DEPTH);
     let mut pending: Option<(WorldHour, u64)> = None;
@@ -1182,14 +1308,18 @@ pub fn build_certified_replay_artifacts(
             lower_current_thread_priority();
             let mut charged = ChargedCacheEncoder::new(cache_encoder);
             for job in jobs_rx {
-                emit_cache_hour(&consumer_dir, &mut charged.encoder, job)?;
+                finprof::timed(&finprof::EMIT_NS, || {
+                    emit_cache_hour(&consumer_dir, &mut charged, job)
+                })?;
                 charged.reprice();
+                recorder_host::finalize_progress::tick(1);
             }
             Ok(charged)
         });
 
         let producer = (|| -> Result<(), OpenError> {
-            while let Some(hour) = cursor.next_hour() {
+            while let Some(hour) = finprof::timed(&finprof::NEXT_HOUR_NS, || cursor.next_hour()) {
+                recorder_host::finalize_progress::tick(1);
                 let hour = hour.map_err(|error| match error {
                     DecodeError::Io(error) => OpenError::Io(error),
                 })?;
@@ -1206,7 +1336,7 @@ pub fn build_certified_replay_artifacts(
                     })?;
                 if let Some((previous, previous_start)) = pending.take() {
                     legacy_json_bytes_avoided = legacy_json_bytes_avoided
-                        .checked_add(previous.snapshot.len() as u64)
+                        .checked_add(previous.json_len())
                         .ok_or_else(|| {
                             OpenError::Certification(
                                 "legacy JSON byte accounting overflowed u64".to_string(),
@@ -1221,7 +1351,7 @@ pub fn build_certified_replay_artifacts(
                         Some(hole) => CacheEmitJob::Hole(hole),
                         None => CacheEmitJob::from_hour(previous, previous_start, start_offset),
                     };
-                    if jobs_tx.send(job).is_err() {
+                    if finprof::timed(&finprof::SEND_WAIT_NS, || jobs_tx.send(job)).is_err() {
                         return Ok(());
                     }
                 }
@@ -1260,7 +1390,7 @@ pub fn build_certified_replay_artifacts(
                 OpenError::Certification("certified H4CR stream emitted no hours".to_string())
             })?;
             legacy_json_bytes_avoided = legacy_json_bytes_avoided
-                .checked_add(last.snapshot.len() as u64)
+                .checked_add(last.json_len())
                 .ok_or_else(|| {
                     OpenError::Certification(
                         "legacy JSON byte accounting overflowed u64".to_string(),
@@ -1350,15 +1480,24 @@ pub fn build_certified_replay_artifacts(
         encoder: cache_encoder,
         delta_base: delta_base_charge,
         hour_entries: hour_entries_charge,
+        canonical_json_bytes,
     } = charged_encoder;
-    let (mut cache_file, replay_index) = cache_encoder
-        .finish(game_id, schema, cache_identity_mode, expected_source_len)
-        .map_err(|error| OpenError::Certification(error.to_string()))?;
+    legacy_json_bytes_avoided = legacy_json_bytes_avoided
+        .checked_add(canonical_json_bytes)
+        .ok_or_else(|| {
+            OpenError::Certification("legacy JSON byte accounting overflowed u64".to_string())
+        })?;
+    let (mut cache_file, replay_index) = finprof::timed(&finprof::ENCODER_FINISH_NS, || {
+        cache_encoder.finish(game_id, schema, cache_identity_mode, expected_source_len)
+    })
+    .map_err(|error| OpenError::Certification(error.to_string()))?;
     // dropped, and only released when the index is.
     drop(delta_base_charge);
     let _replay_index_rows_charge = hour_entries_charge;
-    cache_file.flush()?;
-    cache_file.sync_all()?;
+    finprof::timed(&finprof::ENCODER_FINISH_NS, || -> io::Result<()> {
+        cache_file.flush()?;
+        cache_file.sync_all()
+    })?;
     drop(cache_file);
 
     let stream_end_offsets = stream_index.served_end_offsets();
@@ -1409,16 +1548,26 @@ pub fn build_certified_replay_artifacts(
 
     recorder_host::mem_account::mark("finalize.before_parity_verify");
     let cache_file = fs::File::open(&cache_path)?;
-    let parity_reader = snapshot::CertifiedReplayCache::open_file(
-        &index_bytes,
-        cache_file,
-        expected_source_len,
-        expected_source_sha256,
-    )
+    let parity_reader = finprof::timed(&finprof::PARITY_OPEN_NS, || {
+        snapshot::CertifiedReplayCache::open_file(
+            &index_bytes,
+            cache_file,
+            expected_source_len,
+            expected_source_sha256,
+        )
+    })
     .map_err(|error| OpenError::Certification(error.to_string()))?;
-    let max_seek_deltas = parity_reader.verify_every_hour().map_err(|error| {
+    recorder_host::finalize_progress::stage(recorder_host::finalize_progress::STAGE_PARITY_VERIFY);
+    let max_seek_deltas = finprof::timed(&finprof::PARITY_VERIFY_NS, || {
+        parity_reader.verify_every_hour_observed(&mut || recorder_host::finalize_progress::tick(1))
+    })
+    .map_err(|error| {
         OpenError::Certification(format!("binary reconstruction parity failed: {error}"))
     })?;
+    finprof::TOTAL_NS.fetch_add(
+        finalize_started.elapsed().as_nanos() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     if max_seek_deltas >= checkpoint_interval_hours {
         return Err(OpenError::Certification(format!(
             "binary seek bound failed: observed {max_seek_deltas} delta(s) for interval {checkpoint_interval_hours}"
@@ -2358,6 +2507,11 @@ impl HourCursor {
         self.ready.len()
     }
 
+    /// Have the fold hand hours over as canonical trees instead of JSON text.
+    pub fn set_emit_canonical(&mut self, on: bool) {
+        self.fold.set_emit_canonical(on);
+    }
+
     pub fn next_hour(&mut self) -> Option<Result<WorldHour, DecodeError>> {
         loop {
             if let Some(h) = self.ready.pop_front() {
@@ -3058,7 +3212,8 @@ impl HourCursor {
     fn drain_finished_hours(&mut self, next_hour_start: u64) {
         let counts = std::mem::take(&mut self.cur_counts);
         let finished = self.fold.take_finished();
-        let published_any = !finished.is_empty();
+        let finished_canonical = self.fold.take_finished_canonical();
+        let published_any = !finished.is_empty() || !finished_canonical.is_empty();
         for (hour_index, date, bytes) in finished {
             let cheap = !self.first_hour_seen;
             self.first_hour_seen = true;
@@ -3077,6 +3232,29 @@ impl HourCursor {
                 hour_index,
                 date,
                 snapshot: bytes,
+                canonical: None,
+                domain_data_counts: counts.clone(),
+                snapshot_charge,
+            });
+        }
+        for (hour_index, date, prepared) in finished_canonical {
+            let cheap = !self.first_hour_seen;
+            self.first_hour_seen = true;
+            self.index_hours.push(HourOffset {
+                hour_index,
+                start_offset: self.cur_hour_start,
+                cheap_seek_point: cheap,
+            });
+            self.stats.hours_emitted += 1;
+            let snapshot_charge = recorder_host::mem_account::Charge::new(
+                recorder_host::mem_account::Component::InflightSnapshots,
+                prepared.value_heap_bytes(),
+            );
+            self.ready.push_back(WorldHour {
+                hour_index,
+                date,
+                snapshot: Vec::new(),
+                canonical: Some(prepared),
                 domain_data_counts: counts.clone(),
                 snapshot_charge,
             });

@@ -2348,29 +2348,82 @@ pub struct AttachCorpusCensusStats {
     /// manifest publishes this list so a reader can see exactly what the
     /// recording chose not to bind replay to.
     pub excluded_engine_written_sinks: Vec<String>,
+    pub cache: CensusCacheOutcome,
+}
+
+/// What the digest memo did for one census, published beside the rows so a
+/// row's provenance (re-hashed now, or reused from a validated memo) is never
+/// silent. `mode` is one of `disabled`, `absent`, `refused`, `reused`,
+/// `rebuilt`; `cause` names why a memo was not reused.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CensusCacheOutcome {
+    pub mode: String,
+    pub cause: Option<String>,
+    pub cache_file: Option<String>,
+    pub entries_reused: u64,
+    pub entries_hashed: u64,
+    pub bytes_hashed: u64,
+    pub cache_written: bool,
+    pub listing_ms: u64,
+    pub hash_ms: u64,
 }
 
 const MAX_ATTACH_CORPUS_ROWS: usize = 400_000;
 
+struct HashedEntry {
+    payload_sha256: String,
+    payload_bytes: u64,
+}
+
+/// Read and digest the entries at `indices` one at a time on this thread,
+/// streaming each through a single reused buffer. Results land by entry
+/// index; the first read failure is the census's failure.
+fn hash_entries(
+    vfs: &portable_content_manifest::effective_vfs::EffectiveVfs,
+    entries: &[portable_content_manifest::effective_vfs::EffectiveVfsEntry],
+    indices: &[usize],
+) -> Result<BTreeMap<usize, HashedEntry>, String> {
+    let mut results = BTreeMap::new();
+    let mut buffer = Vec::new();
+    let mut progress = |bytes: usize| crate::finalize_progress::tick(bytes as u64);
+    for &index in indices {
+        let (payload_bytes, payload_sha256) = vfs
+            .hash_entry(&entries[index], &mut buffer, &mut progress)
+            .map_err(|error| {
+                format!(
+                    "attach-time content census could not read {}: {error}",
+                    entries[index].logical_path
+                )
+            })?;
+        results.insert(
+            index,
+            HashedEntry {
+                payload_sha256,
+                payload_bytes,
+            },
+        );
+        crate::finalize_progress::tick(1);
+    }
+    Ok(results)
+}
+
 pub fn census_effective_vfs_corpus(
     vfs: &portable_content_manifest::effective_vfs::EffectiveVfs,
+    cache_dir: Option<&Path>,
 ) -> Result<(Vec<RequiredContent>, AttachCorpusCensusStats), String> {
+    use crate::content_census_cache::{self, CacheEntry, CacheLoad};
+    use portable_content_manifest::effective_vfs::EffectiveVfsEntryFacts;
+
     let started = std::time::Instant::now();
-    let mut rows: BTreeMap<String, RequiredContent> = BTreeMap::new();
+    let entries = vfs.effective_entries()?;
+    crate::finalize_progress::tick(entries.len() as u64);
+    let listing_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+
     let mut excluded_engine_written_sinks: Vec<String> = Vec::new();
-    let stats = vfs.walk_content_keys(|logical_path, content| {
-        if rows.len() >= MAX_ATTACH_CORPUS_ROWS {
-            return Err(format!(
-                "attach-time content census exceeded its {MAX_ATTACH_CORPUS_ROWS}-row ceiling"
-            ));
-        }
-        let normalized = normalize_game_relative_path(logical_path)?;
-        if normalized != content.normalized_game_relative_path {
-            return Err(format!(
-                "attach-time content census path is not canonical: {logical_path}"
-            ));
-        }
-        content.validate()?;
+    let mut excluded_bytes = 0u64;
+    let mut kept: Vec<(usize, String)> = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let normalized = normalize_game_relative_path(&entry.logical_path)?;
         // The engine writes these itself and never resolves them through the
         // VFS, so they are its scratch and not this install's content. Binding
         // replay to them makes every later session a content mismatch: playing
@@ -2380,11 +2433,130 @@ pub fn census_effective_vfs_corpus(
         // effective-VFS census was the remaining place still collecting it.
         if portable_content_manifest::is_engine_written_install_root_sink(
             &normalized,
-            content.layer_kind,
+            entry.layer_kind,
         ) {
             excluded_engine_written_sinks.push(normalized);
-            return Ok(());
+            if let EffectiveVfsEntryFacts::File { len, .. } = &entry.facts {
+                excluded_bytes = excluded_bytes.saturating_add(*len);
+            }
+            continue;
         }
+        if kept.len() >= MAX_ATTACH_CORPUS_ROWS {
+            return Err(format!(
+                "attach-time content census exceeded its {MAX_ATTACH_CORPUS_ROWS}-row ceiling"
+            ));
+        }
+        kept.push((index, normalized));
+    }
+    if kept.is_empty() {
+        return Err("attach-time content census found no content in the effective VFS".into());
+    }
+
+    let mut cache = CensusCacheOutcome {
+        listing_ms,
+        ..CensusCacheOutcome::default()
+    };
+    let mut memo: BTreeMap<String, CacheEntry> = BTreeMap::new();
+    match cache_dir {
+        None => {
+            cache.mode = "disabled".to_string();
+            cache.cause = Some("no --content-census-cache-dir".to_string());
+        }
+        Some(dir) => {
+            cache.cache_file = Some(content_census_cache::cache_path(dir).display().to_string());
+            match content_census_cache::load(dir) {
+                CacheLoad::Absent => {
+                    cache.mode = "absent".to_string();
+                    cache.cause = Some("no cache document at that path".to_string());
+                }
+                CacheLoad::Refused(reason) => {
+                    cache.mode = "refused".to_string();
+                    cache.cause = Some(reason);
+                }
+                CacheLoad::Loaded(entries) => {
+                    cache.mode = "reused".to_string();
+                    memo = entries;
+                }
+            }
+        }
+    }
+
+    let identities: Vec<(String, u64, i64, u32)> = entries
+        .iter()
+        .map(|entry| content_census_cache::entry_identity(&entry.facts))
+        .collect();
+    let mut hits: Vec<usize> = Vec::new();
+    let mut misses: Vec<usize> = Vec::new();
+    for (index, _) in &kept {
+        // Only an archive member is content-keyed by its enumeration facts:
+        // its key carries the archive's own digest. A directory file's
+        // (path, len, mtime) says nothing about its bytes, so it is always
+        // read.
+        let archive_member = matches!(
+            entries[*index].facts,
+            EffectiveVfsEntryFacts::ArchiveMember { .. }
+        );
+        let (key, ..) = &identities[*index];
+        if archive_member && memo.contains_key(key) {
+            hits.push(*index);
+        } else {
+            misses.push(*index);
+        }
+    }
+
+    let hash_started = std::time::Instant::now();
+    let hashed = hash_entries(vfs, &entries, &misses)?;
+    cache.hash_ms = hash_started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    cache.entries_reused = hits.len() as u64;
+    cache.entries_hashed = hashed.len() as u64;
+    cache.bytes_hashed = hashed.values().map(|row| row.payload_bytes).sum();
+
+    let mut rows: BTreeMap<String, RequiredContent> = BTreeMap::new();
+    let mut files = 0u64;
+    let mut payload_bytes = 0u64;
+    let mut learned: BTreeMap<String, CacheEntry> = BTreeMap::new();
+    for (index, normalized) in kept {
+        let entry = &entries[index];
+        let (key, len, secs, nanos) = &identities[index];
+        let (payload_sha256, payload_bytes_of_row) = match hashed.get(&index) {
+            Some(fresh) => (fresh.payload_sha256.clone(), fresh.payload_bytes),
+            None => {
+                let row = &memo[key];
+                (row.payload_sha256.clone(), row.payload_bytes)
+            }
+        };
+        if matches!(entry.facts, EffectiveVfsEntryFacts::File { .. })
+            && payload_bytes_of_row != *len
+        {
+            return Err(format!(
+                "attach-time content census read {} bytes of {} but its enumeration reported {len}",
+                payload_bytes_of_row, entry.logical_path
+            ));
+        }
+        if matches!(entry.facts, EffectiveVfsEntryFacts::ArchiveMember { .. }) {
+            learned.insert(
+                key.clone(),
+                CacheEntry {
+                    key: key.clone(),
+                    len: *len,
+                    modified_unix_secs: *secs,
+                    modified_nanos: *nanos,
+                    payload_bytes: payload_bytes_of_row,
+                    payload_sha256: payload_sha256.clone(),
+                },
+            );
+        }
+        let content = vfs.content_key(entry, payload_sha256, payload_bytes_of_row)?;
+        if normalized != content.normalized_game_relative_path {
+            return Err(format!(
+                "attach-time content census path is not canonical: {}",
+                entry.logical_path
+            ));
+        }
+        files += 1;
+        payload_bytes = payload_bytes
+            .checked_add(payload_bytes_of_row)
+            .ok_or_else(|| "effective VFS walk byte count overflowed".to_string())?;
         if rows
             .insert(
                 normalized.clone(),
@@ -2402,18 +2574,43 @@ pub fn census_effective_vfs_corpus(
                 "attach-time content census repeated path {normalized}"
             ));
         }
-        Ok(())
-    })?;
-    if rows.is_empty() {
-        return Err("attach-time content census found no content in the effective VFS".into());
     }
+    // `files` and `payload_bytes` count what the walk SAW, sinks included; the
+    // sinks are named beside them so the difference from `rows` is explained.
+    files += excluded_engine_written_sinks.len() as u64;
+    payload_bytes = payload_bytes
+        .checked_add(excluded_bytes)
+        .ok_or_else(|| "effective VFS walk byte count overflowed".to_string())?;
+
+    if let Some(dir) = cache_dir {
+        if cache.mode != "reused" || learned != memo {
+            match content_census_cache::store(dir, &learned) {
+                Ok(_) => {
+                    cache.cache_written = true;
+                    if cache.mode != "reused" {
+                        cache.mode = "rebuilt".to_string();
+                    }
+                }
+                Err(error) => {
+                    // A memo that could not be written costs the next run its
+                    // reuse, never this run its rows.
+                    cache.cause = Some(format!(
+                        "{} (memo not written: {error})",
+                        cache.cause.take().unwrap_or_default()
+                    ));
+                }
+            }
+        }
+    }
+
     Ok((
         rows.into_values().collect(),
         AttachCorpusCensusStats {
-            files: stats.files,
-            payload_bytes: stats.payload_bytes,
+            files,
+            payload_bytes,
             elapsed_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             excluded_engine_written_sinks,
+            cache,
         },
     ))
 }
@@ -3127,7 +3324,7 @@ mod tests {
         )
         .unwrap();
 
-        let (rows, stats) = census_effective_vfs_corpus(&vfs).unwrap();
+        let (rows, stats) = census_effective_vfs_corpus(&vfs, None).unwrap();
         let recorded: Vec<&str> = rows
             .iter()
             .map(|row| row.content.normalized_game_relative_path.as_str())

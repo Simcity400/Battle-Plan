@@ -48,6 +48,17 @@ $functionAst = $ast.FindAll(
 if ($null -eq $functionAst) {
     throw 'Update-RecorderFinalizeDeadline is not defined in the harness.'
 }
+# The stall spelling both the grant function and the terminal reason call.
+$stallReasonAst = $ast.FindAll(
+    {
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Get-RecorderFinalizeStallReason'
+    }, $true) | Select-Object -First 1
+if ($null -eq $stallReasonAst) {
+    throw 'Get-RecorderFinalizeStallReason is not defined in the harness.'
+}
+. ([scriptblock]::Create($stallReasonAst.Extent.Text))
 
 # THE TWO FUNCTIONS THAT DECIDE WHAT HAPPENS WHEN THE BOUND ABOVE RUNS OUT, and
 # they belong here for the reason the bound does: both carry defects that
@@ -158,7 +169,9 @@ function Write-Receipt {
         [string]$Capture = $captureId,
         [int64]$WorkBytes = 4096,
         # Defaults to "sampled just now", which is what a live publisher writes.
-        [object]$SampleUtc = $null
+        [object]$SampleUtc = $null,
+        [int64]$WorkChangedOrdinal = 6,
+        [string]$Stage = ''
     )
     if ($null -eq $SampleUtc) { $SampleUtc = [DateTime]::UtcNow }
     $receipt = [ordered]@{
@@ -167,10 +180,11 @@ function Write-Receipt {
         session_id           = $Session
         capture_id           = $Capture
         phase                = $Phase
+        stage                = $Stage
         sample_ordinal       = 7
         elapsed_ms           = 30000
         work_bytes           = $WorkBytes
-        work_changed_ordinal = 6
+        work_changed_ordinal = $WorkChangedOrdinal
         work_unchanged_ms    = $UnchangedMs
         sample_unix_ms       = [DateTimeOffset]::new(
             [DateTime]::SpecifyKind($SampleUtc, [DateTimeKind]::Utc)
@@ -228,16 +242,58 @@ Assert-True ($deadline -gt [DateTime]::UtcNow.AddSeconds($noProgressSeconds - 5)
     "extension was shorter than the no-progress window (deadline=$($deadline.ToString('o')))"
 Assert-True ($reason -like 'work_advancing*') "extension reason was '$reason'"
 
-# --- 3. Stalled work does NOT buy time, however early in the run. ---
+# --- 3. Stalled work CUTS the deadline to now, however much budget stood. ---
+# rc_vanilla8's refused attempt waited 531 s on a receipt that had reported
+# no progress since its first sample, because the READY-anchored budget was
+# still standing and a stall only ever declined to extend it.
 $dir = New-Case 'stalled'
 Write-Receipt -Dir $dir -UnchangedMs ([int64]$noProgressSeconds * 1000 + 1)
-$deadline = [DateTime]::UtcNow.AddSeconds(10)
+$deadline = [DateTime]::UtcNow.AddSeconds(600)
+$before = [DateTime]::UtcNow
+$reason = $null
+$cut = Invoke-Bound -Dir $dir -Deadline ([ref]$deadline) -Ceiling $farCeiling -Reason ([ref]$reason)
+Assert-True $cut 'a stalled finalize did not report that it moved the deadline'
+Assert-True ($deadline -le [DateTime]::UtcNow -and $deadline -ge $before) `
+    "a stalled finalize left the deadline at $($deadline.ToString('o')) instead of cutting it to now"
+Assert-True ($reason -like 'no_progress_for_*') "stall reason was '$reason'"
+# A deadline already in the past is not moved forward by a cut.
+$deadline = [DateTime]::UtcNow.AddSeconds(-30)
 $original = $deadline
 $reason = $null
+$cut = Invoke-Bound -Dir $dir -Deadline ([ref]$deadline) -Ceiling $farCeiling -Reason ([ref]$reason)
+Assert-True (-not $cut) 'a cut moved a deadline that had already passed'
+Assert-True ($deadline -eq $original) 'a cut moved a past deadline forward'
+
+# --- 3b. A finalize that NEVER advanced is named as such, with its stage. ---
+$dir = New-Case 'never_advanced'
+Write-Receipt -Dir $dir -UnchangedMs ([int64]$noProgressSeconds * 1000 + 5000) `
+    -WorkChangedOrdinal 0 -Stage 'content_census'
+$deadline = [DateTime]::UtcNow.AddSeconds(3000)
+$reason = $null
+$cut = Invoke-Bound -Dir $dir -Deadline ([ref]$deadline) -Ceiling $farCeiling -Reason ([ref]$reason)
+Assert-True $cut 'a never-started finalize did not cut the deadline'
+Assert-True ($deadline -le [DateTime]::UtcNow) 'a never-started finalize kept its budget'
+Assert-True ($reason -eq "finalize_never_advanced_for_$($noProgressSeconds + 5)s_in_content_census") `
+    "never-advanced reason was '$reason'"
+
+# --- 3c. A stall that stopped in a named stage names it. ---
+$dir = New-Case 'stalled_in_stage'
+Write-Receipt -Dir $dir -UnchangedMs ([int64]$noProgressSeconds * 1000 + 1000) -Stage 'parity_verify'
+$deadline = [DateTime]::UtcNow.AddSeconds(3000)
+$reason = $null
+[void](Invoke-Bound -Dir $dir -Deadline ([ref]$deadline) -Ceiling $farCeiling -Reason ([ref]$reason))
+Assert-True ($reason -eq "no_progress_for_$($noProgressSeconds + 1)s_in_parity_verify") `
+    "staged stall reason was '$reason'"
+
+# --- 3d. Below the threshold nothing is cut: the ordinary extension stands. ---
+$dir = New-Case 'almost_stalled'
+Write-Receipt -Dir $dir -UnchangedMs ([int64]$noProgressSeconds * 1000 - 2000) -Stage 'fold_and_encode'
+$deadline = [DateTime]::UtcNow.AddSeconds(1)
+$reason = $null
 $extended = Invoke-Bound -Dir $dir -Deadline ([ref]$deadline) -Ceiling $farCeiling -Reason ([ref]$reason)
-Assert-True (-not $extended) 'a stalled finalize extended the deadline'
-Assert-True ($deadline -eq $original) 'a stalled finalize moved the deadline'
-Assert-True ($reason -like 'no_progress_for_*') "stall reason was '$reason'"
+Assert-True $extended 'work just under the stall threshold was not extended'
+Assert-True ($deadline -gt [DateTime]::UtcNow) 'work just under the stall threshold was cut'
+Assert-True ($reason -like 'work_advancing*') "near-threshold reason was '$reason'"
 
 # --- 4. A receipt from another attempt in a reused OutDir proves nothing. ---
 $dir = New-Case 'foreign'
@@ -515,6 +571,14 @@ Write-Receipt -Dir $dir -UnchangedMs 342775
 $reason = Invoke-TerminalReason -Dir $dir
 Assert-True ($reason -eq 'no_progress_for_342s') "a 342 s stall reported '$reason'"
 
+# THE rc_vanilla8 CASE. A receipt whose work never moved names the finalize
+# that never started, and the stage the recorder was in.
+$dir = New-Case 'terminal_never_advanced'
+Write-Receipt -Dir $dir -UnchangedMs 350131 -WorkChangedOrdinal 0 -Stage 'content_census'
+$reason = Invoke-TerminalReason -Dir $dir
+Assert-True ($reason -eq 'finalize_never_advanced_for_350s_in_content_census') `
+    "a never-started finalize reported '$reason'"
+
 # THE OFF-BY-ONE-TICK THE SAMPLED FIELD ALONE CANNOT SEE. `work_unchanged_ms` is
 # a reading taken at `sample_unix_ms`, not at now. A receipt sampled at 178 s of
 # stall and read three seconds later IS a 181 s stall, and naming the sampled
@@ -596,5 +660,5 @@ if ($failures.Count -gt 0) {
     foreach ($failure in $failures) { Write-Host "FAIL: $failure" }
     throw "$($failures.Count) finalize progress bound assertion(s) failed."
 }
-Write-Host 'phase=finalize_progress_bound_selftest result=pass cases=41'
+Write-Host 'phase=finalize_progress_bound_selftest result=pass cases=48'
 exit 0

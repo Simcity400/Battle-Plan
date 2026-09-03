@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -21,6 +21,64 @@ pub const SNAPSHOT_SPILL_DIR_PREFIX: &str = ".native_session_snapshots-";
 pub const REPLAY_ARTIFACT_SPILL_DIR_PREFIX: &str = ".replay_decoder_artifacts-";
 
 pub const ROLLOVER_LOGICAL_STREAMS_DIR: &str = "logical-streams";
+
+/// Work units finalize stages report that leave no bytes on disk while they
+/// run (a census file hashed, an hour folded, an hour proved). The publisher
+/// adds them to every meter's byte count, so a stage that writes nothing
+/// still moves the receipt, and a receipt that stops moving is a stall.
+static WORK_TICKS: std::sync::LazyLock<Arc<AtomicU64>> =
+    std::sync::LazyLock::new(|| Arc::new(AtomicU64::new(0)));
+
+/// The finalize stage the recorder is in, published in the receipt so a
+/// supervisor names WHERE a stall happened rather than only that it did.
+static STAGE: std::sync::RwLock<&'static str> = std::sync::RwLock::new("");
+
+pub const STAGE_ATTACH_PROOF_JOIN: &str = "attach_content_proof_join";
+pub const STAGE_CONTENT_CENSUS: &str = "content_census";
+pub const STAGE_D81_WIRE_PRODUCT: &str = "d81_wire_product";
+pub const STAGE_FOLD_AND_ENCODE: &str = "fold_and_encode";
+pub const STAGE_PARITY_VERIFY: &str = "parity_verify";
+pub const STAGE_CONTAINER_PUBLISH: &str = "container_publish";
+pub const STAGE_MANIFEST_TELEMETRY: &str = "manifest_telemetry";
+pub const STAGE_ROLLOVER_PACKAGE_SET: &str = "rollover_package_set";
+pub const STAGE_SPOOL_RELEASE: &str = "spool_release";
+
+/// Enter a finalize stage. The stage just left is logged with its wall time,
+/// so every capture's `collector_record.stderr.log` carries the per-stage
+/// finalize cost as data.
+pub fn stage(name: &'static str) {
+    static ENTERED_AT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+    let now = Instant::now();
+    let previous = STAGE.read().map(|current| *current).unwrap_or("");
+    if let Ok(mut entered) = ENTERED_AT.lock() {
+        if let Some(started) = entered.replace(now) {
+            if !previous.is_empty() {
+                eprintln!(
+                    "recorder summary: finalize stage {previous} took {} ms",
+                    now.saturating_duration_since(started).as_millis()
+                );
+            }
+        }
+    }
+    if let Ok(mut current) = STAGE.write() {
+        *current = name;
+    }
+}
+
+pub fn current_stage() -> &'static str {
+    STAGE.read().map(|current| *current).unwrap_or("")
+}
+
+pub fn tick(units: u64) {
+    WORK_TICKS.fetch_add(units, Ordering::Relaxed);
+}
+
+/// The counter `tick` feeds: the recorder's one finalize hands it to its
+/// publisher. A publisher given its own counter (a test) sees no other
+/// publisher's work.
+pub fn shared_ticks() -> Arc<AtomicU64> {
+    Arc::clone(&WORK_TICKS)
+}
 
 #[derive(Clone, Debug)]
 pub struct FinalizeProgressBinding {
@@ -199,6 +257,7 @@ fn publish_sample(
         "session_id": binding.session_id,
         "capture_id": binding.capture_id,
         "phase": sample.phase,
+        "stage": current_stage(),
         "sample_ordinal": sample.sample_ordinal,
         "elapsed_ms": sample.elapsed_ms,
         "work_bytes": sample.work_bytes,
@@ -282,7 +341,7 @@ pub struct FinalizeProgressPublisher {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
     started: Instant,
-    ordinal: Arc<std::sync::atomic::AtomicU64>,
+    ordinal: Arc<AtomicU64>,
     #[cfg(test)]
     before_stop_and_join: Option<Box<dyn FnMut()>>,
 }
@@ -292,13 +351,14 @@ impl FinalizeProgressPublisher {
         out_dir: &Path,
         binding: FinalizeProgressBinding,
         meter: Box<dyn WorkMeter>,
+        ticks: Arc<AtomicU64>,
         interval: Duration,
         phase: &'static str,
     ) -> Result<Self, String> {
         let started = Instant::now();
         let mut tracker = ProgressTracker::new(started);
         let mut meter = meter;
-        let first_work = meter.observe();
+        let first_work = meter.observe().saturating_add(ticks.load(Ordering::Relaxed));
         let first = tracker.sample(
             phase,
             0,
@@ -310,7 +370,7 @@ impl FinalizeProgressPublisher {
         publish_sample(out_dir, &binding, &first, 0)?;
 
         let stop = Arc::new(AtomicBool::new(false));
-        let ordinal = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let ordinal = Arc::new(AtomicU64::new(0));
         let thread_stop = Arc::clone(&stop);
         let thread_ordinal = Arc::clone(&ordinal);
         let thread_dir = out_dir.to_path_buf();
@@ -328,7 +388,7 @@ impl FinalizeProgressPublisher {
                     }
                     next_sample = now + interval;
                     let next = thread_ordinal.fetch_add(1, Ordering::AcqRel) + 1;
-                    let work = meter.observe();
+                    let work = meter.observe().saturating_add(ticks.load(Ordering::Relaxed));
                     let sample = tracker.sample(
                         phase,
                         next,

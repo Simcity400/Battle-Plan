@@ -128,6 +128,7 @@ impl SteppedPublisher {
             out_dir,
             binding(),
             Box::new(meter),
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
             STEP_INTERVAL,
             PHASE_FINALIZING,
         )

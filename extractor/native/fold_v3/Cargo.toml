@@ -1,0 +1,9 @@
+[package]
+name = "fold_v3"
+version = "0.1.0"
+edition = "2021"
+description = "H4CP v3 PROTOTYPE: canonical-binary section state plus mutation journal. Measurement only -- it produces no sealed artifact, no production path depends on it, and the v2 fold and cache format are untouched."
+autobins = false
+
+[dependencies]
+snapshot = { path = "../snapshot" }

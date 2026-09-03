@@ -32,12 +32,17 @@ my-cow-census = []
 # rather than asserted. Measurement only: with the feature off the note sites
 # compile away and no production path enables it.
 my-projection-census = []
+# H4CP v3 prototype instrument: exposes `replay_cache::measure_section_patch_bytes`
+# so the prototype prices a section's v2 delta with the production diff and
+# patch encoder. Measurement only; no production path enables it.
+dq-v3-prototype = []
 
 [dependencies]
 compact_stream = { package = "portable_compact_stream", path = "../compact_stream" }
 portable_content_manifest = { path = "../content_manifest" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 flate2 = "1"
 crc32fast = "1"
 zstd = "0.13.3"

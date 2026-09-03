@@ -32,13 +32,23 @@ ha-entry-confinement = []
 # spool through the collector's real repeat gate and proves round-trip fold
 # equality against the non-gated encoding. Measurement only: it writes only
 # the files its arguments name, is never on by default, is never packaged.
-pv-repeat-gate = ["dep:collector", "dep:sha2"]
+pv-repeat-gate = ["dep:collector"]
 # Truncation harness. Shares the entry-confinement fixture
 # (`src/bin/entry_damage_fixture.rs`) and cuts the packaged H4CP short instead
 # of flipping a byte, reporting which hours the verified prefix still serves.
 # Measurement only: it writes nothing outside the scratch directory it is given,
 # is never on by default and is never packaged.
 hr-truncated-prefix = []
+# Lane PR finalize profiler (`src/bin/pr_finalize_profile.rs`). Runs THE
+# production certified-artifact build over a retained spool under FOLD_PROFILE
+# and reports stage timings, digests and peak memory. Measurement only: it
+# writes only the spill directory and report it is given, is never on by
+# default and is never packaged.
+pr-finalize-profile = []
+# H4CP v3 prototype driver and density census (lanes DQ/EE/GE, restored by
+# lane PR). Runs the canonical-binary section state and mutation journal
+# beside the v2 path on a real capture and prices both.
+dq-v3-prototype = ["dep:mimalloc", "dep:fold_v3", "snapshot/dq-v3-prototype"]
 
 [dependencies]
 compact_stream = { path = "../compact_stream" }
@@ -51,8 +61,12 @@ portable_render_stream = { path = "../../../portable_replay/native/render_stream
 # producers' own projection, so a count of minted rows is backed by rows.
 map_unit_presentation = { path = "../lanes/map_unit_presentation" }
 xmap15_orders_semantic = { path = "../lanes/xmap15_orders_semantic" }
-sha2 = { version = "0.10", optional = true }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
 collector = { path = "../collector", optional = true }
+# Instrument-only; pulled in solely by the v3 prototype feature.
+mimalloc = { version = "0.1.52", optional = true }
+fold_v3 = { path = "../fold_v3", optional = true }
 
 [dev-dependencies]
 # Lane VD's pickup contract, owned by neither tree: this crate's
@@ -127,3 +141,18 @@ required-features = ["pv-repeat-gate"]
 name = "wo_xmap13_gate_scan"
 path = "src/bin/wo_xmap13_gate_scan.rs"
 required-features = ["pv-repeat-gate"]
+
+[[bin]]
+name = "pr_finalize_profile"
+path = "src/bin/pr_finalize_profile.rs"
+required-features = ["pr-finalize-profile"]
+
+[[bin]]
+name = "dq_v3_prototype"
+path = "src/bin/dq_v3_prototype.rs"
+required-features = ["dq-v3-prototype"]
+
+[[bin]]
+name = "dq_v3_census"
+path = "src/bin/dq_v3_census.rs"
+required-features = ["dq-v3-prototype"]

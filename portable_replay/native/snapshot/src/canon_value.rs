@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::sync::{Arc, OnceLock};
 
 use crate::canon_to_json::ProjectionMemo;
+use crate::sha256::{to_hex, Sha256};
 
 pub(crate) const MAX_RECURSION_DEPTH: usize = 256;
 
@@ -35,6 +36,10 @@ pub enum CanonValue {
 pub struct ArrayNode {
     items: Vec<CanonValue>,
     memo: OnceLock<Box<ProjectionMemo>>,
+    /// The canonical text of this node, remembered by the writer for nodes at
+    /// [`CanonValue::TEXT_MEMO_DEPTH`]; cleared with the projection memo by the
+    /// one door to mutable contents, invisible to value semantics like it.
+    text: OnceLock<Box<[u8]>>,
 }
 
 impl ArrayNode {
@@ -42,6 +47,7 @@ impl ArrayNode {
         Self {
             items,
             memo: OnceLock::new(),
+            text: OnceLock::new(),
         }
     }
 
@@ -52,11 +58,16 @@ impl ArrayNode {
     /// so bypassing the door does not compile.
     pub fn contents_mut(&mut self) -> &mut Vec<CanonValue> {
         self.memo.take();
+        self.text.take();
         &mut self.items
     }
 
     pub(crate) fn projection_cell(&self) -> &OnceLock<Box<ProjectionMemo>> {
         &self.memo
+    }
+
+    fn text_cell(&self) -> &OnceLock<Box<[u8]>> {
+        &self.text
     }
 }
 
@@ -95,6 +106,8 @@ impl std::fmt::Debug for ArrayNode {
 pub struct ObjectNode {
     members: Vec<(String, CanonValue)>,
     memo: OnceLock<Box<ProjectionMemo>>,
+    /// See [`ArrayNode`]: the same text memo, for objects.
+    text: OnceLock<Box<[u8]>>,
 }
 
 impl ObjectNode {
@@ -102,17 +115,23 @@ impl ObjectNode {
         Self {
             members,
             memo: OnceLock::new(),
+            text: OnceLock::new(),
         }
     }
 
     /// See [`ArrayNode::contents_mut`]: the one door, memo cleared first.
     pub fn contents_mut(&mut self) -> &mut Vec<(String, CanonValue)> {
         self.memo.take();
+        self.text.take();
         &mut self.members
     }
 
     pub(crate) fn projection_cell(&self) -> &OnceLock<Box<ProjectionMemo>> {
         &self.memo
+    }
+
+    fn text_cell(&self) -> &OnceLock<Box<[u8]>> {
+        &self.text
     }
 }
 
@@ -318,6 +337,116 @@ impl CanonValue {
         out
     }
 
+    /// Depth (root = 0) at which a container's canonical text is remembered on
+    /// the node. Two levels down is the entity level of the world document --
+    /// one country, one state, one province row block -- so an hour that
+    /// changes one entity re-spells one entity and copies the rest.
+    pub const TEXT_MEMO_DEPTH: usize = 2;
+    /// Below this many bytes a memo costs more than the spelling it saves.
+    pub const TEXT_MEMO_MIN_BYTES: usize = 1024;
+
+    /// Write the canonical text through the per-node text memo. A container at
+    /// [`Self::TEXT_MEMO_DEPTH`] whose cell is filled is copied out verbatim; one
+    /// whose cell is empty is spelled into `scratch`, copied out, and remembered
+    /// when large enough. The cell is cleared by the one door to mutable
+    /// contents, so a filled cell is always the text of the node as it stands.
+    /// Byte-identical to [`Self::write_json`].
+    pub fn write_json_memo<S: JsonSink>(&self, out: &mut S, depth: usize, scratch: &mut Vec<u8>) {
+        match self {
+            Self::Null => out.put(b"null"),
+            Self::Bool(false) => out.put(b"false"),
+            Self::Bool(true) => out.put(b"true"),
+            Self::Number(token) => out.put(token.as_bytes()),
+            Self::String(body) => {
+                out.put(b"\"");
+                out.put(body.as_bytes());
+                out.put(b"\"");
+            }
+            Self::Array(node) if depth == Self::TEXT_MEMO_DEPTH => {
+                Self::write_memoised(node.text_cell(), self, out, scratch)
+            }
+            Self::Object(node) if depth == Self::TEXT_MEMO_DEPTH => {
+                Self::write_memoised(node.text_cell(), self, out, scratch)
+            }
+            Self::Array(values) => {
+                out.put(b"[");
+                for (index, value) in values.iter().enumerate() {
+                    if index != 0 {
+                        out.put(b",");
+                    }
+                    value.write_json_memo(out, depth + 1, scratch);
+                }
+                out.put(b"]");
+            }
+            Self::Object(members) => {
+                out.put(b"{");
+                for (index, (key, value)) in members.iter().enumerate() {
+                    if index != 0 {
+                        out.put(b",");
+                    }
+                    out.put(b"\"");
+                    out.put(key.as_bytes());
+                    out.put(b"\":");
+                    value.write_json_memo(out, depth + 1, scratch);
+                }
+                out.put(b"}");
+            }
+        }
+    }
+
+    fn write_memoised<S: JsonSink>(
+        cell: &OnceLock<Box<[u8]>>,
+        value: &CanonValue,
+        out: &mut S,
+        scratch: &mut Vec<u8>,
+    ) {
+        if let Some(text) = cell.get() {
+            crate::replay_cache::cacheprof::add(&crate::replay_cache::cacheprof::TEXT_MEMO_HITS, 1);
+            out.put(text);
+            return;
+        }
+        scratch.clear();
+        value.write_json(scratch);
+        crate::replay_cache::cacheprof::add(&crate::replay_cache::cacheprof::TEXT_MEMO_MISSES, 1);
+        crate::replay_cache::cacheprof::add(
+            &crate::replay_cache::cacheprof::TEXT_MEMO_MISS_BYTES,
+            scratch.len() as u64,
+        );
+        out.put(scratch);
+        if scratch.len() >= Self::TEXT_MEMO_MIN_BYTES {
+            let _ = cell.set(scratch.as_slice().into());
+        }
+    }
+
+    /// The SHA-256 of the canonical text and that text's length, taken without
+    /// materialising the document: the text streams through the hasher.
+    pub fn json_sha256_hex(&self) -> (String, u64) {
+        let mut sink = HashingSink::new();
+        let mut scratch = Vec::new();
+        self.write_json_memo(&mut sink, 0, &mut scratch);
+        sink.finish()
+    }
+
+    /// Bytes held by filled text memo cells reachable from this value.
+    pub fn text_memo_bytes(&self) -> u64 {
+        let mut total = 0u64;
+        let mut stack = vec![self];
+        while let Some(value) = stack.pop() {
+            match value {
+                Self::Array(node) => {
+                    total += node.text_cell().get().map_or(0, |text| text.len() as u64);
+                    stack.extend(node.iter());
+                }
+                Self::Object(node) => {
+                    total += node.text_cell().get().map_or(0, |text| text.len() as u64);
+                    stack.extend(node.iter().map(|(_, value)| value));
+                }
+                _ => {}
+            }
+        }
+        total
+    }
+
     fn json_len_hint(&self) -> usize {
         match self {
             Self::Null | Self::Bool(_) => 5,
@@ -361,6 +490,71 @@ impl CanonValue {
             Self::String(body) => decode_json_string_body(body),
             _ => None,
         }
+    }
+}
+
+/// Where canonical text goes: a buffer, or a hasher that never keeps it.
+pub trait JsonSink {
+    fn put(&mut self, bytes: &[u8]);
+}
+
+impl JsonSink for Vec<u8> {
+    fn put(&mut self, bytes: &[u8]) {
+        self.extend_from_slice(bytes);
+    }
+}
+
+/// A sink that hashes the canonical text as it streams past, batching the
+/// small pieces (brackets, keys, tokens) so the hasher sees large blocks.
+pub struct HashingSink {
+    hasher: Sha256,
+    buffer: Vec<u8>,
+    len: u64,
+}
+
+impl Default for HashingSink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HashingSink {
+    const CHUNK: usize = 1 << 20;
+
+    pub fn new() -> Self {
+        Self {
+            hasher: Sha256::new(),
+            buffer: Vec::with_capacity(Self::CHUNK),
+            len: 0,
+        }
+    }
+
+    fn flush(&mut self) {
+        if !self.buffer.is_empty() {
+            self.hasher.update(&self.buffer);
+            self.buffer.clear();
+        }
+    }
+
+    /// The hex digest and the number of bytes hashed.
+    pub fn finish(mut self) -> (String, u64) {
+        self.flush();
+        (to_hex(&self.hasher.finalize()), self.len)
+    }
+}
+
+impl JsonSink for HashingSink {
+    fn put(&mut self, bytes: &[u8]) {
+        self.len += bytes.len() as u64;
+        if bytes.len() >= Self::CHUNK / 4 {
+            self.flush();
+            self.hasher.update(bytes);
+            return;
+        }
+        if self.buffer.len() + bytes.len() > Self::CHUNK {
+            self.flush();
+        }
+        self.buffer.extend_from_slice(bytes);
     }
 }
 

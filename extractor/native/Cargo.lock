@@ -586,6 +586,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fold_v3"
+version = "0.1.0"
+dependencies = [
+ "snapshot",
+]
+
+[[package]]
 name = "fow_visibility_live"
 version = "0.1.0"
 dependencies = [
@@ -885,6 +892,7 @@ dependencies = [
  "portable_content_manifest",
  "serde",
  "serde_json",
+ "sha2",
  "unicode-normalization",
  "windows-sys",
  "zstd",
@@ -1035,10 +1043,13 @@ dependencies = [
  "collector",
  "compact_contract",
  "compact_stream",
+ "fold_v3",
  "map_unit_presentation",
+ "mimalloc",
  "portable_engine_evidence",
  "portable_render_stream",
  "recorder_host",
+ "serde",
  "serde_json",
  "sha2",
  "snapshot",

@@ -13,6 +13,9 @@ members = [
     "wire_product",
     "compact_stream",
     "compact_contract",
+    # H4CP v3 fold: canonical-binary section state plus mutation journal.
+    # Restored from a17e1cd7^ under the owner ruling of 2026-09-02 (lane PR).
+    "fold_v3",
     # D13's payload grammar, owner ruling 2026-08-15: ONE shared decoder. A leaf
     # with no dependencies, because the four sites that walk this grammar sit on
     # both sides of two deliberate crate directions (`wire_format` takes no

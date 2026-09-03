@@ -308,6 +308,7 @@ dependencies = [
  "portable_content_manifest",
  "serde",
  "serde_json",
+ "sha2",
  "unicode-normalization",
  "windows-sys",
  "zstd",

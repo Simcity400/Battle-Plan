@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 pub mod canon;
+pub mod canon_convert;
 pub mod canon_to_json;
 pub mod canon_value;
 pub mod container;
@@ -57,6 +58,7 @@ pub use replay_cache::{
     CertifiedReplayCache, ConfinedHour, FrameOutcome, ProjectedOutcome, ReplayCacheEncoder,
     ReplayCacheError,
     ReplayCacheReader, ReplayExcludedHour, ReplayHourEntry, ReplayHourIndex, ReplaySeekReceipt,
+    UnhashedWorldHour,
     ScrubOutcome, CHECKPOINT_CACHE_FILE, CHECKPOINT_CACHE_HEADER_LEN, CHECKPOINT_CACHE_ROLE,
     DEFAULT_CHECKPOINT_INTERVAL_HOURS, HOUR_INDEX_FILE, HOUR_INDEX_ROLE, MAX_CACHE_RECORD_BYTES,
     MAX_CHECKPOINT_INTERVAL_HOURS, PUBLISHED_COVERAGE_FILE, PUBLISHED_COVERAGE_SCHEMA,
