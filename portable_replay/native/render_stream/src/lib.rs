@@ -150,6 +150,18 @@ pub use xmap13_producer_contract::{
     XMAP13_TASK_FORCE_MEMBER_CONTRACT,
 };
 
+mod xmap14_producer_contract;
+pub use xmap14_producer_contract::{
+    validate_xmap14_producer_contract, xmap14_classify_envelope_leaf, xmap14_classify_land_leaf,
+    xmap14_classify_naval_leaf, xmap14_classify_naval_result_leaf, xmap14_classify_unplaced_leaf,
+    xmap14_contract_gate_leaves, xmap14_viewer_derived_leaves, XMAP14_CARRIER_WIRE_PATH,
+    XMAP14_ENVELOPE_CONTRACT, XMAP14_LAND_ANCHOR_LEAVES, XMAP14_LAND_ATTACKER_FAMILY_BASE_KIND,
+    XMAP14_LAND_ATTACKER_FAMILY_LEN, XMAP14_LAND_BASE_LOCATOR_KIND, XMAP14_LAND_ROW_CONTRACT,
+    XMAP14_NAVAL_RESULT_ROW_CONTRACT, XMAP14_NAVAL_ROW_CONTRACT,
+    XMAP14_PRODUCER_CONTRACT_SCHEMA, XMAP14_RECORDED_INPUTS, XMAP14_TABLES,
+    XMAP14_UNPLACED_ROW_CONTRACT,
+};
+
 mod xmap15_producer_contract;
 pub use xmap15_producer_contract::{
     validate_xmap15_producer_contract, xmap15_classify_envelope_leaf,

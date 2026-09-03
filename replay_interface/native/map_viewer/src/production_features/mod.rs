@@ -12,6 +12,7 @@ pub(crate) mod xmap12;
 pub mod xmap13;
 pub(crate) mod xmap13_pose;
 pub mod xmap14;
+pub mod xmap14_place;
 pub mod xmap15;
 pub(crate) mod xmap16;
 pub(crate) mod xmap17;

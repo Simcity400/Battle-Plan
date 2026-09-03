@@ -582,6 +582,15 @@ pub use production_features::xmap14::{
     XMAP14_COMBAT_STAGE_NAME, XMAP14_ENGINE_SHA256, XMAP14_INPUT_SCHEMA,
     XMAP14_NATIVE_RECEIPT_SCHEMA, XMAP14_PREPARED_SCHEMA,
 };
+pub use production_features::xmap14_place::{
+    xmap14_first_live_attacker, xmap14_land_anchor_for_combat_row,
+    xmap14_land_anchor_for_combat_row_with, xmap14_land_anchor_operands,
+    xmap14_land_anchor_operands_from_xmap13, xmap14_land_anchor_points,
+    xmap14_pre_seeded_locator_point, xmap14_world_anchor, Xmap14AttackerStack,
+    Xmap14FirstLiveAttacker, Xmap14LandAnchorOperands, Xmap14LandAnchorPoints,
+    Xmap14LandAnchorRefusal, Xmap14LocatorSource, XMAP14_LAND_ANCHOR_CAUSE_IDS,
+    XMAP14_LAND_MIDPOINT_FACTOR,
+};
 pub use production_features::xmap15::{
     prepare_xmap15_frame, xmap15_viewer_selection, PreparedXmap15Frame,
     PreparedXmap15MovementDefinition, PreparedXmap15PlanDefinition, Xmap15LifecycleState,

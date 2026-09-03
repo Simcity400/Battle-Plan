@@ -469,6 +469,52 @@ mod tests {
         }
     }
 
+    /// An hour where every CONDITIONAL operand fires: no province on either
+    /// row, one land side unstated and the other stated empty, an untyped
+    /// participant, no naval participants, no owner countries and no occurrence
+    /// set. Two land rows because a side cannot be unstated, empty and untyped
+    /// at once.
+    fn starved_inputs() -> ProducerInputs {
+        ProducerInputs {
+            hour_index: 17_031_768,
+            capture_sequence: 43,
+            land: Some(vec![
+                LandCombatInput {
+                    combat_id: 70,
+                    generation: 1,
+                    location_province_id: None,
+                    attackers: None,
+                    defenders: Some(Vec::new()),
+                    progress_fixed5: None,
+                },
+                LandCombatInput {
+                    combat_id: 71,
+                    generation: 1,
+                    location_province_id: Some(911),
+                    attackers: Some(vec![None]),
+                    defenders: Some(vec![division(12)]),
+                    progress_fixed5: Some(42_000),
+                },
+            ]),
+            naval: Some(vec![NavalCombatInput {
+                combat_id: 80,
+                generation: 1,
+                location_province_id: None,
+                attackers: None,
+                defenders: None,
+                attacker_owner_country_ids: None,
+                defender_owner_country_ids: None,
+                occurrence_provinces: None,
+            }]),
+            naval_results: Some(vec![NavalResultRecordInput {
+                record_id: 9002,
+                province_id: 4002,
+                create_sequence: 41,
+            }]),
+            country_id_by_tag: Vec::new(),
+        }
+    }
+
     fn envelope(inputs: &ProducerInputs) -> wire::CombatEnvelope {
         serde_json::from_value(produce(inputs)).expect("the producer stated a census")
     }
@@ -485,6 +531,359 @@ mod tests {
         assert_eq!(sealed.hour_index, 17_031_767);
         assert_eq!(sealed.capture_sequence, 42);
         sealed.validate_body().expect("the census is lawful");
+    }
+
+    /// kills: this producer's operand vocabulary drifting off the contract
+    /// that says who owes each leaf, in either direction, on every class and
+    /// every branch that names an operand.
+    ///
+    /// The rule: an operand must name a leaf the PRODUCER could owe - a
+    /// contract gate, or a recorded leaf this hour did not carry - never one
+    /// XMAP14-PLACE-1 gives the viewer. The two that do today are declared with
+    /// reasons, as is the one class whose gated leaves no operand names.
+    #[test]
+    fn every_operand_this_producer_names_answers_a_leaf_the_contract_owes_it() {
+        use portable_render_stream::{
+            validate_xmap14_producer_contract, xmap14_classify_envelope_leaf,
+            xmap14_classify_land_leaf, xmap14_classify_naval_leaf,
+            xmap14_classify_naval_result_leaf, CarrierGateOwner, CarrierLeafSource,
+            XMAP14_LAND_ANCHOR_LEAVES, XMAP14_LAND_ROW_CONTRACT, XMAP14_NAVAL_RESULT_ROW_CONTRACT,
+            XMAP14_NAVAL_ROW_CONTRACT,
+        };
+        use std::collections::BTreeSet;
+
+        validate_xmap14_producer_contract().expect("the shared producer contract is well formed");
+
+        // Every operand, with the leaf it names and the table that classifies
+        // that leaf. `envelope` is a real answer: an operand can name a leaf of
+        // the envelope rather than of the row.
+        let mapping: &[(wire::MissingOperand, &str, &str)] = &[
+            (wire::MissingOperand::LandSideFlags, "land", "attacker_side_flags"),
+            (wire::MissingOperand::LandSideFlags, "land", "defender_side_flags"),
+            (wire::MissingOperand::LandSideFlags, "land", "side_flags_sha256"),
+            (wire::MissingOperand::LandFrameSelector, "land", "frame_selector"),
+            (
+                wire::MissingOperand::LandComparisonScalars,
+                "land",
+                "attacker_comparison_fixed",
+            ),
+            (
+                wire::MissingOperand::LandComparisonScalars,
+                "land",
+                "defender_comparison_fixed",
+            ),
+            (wire::MissingOperand::LandProgress, "land", "progress_fixed5"),
+            (
+                wire::MissingOperand::LandIconAnchorPoints,
+                "land",
+                "first_live_attacker_stack_point_f32_bits",
+            ),
+            (wire::MissingOperand::LandParticipantMembership, "land", "attackers"),
+            (wire::MissingOperand::LandParticipantMembership, "land", "defenders"),
+            (wire::MissingOperand::LandIconExistencePredicate, "land", "attackers"),
+            (wire::MissingOperand::LandParticipantTypeIds, "land", "attackers"),
+            (wire::MissingOperand::LandLocationProvince, "land", "location_province_id"),
+            (wire::MissingOperand::NavalProgress, "naval", "progress_fixed5"),
+            (
+                wire::MissingOperand::NavalCategoryCounts,
+                "naval",
+                "attacker_category_counts",
+            ),
+            (
+                wire::MissingOperand::NavalCategoryCounts,
+                "naval",
+                "defender_category_counts",
+            ),
+            (
+                wire::MissingOperand::NavalCategoryCounts,
+                "naval",
+                "category_counts_sha256",
+            ),
+            (
+                wire::MissingOperand::NavalParticipantReferences,
+                "naval",
+                "attackers",
+            ),
+            (
+                wire::MissingOperand::NavalParticipantReferences,
+                "naval",
+                "defenders",
+            ),
+            (
+                wire::MissingOperand::NavalSideOwnerCountries,
+                "naval",
+                "attacker_owner_country_ids",
+            ),
+            (
+                wire::MissingOperand::NavalSideOwnerCountries,
+                "naval",
+                "defender_owner_country_ids",
+            ),
+            (
+                wire::MissingOperand::NavalLocationProvince,
+                "naval",
+                "location_province_id",
+            ),
+            (
+                wire::MissingOperand::NavalIconOccurrenceSet,
+                "envelope",
+                "naval_occurrence_sets",
+            ),
+        ];
+
+        // Operands that name a leaf the VIEWER owns, so no producer owes them.
+        let unowed: &[(wire::MissingOperand, &str, &str)] = &[
+            (
+                wire::MissingOperand::NavalIconAnchorPoint,
+                "naval",
+                "anchor_point_f32_bits",
+            ),
+            (
+                wire::MissingOperand::NavalResultAnchorPoint,
+                "naval_result",
+                "anchor_point_f32_bits",
+            ),
+        ];
+
+        let classify = |table: &str, leaf: &str| -> Option<&'static CarrierLeafSource> {
+            match table {
+                "land" => xmap14_classify_land_leaf(leaf),
+                "naval" => xmap14_classify_naval_leaf(leaf),
+                "naval_result" => xmap14_classify_naval_result_leaf(leaf),
+                "envelope" => xmap14_classify_envelope_leaf(leaf),
+                other => panic!("no table named {other}"),
+            }
+        };
+
+        // Every operand the producer can name, over every branch: the fully
+        // joined hour and the hour where every conditional fires.
+        // PER ROW, against the input that produced it: an operand is right
+        // only if that row's own input state warrants it. A union would let a
+        // side-specific operand be answered by the other side's state.
+        for inputs in [inputs(), starved_inputs()] {
+            let sealed = envelope(&inputs);
+            let named_on = |identity: wire::IndicatorIdentity| -> BTreeSet<wire::MissingOperand> {
+                sealed
+                    .unplaced
+                    .iter()
+                    .find(|row| row.identity == identity)
+                    .unwrap_or_else(|| panic!("{identity:?} is in the census"))
+                    .missing_operands
+                    .iter()
+                    .copied()
+                    .collect()
+            };
+            for input in inputs.land.iter().flatten() {
+                let mut expected: BTreeSet<wire::MissingOperand> = [
+                    wire::MissingOperand::LandIconAnchorPoints,
+                    wire::MissingOperand::LandSideFlags,
+                    wire::MissingOperand::LandFrameSelector,
+                    wire::MissingOperand::LandComparisonScalars,
+                ]
+                .into_iter()
+                .collect();
+                if input.progress_fixed5.is_none() {
+                    expected.insert(wire::MissingOperand::LandProgress);
+                }
+                for side in [&input.attackers, &input.defenders] {
+                    match side {
+                        None => {
+                            expected.insert(wire::MissingOperand::LandParticipantMembership);
+                        }
+                        Some(list) if list.is_empty() => {
+                            expected.insert(wire::MissingOperand::LandIconExistencePredicate);
+                        }
+                        Some(list) if list.iter().any(Option::is_none) => {
+                            expected.insert(wire::MissingOperand::LandParticipantTypeIds);
+                        }
+                        Some(_) => {}
+                    }
+                }
+                if !input.location_province_id.is_some_and(|province| province != 0) {
+                    expected.insert(wire::MissingOperand::LandLocationProvince);
+                }
+                assert_eq!(
+                    named_on(wire::IndicatorIdentity::Land {
+                        combat_id: i64::from(input.combat_id),
+                        generation: input.generation as i64,
+                    }),
+                    expected,
+                    "land combat {} names exactly the operands its own input warrants",
+                    input.combat_id
+                );
+            }
+            for input in inputs.naval.iter().flatten() {
+                let mut expected: BTreeSet<wire::MissingOperand> = [
+                    wire::MissingOperand::NavalIconAnchorPoint,
+                    wire::MissingOperand::NavalCategoryCounts,
+                    wire::MissingOperand::NavalProgress,
+                ]
+                .into_iter()
+                .collect();
+                if input.occurrence_provinces.is_none() {
+                    expected.insert(wire::MissingOperand::NavalIconOccurrenceSet);
+                }
+                if input.attackers.is_none() || input.defenders.is_none() {
+                    expected.insert(wire::MissingOperand::NavalParticipantReferences);
+                }
+                if input.attacker_owner_country_ids.is_none()
+                    || input.defender_owner_country_ids.is_none()
+                {
+                    expected.insert(wire::MissingOperand::NavalSideOwnerCountries);
+                }
+                if !input.location_province_id.is_some_and(|province| province != 0) {
+                    expected.insert(wire::MissingOperand::NavalLocationProvince);
+                }
+                assert_eq!(
+                    named_on(wire::IndicatorIdentity::Naval {
+                        combat_id: i64::from(input.combat_id),
+                        generation: input.generation as i64,
+                    }),
+                    expected,
+                    "naval combat {} names exactly the operands its own input warrants",
+                    input.combat_id
+                );
+            }
+            for input in inputs.naval_results.iter().flatten() {
+                assert_eq!(
+                    named_on(wire::IndicatorIdentity::NavalResult {
+                        result_id: i64::from(input.record_id),
+                        generation: 0,
+                        create_sequence: input.create_sequence,
+                    }),
+                    [wire::MissingOperand::NavalResultAnchorPoint]
+                        .into_iter()
+                        .collect::<BTreeSet<_>>(),
+                    "retained result {} names exactly the anchor operand",
+                    input.record_id
+                );
+            }
+        }
+
+        let rows: Vec<wire::UnplacedIndicator> = [inputs(), starved_inputs()]
+            .iter()
+            .flat_map(|inputs| envelope(inputs).unplaced)
+            .collect();
+        let named = |class: wire::IndicatorClass| -> BTreeSet<wire::MissingOperand> {
+            rows.iter()
+                .filter(|row| wire::IndicatorClass::of(&row.identity) == class)
+                .flat_map(|row| row.missing_operands.iter().copied())
+                .collect()
+        };
+        let every_class = [
+            wire::IndicatorClass::Land,
+            wire::IndicatorClass::Naval,
+            wire::IndicatorClass::NavalResult,
+        ];
+        for class in every_class {
+            assert!(
+                !named(class).is_empty(),
+                "{class:?} contributes rows across the two hours"
+            );
+        }
+
+        for class in every_class {
+            let operands = named(class);
+            let operands = &operands;
+            for operand in operands {
+                if let Some((_, table, leaf)) =
+                    unowed.iter().find(|(candidate, _, _)| candidate == operand)
+                {
+                    assert!(
+                        matches!(
+                            classify(table, leaf),
+                            Some(CarrierLeafSource::ReplayDerived { .. })
+                        ),
+                        "{operand:?} is declared unowed because {table}[].{leaf} is the viewer's, \
+                         and it is not classified that way"
+                    );
+                    continue;
+                }
+                let (_, table, leaf) = mapping
+                    .iter()
+                    .find(|(candidate, _, _)| candidate == operand)
+                    .unwrap_or_else(|| {
+                        panic!("{class:?} names {operand:?}, which maps to no leaf at all")
+                    });
+                match classify(table, leaf) {
+                    Some(CarrierLeafSource::Gate { owed_by, .. }) => {
+                        assert_eq!(*owed_by, CarrierGateOwner::Producer, "{operand:?}");
+                    }
+                    // A recorded leaf this hour did not carry: the operand is an
+                    // hour gate, not a contract gate.
+                    Some(CarrierLeafSource::RecordedPlayTimeState { .. }) => {}
+                    other => panic!("{operand:?} names {table}[].{leaf}, classified {other:?}"),
+                }
+            }
+        }
+
+        // The other direction, per class: a leaf the contract owes the producer
+        // must be named by an operand somewhere. The retained-result class is
+        // the declared gap - d103 hands this producer only the id, the province
+        // and the create sequence, and the rows it emits name only the anchor -
+        // so its gated leaves are listed rather than found.
+        let unnamed_naval_result: &[&str] = &[
+            "subtype",
+            "members",
+            "retire_sequence",
+            "lifecycle_sha256",
+        ];
+        for (class, contract_table, table_name) in [
+            (
+                wire::IndicatorClass::Land,
+                XMAP14_LAND_ROW_CONTRACT.as_slice(),
+                "land",
+            ),
+            (
+                wire::IndicatorClass::Naval,
+                XMAP14_NAVAL_ROW_CONTRACT.as_slice(),
+                "naval",
+            ),
+            (
+                wire::IndicatorClass::NavalResult,
+                XMAP14_NAVAL_RESULT_ROW_CONTRACT.as_slice(),
+                "naval_result",
+            ),
+        ] {
+            let operands = named(class);
+            for (leaf, source) in contract_table {
+                if source.gate_owner() != Some(CarrierGateOwner::Producer) {
+                    continue;
+                }
+                if class == wire::IndicatorClass::NavalResult
+                    && unnamed_naval_result.contains(leaf)
+                {
+                    continue;
+                }
+                let answered = mapping.iter().any(|(operand, mapped_table, mapped_leaf)| {
+                    *mapped_table == table_name
+                        && mapped_leaf == leaf
+                        && operands.contains(operand)
+                });
+                assert!(
+                    answered,
+                    "{class:?} owes the producer {leaf} and no operand it names answers it"
+                );
+            }
+        }
+
+        // The declared gap is exactly those four leaves and no more.
+        let naval_result_gated: BTreeSet<&str> = XMAP14_NAVAL_RESULT_ROW_CONTRACT
+            .iter()
+            .filter(|(_, source)| source.gate_owner() == Some(CarrierGateOwner::Producer))
+            .map(|(leaf, _)| *leaf)
+            .collect();
+        assert_eq!(
+            naval_result_gated,
+            unnamed_naval_result.iter().copied().collect::<BTreeSet<&str>>()
+        );
+
+        // And the land base point stays the viewer's, which is the other half
+        // of the LandIconAnchorPoints reconciliation.
+        assert!(matches!(
+            xmap14_classify_land_leaf(XMAP14_LAND_ANCHOR_LEAVES[0]),
+            Some(CarrierLeafSource::ReplayDerived { .. })
+        ));
     }
 
     #[test]
