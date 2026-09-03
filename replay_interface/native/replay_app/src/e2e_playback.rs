@@ -1,4 +1,5 @@
 
+use replay_core::{CountryIdentityLeaf, CountryIdentityRosterLeaf};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -38,11 +39,11 @@ fn open_recording_timeline(rel: &str) -> (WorldTimeline, RecordingTimeline) {
 }
 
 
-fn owner_map_encoding(map: &BTreeMap<u32, Leaf<String>>) -> String {
+fn owner_map_encoding(map: &BTreeMap<u32, Leaf<replay_core::CountryIdentityRef>>) -> String {
     let mut out = String::new();
     for (state, leaf) in map {
         if let Leaf::Measured(tag) = leaf {
-            out.push_str(&format!("{state}={tag};"));
+            out.push_str(&format!("{state}={};", tag.tag()));
         }
     }
     out
@@ -72,9 +73,9 @@ fn pov_visible_set(frame: &WorldFrame, tag: &str) -> BTreeSet<u32> {
 }
 
 fn effective_visible_set(frame: &WorldFrame, pov: &PovState) -> BTreeSet<u32> {
-    match pov.active_pov() {
+    match pov.active_pov().and_then(|selection| selection.named_in(frame)) {
         None => world_visible_universe(frame),
-        Some(tag) => pov_visible_set(frame, tag),
+        Some(named) => pov_visible_set(frame, named.tag()),
     }
 }
 
@@ -91,10 +92,10 @@ fn leaf_list_encoding(leaf: &Leaf<Vec<String>>) -> String {
 }
 
 fn effective_spotted_encoding(frame: &WorldFrame, pov: &PovState) -> String {
-    match pov.active_pov() {
+    match pov.active_pov().and_then(|selection| selection.named_in(frame)) {
         None => "ALL".to_string(),
-        Some(tag) => {
-            let s = frame.spotted_units_for(tag);
+        Some(named) => {
+            let s = frame.spotted_units_for(named.tag());
             format!(
                 "div={};fleets={};wings={}",
                 leaf_list_encoding(&s.divisions),
@@ -135,7 +136,13 @@ fn topbar_encoding(frame: &WorldFrame, tags: &[&str]) -> String {
 fn state_hash(frame: &WorldFrame, pov: &PovState, topbar_tags: &[&str]) -> u64 {
     let mode = match pov.mode() {
         ObserverMode::Omniscient => "OMNISCIENT".to_string(),
-        ObserverMode::Pov(tag) => format!("POV:{tag}"),
+        // THE NAME THIS FRAME ADMITS. A POV the census refuses hashes as one
+        // unnamed POV rather than as the key it held, which is the same thing
+        // the render status shows.
+        ObserverMode::Pov(selection) => match selection.named_in(frame) {
+            Some(named) => format!("POV:{}", named.tag()),
+            None => "POV:<unnamed>".to_string(),
+        },
     };
     let visible: Vec<String> = effective_visible_set(frame, pov)
         .iter()
@@ -361,7 +368,7 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
     let world_still_has_sov_div = frame5
         .divisions()
         .iter()
-        .any(|d| d.div_uid == "201:1" && d.owner == Leaf::Measured("SOV".to_string()));
+        .any(|d| d.div_uid == "201:1" && d.owner.tag() == Leaf::Measured("SOV"));
     assert!(
         world_still_has_sov_div,
         "omniscient world still carries the SOV division the POV no longer sees"

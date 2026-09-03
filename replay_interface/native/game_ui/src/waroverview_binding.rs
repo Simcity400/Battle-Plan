@@ -1,4 +1,5 @@
 
+use replay_core::{CountryIdentityLeaf, CountryIdentityRosterLeaf};
 use replay_core::NamedCountry;
 use replay_core::{
     DiplomacyView, Leaf, ViewStatus, WarObjectRow, WarParticipantOverviewRow, WorldFrame,
@@ -192,28 +193,22 @@ fn resolve_war_residuals(
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WarRelationSummary {
-    pub first: String,
-    pub second: String,
+    pub first: replay_core::CountryIdentityRef,
+    pub second: replay_core::CountryIdentityRef,
     pub first_casualties: Option<i64>,
     pub second_casualties: Option<i64>,
     pub residuals: Leaf<WarResidualSummary>,
 }
 
-impl Default for WarRelationSummary {
-    fn default() -> Self {
-        Self {
-            first: String::new(),
-            second: String::new(),
-            first_casualties: None,
-            second_casualties: None,
-            residuals: Leaf::Absent,
-        }
-    }
-}
+// NO `Default`. It minted `first: String::new()` -- an empty country name that
+// no census ever admitted -- and a defaulted summary is a war between two
+// countries that do not exist. With `first`/`second` typed there is nothing to
+// default them to, which is the point: the two belligerents come from the row
+// or the summary does not exist. Nothing called it.
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WarParticipantSummary {
-    pub tag: Leaf<String>,
+    pub tag: Leaf<replay_core::CountryIdentityRef>,
     pub tag_db_id: Leaf<i64>,
     pub participation_raw: Leaf<i64>,
     pub capitulation_progress_raw: Leaf<i64>,
@@ -239,15 +234,15 @@ pub struct WarObjectSummary {
     pub producer_ordinal: Leaf<i64>,
     pub aggregate_summary_flag: Leaf<bool>,
     pub war_name: Leaf<String>,
-    pub attackers: Leaf<Vec<String>>,
-    pub defenders: Leaf<Vec<String>>,
+    pub attackers: Leaf<Vec<replay_core::CountryIdentityRef>>,
+    pub defenders: Leaf<Vec<replay_core::CountryIdentityRef>>,
     pub attacker_participants: Leaf<Vec<WarParticipantSummary>>,
     pub defender_participants: Leaf<Vec<WarParticipantSummary>>,
     pub overall_progress_raw: Leaf<i64>,
     pub front: Leaf<String>,
     pub start_hour: Leaf<i64>,
-    pub first: Leaf<String>,
-    pub second: Leaf<String>,
+    pub first: Leaf<replay_core::CountryIdentityRef>,
+    pub second: Leaf<replay_core::CountryIdentityRef>,
     pub first_tag_db_id: Leaf<i64>,
     pub second_tag_db_id: Leaf<i64>,
     pub start_date: Leaf<String>,
@@ -361,17 +356,19 @@ fn belligerents(
     let mut set: BTreeSet<String> = BTreeSet::new();
     if let Leaf::Measured(summaries) = summaries {
         for s in summaries {
-            set.insert(s.first.clone());
-            set.insert(s.second.clone());
+            // DERIVED from admitted identities, so the belligerent roster
+            // spells the TAGs: the census was asked where the row was decoded.
+            set.insert(s.first.tag().to_string());
+            set.insert(s.second.tag().to_string());
         }
     }
     if let Leaf::Measured(rows) = wars {
         for row in rows {
             if let Leaf::Measured(tags) = &row.attackers {
-                set.extend(tags.iter().cloned());
+                set.extend(tags.iter().map(|tag| tag.tag().to_string()));
             }
             if let Leaf::Measured(tags) = &row.defenders {
-                set.extend(tags.iter().cloned());
+                set.extend(tags.iter().map(|tag| tag.tag().to_string()));
             }
         }
     }
@@ -458,8 +455,8 @@ mod tests {
                 (("ENG", "GER"), pair_at_war()),
             ],
             Leaf::Measured(vec![WarRelationRow {
-                first: Leaf::Measured("GER".to_string()),
-                second: Leaf::Measured("ENG".to_string()),
+                first: Leaf::Measured(crate::test_identity::identity("GER")),
+                second: Leaf::Measured(crate::test_identity::identity("ENG")),
                 first_casualties: Leaf::Measured(1200),
                 second_casualties: Leaf::Measured(900),
                 threat_fixed5_raw: Leaf::Absent,
@@ -475,8 +472,8 @@ mod tests {
         assert_eq!(
             summaries,
             Leaf::Measured(vec![WarRelationSummary {
-                first: "GER".to_string(),
-                second: "ENG".to_string(),
+                first: crate::test_identity::identity("GER"),
+                second: crate::test_identity::identity("ENG"),
                 first_casualties: Some(1200),
                 second_casualties: Some(900),
                 residuals: Leaf::Absent,
@@ -525,8 +522,8 @@ mod tests {
             ViewStatus::Present,
             vec![],
             Leaf::Measured(vec![WarRelationRow {
-                first: Leaf::Measured("ITA".to_string()),
-                second: Leaf::Measured("ENG".to_string()),
+                first: Leaf::Measured(crate::test_identity::identity("ITA")),
+                second: Leaf::Measured(crate::test_identity::identity("ENG")),
                 first_casualties: Leaf::Unobtained,
                 second_casualties: Leaf::Absent,
                 threat_fixed5_raw: Leaf::Absent,
@@ -551,8 +548,8 @@ mod tests {
             ViewStatus::Present,
             vec![],
             Leaf::Measured(vec![WarRelationRow {
-                first: Leaf::Measured("GER".to_string()),
-                second: Leaf::Measured("ENG".to_string()),
+                first: Leaf::Measured(crate::test_identity::identity("GER")),
+                second: Leaf::Measured(crate::test_identity::identity("ENG")),
                 first_casualties: Leaf::Measured(1200),
                 second_casualties: Leaf::Measured(900),
                 threat_fixed5_raw: Leaf::Measured(1_795_990),
@@ -591,8 +588,8 @@ mod tests {
             attacker_participants: Leaf::Absent,
             defender_participants: Leaf::Absent,
             overall_progress_raw: Leaf::Absent,
-            first: Leaf::Measured("GER".to_string()),
-            second: Leaf::Measured("ENG".to_string()),
+            first: Leaf::Measured(crate::test_identity::identity("GER")),
+            second: Leaf::Measured(crate::test_identity::identity("ENG")),
             first_tag_db_id: Leaf::Measured(47),
             second_tag_db_id: Leaf::Measured(1),
             start_date: Leaf::Measured("1939.9.1.12".to_string()),
@@ -609,7 +606,7 @@ mod tests {
             casualties_is_save_snapshot: Leaf::Absent,
         };
         let summary = war_object(&row);
-        assert_eq!(summary.first, Leaf::Measured("GER".to_string()));
+        assert_eq!(summary.first.tag(), Leaf::Measured("GER"));
         assert_eq!(summary.second_tag_db_id, Leaf::Measured(1));
         let Leaf::Measured(residuals) = summary.residuals else {
             panic!("D60 H-B5 tuple was not admitted")

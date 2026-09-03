@@ -1539,7 +1539,7 @@ fn prepare_render_political(
                 if tag.trim().is_empty() {
                     return Err("XMAP18 player-country set has a blank tag".into());
                 }
-                player_tags.insert(tag.clone());
+                player_tags.insert(tag.tag().to_string());
             }
             let state_fills = crate::players_fill(&owners, &player_tags, &colors, &defines);
             apply_state_rgba_fills_u8(
@@ -2422,7 +2422,7 @@ fn measured_owner_by_state(
         if owner.trim().is_empty() {
             return Err(format!("XMAP18 owner for state {state_id} is blank").into());
         }
-        owners.insert(state_id, owner.clone());
+        owners.insert(state_id, owner.tag().to_string());
     }
     Ok(owners)
 }

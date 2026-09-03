@@ -4,7 +4,7 @@ use crate::assets::AssetResolver;
 use crate::loc::Localisation;
 use crate::paradox_text::parse_file_refusing_decode_damage;
 use crate::{GameUiError, Result as UiResult};
-use replay_core::{Leaf, OccupationRow, ViewStatus, WorldFrame};
+use replay_core::{CountryIdentityRef, Leaf, OccupationRow, ViewStatus, WorldFrame};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const COUNTRY_OCCUPATION_GUI: &str = "interface/countryoccupationview.gui";
@@ -389,7 +389,7 @@ impl OccupationSurfaceAssembler {
             .occupation_by_state()
             .iter()
             .filter(|(_, row)| {
-                row.occupier_tag.measured().map(String::as_str) == Some(controller_country)
+                row.occupier_tag.measured().map(CountryIdentityRef::tag) == Some(controller_country)
                     && measured_u32(&row.occupation_controller_tag_db_id)
                         == Some(controller.controller_country_tag_db_id)
             })
@@ -434,12 +434,31 @@ impl OccupationSurfaceAssembler {
         })
     }
 
+    /// It takes the SELECTION, not a spelling, and asks this frame about it
+    /// itself.
+    ///
+    /// Folding contention into `None` at the call site cost the panel its
+    /// cause: the caller could then only say the viewer had selected nothing,
+    /// while the contended-key refusal below -- which names the key and why --
+    /// became unreachable (Codex round 1 finding 4, lane XE).
     pub fn assemble_admitted(
         &self,
         frame: &WorldFrame,
-        selected_country: Option<&str>,
+        selection: &crate::stored_country_selection::StoredCountrySelection,
     ) -> std::result::Result<AdmittedOccupationSurface, OccupationAssemblyGap> {
-        let inputs = self.assemble(frame, selected_country)?;
+        let named = match selection.named_in(frame) {
+            Some(named) => Some(named),
+            None if selection.is_selected() => {
+                return Err(OccupationAssemblyGap {
+                    code: "XUI16_SELECTED_COUNTRY_IS_A_CONTENDED_KEY",
+                    detail: selection
+                        .refusal_detail_in(frame)
+                        .unwrap_or_else(|| "the census names no country for it".to_string()),
+                })
+            }
+            None => None,
+        };
+        let inputs = self.assemble(frame, named.as_ref().map(|tag| tag.tag()))?;
         let surface = inputs.admit(frame).map_err(|error| OccupationAssemblyGap {
             code: "XUI16_PRODUCT_ADMISSION_REJECTED",
             detail: format!("{error:?}"),
@@ -487,12 +506,12 @@ fn validate_occupation_controller_census(
                 state_id,
                 row.occupier_tag
                     .measured()
-                    .map(String::as_str)
+                    .map(CountryIdentityRef::tag)
                     .filter(|tag| !tag.trim().is_empty()),
                 measured_u32(&row.occupation_controller_tag_db_id).filter(|id| *id != 0),
                 row.occupied_country_tag
                     .measured()
-                    .map(String::as_str)
+                    .map(CountryIdentityRef::tag)
                     .filter(|tag| !tag.trim().is_empty()),
                 measured_u32(&row.occupied_tag_db_id).filter(|id| *id != 0),
             )
@@ -1054,7 +1073,10 @@ mod alert_join_tests {
         };
 
         let surface = assembler
-            .assemble_admitted(frame.as_ref(), Some("GER"))
+            .assemble_admitted(
+                frame.as_ref(),
+                &crate::stored_country_selection::StoredCountrySelection::of("GER"),
+            )
             .expect("complete all-country D18/D52/D66 product carrier must admit");
         assert!(surface.is_product_authority());
         assert_eq!(surface.states()[0].state_id, 891);
@@ -1284,9 +1306,9 @@ mod alert_join_tests {
             replay_core::OccupationHistoryExactRow {
                 stable_event_id: Leaf::Measured(format!("{controller}|event")),
                 source_ordinal: Leaf::Measured(0),
-                controller_tag: Leaf::Measured(controller.into()),
+                controller_tag: Leaf::Measured(crate::test_identity::identity(controller)),
                 state_id: Leaf::Measured(1),
-                occupied_country_tag: Leaf::Measured("FRA".into()),
+                occupied_country_tag: Leaf::Measured(crate::test_identity::identity("FRA")),
                 event_hour_or_engine_date: Leaf::Measured("1942.1.1.1".into()),
                 attack_blocked: Leaf::Measured(true),
                 resistance_activity: Leaf::Absent,
@@ -1495,7 +1517,7 @@ fn occupation_observer_collections(
         detail: format!("frame hour {} is negative", frame.hour_index()),
     })?;
     for (&state_id, row) in frame.occupation_by_state().iter().filter(|(_, row)| {
-        row.occupier_tag.measured().map(String::as_str) == Some(selected_country)
+        row.occupier_tag.measured().map(CountryIdentityRef::tag) == Some(selected_country)
     }) {
         if measured_u32(&row.occupation_controller_tag_db_id)
             != Some(supplement.controller_country_tag_db_id)
@@ -1512,7 +1534,7 @@ fn occupation_observer_collections(
         .occupation_by_state()
         .iter()
         .filter(|(_, row)| {
-            row.occupier_tag.measured().map(String::as_str) == Some(selected_country)
+            row.occupier_tag.measured().map(CountryIdentityRef::tag) == Some(selected_country)
         })
         .map(|(&state_id, _)| state_id)
         .collect::<BTreeSet<_>>();
@@ -2846,10 +2868,10 @@ fn measured_i64(value: &Leaf<i64>) -> Option<i64> {
 fn measured_u32(value: &Leaf<u32>) -> Option<u32> {
     value.measured().copied()
 }
-fn nonempty_leaf(value: &Leaf<String>) -> Result<&str, OccupationRejection> {
+fn nonempty_leaf<T: AsRef<str>>(value: &Leaf<T>) -> Result<&str, OccupationRejection> {
     value
         .measured()
-        .map(String::as_str)
+        .map(T::as_ref)
         .filter(|value| !value.trim().is_empty())
         .ok_or(OccupationRejection::MissingOrInvalidOccupationValue)
 }

@@ -1176,13 +1176,13 @@ fn xmap05_certified_tables(frame: &WorldFrame) -> Result<Xmap05CertifiedTables> 
 
     fn measured_tags(
         label: &str,
-        rows: &BTreeMap<u32, Leaf<String>>,
+        rows: &BTreeMap<u32, Leaf<replay_core::CountryIdentityRef>>,
     ) -> Result<BTreeMap<u32, String>> {
         let mut out = BTreeMap::new();
         for (&id, leaf) in rows {
             match leaf {
                 Leaf::Measured(tag) if !tag.trim().is_empty() => {
-                    out.insert(id, tag.clone());
+                    out.insert(id, tag.tag().to_string());
                 }
                 Leaf::Measured(_) | Leaf::Absent | Leaf::Unobtained => {
                     return Err(

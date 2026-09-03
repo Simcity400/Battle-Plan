@@ -185,7 +185,7 @@ pub struct WingPlacementInput {
 pub fn wing_placement_input_from_world_row(row: &replay_core::WingUnitRow) -> WingPlacementInput {
     WingPlacementInput {
         uid: row.wing_uid.clone(),
-        owner: row.owner.measured().cloned(),
+        owner: row.owner.measured().map(|owner| owner.tag().to_string()),
         state_id: row.state_id.measured().copied(),
         location_province: row.air_base_province.measured().copied(),
     }
@@ -575,7 +575,10 @@ mod tests {
         let row = WingUnitRow {
             wing_uid: "800:69".into(),
             raw_wing_id: Leaf::Measured(800),
-            owner: Leaf::Measured("ENG".into()),
+            // ABSENT, and it has to be: nothing outside `replay_core` can
+            // build a country identity, which is the closure working. This
+            // test is about the air base anchor and never reads the owner.
+            owner: Leaf::Absent,
             name: Leaf::Absent,
             plane_count: Leaf::Measured(100),
             experience: Leaf::Absent,

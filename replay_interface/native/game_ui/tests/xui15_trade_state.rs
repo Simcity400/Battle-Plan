@@ -10,6 +10,9 @@ use replay_core::{
     Leaf, MarketStockpileRow, ProductionLicenseAgreementRow, ProductionLicenseVariantRow,
     ResourceTradeDealRow, TradeContractRow, TradeResourceRow, TradeView, ViewStatus,
 };
+
+mod identity_support;
+use identity_support::identity;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -115,7 +118,7 @@ fn deal(
 ) -> ResourceTradeDealRow {
     ResourceTradeDealRow {
         deal_id: Leaf::Measured(id),
-        counterpart: Leaf::Measured(partner.into()),
+        counterpart: Leaf::Measured(identity(partner)),
         direction: Leaf::Measured("import".into()),
         resource: Leaf::Measured(if visible_order == 1 { "oil" } else { "steel" }.into()),
         requested: Leaf::Measured(8.0),
@@ -145,19 +148,19 @@ fn equipment_contract() -> TradeContractRow {
     TradeContractRow {
         market_trade_projection: Leaf::Measured(true),
         contract_id: Leaf::Measured("21:81".into()),
-        counterpart: Leaf::Measured("SWE".into()),
+        counterpart: Leaf::Measured(identity("SWE")),
         direction: Leaf::Measured("outgoing".into()),
         convoys_assigned: Leaf::Measured(2),
         visible_order: Leaf::Measured(0),
         equipment_purchase_relation_complete: Leaf::Measured(true),
         relation_agreement_id: Leaf::Measured("equipment_purchase:7:1:60000000".into()),
-        seller: Leaf::Measured("GER".into()),
+        seller: Leaf::Measured(identity("GER")),
         seller_tag_db_id: Leaf::Measured(1),
-        buyer: Leaf::Measured("SWE".into()),
+        buyer: Leaf::Measured(identity("SWE")),
         buyer_tag_db_id: Leaf::Measured(7),
-        relation_first: Leaf::Measured("SWE".into()),
+        relation_first: Leaf::Measured(identity("SWE")),
         relation_first_tag_db_id: Leaf::Measured(7),
-        relation_second: Leaf::Measured("GER".into()),
+        relation_second: Leaf::Measured(identity("GER")),
         relation_second_tag_db_id: Leaf::Measured(1),
         relation_start_date_raw: Leaf::Measured(60_000_000),
         relation_start_date: Leaf::Measured("1937.11.3.0".into()),
@@ -214,13 +217,13 @@ fn view() -> TradeView {
             parties_withheld: [None, None, None, None],
             agreement_id: Leaf::Measured("licence:7:1:60000000".into()),
             visible_order: Leaf::Measured(0),
-            owner: Leaf::Measured("GER".into()),
+            owner: Leaf::Measured(identity("GER")),
             owner_tag_db_id: Leaf::Measured(1),
-            partner: Leaf::Measured("SWE".into()),
+            partner: Leaf::Measured(identity("SWE")),
             partner_tag_db_id: Leaf::Measured(7),
-            relation_first: Leaf::Measured("SWE".into()),
+            relation_first: Leaf::Measured(identity("SWE")),
             relation_first_tag_db_id: Leaf::Measured(7),
-            relation_second: Leaf::Measured("GER".into()),
+            relation_second: Leaf::Measured(identity("GER")),
             relation_second_tag_db_id: Leaf::Measured(1),
             start_date_raw: Leaf::Measured(60_000_000),
             start_date: Leaf::Measured("1937.11.3.0".into()),

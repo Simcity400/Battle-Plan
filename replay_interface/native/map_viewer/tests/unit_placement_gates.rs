@@ -58,17 +58,23 @@ fn leaf_u32(l: &Leaf<u32>) -> Option<u32> {
     l.measured().copied()
 }
 
+/// The TAG of an admitted identity. DERIVED: the census was asked where the
+/// row was decoded, so a placement input may spell the name.
+fn leaf_identity_tag(l: &replay_core::Leaf<replay_core::CountryIdentityRef>) -> Option<String> {
+    l.measured().map(|owner| owner.tag().to_string())
+}
+
 fn division_input(row: &DivisionUnitRow) -> DivisionPlacementInput {
     DivisionPlacementInput {
         uid: row.div_uid.clone(),
-        owner: leaf_string(&row.owner),
+        owner: leaf_identity_tag(&row.owner),
         location_province: leaf_u32(&row.location_province),
     }
 }
 fn fleet_input(row: &FleetUnitRow) -> FleetPlacementInput {
     FleetPlacementInput {
         uid: row.task_force_uid.clone(),
-        owner: leaf_string(&row.owner),
+        owner: leaf_identity_tag(&row.owner),
         location_province: leaf_u32(&row.location_province),
     }
 }

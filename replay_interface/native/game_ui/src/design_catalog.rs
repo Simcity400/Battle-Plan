@@ -1,5 +1,6 @@
 
 use crate::readonly_design_peace::DesignerViewKind;
+use crate::stored_country_selection::StoredCountrySelection;
 use replay_core::NamedCountry;
 use replay_core::{
     ObserverDesignerCandidate, ObserverDesignerCountryFilterRow, ObserverDesignerFamily,
@@ -86,7 +87,10 @@ pub struct ObserverDesignerViewState {
     pub family: DesignerViewKind,
     pub anchor_design_id: String,
     pub anchor_catalogue_hour: i64,
-    pub anchor_catalogue_owner_tag: String,
+    /// The country the anchor belongs to, as a SELECTION rather than a
+    /// spelling: it is written from what the user selected and read only to
+    /// compare against a name this frame's census already admitted.
+    pub anchor_catalogue_owner_tag: StoredCountrySelection,
     pub anchor_catalogue_family: DesignerViewKind,
     pub selected_design_id: Option<String>,
     pub our_filter_enabled: bool,
@@ -174,7 +178,7 @@ pub fn resolve_observer_designer_view_state(
     let context_is_current = viewer.anchor_catalogue_hour == frame.hour_index()
         && viewer
             .anchor_catalogue_owner_tag
-            .eq_ignore_ascii_case(owner_tag.tag())
+            .is_ignoring_ascii_case(owner_tag.tag())
         && viewer.anchor_catalogue_family == viewer.family;
     let mut resolved = viewer.clone();
     if !context_is_current {
@@ -193,7 +197,7 @@ pub fn resolve_observer_designer_view_state(
     let admitted = admit_observer_designer_view(frame, owner_tag, &resolved)?;
     resolved.anchor_design_id = admitted.anchor_design_id().to_string();
     resolved.anchor_catalogue_hour = frame.hour_index();
-    resolved.anchor_catalogue_owner_tag = owner_tag.to_string();
+    resolved.anchor_catalogue_owner_tag = StoredCountrySelection::of(owner_tag.tag());
     resolved.anchor_catalogue_family = viewer.family;
     Ok((resolved, admitted))
 }

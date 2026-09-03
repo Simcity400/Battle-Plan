@@ -1,3 +1,4 @@
+use replay_core::{CountryIdentityLeaf, CountryIdentityRosterLeaf};
 use replay_core::{Leaf, WorldTimeline};
 use serde_json::{Map, Value};
 use std::path::PathBuf;
@@ -108,8 +109,8 @@ fn generated_demo_binds_all_owners_and_exposes_controller_flips() {
             "all generated controllers must bind at step {step}"
         );
         assert_eq!(
-            frame.owner_by_state().get(&1),
-            Some(&Leaf::Measured("FRA".to_string())),
+            frame.owner_by_state().get(&1).map(Leaf::tag),
+            Some(Leaf::Measured("FRA")),
             "occupation must preserve state 1's legal owner at step {step}"
         );
     }
@@ -117,12 +118,12 @@ fn generated_demo_binds_all_owners_and_exposes_controller_flips() {
     let before = timeline.frame(START_HOUR).expect("pre-flip frame");
     let after = timeline.frame(START_HOUR + 1).expect("post-flip frame");
     assert_eq!(
-        before.control_by_state().get(&1),
-        Some(&Leaf::Measured("FRA".to_string()))
+        before.control_by_state().get(&1).map(Leaf::tag),
+        Some(Leaf::Measured("FRA"))
     );
     assert_eq!(
-        after.control_by_state().get(&1),
-        Some(&Leaf::Measured("GER".to_string()))
+        after.control_by_state().get(&1).map(Leaf::tag),
+        Some(Leaf::Measured("GER"))
     );
     assert_eq!(
         before.owner_by_state().get(&1),

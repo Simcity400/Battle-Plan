@@ -11,6 +11,9 @@ use game_ui::occupation_binding::{
     OCCUPATION_COLLECTION_EQUIPMENT_LOSSES, OCCUPATION_COLLECTION_STATES,
 };
 use replay_core::{open_recording, Leaf, OccupationEquipmentExactRow, OccupationRow, WorldTimeline};
+
+mod identity_support;
+use identity_support::identity;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -56,8 +59,8 @@ fn occupation() -> OccupationRow {
         resistance_speed: Leaf::Measured(0.025),
         compliance: Leaf::Measured(65.0),
         compliance_speed: Leaf::Measured(-0.012),
-        occupier_tag: Leaf::Measured("GER".into()),
-        occupied_country_tag: Leaf::Measured("FRA".into()),
+        occupier_tag: Leaf::Measured(identity("GER")),
+        occupied_country_tag: Leaf::Measured(identity("FRA")),
         operational_status: Leaf::Absent,
         occupation_law: Leaf::Unobtained,
         occupation_law_token_id: Leaf::Measured(304_778_569),

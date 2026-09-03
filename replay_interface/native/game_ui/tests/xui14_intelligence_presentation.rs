@@ -20,7 +20,7 @@ fn viewer_country_surface_and_scroll_are_replay_owned() {
     let mut viewer = IntelligenceViewerState::default();
     viewer.toggle(Some("GER"));
     assert!(viewer.panel_open);
-    assert_eq!(viewer.country_tag.as_deref(), Some("GER"));
+    assert!(viewer.country_tag.is("GER"));
     assert_eq!(viewer.surface, IntelligenceViewerSurface::Agency);
 
     let expected_cycle = [
@@ -41,8 +41,8 @@ fn viewer_country_surface_and_scroll_are_replay_owned() {
     assert_eq!(viewer.row_scroll, 3);
     viewer.wheel(-99, 5);
     assert_eq!(viewer.row_scroll, 4);
-    viewer.reconcile_country(Some("FRA"));
-    assert_eq!(viewer.country_tag.as_deref(), Some("FRA"));
+    viewer.reconcile_country(&game_ui::stored_country_selection::StoredCountrySelection::of("FRA"));
+    assert!(viewer.country_tag.is("FRA"));
     assert_eq!(viewer.surface, IntelligenceViewerSurface::Agency);
     assert_eq!(viewer.row_scroll, 0);
     viewer.toggle(Some("FRA"));
@@ -465,7 +465,7 @@ fn effective_vfs_compositor_executes_all_surfaces_and_preserves_exact_owners() {
         &producer_manifest,
         &IntelligenceViewerState {
             panel_open: true,
-            country_tag: Some("GER".into()),
+            country_tag: game_ui::stored_country_selection::StoredCountrySelection::of("GER"),
             surface: IntelligenceViewerSurface::Agency,
             row_scroll: 0,
         },
@@ -491,7 +491,7 @@ fn effective_vfs_compositor_executes_all_surfaces_and_preserves_exact_owners() {
         ] {
             let mut viewer = IntelligenceViewerState {
                 panel_open: true,
-                country_tag: Some("GER".into()),
+                country_tag: game_ui::stored_country_selection::StoredCountrySelection::of("GER"),
                 surface,
                 row_scroll: 0,
             };

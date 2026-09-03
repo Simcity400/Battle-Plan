@@ -671,10 +671,16 @@ impl OwnerProvider for RecordingTimeline {
     }
 }
 
-pub fn owners_from_leaves(leaves: &BTreeMap<u32, Leaf<String>>) -> BTreeMap<u32, String> {
+/// The measured owners as TAGs. DERIVED from admitted identities: the census
+/// was asked where the layer was decoded, so this projection spells the name.
+pub fn owners_from_leaves(
+    leaves: &BTreeMap<u32, Leaf<replay_core::CountryIdentityRef>>,
+) -> BTreeMap<u32, String> {
     leaves
         .iter()
-        .filter_map(|(state_id, leaf)| leaf.measured().map(|tag| (*state_id, tag.clone())))
+        .filter_map(|(state_id, leaf)| {
+            leaf.measured().map(|owner| (*state_id, owner.tag().to_string()))
+        })
         .collect()
 }
 
@@ -1085,8 +1091,8 @@ mod tests {
 
     #[test]
     fn owners_from_leaves_keeps_only_measured() {
-        let mut leaves: BTreeMap<u32, Leaf<String>> = BTreeMap::new();
-        leaves.insert(1, Leaf::Measured("GER".to_string()));
+        let mut leaves: BTreeMap<u32, Leaf<replay_core::CountryIdentityRef>> = BTreeMap::new();
+        leaves.insert(1, Leaf::Measured(crate::test_identity::identity("GER")));
         leaves.insert(2, Leaf::Unobtained);
         leaves.insert(3, Leaf::Absent);
         let owners = owners_from_leaves(&leaves);

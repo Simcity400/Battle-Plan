@@ -792,13 +792,18 @@ fn identifiers(text: &str) -> BTreeSet<String> {
 }
 
 /// Names the d79 join statement and the pixel-composition region may share.
-/// Every one is a language item, a shared input, or a receipt sink. A name added
+/// Every one is a language item, a METHOD NAME, a shared input, or a receipt
+/// sink -- `as_deref`, `and_then`, `push` and `format` were already here, and
+/// `map`, `named_in` and `tag` joined them when the join started asking the
+/// frame's census through `StoredCountrySelection::named_in` instead of
+/// spelling the raw selection. A name added
 /// to both regions is the channel a derived overlay would travel down, whatever
 /// it was called. The two receipt sinks DO carry d79-derived text out of the
 /// join, so `receipt_sinks_are_write_only_where_pixels_are_composed` below
 /// requires the composition region to write to them and never read them.
 const D79_SHARED_WITH_COMPOSITION: &[&str] = &[
     "Err",
+    "named_in",
     "None",
     "Ok",
     "Some",
@@ -817,6 +822,7 @@ const D79_SHARED_WITH_COMPOSITION: &[&str] = &[
     "game_ui",
     "if",
     "let",
+    "map",
     "match",
     "measured_empty",
     "occupation_outcome",
@@ -826,6 +832,7 @@ const D79_SHARED_WITH_COMPOSITION: &[&str] = &[
     "semantic_receipts",
     "slot",
     "surface",
+    "tag",
     "unavailable",
     "viewer",
     "world_frame",

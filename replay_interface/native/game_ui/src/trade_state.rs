@@ -426,7 +426,7 @@ fn measured_deal_card(row: &ResourceTradeDealRow, expected_order: usize) -> Opti
         return None;
     }
     let deal_id = *measured(&row.deal_id)?;
-    let counterpart = measured(&row.counterpart)?.clone();
+    let counterpart = measured(&row.counterpart)?.tag().to_string();
     let direction = measured(&row.direction)?.clone();
     let resource = measured(&row.resource)?.clone();
     let requested = *measured(&row.requested)?;
@@ -563,12 +563,12 @@ fn measured_equipment_purchase_contract(
     }
     let contract_id = measured(&row.contract_id)?.clone();
     let visible_order = *measured(&row.visible_order)?;
-    let counterpart = measured(&row.counterpart)?.clone();
+    let counterpart = measured(&row.counterpart)?.tag().to_string();
     let direction = measured(&row.direction)?.clone();
     let agreement_id = measured(&row.relation_agreement_id)?.clone();
-    let seller = measured(&row.seller)?.clone();
+    let seller = measured(&row.seller)?.tag().to_string();
     let seller_id = *measured(&row.seller_tag_db_id)?;
-    let buyer = measured(&row.buyer)?.clone();
+    let buyer = measured(&row.buyer)?.tag().to_string();
     let buyer_id = *measured(&row.buyer_tag_db_id)?;
     let first_id = *measured(&row.relation_first_tag_db_id)?;
     let second_id = *measured(&row.relation_second_tag_db_id)?;
@@ -583,8 +583,8 @@ fn measured_equipment_purchase_contract(
             || (first_id == buyer_id && second_id == seller_id))
         || agreement_id
             != format!("equipment_purchase:{first_id}:{second_id}:{start_date_raw}")
-        || !((direction == "outgoing" && counterpart == buyer)
-            || (direction == "incoming" && counterpart == seller))
+        || !((direction == "outgoing" && buyer == counterpart)
+            || (direction == "incoming" && seller == counterpart))
         || start_date_raw <= 0
         || start_date.is_empty()
         || !matches!(
@@ -656,9 +656,9 @@ fn measured_production_license_agreement(
 ) -> Option<ProductionLicenseAgreementCard> {
     let agreement_id = measured(&row.agreement_id)?.clone();
     let visible_order = *measured(&row.visible_order)?;
-    let owner = measured(&row.owner)?.clone();
+    let owner = measured(&row.owner)?.tag().to_string();
     let owner_id = *measured(&row.owner_tag_db_id)?;
-    let partner = measured(&row.partner)?.clone();
+    let partner = measured(&row.partner)?.tag().to_string();
     let partner_id = *measured(&row.partner_tag_db_id)?;
     let first_id = *measured(&row.relation_first_tag_db_id)?;
     let second_id = *measured(&row.relation_second_tag_db_id)?;

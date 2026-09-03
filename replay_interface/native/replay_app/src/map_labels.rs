@@ -412,7 +412,7 @@ pub fn measured_control_by_province(frame: &WorldFrame) -> Result<BTreeMap<u32, 
 
 fn measured_controller_rows(
     status: ViewStatus,
-    rows: &BTreeMap<u32, Leaf<String>>,
+    rows: &BTreeMap<u32, Leaf<replay_core::CountryIdentityRef>>,
 ) -> Result<BTreeMap<u32, String>> {
     if status != ViewStatus::Present {
         return Err("map labels: control_by_province domain is not present".into());
@@ -421,7 +421,7 @@ fn measured_controller_rows(
     for (&province_id, controller) in rows {
         match controller {
             Leaf::Measured(tag) if !tag.trim().is_empty() => {
-                measured.insert(province_id, tag.clone());
+                measured.insert(province_id, tag.tag().to_string());
             }
             Leaf::Measured(_) => {
                 return Err(format!(
@@ -1461,15 +1461,15 @@ mod tests {
     #[test]
     fn b10_materializes_only_measured_controller_rows() {
         let rows = BTreeMap::from([
-            (10, Leaf::Measured("GER".to_string())),
-            (11, Leaf::Measured("POL".to_string())),
+            (10u32, Leaf::Measured(crate::test_identity::identity("GER"))),
+            (11, Leaf::Measured(crate::test_identity::identity("POL"))),
         ]);
         assert_eq!(
             measured_controller_rows(ViewStatus::Present, &rows).expect("measured rows"),
             BTreeMap::from([(10, "GER".to_string()), (11, "POL".to_string())])
         );
 
-        let unobtained = BTreeMap::from([(10, Leaf::Unobtained)]);
+        let unobtained = BTreeMap::from([(10u32, Leaf::Unobtained)]);
         assert!(measured_controller_rows(ViewStatus::Present, &unobtained).is_err());
         assert!(measured_controller_rows(ViewStatus::DomainAbsent, &BTreeMap::new()).is_err());
     }

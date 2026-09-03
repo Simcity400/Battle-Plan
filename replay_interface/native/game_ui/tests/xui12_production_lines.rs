@@ -9,6 +9,9 @@ use replay_core::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod identity_support;
+use identity_support::identity;
+
 fn line(id: i64, priority: i64, variant: &str) -> EquipmentProductionLineRow {
     EquipmentProductionLineRow {
         id: Leaf::Measured(id),
@@ -107,13 +110,13 @@ fn trade() -> TradeView {
             parties_withheld: [None, None, None, None],
             agreement_id: Leaf::Measured("licence:7:1:60000000".into()),
             visible_order: Leaf::Measured(0),
-            owner: Leaf::Measured("OTHER".into()),
+            owner: Leaf::Measured(identity("OTHER")),
             owner_tag_db_id: Leaf::Measured(7),
-            partner: Leaf::Measured("ALLY".into()),
+            partner: Leaf::Measured(identity("ALLY")),
             partner_tag_db_id: Leaf::Measured(1),
-            relation_first: Leaf::Measured("OTHER".into()),
+            relation_first: Leaf::Measured(identity("OTHER")),
             relation_first_tag_db_id: Leaf::Measured(7),
-            relation_second: Leaf::Measured("ALLY".into()),
+            relation_second: Leaf::Measured(identity("ALLY")),
             relation_second_tag_db_id: Leaf::Measured(1),
             start_date_raw: Leaf::Measured(60_000_000),
             start_date: Leaf::Measured("1940.1.1".into()),
@@ -261,7 +264,7 @@ fn selected_country_authority_does_not_consult_the_recorded_pov() {
         admitted.production_license_agreements[0]
             .partner
             .measured()
-            .map(String::as_str),
+            .map(replay_core::CountryIdentityRef::tag),
         Some("ALLY")
     );
 }

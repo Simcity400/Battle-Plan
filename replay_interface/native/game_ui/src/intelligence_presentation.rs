@@ -50,37 +50,46 @@ impl IntelligenceViewerSurface {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IntelligenceViewerState {
     pub panel_open: bool,
-    pub country_tag: Option<String>,
+    pub country_tag: crate::stored_country_selection::StoredCountrySelection,
     pub surface: IntelligenceViewerSurface,
     pub row_scroll: usize,
 }
 
 impl IntelligenceViewerState {
     pub fn toggle(&mut self, selected_country: Option<&str>) {
-        let Some(tag) = selected_country.filter(|tag| !tag.trim().is_empty()) else {
+        let selection = crate::stored_country_selection::StoredCountrySelection::from_tag(
+            selected_country.filter(|tag| !tag.trim().is_empty()),
+        );
+        if !selection.is_selected() {
             self.close();
             return;
-        };
-        if self.panel_open && self.country_tag.as_deref() == Some(tag) {
+        }
+        if self.panel_open && self.country_tag == selection {
             self.close();
         } else {
             *self = Self {
                 panel_open: true,
-                country_tag: Some(tag.to_string()),
+                country_tag: selection,
                 ..Self::default()
             };
         }
     }
 
-    pub fn reconcile_country(&mut self, selected_country: Option<&str>) {
-        let Some(tag) = selected_country.filter(|tag| !tag.trim().is_empty()) else {
+    /// Re-target an open panel onto the viewer's selection.
+    ///
+    /// It takes the SELECTION and stores the selection: no spelling passes
+    /// through, which is what lets this run where there is no frame -- the
+    /// panel's country is asked about by `UiRuntime::execute` every frame,
+    /// against that hour's census.
+    pub fn reconcile_country(&mut self, selection: &crate::stored_country_selection::StoredCountrySelection) {
+        if !selection.is_selected() {
             self.close();
             return;
-        };
-        if self.panel_open && self.country_tag.as_deref() != Some(tag) {
+        }
+        if self.panel_open && self.country_tag != *selection {
             *self = Self {
                 panel_open: true,
-                country_tag: Some(tag.to_string()),
+                country_tag: selection.clone(),
                 ..Self::default()
             };
         }
@@ -135,7 +144,7 @@ pub fn admit_intelligence_presentation<'a>(
     if carrier.content_manifest_sha256 != expected_content_manifest_sha256 {
         return Err(IntelligenceAdmissionError::ContentManifestMismatch);
     }
-    if !viewer.panel_open || viewer.country_tag.as_deref() != Some(selected_country) {
+    if !viewer.panel_open || !viewer.country_tag.is(selected_country) {
         return Err(IntelligenceAdmissionError::ViewerMismatch);
     }
     let row = carrier

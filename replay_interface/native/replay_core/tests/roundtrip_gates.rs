@@ -1,7 +1,8 @@
 
+use replay_core::{CountryIdentityLeaf, CountryIdentityRosterLeaf};
 use replay_core::{
-    open_recording, Leaf, PlayerCountry, SnowMudCell, ViewStatus, WarRelationRow, WorldFrame,
-    WorldTimeline,
+    open_recording, CountryIdentityRef, Leaf, PlayerCountry, SnowMudCell, ViewStatus,
+    WarRelationRow, WorldFrame, WorldTimeline,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -60,6 +61,40 @@ fn exp_string(v: Option<&Value>) -> Leaf<String> {
         Some(Value::Null) => Leaf::Unobtained,
         Some(Value::String(s)) => Leaf::Measured(s.clone()),
         other => panic!("exp_string: not a string: {other:?}"),
+    }
+}
+/// The fixture's expected country identity, AUTHENTICATED THROUGH THE FRAME.
+///
+/// There is no forge: nothing in or out of the crate can turn a bare string
+/// into a `CountryIdentityRef`. A test states the TAG the fixture carries and
+/// the frame's own census decides what it names, which is the same question
+/// the decoder's constructor asks. A contended fixture therefore cannot
+/// produce an expectation that a contended decode would match.
+fn exp_identity(frame: &replay_core::WorldFrame, v: Option<&Value>) -> Leaf<CountryIdentityRef> {
+    match v {
+        None => Leaf::Absent,
+        Some(Value::Null) => Leaf::Unobtained,
+        Some(Value::String(s)) => frame
+            .country_identity_ref(s)
+            .map_or(Leaf::Unobtained, Leaf::Measured),
+        other => panic!("exp_identity: not a string: {other:?}"),
+    }
+}
+fn exp_identity_list(
+    frame: &replay_core::WorldFrame,
+    v: Option<&Value>,
+) -> Leaf<Vec<CountryIdentityRef>> {
+    match v {
+        None => Leaf::Absent,
+        Some(Value::Null) => Leaf::Unobtained,
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                frame.country_identity_ref(item.as_str().expect("a TAG string"))
+            })
+            .collect::<Option<Vec<_>>>()
+            .map_or(Leaf::Unobtained, Leaf::Measured),
+        other => panic!("exp_identity_list: not an array: {other:?}"),
     }
 }
 fn exp_nullable_string(v: Option<&Value>) -> Leaf<Option<String>> {
@@ -140,7 +175,7 @@ fn rt_owner_controller_flip() {
                     .get(&sid)
                     .cloned()
                     .unwrap_or(Leaf::Absent),
-                exp_string(raw(&f, &["states", &key, "owner"])),
+                exp_identity(&f, raw(&f, &["states", &key, "owner"])),
                 "owner state {sid} @ {}",
                 f.hour_index()
             );
@@ -149,7 +184,7 @@ fn rt_owner_controller_flip() {
                     .get(&sid)
                     .cloned()
                     .unwrap_or(Leaf::Absent),
-                exp_string(raw(&f, &["states", &key, "controller"])),
+                exp_identity(&f, raw(&f, &["states", &key, "controller"])),
                 "control state {sid} @ {}",
                 f.hour_index()
             );
@@ -161,7 +196,7 @@ fn rt_owner_controller_flip() {
                     .get(&pid)
                     .cloned()
                     .unwrap_or(Leaf::Absent),
-                exp_string(raw(&f, &["provinces", &key, "controller"])),
+                exp_identity(&f, raw(&f, &["provinces", &key, "controller"])),
                 "control province {pid} @ {}",
                 f.hour_index()
             );
@@ -459,7 +494,7 @@ fn rt_naval_air_activity() {
         let sup = f.naval_supremacy_by_region().get(&301).expect("region 301");
         assert_eq!(
             sup.controller,
-            exp_string(raw(
+            exp_identity(&f, raw(
                 &f,
                 &["naval_air", "region_control", "301", "0", "controller"]
             )),
@@ -526,7 +561,7 @@ fn rt_naval_air_activity() {
             tf.dominant_hull_class,
             exp_string(probe("dominant_hull_class").as_ref())
         );
-        assert_eq!(tf.owner, exp_string(probe("owner").as_ref()));
+        assert_eq!(tf.owner, exp_identity(&f, probe("owner").as_ref()));
         let w = f
             .wings()
             .iter()
@@ -566,7 +601,7 @@ fn rt_air_superiority() {
         let p = |k: &str| raw(&f, &["naval_air", "air_superiority", "301", k]).cloned();
         assert_eq!(
             row.controller,
-            exp_string(p("controller").as_ref()),
+            exp_identity(&f, p("controller").as_ref()),
             "air controller @ {}",
             f.hour_index()
         );
@@ -617,8 +652,8 @@ fn rt_diplomacy_live_surfaces() {
                 let want: Vec<WarRelationRow> = items
                     .iter()
                     .map(|it| WarRelationRow {
-                        first: exp_string(it.get("first")),
-                        second: exp_string(it.get("second")),
+                        first: exp_identity(&f, it.get("first")),
+                        second: exp_identity(&f, it.get("second")),
                         first_casualties: exp_i64(it.get("first_casualties")),
                         second_casualties: exp_i64(it.get("second_casualties")),
                         threat_fixed5_raw: exp_i64(it.get("threat_fixed5_raw")),
@@ -935,7 +970,7 @@ fn rt_player_countries_from_world_scenario_players() {
                 .map(|entry| {
                     let obj = entry.as_object().expect("player entry object");
                     PlayerCountry {
-                        tag: exp_string(obj.get("tag")),
+                        tag: exp_identity(&f, obj.get("tag")),
                         // The legacy shapes carry no engine id.
                         tag_db_id: Leaf::Absent,
                         player_name: exp_string(obj.get("label")),
@@ -1232,7 +1267,7 @@ fn rt_country_management() {
             .map(|o| replay_core::OperationRow {
                 op_id: exp_i64(o.get("op_id")),
                 op_type: exp_string(o.get("type")),
-                target: exp_string(o.get("target")),
+                target: exp_identity(&f, o.get("target")),
             })
             .collect();
         assert_eq!(
@@ -1262,7 +1297,7 @@ fn rt_country_management() {
             .map(|o| replay_core::TradeContractRow {
                 market_trade_projection: exp_bool(o.get("r2_market_trade_projection")),
                 contract_id: exp_string(o.get("contract_id")),
-                counterpart: exp_string(o.get("counterpart")),
+                counterpart: exp_identity(&f, o.get("counterpart")),
                 direction: exp_string(o.get("direction")),
                 convoys_assigned: exp_i64(o.get("convoys").and_then(|c| c.get("assigned"))),
                 visible_order: exp_i64(o.get("visible_order")),
@@ -1272,25 +1307,29 @@ fn rt_country_management() {
                 relation_agreement_id: exp_string(
                     o.get("equipment_purchase_relation").and_then(|r| r.get("agreement_id")),
                 ),
-                seller: exp_string(
+                seller: exp_identity(
+                    &f,
                     o.get("equipment_purchase_relation").and_then(|r| r.get("seller")),
                 ),
                 seller_tag_db_id: exp_u32(
                     o.get("equipment_purchase_relation").and_then(|r| r.get("seller_tag_db_id")),
                 ),
-                buyer: exp_string(
+                buyer: exp_identity(
+                    &f,
                     o.get("equipment_purchase_relation").and_then(|r| r.get("buyer")),
                 ),
                 buyer_tag_db_id: exp_u32(
                     o.get("equipment_purchase_relation").and_then(|r| r.get("buyer_tag_db_id")),
                 ),
-                relation_first: exp_string(
+                relation_first: exp_identity(
+                    &f,
                     o.get("equipment_purchase_relation").and_then(|r| r.get("relation_first")),
                 ),
                 relation_first_tag_db_id: exp_u32(
                     o.get("equipment_purchase_relation").and_then(|r| r.get("relation_first_tag_db_id")),
                 ),
-                relation_second: exp_string(
+                relation_second: exp_identity(
+                    &f,
                     o.get("equipment_purchase_relation").and_then(|r| r.get("relation_second")),
                 ),
                 relation_second_tag_db_id: exp_u32(
@@ -1341,7 +1380,7 @@ fn rt_designs_catalog() {
         );
         assert_eq!(
             tmpl0.country,
-            exp_string(raw(&f, &["designs", "division_templates", "0", "country"]))
+            exp_identity(&f, raw(&f, &["designs", "division_templates", "0", "country"]))
         );
         let var = d.equipment_variants.get("200:12").expect("variant 200:12");
         assert_eq!(
@@ -1389,7 +1428,7 @@ fn rt_occupation_sweep() {
         assert_eq!(occ.compliance, exp_f64(p("compliance").as_ref()));
         assert_eq!(
             occ.occupied_country_tag,
-            exp_string(p("occupied_country_tag").as_ref())
+            exp_identity(&f, p("occupied_country_tag").as_ref())
         );
         assert_eq!(
             occ.operational_status,
@@ -1471,7 +1510,7 @@ fn rt_power_balance_combat() {
         );
         assert_eq!(
             row.countries,
-            exp_string_list(raw(&f, &["world", "power_balances", "0", "countries"]))
+            exp_identity_list(&f, raw(&f, &["world", "power_balances", "0", "countries"]))
         );
 
         let nac = f.naval_air_combat();
@@ -1878,13 +1917,13 @@ fn adversarial_wrong_oracle_makes_gate_fail() {
     let owner = open_fixture("fx_owner_controller_flip");
     let f = owner.frame(owner.hours()[5]).unwrap();
 
-    assert_eq!(f.owner_by_state()[&10], Leaf::Measured("SOV".into()));
-    assert_ne!(f.owner_by_state()[&10], Leaf::Measured("GER".into()));
+    assert_eq!(f.owner_by_state()[&10].tag(), Leaf::Measured("SOV"));
+    assert_ne!(f.owner_by_state()[&10].tag(), Leaf::Measured("GER"));
 
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        assert_eq!(f.owner_by_state()[&10], Leaf::Measured("GER".into()));
+        assert_eq!(f.owner_by_state()[&10].tag(), Leaf::Measured("GER"));
     }));
     std::panic::set_hook(prev);
     assert!(
@@ -1895,7 +1934,7 @@ fn adversarial_wrong_oracle_makes_gate_fail() {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        assert_eq!(f.owner_by_state()[&10], Leaf::<String>::Unobtained);
+        assert_eq!(f.owner_by_state()[&10].tag(), Leaf::<&str>::Unobtained);
     }));
     std::panic::set_hook(prev);
     assert!(outcome.is_err(), "Measured must not equal Unobtained");

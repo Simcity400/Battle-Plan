@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// A TAG this frame's census admits. A test that means to name a country says
 /// so here; a test about a contended key asks `named_country` and gets `None`.
 fn named<'tag>(
-    frame: &replay_core::WorldFrame,
+    frame: &'tag replay_core::WorldFrame,
     tag: &'tag str,
 ) -> replay_core::NamedCountry<'tag> {
     frame.named_country(tag).expect("census-admitted tag")
@@ -269,6 +269,119 @@ fn measured_nonempty_committed_fold_without_country_names_keeps_d53_roster() {
         vec![faction("1", "1", &["1", "22", "3"])],
         "the binding must render the source-derived D53 roster even though every country faction name is absent"
     );
+}
+
+/// A SUBJECT ROW NAMING ONE COUNTRY BESIDE ANOTHER'S ID REACHES NO PANEL.
+///
+/// The subject families withhold a contended NAME and keep the row, because the
+/// two ids identify it -- and the guard that enforces "the ids are this row's"
+/// returned early whenever the name was not CONTENDED. So on a frame where
+/// nothing is contended at all, `GER` beside POL's id made only the NAME
+/// unobtained: the row stayed measured carrying 441, and `diplomacy_panel_from_frame`
+/// matches these rows to a viewer BY ID, so GER's raw subject measurement was
+/// rendered in POL's panel.
+#[test]
+fn a_subject_row_naming_one_country_beside_anothers_id_reaches_no_panel() {
+    // kills: in `subject_row_keeps_an_unclaimed_id`, return `None` instead of
+    // asking `CountryIdentityRef::refusal` when the name is not contended --
+    // POL's panel shows GER's row.
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "game_ui_forged_subject_{}_{}",
+        std::process::id(),
+        n
+    ));
+    let game = "forged_subject";
+    let dir = root.join(game);
+    fs::create_dir_all(&dir).unwrap();
+    // The ONLY difference from the control below is the overlord id: 1 is
+    // GER's own, 441 is POL's.
+    let snapshot = |overlord_id: u32| {
+        format!(
+            r#"{{
+          "schema_version":"1",
+          "game_id":"forged_subject",
+          "date":"1940.2.14.20",
+          "hour_index":900,
+          "tag_db_id_index":{{"country_composition_version":2}},
+          "countries":{{
+            "GER":{{"_r2_tag_db_id":1}},
+            "POL":{{"_r2_tag_db_id":441}},
+            "BUL":{{"_r2_tag_db_id":22}}
+          }},
+          "diplomacy_world":{{"domain53_extra":{{
+            "subject_autonomy_rows":[{{
+              "overlord_tag_db_id":{overlord_id},
+              "subject_tag_db_id":22
+            }}],
+            "subject_autonomy_current_status":"measured_nonempty",
+            "subject_autonomy_current_rows":[{{
+              "overlord":"GER",
+              "subject":"BUL",
+              "overlord_tag_db_id":{overlord_id},
+              "subject_tag_db_id":22,
+              "current_state_hash":40977,
+              "previous_state_hash":36881,
+              "next_state_hash":49169,
+              "ratio_raw":10000,
+              "current_score_raw":110000,
+              "lower_score_raw":100000,
+              "upper_score_raw":200000,
+              "last_modified_date":"1940.2.14.20",
+              "last_modified_date_raw":60795475,
+              "direction":"toward_next"
+            }}]
+          }}}}
+        }}"#
+        )
+    };
+    fs::write(dir.join("000000000900.snapshot.json"), snapshot(1)).unwrap();
+    fs::write(
+        dir.join("index.json"),
+        r#"{"game_id":"forged_subject","schema_version":"1","snapshots":[{"hour_index":900,"date":"1940.2.14.20","file":"000000000900.snapshot.json"}]}"#,
+    )
+    .unwrap();
+
+    // THE CONTROL: GER's own id. The row publishes and BUL is its counterpart,
+    // or the refusal below proves nothing.
+    let timeline = WorldTimeline::open(open_recording(&root).unwrap()).unwrap();
+    let frame = timeline.frame(900).unwrap();
+    let ger = diplomacy_panel_from_frame(&frame, named(&frame, "GER"));
+    assert_eq!(ger.subject_autonomy.len(), 1, "the control row must publish");
+    assert_eq!(ger.subject_autonomy[0].counterpart.as_deref(), Some("BUL"));
+    let pol = diplomacy_panel_from_frame(&frame, named(&frame, "POL"));
+    assert!(
+        pol.subject_autonomy.is_empty(),
+        "and POL owns no subject on the control frame"
+    );
+    drop(frame);
+    drop(timeline);
+
+    // ...AND THE FORGERY: the same row, the same measurement, POL's id under
+    // GER's name.
+    fs::write(dir.join("000000000900.snapshot.json"), snapshot(441)).unwrap();
+    let timeline = WorldTimeline::open(open_recording(&root).unwrap()).unwrap();
+    let frame = timeline.frame(900).unwrap();
+    for tag in ["GER", "POL", "BUL"] {
+        let panel = diplomacy_panel_from_frame(&frame, named(&frame, tag));
+        assert!(
+            panel.subject_autonomy.is_empty(),
+            "a row naming GER beside POL's id belongs to neither, and reaches              no panel at all -- {tag} was shown {:?}",
+            panel.subject_autonomy
+        );
+    }
+    assert!(
+        frame.coverage_warnings().iter().any(|warning| {
+            warning.contains("subject_autonomy_current_rows[0]")
+                && warning.contains("belong to two different countries")
+        }),
+        "and the fold is told which fact it hit: {:?}",
+        frame.coverage_warnings()
+    );
+    drop(frame);
+    drop(timeline);
+    portable_test_fs_retry::remove_dir_all(root).unwrap();
 }
 
 #[test]

@@ -1099,7 +1099,7 @@ mod tests {
     /// A TAG this frame's census admits. A test that means to name a country says
     /// so here; a test about a contended key asks `named_country` and gets `None`.
     fn named<'tag>(
-        frame: &replay_core::WorldFrame,
+        frame: &'tag replay_core::WorldFrame,
         tag: &'tag str,
     ) -> replay_core::NamedCountry<'tag> {
         frame.named_country(tag).expect("census-admitted tag")
@@ -1611,7 +1611,7 @@ mod tests {
             family: DesignerViewKind::Tank,
             anchor_design_id: String::new(),
             anchor_catalogue_hour: -1,
-            anchor_catalogue_owner_tag: "GER".into(),
+            anchor_catalogue_owner_tag: crate::stored_country_selection::StoredCountrySelection::of("GER"),
             anchor_catalogue_family: DesignerViewKind::Tank,
             selected_design_id: None,
             our_filter_enabled: true,
@@ -1647,7 +1647,7 @@ mod tests {
             family: DesignerViewKind::Tank,
             anchor_design_id: String::new(),
             anchor_catalogue_hour: -1,
-            anchor_catalogue_owner_tag: "GER".into(),
+            anchor_catalogue_owner_tag: crate::stored_country_selection::StoredCountrySelection::of("GER"),
             anchor_catalogue_family: DesignerViewKind::Tank,
             selected_design_id: None,
             our_filter_enabled: true,
@@ -1754,7 +1754,7 @@ mod tests {
             family: DesignerViewKind::Tank,
             anchor_design_id: String::new(),
             anchor_catalogue_hour: -1,
-            anchor_catalogue_owner_tag: "GER".into(),
+            anchor_catalogue_owner_tag: crate::stored_country_selection::StoredCountrySelection::of("GER"),
             anchor_catalogue_family: DesignerViewKind::Tank,
             selected_design_id: None,
             our_filter_enabled: true,

@@ -1,14 +1,18 @@
 
+use replay_core::{CountryIdentityLeaf, CountryIdentityRosterLeaf};
 use game_ui::compose::{resolve_element_rect, ComposeOptions, Rect};
 use game_ui::gui::{GuiElement, LayoutSet};
 use game_ui::waroverview_binding::{war_overview_from_frame, WarRelationSummary};
 use replay_core::{open_recording, Leaf, WorldTimeline};
+
+mod identity_support;
+use identity_support::identity;
 use std::path::{Path, PathBuf};
 
 /// A TAG this frame's census admits. A test that means to name a country says
 /// so here; a test about a contended key asks `named_country` and gets `None`.
 fn named<'tag>(
-    frame: &replay_core::WorldFrame,
+    frame: &'tag replay_core::WorldFrame,
     tag: &'tag str,
 ) -> replay_core::NamedCountry<'tag> {
     frame.named_country(tag).expect("census-admitted tag")
@@ -103,8 +107,8 @@ fn waroverview_layout_resolves_from_files() {
 
 fn summary(first: &str, second: &str, fc: i64, sc: i64) -> WarRelationSummary {
     WarRelationSummary {
-        first: first.to_string(),
-        second: second.to_string(),
+        first: identity(first),
+        second: identity(second),
         first_casualties: Some(fc),
         second_casualties: Some(sc),
         residuals: Leaf::Absent,
@@ -150,10 +154,10 @@ fn war_overview_flips_at_change_hour() {
     assert_eq!(wars.len(), 1);
     assert_eq!(wars[0].source_key, "axis_allies_1936");
     assert_eq!(
-        wars[0].attackers,
-        Leaf::Measured(vec!["GER".to_string(), "ITA".to_string()])
+        wars[0].attackers.tags(),
+        Leaf::Measured(vec!["GER", "ITA"])
     );
-    assert_eq!(wars[0].defenders, Leaf::Measured(vec!["ENG".to_string()]));
+    assert_eq!(wars[0].defenders.tags(), Leaf::Measured(vec!["ENG"]));
     assert_eq!(wars[0].front, Leaf::Measured("western".to_string()));
     assert_eq!(wars[0].war_name, Leaf::Absent);
     assert_eq!(wars[0].attacker_participants, Leaf::Absent);

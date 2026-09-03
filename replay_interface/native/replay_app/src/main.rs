@@ -3,6 +3,8 @@
 
 
 mod anomaly;
+#[cfg(test)]
+mod test_identity;
 mod blockers;
 mod bundle;
 mod camera;

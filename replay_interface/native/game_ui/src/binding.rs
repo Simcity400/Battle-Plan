@@ -720,8 +720,8 @@ pub struct OutlinerUnitLists {
     pub air_status: ViewStatus,
 }
 
-fn owner_is(owner: &Leaf<String>, pov_tag: &str) -> bool {
-    matches!(owner, Leaf::Measured(tag) if tag == pov_tag)
+fn owner_is(owner: &Leaf<replay_core::CountryIdentityRef>, pov_tag: &str) -> bool {
+    matches!(owner, Leaf::Measured(tag) if tag.tag() == pov_tag)
 }
 
 pub fn outliner_unit_lists_from_frame(frame: &WorldFrame, pov_tag: NamedCountry<'_>) -> OutlinerUnitLists {
@@ -1137,16 +1137,17 @@ pub struct StateTooltipBinding {
 }
 
 pub fn state_tooltip_from_frame(frame: &WorldFrame, state_id: u32) -> StateTooltipBinding {
+    // DERIVED from an admitted identity, so the tooltip spells the TAG.
     let owner = frame
         .owner_by_state()
         .get(&state_id)
         .and_then(Leaf::measured)
-        .cloned();
+        .map(|owner| owner.tag().to_string());
     let controller = frame
         .control_by_state()
         .get(&state_id)
         .and_then(Leaf::measured)
-        .cloned();
+        .map(|controller| controller.tag().to_string());
     StateTooltipBinding {
         state_id,
         owner,
@@ -1160,7 +1161,7 @@ mod tests {
     /// A TAG this frame's census admits. A test that means to name a country says
     /// so here; a test about a contended key asks `named_country` and gets `None`.
     fn named<'tag>(
-        frame: &replay_core::WorldFrame,
+        frame: &'tag replay_core::WorldFrame,
         tag: &'tag str,
     ) -> replay_core::NamedCountry<'tag> {
         frame.named_country(tag).expect("census-admitted tag")
@@ -1688,189 +1689,17 @@ mod tests {
         replay_core::WorldTimeline::open(Box::new(source)).expect("open memory timeline")
     }
 
-    /// A CONTENDED key is not an identity, however it is spelled.
+    /// DELETED: `every_stored_country_selection_is_asked_about`.
     ///
-    /// The numeric branch below exists for a POV key the frame does not carry
-    /// as a country: the spelling IS the id. A contended key is absent from
-    /// every typed map ON PURPOSE -- that is what the census does with a key
-    /// two ids reach -- so all three "is it recorded" checks go false and the
-    /// spelling gets parsed. The census's own refusal became an identity.
-    ///
-    /// kills: asking the typed maps before asking the census.
-    /// The three topbar routes do not spell a refused key back out.
-    ///
-    /// Each was handed a POV string and wrote `Some(pov_tag)` into
-    /// `country_tag` whenever Replay had no identity for it -- which is exactly
-    /// the state the census puts a contended key in. A flag and a topbar are
-    /// rendered FROM that field, so the refusal was undone at the last step
-    /// (Codex round 29).
-    /// The one selector path a TYPE cannot carry: a country selection stored in
-    /// app state.
-    ///
-    /// Every consumer that takes a caller-supplied selector now takes
-    /// `NamedCountry`, so the census is asked by the compiler at the call site
-    /// and there is nothing left for a scan to detect. A selection kept in
-    /// viewer state is an owned `String` on a struct the app carries between
-    /// frames -- no parameter, no type, nothing the compiler can require -- and
-    /// `UiRuntime::execute` published `viewer.selected_country` into an XUI11
-    /// candidate that the closed-panel branch then announced as available
-    /// (Codex round 50). So the one remaining rule is about the READ: a
-    /// function that holds a `&WorldFrame` and reads a stored selection asks
-    /// this hour's census about it. Published or not -- the question is not
-    /// whether the read is published, which is the judgement three rounds of
-    /// scans could not make; it is whether the census was asked.
-    #[test]
-    fn every_stored_country_selection_is_asked_about() {
-        /// The fields an app keeps a country selection in, read off `viewer`.
-        const STATE_SELECTOR_FIELDS: &[&str] = &[
-            "selected_country",
-            "pov_tag",
-            "viewer_country",
-            "selected_country_tag",
-        ];
-
-        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut sources: Vec<(String, String)> = Vec::new();
-        for crate_dir in ["src", "../map_viewer/src", "../replay_app/src"] {
-            let root = manifest.join(crate_dir);
-            let mut stack = vec![root];
-            while let Some(dir) = stack.pop() {
-                let listing = std::fs::read_dir(&dir).expect("a source directory");
-                for entry in listing.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        stack.push(path);
-                    } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
-                        let name = path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or_default()
-                            .to_string();
-                        sources.push((name, std::fs::read_to_string(&path).expect("source")));
-                    }
-                }
-            }
-        }
-        assert!(sources.len() > 40, "this scan read {} files", sources.len());
-
-        // The RECEIVER is not part of the rule: `state.selected_country` and
-        // `self.viewer.pov_tag` are the same read as `viewer.selected_country`,
-        // and a rule that spelled the receiver could not see them (Codex round
-        // 51). What IS part of the rule is where the field name ENDS, so
-        // `.selected_country_filter_ids` is a different field and not a read.
-        // The body is flattened first, because these arrive broken across
-        // lines as `viewer` / `.selected_country`.
-        let stored_selection_reads = |body: &str| -> usize {
-            let flattened: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
-            let flattened = flattened.replace(" . ", ".").replace(". ", ".").replace(" .", ".");
-            STATE_SELECTOR_FIELDS
-                .iter()
-                .map(|field| {
-                    let needle = format!(".{field}");
-                    flattened
-                        .match_indices(&needle)
-                        .filter(|(at, _)| {
-                            flattened[at + needle.len()..]
-                                .chars()
-                                .next()
-                                .is_none_or(|next| !next.is_alphanumeric() && next != '_')
-                        })
-                        .count()
-                })
-                .sum()
-        };
-
-        let mut readers = 0usize;
-        let mut reads = 0usize;
-        let mut unasked: Vec<String> = Vec::new();
-        for (file, source) in &sources {
-            let lines: Vec<&str> = source.lines().collect();
-            let production = lines
-                .iter()
-                .position(|line| line.trim_start().starts_with("mod tests"))
-                .unwrap_or(lines.len());
-            let mut at = 0usize;
-            while at < production {
-                let trimmed = lines[at].trim_start();
-                // Visibility and `async` are PREFIXES, not spellings to
-                // enumerate: an `async fn` declaration was invisible to the
-                // three this rule knew (Codex round 51).
-                // `pub`, `pub(crate)`, `pub(super)`, `pub(in path)` -- the
-                // visibility is `pub` and OPTIONALLY a parenthesised scope, not
-                // a list of the two spellings this rule happened to know
-                // (Codex round 53 walked in through `pub(super)`).
-                let head_of = match trimmed.strip_prefix("pub") {
-                    Some(rest) => match rest.strip_prefix('(') {
-                        Some(scoped) => match scoped.split_once(") ") {
-                            Some((_, after)) => after,
-                            None => trimmed,
-                        },
-                        None => rest.strip_prefix(' ').unwrap_or(trimmed),
-                    },
-                    None => trimmed,
-                };
-                let head_of = head_of.strip_prefix("async ").unwrap_or(head_of);
-                let declared = head_of.strip_prefix("fn ");
-                let Some(rest) = declared else {
-                    at += 1;
-                    continue;
-                };
-                // METHODS TOO: the body ends at the closing brace on the
-                // declaration's own indent (Codex round 49).
-                let indent = lines[at].len() - lines[at].trim_start().len();
-                let closing = format!("{}}}", " ".repeat(indent));
-                let name = rest.split(['(', '<', ' ']).next().unwrap_or("").to_string();
-                let end = (at + 1..lines.len())
-                    .find(|index| lines[*index] == closing)
-                    .unwrap_or(lines.len() - 1);
-                let body = lines[at..=end].join("\n");
-                let head = body.split('{').next().unwrap_or_default().to_string();
-                let body_reads = if head.contains("WorldFrame") {
-                    stored_selection_reads(&body)
-                } else {
-                    0
-                };
-                if body_reads > 0 {
-                    readers += 1;
-                    reads += body_reads;
-                    if !body.contains("named_country") && !body.contains("country_key_is_contended")
-                    {
-                        unasked.push(format!("{file}: {name}"));
-                    }
-                }
-                at = end + 1;
-            }
-        }
-
-        assert!(
-            unasked.is_empty(),
-            "these functions hold a frame and read a stored country selection \
-             without asking that frame's census about it. Call \
-             `frame.named_country(..)` and carry the answer in the type:\n{}",
-            unasked.join("\n")
-        );
-        assert_eq!(
-            readers, 9,
-            "the number of functions reading a stored country selection moved; \
-             every one of them asks the census, and a new one has to as well"
-        );
-        // ...and the READS, not just the functions. The rule above is per
-        // FUNCTION, so a function that asks about one stored selection can
-        // publish a SECOND one unasked and stay green -- Codex round 52
-        // demonstrated that by putting `viewer.selected_country.clone()` back
-        // into the XUI15 trade surface's `country_tag` inside
-        // `prepare_observer_semantic_frame_with_xui12_and_xui22_producers`,
-        // which asks elsewhere. A per-READ rule is not reachable: 42 of these
-        // 57 reads are neither a comparison nor a statement-local ask -- a
-        // tooltip POV, a viewer-state reconcile, a `?`-terminated bind -- and
-        // every rule that admits them is the spelling list rounds 48-50 walked
-        // past. So the COUNT is the instrument, as it is for every other entry
-        // way this lane closed: a new read has to be justified by moving it.
-        assert_eq!(
-            reads, 57,
-            "the number of stored-country-selection READS moved. A new one is              either an ask, a comparison, or a publication -- say which, and              move this number"
-        );
-    }
+    /// Its rule was that a function holding a `&WorldFrame` and reading a
+    /// stored country selection asks that frame's census. That is now a
+    /// property of the TYPE: `StoredCountrySelection` yields a name only
+    /// through `named_in(&WorldFrame)`, which IS the question, and its
+    /// counted-reads instrument measured nothing once a read that is not an
+    /// ask can no longer yield a name. The alias it could not catch (lane UB
+    /// M5) is a compile error, recorded in
+    /// `xe_typed_identity_closures/MUTATIONS.json`; the doors are counted by
+    /// `stored_country_selection::tests::exactly_one_accessor_yields_a_name_and_it_takes_the_frame`.
 
     /// A `NamedCountry` cannot be built for a key two ids reach.
     ///

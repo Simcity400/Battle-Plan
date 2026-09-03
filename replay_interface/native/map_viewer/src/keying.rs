@@ -17,14 +17,14 @@ impl KeyingTables {
 
         for (state_id, leaf) in frame.owner_by_state() {
             if let Leaf::Measured(tag) = leaf {
-                state_owners.insert(*state_id, tag.clone());
+                state_owners.insert(*state_id, tag.tag().to_string());
                 state_controls
                     .entry(*state_id)
                     .or_insert_with(|| InitialStateControl {
                         owner: None,
                         controller: None,
                     })
-                    .owner = Some(tag.clone());
+                    .owner = Some(tag.tag().to_string());
             }
         }
         for (state_id, leaf) in frame.control_by_state() {
@@ -35,7 +35,7 @@ impl KeyingTables {
                         owner: None,
                         controller: None,
                     })
-                    .controller = Some(tag.clone());
+                    .controller = Some(tag.tag().to_string());
             }
         }
 

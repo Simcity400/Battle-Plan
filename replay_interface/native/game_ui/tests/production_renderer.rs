@@ -976,7 +976,8 @@ fn frame_owned_xui23_carrier_reaches_the_actual_production_renderer() {
     );
     let frame = decode(rest);
     let mut viewer = game_ui::production_renderer::ObserverViewerUiState::default();
-    viewer.selected_country = Some("GER".into());
+    viewer.selected_country =
+        game_ui::stored_country_selection::StoredCountrySelection::of("GER");
     viewer.abilities.open = true;
     viewer.abilities.selected_context = Some(context);
     let route = renderer.prepare_xui23_ability_route(frame.as_ref(), &viewer);
@@ -1152,7 +1153,10 @@ fn installed_xui21_shipping_renderer_admits_complete_event_namespace_and_compose
     }
     let timeline = WorldTimeline::open(Box::new(HolFrame)).expect("timeline");
     let frame = timeline.frame(100).expect("frame");
-    let mut route = ObserverEventRoute::authenticated_for_selection(&frame, Some("HOL"));
+    let mut route = ObserverEventRoute::authenticated_for_selection(
+        &frame,
+        &game_ui::stored_country_selection::StoredCountrySelection::of("HOL"),
+    );
     assert_eq!(
         route.country_tag_db_id(),
         Some(1),

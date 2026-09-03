@@ -5,6 +5,10 @@ use replay_core::{
 #[cfg(test)]
 use replay_core::SessionHeaderView;
 
+/// What a point of view is called when nothing has named it: no frame to ask,
+/// or a frame that refuses the key and offers no sentence of its own.
+pub const UNNAMED_POV: &str = "the selected point of view";
+
 pub const POV_RECORDED_STATE_UNAVAILABLE: &str =
     "selected POV has no complete current-frame d94/d95 visibility and spotted-unit evidence";
 
@@ -16,7 +20,10 @@ pub const SESSION_PLAYERS_GAP: &str = "session player-country list unavailable: 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObserverMode {
     Omniscient,
-    Pov(String),
+    /// The fog point of view, held as a SELECTION rather than a spelling: it is
+    /// stored across frames, so it is the same kind of thing as the UI
+    /// selection and it is asked of the frame the same way.
+    Pov(game_ui::stored_country_selection::StoredCountrySelection),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,17 +88,17 @@ pub enum PovRenderStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PovState {
-    selected_ui_country: Option<String>,
+    selected_ui_country: game_ui::stored_country_selection::StoredCountrySelection,
     mode: ObserverMode,
-    last_pov: Option<String>,
+    last_pov: game_ui::stored_country_selection::StoredCountrySelection,
 }
 
 impl Default for PovState {
     fn default() -> Self {
         PovState {
-            selected_ui_country: None,
+            selected_ui_country: game_ui::stored_country_selection::StoredCountrySelection::none(),
             mode: ObserverMode::Omniscient,
-            last_pov: None,
+            last_pov: game_ui::stored_country_selection::StoredCountrySelection::none(),
         }
     }
 }
@@ -104,34 +111,56 @@ impl PovState {
     pub fn mode(&self) -> &ObserverMode {
         &self.mode
     }
-    pub fn selected_ui_country(&self) -> Option<&str> {
-        self.selected_ui_country.as_deref()
+    /// THE SELECTION, not a spelling.
+    ///
+    /// This used to be `Option<&str>`, which is the second stored selection in
+    /// this crate and M5's alias all over again: a caller wanting a name had
+    /// only to read it here instead of from the viewer state. The type is the
+    /// same one the viewer state carries, so the frame is asked either way.
+    pub fn selection(&self) -> &game_ui::stored_country_selection::StoredCountrySelection {
+        &self.selected_ui_country
     }
     pub fn select_ui_country(&mut self, tag: &str) {
-        self.selected_ui_country = Some(tag.to_string());
+        self.selected_ui_country =
+            game_ui::stored_country_selection::StoredCountrySelection::of(tag);
+        // THE FOG SEED, recorded where the spelling arrives. `toggle` used to
+        // read the UI selection's spelling directly; the selection is a type
+        // now and yields no name without a frame. `last_pov` already means
+        // "the last TAG this observer was pointed at" -- `enter_pov` sets it to
+        // the same value it sets the selection to, and
+        // `clear_country_selection` clears both -- so the toggle below reads
+        // exactly what the two-arm `or` read before.
+        self.last_pov = game_ui::stored_country_selection::StoredCountrySelection::of(tag);
     }
     pub fn clear_country_selection(&mut self) {
-        self.selected_ui_country = None;
+        self.selected_ui_country = game_ui::stored_country_selection::StoredCountrySelection::none();
         self.mode = ObserverMode::Omniscient;
-        self.last_pov = None;
+        self.last_pov = game_ui::stored_country_selection::StoredCountrySelection::none();
     }
     pub fn is_omniscient(&self) -> bool {
         matches!(self.mode, ObserverMode::Omniscient)
     }
-    pub fn active_pov(&self) -> Option<&str> {
+    /// The fog point of view, as a SELECTION.
+    ///
+    /// It was `Option<&str>` -- a third raw stored country identity in this
+    /// struct, and the one that reached the window title: a fog POV set before
+    /// its key became contended kept rendering as a country for as long as the
+    /// mode held (Codex round 2 finding 2). `render_status` asks the frame now,
+    /// so a refused POV names its refusal instead of its key.
+    pub fn active_pov(&self) -> Option<&game_ui::stored_country_selection::StoredCountrySelection> {
         match &self.mode {
-            ObserverMode::Pov(tag) => Some(tag),
+            ObserverMode::Pov(selection) => Some(selection),
             ObserverMode::Omniscient => None,
         }
     }
-    pub fn last_pov(&self) -> Option<&str> {
-        self.last_pov.as_deref()
+    pub fn last_pov(&self) -> &game_ui::stored_country_selection::StoredCountrySelection {
+        &self.last_pov
     }
 
     pub fn enter_pov(&mut self, tag: &str) {
-        self.selected_ui_country = Some(tag.to_string());
-        self.mode = ObserverMode::Pov(tag.to_string());
-        self.last_pov = Some(tag.to_string());
+        self.selected_ui_country = game_ui::stored_country_selection::StoredCountrySelection::of(tag);
+        self.mode = ObserverMode::Pov(game_ui::stored_country_selection::StoredCountrySelection::of(tag));
+        self.last_pov = game_ui::stored_country_selection::StoredCountrySelection::of(tag);
     }
 
     pub fn exit_to_world(&mut self) {
@@ -140,14 +169,10 @@ impl PovState {
 
     pub fn toggle(&mut self) {
         self.mode = match &self.mode {
-            ObserverMode::Omniscient => match self
-                .selected_ui_country
-                .as_ref()
-                .or(self.last_pov.as_ref())
-            {
-                Some(tag) => ObserverMode::Pov(tag.clone()),
-                None => ObserverMode::Omniscient,
-            },
+            ObserverMode::Omniscient if self.last_pov.is_selected() => {
+                ObserverMode::Pov(self.last_pov.clone())
+            }
+            ObserverMode::Omniscient => ObserverMode::Omniscient,
             ObserverMode::Pov(_) => ObserverMode::Omniscient,
         };
     }
@@ -155,18 +180,35 @@ impl PovState {
     pub fn render_status(&self, frame: Option<&WorldFrame>) -> PovRenderStatus {
         match &self.mode {
             ObserverMode::Omniscient => PovRenderStatus::Omniscient,
-            ObserverMode::Pov(tag) => {
+            ObserverMode::Pov(selection) => {
                 let Some(frame) = frame else {
+                    // NO FRAME, NO CENSUS, NO NAME. The POV cannot be spelled
+                    // here: nothing has admitted it.
                     return PovRenderStatus::Unavailable {
-                        pov: tag.clone(),
+                        pov: UNNAMED_POV.to_string(),
                         diagnostic: format!(
                             "{POV_RECORDED_STATE_UNAVAILABLE}: displayed WorldFrame is absent"
                         ),
                     };
                 };
+                // THE CENSUS, BEFORE THE TAG IS COPIED ANYWHERE. A fog POV
+                // whose key two D18 ids reach names no country to look through,
+                // and the refusal is what gets rendered.
+                let Some(named) = selection.named_in(frame) else {
+                    return PovRenderStatus::Unavailable {
+                        pov: selection
+                            .refusal_detail_in(frame)
+                            .unwrap_or_else(|| UNNAMED_POV.to_string()),
+                        diagnostic: format!(
+                            "{POV_RECORDED_STATE_UNAVAILABLE}: this hour names no country for \
+                             the selected point of view"
+                        ),
+                    };
+                };
+                let tag = named.tag();
                 if frame.visibility_status() != ViewStatus::Present {
                     return PovRenderStatus::Unavailable {
-                        pov: tag.clone(),
+                        pov: tag.to_string(),
                         diagnostic: format!(
                             "{POV_RECORDED_STATE_UNAVAILABLE}: visibility status is {:?}",
                             frame.visibility_status()
@@ -178,7 +220,7 @@ impl PovState {
                 match admit_recorded_pov(tag, visibility.as_ref(), &spotted) {
                     Ok(status) => status,
                     Err(reason) => PovRenderStatus::Unavailable {
-                        pov: tag.clone(),
+                        pov: tag.to_string(),
                         diagnostic: format!("{POV_RECORDED_STATE_UNAVAILABLE}: {reason}"),
                     },
                 }
@@ -272,7 +314,9 @@ pub fn povs_from_session(session: &SessionMetadataView) -> PovPicker {
             for pc in list {
                 if let Leaf::Measured(tag) = &pc.tag {
                     choices.push(CountryChoice {
-                        tag: tag.clone(),
+                        // DERIVED from an admitted identity: the picker renders
+                        // a name the frame's census already admitted.
+                        tag: tag.tag().to_string(),
                         label: pc.player_name.measured().cloned(),
                     });
                 }
@@ -360,11 +404,18 @@ fn povs_from_session_and_header(
         (_, PovPicker::Available { choices, .. }, Leaf::Measured(player))
             if !choices
                 .iter()
-                .any(|choice| Some(&choice.tag) == player.country_tag.as_ref()) =>
+                .any(|choice| {
+                    Some(choice.tag.as_str())
+                        == player.country_tag.as_ref().map(replay_core::CountryIdentityRef::tag)
+                }) =>
         {
             PovPicker::Unavailable(format!(
                 "D68 local player {:?} is absent from the measured D57 player-country roster",
-                player.country_tag.as_deref().unwrap_or_default()
+                player
+                    .country_tag
+                    .as_ref()
+                    .map(replay_core::CountryIdentityRef::tag)
+                    .unwrap_or_default()
             ))
         }
         (_, PovPicker::Available { .. }, _) => session_picker,
@@ -372,7 +423,7 @@ fn povs_from_session_and_header(
             match &player.country_tag {
                 Some(tag) => PovPicker::Available {
                     choices: vec![CountryChoice {
-                        tag: tag.clone(),
+                        tag: tag.tag().to_string(),
                         label: None,
                     }],
                     unnameable: Vec::new(),
@@ -471,8 +522,8 @@ mod tests {
     fn default_is_omniscient() {
         let state = PovState::new();
         assert!(state.is_omniscient());
-        assert_eq!(state.active_pov(), None);
-        assert_eq!(state.selected_ui_country(), None);
+        assert!(state.active_pov().is_none());
+        assert!(!state.selection().is_selected());
         assert_eq!(state.render_status(None), PovRenderStatus::Omniscient);
     }
 
@@ -480,29 +531,95 @@ mod tests {
     fn ui_country_selection_does_not_request_fog() {
         let mut state = PovState::new();
         state.select_ui_country("FRA");
-        assert_eq!(state.selected_ui_country(), Some("FRA"));
-        assert_eq!(state.active_pov(), None);
+        assert!(state.selection().is("FRA"));
+        assert!(state.active_pov().is_none());
         assert_eq!(state.render_status(None), PovRenderStatus::Omniscient);
 
         state.toggle();
-        assert_eq!(state.active_pov(), Some("FRA"));
+        assert!(state.active_pov().is_some_and(|pov| pov.is("FRA")));
         assert!(matches!(
             state.render_status(None),
             PovRenderStatus::Unavailable { .. }
         ));
         state.toggle();
-        assert_eq!(state.active_pov(), None);
-        assert_eq!(state.selected_ui_country(), Some("FRA"));
+        assert!(state.active_pov().is_none());
+        assert!(state.selection().is("FRA"));
+    }
+
+    /// A fog point of view whose key this hour CONTENDS names no country, and
+    /// the render status carries the refusal rather than the key.
+    ///
+    /// Codex round 2 finding 2: the mode held a raw `String`, so a POV entered
+    /// while its key was nameable kept rendering into the window title after
+    /// the census turned against it -- and the UI selection moving to a
+    /// perfectly good country did not disturb it, because the picker's clear
+    /// only ever looks at the selection.
+    #[test]
+    fn a_contended_fog_pov_names_its_refusal_and_never_its_key() {
+        // kills: `render_status` -- put `selection` straight into
+        // `PovRenderStatus::Unavailable { pov: .. }` without the
+        // `selection.named_in(frame)` ask, and DUP reaches the title again.
+        let contended = crate::test_identity::frame_from_json(serde_json::json!({
+            "countries": { "ENG": { "_r2_tag_db_id": 12 } },
+            "tag_db_id_index": {
+                "country_composition_version": 2,
+                "withheld_countries": {
+                    "contended_keys": { "DUP": { "tag_db_ids": [441, 442] } }
+                },
+            },
+        }));
+
+        // The sequence: fog POV on DUP, then the UI selection moves to a
+        // country this hour DOES name. The selection is fine; the fog POV is
+        // the one holding the refused key.
+        let mut state = PovState::new();
+        state.enter_pov("DUP");
+        state.select_ui_country("ENG");
+        assert!(
+            state.selection().is("ENG"),
+            "the UI selection is the good one, so nothing clears it"
+        );
+
+        match state.render_status(Some(&contended)) {
+            PovRenderStatus::Unavailable { pov, diagnostic } => {
+                assert_ne!(pov, "DUP", "the refused key reached the render status");
+                assert!(
+                    pov.contains("DUP") && pov.contains("census"),
+                    "a refusal may spell the key it refuses, and must say why: {pov}"
+                );
+                assert!(
+                    diagnostic.contains("names no country"),
+                    "the diagnostic names the cause: {diagnostic}"
+                );
+            }
+            other => panic!("a contended fog POV must not be rendered: {other:?}"),
+        }
+
+        // THE CONTROL. Without it this proves nothing: the same sequence on a
+        // frame that names DUP has to reach the ordinary route.
+        let named = crate::test_identity::frame_from_json(serde_json::json!({
+            "countries": { "DUP": { "_r2_tag_db_id": 441 }, "ENG": { "_r2_tag_db_id": 12 } },
+            "tag_db_id_index": { "country_composition_version": 2 },
+        }));
+        match state.render_status(Some(&named)) {
+            PovRenderStatus::Unavailable { pov, diagnostic } => {
+                assert_eq!(
+                    pov, "DUP",
+                    "a POV this frame names is spelled by its name: {diagnostic}"
+                );
+            }
+            other => panic!("this fixture carries no d94/d95, so it fails closed: {other:?}"),
+        }
     }
 
     #[test]
     fn enter_pov_without_world_frame_fails_closed() {
         let mut state = PovState::new();
         state.enter_pov("GER");
-        assert_eq!(state.active_pov(), Some("GER"));
+        assert!(state.active_pov().is_some_and(|pov| pov.is("GER")));
         match state.render_status(None) {
             PovRenderStatus::Unavailable { pov, diagnostic } => {
-                assert_eq!(pov, "GER");
+                assert_eq!(pov, UNNAMED_POV);
                 assert!(diagnostic.contains(POV_RECORDED_STATE_UNAVAILABLE));
                 assert!(diagnostic.contains("WorldFrame is absent"));
             }
@@ -630,7 +747,7 @@ mod tests {
         world_after.exit_to_world();
         let before = world_after.clone();
         world_after.toggle();
-        assert_eq!(world_after.active_pov(), Some("ENG"));
+        assert!(world_after.active_pov().is_some_and(|pov| pov.is("ENG")));
         world_after.toggle();
         assert_eq!(world_after, before);
     }
@@ -639,12 +756,12 @@ mod tests {
     fn picker_available_keeps_measured_tags_and_labels() {
         let list = vec![
             PlayerCountry {
-                tag: Leaf::Measured("GER".into()),
+                tag: Leaf::Measured(crate::test_identity::identity("GER")),
                 tag_db_id: Leaf::Absent,
                 player_name: Leaf::Measured("Alice".into()),
             },
             PlayerCountry {
-                tag: Leaf::Measured("SOV".into()),
+                tag: Leaf::Measured(crate::test_identity::identity("SOV")),
                 tag_db_id: Leaf::Absent,
                 player_name: Leaf::Absent,
             },
@@ -686,7 +803,7 @@ mod tests {
     fn picker_uses_exact_d68_player_when_multiplayer_roster_is_absent() {
         let header = session_header(Leaf::Measured(SessionHeaderPlayer {
             tag_db_id: 368,
-            country_tag: Some("D04".into()),
+            country_tag: Some(crate::test_identity::identity("D04")),
         }));
         match povs_from_session_and_header(&session(Leaf::Absent), &header) {
             PovPicker::Available { choices, .. } => {
@@ -702,7 +819,7 @@ mod tests {
     fn picker_does_not_hide_an_unobtained_d57_roster_with_d68() {
         let header = session_header(Leaf::Measured(SessionHeaderPlayer {
             tag_db_id: 368,
-            country_tag: Some("D04".into()),
+            country_tag: Some(crate::test_identity::identity("D04")),
         }));
         match povs_from_session_and_header(&session(Leaf::Unobtained), &header) {
             PovPicker::Unavailable(reason) => {
@@ -716,10 +833,10 @@ mod tests {
     fn picker_rejects_d57_d68_player_disagreement() {
         let header = session_header(Leaf::Measured(SessionHeaderPlayer {
             tag_db_id: 368,
-            country_tag: Some("D04".into()),
+            country_tag: Some(crate::test_identity::identity("D04")),
         }));
         let roster = vec![PlayerCountry {
-            tag: Leaf::Measured("GER".into()),
+            tag: Leaf::Measured(crate::test_identity::identity("GER")),
             tag_db_id: Leaf::Absent,
             player_name: Leaf::Measured("Alice".into()),
         }];

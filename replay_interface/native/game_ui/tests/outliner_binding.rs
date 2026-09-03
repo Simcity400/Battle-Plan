@@ -9,7 +9,7 @@ use std::path::PathBuf;
 /// A TAG this frame's census admits. A test that means to name a country says
 /// so here; a test about a contended key asks `named_country` and gets `None`.
 fn named<'tag>(
-    frame: &replay_core::WorldFrame,
+    frame: &'tag replay_core::WorldFrame,
     tag: &'tag str,
 ) -> replay_core::NamedCountry<'tag> {
     frame.named_country(tag).expect("census-admitted tag")

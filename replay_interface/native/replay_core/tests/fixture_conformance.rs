@@ -1,3 +1,4 @@
+use replay_core::{CountryIdentityLeaf, CountryIdentityRosterLeaf};
 use replay_core::{open_recording, Leaf, WorldFrame, WorldTimeline};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
@@ -120,11 +121,11 @@ fn selected_positive_fixtures_feed_current_typed_views() {
     let owner = open_fixture("fx_owner_controller_flip");
     let before = owner.frame(owner.hours()[0]).unwrap();
     let after = owner.frame(owner.hours()[5]).unwrap();
-    assert_eq!(before.owner_by_state()[&10], Leaf::Measured("GER".into()));
-    assert_eq!(after.owner_by_state()[&10], Leaf::Measured("SOV".into()));
+    assert_eq!(before.owner_by_state()[&10].tag(), Leaf::Measured("GER"));
+    assert_eq!(after.owner_by_state()[&10].tag(), Leaf::Measured("SOV"));
     assert_eq!(
-        after.control_by_province()[&1000],
-        Leaf::Measured("SOV".into())
+        after.control_by_province()[&1000].tag(),
+        Leaf::Measured("SOV")
     );
 
     let ideology = open_fixture("fx_cosmetic_ideology");

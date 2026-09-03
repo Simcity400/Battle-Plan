@@ -6,6 +6,8 @@ pub mod army_battleplans;
 pub mod character_presentation_g8;
 pub mod cipher_controller;
 pub mod combat_presentation;
+pub mod country_identity;
+mod session_header_raw;
 pub mod d18_roster;
 pub mod decision_evaluation;
 pub mod decisions_live;
@@ -32,6 +34,9 @@ pub mod xui26_frontend;
 
 pub use character_presentation_g8::*;
 pub use combat_presentation::*;
+pub use country_identity::{
+    CountryIdentityLeaf, CountryIdentityRef, CountryIdentityRosterLeaf, IdentityRefusal,
+};
 pub use xmap17_player_labels::*;
 pub use xui26_frontend::*;
 

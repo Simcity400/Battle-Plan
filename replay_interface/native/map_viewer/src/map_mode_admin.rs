@@ -604,7 +604,7 @@ ideologies = {
         let mut owners = BTreeMap::new();
         for (sid, leaf) in frame.owner_by_state() {
             if let Leaf::Measured(tag) = leaf {
-                owners.insert(*sid, tag.clone());
+                owners.insert(*sid, tag.tag().to_string());
             }
         }
         owners
@@ -664,7 +664,7 @@ ideologies = {
             Leaf::Measured(list) => list
                 .iter()
                 .filter_map(|p| match &p.tag {
-                    Leaf::Measured(tag) => Some(tag.clone()),
+                    Leaf::Measured(tag) => Some(tag.tag().to_string()),
                     _ => None,
                 })
                 .collect(),

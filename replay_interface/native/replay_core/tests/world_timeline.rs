@@ -1,6 +1,7 @@
 #![recursion_limit = "512"]
 
 
+use replay_core::{CountryIdentityLeaf, CountryIdentityRosterLeaf};
 use replay_core::world::FactionRosterStatus;
 use replay_core::{
     open_recording, open_recording_game, open_recording_with_decoder,
@@ -840,25 +841,25 @@ fn dir_store_typed_views_and_trichotomy() {
 
     // state ownership change between hours
     assert_eq!(
-        f100.owner_by_state()[&10],
-        Leaf::Measured("GER".to_string())
+        f100.owner_by_state()[&10].tag(),
+        Leaf::Measured("GER")
     );
     assert_eq!(
-        f101.owner_by_state()[&10],
-        Leaf::Measured("GER".to_string())
+        f101.owner_by_state()[&10].tag(),
+        Leaf::Measured("GER")
     );
     assert_eq!(
-        f103.owner_by_state()[&10],
-        Leaf::Measured("SOV".to_string())
+        f103.owner_by_state()[&10].tag(),
+        Leaf::Measured("SOV")
     );
     assert_eq!(f100.owner_by_state()[&30], Leaf::Unobtained);
     assert_eq!(
-        f100.control_by_province()[&2000],
-        Leaf::Measured("SOV".to_string())
+        f100.control_by_province()[&2000].tag(),
+        Leaf::Measured("SOV")
     );
     assert_eq!(
-        f103.control_by_province()[&1000],
-        Leaf::Measured("SOV".to_string())
+        f103.control_by_province()[&1000].tag(),
+        Leaf::Measured("SOV")
     );
 
     let div = |frame: &WorldFrame, uid: &str| {
@@ -872,11 +873,11 @@ fn dir_store_typed_views_and_trichotomy() {
     assert_eq!(d5_101.in_combat, Leaf::Measured(true));
     assert!(div(&f103, "5:1").is_none());
     let d6 = div(&f100, "6").unwrap();
-    assert_eq!(d6.owner, Leaf::Measured("GER".to_string()));
+    assert_eq!(d6.owner.tag(), Leaf::Measured("GER"));
     assert_eq!(d6.organisation, Leaf::Unobtained);
     assert_eq!(d6.in_combat, Leaf::Absent);
     let d7 = div(&f101, "7").unwrap();
-    assert_eq!(d7.owner, Leaf::Measured("SOV".to_string()));
+    assert_eq!(d7.owner.tag(), Leaf::Measured("SOV"));
     assert!(f101
         .coverage_warnings()
         .iter()
@@ -996,8 +997,8 @@ fn dir_store_typed_views_and_trichotomy() {
     let session = f100.session_metadata();
     assert_eq!(session.status, ViewStatus::Present);
     assert_eq!(
-        session.player_countries.measured().unwrap()[0].tag,
-        Leaf::Measured("GER".to_string())
+        session.player_countries.measured().unwrap()[0].tag.tag(),
+        Leaf::Measured("GER")
     );
     assert_eq!(
         session.speed_events.measured().unwrap()[0].speed,
@@ -1023,8 +1024,8 @@ fn dir_store_typed_views_and_trichotomy() {
 
     assert_eq!(f100.naval_supremacy_status(), ViewStatus::Present);
     assert_eq!(
-        f100.naval_supremacy_by_region()[&42].controller,
-        Leaf::Measured("GER".to_string())
+        f100.naval_supremacy_by_region()[&42].controller.tag(),
+        Leaf::Measured("GER")
     );
     assert_eq!(
         f100.naval_supremacy_by_region()[&42].supremacy,
@@ -4151,11 +4152,11 @@ fn scrub_state_at_semantics() {
     }
 
     let a1 = timeline.state_at(100).unwrap();
-    assert_eq!(a1.owner_by_state()[&10], Leaf::Measured("GER".to_string()));
+    assert_eq!(a1.owner_by_state()[&10].tag(), Leaf::Measured("GER"));
     let b = timeline.state_at(103).unwrap();
-    assert_eq!(b.owner_by_state()[&10], Leaf::Measured("SOV".to_string()));
+    assert_eq!(b.owner_by_state()[&10].tag(), Leaf::Measured("SOV"));
     let a2 = timeline.state_at(100).unwrap();
-    assert_eq!(a2.owner_by_state()[&10], Leaf::Measured("GER".to_string()));
+    assert_eq!(a2.owner_by_state()[&10].tag(), Leaf::Measured("GER"));
     assert_eq!(a1.owner_by_state(), a2.owner_by_state());
     assert!(Arc::ptr_eq(&a1, &a2));
 
@@ -4314,8 +4315,8 @@ fn wrong_typed_map_mirror_falls_back_with_warning() {
     let frame = timeline.frame(10).unwrap();
     assert_eq!(frame.owner_by_state_source(), MapLayerSource::DomainWalk);
     assert_eq!(
-        frame.owner_by_state()[&10],
-        Leaf::Measured("GER".to_string())
+        frame.owner_by_state()[&10].tag(),
+        Leaf::Measured("GER")
     );
     assert_eq!(
         frame.control_by_province_source(),

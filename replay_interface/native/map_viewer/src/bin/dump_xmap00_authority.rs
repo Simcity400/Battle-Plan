@@ -370,7 +370,7 @@ fn observations(frame: &WorldFrame) -> Vec<Observation> {
                         .values()
                         .chain(frame.control_by_state().values())
                         .filter_map(|leaf| match leaf {
-                            Leaf::Measured(tag) => Some(tag.as_str()),
+                            Leaf::Measured(tag) => Some(tag.tag()),
                             _ => None,
                         })
                         .filter(|tag| non_tag.iter().any(|key| key == tag))
@@ -379,7 +379,7 @@ fn observations(frame: &WorldFrame) -> Vec<Observation> {
                         .control_by_province()
                         .values()
                         .filter_map(|leaf| match leaf {
-                            Leaf::Measured(tag) => Some(tag.as_str()),
+                            Leaf::Measured(tag) => Some(tag.tag()),
                             _ => None,
                         })
                         .filter(|tag| non_tag.iter().any(|key| key == tag))

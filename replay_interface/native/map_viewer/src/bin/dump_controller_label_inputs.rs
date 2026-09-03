@@ -70,7 +70,7 @@ fn run() -> Result<(), String> {
     for (_, leaf) in frame.control_by_province() {
         match leaf {
             Leaf::Measured(tag) if !tag.trim().is_empty() => {
-                *controllers.entry(tag.clone()).or_default() += 1
+                *controllers.entry(tag.tag().to_string()).or_default() += 1
             }
             _ => unmeasured_rows += 1,
         }
@@ -129,7 +129,7 @@ fn scan_hours(timeline: &WorldTimeline) -> Result<(), String> {
         for (_, leaf) in frame.control_by_province() {
             if let Leaf::Measured(tag) = leaf {
                 if !tag.trim().is_empty() {
-                    *controllers.entry(tag.clone()).or_default() += 1;
+                    *controllers.entry(tag.tag().to_string()).or_default() += 1;
                 }
             }
         }

@@ -114,6 +114,13 @@ pub fn inspect_unitview_layout(layouts: &LayoutSet) -> UnitViewLayoutReport {
 fn opt_string(leaf: &Leaf<String>) -> Option<String> {
     leaf.measured().cloned()
 }
+/// The TAG of an admitted identity, for a view that renders text.
+///
+/// DERIVED: the census was asked where the row was decoded, so a rendered
+/// name here cannot be one the frame refused.
+fn opt_identity_tag(leaf: &Leaf<replay_core::CountryIdentityRef>) -> Option<String> {
+    leaf.measured().map(|owner| owner.tag().to_string())
+}
 fn opt_f64(leaf: &Leaf<f64>) -> Option<f64> {
     leaf.measured().copied()
 }
@@ -173,7 +180,7 @@ pub fn land_unit_view_from_row(row: &DivisionUnitRow, available: bool) -> LandUn
     let (equipment_available, equipment) = equipment_lines(&row.equipment);
     LandUnitView {
         uid: row.div_uid.clone(),
-        owner: opt_string(&row.owner),
+        owner: opt_identity_tag(&row.owner),
         display_name: None,
         template_name: opt_string(&row.template_name),
         template_role: opt_string(&row.template_role),
@@ -294,7 +301,7 @@ pub fn naval_unit_view_from_row(row: &FleetUnitRow, available: bool) -> NavalUni
     NavalUnitView {
         uid: row.task_force_uid.clone(),
         fleet_uid: opt_string(&row.fleet_uid),
-        owner: opt_string(&row.owner),
+        owner: opt_identity_tag(&row.owner),
         display_name: None,
         mission: opt_string(&row.mission),
         mission_state: opt_i64(&row.mission_state),
@@ -394,7 +401,7 @@ pub struct AirWingView {
 pub fn air_wing_view_from_row(row: &WingUnitRow, available: bool) -> AirWingView {
     AirWingView {
         uid: row.wing_uid.clone(),
-        owner: opt_string(&row.owner),
+        owner: opt_identity_tag(&row.owner),
         display_name: opt_string(&row.name),
         plane_count: opt_i64(&row.plane_count),
         effective_planes: opt_i64(&row.effective_planes),
@@ -475,7 +482,7 @@ mod tests {
             raw_division_id: 101,
             raw_division_type: Leaf::Measured(1),
             div_uid: "101:1".to_string(),
-            owner: Leaf::Measured("GER".to_string()),
+            owner: Leaf::Measured(crate::test_identity::identity("GER")),
             location_province: Leaf::Measured(1000),
             state_id: Leaf::Measured(10),
             template_id: Leaf::Measured(1),
@@ -526,7 +533,7 @@ mod tests {
             raw_task_force_id: Leaf::Measured(201),
             raw_task_force_id_space: Leaf::Measured(61),
             raw_fleet_id: Leaf::Measured(200),
-            owner: Leaf::Measured("GER".to_string()),
+            owner: Leaf::Measured(crate::test_identity::identity("GER")),
             location_province: Leaf::Measured(6434),
             movement_path: Leaf::Measured(vec![6434, 5088]),
             movement_progress: Leaf::Measured(0.5),
@@ -585,7 +592,7 @@ mod tests {
         let row = WingUnitRow {
             wing_uid: "800:1".to_string(),
             raw_wing_id: Leaf::Measured(800),
-            owner: Leaf::Measured("ENG".to_string()),
+            owner: Leaf::Measured(crate::test_identity::identity("ENG")),
             name: Leaf::Measured("Fighter Wing".to_string()),
             plane_count: Leaf::Measured(100),
             experience: Leaf::Absent,

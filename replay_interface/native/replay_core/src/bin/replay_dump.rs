@@ -243,7 +243,7 @@ fn print_world_summary(requested_hour: i64, frame: &WorldFrame) {
     let mut states_unmeasured = 0usize;
     for leaf in frame.owner_by_state().values() {
         match leaf {
-            Leaf::Measured(tag) => *owned.entry(tag.as_str()).or_default() += 1,
+            Leaf::Measured(tag) => *owned.entry(tag.tag()).or_default() += 1,
             _ => states_unmeasured += 1,
         }
     }
@@ -258,7 +258,7 @@ fn print_world_summary(requested_hour: i64, frame: &WorldFrame) {
     let mut divisions_unowned = 0usize;
     for row in frame.divisions() {
         match &row.owner {
-            Leaf::Measured(tag) => *divisions.entry(tag.as_str()).or_default() += 1,
+            Leaf::Measured(tag) => *divisions.entry(tag.tag()).or_default() += 1,
             _ => divisions_unowned += 1,
         }
     }
