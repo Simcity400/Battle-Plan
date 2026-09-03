@@ -1,8 +1,8 @@
 //! d16 `decisions_live` — per-country decision-status counters.
 //!
-//! Derived from `world_fold.rs:22827`-`:22885`
+//! Derived from `world_fold.rs:22862`-`:22921`
 //! (`fold_decisions`), the collector write that produces the payload
-// @world-fold-authority domain=16 functions=fold_decisions lines=22827-22885 sha256=be53b53fb85f6abfa59eca3721f7d8b65ef511ef04d038a280f0379815af269c closure=57493a1ea98ce44f4a33769e11d674f4f6287f7cf9df087925c9419acc841966
+// @world-fold-authority domain=16 functions=fold_decisions lines=22862-22921 sha256=9a9101a543c02eea15ddfc445dbc5e2db925da2c4f7a2d37589acb9993fa768c closure=ddeea1b81fa9ce96d30e6012f4085bd415f81f62738b38174a88875fd74ae778
 //! (`extractor/native/collector/src/attach_log.rs:69581`-`:69648`), and the read
 //! that produces the counters (`attach_log.rs:83141`-`:83235`).
 //! Field-level evidence is retained as `domain-16::Overview` in
