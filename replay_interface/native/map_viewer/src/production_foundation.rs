@@ -460,6 +460,14 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
         Ok(())
     }
 
+    /// Distinct meshes the XMAP12 adapter has packed and the geometry bytes
+    /// resident behind them; `None` when the family has no adapter.
+    pub fn xmap12_resident_geometry(&self) -> Option<Result<(usize, usize)>> {
+        self.xmap12
+            .as_ref()
+            .map(|adapter| adapter.resident_geometry())
+    }
+
     /// Registered by EITHER route. Three families are held in a dedicated slot
     /// and the family loop prepares that one instead of a slot adapter, so a
     /// family registered both ways would be prepared twice and one answer
@@ -799,6 +807,72 @@ pub fn product_feature_adapters_with_assigned_stage_schedule(
     Ok(adapters)
 }
 
+/// What one family's preparation cost this hour: its wall time and the
+/// process's committed private bytes once it had answered. The footprint is
+/// measured per family so a frame's peak is attributed rather than inferred
+/// from where a dump died.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FamilyPreparationCost {
+    pub family: MapVisualFamily,
+    pub wall_ms: u64,
+    pub private_bytes_after: u64,
+    pub peak_private_bytes_after: u64,
+}
+
+/// This process's committed private bytes now and at its peak
+/// (`PagefileUsage` / `PeakPagefileUsage` of `PROCESS_MEMORY_COUNTERS`).
+#[cfg(windows)]
+pub fn process_private_bytes() -> Option<(u64, u64)> {
+    #[repr(C)]
+    struct ProcessMemoryCounters {
+        cb: u32,
+        page_fault_count: u32,
+        peak_working_set_size: usize,
+        working_set_size: usize,
+        quota_peak_paged_pool_usage: usize,
+        quota_paged_pool_usage: usize,
+        quota_peak_non_paged_pool_usage: usize,
+        quota_non_paged_pool_usage: usize,
+        pagefile_usage: usize,
+        peak_pagefile_usage: usize,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcess() -> isize;
+        fn K32GetProcessMemoryInfo(
+            process: isize,
+            counters: *mut ProcessMemoryCounters,
+            cb: u32,
+        ) -> i32;
+    }
+    let mut counters = ProcessMemoryCounters {
+        cb: std::mem::size_of::<ProcessMemoryCounters>() as u32,
+        page_fault_count: 0,
+        peak_working_set_size: 0,
+        working_set_size: 0,
+        quota_peak_paged_pool_usage: 0,
+        quota_paged_pool_usage: 0,
+        quota_peak_non_paged_pool_usage: 0,
+        quota_non_paged_pool_usage: 0,
+        pagefile_usage: 0,
+        peak_pagefile_usage: 0,
+    };
+    // SAFETY: the counters struct is the documented PROCESS_MEMORY_COUNTERS
+    // layout and `cb` carries its size; the pseudo-handle needs no release.
+    let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
+    (ok != 0).then(|| {
+        (
+            counters.pagefile_usage as u64,
+            counters.peak_pagefile_usage as u64,
+        )
+    })
+}
+
+#[cfg(not(windows))]
+pub fn process_private_bytes() -> Option<(u64, u64)> {
+    None
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedFoundationFrame {
     pub envelope: FoundationRenderEnvelope,
@@ -825,6 +899,34 @@ pub struct PreparedFoundationFrame {
     pub rail_supply: Option<crate::PreparedXmap16Frame>,
     pub map_modes: crate::PreparedMapModeFrame,
     pub labels: Option<crate::PreparedMapLabelFrame>,
+    /// One row per family in `MapVisualFamily::ALL` order, present or not.
+    pub family_costs: Vec<FamilyPreparationCost>,
+}
+
+/// How much the XMAP12 payload carries this hour: the counts a footprint row
+/// is divided by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Xmap12PayloadSummary {
+    pub draws: usize,
+    pub l03_rows: usize,
+    pub element_diagnostics: usize,
+    pub building_rows: usize,
+}
+
+impl PreparedFoundationFrame {
+    /// `None` when the family did not compose this hour.
+    pub fn xmap12_payload_summary(&self) -> Option<Xmap12PayloadSummary> {
+        let frame = self.xmap12.as_ref()?;
+        Some(Xmap12PayloadSummary {
+            draws: frame.ordered_draws.len(),
+            l03_rows: frame.ordered_l03_rows.len(),
+            element_diagnostics: frame.element_diagnostics.len(),
+            building_rows: self
+                .xmap12_building_visual
+                .as_ref()
+                .map_or(0, |visual| visual.rows.len()),
+        })
+    }
 }
 
 pub enum Xmap16FoundationState<'a> {
@@ -1107,6 +1209,7 @@ fn prepare_foundation_frame_inner(
     let mut adapter_element_diagnostics: Vec<portable_render_stream::ElementDiagnostic> =
         Vec::new();
     let mut families = Vec::with_capacity(MapVisualFamily::ALL.len());
+    let mut family_costs = Vec::with_capacity(MapVisualFamily::ALL.len());
     let mut prepared_terrain = None;
     let mut prepared_political = None;
     let mut prepared_thin_borders = None;
@@ -1125,6 +1228,7 @@ fn prepare_foundation_frame_inner(
     let mut prepared_labels = None;
     let mut prepared_map_modes = None;
     for family in MapVisualFamily::ALL {
+        let family_started = std::time::Instant::now();
         let context = FoundationFeatureContext {
             world_frame,
             viewer,
@@ -1560,6 +1664,14 @@ fn prepare_foundation_frame_inner(
             owner_packet: family.owner_packet().into(),
             disposition,
         });
+        let (private_bytes_after, peak_private_bytes_after) =
+            process_private_bytes().unwrap_or((0, 0));
+        family_costs.push(FamilyPreparationCost {
+            family,
+            wall_ms: u64::try_from(family_started.elapsed().as_millis())?,
+            private_bytes_after,
+            peak_private_bytes_after,
+        });
     }
 
     for authority_gap in map_admission.gaps() {
@@ -1932,6 +2044,7 @@ fn prepare_foundation_frame_inner(
         rail_supply: prepared_rail_supply,
         labels,
         map_modes,
+        family_costs,
     })
 }
 
@@ -2260,6 +2373,102 @@ fn validate_sha256(value: &str, label: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// kills: a broken PROCESS_MEMORY_COUNTERS binding - a wrong `cb` or
+    /// layout fails the call and every footprint row would read zero.
+    #[cfg(windows)]
+    #[test]
+    fn the_process_footprint_reads_a_live_nonzero_commit() {
+        let (private_bytes, peak_private_bytes) =
+            process_private_bytes().expect("K32GetProcessMemoryInfo answers for this process");
+        assert!(
+            private_bytes > 0 && peak_private_bytes >= private_bytes,
+            "{private_bytes} {peak_private_bytes}"
+        );
+    }
+
+    /// kills: a cost row measured over less than the family's whole iteration
+    /// (the timer started after the context is built, or the row pushed before
+    /// the family's coverage row), a second push that would attribute one
+    /// family's cost to another, and a row count that no longer follows
+    /// `MapVisualFamily::ALL`.
+    #[test]
+    fn every_family_cost_row_spans_its_whole_preparation() {
+        let source = include_str!("production_foundation.rs").replace("\r\n", "\n");
+        let body = source
+            .split_once("fn prepare_foundation_frame_inner(")
+            .expect("the family loop must exist")
+            .1
+            .split_once("\n/// Why a family the rest of the preparation reads directly")
+            .expect("the family loop must end")
+            .0;
+        let (before_loop, loop_and_after) = body
+            .split_once("    for family in MapVisualFamily::ALL {\n")
+            .expect("the family loop must iterate MapVisualFamily::ALL");
+        assert!(
+            before_loop.contains("let mut family_costs = Vec::with_capacity(MapVisualFamily::ALL.len());"),
+            "the cost rows are not sized to the family list"
+        );
+        let first_statement = loop_and_after
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with("//"))
+            .expect("the loop has statements");
+        assert_eq!(
+            first_statement, "let family_started = std::time::Instant::now();",
+            "the family timer does not start at the top of the iteration"
+        );
+        assert_eq!(
+            loop_and_after.matches("family_costs.push(FamilyPreparationCost {").count(),
+            1,
+            "a family's cost is pushed from more than one place"
+        );
+        let coverage_row = loop_and_after
+            .find("families.push(FamilyCoverageRow {")
+            .expect("the coverage row is pushed");
+        let cost_row = loop_and_after
+            .find("family_costs.push(FamilyPreparationCost {")
+            .expect("the cost row is pushed");
+        let loop_end = loop_and_after
+            .find("\n    }\n")
+            .expect("the loop closes");
+        assert!(
+            coverage_row < cost_row && cost_row < loop_end,
+            "the cost row is not the last thing the iteration records"
+        );
+        assert!(
+            loop_and_after[cost_row..loop_end].contains("family_started.elapsed()"),
+            "the cost row does not read the timer started at the top"
+        );
+        let loop_body = &loop_and_after[..loop_end];
+        assert_eq!(
+            loop_body.matches("family_started").count(),
+            2,
+            "the timer is named beyond its start and its read: a reset or a shadow"
+        );
+        // After the coverage row the iteration is exactly the two measurement
+        // statements, verbatim: nothing can run between the timer's read and
+        // the row that records it, and nothing after the row.
+        let tail = loop_body[coverage_row..]
+            .split_once("});")
+            .expect("the coverage row closes")
+            .1;
+        assert_eq!(
+            tail.split_whitespace().collect::<Vec<_>>().join(" "),
+            concat!(
+                "let (private_bytes_after, peak_private_bytes_after) = ",
+                "process_private_bytes().unwrap_or((0, 0)); ",
+                "family_costs.push(FamilyPreparationCost { family, ",
+                "wall_ms: u64::try_from(family_started.elapsed().as_millis())?, ",
+                "private_bytes_after, peak_private_bytes_after, });"
+            ),
+            "the iteration's tail is not the two measurement statements, verbatim"
+        );
+        assert!(
+            loop_and_after.contains("family_costs,\n    })"),
+            "the rows do not leave with the prepared frame"
+        );
+    }
 
     /// kills: recording every adapter error as a content gap (a defect filed as
     /// an outcome); dropping the owner scope from a refusal's gap id; accepting

@@ -1392,14 +1392,10 @@ fn sanitize_obj_name(name: &str) -> String {
 
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_support::temp_test_dir;
-    use std::fs;
-    use std::path::{Path, PathBuf};
+pub(crate) mod test_fixtures {
+    use super::PDX_ASSET_BINARY_MAGIC;
 
-
-    fn push_prop_f(bytes: &mut Vec<u8>, name: &str, values: &[f32]) {
+    pub(crate) fn push_prop_f(bytes: &mut Vec<u8>, name: &str, values: &[f32]) {
         bytes.push(b'!');
         bytes.push(name.len() as u8);
         bytes.extend_from_slice(name.as_bytes());
@@ -1410,7 +1406,7 @@ mod tests {
         }
     }
 
-    fn push_prop_i(bytes: &mut Vec<u8>, name: &str, values: &[i32]) {
+    pub(crate) fn push_prop_i(bytes: &mut Vec<u8>, name: &str, values: &[i32]) {
         bytes.push(b'!');
         bytes.push(name.len() as u8);
         bytes.extend_from_slice(name.as_bytes());
@@ -1421,7 +1417,7 @@ mod tests {
         }
     }
 
-    fn push_prop_s(bytes: &mut Vec<u8>, name: &str, value: &str) {
+    pub(crate) fn push_prop_s(bytes: &mut Vec<u8>, name: &str, value: &str) {
         bytes.push(b'!');
         bytes.push(name.len() as u8);
         bytes.extend_from_slice(name.as_bytes());
@@ -1432,13 +1428,126 @@ mod tests {
         bytes.push(0);
     }
 
-    fn push_object(bytes: &mut Vec<u8>, depth: usize, name: &str) {
+    pub(crate) fn push_object(bytes: &mut Vec<u8>, depth: usize, name: &str) {
         bytes.extend(std::iter::repeat(b'[').take(depth));
         bytes.extend_from_slice(name.as_bytes());
         bytes.push(0);
     }
 
-    fn synthetic_mesh_bytes(x_offset: f32) -> Vec<u8> {
+    /// The fixture mesh with a one-influence skin stream: the shape a729 packs
+    /// through the `Skinned` column of its effect-suffix table, and the only
+    /// shape on which the bind-pose and animated-entity arms are reachable.
+    pub(crate) fn synthetic_skinned_mesh_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(PDX_ASSET_BINARY_MAGIC);
+        push_prop_i(&mut bytes, "pdxasset", &[1, 0]);
+        push_object(&mut bytes, 1, "object");
+        push_prop_f(&mut bytes, "loddist", &[50.0, 200.0]);
+        push_object(&mut bytes, 2, "testShape");
+        push_prop_i(&mut bytes, "lod", &[0]);
+        push_object(&mut bytes, 3, "mesh");
+        push_prop_f(
+            &mut bytes,
+            "p",
+            &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        );
+        push_prop_f(
+            &mut bytes,
+            "n",
+            &[0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+        );
+        push_prop_f(
+            &mut bytes,
+            "ta",
+            &[1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0],
+        );
+        push_prop_f(&mut bytes, "u0", &[0.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
+        push_prop_i(&mut bytes, "tri", &[0, 2, 1]);
+        push_object(&mut bytes, 4, "aabb");
+        push_prop_f(&mut bytes, "min", &[0.0, 0.0, 0.0]);
+        push_prop_f(&mut bytes, "max", &[1.0, 1.0, 0.0]);
+        push_object(&mut bytes, 4, "material");
+        push_prop_s(&mut bytes, "shader", "PdxMeshStandard");
+        push_prop_s(&mut bytes, "diff", "test_diffuse.dds");
+        push_object(&mut bytes, 4, "skin");
+        push_prop_i(&mut bytes, "bones", &[1]);
+        push_prop_i(&mut bytes, "ix", &[0; 12]);
+        let mut weights = Vec::new();
+        for _ in 0..3 {
+            weights.extend_from_slice(&[1.0f32, 0.0, 0.0, 0.0]);
+        }
+        push_prop_f(&mut bytes, "w", &weights);
+        bytes
+    }
+
+    /// The fixture mesh the whole materializer runs over, and the only shape on which several
+    /// of its laws are reachable at all.
+    pub(crate) fn synthetic_multi_submesh_mesh_bytes(skinned: bool) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(PDX_ASSET_BINARY_MAGIC);
+        push_prop_i(&mut bytes, "pdxasset", &[1, 0]);
+        push_object(&mut bytes, 1, "object");
+        push_prop_f(&mut bytes, "loddist", &[50.0, 200.0]);
+        // A shape at ANOTHER LOD first, so the shapes that ARE selected have
+        // source indices 1 and 2 while their dense group ordinals are 0 and 1.
+        push_object(&mut bytes, 2, "otherLodShape");
+        push_prop_i(&mut bytes, "lod", &[1]);
+        push_mesh(&mut bytes, 100.0, false, false);
+        for (group, shape) in ["testShape", "secondShape"].into_iter().enumerate() {
+            push_object(&mut bytes, 2, shape);
+            push_prop_i(&mut bytes, "lod", &[0]);
+            // ...and a collision mesh in front of each shape's drawable ones,
+            // so their source ordinals are 1 and 2 while their dense submesh
+            // ordinals are 0 and 1.
+            push_mesh(&mut bytes, (group as f32 * 8.0) + 6.0, true, false);
+            for ordinal in 0..2u8 {
+                let base = (group as f32 * 8.0) + f32::from(ordinal) * 2.0;
+                push_mesh(&mut bytes, base, false, skinned);
+            }
+        }
+        bytes
+    }
+
+    /// One `mesh` node at a given position, drawable or collision, with or
+    /// without a skin stream.
+    fn push_mesh(bytes: &mut Vec<u8>, base: f32, collision: bool, skinned: bool) {
+        push_object(bytes, 3, "mesh");
+        push_prop_f(
+            bytes,
+            "p",
+            &[base, 0.0, 0.0, base + 1.0, 0.0, 0.0, base, 1.0, 0.0],
+        );
+        push_prop_f(bytes, "n", &[0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
+        push_prop_f(
+            bytes,
+            "ta",
+            &[1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0],
+        );
+        push_prop_f(bytes, "u0", &[0.0, 0.0, 1.0, 0.0, 0.0, 1.0]);
+        push_prop_i(bytes, "tri", &[0, 2, 1]);
+        push_object(bytes, 4, "aabb");
+        push_prop_f(bytes, "min", &[base, 0.0, 0.0]);
+        push_prop_f(bytes, "max", &[base + 1.0, 1.0, 0.0]);
+        push_object(bytes, 4, "material");
+        push_prop_s(
+            bytes,
+            "shader",
+            if collision { "Collision" } else { "PdxMeshStandard" },
+        );
+        push_prop_s(bytes, "diff", "test_diffuse.dds");
+        if skinned && !collision {
+            push_object(bytes, 4, "skin");
+            push_prop_i(bytes, "bones", &[1]);
+            push_prop_i(bytes, "ix", &[0; 12]);
+            let mut weights = Vec::new();
+            for _ in 0..3 {
+                weights.extend_from_slice(&[1.0f32, 0.0, 0.0, 0.0]);
+            }
+            push_prop_f(bytes, "w", &weights);
+        }
+    }
+
+    pub(crate) fn synthetic_mesh_bytes(x_offset: f32) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(PDX_ASSET_BINARY_MAGIC);
         push_prop_i(&mut bytes, "pdxasset", &[1, 0]);
@@ -1488,7 +1597,7 @@ mod tests {
         bytes
     }
 
-    fn synthetic_anim_bytes() -> Vec<u8> {
+    pub(crate) fn synthetic_anim_bytes() -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(PDX_ASSET_BINARY_MAGIC);
         push_prop_i(&mut bytes, "pdxasset", &[1, 0]);
@@ -1511,6 +1620,20 @@ mod tests {
         push_prop_f(&mut bytes, "q", &[0.0, 0.0, 0.0, 1.0, 0.1, 0.0, 0.0, 0.9]);
         bytes
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_fixtures::{
+        push_object, push_prop_f, push_prop_i, push_prop_s, synthetic_anim_bytes,
+        synthetic_mesh_bytes,
+    };
+    use super::*;
+    use crate::test_support::temp_test_dir;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+
 
     #[test]
     fn binary_round_trip_parses_tree_and_extracts_model() {

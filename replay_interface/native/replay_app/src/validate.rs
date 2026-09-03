@@ -12,6 +12,10 @@ pub(crate) struct ProductMapFoundationSession {
     /// gets past that admission, so this is the only place its per-family
     /// account survives.
     last_candidate_envelope: Option<map_viewer::FoundationRenderEnvelope>,
+    /// Recorded beside it, for the same reason.
+    last_family_costs: Vec<map_viewer::FamilyPreparationCost>,
+    /// What the XMAP12 payload carried, recorded beside them.
+    last_xmap12_payload: Option<map_viewer::Xmap12PayloadSummary>,
 }
 
 #[cfg(windows)]
@@ -88,6 +92,8 @@ impl ProductMapFoundationSession {
             )?,
             playback: map_viewer::FoundationPlaybackState::default(),
             last_candidate_envelope: None,
+            last_family_costs: Vec::new(),
+            last_xmap12_payload: None,
         })
     }
 
@@ -95,6 +101,22 @@ impl ProductMapFoundationSession {
         &self,
     ) -> Option<&map_viewer::FoundationRenderEnvelope> {
         self.last_candidate_envelope.as_ref()
+    }
+
+    /// Per-family wall time and footprint of the last hour this session
+    /// prepared, refused or not.
+    pub(crate) fn last_family_costs(&self) -> &[map_viewer::FamilyPreparationCost] {
+        &self.last_family_costs
+    }
+
+    /// Distinct meshes the XMAP12 adapter holds packed and their resident bytes.
+    pub(crate) fn xmap12_resident_geometry(&self) -> Option<map_viewer::Result<(usize, usize)>> {
+        self.adapters.xmap12_resident_geometry()
+    }
+
+    /// What the XMAP12 payload of the last prepared hour carried.
+    pub(crate) fn last_xmap12_payload(&self) -> Option<map_viewer::Xmap12PayloadSummary> {
+        self.last_xmap12_payload
     }
 
     pub(crate) fn prepare_with_xmap12_inputs(
@@ -108,6 +130,8 @@ impl ProductMapFoundationSession {
         // Cleared FIRST: a failure before the family loop must not leave the
         // previous hour's account standing as this one's.
         self.last_candidate_envelope = None;
+        self.last_family_costs.clear();
+        self.last_xmap12_payload = None;
         // The map authority is derived inside the preparation, from this frame
         // and manifest: there is no admission to hand it beside them.
         let candidate = self.adapters.prepare_with_xmap12_inputs(
@@ -119,6 +143,8 @@ impl ProductMapFoundationSession {
             fixed_runtime,
         )?;
         self.last_candidate_envelope = Some(candidate.envelope.clone());
+        self.last_family_costs = candidate.family_costs.clone();
+        self.last_xmap12_payload = candidate.xmap12_payload_summary();
         let fresh = map_viewer::require_fresh_foundation_frame(
             self.playback
                 .admit_allowing_xmap16_unavailable(candidate.envelope.clone())?,
@@ -142,6 +168,8 @@ impl ProductMapFoundationSession {
         // Cleared FIRST: a failure before the family loop must not leave the
         // previous hour's account standing as this one's.
         self.last_candidate_envelope = None;
+        self.last_family_costs.clear();
+        self.last_xmap12_payload = None;
         // As above: the preparation derives its own map authority.
         let candidate = self.adapters.prepare_with_xmap12_and_xmap15_inputs(
             frame,
@@ -153,6 +181,8 @@ impl ProductMapFoundationSession {
             selection,
         )?;
         self.last_candidate_envelope = Some(candidate.envelope.clone());
+        self.last_family_costs = candidate.family_costs.clone();
+        self.last_xmap12_payload = candidate.xmap12_payload_summary();
         let fresh = map_viewer::require_fresh_foundation_frame(
             self.playback
                 .admit_allowing_xmap16_unavailable(candidate.envelope.clone())?,

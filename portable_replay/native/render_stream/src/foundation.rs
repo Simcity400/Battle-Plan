@@ -300,6 +300,10 @@ impl MapVisualFamily {
                 // And the one content condition underneath them: an authored ambient
                 // type can name an entity the effective content set does not describe.
                 "ambient-entity-token-unknown-to-content",
+                // A skinned building whose entity plays an animation a729 starts
+                // at a random per-instance phase: the pose is an undecoded engine
+                // law on this build, so the element is excluded rather than posed.
+                "skinned-entity-animation-pose-undecoded",
             ],
             // Declared ONCE, beside the operands themselves, so a hole XMAP14
             // learns to name reaches this vocabulary by being named there.

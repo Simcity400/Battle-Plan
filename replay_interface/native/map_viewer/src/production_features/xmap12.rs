@@ -1,39 +1,28 @@
 //! City population is regenerated from admitted effective installed content.
 
 use crate::{
-    admit_xmap12_ambient_lifecycle, prepare_xmap12_buildings, prepare_xmap12_cities,
-    prepare_xmap12_fixed_objects, prepare_xmap12_render_frame, resolve_xmap12_entity_chain,
-    FoundationFeatureContext, FoundationFeatureOutput, GameFileResolver,
-    PreparedXmap12RenderFrame, Result, Xmap12BuildingVisualFrame, Xmap12FixedRuntimeState,
-    XMAP12_RENDER_FRAME_SCHEMA,
+    admit_xmap12_ambient_lifecycle, prepare_xmap12_buildings_cached, prepare_xmap12_cities_cached,
+    prepare_xmap12_fixed_objects_cached, prepare_xmap12_render_frame,
+    resolve_xmap12_entity_chain_cached, FoundationFeatureContext, FoundationFeatureOutput,
+    GameFileResolver, PreparedXmap12RenderFrame, Result, Xmap12BuildingVisualFrame,
+    Xmap12FixedRuntimeState, Xmap12MeshLibrary, XMAP12_RENDER_FRAME_SCHEMA,
 };
 use crate::map_authority::AmbientLifecycleRefusal;
 use portable_render_stream::{FamilyDisposition, FoundationGap};
 use replay_core::{UsedContentKey, ValidatedContentAdmission, ViewStatus};
 use snapshot::sha256::Sha256;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const XMAP12_EXACT_INPUT_GAP_ID: &str = "XMAP12.exact_per_frame_inputs_unavailable";
 
 pub(crate) struct Xmap12FeaturePreparation {
     pub output: FoundationFeatureOutput,
     /// The payload AND the two states it leaves behind, or nothing at all.
-    ///
-    /// One field, not three optional ones: a present frame that carried its
-    /// draws but not its lifecycle would present correctly and cold-start the
-    /// next frame, forgetting every camera-spawned object, and nothing in the
-    /// type would have been wrong. The three are inseparable, so the type says
-    /// so.
     pub present: Option<Xmap12PresentPreparation>,
 }
 
 impl Xmap12FeaturePreparation {
     /// Whether the disposition and the payload beside it say the same thing.
-    ///
-    /// A present frame owes its payload AND both carried states; an unavailable
-    /// one owes none of them. Nothing else in the product would notice a present
-    /// frame that carried its draws and no lifecycle: it would present correctly
-    /// and cold-start the next frame, forgetting every camera-spawned object.
     pub(crate) fn disposition_agrees_with_payload(&self) -> bool {
         matches!(&self.output.disposition, FamilyDisposition::Present { .. })
             == self.present.is_some()
@@ -56,6 +45,9 @@ pub(crate) struct Xmap12CitiesBuildingsMapObjectsAdapter {
     resolver: GameFileResolver,
     admission: ValidatedContentAdmission,
     texture_quality: u8,
+    /// Every mesh this adapter has packed, shared by every instance of every
+    /// hour it prepares.
+    library: Xmap12MeshLibrary,
 }
 
 impl Xmap12CitiesBuildingsMapObjectsAdapter {
@@ -76,48 +68,40 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
             resolver: resolver.clone(),
             admission: admission.clone(),
             texture_quality: terrain_options.texture_quality,
+            library: Xmap12MeshLibrary::new(),
         })
     }
 
+    /// Distinct meshes packed so far and the geometry bytes resident behind them.
+    pub(crate) fn resident_geometry(&self) -> Result<(usize, usize)> {
+        self.library.resident()
+    }
+
     /// Prepare this hour's cities/buildings/map objects.
-    ///
-    /// `previous_building_visual` is the frame this adapter produced for the previous hour.
-    /// It carries nothing but presentation the engine also remembers frame to frame - the
-    /// destroyed-mesh selector's `slot+0x3a` - and `None` is the engine's own cold start,
-    /// where a freshly created render slot has never selected a destroyed mesh.
-    ///
-    /// `previous_fixed_runtime` is the ambient/fixed lifecycle this adapter
-    /// produced for the previous frame, and `None` is the cold start in which
-    /// nothing has been spawned. It is DERIVED, never read off the wire:
-    /// XMAP12's authority assigns the lifecycle to the viewer and the
-    /// map-authority rows it feeds already refuse a recorded carrier. Its one
-    /// recorded operand is the session's DLC set, which the ambient
-    /// `dlc_allowed` trigger selects on.
     pub(crate) fn prepare(
         &self,
         context: &FoundationFeatureContext<'_>,
         previous_building_visual: Option<&Xmap12BuildingVisualFrame>,
         previous_fixed_runtime: Option<&Xmap12FixedRuntimeState>,
     ) -> Result<Xmap12FeaturePreparation> {
-        let consumed_gap_ids = owned_gap_ids(context);
+        let consumed_gap_ids = owned_gap_ids(context)?;
         let mut missing = Vec::new();
         if context.viewer.camera.is_none() {
+            crate::grow_named(&mut missing, 1, "XMAP12 missing family inputs")?;
             missing.push("the XMAP03 viewer camera");
         }
         if context.world_frame.d48_buildings_status() != ViewStatus::Present {
+            crate::grow_named(&mut missing, 1, "XMAP12 missing family inputs")?;
             missing.push("the present D48 building domain");
         }
-        // THE ADMISSION GATES, THEN THE DERIVATION READS. The lifecycle's one
-        // recorded operand - the session DLC set - reaches
-        // `prepare_xmap12_fixed_objects` only as the token its XMAP00 row mints,
-        // so an hour the row refuses cannot reach the derivation at all, and
-        // there is no second read of the leaf here for the two to disagree over.
+        // THE ADMISSION GATES, THEN THE DERIVATION READS.
         let lifecycle = admit_xmap12_ambient_lifecycle(context);
         let dlc_missing = lifecycle
             .as_ref()
             .err()
             .map(|refused| unmeasured_session_dlc_cause(*refused));
         if let Some(cause) = &dlc_missing {
+            crate::grow_named(&mut missing, 1, "XMAP12 missing family inputs")?;
             missing.push(cause.as_str());
         }
         if !missing.is_empty() {
@@ -145,22 +129,34 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
             lifecycle.map_err(|_| "XMAP12 exact input admission lost the session DLC set")?;
         let replay_frame_identity_sha256 =
             crate::xmap04_replay_frame_identity_sha256(context.world_frame)?;
-        let cities = prepare_xmap12_cities(&self.resolver, &self.admission, camera)?;
-        let (buildings, building_visual) = prepare_xmap12_buildings(
+        // ONE cache for the whole preparation.
+        let mut chains = crate::Xmap12EntityCache::new();
+        let cities = prepare_xmap12_cities_cached(
             &self.resolver,
             &self.admission,
+            &self.library,
+            camera,
+            &mut chains,
+        )?;
+        let (buildings, building_visual) = prepare_xmap12_buildings_cached(
+            &self.resolver,
+            &self.admission,
+            &self.library,
             context.world_frame,
             camera,
             previous_building_visual,
+            &mut chains,
         )?;
-        let fixed = prepare_xmap12_fixed_objects(
+        let fixed = prepare_xmap12_fixed_objects_cached(
             &self.resolver,
             &self.admission,
+            &self.library,
             camera,
             previous_fixed_runtime,
             &replay_frame_identity_sha256,
             context.viewer.animation_time_f32_bits,
             lifecycle,
+            &mut chains,
         )?;
         let [fow_noise_path, fow_height_path, environment_map_path] =
             static_content_paths(self.texture_quality)?;
@@ -170,30 +166,36 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
             admitted_static_content(&self.resolver, &self.admission, &fow_height_path)?;
         let environment_map_content =
             admitted_static_content(&self.resolver, &self.admission, &environment_map_path)?;
-        let prepared = prepare_xmap12_render_frame(
+        // The used-content census reads the component frames, so it runs
+        // BEFORE they are consumed: the render frame takes their draw lists by
+        // move rather than holding a second copy of every draw.
+        let ordered_used_content = ordered_used_content(
+            &self.resolver,
+            &self.admission,
+            &mut chains,
             &cities,
             &buildings,
             &fixed.frame,
+            [
+                &fow_noise_content,
+                &fow_height_content,
+                &environment_map_content,
+            ],
+        )?;
+        let prepared = prepare_xmap12_render_frame(
+            cities,
+            buildings,
+            fixed.frame,
             fow_noise_content,
             fow_height_content,
             environment_map_content,
         )?;
-        prepared.validate()?;
         if prepared.replay_frame_identity_sha256 != replay_frame_identity_sha256 {
             return Err("XMAP12 prepared payload belongs to a different replay frame".into());
         }
         if prepared.viewer_state_sha256 != camera.deterministic_sha256 {
             return Err("XMAP12 prepared payload belongs to a different viewer camera".into());
         }
-
-        let ordered_used_content = ordered_used_content(
-            &self.resolver,
-            &self.admission,
-            &cities,
-            &buildings,
-            &fixed.frame,
-            &prepared,
-        )?;
         let registration = Sha256::hex(
             format!(
                 "XMAP12\0{XMAP12_RENDER_FRAME_SCHEMA}\0cities\0buildings\0ambient_objects\0MainScene\0L03"
@@ -220,13 +222,8 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
     }
 }
 
-/// Why the session's DLC set cannot answer the ambient `dlc_allowed` trigger,
-/// from the lifecycle row's own refusal.
-///
-/// The three states are different facts and say so: the key was never written,
-/// it was written as an explicit non-reading, or it was measured with a blank
-/// name the trigger cannot be matched against. None is an empty DLC set, which
-/// is a measurement.
+/// Why the session's DLC set cannot answer the ambient `dlc_allowed` trigger, from the
+/// lifecycle row's own refusal.
 fn unmeasured_session_dlc_cause(refused: AmbientLifecycleRefusal) -> String {
     let state = match refused {
         AmbientLifecycleRefusal::Absent => "and this frame carries no such key".to_string(),
@@ -237,6 +234,9 @@ fn unmeasured_session_dlc_cause(refused: AmbientLifecycleRefusal) -> String {
             "and this frame carries it with a blank name at index {index}, which no dlc_allowed \
              trigger can be matched against"
         ),
+        AmbientLifecycleRefusal::Unreservable => {
+            "and this machine cannot hold the canonical copy of it".to_string()
+        }
     };
     format!(
         "the measured session DLC set (WorldFrame session.active_dlcs, which the container's own \
@@ -296,33 +296,28 @@ fn empty_output(
 }
 
 /// The map-authority rows this family owns, and may therefore consume a gap for.
-///
-/// An explicit list, not an `objects.` prefix. The prefix said "every input whose
-/// id begins with objects." and MEANT "the three XMAP12 owns", and those stopped
-/// being the same statement the moment a fourth could be added under that prefix
-/// by another family. Consuming another family's gap is not a cosmetic error:
-/// the foundation counts each gap as consumed exactly once, so the family that
-/// really owns it would then be told its own gap was already claimed.
-///
-/// Two of the three are viewer derivations. `objects.city_population` can no
-/// longer BE a gap - it has no recorded operand, so the authority admits it on
-/// every hour - and it stays in the list because the list says what this family
-/// owns, not what happens to be refused today. `objects.generic_population_lifecycle`
-/// still can: its one recorded operand is the session DLC set, and an hour that
-/// did not measure it is filed as this family's gap and consumed here.
 pub(crate) const XMAP12_OWNED_AUTHORITY_INPUTS: [&str; 3] = [
     "objects.building_state_damage",
     "objects.city_population",
     "objects.generic_population_lifecycle",
 ];
 
-fn owned_gap_ids(context: &FoundationFeatureContext<'_>) -> Vec<String> {
-    context
-        .map_authority_gaps
-        .iter()
-        .filter(|gap| XMAP12_OWNED_AUTHORITY_INPUTS.contains(&gap.input_id.as_str()))
-        .map(|gap| gap.input_id.clone())
-        .collect()
+fn owned_gap_ids(context: &FoundationFeatureContext<'_>) -> Result<Vec<String>> {
+    // Authority-sized: the gap census decides how many rows this family owns.
+    let owned = || {
+        context
+            .map_authority_gaps
+            .iter()
+            .filter(|gap| XMAP12_OWNED_AUTHORITY_INPUTS.contains(&gap.input_id.as_str()))
+    };
+    let mut ids = Vec::new();
+    crate::reserve_named(&mut ids, owned().count(), "XMAP12 owned authority gap ids")?;
+    crate::extend_named(
+        &mut ids,
+        owned().map(|gap| gap.input_id.clone()),
+        "XMAP12 owned authority gap ids",
+    )?;
+    Ok(ids)
 }
 
 fn unavailable_gap(hour: i64, reason: String) -> FoundationGap {
@@ -340,21 +335,28 @@ fn unavailable_gap(hour: i64, reason: String) -> FoundationGap {
 fn ordered_used_content(
     resolver: &GameFileResolver,
     admission: &ValidatedContentAdmission,
+    chains: &mut crate::Xmap12EntityCache,
     cities: &crate::PreparedXmap12CityFrame,
     buildings: &crate::PreparedXmap12BuildingFrame,
     fixed: &crate::PreparedXmap12FixedFrame,
-    prepared: &PreparedXmap12RenderFrame,
+    // The three engine textures the render frame will carry, in its own order.
+    static_textures: [&UsedContentKey; 3],
 ) -> Result<Vec<UsedContentKey>> {
     let mut ordered = Vec::new();
     let mut paths = BTreeSet::new();
-    let mut push = |content: &UsedContentKey| {
+    // This list scales with content - every terrain definition, building
+    // definition, entity chain and texture a frame reaches - so it grows by
+    // name like the rest of the family's content-sized lists.
+    let mut push = |content: &UsedContentKey| -> Result<()> {
         let path = content
             .normalized_game_relative_path
             .replace('\\', "/")
             .to_ascii_lowercase();
         if paths.insert(path) {
+            crate::grow_named(&mut ordered, 1, "XMAP12 used content")?;
             ordered.push(content.clone());
         }
+        Ok(())
     };
     for content in [
         &cities.cities_source,
@@ -365,36 +367,45 @@ fn ordered_used_content(
         &cities.province_source,
         &cities.definition_source,
     ] {
-        push(content);
+        push(content)?;
     }
     for content in &cities.terrain_definition_sources {
-        push(content);
+        push(content)?;
     }
-    push(&buildings.map_buildings_source);
+    push(&buildings.map_buildings_source)?;
     for content in &buildings.common_building_sources {
-        push(content);
+        push(content)?;
     }
     for content in &buildings.defines_sources {
-        push(content);
+        push(content)?;
     }
-    push(&prepared.fow_noise_content);
-    push(&prepared.fow_height_content);
-    push(&prepared.environment_map_content);
-    push(&fixed.default_map_source);
-    push(&fixed.ambient_source);
+    for texture in static_textures {
+        push(texture)?;
+    }
+    push(&fixed.default_map_source)?;
+    push(&fixed.ambient_source)?;
+    // One resolution per entity token, over the PREPARATION's cache: resolving enumerates the
+    // whole admitted asset namespace, a frame at full-map zoom carries tens of thousands of
+    // draws over a handful of tokens, and a cache local to this function would still read the
+    // namespace once per distinct token because the producers above have already answered them.
     for draw in cities
         .ordered_visible_draws
         .iter()
         .chain(&buildings.ordered_visible_draws)
         .chain(&fixed.ordered_visible_draws)
     {
-        let chain = resolve_xmap12_entity_chain(resolver, admission, &draw.entity_token)?;
-        push(&chain.entity_source);
-        push(&chain.pdxmesh_source);
-        push(&chain.mesh_source);
-        push(&chain.shader_source);
+        // The borrow of the cache ends with this iteration, so the chain's own keys are pushed
+        // straight from it: a copy per draw would clone four content keys and a texture list
+        // for every one of tens of thousands of draws, and its temporary reservation could
+        // refuse a frame this traversal answers.
+        let chain =
+            resolve_xmap12_entity_chain_cached(resolver, admission, chains, &draw.entity_token)?;
+        push(&chain.entity_source)?;
+        push(&chain.pdxmesh_source)?;
+        push(&chain.mesh_source)?;
+        push(&chain.shader_source)?;
         for texture in &chain.ordered_texture_sources {
-            push(&texture.content);
+            push(&texture.content)?;
         }
     }
     Ok(ordered)
@@ -404,13 +415,11 @@ fn ordered_used_content(
 mod tests {
     use super::*;
 
-    /// The family owns exactly the `objects.` rows, and the promotion means two
-    /// of the three can never be gaps.
-    ///
-    /// kills: claiming an `objects.` gap another family owns - the foundation
-    /// counts each gap consumed once, so the real owner would be told its gap
-    /// was already claimed; and letting the owned list drift away from the
-    /// authority's own `objects.` census in either direction.
+    /// The family owns exactly the `objects.` rows, and the promotion means two of the three
+    /// can never be gaps. kills: claiming an `objects.` gap another family owns - the
+    /// foundation counts each gap consumed once, so the real owner would be told its gap was
+    /// already claimed; and letting the owned list drift away from the authority's own
+    /// `objects.` census in either direction.
     #[test]
     fn the_family_owns_exactly_the_object_rows_and_two_of_them_can_never_gap() {
         use crate::map_authority::{
@@ -473,7 +482,7 @@ mod tests {
             &frame, &viewer, &gaps, &[], &selection,
         );
         assert_eq!(
-            owned_gap_ids(&context),
+            owned_gap_ids(&context).expect("the owned gap ids"),
             vec![
                 "objects.building_state_damage".to_string(),
                 "objects.generic_population_lifecycle".to_string(),
@@ -481,11 +490,10 @@ mod tests {
         );
     }
 
-    /// kills: collapsing the two unmeasured leaf states onto one cause, which
-    /// would tell a reader an hour "has no DLC set" when the recording
-    /// explicitly said it did not read one - and admitting an unmeasured leaf as
-    /// an empty set, which would silently deactivate every DLC-gated ambient
-    /// type instead of refusing the frame.
+    /// kills: collapsing the two unmeasured leaf states onto one cause, which would tell a
+    /// reader an hour "has no DLC set" when the recording explicitly said it did not read one -
+    /// and admitting an unmeasured leaf as an empty set, which would silently deactivate every
+    /// DLC-gated ambient type instead of refusing the frame.
     #[test]
     fn an_unmeasured_session_dlc_set_names_which_unmeasured_state_it_is() {
         let absent = unmeasured_session_dlc_cause(AmbientLifecycleRefusal::Absent);
@@ -501,16 +509,13 @@ mod tests {
         }
     }
 
-    /// The lifecycle's admission IS its XMAP00 row's status, and the token
-    /// carries the set the status certified.
-    ///
-    /// kills: minting from a status the mint did not read - a row that says
-    /// Present while the token is built off a second read of the leaf, or the
-    /// reverse; refusing an EMPTY measured set as if it were unmeasured, which
-    /// would refuse every vanilla-only session; admitting a measured set the
-    /// derivation then refuses (a blank name), which would hard-fail the frame
-    /// behind an admitted row; and letting the city row, which has no recorded
-    /// operand, follow the lifecycle's refusal.
+    /// The lifecycle's admission IS its XMAP00 row's status, and the token carries the set the
+    /// status certified. kills: minting from a status the mint did not read - a row that says
+    /// Present while the token is built off a second read of the leaf, or the reverse; refusing
+    /// an EMPTY measured set as if it were unmeasured, which would refuse every vanilla-only
+    /// session; admitting a measured set the derivation then refuses (a blank name), which
+    /// would hard-fail the frame behind an admitted row; and letting the city row, which has no
+    /// recorded operand, follow the lifecycle's refusal.
     #[test]
     fn the_lifecycle_admission_is_the_rows_own_status_and_carries_its_measured_set() {
         use crate::map_authority::map_authority_viewer_derived_input_status;
@@ -602,7 +607,7 @@ mod tests {
                         };
                         assert_eq!(
                             xmap12_canonical_dlc_names(names),
-                            Err(index),
+                            Err(crate::Xmap12DlcNamesError::BlankName { index }),
                             "{label}: the admission refused a set the canonicalizer accepts"
                         );
                         assert!(cause.contains("blank name"), "{label}: {cause}");
@@ -617,10 +622,10 @@ mod tests {
         }
     }
 
-    /// kills: a present XMAP12 frame that carries its draws and drops the
-    /// lifecycle - it presents correctly, then cold-starts the next frame and
-    /// forgets every camera-spawned object, and nothing else in the product
-    /// would object; and an unavailable frame that carries a payload anyway.
+    /// kills: a present XMAP12 frame that carries its draws and drops the lifecycle - it
+    /// presents correctly, then cold-starts the next frame and forgets every camera-spawned
+    /// object, and nothing else in the product would object; and an unavailable frame that
+    /// carries a payload anyway.
     #[test]
     fn a_present_frame_owes_its_payload_and_both_carried_states() {
         let present = FamilyDisposition::Present {

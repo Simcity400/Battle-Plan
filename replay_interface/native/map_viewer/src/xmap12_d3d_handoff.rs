@@ -1,4 +1,4 @@
-
+use crate::sha256_json;
 use crate::{
     PreparedXmap12RenderFrame, PreparedXmap13Frame, Result, Xmap12PdxMeshMaterialization,
     Xmap13NativeComponent, Xmap13NativeComponentReceipt, Xmap13NativeDrawClosure,
@@ -7,7 +7,7 @@ use crate::{
 use replay_core::{UsedContentKey, ValidatedContentAdmission};
 use serde::{Deserialize, Serialize};
 use snapshot::sha256::Sha256;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub const XMAP12_NATIVE_EXECUTION_SCHEMA: &str = "hoi4.replay.xmap12.native-execution.a729.v1";
 
@@ -23,11 +23,22 @@ pub fn xmap13_native_bridge_frame(
     environment_map_content: UsedContentKey,
 ) -> Result<PreparedXmap12RenderFrame> {
     prepared.validate()?;
-    let ordered_l03_rows = prepared
-        .native_entity_draws
-        .iter()
-        .map(Xmap12PdxMeshMaterialization::l03_caster_row)
-        .collect::<Vec<_>>();
+    // One row per DRAW: frame-sized, so it is reserved by name like every other
+    // list of that shape.
+    let mut ordered_l03_rows = Vec::new();
+    crate::reserve_named(
+        &mut ordered_l03_rows,
+        prepared.native_entity_draws.len(),
+        "XMAP12 native L03 rows",
+    )?;
+    crate::try_extend_named(
+        &mut ordered_l03_rows,
+        prepared
+            .native_entity_draws
+            .iter()
+            .map(Xmap12PdxMeshMaterialization::l03_caster_row),
+        "XMAP12 native L03 rows",
+    )?;
     let mut bridge = PreparedXmap12RenderFrame {
         schema: crate::XMAP12_RENDER_FRAME_SCHEMA.into(),
         content_manifest_sha256: content_manifest_sha256.into(),
@@ -48,7 +59,7 @@ pub fn xmap13_native_bridge_frame(
         ordered_l03_rows,
         deterministic_sha256: String::new(),
     };
-    bridge.deterministic_sha256 = Sha256::hex(&serde_json::to_vec(&bridge)?);
+    bridge.deterministic_sha256 = sha256_json(&bridge)?;
     bridge.validate()?;
     Ok(bridge)
 }
@@ -102,7 +113,7 @@ impl Xmap12NativeExecutionReceipt {
         }
         let mut unsigned = self.clone();
         unsigned.deterministic_sha256.clear();
-        if self.deterministic_sha256 != Sha256::hex(&serde_json::to_vec(&unsigned)?) {
+        if self.deterministic_sha256 != sha256_json(&unsigned)? {
             return Err("XMAP12 native receipt digest mismatch".into());
         }
         Ok(())
@@ -251,12 +262,33 @@ struct OwnedXmap12Sampler {
     sampler: crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11SamplerState>,
 }
 
+/// One shared geometry's GPU buffers, uploaded once per distinct
+/// `geometry_sha256` and bound by every draw that instances it.
+#[cfg(windows)]
+struct OwnedXmap12Geometry {
+    vertex: crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11Buffer>,
+    index: crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11Buffer>,
+}
+
+/// The retained draws' identities as one JSON sequence, serialised straight
+/// from the rows: byte-identical to a collected `Vec<(&id, &sha)>` without
+/// materialising one per instance.
+#[cfg(windows)]
+struct DrawIdentities<'a, T>(&'a [T], fn(&'a T) -> (&'a String, &'a String));
+
+#[cfg(windows)]
+impl<'a, T> serde::Serialize for DrawIdentities<'a, T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let identity = self.1;
+        serializer.collect_seq(self.0.iter().map(identity))
+    }
+}
+
 #[cfg(windows)]
 struct OwnedXmap12Submesh {
     group_ordinal: u32,
     submesh_ordinal: u32,
-    vertex: crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11Buffer>,
-    index: crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11Buffer>,
+    buffers: std::rc::Rc<OwnedXmap12Geometry>,
 }
 
 #[cfg(windows)]
@@ -287,6 +319,11 @@ pub struct NativeXmap12ResourceOwner {
     shared_textures: Vec<OwnedXmap12SharedTexture>,
     samplers: Vec<OwnedXmap12Sampler>,
     draws: Vec<OwnedXmap12Draw>,
+    /// `stable_typed_id` to its row in `draws`; reserved by name for the whole
+    /// frame before the first insert.
+    draw_index: HashMap<String, usize>,
+    /// Uploaded geometry by `geometry_sha256`.
+    geometry: BTreeMap<String, std::rc::Rc<OwnedXmap12Geometry>>,
     owned_resource_set_sha256: String,
 }
 
@@ -402,8 +439,10 @@ impl NativeXmap12ResourceOwner {
             require_admitted_content(resolver, admission, source)?;
         }
 
-        let mut programs = Vec::with_capacity(effect_sources.len());
-        let mut shadow_programs = Vec::with_capacity(effect_sources.len());
+        let mut programs = Vec::new();
+        crate::reserve_named(&mut programs, effect_sources.len(), "XMAP12 retained programs")?;
+        let mut shadow_programs = Vec::new();
+        crate::reserve_named(&mut shadow_programs, effect_sources.len(), "XMAP12 retained shadow programs")?;
         let mut sampler_descriptors = BTreeMap::<u32, NativeSamplerDescriptor>::new();
         for (effect_name, shader_source) in &effect_sources {
             let effect_file = crate::effect_file_from_resolver(
@@ -432,6 +471,7 @@ impl NativeXmap12ResourceOwner {
                 &reflected_samplers,
                 &mut sampler_descriptors,
             )?;
+            crate::grow_named(&mut programs, 1, "XMAP12 programs")?;
             programs.push(main_program);
 
             let shadow_name = format!("{effect_name}Shadow");
@@ -471,14 +511,17 @@ impl NativeXmap12ResourceOwner {
                 &reflected_shadow_samplers,
                 &mut sampler_descriptors,
             )?;
+            crate::grow_named(&mut shadow_programs, 1, "XMAP12 shadow_programs")?;
             shadow_programs.push(shadow_program);
         }
         programs.sort_by(|left, right| left.effect_name.cmp(&right.effect_name));
         shadow_programs.sort_by(|left, right| left.main_effect_name.cmp(&right.main_effect_name));
         validate_material_binding_contracts(frame, &programs, &shadow_programs)?;
 
-        let mut samplers = Vec::with_capacity(sampler_descriptors.len());
+        let mut samplers = Vec::new();
+        crate::reserve_named(&mut samplers, sampler_descriptors.len(), "XMAP12 retained samplers")?;
         for descriptor in sampler_descriptors.into_values() {
+            crate::grow_named(&mut samplers, 1, "XMAP12 samplers")?;
             samplers.push(create_native_sampler(device, descriptor)?);
         }
 
@@ -511,11 +554,13 @@ impl NativeXmap12ResourceOwner {
                 }
             }
         }
-        let mut textures = Vec::with_capacity(texture_census.len());
+        let mut textures = Vec::new();
+        crate::reserve_named(&mut textures, texture_census.len(), "XMAP12 retained textures")?;
         for ((shader_register, _), content) in texture_census {
             let bytes = resolver.read_admitted_used_content(&content)?;
             let descriptor = parse_material_dds_descriptor(&content, &bytes)?;
             let (texture, view) = create_material_dds(device, &bytes, &descriptor)?;
+            crate::grow_named(&mut textures, 1, "XMAP12 textures")?;
             textures.push(OwnedXmap12Texture {
                 content,
                 shader_register,
@@ -525,7 +570,8 @@ impl NativeXmap12ResourceOwner {
             });
         }
 
-        let mut shared_textures = Vec::with_capacity(3);
+        let mut shared_textures = Vec::new();
+        crate::reserve_named(&mut shared_textures, 3, "XMAP12 retained shared textures")?;
         for (semantic, content) in [
             ("FOWNoise_Texture", &frame.fow_noise_content),
             ("FOWHeight_Texture", &frame.fow_height_content),
@@ -534,6 +580,7 @@ impl NativeXmap12ResourceOwner {
             let bytes = resolver.read_admitted_used_content(content)?;
             let descriptor = parse_material_dds_descriptor(content, &bytes)?;
             let (texture, view) = create_material_dds(device, &bytes, &descriptor)?;
+            crate::grow_named(&mut shared_textures, 1, "XMAP12 shared_textures")?;
             shared_textures.push(OwnedXmap12SharedTexture {
                 semantic: semantic.into(),
                 content: content.clone(),
@@ -548,6 +595,7 @@ impl NativeXmap12ResourceOwner {
             resolver.read_admitted_used_content(&frame.environment_map_content)?;
         let (environment_texture, environment_view, environment_descriptor_sha256) =
             create_environment_cube(device, &frame.environment_map_content, &environment_bytes)?;
+        crate::grow_named(&mut shared_textures, 1, "XMAP12 shared_textures")?;
         shared_textures.push(OwnedXmap12SharedTexture {
             semantic: "EnvironmentMap_Texture".into(),
             content: frame.environment_map_content.clone(),
@@ -557,7 +605,14 @@ impl NativeXmap12ResourceOwner {
             view: environment_view,
         });
 
-        let mut draws = Vec::with_capacity(frame.ordered_draws.len());
+        let mut draws = Vec::new();
+        crate::reserve_named(&mut draws, frame.ordered_draws.len(), "XMAP12 retained draws")?;
+        let draw_index = crate::named_index_of(
+            &frame.ordered_draws,
+            |draw| draw.stable_typed_id.clone(),
+            "XMAP12 retained draw index",
+        )?;
+        let mut geometry = BTreeMap::<String, std::rc::Rc<OwnedXmap12Geometry>>::new();
         for draw in &frame.ordered_draws {
             let mut object_cb1_by_partition = BTreeMap::new();
             for partition in [1u8, 2u8, 4u8] {
@@ -571,30 +626,41 @@ impl NativeXmap12ResourceOwner {
             if object_cb1_by_partition.is_empty() {
                 return Err("XMAP12 retained draw has no partition-specific object CB1".into());
             }
-            let mut submeshes = Vec::with_capacity(draw.submeshes.len());
+            let mut submeshes = Vec::new();
+            crate::reserve_named(&mut submeshes, draw.submeshes.len(), "XMAP12 retained submeshes")?;
             for submesh in &draw.submeshes {
-                let index_bytes = submesh
-                    .indices
-                    .iter()
-                    .flat_map(|index| index.to_le_bytes())
-                    .collect::<Vec<_>>();
+                let buffers = match geometry.get(&submesh.geometry_sha256) {
+                    Some(buffers) => std::rc::Rc::clone(buffers),
+                    None => {
+                        let buffers = std::rc::Rc::new(OwnedXmap12Geometry {
+                            vertex: create_immutable_buffer(
+                                device,
+                                submesh.geometry.vertex_bytes(),
+                                D3D11_BIND_VERTEX_BUFFER,
+                                "XMAP12 retained vertex buffer",
+                            )?,
+                            index: create_immutable_buffer(
+                                device,
+                                &submesh.geometry.index_bytes()?,
+                                D3D11_BIND_INDEX_BUFFER,
+                                "XMAP12 retained index buffer",
+                            )?,
+                        });
+                        geometry.insert(
+                            submesh.geometry_sha256.clone(),
+                            std::rc::Rc::clone(&buffers),
+                        );
+                        buffers
+                    }
+                };
+                crate::grow_named(&mut submeshes, 1, "XMAP12 submeshes")?;
                 submeshes.push(OwnedXmap12Submesh {
                     group_ordinal: submesh.object_group_ordinal,
                     submesh_ordinal: submesh.object_submesh_ordinal,
-                    vertex: create_immutable_buffer(
-                        device,
-                        &submesh.vertex_bytes,
-                        D3D11_BIND_VERTEX_BUFFER,
-                        "XMAP12 retained vertex buffer",
-                    )?,
-                    index: create_immutable_buffer(
-                        device,
-                        &index_bytes,
-                        D3D11_BIND_INDEX_BUFFER,
-                        "XMAP12 retained index buffer",
-                    )?,
+                    buffers,
                 });
             }
+            crate::grow_named(&mut draws, 1, "XMAP12 draws")?;
             draws.push(OwnedXmap12Draw {
                 stable_typed_id: draw.stable_typed_id.clone(),
                 draw_sha256: draw.deterministic_sha256.clone(),
@@ -614,44 +680,51 @@ impl NativeXmap12ResourceOwner {
                 submeshes,
             });
         }
-        let owned_resource_set_sha256 = Sha256::hex(&serde_json::to_vec(&(
+        // Streamed through the hasher: the draw identities are one entry per
+        // instance, and a buffered JSON of them is the class of allocation this
+        // family no longer makes.
+        let owned_resource_set_sha256 = sha256_json(&(
             frame.deterministic_sha256.as_str(),
             map_width,
             map_height,
             viewport_width,
             viewport_height,
-            programs
-                .iter()
-                .map(|row| (&row.effect_name, &row.program_sha256))
-                .collect::<Vec<_>>(),
-            shadow_programs
-                .iter()
-                .map(|row| (&row.main_effect_name, &row.program_sha256))
-                .collect::<Vec<_>>(),
-            textures
-                .iter()
-                .map(|row| (row.shader_register, &row.content, &row.descriptor_sha256))
-                .collect::<Vec<_>>(),
-            shared_textures
-                .iter()
-                .map(|row| {
+            // Each of these is one entry per owned resource, so each is
+            // content-sized and reserved by name before it is filled.
+            crate::named_rows(
+                &programs,
+                |row| (&row.effect_name, &row.program_sha256),
+                "XMAP12 program digest rows",
+            )?,
+            crate::named_rows(
+                &shadow_programs,
+                |row| (&row.main_effect_name, &row.program_sha256),
+                "XMAP12 shadow program digest rows",
+            )?,
+            crate::named_rows(
+                &textures,
+                |row| (row.shader_register, &row.content, &row.descriptor_sha256),
+                "XMAP12 texture digest rows",
+            )?,
+            crate::named_rows(
+                &shared_textures,
+                |row| {
                     (
                         row.semantic.as_str(),
                         &row.content,
                         row.descriptor_sha256.as_str(),
                         row.view_dimension,
                     )
-                })
-                .collect::<Vec<_>>(),
-            samplers
-                .iter()
-                .map(|row| (row.shader_register, &row.descriptor_sha256))
-                .collect::<Vec<_>>(),
-            draws
-                .iter()
-                .map(|row| (&row.stable_typed_id, &row.draw_sha256))
-                .collect::<Vec<_>>(),
-        ))?);
+                },
+                "XMAP12 shared texture digest rows",
+            )?,
+            crate::named_rows(
+                &samplers,
+                |row| (row.shader_register, &row.descriptor_sha256),
+                "XMAP12 sampler digest rows",
+            )?,
+            DrawIdentities(&draws, |row| (&row.stable_typed_id, &row.draw_sha256)),
+        ))?;
 
         Ok(Self {
             device_identity: device as usize,
@@ -670,8 +743,15 @@ impl NativeXmap12ResourceOwner {
             shared_textures,
             samplers,
             draws,
+            draw_index,
+            geometry,
             owned_resource_set_sha256,
         })
+    }
+
+    /// Distinct geometries uploaded and the draws instancing them.
+    pub fn geometry_sharing(&self) -> (usize, usize) {
+        (self.geometry.len(), self.draws.len())
     }
 
     pub fn matches(
@@ -736,10 +816,10 @@ impl NativeXmap12ResourceOwner {
         &self.owned_resource_set_sha256
     }
 
-    pub fn program_bindings(&self) -> Vec<NativeXmap12ProgramBinding> {
-        self.programs
-            .iter()
-            .map(|row| NativeXmap12ProgramBinding {
+    pub fn program_bindings(&self) -> Result<Vec<NativeXmap12ProgramBinding>> {
+        crate::named_rows(
+            &self.programs,
+            |row| NativeXmap12ProgramBinding {
                 effect_name: row.effect_name.clone(),
                 program_sha256: row.program_sha256.clone(),
                 required_material_resource_registers: row
@@ -754,19 +834,21 @@ impl NativeXmap12ResourceOwner {
                 blend_state: row.blend_state.as_raw(),
                 depth_state: row.depth_state.as_raw(),
                 rasterizer_state: row.rasterizer_state.as_raw(),
-            })
-            .collect()
+            },
+            "XMAP12 native program bindings",
+        )
     }
 
-    pub fn texture_bindings(&self) -> Vec<NativeXmap12TextureBinding> {
-        self.textures
-            .iter()
-            .map(|row| NativeXmap12TextureBinding {
+    pub fn texture_bindings(&self) -> Result<Vec<NativeXmap12TextureBinding>> {
+        crate::named_rows(
+            &self.textures,
+            |row| NativeXmap12TextureBinding {
                 content: row.content.clone(),
                 shader_register: row.shader_register,
                 view: row.view.as_raw(),
-            })
-            .collect()
+            },
+            "XMAP12 native texture bindings",
+        )
     }
 
     pub fn static_shared_resource(
@@ -787,21 +869,22 @@ impl NativeXmap12ResourceOwner {
         })
     }
 
-    pub fn sampler_bindings(&self) -> Vec<NativeXmap12SamplerBinding> {
-        self.samplers
-            .iter()
-            .map(|row| NativeXmap12SamplerBinding {
+    pub fn sampler_bindings(&self) -> Result<Vec<NativeXmap12SamplerBinding>> {
+        crate::named_rows(
+            &self.samplers,
+            |row| NativeXmap12SamplerBinding {
                 shader_register: row.shader_register,
                 descriptor_sha256: row.descriptor_sha256.clone(),
                 sampler: row.sampler.as_raw(),
-            })
-            .collect()
+            },
+            "XMAP12 native sampler bindings",
+        )
     }
 
-    pub fn shadow_program_bindings(&self) -> Vec<NativeXmap12ShadowProgramBinding> {
-        self.shadow_programs
-            .iter()
-            .map(|row| NativeXmap12ShadowProgramBinding {
+    pub fn shadow_program_bindings(&self) -> Result<Vec<NativeXmap12ShadowProgramBinding>> {
+        crate::named_rows(
+            &self.shadow_programs,
+            |row| NativeXmap12ShadowProgramBinding {
                 pipeline: row.pipeline,
                 main_effect_name: row.main_effect_name.clone(),
                 program_sha256: row.program_sha256.clone(),
@@ -817,14 +900,16 @@ impl NativeXmap12ResourceOwner {
                 input_layout: row.input_layout.as_raw(),
                 depth_state: row.depth_state.as_raw(),
                 rasterizer_state: row.rasterizer_state.as_raw(),
-            })
-            .collect()
+            },
+            "XMAP12 native shadow program bindings",
+        )
     }
 
     fn retained_draw(&self, stable_typed_id: &str) -> Result<&OwnedXmap12Draw> {
-        self.draws
-            .iter()
-            .find(|row| row.stable_typed_id == stable_typed_id)
+        self.draw_index
+            .get(stable_typed_id)
+            .and_then(|index| self.draws.get(*index))
+            .filter(|row| row.stable_typed_id == stable_typed_id)
             .ok_or_else(|| "XMAP12 retained draw disappeared".into())
     }
 }
@@ -857,7 +942,7 @@ impl NativeXmap12LightSceneConstantBuffer {
         let bytes = xmap12_light_scene_cb0_payload(selected_light.light_view_projection_f32_bits)?;
         Ok(Self {
             device_identity: device as usize,
-            selected_light_frame_sha256: Sha256::hex(&serde_json::to_vec(selected_light)?),
+            selected_light_frame_sha256: sha256_json(selected_light)?,
             payload_sha256: Sha256::hex(&bytes),
             buffer: create_immutable_buffer(
                 device,
@@ -886,6 +971,7 @@ impl NativeXmap12LightSceneConstantBuffer {
 }
 
 #[cfg(windows)]
+/// A digest's own row list, reserved for exactly the rows it covers.
 fn xmap12_light_scene_cb0_payload(matrix: [u32; 16]) -> Result<[u8; 416]> {
     if matrix
         .iter()
@@ -996,23 +1082,27 @@ impl<'a> NativeXmap12LightDepthCaster<'a> {
         {
             return Err("XMAP12 L03 selected-light frame differs from projection".into());
         }
-        let selected_light_frame_sha256 = Sha256::hex(&serde_json::to_vec(selected_light_frame)?);
+        let selected_light_frame_sha256 = sha256_json(selected_light_frame)?;
         let ids = frame
             .ordered_draws
             .iter()
             .map(|draw| draw.stable_typed_id.as_str())
             .collect::<BTreeSet<_>>();
-        let owned_submissions = projection
-            .submissions
-            .iter()
-            .filter(|submission| match submission {
-                crate::L03LightDepthSubmission::Pdxmesh {
-                    stable_typed_upstream_id,
-                    ..
-                } => ids.contains(stable_typed_upstream_id.as_str()),
-                crate::L03LightDepthSubmission::Tree { .. } => false,
-            })
-            .collect::<Vec<_>>();
+        let mut owned_submissions = Vec::new();
+        crate::extend_named(
+            &mut owned_submissions,
+            projection
+                .submissions
+                .iter()
+                .filter(|submission| match submission {
+                    crate::L03LightDepthSubmission::Pdxmesh {
+                        stable_typed_upstream_id,
+                        ..
+                    } => ids.contains(stable_typed_upstream_id.as_str()),
+                    crate::L03LightDepthSubmission::Tree { .. } => false,
+                }),
+            "XMAP12 L03 owned submissions",
+        )?;
         if owned_submissions.is_empty() {
             return Err("XMAP12 L03 caster has no projected XMAP12 submissions".into());
         }
@@ -1026,6 +1116,7 @@ impl<'a> NativeXmap12LightDepthCaster<'a> {
             {
                 let required = (*pipeline, selected_submesh_material.as_str());
                 if !required_programs.contains(&required) {
+                    crate::grow_named(&mut required_programs, 1, "XMAP12 L03 required programs")?;
                     required_programs.push(required);
                 }
             }
@@ -1096,14 +1187,21 @@ impl<'a> NativeXmap12LightDepthCaster<'a> {
         if required_partitions != bound_partitions {
             return Err("XMAP12 L03 partition CB0 census differs from projection".into());
         }
-        let registered_submission_sha256s = owned_submissions
-            .iter()
-            .map(|submission| {
-                serde_json::to_vec(*submission)
-                    .map(|bytes| Sha256::hex(&bytes))
-                    .map_err(Into::into)
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let mut registered_submission_sha256s = Vec::new();
+        crate::reserve_named(
+            &mut registered_submission_sha256s,
+            owned_submissions.len(),
+            "XMAP12 L03 registered submission digests",
+        )?;
+        for submission in &owned_submissions {
+            crate::grow_named(
+                &mut registered_submission_sha256s,
+                1,
+                "XMAP12 L03 registered submission digests",
+            )?;
+            crate::grow_named(&mut registered_submission_sha256s, 1, "XMAP12 L03 digests")?;
+        registered_submission_sha256s.push(sha256_json(*submission)?);
+        }
         Ok(Self {
             owner_packet,
             device,
@@ -1147,11 +1245,11 @@ impl crate::NativeXmap09LightDepthCaster for NativeXmap12LightDepthCaster<'_> {
         use winapi::um::d3dcommon::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 
         validate_context_device(self.device, context)?;
-        let expected_selected_light_sha256 = Sha256::hex(&serde_json::to_vec(selected_light)?);
+        let expected_selected_light_sha256 = sha256_json(selected_light)?;
         if expected_selected_light_sha256 != self.selected_light_frame_sha256 {
             return Err("XMAP12 L03 selected-light identity changed after registration".into());
         }
-        let submission_sha256 = Sha256::hex(&serde_json::to_vec(submission)?);
+        let submission_sha256 = sha256_json(submission)?;
         if !self
             .registered_submission_sha256s
             .iter()
@@ -1230,7 +1328,7 @@ impl crate::NativeXmap09LightDepthCaster for NativeXmap12LightDepthCaster<'_> {
             .get(partition_mask)
             .ok_or("XMAP12 L03 partition-specific object CB1 disappeared")?;
         let object = [object_cb1.as_raw()];
-        let buffers = [geometry.vertex.as_raw()];
+        let buffers = [geometry.buffers.vertex.as_raw()];
         let strides = [submesh.vertex_stride_bytes];
         let offsets = [0u32];
         (*context).VSSetShader(program.vertex_shader, std::ptr::null(), 0);
@@ -1251,7 +1349,7 @@ impl crate::NativeXmap09LightDepthCaster for NativeXmap12LightDepthCaster<'_> {
         (*context).PSSetConstantBuffers(1, 1, object.as_ptr());
         bind_shadow_material_resources(context, self.owned, materialization, submesh, program)?;
         (*context).IASetVertexBuffers(0, 1, buffers.as_ptr(), strides.as_ptr(), offsets.as_ptr());
-        (*context).IASetIndexBuffer(geometry.index.as_raw(), DXGI_FORMAT_R32_UINT, 0);
+        (*context).IASetIndexBuffer(geometry.buffers.index.as_raw(), DXGI_FORMAT_R32_UINT, 0);
         (*context).DrawIndexed(submesh.index_count, 0, 0);
         clear_shadow_material_bindings(context);
         Ok(())
@@ -1328,6 +1426,11 @@ pub unsafe fn execute_xmap12_main_scene(
     bind_samplers(context, bindings);
 
     let mut ordered_draw_sha256 = Vec::new();
+    crate::reserve_named(
+        &mut ordered_draw_sha256,
+        frame.ordered_draws.len(),
+        "XMAP12 MainScene draw digests",
+    )?;
     for draw in &frame.ordered_draws {
         let retained = owned.retained_draw(&draw.stable_typed_id)?;
         if retained.draw_sha256 != draw.deterministic_sha256 {
@@ -1377,9 +1480,20 @@ pub unsafe fn execute_xmap12_main_scene(
                     .ok_or("XMAP12 retained MainScene submesh disappeared")?;
                 let stride = submesh.vertex_stride_bytes;
                 let offset = 0u32;
-                (*context).IASetVertexBuffers(0, 1, &geometry.vertex.as_raw(), &stride, &offset);
-                (*context).IASetIndexBuffer(geometry.index.as_raw(), DXGI_FORMAT_R32_UINT, 0);
+                (*context).IASetVertexBuffers(
+                    0,
+                    1,
+                    &geometry.buffers.vertex.as_raw(),
+                    &stride,
+                    &offset,
+                );
+                (*context).IASetIndexBuffer(
+                    geometry.buffers.index.as_raw(),
+                    DXGI_FORMAT_R32_UINT,
+                    0,
+                );
                 (*context).DrawIndexed(submesh.index_count, 0, 0);
+                crate::grow_named(&mut ordered_draw_sha256, 1, "XMAP12 MainScene draw digests")?;
                 ordered_draw_sha256.push(Sha256::hex(&serde_json::to_vec(&(
                     draw.deterministic_sha256.as_str(),
                     partition,
@@ -1394,13 +1508,11 @@ pub unsafe fn execute_xmap12_main_scene(
     let null_cb = std::ptr::null_mut();
     (*context).VSSetConstantBuffers(2, 1, &null_cb);
     clear_native_bindings(context);
-    let program_set_sha256 = Sha256::hex(&serde_json::to_vec(
-        &bindings
-            .programs
-            .iter()
-            .map(|row| (&row.effect_name, &row.program_sha256))
-            .collect::<Vec<_>>(),
-    )?);
+    let program_set_sha256 = Sha256::hex(&serde_json::to_vec(&crate::named_rows(
+        &bindings.programs,
+        |row| (&row.effect_name, &row.program_sha256),
+        "XMAP12 program set digest rows",
+    )?)?);
     let resource_set_sha256 = resource_set_sha256(bindings)?;
     let mut receipt = Xmap12NativeExecutionReceipt {
         schema: XMAP12_NATIVE_EXECUTION_SCHEMA.into(),
@@ -1415,7 +1527,7 @@ pub unsafe fn execute_xmap12_main_scene(
         ordered_draw_sha256,
         deterministic_sha256: String::new(),
     };
-    receipt.deterministic_sha256 = Sha256::hex(&serde_json::to_vec(&receipt)?);
+    receipt.deterministic_sha256 = sha256_json(&receipt)?;
     receipt.validate()?;
     Ok(receipt)
 }
@@ -1539,7 +1651,7 @@ unsafe fn validate_native_bindings(
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        let samplers = program
+        let required_samplers = program
             .required_sampler_registers
             .iter()
             .copied()
@@ -1568,7 +1680,7 @@ unsafe fn validate_native_bindings(
                     || !shared.contains(register)
             })
             || named_shared.len() != shared.len()
-            || samplers.len() != program.required_sampler_registers.len()
+            || required_samplers.len() != program.required_sampler_registers.len()
             || shared.iter().any(|register| *register <= 2)
             || program.vertex_shader.is_null()
             || program.pixel_shader.is_null()
@@ -1873,10 +1985,11 @@ unsafe fn create_effect_program(
         reflected_registers(&pixel_reflection, 2, |register| register <= 2)?;
     let required_shared_resources =
         reflected_named_resources(&pixel_reflection, 2, |register| register > 2)?;
-    let required_shared_resource_registers = required_shared_resources
-        .iter()
-        .map(|resource| resource.shader_register)
-        .collect::<Vec<_>>();
+    let required_shared_resource_registers = crate::named_rows(
+        required_shared_resources.as_slice(),
+        |resource: &NativeXmap12ReflectedSharedResource| resource.shader_register,
+        "XMAP12 required shared resource registers",
+    )?;
     let required_sampler_registers = reflected_registers(&pixel_reflection, 3, |_| true)?;
     let (blend_state, depth_state, rasterizer_state, state_sha256) =
         create_effect_states(device, file, effect)?;
@@ -2034,7 +2147,10 @@ fn reflected_registers(
     resource_type: u32,
     include: impl Fn(u32) -> bool,
 ) -> Result<Vec<u32>> {
-    let mut out = BTreeSet::new();
+    // Named `bound` rather than the `out` this file uses for its Vec locals: the allocation
+    // scan discovers list names per FILE, so one name shared by a `Vec` in one function and a
+    // `BTreeSet` in another makes the set's `insert` look like an unreserved list growth.
+    let mut bound = BTreeSet::new();
     for resource in reflection
         .resources
         .iter()
@@ -2043,11 +2159,16 @@ fn reflected_registers(
         if resource.bind_count != 1 {
             return Err("XMAP12 effect uses an unsupported resource array".into());
         }
-        if include(resource.bind_point) && !out.insert(resource.bind_point) {
+        if include(resource.bind_point) && !bound.insert(resource.bind_point) {
             return Err("XMAP12 reflected resource register is duplicate".into());
         }
     }
-    Ok(out.into_iter().collect())
+    // Reflection-sized: an effect declares as many registers as it declares,
+    // so the list that leaves here is reserved for exactly them.
+    let mut registers = Vec::new();
+    crate::reserve_named(&mut registers, bound.len(), "XMAP12 reflected registers")?;
+    crate::extend_named(&mut registers, bound, "XMAP12 reflected registers")?;
+    Ok(registers)
 }
 
 #[cfg(windows)]
@@ -2056,7 +2177,9 @@ fn reflected_named_resources(
     resource_type: u32,
     include: impl Fn(u32) -> bool,
 ) -> Result<Vec<NativeXmap12ReflectedSharedResource>> {
-    let mut registers = BTreeSet::new();
+    // `bound`, not `registers`: that name holds a `Vec` in the function above,
+    // and the allocation scan reasons about growth by name within a file.
+    let mut bound = BTreeSet::new();
     let mut names = BTreeSet::new();
     let mut out = Vec::new();
     for resource in reflection
@@ -2071,11 +2194,12 @@ fn reflected_named_resources(
             continue;
         }
         if resource.name.trim().is_empty()
-            || !registers.insert(resource.bind_point)
+            || !bound.insert(resource.bind_point)
             || !names.insert(resource.name.as_str())
         {
             return Err("XMAP12 reflected shared resource is blank or duplicate".into());
         }
+        crate::grow_named(&mut out, 1, "XMAP12 reflected shared resources")?;
         out.push(NativeXmap12ReflectedSharedResource {
             semantic: resource.name.clone(),
             shader_register: resource.bind_point,
@@ -2165,24 +2289,26 @@ fn validate_xmap12_cbuffer_layout(
     stage: &str,
 ) -> Result<()> {
     let expected_name = format!("dx11_cb{}", resource.bind_point);
-    let matches = reflection
+    let mut matching = reflection
         .cbuffers
         .iter()
-        .filter(|cbuffer| cbuffer.name == resource.name)
-        .collect::<Vec<_>>();
-    if resource.name != expected_name || matches.len() != 1 {
+        .filter(|cbuffer| cbuffer.name == resource.name);
+    // Counted through the iterator: the question is whether there is EXACTLY
+    // one, which needs no list to answer.
+    let cbuffer = matching.next();
+    if resource.name != expected_name || cbuffer.is_none() || matching.next().is_some() {
         return Err(format!(
             "XMAP12 {stage} b{} has no unique canonical reflected layout",
             resource.bind_point
         )
         .into());
     }
-    let cbuffer = matches[0];
-    let actual_rows = cbuffer
-        .vars
-        .iter()
-        .map(|var| (var.name.as_str(), var.offset, var.size))
-        .collect::<Vec<_>>();
+    let cbuffer = cbuffer.expect("just checked");
+    let actual_rows = crate::named_rows(
+        &cbuffer.vars,
+        |var| (var.name.as_str(), var.offset, var.size),
+        "XMAP12 reflected constant rows",
+    )?;
     let valid = match resource.bind_point {
         0 => cbuffer.size == crate::XMAP10_SCENE_CB0_BYTE_LEN as u32,
         1 => {
@@ -2404,9 +2530,11 @@ unsafe fn create_static_input_layout(
         };
         let mut indices = element(texcoord.as_ptr(), DXGI_FORMAT_R32G32B32A32_UINT, 48);
         indices.SemanticIndex = 4;
+        crate::grow_named(&mut elements, 1, "XMAP12 input layout elements")?;
         elements.push(indices);
         let mut weights = element(texcoord.as_ptr(), DXGI_FORMAT_R32G32B32_FLOAT, 64);
         weights.SemanticIndex = 5;
+        crate::grow_named(&mut elements, 1, "XMAP12 input layout elements")?;
         elements.push(weights);
     }
     let mut raw = std::ptr::null_mut();
@@ -2964,7 +3092,8 @@ fn parse_material_dds_descriptor(
         }
     };
     let mut source_offset = payload_offset;
-    let mut mips = Vec::with_capacity(mip_levels as usize);
+    let mut mips = Vec::new();
+    crate::reserve_named(&mut mips, mip_levels as usize, "XMAP12 material mip chain")?;
     for mip in 0..mip_levels {
         let mip_width = (width >> mip).max(1);
         let mip_height = (height >> mip).max(1);
@@ -2993,6 +3122,7 @@ fn parse_material_dds_descriptor(
         bytes
             .get(source_offset..end)
             .ok_or_else(|| format!("XMAP12 DDS mip {mip} is truncated"))?;
+        crate::grow_named(&mut mips, 1, "XMAP12 mips")?;
         mips.push(Xmap12DdsMipDescriptor {
             source_offset: source_offset as u64,
             row_pitch,
@@ -3054,24 +3184,23 @@ unsafe fn create_material_dds(
     use crate::d3d11_device::{native_d3d11_hr, D3dPtr};
     use winapi::shared::dxgitype::DXGI_SAMPLE_DESC;
     use winapi::um::d3d11::*;
-    let initial = descriptor
-        .mips
-        .iter()
-        .map(|mip| {
-            let offset = usize::try_from(mip.source_offset)?;
-            let end = offset
-                .checked_add(mip.slice_pitch as usize)
-                .ok_or("XMAP12 DDS native range overflow")?;
-            let payload = bytes
-                .get(offset..end)
-                .ok_or("XMAP12 DDS native mip is truncated")?;
-            Ok(D3D11_SUBRESOURCE_DATA {
-                pSysMem: payload.as_ptr() as *const _,
-                SysMemPitch: mip.row_pitch,
-                SysMemSlicePitch: mip.slice_pitch,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let mut initial = Vec::new();
+    crate::reserve_named(&mut initial, descriptor.mips.len(), "XMAP12 material mip subresources")?;
+    for mip in &descriptor.mips {
+        let offset = usize::try_from(mip.source_offset)?;
+        let end = offset
+            .checked_add(mip.slice_pitch as usize)
+            .ok_or("XMAP12 DDS native range overflow")?;
+        let payload = bytes
+            .get(offset..end)
+            .ok_or("XMAP12 DDS native mip is truncated")?;
+        crate::grow_named(&mut initial, 1, "XMAP12 material mip subresources")?;
+        initial.push(D3D11_SUBRESOURCE_DATA {
+            pSysMem: payload.as_ptr() as *const _,
+            SysMemPitch: mip.row_pitch,
+            SysMemSlicePitch: mip.slice_pitch,
+        });
+    }
     let native = D3D11_TEXTURE2D_DESC {
         Width: descriptor.width,
         Height: descriptor.height,
@@ -3138,7 +3267,8 @@ unsafe fn create_environment_cube(
     let height = u32::try_from(cube.height)?;
     let mip_levels = u32::try_from(cube.mips)?;
     let array_size = u32::try_from(cube.faces)?;
-    let mut initial = Vec::with_capacity(cube.faces * cube.mips);
+    let mut initial = Vec::new();
+    crate::reserve_named(&mut initial, cube.faces * cube.mips, "XMAP12 environment cube faces")?;
     let mut source_offset = 0usize;
     for _face in 0..cube.faces {
         for mip in 0..cube.mips {
@@ -3157,6 +3287,7 @@ unsafe fn create_environment_cube(
                 .payload
                 .get(source_offset..end)
                 .ok_or("XMAP12 environment cube mip is truncated")?;
+            crate::grow_named(&mut initial, 1, "XMAP12 initial")?;
             initial.push(D3D11_SUBRESOURCE_DATA {
                 pSysMem: payload.as_ptr() as *const _,
                 SysMemPitch: u32::try_from(row_pitch)?,
@@ -3261,10 +3392,9 @@ unsafe fn create_object_cb1(
     partition_mask: u8,
     map_width: u32,
 ) -> Result<crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11Buffer>> {
-    // Exact retained PdxMesh CB1 layout is 24 f32 lanes (96 bytes): the
-    // row-vector WorldMatrix followed by the engine-default CMeshUserData
-    // AtlasCoordinate=(0,0,1,1), vUVAnimSpeed=1, and three padding lanes.
-    // The retained O04 city-submit event 171 binds this same payload to VS/PS.
+    // Exact retained PdxMesh CB1 layout is 24 f32 lanes (96 bytes): the row-vector WorldMatrix
+    // followed by the engine-default CMeshUserData AtlasCoordinate=(0,0,1,1), vUVAnimSpeed=1,
+    // and three padding lanes.
     let bytes = xmap12_object_cb1_payload(draw.world_matrix_f32_bits, partition_mask, map_width)?;
     create_immutable_buffer(
         device,
@@ -3465,21 +3595,20 @@ fn material_texture_source<'a>(
     slot_name: &str,
     authored: &str,
 ) -> Result<&'a crate::Xmap12TextureSource> {
-    // The AUTHORED bytes the producer recorded beside the path it resolved.
-    // Folding this to a lower-cased basename could not find the `.dds` a729
-    // opens for an authored `.tga`, and made two directory-qualified references
-    // sharing a basename ambiguous (`crate::pdxmesh_asset_law`).
-    let source = draw
-        .ordered_texture_sources
-        .iter()
-        .filter(|row| {
-            row.slot.eq_ignore_ascii_case(slot_name) && row.authored_reference == authored
-        })
-        .collect::<Vec<_>>();
-    if source.len() != 1 {
+    // The AUTHORED bytes the producer recorded beside the path it resolved. Folding this to a
+    // lower-cased basename could not find the `.dds` a729 opens for an authored `.tga`, and
+    // made two directory-qualified references sharing a basename ambiguous
+    // (`crate::pdxmesh_asset_law`).
+    let mut matching = draw.ordered_texture_sources.iter().filter(|row| {
+        row.slot.eq_ignore_ascii_case(slot_name) && row.authored_reference == authored
+    });
+    // EXACTLY one, counted through the iterator: this runs per draw, and a
+    // list per draw is a list per instance.
+    let source = matching.next();
+    if source.is_none() || matching.next().is_some() {
         return Err("XMAP12 native material texture identity is ambiguous".into());
     }
-    Ok(source[0])
+    Ok(source.expect("just checked"))
 }
 
 #[cfg(windows)]
@@ -3494,41 +3623,47 @@ unsafe fn clear_native_bindings(context: *mut winapi::um::d3d11::ID3D11DeviceCon
 
 #[cfg(windows)]
 fn resource_set_sha256(bindings: &NativeXmap12MainSceneBindings) -> Result<String> {
+    // Four bound-set-sized lists: named, because a frame with more draws binds
+    // more of each, and an unnameable abort here would kill the viewer mid-frame.
+    let textures = crate::named_rows(
+        &bindings.textures,
+        |row| (row.shader_register, &row.content),
+        "XMAP12 native resource digest textures",
+    )?;
+    let shared_resources = crate::named_rows(
+        &bindings.shared_resources,
+        |row| {
+            (
+                row.shader_register,
+                &row.semantic,
+                &row.payload_sha256,
+                &row.descriptor_sha256,
+                row.view_dimension,
+            )
+        },
+        "XMAP12 native resource digest shared resources",
+    )?;
+    let samplers = crate::named_rows(
+        &bindings.samplers,
+        |row| (row.shader_register, &row.descriptor_sha256),
+        "XMAP12 native resource digest samplers",
+    )?;
+    let partition_scenes = crate::named_rows(
+        &bindings.partition_scenes,
+        |row| {
+            (
+                row.partition_mask,
+                &row.viewer_state_sha256,
+                &row.payload_sha256,
+            )
+        },
+        "XMAP12 native resource digest partition scenes",
+    )?;
     Ok(Sha256::hex(&serde_json::to_vec(&(
-        bindings
-            .textures
-            .iter()
-            .map(|row| (row.shader_register, &row.content))
-            .collect::<Vec<_>>(),
-        bindings
-            .shared_resources
-            .iter()
-            .map(|row| {
-                (
-                    row.shader_register,
-                    &row.semantic,
-                    &row.payload_sha256,
-                    &row.descriptor_sha256,
-                    row.view_dimension,
-                )
-            })
-            .collect::<Vec<_>>(),
-        bindings
-            .samplers
-            .iter()
-            .map(|row| (row.shader_register, &row.descriptor_sha256))
-            .collect::<Vec<_>>(),
-        bindings
-            .partition_scenes
-            .iter()
-            .map(|row| {
-                (
-                    row.partition_mask,
-                    &row.viewer_state_sha256,
-                    &row.payload_sha256,
-                )
-            })
-            .collect::<Vec<_>>(),
+        textures,
+        shared_resources,
+        samplers,
+        partition_scenes,
         &bindings.pixel_cb2_payload_sha256,
     ))?))
 }
@@ -3555,12 +3690,8 @@ unsafe fn validate_context_device(
     Ok(())
 }
 
-/// Return the exact live SRV dimension used to join an external XMAP04/05/07/
-/// 09/10 provider to effective XMAP12 reflection.
-///
-/// # Safety
-/// `view` must be a live D3D11 shader-resource view for the duration of this
-/// call.
+/// Return the exact live SRV dimension used to join an external XMAP04/05/07/ 09/10 provider to
+/// effective XMAP12 reflection.
 #[cfg(windows)]
 pub unsafe fn xmap12_native_srv_view_dimension(
     view: *mut winapi::um::d3d11::ID3D11ShaderResourceView,
@@ -3587,6 +3718,30 @@ fn validate_sha256(value: &str, label: &str) -> Result<()> {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    /// kills: a streamed identity sequence that is not byte-identical to the collected
+    /// `Vec<(&id, &sha)>` it replaced - an empty slice serialised as anything but an empty
+    /// sequence, or a different framing - which would change every retained frame's
+    /// `owned_resource_set_sha256`.
+    #[test]
+    fn streamed_draw_identities_serialize_exactly_as_the_collected_pairs() {
+        let rows = vec![
+            ("xmap12:city:a".to_string(), "0".repeat(64)),
+            ("xmap12:building:b".to_string(), "1".repeat(64)),
+        ];
+        let identity: fn(&(String, String)) -> (&String, &String) = |row| (&row.0, &row.1);
+        for slice in [&rows[..], &rows[..1], &[][..]] {
+            let streamed = serde_json::to_vec(&DrawIdentities(slice, identity)).unwrap();
+            let collected =
+                serde_json::to_vec(&slice.iter().map(identity).collect::<Vec<_>>()).unwrap();
+            assert_eq!(
+                String::from_utf8(streamed).unwrap(),
+                String::from_utf8(collected).unwrap(),
+                "{} rows",
+                slice.len()
+            );
+        }
+    }
 
     #[test]
     fn object_cb1_matches_retained_pdxmesh_user_data_layout() {

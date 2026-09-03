@@ -639,12 +639,13 @@ pub use production_foundation::{
     foundation_map_dimensions, prepare_foundation_frame,
     MAP_AUTHORITY_OWNER_UNCLASSIFIED, MAP_AUTHORITY_SET_IDENTITY_A729,
     product_feature_adapters_with_assigned_stage_schedule,
-    product_foundation_assigned_stage_topology, require_fresh_foundation_frame,
-    FamilyContentRefusal, FoundationContentExecutionReceipt, FoundationFeatureContext,
+    process_private_bytes, product_foundation_assigned_stage_topology,
+    require_fresh_foundation_frame, FamilyContentRefusal, FamilyPreparationCost,
+    FoundationContentExecutionReceipt, FoundationFeatureContext,
     FoundationFeatureOutput, FoundationPlaybackOutcome, FoundationPlaybackState,
     FoundationProductUnavailable,
     PreparedFoundationFrame, ProductionMapFeatureAdapter, ProductionMapFeatureAdapters,
-    ViewerOwnedMapState, Xmap15FoundationState, Xmap16FoundationState,
+    ViewerOwnedMapState, Xmap12PayloadSummary, Xmap15FoundationState, Xmap16FoundationState,
     FOUNDATION_CONTENT_EXECUTION_RECEIPT_SCHEMA,
 };
 pub use production_map_interpreter::{

@@ -585,6 +585,49 @@ pub(crate) fn write_synthetic_terrain_id_map_game_files(root: &Path, terrain_pal
     fs::write(default_map, "terrain = \"terrain.bmp\"\n").expect("write default.map");
 }
 
+/// An indexed BMP whose every pixel is chosen by the caller.
+pub(crate) fn write_indexed_bmp_with(
+    path: &Path,
+    width: usize,
+    height: usize,
+    value_at: impl Fn(usize, usize) -> u8,
+) {
+    let row_stride = (width + 3) & !3;
+    let palette_bytes = 256usize * 4;
+    let pixel_offset = 14usize + 40usize + palette_bytes;
+    let image_bytes = row_stride.checked_mul(height).expect("indexed BMP byte count");
+    let file_size = pixel_offset + image_bytes;
+    let mut file = fs::File::create(path).expect("create indexed BMP");
+    file.write_all(b"BM").expect("write BMP signature");
+    file.write_all(&(file_size as u32).to_le_bytes()).expect("file size");
+    file.write_all(&[0u8; 4]).expect("reserved");
+    file.write_all(&(pixel_offset as u32).to_le_bytes()).expect("pixel offset");
+    file.write_all(&40u32.to_le_bytes()).expect("header size");
+    file.write_all(&(width as i32).to_le_bytes()).expect("width");
+    file.write_all(&(height as i32).to_le_bytes()).expect("height");
+    file.write_all(&1u16.to_le_bytes()).expect("planes");
+    file.write_all(&8u16.to_le_bytes()).expect("bpp");
+    file.write_all(&0u32.to_le_bytes()).expect("compression");
+    file.write_all(&(image_bytes as u32).to_le_bytes()).expect("image size");
+    file.write_all(&2835u32.to_le_bytes()).expect("x ppm");
+    file.write_all(&2835u32.to_le_bytes()).expect("y ppm");
+    file.write_all(&256u32.to_le_bytes()).expect("colour count");
+    file.write_all(&256u32.to_le_bytes()).expect("important colours");
+    for palette in 0..=255u8 {
+        file.write_all(&[palette, palette, palette, 0]).expect("palette");
+    }
+    // BMP rows run bottom-up, and the family's decoders undo that, so the
+    // callback is given the coordinates the PRODUCERS use: `value_at(x, z)` is
+    // what a sampler asked about world (x, z) reads.
+    for row in 0..height {
+        let mut line = vec![0u8; row_stride];
+        for x in 0..width {
+            line[x] = value_at(x, row);
+        }
+        file.write_all(&line).expect("row");
+    }
+}
+
 pub(crate) fn write_indexed_bmp(path: &Path, width: usize, height: usize, value: u8) {
     let row_stride = (width + 3) & !3;
     let palette_bytes = 256usize * 4;

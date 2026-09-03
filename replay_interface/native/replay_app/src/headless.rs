@@ -838,10 +838,14 @@ impl DumpPhaseLog {
 
     fn mark(&mut self, phase: &str) {
         let now = std::time::Instant::now();
+        let (private_bytes, peak_private_bytes) =
+            map_viewer::process_private_bytes().unwrap_or((0, 0));
         eprintln!(
-            "PHASE {phase}: {} ms (elapsed {} ms)",
+            "PHASE {phase}: {} ms (elapsed {} ms) private {} MiB (peak {} MiB)",
             now.duration_since(self.last).as_millis(),
-            now.duration_since(self.start).as_millis()
+            now.duration_since(self.start).as_millis(),
+            private_bytes >> 20,
+            peak_private_bytes >> 20
         );
         self.last = now;
     }
@@ -977,6 +981,37 @@ fn dump_production_recording_frame(
         ui_profile.key().gui_scale(),
     );
     phases.mark("render_execute");
+    for cost in composition.last_family_costs() {
+        eprintln!(
+            "FAMILY {} ({:?}): {} ms, private {} MiB (peak {} MiB)",
+            cost.family.owner_packet(),
+            cost.family,
+            cost.wall_ms,
+            cost.private_bytes_after >> 20,
+            cost.peak_private_bytes_after >> 20
+        );
+    }
+    match composition.xmap12_resident_geometry() {
+        Some(Ok((meshes, bytes))) => eprintln!(
+            "XMAP12 library: {meshes} shared meshes, {bytes} bytes of packed geometry resident"
+        ),
+        Some(Err(error)) => eprintln!("XMAP12 library: unreadable ({error})"),
+        None => {}
+    }
+    if let Some(payload) = composition.last_xmap12_payload() {
+        eprintln!(
+            "XMAP12 payload: {} draws, {} L03 rows, {} element diagnostics, {} building rows",
+            payload.draws, payload.l03_rows, payload.element_diagnostics, payload.building_rows
+        );
+    }
+    for (family, sharing) in ["XMAP12", "XMAP13"]
+        .into_iter()
+        .zip(composition.retained_geometry_sharing())
+    {
+        if let Some((geometries, draws)) = sharing {
+            eprintln!("GEOMETRY {family}: {draws} draws over {geometries} shared geometries");
+        }
+    }
     let receipt = match executed {
         Ok(receipt) => receipt,
         Err(error) => {
