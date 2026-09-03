@@ -19,6 +19,7 @@ If the owner has not designated you orchestrator, you are a lane or a reviewer p
 - Residuals are never left behind. Anything you can fix, fix now. Anything you legitimately cannot (owner decision, live probe, missing capture, another lane's file) goes in your final report with its class and the exact artifact path so the orchestrator staffs it immediately.
 - Report once, numbers first, when everything is finished: tip, what landed, tests run, review record, residuals.
 - Clean up: worktree, branch, build output, temp files. Never stash. Hash-pinned files carry `.gitattributes` `text eol=lf`.
+- (Claude only) Launch the call in the background with its PID captured and hold the turn with the blocking wait from "Tools and traps" (`timeout 590 tail --pid=$PID -f /dev/null`, repeated until it exits 0); never a monitor with an ended turn.
 
 ## Lane workflow
 
@@ -56,16 +57,11 @@ Applies to every harness. The reviewer is a fresh agent each round.
 - `hoi4_re` is the RE facade: `re_status` first, never edit its registry, four-job offline queue. `hoi4_ghidra` (pinned a729/870ebf): `ghidra_status` first, `ghidra_verify` before relying on indexed evidence. Census and cross-analysis outputs are discovery, not proof. Pinned artifacts use the `engine_evidence` crate pattern with literal byte sizes and must pass `reverify_engine_evidence.py`.
 - Live instrumentation needs explicit owner authorization and a running matching game; lanes never launch the game. A needed probe is handed back as a bounded SPEC.
 - **Waiting is a blocking call, never an ended turn.** A lane that has ended its turn is finished, and a report is due; so a lane never ends its turn while a review, build, test run, fold or dump of its own is still running. Launch the long job in the background with its PID captured (`job … & PID=$!`, with output to a log file), then hold the turn with a foreground `timeout 590 tail --pid=$PID -f /dev/null`, repeated while it exits 124, until it exits 0; then read the log. No polling loops, no `sleep`, no monitor-and-end-turn. One long job at a time; own scratch subdir under the session scratchpad.
-- Disk: your worktree's build directory is yours; reclaim only your own incremental cache and only below 30 GB free.
-- Citation scanner: citation strings at module scope; function-local items need reasoned allowance entries; never split a citation across lines; two local items sharing a name break the world-fold scanner, so rename rather than declare. Source-scan tests normalise CRLF.
-- A carrier change that moves leaves in the XUI09 joint fixture regenerates it through `JO_WRITE_XUI09_FIXTURE=1` and updates the consumer half's `FIXTURE_SHA256`.
-- Any `attach_log` macro change runs the counter-wire census.
 
 ## Orchestration (designated orchestrator only)
 
 - Landing, per batch: `git merge --no-ff` each converged branch onto `landing-tmp`, check the merge exit code before anything else, assert `HEAD^2` is the lane tip, restamp citations (`restamp_world_fold_citations.py`, `restamp_citation_allowance.py`, then `--check`), `verify_citation_integrity.py`, `reverify_engine_evidence.py`, then one gate: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-Validation.ps1 -Mode Landing`, exit code captured. Green: push `landing-tmp:master`, verify every tip is an ancestor, retire worktrees and branches. Red: attribute each failure against pure master and bounce it to the owning lane. Hold the gate for batches; never restart a running gate.
 - Publish one pure-master fold reference per master commit under `runs/fold_reference/<sha>/`.
-- Keep a residuals ledger; every item has an owner (a lane, an owner question, or the next measurement capture) until closed.
 - After a restart or limit kill, resume existing agents with their transcripts; never relaunch a lane that has one.
 
 ## How to launch, per harness (designated orchestrator and its lanes only)
@@ -77,20 +73,12 @@ OUT=$(mktemp /tmp/cdx_XXXXXX.txt); AJ=$(mktemp /tmp/cdx_XXXXXX.jsonl)
 printf '%s' "$PROMPT" | codex exec --json -s danger-full-access -c approval_policy=never --skip-git-repo-check -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c service_tier=priority -o "$OUT" - > "$AJ"
 ```
 
-Flags are mandatory as written; never `--ephemeral`, never `resume --last`, never a sandboxed `-s` mode. Thread id = first line of `$AJ`; reply = `$OUT`, success is exit 0 and a non-empty file; retry once, except on a usage-limit signature: queue the thread id and resume it later by id (`codex exec -s danger-full-access … resume <id> -`, same flags). Launch the call in the background with its PID captured and hold the turn with the blocking wait from "Tools and traps" (`timeout 590 tail --pid=$PID -f /dev/null`, repeated until it exits 0); never a monitor with an ended turn.
+Flags are mandatory as written; never `--ephemeral`, never `resume --last`, never a sandboxed `-s` mode. Thread id = first line of `$AJ`; reply = `$OUT`, success is exit 0 and a non-empty file; retry once, except on a usage-limit signature: queue the thread id and resume it later by id (`codex exec -s danger-full-access … resume <id> -`, same flags).
 
-**Codex.** Lanes are sub-agents. Never call the Codex CLI from inside Codex. Reviewer: native Claude Code, one fresh background session per round. Only the designated orchestrator, or a lane that has reached step 3 of the lane workflow, may launch it. The owner's designation of this orchestration workflow authorizes its required review rounds; outside that workflow, only an explicit owner request authorizes a Claude call. Ordinary top-level agents, reviewers, research agents, and sub-agents not briefed as lanes never call Claude. Claude is only the independent reviewer here: never use it for implementation, research, planning, delegation, or an ad-hoc second opinion.
-
-Launch from PowerShell with the complete review prompt in `$PROMPT` and a unique name in `$REVIEW_NAME`:
-
-```powershell
-$launch = claude --bg --name "$REVIEW_NAME" --model fable --effort xhigh --permission-mode auto "$PROMPT"
-```
-
-The flags are mandatory as written. This is the native first-party background-session path: never use `claude -p`, the Agent SDK, T3 Code, a plugin wrapper, copied OAuth credentials, or PTY/keystroke automation. Do not add `--safe-mode`, `--restricted`, `--tools`, `--allowedTools`, `--disallowedTools`, `--mcp-config`, or `--no-chrome`; the normal Claude configuration, built-in tools, skills, hooks, browser integration, and MCP servers are intentionally available. The review prompt's read-only instruction remains mandatory: Claude must not edit, implement a finding, create a commit, or enter/create a worktree.
-
-Before launch, capture `git status --porcelain=v2 --untracked-files=all` and `git worktree list --porcelain`. Parse the short background id from `$launch` and persist it to the run dir before reading the answer. Then hold the turn per the waiting rule in "Tools and traps": a blocking foreground wait on that id (one bounded `timeout 590` check of `claude agents --json --all` per call, repeated only while the state is non-terminal), never a background monitor with an ended turn and never a busy loop. On `done`, capture `claude logs <id>` as the raw review transcript. Success requires a non-empty reviewer answer, unchanged status and worktree snapshots, and a log header showing Fable 5.1, `xhigh`, `auto mode on`, and `Claude Max` rather than `API Usage Billing`. Then stop and remove the Claude job only after the transcript and review record are durable.
-
-On `blocked`, `failed`, login expiry, `API Usage Billing`, or a usage-limit signature, do not launch a replacement. Preserve the id and logs, report the exact condition, and resume that same session by id when the condition is resolved. Any repository mutation or new worktree attributable to the reviewer invalidates the round: stop it, preserve the evidence, do not use its changes, and report the contract violation. Findings go back to the implementing lane; Claude never fixes them itself.
+**Codex.**
+- Codex review Lanes are sub-agents. Never call the Codex CLI from inside Codex.
+- If asked to use claude as the reviewer, Launch: `claude --bg --name "$REVIEW_NAME" --model fable --effort xhigh --permission-mode auto "$PROMPT"`. Never use `-p`
+- Claude reviews read-only: no implementation, edits, commits, or worktrees. Record the session id, wait in-turn
+- On failure, login expiry, API billing, or limits, preserve and resume the same session id; never launch a replacement. Findings return to the implementing lane.
 
 **Any other harness.** Same roles and contract; the reviewer must be a separate agent with no shared memory of the implementation. Record how reviews are launched and resumed in the run dir's POINTER.
