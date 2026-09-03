@@ -261,6 +261,10 @@ REQUIRED_LEAF_AUTHORITIES = {
             "extractor/native/collector/src/attach_log/domain13_tech_delta_tests.rs",
             "extractor/native/recorder_host/src/domain_data_authority.rs",
             "extractor/native/recorder_host/src/world_fold.rs",
+            # Lane PR: the XUI09 carry-over differential tests ENCODE a D13
+            # record with the grammar's own encoder to feed the fold, so the
+            # test file walks the grammar and carries the marker.
+            "extractor/native/recorder_host/src/world_fold/tests.rs",
             "extractor/native/wire_format/src/d13.rs",
         ),
         const_only={
