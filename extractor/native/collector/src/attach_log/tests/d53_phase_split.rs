@@ -43,16 +43,17 @@ fn d53_clock_bracket_calls_only_the_bounded_capture_function() {
         "fn capture_compact_diplomacy_intel_operatives_live_snapshot<'t>(",
     ));
     assert!(capture.contains("plan.capture_with("));
-    // The per-page copy is its own function so the benchmark measures the
-    // production path: the region gate, then the SEH copy, under one budget.
-    assert!(capture.contains("domain53_gated_page_copy("));
-    let gated = code_only(item_body(&source, "fn domain53_gated_page_copy("));
-    assert!(gated.contains("seh_read_exact("));
-    assert!(gated.contains("domain53_page_region("));
-    assert!(gated.contains("gate.queries >= gate.budget"));
+    // The gate query and the batch copy are their own functions so the
+    // benchmark measures the production path, and the query budget the
+    // bracket runs under is the planner's OS-region cap.
+    assert!(capture.contains("domain53_snapshot_os_region,"));
+    assert!(capture.contains("domain53_batch_copy,"));
+    assert!(capture.contains("DOMAIN53_SNAPSHOT_MAX_OS_REGIONS as u32,"));
+    let gated = code_only(item_body(&source, "fn domain53_batch_copy("));
+    assert!(gated.contains("seh_guarded_copy_specs("));
     // The gate's region predicate is the live reader's (`readable_region`).
-    let region = code_only(item_body(&source, "fn domain53_page_region("));
-    assert!(region.contains("query_region(addr)?"));
+    let region = code_only(item_body(&source, "fn domain53_snapshot_os_region("));
+    assert!(region.contains("query_region(address as usize)?"));
     assert!(region.contains("region.state == MEM_COMMIT"));
     assert!(region.contains("(region.protect & (PAGE_NOACCESS | PAGE_GUARD)) == 0"));
     let capture = format!("{capture}
@@ -235,7 +236,8 @@ fn a30_reads_only_through_the_selected_domain53_memory() {
 // receipt and the residency law below.
 
 const BENCH_PAGE_BYTES: usize = diplomacy53::snapshot_memory::DOMAIN53_SNAPSHOT_PAGE_BYTES;
-const BENCH_MAX_PAGES: usize = diplomacy53::snapshot_memory::DOMAIN53_SNAPSHOT_MAX_REGIONS;
+const BENCH_MAX_REGIONS: usize = diplomacy53::snapshot_memory::DOMAIN53_SNAPSHOT_MAX_REGIONS;
+const BENCH_MAX_BYTES: usize = diplomacy53::snapshot_memory::DOMAIN53_SNAPSHOT_MAX_BYTES;
 const BENCH_MAX_OS_REGIONS: usize = diplomacy53::snapshot_memory::DOMAIN53_SNAPSHOT_MAX_OS_REGIONS;
 
 #[link(name = "kernel32")]
@@ -283,11 +285,13 @@ fn resident_pages(base: usize, bytes: usize) -> usize {
     resident_pages_at(&addresses)
 }
 
-/// A plan over `reads`, allowed up to `max_pages` pages (so a shape ABOVE the
-/// production caps can be measured against them).
+
+/// A plan over `reads`, allowed up to `max_regions` ranges and `max_bytes`
+/// bytes (so a shape ABOVE the production caps can be measured against them).
 fn bench_plan_for(
     reads: Vec<(u64, usize)>,
-    max_pages: usize,
+    max_regions: usize,
+    max_bytes: usize,
 ) -> diplomacy53::snapshot_memory::Domain53SnapshotPlan {
     let trace = diplomacy53::snapshot_memory::Domain53AccessTrace {
         reads: reads
@@ -303,10 +307,34 @@ fn bench_plan_for(
     diplomacy53::snapshot_memory::Domain53SnapshotPlan::from_trace_with_limits(
         1,
         trace,
-        max_pages,
-        max_pages * BENCH_PAGE_BYTES,
+        max_regions,
+        max_bytes,
     )
     .expect("a plan inside the given limits")
+}
+
+/// `count` reads of `len` bytes, `per_page` of them on each 4 KiB page from
+/// `base` up: the SPATIAL shape a d53 plan actually has. Capture e2e_02's
+/// worst hour put 393,117 merged ranges of ~68 bytes on 125,083 distinct
+/// pages, so the copy walks a wide span and touches a fraction of it -- which
+/// is what the cache and the TLB, not the byte total, charge for.
+fn scattered_reads(base: u64, count: usize, len: usize, per_page: usize) -> Vec<(u64, usize)> {
+    let stride = (BENCH_PAGE_BYTES / per_page) as u64;
+    assert!(
+        stride > diplomacy53::snapshot_memory::DOMAIN53_SNAPSHOT_MERGE_GAP_BYTES + len as u64,
+        "the reads must not merge into one range"
+    );
+    (0..count)
+        .map(|ordinal| {
+            let page = (ordinal / per_page) as u64;
+            let slot = (ordinal % per_page) as u64;
+            (base + page * BENCH_PAGE_BYTES as u64 + slot * stride, len)
+        })
+        .collect()
+}
+
+fn pages_for(count: usize, per_page: usize) -> usize {
+    count.div_ceil(per_page)
 }
 
 /// One committed read-write region of `pages` pages, filled with `fill`.
@@ -368,13 +396,12 @@ fn spin_for(ns: u64) -> u64 {
 /// moments), and the per-pair difference.
 struct BenchShape {
     name: String,
-    pages: usize,
+    regions: usize,
+    bytes: usize,
     queries: u32,
     load_threads: usize,
     arena_resident_min: usize,
     arena_resident_max: usize,
-    source_resident_min: usize,
-    source_resident_max: usize,
     copy_ns: Vec<u64>,
     spin_ns: Vec<u64>,
     /// Per-pair `copy - spin`, sorted.
@@ -401,17 +428,15 @@ impl BenchShape {
     fn print(&self) {
         let pairs = self.paired_delta_ns.len();
         eprintln!(
-            "D53_GATED_COPY_BENCH shape={} pages={} bytes={} queries={} samples={} load_threads={} arena_resident_before_min={} arena_resident_before_max={} source_resident_before_min={} source_resident_before_max={} p50_ns={} p95_ns={} max_ns={} spin_p50_ns={} spin_p95_ns={} spin_max_ns={} paired_delta_median_ns={} paired_delta_p95_ns={} paired_delta_max_ns={} copy_quantum_events={} spin_quantum_events={} copy_over_bar={} spin_over_bar={}",
+            "D53_GATED_COPY_BENCH shape={} regions={} bytes={} queries={} samples={} load_threads={} arena_resident_before_min={} arena_resident_before_max={} p50_ns={} p95_ns={} max_ns={} spin_p50_ns={} spin_p95_ns={} spin_max_ns={} paired_delta_median_ns={} paired_delta_p95_ns={} paired_delta_max_ns={} copy_quantum_events={} spin_quantum_events={} copy_over_bar={} spin_over_bar={}",
             self.name,
-            self.pages,
-            self.pages * BENCH_PAGE_BYTES,
+            self.regions,
+            self.bytes,
             self.queries,
             self.copy_ns.len(),
             self.load_threads,
             self.arena_resident_min,
             self.arena_resident_max,
-            self.source_resident_min,
-            self.source_resident_max,
             self.copy_ns[self.copy_ns.len() / 2],
             p95_nearest_rank(&self.copy_ns),
             self.copy_ns[self.copy_ns.len() - 1],
@@ -429,43 +454,49 @@ impl BenchShape {
     }
 }
 
-/// `samples` PAIRS of (spin of `spin_ns`, then `before_copy`, then one bracket
-/// of the production copy over `plan`) under whatever load is running, so the
-/// spin and the copy populations saw the same machine.
+/// One bracket exactly as production runs it: the plan's gate over
+/// `domain53_snapshot_os_region`, the batched SEH copy, one query budget.
+fn bench_capture(
+    plan: &mut diplomacy53::snapshot_memory::Domain53SnapshotPlan,
+    budget: u32,
+) -> diplomacy53::snapshot_memory::Domain53SnapshotCaptureReceipt {
+    plan.capture_with(domain53_snapshot_os_region, domain53_batch_copy, budget)
+}
+
+/// `samples` PAIRS of (spin of `spin_ns`, then one bracket of the production
+/// copy over `plan`) under whatever load is running, so the spin and the copy
+/// populations saw the same machine.
 fn bench_measure(
     name: String,
     plan: &mut diplomacy53::snapshot_memory::Domain53SnapshotPlan,
-    expected_pages: usize,
+    expected_regions: usize,
     expected_queries: u32,
     samples: usize,
     load_threads: usize,
     spin_ns: u64,
-    mut before_copy: impl FnMut(),
 ) -> BenchShape {
-    let (arena_base, arena_bytes) = plan.page_buffer_span();
-    let sources: Vec<usize> = plan.region_specs().map(|spec| spec.address as usize).collect();
+    let (arena_base, arena_bytes) = plan.arena_span();
+    let expected_bytes = plan.byte_count();
     let mut copy_ns = Vec::with_capacity(samples);
     let mut spin_samples = Vec::with_capacity(samples);
     let mut deltas = Vec::with_capacity(samples);
     let (mut arena_min, mut arena_max) = (usize::MAX, 0usize);
-    let (mut source_min, mut source_max) = (usize::MAX, 0usize);
     for _ in 0..samples {
         let spin = spin_for(spin_ns);
-        before_copy();
         let arena = resident_pages(arena_base, arena_bytes);
-        let source = resident_pages_at(&sources);
         arena_min = arena_min.min(arena);
         arena_max = arena_max.max(arena);
-        source_min = source_min.min(source);
-        source_max = source_max.max(source);
-        let mut gate = Domain53PageGate::new(expected_queries.max(1));
         let started = Instant::now();
-        let receipt = plan.capture_with(|address, out| domain53_gated_page_copy(&mut gate, address, out));
+        let receipt = bench_capture(plan, expected_queries.max(1));
         let copy = started.elapsed().as_nanos() as u64;
         assert_eq!(receipt.failure_region_ordinal, None);
-        assert_eq!(receipt.copied_region_count as usize, expected_pages);
-        assert!(!gate.exhausted);
-        assert_eq!(gate.queries, expected_queries, "{name}: one query per OS region");
+        assert_eq!(receipt.copied_region_count as usize, expected_regions);
+        assert!(!receipt.gate_budget_exhausted);
+        assert_eq!(
+            receipt.gate_queries,
+            expected_queries.max(1),
+            "{name}: one query per OS region"
+        );
         copy_ns.push(copy);
         spin_samples.push(spin);
         deltas.push(copy as i64 - spin as i64);
@@ -475,13 +506,12 @@ fn bench_measure(
     deltas.sort_unstable();
     BenchShape {
         name,
-        pages: expected_pages,
+        regions: expected_regions,
+        bytes: expected_bytes,
         queries: expected_queries,
         load_threads,
         arena_resident_min: arena_min,
         arena_resident_max: arena_max,
-        source_resident_min: source_min,
-        source_resident_max: source_max,
         copy_ns,
         spin_ns: spin_samples,
         paired_delta_ns: deltas,
@@ -552,90 +582,73 @@ impl Drop for BackgroundLoad {
     }
 }
 
-/// The worst LEGAL plan at `pages` pages and `os_regions` OS regions:
-/// `os_regions - 1` single-page regions plus one region holding every
-/// remaining page, so the bracket spends every query and every copy the two
-/// caps allow.
-fn worst_legal_plan(
-    pages: usize,
-    os_regions: usize,
-    singles: &[SourceRegion],
-) -> (diplomacy53::snapshot_memory::Domain53SnapshotPlan, SourceRegion) {
-    let singles = &singles[..os_regions - 1];
-    let rest = SourceRegion::new(pages - singles.len(), 0xc3);
-    let mut reads: Vec<(u64, usize)> = singles.iter().map(|page| (page.address(), 8)).collect();
-    reads.push((rest.address(), rest.bytes()));
-    let plan = bench_plan_for(reads, pages);
-    assert_eq!(plan.region_count(), pages);
-    assert_eq!(domain53_os_region_count(&plan), os_regions);
-    (plan, rest)
-}
+/// The measured production demand: capture e2e_02's worst refused hour,
+/// 393,117 merged ranges totalling 26,609,589 bytes over 125,083 pages.
+const MEASURED_RANGES: usize = 393_117;
+const MEASURED_RANGE_BYTES: usize = 68;
+const MEASURED_RANGES_PER_PAGE: usize = 3;
+/// What the page-granular planner turned that demand into, and refused.
+const SUPERSEDED_PAGE_PLAN_PAGES: usize = 125_083;
 
-/// The bracket copy as production runs it (`domain53_gated_page_copy`: gate
-/// query + SEH copy per page, into the plan's page arena), PAIRED: every copy
-/// sample is preceded by a bracket-length busy spin (the shape's unloaded
-/// copy p50) under the same load instance, so what the machine charged a
-/// thread of that length in the same moments is on the same line. Shapes:
-///   one_region        the page cap in ONE operating-system region (1 query)
-///   distinct_regions  the OS-region cap, every page its own region
-///   worst_legal_<N>   the combined legal maximum at N pages with N/2 OS
-///                     regions, for N = 8,192 (the previous cap), 4,096 (the
-///                     cap) and 2,048, so the receipt supports the cap it
-///                     names and the ones either side of it
-///   p4_demand_1041    the P4 demand lower bound (runs/perf_w2_d53/
-///                     DEMAND_MEASUREMENT.json), every page its own region
-/// each worst_legal / p4_demand shape in these conditions:
-///   (none)            the fleet running as it was
-///   _compute_loaded   available_parallelism - 1 cache-resident hash threads
-///                     (the lane-fleet stand-in: the acceptance load)
-///   _bandwidth_saturated  the same thread count copying 32 MiB buffers
-///                     (the memory bus saturated: a stress bound)
-///   _cold             the process working set emptied before EVERY copy:
-///                     source pages and arena non-resident (both asserted
-///                     trimmed), the bound for a plan that waited for a frame
-///   _cold_source_only the same with the arena re-touched first: the
-///                     difference to _cold is the arena's own share
-/// p95 is nearest-rank over the sorted samples; max is the largest sample;
-/// spin_* are the same statistics of the paired spins; copy_over_bar /
-/// spin_over_bar count the samples above the 16 ms bar in each population
-/// (the max-class comparison: does the bracket cross the bar more often
-/// than a same-length thread doing nothing?).
+/// The bracket copy measured as production runs it (the plan's VirtualQuery
+/// gate plus `domain53_batch_copy`, one SEH frame per confirmed region, into
+/// the plan's arena), PAIRED: every copy sample is preceded by a
+/// bracket-length busy spin under the same load instance, so what the machine
+/// charged a thread of that length in the same moments is on the same line.
+/// Shapes:
+///   measured_demand      capture e2e_02's worst hour: 393,117 ranges of 68
+///                        bytes, 3 to a page, in ONE operating-system region
+///   measured_demand_fragmented  the same ranges when the layout costs the
+///                        whole query budget
+///   superseded_page_plan the 125,083 pages / 512 MiB the page-granular
+///                        planner asked for on that same hour and was refused
+///   cap_worst_legal      the worst LEGAL plan at the caps: the region cap,
+///                        the byte cap and the OS-region cap all met at once,
+///                        at the measured spatial density
+/// each in these conditions:
+///   (none)               the fleet running as it was
+///   _compute_loaded      available_parallelism - 1 cache-resident hash
+///                        threads (the lane-fleet stand-in: the acceptance
+///                        load)
+///   _bandwidth_saturated the same thread count copying 32 MiB buffers (the
+///                        memory bus saturated: a stress bound)
+///
+/// The COLD conditions the page-plan receipt carried are not repeated. The
+/// sources are the game's own live heap, which the plan walk read end to end
+/// on its own thread milliseconds earlier, and the arena is committed and
+/// touched when the plan is built -- proven by
+/// `d53_plan_arena_is_page_aligned_and_resident_when_built`, not by a timing.
 ///
 /// Closing with D53_ZERO_WORK_PROBE: 50 us spins, 1,000 of them, under no
 /// load and under each load. Its over-bar count and max are what the
 /// machine does to a bracket of NO work; under CPU saturation they are the
 /// floor no bracket can get under.
 ///
-/// IGNORED in the suite: it saturates every core and empties the process
-/// working set, which perturbs every test running beside it (and they it).
+/// IGNORED in the suite: it saturates every core and holds over a gigabyte of
+/// source pages, which perturbs every test running beside it (and they it).
 /// Run it alone: `cargo test -p collector --lib -- --ignored
-/// d53_gated_page_copy_bench_receipt --nocapture`.
+/// d53_gated_copy_bench_receipt --nocapture`.
 #[test]
 #[ignore]
-fn d53_gated_page_copy_bench_receipt() {
-    const UNLOADED_PAIRS: usize = 200;
-    const LOADED_PAIRS: usize = 1_000;
-    const COLD_PAIRS: usize = 20;
-    const WARMUP: usize = 9;
-    const P4_DEMAND_LOWER_BOUND_PAGES: usize = 1_041;
-    const PREVIOUS_CAP_PAGES: usize = 8_192;
+fn d53_gated_copy_bench_receipt() {
+    const UNLOADED_PAIRS: usize = 60;
+    const LOADED_PAIRS: usize = 120;
+    const WARMUP: usize = 5;
+    const ZERO_WORK_PAIRS: usize = 1_000;
 
     let load_threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
         .saturating_sub(1)
         .max(1);
-    let singles: Vec<SourceRegion> = (0..PREVIOUS_CAP_PAGES / 2)
-        .map(|ordinal| SourceRegion::new(1, ordinal as u8))
-        .collect();
 
     // The spin length of a shape: the median of a few unloaded copies.
-    let spin_length = |plan: &mut diplomacy53::snapshot_memory::Domain53SnapshotPlan, queries: u32| {
+    let spin_length = |plan: &mut diplomacy53::snapshot_memory::Domain53SnapshotPlan,
+                       queries: u32| {
         let mut warm: Vec<u64> = (0..WARMUP)
             .map(|_| {
-                let mut gate = Domain53PageGate::new(queries.max(1));
                 let started = Instant::now();
-                plan.capture_with(|address, out| domain53_gated_page_copy(&mut gate, address, out));
+                bench_capture(plan, queries.max(1));
                 started.elapsed().as_nanos() as u64
             })
             .collect();
@@ -645,10 +658,10 @@ fn d53_gated_page_copy_bench_receipt() {
 
     let run_conditions = |name: &str,
                           plan: &mut diplomacy53::snapshot_memory::Domain53SnapshotPlan,
-                          pages: usize,
+                          regions: usize,
                           queries: u32| {
         let spin_ns = spin_length(plan, queries);
-        bench_measure(name.to_string(), plan, pages, queries, UNLOADED_PAIRS, 0, spin_ns, || {}).print();
+        bench_measure(name.to_string(), plan, regions, queries, UNLOADED_PAIRS, 0, spin_ns).print();
         for (suffix, kind) in [
             ("_compute_loaded", LoadKind::Compute),
             ("_bandwidth_saturated", LoadKind::Bandwidth),
@@ -657,116 +670,117 @@ fn d53_gated_page_copy_bench_receipt() {
             bench_measure(
                 format!("{name}{suffix}"),
                 plan,
-                pages,
+                regions,
                 queries,
                 LOADED_PAIRS,
                 load_threads,
                 spin_ns,
-                || {},
             )
             .print();
         }
-        let cold = bench_measure(
-            format!("{name}_cold"),
-            plan,
-            pages,
-            queries,
-            COLD_PAIRS,
-            0,
-            spin_ns,
-            || assert_ne!(unsafe { K32EmptyWorkingSet(GetCurrentProcess()) }, 0),
-        );
-        assert!(
-            cold.arena_resident_max < pages / 8 && cold.source_resident_max < pages / 8,
-            "{name}_cold must start from a trimmed arena AND trimmed sources, saw {} / {} resident pages",
-            cold.arena_resident_max,
-            cold.source_resident_max
-        );
-        cold.print();
-        let (arena_base, arena_bytes) = plan.page_buffer_span();
-        let source_only = bench_measure(
-            format!("{name}_cold_source_only"),
-            plan,
-            pages,
-            queries,
-            COLD_PAIRS,
-            0,
-            spin_ns,
-            || {
-                assert_ne!(unsafe { K32EmptyWorkingSet(GetCurrentProcess()) }, 0);
-                for offset in (0..arena_bytes).step_by(BENCH_PAGE_BYTES) {
-                    // SAFETY: the plan's own arena, committed and writable.
-                    unsafe { ptr::write_volatile((arena_base + offset) as *mut u8, 0) };
-                }
-            },
-        );
-        assert_eq!(source_only.arena_resident_min, pages, "the arena is resident again");
-        source_only.print();
     };
 
-    // one_region: the page cap inside one committed region.
+    // measured_demand and superseded_page_plan share one source region: the
+    // same hour, planned the two ways.
     {
-        let one = SourceRegion::new(BENCH_MAX_PAGES, 0x5a);
-        let mut plan = bench_plan_for(vec![(one.address(), one.bytes())], BENCH_MAX_PAGES);
-        assert_eq!(plan.region_count(), BENCH_MAX_PAGES);
-        let spin_ns = spin_length(&mut plan, 1);
-        bench_measure("one_region".to_string(), &mut plan, BENCH_MAX_PAGES, 1, UNLOADED_PAIRS, 0, spin_ns, || {})
-            .print();
-        let copied =
-            diplomacy53::extractor::Domain53Memory::read_bytes(&plan.view(), one.address(), 8)
-                .expect("captured image");
-        assert_eq!(copied, [0x5a; 8]);
-    }
-
-    // distinct_regions: the OS-region cap, one reservation per page.
-    {
+        let pages = pages_for(MEASURED_RANGES, MEASURED_RANGES_PER_PAGE);
+        let source = SourceRegion::new(pages, 0x5a);
         let mut plan = bench_plan_for(
-            singles[..BENCH_MAX_OS_REGIONS].iter().map(|page| (page.address(), 8)).collect(),
-            BENCH_MAX_OS_REGIONS,
+            scattered_reads(
+                source.address(),
+                MEASURED_RANGES,
+                MEASURED_RANGE_BYTES,
+                MEASURED_RANGES_PER_PAGE,
+            ),
+            MEASURED_RANGES,
+            MEASURED_RANGES * MEASURED_RANGE_BYTES,
         );
-        assert_eq!(plan.region_count(), BENCH_MAX_OS_REGIONS);
-        assert_eq!(domain53_os_region_count(&plan), BENCH_MAX_OS_REGIONS);
-        let spin_ns = spin_length(&mut plan, BENCH_MAX_OS_REGIONS as u32);
-        bench_measure(
-            "distinct_regions".to_string(),
-            &mut plan,
-            BENCH_MAX_OS_REGIONS,
-            BENCH_MAX_OS_REGIONS as u32,
-            UNLOADED_PAIRS,
-            0,
-            spin_ns,
-            || {},
-        )
-        .print();
+        assert_eq!(plan.region_count(), MEASURED_RANGES);
+        assert_eq!(
+            plan.count_os_regions(domain53_snapshot_os_region),
+            1,
+            "one reservation, one region"
+        );
+        run_conditions("measured_demand", &mut plan, MEASURED_RANGES, 1);
+        drop(plan);
+
+        let mut pages_plan = bench_plan_for(
+            vec![(source.address(), SUPERSEDED_PAGE_PLAN_PAGES * BENCH_PAGE_BYTES)],
+            1,
+            SUPERSEDED_PAGE_PLAN_PAGES * BENCH_PAGE_BYTES,
+        );
+        run_conditions("superseded_page_plan", &mut pages_plan, 1, 1);
     }
 
-    // The worst legal plan at the previous cap, the cap, and half the cap.
-    for pages in [PREVIOUS_CAP_PAGES, BENCH_MAX_PAGES, BENCH_MAX_PAGES / 2] {
-        let os_regions = pages / 2;
-        let (mut plan, _rest) = worst_legal_plan(pages, os_regions, &singles);
-        run_conditions(&format!("worst_legal_{pages}"), &mut plan, pages, os_regions as u32);
-    }
-    assert_eq!(BENCH_MAX_OS_REGIONS, BENCH_MAX_PAGES / 2, "the shapes above measure the caps");
-
-    // The P4 demand lower bound, every page its own region (the most queries
-    // that demand can cost).
+    // measured_demand_fragmented: the same range count and bytes when the
+    // first BENCH_MAX_OS_REGIONS - 1 ranges each sit in their own reservation,
+    // so the bracket spends its whole query budget.
     {
-        let mut plan = bench_plan_for(
-            singles[..P4_DEMAND_LOWER_BOUND_PAGES].iter().map(|page| (page.address(), 8)).collect(),
-            P4_DEMAND_LOWER_BOUND_PAGES,
+        let singles: Vec<SourceRegion> = (0..BENCH_MAX_OS_REGIONS - 1)
+            .map(|ordinal| SourceRegion::new(1, ordinal as u8))
+            .collect();
+        let rest = SourceRegion::new(
+            pages_for(MEASURED_RANGES - singles.len(), MEASURED_RANGES_PER_PAGE),
+            0xc3,
         );
+        let mut reads: Vec<(u64, usize)> = singles
+            .iter()
+            .map(|page| (page.address(), MEASURED_RANGE_BYTES))
+            .collect();
+        reads.extend(scattered_reads(
+            rest.address(),
+            MEASURED_RANGES - singles.len(),
+            MEASURED_RANGE_BYTES,
+            MEASURED_RANGES_PER_PAGE,
+        ));
+        let mut plan = bench_plan_for(
+            reads,
+            MEASURED_RANGES,
+            MEASURED_RANGES * MEASURED_RANGE_BYTES,
+        );
+        let queries = plan.count_os_regions(domain53_snapshot_os_region);
+        assert_eq!(queries, BENCH_MAX_OS_REGIONS, "the whole query budget");
         run_conditions(
-            "p4_demand_1041",
+            "measured_demand_fragmented",
             &mut plan,
-            P4_DEMAND_LOWER_BOUND_PAGES,
-            P4_DEMAND_LOWER_BOUND_PAGES as u32,
+            MEASURED_RANGES,
+            queries as u32,
         );
+    }
+
+    // cap_worst_legal: the region cap, the byte cap and the OS-region cap in
+    // one plan, at the measured spatial density.
+    {
+        let range_bytes = BENCH_MAX_BYTES / BENCH_MAX_REGIONS;
+        let singles: Vec<SourceRegion> = (0..BENCH_MAX_OS_REGIONS - 1)
+            .map(|ordinal| SourceRegion::new(1, ordinal as u8))
+            .collect();
+        let scattered = BENCH_MAX_REGIONS - singles.len();
+        let rest = SourceRegion::new(pages_for(scattered, MEASURED_RANGES_PER_PAGE), 0x3c);
+        let mut reads: Vec<(u64, usize)> = singles
+            .iter()
+            .map(|page| (page.address(), range_bytes))
+            .collect();
+        reads.extend(scattered_reads(
+            rest.address(),
+            scattered,
+            range_bytes,
+            MEASURED_RANGES_PER_PAGE,
+        ));
+        let mut plan = bench_plan_for(reads, BENCH_MAX_REGIONS, BENCH_MAX_BYTES);
+        assert_eq!(plan.region_count(), BENCH_MAX_REGIONS);
+        assert!(plan.byte_count() <= BENCH_MAX_BYTES);
+        let queries = plan.count_os_regions(domain53_snapshot_os_region);
+        assert_eq!(queries, BENCH_MAX_OS_REGIONS);
+        run_conditions("cap_worst_legal", &mut plan, BENCH_MAX_REGIONS, queries as u32);
     }
 
     // The zero-work probe: what the machine does to a bracket of no work.
     const ZERO_WORK_SPIN_NS: u64 = 50_000;
     let zero_work = |condition: &str, load_threads: usize| {
-        let mut sorted: Vec<u64> = (0..LOADED_PAIRS).map(|_| spin_for(ZERO_WORK_SPIN_NS)).collect();
+        let mut sorted: Vec<u64> = (0..ZERO_WORK_PAIRS)
+            .map(|_| spin_for(ZERO_WORK_SPIN_NS))
+            .collect();
         sorted.sort_unstable();
         eprintln!(
             "D53_ZERO_WORK_PROBE condition={condition} samples={} load_threads={load_threads} spin_ns={ZERO_WORK_SPIN_NS} p50_ns={} p95_ns={} max_ns={} over_bar={} quantum_events={}",
@@ -788,34 +802,35 @@ fn d53_gated_page_copy_bench_receipt() {
     }
 }
 
-/// Codex round 3, N1: the plan's page buffers are one page-aligned arena,
-/// every page of which is committed and resident the moment the plan is
-/// built (on the plan-walk thread), so the bracket's first copy faults
-/// nothing in. Proven against the production plan at the page cap with the
+/// The plan's arena is one page-aligned allocation, every page of which is
+/// committed and resident the moment the plan is built (on the plan-walk
+/// thread), so the bracket's first copy faults nothing in. Proven with the
 /// working-set query the kernel answers, not by inspection.
 #[test]
-fn d53_plan_page_buffers_are_page_aligned_and_resident_when_built() {
-    let source = SourceRegion::new(BENCH_MAX_PAGES, 0x11);
-    let mut plan = bench_plan_for(vec![(source.address(), source.bytes())], BENCH_MAX_PAGES);
-    let (base, bytes) = plan.page_buffer_span();
+fn d53_plan_arena_is_page_aligned_and_resident_when_built() {
+    const RANGES: usize = 4_096;
+    const RANGE_BYTES: usize = 68;
+    let source = SourceRegion::new(pages_for(RANGES, MEASURED_RANGES_PER_PAGE), 0x11);
+    let mut plan = bench_plan_for(
+        scattered_reads(source.address(), RANGES, RANGE_BYTES, MEASURED_RANGES_PER_PAGE),
+        RANGES,
+        RANGES * RANGE_BYTES,
+    );
+    let (base, bytes) = plan.arena_span();
     assert_eq!(base % BENCH_PAGE_BYTES, 0, "page-aligned arena");
-    assert_eq!(bytes, BENCH_MAX_PAGES * BENCH_PAGE_BYTES);
+    assert_eq!(bytes, RANGES * RANGE_BYTES);
     assert_eq!(
         resident_pages(base, bytes),
-        BENCH_MAX_PAGES,
+        bytes / BENCH_PAGE_BYTES,
         "every destination page resident before the first bracket"
     );
-    // The bracket copies exactly into that span and nowhere else.
-    let mut gate = Domain53PageGate::new(BENCH_MAX_OS_REGIONS as u32);
-    let mut lowest = usize::MAX;
-    let mut highest = 0usize;
-    let receipt = plan.capture_with(|address, out| {
-        let at = out.as_ptr() as usize;
-        assert_eq!(at % BENCH_PAGE_BYTES, 0, "a page buffer starts on a page");
-        lowest = lowest.min(at);
-        highest = highest.max(at + out.len());
-        domain53_gated_page_copy(&mut gate, address, out)
-    });
-    assert_eq!(receipt.copied_region_count as usize, BENCH_MAX_PAGES);
-    assert_eq!((lowest, highest), (base, base + bytes));
+    // The arena holds the ranges end to end, and the bracket fills all of it.
+    let specs = plan.copy_specs();
+    assert_eq!(specs[0].dst_offset, 0);
+    let last = specs[specs.len() - 1];
+    assert_eq!(last.dst_offset + last.len, bytes as u64);
+    let receipt = bench_capture(&mut plan, BENCH_MAX_OS_REGIONS as u32);
+    assert_eq!(receipt.copied_region_count as usize, RANGES);
+    assert_eq!(receipt.copied_byte_count as usize, bytes);
+    assert_eq!(receipt.gate_queries, 1, "one reservation, one query");
 }
