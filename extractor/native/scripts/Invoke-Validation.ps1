@@ -373,23 +373,10 @@ function Invoke-ShippingTests {
         [switch]$PlanOnly
     )
 
-    # Deny-list (lane UG, 2026-08-26): bin targets are planned by DEFAULT so
-    # their #[cfg(test)] modules run at landing (525 tests were invisible under
-    # the old allow-list). Every exclusion added here must carry its reason.
-    $excludedShippingBins = @(
-        # Feature-gated bins (cargo metadata required-features): unbuildable in
-        # the plain landing plan. Complete set as of 2026-08-26; re-derive with
-        # cargo metadata if a new feature-gated bin appears.
-        'collector_record_evidence',   # evidence-client-driving
-        'gq_bad_hour',                 # gq-bad-hour
-        'gz_interior_holes',           # gz-interior-holes
-        'ha_entry_confinement',        # ha-entry-confinement
-        'hr_truncated_prefix',         # hr-truncated-prefix
-        'pv_repeat_gate_reencode',     # pv-repeat-gate
-        'pv_repeat_diag',              # pv-repeat-gate
-        'pv_hour_dump',                # pv-repeat-gate
-        'wo_xmap13_gate_scan'          # pv-repeat-gate (lane WO, 2026-09-01)
-    )
+    # Bin targets are planned by DEFAULT so their #[cfg(test)] modules run at
+    # landing (lane UG, 2026-08-26: 525 tests were invisible under the old
+    # allow-list). Feature-gated bins are unbuildable in the plain landing plan
+    # and are excluded from cargo metadata's required-features, never by name.
     $plans = @()
     foreach ($root in $Topology.Roots) {
         $packages = @($root.Packages | Where-Object {
@@ -410,7 +397,8 @@ function Invoke-ShippingTests {
                 if ($kinds -contains 'test' -and (Test-ShippingTestTarget ([string]$target.name))) {
                     [void]$tests.Add([string]$target.name)
                 }
-                if ($kinds -contains 'bin' -and $excludedShippingBins -notcontains [string]$target.name) {
+                $gated = $target.PSObject.Properties['required-features']
+                if ($kinds -contains 'bin' -and ($null -eq $gated -or @($gated.Value).Count -eq 0)) {
                     [void]$bins.Add([string]$target.name)
                 }
             }
