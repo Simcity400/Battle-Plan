@@ -49,6 +49,22 @@
 //! index and the whole-cache SHA are in NEITHER lane -- v3 would still owe all
 //! of them, and the report says so rather than quietly banking their absence.
 //!
+//! # Seam mode (stage 1 of the v3 production fold)
+//!
+//! With `DQ_V3_SEAM=1` the fold's reducer seam is enabled for `countries`,
+//! `divisions`, `states` and `provinces`: the reducers name what they changed
+//! and the fold hands this instrument the hour's grain upserts and removals
+//! (see `recorder_host::world_fold::v3_seam`). For those sections the adapter
+//! does not run and the v2 build span is not charged; what is charged instead
+//! is the seam itself -- the reducers' marks and the hour-end render of the
+//! marked members -- so the section's cost is `api + seam`, a MEASURED number
+//! and not a band. The report's `kill_switch` block projects full conversion
+//! from that: `credited` charges every seam section its seam cost and every
+//! other section its adapter-inclusive upper bound; `best_case` charges the
+//! other sections their api floor, which is what they would cost if the seam
+//! reached them for nothing. The oracle is unchanged: the v3 projection of
+//! every section is compared with the v2 bytes every hour.
+//!
 //! # A band names the file it opened
 //!
 //! Every report carries `executable_path` and `executable_sha256`: the pathname
@@ -67,14 +83,14 @@
 //! reports with different digests are two different experiments, whatever their
 //! fields say.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path as FsPath;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use fold_v3::{decompose_ref, Path, RootKind, SectionSpec, SectionState, Shape};
 use snapshot::canon_value::CanonValue;
-use snapshot::replay_cache::measure_section_patch_bytes;
+use snapshot::replay_cache::{encode_section_patch_bytes, measure_section_patch_bytes, SectionPatchNames};
 use snapshot::sha256::Sha256;
 
 use crate::{HourCursor, IndexSourceDescriptor, StreamIdentityMode, WorldHour};
@@ -309,6 +325,10 @@ struct Lane {
     /// The fold's own `build_snapshot` span for this section, charged into the
     /// upper bound.
     build: Duration,
+    /// Seam mode: the fold's hour-end render of the reducers' marks for this
+    /// section. Replaces `v3_adapter` and `build` in what the section is
+    /// charged.
+    v3_seam: Duration,
 }
 
 #[derive(Default)]
@@ -347,6 +367,57 @@ struct SectionReport {
     /// the mean.
     worst_amplification: f64,
     worst_amplification_hour: i64,
+    /// Seam mode: whether this section is served by the seam, and what the seam
+    /// rendered for it over the measured hours.
+    seam: bool,
+    seam_rows_rendered: u64,
+    seam_members_rendered: u64,
+    seam_rendered_bytes: u64,
+    seam_removals: u64,
+    seam_upserts: u64,
+    /// The reducers' own write set (rows; for countries, (row, member) pairs)
+    /// before the seam widened it, summed over the measured hours.
+    seam_reducer_marked_rows: u64,
+    seam_reducer_marked_members: u64,
+    /// Measured hours in which the seam rendered every row of the section.
+    seam_hours_widened_all: u64,
+}
+
+/// Seam sections: in seam mode a missing seam output is refused, never priced
+/// through the adapter (a seam that stopped emitting must not pass on it).
+const SEAM_SECTIONS: &[&str] = &[
+    recorder_host::world_fold::v3_seam::V3_SECTION_COUNTRIES,
+    recorder_host::world_fold::v3_seam::V3_SECTION_DIVISIONS,
+    recorder_host::world_fold::v3_seam::V3_SECTION_STATES,
+    recorder_host::world_fold::v3_seam::V3_SECTION_PROVINCES,
+];
+
+/// What feeds a section this hour. The only constructor is [`seam_feed`], so
+/// the pricing loop cannot reach the adapter for a seam section in seam mode.
+#[derive(Debug)]
+enum Feed {
+    Seam(recorder_host::world_fold::V3SectionHour),
+    Adapter,
+}
+
+fn seam_feed(
+    seam_mode: bool,
+    section: &str,
+    sections: &mut BTreeMap<String, recorder_host::world_fold::V3SectionHour>,
+    hour_index: i64,
+) -> Result<Feed, String> {
+    match sections.remove(section) {
+        Some(seam) => Ok(Feed::Seam(seam)),
+        None if seam_mode && SEAM_SECTIONS.contains(&section) => Err(format!(
+            "seam mode: the fold produced no seam output for section {section} on hour {hour_index}"
+        )),
+        None => Ok(Feed::Adapter),
+    }
+}
+
+/// Dropping an upsert equal to the standing grain would prove nothing.
+fn negative_control_should_drop(standing: Option<&[u8]>, fresh: &[u8]) -> bool {
+    standing.is_some_and(|standing| standing != fresh)
 }
 
 struct SectionRun {
@@ -356,12 +427,22 @@ struct SectionRun {
     replica: SectionState,
     previous: Option<CanonValue>,
     report: SectionReport,
+    patch_names: SectionPatchNames,
+}
+
+/// `DQ_V3_BYTES_DIR=<dir>`: every hour's v2 patch record and v3 delta, per
+/// section, written as `<dir>/<section>_<hour>.v2` / `.v3` for the size study.
+fn bytes_dir() -> Option<&'static str> {
+    static DIR: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| std::env::var("DQ_V3_BYTES_DIR").ok())
+        .as_deref()
 }
 
 /// One hour's v2 terms for one section.
 struct V2Hour {
     bytes: Vec<u8>,
     patch_bytes: usize,
+    patch: Option<Vec<u8>>,
 }
 
 /// Price the five whole-document terms v2 pays, restricted to one section:
@@ -394,22 +475,95 @@ fn price_v2(
     std::hint::black_box(digest);
 
     let mut patch_bytes = 0usize;
+    let mut patch = None;
     if let Some(previous) = &run.previous {
         let started = Instant::now();
         patch_bytes = measure_section_patch_bytes(previous, section)
             .map_err(|e| format!("section {} patch: {e}", run.name))?;
         if measure {
-        run.report.lane.v2_diff_encode += started.elapsed();
+            run.report.lane.v2_diff_encode += started.elapsed();
+        }
+        if bytes_dir().is_some() {
+            patch = Some(
+                encode_section_patch_bytes(previous, section, &mut run.patch_names)
+                    .map_err(|e| format!("section {} patch encode: {e}", run.name))?,
+            );
+        }
     }
-    }
-    Ok(V2Hour { bytes, patch_bytes })
+    Ok(V2Hour { bytes, patch_bytes, patch })
 }
 
 struct V3Hour {
     delta_bytes: usize,
+    bytes: Option<Vec<u8>>,
     mutations: u64,
     /// Time spent on the oracle, which is never charged to either lane.
     instrument: Duration,
+}
+
+/// Seam mode: the hour's mutations for one section, from the fold.
+fn price_v3_seam(
+    run: &mut SectionRun,
+    seam: recorder_host::world_fold::V3SectionHour,
+    hour_index: i64,
+    measure: bool,
+    drop_control: bool,
+) -> Result<V3Hour, String> {
+    let drop_one = drop_control && run.state.revision() > 0;
+    let render = Duration::from_nanos(seam.render_ns);
+    if measure {
+        run.report.lane.v3_seam += render;
+        run.report.seam_rows_rendered += seam.rows_rendered;
+        run.report.seam_members_rendered += seam.members_rendered;
+        run.report.seam_rendered_bytes += seam.rendered_bytes;
+        run.report.seam_removals += seam.removals.len() as u64;
+        run.report.seam_upserts += seam.upserts.len() as u64;
+        run.report.seam_reducer_marked_rows += seam.reducer_marked_rows;
+        run.report.seam_reducer_marked_members += seam.reducer_marked_members;
+        if seam.widened_all.is_some() {
+            run.report.seam_hours_widened_all += 1;
+        }
+    }
+    run.report.seam = true;
+
+    // ---- the API: what the section is charged besides the seam -------------
+    let started = Instant::now();
+    let mut txn = run
+        .state
+        .begin_hour()
+        .map_err(|e| format!("section {}: {e}", run.name))?;
+    for path in &seam.removals {
+        txn.remove(path)
+            .map_err(|e| format!("section {}: {e}", run.name))?;
+    }
+    let declared = run.spec.shape.declared_root_kind();
+    if txn.state().root_kind() != declared {
+        txn.set_root_kind(declared)
+            .map_err(|e| format!("section {}: {e}", run.name))?;
+    }
+    let mut dropped = 0u64;
+    for (path, bytes) in seam.upserts {
+        if drop_one
+            && dropped == 0
+            && negative_control_should_drop(
+                txn.state().grain(&path).map(|grain| grain.bytes()),
+                &bytes,
+            )
+        {
+            dropped += 1;
+            continue;
+        }
+        txn.upsert_canonical_bytes(path, bytes)
+            .map_err(|e| format!("section {}: {e}", run.name))?;
+    }
+    run.report.mutations_dropped += dropped;
+    let delta = txn.commit();
+    let delta_digest = Sha256::digest(&delta.bytes);
+    if measure {
+        run.report.lane.v3_api += started.elapsed();
+    }
+    std::hint::black_box(delta_digest);
+    v3_oracle_and_report(run, delta, hour_index)
 }
 
 fn price_v3(
@@ -541,7 +695,15 @@ fn price_v3(
         run.report.lane.v3_api += started.elapsed();
     }
     std::hint::black_box(delta_digest);
+    v3_oracle_and_report(run, delta, hour_index)
+}
 
+/// The replica oracle and the hour's v3 numbers, shared by both feeds.
+fn v3_oracle_and_report(
+    run: &mut SectionRun,
+    delta: fold_v3::SectionDelta,
+    hour_index: i64,
+) -> Result<V3Hour, String> {
     // ---- oracle: never timed into either lane ------------------------------
     let started = Instant::now();
     let applied = run
@@ -615,6 +777,7 @@ fn price_v3(
 
     Ok(V3Hour {
         delta_bytes: delta.bytes.len(),
+        bytes: bytes_dir().map(|_| delta.bytes.clone()),
         mutations: delta.mutations,
         instrument,
     })
@@ -838,6 +1001,13 @@ fn executable_identity() -> (String, String) {
 /// alternative — splicing the identity into `run`'s own `format!` — was
 /// untestable in this crate, because `run` takes a capture spool and a test
 /// that deleted the splice stayed green.
+fn json_opt_string(value: Option<&str>) -> String {
+    match value {
+        Some(value) => json_string(value),
+        None => "null".to_string(),
+    }
+}
+
 fn report_envelope(body: &str) -> String {
     let (path, sha) = executable_identity();
     format!(
@@ -940,7 +1110,53 @@ pub fn run(
                     lower bound twice"
             .to_string());
     }
+    let seam_mode = std::env::var("DQ_V3_SEAM").map(|v| v == "1").unwrap_or(false);
+    let seam_trace = std::env::var("DQ_V3_SEAM_TRACE").map(|v| v == "1").unwrap_or(false);
+    // Census-only: the seam renders exactly the reducer marks; the oracle is
+    // expected to fail, the render time is the write-set floor.
+    let census_only = seam_mode
+        && std::env::var("DQ_V3_SEAM_CENSUS_ONLY").map(|v| v == "1").unwrap_or(false);
     let raw_h4cr_path = std::fs::canonicalize(raw_h4cr_path).map_err(|e| e.to_string())?;
+    let source_sha256 = {
+        let mut file = std::fs::File::open(&raw_h4cr_path).map_err(|e| e.to_string())?;
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0u8; 1 << 20];
+        let mut total = 0u64;
+        loop {
+            match std::io::Read::read(&mut file, &mut buffer) {
+                Ok(0) => break,
+                Ok(read) => {
+                    total += read as u64;
+                    hasher.update(&buffer[..read]);
+                }
+                Err(error) => return Err(format!("reading the source: {error}")),
+            }
+        }
+        if total != expected_source_len {
+            return Err(format!(
+                "source {} is {total} bytes, expected {expected_source_len}",
+                raw_h4cr_path.display()
+            ));
+        }
+        snapshot::sha256::to_hex(&hasher.finalize())
+    };
+    let env_of = |name: &str| std::env::var(name).ok();
+    let provenance = format!(
+        "\"source\":{{\"path\":{},\"sha256\":{},\"len\":{expected_source_len},\
+         \"game_id\":{},\"identity_mode\":{}}},\
+         \"command\":{{\"max_hours\":{max_hours},\"env\":{{\"FOLD_PROFILE\":{},\
+         \"DQ_V3_SEAM\":{},\"DQ_DROP_MUTATION\":{},\"DQ_V3_DUMP_DIR\":{},\
+         \"DQ_V3_SEAM_CENSUS_ONLY\":{}}}}}",
+        json_string(&raw_h4cr_path.to_string_lossy()),
+        json_string(&source_sha256),
+        json_string(game_id),
+        json_string(&format!("{identity_mode:?}")),
+        json_opt_string(env_of("FOLD_PROFILE").as_deref()),
+        json_opt_string(env_of("DQ_V3_SEAM").as_deref()),
+        json_opt_string(env_of("DQ_DROP_MUTATION").as_deref()),
+        json_opt_string(env_of("DQ_V3_DUMP_DIR").as_deref()),
+        json_opt_string(env_of("DQ_V3_SEAM_CENSUS_ONLY").as_deref()),
+    );
     let source_file = std::fs::File::open(&raw_h4cr_path).map_err(|e| e.to_string())?;
     let mut cursor = HourCursor::from_reader_with_source(
         Box::new(source_file),
@@ -979,6 +1195,16 @@ pub fn run(
         .map(|(name, _)| *name)
         .collect();
 
+    if seam_mode {
+        let depth_of = |name: &str| depth_overrides.get(name).copied().unwrap_or(grain_depth);
+        cursor.enable_v3_seam(recorder_host::world_fold::V3SeamConfig {
+            countries_depth: depth_of("countries"),
+            divisions_depth: depth_of("divisions"),
+            states_depth: depth_of("states"),
+            provinces_depth: depth_of("provinces"),
+            census_only,
+        })?;
+    }
     let mut runs: Vec<SectionRun> = Vec::new();
     for (name, spelling) in active_sections.iter().copied() {
         let spec = SectionSpec {
@@ -993,11 +1219,18 @@ pub fn run(
             replica: SectionState::new(spec.clone()),
             previous: None,
             report: SectionReport::default(),
+            patch_names: SectionPatchNames::default(),
         });
     }
 
     let mut decode = Duration::ZERO;
     let mut doc_parse = Duration::ZERO;
+    let mut seam_mark = Duration::ZERO;
+    // Whole-hour render; the per-section spans sum to less and the rest is charged too.
+    let mut seam_render_whole = Duration::ZERO;
+    let mut seam_render_sections = Duration::ZERO;
+    let mut dumped_sections: BTreeSet<String> = BTreeSet::new();
+    let mut seam_marks_total = 0u64;
     let mut instrument = Duration::ZERO;
     let mut hours = 0u64;
     let mut document_bytes_last = 0u64;
@@ -1035,9 +1268,40 @@ pub fn run(
         let next = cursor.next_hour();
         decode += started.elapsed();
         let Some(hour) = next else { break };
-        let hour: WorldHour = hour.map_err(|e| format!("decode: {e:?}"))?;
+        let mut hour: WorldHour = hour.map_err(|e| format!("decode: {e:?}"))?;
         hours += 1;
         document_bytes_last = hour.snapshot.len() as u64;
+        // Seam mode: the fold's mutations for this hour, one entry per covered
+        // section, taken out of the hour before the sections are priced.
+        let mut seam_sections: BTreeMap<String, recorder_host::world_fold::V3SectionHour> =
+            BTreeMap::new();
+        if let Some(output) = hour.v3.take() {
+            if output.hour_index != hour.hour_index {
+                return Err(format!(
+                    "seam output is for hour {} but the document is hour {}",
+                    output.hour_index, hour.hour_index
+                ));
+            }
+            if output.outputs_dropped > 0 {
+                return Err(format!(
+                    "seam: the fold dropped {} hours of seam output nobody drained",
+                    output.outputs_dropped
+                ));
+            }
+            if hours > 1 {
+                seam_mark += Duration::from_nanos(output.mark_ns);
+                seam_marks_total += output.marks;
+                seam_render_whole += Duration::from_nanos(output.render_ns);
+                for section in &output.sections {
+                    seam_render_sections += Duration::from_nanos(section.render_ns);
+                }
+            }
+            for section in output.sections {
+                seam_sections.insert(section.section.to_string(), section);
+            }
+        } else if seam_mode {
+            return Err(format!("seam mode: the fold produced no output for hour {}", hour.hour_index));
+        }
 
         // Harvest the fold's own section spans for THIS hour before anything
         // else can add to them.
@@ -1105,7 +1369,34 @@ pub fn run(
                 continue;
             };
             run.report.hours_present += 1;
-            if run.previous.is_some() {
+            let seam_hour = match seam_feed(seam_mode, &run.name, &mut seam_sections, hour.hour_index)? {
+                Feed::Seam(seam_hour) => Some(seam_hour),
+                Feed::Adapter => None,
+            };
+            if let Some(seam_hour) = &seam_hour {
+                if seam_trace {
+                    eprintln!(
+                        "seam-trace hour {} {}: rows={} members={} bytes={} upserts={} removals={} marked_rows={} marked_members={} widened={:?} render_ms={:.1} :: {}",
+                        hour.hour_index,
+                        run.name,
+                        seam_hour.rows_rendered,
+                        seam_hour.members_rendered,
+                        seam_hour.rendered_bytes,
+                        seam_hour.upserts.len(),
+                        seam_hour.removals.len(),
+                        seam_hour.reducer_marked_rows,
+                        seam_hour.reducer_marked_members,
+                        seam_hour.widened_all,
+                        seam_hour.render_ns as f64 / 1e6,
+                        seam_hour.diagnostics
+                    );
+                }
+            }
+            let seam_diagnostics = seam_hour
+                .as_ref()
+                .map(|seam_hour| seam_hour.diagnostics.clone())
+                .unwrap_or_default();
+            if run.previous.is_some() && seam_hour.is_none() {
                 run.report.lane.build += build_ns[index];
             }
 
@@ -1118,7 +1409,16 @@ pub fn run(
             if measure {
                 run.report.hours_measured += 1;
             }
-            let (v2, v3) = if v2_first {
+            let (v2, v3) = if let Some(seam_hour) = seam_hour {
+                // The seam's cost was paid inside the fold; only v2's pricing
+                // and the API run here, so lane order is moot.
+                let v2 = price_v2(run, section, measure)?;
+                let drop_control = std::env::var("DQ_DROP_MUTATION")
+                    .map(|name| name == run.name)
+                    .unwrap_or(false);
+                let v3 = price_v3_seam(run, seam_hour, hour.hour_index, measure, drop_control)?;
+                (v2, v3)
+            } else if v2_first {
                 let v2 = price_v2(run, section, measure)?;
                 let v3 = price_v3(run, section, hour.hour_index, measure)?;
                 (v2, v3)
@@ -1142,6 +1442,17 @@ pub fn run(
                     projected.len(),
                     v2.bytes.len()
                 ));
+                // `DQ_V3_DUMP_DIR=<dir>`: both sides of the first divergence of
+                // each section, for reading the byte difference offline.
+                if let Ok(dir) = std::env::var("DQ_V3_DUMP_DIR") {
+                    if !dumped_sections.contains(&run.name) {
+                        dumped_sections.insert(run.name.clone());
+                        let stem = format!("{}/{}_{}", dir, run.name, hour.hour_index);
+                        let _ = std::fs::write(format!("{stem}_v3.json"), &projected);
+                        let _ = std::fs::write(format!("{stem}_v2.json"), &v2.bytes);
+                        let _ = std::fs::write(format!("{stem}_seam.txt"), &seam_diagnostics);
+                    }
+                }
             }
             if run.replica.project() != projected && divergences.len() < 8 {
                 divergences.push(format!(
@@ -1171,6 +1482,15 @@ pub fn run(
             run.report.v3_delta_bytes += v3.delta_bytes as u64;
             run.report.v3_mutations += v3.mutations;
             run.report.v2_patch_bytes += v2.patch_bytes as u64;
+            if let Some(dir) = bytes_dir() {
+                let stem = format!("{dir}/{}_{}", run.name, hour.hour_index);
+                if let Some(patch) = &v2.patch {
+                    std::fs::write(format!("{stem}.v2"), patch).map_err(|e| e.to_string())?;
+                }
+                if let Some(bytes) = &v3.bytes {
+                    std::fs::write(format!("{stem}.v3"), bytes).map_err(|e| e.to_string())?;
+                }
+            }
             if v2.patch_bytes > 0 {
                 let amplification = v3.delta_bytes as f64 / v2.patch_bytes as f64;
                 if amplification > run.report.worst_amplification {
@@ -1214,6 +1534,9 @@ pub fn run(
     let hours_f = measured_hours as f64;
     let mut rows: Vec<String> = Vec::new();
     let mut total = Lane::default();
+    let mut seam_section_names: Vec<String> = Vec::new();
+    let mut credited_total = Duration::ZERO;
+    let mut best_case_total = Duration::ZERO;
     let mut covered_bytes = 0u64;
     let mut v2_patch_total = 0u64;
     let mut v3_delta_total = 0u64;
@@ -1240,6 +1563,15 @@ pub fn run(
         total.v3_api += lane.v3_api;
         total.v3_adapter += lane.v3_adapter;
         total.build += lane.build;
+        total.v3_seam += lane.v3_seam;
+        if run.report.seam {
+            seam_section_names.push(run.name.clone());
+            credited_total += lane.v3_api + lane.v3_seam;
+            best_case_total += lane.v3_api + lane.v3_seam;
+        } else {
+            credited_total += lane.v3_api + lane.v3_adapter + lane.build;
+            best_case_total += lane.v3_api;
+        }
         if run.report.section_bytes_hour == coverage_hour {
             covered_bytes += run.report.section_bytes_last;
         } else {
@@ -1261,7 +1593,11 @@ pub fn run(
              \"v2_s_per_hour\":{{\"build\":{:.6},\"serialize\":{:.6},\"parse\":{:.6},\
              \"sha256\":{:.6},\"diff_encode\":{:.6},\"total\":{:.6}}},\
              \"v3_s_per_hour\":{{\"api_lower\":{:.6},\"adapter\":{:.6},\
-             \"adapter_inclusive_upper\":{:.6}}},\
+             \"adapter_inclusive_upper\":{:.6},\"seam\":{:.6},\"credited\":{:.6}}},\
+             \"seam\":{{\"served\":{},\"rows_per_hour\":{:.1},\"members_per_hour\":{:.1},\
+             \"rendered_bytes_per_hour\":{:.1},\"removals_per_hour\":{:.1},\
+             \"upserts_per_hour\":{:.1},\"reducer_marked_rows_per_hour\":{:.1},\
+             \"reducer_marked_members_per_hour\":{:.1},\"hours_widened_all\":{}}},\
              \"v2_patch_bytes_per_hour\":{:.1},\"v3_delta_bytes_per_hour\":{:.1},\
              \"delta_byte_ratio\":{:.4},\"worst_hour_delta_byte_ratio\":{:.4},\
              \"worst_hour\":{},\"mutations_per_hour\":{:.1},\
@@ -1286,6 +1622,21 @@ pub fn run(
             secs(lane.v3_api) / section_hours,
             secs(lane.v3_adapter) / section_hours,
             secs(lane.v3_api + lane.v3_adapter + lane.build) / section_hours,
+            secs(lane.v3_seam) / section_hours,
+            if run.report.seam {
+                secs(lane.v3_api + lane.v3_seam) / section_hours
+            } else {
+                secs(lane.v3_api + lane.v3_adapter + lane.build) / section_hours
+            },
+            run.report.seam,
+            run.report.seam_rows_rendered as f64 / section_hours,
+            run.report.seam_members_rendered as f64 / section_hours,
+            run.report.seam_rendered_bytes as f64 / section_hours,
+            run.report.seam_removals as f64 / section_hours,
+            run.report.seam_upserts as f64 / section_hours,
+            run.report.seam_reducer_marked_rows as f64 / section_hours,
+            run.report.seam_reducer_marked_members as f64 / section_hours,
+            run.report.seam_hours_widened_all,
             run.report.v2_patch_bytes as f64 / section_hours,
             run.report.v3_delta_bytes as f64 / section_hours,
             if run.report.v2_patch_bytes > 0 {
@@ -1371,10 +1722,36 @@ pub fn run(
     // the wire records whatever the state looks like.
     let projected_lower = v3_lower / coverage + apply_per_hour;
     let projected_upper = v3_upper / coverage + apply_per_hour;
+    // Seam mode: what the seam sections MEASURE plus what the others still owe.
+    // Marks ran inside the reducers: already in `apply_per_hour`.
+    let seam_mark_per_hour = secs(seam_mark) / hours_f;
+    let seam_render_whole_per_hour = secs(seam_render_whole) / hours_f;
+    let seam_render_uncharged_per_hour =
+        (secs(seam_render_whole).max(secs(seam_render_sections)) - secs(seam_render_sections))
+            / hours_f;
+    let credited_covered = secs(credited_total) / hours_f + seam_render_uncharged_per_hour;
+    let best_case_covered = secs(best_case_total) / hours_f + seam_render_uncharged_per_hour;
+    let projected_credited = credited_covered / coverage + apply_per_hour;
+    let projected_best_case = best_case_covered / coverage + apply_per_hour;
+    let kill_switch = if seam_section_names.is_empty() {
+        "not_in_seam_mode"
+    } else if census_only {
+        "census_only_floor_not_a_seam"
+    } else if !divergences.is_empty() {
+        "oracle_failed"
+    } else if projected_credited <= 0.20 {
+        "pass"
+    } else if projected_best_case <= 0.20 {
+        "credited_crosses_best_case_passes"
+    } else {
+        "kill"
+    };
     let projected_lower_less_whole_state =
         v3_lower / coverage + (apply_per_hour - apply_whole_state_per_hour).max(0.0);
 
-    let verdict = if !divergences.is_empty() {
+    let verdict = if census_only {
+        "census_only_floor_not_a_seam"
+    } else if !divergences.is_empty() {
         "oracle_failed"
     } else if projected_upper <= 0.20 {
         "pass"
@@ -1502,6 +1879,18 @@ pub fn run(
          \"ratio_lower\":{:.4},\"ratio_upper\":{:.4}}},\
          \"projected_full_conversion_s_per_hour\":{{\"lower\":{projected_lower:.6},\
          \"upper\":{projected_upper:.6},\"threshold\":0.20}},\
+         \"kill_switch\":{{\"census_only\":{census_only},\"seam_sections\":[{}],\
+         \"seam_mark_s_per_hour\":{seam_mark_per_hour:.6},\
+         \"seam_marks_per_hour\":{:.1},\
+         \"seam_marks_note\":\"inside apply_domain_data_s_per_hour already; not added to the projections\",\
+         \"seam_render_s_per_hour\":{:.6},\
+         \"seam_render_whole_hour_s_per_hour\":{seam_render_whole_per_hour:.6},\
+         \"seam_render_uncharged_remainder_s_per_hour\":{seam_render_uncharged_per_hour:.6},\
+         \"covered_s_per_hour\":{{\"credited\":{credited_covered:.6},\
+         \"best_case\":{best_case_covered:.6}}},\
+         \"projected_full_conversion_s_per_hour\":{{\"credited\":{projected_credited:.6},\
+         \"best_case\":{projected_best_case:.6},\"threshold\":0.20}},\
+         \"verdict\":{}}},\
          \"two_resident_states_bytes\":{{\"covered\":{two_states},\
          \"projected_full\":{two_states_full},\"threshold\":1073741824,\
          \"interned_name_bytes\":{interner_bytes},\
@@ -1515,6 +1904,7 @@ pub fn run(
          \"unpriced_v3_obligations\":\"checkpoint framing, H4IX index, whole-cache \
          SHA-256, verify_every_hour, container write\",\
          \"apply_domain_data_by_domain\":[{}],\
+         {provenance},\
          \"verdict\":{},\"sections\":[{}]",
         json_string(grain_depth_spec),
         depth_rows.join(","),
@@ -1537,6 +1927,14 @@ pub fn run(
         } else {
             0.0
         },
+        seam_section_names
+            .iter()
+            .map(|name| json_string(name))
+            .collect::<Vec<_>>()
+            .join(","),
+        seam_marks_total as f64 / hours_f,
+        secs(total.v3_seam) / hours_f,
+        json_string(kill_switch),
         v2_patch_total as f64 / hours_f,
         v3_delta_total as f64 / hours_f,
         divergence_rows.join(","),
@@ -1910,5 +2308,89 @@ mod tests {
         );
         assert_eq!(emitted, "\"a b c d e'f/g\"");
         assert!(serde_json::from_str::<serde_json::Value>(&emitted).is_ok());
+    }
+    /// Seam mode refuses a seam section that arrived without the fold's seam
+    /// output, and only in seam mode, and only for seam sections.
+    ///
+    /// kills: dropping the `seam_mode` term (the adapter-mode run of a seam
+    /// section errors, second assert); dropping the `SEAM_SECTIONS` term (a
+    /// non-seam section errors in seam mode, third assert); dropping the
+    /// `!present` term or the whole check (the first assert gets Ok).
+    #[test]
+    fn seam_mode_refuses_a_seam_section_without_seam_output() {
+        let mut none = BTreeMap::new();
+        let err = seam_feed(true, "countries", &mut none, 7).unwrap_err();
+        assert!(err.contains("countries") && err.contains("hour 7"), "{err}");
+        assert!(matches!(seam_feed(false, "countries", &mut none, 7), Ok(Feed::Adapter)));
+        assert!(matches!(seam_feed(true, "map", &mut none, 7), Ok(Feed::Adapter)));
+        let mut some = BTreeMap::new();
+        some.insert("provinces".to_string(), seam_section("provinces", vec![]));
+        assert!(matches!(seam_feed(true, "provinces", &mut some, 7), Ok(Feed::Seam(_))));
+        assert!(some.is_empty(), "the feed takes the section out of the hour");
+    }
+
+    fn seam_section(
+        section: &'static str,
+        upserts: Vec<(Path, Vec<u8>)>,
+    ) -> recorder_host::world_fold::V3SectionHour {
+        recorder_host::world_fold::V3SectionHour {
+            section,
+            removals: vec![],
+            upserts,
+            render_ns: 0,
+            rendered_bytes: 0,
+            rows_rendered: 0,
+            members_rendered: 0,
+            reducer_marked_rows: 0,
+            reducer_marked_members: 0,
+            widened_all: None,
+            diagnostics: String::new(),
+        }
+    }
+
+    /// The negative control inside `price_v3_seam`: it drops an upsert only
+    /// where the bytes would change a standing grain, and counts it.
+    ///
+    /// kills: removing the control from `price_v3_seam` (the third hour
+    /// counts no drop); `is_some()` in place of the byte comparison (the
+    /// second hour drops an equal upsert); `revision() > 0` removed (the
+    /// first hour drops).
+    #[test]
+    fn price_v3_seam_drops_only_a_changing_standing_upsert() {
+        let spec = SectionSpec {
+            name: "provinces".to_string(),
+            shape: Shape::Object,
+            grain_depth: 1,
+        };
+        let mut run = SectionRun {
+            name: "provinces".to_string(),
+            spec: spec.clone(),
+            state: SectionState::new(spec.clone()),
+            replica: SectionState::new(spec),
+            previous: None,
+            report: SectionReport::default(),
+            patch_names: SectionPatchNames::default(),
+        };
+        let path: Path = vec![fold_v3::Seg::key("1")];
+        let hour = |bytes: &[u8]| seam_section("provinces", vec![(path.clone(), bytes.to_vec())]);
+        price_v3_seam(&mut run, hour(b"1"), 1, false, true).unwrap();
+        assert_eq!(run.report.mutations_dropped, 0, "nothing stands on the first hour");
+        price_v3_seam(&mut run, hour(b"1"), 2, true, true).unwrap();
+        assert_eq!(run.report.mutations_dropped, 0, "an equal upsert is not a control");
+        price_v3_seam(&mut run, hour(b"2"), 3, true, true).unwrap();
+        assert_eq!(run.report.mutations_dropped, 1);
+        assert_eq!(run.state.project(), b"{\"1\":1}", "the dropped upsert left the old grain");
+    }
+
+    /// The negative control skips an upsert only where it would change a
+    /// standing grain.
+    ///
+    /// kills: `standing.is_some()` (the equal-bytes case drops, second assert);
+    /// `true` (the absent case drops, third assert); `false` (first assert).
+    #[test]
+    fn negative_control_drops_only_a_changing_upsert_on_a_standing_grain() {
+        assert!(negative_control_should_drop(Some(b"1"), b"2"));
+        assert!(!negative_control_should_drop(Some(b"1"), b"1"));
+        assert!(!negative_control_should_drop(None, b"2"));
     }
 }

@@ -1018,6 +1018,7 @@ dependencies = [
  "direct_frd_transitions_live",
  "dynamic_collection_trace_live_lane",
  "fired_event_popups_live_lane",
+ "fold_v3",
  "hub_motorization_live_lane",
  "hud_role_observer_live_lane",
  "land_combat_detail_events_live_lane",

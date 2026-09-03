@@ -244,3 +244,6 @@ extractor/native/runs/va_rail_z_frame/evidence/*.txt -text
 # the reference artifact is stable; both sides are newline-normalized by
 # Python source loading anyway, so the comparison holds either way.
 replay_interface/tools/hoi4_re/tests/reference_trace_script_before_the_knob.py.txt text eol=lf
+
+# Lane PR: the v3 stage reports pin their binaries by SHA-256 text; keep the hashes LF on Windows.
+extractor/native/runs/perf_finalize/**/*.sha256 text eol=lf

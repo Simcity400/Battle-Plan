@@ -5148,6 +5148,23 @@ pub fn measure_section_patch_bytes(
     grammar_cost(&patch, 0)
 }
 
+/// The name dictionary one section's patch records share across hours, for
+/// [`encode_section_patch_bytes`]; a cache carries one per recording.
+#[derive(Default)]
+pub struct SectionPatchNames(NameDictionary);
+
+/// The record payload the cache encoder writes for one section's hour: the
+/// patch from `old` to `new` through the production encoder, so the bytes a
+/// size study compresses are the bytes the cache stores.
+pub fn encode_section_patch_bytes(
+    old: &CanonValue,
+    new: &CanonValue,
+    names: &mut SectionPatchNames,
+) -> Result<Vec<u8>, ReplayCacheError> {
+    let patch = diff_value(old, new, None, 0)?;
+    encode_patch(&patch, &mut names.0)
+}
+
 fn grammar_cost(patch: &Patch, depth: usize) -> Result<usize, ReplayCacheError> {
     require_depth(depth)?;
     Ok(match patch {

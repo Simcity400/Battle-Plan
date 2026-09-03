@@ -1872,6 +1872,20 @@ pub fn decompose_ref<'a>(
     }
 }
 
+/// Decomposes one SUBTREE of a section the way [`decompose`] would have at
+/// this point of its walk: `prefix` is the path of `value` from the section
+/// root and `depth_left` how many levels remain before grain depth. A domain
+/// reducer that knows which member of which entity it changed uses this to
+/// emit exactly that member's grains, never the whole section.
+pub fn decompose_subtree<'a>(
+    value: &'a CanonValue,
+    depth_left: usize,
+    mut prefix: Path,
+    out: &mut Vec<(Path, &'a CanonValue)>,
+) {
+    decompose_into(value, depth_left, &mut prefix, out);
+}
+
 fn decompose_into<'a>(
     value: &'a CanonValue,
     depth_left: usize,

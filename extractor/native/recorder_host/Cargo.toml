@@ -101,6 +101,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 snapshot = { path = "../snapshot" }
+# H4CP v3 reducer seam (stage 1): the fold emits grain mutations for the
+# covered sections straight from its reducers; dormant unless enabled.
+fold_v3 = { path = "../fold_v3" }
 wire_product = { path = "../wire_product" }
 portable_render_stream = { path = "../../../portable_replay/native/render_stream" }
 portable_content_manifest = { path = "../../../portable_replay/native/content_manifest" }

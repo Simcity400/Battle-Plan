@@ -537,6 +537,13 @@ pub struct WorldHour {
     canonical: Option<snapshot::UnhashedWorldHour>,
     pub domain_data_counts: BTreeMap<u16, u64>,
     snapshot_charge: recorder_host::mem_account::Charge,
+    /// The v3 reducer seam's grain mutations for this hour, when the fold's
+    /// seam is enabled (`HourCursor::enable_v3_seam`); not part of equality.
+    pub v3: Option<recorder_host::world_fold::V3HourOutput>,
+}
+
+fn v3_output_bytes(v3: &Option<recorder_host::world_fold::V3HourOutput>) -> u64 {
+    v3.as_ref().map_or(0, |output| output.approx_bytes())
 }
 
 impl Clone for WorldHour {
@@ -547,7 +554,8 @@ impl Clone for WorldHour {
             recorder_host::mem_account::Component::InflightSnapshots,
             canonical
                 .as_ref()
-                .map_or(snapshot.capacity() as u64, |prepared| prepared.value_heap_bytes()),
+                .map_or(snapshot.capacity() as u64, |prepared| prepared.value_heap_bytes())
+                + v3_output_bytes(&self.v3),
         );
         Self {
             hour_index: self.hour_index,
@@ -556,6 +564,7 @@ impl Clone for WorldHour {
             canonical,
             domain_data_counts: self.domain_data_counts.clone(),
             snapshot_charge,
+            v3: self.v3.clone(),
         }
     }
 }
@@ -2534,6 +2543,15 @@ impl HourCursor {
         }
     }
 
+    /// Turns on the fold's v3 reducer seam; every later hour carries its grain
+    /// mutations in `WorldHour::v3`.
+    pub fn enable_v3_seam(
+        &mut self,
+        config: recorder_host::world_fold::V3SeamConfig,
+    ) -> Result<(), String> {
+        self.fold.enable_v3_seam(config)
+    }
+
     pub fn take_index(mut self) -> Result<StreamIndex, IndexCertificationError> {
         self.validate_complete()?;
         let coverage = self.boundary_tracker.coverage().clone();
@@ -3213,6 +3231,12 @@ impl HourCursor {
         let counts = std::mem::take(&mut self.cur_counts);
         let finished = self.fold.take_finished();
         let finished_canonical = self.fold.take_finished_canonical();
+        let mut v3_outputs: BTreeMap<i64, recorder_host::world_fold::V3HourOutput> = self
+            .fold
+            .take_v3_hour_outputs()
+            .into_iter()
+            .map(|output| (output.hour_index, output))
+            .collect();
         let published_any = !finished.is_empty() || !finished_canonical.is_empty();
         for (hour_index, date, bytes) in finished {
             let cheap = !self.first_hour_seen;
@@ -3224,9 +3248,10 @@ impl HourCursor {
             });
             self.stats.hours_emitted += 1;
             // guard rides with the hour and releases wherever it is dropped.
+            let v3 = v3_outputs.remove(&hour_index);
             let snapshot_charge = recorder_host::mem_account::Charge::new(
                 recorder_host::mem_account::Component::InflightSnapshots,
-                bytes.capacity() as u64,
+                bytes.capacity() as u64 + v3_output_bytes(&v3),
             );
             self.ready.push_back(WorldHour {
                 hour_index,
@@ -3235,6 +3260,7 @@ impl HourCursor {
                 canonical: None,
                 domain_data_counts: counts.clone(),
                 snapshot_charge,
+                v3,
             });
         }
         for (hour_index, date, prepared) in finished_canonical {
@@ -3246,9 +3272,10 @@ impl HourCursor {
                 cheap_seek_point: cheap,
             });
             self.stats.hours_emitted += 1;
+            let v3 = v3_outputs.remove(&hour_index);
             let snapshot_charge = recorder_host::mem_account::Charge::new(
                 recorder_host::mem_account::Component::InflightSnapshots,
-                prepared.value_heap_bytes(),
+                prepared.value_heap_bytes() + v3_output_bytes(&v3),
             );
             self.ready.push_back(WorldHour {
                 hour_index,
@@ -3257,6 +3284,7 @@ impl HourCursor {
                 canonical: Some(prepared),
                 domain_data_counts: counts.clone(),
                 snapshot_charge,
+                v3,
             });
         }
         self.hour_index_charge
