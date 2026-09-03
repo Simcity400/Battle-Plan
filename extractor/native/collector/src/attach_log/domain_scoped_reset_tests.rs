@@ -51,6 +51,14 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
          published-hour delta, while each changed hour re-arms and validates its own copy",
     ),
     (
+        "market_trade_live_snapshot",
+        "d43's bounded snapshot plan, arming buffer and sticky refusal (lane PD), carried \
+         across the reset unconditionally by its own carve-out for d81's reason: a rejected \
+         bracket says nothing about whether the region table still describes the walk, every \
+         frame re-copies and re-proves it before anything is published, and nothing in it is \
+         a published-hour delta",
+    ),
+    (
         "acceptance_weather_fault_injected",
         "session-local one-shot, not a per-domain read product",
     ),

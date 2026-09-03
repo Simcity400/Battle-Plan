@@ -392,7 +392,32 @@ pub(super) fn drive_compact_frame_with_deferred_work(
     elapsed_wall_ms: u64,
     deferred_work: Option<InFrameDeferredWork<'_>>,
 ) -> FrameOutcome {
-    let mut trackers = CompactPerfGateTrackers::default();
+    let mut span_delta_consumer =
+        compact_contract::payload_span_delta::PayloadSpanDeltaConsumer::new();
+    drive_compact_frame_carrying(
+        state,
+        control,
+        game_hour_raw,
+        elapsed_wall_ms,
+        CompactPerfGateTrackers::default(),
+        &mut span_delta_consumer,
+        deferred_work,
+    )
+}
+
+/// One frame over trackers and a `PSD1` consumer the caller carries, so a
+/// test can drive consecutive hours through the same tracker state (the
+/// outcome hands the trackers back) and read every delta record against the
+/// baseline the producer pinned on an earlier frame.
+pub(super) fn drive_compact_frame_carrying(
+    state: Option<&CollectorState>,
+    control: &CollectorControl,
+    game_hour_raw: i32,
+    elapsed_wall_ms: u64,
+    mut trackers: CompactPerfGateTrackers,
+    span_delta_consumer: &mut compact_contract::payload_span_delta::PayloadSpanDeltaConsumer,
+    deferred_work: Option<InFrameDeferredWork<'_>>,
+) -> FrameOutcome {
     let _rc_counters = super::super::lock_rc_counters();
     page_cache_new_frame();
     let (bytes, next_sequence, timing) = build_compact_extraction_gate_records(
@@ -421,8 +446,6 @@ pub(super) fn drive_compact_frame_with_deferred_work(
     // it is what makes every d41/d43/d53 test in this crate a live exercise of
     // the round trip, because each one reads a payload that has been through the
     // producer and back.
-    let mut span_delta_consumer =
-        compact_contract::payload_span_delta::PayloadSpanDeltaConsumer::new();
     while offset < bytes.len() {
         let header = compact_contract::parse_compact_record_header(&bytes[offset..])
             .expect("the frame builder emits well-framed compact records");
@@ -441,7 +464,7 @@ pub(super) fn drive_compact_frame_with_deferred_work(
             )
         });
         let reconstructed = compact_contract::payload_span_delta::reconstruct_if_enveloped(
-            &mut span_delta_consumer,
+            span_delta_consumer,
             header.record_flags,
             compact_contract::payload_span_delta::PayloadSpanDeltaIdentity {
                 domain_id: header.domain_id,

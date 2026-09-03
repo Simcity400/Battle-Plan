@@ -132,7 +132,31 @@ fn exact_selected_country(view: usize) -> Option<usize> {
     (country != 0).then_some(country)
 }
 
+thread_local! {
+    static SNAPSHOT_OVERRIDE: std::cell::Cell<Option<Option<ActivationSnapshot>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Serve `snapshot` to every `snapshot()` call made by `f` on this thread: the
+/// activation d43's bracket observed, replayed to its outside-bracket decode.
+pub(crate) fn with_snapshot_override<R>(
+    snapshot: Option<ActivationSnapshot>,
+    f: impl FnOnce() -> R,
+) -> R {
+    struct Restore(Option<Option<ActivationSnapshot>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SNAPSHOT_OVERRIDE.with(|slot| slot.set(self.0));
+        }
+    }
+    let _restore = Restore(SNAPSHOT_OVERRIDE.with(|slot| slot.replace(Some(snapshot))));
+    f()
+}
+
 pub(crate) fn snapshot() -> Option<ActivationSnapshot> {
+    if let Some(served) = SNAPSHOT_OVERRIDE.with(std::cell::Cell::get) {
+        return served;
+    }
     if !INSTALLED.load(Ordering::Acquire) || DRAINING.load(Ordering::Acquire) {
         return None;
     }
