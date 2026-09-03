@@ -5,6 +5,10 @@ use portable_content_manifest::{
     RecordedContentLayer, RequiredContent, RequiredContentKind, SourceGameIdentity,
     SourceProfileIdentity, UsedContentKey, SCHEMA,
 };
+use portable_render_stream::combat_records::{
+    naval_combat_key, LandCombatRecord, NavalCombatMemberRow, NavalCombatRecord,
+};
+use portable_render_stream::Leaf;
 use serde_json::{json, Map, Value};
 use snapshot::{pack, pack_with, PackEntry, PackIdentity, PackOptions};
 use std::collections::BTreeMap;
@@ -941,16 +945,25 @@ fn fx_division_movement(seed: u64) -> Scenario {
             ]);
             if tick >= 6 && tick <= 9 {
                 snap["divisions"][0]["in_combat"] = json!(true);
-                snap["combats"] = json!([{
-                    "combat_id": 9001,
-                    "kind": "land",
-                    "location_province": loc,
-                    "attackers": [101],
-                    "defenders": [201],
-                    "combat_width": 80.0,
-                    "terrain": "plains",
-                    "progress": tick as f64 / 10.0
-                }]);
+                // The shared record: the same struct the recorder writes
+                // and the replay reads, so this fixture cannot spell a shape
+                // the replay refuses.
+                snap["combats"] = serde_json::to_value(vec![LandCombatRecord {
+                    combat_id: Leaf::Measured(9001),
+                    generation: Leaf::Measured(1),
+                    kind: Leaf::Measured("land".into()),
+                    location_province: Leaf::Measured(
+                        u32::try_from(loc).expect("a fixture province id fits u32"),
+                    ),
+                    attackers: Leaf::Measured(vec![101]),
+                    defenders: Leaf::Measured(vec![201]),
+                    combat_width: Leaf::Measured(80.0),
+                    terrain: Leaf::Measured("plains".into()),
+                    progress: Leaf::Measured(tick as f64 / 10.0),
+                    modifiers: Leaf::Unobtained,
+                    detail: Leaf::Absent,
+                }])
+                .expect("a land combat record serializes");
             }
         },
     );
@@ -1558,9 +1571,47 @@ fn fx_power_balance_combat(seed: u64) -> Scenario {
             snap["world"]["power_balances"] = json!([
                 {"template": "GER_alignment", "value": -0.5 + tick as f64 * 0.08, "left_side": "hardliners", "right_side": "moderates", "trending_side": if tick < 6 { "left" } else { "right" }, "countries": ["GER"]}
             ]);
-            snap["naval_combats"] = json!([
-                {"naval_combat_id": 8001, "location_province": 3000, "attacker": "ENG", "defender": "GER", "attacker_task_force": "501:1", "defender_task_force": "600:1", "result_type": if tick < 6 { "naval_battle" } else { "port_strike" }, "progress": tick as f64 / 11.0, "attacker_ships": 8, "defender_ships": 4}
+            // The shared record, keyed as the recorder keys it. Owner ids
+            // are D18 tag_db_ids (ENG = 1, GER = 2 in this fixture's roster
+            // order), and a side's country set is DERIVED from them.
+            let member = |side: &str, owner: i64, task_force: Option<i64>, slot: i64| {
+                let mut row = NavalCombatMemberRow::all_absent();
+                row.side = Leaf::Measured(side.into());
+                row.owner_tag_db_id = Leaf::Measured(owner);
+                row.is_convoy = Leaf::Measured(task_force.is_none());
+                row.task_force_id = Leaf::from_option(task_force);
+                row.task_force_id_space = Leaf::from_option(task_force.map(|_| 61));
+                row.battle_slot_index = Leaf::Measured(slot);
+                row.strength = Leaf::Measured(1.0 - tick as f64 / 20.0);
+                row
+            };
+            let mut battle = NavalCombatRecord::all_absent();
+            battle.combat_id = Leaf::Measured(8001);
+            battle.naval_combat_id = Leaf::Measured(8001);
+            battle.generation = Leaf::Measured(1);
+            battle.kind = Leaf::Measured("naval".into());
+            battle.location_province = Leaf::Measured(3000);
+            battle.region_id = Leaf::Measured(301);
+            battle.attacker_member_count = Leaf::Measured(2);
+            battle.defender_member_count = Leaf::Measured(1);
+            battle.attacker_positioning_raw = Leaf::Measured(81_250);
+            battle.attacker_positioning = Leaf::Measured(0.8125);
+            battle.defender_positioning_raw = Leaf::Measured(76_500);
+            battle.defender_positioning = Leaf::Measured(0.765);
+            battle.attacker_task_force_ids = Leaf::Measured(vec![501]);
+            battle.attacker_task_force_id_spaces = Leaf::Measured(vec![61]);
+            battle.defender_task_force_ids = Leaf::Measured(vec![600]);
+            battle.defender_task_force_id_spaces = Leaf::Measured(vec![61]);
+            battle.members = Leaf::Measured(vec![
+                member("attacker", 1, Some(501), 0),
+                member("attacker", 1, None, 1),
+                member("defender", 2, Some(600), 0),
             ]);
+            snap["naval_combats"] = serde_json::to_value(BTreeMap::from([(
+                naval_combat_key(8001, 1),
+                battle,
+            )]))
+            .expect("a naval combat record serializes");
             snap["air_combats"] = json!([
                 {"air_combat_id": 8500, "strategic_region": 301, "attacker": "ENG", "defender": "GER", "attacker_planes": 100 - t, "defender_planes": 60}
             ]);

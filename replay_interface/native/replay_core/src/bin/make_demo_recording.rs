@@ -1,6 +1,7 @@
 //! Build a SYNTHETIC demo `.battleplan` recording from a generated map
 //! dev fixture: hour 0 is the bundle's real 1936 ownership, later hours flip
 
+use portable_render_stream::Leaf;
 use snapshot::{pack, PackEntry, PackIdentity};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -321,13 +322,23 @@ impl WarScript {
             }));
 
             if battle_here && !destroyed {
-                combats.push(serde_json::json!({
-                    "combat_id": 500 + i as i64,
-                    "kind": "land",
-                    "location_province": front_province,
-                    "attackers": [2000 + i as i64],
-                    "defenders": [1000 + i as i64],
-                }));
+                // The shared record the recorder writes and the replay reads.
+                let record = portable_render_stream::combat_records::LandCombatRecord {
+                    combat_id: Leaf::Measured(500 + i as i64),
+                    generation: Leaf::Measured(1),
+                    kind: Leaf::Measured("land".into()),
+                    location_province: Leaf::Measured(*front_province),
+                    attackers: Leaf::Measured(vec![2000 + i as i64]),
+                    defenders: Leaf::Measured(vec![1000 + i as i64]),
+                    combat_width: Leaf::Unobtained,
+                    terrain: Leaf::Unobtained,
+                    progress: Leaf::Unobtained,
+                    modifiers: Leaf::Unobtained,
+                    detail: Leaf::Absent,
+                };
+                combats.push(
+                    serde_json::to_value(record).expect("a land combat record serializes"),
+                );
             }
         }
         (divisions, combats)

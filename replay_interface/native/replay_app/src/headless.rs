@@ -1769,7 +1769,7 @@ mod tests {
             "diplomacy_live": {}, "naval_air": {}, "supply": {},
             "strategic_air": {}, "strategic_operatives": {}, "raids": {},
             "world_events": {}, "world": {}, "weather": {}, "visibility": {},
-            "naval_combats": [], "models": {}, "intel_ledger": {},
+            "naval_combats": {}, "models": {}, "intel_ledger": {},
         });
         let index = serde_json::json!({
             "game_id": "headless_1081_keying",

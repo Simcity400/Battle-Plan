@@ -250,7 +250,7 @@ fn snapshot_101() -> Value {
               "strength": 1.0, "equipment": null }
         ],
         "combats": [
-            { "combat_id": 900, "kind": "land", "location_province": 1001,
+            { "combat_id": 900, "generation": 2, "kind": "land", "location_province": 1001,
               "attackers": [5], "defenders": [7] }
         ],
         "session": null,
@@ -886,19 +886,23 @@ fn dir_store_typed_views_and_trichotomy() {
     assert_eq!(f101.combats().len(), 1);
     let combat = &f101.combats()[0];
     assert_eq!(combat.combat_id, Leaf::Measured(900));
+    assert_eq!(combat.generation, Leaf::Measured(2));
     assert_eq!(combat.kind, Leaf::Measured("land".to_string()));
     assert_eq!(combat.location_province, Leaf::Measured(1001));
     assert_eq!(combat.attackers, Leaf::Measured(vec![5]));
     assert_eq!(combat.defenders, Leaf::Measured(vec![7]));
-    assert_eq!(f103.combats().len(), 1);
-    let bad_combat = &f103.combats()[0];
-    assert_eq!(bad_combat.combat_id, Leaf::Unobtained);
-    assert_eq!(bad_combat.attackers, Leaf::Unobtained);
-    assert_eq!(bad_combat.defenders, Leaf::Measured(vec![]));
+    // A row the shared record refuses -- a non-integer division id -- costs
+    // the hour its active census, by name: the recorder writes the same struct
+    // and cannot produce such a row, so one is not a gap to read around.
+    assert!(f103.combats().is_empty());
+    assert_eq!(
+        f103.combats_status(),
+        replay_core::ViewStatus::DomainUnavailable
+    );
     assert!(f103
         .coverage_warnings()
         .iter()
-        .any(|w| w.contains("combats[0].attackers[1]")));
+        .any(|w| w.contains("combats[0]") && w.contains("bad")));
 
     let ger_100 = f100.country("GER").unwrap();
     let ger_101 = f101.country("GER").unwrap();

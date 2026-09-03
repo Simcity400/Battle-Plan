@@ -88,6 +88,17 @@ pub use xmap07_snow_mud::{
 /// read as this crate's own vocabulary rather than XMAP14's.
 pub mod xmap14_combat_indicators;
 
+/// The three-state leaf the replay reads every typed view through, with the
+/// wire form the shared records carry it in.
+mod leaf;
+pub use leaf::Leaf;
+
+/// The combat records (`combats[]`, `ended_combats[]`, `naval_combats`) the
+/// recorder writes and the replay reads, as ONE struct each. A module, like
+/// XMAP14's, because its names (`LandCombatDetail`, `NavalCombatMemberRow`) are
+/// the replay's vocabulary rather than this crate's.
+pub mod combat_records;
+
 mod assigned_stage;
 pub use assigned_stage::{
     AssignedStage, AssignedStageEdge, AssignedStageIdentity, AssignedStageSchedule,

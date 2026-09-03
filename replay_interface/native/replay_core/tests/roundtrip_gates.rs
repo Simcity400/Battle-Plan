@@ -1477,19 +1477,22 @@ fn rt_power_balance_combat() {
         let nac = f.naval_air_combat();
         let nc = &nac.naval_combats[0];
         assert_eq!(
-            nc.result_type,
-            exp_string(raw(&f, &["naval_combats", "0", "result_type"])),
-            "naval result_type @ {}",
+            nc.generation,
+            exp_i64(raw(&f, &["naval_combats", "8001:1", "generation"])),
+            "naval generation @ {}",
             f.hour_index()
         );
         assert_eq!(
-            nc.progress,
-            exp_f64(raw(&f, &["naval_combats", "0", "progress"]))
+            nc.attacker_positioning,
+            exp_f64(raw(&f, &["naval_combats", "8001:1", "attacker_positioning"]))
         );
         assert_eq!(
             nc.location_province,
-            exp_u32(raw(&f, &["naval_combats", "0", "location_province"]))
+            exp_u32(raw(&f, &["naval_combats", "8001:1", "location_province"]))
         );
+        // The owner sets derive from the members the fixture wrote.
+        assert_eq!(nc.attacker_country_tag_db_ids(), Leaf::Measured(vec![1]));
+        assert_eq!(nc.defender_country_tag_db_ids(), Leaf::Measured(vec![2]));
         assert_eq!(
             nac.sunk_convoys,
             Leaf::Absent,

@@ -388,6 +388,7 @@ name = "replay_fixture_gen"
 version = "0.1.0"
 dependencies = [
  "portable_content_manifest",
+ "portable_render_stream",
  "portable_replay_format",
  "portable_test_fs_retry",
  "serde_json",
