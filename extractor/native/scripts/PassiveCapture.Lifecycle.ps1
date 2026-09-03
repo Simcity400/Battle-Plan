@@ -903,56 +903,153 @@ function Get-PassiveJsonDuplicateKeys {
     return @($ordered)
 }
 
-function Get-PassiveCollectorFeatureAuthorityFromJson {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Json)
+# One payload's wire vocabulary (READY or its ACK), as the binary states it.
+#
+# Nothing here re-pins a contract VALUE. Every check is a property the reader
+# itself must hold: it appends a 32-byte HMAC-SHA256 tag, it writes the length
+# into a u16 prefix field, and a required bit outside the known mask would
+# refuse every receipt instead of reporting the skew.
+function Read-PassiveReadyPayloadVocabulary {
+    param(
+        [Parameter(Mandatory = $true)][AllowNull()]$Section,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
 
-    $duplicateKeys = @(Get-PassiveJsonDuplicateKeys -Json $Json)
-    if ($duplicateKeys.Count -ne 0) {
+    if ($null -eq $Section -or $Section -isnot [psobject] -or
+        $Section -is [array] -or $Section -is [string] -or $Section -is [valuetype]) {
         throw (New-PassiveReadyContractMismatch `
-            -Class 'collector_feature_dialect' `
-            -Field 'collector_feature_authority output' `
-            -Expected 'every object names each key once' `
-            -Observed "duplicated: $($duplicateKeys -join ',')" `
-            -Message 'Collector feature-bit authority repeated a JSON key.')
+            -Class 'passive_ready_authority_dialect' `
+            -Field $Name `
+            -Expected 'a JSON object' `
+            -Observed $(if ($null -eq $Section) { 'null' } else { $Section.GetType().FullName }) `
+            -Message "Passive READY authority did not emit '$Name' as an object.")
     }
-    $parsed = $null
-    try {
-        $parsed = $Json | ConvertFrom-Json
-    } catch {
-        throw (New-PassiveReadyContractMismatch `
-            -Class 'collector_feature_dialect' `
-            -Field 'collector_feature_authority output' `
-            -Expected 'one JSON object' `
-            -Observed "unparseable: $($_.Exception.Message)" `
-            -Message 'Collector feature-bit authority did not emit JSON.')
+    $declared = @('magic', 'version', 'len', 'required_flags', 'known_flags')
+    $present = @($Section.PSObject.Properties.Name)
+    foreach ($field in $declared) {
+        $matched = @($present | Where-Object { $_ -ceq $field })
+        if ($matched.Count -ne 1) {
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'passive_ready_authority_dialect' `
+                -Field "$Name.$field" `
+                -Expected 'present exactly once, exact case' `
+                -Observed "occurrences=$($matched.Count) fields: $($present -join ',')" `
+                -Message "Passive READY authority does not name '$Name.$field' exactly once.")
+        }
     }
-    # ONE OBJECT. Windows PowerShell 5.1 unrolls a top-level JSON array, and a
-    # singleton array collapses to its element -- so `[{...}]` would otherwise be
-    # read as the object it contains, and a multi-element array would silently
-    # take the first.
-    if ($parsed -is [array]) {
+    $unexpected = @($present | Where-Object { $_ -cnotin $declared })
+    if ($unexpected.Count -ne 0) {
         throw (New-PassiveReadyContractMismatch `
-            -Class 'collector_feature_dialect' `
-            -Field 'collector_feature_authority output' `
-            -Expected 'one JSON object' `
-            -Observed "a JSON array of $(@($parsed).Count) element(s)" `
-            -Message 'Collector feature-bit authority emitted an array, not an object.')
+            -Class 'passive_ready_authority_dialect' `
+            -Field $Name `
+            -Expected "exactly the $($declared.Count) declared fields" `
+            -Observed "also carries: $($unexpected -join ',')" `
+            -Message "Passive READY authority emitted an unknown field in '$Name'.")
     }
-    if ($null -eq $parsed -or $parsed -isnot [psobject] -or
-        $parsed -is [string] -or $parsed -is [valuetype]) {
+
+    if ($Section.magic -isnot [string]) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'passive_ready_authority_dialect' `
+            -Field "$Name.magic" `
+            -Expected 'a JSON string' `
+            -Observed $(if ($null -eq $Section.magic) { 'null' } else { $Section.magic.GetType().FullName }) `
+            -Message "Passive READY authority emitted a non-string magic for '$Name'.")
+    }
+    $magic = [string]$Section.magic
+    # Four ASCII graphic characters: the reader writes it with
+    # [Text.Encoding]::ASCII, which turns anything else into '?' on the wire.
+    if ($magic.Length -ne 4 -or
+        @($magic.ToCharArray() | Where-Object {
+            [int]$_ -lt 33 -or [int]$_ -gt 126
+        }).Count -ne 0) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'passive_ready_authority_dialect' `
+            -Field "$Name.magic" `
+            -Expected 'four ASCII graphic characters' `
+            -Observed $magic `
+            -Message "Passive READY authority emitted a magic the reader cannot encode for '$Name'.")
+    }
+
+    $version = ConvertTo-PassiveReceiptInteger $Section.version u32 "$Name.version"
+    if ($version -eq [uint32]0 -or $version -gt [uint32]65535) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'passive_ready_authority_dialect' `
+            -Field "$Name.version" `
+            -Expected 'nonzero and inside the u16 prefix field' `
+            -Observed ([string]$version) `
+            -Message "Passive READY authority emitted a version '$Name' cannot carry.")
+    }
+    $len = ConvertTo-PassiveReceiptInteger $Section.len u32 "$Name.len"
+    # 12-byte prefix plus a 32-byte tag, and the length also rides in a u16.
+    if ($len -le [uint32]44 -or $len -gt [uint32]65535) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'passive_ready_authority_dialect' `
+            -Field "$Name.len" `
+            -Expected 'longer than its 12-byte prefix plus its 32-byte tag, and inside the u16 prefix field' `
+            -Observed ([string]$len) `
+            -Message "Passive READY authority emitted a length the reader cannot rebuild for '$Name'.")
+    }
+    $requiredFlags = ConvertTo-PassiveReceiptInteger `
+        $Section.required_flags u32 "$Name.required_flags"
+    $knownFlags = ConvertTo-PassiveReceiptInteger `
+        $Section.known_flags u32 "$Name.known_flags"
+    if ($knownFlags -eq [uint32]0) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'passive_ready_authority_dialect' `
+            -Field "$Name.known_flags" `
+            -Expected 'at least one known flag' `
+            -Observed '0' `
+            -Message "Passive READY authority named no known flag for '$Name'.")
+    }
+    if ($requiredFlags -eq [uint32]0) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'passive_ready_authority_dialect' `
+            -Field "$Name.required_flags" `
+            -Expected 'at least one required flag' `
+            -Observed '0' `
+            -Message "Passive READY authority requires no flag at all for '$Name'.")
+    }
+    # A required bit outside the known set can never be admitted: a receipt
+    # carrying it is refused as unknown, one omitting it as short.
+    if (($requiredFlags -band (-bnot $knownFlags)) -ne 0) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'passive_ready_authority_dialect' `
+            -Field "$Name.required_flags" `
+            -Expected "inside known_flags 0x$($knownFlags.ToString('x8'))" `
+            -Observed "0x$($requiredFlags.ToString('x8'))" `
+            -Message "Passive READY authority requires a flag it does not know for '$Name'.")
+    }
+
+    return [pscustomobject]@{
+        Magic = $magic
+        Version = [uint16]$version
+        Len = $len
+        # What the reader hashes before appending its own HMAC-SHA256 tag.
+        BodyLen = [uint32]($len - 32)
+        RequiredFlags = $requiredFlags
+        KnownFlags = $knownFlags
+    }
+}
+
+function Read-PassiveCollectorFeatureVocabulary {
+    param([Parameter(Mandatory = $true)][AllowNull()]$Section)
+
+    if ($null -eq $Section -or $Section -isnot [psobject] -or
+        $Section -is [array] -or $Section -is [string] -or $Section -is [valuetype]) {
         throw (New-PassiveReadyContractMismatch `
             -Class 'collector_feature_dialect' `
-            -Field 'collector_feature_authority output' `
-            -Expected 'one JSON object' `
-            -Observed $(if ($null -eq $parsed) { 'null' } else { $parsed.GetType().FullName }) `
-            -Message 'Collector feature-bit authority did not emit a JSON object.')
+            -Field 'collector_features' `
+            -Expected 'a JSON object' `
+            -Observed $(if ($null -eq $Section) { 'null' } else { $Section.GetType().FullName }) `
+            -Message 'Passive READY authority did not emit collector_features as an object.')
     }
     # EXACT-CASE, EXACTLY ONCE. `-notcontains` is case-insensitive and
     # ConvertFrom-Json keeps only the last of duplicate keys, so `"KNOWN_MASK"`
     # or a repeated `"known_mask"` could satisfy a loose check while meaning
     # something the emitter never wrote.
-    $present = @($parsed.PSObject.Properties.Name)
-    foreach ($field in @('schema', 'declared_bit', 'known_mask', 'diagnostic_mask', 'feature_names')) {
+    $declaredFields = @('declared_bit', 'known_mask', 'diagnostic_mask', 'feature_names')
+    $present = @($Section.PSObject.Properties.Name)
+    foreach ($field in $declaredFields) {
         $matched = @($present | Where-Object { $_ -ceq $field })
         if ($matched.Count -ne 1) {
             throw (New-PassiveReadyContractMismatch `
@@ -963,29 +1060,19 @@ function Get-PassiveCollectorFeatureAuthorityFromJson {
                 -Message "Collector feature-bit authority does not name '$field' exactly once.")
         }
     }
-    $unexpected = @($present | Where-Object {
-        $_ -cnotin @('schema', 'declared_bit', 'known_mask', 'diagnostic_mask', 'feature_names')
-    })
+    $unexpected = @($present | Where-Object { $_ -cnotin $declaredFields })
     if ($unexpected.Count -ne 0) {
         throw (New-PassiveReadyContractMismatch `
             -Class 'collector_feature_dialect' `
-            -Field 'collector_feature_authority output' `
-            -Expected 'exactly the five declared fields' `
+            -Field 'collector_features' `
+            -Expected 'exactly the four declared fields' `
             -Observed "also carries: $($unexpected -join ',')" `
             -Message 'Collector feature-bit authority emitted an unknown field.')
     }
-    if ([string]$parsed.schema -cne 'hoi4-collector-feature-authority-v1') {
-        throw (New-PassiveReadyContractMismatch `
-            -Class 'collector_feature_dialect' `
-            -Field 'schema' `
-            -Expected 'hoi4-collector-feature-authority-v1' `
-            -Observed ([string]$parsed.schema) `
-            -Message 'Collector feature-bit authority speaks an unknown schema.')
-    }
 
-    $declaredBit = ConvertTo-PassiveReceiptInteger $parsed.declared_bit u32 'declared_bit'
-    $knownMask = ConvertTo-PassiveReceiptInteger $parsed.known_mask u32 'known_mask'
-    $diagnosticMask = ConvertTo-PassiveReceiptInteger $parsed.diagnostic_mask u32 'diagnostic_mask'
+    $declaredBit = ConvertTo-PassiveReceiptInteger $Section.declared_bit u32 'declared_bit'
+    $knownMask = ConvertTo-PassiveReceiptInteger $Section.known_mask u32 'known_mask'
+    $diagnosticMask = ConvertTo-PassiveReceiptInteger $Section.diagnostic_mask u32 'diagnostic_mask'
 
     if ($declaredBit -ne [uint32]1) {
         throw (New-PassiveReadyContractMismatch `
@@ -1024,18 +1111,18 @@ function Get-PassiveCollectorFeatureAuthorityFromJson {
     # A JSON ARRAY, not something array-shaped. `@(...)` wraps a bare object into
     # a one-element array just as happily, so a `feature_names` that is a single
     # object -- or a string -- would read as a legal one-entry list.
-    if ($parsed.feature_names -isnot [array]) {
+    if ($Section.feature_names -isnot [array]) {
         throw (New-PassiveReadyContractMismatch `
             -Class 'collector_feature_dialect' `
             -Field 'feature_names' `
             -Expected 'a JSON array' `
-            -Observed $(if ($null -eq $parsed.feature_names) { 'null' } else { $parsed.feature_names.GetType().FullName }) `
+            -Observed $(if ($null -eq $Section.feature_names) { 'null' } else { $Section.feature_names.GetType().FullName }) `
             -Message 'Collector feature-bit authority did not emit feature_names as an array.')
     }
     $featureNames = [Collections.Generic.List[object]]::new()
     $namedMask = [uint32]0
     $seenNames = @{}
-    foreach ($entry in @($parsed.feature_names)) {
+    foreach ($entry in @($Section.feature_names)) {
         if ($null -eq $entry -or $entry -isnot [psobject] -or
             $entry -is [array] -or $entry -is [string] -or $entry -is [valuetype]) {
             throw (New-PassiveReadyContractMismatch `
@@ -1154,7 +1241,118 @@ function Get-PassiveCollectorFeatureAuthorityFromJson {
     }
 }
 
-# Ask THE RECORDER HOST for its own feature vocabulary.
+# The whole passive READY wire vocabulary, as one document from one build.
+#
+# The collector features, the readiness flag masks, the ACK flag word and both
+# payload prefixes were PowerShell literals. Three of them drifted and the gate
+# could not see it: it recomputed the same literals, so both sides agreed with
+# each other and not with the binary.
+function Get-PassiveReadyAuthorityFromJson {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Json)
+
+    $duplicateKeys = @(Get-PassiveJsonDuplicateKeys -Json $Json)
+    if ($duplicateKeys.Count -ne 0) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'passive_ready_authority_dialect' `
+            -Field 'passive_ready_authority output' `
+            -Expected 'every object names each key once' `
+            -Observed "duplicated: $($duplicateKeys -join ',')" `
+            -Message 'Passive READY authority repeated a JSON key.')
+    }
+    $parsed = $null
+    try {
+        $parsed = $Json | ConvertFrom-Json
+    } catch {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'passive_ready_authority_dialect' `
+            -Field 'passive_ready_authority output' `
+            -Expected 'one JSON object' `
+            -Observed "unparseable: $($_.Exception.Message)" `
+            -Message 'Passive READY authority did not emit JSON.')
+    }
+    # ONE OBJECT. Windows PowerShell 5.1 unrolls a top-level JSON array, and a
+    # singleton array collapses to its element.
+    if ($parsed -is [array]) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'passive_ready_authority_dialect' `
+            -Field 'passive_ready_authority output' `
+            -Expected 'one JSON object' `
+            -Observed "a JSON array of $(@($parsed).Count) element(s)" `
+            -Message 'Passive READY authority emitted an array, not an object.')
+    }
+    if ($null -eq $parsed -or $parsed -isnot [psobject] -or
+        $parsed -is [string] -or $parsed -is [valuetype]) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'passive_ready_authority_dialect' `
+            -Field 'passive_ready_authority output' `
+            -Expected 'one JSON object' `
+            -Observed $(if ($null -eq $parsed) { 'null' } else { $parsed.GetType().FullName }) `
+            -Message 'Passive READY authority did not emit a JSON object.')
+    }
+    $declaredFields = @('schema', 'collector_features', 'ready', 'ready_ack')
+    $present = @($parsed.PSObject.Properties.Name)
+    foreach ($field in $declaredFields) {
+        $matched = @($present | Where-Object { $_ -ceq $field })
+        if ($matched.Count -ne 1) {
+            throw (New-PassiveReadyContractMismatch `
+                -Class 'passive_ready_authority_dialect' `
+                -Field $field `
+                -Expected 'present exactly once, exact case' `
+                -Observed "occurrences=$($matched.Count) fields: $($present -join ',')" `
+                -Message "Passive READY authority does not name '$field' exactly once.")
+        }
+    }
+    $unexpected = @($present | Where-Object { $_ -cnotin $declaredFields })
+    if ($unexpected.Count -ne 0) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'passive_ready_authority_dialect' `
+            -Field 'passive_ready_authority output' `
+            -Expected 'exactly the four declared fields' `
+            -Observed "also carries: $($unexpected -join ',')" `
+            -Message 'Passive READY authority emitted an unknown field.')
+    }
+    if ([string]$parsed.schema -cne 'hoi4-passive-ready-authority-v1') {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'passive_ready_authority_dialect' `
+            -Field 'schema' `
+            -Expected 'hoi4-passive-ready-authority-v1' `
+            -Observed ([string]$parsed.schema) `
+            -Message 'Passive READY authority speaks an unknown schema.')
+    }
+
+    $ready = Read-PassiveReadyPayloadVocabulary -Section $parsed.ready -Name 'ready'
+    $readyAck = Read-PassiveReadyPayloadVocabulary `
+        -Section $parsed.ready_ack -Name 'ready_ack'
+    # The two payloads share a prefix layout and are told apart by the magic
+    # alone; one magic for both would let either rebuild pass as the other.
+    if ($ready.Magic -ceq $readyAck.Magic) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'passive_ready_authority_dialect' `
+            -Field 'ready_ack.magic' `
+            -Expected "different from ready.magic '$($ready.Magic)'" `
+            -Observed $readyAck.Magic `
+            -Message 'Passive READY authority gives READY and its ACK the same magic.')
+    }
+    if ($ready.Version -ne $readyAck.Version) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'passive_ready_authority_dialect' `
+            -Field 'ready_ack.version' `
+            -Expected "the READY version $($ready.Version)" `
+            -Observed ([string]$readyAck.Version) `
+            -Message 'Passive READY authority versions READY and its ACK differently.')
+    }
+
+    return [pscustomobject]@{
+        CollectorFeatures = (
+            Read-PassiveCollectorFeatureVocabulary -Section $parsed.collector_features
+        )
+        Ready = $ready
+        ReadyAck = $readyAck
+    }
+}
+
+
+# Ask THE RECORDER HOST for its own READY wire vocabulary.
 #
 # `collector_record.exe` and not a tool of its own: the harness must not be able
 # to read one build's vocabulary while admitting another build's receipt. A
@@ -1164,7 +1362,7 @@ function Get-PassiveCollectorFeatureAuthorityFromJson {
 # The recorder host is the binary the harness already requires, already attests,
 # and is about to launch, which makes "same build" structural rather than hoped
 # for.
-function Get-PassiveCollectorFeatureAuthority {
+function Get-PassiveReadyAuthority {
     param(
         [string]$RecorderHostPath = '',
         # Where the child writes its vocabulary. Overridable ONLY so a probe
@@ -1180,11 +1378,11 @@ function Get-PassiveCollectorFeatureAuthority {
     }
     if (-not (Test-Path -LiteralPath $RecorderHostPath -PathType Leaf)) {
         throw (New-PassiveReadyContractMismatch `
-            -Class 'collector_feature_dialect' `
+            -Class 'passive_ready_authority_dialect' `
             -Field 'collector_record.exe' `
             -Expected 'the recorder host is built and readable' `
             -Observed "missing: $RecorderHostPath" `
-            -Message ('Collector feature-bit authority is unavailable ' +
+            -Message ('Passive READY authority is unavailable ' +
                       '(cargo build --release -p recorder_host).'))
     }
     # A FILE, AND `Start-Process -Wait`, because the recorder host is linked
@@ -1194,7 +1392,7 @@ function Get-PassiveCollectorFeatureAuthority {
     # vocabulary as a contract failure on every run. Naming an output path and
     # waiting on the process makes both the payload and the exit code real.
     if ([string]::IsNullOrEmpty($OutputDirectory)) { $OutputDirectory = [IO.Path]::GetTempPath() }
-    $outPath = Join-Path $OutputDirectory ("hoi4_cfa_{0}.json" -f [guid]::NewGuid().ToString('N'))
+    $outPath = Join-Path $OutputDirectory ("hoi4_pra_{0}.json" -f [guid]::NewGuid().ToString('N'))
     $text = ''
     try {
         $process = $null
@@ -1204,19 +1402,19 @@ function Get-PassiveCollectorFeatureAuthority {
             # `C:\Users\Example Doe\...` would arrive as two arguments and the
             # child would write the prefix instead of the file.
             $process = Start-Process -FilePath $RecorderHostPath `
-                -ArgumentList @('--print-collector-feature-authority', ('"' + $outPath + '"')) `
+                -ArgumentList @('--print-passive-ready-authority', ('"' + $outPath + '"')) `
                 -Wait -PassThru -NoNewWindow -ErrorAction Stop
         } catch {
             throw (New-PassiveReadyContractMismatch `
-                -Class 'collector_feature_dialect' `
+                -Class 'passive_ready_authority_dialect' `
                 -Field 'collector_record.exe' `
-                -Expected 'the recorder host runs and states its feature vocabulary' `
+                -Expected 'the recorder host runs and states its READY vocabulary' `
                 -Observed (([string]$_.Exception.Message) -replace '\s+', ' ').Trim() `
-                -Message 'Collector feature-bit authority could not be run.')
+                -Message 'Passive READY authority could not be run.')
         }
         if ($null -eq $process -or $process.ExitCode -ne 0) {
             throw (New-PassiveReadyContractMismatch `
-                -Class 'collector_feature_dialect' `
+                -Class 'passive_ready_authority_dialect' `
                 -Field 'collector_record.exe' `
                 -Expected 'exit code 0' `
                 -Observed $(
@@ -1226,15 +1424,15 @@ function Get-PassiveCollectorFeatureAuthority {
                         "exit=$($process.ExitCode)"
                     }
                 ) `
-                -Message 'Collector feature-bit authority run failed.')
+                -Message 'Passive READY authority run failed.')
         }
         if (-not (Test-Path -LiteralPath $outPath -PathType Leaf)) {
             throw (New-PassiveReadyContractMismatch `
-                -Class 'collector_feature_dialect' `
+                -Class 'passive_ready_authority_dialect' `
                 -Field 'collector_record.exe' `
-                -Expected 'the recorder host wrote its feature vocabulary' `
+                -Expected 'the recorder host wrote its READY vocabulary' `
                 -Observed "no file at $outPath" `
-                -Message 'Collector feature-bit authority wrote nothing.')
+                -Message 'Passive READY authority wrote nothing.')
         }
         $text = (Get-Content -LiteralPath $outPath -Raw)
     } finally {
@@ -1242,7 +1440,7 @@ function Get-PassiveCollectorFeatureAuthority {
             Remove-Item -LiteralPath $outPath -Force -ErrorAction SilentlyContinue
         }
     }
-    return (Get-PassiveCollectorFeatureAuthorityFromJson $text)
+    return (Get-PassiveReadyAuthorityFromJson $text)
 }
 
 # The producer's feature word as it rides the wire at CaptureReadyV2 offset 20.
@@ -1377,14 +1575,16 @@ function Add-PassiveHmacSha256 {
 function Get-PassiveCaptureReadyPayloadSha256 {
     param(
         [Parameter(Mandatory = $true)][object]$Ready,
-        [Parameter(Mandatory = $true)][string]$PipeToken
+        [Parameter(Mandatory = $true)][string]$PipeToken,
+        [Parameter(Mandatory = $true)][object]$Authority
     )
 
+    $layout = $Authority.Ready
     $bytes = [Collections.Generic.List[byte]]::new()
-    $bytes.AddRange([Text.Encoding]::ASCII.GetBytes('H4RD'))
-    Add-PassiveLittleEndianBytes $bytes u16 ([uint16]2)
-    Add-PassiveLittleEndianBytes $bytes u16 ([uint16]512)
-    Add-PassiveLittleEndianBytes $bytes u32 ([uint32]512)
+    $bytes.AddRange([Text.Encoding]::ASCII.GetBytes($layout.Magic))
+    Add-PassiveLittleEndianBytes $bytes u16 ([uint16]$layout.Version)
+    Add-PassiveLittleEndianBytes $bytes u16 ([uint16]$layout.Len)
+    Add-PassiveLittleEndianBytes $bytes u32 ([uint32]$layout.Len)
     Add-PassiveLittleEndianBytes $bytes u32 (
         ConvertTo-PassiveReceiptInteger $Ready.readiness_flags u32 `
             'readiness_flags'
@@ -1466,28 +1666,40 @@ function Get-PassiveCaptureReadyPayloadSha256 {
     )) {
         Add-PassiveSha256Bytes $bytes ([string]$Ready.$field)
     }
-    if ($bytes.Count -ne 480) {
-        throw "Passive READY authenticated body is $($bytes.Count) bytes, not 480."
+    if ($bytes.Count -ne [int]$layout.BodyLen) {
+        throw ("Passive READY authenticated body is $($bytes.Count) bytes, " +
+            "not $($layout.BodyLen).")
     }
     Add-PassiveHmacSha256 $bytes $PipeToken
-    if ($bytes.Count -ne 512) {
-        throw "Passive READY authenticated payload is $($bytes.Count) bytes, not 512."
+    if ($bytes.Count -ne [int]$layout.Len) {
+        throw ("Passive READY authenticated payload is $($bytes.Count) bytes, " +
+            "not $($layout.Len).")
     }
     return Get-PassiveBytesSha256 $bytes.ToArray()
 }
 
+# The host's ACK to the collector's READY, rebuilt so `ready_ack_sha256` can be
+# compared.
+#
+# THE FLAGS WORD IS THE CONTRACT'S, NOT A LITERAL. It was `1` here while
+# `CaptureReadyAckFlags::REQUIRED_HOST_VALIDATION` became
+# HOST_VALIDATED|HOURLY_SERVICE_TRANSPORT = 3 (master af128a9d), so every
+# capture from that commit on was refused on `ready_ack_sha256` -- and the gate
+# recomputed the same 1, so both agreed with each other and not with the binary.
 function Get-PassiveCaptureReadyAckSha256 {
     param(
         [Parameter(Mandatory = $true)][object]$Ready,
-        [Parameter(Mandatory = $true)][string]$PipeToken
+        [Parameter(Mandatory = $true)][string]$PipeToken,
+        [Parameter(Mandatory = $true)][object]$Authority
     )
 
+    $layout = $Authority.ReadyAck
     $bytes = [Collections.Generic.List[byte]]::new()
-    $bytes.AddRange([Text.Encoding]::ASCII.GetBytes('H4RA'))
-    Add-PassiveLittleEndianBytes $bytes u16 ([uint16]2)
-    Add-PassiveLittleEndianBytes $bytes u16 ([uint16]168)
-    Add-PassiveLittleEndianBytes $bytes u32 ([uint32]168)
-    Add-PassiveLittleEndianBytes $bytes u32 ([uint32]1)
+    $bytes.AddRange([Text.Encoding]::ASCII.GetBytes($layout.Magic))
+    Add-PassiveLittleEndianBytes $bytes u16 ([uint16]$layout.Version)
+    Add-PassiveLittleEndianBytes $bytes u16 ([uint16]$layout.Len)
+    Add-PassiveLittleEndianBytes $bytes u32 ([uint32]$layout.Len)
+    Add-PassiveLittleEndianBytes $bytes u32 ([uint32]$layout.RequiredFlags)
     Add-PassiveLittleEndianBytes $bytes u32 (
         ConvertTo-PassiveReceiptInteger $Ready.pid u32 'pid'
     )
@@ -1511,14 +1723,36 @@ function Get-PassiveCaptureReadyAckSha256 {
     Add-PassiveSha256Bytes `
         $bytes ([string]$Ready.public_receipt_core_sha256)
     Add-PassiveSha256Bytes $bytes ([string]$Ready.session_id_sha256)
-    if ($bytes.Count -ne 136) {
-        throw "Passive READY ACK authenticated body is $($bytes.Count) bytes, not 136."
+    if ($bytes.Count -ne [int]$layout.BodyLen) {
+        throw ("Passive READY ACK authenticated body is $($bytes.Count) bytes, " +
+            "not $($layout.BodyLen).")
     }
     Add-PassiveHmacSha256 $bytes $PipeToken
-    if ($bytes.Count -ne 168) {
-        throw "Passive READY ACK is $($bytes.Count) bytes, not 168."
+    if ($bytes.Count -ne [int]$layout.Len) {
+        throw "Passive READY ACK is $($bytes.Count) bytes, not $($layout.Len)."
     }
     return Get-PassiveBytesSha256 $bytes.ToArray()
+}
+
+# The canonical pinned hook roster, read from the contract this checkout ships.
+#
+# Its own function because the refusal path needs the roster WITHOUT the rest of
+# the parity scan: a capture whose READY receipt was refused still has to bind
+# the collector's restoration receipt to a roster it did not write.
+function Get-PassivePinnedHookAllowlistAuthority {
+    $contractPath = Join-Path `
+        ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))) `
+        'compact_contract\src\passive_ready.rs'
+    if (-not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
+        throw (New-PassiveReadyContractMismatch `
+            -Class 'producer_sources' `
+            -Field 'compact_contract/src/passive_ready.rs' `
+            -Expected 'the pinned hook roster source is readable' `
+            -Observed "missing: $contractPath" `
+            -Message 'Passive pinned hook roster source is unavailable.')
+    }
+    return (Get-PassivePinnedHookAllowlistAuthorityFromSource `
+        (Get-Content -LiteralPath $contractPath -Raw))
 }
 
 function Assert-PassiveReadySourceContractParity {
@@ -1613,11 +1847,9 @@ function Assert-PassiveReadySourceContractParity {
             -Message 'Passive READY verifier build-profile input differs from compact_contract.')
     }
     foreach ($fragment in @(
-        'pub const CAPTURE_READY_MAGIC: &[u8; 4] = b"H4RD";',
-        'pub const CAPTURE_READY_ACK_MAGIC: &[u8; 4] = b"H4RA";',
-        'pub const CAPTURE_READY_VERSION: u16 = 2;',
-        'pub const CAPTURE_READY_LEN: usize = 512;',
-        'pub const CAPTURE_READY_ACK_LEN: usize = 168;',
+        # The prefix constants are NOT pinned here. They are values, and a value
+        # restated in PowerShell is the drift this file keeps losing captures
+        # to; Get-PassiveReadyAuthority reads them from the build instead.
         # The DECODE side of offset 20, pinned so the feature word cannot move
         # or quietly go back to reserved-must-be-zero without this file hearing
         # about it. The ACK's own offset-20 reserved check is pinned beside it:
@@ -1644,7 +1876,7 @@ function Assert-PassiveReadySourceContractParity {
     # failure, reported before a capture opens a graded window, rather than a
     # surprise in the middle of receipt admission. It comes from the contract's
     # own emitter now, not from $payload -- there is no Rust text left to parse.
-    [void](Get-PassiveCollectorFeatureAuthority)
+    [void](Get-PassiveReadyAuthority)
     $readyEncoderStart = $payload.IndexOf('impl CaptureReadyV2 {')
     $readyEncoderEnd = $payload.IndexOf(
         'pub struct CaptureReadyAckFlags',
@@ -2105,7 +2337,10 @@ function Test-PassiveCaptureReadyReceipt {
         -Ready $ready `
         -ExpectedProperties $readyProperties `
         -Label 'CaptureReadyV2 receipt'
-    $featureAuthority = Get-PassiveCollectorFeatureAuthority
+    $readyAuthority = Get-PassiveReadyAuthority
+    $featureAuthority = $readyAuthority.CollectorFeatures
+    $requiredReadinessFlags = [uint32]$readyAuthority.Ready.RequiredFlags
+    $knownReadinessFlags = [uint32]$readyAuthority.Ready.KnownFlags
 
     $digestFields = @(
         'target_executable_sha256', 'collector_dll_sha256',
@@ -2207,10 +2442,12 @@ function Test-PassiveCaptureReadyReceipt {
     $expectedControlSha = Get-PassiveBytesSha256 $collectorControlBytes
     $expectedReadyPayloadSha = Get-PassiveCaptureReadyPayloadSha256 `
         -Ready $ready `
-        -PipeToken $pipeToken
+        -PipeToken $pipeToken `
+        -Authority $readyAuthority
     $expectedReadyAckSha = Get-PassiveCaptureReadyAckSha256 `
         -Ready $ready `
-        -PipeToken $pipeToken
+        -PipeToken $pipeToken `
+        -Authority $readyAuthority
 
     $hostBindingBytes = [Collections.Generic.List[byte]]::new()
     $utf8 = [Text.UTF8Encoding]::new($false)
@@ -2308,17 +2545,15 @@ function Test-PassiveCaptureReadyReceipt {
     # harness here cannot bind to this host at all.
     Add-PassiveAdmissionFailure $custodyFailures 'requested_duration_ms' `
         ($duration -ne $RequestedDurationMs) $RequestedDurationMs $duration
-    # 255 is the complete REQUIRED_PASSIVE_CAPTURE set and every bit of it is
-    # mandatory. Bit 8 (256) is IDENTITY_V1_STREAM, which is OPTIONAL by design:
-    # the collector sets it only when the stream it has already begun carries a
-    # CID1 campaign identity, and a campaign identity that cannot be read must
-    # cost the identity, never the recording. Pinning this field to exactly 255
-    # refused every capture that DID obtain its identity -- observed live on
-    # t80, expected='255' actual='511' -- which is the opposite of what the
-    # optional bit is for. Required bits must all be present; no bit outside the
-    # known mask (511) may be.
+    # REQUIRED AND KNOWN COME FROM THE BINARY. Pinned literals here refused
+    # every capture twice: 255/511 could not admit a receipt that had obtained
+    # its campaign identity (bit 8), and then could not admit the contract's own
+    # 767/1023 once HOURLY_SERVICE_TRANSPORT took bit 9. Required bits must all
+    # be present; no bit outside the known mask may be.
     Add-PassiveAdmissionFailure $gradingFailures 'readiness_flags' `
-        ((($flags -band 255) -ne 255) -or (($flags -band 511) -ne $flags)) 255 $flags
+        ((($flags -band $requiredReadinessFlags) -ne $requiredReadinessFlags) -or
+            (($flags -band $knownReadinessFlags) -ne $flags)) `
+        $requiredReadinessFlags $flags
     Add-PassiveAdmissionFailure $gradingFailures 'validated_domain_count' `
         ($domainCount -ne [uint32]$ScheduledDomainNames.Count) `
         ([uint32]$ScheduledDomainNames.Count) $domainCount

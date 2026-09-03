@@ -1233,6 +1233,46 @@ mod tests {
         assert_ne!(thirteen, thousand);
     }
 
+    /// The ACK digest the harness rebuilds for the t36 fixture receipt.
+    ///
+    /// `PassiveCaptureReady.ReceiptDialects.fixture.v1.json` pins this value, so
+    /// the PowerShell rebuild is compared against the CONTRACT's encoder rather
+    /// than against itself. The flags word is the constant that drifted: it was
+    /// HOST_VALIDATED alone when t36 was recorded, and a harness still hashing a
+    /// literal 1 cannot match any collector built since af128a9d.
+    #[test]
+    fn passive_capture_ready_ack_pins_the_harness_rebuild_vector() {
+        let token = b"f743c8f124d2572ad18b99db033554ba";
+        let ack = CaptureReadyAckV2 {
+            flags: CaptureReadyAckFlags::from_bits(
+                CaptureReadyAckFlags::REQUIRED_HOST_VALIDATION,
+            )
+            .unwrap(),
+            pid: 58_600,
+            process_creation_filetime_utc: 134_305_757_425_608_784,
+            requested_duration_ms: 60_000,
+            validated_domain_count: 68,
+            ready_sha256: hex32(
+                "55e105a8d591382acc9e3f18d3b87fe5df006a6d4691303f749a7e5ffe95a4d8",
+            ),
+            public_receipt_core_sha256: hex32(
+                "cee1e36f25b799587649a3442d7dc10b31ea5e4b01033dd0c7524a6c5e9c4d39",
+            ),
+            session_id_sha256: hex32(
+                "66421854a8a3ec616d7b419b52c11a77162c0248ce2e79b4a3177660f5b28f20",
+            ),
+        };
+        let wire = ack
+            .encode_authenticated(token)
+            .expect("the t36 ACK fields are a valid CaptureReadyAckV2");
+        assert_eq!(wire.len(), CAPTURE_READY_ACK_LEN);
+        assert_eq!(read_u32(&wire, 12), CaptureReadyAckFlags::REQUIRED_HOST_VALIDATION);
+        assert_eq!(
+            to_hex32(&capture_ready_payload_sha256(&wire)),
+            "64d2a2998010384208e24be5c1ed94b24e9aba6863b8f492271274ef066e21b1"
+        );
+    }
+
     fn ready_fields() -> CaptureReadyV2 {
         CaptureReadyV2 {
             flags: CaptureReadyFlags::from_bits(CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE)

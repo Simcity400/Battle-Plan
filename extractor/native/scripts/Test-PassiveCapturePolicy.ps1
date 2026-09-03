@@ -259,6 +259,12 @@ foreach ($requiredFunction in @(
     # testable at all; inlining it back into the caller is the regression.
     'Assert-PassiveCaptureReadyReceiptShape',
     'Assert-PassiveReadySourceContractParity',
+    # The READY vocabulary reader and its two section readers. The masks, the
+    # ACK flags word and both payload prefixes come from the shipped binary
+    # through these; inlining any of them back as a literal is the class.
+    'Get-PassiveReadyAuthorityFromJson',
+    'Read-PassiveReadyPayloadVocabulary',
+    'Read-PassiveCollectorFeatureVocabulary',
     'Assert-PassiveExactPropertySet'
 )) {
     Assert-Policy `
@@ -297,9 +303,8 @@ foreach ($required in @(
     'PRODUCTION_PROPOSAL_POOL_CAPACITY_BYTES_V1: u64 = 256 * 1024 * 1024',
     'Assert-PassiveReadySourceContractParity',
     'CAPTURE_READY_MAGIC',
-    'CAPTURE_READY_ACK_MAGIC',
     'CAPTURE_READY_LEN',
-    'CAPTURE_READY_ACK_LEN',
+    'hoi4-passive-ready-authority-v1',
     'Get-PassiveCaptureReadyPayloadSha256',
     'Get-PassiveCaptureReadyAckSha256',
     'Assert-PassiveExactPropertySet'
@@ -313,7 +318,16 @@ foreach ($required in @(
 }
 foreach ($retired in @(
     'clock_tick',
-    'hoi4.collector.production.zero-client-mutation.v1'
+    'hoi4.collector.production.zero-client-mutation.v1',
+    # THE VALUES THE BINARY NOW STATES. Each of these was a PowerShell literal
+    # for a contract constant, and three of them drifted and refused captures.
+    # Reintroducing any spelling of them is the defect, not a style question.
+    "ASCII.GetBytes('H4RD')",
+    "ASCII.GetBytes('H4RA')",
+    'pub const CAPTURE_READY_LEN: usize = 512;',
+    'pub const CAPTURE_READY_ACK_LEN: usize = 168;',
+    'pub const CAPTURE_READY_VERSION: u16 = 2;',
+    'hoi4-collector-feature-authority-v1'
 )) {
     Assert-Policy `
         -Condition ($lifecycle.IndexOf(
@@ -351,12 +365,34 @@ Assert-Policy `
         [uint16]$policyHookAuthority.ImportSlotCount -gt 0 -and
         [string]$policyHookAuthority.Sha256 -cmatch '^[0-9a-f]{64}$') `
     -Message 'Passive READY source-contract parity returned no hook authority.'
-$policyFeatureAuthority = Get-PassiveCollectorFeatureAuthority
+$policyReadyAuthority = Get-PassiveReadyAuthority
+$policyFeatureAuthority = $policyReadyAuthority.CollectorFeatures
 Assert-Policy `
     -Condition ([uint32]$policyFeatureAuthority.DeclaredBit -eq 1 -and
         [uint32]$policyFeatureAuthority.KnownMask -ge 1 -and
         @($policyFeatureAuthority.FeatureNames).Count -gt 0) `
     -Message 'Collector feature-bit authority could not be read from the contract.'
+# THE GATE MUST NOT RECOMPUTE THESE. It refused nothing while both sides shared
+# the same stale PowerShell constants, so what is asserted here is only that the
+# binary stated a self-consistent vocabulary -- the values themselves are its
+# to choose, and the Rust side pins them against the contract.
+foreach ($layout in @(
+    @{ Name = 'ready'; Value = $policyReadyAuthority.Ready },
+    @{ Name = 'ready_ack'; Value = $policyReadyAuthority.ReadyAck }
+)) {
+    Assert-Policy `
+        -Condition ([string]$layout.Value.Magic -cmatch '^[!-~]{4}$' -and
+            [uint32]$layout.Value.Len -gt [uint32]44 -and
+            [uint32]$layout.Value.BodyLen -eq [uint32]($layout.Value.Len - 32) -and
+            [uint32]$layout.Value.RequiredFlags -ne 0 -and
+            ([uint32]$layout.Value.RequiredFlags -band
+                (-bnot [uint32]$layout.Value.KnownFlags)) -eq 0) `
+        -Message "The recorder host's '$($layout.Name)' wire vocabulary is not usable: magic=$($layout.Value.Magic) len=$($layout.Value.Len) required=$($layout.Value.RequiredFlags) known=$($layout.Value.KnownFlags)."
+}
+Assert-Policy `
+    -Condition ([string]$policyReadyAuthority.Ready.Magic -cne
+        [string]$policyReadyAuthority.ReadyAck.Magic) `
+    -Message 'READY and its ACK were given the same magic; either rebuild would pass as the other.'
 
 # 2. The payload rebuild against receipts it did not produce. The expected
 #    digests are the receipts' OWN recorded values, so the only way to satisfy
@@ -434,7 +470,8 @@ foreach ($case in $dialectCases) {
     if ($null -ne $case.expected_ready_payload_sha256) {
         $observedPayloadSha = Get-PassiveCaptureReadyPayloadSha256 `
             -Ready $receipt `
-            -PipeToken ([string]$dialectFixture.pipe_token)
+            -PipeToken ([string]$dialectFixture.pipe_token) `
+            -Authority $policyReadyAuthority
         Assert-Policy `
             -Condition ($observedPayloadSha -ceq
                 [string]$case.expected_ready_payload_sha256) `
@@ -454,7 +491,8 @@ foreach ($case in $dialectCases) {
     if ($null -ne $case.expected_ready_ack_sha256) {
         $observedAckSha = Get-PassiveCaptureReadyAckSha256 `
             -Ready $receipt `
-            -PipeToken ([string]$dialectFixture.pipe_token)
+            -PipeToken ([string]$dialectFixture.pipe_token) `
+            -Authority $policyReadyAuthority
         Assert-Policy `
             -Condition ($observedAckSha -ceq
                 [string]$case.expected_ready_ack_sha256) `
@@ -568,7 +606,9 @@ Assert-Policy `
 $namedRefusalFunctions = @(
     'Assert-PassiveReadySourceContractParity',
     'Assert-PassiveProducerFragment',
-    'Get-PassiveCollectorFeatureAuthorityFromJson'
+    'Get-PassiveReadyAuthorityFromJson',
+    'Read-PassiveReadyPayloadVocabulary',
+    'Read-PassiveCollectorFeatureVocabulary'
 )
 foreach ($functionName in $namedRefusalFunctions) {
     $definition = @(
@@ -657,45 +697,120 @@ Assert-Policy `
 #       emits its compiled constants as JSON and this file reads them, so what a
 #       drift probe has to exercise now is the READER's fail-closed behaviour on
 #       a vocabulary it must not admit, not a regex against source text.
-$authorityJson = '{"schema":"hoi4-collector-feature-authority-v1","declared_bit":1,' +
-    '"known_mask":7,"diagnostic_mask":6,"feature_names":' +
+$featureVocabulary = '"collector_features":{"declared_bit":1,"known_mask":7,' +
+    '"diagnostic_mask":6,"feature_names":' +
     '[{"bit":2,"cargo_name":"test-support"},{"bit":4,"cargo_name":"range-tracer"}]}'
+$readyVocabulary = '"ready":{"magic":"H4RD","version":2,"len":512,' +
+    '"required_flags":767,"known_flags":1023}'
+$ackVocabulary = '"ready_ack":{"magic":"H4RA","version":2,"len":168,' +
+    '"required_flags":3,"known_flags":3}'
+$authorityJson = '{"schema":"hoi4-passive-ready-authority-v1",' +
+    $featureVocabulary + ',' + $readyVocabulary + ',' + $ackVocabulary + '}'
 Assert-Policy `
-    -Condition ($null -ne (Get-PassiveCollectorFeatureAuthorityFromJson $authorityJson)) `
-    -Message 'The collector feature authority reader rejects a well-formed vocabulary; this drift probe is testing nothing.'
+    -Condition ($null -ne (Get-PassiveReadyAuthorityFromJson $authorityJson)) `
+    -Message 'The READY vocabulary reader rejects a well-formed document; this drift probe is testing nothing.'
 
-#       Each of these is a vocabulary the reader MUST refuse, and each is a way a
-#       truncated or edited emission could otherwise narrow the mask and make a
-#       real feature bit look unknown -- or make a diagnostic build look clean.
+#       Each of these is a vocabulary the reader MUST refuse. The collector
+#       cases narrow the mask or make a diagnostic build look clean; the READY
+#       and ACK cases are shapes that would put a wrong flags word or a wrong
+#       prefix into a payload rebuild, which is exactly what refused e2e_01.
 $driftCases = @(
-    @{ Field = 'DIAGNOSTIC_MASK'
+    @{ Class = 'collector_feature_dialect'
+       Field = 'DIAGNOSTIC_MASK'
        Json  = $authorityJson.Replace('"diagnostic_mask":6', '"diagnostic_mask":4') },
-    @{ Field = 'FEATURE_NAMES coverage'
+    @{ Class = 'collector_feature_dialect'
+       Field = 'FEATURE_NAMES coverage'
        Json  = $authorityJson.Replace(',{"bit":4,"cargo_name":"range-tracer"}', '') },
-    @{ Field = 'DECLARED'
+    @{ Class = 'collector_feature_dialect'
+       Field = 'DECLARED'
        Json  = $authorityJson.Replace('"declared_bit":1', '"declared_bit":2') },
     # Shapes ConvertFrom-Json will happily hand back but the emitter cannot
     # produce. Each one would otherwise be read as a legal vocabulary.
-    @{ Field = 'feature_names[].bit'
+    @{ Class = 'collector_feature_dialect'
+       Field = 'feature_names[].bit'
        Json  = $authorityJson.Replace(
                  '[{"bit":2,"cargo_name":"test-support"},{"bit":4,"cargo_name":"range-tracer"}]',
                  '[{"bit":6,"cargo_name":"both"}]') },
-    @{ Field = 'feature_names'
+    @{ Class = 'collector_feature_dialect'
+       Field = 'feature_names'
        Json  = $authorityJson.Replace(
                  '[{"bit":2,"cargo_name":"test-support"},{"bit":4,"cargo_name":"range-tracer"}]',
                  '{"bit":2,"cargo_name":"test-support"}') },
-    @{ Field = 'feature_names[].cargo_name'
+    @{ Class = 'collector_feature_dialect'
+       Field = 'feature_names[].cargo_name'
        Json  = $authorityJson.Replace('"cargo_name":"range-tracer"', '"cargo_name":4') },
-    @{ Field = 'known_mask'
-       Json  = $authorityJson.Replace('"known_mask"', '"KNOWN_MASK"') },
-    @{ Field = 'collector_feature_authority output'
-       Json  = '[' + $authorityJson + ']' }
+    @{ Class = 'collector_feature_dialect'
+       Field = 'known_mask'
+       Json  = $authorityJson.Replace('"known_mask":7', '"KNOWN_MASK":7') },
+    @{ Class = 'passive_ready_authority_dialect'
+       Field = 'passive_ready_authority output'
+       Json  = '[' + $authorityJson + ']' },
+    @{ Class = 'passive_ready_authority_dialect'
+       Field = 'collector_features'
+       Json  = '{"schema":"hoi4-passive-ready-authority-v1",' + $readyVocabulary +
+               ',' + $ackVocabulary + '}' },
+    @{ Class = 'passive_ready_authority_dialect'
+       Field = 'ready'
+       Json  = '{"schema":"hoi4-passive-ready-authority-v1",' + $featureVocabulary +
+               ',' + $ackVocabulary + '}' },
+    @{ Class = 'passive_ready_authority_dialect'
+       Field = 'ready_ack'
+       Json  = '{"schema":"hoi4-passive-ready-authority-v1",' + $featureVocabulary +
+               ',' + $readyVocabulary + '}' },
+    @{ Class = 'passive_ready_authority_dialect'
+       Field = 'schema'
+       Json  = $authorityJson.Replace(
+                 'hoi4-passive-ready-authority-v1',
+                 'hoi4-collector-feature-authority-v1') },
+    # A required bit the vocabulary does not know: no receipt can satisfy it, so
+    # every capture would refuse instead of the skew being reported.
+    @{ Class = 'passive_ready_authority_dialect'
+       Field = 'ready.required_flags'
+       Json  = $authorityJson.Replace('"required_flags":767', '"required_flags":2047') },
+    @{ Class = 'passive_ready_authority_dialect'
+       Field = 'ready_ack.required_flags'
+       Json  = $authorityJson.Replace(
+                 '"required_flags":3,"known_flags":3',
+                 '"required_flags":0,"known_flags":3') },
+    @{ Class = 'passive_ready_authority_dialect'
+       Field = 'ready_ack.known_flags'
+       Json  = $authorityJson.Replace(
+                 '"required_flags":3,"known_flags":3',
+                 '"required_flags":3,"known_flags":0') },
+    # A payload shorter than its own prefix plus tag, and one that will not fit
+    # the u16 the prefix carries the length in.
+    @{ Class = 'passive_ready_authority_dialect'
+       Field = 'ready.len'
+       Json  = $authorityJson.Replace('"len":512', '"len":32') },
+    @{ Class = 'passive_ready_authority_dialect'
+       Field = 'ready_ack.len'
+       Json  = $authorityJson.Replace('"len":168', '"len":70000') },
+    @{ Class = 'passive_ready_authority_dialect'
+       Field = 'ready.version'
+       Json  = $authorityJson.Replace('"magic":"H4RD","version":2', '"magic":"H4RD","version":0') },
+    @{ Class = 'passive_ready_authority_dialect'
+       Field = 'ready.magic'
+       Json  = $authorityJson.Replace('"magic":"H4RD"', '"magic":"H4R"') },
+    # ONE MAGIC FOR BOTH PAYLOADS. The two share a prefix layout, so either
+    # rebuild would pass as the other.
+    @{ Class = 'passive_ready_authority_dialect'
+       Field = 'ready_ack.magic'
+       Json  = $authorityJson.Replace('"magic":"H4RA"', '"magic":"H4RD"') },
+    @{ Class = 'passive_ready_authority_dialect'
+       Field = 'ready_ack.version'
+       Json  = $authorityJson.Replace('"magic":"H4RA","version":2', '"magic":"H4RA","version":3') },
+    @{ Class = 'passive_ready_authority_dialect'
+       Field = 'ready.magic'
+       Json  = $authorityJson.Replace('"magic":"H4RD"', '"magic":4') },
+    @{ Class = 'passive_ready_authority_dialect'
+       Field = 'ready'
+       Json  = $authorityJson.Replace($readyVocabulary, '"ready":[]') }
 )
 $singleClauseDrift = $null
 foreach ($driftCase in $driftCases) {
     $driftRefusal = $null
     try {
-        [void](Get-PassiveCollectorFeatureAuthorityFromJson $driftCase.Json)
+        [void](Get-PassiveReadyAuthorityFromJson $driftCase.Json)
     } catch {
         $driftRefusal = New-PassiveReadyRefusalRecord `
             -ErrorRecord $_ `
@@ -704,18 +819,56 @@ foreach ($driftCase in $driftCases) {
     }
     Assert-Policy `
         -Condition ($null -ne $driftRefusal) `
-        -Message "A collector feature vocabulary that drifted $($driftCase.Field) was ACCEPTED by the reader."
+        -Message "A READY vocabulary that drifted $($driftCase.Field) was ACCEPTED by the reader."
     Assert-Policy `
-        -Condition ([string]$driftRefusal.class -ceq 'collector_feature_dialect') `
-        -Message "A drifted collector feature vocabulary was classified '$($driftRefusal.class)', not 'collector_feature_dialect'."
+        -Condition ([string]$driftRefusal.class -ceq $driftCase.Class) `
+        -Message "A drifted READY vocabulary ($($driftCase.Field)) was classified '$($driftRefusal.class)', not '$($driftCase.Class)'."
     Assert-Policy `
         -Condition (@($driftRefusal.clauses).Count -eq 1 -and
             [string]@($driftRefusal.clauses)[0].field -ceq $driftCase.Field) `
-        -Message "A drifted collector feature vocabulary did not name $($driftCase.Field) as the field: $(@($driftRefusal.clauses) | ForEach-Object { $_.field })"
+        -Message "A drifted READY vocabulary did not name $($driftCase.Field) as the field: $(@($driftRefusal.clauses) | ForEach-Object { $_.field })"
     # Kept for the JSON round-trip check below, chosen BY NAME rather than by
     # being whichever case the loop happened to run last.
     if ($driftCase.Field -ceq 'DECLARED') { $singleClauseDrift = $driftRefusal }
 }
+
+#    c1) THE VOCABULARY REACHES THE PAYLOAD. A reader that admits the document
+#        and then ignores it is the same defect one layer along, and the two
+#        digests below are exactly the ones e2e_01 was refused on.
+$driftReceipt = $dialectCases[0].receipt
+$baselineAck = Get-PassiveCaptureReadyAckSha256 `
+    -Ready $driftReceipt `
+    -PipeToken ([string]$dialectFixture.pipe_token) `
+    -Authority $policyReadyAuthority
+foreach ($reach in @(
+    @{ Name  = 'ready_ack.required_flags'
+       Json  = $authorityJson.Replace(
+                 '"required_flags":3,"known_flags":3',
+                 '"required_flags":1,"known_flags":3') },
+    @{ Name  = 'ready_ack.magic'
+       Json  = $authorityJson.Replace('"magic":"H4RA"', '"magic":"H4RB"') }
+)) {
+    $mutated = Get-PassiveReadyAuthorityFromJson $reach.Json
+    $mutatedAck = Get-PassiveCaptureReadyAckSha256 `
+        -Ready $driftReceipt `
+        -PipeToken ([string]$dialectFixture.pipe_token) `
+        -Authority $mutated
+    Assert-Policy `
+        -Condition ($mutatedAck -cne $baselineAck) `
+        -Message "Changing $($reach.Name) did not change the rebuilt ready_ack_sha256; the ACK rebuild is not reading the authority."
+}
+$mutatedReady = Get-PassiveReadyAuthorityFromJson `
+    ($authorityJson.Replace('"magic":"H4RD"', '"magic":"H4RE"'))
+Assert-Policy `
+    -Condition ((Get-PassiveCaptureReadyPayloadSha256 `
+            -Ready $driftReceipt `
+            -PipeToken ([string]$dialectFixture.pipe_token) `
+            -Authority $mutatedReady) -cne
+        (Get-PassiveCaptureReadyPayloadSha256 `
+            -Ready $driftReceipt `
+            -PipeToken ([string]$dialectFixture.pipe_token) `
+            -Authority $policyReadyAuthority)) `
+    -Message 'Changing ready.magic did not change the rebuilt ready_payload_sha256; the payload rebuild is not reading the authority.'
 
 #    c2) A RECEIPT WITHOUT `install_freeze_count` IS REFUSED BY NAME.
 #
@@ -750,7 +903,8 @@ $freezeProbes = @(
     @{ Name = 'the payload rebuild'; Action = {
             [void](Get-PassiveCaptureReadyPayloadSha256 `
                 -Ready $freezelessReceipt `
-                -PipeToken ([string]$dialectFixture.pipe_token))
+                -PipeToken ([string]$dialectFixture.pipe_token) `
+                -Authority $policyReadyAuthority)
         } },
     @{ Name = 'the receipt-shape admission'; Action = {
             Assert-PassiveCaptureReadyReceiptShape `

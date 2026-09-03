@@ -1309,13 +1309,11 @@ $rosterTool = Join-Path $releaseRoot 'domain_roster.exe'
 if (-not (Test-Path -LiteralPath $rosterTool -PathType Leaf)) {
     throw "Production roster tool is missing: $rosterTool (cargo build --release -p recorder_host)"
 }
-# Read HERE rather than at ready validation. The recorder host's own feature
-# vocabulary is what admits the CaptureReadyV2 receipt, so a host that cannot
-# state it would otherwise launch the game, settle, inject, and only then
-# refuse -- which is how rc_vanilla8's first attempt burned 11 minutes. It is
-# the same `$collectorRecord` this attempt is about to run, so there is no
-# second artifact to go stale.
-[void](Get-PassiveCollectorFeatureAuthority -RecorderHostPath $collectorRecord)
+# Read HERE rather than at ready validation. This binary's READY vocabulary is
+# what admits the CaptureReadyV2 receipt, so a host that cannot state it would
+# otherwise launch the game, settle, inject, and only then refuse -- which is
+# how rc_vanilla8's first attempt burned 11 minutes.
+[void](Get-PassiveReadyAuthority -RecorderHostPath $collectorRecord)
 if ($ScheduledDomainOverride.Count -gt 0) {
     # `powershell -File` binds a comma-joined argument as ONE literal string —
     # it never gets PowerShell's array splitting. The 2026-07-26 crash trials
@@ -1682,6 +1680,203 @@ function Assert-PassiveWitnessVerdict {
         $reason = "the verdict authority exited $($result.ExitCode) without a reason"
     }
     throw "Passive capture stopped. $reason"
+}
+
+# Is the collector provably out of the client, WITHOUT an admitted teardown
+# receipt?
+#
+# The graded window exists so nothing touches the client while hook custody is
+# unresolved, and everything the harness owes an operator afterwards -- stopping
+# the game it launched, releasing the settings guard, giving the affinity mask
+# back -- is gated on closing it. A READY receipt the verifier cannot admit is
+# not evidence that the hooks are still in: e2e_01 was refused on two stale
+# PowerShell constants while HOOK_RESTORATION_OUTCOMES_V1.json beside it recorded
+# 64 of 64 pinned sites and 2 of 2 import slots back at their baseline digest and
+# the collector module unloaded. The harness held the window open anyway, so it
+# left the game running and settings.txt read-only for a human to reason about
+# from receipts by hand.
+#
+# The recorder must have EXITED first: a live one still owns the lease. And
+# the roster is the CONTRACT'S, not the receipt's own: a self-consistent
+# document proves only that the rows it still carries say "restored", which a
+# truncated report satisfies while omitted hooks stay installed.
+function Test-CollectorHookReleaseProof {
+    param(
+        [Parameter(Mandatory = $true)][string]$RunDir,
+        # MANDATORY AND NON-NULL. Injection started, so a recorder exists; a
+        # $null here would mean "nothing to wait for" and admit a run whose
+        # writer was never observed at all.
+        [Parameter(Mandatory = $true)][AllowNull()]$RecorderProcess,
+        # The canonical roster, derived from the contract rather than from the
+        # receipt. Self-consistency proves only that every row PRESENT says
+        # restored; it says nothing about the rows that are missing.
+        [Parameter(Mandatory = $true)][object]$HookAuthority,
+        [Parameter(Mandatory = $true)][ref]$ProofOut
+    )
+
+    $ProofOut.Value = ''
+    if ($null -eq $RecorderProcess) {
+        $ProofOut.Value = 'no collector_record process was observed for this attempt'
+        return $false
+    }
+    try {
+        $RecorderProcess.Refresh()
+        if (-not $RecorderProcess.HasExited) {
+            $ProofOut.Value = "collector_record PID $($RecorderProcess.Id) is still running"
+            return $false
+        }
+    } catch {
+        $ProofOut.Value = 'collector_record liveness is unreadable'
+        return $false
+    }
+    $expectedNames = @($HookAuthority.LogicalNames)
+    $expectedSlotCount = [int]$HookAuthority.ImportSlotCount
+    if ($expectedNames.Count -eq 0 -or $expectedSlotCount -le 0) {
+        $ProofOut.Value = 'the pinned hook roster authority names no site or no import slot'
+        return $false
+    }
+    $receiptPath = Join-Path $RunDir 'HOOK_RESTORATION_OUTCOMES_V1.json'
+    if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
+        $ProofOut.Value = 'the collector published no hook-restoration receipt'
+        return $false
+    }
+    $receipt = $null
+    try {
+        $receipt = [IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json
+    } catch {
+        $ProofOut.Value = "the hook-restoration receipt is unreadable: $(($_.Exception.Message -replace '\s+', ' ').Trim())"
+        return $false
+    }
+    try {
+        Assert-ExactJsonPropertySet `
+            -Value $receipt `
+            -Expected @(
+                'schema', 'outcome', 'collector_module_disposition',
+                'restoration_wait_ms', 'pinned_hook_site_count',
+                'unrestored_hook_site_count', 'import_slot_count',
+                'unrestored_import_slot_count',
+                'pinned_hook_site_baseline_sha256',
+                'pinned_hook_site_observed_sha256',
+                'unrestored_hook_names', 'unrestored_hook_domains',
+                'sites', 'import_slots'
+            ) `
+            -Label 'HookRestorationOutcomesV1'
+    } catch {
+        $ProofOut.Value = "the hook-restoration receipt has an unexpected shape: $(($_.Exception.Message -replace '\s+', ' ').Trim())"
+        return $false
+    }
+
+    $failures = [Collections.Generic.List[string]]::new()
+    # Each entry is read the same way, so a roster row cannot escape the name
+    # binding by being shaped differently from its neighbours.
+    function Read-HookRosterNames {
+        param($Entries, [string]$Label, $Failures)
+
+        $names = [Collections.Generic.List[string]]::new()
+        foreach ($entry in @($Entries)) {
+            if ($null -eq $entry -or $entry -is [array] -or
+                $entry -is [string] -or $entry -is [valuetype]) {
+                [void]$Failures.Add("$Label has an entry that is not an object")
+                continue
+            }
+            $fields = @($entry.PSObject.Properties.Name)
+            if (@($fields | Where-Object { $_ -ceq 'logical_name' }).Count -ne 1 -or
+                @($fields | Where-Object { $_ -ceq 'status' }).Count -ne 1 -or
+                @($fields | Where-Object { $_ -cnotin @('logical_name', 'domain', 'status') }).Count -ne 0) {
+                [void]$Failures.Add("$Label has an entry whose fields are $($fields -join ',')")
+                continue
+            }
+            if ($entry.logical_name -isnot [string] -or
+                [string]::IsNullOrEmpty([string]$entry.logical_name)) {
+                [void]$Failures.Add("$Label has an entry with no logical name")
+                continue
+            }
+            if ([string]$entry.status -cne 'restored') {
+                [void]$Failures.Add("$Label entry '$($entry.logical_name)' is '$($entry.status)'")
+            }
+            [void]$names.Add([string]$entry.logical_name)
+        }
+        return $names
+    }
+
+    # @() ON THE RESULT. PowerShell unrolls a returned collection, so an empty
+    # roster comes back as $null and every .Count below dies under StrictMode --
+    # which is a THROW out of the cleanup prefix, not a refusal.
+    $siteNames = @(Read-HookRosterNames -Entries $receipt.sites -Label 'sites' -Failures $failures)
+    $slotNames = @(Read-HookRosterNames -Entries $receipt.import_slots -Label 'import_slots' -Failures $failures)
+    # ORDINAL distinctness. `Sort-Object -Unique` folds case, so two roster names
+    # differing only in case would collapse into one. Both directions of that are
+    # already fail-closed here, but the count this feeds is meant to be "how many
+    # DIFFERENT names did the receipt list", and that is an ordinal question.
+    $distinctSites = @([Linq.Enumerable]::Distinct(
+        [string[]]$siteNames, [StringComparer]::Ordinal))
+    $distinctSlots = @([Linq.Enumerable]::Distinct(
+        [string[]]$slotNames, [StringComparer]::Ordinal))
+    # SET EQUALITY WITH THE CONTRACT'S ROSTER, both directions. A truncated
+    # report -- every row it still carries saying "restored" -- is exactly the
+    # document self-consistency admits and this refuses.
+    $missing = @($expectedNames | Where-Object { $_ -cnotin $distinctSites })
+    $foreign = @($distinctSites | Where-Object { $_ -cnotin $expectedNames })
+    if ($missing.Count -ne 0 -or $foreign.Count -ne 0 -or
+        $distinctSites.Count -ne $siteNames.Count) {
+        [void]$failures.Add(
+            "sites roster: missing=$($missing.Count) foreign=$($foreign.Count) " +
+            "duplicated=$($siteNames.Count - $distinctSites.Count) " +
+            "first_missing=$(if ($missing.Count -gt 0) { $missing[0] } else { '-' }) " +
+            "first_foreign=$(if ($foreign.Count -gt 0) { $foreign[0] } else { '-' })")
+    }
+    # The import slots are the subset of the same roster that is hooked through
+    # an import table, so they are bound to it too and their count is the
+    # contract's, never the receipt's own.
+    $foreignSlots = @($distinctSlots | Where-Object { $_ -cnotin $expectedNames })
+    if ($distinctSlots.Count -ne $expectedSlotCount -or
+        $foreignSlots.Count -ne 0 -or
+        $distinctSlots.Count -ne $slotNames.Count) {
+        [void]$failures.Add(
+            "import_slots roster: named=$($distinctSlots.Count) expected=$expectedSlotCount " +
+            "foreign=$($foreignSlots.Count) duplicated=$($slotNames.Count - $distinctSlots.Count)")
+    }
+
+    $baseline = [string]$receipt.pinned_hook_site_baseline_sha256
+    $observed = [string]$receipt.pinned_hook_site_observed_sha256
+    if ([string]$receipt.schema -cne 'hoi4-hook-restoration-outcomes-v1') {
+        [void]$failures.Add("schema=$($receipt.schema)")
+    }
+    if ([string]$receipt.outcome -cne 'complete') {
+        [void]$failures.Add("outcome=$($receipt.outcome)")
+    }
+    # "unloaded" means OBSERVED unloaded: the recorder no longer substitutes it
+    # for a terminal state it could not read (it publishes nothing instead).
+    if ([string]$receipt.collector_module_disposition -cne 'unloaded') {
+        [void]$failures.Add("collector_module_disposition=$($receipt.collector_module_disposition)")
+    }
+    if ([int]$receipt.pinned_hook_site_count -ne $expectedNames.Count) {
+        [void]$failures.Add("pinned_hook_site_count=$($receipt.pinned_hook_site_count) expected=$($expectedNames.Count)")
+    }
+    if ([int]$receipt.import_slot_count -ne $expectedSlotCount) {
+        [void]$failures.Add("import_slot_count=$($receipt.import_slot_count) expected=$expectedSlotCount")
+    }
+    if ([int]$receipt.unrestored_hook_site_count -ne 0 -or
+        [int]$receipt.unrestored_import_slot_count -ne 0 -or
+        @($receipt.unrestored_hook_names).Count -ne 0 -or
+        @($receipt.unrestored_hook_domains).Count -ne 0) {
+        [void]$failures.Add(
+            "unrestored sites=$($receipt.unrestored_hook_site_count) " +
+            "slots=$($receipt.unrestored_import_slot_count) " +
+            "named=$(@($receipt.unrestored_hook_names) -join ',')")
+    }
+    if ($baseline -cnotmatch '^[0-9a-f]{64}$' -or $baseline -cmatch '^0{64}$' -or
+        $observed -cne $baseline) {
+        [void]$failures.Add("baseline=$baseline observed=$observed")
+    }
+    if ($failures.Count -ne 0) {
+        $ProofOut.Value = "the hook-restoration receipt does not prove release: $($failures -join '; ')"
+        return $false
+    }
+    $ProofOut.Value = (
+        "hook_sites=$($distinctSites.Count) import_slots=$($distinctSlots.Count) " +
+        "roster=contract module=unloaded baseline_sha256=$baseline receipt=$receiptPath")
+    return $true
 }
 
 function Confirm-CollectorTeardownReceipt {
@@ -4502,6 +4697,41 @@ $scriptExitCode = [int]$recorderExit
             Write-SettingsGuardNonThrowingWarning -Message "Collector teardown receipt was rejected; reused game state will not be changed: $($_.Exception.Message)"
         }
     }
+    # The refusal path's own exit. Teardown was never authenticated -- the
+    # attempt stays refused and still returns nonzero -- but hook custody is
+    # settled, so the window that forbids touching the client is closed and the
+    # cleanup below runs: a game this harness launched is closed when the
+    # harness is finished with it. A game it did NOT launch is still never
+    # touched; $launchedProcess is null for those.
+    if ($collectorInjectionStarted -and
+        $gradedWindowStarted -and
+        -not $collectorTeardownAuthenticated) {
+        $hookReleaseProof = ''
+        $targetGoneDetail = ''
+        # NON-THROWING. This runs in the cleanup prefix, where every failing
+        # cmdlet is terminating and a throw abandons the settings-guard restore
+        # and the refusal receipt below it. An unreadable proof holds the window.
+        try {
+            if (Test-TargetProcessGone `
+                    -TargetProcessId $gamePid `
+                    -ExpectedCreationFiletimeUtc $gameCreationFiletimeUtc `
+                    -Detail ([ref]$targetGoneDetail)) {
+                $gradedWindowStarted = $false
+                Write-Host "phase=graded_window_closed_target_gone pid=$gamePid target_state=$targetGoneDetail"
+            } elseif (Test-CollectorHookReleaseProof `
+                    -RunDir $OutDir `
+                    -RecorderProcess $recorderProcess `
+                    -HookAuthority (Get-PassivePinnedHookAllowlistAuthority) `
+                    -ProofOut ([ref]$hookReleaseProof)) {
+                $gradedWindowStarted = $false
+                Write-Host "phase=graded_window_closed_on_hook_restoration_receipt pid=$gamePid $hookReleaseProof"
+            } else {
+                Write-Host "phase=graded_window_held_open pid=$gamePid reason=$hookReleaseProof"
+            }
+        } catch {
+            Write-Host "phase=graded_window_held_open pid=$gamePid reason=$(($_.Exception.Message -replace '\s+', ' ').Trim())"
+        }
+    }
     if ($reuseRunningGame -and
         $collectorInjectionStarted -and
         -not $collectorTeardownAuthenticated -and
@@ -4615,8 +4845,7 @@ $scriptExitCode = [int]$recorderExit
     }
     if ($null -ne $launchedProcess -and
         (-not $captureSucceeded -or -not $KeepGameAfterCapture) -and
-        (-not $collectorInjectionStarted -or
-            ($collectorTeardownAuthenticated -and -not $gradedWindowStarted))) {
+        (-not $collectorInjectionStarted -or -not $gradedWindowStarted)) {
         try {
             Assert-Hoi4ClientDrivingOptIn -Caller $PSCommandPath
             $launchedProcess.Refresh()
@@ -4634,7 +4863,7 @@ $scriptExitCode = [int]$recorderExit
     } elseif ($null -ne $launchedProcess -and
         $collectorInjectionStarted -and
         $gradedWindowStarted) {
-        Write-SettingsGuardNonThrowingWarning -Message "Harness-launched the game PID $gamePid remains running because the passive graded window did not close cleanly. Stopping it inside that window is forbidden."
+        Write-SettingsGuardNonThrowingWarning -Message "Harness-launched the game PID $gamePid remains running because hook custody is unresolved: neither an authenticated teardown receipt nor a complete hook-restoration receipt. Stopping it inside the graded window is forbidden."
     }
 
     # Give the game its CPU affinity back.
@@ -4686,7 +4915,7 @@ $scriptExitCode = [int]$recorderExit
             Write-SettingsGuardNonThrowingWarning -Message "SETTINGS GUARD RESTORE FAILED for '$settingsPath'. Manually set IsReadOnly=$settingsGuardPriorReadOnly, then remove sentinel '$settingsGuardSentinel'. The sentinel was retained for recovery. Error: $($_.Exception.Message)"
         }
     } elseif ($settingsGuardRestoreRequired -and $gradedWindowStarted) {
-        Write-SettingsGuardNonThrowingWarning -Message "Settings guard remains applied to '$settingsPath' because collector teardown was not authenticated. Restoring launcher/user settings inside the graded window is forbidden. After independently proving hooks are gone, set IsReadOnly=$settingsGuardPriorReadOnly and remove sentinel '$settingsGuardSentinel'."
+        Write-SettingsGuardNonThrowingWarning -Message "Settings guard remains applied to '$settingsPath' because hook custody is unresolved: neither an authenticated teardown receipt nor a complete hook-restoration receipt. Restoring launcher/user settings inside the graded window is forbidden. After independently proving hooks are gone, set IsReadOnly=$settingsGuardPriorReadOnly and remove sentinel '$settingsGuardSentinel'."
     }
 
     $settingsGuardOwnerStreamClosed = $true
