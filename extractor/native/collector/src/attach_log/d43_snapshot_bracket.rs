@@ -85,6 +85,7 @@ pub(super) struct Domain43SnapshotDiag {
     pub plan_refusal_cause: u64,
     pub copy_refused: u64,
     pub region_miss: u64,
+    pub miss_reads: u64,
     pub engine_call_mismatch: u64,
     pub probe_regions: u64,
     pub probe_unreadable: u64,
@@ -93,7 +94,7 @@ pub(super) struct Domain43SnapshotDiag {
     pub os_regions: u64,
 }
 
-pub(super) const D43_SNAPSHOT_UNIT_NAMES: [&str; 19] = [
+pub(super) const D43_SNAPSHOT_UNIT_NAMES: [&str; 20] = [
     "d43_snapshot_mode",
     "d43_snapshot_region_count",
     "d43_snapshot_byte_count",
@@ -107,6 +108,7 @@ pub(super) const D43_SNAPSHOT_UNIT_NAMES: [&str; 19] = [
     "d43_snapshot_plan_refusal_cause",
     "d43_snapshot_copy_refused",
     "d43_snapshot_region_miss",
+    "d43_snapshot_miss_reads",
     "d43_snapshot_engine_call_mismatch",
     "d43_snapshot_probe_regions",
     "d43_snapshot_probe_unreadable",
@@ -116,7 +118,7 @@ pub(super) const D43_SNAPSHOT_UNIT_NAMES: [&str; 19] = [
 ];
 
 impl Domain43SnapshotDiag {
-    pub(super) fn values(&self) -> [u64; 19] {
+    pub(super) fn values(&self) -> [u64; 20] {
         [
             self.mode,
             self.region_count,
@@ -131,6 +133,7 @@ impl Domain43SnapshotDiag {
             self.plan_refusal_cause,
             self.copy_refused,
             self.region_miss,
+            self.miss_reads,
             self.engine_call_mismatch,
             self.probe_regions,
             self.probe_unreadable,
@@ -585,30 +588,37 @@ fn decode_from_plan(
         },
     );
     diag.engine_call_mismatch = mismatches;
-    let missed = view.first_miss().is_some();
+    diag.miss_reads = view.misses();
+    diag.region_miss = u64::from(diag.miss_reads > 0);
     drop(view);
-    if missed {
-        diag.region_miss = 1;
-        snapshot.prepare_trace_buffer();
-        return domain43_snapshot_unavailable_read(
-            status_flags,
-            domain43_degraded_cause::SNAPSHOT_REGION_MISS,
-            diag,
-        );
-    }
     if mismatches > 0 {
-        // The decode reached a callback the bracket did not capture: the
-        // rows it produced are not the copy's hour. Sealed like a miss, and
-        // the plan is dropped so the next hour arms against the new slot.
+        // The decode reached a callback the bracket did not capture, so the
+        // rows it produced are not the copy's hour: nothing it walked is
+        // publishable and the frame words it wrote describe a discarded walk.
+        // The plan is dropped so the next hour arms against the new slot.
         snapshot.prepare_trace_buffer();
+        domain43_reset_frame_words();
         return domain43_snapshot_unavailable_read(
             status_flags,
             domain43_degraded_cause::SNAPSHOT_ENGINE_CALL_MISMATCH,
             diag,
         );
     }
-    snapshot.plan = Some(plan);
     let mut read = read;
+    if diag.miss_reads > 0 {
+        // A read the plan does not cover is a read that FAILED, and this walk
+        // types every failed read where it happens: the country whose oil trio
+        // could not be derived, the owner whose deal list is not exhaustive,
+        // the family that refuses whole. Discarding the frame instead threw
+        // away every root the copy did serve to represent the handful it did
+        // not -- on e2e_03, 319 of 339 snapshot frames, ~439 countries each.
+        // The plan is dropped so the next hour re-arms live.
+        domain43_record_degraded_cause(domain43_degraded_cause::SNAPSHOT_REGION_MISS);
+        read.status_flags |= COMPACT_STATUS_PARTIAL_DATA;
+        snapshot.prepare_trace_buffer();
+    } else {
+        snapshot.plan = Some(plan);
+    }
     read.snapshot = diag;
     read
 }

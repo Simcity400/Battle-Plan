@@ -431,6 +431,7 @@ impl Domain43SnapshotPlan {
         Domain43SnapshotMemory {
             plan: self,
             first_miss: Cell::new(None),
+            misses: Cell::new(0),
             last_hit: Cell::new(0),
             served: Cell::new(0),
         }
@@ -448,13 +449,36 @@ impl Domain43SnapshotPlan {
 pub(super) struct Domain43SnapshotMemory<'a> {
     plan: &'a Domain43SnapshotPlan,
     first_miss: Cell<Option<(u64, usize)>>,
+    misses: Cell<u64>,
     last_hit: Cell<usize>,
     served: Cell<u64>,
+}
+
+thread_local! {
+    /// Free-running across frames and never reset, so two nested samplers
+    /// cannot clear each other's baseline; every reader of it takes a delta.
+    static COPY_SHORT_READS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// How many reads this thread's snapshot views have failed to answer out of a
+/// copy, ever. The walk cannot reach the view it is running under, so a site
+/// that needs to know whether its own refusal came from a short copy brackets
+/// this instead.
+pub(super) fn copy_short_reads() -> u64 {
+    COPY_SHORT_READS.with(Cell::get)
 }
 
 impl Domain43SnapshotMemory<'_> {
     pub fn first_miss(&self) -> Option<(u64, usize)> {
         self.first_miss.get()
+    }
+
+    /// Reads this view could not answer because the plan does not cover them.
+    /// A read the plan covers but the copy refused (a probe still unreadable,
+    /// or a range that straddled two operating-system regions at the copy
+    /// instant) is the live gate's own answer and is not counted here.
+    pub fn misses(&self) -> u64 {
+        self.misses.get()
     }
 
     pub fn reads_served(&self) -> u64 {
@@ -506,6 +530,8 @@ impl Domain81Memory for Domain43SnapshotMemory<'_> {
             if self.first_miss.get().is_none() {
                 self.first_miss.set(Some((address, len)));
             }
+            self.misses.set(self.misses.get().saturating_add(1));
+            COPY_SHORT_READS.with(|reads| reads.set(reads.get().wrapping_add(1)));
             return false;
         };
         // Refused without a miss, as the live gate refuses: a region this

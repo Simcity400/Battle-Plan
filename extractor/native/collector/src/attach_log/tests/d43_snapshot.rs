@@ -245,6 +245,8 @@ struct World {
     routes: Vec<usize>,
     contracts: Vec<usize>,
     contributing_wings: Vec<usize>,
+    /// The `CStrategicAirManager`'s per-country slot array.
+    air_items: usize,
     /// The executable stub the eligibility slot points at, when staged.
     engine_stub: Option<usize>,
 }
@@ -286,6 +288,15 @@ impl World {
 
     /// One more wing on a country's container, in a wing vector the walk has
     /// never read: the shape a plan cannot have covered.
+    /// The country's `CStrategicAirManager` slot goes to zero: the engine
+    /// defines no air/land contribution for it, so the walk refuses its oil
+    /// needed-trio at `AIR_LAND_SITE_MANAGER_ENTRY_ABSENT` -- an engine
+    /// refusal, on any walk, with no copy involved.
+    fn absent_air_manager_entry(&mut self, country: usize) {
+        let slot = self.air_items + 8 * (country + 1);
+        self.fixture.heap.write_u64(slot, 0);
+    }
+
     fn grow_wings(&mut self, country: usize) {
         let container = self.countries[country].container;
         let old = self.countries[country].wings.clone();
@@ -901,6 +912,7 @@ fn build_world_staged(shape: Shape, layout: Layout, engine_callback: bool) -> Wo
         routes,
         contracts,
         contributing_wings,
+        air_items,
         engine_stub,
     }
 }
@@ -1007,20 +1019,6 @@ fn assert_clean(outcome: &FrameOutcome, what: &str) {
         perf.status_flags, 0,
         "{what}: d43 must be clean; diagnostics {:?}",
         perf.diagnostics
-    );
-}
-
-fn assert_unavailable(outcome: &FrameOutcome, what: &str) {
-    let flags = status(outcome);
-    assert_eq!(
-        flags & compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE,
-        compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE,
-        "{what}: the hour must be sealed unavailable, status {flags:#x}"
-    );
-    assert_eq!(
-        flags & compact_contract::COMPACT_STATUS_PARTIAL_DATA,
-        compact_contract::COMPACT_STATUS_PARTIAL_DATA,
-        "{what}: the hour must be sealed partial, status {flags:#x}"
     );
 }
 
@@ -1224,10 +1222,12 @@ fn d43_snapshot_decode_serves_the_copy_and_never_the_live_word() {
     assert_eq!(compact_market_trade_data_payload(&next, ELAPSED_WALL_MS), after);
 }
 
-/// kills: serving a read the plan does not cover from anywhere, publishing
-/// the hour a miss was found in, and not re-arming after it.
+/// kills: serving a read the plan does not cover from anywhere, throwing away
+/// the roots the copy DID serve because another root's read fell outside it,
+/// leaving the copy's shortfall uncounted or attributed to the engine, and not
+/// re-arming after it.
 #[test]
-fn d43_snapshot_region_miss_seals_the_hour_by_name_and_re_arms() {
+fn d43_snapshot_region_miss_costs_the_reads_it_touched_and_re_arms() {
     let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
     let mut session = Session::new(build_world(SMALL_SHAPE));
     assert_mode(&session.frame(), D43_SNAPSHOT_MODE_LIVE, "live");
@@ -1236,35 +1236,80 @@ fn d43_snapshot_region_miss_seals_the_hour_by_name_and_re_arms() {
     assert_mode(&armed, D43_SNAPSHOT_MODE_SNAPSHOT, "snapshot");
     assert_clean(&armed, "snapshot");
 
+    // An ENGINE refusal first, so the two populations are separated by the
+    // same frame's counters and not only by a fixture that has one of them:
+    // country 5 has no `CStrategicAirManager` entry, which refuses its trio on
+    // any walk, copy or none.
+    session.world.absent_air_manager_entry(5);
     session.world.grow_wings(3);
     let missed = session.frame();
     assert_mode(&missed, D43_SNAPSHOT_MODE_SNAPSHOT, "miss frame");
     assert_eq!(unit(&missed, "d43_snapshot_region_miss"), 1);
+    assert!(
+        unit(&missed, "d43_snapshot_miss_reads") > 0,
+        "the reads that fell outside the copy are counted, not just flagged"
+    );
     assert_eq!(unit(&missed, "d43_snapshot_copy_refused"), 0);
-    assert_unavailable(&missed, "miss frame");
+    let flags = status(&missed);
+    assert_eq!(
+        flags & compact_contract::COMPACT_STATUS_PARTIAL_DATA,
+        compact_contract::COMPACT_STATUS_PARTIAL_DATA,
+        "miss frame: partial, status {flags:#x}"
+    );
+    assert_eq!(
+        flags & compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        0,
+        "miss frame: the copy served every other read, so the source is not          unavailable; status {flags:#x}"
+    );
+    // What the hour actually cost: one country's needed-trio, named as the
+    // copy's shortfall rather than as a game the reader could not read. Every
+    // other root, and every other family, is published.
+    assert_eq!(
+        unit(&missed, "d43_oil_roots_walked"),
+        SMALL_SHAPE.countries as u64,
+        "miss frame: every root is still walked"
+    );
     assert_eq!(
         missed
             .perf(COMPACT_DOMAIN_MARKET_TRADE_LIVE)
             .expect("perf")
             .row_count,
-        0,
-        "a missed hour publishes no rows"
+        SMALL_SHAPE.contracts as u32,
+        "miss frame: the contract rows the copy served are published"
+    );
+    assert_payload_carries_every_family(&payload(&missed));
+    assert_eq!(unit(&missed, "d43_resource_skipped_roots"), 0, "miss frame");
+    assert_eq!(unit(&missed, "d43_resource_oil_unavailable_roots"), 2, "miss frame");
+    assert_eq!(
+        unit(&missed, "d43_resource_oil_unavailable_copy_short_roots"),
+        1,
+        "one of the two roots lost its trio to the copy and one to the engine,          and the frame says which is which"
     );
     assert!(session.snapshot_tracker().plan().is_none(), "the plan is dropped");
 
+    // The live re-arm and the snapshot after it are the same walk over the
+    // same world: the engine refusal survives both, the copy's does not.
     let rearmed = session.frame();
     assert_mode(&rearmed, D43_SNAPSHOT_MODE_ARMING, "re-arm");
-    assert_clean(&rearmed, "re-arm");
-    let grown = Shape {
-        wings_per_arm: SMALL_SHAPE.wings_per_arm + 1,
-        ..SMALL_SHAPE
-    };
-    assert_world_counts(&rearmed, grown, "re-arm");
     let recovered = session.frame();
     assert_mode(&recovered, D43_SNAPSHOT_MODE_SNAPSHOT, "recovered");
-    assert_clean(&recovered, "recovered");
-    assert_world_counts(&recovered, grown, "recovered");
-    assert_eq!(payload(&recovered), payload(&session.live_reference()));
+    for (outcome, what) in [(&rearmed, "re-arm"), (&recovered, "recovered")] {
+        assert_eq!(unit(outcome, "d43_snapshot_region_miss"), 0, "{what}");
+        assert_eq!(unit(outcome, "d43_resource_oil_unavailable_roots"), 1, "{what}");
+        assert_eq!(
+            unit(outcome, "d43_resource_oil_unavailable_copy_short_roots"),
+            0,
+            "{what}: no copy was short, so no root may be attributed to one"
+        );
+        assert_eq!(
+            unit(outcome, "d43_resource_oil_unavailable_stage_sample"),
+            domain43_oil_stage::air_land(
+                domain43_oil_stage::AIR_LAND_CURRENT_BASE,
+                domain43_oil_stage::AIR_LAND_SITE_MANAGER_ENTRY_ABSENT,
+            ) as u64,
+            "{what}: the engine refusal keeps its own site"
+        );
+    }
 }
 
 /// kills: a cap that truncates instead of refusing, a refusal that is not
@@ -1614,18 +1659,19 @@ fn d43_snapshot_bracket_copies_and_the_decode_walks_the_copy() {
     let view = decode.find("with_d81_memory_override(&view").expect("the override");
     let walk = decode.find("read_compact_market_trade(").expect("the walk");
     assert!(view < walk, "the walk runs under the snapshot view");
-    assert!(decode.contains("view.first_miss()"));
+    assert!(decode.contains("view.misses()"));
     assert!(decode.contains("domain43_degraded_cause::SNAPSHOT_REGION_MISS"));
     assert!(decode.contains("domain43_degraded_cause::SNAPSHOT_COPY_REFUSED"));
     assert!(decode.contains("domain43_degraded_cause::SNAPSHOT_ENGINE_CALL_MISMATCH"));
     assert_eq!(
         decode.matches("domain43_snapshot_unavailable_read(").count(),
-        3,
-        "copy refusal, region miss and engine-call mismatch each seal the hour unavailable"
+        2,
+        "a copy refusal and an engine-call mismatch each seal the hour; a region          miss publishes the walk it did complete"
     );
-    assert!(
-        !decode.contains("read.status_flags |="),
-        "no snapshot failure publishes rows under a status bit; each seals"
+    assert_eq!(
+        decode.matches("read.status_flags |=").count(),
+        1,
+        "the region miss is the one snapshot outcome that publishes rows, and it          publishes them under a status bit"
     );
 
     let attach_log = super::collector_source_lf();
@@ -1695,8 +1741,8 @@ fn d43_snapshot_units_ride_every_frame_in_order() {
 /// operating-system regions (the live gate's rule, both readable or not), and
 /// served the hour they are one; the plan is kept throughout. The
 /// healed hour is a MISS (the walk goes on into regions the plan never
-/// covered), sealed by name, re-armed the next, and the plan after it carries
-/// the healed read as data.
+/// covered), named and counted rather than sealed, re-armed the next, and the
+/// plan after it carries the healed read as data.
 #[test]
 fn d43_snapshot_probe_regions_replay_a_failed_read_and_serve_it_once_readable() {
     let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
@@ -1784,7 +1830,17 @@ fn d43_snapshot_probe_regions_replay_a_failed_read_and_serve_it_once_readable() 
     assert_eq!(unit(&healed, "d43_snapshot_probe_regions"), 1);
     assert_eq!(unit(&healed, "d43_snapshot_probe_unreadable"), 0, "the probe copied");
     assert_eq!(unit(&healed, "d43_snapshot_region_miss"), 1, "the walk went further");
-    assert_unavailable(&healed, "healed");
+    assert!(unit(&healed, "d43_snapshot_miss_reads") > 0, "healed: counted");
+    assert_eq!(
+        status(&healed) & partial,
+        partial,
+        "healed: the reads past the probe fell outside the plan and are named"
+    );
+    assert_eq!(
+        status(&healed) & compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        0,
+        "healed: everything the copy carried is still published"
+    );
     assert!(session.snapshot_tracker().plan().is_none());
     let rearmed = session.frame();
     assert_mode(&rearmed, D43_SNAPSHOT_MODE_ARMING, "re-armed");
@@ -1963,7 +2019,7 @@ fn d43_snapshot_engine_call_capture_reads_the_copy_not_live_memory() {
 /// stub before the copy. A copy-only capture sees the stub in the copied slot,
 /// misses the header on the copy and captures NO call; a live header read
 /// would capture the stub. The decode over the same copy misses the header
-/// too: sealed by name, re-armed, and the plan after it carries the header.
+/// too: named and counted, re-armed, and the plan after it carries the header.
 #[test]
 fn d43_snapshot_engine_call_capture_reads_the_module_header_from_the_copy() {
     let _rc_counters = super::super::lock_rc_counters();
@@ -2007,17 +2063,14 @@ fn d43_snapshot_engine_call_capture_reads_the_module_header_from_the_copy() {
         Some(None),
         "the copied slot names the stub but the header is not in the plan: no call"
     );
-    let sealed = finish_compact_market_trade_snapshot(captured);
-    assert_eq!(sealed.snapshot.mode, D43_SNAPSHOT_MODE_SNAPSHOT);
+    let missed = finish_compact_market_trade_snapshot(captured);
+    assert_eq!(missed.snapshot.mode, D43_SNAPSHOT_MODE_SNAPSHOT);
     assert_eq!(
-        sealed.snapshot.region_miss, 1,
+        missed.snapshot.region_miss, 1,
         "the decode reaches the header the plan never covered"
     );
-    assert_eq!(
-        sealed.status_flags,
-        compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE
-            | compact_contract::COMPACT_STATUS_PARTIAL_DATA
-    );
+    assert_eq!(missed.status_flags, compact_contract::COMPACT_STATUS_PARTIAL_DATA);
+    assert!(missed.snapshot.miss_reads > 0);
     assert!(trackers.market_trade_live_snapshot.plan().is_none());
 
     let rearmed = read(&mut trackers);
