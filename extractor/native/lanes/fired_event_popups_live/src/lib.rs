@@ -16,12 +16,10 @@ pub mod a729_runtime;
 pub const DOMAIN_ID: u16 = 75;
 pub const DOMAIN_NAME: &str = "fired_event_popups_live";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"FEV1");
-// 5, NOT 4. Two lanes bumped v3 -> v4 independently -- one adding the
-// capture-start block, one adding the per-row recipient identity -- and this
-// tree is their merge, so it carries BOTH and is a THIRD layout. Leaving it at
-// 4 would let a payload from either parent pass the header check at
-// `decode_payload` and then be read with the wrong field order.
-pub const SCHEMA_VERSION: u32 = 6;
+/// Bumped on every telemetry/row layout change: `decode_payload` accepts only
+/// this exact version, so a payload from an older writer cannot be read with
+/// the wrong field order.
+pub const SCHEMA_VERSION: u32 = 7;
 pub const AUTHORITY_A729_INLINE_HOOKS: u32 = 1;
 pub const MAX_ROWS: usize = 1_000_000;
 pub const MAX_CAPTURE_START_FIRED_IDS: usize = 1_000_000;
@@ -125,8 +123,20 @@ pub struct HookTelemetry {
     pub queue_capacity: u32,
     pub queue_high_water_mark: u32,
     pub dropped_fire_rows: u64,
-    pub dropped_resolution_rows: u64,
-    pub correlation_failures: u64,
+    /// A fire the ledger already holds a row for whose post-dispatch commit did
+    /// not settle. The row is published but its identity is unproven, so this
+    /// withholds the whole set.
+    pub uncommitted_fire_rows: u64,
+    /// A refusal that NAMED a published row: that row's option set or
+    /// resolution was observed and lost, so the row's own state is wrong.
+    pub lost_row_resolutions: u64,
+    /// A resolution or materialisation observation that named no published row.
+    /// It cannot make a published row wrong -- every live fire is bound at its
+    /// commit and every carried baseline row at attach, so a bound row is
+    /// always found -- and it cannot hide a missed fire, because a fire reaches
+    /// exactly one of `dropped_fire_rows`, `invalid_definition_joins`,
+    /// `uncommitted_fire_rows` or a row. Counted, never a refusal.
+    pub unbound_resolution_observations: u64,
     pub invalid_definition_joins: u64,
     pub fired_ledger_shadow_mismatches: u64,
     /// Entries of the engine's retained fired-event set that were present when
@@ -137,6 +147,12 @@ pub struct HookTelemetry {
 }
 
 impl HookTelemetry {
+    /// Every published row is a fire this capture saw, every fire this capture
+    /// saw is a published row, and every row's own state is measured.
+    ///
+    /// `materialisation_hook_validated` is deliberately absent: the production
+    /// roster does not install that detour, and the option set it would supply
+    /// is published UNOBTAINED per row rather than withheld per hour.
     pub fn zero_gap(&self) -> bool {
         self.fire_hook_validated
             && self.option_hook_validated
@@ -147,10 +163,57 @@ impl HookTelemetry {
             && self.queue_capacity > 0
             && self.queue_high_water_mark <= self.queue_capacity
             && self.dropped_fire_rows == 0
-            && self.dropped_resolution_rows == 0
-            && self.correlation_failures == 0
+            && self.uncommitted_fire_rows == 0
+            && self.lost_row_resolutions == 0
             && self.invalid_definition_joins == 0
             && self.fired_ledger_shadow_mismatches == 0
+    }
+
+    /// The terms of `zero_gap` this frame fails, each with its number. Empty
+    /// exactly when `zero_gap` holds.
+    pub fn gap_terms(&self) -> Vec<String> {
+        let mut terms = Vec::new();
+        let mut flag = |held: bool, name: &str| {
+            if !held {
+                terms.push(format!("{name}=0"));
+            }
+        };
+        flag(self.fire_hook_validated, "fire_hook_validated");
+        flag(self.option_hook_validated, "option_hook_validated");
+        flag(self.timeout_hook_validated, "timeout_hook_validated");
+        flag(self.all_event_classes_covered, "all_event_classes_covered");
+        flag(
+            self.player_ai_timeout_no_choice_covered,
+            "player_ai_timeout_no_choice_covered",
+        );
+        flag(
+            self.capture_start_baseline_complete,
+            "capture_start_baseline_complete",
+        );
+        if self.queue_capacity == 0 {
+            terms.push("queue_capacity=0".to_string());
+        }
+        if self.queue_high_water_mark > self.queue_capacity {
+            terms.push(format!(
+                "queue_high_water_mark={} exceeds queue_capacity={}",
+                self.queue_high_water_mark, self.queue_capacity
+            ));
+        }
+        for (count, name) in [
+            (self.dropped_fire_rows, "dropped_fire_rows"),
+            (self.uncommitted_fire_rows, "uncommitted_fire_rows"),
+            (self.lost_row_resolutions, "lost_row_resolutions"),
+            (self.invalid_definition_joins, "invalid_definition_joins"),
+            (
+                self.fired_ledger_shadow_mismatches,
+                "fired_ledger_shadow_mismatches",
+            ),
+        ] {
+            if count != 0 {
+                terms.push(format!("{name}={count}"));
+            }
+        }
+        terms
     }
 }
 
@@ -309,8 +372,9 @@ impl A729EventLedger {
             reserved_rows: 0,
             discarded_diagnostics: telemetry
                 .dropped_fire_rows
-                .saturating_add(telemetry.dropped_resolution_rows)
-                .saturating_add(telemetry.correlation_failures)
+                .saturating_add(telemetry.uncommitted_fire_rows)
+                .saturating_add(telemetry.lost_row_resolutions)
+                .saturating_add(telemetry.unbound_resolution_observations)
                 .saturating_add(telemetry.invalid_definition_joins)
                 .saturating_add(telemetry.fired_ledger_shadow_mismatches)
                 .saturating_add(telemetry.capture_start_fired_ids_unresolved)
@@ -327,8 +391,9 @@ impl A729EventLedger {
         state.telemetry.capture_start_baseline_complete = false;
         // release fails and the abort is retried -- report the same diagnostics
         state.telemetry.dropped_fire_rows = 0;
-        state.telemetry.dropped_resolution_rows = 0;
-        state.telemetry.correlation_failures = 0;
+        state.telemetry.uncommitted_fire_rows = 0;
+        state.telemetry.lost_row_resolutions = 0;
+        state.telemetry.unbound_resolution_observations = 0;
         state.telemetry.invalid_definition_joins = 0;
         state.telemetry.fired_ledger_shadow_mismatches = 0;
         state.telemetry.capture_start_fired_ids_unresolved = 0;
@@ -452,8 +517,10 @@ impl A729EventLedger {
             .iter()
             .position(|row| row.event_sequence == input.event_sequence)
         else {
-            state.telemetry.correlation_failures =
-                state.telemetry.correlation_failures.saturating_add(1);
+            state.telemetry.unbound_resolution_observations = state
+                .telemetry
+                .unbound_resolution_observations
+                .saturating_add(1);
             return;
         };
         let fire_tick = state.rows[row_index].fire_tick;
@@ -463,8 +530,8 @@ impl A729EventLedger {
             .and_then(|value| u32::try_from(value).ok())
             .filter(|value| *value != 0)
         else {
-            state.telemetry.correlation_failures =
-                state.telemetry.correlation_failures.saturating_add(1);
+            state.telemetry.lost_row_resolutions =
+                state.telemetry.lost_row_resolutions.saturating_add(1);
             return;
         };
         let row = &mut state.rows[row_index];
@@ -486,8 +553,10 @@ impl A729EventLedger {
             .iter_mut()
             .find(|row| row.event_sequence == input.event_sequence)
         else {
-            state.telemetry.correlation_failures =
-                state.telemetry.correlation_failures.saturating_add(1);
+            state.telemetry.unbound_resolution_observations = state
+                .telemetry
+                .unbound_resolution_observations
+                .saturating_add(1);
             return;
         };
         row.chosen_option_ordinal = input.chosen_option_ordinal;
@@ -500,10 +569,22 @@ impl A729EventLedger {
         s.telemetry.invalid_definition_joins =
             s.telemetry.invalid_definition_joins.saturating_add(1)
     }
-    pub(crate) fn note_correlation_failure(&self) {
+    pub(crate) fn note_unbound_resolution_observation(&self) {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        state.telemetry.correlation_failures =
-            state.telemetry.correlation_failures.saturating_add(1)
+        state.telemetry.unbound_resolution_observations = state
+            .telemetry
+            .unbound_resolution_observations
+            .saturating_add(1)
+    }
+    pub(crate) fn note_lost_row_resolution(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.telemetry.lost_row_resolutions =
+            state.telemetry.lost_row_resolutions.saturating_add(1)
+    }
+    pub(crate) fn note_uncommitted_fire_row(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.telemetry.uncommitted_fire_rows =
+            state.telemetry.uncommitted_fire_rows.saturating_add(1)
     }
     pub(crate) fn note_shadow_mismatch(&self) {
         let mut s = self.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -931,8 +1012,9 @@ fn put_telemetry(o: &mut Vec<u8>, t: &HookTelemetry) {
     u32v(o, t.queue_high_water_mark);
     for v in [
         t.dropped_fire_rows,
-        t.dropped_resolution_rows,
-        t.correlation_failures,
+        t.uncommitted_fire_rows,
+        t.lost_row_resolutions,
+        t.unbound_resolution_observations,
         t.invalid_definition_joins,
         t.fired_ledger_shadow_mismatches,
         t.capture_start_fired_ids_unresolved,
@@ -1102,8 +1184,9 @@ impl<'a> Reader<'a> {
             queue_capacity: self.u32()?,
             queue_high_water_mark: self.u32()?,
             dropped_fire_rows: self.u64()?,
-            dropped_resolution_rows: self.u64()?,
-            correlation_failures: self.u64()?,
+            uncommitted_fire_rows: self.u64()?,
+            lost_row_resolutions: self.u64()?,
+            unbound_resolution_observations: self.u64()?,
             invalid_definition_joins: self.u64()?,
             fired_ledger_shadow_mismatches: self.u64()?,
             capture_start_fired_ids_unresolved: self.u64()?,
@@ -1565,13 +1648,13 @@ mod tests {
         dropped_fire.dropped_fire_rows = 1;
         failures.push(dropped_fire);
 
-        let mut dropped_resolution = telemetry();
-        dropped_resolution.dropped_resolution_rows = 1;
-        failures.push(dropped_resolution);
+        let mut uncommitted = telemetry();
+        uncommitted.uncommitted_fire_rows = 1;
+        failures.push(uncommitted);
 
-        let mut correlation = telemetry();
-        correlation.correlation_failures = 1;
-        failures.push(correlation);
+        let mut lost_resolution = telemetry();
+        lost_resolution.lost_row_resolutions = 1;
+        failures.push(lost_resolution);
 
         let mut invalid_join = telemetry();
         invalid_join.invalid_definition_joins = 1;
@@ -1581,7 +1664,98 @@ mod tests {
         shadow.fired_ledger_shadow_mismatches = 1;
         failures.push(shadow);
 
-        assert!(failures.into_iter().all(|telemetry| !telemetry.zero_gap()));
+        assert!(failures.iter().all(|telemetry| !telemetry.zero_gap()));
+        assert!(failures.iter().all(|telemetry| !telemetry.gap_terms().is_empty()));
+    }
+
+    /// An observation that named no row cannot make a published row wrong, so
+    /// it is counted and the hour still publishes.
+    #[test]
+    fn unbound_resolution_observations_are_counted_not_a_refusal() {
+        let mut unbound = telemetry();
+        unbound.unbound_resolution_observations = 2_515;
+        assert!(unbound.zero_gap());
+        assert!(unbound.gap_terms().is_empty());
+    }
+
+    /// The production roster ships without the materialisation detour; the
+    /// option set it would supply is published unobtained per row, so its
+    /// absence never withholds the hour's rows.
+    #[test]
+    fn an_uninstalled_materialisation_detour_does_not_withhold_the_hour() {
+        let mut production = telemetry();
+        production.materialisation_hook_validated = false;
+        assert!(production.zero_gap());
+        assert!(production.gap_terms().is_empty());
+    }
+
+    /// The two production captures whose D75 hours were all withheld, replayed
+    /// through the predicate as they were measured.
+    ///
+    /// `captures/e2e_02` (2026-09-04, 598 game hours): 164 published frames, 21
+    /// rows in the ledger, 0 admitted; `runs/perf_20260831_093106_1b9f6b63`
+    /// (549 hours): 18 rows admitted before the third failure, 40 withheld
+    /// after it. In BOTH the fire set was clean and the only non-zero term was
+    /// the lifetime correlation counter -- the observations of the third kind,
+    /// which name no row.
+    ///
+    /// kills: putting `unbound_resolution_observations` back into `zero_gap`,
+    /// or the materialisation flag into it.
+    #[test]
+    fn the_two_withheld_production_captures_publish_under_the_split_counters() {
+        let measured = |unbound: u64, high_water: u32| HookTelemetry {
+            fire_hook_validated: true,
+            option_hook_validated: true,
+            // Not installed by the production roster in either capture.
+            materialisation_hook_validated: false,
+            timeout_hook_validated: true,
+            all_event_classes_covered: true,
+            player_ai_timeout_no_choice_covered: true,
+            capture_start_baseline_complete: true,
+            queue_capacity: 65_536,
+            queue_high_water_mark: high_water,
+            dropped_fire_rows: 0,
+            uncommitted_fire_rows: 0,
+            lost_row_resolutions: 0,
+            unbound_resolution_observations: unbound,
+            invalid_definition_joins: 0,
+            fired_ledger_shadow_mismatches: 0,
+            capture_start_fired_ids_unresolved: 0,
+        };
+        for telemetry in [measured(2_515, 21), measured(3, 40)] {
+            assert!(telemetry.zero_gap());
+            assert!(telemetry.gap_terms().is_empty());
+            let frame = FiredEventFrame {
+                elapsed_wall_ms: 1,
+                frame_hour: 12,
+                producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+                telemetry,
+                fired_events_complete: true,
+                capture_start_fired_event_ids: Some(Vec::new()),
+                capture_start_pending_unresolved: Vec::new(),
+                rows: vec![row()],
+            };
+            let bytes = encode_payload(&frame).expect("the hour is encodable");
+            let decoded = decode_payload(&bytes).expect("the hour is decodable");
+            assert!(decoded.fired_events_complete);
+            assert_eq!(decoded.rows.len(), 1, "the hour publishes its rows");
+        }
+    }
+
+    #[test]
+    fn gap_terms_name_every_failing_term_with_its_number() {
+        let mut gapped = telemetry();
+        gapped.capture_start_baseline_complete = false;
+        gapped.dropped_fire_rows = 3;
+        gapped.lost_row_resolutions = 7;
+        assert_eq!(
+            gapped.gap_terms(),
+            vec![
+                "capture_start_baseline_complete=0".to_string(),
+                "dropped_fire_rows=3".to_string(),
+                "lost_row_resolutions=7".to_string(),
+            ]
+        );
     }
 
     #[test]
