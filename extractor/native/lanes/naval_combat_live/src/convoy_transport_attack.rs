@@ -686,6 +686,59 @@ impl ConvoyTransportAttackWitness {
             && self.events_seen_this_drain == self.events_emitted_this_drain
             && self.drops_this_drain == 0
     }
+
+    /// Which conjuncts of `exact_events_complete` this witness fails, each
+    /// with the number that failed it, followed by the lifetime drop leaves
+    /// that are nonzero. Empty exactly when the batch is exact.
+    ///
+    /// The leaves carry the `lifetime_` prefix, because this interval's loss
+    /// is `drops_this_drain` and a reader who took a leaf for the cause of
+    /// this hour would name a refusal that happened in an earlier one.
+    pub fn exhaustiveness_gap_terms(&self) -> Vec<String> {
+        let mut terms = Vec::new();
+        if !self.hook_installed {
+            // The wire's own unavailable marker: `validate_witness` admits it
+            // only as an all-default witness, so no other term can be true.
+            terms.push("hook_installed=false".to_string());
+            return terms;
+        }
+        if !self.queue_drain_complete {
+            terms.push("queue_drain_complete=false".to_string());
+        }
+        if self.remaining_events != 0 {
+            terms.push(format!("remaining_events={}", self.remaining_events));
+        }
+        if self.active_callbacks != 0 {
+            terms.push(format!("active_callbacks={}", self.active_callbacks));
+        }
+        if self.events_seen_this_drain != self.events_emitted_this_drain {
+            terms.push(format!(
+                "events_seen_this_drain={} events_emitted_this_drain={}",
+                self.events_seen_this_drain, self.events_emitted_this_drain
+            ));
+        }
+        if self.drops_this_drain != 0 {
+            terms.push(format!("drops_this_drain={}", self.drops_this_drain));
+        }
+        if terms.is_empty() {
+            return terms;
+        }
+        for (name, value) in self.telemetry.leaf_drops() {
+            if value != 0 {
+                terms.push(format!("lifetime_{name}={value}"));
+            }
+        }
+        terms
+    }
+
+    /// Whether this batch KNOWS it lost an event, as opposed to being unable
+    /// to prove it did not. The two are different answers -- `Incomplete`
+    /// against `Unprovable` -- and only the drain deltas can tell them apart.
+    pub fn exhaustiveness_loss_is_known(&self) -> bool {
+        self.hook_installed
+            && (self.drops_this_drain != 0
+                || self.events_seen_this_drain != self.events_emitted_this_drain)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -708,7 +761,6 @@ pub enum BatchDecodeError {
     InvalidMutationKind(u8),
     InvalidMutationProof(&'static str),
     ProducerOrder,
-    MutationChain,
     InvalidWitness(&'static str),
 }
 
@@ -726,7 +778,6 @@ pub fn encode_convoy_transport_attack_batch(
         return Err(BatchDecodeError::RowCount(rows.len()));
     }
     validate_producer_order(rows)?;
-    validate_mutation_chain(rows)?;
     validate_witness(&witness, rows.len())?;
     let payload_len = BATCH_HEADER_LEN
         .checked_add(
@@ -916,7 +967,6 @@ pub fn decode_convoy_transport_attack_batch(
         rows.push(row);
     }
     validate_producer_order(&rows)?;
-    validate_mutation_chain(&rows)?;
     validate_witness(&witness, rows.len())?;
     if witness.exact_events_complete() != (flags & BATCH_FLAG_COMPLETE_EXACT_EVENTS != 0) {
         return Err(BatchDecodeError::InvalidWitness("complete_flag"));
@@ -938,25 +988,33 @@ fn validate_producer_order(rows: &[ConvoyTransportAttackRow]) -> Result<(), Batc
     Ok(())
 }
 
-fn validate_mutation_chain(rows: &[ConvoyTransportAttackRow]) -> Result<(), BatchDecodeError> {
-    for pair in rows.windows(2) {
-        let previous = pair[0];
-        let next = pair[1];
-        if next.d70.before_rows != previous.d70.after_rows {
-            return Err(BatchDecodeError::MutationChain);
-        }
-        if next.carrier.game_hour_raw == previous.carrier.game_hour_raw
-            && next.carrier.owner_tag_db_id == previous.carrier.owner_tag_db_id
-            && next.carrier.killer_tag_db_id == previous.carrier.killer_tag_db_id
-            && next.d70.ordinal == previous.d70.ordinal
-            && next.d70.before_count != previous.d70.after_count
-        {
-            return Err(BatchDecodeError::MutationChain);
-        }
-    }
-    Ok(())
-}
-
+/// THERE IS NO CROSS-ROW D70 LAW, and there cannot be one.
+///
+/// Until this lane there was: consecutive rows had to satisfy
+/// `next.before_rows == previous.after_rows`, and same-identity rows
+/// `next.before_count == previous.after_count`. Both claim that nothing
+/// touched the engine's D70 table between two ENQUEUED events, which the hook
+/// itself contradicts: `convoy_terminal_hook` calls the original aggregator on
+/// every entry, including the ones it refuses, so an entry dropped at any
+/// named site still advances the table. One refused sink that appended a new
+/// (month, killer, owner) row therefore made every later row's `before_rows`
+/// one higher than the previous row's `after_rows`, and the whole batch was
+/// refused as `MutationChain`.
+///
+/// A refused batch is rolled back, so its rows stay queued and the next drain
+/// re-encodes the same pair -- the domain stalls for the rest of the capture
+/// and publishes an uninstalled-marker batch every hour. In captures/e2e_03
+/// (1169 hours) that cost 252 of D90's 282 records and the terminal seal
+/// (`abort_partial_install_and_uninstall` -> `Batch(MutationChain)`), against
+/// 30 records taken before the first straddling drop.
+///
+/// Each row still proves its OWN mutation exactly, bracketed by the two reads
+/// `prove_d70_mutation` took around the original call (`validate_row`), and
+/// `validate_producer_order` still proves the rows are the queue's order. What
+/// the deleted law claimed on top of that -- that no event is missing between
+/// two rows -- is the one thing a batch may not assert: the per-drain
+/// counters (`events_seen_this_drain == events_emitted_this_drain + drops`)
+/// are what say whether anything was lost.
 fn validate_witness(
     witness: &ConvoyTransportAttackWitness,
     row_count: usize,
@@ -1865,16 +1923,162 @@ mod tests {
         );
     }
 
+    /// The stall this lane closed, as the wire sees it: the hook called the
+    /// original aggregator for a sink it then refused, that sink appended a
+    /// D70 row, and the next event it DID enqueue therefore starts two rows
+    /// past where the previous one ended.
     #[test]
-    fn cta2_rejects_broken_d70_chain() {
+    fn cta2_accepts_rows_straddling_a_dropped_hook_entry() {
         let mut rows = vec![
             row(7, ConvoyD70MutationKind::IncrementExisting),
             row(8, ConvoyD70MutationKind::AppendFirstSeen),
         ];
-        rows[1].d70.before_rows = 440;
+        rows[1].d70.before_rows = rows[0].d70.after_rows + 1;
+        rows[1].d70.ordinal = rows[1].d70.before_rows;
+        rows[1].d70.after_rows = rows[1].d70.before_rows + 1;
+        let mut witness = witness(&rows);
+        witness.events_seen_this_drain += 1;
+        witness.drops_this_drain = 1;
+        witness.telemetry.callbacks_seen = 3;
+        witness.telemetry.original_calls = 3;
+        witness.telemetry.events_emitted = 2;
+        witness.telemetry.dropped_hour_or_epoch = 1;
+        witness.telemetry.dropped_receipt_lag_beyond = 1;
+        let decoded = decode_convoy_transport_attack_batch(
+            &encode_convoy_transport_attack_batch(&rows, witness).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded.rows, rows);
+        // The batch is published; the lost entry is named by the per-drain
+        // counters, not by refusing every row behind it.
+        assert!(!decoded.exact_events_complete);
+        assert_eq!(
+            decoded.witness.exhaustiveness_gap_terms(),
+            vec![
+                "events_seen_this_drain=3 events_emitted_this_drain=2".to_string(),
+                "drops_this_drain=1".to_string(),
+                "lifetime_convoy_transport_attack_dropped_receipt_lag_beyond=1".to_string(),
+            ]
+        );
+        assert!(decoded.witness.exhaustiveness_loss_is_known());
+    }
+
+    /// The stall cannot come back. Every drain a hook run can produce -- any
+    /// interleaving of enqueued sinks and refused ones, each refusal free to
+    /// have grown the engine's D70 table -- encodes, so a rolled-back
+    /// reservation can never re-refuse the same rows for the rest of a
+    /// capture.
+    #[test]
+    fn cta2_encodes_every_drain_a_hook_run_with_drops_can_produce() {
+        let mut table_rows = 3u32;
+        let mut sequence = 0u64;
+        let mut rows = Vec::new();
+        let mut drops = 0u64;
+        let mut state = 0x9E37_79B9u32;
+        for step in 0..64u32 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let appends = state & 1 == 0;
+            let enqueued = step % 3 != 1;
+            let before_rows = table_rows;
+            if appends {
+                table_rows += 1;
+            }
+            if !enqueued {
+                drops += 1;
+                continue;
+            }
+            sequence += 1;
+            let kind = if appends {
+                ConvoyD70MutationKind::AppendFirstSeen
+            } else {
+                ConvoyD70MutationKind::IncrementExisting
+            };
+            let mut next = row(sequence, kind);
+            next.d70 = match kind {
+                ConvoyD70MutationKind::AppendFirstSeen => ConvoyD70MutationProof {
+                    kind,
+                    ordinal: before_rows,
+                    before_rows,
+                    after_rows: before_rows + 1,
+                    before_count: 0,
+                    after_count: 1,
+                },
+                ConvoyD70MutationKind::IncrementExisting => ConvoyD70MutationProof {
+                    kind,
+                    ordinal: before_rows - 1,
+                    before_rows,
+                    after_rows: before_rows,
+                    before_count: 1,
+                    after_count: 2,
+                },
+            };
+            rows.push(next);
+        }
+        assert!(drops > 0 && rows.len() > 1, "the run must straddle a drop");
+        let witness = ConvoyTransportAttackWitness {
+            drained_rows: rows.len() as u32,
+            events_seen_this_drain: rows.len() as u64 + drops,
+            events_emitted_this_drain: rows.len() as u64,
+            drops_this_drain: drops,
+            telemetry: ConvoyTransportAttackTelemetry {
+                callbacks_seen: rows.len() as u64 + drops,
+                original_calls: rows.len() as u64 + drops,
+                events_emitted: rows.len() as u64,
+                dropped_hour_or_epoch: drops,
+                dropped_receipt_lag_beyond: drops,
+                ..ConvoyTransportAttackTelemetry::default()
+            },
+            producer_sequence_next: sequence + 1,
+            ..witness(&rows)
+        };
+        let decoded = decode_convoy_transport_attack_batch(
+            &encode_convoy_transport_attack_batch(&rows, witness).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded.rows, rows);
+        assert!(decoded.witness.exhaustiveness_loss_is_known());
+    }
+
+    /// A row whose own bracket is impossible is still refused: deleting the
+    /// cross-row law did not delete the per-row proof.
+    #[test]
+    fn cta2_rejects_row_whose_own_mutation_is_not_proven() {
+        let mut rows = vec![row(7, ConvoyD70MutationKind::AppendFirstSeen)];
+        rows[0].d70.after_rows = rows[0].d70.before_rows;
         assert_eq!(
             encode_convoy_transport_attack_batch(&rows, witness(&rows)),
-            Err(BatchDecodeError::MutationChain)
+            Err(BatchDecodeError::InvalidMutationProof("append_first_seen"))
+        );
+    }
+
+    #[test]
+    fn cta2_gap_terms_are_empty_exactly_when_the_batch_is_exact() {
+        let rows = vec![row(7, ConvoyD70MutationKind::IncrementExisting)];
+        let exact = witness(&rows);
+        assert!(exact.exact_events_complete());
+        assert!(exact.exhaustiveness_gap_terms().is_empty());
+        assert!(!exact.exhaustiveness_loss_is_known());
+
+        let mut stalled = exact;
+        stalled.queue_drain_complete = false;
+        stalled.remaining_events = 4;
+        stalled.active_callbacks = 2;
+        assert_eq!(
+            stalled.exhaustiveness_gap_terms(),
+            vec![
+                "queue_drain_complete=false".to_string(),
+                "remaining_events=4".to_string(),
+                "active_callbacks=2".to_string(),
+            ]
+        );
+        // Nothing is known to be missing here -- the drain simply did not
+        // finish -- so the extent this feeds is `Unprovable`, not `Incomplete`.
+        assert!(!stalled.exhaustiveness_loss_is_known());
+
+        let unavailable = ConvoyTransportAttackWitness::default();
+        assert_eq!(
+            unavailable.exhaustiveness_gap_terms(),
+            vec!["hook_installed=false".to_string()]
         );
     }
 }
