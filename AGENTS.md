@@ -19,7 +19,7 @@ If the owner has not designated you orchestrator, you are a lane or a reviewer p
 - Residuals are never left behind. Anything you can fix, fix now. Anything you legitimately cannot (owner decision, live probe, missing capture, another lane's file) goes in your final report with its class and the exact artifact path so the orchestrator staffs it immediately.
 - Report once, numbers first, when everything is finished: tip, what landed, tests run, review record, residuals.
 - Clean up: worktree, branch, build output, temp files. Never stash. Hash-pinned files carry `.gitattributes` `text eol=lf`.
-- (Claude only) Launch the call in the background with its PID captured and hold the turn with the blocking wait from "Tools and traps" (`timeout 590 tail --pid=$PID -f /dev/null`, repeated until it exits 0); never a monitor with an ended turn.
+- (Claude only) Long calls: the blocking wait from "Tools and traps"; never a monitor with an ended turn.
 
 ## Lane workflow
 
@@ -50,7 +50,7 @@ Applies to every harness. The reviewer is a fresh agent each round.
 
 - `hoi4_re` is the RE facade: `re_status` first, never edit its registry, four-job offline queue. `hoi4_ghidra` (pinned a729/870ebf): `ghidra_status` first, `ghidra_verify` before relying on indexed evidence. Census and cross-analysis outputs are discovery, not proof. Pinned artifacts use the `engine_evidence` crate pattern with literal byte sizes and must pass `reverify_engine_evidence.py`.
 - Live instrumentation needs explicit owner authorization and a running matching game; lanes never launch the game. A needed probe is handed back as a bounded SPEC.
-- **Waiting is a blocking call, never an ended turn.** A lane that has ended its turn is finished, and a report is due; so a lane never ends its turn while a review, build, test run, fold or dump of its own is still running. Launch the long job in the background with its PID captured (`job … & PID=$!`, with output to a log file), then hold the turn with a foreground `timeout 590 tail --pid=$PID -f /dev/null`, repeated while it exits 124, until it exits 0; then read the log. No polling loops, no `sleep`, no monitor-and-end-turn. One long job at a time; own scratch subdir under the session scratchpad.
+- **Waiting is a blocking call, never an ended turn.** A lane that has ended its turn is finished, and a report is due; so a lane never ends its turn while a review, build, test run, fold or dump of its own is still running. Launch the long job inside a background bash subshell and capture that subshell's `$!` (`( job … > log 2>&1; echo $? > log.exit ) & PID=$!`), then hold the turn with a foreground `timeout 590 tail --pid=$PID -f /dev/null`, repeated while it exits 124, until it exits 0; then read the log and the exit file. The PID must be bash's `$!`; `tail --pid` cannot follow a native Windows PID taken from `tasklist`, and the subshell keeps `$!` alive for wrappers that detach. No polling loops, no `sleep`, no monitor-and-end-turn. One long job at a time; own scratch subdir under the session scratchpad.
 
 ## Orchestration (designated orchestrator only)
 
