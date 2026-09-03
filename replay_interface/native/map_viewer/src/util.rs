@@ -102,6 +102,26 @@ pub(crate) fn parse_token_value(text: &str, key: &str) -> Option<String> {
     parse_token_at(&text[idx..])
 }
 
+/// `key = "value"` or `key = value`, on the line the key is written on.
+///
+/// Vanilla writes both - `gfx/entities/wtt_units_infantry.asset` has twenty
+/// entities whose `name` and `clone` are bare tokens - and a reader that only
+/// looked for the next quote read the NEXT line's quoted `pdxmesh` as the
+/// entity's name. Whitespace after the `=` is skipped only on the same line.
+pub(crate) fn parse_string_value(text: &str, key: &str) -> Option<String> {
+    let idx = find_assignment(text, key, 0)?;
+    let value = text[idx..].trim_start_matches([' ', '\t']);
+    if let Some(quoted) = value.strip_prefix('"') {
+        let end = quoted.find('"')?;
+        return Some(quoted[..end].to_string());
+    }
+    let token: String = value
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != '{' && *c != '}' && *c != '"')
+        .collect();
+    (!token.is_empty()).then_some(token)
+}
+
 pub(crate) fn parse_quoted_value(text: &str, key: &str) -> Option<String> {
     let idx = find_assignment(text, key, 0)?;
     let value = &text[idx..];
