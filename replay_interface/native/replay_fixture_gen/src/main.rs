@@ -957,6 +957,7 @@ fn fx_division_movement(seed: u64) -> Scenario {
                     ),
                     attackers: Leaf::Measured(vec![101]),
                     defenders: Leaf::Measured(vec![201]),
+                    first_live_attacker: Leaf::Measured(101),
                     combat_width: Leaf::Measured(80.0),
                     terrain: Leaf::Measured("plains".into()),
                     progress: Leaf::Measured(tick as f64 / 10.0),
