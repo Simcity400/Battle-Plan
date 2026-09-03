@@ -46,7 +46,7 @@ Applies to every harness. The reviewer is a fresh agent each round.
 
 - The review prompt carries full context: the defect class, the diff scope, raw evidence paths, an out-of-scope list, and "this job is read-only, do not modify files". The reviewer has no project memory.
 - Review scope is code behaviour only. A finding is valid only if it names production or test code whose behaviour is wrong, unproven, or unsafe. Prose, wording, naming, comments, and claim phrasing are discarded without a round.
-- Round 1 demands every blocking finding, ranked. Later rounds review the delta plus each prior fix. Demonstrating mutations are applied by the lane, delta-scoped and cached by content hash; no mutation batteries. Push back on findings you can refute with code or a measurement.
+- Round 1 demands every blocking finding, ranked. Later rounds review the delta plus each prior fix. Push back on findings you can refute with code or a measurement.
 - No round limit while rounds fix real defects. At round 7, stop and diagnose: if one class keeps recurring, close the class structurally (a counted, asserted number) instead of playing round 8, and write the diagnosis into the run dir.
 - A commit after an approve gets one confirmation round.
 - Persist the review's identity (thread or transcript id) to the run dir before anything else, so a killed review is resumed, never re-run. Wait for a review in-turn; never end a turn to wait, never poll in a loop.
