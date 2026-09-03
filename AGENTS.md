@@ -26,18 +26,12 @@ If the owner has not designated you orchestrator, you are a lane or a reviewer p
 1. Work only in your worktree. Start pin = your branch's first commit. Merge `origin/master` (or the branch the brief names) before you finish.
 2. Implement everything yourself; the reviewer is not a delegate. Between review rounds run only `cargo check` on the crates you touched.
 3. Review until the reviewer approves with zero blocking findings (contract below).
-4. Then, once: the full test modules of every crate and file you changed (no hand-picked subsets), plus the law list. A failure is fixed and gets one confirmation round.
+4. Then, once: the full test modules of every crate and file you changed (no hand-picked subsets), plus the law-test script below. A failure is fixed and gets one confirmation round.
 5. Commit early and often, push your branch when converged, report.
 
 Never run a full workspace suite; the gate does that once per batch. Never run the whole-capture decode tests (`game_ui::uz_rc_vanilla8_operands`, the xmap00 ledger audit); they are gate-only.
 
-**Law list** (every lane, regardless of what it touched; a step that starts zero tests is a failure):
-- `cargo nextest run -p replay_app -E 'test(game_file_ledger)'`
-- `cargo nextest run -p collector -E 'test(xui09_joint_certification)'` and `cargo nextest run -p game_ui -E 'test(joint_certification)'`
-- `cargo nextest run -p compact_contract --test compact_contract_suite -E 'test(counter_wire_census)'`
-- `cargo nextest run -p replay_core -E 'test(every_country_reference_decode_is_gated_witnessed_or_named)'`
-- collector-wide laws when the collector is touched: `attach_log domain_scoped_reset_tests`, `inline_detour` quiescence-sweep and detour-census laws, `d51_read_window_tests`
-- `python extractor/native/scripts/verify_citation_integrity.py` and `python extractor/native/scripts/restamp_world_fold_citations.py --check`
+After convergence run `bash extractor/native/scripts/lane_law_tests.sh` once (`--collector` when the collector was touched): the cross-crate scans the gate would otherwise catch a batch later; a step that starts zero tests fails.
 
 **Fold equivalence** when a fold change needs proof: fold `captures/rc_vanilla8/collector_stream.bin` once with your tree and compare against `extractor/native/runs/fold_reference/<master-sha>/` (same `--game-id`, spool sha256 verified). Never re-fold master.
 
