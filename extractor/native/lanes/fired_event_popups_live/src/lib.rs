@@ -21,10 +21,11 @@ pub const MAGIC: u32 = u32::from_le_bytes(*b"FEV1");
 // tree is their merge, so it carries BOTH and is a THIRD layout. Leaving it at
 // 4 would let a payload from either parent pass the header check at
 // `decode_payload` and then be read with the wrong field order.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 pub const AUTHORITY_A729_INLINE_HOOKS: u32 = 1;
 pub const MAX_ROWS: usize = 1_000_000;
 pub const MAX_CAPTURE_START_FIRED_IDS: usize = 1_000_000;
+pub const MAX_CAPTURE_START_PENDING_UNRESOLVED: usize = 1_000_000;
 pub const MAX_OPTIONS: usize = 65_536;
 pub const MAX_STRING: usize = 65_536;
 pub const PRODUCER_MANIFEST_SHA256: [u8; 32] = [
@@ -61,17 +62,39 @@ pub struct OptionRuntimeTextContext {
     pub context_id: String,
 }
 
+/// The country the dispatch was addressed to, carried BESIDE its TAG.
+///
+/// The TAG is display text and two countries can share it, so a row that
+/// carried only the TAG could not say which country the event was addressed
+/// to. `tag_db_id == 0` is the engine's "addressed to no country" and is
+/// spelled with the engine's own no-country tag; the two spellings are
+/// exclusive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FiredEventRecipient {
+    pub tag_db_id: u32,
+    pub tag: String,
+}
+
+/// One pending row of the engine's event vector that the capture-start
+/// baseline could not turn into a row, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CaptureStartPendingUnresolved {
+    pub index: u32,
+    pub instance_id: u32,
+    pub cause: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FiredEventRow {
     pub event_id: String,
-    /// The engine identity of the recipient, carried BESIDE its TAG.
-    ///
-    /// The TAG is display text and two countries can share it, so a row that
-    /// carried only the TAG could not say which country the event was addressed
-    /// to. The bridge already observes this id (`A19DelayedEventDispatchObservation
-    /// .recipient_tag_id`) and used to spend it resolving the TAG and drop it.
-    pub recipient_tag_db_id: u32,
-    pub recipient_tag: String,
+    /// `CEventScope+0x08` of the scope the engine copied into its pending row
+    /// and its window: the identity every producer of this domain joins on.
+    /// `0` names no country.
+    pub scope_country_tag_db_id: u32,
+    /// The recipient the dispatch was addressed to. Measured on a live fire,
+    /// where the dispatch hands it over; `None` on a capture-start baseline
+    /// row, because the engine's pending row does not carry it.
+    pub recipient: Option<FiredEventRecipient>,
     pub fire_date: String,
     pub fire_hour: u64,
     pub fire_tick: u64,
@@ -138,6 +161,14 @@ pub struct FiredEventFrame {
     pub producer_manifest_sha256: [u8; 32],
     pub telemetry: HookTelemetry,
     pub fired_events_complete: bool,
+    /// Every pending row of the engine's event vector that the attach-time
+    /// baseline saw and could not carry, with its cause. A row named here
+    /// makes the baseline incomplete, and the carrier refuses a frame that
+    /// names one while `telemetry.capture_start_baseline_complete` claims
+    /// otherwise. (The reverse is not a contradiction: the flag is also false
+    /// on a frame whose baseline was never read -- a source-unavailable
+    /// placeholder -- which names nothing.)
+    pub capture_start_pending_unresolved: Vec<CaptureStartPendingUnresolved>,
     /// Event ids the engine's retained fired-event set already held when the
     /// observer attached. `rows` starts at the attach, so these fires have no
     /// row and never will; naming them is what keeps the published history from
@@ -179,6 +210,7 @@ mod exact_source_seal {
 pub struct FiredEventSnapshot {
     pub telemetry: HookTelemetry,
     pub capture_start_fired_event_ids: Option<Vec<String>>,
+    pub capture_start_pending_unresolved: Vec<CaptureStartPendingUnresolved>,
     pub rows: Vec<FiredEventRow>,
 }
 
@@ -204,14 +236,15 @@ struct LedgerState {
     /// looked", so the snapshot refuses rather than encode the initial value.
     capture_start_baseline_recorded: bool,
     capture_start_fired_event_ids: Option<Vec<String>>,
+    capture_start_pending_unresolved: Vec<CaptureStartPendingUnresolved>,
     rows: Vec<FiredEventRow>,
 }
 
 #[derive(Clone, Debug)]
 pub struct FireInput {
     pub event_id: String,
-    pub recipient_tag_db_id: u32,
-    pub recipient_tag: String,
+    pub scope_country_tag_db_id: u32,
+    pub recipient: Option<FiredEventRecipient>,
     pub fire_date: String,
     pub fire_hour: u64,
     pub fire_tick: u64,
@@ -261,6 +294,7 @@ impl A729EventLedger {
                 },
                 capture_start_baseline_recorded: false,
                 capture_start_fired_event_ids: None,
+                capture_start_pending_unresolved: Vec::new(),
                 rows: Vec::new(),
             }),
             capacity,
@@ -279,12 +313,18 @@ impl A729EventLedger {
                 .saturating_add(telemetry.correlation_failures)
                 .saturating_add(telemetry.invalid_definition_joins)
                 .saturating_add(telemetry.fired_ledger_shadow_mismatches)
-                .saturating_add(telemetry.capture_start_fired_ids_unresolved),
+                .saturating_add(telemetry.capture_start_fired_ids_unresolved)
+                // The attach-time baseline's unresolved rows are diagnostics
+                // too: each names a pending row the install could not carry,
+                // and an abort throws those names away with the rows.
+                .saturating_add(state.capture_start_pending_unresolved.len() as u64),
             poisoned: !telemetry.zero_gap(),
         };
         state.rows.clear();
         state.capture_start_baseline_recorded = false;
         state.capture_start_fired_event_ids = None;
+        state.capture_start_pending_unresolved.clear();
+        state.telemetry.capture_start_baseline_complete = false;
         // release fails and the abort is retried -- report the same diagnostics
         state.telemetry.dropped_fire_rows = 0;
         state.telemetry.dropped_resolution_rows = 0;
@@ -304,9 +344,16 @@ impl A729EventLedger {
         }
     }
 
-    pub(crate) fn record_baseline_complete(&self, complete: bool) {
+    /// The attach-time read of the engine's pending-event vector: every row it
+    /// could not carry, by cause. The completeness flag is this list being
+    /// empty, stated once here so the two cannot drift.
+    pub(crate) fn record_capture_start_pending(
+        &self,
+        unresolved: Vec<CaptureStartPendingUnresolved>,
+    ) {
         if let Ok(mut state) = self.state.lock() {
-            state.telemetry.capture_start_baseline_complete = complete;
+            state.telemetry.capture_start_baseline_complete = unresolved.is_empty();
+            state.capture_start_pending_unresolved = unresolved;
         }
     }
 
@@ -343,7 +390,15 @@ impl A729EventLedger {
         all_resolution_paths: bool,
     ) {
         self.record_installation_validation(false);
-        self.record_baseline_complete(baseline_complete);
+        self.record_capture_start_pending(if baseline_complete {
+            Vec::new()
+        } else {
+            vec![CaptureStartPendingUnresolved {
+                index: 0,
+                instance_id: 0,
+                cause: "test: a baseline row the install could not carry".into(),
+            }]
+        });
         self.record_capture_start_fired_baseline(CaptureStartFiredBaseline::default());
         self.record_route_certification(all_classes, all_resolution_paths);
     }
@@ -361,8 +416,8 @@ impl A729EventLedger {
         }
         let row = FiredEventRow {
             event_id: input.event_id,
-            recipient_tag_db_id: input.recipient_tag_db_id,
-            recipient_tag: input.recipient_tag,
+            scope_country_tag_db_id: input.scope_country_tag_db_id,
+            recipient: input.recipient,
             fire_date: input.fire_date,
             fire_hour: input.fire_hour,
             fire_tick: input.fire_tick,
@@ -470,6 +525,7 @@ impl A729EventLedger {
         Ok(FiredEventSnapshot {
             telemetry: state.telemetry.clone(),
             capture_start_fired_event_ids: state.capture_start_fired_event_ids.clone(),
+            capture_start_pending_unresolved: state.capture_start_pending_unresolved.clone(),
             rows: state.rows.clone(),
         })
     }
@@ -515,6 +571,7 @@ pub fn collect_and_encode<S: ExactFiredEventSource>(
         fired_events_complete: snapshot.telemetry.zero_gap(),
         telemetry: snapshot.telemetry,
         capture_start_fired_event_ids: snapshot.capture_start_fired_event_ids,
+        capture_start_pending_unresolved: snapshot.capture_start_pending_unresolved,
         rows: snapshot.rows,
     };
     encode_payload(&frame)
@@ -552,15 +609,41 @@ pub fn validate_frame(frame: &FiredEventFrame) -> Result<(), CarrierError> {
             }
         }
     }
+    // A baseline that left a row behind is not complete: a frame naming an
+    // unresolved row while claiming a complete baseline is refused. A frame
+    // claiming an incomplete baseline may name nothing -- the flag is false
+    // on a placeholder whose baseline was never read at all.
+    if frame.telemetry.capture_start_baseline_complete
+        && !frame.capture_start_pending_unresolved.is_empty()
+    {
+        return invalid("capture-start baseline claims completeness beside unresolved rows");
+    }
+    if frame.capture_start_pending_unresolved.len() > MAX_CAPTURE_START_PENDING_UNRESOLVED {
+        return invalid("capture-start unresolved row count exceeds bound");
+    }
+    for unresolved in &frame.capture_start_pending_unresolved {
+        nonempty(&unresolved.cause, "capture-start unresolved cause")?;
+    }
     let mut seq = None;
     let mut tick = None;
     let mut identities = BTreeSet::new();
     for row in &frame.rows {
         nonempty(&row.event_id, "event id")?;
-        if row.recipient_tag_db_id == 0 {
-            return invalid("recipient tag_db_id is zero");
+        // A recipient of 0 is the engine's "addressed to no country" (the value
+        // its dispatch branches on), and it is spelled with the engine's own
+        // no-country tag; any other id names a country and carries that
+        // country's tag. The two spellings are exclusive, so a row cannot say
+        // both. `None` is the unobtained spelling: a capture-start row, whose
+        // pending row does not carry the recipient.
+        if let Some(recipient) = &row.recipient {
+            if recipient.tag_db_id == 0 {
+                if recipient.tag != compact_contract::country_tag::NO_COUNTRY_SENTINEL {
+                    return invalid("absent recipient must carry the no-country sentinel");
+                }
+            } else {
+                tag(&recipient.tag)?;
+            }
         }
-        tag(&row.recipient_tag)?;
         nonempty(&row.fire_date, "fire date")?;
         if !identities.insert(row.event_sequence) {
             return invalid("duplicate event sequence");
@@ -654,11 +737,24 @@ pub fn encode_payload(frame: &FiredEventFrame) -> Result<Vec<u8>, CarrierError> 
             }
         }
     }
+    u32v(&mut out, frame.capture_start_pending_unresolved.len() as u32);
+    for unresolved in &frame.capture_start_pending_unresolved {
+        u32v(&mut out, unresolved.index);
+        u32v(&mut out, unresolved.instance_id);
+        string(&mut out, &unresolved.cause)?;
+    }
     u32v(&mut out, frame.rows.len() as u32);
     for row in &frame.rows {
         string(&mut out, &row.event_id)?;
-        u32v(&mut out, row.recipient_tag_db_id);
-        string(&mut out, &row.recipient_tag)?;
+        u32v(&mut out, row.scope_country_tag_db_id);
+        match &row.recipient {
+            None => u32v(&mut out, 0),
+            Some(recipient) => {
+                u32v(&mut out, 1);
+                u32v(&mut out, recipient.tag_db_id);
+                string(&mut out, &recipient.tag)?;
+            }
+        }
         string(&mut out, &row.fire_date)?;
         u64v(&mut out, row.fire_hour);
         u64v(&mut out, row.fire_tick);
@@ -714,6 +810,18 @@ pub fn decode_payload(payload: &[u8]) -> Result<FiredEventFrame, CarrierError> {
         }
         _ => return invalid("capture-start fired baseline marker invalid"),
     };
+    let unresolved_count = r.u32()? as usize;
+    if unresolved_count > MAX_CAPTURE_START_PENDING_UNRESOLVED {
+        return invalid("capture-start unresolved row count exceeds bound");
+    }
+    let mut capture_start_pending_unresolved = Vec::with_capacity(unresolved_count);
+    for _ in 0..unresolved_count {
+        capture_start_pending_unresolved.push(CaptureStartPendingUnresolved {
+            index: r.u32()?,
+            instance_id: r.u32()?,
+            cause: r.string()?,
+        });
+    }
     let count = r.u32()? as usize;
     if count > MAX_ROWS {
         return invalid("row count exceeds bound");
@@ -721,8 +829,15 @@ pub fn decode_payload(payload: &[u8]) -> Result<FiredEventFrame, CarrierError> {
     let mut rows = Vec::with_capacity(count);
     for _ in 0..count {
         let event_id = r.string()?;
-        let recipient_tag_db_id = r.u32()?;
-        let recipient_tag = r.string()?;
+        let scope_country_tag_db_id = r.u32()?;
+        let recipient = match r.u32()? {
+            0 => None,
+            1 => Some(FiredEventRecipient {
+                tag_db_id: r.u32()?,
+                tag: r.string()?,
+            }),
+            _ => return invalid("recipient marker invalid"),
+        };
         let fire_date = r.string()?;
         let fire_hour = r.u64()?;
         let fire_tick = r.u64()?;
@@ -763,8 +878,8 @@ pub fn decode_payload(payload: &[u8]) -> Result<FiredEventFrame, CarrierError> {
         }
         rows.push(FiredEventRow {
             event_id,
-            recipient_tag_db_id,
-            recipient_tag,
+            scope_country_tag_db_id,
+            recipient,
             fire_date,
             fire_hour,
             fire_tick,
@@ -793,6 +908,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<FiredEventFrame, CarrierError> {
         telemetry,
         fired_events_complete,
         capture_start_fired_event_ids,
+        capture_start_pending_unresolved,
         rows,
     };
     validate_frame(&frame)?;
@@ -1015,8 +1131,8 @@ mod tests {
     fn row() -> FiredEventRow {
         FiredEventRow {
             event_id: "germany.1".into(),
-            recipient_tag_db_id: 1,
-            recipient_tag: "GER".into(),
+            scope_country_tag_db_id: 1,
+            recipient: Some(FiredEventRecipient { tag_db_id: 1, tag: "GER".into() }),
             fire_date: "1936.1.1.12".into(),
             fire_hour: 0,
             fire_tick: 12,
@@ -1035,6 +1151,99 @@ mod tests {
             runtime_option_text_contexts: Vec::new(),
         }
     }
+    /// The recipient's three spellings: measured as a country (id beside its
+    /// tag), measured as "addressed to no country" (0 beside the engine's own
+    /// no-country tag), and unobtained (`None`, a capture-start row). A zero
+    /// beside a country's tag or a country's id beside the sentinel is neither.
+    ///
+    /// kills: refusing id 0; a zero id beside a country's tag; a country's id
+    /// beside the sentinel; a carrier that cannot spell an unobtained
+    /// recipient.
+    #[test]
+    fn the_recipient_is_a_country_or_no_country_or_unobtained_and_nothing_else() {
+        let frame = |recipient: Option<(u32, &str)>| FiredEventFrame {
+            elapsed_wall_ms: 1,
+            frame_hour: 12,
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+            telemetry: telemetry(),
+            fired_events_complete: true,
+            capture_start_fired_event_ids: Some(Vec::new()),
+            capture_start_pending_unresolved: Vec::new(),
+            rows: vec![FiredEventRow {
+                scope_country_tag_db_id: 0,
+                recipient: recipient.map(|(tag_db_id, tag)| FiredEventRecipient {
+                    tag_db_id,
+                    tag: tag.into(),
+                }),
+                ..row()
+            }],
+        };
+        for lawful in [
+            frame(None),
+            frame(Some((0, compact_contract::country_tag::NO_COUNTRY_SENTINEL))),
+            frame(Some((7, "ENG"))),
+        ] {
+            let bytes = encode_payload(&lawful).expect("a lawful recipient is encodable");
+            assert_eq!(decode_payload(&bytes).unwrap(), lawful);
+        }
+        for contradiction in [
+            frame(Some((0, "GER"))),
+            frame(Some((1, compact_contract::country_tag::NO_COUNTRY_SENTINEL))),
+        ] {
+            assert!(matches!(
+                encode_payload(&contradiction),
+                Err(CarrierError::Invalid(_))
+            ));
+        }
+    }
+
+    /// A frame that names unresolved baseline rows is an incomplete baseline:
+    /// one claiming completeness beside them is refused, one carrying them
+    /// consistently round-trips with every cause intact, and one claiming an
+    /// incomplete baseline while naming nothing is still a frame (a placeholder
+    /// whose baseline was never read says exactly that).
+    #[test]
+    fn unresolved_capture_start_rows_ride_the_frame_and_agree_with_the_completeness_flag() {
+        let unresolved = vec![CaptureStartPendingUnresolved {
+            index: 2,
+            instance_id: 41,
+            cause: "XUI21 baseline timeout is invalid".into(),
+        }];
+        let mut incomplete = telemetry();
+        incomplete.capture_start_baseline_complete = false;
+        let consistent = FiredEventFrame {
+            elapsed_wall_ms: 1,
+            frame_hour: 12,
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+            fired_events_complete: incomplete.zero_gap(),
+            telemetry: incomplete.clone(),
+            capture_start_fired_event_ids: Some(Vec::new()),
+            capture_start_pending_unresolved: unresolved.clone(),
+            rows: vec![row()],
+        };
+        assert!(!consistent.fired_events_complete);
+        let bytes = encode_payload(&consistent).expect("named unresolved rows are encodable");
+        assert_eq!(decode_payload(&bytes).unwrap(), consistent);
+
+        let claims_complete = FiredEventFrame {
+            telemetry: telemetry(),
+            fired_events_complete: true,
+            ..consistent.clone()
+        };
+        assert!(matches!(
+            encode_payload(&claims_complete),
+            Err(CarrierError::Invalid(_))
+        ));
+        let never_read = FiredEventFrame {
+            capture_start_pending_unresolved: Vec::new(),
+            ..consistent
+        };
+        assert!(
+            encode_payload(&never_read).is_ok(),
+            "an incomplete baseline that names nothing is a placeholder, not a contradiction"
+        );
+    }
+
     #[test]
     fn roundtrip_and_zero_gap() {
         let f = FiredEventFrame {
@@ -1044,6 +1253,7 @@ mod tests {
             telemetry: telemetry(),
             fired_events_complete: true,
             capture_start_fired_event_ids: Some(Vec::new()),
+            capture_start_pending_unresolved: Vec::new(),
             rows: vec![row()],
         };
         let b = encode_payload(&f).unwrap();
@@ -1067,6 +1277,7 @@ mod tests {
             telemetry: telemetry(),
             fired_events_complete: true,
             capture_start_fired_event_ids: Some(Vec::new()),
+            capture_start_pending_unresolved: Vec::new(),
             rows: vec![row()],
         })
         .expect("encode");
@@ -1096,6 +1307,7 @@ mod tests {
             telemetry: telemetry(),
             fired_events_complete: true,
             capture_start_fired_event_ids: Some(vec!["france.10".into(), "germany.1".into()]),
+            capture_start_pending_unresolved: Vec::new(),
             rows: vec![row()],
         };
         assert!(f.fired_events_complete);
@@ -1124,12 +1336,14 @@ mod tests {
             telemetry: telemetry(),
             fired_events_complete: true,
             capture_start_fired_event_ids: Some(vec!["germany.1".into(), "france.10".into()]),
+            capture_start_pending_unresolved: Vec::new(),
             rows: Vec::new(),
         };
         assert!(matches!(encode_payload(&f), Err(CarrierError::Invalid(_))));
 
         let duplicated = FiredEventFrame {
             capture_start_fired_event_ids: Some(vec!["germany.1".into(), "germany.1".into()]),
+            capture_start_pending_unresolved: Vec::new(),
             ..f.clone()
         };
         assert!(matches!(
@@ -1139,6 +1353,7 @@ mod tests {
 
         let blank = FiredEventFrame {
             capture_start_fired_event_ids: Some(vec![String::new()]),
+            capture_start_pending_unresolved: Vec::new(),
             ..f
         };
         assert!(matches!(
@@ -1151,7 +1366,7 @@ mod tests {
     fn a_ledger_that_never_read_the_retained_set_refuses_instead_of_claiming_none() {
         let ledger = A729EventLedger::new(8);
         ledger.record_installation_validation(true);
-        ledger.record_baseline_complete(true);
+        ledger.record_capture_start_pending(Vec::new());
         ledger.record_route_certification(true, true);
         // No `record_capture_start_fired_baseline`: the attach-time read never
         // happened, so there is no honest value for the field.
@@ -1196,6 +1411,7 @@ mod tests {
             fired_events_complete: snapshot.telemetry.zero_gap(),
             telemetry: snapshot.telemetry,
             capture_start_fired_event_ids: snapshot.capture_start_fired_event_ids,
+            capture_start_pending_unresolved: snapshot.capture_start_pending_unresolved,
             rows: vec![row()],
         };
         assert!(
@@ -1221,6 +1437,7 @@ mod tests {
             fired_events_complete: unresolved.zero_gap(),
             telemetry: unresolved,
             capture_start_fired_event_ids: Some(vec!["germany.1".into()]),
+            capture_start_pending_unresolved: Vec::new(),
             rows: Vec::new(),
         };
         assert!(matches!(
@@ -1234,6 +1451,7 @@ mod tests {
         let withheld = FiredEventFrame {
             telemetry: telemetry(),
             capture_start_fired_event_ids: None,
+            capture_start_pending_unresolved: Vec::new(),
             ..short
         };
         let bytes = encode_payload(&withheld).expect("withholding needs no cause");
@@ -1263,8 +1481,8 @@ mod tests {
         for sequence in [10, 11] {
             ledger.record_fire(FireInput {
                 event_id: "germany.1".into(),
-                recipient_tag_db_id: 1,
-                recipient_tag: "GER".into(),
+                scope_country_tag_db_id: 1,
+                recipient: Some(FiredEventRecipient { tag_db_id: 1, tag: "GER".into() }),
                 fire_date: "1936.1.1.12".into(),
                 fire_hour: 0,
                 fire_tick: 12,
@@ -1275,11 +1493,21 @@ mod tests {
             });
         }
 
+        // The attach-time baseline's unresolved rows are diagnostics the abort
+        // throws away too; each is counted once.
+        ledger.record_capture_start_pending(vec![CaptureStartPendingUnresolved {
+            index: 0,
+            instance_id: 7,
+            cause: "XUI21 baseline timeout is invalid".into(),
+        }]);
         let first = ledger.discard_retained_rows();
         let retry = ledger.discard_retained_rows();
 
         assert_eq!(first.retained_rows, 1);
-        assert_eq!(first.discarded_diagnostics, 1, "one fire row was dropped");
+        assert_eq!(
+            first.discarded_diagnostics, 2,
+            "one fire row was dropped and one baseline row was left unresolved"
+        );
         assert_eq!(retry.retained_rows, 0);
         assert_eq!(
             retry.discarded_diagnostics, 0,
@@ -1298,6 +1526,7 @@ mod tests {
             telemetry: t,
             fired_events_complete: true,
             capture_start_fired_event_ids: Some(Vec::new()),
+            capture_start_pending_unresolved: Vec::new(),
             rows: vec![row()],
         };
         assert!(validate_frame(&f).is_err());
@@ -1310,6 +1539,7 @@ mod tests {
             telemetry: telemetry(),
             fired_events_complete: true,
             capture_start_fired_event_ids: Some(Vec::new()),
+            capture_start_pending_unresolved: Vec::new(),
             rows: vec![r],
         };
         assert!(validate_frame(&f).is_err())
@@ -1361,8 +1591,8 @@ mod tests {
         for sequence in [11, 10] {
             ledger.record_fire(FireInput {
                 event_id: "germany.1".into(),
-                recipient_tag_db_id: 1,
-                recipient_tag: "GER".into(),
+                scope_country_tag_db_id: 1,
+                recipient: Some(FiredEventRecipient { tag_db_id: 1, tag: "GER".into() }),
                 fire_date: "1936.1.1.12".into(),
                 fire_hour: 0,
                 fire_tick: 12,
@@ -1448,6 +1678,7 @@ mod tests {
             telemetry: telemetry(),
             fired_events_complete: true,
             capture_start_fired_event_ids: Some(Vec::new()),
+            capture_start_pending_unresolved: Vec::new(),
             rows: vec![ai],
         };
         assert!(validate_frame(&frame).is_ok());
@@ -1477,6 +1708,7 @@ mod tests {
             telemetry: telemetry(),
             fired_events_complete: true,
             capture_start_fired_event_ids: Some(Vec::new()),
+            capture_start_pending_unresolved: Vec::new(),
             rows: vec![timeout_default, timeout_no_choice],
         };
         let decoded = decode_payload(&encode_payload(&frame).unwrap()).unwrap();
@@ -1498,6 +1730,7 @@ mod tests {
             telemetry: telemetry(),
             fired_events_complete: true,
             capture_start_fired_event_ids: Some(Vec::new()),
+            capture_start_pending_unresolved: Vec::new(),
             rows: vec![invalid],
         };
         assert!(validate_frame(&frame).is_err());

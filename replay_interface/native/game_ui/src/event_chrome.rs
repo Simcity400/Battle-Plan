@@ -761,16 +761,27 @@ impl PopupSuppression {
     }
 }
 
+/// The engine's own tag for country slot 0, the "names no country" value a
+/// recipient of 0 arrives beside (lane XD's pending-recipient law).
+pub const FIRED_EVENT_NO_COUNTRY_TAG: &str = "---";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdmittedFiredEvent {
     pub source_file: String,
     pub event_id: String,
+    /// The country the engine's event scope named at the fire (0 = none). The
+    /// row's join identity; measured on every row.
+    pub scope_country_tag_db_id: i64,
     /// The recipient's ENGINE identity. Carried through rather than spent
     /// resolving the TAG: two ids can share a display TAG, and an admitted
     /// history accumulates rows across hours, so the TAG alone cannot say which
-    /// country an event was addressed to.
-    pub recipient_tag_db_id: i64,
-    pub recipient_tag: String,
+    /// country an event was addressed to. `Some(0)` beside the engine's own
+    /// no-country tag is a fire addressed to no country; `None` is a row the
+    /// recorder recovered from the engine's pending vector at attach, which
+    /// does not carry the recipient at all (lane XD): the addressee is
+    /// UNOBTAINED, not absent.
+    pub recipient_tag_db_id: Option<i64>,
+    pub recipient_tag: Option<String>,
     pub fire_date: String,
     pub fire_hour: i64,
     pub fire_tick: i64,
@@ -796,8 +807,35 @@ impl AdmittedFiredEvent {
     /// reach 442 on a later hour where `DUP` denotes 442. The admitted history
     /// proving one TAG per id within itself is not enough: it never sees the
     /// id the TAG denotes NOW.
+    ///
+    /// A row whose recipient is unobtained (`None`) is open for nobody: the
+    /// viewer cannot be shown to be its addressee, and `production_renderer`
+    /// names such rows as a gap while their window is open rather than
+    /// guessing. A fire addressed to no country (`Some(0)`) is likewise open
+    /// for nobody, whatever id a viewer has.
     pub fn lifecycle_open_at(&self, recipient_tag_db_id: i64, tick: i64) -> bool {
-        if self.recipient_tag_db_id != recipient_tag_db_id || tick < self.fire_tick {
+        self.recipient_tag_db_id
+            .is_some_and(|recipient| recipient > 0 && recipient == recipient_tag_db_id)
+            && self.lifecycle_window_contains(tick)
+    }
+
+    /// Whether this row is a named gap for the renderer at `tick`: its window
+    /// is open, its recipient is unobtained (a row recovered from the engine's
+    /// pending vector at attach), and it is not a row the engine measured as
+    /// showing no popup -- such a row reaches nobody's screen whoever it was
+    /// addressed to, so its addressee is not a question the frame must answer.
+    pub fn recipient_unobtained_while_open(&self, tick: i64) -> bool {
+        self.recipient_tag_db_id.is_none()
+            && self.lifecycle_window_contains(tick)
+            && !self
+                .popup_suppression
+                .is_some_and(|reason| reason.is_measured_no_popup())
+    }
+
+    /// Whether `tick` lies in the row's lifecycle window, whoever it is for:
+    /// from the fire tick up to the earlier of resolution and timeout.
+    pub fn lifecycle_window_contains(&self, tick: i64) -> bool {
+        if tick < self.fire_tick {
             return false;
         }
         let close_tick = self.resolved_tick.map_or(self.timeout_tick, |resolved| {
@@ -1535,14 +1573,13 @@ pub fn admit_event_history(
     let mut recipient_id_by_tag: BTreeMap<String, i64> = BTreeMap::new();
     for row in rows {
         let admitted = admit_fired_event(row, &request)?;
-        if recipient_id_by_tag
-            .insert(
-                admitted.recipient_tag.clone(),
-                admitted.recipient_tag_db_id,
-            )
-            .is_some_and(|seen| seen != admitted.recipient_tag_db_id)
-        {
-            return Err(EventHistoryRejection::InvalidIdentity);
+        if let (Some(tag), Some(id)) = (&admitted.recipient_tag, admitted.recipient_tag_db_id) {
+            if recipient_id_by_tag
+                .insert(tag.clone(), id)
+                .is_some_and(|seen| seen != id)
+            {
+                return Err(EventHistoryRejection::InvalidIdentity);
+            }
         }
         if prior_sequence.is_some_and(|value| value >= admitted.event_sequence)
             || prior_tick.is_some_and(|value| value > admitted.fire_tick)
@@ -1563,13 +1600,33 @@ fn admit_fired_event(
 ) -> std::result::Result<AdmittedFiredEvent, EventHistoryRejection> {
     let event_id =
         measured_nonempty(&row.event_id).ok_or(EventHistoryRejection::InvalidIdentity)?;
-    let recipient_tag =
-        measured_nonempty(&row.recipient_tag).ok_or(EventHistoryRejection::InvalidIdentity)?;
-    let recipient_tag_db_id = *row
-        .recipient_tag_db_id
+    // Country identities are the engine's u32 tag-db ids: nothing negative,
+    // nothing wider, is a country.
+    let is_engine_identity = |id: i64| (0..=i64::from(u32::MAX)).contains(&id);
+    let scope_country_tag_db_id = *row
+        .scope_country_tag_db_id
         .measured()
-        .filter(|id| **id > 0)
+        .filter(|id| is_engine_identity(**id))
         .ok_or(EventHistoryRejection::InvalidIdentity)?;
+    // The recipient's two spellings (lane XD's pending-recipient law): a
+    // measured pair, where 0 is the engine's "addressed to no country" and
+    // arrives only beside the engine's own no-country tag, and any other id
+    // only beside a country's tag; or an unobtained pair, a row the recorder
+    // recovered from the pending vector, which does not carry the recipient.
+    // Either is admitted -- the history stays whole. One measured beside one
+    // unobtained, or a contradicting pair, is not a row the engine wrote.
+    let (recipient_tag_db_id, recipient_tag) =
+        match (&row.recipient_tag_db_id, &row.recipient_tag) {
+            (Leaf::Measured(id), Leaf::Measured(tag))
+                if is_engine_identity(*id)
+                    && !tag.is_empty()
+                    && ((*id == 0) == (tag == FIRED_EVENT_NO_COUNTRY_TAG)) =>
+            {
+                (Some(*id), Some(tag.clone()))
+            }
+            (Leaf::Unobtained, Leaf::Unobtained) => (None, None),
+            _ => return Err(EventHistoryRejection::InvalidIdentity),
+        };
     let fire_date =
         measured_nonempty(&row.fire_date).ok_or(EventHistoryRejection::InvalidIdentity)?;
     let fire_hour =
@@ -1665,8 +1722,9 @@ fn admit_fired_event(
     Ok(AdmittedFiredEvent {
         source_file: def.source_file.clone(),
         event_id: event_id.to_string(),
+        scope_country_tag_db_id,
         recipient_tag_db_id,
-        recipient_tag: recipient_tag.to_string(),
+        recipient_tag,
         fire_date: fire_date.to_string(),
         fire_hour,
         fire_tick,
@@ -2305,6 +2363,7 @@ mod tests {
     fn rich_row() -> RecordedFiredEventRow {
         RecordedFiredEventRow {
             event_id: Leaf::Measured("generic.1".into()),
+            scope_country_tag_db_id: Leaf::Measured(1),
             recipient_tag_db_id: Leaf::Measured(1),
             recipient_tag: Leaf::Measured("GER".into()),
             fire_date: Leaf::Measured("1936.1.1.12".into()),
@@ -2882,7 +2941,8 @@ mod tests {
         assert!(!event.visible_at(1, 1210));
         assert!(!event.visible_at(2, 1205));
         assert_eq!(
-            event.recipient_tag_db_id, 1,
+            event.recipient_tag_db_id,
+            Some(1),
             "the recipient identity reaches the UI rather than being spent on the TAG"
         );
 
@@ -2897,8 +2957,121 @@ mod tests {
         );
         assert!(event.visible_at(1, 1200), "and its own country still sees it");
         assert_eq!(
-            event.recipient_tag_db_id, 1,
+            event.recipient_tag_db_id,
+            Some(1),
             "the recipient identity reaches the UI rather than being spent on the TAG"
+        );
+
+        // THE RECIPIENT'S OTHER TWO SPELLINGS. A fire addressed to no country
+        // (id 0 beside the engine's own no-country tag), and a row recovered
+        // from the engine's pending vector at attach, whose recipient is
+        // unobtained (both fields null). Each is admitted -- the history stays
+        // whole -- and each is open for no viewer, viewer 0 included; the
+        // unobtained row's window is still open, which is the renderer's gap.
+        let admit = |rows: Vec<RecordedFiredEventRow>| {
+            admit_event_history(EventHistoryRequest {
+                source_record_id: "record:1",
+                history: &FiredEventsView {
+                    events: Leaf::Measured(rows),
+                    history_complete: Leaf::Measured(true),
+                    hook_coverage_complete: Leaf::Measured(true),
+                    prior_to_capture: Leaf::Measured(Vec::new()),
+                },
+                definitions: &definitions,
+                localisation: &loc,
+                sprites: &sprites,
+                runtime_text: &BTreeMap::new(),
+            })
+        };
+        let mut no_country = rich_row();
+        no_country.scope_country_tag_db_id = Leaf::Measured(0);
+        no_country.recipient_tag_db_id = Leaf::Measured(0);
+        no_country.recipient_tag = Leaf::Measured("---".into());
+        no_country.event_sequence = Leaf::Measured(9);
+        let mut unobtained = rich_row();
+        unobtained.scope_country_tag_db_id = Leaf::Measured(0);
+        unobtained.recipient_tag_db_id = Leaf::Unobtained;
+        unobtained.recipient_tag = Leaf::Unobtained;
+        unobtained.event_sequence = Leaf::Measured(10);
+        let admitted = admit(vec![rich_row(), no_country, unobtained])
+            .expect("both spellings keep the history whole");
+        assert_eq!(admitted.len(), 3);
+        assert_eq!(admitted[0].scope_country_tag_db_id, 1);
+        assert_eq!(admitted[1].scope_country_tag_db_id, 0);
+        assert_eq!(admitted[1].recipient_tag_db_id, Some(0));
+        assert_eq!(admitted[1].recipient_tag.as_deref(), Some("---"));
+        assert_eq!(admitted[2].recipient_tag_db_id, None);
+        assert_eq!(admitted[2].recipient_tag, None);
+        assert!(admitted[0].visible_at(1, 1205), "the addressed row still shows");
+        for viewer in [0, 1, 2] {
+            assert!(
+                !admitted[1].visible_at(viewer, 1205),
+                "an event addressed to no country is open for no viewer"
+            );
+            assert!(
+                !admitted[2].visible_at(viewer, 1205),
+                "an event whose recipient is unobtained is open for no viewer"
+            );
+        }
+        assert!(
+            admitted[2].lifecycle_window_contains(1205)
+                && !admitted[2].lifecycle_window_contains(1210),
+            "its window is still the fire-to-close window"
+        );
+        // The renderer's gap: an unobtained recipient while the window is
+        // open, unless the engine measured the row as showing no popup.
+        assert!(
+            admitted[2].recipient_unobtained_while_open(1205)
+                && !admitted[2].recipient_unobtained_while_open(1210)
+        );
+        assert!(
+            !admitted[1].recipient_unobtained_while_open(1205),
+            "a fire addressed to no country is measured, not a gap"
+        );
+        let mut hidden = admitted[2].clone();
+        hidden.popup = None;
+        hidden.popup_suppression = Some(PopupSuppression::DefinitionHidden);
+        assert!(
+            !hidden.recipient_unobtained_while_open(1205),
+            "a row the engine showed no popup for is nobody's gap"
+        );
+        let mut no_options = hidden.clone();
+        no_options.popup_suppression = Some(PopupSuppression::VisibleOptionOrdinalsEmpty);
+        assert!(!no_options.recipient_unobtained_while_open(1205));
+        let mut unmaterialised = hidden.clone();
+        unmaterialised.popup_suppression = Some(PopupSuppression::VisibleOptionOrdinalsUnobtained);
+        assert!(
+            unmaterialised.recipient_unobtained_while_open(1205),
+            "a row whose popup is merely unavailable may still have been someone's"
+        );
+        // The law's other side: the pairs the engine never writes are refused.
+        for (id, tag) in [
+            (Leaf::Measured(0), Leaf::Measured("GER".into())),
+            (Leaf::Measured(1), Leaf::Measured("---".into())),
+            (Leaf::Unobtained, Leaf::Measured("GER".into())),
+            (Leaf::Measured(0), Leaf::Unobtained),
+            // The engine's identities are u32: nothing wider is a country.
+            (Leaf::Measured(1 << 32), Leaf::Measured("GER".into())),
+        ] {
+            let mut contradiction = rich_row();
+            contradiction.recipient_tag_db_id = id;
+            contradiction.recipient_tag = tag;
+            assert!(
+                matches!(
+                    admit(vec![contradiction]),
+                    Err(EventHistoryRejection::InvalidIdentity)
+                ),
+                "a recipient pair the engine never writes is not a row"
+            );
+        }
+        let mut wide_scope = rich_row();
+        wide_scope.scope_country_tag_db_id = Leaf::Measured(1 << 32);
+        assert!(
+            matches!(
+                admit(vec![wide_scope]),
+                Err(EventHistoryRejection::InvalidIdentity)
+            ),
+            "a scope country wider than the engine's u32 identity is not a row"
         );
 
         // TWO IDS, ONE TAG, across the accumulated history. The join below is by

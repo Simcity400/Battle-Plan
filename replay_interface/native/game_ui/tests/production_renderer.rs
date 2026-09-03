@@ -1065,8 +1065,9 @@ fn installed_xui21_shipping_renderer_admits_complete_event_namespace_and_compose
         AdmittedFiredEvent {
             source_file: "events/LowCountries.txt".into(),
             event_id: "low.1".into(),
-            recipient_tag_db_id: 1,
-            recipient_tag: "HOL".into(),
+            scope_country_tag_db_id: 1,
+            recipient_tag_db_id: Some(1),
+            recipient_tag: Some("HOL".into()),
             fire_date: "1936.1.1".into(),
             fire_hour: 100,
             fire_tick: 100,

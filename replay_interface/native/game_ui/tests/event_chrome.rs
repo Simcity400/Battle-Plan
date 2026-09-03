@@ -171,8 +171,9 @@ fn positive_event_popup_reaches_the_shipping_compositor_with_shipped_assets() {
         let event = AdmittedFiredEvent {
             source_file: "events/xui21_positive_compositor_evidence.txt".into(),
             event_id: format!("xui21.positive.{index}"),
-            recipient_tag_db_id: 3,
-            recipient_tag: "ENG".into(),
+            scope_country_tag_db_id: 3,
+            recipient_tag_db_id: Some(3),
+            recipient_tag: Some("ENG".into()),
             fire_date: "1936.1.1.12".into(),
             fire_hour: 12,
             fire_tick: 120,

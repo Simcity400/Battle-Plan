@@ -5627,6 +5627,28 @@ impl ProductionUiRenderer {
             });
             return route;
         }
+        // Rows the recorder recovered from the engine's pending vector at
+        // attach carry no recipient (the vector does not hold it; lane XD).
+        // While such a row's window is open the viewer may or may not be its
+        // addressee, and the frame cannot say: that is a named gap, not an
+        // empty stack.
+        let unaddressed_open = admitted
+            .iter()
+            .filter(|event| event.recipient_unobtained_while_open(tick))
+            .map(|event| event.event_sequence.to_string())
+            .collect::<Vec<_>>();
+        if !unaddressed_open.is_empty() {
+            route.gaps.push(ObserverUiGap {
+                surface: "XUI21/events",
+                field: "recipient",
+                required_domain: "a measured d75 recipient for every event row whose window is open",
+                reason: format!(
+                    "open event rows were recovered from the pending vector at attach and carry no recipient ({})",
+                    unaddressed_open.join(",")
+                ),
+            });
+            return route;
+        }
         let (visible, focused) = crate::event_chrome::visible_event_popup_stack(
             &admitted,
             country_tag_db_id,

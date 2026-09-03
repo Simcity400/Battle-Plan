@@ -6185,7 +6185,7 @@ pub fn install_xui21_a729_fired_event_runtime(
     image_base: usize,
     bridge: std::sync::Arc<dyn fired_event_popups_live_lane::a729_runtime::A729EventBridge>,
     capacity: usize,
-) -> Result<(), String> {
+) -> Result<fired_event_popups_live_lane::a729_runtime::A729InstallReport, String> {
     fired_event_popups_live_lane::a729_runtime::install_a729_event_runtime(
         image_base, bridge, capacity,
     )
