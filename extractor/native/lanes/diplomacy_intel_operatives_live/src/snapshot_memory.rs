@@ -30,12 +30,33 @@ pub const DOMAIN53_SNAPSHOT_MERGE_GAP_BYTES: u64 = 64;
 pub const DOMAIN53_SNAPSHOT_MAX_REGIONS: usize = 524_288;
 pub const DOMAIN53_SNAPSHOT_MAX_BYTES: usize = 32 * 1024 * 1024;
 pub const DOMAIN53_SNAPSHOT_MAX_TRACE_READS: usize = 8 * 1024 * 1024;
-/// Distinct operating-system regions a plan may span. Each costs one
-/// VirtualQuery inside the bracket (the copy's guard-page gate), so the count
-/// is taken on the plan-walk thread and refused above this; the bracket's
-/// query budget is the same number, so a layout that fragmented after
-/// planning refuses the copy instead of running past the bound.
-pub const DOMAIN53_SNAPSHOT_MAX_OS_REGIONS: usize = 2_048;
+/// The service bar one bracket is measured against: one frame at 60 Hz.
+pub const DOMAIN53_SNAPSHOT_SERVICE_BAR_NS: u64 = 16_000_000;
+/// What the copy of the measured production demand costs the bracket:
+/// 393,494 ranges and 26,757,592 bytes at 7,874,200 ns unloaded p50 on the
+/// production copy path (runs/d53c_os_region_budget/GATE_COST.json,
+/// measured_demand).
+pub const DOMAIN53_SNAPSHOT_MEASURED_COPY_NS: u64 = 7_874_200;
+/// What ONE gate query costs the bracket. Two measurements, and this is the
+/// LARGER: interleaving a one-region and a many-region capture so both see
+/// the same machine gives 514-784 ns, and subtracting the one-region shape's
+/// own measurement window from the many-region shape's gives 1,052 ns. The
+/// interleaved figure is the cleaner one and the standalone figure is the one
+/// a bracket actually exhibited, so the budget is derived from the standalone
+/// figure and is the smaller of the two derivations.
+pub const DOMAIN53_SNAPSHOT_GATE_QUERY_NS: u64 = 1_052;
+/// Gate queries one bracket may make, which is what is left of the service
+/// bar after the measured copy, at the measured cost of one query. NOT a cap
+/// on how fragmented the address space may be: the bracket queries a region
+/// when the copy reaches a range outside the one it holds, so fragmentation
+/// costs queries. Only a layout needing more queries than the bar affords
+/// costs the hour, and it says so with the count it reached. Capture e2e_03
+/// measured 2,319 regions at its worst hour, 3.3x under this; the cap this
+/// replaces was a guessed 2,048 checked BEFORE the copy ran, which refused
+/// 490 of that capture's 1,169 hours.
+pub const DOMAIN53_SNAPSHOT_GATE_QUERY_BUDGET: u32 =
+    ((DOMAIN53_SNAPSHOT_SERVICE_BAR_NS - DOMAIN53_SNAPSHOT_MEASURED_COPY_NS)
+        / DOMAIN53_SNAPSHOT_GATE_QUERY_NS) as u32;
 
 pub const DOMAIN53_SNAPSHOT_REGION_CAP_CAUSE: &str = "domain53_snapshot_region_cap";
 pub const DOMAIN53_SNAPSHOT_BYTE_CAP_CAUSE: &str = "domain53_snapshot_byte_cap";
@@ -43,7 +64,6 @@ pub const DOMAIN53_SNAPSHOT_ADDRESS_OVERFLOW_CAUSE: &str = "domain53_snapshot_ad
 pub const DOMAIN53_SNAPSHOT_REGION_MISS_CAUSE: &str = "domain53_snapshot_region_miss";
 pub const DOMAIN53_SNAPSHOT_COPY_REFUSED_CAUSE: &str = "domain53_snapshot_copy_refused";
 pub const DOMAIN53_SNAPSHOT_TRACE_CAP_CAUSE: &str = "domain53_snapshot_trace_cap";
-pub const DOMAIN53_SNAPSHOT_OS_REGION_CAP_CAUSE: &str = "domain53_snapshot_os_region_cap";
 pub const DOMAIN53_SNAPSHOT_GATE_BUDGET_CAUSE: &str = "domain53_snapshot_gate_budget";
 pub const DOMAIN53_SNAPSHOT_ARENA_CAUSE: &str = "domain53_snapshot_arena_refused";
 
@@ -310,9 +330,6 @@ pub struct Domain53SnapshotPlanDemand {
     /// miss.
     pub probe_region_count: u64,
     pub probe_byte_count: u64,
-    /// Distinct operating-system regions the plan's ranges span, counted on
-    /// the plan-walk thread (0 when never counted).
-    pub os_region_count: u64,
 }
 
 impl Domain53SnapshotPlanDemand {
@@ -480,7 +497,6 @@ impl Domain53SnapshotPlan {
             data_byte_count,
             probe_region_count,
             probe_byte_count,
-            os_region_count: 0,
         };
         let total_region_count = demand.region_count();
         let total_byte_count = demand.byte_count();
@@ -555,30 +571,6 @@ impl Domain53SnapshotPlan {
 
     pub fn demand(&self) -> Domain53SnapshotPlanDemand {
         self.demand
-    }
-
-    pub fn note_os_region_count(&mut self, count: u64) {
-        self.demand.os_region_count = count;
-    }
-
-    /// Distinct operating-system regions the plan's ranges span, counted with
-    /// the same query and the same reuse rule as [`Self::capture_with`]'s
-    /// gate (a rejected region covers its ranges too), so the count IS the
-    /// bracket's query count. Runs on the plan-walk thread.
-    pub fn count_os_regions(
-        &self,
-        mut query: impl FnMut(u64) -> Option<Domain53SnapshotOsRegion>,
-    ) -> usize {
-        let mut region: Option<Domain53SnapshotOsRegion> = None;
-        let mut regions = 0usize;
-        for spec in &self.specs {
-            if region.is_some_and(|held| covers(held, spec)) {
-                continue;
-            }
-            regions += 1;
-            region = query(spec.src);
-        }
-        regions
     }
 
     /// Copy every planned range. `query` answers the operating-system region
@@ -1111,7 +1103,6 @@ mod tests {
                     data_byte_count: 16,
                     probe_region_count: 0,
                     probe_byte_count: 0,
-                    os_region_count: 0,
                 },
             }
         );
@@ -1273,8 +1264,6 @@ mod tests {
         assert!(receipt.gate_budget_exhausted);
         assert_eq!(receipt.gate_queries, 1);
         assert_eq!(receipt.copied_region_count, 0);
-
-        assert_eq!(plan.count_os_regions(|address| source.region_at(address)), 2);
     }
 
     /// A range that faults mid-batch loses only itself: the ranges before it
@@ -1368,9 +1357,9 @@ mod tests {
     /// The worst hour's shape is planned here against the production caps.
     #[test]
     fn the_measured_production_demand_fits_the_caps() {
-        const MEASURED_TRACE_READS: u64 = 542_700;
-        const MEASURED_MERGED_RANGES: usize = 393_117;
-        const MEASURED_MERGED_BYTES: u64 = 26_609_589;
+        const MEASURED_TRACE_READS: u64 = 544_830;
+        const MEASURED_MERGED_RANGES: usize = 393_494;
+        const MEASURED_MERGED_BYTES: u64 = 26_613_940;
         // The page-granular planner turned that demand into this, which is
         // what refused every hour of the capture.
         const MEASURED_PAGE_REGIONS: u64 = 125_083;
@@ -1416,5 +1405,40 @@ mod tests {
             (DOMAIN53_SNAPSHOT_MAX_BYTES as f64) / (MEASURED_MERGED_BYTES as f64) >= 1.26,
             "the byte cap keeps its stated headroom over the measured demand"
         );
+    }
+
+    /// The gate's query budget is arithmetic over three measured numbers, and
+    /// the operating-system regions a real campaign's plan spans sit under it
+    /// with room. Capture e2e_03 refused 490 of 1,169 hours because the same
+    /// quantity was a GUESSED cap of 2,048 checked before the copy ran.
+    #[test]
+    fn the_gate_query_budget_is_what_the_bar_affords_over_the_measured_demand() {
+        const MEASURED_OS_REGIONS_MIN: u32 = 2_273;
+        const MEASURED_OS_REGIONS_MAX: u32 = 2_319;
+        const SUPERSEDED_OS_REGION_CAP: u32 = 2_048;
+        assert!(
+            MEASURED_OS_REGIONS_MIN > SUPERSEDED_OS_REGION_CAP,
+            "every hour of e2e_03 was over the cap it was refused by, not a tail"
+        );
+        assert_eq!(
+            DOMAIN53_SNAPSHOT_GATE_QUERY_BUDGET,
+            ((DOMAIN53_SNAPSHOT_SERVICE_BAR_NS - DOMAIN53_SNAPSHOT_MEASURED_COPY_NS)
+                / DOMAIN53_SNAPSHOT_GATE_QUERY_NS) as u32,
+        );
+        assert!(
+            DOMAIN53_SNAPSHOT_MEASURED_COPY_NS < DOMAIN53_SNAPSHOT_SERVICE_BAR_NS,
+            "the copy has to leave the bar something to buy queries with"
+        );
+        assert!(
+            DOMAIN53_SNAPSHOT_GATE_QUERY_BUDGET >= MEASURED_OS_REGIONS_MAX * 3,
+            "the budget carries at least 3x the measured region demand: {} against {MEASURED_OS_REGIONS_MAX}",
+            DOMAIN53_SNAPSHOT_GATE_QUERY_BUDGET,
+        );
+        // The budget bounds the bracket, so spending all of it plus the
+        // measured copy still fits the bar it was derived from.
+        let spent = u64::from(DOMAIN53_SNAPSHOT_GATE_QUERY_BUDGET)
+            * DOMAIN53_SNAPSHOT_GATE_QUERY_NS
+            + DOMAIN53_SNAPSHOT_MEASURED_COPY_NS;
+        assert!(spent <= DOMAIN53_SNAPSHOT_SERVICE_BAR_NS);
     }
 }
