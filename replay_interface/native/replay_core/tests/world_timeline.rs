@@ -4330,3 +4330,301 @@ fn wrong_typed_map_mirror_falls_back_with_warning() {
     let _ = fs::remove_dir_all(&root);
 }
 
+
+/// One CTA2 wire row as the fold spells it, with a producer sequence and a D70
+/// mutation of the caller's choosing.
+fn d90_wire_row(producer_sequence: u64, d70: Value) -> Value {
+    json!({
+        "producer_sequence": producer_sequence,
+        "game_hour_raw": 16_959_360,
+        "combat": {"bound": true, "combat_id": 21, "generation": 4},
+        "convoy": {"id": 158_065 + producer_sequence, "type_tag": 4_713},
+        "owner_country": null,
+        "killer_country": null,
+        "owner_tag_db_id": 9,
+        "killer_tag_db_id": 4,
+        "client": {"id": 106_381, "type_tag": 4_713},
+        "convoy_index": producer_sequence,
+        "member_state_at_entry": 3,
+        "battle_slot": producer_sequence,
+        "route": {
+            "bound": true,
+            "route_key": {"id": 106_381, "type_tag": 4_713},
+            "producer_kind": "lend_lease",
+            "source": {"kind": "state", "id": 282},
+            "destination": {"kind": "state", "id": 64}
+        },
+        "d70_mutation": d70
+    })
+}
+
+fn d90_append(ordinal: u64, before_rows: u64) -> Value {
+    json!({
+        "kind": "append_first_seen",
+        "ordinal": ordinal,
+        "before_rows": before_rows,
+        "after_rows": before_rows + 1,
+        "before_count": 0,
+        "after_count": 1
+    })
+}
+
+fn d90_coverage_gap(cause: &str, skipped: u64, lost: u64, uncounted: u64) -> Value {
+    json!({
+        "cause": cause,
+        "records": 1,
+        "first_hour_index": 16_959_360,
+        "last_hour_index": 16_959_360,
+        "first_game_hour_raw": 60_831_717,
+        "last_game_hour_raw": 60_831_717,
+        "events_lost_counted": lost,
+        "records_with_uncounted_loss": uncounted,
+        "producer_sequences_skipped": skipped,
+        "first_detail": "detail"
+    })
+}
+
+fn write_d90_store(root: &Path, game: &str, hours: Vec<(i64, Value)>) {
+    let dir = root.join(game);
+    fs::create_dir_all(&dir).unwrap();
+    let mut entries = Vec::new();
+    for (hour_index, world_events) in hours {
+        let snapshot = json!({
+            "schema_version": "1",
+            "game_id": game,
+            "date": "1936.1.1.0",
+            "hour_index": hour_index,
+            "world_events": world_events
+        });
+        let file = format!("{hour_index:012}.snapshot.json");
+        fs::write(dir.join(&file), serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        entries.push(json!({
+            "hour_index": hour_index,
+            "date": "1936.1.1.0",
+            "file": file
+        }));
+    }
+    let index = json!({
+        "game_id": game,
+        "schema_version": "1",
+        "snapshots": entries
+    });
+    fs::write(dir.join("index.json"), serde_json::to_vec(&index).unwrap()).unwrap();
+}
+
+/// A D90 row set that skips a producer sequence is ADMITTED, and the coverage
+/// ledger beside it says the campaign event set is not exhaustive.
+///
+/// The producer assigns the sequence above `capture_candidate`, so a counted
+/// drop burns one and a `producer_sequence == index + 1` law throws away every
+/// real ledger that ever lost an event. The reader proves strict producer
+/// order, each row's own D70 mutation, and nothing about what happened between
+/// two rows.
+///
+/// What production change makes this fail: reinstating contiguity, the D70
+/// cardinality chain, or the same-ordinal identity/count chain on this side.
+#[test]
+fn d90_admits_a_row_set_with_a_declared_hole_and_a_d70_table_that_advanced() {
+    let root = unique_temp_dir("d90_coverage");
+    write_d90_store(
+        &root,
+        "d90_coverage",
+        vec![(
+            10,
+            json!({
+                "convoy_transport_attacks_complete": true,
+                "convoy_transport_attacks": [
+                    d90_wire_row(1, d90_append(441, 441)),
+                    // Sequence 2 was burned, and the table also advanced by two
+                    // rows a refused sink appended in between.
+                    d90_wire_row(3, d90_append(444, 444))
+                ],
+                "convoy_transport_attack_coverage_gaps": [
+                    d90_coverage_gap("convoy_attack_producer_sequence_skipped", 1, 0, 1)
+                ]
+            }),
+        )],
+    );
+    let timeline = open_timeline(&root);
+    let frame = timeline.frame(10).unwrap();
+    let view = frame.convoy_transport_attacks();
+
+    assert_eq!(frame.convoy_transport_attacks_status(), ViewStatus::Present);
+    let rows = match &view.events {
+        Leaf::Measured(rows) => rows,
+        other => panic!("both authenticated sinks must be admitted, got {other:?}"),
+    };
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.producer_sequence)
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    assert_eq!(view.coverage_gaps.len(), 1);
+    assert_eq!(view.coverage_gaps[0].producer_sequences_skipped, 1);
+    assert!(
+        !view.exhaustive(),
+        "a row set with a declared hole is exact for its rows and NOT the \
+         complete campaign event set"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// An empty coverage ledger is the only thing that makes a row set exhaustive.
+#[test]
+fn d90_an_empty_coverage_ledger_is_what_makes_a_row_set_exhaustive() {
+    let root = unique_temp_dir("d90_exhaustive");
+    write_d90_store(
+        &root,
+        "d90_exhaustive",
+        vec![(
+            10,
+            json!({
+                "convoy_transport_attacks_complete": true,
+                "convoy_transport_attacks": [d90_wire_row(1, d90_append(441, 441))],
+                "convoy_transport_attack_coverage_gaps": []
+            }),
+        )],
+    );
+    let timeline = open_timeline(&root);
+    let frame = timeline.frame(10).unwrap();
+    let view = frame.convoy_transport_attacks();
+    assert!(view.exhaustive());
+    assert!(view.coverage_gaps.is_empty());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// A row set carried WITHOUT its coverage ledger claims exhaustiveness it has
+/// not proved, and is refused rather than admitted as measured.
+#[test]
+fn d90_a_row_set_without_a_believable_coverage_ledger_is_unobtained() {
+    let root = unique_temp_dir("d90_no_ledger");
+    write_d90_store(
+        &root,
+        "d90_no_ledger",
+        vec![
+            (
+                10,
+                json!({
+                    "convoy_transport_attacks_complete": true,
+                    "convoy_transport_attacks": [d90_wire_row(1, d90_append(441, 441))]
+                }),
+            ),
+            (
+                11,
+                json!({
+                    "convoy_transport_attacks_complete": true,
+                    "convoy_transport_attacks": [d90_wire_row(1, d90_append(441, 441))],
+                    "convoy_transport_attack_coverage_gaps": [
+                        {"cause": "convoy_attack_drain_not_exhaustive"}
+                    ]
+                }),
+            ),
+        ],
+    );
+    let timeline = open_timeline(&root);
+    for hour in [10, 11] {
+        let frame = timeline.frame(hour).unwrap();
+        assert_eq!(
+            frame.convoy_transport_attacks_status(),
+            ViewStatus::DomainUnavailable,
+            "hour {hour} must not be admitted without a believable coverage ledger"
+        );
+        assert_eq!(frame.convoy_transport_attacks().events, Leaf::Unobtained);
+        assert!(
+            frame
+                .coverage_warnings()
+                .iter()
+                .any(|warning| warning.contains("convoy_transport_attack_coverage_gaps")),
+            "the refusal names the ledger: {:?}",
+            frame.coverage_warnings()
+        );
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// An hour whose own drain was not exact publishes no event set, and the
+/// coverage ledger it declared still reaches the reader.
+#[test]
+fn d90_an_incomplete_hour_keeps_its_coverage_ledger_while_the_rows_go_unobtained() {
+    let root = unique_temp_dir("d90_incomplete_hour");
+    write_d90_store(
+        &root,
+        "d90_incomplete_hour",
+        vec![(
+            10,
+            json!({
+                "convoy_transport_attacks_complete": false,
+                "convoy_transport_attacks": null,
+                "convoy_transport_attack_coverage_gaps": [
+                    d90_coverage_gap("convoy_attack_drain_not_exhaustive", 0, 3, 0)
+                ]
+            }),
+        )],
+    );
+    let timeline = open_timeline(&root);
+    let frame = timeline.frame(10).unwrap();
+    let view = frame.convoy_transport_attacks();
+    assert_eq!(
+        frame.convoy_transport_attacks_status(),
+        ViewStatus::DomainUnavailable
+    );
+    assert_eq!(view.events, Leaf::Unobtained);
+    assert_eq!(view.coverage_gaps.len(), 1);
+    assert_eq!(view.coverage_gaps[0].events_lost_counted, 3);
+    assert_eq!(
+        view.coverage_gaps[0].cause,
+        "convoy_attack_drain_not_exhaustive"
+    );
+    assert!(!view.exhaustive());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// Producer order is still proved: a row set that does not strictly increase,
+/// or that carries sequence 0, is refused whole.
+#[test]
+fn d90_refuses_a_row_set_whose_producer_order_is_not_strictly_increasing() {
+    let root = unique_temp_dir("d90_order");
+    write_d90_store(
+        &root,
+        "d90_order",
+        vec![
+            (
+                10,
+                json!({
+                    "convoy_transport_attacks_complete": true,
+                    "convoy_transport_attacks": [
+                        d90_wire_row(3, d90_append(441, 441)),
+                        d90_wire_row(3, d90_append(442, 442))
+                    ],
+                    "convoy_transport_attack_coverage_gaps": []
+                }),
+            ),
+            (
+                11,
+                json!({
+                    "convoy_transport_attacks_complete": true,
+                    "convoy_transport_attacks": [d90_wire_row(0, d90_append(441, 441))],
+                    "convoy_transport_attack_coverage_gaps": []
+                }),
+            ),
+        ],
+    );
+    let timeline = open_timeline(&root);
+    for hour in [10, 11] {
+        assert_eq!(
+            timeline
+                .frame(hour)
+                .unwrap()
+                .convoy_transport_attacks_status(),
+            ViewStatus::DomainUnavailable,
+            "hour {hour} carries a producer order no queue can produce"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}
