@@ -1,9 +1,9 @@
 //! d11 `production_live` — per-country stockpiles, production lines, the civil
 //! construction queue, production licences and the convoy bank.
 //!
-//! Derived from `world_fold.rs:20581`-`:21225`
+//! Derived from `world_fold.rs:20621`-`:21265`
 //! (`fold_production`), its `parse_production_trailers` chain parser and the ten
-// @world-fold-authority domain=11 functions=fold_production lines=20581-21225 sha256=8c1bc2a496092cf62ec09af9ff2b443edf410aa24e5994ca1f58f209a6d84b4c closure=8d94c24adafbf4b7e08de91da64c457b52c4dc97284ea69c3751f49bfd35187d
+// @world-fold-authority domain=11 functions=fold_production lines=20621-21265 sha256=8c1bc2a496092cf62ec09af9ff2b443edf410aa24e5994ca1f58f209a6d84b4c closure=8d94c24adafbf4b7e08de91da64c457b52c4dc97284ea69c3751f49bfd35187d
 // @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=9 sha256=cce6673c3c6f566a7eb6235c00f0d42cb115d5e49de3f90fe4f2c76a96b2c5a2
 //! per-segment parsers it dispatches to, plus the collector reads that produce
 //! every gate (`extractor/native/collector/src/attach_log.rs`, cited per field).

@@ -1031,6 +1031,7 @@ dependencies = [
  "occupation_resistance_compliance_live_lane",
  "portable_admission",
  "portable_content_manifest",
+ "portable_engine_evidence",
  "portable_render_stream",
  "portable_test_fs_retry",
  "production_render_submit_live_lane",

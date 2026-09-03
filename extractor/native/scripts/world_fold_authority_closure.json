@@ -417,6 +417,7 @@
       "BTreeMap",
       "COMPACT_STATUS_FAILURE_MASK",
       "CombatFoldRow",
+      "CombatIndicatorSides",
       "CombatState",
       "DIPLOMACY_INTEL_OPERATIVES_DOMAIN_ID",
       "DomainProblem",
@@ -452,7 +453,9 @@
       "_#4",
       "compact_status_is_failure",
       "domain_name",
+      "land_indicator",
       "need",
+      "read_i64",
       "read_u32",
       "read_u64"
     ],

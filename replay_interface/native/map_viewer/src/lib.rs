@@ -584,11 +584,13 @@ pub use production_features::xmap14::{
 };
 pub use production_features::xmap14_place::{
     xmap14_first_live_attacker, xmap14_land_anchor_for_combat_row,
+    xmap14_land_indicator_for_combat_row,
     xmap14_land_anchor_for_combat_row_with, xmap14_land_anchor_operands,
     xmap14_land_anchor_operands_from_xmap13, xmap14_land_anchor_points,
     xmap14_pre_seeded_locator_point, xmap14_world_anchor, Xmap14AttackerStack,
     Xmap14FirstLiveAttacker, Xmap14LandAnchorOperands, Xmap14LandAnchorPoints,
-    Xmap14LandAnchorRefusal, Xmap14LocatorSource, XMAP14_LAND_ANCHOR_CAUSE_IDS,
+    Xmap14LandAnchorRefusal, Xmap14LandIndicatorOperands, Xmap14LandIndicatorRefusal,
+    Xmap14LocatorSource, XMAP14_LAND_ANCHOR_CAUSE_IDS, XMAP14_LAND_INDICATOR_CAUSE_IDS,
     XMAP14_LAND_MIDPOINT_FACTOR,
 };
 pub use production_features::xmap15::{
