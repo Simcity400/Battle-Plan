@@ -6,7 +6,7 @@ Changes only with the owner's permission. Read `PROJECT.md` before changing prod
 
 - **Orchestrator**: the top-level agent the owner has EXPLICITLY designated as orchestrator for the session. Nobody assumes this role on their own. Staffs lanes, lands their work, runs the gate, runs measurement captures, asks the owner. Never implements lane work itself.
 - **Lane**: an agent with its own worktree and branch. Implements one scoped piece of work end to end, gets it reviewed, pushes, reports once.
-- **Reviewer**: a separate agent with a fresh context and no memory of the implementer's work, reviewing read-only. It never implements, researches, or writes into a worktree. In Claude Code this is the Codex CLI; in Codex it is a sub-agent; see "How to launch".
+- **Reviewer**: a separate agent with a fresh context and no memory of the implementer's work, reviewing read-only. It never implements, researches, or writes into a worktree. In Claude Code this is the Codex CLI; in Codex it is a native Claude Code background session; see "How to launch".
 
 If the owner has not designated you orchestrator, you are a lane or a reviewer per your brief: ignore the "Orchestration" section and the launch mechanics entirely.
 
@@ -49,13 +49,13 @@ Applies to every harness. The reviewer is a fresh agent each round.
 - Round 1 demands every blocking finding, ranked. Later rounds review the delta plus each prior fix. Push back on findings you can refute with code or a measurement.
 - No round limit while rounds fix real defects. At round 7, stop and diagnose: if one class keeps recurring, close the class structurally (a counted, asserted number) instead of playing round 8, and write the diagnosis into the run dir.
 - A commit after an approve gets one confirmation round.
-- Persist the review's identity (thread or transcript id) to the run dir before anything else, so a killed review is resumed, never re-run. Wait for a review in-turn; never end a turn to wait, never poll in a loop.
+- Persist the review's identity (thread or transcript id) to the run dir before anything else, so a killed review is resumed, never re-run.
 
 ## Tools and traps
 
 - `hoi4_re` is the RE facade: `re_status` first, never edit its registry, four-job offline queue. `hoi4_ghidra` (pinned a729/870ebf): `ghidra_status` first, `ghidra_verify` before relying on indexed evidence. Census and cross-analysis outputs are discovery, not proof. Pinned artifacts use the `engine_evidence` crate pattern with literal byte sizes and must pass `reverify_engine_evidence.py`.
 - Live instrumentation needs explicit owner authorization and a running matching game; lanes never launch the game. A needed probe is handed back as a bounded SPEC.
-- One background task at a time; never poll a child; own scratch subdir under the session scratchpad.
+- **Waiting is a blocking call, never an ended turn.** A lane that has ended its turn is finished, and a report is due; so a lane never ends its turn while a review, build, test run, fold or dump of its own is still running. Launch the long job in the background with its PID captured (`job … & PID=$!`, with output to a log file), then hold the turn with a foreground `timeout 590 tail --pid=$PID -f /dev/null`, repeated while it exits 124, until it exits 0; then read the log. No polling loops, no `sleep`, no monitor-and-end-turn. One long job at a time; own scratch subdir under the session scratchpad.
 - Disk: your worktree's build directory is yours; reclaim only your own incremental cache and only below 30 GB free.
 - Citation scanner: citation strings at module scope; function-local items need reasoned allowance entries; never split a citation across lines; two local items sharing a name break the world-fold scanner, so rename rather than declare. Source-scan tests normalise CRLF.
 - A carrier change that moves leaves in the XUI09 joint fixture regenerates it through `JO_WRITE_XUI09_FIXTURE=1` and updates the consumer half's `FIXTURE_SHA256`.
@@ -79,6 +79,18 @@ printf '%s' "$PROMPT" | codex exec --json -s danger-full-access -c approval_poli
 
 Flags are mandatory as written; never `--ephemeral`, never `resume --last`, never a sandboxed `-s` mode. Thread id = first line of `$AJ`; reply = `$OUT`, success is exit 0 and a non-empty file; retry once, except on a usage-limit signature: queue the thread id and resume it later by id (`codex exec -s danger-full-access … resume <id> -`, same flags). Run the call as one tracked background task with a Monitor on a completion marker.
 
-**Codex.** Lanes and reviewers are sub-agents. Never call the Codex CLI from inside Codex. A reviewer is a fresh sub-agent given the review prompt above, read-only; the lane records the reviewer's transcript id in its run dir. Model and effort follow the owner's current pin for that harness.
+**Codex.** Lanes are sub-agents. Never call the Codex CLI from inside Codex. Reviewer: native Claude Code, one fresh background session per round. Only the designated orchestrator, or a lane that has reached step 3 of the lane workflow, may launch it. The owner's designation of this orchestration workflow authorizes its required review rounds; outside that workflow, only an explicit owner request authorizes a Claude call. Ordinary top-level agents, reviewers, research agents, and sub-agents not briefed as lanes never call Claude. Claude is only the independent reviewer here: never use it for implementation, research, planning, delegation, or an ad-hoc second opinion.
+
+Launch from PowerShell with the complete review prompt in `$PROMPT` and a unique name in `$REVIEW_NAME`:
+
+```powershell
+$launch = claude --bg --name "$REVIEW_NAME" --model fable --effort xhigh --permission-mode auto "$PROMPT"
+```
+
+The flags are mandatory as written. This is the native first-party background-session path: never use `claude -p`, the Agent SDK, T3 Code, a plugin wrapper, copied OAuth credentials, or PTY/keystroke automation. Do not add `--safe-mode`, `--restricted`, `--tools`, `--allowedTools`, `--disallowedTools`, `--mcp-config`, or `--no-chrome`; the normal Claude configuration, built-in tools, skills, hooks, browser integration, and MCP servers are intentionally available. The review prompt's read-only instruction remains mandatory: Claude must not edit, implement a finding, create a commit, or enter/create a worktree.
+
+Before launch, capture `git status --porcelain=v2 --untracked-files=all` and `git worktree list --porcelain`. Parse the short background id from `$launch` and persist it to the run dir before reading the answer. Start one tracked background monitor for that id; the monitor may inspect `claude agents --json --all` until a terminal state, but the agent never performs a foreground polling loop. On `done`, capture `claude logs <id>` as the raw review transcript. Success requires a non-empty reviewer answer, unchanged status and worktree snapshots, and a log header showing Fable 5.1, `xhigh`, `auto mode on`, and `Claude Max` rather than `API Usage Billing`. Then stop and remove the Claude job only after the transcript and review record are durable.
+
+On `blocked`, `failed`, login expiry, `API Usage Billing`, or a usage-limit signature, do not launch a replacement. Preserve the id and logs, report the exact condition, and resume that same session by id when the condition is resolved. Any repository mutation or new worktree attributable to the reviewer invalidates the round: stop it, preserve the evidence, do not use its changes, and report the contract violation. Findings go back to the implementing lane; Claude never fixes them itself.
 
 **Any other harness.** Same roles and contract; the reviewer must be a separate agent with no shared memory of the implementation. Record how reviews are launched and resumed in the run dir's POINTER.
