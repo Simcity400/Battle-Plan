@@ -12,7 +12,7 @@ fail=0
 nextest_step() {  # name, manifest, args...
   local name="$1" manifest="$2"; shift 2
   local out; out=$(cargo nextest run --manifest-path "$manifest" "$@" 2>&1); local rc=$?
-  local started; started=$(printf '%s\n' "$out" | grep -oE 'Starting [0-9]+ tests' | grep -oE '[0-9]+' | head -1)
+  local started; started=$(printf '%s\n' "$out" | grep -oE 'Starting [0-9]+ tests?' | grep -oE '[0-9]+' | head -1)
   if [ $rc -ne 0 ]; then echo "FAIL  $name (exit $rc)"; printf '%s\n' "$out" | grep -E 'FAIL \[|panicked|error' | head -20; fail=1
   elif [ -z "$started" ] || [ "$started" = "0" ]; then echo "FAIL  $name (started zero tests: false green)"; fail=1
   else echo "ok    $name ($started tests)"; fi
