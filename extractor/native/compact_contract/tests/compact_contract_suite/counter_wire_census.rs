@@ -3796,6 +3796,7 @@ fn a_measured_slice_is_only_ever_filled_where_the_read_is_built() {
     const SLICE_MENTIONS: &[&str] = &[
         "build_compact_extraction_gate_records|) as u32; let mut|= domain56_dia",
         "build_compact_extraction_gate_records|.walk_counters, &read.|), );",
+        "build_compact_extraction_gate_records|.walk_counters, &read.|), );",
         "build_compact_extraction_gate_records|::mem::take(&mut read.|); d93_tra",
         "build_compact_extraction_gate_records|= ship_read { let|= domain29_dia",
         "build_compact_extraction_gate_records|_units_from_declared(&|); let d42",
@@ -3868,8 +3869,16 @@ fn a_measured_slice_is_only_ever_filled_where_the_read_is_built() {
         "build_compact_extraction_gate_records|} let mut|= domain53_dia",
         "build_compact_extraction_gate_records|}|.push(CompactD",
         "compute_compact_fog_derivation_inputs|d_hour_raw: None,|: vec![",
+        "compute_compact_naval_combat_results|d_hour_raw: None,|: Vec::new(),",
         "finalize_compact_fog_derivation_inputs_read|::new(); read.|.push(CompactD",
         "finalize_compact_fog_derivation_inputs_read|} } read.|.push(CompactD",
+        "finalize_compact_naval_combat_results_read|); read.|.push(CompactD",
+        "finalize_compact_naval_combat_results_read|e(); read.|.push(CompactD",
+        "finalize_compact_naval_combat_results_read|read.|",
+        "finalize_compact_naval_combat_results_read|read.|.extend([",
+        "finalize_compact_naval_combat_results_read|read.|.push(CompactD",
+        "finalize_compact_naval_combat_results_read|read.|.push(CompactD",
+        "finalize_compact_naval_combat_results_read|} } read.|.push(CompactD",
     ];
     let raw = read(COLLECTOR_EMISSION_FILE).replace('\r', "");
     let raw = without_comments_or_strings(&raw);
@@ -3990,7 +3999,7 @@ fn ".len();
     // family, rather than recognising one more spelling (owner ruling
     // 2026-08-29: close the class, do not run another round).
     const RECORD_TYPE_ARGUMENTS: &[(&str, usize, &str)] = &[
-        ("COMPACT_RECORD_TYPE_DOMAIN_DATA", 83, "a domain's data record"),
+        ("COMPACT_RECORD_TYPE_DOMAIN_DATA", 84, "a domain's data record"),
         ("COMPACT_RECORD_TYPE_DOMAIN_PERF", 1, "THE PERF RECORD, whose writers are pinned below"),
         ("COMPACT_RECORD_TYPE_FRAME_END", 1, "the frame terminator"),
         ("COMPACT_RECORD_TYPE_STREAM_HEADER", 1, "the stream's own header"),

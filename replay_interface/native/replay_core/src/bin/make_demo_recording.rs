@@ -330,6 +330,7 @@ impl WarScript {
                     location_province: Leaf::Measured(*front_province),
                     attackers: Leaf::Measured(vec![2000 + i as i64]),
                     defenders: Leaf::Measured(vec![1000 + i as i64]),
+                    first_live_attacker: Leaf::Measured(2000 + i as i64),
                     combat_width: Leaf::Unobtained,
                     terrain: Leaf::Unobtained,
                     progress: Leaf::Unobtained,

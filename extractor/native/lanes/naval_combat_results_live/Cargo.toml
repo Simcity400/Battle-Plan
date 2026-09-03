@@ -1,0 +1,26 @@
+[package]
+name = "naval_combat_results_live_lane"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+compact_contract = { path = "../../compact_contract" }
+
+[features]
+# Fixture constructors (`Sink::filed`, `CombatOccurrence::filed`) for the
+# collector's tests; a production build never enables it.
+fixtures = []
+
+[dev-dependencies]
+# THE PROVENANCE CENSUS IS A PARSE, NOT A GREP. `xa_the_only_ungated_constructors_are_the_readers`
+# asserts that the only ungated ways to obtain a `Sink`, a `CombatOccurrence`
+# or a `VisitBudget` are the two engine readers and the hour's one budget mint.
+# A text scan of this file cannot decide that: nested block comments, trivia
+# inside `pub(crate)` or `#[derive(`, a `->` inside a generic bound, a `;`
+# inside an array type and a `where` clause on a trait impl are all valid Rust
+# that reads one way and parses another. Tests only.
+syn = { version = "2", features = ["full", "extra-traits", "visit"] }
+quote = "1"

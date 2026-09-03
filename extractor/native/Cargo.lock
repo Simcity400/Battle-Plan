@@ -181,15 +181,18 @@ dependencies = [
  "map_unit_presentation",
  "minhook_h4",
  "naval_combat_live_lane",
+ "naval_combat_results_live_lane",
  "naval_missions_status_live_lane",
  "nuke_stockpile_live_lane",
  "occupation_resistance_compliance_live_lane",
  "portable_content_manifest",
  "portable_render_stream",
  "portable_test_fs_retry",
+ "proc-macro2",
  "production_hook_receipt",
  "production_render_catalog_live_lane",
  "production_render_submit_live_lane",
+ "quote",
  "recorder_host",
  "resolved_tooltip_instances_live_lane",
  "runtime_text_inputs_live_lane",
@@ -201,6 +204,7 @@ dependencies = [
  "spotted_units_live",
  "sunk_ship_history_live_lane",
  "supply_logistics_attrition_live_lane",
+ "syn 2.0.119",
  "theatre_selector_live_lane",
  "victory_points",
  "windows-sys",
@@ -794,6 +798,15 @@ dependencies = [
  "serde",
  "sha2",
  "snapshot",
+]
+
+[[package]]
+name = "naval_combat_results_live_lane"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

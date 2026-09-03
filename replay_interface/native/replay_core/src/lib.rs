@@ -14,6 +14,7 @@ pub mod frd_depth;
 pub mod intelligence_controller_companion;
 pub mod intelligence_presentation;
 pub mod fog_derivation_inputs;
+pub mod naval_combat_results;
 pub mod map_furniture;
 pub mod orders_group_manager;
 pub mod peace_conference_presentation;
@@ -188,6 +189,11 @@ pub use fog_derivation_inputs::{
 pub use map_furniture::{
     MapFurnitureFrame, VictoryPointFurnitureRow, MAP_FURNITURE_A729_EXECUTABLE_SHA256,
     MAP_FURNITURE_SCHEMA,
+};
+pub use naval_combat_results::{
+    ActiveNavalCombatRow, NavalCombatResultsFrame, NavalResultCountryEntry,
+    NavalResultRecordRow, NavalResultSideRow, SpillOverUnitRow,
+    NAVAL_COMBAT_RESULTS_A729_EXECUTABLE_SHA256, NAVAL_COMBAT_RESULTS_SCHEMA,
 };
 pub use orders_group_manager::{
     ArmyCohesionMode, ArmyExecutionMode, ArmyOrdersGroupManagerView, ArmyOrdersGroupScalarExact,

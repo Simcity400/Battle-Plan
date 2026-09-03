@@ -71,6 +71,7 @@ hud_role_observer_live_lane = { path = "../lanes/hud_role_observer_live" }
 character_presentation_live_lane = { path = "../lanes/character_presentation_live" }
 nuke_stockpile_live_lane = { path = "../lanes/nuke_stockpile_live" }
 fog_derivation_inputs_live_lane = { path = "../lanes/fog_derivation_inputs_live" }
+naval_combat_results_live_lane = { path = "../lanes/naval_combat_results_live" }
 theatre_selector_live_lane = { path = "../lanes/theatre_selector_live" }
 country_army_upgrade_requests_live_lane = { path = "../lanes/country_army_upgrade_requests_live" }
 country_economy_production_stockpile_live_lane = { path = "../lanes/country_economy_production_stockpile_live" }
@@ -132,12 +133,27 @@ range-tracer = []
 # retired feature names or the retired lane feature names literally here.
 
 [dev-dependencies]
+# THE PROVENANCE CENSUS IS A PARSE, NOT A GREP.
+# `xa_the_hour_has_one_occurrence_budget_and_one_scheduling_gate` asserts, over
+# the production emission's own syntax tree, that the hour mints one visit
+# budget, that both naval walks take that one binding, and that the occurrence
+# read is gated on d103 being scheduled. A text scan of `attach_log.rs` cannot
+# decide any of that: an argument list continued after a line comment, a `let`
+# broken across lines and trivia inside a path all read one way and parse
+# another. Tests only.
+syn = { version = "2", features = ["full", "extra-traits", "visit"] }
+quote = "1"
+# The macro census reads identifiers off the token tree rather than its text.
+proc-macro2 = "1"
 # Waits out the Windows sharing violation a real-time scanner causes on a
 # freshly written file (lane KY). Test-only: nothing this package ships calls it.
 portable_test_fs_retry = { path = "../../../portable_replay/native/test_fs_retry" }
 # `test-support` enables the lane's lifecycle-claiming helper for tests only.
 # A production `cargo build -p collector` does not carry it.
 division_combat_stats_live_lane = { package = "division_combat_stats_live", path = "../lanes/division_combat_stats_live", features = ["test-support"] }
+# `fixtures` enables d103's `Sink::filed` / `CombatOccurrence::filed` for the
+# arrival tests only; a production build cannot file rows it did not read.
+naval_combat_results_live_lane = { path = "../lanes/naval_combat_results_live", features = ["fixtures"] }
 compact_contract = { path = "../compact_contract", features = ["test-support"] }
 # `test-support` mints the matched installed/released receipt pair that
 # `validate_released_standard_receipts` is exercised with. Tests only.

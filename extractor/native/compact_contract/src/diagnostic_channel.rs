@@ -2024,6 +2024,10 @@ pub const EXPLICIT_PER_FRAME_UNITS: &[&str] = &[
     "fog_derivation_inputs_units_without_handle",
     "fog_derivation_inputs_viewer_levels_non_positive",
     "fog_derivation_inputs_units_undispatched_class",
+    "fog_derivation_inputs_air_containers_at_reserved_slot",
+    "naval_combat_results_records_walked",
+    "naval_combat_results_combats_walked",
+    "naval_combat_results_units_without_location",
 ];
 
 pub const LAST_VALUE_UNITS: &[&str] = &[

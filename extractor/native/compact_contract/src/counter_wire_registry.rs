@@ -226,6 +226,7 @@ const D87_FILE: &str = "lanes/decision_panel_live/src/a729_hook.rs";
 const D72_FILE: &str = "lanes/resolved_tooltip_instances_live/src/a729_hook.rs";
 const D78_FILE: &str = "lanes/design_catalog_context_live/src/a729_hook.rs";
 const D102_FILE: &str = "lanes/fog_derivation_inputs_live/src/lib.rs";
+const D103_FILE: &str = "lanes/naval_combat_results_live/src/lib.rs";
 const D95_FILE: &str = "lanes/spotted_units_live/src/a729.rs";
 
 /// Every registered producer.
@@ -337,6 +338,30 @@ pub const PRODUCERS: &[CounterWireProducer] = &[
                 "the engine vtable address a walked controller area object must match",
             ),
             (
+                "FogInputGuards.strategic_air_manager_vtable",
+                "the engine vtable address the strategic air manager must match",
+            ),
+            (
+                "FogInputGuards.air_base_vtable",
+                "the engine vtable address a walked air base must match",
+            ),
+            (
+                "FogInputGuards.air_container_vtable",
+                "the engine vtable address a walked per-country air container must match",
+            ),
+            (
+                "FogInputGuards.air_pool_vtable",
+                "the engine vtable address a walked air-wing pool must match",
+            ),
+            (
+                "FogInputGuards.air_wing_object_vtable",
+                "the engine vtable address a walked air-wing object must match",
+            ),
+            (
+                "FogInputGuards.air_wing_vtable",
+                "the engine vtable address a walked air-wing body must match",
+            ),
+            (
                 "EngineVector.data_address",
                 "the engine address the vector's data pointer was read from, held for the                  post-bracket recycle check",
             ),
@@ -367,6 +392,10 @@ pub const PRODUCERS: &[CounterWireProducer] = &[
             (
                 "Sink.stationed_key_countries",
                 "the distinct container+0x110 keys the walk filed rows under, resolved                  against the ordinal set after the enumeration",
+            ),
+            (
+                "Sink.air_container_round_trips",
+                "the (slot, container+0xB0 id) pairs the walk published air-base pool rows                  under, checked for the ordinal table's round trip after the enumeration",
             ),
         ],
         locals_that_are_not_counters: &[],
@@ -434,6 +463,10 @@ pub const PRODUCERS: &[CounterWireProducer] = &[
                 "rows the CENSUS this hour computed holds in the volunteer-host table. It is retained when the payload then refuses to encode, and fog_derivation_inputs_payload_encode_refused is the unit that says the record carries none of them",
             ),
             (
+                "fog_derivation_inputs_air_base_pool_wing_rows",
+                "rows the CENSUS this hour computed holds in the air-base pool membership table. It is retained when the payload then refuses to encode, and fog_derivation_inputs_payload_encode_refused is the unit that says the record carries none of them",
+            ),
+            (
                 "fog_derivation_inputs_payload_encode_refused",
                 "the payload would not encode. THIS record carries the refusal, and the delta tracker is reset so the NEXT record that encodes carries a full census rather than a delta against a baseline nothing received",
             ),
@@ -451,6 +484,174 @@ pub const PRODUCERS: &[CounterWireProducer] = &[
         emission_fn: "d102_fog_derivation_inputs_units",
         emission_argument:
             "&d102_fog_derivation_inputs_units(read.walk_counters, &read.diagnostic_units)",
+    },
+    // d103 is d102's shape without the delta: one full census per hour. Its
+    // record walk fills one sink in its own bracket; each active combat's rows
+    // are read in domain 49's visit of the object into a sink of their own,
+    // and `assemble_census` lifts the record sink's tally and the visits'
+    // count and drops into the walk the counters are read from.
+    CounterWireProducer {
+        producer_struct: "D103NavalResultCounters",
+        producer_file: "collector/src/attach_log.rs",
+        source_file: D103_FILE,
+        source_struct: "NavalResultWalk",
+        lift_fn: "assemble_census",
+        lift_return_paths: 1,
+        state_struct: "Sink",
+        state_counters_struct: "D103WalkCounters",
+        state_fields_off_the_channel: &[],
+        declarations_that_are_not_counters: &[
+            (
+                "NavalResultGuards.module_base",
+                "the attached hoi4.exe image base every registry RVA is resolved against",
+            ),
+            (
+                "NavalResultGuards.record_vtable",
+                "the engine vtable address a walked naval-result record must match",
+            ),
+            (
+                "NavalResultGuards.naval_combat_vtable",
+                "the engine vtable address a walked naval combat must match",
+            ),
+            (
+                "NavalResultGuards.naval_combat_side_vtable",
+                "the engine vtable address a walked naval combat side must match",
+            ),
+            (
+                "NavalResultGuards.transfer_vtable",
+                "the engine vtable address a resolved unit transfer must match",
+            ),
+            (
+                "NavalResultGuards.division_vtable",
+                "one of the three engine vtable addresses a resolved unit may carry",
+            ),
+            (
+                "NavalResultGuards.fleet_vtable",
+                "one of the three engine vtable addresses a resolved unit may carry",
+            ),
+            (
+                "NavalResultGuards.taskforce_vtable",
+                "one of the three engine vtable addresses a resolved unit may carry",
+            ),
+            (
+                "NavalResultGuards.province_vtable",
+                "the engine vtable address a walked province must match",
+            ),
+            (
+                "EngineVector.data_address",
+                "the engine address the vector's data pointer was read from, held for the                  post-walk coherence check",
+            ),
+            (
+                "EngineVector.count_address",
+                "the engine address the vector's length was read from",
+            ),
+            (
+                "EngineVector.data",
+                "the engine's own data pointer for the vector, the base every element read                  is offset from",
+            ),
+            (
+                "EngineVector.count",
+                "the engine's own length for the vector, copied per read and bounded against                  the walk's maximum; nothing adds to it",
+            ),
+            (
+                "VisitBudget.unit_visits_left",
+                "the transfer-unit visits one hour may still spend, set from                  MAX_UNIT_VISITS_PER_HOUR and only ever decremented; exhaustion refuses the                  visit by name (naval_results_visit_budget_exhausted), so nothing is dropped                  silently",
+            ),
+            (
+                "CombatVisit.generation",
+                "the domain-49 epoch generation the collector minted for the visit, copied                  into the active-combat row's k3/k4 as its join key; nothing adds to it",
+            ),
+            (
+                "Sink.country_ids",
+                "every side-list and admitted-list id the walk copied and the row index that                  carries it, held for the canonical-entry read that runs after the walk",
+            ),
+        ],
+        locals_that_are_not_counters: &[
+            (
+                "lanes/naval_combat_results_live/src/lib.rs::present",
+            ),
+            (
+                "lanes/naval_combat_results_live/src/lib.rs::probe",
+                "the robin-hood probe distance the resolver compares against a slot's own                  distance; it walks the registry the engine's way and counts nothing dropped",
+            ),
+            (
+                "lanes/naval_combat_results_live/src/lib.rs::probed",
+                "how many slots the resolver has visited, bounded by the table's bucket count                  so an unterminated chain refuses rather than spins; not a diagnostic",
+            ),
+        ],
+        crate_modules_outside_the_domain: &[],
+        measured_units_carrier: "CompactNavalCombatResultsRead",
+        measured_units: &[
+            (
+                "naval_combat_results_worker_panic",
+                "the census worker panicked; the hour carries no walk at all",
+            ),
+            (
+                "naval_combat_results_bracket_refused",
+                "the bracket could not vouch for the hour it observed, or held steady on a different hour, so no census is attributable to this one. The WALK may still have run and its counters are carried",
+            ),
+            (
+                "naval_combat_results_walk_incoherent",
+                "the census the walk read does not hold together: one key was read with two values",
+            ),
+            (
+                "naval_combat_results_occurrence_visits_refused",
+                "active combats whose d49 visit refused by name this hour: their rows are not in the census, every other combat's are, and the refusal's own name is the unit beside this one that says why",
+            ),
+            (
+                "naval_combat_results_occurrence_visit_unavailable",
+                "domain 49 did not complete a walk this frame, or did not run, so no active combat object was visited and its d103 rows were never read; the hour carries no census",
+            ),
+            (
+                "naval_combat_results_full_census",
+                "the census this hour computed was sent WHOLE; this domain never sends a delta. Retained when the payload then refuses to encode, where the refusal unit says the record carries none",
+            ),
+            (
+                "naval_combat_results_compute_us",
+                "microseconds the MAIN THREAD spent assembling domain 49's visits onto the record walk, the sort and the digest, kept apart from encode_us",
+            ),
+            (
+                "naval_combat_results_record_rows",
+                "rows the CENSUS this hour computed holds in the record table. It is retained when the payload then refuses to encode, and naval_combat_results_payload_encode_refused is the unit that says the record carries none of them",
+            ),
+            (
+                "naval_combat_results_side_country_rows",
+                "rows the CENSUS this hour computed holds in the side country-list table. It is retained when the payload then refuses to encode, and naval_combat_results_payload_encode_refused is the unit that says the record carries none of them",
+            ),
+            (
+                "naval_combat_results_side_member_rows",
+                "rows the CENSUS this hour computed holds in the side member-count table. It is retained when the payload then refuses to encode, and naval_combat_results_payload_encode_refused is the unit that says the record carries none of them",
+            ),
+            (
+                "naval_combat_results_admitted_rows",
+                "rows the CENSUS this hour computed holds in the admitted-participant table. It is retained when the payload then refuses to encode, and naval_combat_results_payload_encode_refused is the unit that says the record carries none of them",
+            ),
+            (
+                "naval_combat_results_active_combat_rows",
+                "rows the CENSUS this hour computed holds in the active naval-combat table. It is retained when the payload then refuses to encode, and naval_combat_results_payload_encode_refused is the unit that says the record carries none of them",
+            ),
+            (
+                "naval_combat_results_spill_over_rows",
+                "rows the CENSUS this hour computed holds in the spill-over unit-location table. It is retained when the payload then refuses to encode, and naval_combat_results_payload_encode_refused is the unit that says the record carries none of them",
+            ),
+            (
+                "naval_combat_results_payload_encode_refused",
+                "the payload would not encode. THIS record carries the refusal and no census",
+            ),
+            (
+                "naval_combat_results_encode_us",
+                "microseconds the MAIN THREAD spent encoding the payload, kept apart from compute_us",
+            ),
+        ],
+        measured_unit_name_sources: &[(
+            "name",
+            "the refusal's own name: NavalResultRefusal::name() when the walk refused, or              naval_combat_results_frame_status_failure when the frame had already failed.              A marker for WHY the hour carries no census, valued 1; the lane's refusal              names are an enum, and none of them is a count",
+        )],
+        domain_const: "COMPACT_DOMAIN_NAVAL_COMBAT_RESULTS_LIVE",
+        domain_id: 103,
+        emission_fn: "d103_naval_combat_results_units",
+        emission_argument:
+            "&d103_naval_combat_results_units(read.walk_counters, &read.diagnostic_units)",
     },
     CounterWireProducer {
         producer_struct: "D79HookCounters",
@@ -1266,6 +1467,51 @@ pub const REGISTRY: &[CounterWireRow] = &[
         lifts: &["sink.counters.units_undispatched_class"],
         producer_struct: "D102FogInputCounters",
         unit: "fog_derivation_inputs_units_undispatched_class",
+        role: crate::diagnostic_channel::UnitRole::Undeclared,
+        consumer: PERF_UNIT_CONSUMER,
+    },
+    CounterWireRow {
+        source_file: D102_FILE,
+        source_struct: "FogInputWalk",
+        field: "air_containers_at_reserved_slot",
+        source_type: "u64",
+        lifts: &["sink.counters.air_containers_at_reserved_slot"],
+        producer_struct: "D102FogInputCounters",
+        unit: "fog_derivation_inputs_air_containers_at_reserved_slot",
+        role: crate::diagnostic_channel::UnitRole::Undeclared,
+        consumer: PERF_UNIT_CONSUMER,
+    },
+    // ---- d103 naval combat results --------------------------------------
+    CounterWireRow {
+        source_file: D103_FILE,
+        source_struct: "NavalResultWalk",
+        field: "records_walked",
+        source_type: "u32",
+        lifts: &["sink.records_walked"],
+        producer_struct: "D103NavalResultCounters",
+        unit: "naval_combat_results_records_walked",
+        role: crate::diagnostic_channel::UnitRole::Undeclared,
+        consumer: PERF_UNIT_CONSUMER,
+    },
+    CounterWireRow {
+        source_file: D103_FILE,
+        source_struct: "NavalResultWalk",
+        field: "combats_walked",
+        source_type: "u32",
+        lifts: &["visits.len().min(u32::MAX as usize) as u32"],
+        producer_struct: "D103NavalResultCounters",
+        unit: "naval_combat_results_combats_walked",
+        role: crate::diagnostic_channel::UnitRole::Undeclared,
+        consumer: PERF_UNIT_CONSUMER,
+    },
+    CounterWireRow {
+        source_file: D103_FILE,
+        source_struct: "NavalResultWalk",
+        field: "units_without_location",
+        source_type: "u64",
+        lifts: &["visits.iter().map(|visit| visit.occurrence.counters.units_without_location).sum()"],
+        producer_struct: "D103NavalResultCounters",
+        unit: "naval_combat_results_units_without_location",
         role: crate::diagnostic_channel::UnitRole::Undeclared,
         consumer: PERF_UNIT_CONSUMER,
     },

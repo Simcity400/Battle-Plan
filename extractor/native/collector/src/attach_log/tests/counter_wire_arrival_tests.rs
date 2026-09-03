@@ -93,6 +93,23 @@ fn d102_probe(base: u64, _truths: u64) -> Vec<CompactDomainPerfDiagnosticUnit> {
                 units_without_handle: value(base, 1),
                 viewer_levels_non_positive: value(base, 2),
                 units_undispatched_class: value(base, 3),
+                air_containers_at_reserved_slot: value(base, 4),
+            },
+        )),
+        &[],
+    )
+}
+
+/// d103 drives its emission function the same way d102 does: the counters
+/// alone, with no measured units beside them.
+fn d103_probe(base: u64, _truths: u64) -> Vec<CompactDomainPerfDiagnosticUnit> {
+    d103_naval_combat_results_units(
+        Some(d103_naval_result_counters(
+            &naval_combat_results_live_lane::NavalResultWalk {
+                rows: Vec::new(),
+                records_walked: value(base, 0) as u32,
+                combats_walked: value(base, 1) as u32,
+                units_without_location: value(base, 2),
             },
         )),
         &[],
@@ -204,6 +221,11 @@ const ARRIVAL_CASES: &[ArrivalCase] = &[
         producer_struct: "D102FogInputCounters",
         domain_id: COMPACT_DOMAIN_FOG_DERIVATION_INPUTS_LIVE,
         probe: Probe::Untyped(d102_probe),
+    },
+    ArrivalCase {
+        producer_struct: "D103NavalResultCounters",
+        domain_id: COMPACT_DOMAIN_NAVAL_COMBAT_RESULTS_LIVE,
+        probe: Probe::Untyped(d103_probe),
     },
     ArrivalCase {
         producer_struct: "D79HookCounters",
@@ -359,6 +381,7 @@ fn d102_publishes_its_measured_units_and_nothing_else() {
                 units_without_handle: 2,
                 viewer_levels_non_positive: 3,
                 units_undispatched_class: 4,
+                air_containers_at_reserved_slot: 5,
             },
         )),
         &measured,
@@ -409,7 +432,7 @@ fn d102_publishes_its_measured_units_and_nothing_else() {
 fn d102_measured_row_counts_are_the_census_the_walk_read() {
     use compact_contract::fog_derivation_inputs as fgi;
 
-    const UNITS: [(u8, &str); 7] = [
+    const UNITS: [(u8, &str); 8] = [
         (fgi::TABLE_RADAR_COVERAGE, "fog_derivation_inputs_radar_rows"),
         (
             fgi::TABLE_STATIONED_PROVINCE,
@@ -432,11 +455,15 @@ fn d102_measured_row_counts_are_the_census_the_walk_read() {
             fgi::TABLE_VOLUNTEER_HOST,
             "fog_derivation_inputs_volunteer_host_rows",
         ),
+        (
+            fgi::TABLE_AIR_BASE_POOL_WING,
+            "fog_derivation_inputs_air_base_pool_wing_rows",
+        ),
     ];
 
     // The real compute, the real units builder and the real encoder, driven
     // with a census of the caller's shape and read back out of the bytes.
-    let emit = |counts: [u32; 7], walked: u32| -> Vec<DiagUnit> {
+    let emit = |counts: [u32; 8], walked: u32| -> Vec<DiagUnit> {
         let mut walk_rows = Vec::new();
         for (index, (table, _)) in UNITS.iter().enumerate() {
             for row in 0..counts[index] {
@@ -485,6 +512,7 @@ fn d102_measured_row_counts_are_the_census_the_walk_read() {
                 units_without_handle: 0,
                 viewer_levels_non_positive: 0,
                 units_undispatched_class: 0,
+                air_containers_at_reserved_slot: 0,
             }),
             previous: &[],
             baselined: false,
@@ -509,8 +537,8 @@ fn d102_measured_row_counts_are_the_census_the_walk_read() {
     // value with the number the fixture expects passes a single-shape proof and
     // loses the measurement on every other hour. Two shapes with no count in
     // common cannot be followed by any constant (Codex VB2 round 11, finding 1).
-    const FIRST: [u32; 7] = [11, 13, 17, 19, 23, 29, 31];
-    const SECOND: [u32; 7] = [3, 5, 2, 37, 41, 1, 43];
+    const FIRST: [u32; 8] = [11, 13, 17, 19, 23, 29, 31, 47];
+    const SECOND: [u32; 8] = [3, 5, 2, 37, 41, 1, 43, 53];
     let first = emit(FIRST, 9);
     let second = emit(SECOND, 5);
     for (index, (_, unit)) in UNITS.iter().enumerate() {
@@ -737,7 +765,7 @@ fn d102_publishes_its_walk_counters_only_when_the_walk_ran() {
         .iter()
         .map(|row| row.unit)
         .collect();
-    assert_eq!(registered.len(), 4, "d102 has four registered counters");
+    assert_eq!(registered.len(), 5, "d102 has five registered counters");
 
     let counted = fog_derivation_inputs_live_lane::FogInputWalk {
         rows: Vec::new(),
@@ -747,6 +775,7 @@ fn d102_publishes_its_walk_counters_only_when_the_walk_ran() {
         units_without_handle: 22,
         viewer_levels_non_positive: 33,
         units_undispatched_class: 44,
+        air_containers_at_reserved_slot: 55,
     };
 
     let observation = |walk_counters, frame_status_failure, address_reads| {
@@ -810,7 +839,550 @@ fn d102_publishes_its_walk_counters_only_when_the_walk_ran() {
             ("fog_derivation_inputs_units_without_handle", 22),
             ("fog_derivation_inputs_viewer_levels_non_positive", 33),
             ("fog_derivation_inputs_units_undispatched_class", 44),
+            ("fog_derivation_inputs_air_containers_at_reserved_slot", 55),
         ],
         "a walk that ran and was then refused must publish what it counted"
+    );
+}
+
+/// d103's WHOLE trailer, measured units included, read back out of the bytes:
+/// the same guard d102 carries, on the same emission shape.
+///
+/// MUTATION: push a unit inside `d103_naval_combat_results_units`, under any
+/// name, and this fails.
+#[test]
+fn d103_publishes_its_measured_units_and_nothing_else() {
+    let producer = PRODUCERS
+        .iter()
+        .find(|producer| producer.producer_struct == "D103NavalResultCounters")
+        .expect("d103 is a registered producer");
+    let registered: std::collections::BTreeSet<&str> = rows_for(producer.producer_struct)
+        .iter()
+        .map(|row| row.unit)
+        .collect();
+    let named: std::collections::BTreeSet<&str> = producer
+        .measured_units
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
+    assert!(!named.is_empty(), "d103 declares a measured-unit carrier");
+    let measured: Vec<CompactDomainPerfDiagnosticUnit> = named
+        .iter()
+        .enumerate()
+        .map(|(index, name)| CompactDomainPerfDiagnosticUnit {
+            name,
+            value: 5_000 + index as u64,
+        })
+        .collect();
+    let units = d103_naval_combat_results_units(
+        Some(d103_naval_result_counters(
+            &naval_combat_results_live_lane::NavalResultWalk {
+                rows: Vec::new(),
+                records_walked: 1,
+                combats_walked: 2,
+                units_without_location: 3,
+            },
+        )),
+        &measured,
+    );
+    let arrived = untyped_units_on_the_wire(producer.domain_id, &units);
+    assert_eq!(
+        arrived.len(),
+        measured.len() + registered.len(),
+        "d103 published {} units for {} measured and {} registered",
+        arrived.len(),
+        measured.len(),
+        registered.len()
+    );
+    for (index, unit) in arrived.iter().enumerate() {
+        assert!(
+            registered.contains(unit.name.as_str()) || named.contains(unit.name.as_str()),
+            "{} arrived in d103's trailer and is neither a registry row nor a named \
+             measured unit",
+            unit.name
+        );
+        assert_eq!(
+            index < measured.len(),
+            named.contains(unit.name.as_str()),
+            "{} arrived at position {index}, which is not where its kind belongs",
+            unit.name
+        );
+    }
+}
+
+/// d103's MEASURED VALUES are the hour's: the six table counts come out of the
+/// census the compute half sorted, on two shapes with no count in common.
+#[test]
+fn d103_measured_row_counts_are_the_census_the_walk_read() {
+    use compact_contract::naval_combat_results as ncr;
+    use naval_combat_results_live_lane as lane;
+
+    const UNITS: [(u8, &str); 6] = [
+        (ncr::TABLE_RECORD, "naval_combat_results_record_rows"),
+        (ncr::TABLE_SIDE_COUNTRY, "naval_combat_results_side_country_rows"),
+        (ncr::TABLE_SIDE_MEMBERS, "naval_combat_results_side_member_rows"),
+        (ncr::TABLE_ADMITTED, "naval_combat_results_admitted_rows"),
+        (ncr::TABLE_ACTIVE_COMBAT, "naval_combat_results_active_combat_rows"),
+        (ncr::TABLE_SPILL_OVER, "naval_combat_results_spill_over_rows"),
+    ];
+    // One record row per record and one combat row per combat, so the header
+    // counts the encoder checks agree with the census; the other tables hang
+    // off record 1 and combat 1 with distinct keys. The record tables come
+    // from the bracket's walk, the combat tables from domain 49's visits.
+    let emit = |counts: [u32; 6]| -> Vec<DiagUnit> {
+        let mut record_rows = Vec::new();
+        let mut spill_rows = Vec::new();
+        for (index, (table, _)) in UNITS.iter().enumerate().take(4) {
+            for row in 0..counts[index] {
+                let (key, value) = match *table {
+                    ncr::TABLE_RECORD => ((*table, row + 1, 4001, 1, 0, 17), 20),
+                    ncr::TABLE_SIDE_COUNTRY => ((*table, 1, 0, row, 7 + row, 1), 1),
+                    ncr::TABLE_SIDE_MEMBERS => ((*table, 1, row.min(1), 3 + row, 0, 0), 1),
+                    _ => ((*table, 1, row, 7 + row, 1, 0), 1),
+                };
+                record_rows.push(ncr::NavalResultRow::new(key, value));
+            }
+        }
+        for row in 0..counts[5] {
+            spill_rows.push(ncr::NavalResultRow::new(
+                (ncr::TABLE_SPILL_OVER, 1, 301, 13, 700 + row, 4009),
+                1,
+            ));
+        }
+        let visits: Vec<NavalOccurrenceVisit> = (0..counts[4])
+            .map(|row| {
+                let combat_id = row + 1;
+                let mut rows = vec![ncr::NavalResultRow::new(
+                    (ncr::TABLE_ACTIVE_COMBAT, combat_id, 4002, 1, 0, 0),
+                    1,
+                )];
+                if combat_id == 1 {
+                    rows.extend(spill_rows.iter().copied());
+                }
+                NavalOccurrenceVisit {
+                    combat_id,
+                    generation: 5,
+                    occurrence: Ok(lane::CombatOccurrence::filed(rows)),
+                }
+            })
+            .collect();
+        let mut read = compute_compact_naval_combat_results(
+            CompactNavalCombatResultsObservation {
+                bracket_read_time_us: 0,
+                records: Some(lane::Sink::filed(record_rows, counts[0])),
+                refusal: None,
+                frame_status_failure: false,
+            },
+            0,
+            0,
+        );
+        let mut ledger = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+        finalize_compact_naval_combat_results_read(
+            &mut read,
+            &mut ledger,
+            Some(&NavalOccurrenceHandOff {
+                visits: Some(visits),
+                torn_reason: None,
+                bracket: Some(BracketHourVerdict::InFrameHour),
+            }),
+            HOUR_LABEL_MISMATCH_POLICY,
+        );
+        assert!(
+            !read.snapshot.is_refusal(),
+            "the fixture census must compute clean: {:?}",
+            read.diagnostic_units.iter().map(|unit| unit.name).collect::<Vec<_>>()
+        );
+        assert_eq!(read.snapshot.active_combat_count, counts[4]);
+        let units = d103_naval_combat_results_units(read.walk_counters, &read.diagnostic_units);
+        untyped_units_on_the_wire(COMPACT_DOMAIN_NAVAL_COMBAT_RESULTS_LIVE, &units)
+    };
+    const FIRST: [u32; 6] = [3, 5, 2, 4, 2, 7];
+    const SECOND: [u32; 6] = [1, 2, 1, 3, 1, 4];
+    let first = emit(FIRST);
+    let second = emit(SECOND);
+    for (index, (_, unit)) in UNITS.iter().enumerate() {
+        let value = |arrived: &[DiagUnit]| {
+            arrived
+                .iter()
+                .find(|u| u.name == *unit)
+                .unwrap_or_else(|| panic!("{unit} is on the wire"))
+                .value
+        };
+        assert_eq!(value(&first), u64::from(FIRST[index]), "{unit} on the first shape");
+        assert_eq!(value(&second), u64::from(SECOND[index]), "{unit} on the second shape");
+    }
+}
+
+/// kills: `finalize_compact_naval_combat_results_read` disagreeing with
+/// `occurrence_bracket_vouches` on any (verdict, policy) cell -- hardcoding
+/// `== InFrameHour`, ignoring the policy, or accepting a torn or panicked
+/// bracket; a sealed hour publishing without the visit's active-combat row;
+/// a refused visit costing the whole census instead of its own rows; and the
+/// counters falling back to the record walk's when a visit refuses.
+///
+/// The active-combat rows are read in domain 49's visits and keyed by the
+/// epoch each visit minted; without a completed d49 walk, or with one visit
+/// refused, the hour refuses by name and still publishes what it counted.
+#[test]
+fn d103_publishes_its_walk_counters_only_when_the_walk_ran() {
+    use compact_contract::naval_combat_results as ncr;
+    use naval_combat_results_live_lane as lane;
+
+    let registered: Vec<&str> = rows_for("D103NavalResultCounters")
+        .iter()
+        .map(|row| row.unit)
+        .collect();
+    assert_eq!(registered.len(), 3, "d103 has three registered counters");
+
+    let observation = |records, frame_status_failure| CompactNavalCombatResultsObservation {
+        bracket_read_time_us: 0,
+        records,
+        refusal: None,
+        frame_status_failure,
+    };
+    let published = |read: &CompactNavalCombatResultsRead| -> Vec<(&'static str, u64)> {
+        d103_naval_combat_results_units(read.walk_counters, &read.diagnostic_units)
+            .into_iter()
+            .filter(|unit| registered.contains(&unit.name))
+            .map(|unit| (unit.name, unit.value))
+            .collect()
+    };
+    let unit_names = |read: &CompactNavalCombatResultsRead| -> Vec<&'static str> {
+        read.diagnostic_units.iter().map(|unit| unit.name).collect()
+    };
+    let finalized = |read: &mut CompactNavalCombatResultsRead,
+                     hand_off: Option<&NavalOccurrenceHandOff>| {
+        let mut ledger = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+        finalize_compact_naval_combat_results_read(
+            read,
+            &mut ledger,
+            hand_off,
+            HOUR_LABEL_MISMATCH_POLICY,
+        );
+    };
+    let visit = |combat_id: u32,
+                 occurrence: Result<lane::CombatOccurrence, lane::NavalResultRefusal>| {
+        NavalOccurrenceVisit {
+            combat_id,
+            generation: 3,
+            occurrence,
+        }
+    };
+    let active = |combat_id: u32| {
+        lane::CombatOccurrence::filed(vec![ncr::NavalResultRow::new(
+            (ncr::TABLE_ACTIVE_COMBAT, combat_id, 4002, 1, 0, 0),
+            1,
+        )])
+    };
+
+    let read = compute_compact_naval_combat_results(observation(None, true), 0, 0);
+    assert!(
+        published(&read).is_empty(),
+        "an hour that walked nothing published {:?}, which is a measurement nobody took",
+        published(&read)
+    );
+
+    let torn = vec![
+        ncr::NavalResultRow::new((ncr::TABLE_SIDE_MEMBERS, 1, 0, 3, 0, 0), 1),
+        ncr::NavalResultRow::new((ncr::TABLE_SIDE_MEMBERS, 1, 0, 3, 0, 0), 2),
+    ];
+    let mut read =
+        compute_compact_naval_combat_results(observation(Some(lane::Sink::filed(torn, 11)), false), 0, 0);
+    finalized(
+        &mut read,
+        Some(&NavalOccurrenceHandOff {
+            visits: Some(vec![visit(1, Ok(active(1))), visit(2, Ok(active(2)))]),
+            torn_reason: None,
+            bracket: Some(BracketHourVerdict::InFrameHour),
+        }),
+    );
+    assert!(
+        read.refusal.is_some() || read.snapshot.is_refusal(),
+        "the torn walk was not refused, so this proves nothing"
+    );
+    assert!(unit_names(&read).contains(&"naval_combat_results_walk_incoherent"));
+    assert_eq!(
+        published(&read),
+        vec![
+            ("naval_combat_results_records_walked", 11),
+            ("naval_combat_results_combats_walked", 2),
+            ("naval_combat_results_units_without_location", 0),
+        ],
+        "a walk that ran and was then refused must publish what it counted"
+    );
+
+    // NO D49 WALK: the active combats were never visited, and the hour says
+    // so by name rather than certifying a census with none.
+    let clean = || {
+        compute_compact_naval_combat_results(
+            observation(
+                Some(lane::Sink::filed(
+                    vec![ncr::NavalResultRow::new(
+                        (ncr::TABLE_RECORD, 1, 4001, 1, 0, 17),
+                        20,
+                    )],
+                    1,
+                )),
+                false,
+            ),
+            0,
+            0,
+        )
+    };
+    for hand_off in [
+        None,
+        Some(NavalOccurrenceHandOff {
+            visits: None,
+            torn_reason: Some("naval_duplicate_combat_id"),
+            bracket: Some(BracketHourVerdict::InFrameHour),
+        }),
+    ] {
+        let mut read = clean();
+        finalized(&mut read, hand_off.as_ref());
+        assert!(read.snapshot.is_refusal(), "{:?}", unit_names(&read));
+        assert!(unit_names(&read).contains(&"naval_combat_results_occurrence_visit_unavailable"));
+        assert_eq!(
+            published(&read),
+            vec![
+                ("naval_combat_results_records_walked", 1),
+                ("naval_combat_results_combats_walked", 0),
+                ("naval_combat_results_units_without_location", 0),
+            ]
+        );
+    }
+
+    // THE SWITCH decides a label mismatch for d103's visits exactly as it
+    // does for d49's own records: counted under CountOnly, refused under
+    // Refuse; a tear, an unreadable clock, a panic or no bracket never vouch.
+    for policy in [HourLabelMismatchPolicy::Refuse, HourLabelMismatchPolicy::CountOnly] {
+        assert!(occurrence_bracket_vouches(Some(BracketHourVerdict::InFrameHour), policy));
+        assert_eq!(
+            occurrence_bracket_vouches(Some(BracketHourVerdict::LabelMismatch), policy),
+            policy == HourLabelMismatchPolicy::CountOnly
+        );
+        for never in [
+            None,
+            Some(BracketHourVerdict::Straddled),
+            Some(BracketHourVerdict::ClockUnreadable),
+            Some(BracketHourVerdict::WorkerPanic),
+        ] {
+            assert!(!occurrence_bracket_vouches(never, policy), "{never:?} under {policy:?}");
+        }
+    }
+    assert_eq!(
+        HOUR_LABEL_MISMATCH_POLICY,
+        HourLabelMismatchPolicy::Refuse,
+        "the cases below assume the capture refuses a label mismatch"
+    );
+
+    // FINALIZE ITSELF moves with the switch, not only the predicate beside it,
+    // and it does so for EVERY verdict: the matrix below asserts finalize
+    // against the predicate's own answer, so it cannot agree on one cell and
+    // diverge on another. A sealed hour also has to CARRY the visit's row --
+    // an hour that sealed with an empty census would pass a refusal-bit check.
+    for policy in [
+        HourLabelMismatchPolicy::Refuse,
+        HourLabelMismatchPolicy::CountOnly,
+    ] {
+        for bracket in [
+            None,
+            Some(BracketHourVerdict::InFrameHour),
+            Some(BracketHourVerdict::LabelMismatch),
+            Some(BracketHourVerdict::Straddled),
+            Some(BracketHourVerdict::ClockUnreadable),
+            Some(BracketHourVerdict::WorkerPanic),
+        ] {
+            let mut read = compute_compact_naval_combat_results(
+                observation(
+                    Some(lane::Sink::filed(
+                        vec![ncr::NavalResultRow::new((ncr::TABLE_RECORD, 1, 4001, 1, 0, 17), 20)],
+                        1,
+                    )),
+                    false,
+                ),
+                0,
+                0,
+            );
+            let mut ledger = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+            finalize_compact_naval_combat_results_read(
+                &mut read,
+                &mut ledger,
+                Some(&NavalOccurrenceHandOff {
+                    visits: Some(vec![visit(1, Ok(active(1)))]),
+                    torn_reason: None,
+                    bracket,
+                }),
+                policy,
+            );
+            let vouches = occurrence_bracket_vouches(bracket, policy);
+            assert_eq!(
+                !read.snapshot.is_refusal(),
+                vouches,
+                "{policy:?} / {bracket:?}: finalize and the predicate disagree"
+            );
+            if vouches {
+                assert_eq!(
+                    read.snapshot
+                        .rows
+                        .iter()
+                        .filter(|row| row.table == ncr::TABLE_ACTIVE_COMBAT)
+                        .count(),
+                    1,
+                    "{policy:?} / {bracket:?}: the hour sealed without the visit's row"
+                );
+                assert_eq!(read.snapshot.active_combat_count, 1);
+            }
+        }
+    }
+    for (policy, refuses) in [
+        (HourLabelMismatchPolicy::Refuse, true),
+        (HourLabelMismatchPolicy::CountOnly, false),
+    ] {
+        let mut read = compute_compact_naval_combat_results(
+            observation(
+                Some(lane::Sink::filed(
+                    vec![ncr::NavalResultRow::new((ncr::TABLE_RECORD, 1, 4001, 1, 0, 17), 20)],
+                    1,
+                )),
+                false,
+            ),
+            0,
+            0,
+        );
+        let mut ledger = compact_contract::domain_outcome::DomainOutcomeLedger::new();
+        finalize_compact_naval_combat_results_read(
+            &mut read,
+            &mut ledger,
+            Some(&NavalOccurrenceHandOff {
+                visits: Some(vec![NavalOccurrenceVisit {
+                    combat_id: 1,
+                    generation: 3,
+                    occurrence: Ok(lane::CombatOccurrence::filed(vec![
+                        ncr::NavalResultRow::new(
+                            (ncr::TABLE_ACTIVE_COMBAT, 1, 4002, 1, 0, 0),
+                            1,
+                        ),
+                    ])),
+                }]),
+                torn_reason: None,
+                bracket: Some(BracketHourVerdict::LabelMismatch),
+            }),
+            policy,
+        );
+        assert_eq!(
+            read.snapshot.is_refusal(),
+            refuses,
+            "{policy:?}: finalize did not follow the switch"
+        );
+    }
+
+    // D49 WALKED, BUT ITS BRACKET DID NOT VOUCH FOR THE HOUR (or no bracket
+    // was recorded): the visits are not attributable to this hour, and the
+    // hour refuses by name before reconciliation gaps d49's own records.
+    for bracket in [
+        None,
+        Some(BracketHourVerdict::Straddled),
+        Some(BracketHourVerdict::ClockUnreadable),
+        Some(BracketHourVerdict::LabelMismatch),
+        Some(BracketHourVerdict::WorkerPanic),
+    ] {
+        let mut read = clean();
+        finalized(
+            &mut read,
+            Some(&NavalOccurrenceHandOff {
+                visits: Some(vec![visit(1, Ok(active(1)))]),
+                torn_reason: None,
+                bracket,
+            }),
+        );
+        assert!(read.snapshot.is_refusal(), "{bracket:?}: {:?}", unit_names(&read));
+        assert!(unit_names(&read).contains(&"naval_combat_results_occurrence_visit_unavailable"));
+        assert_eq!(
+            published(&read),
+            vec![
+                ("naval_combat_results_records_walked", 1),
+                ("naval_combat_results_combats_walked", 0),
+                ("naval_combat_results_units_without_location", 0),
+            ],
+            "{bracket:?}"
+        );
+    }
+
+    // ONE VISIT REFUSED: it costs ITS row by name; the hour seals with the
+    // other combat, and the counters are the clean visits' (finding 6).
+    let mut read = clean();
+    finalized(
+        &mut read,
+        Some(&NavalOccurrenceHandOff {
+            visits: Some(vec![
+                visit(1, Ok(active(1))),
+                visit(2, Err(lane::NavalResultRefusal::CombatHandleInvalid)),
+                visit(3, Err(lane::NavalResultRefusal::CombatHandleInvalid)),
+                visit(4, Err(lane::NavalResultRefusal::VisitBudgetExhausted)),
+            ]),
+            torn_reason: None,
+            bracket: Some(BracketHourVerdict::InFrameHour),
+        }),
+    );
+    assert!(!read.snapshot.is_refusal(), "{:?}", unit_names(&read));
+    let stated: Vec<u32> = read
+        .snapshot
+        .rows
+        .iter()
+        .filter(|row| row.table == ncr::TABLE_ACTIVE_COMBAT)
+        .map(|row| row.k0)
+        .collect();
+    assert_eq!(stated, vec![1], "the refused visits' rows are not in the census");
+    assert_eq!(read.snapshot.active_combat_count, 1);
+    let unit = |name: &str| {
+        read.diagnostic_units
+            .iter()
+            .find(|unit| unit.name == name)
+            .map(|unit| unit.value)
+    };
+    assert_eq!(unit("naval_combat_results_occurrence_visits_refused"), Some(3));
+    assert_eq!(unit(lane::NavalResultRefusal::CombatHandleInvalid.name()), Some(2));
+    assert_eq!(unit(lane::NavalResultRefusal::VisitBudgetExhausted.name()), Some(1));
+    assert_eq!(
+        published(&read),
+        vec![
+            ("naval_combat_results_records_walked", 1),
+            ("naval_combat_results_combats_walked", 1),
+            ("naval_combat_results_units_without_location", 0),
+        ],
+        "the counters are what the clean visits counted"
+    );
+
+    // EVERY VISIT CLEAN: the census carries each row under its visit's epoch.
+    let mut read = clean();
+    finalized(
+        &mut read,
+        Some(&NavalOccurrenceHandOff {
+            visits: Some(vec![visit(1, Ok(active(1))), visit(2, Ok(active(2)))]),
+            torn_reason: None,
+            bracket: Some(BracketHourVerdict::InFrameHour),
+        }),
+    );
+    assert!(!read.snapshot.is_refusal(), "{:?}", unit_names(&read));
+    let epochs: Vec<(u32, u32, u32)> = read
+        .snapshot
+        .rows
+        .iter()
+        .filter(|row| row.table == ncr::TABLE_ACTIVE_COMBAT)
+        .map(|row| (row.k0, row.k3, row.k4))
+        .collect();
+    assert_eq!(epochs, vec![(1, 3, 0), (2, 3, 0)]);
+    assert_eq!(read.snapshot.active_combat_count, 2);
+    assert!(read
+        .diagnostic_units
+        .iter()
+        .any(|unit| unit.name == "naval_combat_results_occurrence_visits_refused" && unit.value == 0));
+    assert_eq!(
+        published(&read),
+        vec![
+            ("naval_combat_results_records_walked", 1),
+            ("naval_combat_results_combats_walked", 2),
+            ("naval_combat_results_units_without_location", 0),
+        ]
     );
 }

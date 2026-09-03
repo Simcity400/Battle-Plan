@@ -180,6 +180,9 @@ wire_record! {
         pub location_province: Leaf<u32>,
         pub attackers: Leaf<Vec<i64>>,
         pub defenders: Leaf<Vec<i64>>,
+        /// XMAP14-PLACE-1's operand: the attacker whose `CUnit+0x298` map
+        /// entity the engine anchors the icon on. `0` = measured, none live.
+        pub first_live_attacker: Leaf<i64>,
         pub combat_width: Leaf<f64>,
         pub terrain: Leaf<String>,
         pub progress: Leaf<f64>,

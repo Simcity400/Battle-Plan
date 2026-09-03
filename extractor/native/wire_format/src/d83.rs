@@ -1,8 +1,8 @@
 //! d83 `nuke_stockpile_live` — per-country nuclear stockpile containers.
 //!
-//! Derived from `world_fold.rs:18769`-`:18838`
+//! Derived from `world_fold.rs:19193`-`:19262`
 //! (`fold_nuke_stockpile`) and the payload codec the fold calls, which for this
-// @world-fold-authority domain=83 functions=fold_nuke_stockpile lines=18769-18838 sha256=f938de9a0f2da83b112ea3fe8129fe1f28232fcf829cfccba0c6a8d6d5ec317e closure=e1ab7b467c8bfc627a90e897e595b1b721afd38a5f54f572361c4636a9ae414a
+// @world-fold-authority domain=83 functions=fold_nuke_stockpile lines=19193-19262 sha256=f938de9a0f2da83b112ea3fe8129fe1f28232fcf829cfccba0c6a8d6d5ec317e closure=414b929b2ab4b6c169dfe1e44fa1deda5dd5dd695d9493e24a2258011519e3e6
 //! domain lives **outside** the fold in its own leaf crate:
 //! `extractor/native/lanes/nuke_stockpile_live/src/lib.rs` (`encode_payload` at
 //! `:293`, `decode_payload` at `:328`, `validate_frame` at `:270`,
