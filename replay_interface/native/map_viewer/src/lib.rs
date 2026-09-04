@@ -340,6 +340,7 @@ pub use map_authority::{
     ambient_lifecycle_session_dlcs, map_authority_observed_status_label,
     map_authority_owner_proven_admission, map_authority_projection_from_world_frame,
     map_authority_proven_input_status, map_authority_requirement_metadata,
+    map_authority_viewer_derivation_owed_input, map_authority_viewer_derivation_owed_status,
     map_authority_viewer_derived_admission, map_authority_viewer_derived_input_status,
     player_country_set_leaf_status,
     refuse_missing_xmap00_authority,
@@ -348,10 +349,11 @@ pub use map_authority::{
     MapAuthorityAdmissionSource, MapAuthorityAdmittedInput, MapAuthorityGap,
     MapAuthorityOwnerProvenAdmission,
     MapAuthorityProjection, MapAuthorityRequirement, MapAuthorityRequirementDisposition,
-    MapAuthorityRequirementMetadata, MapAuthorityViewerDerivedAdmission,
+    MapAuthorityRequirementMetadata, MapAuthorityViewerDerivationOwedInput,
+    MapAuthorityViewerDerivedAdmission,
     Xmap01ProductMapRefusal, MAP_AUTHORITY_INPUT_SCHEMA,
     MAP_AUTHORITY_OWNER_PROVEN_INPUTS, MAP_AUTHORITY_REQUIRED_INPUTS,
-    MAP_AUTHORITY_VIEWER_DERIVED_INPUTS,
+    MAP_AUTHORITY_VIEWER_DERIVATION_OWED_INPUTS, MAP_AUTHORITY_VIEWER_DERIVED_INPUTS,
 };
 pub use map_furniture::{
     associate_naval_spawns_to_provinces, base_icon_defines_from_resolver, base_icon_frame,
