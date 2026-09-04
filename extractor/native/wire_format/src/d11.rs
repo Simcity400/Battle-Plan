@@ -3,8 +3,7 @@
 //!
 //! Derived from `world_fold.rs:20819`-`:21463`
 //! (`fold_production`), its `parse_production_trailers` chain parser and the ten
-// @world-fold-authority domain=11 functions=fold_production lines=20819-21463 sha256=8c1bc2a496092cf62ec09af9ff2b443edf410aa24e5994ca1f58f209a6d84b4c closure=591b7276c88e68bd0afd47fc0a0a7e18b3d4888c97f8358b8f735db776ef2b3c
-// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=9 sha256=cce6673c3c6f566a7eb6235c00f0d42cb115d5e49de3f90fe4f2c76a96b2c5a2
+// Fold authority: `world_fold.rs::fold_production`.
 //! per-segment parsers it dispatches to, plus the collector reads that produce
 //! every gate (`extractor/native/collector/src/attach_log.rs`, cited per field).
 //! Native offsets and scale proofs are retained as

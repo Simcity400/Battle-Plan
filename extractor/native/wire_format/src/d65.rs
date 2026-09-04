@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:20558`-`:20654`
 //! (`fold_special_project_programs`), its payload constants at `:191`-`:196`, the
-// @world-fold-authority domain=65 functions=fold_special_project_programs lines=20558-20654 sha256=6e16b93328934774eaea4910539642a254d8decca332ade4f40900dcbc26333a closure=98a036b84c13e60e49ac5e228f8b090855fc4df1ab34ae4b76277ea8228815bd
+// Fold authority: `world_fold.rs::fold_special_project_programs`.
 //! status-independent payload authority
 //! `decode_compact_special_project_programs_data_payload`
 //! (`recorder_host/src/domain_data_authority.rs:12305`-`:12384`), and the

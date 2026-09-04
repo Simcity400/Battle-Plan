@@ -2,7 +2,7 @@
 //! simulation inputs.
 //!
 //! Derived from `world_fold.rs:18424`-`:18451` (`fold_rail_replay_state`).
-// @world-fold-authority domain=81 functions=fold_rail_replay_state lines=18424-18451 sha256=cccace04a76fb96d48374edb442b574ccdd2beec395af042f5a4e6e8bfd26f8f closure=f99563ad0ebd570015f32cd906e076bc9427d23ba9304d6be318c37d143d9f44
+// Fold authority: `world_fold.rs::fold_rail_replay_state`.
 //!
 //! Public schema v4 deliberately carries no GUI object, selected-country, or
 //! effective-country state.  The first three collections retain the exact

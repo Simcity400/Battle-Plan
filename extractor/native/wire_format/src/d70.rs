@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:16843`-`:16903`
 //! (`fold_sunk_convoy_history`), its two dispatch sites (`:4737` and `:4801`-`:4806`),
-// @world-fold-authority domain=70 functions=fold_sunk_convoy_history lines=16843-16903 sha256=275d9ee0dc03e03b4c0f5f85f38d7da0f2cb6106a7021ef04e2dbbd21780b54a closure=2ca770f30c58da338eaeb76e06108759eb719cd5178aa04f543ff068a794d3a3
+// Fold authority: `world_fold.rs::fold_sunk_convoy_history`.
 //! and the payload codec `extractor/native/compact_contract/src/naval_history.rs`,
 //! which is where this domain's row grammar actually lives. There is no dossier
 //! under `extractor/documents/domains/`, so those three are the whole basis.
@@ -15,10 +15,7 @@
 //! refusals (`world_fold.rs::fold_sunk_convoy_history`). `wire_format`'s library half must
 //! not depend on `compact_contract` (`Cargo.toml`), so this module mirrors the
 //! codec's grammar with a `naval_history.rs:LINE` citation on every constant and
-//! every check — and `bin/bench_real_d70.rs`, which *does* depend on it, runs
-//! the real `decode_payload` beside this module's own decode on every record of
-//! the capture and refuses the stream if the two ever disagree. That
-//! cross-check, not the comments, is what keeps the mirror from drifting.
+//! every check.
 //!
 //! # Payload grammar (`naval_history.rs:9`-`:24`, `:266`-`:421`)
 //!
@@ -258,8 +255,8 @@ pub enum Ordering {
 /// values are build-pinning receipts owned by `compact_contract`
 /// (`naval_history.rs:34`-`:45`); copying them here would put a second copy of a
 /// build identity in a crate that has no way to notice when the real one moves.
-/// The caller supplies them — `bin/bench_real_d70.rs` from `compact_contract`
-/// itself — and this module checks the payload against what it was handed.
+/// The caller supplies them from `compact_contract` itself, and this module
+/// checks the payload against what it was handed.
 ///
 /// **Why check them at all**, when this crate is a schema layer: an
 /// `authority_raw` word of `1` is a claim of exact static authority, and the
@@ -843,9 +840,7 @@ pub struct Decoded {
 /// [`record_from_row`] must refuse the same rows the codec does, and those two
 /// see one row at a time. The set of predicates is identical, so the accept/
 /// reject classification of any payload is identical too and only the message of
-/// a doubly-malformed payload differs — which `bin/bench_real_d70.rs` pins by
-/// running `compact_contract`'s own `decode_payload` beside this one on every
-/// record of the capture and refusing the stream if the two ever disagree.
+/// a doubly-malformed payload differs.
 ///
 /// Public because the measurement bin needs the decode without the fold's
 /// accumulator semantics — and because sharing one decode is what keeps the bin,
@@ -979,9 +974,7 @@ mod tests {
     /// A stand-in receipt block. The values are irrelevant to every property
     /// under test — what matters is that the payload and the caller agree — so
     /// the tests use a distinguishable pattern rather than a copy of
-    /// `compact_contract`'s pinned build identity. `bench_real_d70.rs` is where
-    /// the real receipts are used, and where the two are cross-checked against
-    /// the codec on every record of the capture.
+    /// `compact_contract`'s pinned build identity.
     fn receipts() -> AuthorityReceipts {
         let mut hashes = [[0u8; 32]; RECEIPT_COUNT];
         for (index, hash) in hashes.iter_mut().enumerate() {

@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:15565`-`:15610`
 //! (`fold_fuel`), its scale constant at `:152`, the collector read that produces
-// @world-fold-authority domain=10 functions=fold_fuel lines=15565-15610 sha256=ef737fc3e1a9ab424f269e4ca1b5c1049087717a870a70cf4a6a6e8b0f70fa3e closure=b9f44ae0e3a0bbd1215b7cc2a5c5a61175b02e18e8891052cd19fd07581e893b
+// Fold authority: `world_fold.rs::fold_fuel`.
 //! the rows (`extractor/native/collector/src/attach_log.rs:83846`-`:83885`), the
 //! collector's payload encoder (`:67976`-`:67999`), and the recorder's own
 //! structural decoder for this payload
@@ -75,8 +75,7 @@
 //! 1. The state this domain's `KeyedSet` models is the fold's **accumulated**
 //!    country map, not one payload. A row missing from an hour means "unchanged",
 //!    so a keyed state built from a single payload would delete every country the
-//!    hour did not mention. `bench_real_d10.rs` accumulates; a future reader must
-//!    too.
+//!    hour did not mention.
 //! 2. Row absence therefore conflates *unchanged* with *unreadable this frame*:
 //!    a country whose fuel pointer goes bad is omitted exactly like a country
 //!    whose fuel did not move, and the fold keeps serving the last value. That is

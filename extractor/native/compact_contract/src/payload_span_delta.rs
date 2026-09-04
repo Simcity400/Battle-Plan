@@ -326,10 +326,10 @@ pub const MAX_OPS: usize = 1 << 22;
 /// payload — and all four were MEASURED rather than assumed. Not through this
 /// codec's own producer, though, and the difference is worth stating: a domain
 /// that is not on the list above is refused BY NAME by both sides of this codec,
-/// so `ps_wire_delta_reencode` cannot price a candidate. They were priced by
+/// so no re-encode harness can price a candidate. They were priced by
 /// `runs/sg_dense_delta/sg_psd1_model.py`, a port of the producer's size
-/// decisions that `sg_calibrate.py` holds to byte-identity against
-/// `ps_wire_delta_reencode` on a spool whose enabled domains ride raw — same
+/// decisions that `sg_calibrate.py` holds to byte-identity against a re-encode
+/// of a spool whose enabled domains ride raw — same
 /// fields, and the same SHA-256 over a whole 316 MB rewritten spool.
 /// (`runs/sg_dense_delta/MEASUREMENT.md` §2, §3, §7b.)
 ///
@@ -3056,7 +3056,7 @@ mod tests {
             //
             // Priced by `runs/sg_dense_delta/sg_psd1_model.py`, a port of this
             // codec's producer that `sg_calibrate.py` holds byte-identical to
-            // `ps_wire_delta_reencode` -- the shipped harness cannot price a
+            // a re-encode of the spool -- no shipped harness can price a
             // domain that is not enabled yet, because both sides of this codec
             // refuse an unassigned domain by name.
             (20, "d20 divisions, -53.9 MB decoded but +5,062,159 B stored"),

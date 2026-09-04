@@ -6,7 +6,7 @@
 //! at `:4726`), its row validator `validate_scripted_state_row` (`world_fold.rs::validate_scripted_state_row`), its
 //! accumulator writer `apply_scripted_state_row` (`world_fold.rs::apply_scripted_state_row`) and its clear
 //! `clear_scripted_state_accumulators` (`world_fold.rs::clear_scripted_state_accumulators`). There is no dossier for this
-// @world-fold-authority domain=51 functions=fold_scripted_state lines=29448-29663 sha256=e92a1ed010a355d572703f77b655f9d358d4d48d2e1fda54be0ccee32b82e2e8 closure=c3885e578a0f5127f3b28df39a7263addda6a78c7f7aba72eda1fd8e9e71ce86
+// Fold authority: `world_fold.rs::fold_scripted_state`.
 // @lane-payload-authority domain=51 path=extractor/native/lanes/scripted_state_flags_variables_live/scripted_state_compact.rs function=decode_payload lines=231-663 sha256=ebb8ac22ae995651cc86c6ff81709f2ccce422c0b4e830714cfb5b48b624bc80
 //! domain; the fold is sufficient. The lane's own payload decoder
 //! (`lanes/scripted_state_flags_variables_live/scripted_state_compact.rs`,
@@ -56,8 +56,8 @@
 //! permutes rows only *within* one `(scope_kind, owner_id)` run — it cannot change
 //! the sequence of leading components and therefore cannot change the delta chain.
 //! The whole assignment-sensitivity of the measurement collapses to
-//! `sum(varint_len(symbol_id))`, which `bin/bench_real_d51.rs` reports as an exact
-//! band. A symbol-led key would have made the band a permutation problem instead.
+//! `sum(varint_len(symbol_id))`, an exact band. A symbol-led key would have made
+//! the band a permutation problem instead.
 //!
 //! # `value_raw` is carried RAW, not as `Fixed(5)` — and this diverges from d52
 //!
@@ -333,7 +333,7 @@ pub const SCRIPTED_GUI_BADGE_KEY: &str = "root_unresolved:scripted_gui_open_stat
 /// **4,354** symbols: ids `0..=127` are one-byte varints, `128..=16_383` are two,
 /// so a different assignment moves which names pay the second byte. The
 /// measurement therefore reports the stand-in's cost **and the exact band** over
-/// all assignments of this vocabulary (`bin/bench_real_d51.rs`), which is
+/// all assignments of this vocabulary, which is
 /// computable precisely because the symbol is never the leading key component —
 /// see the module docs. content-identity contract's ids are file-global, so an assignment over the whole
 /// content set can widen the varint further; that is claimed nowhere.
@@ -1295,7 +1295,7 @@ impl State {
     /// (`compact_status_for_global_interpretation` strips the three lane-local
     /// badges, of which bit 12 is otherwise `CONTROL_INVALID` and inside the
     /// failure mask), which is what the fold's hand-written expression at
-    /// `world_fold.rs::fold_scripted_state` computes; `bin/bench_real_d51.rs` pins the agreement.
+    /// `world_fold.rs::fold_scripted_state` computes.
     ///
     /// The **delta-before-baseline** exclusion is handled here, because it needs
     /// no vocabulary this crate lacks.
@@ -1394,7 +1394,7 @@ fn collection_of(schema: &Schema, id: u32) -> core::result::Result<&Collection, 
 /// content-identity contract forbids in-stream interning — the symbol table "must be fully read before
 /// any seek" — so the vocabulary has to be collected over the whole validated
 /// stream before any record is mapped, which means pass 1 cannot call a mapper at
-/// all (d29's rule; `bin/bench_real_d29.rs:458`-`:465` is the worked example).
+/// all (d29's rule).
 /// This type is d29's key-only mirror, and it is thinner than d29's because the
 /// only fold state d51's classification depends on is `baseline_seen`: every other
 /// decision is a pure function of the payload.
@@ -3459,7 +3459,7 @@ mod tests {
         // `compact_contract/src/status_flags_base.rs:16`, `:69`-`:71`. The three
         // lane-local badges alias globally-assigned bits 11, 12 and 13, which is
         // why the failure classification has to run through
-        // `compact_status_for_global_interpretation` — see `bin/bench_real_d51.rs`.
+        // `compact_status_for_global_interpretation`.
         assert_eq!(STATUS_DELTA_DATA, 1 << 10);
         assert_eq!(STATUS_FLAG_NAMES_PARTIAL, 1 << 11);
         assert_eq!(STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED, 1 << 12);

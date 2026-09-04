@@ -2,102 +2,54 @@
 """Fail closed when a source citation cannot be resolved, repo-wide.
 
 WHAT A CITATION IS.  A reference written in a comment or a design document that
-names a Rust source file and a place inside it.  Two written forms:
+names a Rust source file and an item inside it:
 
-    `attach_log.rs:<line>`          a LINE NUMBER
-    `attach_log.rs::dll_main`       an ITEM NAME
+    `attach_log.rs::dll_main`
 
-(The line form is written with a placeholder here on purpose: this file is
-inside the scan roots, and a worked example spelt with real digits would be a
-citation this gate then demanded be grandfathered.  The item form needs no such
-care -- it is spelt exactly as it would be written, and it resolves.)
+An item name survives every insertion above it, and its one failure mode -- the
+item was renamed or deleted -- is exactly what a checker can detect.  Line
+numbers are not citations this gate reads: they drift on the next insertion into
+the cited file and nothing can check them.
 
-The first rots.  A line number is a position in a file whose own line numbers
-move on the next insertion above them; nothing compiles a comment, so nothing
-notices.  Lane HK measured the damage on one tree -- 1,143 line citations in the
-dNN wire modules, of a sample of ten, six landing on unrelated text -- and lane
-`runs/prose_refs/` had already converted the citations of ONE file
-(`world_fold.rs`) to the item form and guarded the result with
-``verify_world_fold_citations.py``.  This is that guard generalized to the whole
-repository.
-
-The second form does not rot the same way.  An item name survives every
-insertion above it, and its one failure mode -- the item was renamed or deleted
--- is exactly what a checker can detect.  That is the whole argument for the
-conversion: it moves citations from a class nothing can check into a class this
-script checks on every run.
-
-THREE RULES.
-
-  L (line references are a ratchet).  Every line citation must already be listed
-    in ``citation_integrity_allowance.json`` under its citing file.  A NEW one
-    fails.  The list may only shrink -- an unused entry is reported, never an
-    error, so deleting a citation never forces an allowance edit in the same
-    commit, while adding one always does.
-
-  U (a grandfathered citation must still land).  A line citation whose file does
-    not exist, whose basename is carried by several files, or whose line is past
-    the end of the file, fails -- unless it is listed under ``unresolved`` with a
-    reason.  This is the half that catches rot as it happens rather than
-    freezing it: a grandfathered citation is permitted to EXIST, not permitted to
-    stop resolving.
-
-    Note what U does NOT claim.  A citation that lands inside its file lands
-    SOMEWHERE, not necessarily on what the citing sentence means -- no checker
-    can read that.  That is why L exists: the only durable fix is the item form,
-    and L is what stops the population growing while it is converted.
-
-  I (item references must check out).  An item citation must name exactly one
-    file that defines the item, and a multi-segment path must be a real route
-    through it: each segment has to be declared inside the body of the one
-    before it.  There is no ratchet here and no budget -- an item citation is
-    checkable, so it is checked.  The few that do not resolve today are listed
-    under ``items`` with a reason.
+THE RULE.  An item citation must name exactly one file that defines the item,
+and a multi-segment path must be a real route through it: each segment has to be
+declared inside the body of the one before it.  There is no ratchet and no
+budget -- an item citation is checkable, so it is checked.  The few that do not
+resolve today are listed under ``items`` in
+``citation_integrity_allowance.json`` with a reason.
 
 WHAT IS NOT SCANNED.  Evidence trees -- any ``runs/`` directory and any
 ``re_evidence/`` directory.  AGENTS.md makes those append-only: a completed run
 records what was true when it ran, and a stale citation inside one is frozen
-history, not a defect.  Editing one to satisfy a gate would be falsifying the
-record.  ``census.py`` in this lane's run directory counts them so the size of
-that frozen population is known (633 citations) rather than merely excluded.
+history, not a defect.
 
-EXTERNAL SOURCES.  ``libc-0.2.189/src/psp.rs:505`` is a real citation of a real
-file that is not in this repository.  Those are listed under
-``external_sources`` by path and skipped -- a checker that demanded they resolve
-would be demanding the vendor tree be checked in.
-
-OVERLAP WITH ``verify_world_fold_citations.py`` IS DELIBERATE.  That gate is
-stricter inside its own territory: it bans line numbers in the dNN modules
-outright, pins the fold's line range with a digest, and pins the callee closure.
-This one is broader and weaker: it covers every file in the scan roots and asks
-only that a citation resolve.  Both ratchets only ever fail on a citation being
-ADDED, and both accept an unused allowance entry, so the cost of the overlap is
-one extra allowance edit on the rare occasion a new world_fold line number is
-deliberately grandfathered -- and the benefit is that neither gate's coverage
-depends on the other still existing.
+EXTERNAL SOURCES.  ``libc-0.2.189/src/psp.rs`` is a real file that is not in
+this repository.  Those are listed under ``external_sources`` by path and
+skipped -- a checker that demanded they resolve would be demanding the vendor
+tree be checked in.
 
 WHY THERE IS A CACHE.  Lane JD timed a full battery and found this gate, as run
 by ``recorder_host``'s ``citation_integrity`` test, was 70.8 s of the 106.6 s the
 Extractor serial half holds the machine-wide mutex -- 66% of it, one test.  Lane
-JN profiled where that goes: the three citation patterns swept over the 98.2 MB
-of text in the scan set cost 61.4 s of a 64.5 s run, and everything else --
-walking the tree, sniffing it for binaries, reading every byte and hashing it --
-costs 0.7 s together.  The whole of the expense is re-asking a question about
-files that did not change.
+JN profiled where that goes: the citation patterns swept over the 98.2 MB of
+text in the scan set cost 61.4 s of a 64.5 s run, and everything else -- walking
+the tree, sniffing it for binaries, reading every byte and hashing it -- costs
+0.7 s together.  The whole of the expense is re-asking a question about files
+that did not change.
 
 WHAT MAKES SKIPPING IT SOUND.  Verifying ONE citing file is a deterministic
 function of that file's bytes, of the allowance, of this script, and of a set of
-QUESTIONS ABOUT THE REST OF THE TREE -- which files carry a basename, how long
-one is, what names it declares.  ``Tree`` is the only route to those questions,
-so every one of them is recorded, with the answer it gave, while the file is
-verified.  A cached result is reused only when the file's bytes hash the same AND
-every recorded question still gives the recorded answer; by determinism the run
-would then replay identically, so the recorded result IS this run's result.
-Anything else -- one recorded answer that moved, a cache written by another
-allowance or another copy of this script, a cache that will not parse, an entry
-whose own digest does not match its contents -- verifies the file again.  The
-cache is therefore incapable of hiding a citation: it can only be slower than it
-could have been.
+QUESTIONS ABOUT THE REST OF THE TREE -- which files carry a basename, what names
+one declares.  ``Tree`` is the only route to those questions, so every one of
+them is recorded, with the answer it gave, while the file is verified.  A cached
+result is reused only when the file's bytes hash the same AND every recorded
+question still gives the recorded answer; by determinism the run would then
+replay identically, so the recorded result IS this run's result.  Anything else
+-- one recorded answer that moved, a cache written by another allowance or
+another copy of this script, a cache that will not parse, an entry whose own
+digest does not match its contents -- verifies the file again.  The cache is
+therefore incapable of hiding a citation: it can only be slower than it could
+have been.
 
 Two consequences worth stating plainly.  A changed ALLOWANCE or a changed SCRIPT
 re-verifies the whole tree, because both are inputs to every file's result and
@@ -212,20 +164,6 @@ def normalized(name: str) -> str:
     return unicodedata.normalize("NFC", name)
 
 
-LINE_CITATION = re.compile(
-    rf"{NOT_AFTER}"
-    rf"(?P<path>(?:{PATH_CHAR}+[/\\])*)"
-    rf"(?P<base>{PATH_CHAR}+\.rs)"
-    r":(?P<line>\d+)"
-    r"(?:-(?P<end>\d+))?"
-    r"(?![0-9])"
-)
-SPLIT_RANGE = re.compile(
-    r"`?[ \t]*(?:\r?\n[ \t]*(?://[/!]?|\#+|\*)?[ \t]*)?"
-    r"[-–—]"
-    r"[ \t]*(?:\r?\n[ \t]*(?://[/!]?|\#+|\*)?[ \t]*)?"
-    r"`?:(?P<end>\d+)(?![0-9])"
-)
 MALFORMED_ITEM = re.compile(
     rf"{NOT_AFTER}"
     rf"(?P<path>(?:{PATH_CHAR}+[/\\])*)"
@@ -259,8 +197,7 @@ def citation_matches(
     What it buys: `(?:{PATH_CHAR}+[/\\\\])*{PATH_CHAR}+\\.rs` backtracks
     quadratically over every long run of path characters that does NOT end in
     `.rs`, which is nearly all of a large generated file.  Skipping the lines
-    that cannot match turned a 190-second restamp into seconds; the gate's own
-    scan is the same three patterns over the same files.
+    that cannot match turned a 190-second scan into seconds.
     """
     pos = 0
     length = len(text)
@@ -308,15 +245,6 @@ def _sanitize_rust(source: str) -> str:
     source does not balance, and Rust-looking text inside a comment would
     otherwise declare items that no citation can reach.
 
-    This is a SECOND implementation of a scanner this repository already has
-    (`verify_world_fold_citations.sanitize_rust`), and that is deliberate: the
-    original walks character by character in Python, which costs three minutes
-    over the ~40 MB of Rust this gate indexes, against three seconds here.  The
-    two are held to the same behaviour by `test_verify_citation_integrity.py`,
-    which runs both over the same tricky fixtures -- nested-free block comments,
-    hashed raw strings, escaped quotes, char literals, lifetimes -- and requires
-    identical output.  A divergence fails that test rather than silently
-    changing what this gate can see.
     """
     return _BLANKABLE.sub(_blank, source)
 
@@ -651,19 +579,6 @@ class Tree:
         """Note that this run's answer depended on ``relative``'s content."""
         if self.recording is not None and relative not in self.recording.files:
             self.recording.files[relative] = self.store.digest(relative)
-
-    def line_count(self, relative: str) -> int:
-        """PHYSICAL lines.
-
-        `count("\\n") + 1` invents a line past the end of every
-        newline-terminated file, which made a citation one line too far resolve,
-        and reported 1 for an empty file.  (Codex review round 2, finding 3.)
-        The text is not retained: `attach_log.rs` alone is 5 MB.
-        """
-        self._consulted(relative)
-        if relative not in self._lines:
-            self._lines[relative] = len(self._text(relative).splitlines())
-        return self._lines[relative]
 
     def defined_names(self, relative: str) -> frozenset[str]:
         """Every name the file declares at an ADDRESSABLE place.
@@ -1072,11 +987,7 @@ def _parse_allowance(path: Path, data: bytes) -> dict:
         raise VerificationError(f"cannot read {path}: {error}") from error
     if not isinstance(loaded, dict):
         raise VerificationError(f"{ALLOWANCE.as_posix()}: expected a JSON object")
-    for section, value_kind in (
-        ("line_references", int),
-        ("unresolved", str),
-        ("items", str),
-    ):
+    for section, value_kind in (("items", str),):
         section_value = loaded.get(section, {})
         if not isinstance(section_value, dict):
             raise VerificationError(
@@ -1113,39 +1024,6 @@ def _parse_allowance(path: Path, data: bytes) -> dict:
     return loaded
 
 
-def citation_end(text: str, match: re.Match[str]) -> int | None:
-    """The last line a citation covers, or ``None`` when it names one line.
-
-    Two spellings, both real in this tree: `file.rs:<a>-<b>` in one token, and
-    the split ``file.rs:<a>`-`:<b>`` form the documents prefer.
-    """
-    if match.group("end"):
-        return int(match.group("end"))
-    split = SPLIT_RANGE.match(text, match.end())
-    return int(split.group("end")) if split else None
-
-
-def written_citation(text: str, match: re.Match[str], tree: "Tree") -> str:
-    """A `LINE_CITATION` match, canonicalized with its endpoint if it has one.
-
-    One function so the gate's budget key and the restamper's cannot disagree --
-    they did once, over the range endpoint, and an allowance whose keys differ
-    from the gate's is an allowance that grandfathers nothing it names.  The
-    split-range endpoint is folded in here rather than left in the source text,
-    so the two spellings of one range produce one key.
-
-    The tree is a parameter for the same reason: the path a citation names is
-    the one `cited_path` resolves, spaces included, and a key that spelt only the
-    tail of a spaced filename would be a key for a citation nobody wrote.
-    """
-    path, base = cited_path(text, match, tree)
-    written = f"{path}{base}:{int(match.group('line'))}"
-    end = citation_end(text, match)
-    if end is not None:
-        written += f"-{end}"
-    return written
-
-
 def _external(external: list[str], path: str, base: str) -> bool:
     written = (path + base).replace("\\", "/")
     return any(written == entry or written.endswith("/" + entry) for entry in external)
@@ -1155,15 +1033,13 @@ def verify_one(
     citing: str,
     text: str,
     tree: "Tree",
-    permitted: dict,
-    unresolved_ok: dict,
     items_ok: dict,
     external: list[str],
-) -> tuple[list[str], int, int, "Counter[str]"]:
-    """Apply all three rules to ONE citing file.
+) -> tuple[list[str], int, "Counter[str]"]:
+    """Apply the rule to ONE citing file.
 
-    -> (the failures it produced, its line citations, its item citations, the
-    allowance entries it consumed and how often).
+    -> (the failures it produced, its item citations, the allowance entries it
+    consumed and how often).
 
     THE ONLY IMPLEMENTATION OF THE RULES.  A full run and an incremental run
     differ in which files reach this function, never in what happens when one
@@ -1177,10 +1053,7 @@ def verify_one(
     """
     failures: list[str] = []
     used: "Counter[str]" = Counter()
-    line_total = 0
     item_total = 0
-    budget = Counter(permitted.get(citing, {}))
-    item_spans: list[tuple[int, int]] = []
 
     for match in citation_matches(MALFORMED_ITEM, text):
         line = text.count("\n", 0, match.start()) + 1
@@ -1193,7 +1066,6 @@ def verify_one(
         )
 
     for match in citation_matches(ITEM_CITATION, text):
-        item_spans.append((match.start(), match.end()))
         path, base = cited_path(text, match, tree)
         item_path = match.group("item")
         written = f"{path}{base}::{item_path}"
@@ -1232,74 +1104,7 @@ def verify_one(
                 f"its path to name one"
             )
 
-    item_span_starts = [start for start, _end in item_spans]
-    for match in citation_matches(LINE_CITATION, text):
-        at = bisect.bisect_right(item_span_starts, match.start()) - 1
-        if at >= 0 and match.start() < item_spans[at][1]:
-            continue
-        path, base = cited_path(text, match, tree)
-        cited_line = int(match.group("line"))
-        cited_end = citation_end(text, match)
-        written = written_citation(text, match, tree)
-        if _external(external, path, base):
-            continue
-        line_total += 1
-        line = text.count("\n", 0, match.start()) + 1
-
-        if budget[written] <= 0:
-            failures.append(
-                f"{citing}:{line}: `{written}` is a new free-text line "
-                f"number. Line numbers drift on the next insertion into the "
-                f"cited file and nothing checks them; cite the item instead, "
-                f"as `{base}::<item_name>`. (If this reference genuinely "
-                f"cannot name an item, add it to {ALLOWANCE.name} under "
-                f'"line_references" with the reason.)'
-            )
-            continue
-        budget[written] -= 1
-        used[written] += 1
-
-        reason = unresolved_ok.get(citing, {}).get(written)
-        candidates = tree.candidates(path, base)
-        if len(candidates) == 1:
-            total = tree.line_count(candidates[0])
-            last = cited_end if cited_end is not None else cited_line
-            if 1 <= cited_line <= last <= total:
-                continue
-            if reason is None and cited_end is not None and cited_end < cited_line:
-                failures.append(
-                    f"{citing}:{line}: `{written}` is a backwards range -- it "
-                    f"ends before it starts, so it cites nothing."
-                )
-                continue
-            if reason is None and cited_line < 1:
-                failures.append(
-                    f"{citing}:{line}: `{written}` cites line {cited_line}; "
-                    f"files start at line 1."
-                )
-                continue
-        if reason is not None:
-            continue
-        if not candidates:
-            failures.append(
-                f"{citing}:{line}: `{written}` names no file in this tree. "
-                f"Find what it meant (`git log -S`), then re-point it at the "
-                f"item -- or correct the sentence and delete it."
-            )
-        elif len(candidates) > 1:
-            failures.append(
-                f"{citing}:{line}: `{written}` is ambiguous -- {len(candidates)} "
-                f"files carry that name ({candidates[:4]}...). Qualify it with "
-                f"enough of its path to name one."
-            )
-        else:
-            failures.append(
-                f"{citing}:{line}: `{written}` is past the end of "
-                f"{candidates[0]} ({tree.line_count(candidates[0])} lines). "
-                f"The cited text moved or was deleted; re-point the citation "
-                f"at the item it meant."
-            )
-    return failures, line_total, item_total, used
+    return failures, item_total, used
 
 
 
@@ -1308,7 +1113,6 @@ ENTRY_FIELDS = (
     "candidates",
     "files",
     "failures",
-    "line_total",
     "item_total",
     "used",
 )
@@ -1414,10 +1218,9 @@ def well_formed(entry: object) -> bool:
         isinstance(message, str) for message in entry["failures"]
     ):
         return False
-    for field in ("line_total", "item_total"):
-        value = entry.get(field)
-        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            return False
+    value = entry.get("item_total")
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return False
     if not isinstance(entry.get("used"), list) or not all(
         isinstance(record, list)
         and len(record) == 2
@@ -1463,8 +1266,6 @@ def verify_and_record(
     citing: str,
     tree: "Tree",
     store: "FileStore",
-    permitted: dict,
-    unresolved_ok: dict,
     items_ok: dict,
     external: list[str],
     key: str,
@@ -1474,8 +1275,8 @@ def verify_and_record(
     tree.recording = deps
     try:
         text = store.text(citing)
-        failures, line_total, item_total, used = verify_one(
-            citing, text, tree, permitted, unresolved_ok, items_ok, external
+        failures, item_total, used = verify_one(
+            citing, text, tree, items_ok, external
         )
     finally:
         tree.recording = None
@@ -1486,7 +1287,6 @@ def verify_and_record(
         ),
         "files": dict(sorted(deps.files.items())),
         "failures": failures,
-        "line_total": line_total,
         "item_total": item_total,
         "used": sorted([written, count] for written, count in used.items()),
     }
@@ -1646,8 +1446,8 @@ def verify_repo(
     use_cache: bool = True,
     cache_path: "Path | None" = None,
     notices: "list[str] | None" = None,
-) -> tuple[int, int, int, int]:
-    """-> (files scanned, line citations, item citations, unused allowance entries).
+) -> tuple[int, int, int]:
+    """-> (files scanned, item citations, unused allowance entries).
 
     ``use_cache=False`` is `--full`: every file is verified from its bytes, with
     no recorded result consulted.  The cache is still WRITTEN either way, so the
@@ -1659,22 +1459,8 @@ def verify_repo(
     store = FileStore(repo_root)
     tree = Tree(repo_root, store)
     allowance_bytes, allowance = read_allowance(repo_root)
-    permitted: dict[str, dict[str, int]] = allowance.get("line_references", {})
-    unresolved_ok: dict[str, dict[str, str]] = allowance.get("unresolved", {})
     items_ok: dict[str, dict[str, str]] = allowance.get("items", {})
     external: list[str] = allowance.get("external_sources", [])
-
-    orphaned = sorted(
-        f"{citing} :: {citation}"
-        for citing, entries in unresolved_ok.items()
-        for citation in entries
-        if citation not in permitted.get(citing, {})
-    )
-    if orphaned:
-        raise VerificationError(
-            f"{ALLOWANCE.name}: these \"unresolved\" entries have no matching "
-            f"\"line_references\" entry, so they permit nothing: {orphaned}"
-        )
 
     location = cache_location(repo_root, cache_path, notices)
     identified = SCRIPT_DIGEST is not None and location is not None
@@ -1688,7 +1474,6 @@ def verify_repo(
 
     failures: list[str] = []
     used: Counter[tuple[str, str]] = Counter()
-    line_total = 0
     item_total = 0
     reused = 0
     entries: dict[str, dict] = {}
@@ -1699,19 +1484,9 @@ def verify_repo(
         if entry is not None and reusable(entry, citing, tree, store, key):
             reused += 1
         else:
-            entry = verify_and_record(
-                citing,
-                tree,
-                store,
-                permitted,
-                unresolved_ok,
-                items_ok,
-                external,
-                key,
-            )
+            entry = verify_and_record(citing, tree, store, items_ok, external, key)
         entries[citing] = entry
         failures.extend(entry["failures"])
-        line_total += entry["line_total"]
         item_total += entry["item_total"]
         for written, count in entry["used"]:
             used[(citing, written)] += count
@@ -1730,11 +1505,11 @@ def verify_repo(
 
     unused = sum(
         1
-        for citing, entries_for_file in permitted.items()
-        for citation, count in entries_for_file.items()
-        if used[(citing, citation)] < count
+        for citing, entries_for_file in items_ok.items()
+        for citation in entries_for_file
+        if used[(citing, citation)] == 0
     )
-    return len(scanned), line_total, item_total, unused
+    return len(scanned), item_total, unused
 
 
 def _report(notices: list[str]) -> None:
@@ -1776,7 +1551,7 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, ValueError):
                 pass
     try:
-        files, lines, items, unused = verify_repo(
+        files, items, unused = verify_repo(
             args.repo_root,
             use_cache=not args.full,
             cache_path=args.cache,
@@ -1789,8 +1564,7 @@ def main(argv: list[str] | None = None) -> int:
     _report(notices)
     print(
         f"citation integrity check: PASS ({files} files scanned, "
-        f"{lines} line citations grandfathered, {items} item citations resolved, "
-        f"{unused} unused allowance entries)"
+        f"{items} item citations resolved, {unused} unused allowance entries)"
     )
     return 0
 

@@ -1216,8 +1216,7 @@ mod tests {
 
     #[test]
     fn p18_churn_is_invariant_and_keeps_a_nonzero_cross_gap_transition() {
-        // bench_real_d50.rs:1866–:1869:
-        // the gap rule decides the ENCODING, not what changed. Churn still
+        // The gap rule decides the ENCODING, not what changed. Churn still
         // compares consecutive measured states across an excluded hour.
         let measured_states = [
             (1u64, vec![Some(1u32), Some(2)]),

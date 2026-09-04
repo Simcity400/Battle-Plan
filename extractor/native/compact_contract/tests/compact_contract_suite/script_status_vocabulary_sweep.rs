@@ -822,20 +822,6 @@ fn report_raw_capture_really_reads_the_registry_it_is_pointed_at() {
 }
 
 #[test]
-fn c0_domain_census_lane_local_table_matches_the_contract() {
-    let text = read_code("c0_domain_census.py");
-    let block = block_after(&text, "LANE_LOCAL = ");
-    let mut observed = BTreeMap::new();
-    for (key, inner) in nested_entries(&block) {
-        let name = key.trim().trim_matches(['"', '\'']);
-        let descriptor = assigned_descriptor_by_name(name)
-            .unwrap_or_else(|| panic!("c0_domain_census.py names unknown domain {name:?}"));
-        observed.insert(descriptor.id, mask_of(&int_keys(&inner)));
-    }
-    check_table("c0_domain_census.py LANE_LOCAL", &observed);
-}
-
-#[test]
 fn c0_pass2_spans_lane_local_table_matches_the_contract() {
     let raw = read_script("c0_pass2_spans.py");
     let text = strip_non_code_in(&raw, Dialect::Python);
@@ -1968,7 +1954,6 @@ fn each_script_is_read_under_its_own_dialect() {
     }
     for name in [
         "report_raw_capture.py",
-        "c0_domain_census.py",
         "c0_pass2_spans.py",
     ] {
         assert_eq!(

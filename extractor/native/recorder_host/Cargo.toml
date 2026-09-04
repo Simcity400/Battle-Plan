@@ -15,11 +15,6 @@ evidence-client-driving = []
 # allocation, and the finalize path allocates hundreds of thousands of times per
 # game hour. It cannot change a produced byte.
 mem-alloc-trace = []
-# Lane PR census profiler (`src/bin/pr_census_profile.rs`). Mounts the effective
-# VFS a sealed manifest records and runs THE attach-time content census over the
-# real install, timing mount and walk and checking the rows against the sealed
-# manifest. Measurement only: never on by default, never packaged.
-pr-census-profile = []
 
 [dependencies]
 # D34's air-base-status byte grammar (lane UT). Dependency-free leaf: the
@@ -142,8 +137,3 @@ path = "src/bin/stream_fold.rs"
 [[bin]]
 name = "domain_roster"
 path = "src/bin/domain_roster.rs"
-
-[[bin]]
-name = "pr_census_profile"
-path = "src/bin/pr_census_profile.rs"
-required-features = ["pr-census-profile"]

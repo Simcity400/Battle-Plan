@@ -9,14 +9,6 @@ autobins = false
 
 [features]
 default = []
-# Passthrough for the H4CP v3 prototype instrument (restored by lane PR).
-dq-v3-prototype = ["portable_replay_format/dq-v3-prototype"]
-# The `ce-cache-anatomy` and `dq-v3-prototype` passthroughs that stood here were
-# the only thing in this workspace that enabled the same-named
-# `portable_replay_format` features. They were removed on 2026-08-13 with the
-# lane CE and lane DQ instruments in `replay_decoder` that were their sole
-# consumers; the neutral-layer features they forwarded to belong to
-# `portable_replay/` and are untouched.
 
 [dependencies]
 portable_replay_format = { path = "../../../portable_replay/native/snapshot" }

@@ -26,7 +26,6 @@ use super::*;
 /// constant rather than a literal so that is visible.
 const NEED: i32 = 12;
 
-// @leaf-source-authority crate=d43_grammar root=extractor/native/d43_grammar files=8 sha256=1c09d4e7cfb0eb8d9f6f15f471b36197031c998521e6a715747308ea59134748
 fn sample() -> Domain43OilSelfCheckSample {
     Domain43OilSelfCheckSample {
         fuel: d43_grammar::oil_trio::FuelScalars {

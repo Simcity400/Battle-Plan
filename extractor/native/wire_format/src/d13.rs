@@ -2,12 +2,11 @@
 //!
 //! Derived from `world_fold.rs:21656`-`:22066`
 //! (`fold_tech`), its scale constants at `:154`-`:155`, the collector packer
-// @world-fold-authority domain=13 functions=fold_tech lines=21656-22066 sha256=3af4d9296fec69a14dbf2d31df6de6cb29ef549197aa09de0dedcf0f55a63dc2 closure=7970cb021fa140d1cc65d85521dbcbf9e48e81bdb0a0ef9203a5b720035acece
+// Fold authority: `world_fold.rs::fold_tech`.
 // The structural half of that fold no longer lives in `world_fold.rs`: it is the
 // shared leaf `d13_grammar`, which this port EXECUTES rather than transcribes.
 // The closure above cannot follow it across the crate boundary, so the leaf's
 // own source is pinned here instead.
-// @leaf-source-authority crate=d13_grammar root=extractor/native/d13_grammar files=4 sha256=ec84da6e0618aad3c8fdb720f0e048195d65bb6e37963e92391049463644b6d2
 //! (`extractor/native/collector/src/attach_log.rs:69183`-`:69328`) and the
 //! collector read that produces every presence flag (`:80860`-`:81047`,
 //! `:81311`-`:81356`). A29 producer knowledge is retained as
@@ -130,9 +129,8 @@
 //!
 //! `fold_tech` **never reads `status_flags`** — it has no `handle_compact_failure`
 //! call, unlike `fold_country_core_scalars` (`world_fold.rs::fold_country_core_scalars`). Like d10, that forces an
-//! explicit exclusion decision on the measurement side rather than a silent one;
-//! see `bin/bench_real_d13.rs`, which refuses a row-bearing failure-status record
-//! outright and counts-and-skips an empty one. Nothing about it belongs in this
+//! explicit exclusion decision on the measurement side rather than a silent one.
+//! Nothing about it belongs in this
 //! module, which never sees the status word except to expose it in
 //! [`PayloadHeader`].
 //!
@@ -215,8 +213,7 @@
 //!    `selected_present_receipt_sha256` and the eighteen clauses still pass. The
 //!    rule is therefore fail-closed and lives with the caller that has an
 //!    acceptance policy: [`payload_carries_a29_provenance`] is public for exactly
-//!    that, and `bin/bench_real_d13.rs` refuses to measure any stream whose d13
-//!    payloads carry a provenance block. The reference capture carries none.
+//!    that. The reference capture carries no provenance block.
 //!
 //!    `localization_branch` is ported because the fold constrains the quartet's
 //!    shape with it (`:13513`-`:13522`). The values encode no display, unreduced,
@@ -483,7 +480,7 @@ pub fn schema() -> Schema {
 /// `changed_rows`, `status_flags` and the two scale words are carried here
 /// because they are captured bytes, not because anything below acts on them:
 /// `fold_tech` reads none of the four, so checking them would reject payloads the
-/// recorder folds. `bin/bench_real_d13.rs` reports them.
+/// recorder folds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PayloadHeader {
     pub elapsed_wall_ms: u64,
@@ -937,7 +934,7 @@ pub fn payload_carries_a29_provenance(payload: &[u8]) -> core::result::Result<bo
 /// This evaluates **eighteen of the twenty** clauses of the fold's A29 acceptance
 /// predicate. The two digest equalities (`world_fold.rs::fold_tech`) need
 /// `recorder_host` internals this crate cannot reach; the module docs say what a
-/// caller must do about them, and `bin/bench_real_d13.rs` does it.
+/// caller must do about them.
 pub fn record_from_active_row_at_hour(
     collection: &Collection,
     row: &[u8],

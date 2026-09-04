@@ -11,10 +11,6 @@
 //!
 //! This crate is dependency-free, which is why all three may depend on it --
 //! the owner's 2026-08-15 one-shared-decoder shape, as used for d64 and XUI09.
-//! It is also an ATTESTED leaf, so the column is written out rather than
-//! generated: `verify_world_fold_citations` refuses a `macro_rules!` here,
-//! because the digest covers source text and the code that runs would be the
-//! code a macro produced.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(u32)]

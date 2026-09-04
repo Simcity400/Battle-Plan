@@ -4,7 +4,7 @@
 //!
 //! Derived from `world_fold.rs:31439`-`:31797`
 //! (`fold_construction_buildings_state_damage`), its accumulator type at
-// @world-fold-authority domain=48 functions=fold_construction_buildings_state_damage lines=31439-31797 sha256=14f6ab061c788ad049a033469338fffc47be2d93d036f9af01e3796284d0ba06 closure=60b1ab7dc375e96c6f3ef8299ca49c7c9ba303e42d8a45f010efe471abdf5d22
+// Fold authority: `world_fold.rs::fold_construction_buildings_state_damage`.
 //! `:2123`-`:2131` and its key helpers at `:25681`-`:25696`; the row grammar is
 //! the lane crate `extractor/native/lanes/construction_buildings_state_damage_live/src/lib.rs`
 //! (`decode_lane_frame` at `:365`, `gate_decoded_frame` at `:1413`, the row
@@ -2060,8 +2060,8 @@ impl Domain48Fold {
 /// rows (`world_fold.rs::fold_construction_buildings_state_damage`). So an `Err` here does not say "the
 /// recorder rejected this frame"; it says "the resulting state is not
 /// expressible as keyed sets", which makes the **stream** unmeasurable rather
-/// than the frame invalid. A caller must abort, not skip the hour and continue —
-/// and `bench_real_d48` does exactly that, refusing the stream in pass 1. Use
+/// than the frame invalid. A caller must abort, not skip the hour and continue.
+/// Use
 /// [`Domain48Fold::apply`] directly where recorder-exact accumulator semantics
 /// are wanted without the wire-representability check.
 pub fn fold_payload(

@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:16924`-`:16987`
 //! (`fold_country_preferred_tactics`, dispatched at `:4747`), its payload codec
-// @world-fold-authority domain=92 functions=fold_country_preferred_tactics lines=16924-16987 sha256=71d2fd757b4fb2313157fe9236ed757d33079ecc19ce02c2d3fbfe631d9acf54 closure=924ed4559db69e6249cf54b93e745262d9d9a721c5ebe518ff937235738c2a38
+// Fold authority: `world_fold.rs::fold_country_preferred_tactics`.
 //! `extractor/native/compact_contract/src/preferred_tactic.rs`, and the collector
 //! read that produces every row
 //! (`extractor/native/collector/src/attach_log.rs:32490`-`:32557`,

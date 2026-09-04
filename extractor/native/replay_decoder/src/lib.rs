@@ -34,12 +34,6 @@ use snapshot::sha256::{to_hex, Sha256};
 const CHUNK: usize = 8 * 1024 * 1024;
 
 pub mod fold_cache;
-/// H4CP v3 prototype driver (lanes DQ/EE/GE; restored by lane PR).
-#[cfg(feature = "dq-v3-prototype")]
-pub mod dq_v3_prototype;
-/// H4CP v3 density census (lane EE; restored by lane PR).
-#[cfg(feature = "dq-v3-prototype")]
-pub mod dq_v3_census;
 
 /// Stage timers for `build_certified_replay_artifacts`, enabled by the same
 /// `FOLD_PROFILE` environment variable as `world_fold::foldprof` and

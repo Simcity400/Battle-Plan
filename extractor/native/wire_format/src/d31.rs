@@ -3,7 +3,7 @@
 //!
 //! Derived from `world_fold.rs:24494`-`:24641`
 //! (`fold_air_region_activity`), its payload constants at `:977`-`:978`, the
-// @world-fold-authority domain=31 functions=fold_air_region_activity lines=24494-24641 sha256=06884767f94764ae24a0bdce96e6981a50e1fe1dd0431e6b2be0d00682d4ea36 closure=390a27b7bd43cb531173923eefb1db13ded2dee75d5e12135f88269334f01b98
+// Fold authority: `world_fold.rs::fold_air_region_activity`.
 //! accumulator's own JSON projection (`world_fold.rs::insert_air_region_activity`), and the collector read
 //! that builds the buckets and the delta rows
 //! (`extractor/native/collector/src/attach_log.rs:48122`-`:48160`,

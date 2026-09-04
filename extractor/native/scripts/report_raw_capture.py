@@ -467,137 +467,6 @@ def load_manifest(run_dir: str) -> tuple[dict, str]:
     raise ReportError(f"no native_session_manifest.json under {run_dir}")
 
 
-def _audit_int(container: dict, key: str, source: str) -> int:
-    """Strict integer read for audit-census fields: must exist, be an int,
-    not a bool (JSON booleans are ints in Python). Anything else is a
-    ReportError - a malformed census can never launder as consistent."""
-    value = container.get(key)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ReportError(f"--repeat-audit {source} carries {key!r} = {value!r}; "
-                          "an integer is required")
-    return value
-
-
-def load_repeat_census(path: str, run_dir: str, raw_stream_name: str) -> dict:
-    """Read hour_label_audit's --json output and distil its section F
-    (DOMAIN_DATA_REPEAT census, lane RQ) into the report's repeat_census
-    shape. The audit binary is the single-stream authority: its baseline
-    chain is verified by compact_contract::DomainRepeatBaselines, its
-    keyframe-cadence and force-full refusals mirror domain_repeat_gate.rs.
-    This loader only surfaces them; it never re-derives them.
-
-    PROVENANCE IS CHECKED: the audit JSON names the spool it scanned
-    (input_path); it must be exactly this run dir's raw stream, or the merge
-    is refused -- an audit of another capture must never satisfy this
-    capture's predicate."""
-    if not os.path.isfile(path):
-        raise ReportError(f"--repeat-audit file not found: {path}")
-    with open(path, encoding="utf-8") as handle:
-        try:
-            audit_json = json.load(handle)
-        except json.JSONDecodeError as error:
-            raise ReportError(f"--repeat-audit {path} is not valid JSON: {error}")
-    if not isinstance(audit_json, dict):
-        raise ReportError(
-            f"--repeat-audit {path} is not an hour_label_audit report (top-level "
-            "JSON value is not an object)"
-        )
-    declared_input = audit_json.get("input_path")
-    expected_input = os.path.normcase(
-        os.path.abspath(os.path.join(run_dir, raw_stream_name))
-    )
-
-    # PROVENANCE IS ABSOLUTE-ONLY. The audit serializes input_path verbatim;
-    # its working directory is unrecoverable here, so only a string that IS
-    # an absolute path naming this run's spool proves anything. A RELATIVE
-    # string is refused even when it would coincidentally resolve to the
-    # spool from THIS process's working directory - the audit may have
-    # resolved it somewhere else entirely. abspath() is applied ONLY after
-    # the isabs() gate so the comparison can never launder a relative name.
-    if (
-        not isinstance(declared_input, str)
-        or not declared_input
-        or not os.path.isabs(declared_input)
-        or os.path.normcase(os.path.abspath(declared_input)) != expected_input
-    ):
-        raise ReportError(
-            f"--repeat-audit {path} was produced over "
-            f"{declared_input!r}, not this run's raw stream "
-            f"{expected_input!r}; regenerate it with hour_label_audit --json "
-            "over the ABSOLUTE spool path before merging"
-        )
-    section = audit_json.get("section_f_repeat_census")
-    if not isinstance(section, dict):
-        raise ReportError(
-            f"--repeat-audit {path} carries no section_f_repeat_census; regenerate "
-            "it with the current hour_label_audit --json over the same raw spool"
-        )
-    per_domain = section.get("per_domain")
-    if not isinstance(per_domain, list):
-        raise ReportError(
-            f"--repeat-audit {path} section_f_repeat_census.per_domain is not a list"
-        )
-    rows = []
-    for row in per_domain:
-        if not isinstance(row, dict):
-            raise ReportError(
-                f"--repeat-audit {path} per_domain carries a non-object row {row!r}"
-            )
-        hours = []
-        for key in ("first_repeat_hour_raw", "last_repeat_hour_raw"):
-            if key not in row:
-                raise ReportError(
-                    f"--repeat-audit {path} per_domain row omits {key!r} "
-                    "(an explicit null is required when no repeat exists)"
-                )
-            value = row[key]
-            if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
-                raise ReportError(
-                    f"--repeat-audit {path} per_domain row carries {key!r} = {value!r}"
-                )
-            hours.append(value)
-        rows.append(
-            {
-                "domain_id": _audit_int(row, "domain_id", path),
-                "repeat_records": _audit_int(row, "repeat_records", path),
-                "first_repeat_hour_raw": hours[0],
-                "last_repeat_hour_raw": hours[1],
-                "full_data_records": _audit_int(row, "full_data_records", path),
-                "keyframe_cadence_violations":
-                    _audit_int(row, "keyframe_cadence_violations", path),
-                "repeats_after_named_gap":
-                    _audit_int(row, "repeats_after_named_gap", path),
-                "longest_repeat_run": _audit_int(row, "longest_repeat_run", path),
-            }
-        )
-    cadence_violations = sum(r["keyframe_cadence_violations"] for r in rows)
-    gap_violations = sum(r["repeats_after_named_gap"] for r in rows)
-    baseline_errors = _audit_int(section, "baseline_errors_total", path)
-    gate_excluded = _audit_int(section, "gate_excluded_repeat_records", path)
-    consistency_ok = (
-        baseline_errors == 0
-        and cadence_violations == 0
-        and gap_violations == 0
-        and gate_excluded == 0
-    )
-    return {
-        "source": path,
-        "audited_spool": declared_input,
-        "expected_spool": expected_input,
-        "domain_data_repeat_records":
-            _audit_int(section, "domain_data_repeat_records", path),
-        "domains_with_repeats": _audit_int(section, "domains_with_repeats", path),
-        "gate_excluded_repeat_records": gate_excluded,
-        "per_domain": rows,
-        "baseline_errors_total": baseline_errors,
-        "keyframe_cadence_violations_total": cadence_violations,
-        "repeats_after_named_gap_total": gap_violations,
-        "longest_repeat_run_max": max(
-            (r["longest_repeat_run"] for r in rows), default=0
-        ),
-        "consistency_ok": consistency_ok,
-    }
-
 
 def selftest() -> int:
     """Prove the undefined-status-bit verdict through the REAL entry path.
@@ -796,193 +665,6 @@ def selftest() -> int:
             failures += 1
             print(out)
 
-    # --repeat-audit merge (lane RQ): the report must surface hour_label_audit's
-    # DOMAIN_DATA_REPEAT census and name a broken baseline chain, without ever
-    # changing its own exit verdict class. The audit must also PROVE it
-    # describes this run dir's spool (input_path provenance).
-    repeat_audit_cases = (
-        ("a consistent repeat census surfaces as ok",
-         {"domain_data_repeat_records": 3,
-          "domains_with_repeats": 1, "gate_excluded_repeat_records": 0,
-          "per_domain": [{"domain_id": 10, "repeat_records": 3,
-                          "first_repeat_hour_raw": 60_006_000,
-                          "last_repeat_hour_raw": 60_006_100,
-                          "full_data_records": 20,
-                          "keyframe_cadence_violations": 0,
-                          "repeats_after_named_gap": 0,
-                          "longest_repeat_run": 2}],
-          "baseline_errors_total": 0},
-         True),
-        ("a broken repeat census is named, not laundered",
-         {"domain_data_repeat_records": 1,
-          "domains_with_repeats": 1, "gate_excluded_repeat_records": 0,
-          "per_domain": [{"domain_id": 10, "repeat_records": 1,
-                          "first_repeat_hour_raw": 60_006_000,
-                          "last_repeat_hour_raw": 60_006_000,
-                          "full_data_records": 1,
-                          "keyframe_cadence_violations": 1,
-                          "repeats_after_named_gap": 0,
-                          "longest_repeat_run": 1}],
-          "baseline_errors_total": 1},
-         False),
-    )
-    for label, section, want_ok in repeat_audit_cases:
-        with tempfile.TemporaryDirectory() as run_dir:
-            path = os.path.join(run_dir, "native_session_manifest.json")
-            with open(path, "w", encoding="utf-8") as handle:
-                json.dump(build({"fuel_live": (10, 0)}), handle)
-            audit_path = os.path.join(run_dir, "hour_label_audit.json")
-            # hour_label_audit serializes input_path as a TOP-LEVEL field of
-            # its report, beside section_f_repeat_census.
-            audit_doc = {
-                "input_path": os.path.join(run_dir, "collector_stream.bin"),
-                "section_f_repeat_census": section,
-            }
-            with open(audit_path, "w", encoding="utf-8") as handle:
-                json.dump(audit_doc, handle)
-            argv = sys.argv
-            sys.argv = [argv[0], "--run-dir", run_dir, "--repeat-audit", audit_path]
-            buffer = io.StringIO()
-            try:
-                with contextlib.redirect_stdout(buffer):
-                    with contextlib.redirect_stderr(buffer):
-                        code = guarded_main()
-            finally:
-                sys.argv = argv
-            out = buffer.getvalue()
-            refusal = "CONSISTENCY REFUSAL" in out
-            ok = (
-                code == 0
-                and "DOMAIN_DATA_REPEAT census" in out
-                and refusal == (not want_ok)
-                and has_receipt(out, code)
-            )
-            print(f"selftest {'ok  ' if ok else 'FAIL'} exit={code}: {label}")
-            if not ok:
-                failures += 1
-                print(out)
-    with tempfile.TemporaryDirectory() as run_dir:
-        path = os.path.join(run_dir, "native_session_manifest.json")
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(build({"fuel_live": (10, 0)}), handle)
-        argv = sys.argv
-        sys.argv = [argv[0], "--run-dir", run_dir,
-                    "--repeat-audit", os.path.join(run_dir, "absent.json")]
-        buffer = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(buffer):
-                with contextlib.redirect_stderr(buffer):
-                    code = guarded_main()
-        finally:
-            sys.argv = argv
-        out = buffer.getvalue()
-        ok = code == EXIT_REPORT_ERROR and "REPORT ERROR" in out and has_receipt(out, code)
-        print(f"selftest {'ok  ' if ok else 'FAIL'} exit={code} "
-              f"(want {EXIT_REPORT_ERROR}): a missing --repeat-audit file reaches no "
-              f"verdict")
-        if not ok:
-            failures += 1
-            print(out)
-    provenance_cases = (
-        ("an audit of ANOTHER spool is refused even when its census is clean",
-         "C:\\some\\other\\capture\\collector_stream.bin", False),
-        ("an audit with no input_path is refused", None, False),
-        ("a RELATIVE spool argument is refused - it cannot be proven to name "
-         "this spool",
-         os.path.join("..", "<RUNDIR_NAME>", "collector_stream.bin"), False),
-    )
-    for label, spool, want_ok in provenance_cases:
-        with tempfile.TemporaryDirectory() as run_dir:
-            path = os.path.join(run_dir, "native_session_manifest.json")
-            with open(path, "w", encoding="utf-8") as handle:
-                json.dump(build({"fuel_live": (10, 0)}), handle)
-            audit_path = os.path.join(run_dir, "hour_label_audit.json")
-            section = {
-                "domain_data_repeat_records": 1, "domains_with_repeats": 1,
-                "gate_excluded_repeat_records": 0,
-                "per_domain": [{"domain_id": 10, "repeat_records": 1,
-                                "first_repeat_hour_raw": 60_006_000,
-                                "last_repeat_hour_raw": 60_006_000,
-                                "full_data_records": 9,
-                                "keyframe_cadence_violations": 0,
-                                "repeats_after_named_gap": 0,
-                                "longest_repeat_run": 1}],
-                "baseline_errors_total": 0,
-            }
-            # The provenance field lives TOP-LEVEL in hour_label_audit output.
-            declared = (spool.replace("<RUNDIR_NAME>", os.path.basename(run_dir))
-                        if spool else spool)
-            audit_doc = {"input_path": declared, "section_f_repeat_census": section}
-            with open(audit_path, "w", encoding="utf-8") as handle:
-                json.dump(audit_doc, handle)
-            argv = sys.argv
-            sys.argv = [argv[0], "--run-dir", run_dir, "--repeat-audit", audit_path]
-            buffer = io.StringIO()
-            try:
-                with contextlib.redirect_stdout(buffer):
-                    with contextlib.redirect_stderr(buffer):
-                        code = guarded_main()
-            finally:
-                sys.argv = argv
-            out = buffer.getvalue()
-            if want_ok:
-                ok = code == 0 and "DOMAIN_DATA_REPEAT census" in out and has_receipt(out, code)
-            else:
-                ok = (code == EXIT_REPORT_ERROR and "REPORT ERROR" in out
-                      and "not this run's raw stream" in out
-                      and has_receipt(out, code))
-            print(f"selftest {'ok  ' if ok else 'FAIL'} exit={code}: {label}")
-            if not ok:
-                failures += 1
-                print(out)
-
-    # A relative input_path that RESOLVES to the expected spool from THIS
-    # process's cwd is still refused: the audit may have resolved it from a
-    # different directory. Run from inside the run dir so the bare filename
-    # would resolve correctly - only the isabs() gate keeps this honest.
-    with tempfile.TemporaryDirectory() as run_dir:
-        path = os.path.join(run_dir, "native_session_manifest.json")
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(build({"fuel_live": (10, 0)}), handle)
-        audit_path = os.path.join(run_dir, "hour_label_audit.json")
-        section = {
-            "domain_data_repeat_records": 1, "domains_with_repeats": 1,
-            "gate_excluded_repeat_records": 0,
-            "per_domain": [{"domain_id": 10, "repeat_records": 1,
-                            "first_repeat_hour_raw": 60_006_000,
-                            "last_repeat_hour_raw": 60_006_000,
-                            "full_data_records": 9,
-                            "keyframe_cadence_violations": 0,
-                            "repeats_after_named_gap": 0,
-                            "longest_repeat_run": 1}],
-            "baseline_errors_total": 0,
-        }
-        with open(audit_path, "w", encoding="utf-8") as handle:
-            json.dump({"input_path": "collector_stream.bin",
-                       "section_f_repeat_census": section}, handle)
-        argv = sys.argv
-        previous_cwd = os.getcwd()
-        os.chdir(run_dir)
-        sys.argv = [argv[0], "--run-dir", run_dir, "--repeat-audit", audit_path]
-        buffer = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(buffer):
-                with contextlib.redirect_stderr(buffer):
-                    code = guarded_main()
-        finally:
-            os.chdir(previous_cwd)
-            sys.argv = argv
-        out = buffer.getvalue()
-        ok = (code == EXIT_REPORT_ERROR and "REPORT ERROR" in out
-              and "not this run's raw stream" in out
-              and has_receipt(out, code))
-        label = ("a relative input_path that RESOLVES to the spool from this "
-                 "cwd is still refused")
-        print(f"selftest {'ok  ' if ok else 'FAIL'} exit={code} "
-              f"(want {EXIT_REPORT_ERROR}): {label}")
-        if not ok:
-            failures += 1
-            print(out)
 
     names, source = load_pseudo_domain_names()
     derived_ok = (
@@ -1258,15 +940,11 @@ def selftest() -> int:
             print(err)
 
     total = (len(cases) + 2 * len(error_cases) + len(roster_cases)
-             + len(reason_cases) + len(registry_cases)
-             + len(repeat_audit_cases) + len(json_cases)
-             # three standalone single-run checks, each of which prints its own
-             # `selftest ...` line and can add to `failures`: the missing
-             # --repeat-audit file, the resolving-relative input_path refusal,
-             # and the pseudo-domain derivation check above `registry_cases`.
-             # The last was missing from this sum, so the denominator read one
-             # short of the lines actually printed.
-             + 3 + len(provenance_cases))
+             + len(reason_cases) + len(registry_cases) + len(json_cases)
+             # one standalone single-run check, which prints its own
+             # `selftest ...` line and can add to `failures`: the
+             # pseudo-domain derivation check above `registry_cases`.
+             + 1)
     print(f"selftest: {total - failures}/{total} passed")
     return 1 if failures else 0
 
@@ -1277,11 +955,6 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
     parser.add_argument("--all-domains", action="store_true",
                         help="list every domain, not only the ones with status bits")
-    parser.add_argument("--repeat-audit", metavar="JSON", default=None,
-                        help="merge hour_label_audit's DOMAIN_DATA_REPEAT census "
-                             "(its --json output over the same raw spool) into this "
-                             "report as repeat_census; surfaces counts and consistency, "
-                             "never changes the exit verdict")
     args = parser.parse_args()
 
     run_dir = os.path.abspath(args.run_dir)
@@ -1289,11 +962,6 @@ def main() -> int:
     stream = manifest.get("compact_stream", {})
     per_domain = stream.get("per_domain", {})
     raw_stream_name = manifest.get("raw_stream") or "collector_stream.bin"
-    repeat_census = (
-        load_repeat_census(args.repeat_audit, run_dir, raw_stream_name)
-        if args.repeat_audit
-        else None
-    )
 
     tolerated = {}
     tolerated_reason = {}
@@ -1426,7 +1094,6 @@ def main() -> int:
         "silent_domains": [r["domain"] for r in silent],
         "domains_with_problems": [r["domain"] for r in with_problems],
         "descheduled_domains": stream.get("descheduled_domains", {}) or {},
-        "repeat_census": repeat_census,
         "outcome_reasons_by_domain_id": {
             str(domain_id): reasons for domain_id, reasons in sorted(outcome_reasons.items())
         },
@@ -1513,32 +1180,6 @@ def main() -> int:
                  f"by {block.get('decided_by', '?')}"
                  f" ({block.get('authority', '?')}): {', '.join(sorted(domains))}")
             line("    reason", reason)
-
-    if report["repeat_census"] is not None:
-        census = report["repeat_census"]
-        print("\n--- DOMAIN_DATA_REPEAT census (hour_label_audit) ---")
-        line("type-14 records", census["domain_data_repeat_records"])
-        line("domains carrying repeats", census["domains_with_repeats"])
-        line("gate-excluded type-14 records", census["gate_excluded_repeat_records"])
-        line("longest repeat chain", census["longest_repeat_run_max"])
-        for row in census["per_domain"]:
-            if row.get("repeat_records"):
-                print(
-                    f"    domain {row.get('domain_id')}: repeats={row.get('repeat_records')} "
-                    f"hours={row.get('first_repeat_hour_raw')}..={row.get('last_repeat_hour_raw')} "
-                    f"full_records={row.get('full_data_records')} "
-                    f"longest_run={row.get('longest_repeat_run')} "
-                    f"cadence_violations={row.get('keyframe_cadence_violations')} "
-                    f"after_named_gap={row.get('repeats_after_named_gap')}"
-                )
-        line("baseline consistency ok", census["consistency_ok"])
-        if not census["consistency_ok"]:
-            print(
-                f"  CONSISTENCY REFUSAL: baseline_errors={census['baseline_errors_total']} "
-                f"keyframe_cadence_violations={census['keyframe_cadence_violations_total']} "
-                f"repeats_after_named_gap={census['repeats_after_named_gap_total']} "
-                f"gate_excluded={census['gate_excluded_repeat_records']}"
-            )
 
     print("\n--- gate verdict ---")
     line("hourly requirement met", report["hourly_requirement_met"])

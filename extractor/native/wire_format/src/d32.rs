@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:24644`-`:24785`
 //! (`fold_air_wing_loadouts`), its payload constants at `:979`-`:981`, its
-// @world-fold-authority domain=32 functions=fold_air_wing_loadouts lines=24644-24785 sha256=a5d78d0723cbeb2867a22cfc4b51f3a8f7b279223a598274998d6a73bcd141b4 closure=e447581b4e8e25a3721e5e6428e48d9270cc67de994c0177fed41847bb9a7add
+// Fold authority: `world_fold.rs::fold_air_wing_loadouts`.
 //! accumulator's JSON projection (`world_fold.rs::build_order_of_battle`), the end-of-hour orphan prune
 //! that also writes that accumulator (`world_fold.rs::prune_air_wing_loadout_orphans_for_current_hour`), and the collector read
 //! and packer that produce the rows
@@ -187,11 +187,9 @@
 //! `:5040`) **removes** every registered key that d30's `air_wings` accumulator
 //! does not hold. That is a second writer of this domain's accumulator, and it is
 //! cross-domain: modelling it here would mean re-deriving d30's payload grammar,
-//! which this crate does not own. `bench_real_d32.rs` instead reads only the d30
-//! key set the check needs and **asserts the prune drops nothing**, so a capture
-//! where it bites fails the harness loudly instead of yielding a wrong number.
-//! Measured on `runs/batch2/deepwar_t1`: 0 drops in 146 hours, with d30 and d32
-//! holding the identical 643 keys at the end.
+//! which this crate does not own. The prune was measured rather than modelled,
+//! on `runs/batch2/deepwar_t1`: 0 drops in 146 hours, with d30 and d32 holding
+//! the identical 643 keys at the end.
 //!
 //! # No derived field (derived-field contract)
 //!

@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 
-// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=9 sha256=cce6673c3c6f566a7eb6235c00f0d42cb115d5e49de3f90fe4f2c76a96b2c5a2
 pub const DEPLOYMENT_QUEUE_SCHEMA_VERSION: u32 = d11_grammar::deployment::SchemaVersion::V2.wire();
 pub const DEPLOYMENT_QUEUE_HEADER_LEN: usize = d11_grammar::deployment::HEADER_LEN;
 pub const DEPLOYMENT_CONVEYOR_ID_TYPE: u32 = d11_grammar::deployment::CONVEYOR_ID_TYPE;

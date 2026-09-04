@@ -128,16 +128,6 @@ replay_interface/fixtures/xmap19_weather_visual_lifecycle_joint_certification.js
 # Lane JC (GP-U15): the MAPC1 evidence scripts are cited from source docs as gates.
 extractor/native/runs/jc_gpu15_mapc1/*.py text eol=lf
 
-# Lane KP: `d13_grammar` is a SHARED GRAMMAR leaf, and every site that walks or
-# writes it carries a `@leaf-source-authority` marker over the SHA-256 of these
-# files (`extractor/native/scripts/verify_world_fold_citations.py`). The digest
-# normalizes line endings, so it does not depend on the checkout -- these
-# attributes are the belt to that braces, per AGENTS.md: a hash-pinned committed
-# file gets a fixed checkout form, so the pin cannot start depending on
-# core.autocrlf if the normalization is ever narrowed.
-extractor/native/d13_grammar/Cargo.toml text eol=lf
-extractor/native/d13_grammar/src/*.rs text eol=lf
-
 # Structured replacements for retired rendering-law Markdown are hash-pinned
 # by their sidecars and runtime constants.
 replay_interface/re_evidence/rendering_laws/XUI15/port_contract.json text eol=lf

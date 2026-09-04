@@ -3,7 +3,7 @@
 //!
 //! Derived from `world_fold.rs:31255`-`:31343`
 //! (`fold_naval_combat_lifecycle`, dispatched at `:4718`), the lane codec that
-// @world-fold-authority domain=49 functions=fold_naval_combat_lifecycle lines=31255-31343 sha256=513cfd661b84ade3f5778895882af340697db1795ab087292bd87d3ddf297eb6 closure=c7e4e42e52f62b4d6757701fa91ca35d61afb5810de3094af12bf67f58657a55
+// Fold authority: `world_fold.rs::fold_naval_combat_lifecycle`.
 //! owns the payload grammar
 //! (`extractor/native/lanes/naval_combat_live/src/domain49_50_naval_combat_live.rs`),
 //! the fold's own renderer (`world_fold.rs::build_naval_combats`), and the collector walk

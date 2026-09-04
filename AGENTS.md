@@ -54,7 +54,7 @@ Applies to every harness. The reviewer is a fresh agent each round.
 
 ## Orchestration (designated orchestrator only)
 
-- Landing, per batch: `git merge --no-ff` each converged branch onto `landing-tmp`, check the merge exit code before anything else, assert `HEAD^2` is the lane tip, restamp citations (`restamp_world_fold_citations.py`, `restamp_citation_allowance.py`, then `--check`), `verify_citation_integrity.py`, `reverify_engine_evidence.py`, then one gate: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-Validation.ps1 -Mode Landing`, exit code captured. Green: push `landing-tmp:master`, verify every tip is an ancestor, retire worktrees and branches. Red: attribute each failure against pure master and bounce it to the owning lane. Hold the gate for batches; never restart a running gate.
+- Landing, per batch: `git merge --no-ff` each converged branch onto `landing-tmp`, check the merge exit code before anything else, assert `HEAD^2` is the lane tip, `verify_citation_integrity.py`, `reverify_engine_evidence.py`, then one gate: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-Validation.ps1 -Mode Landing`, exit code captured. Green: push `landing-tmp:master`, verify every tip is an ancestor, retire worktrees and branches. Red: attribute each failure against pure master and bounce it to the owning lane. Hold the gate for batches; never restart a running gate.
 - Publish one pure-master fold reference per master commit under `runs/fold_reference/<sha>/`.
 - After a restart or limit kill, resume existing agents with their transcripts; never relaunch a lane that has one.
 

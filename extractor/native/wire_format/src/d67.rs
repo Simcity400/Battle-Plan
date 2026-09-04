@@ -4,7 +4,7 @@
 //! Derived from `world_fold.rs:16186`-`:16642`
 //! (`fold_country_dynamic_modifiers` and the
 //! `fold_country_dynamic_modifier_instances` it delegates to), the payload codec
-// @world-fold-authority domain=67 functions=fold_country_dynamic_modifiers,fold_country_dynamic_modifier_instances lines=16186-16642 sha256=baefd664fa24fe95878cd90d86687278c577a12f9e40a8d8677211ba68c3d40a closure=c9fc92ed59234360272c7f531fa541115f113a41acdeb61d33d08a00f9ac7c7e
+// Fold authority: `world_fold.rs::fold_country_dynamic_modifiers`, `world_fold.rs::fold_country_dynamic_modifier_instances`.
 //! `extractor/native/compact_contract/src/dynamic_modifiers.rs`, the collector
 //! read at `extractor/native/collector/src/attach_log.rs:61148`-`:61371`, and the
 //! entry decoder `extractor/native/lanes/country_dynamic_modifiers_live/timed_instance_exact.rs`.
@@ -44,12 +44,7 @@
 //! surface** (`Cargo.toml`; the same rule d22 states at `d22.rs:470` and d24 at
 //! `d24.rs:999`), so the grammar is transcribed with
 //! per-constant citations exactly as every other domain module transcribes its
-//! fold's row layout. The duplication is not left on trust: `bench_real_d67`
-//! *does* depend on `compact_contract` and asserts, on every one of the capture's
-//! records and on a byte-level fuzz sweep, that [`decode_payload`] and
-//! `compact_contract::dynamic_modifiers::decode_payload` accept and reject
-//! exactly the same payloads and produce identical frames
-//! (`bin/bench_real_d67.rs`, `the_two_decoders_agree_on_every_fuzzed_payload`).
+//! fold's row layout.
 //!
 //! 104-byte header:
 //!
@@ -236,9 +231,7 @@ pub mod field {
 // --- Payload grammar constants ----------------------------------------------
 //
 // Every one of these is transcribed from `compact_contract`, which this crate's
-// library half does not depend on. `bench_real_d67`'s
-// `every_transcribed_constant_equals_the_shipping_one` asserts each against its
-// original, so a change there fails a test here rather than drifting.
+// library half does not depend on.
 
 /// `dynamic_modifiers.rs:23`.
 pub const MAGIC: &[u8; 4] = b"DMI2";
@@ -318,9 +311,8 @@ pub const KNOWN_FLAGS: u16 = FLAG_ENABLED | FLAG_REMAINING_DAYS;
 /// vocabulary is **147** symbols: ids `0..=127` are one-byte varints and
 /// `128..=146` are two-byte, so a different assignment moves which symbols pay
 /// the second byte. The measurement therefore reports the stand-in's cost **and
-/// the exact band** over all assignments of this vocabulary
-/// (`bin/bench_real_d67.rs` prints the best- and worst-case symbol-id byte
-/// totals). content-identity contract's ids are file-global, so an assignment over the whole content
+/// the exact band** over all assignments of this vocabulary.
+/// content-identity contract's ids are file-global, so an assignment over the whole content
 /// set can widen the varint further; that is claimed nowhere.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Symbols {
@@ -1206,8 +1198,7 @@ pub fn fold_payload(
 /// `compact_contract/src/calendar.rs:22`: the engine's stored hour counter minus
 /// the epoch, or `None` outside the plausible calendar window (fail closed).
 /// Transcribed for the same reason the payload grammar is — d67 is not admitted
-/// to the production-codec dependency surface — and asserted equal to it over
-/// the whole `i32` boundary neighbourhood in `bench_real_d67`.
+/// to the production-codec dependency surface.
 pub fn hour_index_from_raw(stored: i32) -> Option<i64> {
     // `calendar.rs:14`-`:18`.
     if !(RAW_DATE_MIN..=RAW_DATE_MAX).contains(&stored) {
@@ -2114,9 +2105,7 @@ mod tests {
     #[test]
     fn the_transcribed_calendar_matches_its_source() {
         // The exact identity `compact_contract::calendar::hour_index_from_raw`
-        // has (`calendar.rs:14`-`:27`), including its sanity window;
-        // `bench_real_d67` asserts the two agree across the whole boundary
-        // neighbourhood and on the capture's own hours.
+        // has (`calendar.rs:14`-`:27`), including its sanity window.
         assert_eq!(
             hour_index_from_raw(RAW_DATE_MIN),
             Some((RAW_DATE_MIN - DATE_EPOCH_CONST) as i64)

@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:23102`-`:23161`
 //! (`fold_decisions`), the collector write that produces the payload
-// @world-fold-authority domain=16 functions=fold_decisions lines=23102-23161 sha256=9a9101a543c02eea15ddfc445dbc5e2db925da2c4f7a2d37589acb9993fa768c closure=9a2c689faa5c2c4d6d414a3fea0187e95e7f7b70b174164c42778bc86843c606
+// Fold authority: `world_fold.rs::fold_decisions`.
 //! (`extractor/native/collector/src/attach_log.rs:69581`-`:69648`), and the read
 //! that produces the counters (`attach_log.rs:83141`-`:83235`).
 //! Field-level evidence is retained as `domain-16::Overview` in

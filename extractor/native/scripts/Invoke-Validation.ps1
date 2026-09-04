@@ -122,37 +122,6 @@ function Test-CitationInput {
     return $Path -notmatch '(?i)\.(?:png|jpe?g|gif|bmp|ico|tga|dds|webp|svgz|zip|gz|xz|zst|7z|rar|tar|cab|msi|exe|dll|pdb|lib|obj|so|dylib|a|o|bin|dat|pak|ttf|otf|woff2?|wav|mp3|ogg|mp4|avi|mkv|pyc|pyd|class|jar|rlib|rmeta|db|sqlite|parquet)$'
 }
 
-function Get-PathTextAtRevision {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Base
-    )
-
-    $current = Join-Path $script:RepoRoot ($Path.Replace('/', '\'))
-    $parts = @()
-    if (Test-Path -LiteralPath $current -PathType Leaf) {
-        try { $parts += [IO.File]::ReadAllText($current) } catch { }
-    }
-    $old = Invoke-Captured -Program 'git' -Arguments @('show', "${Base}:$Path") -AllowFailure
-    if ($old.ExitCode -eq 0) { $parts += $old.Stdout }
-    return ($parts -join "`n")
-}
-
-function Test-WorldFoldInput {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Base
-    )
-
-    if ($Path -match '^extractor/native/scripts/(?:verify|restamp)_world_fold_citations\.py$' -or
-        $Path -match '^extractor/native/scripts/world_fold_.*\.(?:json|txt)$' -or
-        $Path -eq 'extractor/native/recorder_host/src/world_fold.rs') {
-        return $true
-    }
-    $text = Get-PathTextAtRevision -Path $Path -Base $Base
-    return $text -match '@(?:world-fold-authority|lane-payload-authority|leaf-source-authority)|world_fold\.rs(?:::|:)'
-}
-
 function Get-CargoTopology {
     $rootPaths = @(
         'extractor/native',
@@ -318,12 +287,11 @@ function Test-ShippingTestTarget {
 
     # Exclusion audit (lane QG follow-up, 2026-08-24). Every name kept out of
     # the landing plan has a recorded reason:
-    #   citation_integrity / world_fold_citation_authority - no Rust targets
-    #     exist under these names; the gate validates them through
-    #     its own python ExtraPlans (verify_citation_integrity.py /
-    #     verify_world_fold_citations.py below, scheduled when their inputs
-    #     change or -AllValidators is passed), and the names stay listed so
-    #     a duplicate Rust reimplementation cannot shadow that authority;
+    #   citation_integrity - no Rust target exists under this name; the gate
+    #     validates it through its own python ExtraPlan
+    #     (verify_citation_integrity.py below, scheduled when its inputs change
+    #     or -AllValidators is passed), and the name stays listed so a duplicate
+    #     Rust reimplementation cannot shadow that authority;
     #   soak / soak_f2 - long-run soak binaries with their own [profile.soak];
     #   fow_hidden_counter_evidence - gate_renderdoc_mined: mined RenderDoc
     #     capture evidence;
@@ -351,7 +319,7 @@ function Test-ShippingTestTarget {
     # vanilla_admission_matches_all_frozen_o05_semantics), so planning the
     # targets runs only their committed-fixture deterministic tests.
     return $Name -notin @(
-        'citation_integrity', 'world_fold_citation_authority',
+        'citation_integrity',
         'c07_generated_library_matches_generator',
         'soak', 'soak_f2', 'fow_hidden_counter_evidence',
         'frame162662_label_size_gate', 'frame4700_label_size_gate',
@@ -569,14 +537,13 @@ try {
 
     $python = if (Get-Command python -ErrorAction SilentlyContinue) { 'python' } elseif (Get-Command py -ErrorAction SilentlyContinue) { 'py' } else { '' }
     $citationChanged = $AllValidators -or @($changes.Paths | Where-Object { Test-CitationInput $_ }).Count -gt 0
-    $worldFoldChanged = $AllValidators -or @($changes.Paths | Where-Object { Test-WorldFoldInput -Path $_ -Base $changes.Base }).Count -gt 0
     $productModsetChanged = $Mode -eq 'Landing' -or @($changes.Paths | Where-Object {
         $_ -like 'extractor/game_defs/*'
     }).Count -gt 0
     $peaceOracleChanged = $Mode -eq 'Landing' -or @($changes.Paths | Where-Object {
         $_ -like 'extractor/save_oracle/*'
     }).Count -gt 0
-    if (($citationChanged -or $worldFoldChanged -or $productModsetChanged -or $peaceOracleChanged) -and
+    if (($citationChanged -or $productModsetChanged -or $peaceOracleChanged) -and
         [string]::IsNullOrWhiteSpace($python)) {
         throw 'Python is required for the product or citation tests selected by this change.'
     }
@@ -586,12 +553,6 @@ try {
         $extraPlans += [pscustomobject]@{
             Name = 'citation integrity'; Program = $python
             Arguments = @((Join-Path $PSScriptRoot 'verify_citation_integrity.py'), '--repo-root', $script:RepoRoot)
-        }
-    }
-    if ($worldFoldChanged) {
-        $extraPlans += [pscustomobject]@{
-            Name = 'world-fold citations'; Program = $python
-            Arguments = @((Join-Path $PSScriptRoot 'verify_world_fold_citations.py'), '--repo-root', $script:RepoRoot)
         }
     }
     if ($productModsetChanged) {

@@ -8,47 +8,6 @@ autotests = false
 
 [features]
 default = []
-# Lane GQ bad-hour fault-injection harness. Injects one structural fault at a
-# time into an otherwise clean H4CR stream (and into a real retained container)
-# and reports which game hours the REAL production paths still deliver, which
-# they lose, and whether the loss is named. Measurement only: it writes nothing
-# outside the scratch directory it is given, is never on by default and is never
-# packaged.
-gq-bad-hour = []
-# Lane GZ interior-hole harness. Injects one structural fault at a time into an
-# otherwise clean H4CR stream, runs the REAL production artifact build over it,
-# and reports which hours the packaged H4IX/H4CP serve, which it names as holes,
-# and whether every served hour still reconstructs. Measurement only: it writes
-# nothing outside the scratch directory it is given, is never on by default and
-# is never packaged.
-gz-interior-holes = []
-# Lane HA entry-confinement harness. Builds one clean artifact pair with the
-# real production build, then flips one byte inside a chosen packaged H4CP
-# record and reports which hours the real consumer door still serves and which
-# it refuses by name. Measurement only: it writes nothing outside the scratch
-# directory it is given, is never on by default and is never packaged.
-ha-entry-confinement = []
-# Lane PV DOMAIN_DATA_REPEAT offline harness. Re-encodes a retained H4CR
-# spool through the collector's real repeat gate and proves round-trip fold
-# equality against the non-gated encoding. Measurement only: it writes only
-# the files its arguments name, is never on by default, is never packaged.
-pv-repeat-gate = ["dep:collector"]
-# Truncation harness. Shares the entry-confinement fixture
-# (`src/bin/entry_damage_fixture.rs`) and cuts the packaged H4CP short instead
-# of flipping a byte, reporting which hours the verified prefix still serves.
-# Measurement only: it writes nothing outside the scratch directory it is given,
-# is never on by default and is never packaged.
-hr-truncated-prefix = []
-# Lane PR finalize profiler (`src/bin/pr_finalize_profile.rs`). Runs THE
-# production certified-artifact build over a retained spool under FOLD_PROFILE
-# and reports stage timings, digests and peak memory. Measurement only: it
-# writes only the spill directory and report it is given, is never on by
-# default and is never packaged.
-pr-finalize-profile = []
-# H4CP v3 prototype driver and density census (lanes DQ/EE/GE, restored by
-# lane PR). Runs the canonical-binary section state and mutation journal
-# beside the v2 path on a real capture and prices both.
-dq-v3-prototype = ["dep:mimalloc", "dep:fold_v3", "snapshot/dq-v3-prototype"]
 
 [dependencies]
 compact_stream = { path = "../compact_stream" }
@@ -63,10 +22,6 @@ map_unit_presentation = { path = "../lanes/map_unit_presentation" }
 xmap15_orders_semantic = { path = "../lanes/xmap15_orders_semantic" }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
-collector = { path = "../collector", optional = true }
-# Instrument-only; pulled in solely by the v3 prototype feature.
-mimalloc = { version = "0.1.52", optional = true }
-fold_v3 = { path = "../fold_v3", optional = true }
 
 [dev-dependencies]
 # Lane VD's pickup contract, owned by neither tree: this crate's
@@ -92,26 +47,6 @@ path = "tests/ps_wire_delta_replay_equality.rs"
 name = "vd_audio_pickup_binding"
 path = "tests/vd_audio_pickup_binding.rs"
 
-[[bin]]
-name = "gq_bad_hour"
-path = "src/bin/gq_bad_hour.rs"
-required-features = ["gq-bad-hour"]
-
-[[bin]]
-name = "gz_interior_holes"
-path = "src/bin/gz_interior_holes.rs"
-required-features = ["gz-interior-holes"]
-
-[[bin]]
-name = "ha_entry_confinement"
-path = "src/bin/ha_entry_confinement.rs"
-required-features = ["ha-entry-confinement"]
-
-[[bin]]
-name = "hr_truncated_prefix"
-path = "src/bin/hr_truncated_prefix.rs"
-required-features = ["hr-truncated-prefix"]
-
 # `src/bin/replay_prefold_worker.rs` is deliberately NOT a `[[bin]]` target and
 # `autobins = false` keeps it from becoming one. It is PRODUCTION SOURCE: the
 # shipped recorder `include!`s it (`recorder_host/src/main.rs`) and runs it
@@ -119,40 +54,3 @@ required-features = ["hr-truncated-prefix"]
 # minted or packaged as a standalone executable, which is what declaring a
 # target here would allow.
 
-[[bin]]
-name = "pv_repeat_gate_reencode"
-path = "src/bin/pv_repeat_gate_reencode.rs"
-required-features = ["pv-repeat-gate"]
-
-[[bin]]
-name = "pv_repeat_diag"
-path = "src/bin/pv_repeat_diag.rs"
-required-features = ["pv-repeat-gate"]
-
-[[bin]]
-name = "pv_hour_dump"
-path = "src/bin/pv_hour_dump.rs"
-required-features = ["pv-repeat-gate"]
-
-# Lane WO: one fold, one row per hour, of what the XMAP13 producer minted and
-# what it could not. Behind the same diagnostic feature as the other one-fold
-# instruments so the shipped decoder does not carry it.
-[[bin]]
-name = "wo_xmap13_gate_scan"
-path = "src/bin/wo_xmap13_gate_scan.rs"
-required-features = ["pv-repeat-gate"]
-
-[[bin]]
-name = "pr_finalize_profile"
-path = "src/bin/pr_finalize_profile.rs"
-required-features = ["pr-finalize-profile"]
-
-[[bin]]
-name = "dq_v3_prototype"
-path = "src/bin/dq_v3_prototype.rs"
-required-features = ["dq-v3-prototype"]
-
-[[bin]]
-name = "dq_v3_census"
-path = "src/bin/dq_v3_census.rs"
-required-features = ["dq-v3-prototype"]

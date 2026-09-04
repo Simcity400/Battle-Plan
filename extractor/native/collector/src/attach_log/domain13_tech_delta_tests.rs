@@ -195,7 +195,6 @@ struct DecodedBlock {
     active_rows: Vec<Vec<u8>>,
 }
 
-// @leaf-source-authority crate=d13_grammar root=extractor/native/d13_grammar files=4 sha256=ec84da6e0618aad3c8fdb720f0e048195d65bb6e37963e92391049463644b6d2
 fn decode_tech_payload(payload: &[u8]) -> BTreeMap<u32, DecodedBlock> {
     let header = d13_grammar::read_header(payload).expect("a production payload has a header");
     let layout =

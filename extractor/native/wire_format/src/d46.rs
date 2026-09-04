@@ -4,7 +4,7 @@
 //!
 //! Derived from `world_fold.rs:25949`-`:26171`
 //! (`fold_air_variant_archetypes`, dispatched at `:4723`), the row grammar and
-// @world-fold-authority domain=46 functions=fold_air_variant_archetypes lines=25949-26171 sha256=909606bb88fb11fd6dcb23ab321bc0929e9f5da384ae20a39d44b2e4c183797f closure=fe61f7b276b5e1bbbfdafe2f0efcb1c1c4572efd26567c6b77d674c4e07ac3f1
+// Fold authority: `world_fold.rs::fold_air_variant_archetypes`.
 //! bounds in
 //! `extractor/native/lanes/air_wings_variants_lifecycle_live/src/domain46_air_variant_archetypes_live.rs`
 //! (authority #2 — production's status-independent payload check), the trailer

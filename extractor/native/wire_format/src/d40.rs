@@ -7,7 +7,7 @@
 //! domains, and the
 //! only divergences inside it are the accumulator it writes (`world_fold.rs::fold_variant_upgrades`)
 //! and the name in its error strings (`world_fold.rs::fold_variant_upgrades`). Read that module for
-// @world-fold-authority domain=40 functions=fold_variant_upgrades lines=25372-25453 sha256=c8dd403bda7ec0313372fdfe81ec3ff275289d4884eeaa2c4279c1e63eb9e781 closure=f3348c421c0f3ab2ccaf7a0952d687dfe9584b87c5362caca8ba967a41ba900c
+// Fold authority: `world_fold.rs::fold_variant_upgrades`.
 //! the payload tables, the four-state decision (none: `flags` must be exactly
 //! zero, `world_fold.rs::fold_variant_upgrades`), the upsert-only fold, and the one place the mapping is
 //! stricter than the fold.

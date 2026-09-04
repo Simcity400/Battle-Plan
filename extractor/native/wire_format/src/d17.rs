@@ -3,7 +3,7 @@
 //!
 //! Derived from `world_fold.rs:23164`-`:23238`
 //! (`fold_diplomacy`), the `ascii8` token decoder it calls (`world_fold.rs::ascii8`), and the
-// @world-fold-authority domain=17 functions=fold_diplomacy lines=23164-23238 sha256=e64b09bdc4f6f1c9569251327f9be15be01460123bddfe735e967cbb40c9ce29 closure=43ecc7bddff27f3e79a84f714cadb46e88efc52c0798fedea0ae4f9dc4309cbc
+// Fold authority: `world_fold.rs::fold_diplomacy`.
 //! collector reads and writes that produce the payload
 //! (`extractor/native/collector/src/attach_log.rs:69650`-`:69710` writer,
 //! `:80136`-`:80290` reads, `:59759`-`:59780` war-segment accounting).

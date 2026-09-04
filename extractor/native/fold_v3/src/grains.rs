@@ -572,9 +572,7 @@ impl GrainStore {
     /// slots. That is real retained memory and nothing else reports it.
     pub(crate) fn retained_overhead_bytes(&self) -> u64 {
         // 128 bytes on a 64-bit target: a `Path` header, the cached hash and a
-        // `Grain`. `dq_v3_prototype::PER_GRAIN_OVERHEAD` is that number, and
-        // the two have to move together or a grain would be charged twice or
-        // not at all.
+        // `Grain`.
         const _: () = assert!(std::mem::size_of::<SlotEntry>() == 128);
         let row = std::mem::size_of::<SlotEntry>();
         ((self.buckets.capacity() + self.order.capacity() + self.pending.capacity()

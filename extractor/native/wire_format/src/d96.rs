@@ -3,7 +3,7 @@
 //!
 //! Derived from `world_fold.rs:16989`-`:17027`
 //! (`fold_country_preferred_tactic_weights`, dispatched at `:4763`) together with
-// @world-fold-authority domain=96 functions=fold_country_preferred_tactic_weights lines=16989-17027 sha256=78a2fe55c72480d7ec9621eda4995fe17b27dd7f3ed95795117d0162985508e5 closure=b2c1f911572391a3f0aad61045a0310cab813ae0add73ceea6cdb87d6fe1e3a6
+// Fold authority: `world_fold.rs::fold_country_preferred_tactic_weights`.
 //! the deferred fold it delegates to,
 //! `extractor/native/recorder_host/src/tactic_weight_fold.rs:32`-`:80`
 //! (`TacticWeightFoldState::fold_payload`); its payload codec

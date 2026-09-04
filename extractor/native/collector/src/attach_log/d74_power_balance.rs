@@ -1,6 +1,5 @@
 use super::*;
 
-// @leaf-source-authority crate=d74_grammar root=extractor/native/d74_grammar files=3 sha256=4cd5d55b36bc61bbe0564824bfd040a4ea8ebe386289c6894e730667fa3fae3c
 const A729_SHA256: &str = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 const MANAGER_OFF: usize = 0x450;
 const RECORD_STRIDE: usize = 0x190;

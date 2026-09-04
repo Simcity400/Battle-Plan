@@ -3,7 +3,7 @@
 //!
 //! Derived from `world_fold.rs:25113`-`:25231`
 //! (`fold_air_variant_reserves`), its payload constants at `:989`-`:990` and
-// @world-fold-authority domain=36 functions=fold_air_variant_reserves lines=25113-25231 sha256=0494555a8f3fb15f3c2401694cf45d691d481cc20aa9170d0a7c64477408f3bb closure=9ced37803f7a2b7bb219b75ecc4eeeffd71601ced261e21ca2f475aaddcda04e
+// Fold authority: `world_fold.rs::fold_air_variant_reserves`.
 //! `:156`, the render at `world_fold.rs::build_designs`, and the collector read that produces
 //! the rows (`extractor/native/collector/src/attach_log.rs:55392`-`:55530`,
 //! `:71487`-`:71523`). There is no `extractor/documents/domains/d36_*.md`, so the

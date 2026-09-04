@@ -4,7 +4,7 @@
 //!
 //! Derived from `world_fold.rs:27267`-`:27273`
 //! (`fold_occupation_resistance_compliance`, dispatched `:4714`), its payload
-// @world-fold-authority domain=52 functions=fold_occupation_resistance_compliance lines=27267-27273 sha256=3264eb66c9def2ec9621972f8ec726bae49e6c181c3bdea79c7f28437185d962 closure=179bcdfd7ac98a3ab1469811788295c916119f08c583346c2c9b56a05049dcbc
+// Fold authority: `world_fold.rs::fold_occupation_resistance_compliance`.
 // @lane-payload-authority domain=52 path=extractor/native/lanes/occupation_resistance_compliance_live/domain44_compact.rs function=decode_payload lines=264-661 sha256=974013e723937ae796d4f566b1b702b266e152ddf2e990ba2f3409d31994eff5
 //! constants at `:388`-`:399` and `:435`-`:466`, its two trailer decoders
 //! (`occupation_garrison_alert_len` `:30271`, `decode_occupation_collaboration`
@@ -132,8 +132,7 @@
 //! A keyed set cannot say "this collection's membership was not measured this
 //! hour", so that hour cannot be
 //! encoded faithfully and cannot be silently skipped either. [`FoldOutcome`]
-//! reports it and the measurement harness **refuses the run**; see
-//! `bin/bench_real_d52.rs`.
+//! reports it and a measurement harness must **refuse the run**.
 //!
 //! **The fold's call order puts the trailer decode BEFORE the status check**
 //! (`:16813`-`:16823` decode, `:16825` status). A malformed `GAR1`/`COL1` trailer
@@ -1386,7 +1385,7 @@ pub enum FoldOutcome {
     /// reason this outcome has its own name. An hour in this state carries
     /// measured trailer data beside an unknown base table, which no keyed set can
     /// express, so a measurement harness must refuse the run rather than skip the
-    /// hour — see `bin/bench_real_d52.rs`.
+    /// hour.
     DeltaBeforeBaseline,
 }
 
@@ -1639,7 +1638,7 @@ pub fn check_authority_payload(payload: &[u8]) -> core::result::Result<(), Strin
     }
     // The census invariants, mirrored from the lane decoder
     // (`occupation_resistance_compliance_live/domain44_compact.rs::decode_payload`).
-    // This function is the SECONDARY authority `bench_real_d52` treats as
+    // This function is the SECONDARY authority a measurement harness treats as
     // decoder-equivalent, so an invariant enforced only over there would let a
     // stream certify here and be refused in production.
     // Rows and drops together never exceed the roots walked, on ANY frame. A

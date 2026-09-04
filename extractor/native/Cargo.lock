@@ -1055,12 +1055,9 @@ dependencies = [
 name = "replay_decoder"
 version = "0.1.0"
 dependencies = [
- "collector",
  "compact_contract",
  "compact_stream",
- "fold_v3",
  "map_unit_presentation",
- "mimalloc",
  "portable_engine_evidence",
  "portable_render_stream",
  "recorder_host",

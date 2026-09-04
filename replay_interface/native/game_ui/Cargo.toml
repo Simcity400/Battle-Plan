@@ -38,13 +38,3 @@ snapshot = { package = "portable_replay_format", path = "../../../portable_repla
 portable_content_manifest = { path = "../../../portable_replay/native/content_manifest" }
 flate2 = "1"
 
-[[bin]]
-name = "ui_probe"
-path = "src/bin/ui_probe.rs"
-
-[[bin]]
-name = "acceptance"
-path = "src/bin/acceptance.rs"
-test = false
-bench = false
-

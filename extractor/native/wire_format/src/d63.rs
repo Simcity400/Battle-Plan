@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:15618`-`:15838`
 //! (`fold_country_core_scalars`), its payload constants at `:159`-`:172`, and the
-// @world-fold-authority domain=63 functions=fold_country_core_scalars lines=15618-15838 sha256=8b4e8e779f3c020cc0a8fc27070098698371f5023690e978b7a1c82c750dfb24 closure=593db20c8a895f2f363734a72440cbc30a71893853a026d6d4309abf789d8306
+// Fold authority: `world_fold.rs::fold_country_core_scalars`.
 //! collector read that produces the presence flags
 //! (`extractor/native/collector/src/attach_log.rs:60573`-`:60757`).
 //! The fold and collector read are the field-level basis.

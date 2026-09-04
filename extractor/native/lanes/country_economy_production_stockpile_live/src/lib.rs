@@ -290,7 +290,6 @@ pub fn encode_fuel_payload(elapsed_wall_ms: u64, status_flags: u32, rows: &[Fuel
     payload
 }
 
-// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=9 sha256=cce6673c3c6f566a7eb6235c00f0d42cb115d5e49de3f90fe4f2c76a96b2c5a2
 pub fn encode_production_payload(
     elapsed_wall_ms: u64,
     status_flags: u32,

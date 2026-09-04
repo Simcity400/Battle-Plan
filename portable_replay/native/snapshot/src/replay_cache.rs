@@ -5121,33 +5121,6 @@ impl<'a> PatchReaders<'a> {
     }
 }
 
-/// WHAT AN ARRAY EDIT SCRIPT IS COMPARED AGAINST, and the one thing in this
-/// file that is a cost model rather than an encoder.
-///
-/// `diff_value` offers a keyed edit script only where it is shorter than
-/// restating the array, and that comparison has to be a total function of the
-/// two values or the same recording could have two spellings. It therefore
-/// CANNOT be the size of the bytes actually written: which stream a byte lands
-/// in depends on the member name it sits under, whether a length prefix crosses
-/// a varint boundary depends on the rest of the record, and whether a name is
-/// already in the dictionary depends on every record before it. A subtree has
-/// no marginal physical size (Codex design round, question 4).
-///
-/// So the rule stays what it has always been -- the flat grammar's own byte
-/// count -- stated here once, arithmetically, as the definition rather than as
-/// a measurement of a second encoder.
-/// H4CP v3 prototype instrument: price ONE section's v2 delta with the
-/// production encoder, so the journal-versus-patch byte question is answered by
-/// the real [`diff_value`] and [`encode_patch`] rather than a reimplementation.
-#[cfg(feature = "dq-v3-prototype")]
-pub fn measure_section_patch_bytes(
-    old: &CanonValue,
-    new: &CanonValue,
-) -> Result<usize, ReplayCacheError> {
-    let patch = diff_value(old, new, None, 0)?;
-    grammar_cost(&patch, 0)
-}
-
 /// The name dictionary one section's patch records share across hours, for
 /// [`encode_section_patch_bytes`]; a cache carries one per recording.
 #[derive(Default)]
@@ -5165,6 +5138,21 @@ pub fn encode_section_patch_bytes(
     encode_patch(&patch, &mut names.0)
 }
 
+/// WHAT AN ARRAY EDIT SCRIPT IS COMPARED AGAINST, and the one thing in this
+/// file that is a cost model rather than an encoder.
+///
+/// `diff_value` offers a keyed edit script only where it is shorter than
+/// restating the array, and that comparison has to be a total function of the
+/// two values or the same recording could have two spellings. It therefore
+/// CANNOT be the size of the bytes actually written: which stream a byte lands
+/// in depends on the member name it sits under, whether a length prefix crosses
+/// a varint boundary depends on the rest of the record, and whether a name is
+/// already in the dictionary depends on every record before it. A subtree has
+/// no marginal physical size (Codex design round, question 4).
+///
+/// So the rule stays what it has always been -- the flat grammar's own byte
+/// count -- stated here once, arithmetically, as the definition rather than as
+/// a measurement of a second encoder.
 fn grammar_cost(patch: &Patch, depth: usize) -> Result<usize, ReplayCacheError> {
     require_depth(depth)?;
     Ok(match patch {

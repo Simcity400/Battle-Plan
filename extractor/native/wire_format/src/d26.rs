@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:28051`-`:28366`
 //! (`fold_division_equipment`), its payload constants at `:810`-`:816`, the
-// @world-fold-authority domain=26 functions=fold_division_equipment lines=28051-28366 sha256=4134d7fed8612a9e7eab0b5a373029e671d816494592c2a42c0284c5e322d9c3 closure=a53c470a1e7f82ce9af2792d24c93128f5a1a91fe49a5d322b86bab2086c0e35
+// Fold authority: `world_fold.rs::fold_division_equipment`.
 //! accumulator's own JSON projection (`:24160`-`:24176`), and the collector read
 //! that produces the row flags and the entry rows
 //! (`extractor/native/collector/src/attach_log.rs:45789`-`:46005`,

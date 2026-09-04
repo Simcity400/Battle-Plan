@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:25827`-`:25880`
 //! (`fold_air_loss_stats`, dispatched at `:4708`), its JSON emission at
-// @world-fold-authority domain=61 functions=fold_air_loss_stats lines=25827-25880 sha256=66ea65854ffcdc1958091016b6f1d524fd91b017b314f6a2452f5abf8aa21906 closure=7bbe66056a640b633cd09796af64130ba1a4249151b15b165722628a6a0914cb
+// Fold authority: `world_fold.rs::fold_air_loss_stats`.
 //! `:9150`-`:9183`, and the payload codec the fold calls, which for this domain
 //! lives **outside** the fold in its own leaf crate:
 //! `extractor/native/lanes/air_loss_stats_live/src/lib.rs` (`decode_payload_rows`
