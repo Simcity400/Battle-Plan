@@ -28,9 +28,7 @@ Roles. The **orchestrator** is the one agent the owner has explicitly named orch
 5. After approve, once: the full test modules of every crate and file you changed (no hand-picked subsets), then `bash extractor/native/scripts/lane_law_tests.sh` (`--collector` when the collector was touched). A step that starts zero tests fails. A failure is fixed and gets one confirmation round.
 6. Merge `origin/master` (or the branch the brief names) before you finish. Commit early and often, push when converged, report.
 
-Never run the full workspace suite. Never run the whole-capture decode tests (`game_ui::uz_rc_vanilla8_operands`, the xmap00 ledger audit); the gate runs those once per batch.
-
-Fold equivalence, when a fold change needs proof: fold `captures/rc_vanilla8/collector_stream.bin` once with your tree and compare against `extractor/native/runs/fold_reference/<master-sha>/` (same `--game-id`, spool sha256 verified). Never re-fold master.
+Never run the full workspace suite.
 
 ## Orchestrator
 
@@ -56,7 +54,6 @@ A finding names production or test code whose behaviour is wrong, unproven, or u
 3. `verify_citation_integrity.py`, then `reverify_engine_evidence.py`.
 4. Gate: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-Validation.ps1 -Mode Landing`. Capture the exit code.
 5. Green: push `landing-tmp:master`, verify every tip is an ancestor, retire worktrees and branches. Red: attribute each failure against pure master and bounce it to the owning lane.
-6. Publish one pure-master fold reference per master commit under `runs/fold_reference/<sha>/`.
 
 ### Captures
 
