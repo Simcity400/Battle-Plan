@@ -882,8 +882,8 @@ Assert-ClosureCase 'PROJECT binds passive observation and restored hooks' (
     $project.Contains('never pauses the game') -and
     $project.Contains('drives the UI') -and
     $project.Contains('sends input') -and
-    $project.Contains('collector has no authority to control the client') -and
-    $project.Contains('restored byte-for-byte at teardown')
+    $project.Contains('The collector has no authority over the client') -and
+    $project.Contains('restored byte for byte at teardown')
 )
 $cases++
 
