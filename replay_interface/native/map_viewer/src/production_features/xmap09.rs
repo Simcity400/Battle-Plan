@@ -1038,6 +1038,8 @@ impl Xmap09LightingAdapter {
             self.defines.draw_shadows_fade_length,
         )? > 0.0;
         let ambient = self.defines.ambient_rig();
+        // The empty census below is lawful only while this holds.
+        crate::xmap09_point_light_census_is_sourceless()?;
         let input = Xmap09LightingInput {
             schema: XMAP09_INPUT_SCHEMA.into(),
             executable_sha256: XMAP09_A729_EXECUTABLE_SHA256.into(),
