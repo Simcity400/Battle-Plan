@@ -6,7 +6,7 @@ Changes only with the owner's permission. Read `PROJECT.md` before changing prod
 
 - **Orchestrator**: the top-level agent the owner has EXPLICITLY designated as orchestrator for the session. Nobody assumes this role on their own. Staffs lanes, lands their work, runs the gate, runs measurement captures, asks the owner. Never implements lane work itself.
 - **Lane**: an agent with its own worktree and branch. Implements one scoped piece of work end to end, gets it reviewed, pushes, reports once.
-- **Reviewer**: a separate agent with a fresh context and no memory of the implementer's work, reviewing read-only. It never implements, researches, or writes into a worktree. In Claude Code this is the Codex CLI; in Codex it is a native Claude Code background session; see "How to launch".
+- **Reviewer**: the orchestrator. It reviews each lane's pushed tip read-only against origin/landing-tmp, production behaviour first, and bounces findings to the lane by message. Lanes never review their own work and never run a review tool.
 
 If the owner has not designated you orchestrator, you are a lane or a reviewer per your brief: ignore the "Orchestration" section and the launch mechanics entirely.
 
@@ -60,14 +60,7 @@ Applies to every harness. The reviewer is a fresh agent each round.
 
 ## How to launch, per harness (designated orchestrator and its lanes only)
 
-**Claude Code.** Lanes: `subagent_type: "lane-opus"` (Opus 5, high); verify the resolved model in `subagents/agent-*.jsonl`; resume by agent id with `SendMessage`. Reviewer: the Codex CLI, one fresh thread per round, from Bash:
-
-```bash
-OUT=$(mktemp /tmp/cdx_XXXXXX.txt); AJ=$(mktemp /tmp/cdx_XXXXXX.jsonl)
-printf '%s' "$PROMPT" | codex exec --json -s danger-full-access -c approval_policy=never --skip-git-repo-check -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c service_tier=priority -o "$OUT" - > "$AJ"
-```
-
-Flags are mandatory as written; never `--ephemeral`, never `resume --last`, never a sandboxed `-s` mode. Thread id = first line of `$AJ`; reply = `$OUT`, success is exit 0 and a non-empty file; retry once, except on a usage-limit signature: queue the thread id and resume it later by id (`codex exec -s danger-full-access … resume <id> -`, same flags).
+**Claude Code.** Lanes: `subagent_type: "lane-opus"` (Opus 5, high; the owner may name another model per lane); verify the resolved model in `subagents/agent-*.jsonl`; resume by agent id with `SendMessage`. Reviewer: the orchestrator, from the lane's pushed tip; no Codex CLI.
 
 **Codex.**
 - Codex review Lanes are sub-agents. Never call the Codex CLI from inside Codex.

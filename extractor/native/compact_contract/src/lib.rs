@@ -1033,7 +1033,7 @@ pub fn passive_production_roster() -> Vec<CompactDomainDescriptor> {
 // d57 belonged here until the owner ruling of 2026-08-24 promoted it: with the
 // X12 hooks installed and stage 38 closed it is an ordinary mandatory member of
 // the passive production roster, no longer a capture-only rider.
-pub const PASSIVE_CAPTURE_ONLY_DOMAIN_IDS: &[CompactDomainId] = &[100, 101];
+pub const PASSIVE_CAPTURE_ONLY_DOMAIN_IDS: &[CompactDomainId] = &[98, 100, 101, 102];
 
 pub fn passive_capture_roster() -> Vec<CompactDomainDescriptor> {
     let mut roster = passive_production_roster();
