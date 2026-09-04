@@ -1598,27 +1598,8 @@ fn prepare_render_political(
             )?;
             let state_max = crate::parse_infrastructure_state_max(&buildings)
                 .ok_or("XMAP18 effective building database has no infrastructure state_max")?;
-            let mut inputs = BTreeMap::new();
-            for state_id in states.keys().copied() {
-                let buildings = context
-                    .world_frame
-                    .buildings_by_state()
-                    .get(&state_id)
-                    .ok_or_else(|| format!("XMAP18 infrastructure state {state_id} is absent"))?;
-                let level = match buildings.state_buildings.get("infrastructure") {
-                    Some(row) => match &row.level {
-                        Leaf::Measured(level) => *level,
-                        _ => {
-                            return Err(format!(
-                                "XMAP18 infrastructure level for state {state_id} is not measured"
-                            )
-                            .into())
-                        }
-                    },
-                    None => 0.0,
-                };
-                inputs.insert(state_id, crate::InfraLevelInput { level: Some(level) });
-            }
+            let inputs =
+                infrastructure_level_inputs(context.world_frame, states.keys().copied())?;
             let state_fills = crate::infra_state_tints(&inputs, state_max, &colors);
             apply_state_rgba_fills_f32(
                 &eligible,
@@ -1722,6 +1703,61 @@ fn prepare_render_political(
         )?,
         None,
     ))
+}
+
+/// The infrastructure level for every state the effective VFS defines, COUNTED
+/// rather than stopped at the first refusal, and refusing by state id.
+pub(crate) fn infrastructure_level_inputs(
+    frame: &replay_core::WorldFrame,
+    vfs_state_ids: impl Iterator<Item = u32>,
+) -> Result<BTreeMap<u32, crate::InfraLevelInput>> {
+    const NAMED_REFUSALS: usize = 8;
+    let mut inputs = BTreeMap::new();
+    let mut unmeasured_scope = Vec::new();
+    let mut unmeasured_level = Vec::new();
+    let mut expected = 0usize;
+    for state_id in vfs_state_ids {
+        expected += 1;
+        if !crate::map_authority::xmap18_state_building_scope_is_whole(frame, state_id) {
+            unmeasured_scope.push(state_id);
+            continue;
+        }
+        if !crate::map_authority::xmap18_infrastructure_level_is_measured(frame, state_id) {
+            unmeasured_level.push(state_id);
+            continue;
+        }
+        let level = frame
+            .buildings_by_state()
+            .get(&state_id)
+            .and_then(|state| state.state_buildings.get("infrastructure"))
+            .and_then(|row| match row.level {
+                Leaf::Measured(level) => Some(level),
+                _ => None,
+            })
+            .unwrap_or(0.0);
+        inputs.insert(state_id, crate::InfraLevelInput { level: Some(level) });
+    }
+    if inputs.len() != expected {
+        let named = |states: &[u32]| {
+            states
+                .iter()
+                .take(NAMED_REFUSALS)
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        return Err(format!(
+            "XMAP18 infrastructure joined {} of the {expected} states the effective VFS defines: \
+             {} carry no whole D48 building scope ({}), {} carry an unmeasured infrastructure level ({})",
+            inputs.len(),
+            unmeasured_scope.len(),
+            named(&unmeasured_scope),
+            unmeasured_level.len(),
+            named(&unmeasured_level),
+        )
+        .into());
+    }
+    Ok(inputs)
 }
 
 fn raw_runtime_layers(
@@ -3141,6 +3177,103 @@ fn scripted_definition_ids(bytes: &[u8], path: &str) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn frame_with_states(states: serde_json::Value) -> std::sync::Arc<replay_core::WorldFrame> {
+        use replay_core::{RawFrame, ReplaySource, SourceError, WorldTimeline};
+        struct Source(serde_json::Value);
+        impl ReplaySource for Source {
+            fn game_id(&self) -> &str {
+                "xmap18-infrastructure-join"
+            }
+            fn hours(&self) -> &[i64] {
+                &[7]
+            }
+            fn warnings(&self) -> &[String] {
+                &[]
+            }
+            fn frame(&self, hour_index: i64) -> std::result::Result<RawFrame, SourceError> {
+                let mut rest = serde_json::Map::new();
+                rest.insert("states".into(), self.0.clone());
+                Ok(RawFrame {
+                    hour_index,
+                    date: None,
+                    save_version: None,
+                    schema_version: None,
+                    rest,
+                })
+            }
+        }
+        let timeline = WorldTimeline::open(Box::new(Source(states))).expect("timeline");
+        timeline.frame(7).expect("frame")
+    }
+
+    fn d48_state(level: Option<u32>) -> serde_json::Value {
+        let rows = match level {
+            Some(level) => serde_json::json!({
+                "type_0x00002fab": {
+                    "level": level,
+                    "healthy_level": level,
+                    "damaged": false,
+                    "token": "infrastructure"
+                }
+            }),
+            None => serde_json::json!({}),
+        };
+        serde_json::json!({
+            "construction_buildings_state_damage_live": {
+                "source": "C",
+                "state_buildings": rows
+            }
+        })
+    }
+
+    /// COUNTED: every position in a four-state VFS list is broken in turn, so a
+    /// loop that read a prefix, a suffix or any fixed count fails here.
+    #[test]
+    fn the_infrastructure_join_counts_every_state_the_vfs_defines() {
+        let vfs: Vec<u32> = vec![11, 12, 13, 14];
+
+        let whole = serde_json::json!({
+            "11": d48_state(Some(3)),
+            "12": d48_state(None),
+            "13": d48_state(Some(1)),
+            "14": d48_state(Some(5)),
+        });
+        let frame = frame_with_states(whole.clone());
+        let inputs =
+            infrastructure_level_inputs(&frame, vfs.iter().copied()).expect("whole scopes join");
+        assert_eq!(inputs.len(), 4);
+        assert_eq!(inputs[&12].level, Some(0.0), "a measured-empty scope is zero");
+        assert_eq!(inputs[&14].level, Some(5.0));
+
+        for broken in &vfs {
+            for shape in [
+                serde_json::json!({}),
+                serde_json::json!({"construction_buildings_state_damage_live": {"source": "C"}}),
+                serde_json::json!({
+                    "construction_buildings_state_damage_live": {
+                        "source": "recorder", "state_buildings": {}
+                    }
+                }),
+            ] {
+                let mut states = whole.clone();
+                states[broken.to_string()] = shape;
+                let frame = frame_with_states(states);
+                let error = infrastructure_level_inputs(&frame, vfs.iter().copied())
+                    .expect_err("a state without a whole D48 scope must refuse")
+                    .to_string();
+                assert!(
+                    error.contains("joined 3 of the 4 states") && error.contains(&broken.to_string()),
+                    "the refusal must count and name state {broken}: {error}"
+                );
+            }
+            // A state the VFS defines and the frame does not carry at all.
+            let mut states = whole.clone();
+            states.as_object_mut().expect("object").remove(&broken.to_string());
+            let frame = frame_with_states(states);
+            assert!(infrastructure_level_inputs(&frame, vfs.iter().copied()).is_err());
+        }
+    }
 
     #[test]
     fn effective_scripted_database_preserves_file_order() {
