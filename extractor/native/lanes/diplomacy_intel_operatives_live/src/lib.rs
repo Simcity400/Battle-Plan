@@ -20,6 +20,7 @@ pub(crate) mod cause_column;
 pub mod cipher_controller;
 pub mod decoder_gate;
 pub mod extractor;
+pub mod keep_up;
 pub mod replay_verify;
 pub mod snapshot_memory;
 pub mod stream_gate;

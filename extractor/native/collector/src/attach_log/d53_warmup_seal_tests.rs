@@ -82,7 +82,7 @@ fn the_warmup_read_carries_no_failure_bits_into_any_window_or() {
         "domain53_discovery_cold",
         Domain53RootStageDiag::default(),
     );
-    assert!(read.warmup_gap);
+    assert!(read.typed_gap);
     // The warmup record is EMPTY, so it declares its intel table absent -- and
     // that is the whole of what it adds. `DOMAIN53_STATUS_INTEL_MAP_UNPROVEN` is
     // lane-local: `compact_status_for_global_interpretation` strips it, so it
@@ -196,7 +196,7 @@ fn real_refusals_still_fail_closed_with_their_failure_bits() {
         ..Domain53Diag::default()
     };
     let read = domain53_source_unavailable_read(now, 0, 0, diag);
-    assert!(!read.warmup_gap);
+    assert!(!read.typed_gap);
     assert_ne!(
         read.status_flags & COMPACT_STATUS_SOURCE_UNAVAILABLE,
         0,
@@ -221,7 +221,7 @@ fn real_refusals_still_fail_closed_with_their_failure_bits() {
 // refused by the payload grammar AT DECODE on the recorder side. (What no
 // payload-level test can pin: that no PERF/DATA record rides beside the gap —
 // enforced by the fold's `gap_accounting_invalid` rule on every capture and
-// by the single `if read.warmup_gap` branch at the encode site.)
+// by the single `if read.typed_gap` branch at the encode site.)
 #[test]
 fn the_encode_sites_gap_shape_encodes_decodes_and_validates() {
     fn hour(offset: i32) -> i32 {

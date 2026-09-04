@@ -942,6 +942,71 @@ fn d53_a_fragmented_layout_costs_queries_not_the_plan() {
     assert!(receipt.failure_region_ordinal.is_some());
 }
 
+/// THE KEEP-UP LAW. d53's read is on the frame's critical path (capture
+/// e2e_04: 158.7 ms p50, 85.5% of the whole capture's critical path, 182 of
+/// 936 hours lost), so an hour the ledger cannot pay for must cost the frame
+/// NOTHING and be named. The gate stands before the reap, the spawn and the
+/// bracket, its arm reaches no plan machinery at all, and every exit of the
+/// finish half charges what its read measured.
+#[test]
+fn d53_an_hour_the_ledger_cannot_pay_for_costs_the_frame_nothing() {
+    let source = super::collector_source_lf();
+    let arm = code_only(item_body(
+        &source,
+        "fn arm_compact_diplomacy_intel_operatives_live_snapshot(",
+    ));
+    let gate = arm
+        .find("tracker.keep_up.admit()")
+        .expect("the arm consults the keep-up ledger");
+    for after in [
+        "domain53_reap_plan_job(tracker, now);",
+        "domain53_spawn_plan_job(",
+        "tracker.snapshot_plan.take()",
+    ] {
+        let at = arm.find(after).unwrap_or_else(|| panic!("{after} must exist"));
+        assert!(gate < at, "the keep-up gate must stand before `{after}`");
+    }
+
+    // The deferred arm builds a typed gap and touches nothing else.
+    let deferred = code_only(item_body(&source, "fn domain53_keep_up_deferred_read("));
+    assert!(deferred.contains("typed_gap: true,"));
+    assert!(deferred.contains("DOMAIN53_KEEP_UP_DEFERRED_CAUSE"));
+    for forbidden in [
+        "Domain53InProcessMemory",
+        "capture_with",
+        "read_compact_diplomacy_intel_operatives_live_observe",
+        "domain53_spawn_plan_job",
+        "domain53_reap_plan_job",
+    ] {
+        assert!(
+            !deferred.contains(forbidden),
+            "a deferred hour reached `{forbidden}`"
+        );
+    }
+
+    // Every exit of the finish half that produced a read charges the ledger:
+    // the `return read;` exits plus the tail expression. The one exit that
+    // does not is the deferred hour, which spent nothing to charge.
+    let finish = code_only(item_body(
+        &source,
+        "fn finish_compact_diplomacy_intel_operatives_live_snapshot(",
+    ));
+    assert_eq!(
+        finish.matches("tracker.keep_up.charge(read.read_time_us);").count(),
+        finish.matches("return read;").count() + 1,
+        "every exit that produced a read charges what it measured"
+    );
+    assert!(finish.contains("return domain53_keep_up_deferred_read("));
+
+    // A dropped plan waits before walking again, so a layout that keeps
+    // drifting cannot put the walk thread back on the machine every hour.
+    assert_eq!(
+        finish.matches("DOMAIN53_PLAN_DROP_BACKOFF").count(),
+        2,
+        "the copy-refusal and region-miss exits both back the walk off"
+    );
+}
+
 /// The plan's arena is one page-aligned allocation, every page of which is
 /// committed and resident the moment the plan is built (on the plan-walk
 /// thread), so the bracket's first copy faults nothing in. Proven with the
