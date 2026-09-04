@@ -305,7 +305,8 @@ pub use xmap07_snow_mud_law::{
 pub use xmap09_light_template::{
     parse_light_templates, resolve_light_event, xmap09_attach_node_object_transform,
     xmap09_event_age_seconds, xmap09_event_playhead_phase, xmap09_light_world_position,
-    Xmap09LightAnimation, Xmap09LightAnimationOp, Xmap09LightEventRefusal, Xmap09LightTemplate,
+    Xmap09LightAnimation, Xmap09LightAnimationOp, Xmap09LightEvaluationRefusal,
+    Xmap09LightInstanceClock, Xmap09LightEventRefusal, Xmap09LightTemplate,
     Xmap09ResolvedLightEvent, XMAP09_LIGHT_INTENSITY_LAW_UNPINNED,
 };
 pub use xmap09_lighting_law::{
