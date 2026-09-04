@@ -94,8 +94,8 @@
 //! | `+44` | u32 | `execution_status`            | raw | `<= STATUS_FIXTURE_REQUIRED` |
 //! | `+48` | u32 | `assigned_units_status`       | raw | `EXACT` on every non-deleted row |
 //! | `+52` | u32 | `order_linkage_status`        | raw | `EXACT` on every non-deleted row |
-//! | `+56` | u32 | `stance_status`               | raw | `<= STATUS_COLD_PREFLIGHT_ONLY` |
-//! | `+60` | u32 | `aggressiveness_status`       | raw | `<= STATUS_COLD_PREFLIGHT_ONLY` |
+//! | `+56` | u32 | `style_flags`                 | raw | `& !STYLE_FLAG_MASK == 0` |
+//! | `+60` | u32 | `style_status`                | raw | `<= STATUS_COLD_PREFLIGHT_ONLY` |
 //! | `+64` | u32 | `engine_order_instance_id`    | raw | key; `1..=MAX_ORDER_INSTANCE_ID` |
 //! | `+68` | u32 | `assigned_first`              | —   | transport, not state |
 //! | `+72` | u32 | `assigned_count`              | —   | transport, not state |
@@ -341,11 +341,14 @@ pub mod field {
     pub const TARGET_STATUS: u32 = 8;
     pub const GEOMETRY_STATUS: u32 = 9;
     pub const EXECUTION_STATUS: u32 = 10;
-    pub const STANCE_STATUS: u32 = 11;
-    pub const AGGRESSIVENESS_STATUS: u32 = 12;
+    // 11 and 12 were the retired per-order stance/aggressiveness premise; the
+    // schema-identity contract forbids reusing an id for a different field, so
+    // the style pair that replaced them on the wire takes fresh ids.
     pub const ACTIVE: u32 = 13;
     pub const NON_TYPE5_GEOMETRY_BLOCKED: u32 = 14;
     pub const EXECUTION_BLOCKED: u32 = 15;
+    pub const STYLE_FLAGS: u32 = 16;
+    pub const STYLE_STATUS: u32 = 17;
 
     // --- ORDER_TARGET_STATES ---
     pub const TS_OWNER_KIND: u32 = 20;
@@ -436,6 +439,11 @@ pub const STATUS_FIXTURE_REQUIRED: u32 = 6;
 pub const STATUS_COLD_PREFLIGHT_ONLY: u32 = 7;
 /// schema-kind contract cardinality for every status field: codes `0..=7`.
 pub const STATUS_CARD: u32 = 8;
+
+/// `army_battleplans_depth_live_lane::STYLE_FLAG_MASK`: the six engine
+pub const STYLE_FLAG_MASK: u32 = 0b11_1111;
+/// Every subset of those six bits is a value the grammar accepts.
+pub const STYLE_FLAG_CARD: u32 = STYLE_FLAG_MASK + 1;
 
 /// `orders_group_live::ORDER_OWNER_KIND_ARMY` / `_ARMY_GROUP` (`:46`-`:47`).
 pub const ORDER_OWNER_KIND_ARMY: u32 = 0;
@@ -554,8 +562,8 @@ pub fn schema() -> Schema {
             // The collector hard-codes both to `STATUS_UNKNOWN`
             // (`attach_log.rs:46592`-`:46593`), but the validator admits the whole
             // vocabulary, so they are measured witnesses and not constants.
-            Field::new(f::STANCE_STATUS, Kind::Enum).enum_card(STATUS_CARD),
-            Field::new(f::AGGRESSIVENESS_STATUS, Kind::Enum).enum_card(STATUS_CARD),
+            Field::new(f::STYLE_FLAGS, Kind::Enum).enum_card(STYLE_FLAG_CARD),
+            Field::new(f::STYLE_STATUS, Kind::Enum).enum_card(STATUS_CARD),
             Field::new(f::ACTIVE, Kind::Boolean),
             // Two independent witness bits: the emitter derives each from a status
             // code (`lane lib.rs:709`-`:714`) but no validator couples them, so
@@ -778,8 +786,8 @@ pub struct OrderRow {
     pub execution_status: u32,
     pub assigned_units_status: u32,
     pub order_linkage_status: u32,
-    pub stance_status: u32,
-    pub aggressiveness_status: u32,
+    pub style_flags: u32,
+    pub style_status: u32,
     pub active: bool,
     pub active_status: u32,
 }
@@ -827,8 +835,8 @@ pub fn parse_order_row(row: &[u8]) -> core::result::Result<OrderRow, String> {
     let execution_status = u32_at(row, 44);
     let assigned_units_status = u32_at(row, 48);
     let order_linkage_status = u32_at(row, 52);
-    let stance_status = u32_at(row, 56);
-    let aggressiveness_status = u32_at(row, 60);
+    let style_flags = u32_at(row, 56);
+    let style_status = u32_at(row, 60);
     let engine_order_instance_id = u32_at(row, 64);
     let assigned_first = u32_at(row, 68);
     let assigned_count = u32_at(row, 72);
@@ -863,18 +871,16 @@ pub fn parse_order_row(row: &[u8]) -> core::result::Result<OrderRow, String> {
         || execution_status > STATUS_FIXTURE_REQUIRED
         || assigned_units_status > STATUS_COLD_PREFLIGHT_ONLY
         || order_linkage_status > STATUS_COLD_PREFLIGHT_ONLY
-        || stance_status > STATUS_COLD_PREFLIGHT_ONLY
-        || aggressiveness_status > STATUS_COLD_PREFLIGHT_ONLY
+        || style_status > STATUS_COLD_PREFLIGHT_ONLY
+        || style_flags & !STYLE_FLAG_MASK != 0
         || active_status > STATUS_COLD_PREFLIGHT_ONLY
     {
         return Err("battleplans row has a status code outside the vocabulary".into());
     }
     // `:961`-`:973`: a tombstone carries identity and nothing else.
     if deleted
-        && (child_first != 0
-            || child_count != 0
+        && (child_count != 0
             || target_declared != 0
-            || assigned_first != 0
             || assigned_count != 0
             || active_value != 0
             || active_status != STATUS_NONE)
@@ -966,8 +972,8 @@ pub fn parse_order_row(row: &[u8]) -> core::result::Result<OrderRow, String> {
         execution_status,
         assigned_units_status,
         order_linkage_status,
-        stance_status,
-        aggressiveness_status,
+        style_flags,
+        style_status,
         active: active_value != 0,
         active_status,
     })
@@ -1408,8 +1414,8 @@ pub fn record_from_order_row(
         Value::Enum(parsed.target_status),
         Value::Enum(parsed.geometry_status),
         Value::Enum(parsed.execution_status),
-        Value::Enum(parsed.stance_status),
-        Value::Enum(parsed.aggressiveness_status),
+        Value::Enum(parsed.style_flags),
+        Value::Enum(parsed.style_status),
         Value::Bool(parsed.active),
         Value::Bool(parsed.flags & FLAG_NON_TYPE5_GEOMETRY_BLOCKED != 0),
         Value::Bool(parsed.flags & FLAG_EXECUTION_BLOCKED != 0),
@@ -1863,8 +1869,8 @@ mod tests {
         execution_status: u32,
         assigned_units_status: u32,
         order_linkage_status: u32,
-        stance_status: u32,
-        aggressiveness_status: u32,
+        style_flags: u32,
+        style_status: u32,
         assigned_first: u32,
         assigned_count: u32,
         active: u32,
@@ -1891,8 +1897,8 @@ mod tests {
                 execution_status: STATUS_EXACT,
                 assigned_units_status: STATUS_EXACT,
                 order_linkage_status: STATUS_EXACT,
-                stance_status: STATUS_UNKNOWN,
-                aggressiveness_status: STATUS_UNKNOWN,
+                style_flags: 0,
+                style_status: STATUS_EXACT,
                 assigned_first: 0,
                 assigned_count: 0,
                 active: 1,
@@ -1917,8 +1923,8 @@ mod tests {
                 execution_status: STATUS_NONE,
                 assigned_units_status: STATUS_NONE,
                 order_linkage_status: STATUS_NONE,
-                stance_status: STATUS_NONE,
-                aggressiveness_status: STATUS_NONE,
+                style_flags: 0,
+                style_status: STATUS_NONE,
                 assigned_first: 0,
                 assigned_count: 0,
                 active: 0,
@@ -1942,8 +1948,8 @@ mod tests {
                 self.execution_status,
                 self.assigned_units_status,
                 self.order_linkage_status,
-                self.stance_status,
-                self.aggressiveness_status,
+                self.style_flags,
+                self.style_status,
             ] {
                 out.extend_from_slice(&word.to_le_bytes());
             }
@@ -2290,8 +2296,8 @@ mod tests {
         row.target_status = STATUS_OVERFLOW;
         row.geometry_status = STATUS_VALIDATION_FAILED;
         row.execution_status = STATUS_FIXTURE_REQUIRED;
-        row.stance_status = STATUS_COLD_PREFLIGHT_ONLY;
-        row.aggressiveness_status = STATUS_NONE;
+        row.style_flags = STYLE_FLAG_MASK;
+        row.style_status = STATUS_COLD_PREFLIGHT_ONLY;
         row.assigned_first = 0x99;
         row.assigned_count = 0;
         row.active = 1;
@@ -2312,8 +2318,8 @@ mod tests {
         assert_eq!(parsed.execution_status, STATUS_FIXTURE_REQUIRED);
         assert_eq!(parsed.assigned_units_status, STATUS_EXACT);
         assert_eq!(parsed.order_linkage_status, STATUS_EXACT);
-        assert_eq!(parsed.stance_status, STATUS_COLD_PREFLIGHT_ONLY);
-        assert_eq!(parsed.aggressiveness_status, STATUS_NONE);
+        assert_eq!(parsed.style_flags, STYLE_FLAG_MASK);
+        assert_eq!(parsed.style_status, STATUS_COLD_PREFLIGHT_ONLY);
         assert!(parsed.active);
         assert_eq!(parsed.active_status, STATUS_EXACT);
 
@@ -2329,8 +2335,8 @@ mod tests {
                 Value::Enum(STATUS_OVERFLOW),
                 Value::Enum(STATUS_VALIDATION_FAILED),
                 Value::Enum(STATUS_FIXTURE_REQUIRED),
+                Value::Enum(STYLE_FLAG_MASK),
                 Value::Enum(STATUS_COLD_PREFLIGHT_ONLY),
-                Value::Enum(STATUS_NONE),
                 Value::Bool(true),
                 Value::Bool(true),
                 Value::Bool(true),
@@ -3028,7 +3034,12 @@ mod tests {
         let orders = collection_of(&s, ORDERS).unwrap();
         for f in orders.value_fields() {
             if f.kind == Kind::Enum {
-                assert_eq!(f.enum_card, Some(STATUS_CARD), "field {}", f.field_id);
+                let expected = if f.field_id == field::STYLE_FLAGS {
+                    STYLE_FLAG_CARD
+                } else {
+                    STATUS_CARD
+                };
+                assert_eq!(f.enum_card, Some(expected), "field {}", f.field_id);
             }
         }
         let armies = collection_of(&s, ORDERS_GROUP_ARMIES).unwrap();
@@ -3042,5 +3053,58 @@ mod tests {
                 other => panic!("unexpected census field {other}"),
             }
         }
+    }
+
+    /// Capture 06's 43 excluded d54 records. `assigned_first` is a range start
+    /// the reader never dereferences at count zero, so a tombstone carrying the
+    /// producer's running cursor there claims no children.
+    #[test]
+    fn a_tombstone_carrying_a_stale_range_cursor_still_parses() {
+        for (offset_name, first) in [("child_first", true), ("assigned_first", false)] {
+            let mut row = RawOrder::tombstone(ORDER_OWNER_KIND_ARMY, 10, 1_055, 3);
+            if first {
+                row.child_first = 0x4321;
+            } else {
+                row.assigned_first = 0x4321;
+            }
+            let parsed = parse_order_row(&row.encode())
+                .unwrap_or_else(|error| panic!("{offset_name}: {error}"));
+            assert!(parsed.deleted());
+            assert_eq!(parsed.assigned_count, 0);
+            assert_eq!(parsed.child_count, 0);
+        }
+    }
+
+    #[test]
+    fn a_tombstone_that_claims_children_is_refused() {
+        for mutate in [
+            (|row: &mut RawOrder| row.child_count = 1) as fn(&mut RawOrder),
+            |row: &mut RawOrder| row.target_declared = 1,
+            |row: &mut RawOrder| row.assigned_count = 1,
+            |row: &mut RawOrder| row.active = 1,
+            |row: &mut RawOrder| row.active_status = STATUS_EXACT,
+        ] {
+            let mut row = RawOrder::tombstone(ORDER_OWNER_KIND_ARMY, 10, 1_055, 3);
+            mutate(&mut row);
+            let error = parse_order_row(&row.encode()).expect_err("claim refused");
+            assert!(
+                error.contains("deleted row carries child fields"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_style_bit_subset_is_a_value_the_grammar_carries() {
+        for style_flags in 0..=STYLE_FLAG_MASK {
+            let mut row = RawOrder::live();
+            row.style_flags = style_flags;
+            let parsed = parse_order_row(&row.encode())
+                .unwrap_or_else(|error| panic!("style {style_flags:#x}: {error}"));
+            assert_eq!(parsed.style_flags, style_flags);
+        }
+        let mut row = RawOrder::live();
+        row.style_flags = STYLE_FLAG_MASK + 1;
+        parse_order_row(&row.encode()).expect_err("a bit outside the mask is refused");
     }
 }
