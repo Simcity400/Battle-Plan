@@ -114,6 +114,7 @@ mod xmap06_d3d_handoff;
 mod xmap07_d3d_handoff;
 mod xmap08_d3d_handoff;
 mod xmap09_d3d_handoff;
+mod xmap07_snow_mud_law;
 mod xmap09_lighting_law;
 mod xmap10_d3d_handoff;
 mod xmap10_scene_cb0;
@@ -291,6 +292,13 @@ pub use light_law::{defines as light_defines, offsets as light_offsets};
 pub use light_law::{
     diffuse_color_rgb_from_hsv_define, night_yzw_residual, render_sun_dir_yzw,
     validate_lighting_law_against_cb0, LightingLawResidual, SceneLighting,
+};
+pub use xmap07_snow_mud_law::{
+    xmap07_snow_mud_census, xmap07_snow_mud_sampler_sites, xmap07_snow_mud_supply,
+    Xmap07SnowMudCensus, Xmap07SnowMudSamplerSite, Xmap07SnowMudSupply,
+    XMAP07_SNOW_MUD_CONSUMER_EFFECT_FILES, XMAP07_SNOW_MUD_FADE_SCENE_FIELD,
+    XMAP07_SNOW_MUD_FADE_SCENE_LANE, XMAP07_SNOW_MUD_SAMPLER_SPELLINGS,
+    XMAP07_SNOW_MUD_SHADER_READER,
 };
 pub use xmap09_lighting_law::{
     engine_hour_of_day, engine_hour_of_day_fraction, virtual_rig,

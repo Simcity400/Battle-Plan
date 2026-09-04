@@ -68,7 +68,11 @@ const WATER_STATIC_SAMPLERS: [(&str, &str, &str); 8] = [
 const WATER_DEPENDENT_SAMPLERS: [(&str, &str, &str); 9] = [
     ("ProvinceSecondaryColorMap", "XMAP05", "Texture2D"),
     ("WaterRefraction", "XMAP07", "Texture2D"),
-    ("SnowMudTexture", "XMAP07", "Texture2D"),
+    (
+        crate::XMAP07_SNOW_MUD_SAMPLER_SPELLINGS[1],
+        "XMAP07",
+        "Texture2D",
+    ),
     ("LightIndexMap", "XMAP09", "Texture2D"),
     ("LightDataMap", "XMAP09", "Texture2D"),
     ("GradientBorderChannel1", "XMAP05", "Texture2D"),
@@ -878,12 +882,10 @@ impl ProductionMapFeatureAdapter for Xmap07WaterAdapter {
             snow_mud_addressing.texture_width,
             snow_mud_addressing.texture_height,
         )?;
-        let fade_phase = f32::from_bits(snow_packet.fade_f32_bits);
-        if !fade_phase.is_finite() || !(0.0..=1.0).contains(&fade_phase) {
-            return Err("XMAP07 exact SnowMud carrier has an invalid fade value".into());
-        }
-        let snow_mud_fade_f32_bits = snow_packet.fade_f32_bits;
-        let snow_mud_authority_sha256 = snow_packet.authority_sha256.clone();
+        let supply = crate::xmap07_snow_mud_supply(snow_packet)?;
+        let fade_phase = supply.fade;
+        let snow_mud_fade_f32_bits = supply.fade_f32_bits;
+        let snow_mud_authority_sha256 = supply.authority_sha256;
         let animation_time = f32::from_bits(context.viewer.animation_time_f32_bits);
         if !animation_time.is_finite() || animation_time < 0.0 {
             return Err("XMAP07 viewer animation time is invalid".into());
