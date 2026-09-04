@@ -1689,6 +1689,7 @@ mod tests {
                 replay_core::ProductionProfileGuarantee::ProductionProfileEnabled,
             ],
             profile_domains_not_scheduled: vec!["decision_panel_live".into()],
+            profile_domains_refused: Vec::new(),
             missing_required_static_artifacts: vec!["focus_defs_static".into()],
             static_artifacts_not_content_bound: vec![
                 replay_core::StaticArtifactNotContentBound {

@@ -1299,12 +1299,14 @@ foreach ($entry in $staticCatalogs.GetEnumerator()) {
     }
 }
 
-# `--profile production` is early-launch-only ("production/profile capture
-# requires authenticated --early-launch-exe so render creation cannot be
-# missed") and additionally demands a process-bound static bundle. A late
-# attach therefore selects the production roster explicitly, exactly as the
-# shipped product worker does. Passing no schedule at all would silently fall
-# back to the eight-domain compatibility set, so the roster is mandatory.
+# `--profile production` additionally demands a process-bound static bundle
+# (`production/profile capture requires --static-bundle-manifest`), which this
+# harness does not assemble: it passes loose static catalogs instead. So a late
+# attach selects the production roster explicitly, exactly as the shipped
+# product worker does, and the recorder derives production_profile.enabled from
+# that roster rather than from the flag. Passing no schedule at all would
+# silently fall back to the eight-domain compatibility set, so the roster is
+# mandatory.
 $rosterTool = Join-Path $releaseRoot 'domain_roster.exe'
 if (-not (Test-Path -LiteralPath $rosterTool -PathType Leaf)) {
     throw "Production roster tool is missing: $rosterTool (cargo build --release -p recorder_host)"

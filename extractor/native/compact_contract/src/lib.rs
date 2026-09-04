@@ -574,10 +574,41 @@ pub fn status_in_production_profile(status: CompactDomainStatus) -> bool {
 ///
 /// Not a readiness statement: every entry is schedulable and production
 /// complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PassiveProductionRefusalKind {
+    /// The producer's only source is a hook the shipped passive observer does
+    /// not install.
+    ProductObserverHookAbsent,
+    /// Requesting it is an evidence/UI control the passive product rejects.
+    EvidenceOnlyControl,
+}
+
+impl PassiveProductionRefusalKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PassiveProductionRefusalKind::ProductObserverHookAbsent => {
+                "product_observer_hook_absent"
+            }
+            PassiveProductionRefusalKind::EvidenceOnlyControl => "evidence_only_control",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<PassiveProductionRefusalKind> {
+        match value {
+            "product_observer_hook_absent" => {
+                Some(PassiveProductionRefusalKind::ProductObserverHookAbsent)
+            }
+            "evidence_only_control" => Some(PassiveProductionRefusalKind::EvidenceOnlyControl),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PassiveProductionRefusal {
     pub id: CompactDomainId,
     pub decided_on: &'static str,
+    pub kind: PassiveProductionRefusalKind,
     pub reason: &'static str,
 }
 
@@ -587,6 +618,7 @@ pub const PASSIVE_PRODUCTION_REFUSALS: &[PassiveProductionRefusal] = &[
     PassiveProductionRefusal {
         id: 71,
         decided_on: "2026-07-29",
+        kind: PassiveProductionRefusalKind::ProductObserverHookAbsent,
         reason: "dynamic_collection_trace_live: its only current source is the noncanonical A28 \
                  auxiliary hook owner, which the passive product does not install \
                  (collector/src/attach_log.rs, the passive_product_capture refusal)",
@@ -594,6 +626,7 @@ pub const PASSIVE_PRODUCTION_REFUSALS: &[PassiveProductionRefusal] = &[
     PassiveProductionRefusal {
         id: 82,
         decided_on: "2026-07-29",
+        kind: PassiveProductionRefusalKind::EvidenceOnlyControl,
         reason: "character_presentation_live: presentation observation, which is excluded from \
                  capture; requesting it in passive production is rejected as an evidence/UI hook \
                  control (collector/src/attach_log.rs, the `d82_character_presentation` conflict)",
@@ -601,6 +634,7 @@ pub const PASSIVE_PRODUCTION_REFUSALS: &[PassiveProductionRefusal] = &[
     PassiveProductionRefusal {
         id: 87,
         decided_on: "2026-07-29",
+        kind: PassiveProductionRefusalKind::ProductObserverHookAbsent,
         reason: "decision_panel_live: its A34 producer requires the authenticated early-render \
                  selected-Present owner and the passive product runs with \
                  `early_render_capture_v1` false; scheduling it also made the host attach an A34 \
@@ -1051,6 +1085,31 @@ pub fn passive_capture_roster() -> Vec<CompactDomainDescriptor> {
     }
     roster.sort_by_key(|descriptor| descriptor.id);
     roster
+}
+
+/// The wire names the shipped product and the capture harness both schedule.
+///
+/// One roster, so a product capture and a harness capture are the same capture.
+pub fn production_capture_roster_names() -> Vec<&'static str> {
+    passive_capture_roster()
+        .into_iter()
+        .map(|descriptor| descriptor.wire_name)
+        .collect()
+}
+
+/// The production capture roster names `scheduled` does not carry. Empty means
+/// the capture ran the shipping production profile.
+pub fn production_capture_roster_missing<S: AsRef<str>>(scheduled: &[S]) -> Vec<&'static str> {
+    production_capture_roster_names()
+        .into_iter()
+        .filter(|wire_name| {
+            let id = id_for_scheduled_name(wire_name);
+            !scheduled.iter().any(|name| {
+                let name = name.as_ref();
+                name == *wire_name || (id.is_some() && id_for_scheduled_name(name) == id)
+            })
+        })
+        .collect()
 }
 
 pub fn is_in_passive_capture_roster(id: CompactDomainId) -> bool {
@@ -3166,6 +3225,67 @@ mod tests {
                 "the passive collector refuses domain {id} at attach, so no roster may name it"
             );
         }
+    }
+
+    /// The production capture roster is the one roster the shipped product and
+    /// the capture harness both schedule, and a refused domain is never in it.
+    #[test]
+    fn production_capture_roster_names_join_the_passive_capture_roster() {
+        let names = production_capture_roster_names();
+        let roster: Vec<&'static str> = passive_capture_roster()
+            .into_iter()
+            .map(|descriptor| descriptor.wire_name)
+            .collect();
+        assert_eq!(names, roster);
+        assert!(!names.is_empty());
+        for id in PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS {
+            let refused = wire_name_for_id(*id).expect("a refused domain has a wire name");
+            assert!(
+                !names.contains(&refused),
+                "the production capture roster must never schedule refused domain {id}"
+            );
+        }
+        for id in PASSIVE_CAPTURE_ONLY_DOMAIN_IDS {
+            let rider = wire_name_for_id(*id).expect("a capture-only rider has a wire name");
+            assert!(
+                names.contains(&rider),
+                "every PASSIVE_CAPTURE_ONLY_DOMAIN_IDS rider rides the production capture roster"
+            );
+        }
+        assert!(production_capture_roster_missing(&names).is_empty());
+        let mut short = names.clone();
+        let dropped = short.pop().expect("the roster is nonempty");
+        assert_eq!(production_capture_roster_missing(&short), vec![dropped]);
+        let empty: Vec<&str> = Vec::new();
+        assert_eq!(production_capture_roster_missing(&empty), names);
+    }
+
+    /// A refusal states a typed KIND, not only prose: a reader decides "the
+    /// product cannot install that hook" from the kind, never by reading text.
+    #[test]
+    fn every_passive_production_refusal_states_a_typed_kind() {
+        for refusal in PASSIVE_PRODUCTION_REFUSALS {
+            assert_eq!(
+                PassiveProductionRefusalKind::parse(refusal.kind.as_str()),
+                Some(refusal.kind),
+                "refusal {} must round-trip its kind token",
+                refusal.id
+            );
+            assert!(!refusal.reason.trim().is_empty());
+        }
+        assert_eq!(
+            passive_production_refusal(71).map(|refusal| refusal.kind),
+            Some(PassiveProductionRefusalKind::ProductObserverHookAbsent)
+        );
+        assert_eq!(
+            passive_production_refusal(82).map(|refusal| refusal.kind),
+            Some(PassiveProductionRefusalKind::EvidenceOnlyControl)
+        );
+        assert_eq!(
+            passive_production_refusal(87).map(|refusal| refusal.kind),
+            Some(PassiveProductionRefusalKind::ProductObserverHookAbsent)
+        );
+        assert_eq!(PassiveProductionRefusalKind::parse("neither"), None);
     }
 
     /// Every passive-production refusal carries its reason, and the id list and

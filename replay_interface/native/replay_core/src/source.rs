@@ -65,11 +65,25 @@ pub enum ProductionProfileAuthority {
     Enabled,
 }
 
+/// A profile domain the recording deliberately did not schedule, with the
+/// recorder's own typed reason. A named refusal is not a gap: it is the
+/// standing decision, and a surface must render it by name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductionProfileRefusal {
+    pub domain: String,
+    pub domain_id: u64,
+    pub decided_on: String,
+    pub kind: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecorderProductAdmission {
     pub authority: ProductionProfileAuthority,
     pub guarantees_not_held: Vec<ProductionProfileGuarantee>,
     pub profile_domains_not_scheduled: Vec<String>,
+    /// The subset of `profile_domains_not_scheduled` carrying a typed refusal.
+    pub profile_domains_refused: Vec<ProductionProfileRefusal>,
     pub missing_required_static_artifacts: Vec<String>,
     pub static_artifacts_not_content_bound: Vec<StaticArtifactNotContentBound>,
     /// Every artifact the attach-time content proof refused and WHY, including
@@ -120,6 +134,7 @@ impl RecorderProductAdmission {
                 ProductionProfileGuarantee::FullProfileDomainSchedule,
             ],
             profile_domains_not_scheduled: Vec::new(),
+            profile_domains_refused: Vec::new(),
             missing_required_static_artifacts: Vec::new(),
             static_artifacts_not_content_bound: Vec::new(),
             attach_time_refusals: Vec::new(),
@@ -3568,29 +3583,69 @@ fn validate_recorder_product_admission(
         )));
     }
 
+    let profile_domains_refused = read_production_profile_refusals(profile)?;
+    let refused_names: BTreeSet<String> = profile_domains_refused
+        .iter()
+        .map(|refusal| refusal.domain.clone())
+        .collect();
+    if let Some(unknown) = refused_names
+        .iter()
+        .find(|name| !declared_not_scheduled.contains(*name))
+    {
+        return Err(SourceError::Open(format!(
+            "recorder production_profile.profile_domains_refused_by_the_passive_product names \
+             {unknown:?}, which production_profile.profile_domains_not_scheduled does not carry"
+        )));
+    }
+    let unexplained: Vec<String> = declared_not_scheduled
+        .difference(&refused_names)
+        .cloned()
+        .collect();
+    // Absent on a recording that published no residue field; the residue is
+    // derived either way, so a present field is only ever cross-checked.
+    if profile
+        .get("profile_domains_not_scheduled_without_a_named_reason")
+        .is_some()
+    {
+        let declared_unexplained: Vec<String> = unique_names(
+            &read_list("profile_domains_not_scheduled_without_a_named_reason")?,
+            "production_profile.profile_domains_not_scheduled_without_a_named_reason",
+        )?
+        .into_iter()
+        .collect();
+        if declared_unexplained != unexplained {
+            return Err(SourceError::Open(format!(
+                "recorder production_profile.profile_domains_not_scheduled_without_a_named_reason \
+                 ({declared_unexplained:?}) is not the unscheduled residue carrying no typed \
+                 refusal ({unexplained:?})"
+            )));
+        }
+    }
+
     if enabled {
-        for (field, rows) in [
-            (
-                "profile_domains_not_scheduled",
-                &profile_domains_not_scheduled,
-            ),
-            (
-                "missing_required_static_artifacts",
-                &missing_required_static_artifacts,
-            ),
-        ] {
-            if !rows.is_empty() {
-                return Err(SourceError::Open(format!(
-                    "recorder production_profile.{field} is nonempty ({rows:?}) while \
-                     production_profile.enabled is true; a capture that claims the production \
-                     profile must satisfy all of it"
-                )));
-            }
+        // A capture claiming the production profile must satisfy all of it,
+        // EXCEPT the domains the recorder refuses by name and by kind: a named
+        // standing refusal is the decision, not a gap.
+        if !unexplained.is_empty() {
+            return Err(SourceError::Open(format!(
+                "recorder production_profile.profile_domains_not_scheduled names {unexplained:?} \
+                 with no typed refusal while production_profile.enabled is true; a capture that \
+                 claims the production profile must schedule every profile domain it does not \
+                 refuse by name"
+            )));
+        }
+        if !missing_required_static_artifacts.is_empty() {
+            return Err(SourceError::Open(format!(
+                "recorder production_profile.missing_required_static_artifacts is nonempty \
+                 ({missing_required_static_artifacts:?}) while production_profile.enabled is \
+                 true; a capture that claims the production profile must satisfy all of it"
+            )));
         }
         return Ok(RecorderProductAdmission {
             authority: ProductionProfileAuthority::Enabled,
             guarantees_not_held: Vec::new(),
             profile_domains_not_scheduled,
+            profile_domains_refused,
             missing_required_static_artifacts,
             static_artifacts_not_content_bound: Vec::new(),
             attach_time_refusals: Vec::new(),
@@ -3598,7 +3653,7 @@ fn validate_recorder_product_admission(
     }
 
     let mut guarantees_not_held = vec![ProductionProfileGuarantee::ProductionProfileEnabled];
-    if !profile_domains_not_scheduled.is_empty() {
+    if !unexplained.is_empty() {
         guarantees_not_held.push(ProductionProfileGuarantee::FullProfileDomainSchedule);
     }
     guarantees_not_held.sort_unstable();
@@ -3607,10 +3662,66 @@ fn validate_recorder_product_admission(
         authority: ProductionProfileAuthority::Disabled,
         guarantees_not_held,
         profile_domains_not_scheduled,
+        profile_domains_refused,
         missing_required_static_artifacts,
         static_artifacts_not_content_bound: Vec::new(),
         attach_time_refusals: Vec::new(),
     })
+}
+
+/// The recorder's typed refusal rows. Absent means a recording that published
+/// no refusal table at all, which leaves every unscheduled domain unexplained.
+fn read_production_profile_refusals(
+    profile: &Map<String, Value>,
+) -> Result<Vec<ProductionProfileRefusal>, SourceError> {
+    let field = "profile_domains_refused_by_the_passive_product";
+    let Some(value) = profile.get(field) else {
+        return Ok(Vec::new());
+    };
+    let rows = value.as_array().ok_or_else(|| {
+        SourceError::Open(format!("recorder production_profile.{field} is not an array"))
+    })?;
+    let mut refusals = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (index, row) in rows.iter().enumerate() {
+        let row = row.as_object().ok_or_else(|| {
+            SourceError::Open(format!(
+                "recorder production_profile.{field}[{index}] is not an object"
+            ))
+        })?;
+        let text = |key: &str| -> Result<String, SourceError> {
+            row.get(key)
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    SourceError::Open(format!(
+                        "recorder production_profile.{field}[{index}].{key} is absent or empty; a \
+                         refusal that names no {key} is a silent absence"
+                    ))
+                })
+        };
+        let domain_id = row.get("domain_id").and_then(Value::as_u64).ok_or_else(|| {
+            SourceError::Open(format!(
+                "recorder production_profile.{field}[{index}].domain_id is absent or not a number"
+            ))
+        })?;
+        let refusal = ProductionProfileRefusal {
+            domain: text("domain")?,
+            domain_id,
+            decided_on: text("decided_on")?,
+            kind: text("kind")?,
+            reason: text("reason")?,
+        };
+        if !seen.insert(refusal.domain.clone()) {
+            return Err(SourceError::Open(format!(
+                "recorder production_profile.{field} repeats {:?}",
+                refusal.domain
+            )));
+        }
+        refusals.push(refusal);
+    }
+    Ok(refusals)
 }
 
 fn read_optional_metadata_object_once<F>(
@@ -5524,6 +5635,89 @@ mod tests {
             )
             .is_err(),
             "present admission authorities must be complete and positive"
+        );
+    }
+
+    #[test]
+    /// A production-profile capture may leave a profile domain unscheduled when
+    /// the recorder refuses it BY NAME, with a kind and a date. The same
+    /// recording with the refusal table stripped is refused: an absence nothing
+    /// explains cannot pass as the production profile.
+    fn a_named_refusal_is_not_a_gap_and_an_unnamed_absence_is() {
+        let recording = |refusals: Value, residue: Value| {
+            json!({
+                "scheduled_domains": ["fuel_live", "production_live"],
+                "replay_artifact": {
+                    "recovery": false,
+                    "reason": "gate_passed",
+                    "gate_problems": [],
+                },
+                "production_profile": {
+                    "enabled": true,
+                    "profile_domains": [
+                        "fuel_live",
+                        "production_live",
+                        "decision_panel_live",
+                    ],
+                    "mandatory_domains_not_production_complete": [],
+                    "profile_domains_not_scheduled": ["decision_panel_live"],
+                    "profile_domains_refused_by_the_passive_product": refusals,
+                    "profile_domains_not_scheduled_without_a_named_reason": residue,
+                    "missing_required_static_artifacts": [],
+                },
+            })
+        };
+        let named = json!([{
+            "domain": "decision_panel_live",
+            "domain_id": 87,
+            "decided_on": "2026-07-29",
+            "kind": "product_observer_hook_absent",
+            "reason": "its A34 producer requires the authenticated early-render owner",
+        }]);
+
+        let admission =
+            validate_recorder_product_admission(recording(named.clone(), json!([])).as_object().unwrap())
+                .expect("a named refusal does not disqualify the production profile");
+        assert_eq!(admission.authority, ProductionProfileAuthority::Enabled);
+        assert!(admission.is_full_production_profile());
+        assert_eq!(admission.profile_domains_refused.len(), 1);
+        let refusal = &admission.profile_domains_refused[0];
+        assert_eq!(refusal.domain, "decision_panel_live");
+        assert_eq!(refusal.domain_id, 87);
+        assert_eq!(refusal.kind, "product_observer_hook_absent");
+        assert_eq!(refusal.decided_on, "2026-07-29");
+        assert!(!refusal.reason.is_empty());
+
+        let error = validate_recorder_product_admission(
+            recording(json!([]), json!(["decision_panel_live"]))
+                .as_object()
+                .unwrap(),
+        )
+        .expect_err("an unscheduled domain with no typed refusal must not claim the profile");
+        assert!(
+            error.to_string().contains("with no typed refusal"),
+            "{error}"
+        );
+
+        let mut untyped = named.clone();
+        untyped[0]["kind"] = json!("");
+        let error = validate_recorder_product_admission(
+            recording(untyped, json!([])).as_object().unwrap(),
+        )
+        .expect_err("a refusal with no kind is a silent absence");
+        assert!(error.to_string().contains("kind is absent or empty"), "{error}");
+
+        let error = validate_recorder_product_admission(
+            recording(named, json!(["decision_panel_live"]))
+                .as_object()
+                .unwrap(),
+        )
+        .expect_err("the residue list must join the refusal table");
+        assert!(
+            error
+                .to_string()
+                .contains("is not the unscheduled residue carrying no typed refusal"),
+            "{error}"
         );
     }
 

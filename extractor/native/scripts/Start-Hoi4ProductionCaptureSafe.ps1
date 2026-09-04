@@ -437,6 +437,7 @@ $args = @(
     "--pid", "$Hoi4Pid", "--dll", $stagedDll, "--out-dir", $OutDir,
     "--duration-s", ([string]::Format([Globalization.CultureInfo]::InvariantCulture, "{0:0.###}", $DurationSeconds)),
     "--sample-ms", "1", "--min-game-hours", "$MinGameHours", "--profile", "production",
+    "--scheduled-domains-exact",
     "--reader-concurrency", "$ReaderConcurrency",
     "--session-id", $SessionId, "--capture-id", $CaptureId, "--read-only-scheduler",
     "--read-only-scheduler-poll-ms", "$ReadOnlySchedulerPollMs",
@@ -453,6 +454,11 @@ $args = @(
     "--static-bundle-python", $PythonExe,
     "--static-bundle-timeout-ms", "300000"
 )
+# The plan below records this roster as the capture's schedule, so the command
+# must schedule exactly it rather than let the profile union pick a set.
+foreach ($domain in $productionDomainNames) {
+    $args += @("--scheduled-domain", $domain)
+}
 if ($AcceptanceMode -ne "production") {
     $args += @("--acceptance-test-mode", $AcceptanceMode, "--acceptance-test-nonce", $AcceptanceTestNonce)
 }
