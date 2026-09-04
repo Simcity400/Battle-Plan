@@ -663,17 +663,17 @@ mod tests {
         let integration: [(&str, &str); 4] = [
             (
                 "tooltip_runtime_no_d72.rs",
-                include_str!("../tests/tooltip_runtime_no_d72.rs"),
+                include_str!("../tests/replay_app_suite/tooltip_runtime_no_d72.rs"),
             ),
             (
                 "descheduled_carriers_reach_no_pixel.rs",
-                include_str!("../tests/descheduled_carriers_reach_no_pixel.rs"),
+                include_str!("../tests/replay_app_suite/descheduled_carriers_reach_no_pixel.rs"),
             ),
             (
                 "no_silent_skip.rs",
-                include_str!("../tests/no_silent_skip.rs"),
+                include_str!("../tests/replay_app_suite/no_silent_skip.rs"),
             ),
-            ("gate_currency.rs", include_str!("../tests/gate_currency.rs")),
+            ("gate_currency.rs", include_str!("../tests/replay_app_suite/gate_currency.rs")),
         ];
         let mut call_sites = 0usize;
         for (name, body) in integration {

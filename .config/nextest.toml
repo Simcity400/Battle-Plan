@@ -10,9 +10,8 @@
 [profile.default]
 default-filter = '''
 not (
-  binary(soak)
-  | binary(soak_f2)
-  | binary(/^(alerts_binding|decision_chrome|event_chrome|flag_precedence|markup_law|topbar_binding|topbar_quads|unitview_binding|waroverview_binding|widget_layout|xui01_definition_admission|xui02_window_manager|xui17_characters)$/)
+  binary(replay_app_soak)
+  | binary(/^(game_ui_evidence|game_ui_binding_evidence)$/)
   | test(/(?x)(^|::)(
       admitted_ui_resolver_rejects_an_installed_but_unrecorded_path
       | captured_pixel_shader_prefilter_covers_full_family_classifiers
@@ -77,8 +76,7 @@ slow-timeout = "10s"
 [profile.ci]
 default-filter = '''
 not (
-  binary(soak)
-  | binary(soak_f2)
+  binary(replay_app_soak)
   | test(/(?x)(^|::)(
       admitted_ui_resolver_rejects_an_installed_but_unrecorded_path
       | alerts_feed_window_resolves_via_shared_parser
@@ -159,7 +157,7 @@ test-threads = 32
 slow-timeout = "10s"
 
 [profile.soak]
-default-filter = 'binary(soak) | binary(soak_f2)'
+default-filter = 'binary(replay_app_soak)'
 fail-fast = false
 failure-output = "immediate-final"
 success-output = "never"
@@ -170,7 +168,7 @@ slow-timeout = "5m"
 
 [profile.evidence]
 default-filter = '''
-binary(/^(alerts_binding|decision_chrome|event_chrome|flag_precedence|markup_law|topbar_binding|topbar_quads|unitview_binding|waroverview_binding|widget_layout|xui01_definition_admission|xui02_window_manager|xui17_characters|xui22_installed_game_evidence)$/)
+binary(/^(game_ui_evidence|game_ui_binding_evidence|xui22_installed_game_evidence)$/)
 | test(/(?x)(^|::)(
     admitted_ui_resolver_rejects_an_installed_but_unrecorded_path
     | captured_pixel_shader_prefilter_covers_full_family_classifiers

@@ -1,5 +1,5 @@
 
-include!("../test_gates.rs");
+include!("../../test_gates.rs");
 
 #[test]
 fn compiled_test_gates_match_the_current_environment() {

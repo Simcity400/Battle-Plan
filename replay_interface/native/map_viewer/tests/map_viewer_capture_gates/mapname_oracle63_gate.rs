@@ -123,7 +123,7 @@ fn oracle_text_metrics(
     };
     let mut texts: BTreeMap<String, String> = BTreeMap::new();
     let key: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/mapname/frame4700_labels.json"))
+        serde_json::from_str(include_str!("../fixtures/mapname/frame4700_labels.json"))
             .expect("answer key parses");
     if let Some(labels) = key["labels"].as_array() {
         for r in labels {
@@ -280,7 +280,7 @@ fn oracle63_engine_baseline_reproduces() {
         province_importance: &bundle.province_importance,
         province_type: &bundle.province_type,
     };
-    let raw = include_str!("fixtures/mapname/engine_label_oracle.json");
+    let raw = include_str!("../fixtures/mapname/engine_label_oracle.json");
     let v: serde_json::Value = serde_json::from_str(raw).expect("oracle parses");
     let rows = v["labels"].as_array().expect("labels array");
 

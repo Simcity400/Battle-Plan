@@ -1,6 +1,3 @@
-#![recursion_limit = "512"]
-
-
 use replay_core::{CountryIdentityLeaf, CountryIdentityRosterLeaf};
 use replay_core::world::FactionRosterStatus;
 use replay_core::{

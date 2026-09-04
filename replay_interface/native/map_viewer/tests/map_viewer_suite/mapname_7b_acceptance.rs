@@ -6,14 +6,14 @@ use map_viewer::{
 };
 
 const NUM_DRAWS: usize = 23;
-const FNT: &str = include_str!("fixtures/mapname_7b/hoi_mapfont4.fnt");
+const FNT: &str = include_str!("../fixtures/mapname_7b/hoi_mapfont4.fnt");
 
 fn draws() -> Vec<(Vec<u8>, Vec<u8>)> {
     macro_rules! pair {
         ($n:literal) => {
             (
-                include_bytes!(concat!("fixtures/mapname_7b/draw", $n, "_vb.bin")).to_vec(),
-                include_bytes!(concat!("fixtures/mapname_7b/draw", $n, "_cb0.bin")).to_vec(),
+                include_bytes!(concat!("../fixtures/mapname_7b/draw", $n, "_vb.bin")).to_vec(),
+                include_bytes!(concat!("../fixtures/mapname_7b/draw", $n, "_cb0.bin")).to_vec(),
             )
         };
     }

@@ -1,5 +1,3 @@
-#![recursion_limit = "256"]
-
 use serde_json::{json, Value};
 use snapshot::canon::manifest_canonical_bytes;
 use snapshot::container::{
