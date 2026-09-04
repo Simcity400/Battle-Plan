@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 #[test]
 fn ui_layout_engine_evidence_is_structured_and_build_bound() {
     let value: Value =
-        serde_json::from_str(include_str!("fixtures/ui_layout_engine_evidence_a729.json"))
+        serde_json::from_str(include_str!("../fixtures/ui_layout_engine_evidence_a729.json"))
             .expect("structured UI-layout evidence parses");
 
     assert_eq!(value["schema"], "hoi4.ui-layout-engine-evidence.a729.v1");

@@ -1,8 +1,7 @@
 
-mod soak_support;
 
 use replay_core::{open_recording, ReplaySource, TimelineConfig, WorldTimeline};
-use soak_support::{
+use crate::soak_support::{
     assert_seek_eq_play, env_usize, fixture_path, live_bytes, Lcg, SyntheticSource, INDEX_COPIES,
 };
 

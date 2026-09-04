@@ -1,7 +1,7 @@
 
 #[allow(dead_code)]
 mod corpus {
-    include!("../test_gates.rs");
+    include!("../../test_gates.rs");
 }
 
 use flate2::read::{DeflateDecoder, GzDecoder};

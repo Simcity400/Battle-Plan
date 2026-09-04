@@ -19,19 +19,28 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Only these exact files may contain the guarded vocabulary itself (they
-/// define and document the pin). Exemption is by exact path, not by stem.
-fn exempt_files(root: &Path) -> Vec<PathBuf> {
-    ["portable_replay/native/test_fs_retry/tests/junction_pin.rs",
-     "portable_replay/native/test_fs_retry/tests/no_console_shellouts.rs"]
-    .iter()
-    .map(|relative| {
-        let mut path = root.to_path_buf();
-        for component in relative.split('/') {
-            path.push(component);
-        }
-        path
-    })
-    .collect()
+/// define and document the pin). Exemption is by exact path, not by stem, and
+/// the directory is `file!()`'s own so a move cannot silently un-exempt them
+/// or exempt anything beside them.
+fn exempt_files() -> Vec<PathBuf> {
+    let this = Path::new(env!("CARGO_MANIFEST_DIR")).join(file!());
+    assert!(
+        this.is_file(),
+        "the self-exemption must resolve to this source file; got {}",
+        this.display()
+    );
+    let directory = this
+        .parent()
+        .expect("a source file has a parent directory")
+        .to_path_buf();
+    let exempt = vec![
+        directory.join("junction_pin.rs"),
+        directory.join("no_console_shellouts.rs"),
+    ];
+    for file in &exempt {
+        assert!(file.is_file(), "exempt file is missing: {}", file.display());
+    }
+    exempt
 }
 
 fn repo_root() -> PathBuf {
@@ -421,7 +430,7 @@ fn no_native_tree_builds_junctions_or_drives_disks_through_shellouts_anymore() {
     // names are case-insensitive on Windows too.
     let mut offenders: Vec<String> = Vec::new();
     let root = repo_root();
-    let exempt = exempt_files(&root);
+    let exempt = exempt_files();
     let vocabularies: Vec<Vec<char>> = ["mklink", "robocopy", "fsutil"]
         .iter()
         .map(|token| token.chars().collect())
@@ -493,7 +502,7 @@ fn every_remaining_spawn_of_the_console_shells_carries_the_windowless_flag() {
 
     let mut offenders: Vec<String> = Vec::new();
     let root = repo_root();
-    let exempt = exempt_files(&root);
+    let exempt = exempt_files();
     for tree in ["extractor/native", "portable_replay/native", "replay_interface/native"] {
         for file in rust_sources(&root.join(tree)) {
             if exempt.iter().any(|e| e == &file) {

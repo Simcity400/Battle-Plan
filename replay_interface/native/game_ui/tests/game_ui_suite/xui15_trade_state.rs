@@ -11,6 +11,7 @@ use replay_core::{
     ResourceTradeDealRow, TradeContractRow, TradeResourceRow, TradeView, ViewStatus,
 };
 
+#[path = "../identity_support/mod.rs"]
 mod identity_support;
 use identity_support::identity;
 use std::collections::BTreeMap;
