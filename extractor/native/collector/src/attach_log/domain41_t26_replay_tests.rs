@@ -307,6 +307,7 @@ fn decode_projects_payload(payload: &[u8]) -> DecodedRecord {
     root_reasons.invalid_project_short_array = u32le(payload, 132);
 
     let read = CompactProjectsRead {
+        omissions: None,
         phase: Domain41PhaseTimes::default(),
         facilities,
         projects,

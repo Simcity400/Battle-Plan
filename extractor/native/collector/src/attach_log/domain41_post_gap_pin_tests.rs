@@ -43,6 +43,7 @@ fn read_of(
     let observed_facility_rows = facilities.len() as u32;
     let observed_project_rows = owner_progress_rows.len() as u32;
     CompactProjectsRead {
+        omissions: None,
         phase: Domain41PhaseTimes::default(),
         facilities,
         projects: Vec::new(),

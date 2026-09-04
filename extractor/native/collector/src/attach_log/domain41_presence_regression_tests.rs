@@ -152,6 +152,7 @@ fn t26_scale_read(status_flags: u32) -> CompactProjectsRead {
     let observed_project_rows = owner_progress.len() as u32;
     let changed_rows = observed_facility_rows.saturating_add(observed_scientist_rows);
     CompactProjectsRead {
+        omissions: None,
         phase: Domain41PhaseTimes::default(),
         facilities,
         projects: Vec::new(),

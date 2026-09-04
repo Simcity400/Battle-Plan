@@ -11,6 +11,7 @@ pub mod clock_unreadable_interval;
 pub mod content_identity_census;
 pub mod control_transport;
 pub mod counter_wire_registry;
+pub mod d41_omission;
 pub mod country_tag;
 pub mod country_tag_db;
 pub mod diagnostic_channel;
@@ -305,6 +306,11 @@ pub const COMPACT_EXPECTED_PARTIAL_TOLERANCES: &[CompactExpectedPartialTolerance
         domain_id: 28,
         tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
         reason: "oob_command: only invalid army-root or naval task-force-root rows are tolerated; the collector freezes additions/deletes/linkage changes, and the domain/hour remains unknown because omitted command identities are not serialized",
+    },
+    CompactExpectedPartialTolerance {
+        domain_id: 41,
+        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
+        reason: "special_projects: only a payload-declared pin-to-row omission is tolerated, and the declaration IS the payload spelling — the D41O trailer names every omitted row BY IDENTITY (facility id with the pin's province; scientist character id), the declared total is those lists' length, and the decoder refuses a trailer that names nothing, a declaration without PARTIAL_DATA, an out-of-canonical-order list, an identity no class could produce, and a declaration the record contradicts by also carrying the row. A cause with no per-row key — a refused country root, an over-capacity cache, an aborted lifecycle/owner-progress/reward-history country, a refused breakthrough country, or a walk that stopped on its row cap — cannot be declared, so the producer emits no trailer and the frame stays a refused hour. The rows carried are exact measurements and whole rows are the only unit of omission; the fold drops exactly the declared facility and scientist identities from the accumulator so no omitted row survives as the hour's measurement and no deletion is fabricated. Every other failing word keeps the pre-tolerance verdict, and the domain/hour remains unknown for exactly the rows the declaration names",
     },
     CompactExpectedPartialTolerance {
         domain_id: 42,
@@ -3672,7 +3678,7 @@ mod tests {
             .iter()
             .map(|tolerance| tolerance.domain_id)
             .collect::<Vec<_>>();
-        assert_eq!(domains, vec![26, 27, 28, 42, 47, 53, 54, 86]);
+        assert_eq!(domains, vec![26, 27, 28, 41, 42, 47, 53, 54, 86]);
     }
 
     #[test]
@@ -3689,10 +3695,10 @@ mod tests {
 
     #[test]
     fn expected_partial_tolerance_lookup_rejects_unaccepted_partial_domains() {
-        for domain_id in [29, 41, 45, 48, 49, 50, 56, 65] {
+        for domain_id in [29, 45, 48, 49, 50, 56, 65] {
             assert_eq!(expected_partial_tolerance(domain_id), None);
         }
-        for domain_id in [26, 27, 28, 42, 47, 53, 54, 86] {
+        for domain_id in [26, 27, 28, 41, 42, 47, 53, 54, 86] {
             assert_eq!(
                 expected_partial_tolerance(domain_id).map(|tolerance| tolerance.tolerated_flags),
                 Some(COMPACT_STATUS_PARTIAL_DATA)

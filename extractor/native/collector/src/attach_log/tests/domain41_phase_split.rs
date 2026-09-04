@@ -44,6 +44,7 @@ pub(super) fn read_with_phase_and_shortfall(
     scientist_row_shortfall: u32,
 ) -> CompactProjectsRead {
     CompactProjectsRead {
+        omissions: None,
         facilities: Vec::new(),
         projects: Vec::new(),
         scientists: Vec::new(),
