@@ -458,25 +458,22 @@ fn gate(
 
 /// The exact field set `replay_core::army_battleplans::parse_order` admits.
 ///
-/// It admits a row of EXACTLY these plus `aggressiveness_status` (the legacy
-/// shape), or those plus `owner_kind` and `owner_id` (the typed shape), and
+/// It admits a row of EXACTLY these plus `owner_kind` and `owner_id`, and
 /// refuses any other field count. That refusal is part of the census: an order
 /// with an extra key is not in the view this producer's census must equal, so
 /// admitting it here would put a plan in one census and not the other.
-const D54_BASE_FIELDS: [&str; 17] = portable_render_stream::XMAP15_D54_ORDER_ROW_FIELDS;
+const D54_BASE_FIELDS: [&str; 18] = portable_render_stream::XMAP15_D54_ORDER_ROW_FIELDS;
 
 /// The status words the row SHAPE pins, and the value each is pinned to.
 ///
 /// `target_status` is deliberately not among them: parse_order pins it per
 /// order type - "exact" at type 5, "unsupported" everywhere else - so a flat
 /// entry here would refuse a row the view admits.
-const D54_PINNED_STATUS: [(&str, &str); 6] = [
+const D54_PINNED_STATUS: [(&str, &str); 4] = [
     ("execution_status", "exact"),
     ("assigned_units_status", "exact"),
     ("order_linkage_status", "exact"),
     ("active_status", "exact"),
-    ("stance_status", "unknown"),
-    ("aggressiveness_status", "unknown"),
 ];
 
 /// The engine ranges parse pins, taken from the ONE spelling of them.
@@ -528,18 +525,13 @@ pub(crate) enum D54Order {
 fn d54_order(order: &Map<String, Value>) -> D54Order {
     // The exact field set, including the count. A row carrying an extra key is
     // refused before any value is read.
-    if !D54_BASE_FIELDS.iter().all(|field| order.contains_key(*field))
-        || !order.contains_key("aggressiveness_status")
-    {
+    if !D54_BASE_FIELDS.iter().all(|field| order.contains_key(*field)) {
         return D54Order::Refused;
     }
-    let legacy = order.len() == D54_BASE_FIELDS.len() + 1
-        && !order.contains_key("owner_kind")
-        && !order.contains_key("owner_id");
-    let typed = order.len() == D54_BASE_FIELDS.len() + 3
+    let typed = order.len() == D54_BASE_FIELDS.len() + 2
         && order.contains_key("owner_kind")
         && order.contains_key("owner_id");
-    if !legacy && !typed {
+    if !typed {
         return D54Order::Refused;
     }
     for (key, expected) in D54_PINNED_STATUS {
@@ -556,7 +548,7 @@ fn d54_order(order: &Map<String, Value>) -> D54Order {
         Some(path_provinces),
         Some(ordered_assigned_division_ids),
     ) = (
-        order_identity(order, legacy),
+        order_identity(order),
         order.get("generation").and_then(Value::as_u64),
         order.get("active").and_then(Value::as_bool),
         order
@@ -661,13 +653,8 @@ struct OrderIdentity {
 }
 
 /// The identity half of the admission, including its engine ranges.
-///
-/// The LEGACY row shape carries no owner kind at all and is an army by
-/// definition, which is how parse_order reads it.
-fn order_identity(order: &Map<String, Value>, legacy: bool) -> Option<OrderIdentity> {
-    let (owner_is_army_group, owner_id) = if legacy {
-        (false, u32_of(order, "army_id")?)
-    } else {
+fn order_identity(order: &Map<String, Value>) -> Option<OrderIdentity> {
+    let (owner_is_army_group, owner_id) = {
         let owner_id = u32_of(order, "owner_id")?;
         match order.get("owner_kind")?.as_str()? {
             "army" if u32_of(order, "army_id") == Some(owner_id) => (false, owner_id),
@@ -818,8 +805,8 @@ mod tests {
             "order_linkage_status": "exact",
             "active": true,
             "active_status": "exact",
-            "stance_status": "unknown",
-            "aggressiveness_status": "unknown",
+            "style_flags": 0,
+            "style_status": "exact",
         });
         let order_of_battle = json!({
             "extra": {

@@ -1,7 +1,7 @@
 
 use crate::{
-    FoundationFeatureContext, FoundationFeatureOutput, GameFileResolver,
-    ProductionMapFeatureAdapter, Result,
+    derive_xmap15_orders, FoundationFeatureContext, FoundationFeatureOutput, GameFileResolver,
+    ProductionMapFeatureAdapter, ProvinceAnchors, Result, Xmap15OrderDerivation,
 };
 use portable_render_stream::{
     AssignedStage, FamilyDisposition, FoundationGap, MapVisualFamily, UsedContentKey,
@@ -89,6 +89,10 @@ pub trait Xmap15UnitIdentityProvider {
 pub(crate) struct Xmap15OrdersAdapter {
     resolver: GameFileResolver,
     admission: ValidatedContentAdmission,
+    /// The effective map's own province positions, decoded once per session:
+    /// they are what a recorded route province id stands for, and re-decoding
+    /// `provinces.bmp` per frame would put a bitmap walk on the hot path.
+    anchors: std::sync::Arc<std::sync::OnceLock<std::result::Result<ProvinceAnchors, String>>>,
 }
 
 impl Xmap15OrdersAdapter {
@@ -96,7 +100,18 @@ impl Xmap15OrdersAdapter {
         Self {
             resolver: resolver.clone(),
             admission: admission.clone(),
+            anchors: std::sync::Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    fn province_anchors(&self) -> std::result::Result<&ProvinceAnchors, String> {
+        self.anchors
+            .get_or_init(|| {
+                crate::province_anchors_from_resolver(&self.resolver)
+                    .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)
     }
 }
 
@@ -139,6 +154,25 @@ impl ProductionMapFeatureAdapter for Xmap15OrdersAdapter {
             consumed_gap_ids: vec![XMAP15_AUTHORITY_GAP_ID.into()],
         };
 
+        // The recorded order census is this family's own semantic input, and its
+        // arrows are placed from the province identities it carries. The
+        // derivation runs before anything else so an hour that cannot draw says
+        // which orders it could place and which it refused, by name and count.
+        let order_derivation = match self.province_anchors() {
+            Ok(anchors) => {
+                let derived = derive_xmap15_orders(context.world_frame, anchors);
+                if let Some(derived) = derived.as_ref() {
+                    derived.validate()?;
+                }
+                derived
+            }
+            Err(error) => {
+                return Ok(unavailable(&format!(
+                    "this recording's effective map yields no province positions to place a recorded order route against: {error}"
+                )));
+            }
+        };
+
         if semantic_value(context.world_frame).is_none() {
             // WHY the key is absent is the recorder's answer. A recording made
             // by a recorder that has the XMAP15 producer carries the gate
@@ -148,9 +182,10 @@ impl ProductionMapFeatureAdapter for Xmap15OrdersAdapter {
             // hour did not carry.
             return Ok(unavailable(&format!(
                 "this recording carries no key {}: the unconditional current-hour XMAP15 \
-                 semantic sidecar is absent; {}",
+                 semantic sidecar is absent; {}; {}",
                 replay_core::XMAP15_ORDERS_FRONTS_MOVEMENT_SEMANTIC_PATH.join("."),
-                xmap15_unavailable_account(context.world_frame)
+                xmap15_unavailable_account(context.world_frame),
+                xmap15_order_derivation_account(context.world_frame, order_derivation.as_ref())
             )));
         }
         let Some(units) = context.xmap15_units else {
@@ -1381,6 +1416,27 @@ fn xmap15_account_from_gate(gate: Option<&serde_json::Value>, hour_index: i64) -
 /// A gate for a DIFFERENT hour is refused rather than quoted: the fold writes
 /// one per hour, and a mismatched index means the value was carried across an
 /// hour boundary, so its counts describe an hour that is not this one.
+/// What the recorded order census yielded this hour, for a gap that has to say
+/// why the family cannot draw without pretending the orders were not there.
+fn xmap15_order_derivation_account(
+    world: &WorldFrame,
+    derivation: Option<&Xmap15OrderDerivation>,
+) -> String {
+    if let Some(derivation) = derivation {
+        return derivation.refusal_account();
+    }
+    let view = world.army_battleplans();
+    match view.diagnostic {
+        Some(diagnostic) => format!(
+            "the recording carries no admitted battle-plan order census this hour: {diagnostic}"
+        ),
+        None => format!(
+            "the recording carries no admitted battle-plan order census this hour: the D54 view              is {:?}",
+            view.status
+        ),
+    }
+}
+
 fn xmap15_unavailable_account(world: &WorldFrame) -> String {
     xmap15_account_from_gate(world.xmap15_producer_gate(), world.hour_index())
 }

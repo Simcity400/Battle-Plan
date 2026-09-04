@@ -1435,7 +1435,6 @@
       "world_fold.rs:6014-6019": 1
     },
     "extractor/native/wire_format/src/d54.rs": {
-      "attach_log.rs:46592-46593": 1,
       "compact_contract/src/lib.rs:197-201": 1,
       "compact_contract/src/status_flags_base.rs:16": 1,
       "d11.rs:162-172": 1,

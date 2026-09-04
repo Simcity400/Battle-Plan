@@ -144,7 +144,7 @@ pub use portable_render_stream::{grid_from_tiles, tiles_from_grid};
 
 pub use army_battleplans::{
     ArmyBattleplanGeometry, ArmyBattleplanOrderExact, ArmyBattleplanOrderKey,
-    ArmyBattleplanOwnerKey, ArmyBattleplanOwnerKind, ArmyBattleplansView,
+    ArmyBattleplanOwnerKey, ArmyBattleplanOwnerKind, ArmyBattleplanStyle, ArmyBattleplansView,
 };
 pub use decision_evaluation::{
     admit_decision_evaluation, card_record_sha256 as xui19_card_record_sha256,

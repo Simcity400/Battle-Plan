@@ -55,7 +55,7 @@ pub const XMAP15_PRODUCER_GATE_SCHEMA: &str = "hoi4.xmap15.producer-gate.v1";
 /// instance ids to `i32::MAX` while the consumer stopped at a hundred million,
 /// so a row above that was minted here and made the whole view unavailable
 /// there. `army_battleplans.rs` takes its own constants from these.
-pub const XMAP15_D54_ORDER_ROW_FIELDS: [&str; 17] = [
+pub const XMAP15_D54_ORDER_ROW_FIELDS: [&str; 18] = [
     "army_id",
     "engine_order_instance_id",
     "generation",
@@ -72,8 +72,25 @@ pub const XMAP15_D54_ORDER_ROW_FIELDS: [&str; 17] = [
     "order_linkage_status",
     "active",
     "active_status",
-    "stance_status",
+    "style_flags",
+    "style_status",
 ];
+
+/// on to pick an order's `gfx/maparrows/maparrows.txt` definition, one bit each
+/// in that function's own branch order. The engine reads them from the order at
+/// +0x118, +0x119, +0x298, +0x299 and +0x378, and from its owner at +0x39.
+pub const XMAP15_D54_STYLE_MOVE_SPECIAL: u32 = 1;
+pub const XMAP15_D54_STYLE_WITHDRAW: u32 = 1 << 1;
+pub const XMAP15_D54_STYLE_FALLBACK: u32 = 1 << 2;
+pub const XMAP15_D54_STYLE_VIRTUAL: u32 = 1 << 3;
+pub const XMAP15_D54_STYLE_OWNER_OVERRIDE: u32 = 1 << 4;
+pub const XMAP15_D54_STYLE_OWNER_GROUPED: u32 = 1 << 5;
+pub const XMAP15_D54_STYLE_FLAG_MASK: u32 = XMAP15_D54_STYLE_MOVE_SPECIAL
+    | XMAP15_D54_STYLE_WITHDRAW
+    | XMAP15_D54_STYLE_FALLBACK
+    | XMAP15_D54_STYLE_VIRTUAL
+    | XMAP15_D54_STYLE_OWNER_OVERRIDE
+    | XMAP15_D54_STYLE_OWNER_GROUPED;
 
 pub const XMAP15_D54_MAX_ARMY_ID: u32 = i32::MAX as u32;
 pub const XMAP15_D54_MAX_ORDER_INSTANCE_ID: u32 = 100_000_000;

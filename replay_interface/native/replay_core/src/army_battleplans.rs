@@ -41,6 +41,18 @@ pub enum ArmyBattleplanGeometry {
     Unsupported,
 }
 
+/// on to pick an order's `maparrows.txt` definition. Half a set is no set: the
+/// producer refuses all six unless every byte read back 0 or 1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArmyBattleplanStyle {
+    pub move_special: bool,
+    pub withdraw: bool,
+    pub fallback: bool,
+    pub virtual_line: bool,
+    pub owner_override: bool,
+    pub owner_grouped: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArmyBattleplanOrderExact {
     pub key: ArmyBattleplanOrderKey,
@@ -49,6 +61,9 @@ pub struct ArmyBattleplanOrderExact {
     pub geometry: ArmyBattleplanGeometry,
     pub assigned_division_ids: Vec<u32>,
     pub active: bool,
+    /// `None` where the producer could not read the whole predicate set for
+    /// this order; never a default, because every default is a real arrow.
+    pub style: Option<ArmyBattleplanStyle>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,7 +175,10 @@ fn parse_army_battleplans(
     match domain.get("known") {
         Some(Value::Bool(true)) => {}
         Some(Value::Bool(false)) | None | Some(Value::Null) => {
-            return ArmyBattleplansView::unavailable(None);
+            // A withheld hour still carries the producer's own omission counts.
+            // Dropping them here left every consumer with "unavailable" and no
+            // way to say which of the fold's refusals this hour hit.
+            return ArmyBattleplansView::unavailable(withheld_hour_diagnostic(domain));
         }
         Some(_) => {
             return ArmyBattleplansView::unavailable(Some(
@@ -264,27 +282,38 @@ fn parse_army_battleplans(
     }
 }
 
-fn parse_order(row: &Map<String, Value>, _index: usize) -> Option<ArmyBattleplanOrderExact> {
-    const FIELDS: [&str; 17] = portable_render_stream::XMAP15_D54_ORDER_ROW_FIELDS;
-    let has_base_fields = FIELDS.iter().all(|field| row.contains_key(*field))
-        && row.contains_key("aggressiveness_status");
-    let legacy = row.len() == FIELDS.len() + 1
-        && has_base_fields
-        && !row.contains_key("owner_kind")
-        && !row.contains_key("owner_id");
-    let typed = row.len() == FIELDS.len() + 3
-        && has_base_fields
-        && row.contains_key("owner_kind")
-        && row.contains_key("owner_id");
-    if !legacy && !typed {
+/// What the producer said about the hour it withheld, where it said anything.
+fn withheld_hour_diagnostic(domain: &Map<String, Value>) -> Option<String> {
+    let counts = [
+        ("non-exact", "omitted_non_exact_rows_this_hour"),
+        ("invalid-path", "path_geometry_omitted_rows_this_hour"),
+        ("invalid-identity", "identity_or_active_omitted_rows_this_hour"),
+    ]
+    .into_iter()
+    .filter_map(|(label, key)| {
+        let value = required_u32(domain, key)?;
+        (value != 0).then(|| format!("{value} {label}"))
+    })
+    .collect::<Vec<_>>();
+    if counts.is_empty() {
         return None;
     }
-    let owner = if legacy {
-        ArmyBattleplanOwnerKey {
-            kind: ArmyBattleplanOwnerKind::Army,
-            id: required_u32(row, "army_id")?,
-        }
-    } else {
+    Some(format!(
+        "the producer omitted {} order row(s) this hour without serialising their identity, so          the fold withheld the whole hour rather than let the accumulator keep rows it could not          confirm",
+        counts.join(", ")
+    ))
+}
+
+fn parse_order(row: &Map<String, Value>, _index: usize) -> Option<ArmyBattleplanOrderExact> {
+    const FIELDS: [&str; 18] = portable_render_stream::XMAP15_D54_ORDER_ROW_FIELDS;
+    let typed = row.len() == FIELDS.len() + 2
+        && FIELDS.iter().all(|field| row.contains_key(*field))
+        && row.contains_key("owner_kind")
+        && row.contains_key("owner_id");
+    if !typed {
+        return None;
+    }
+    let owner = {
         let id = required_u32(row, "owner_id")?;
         match row.get("owner_kind")?.as_str()? {
             "army" if required_u32(row, "army_id") == Some(id) => ArmyBattleplanOwnerKey {
@@ -312,11 +341,10 @@ fn parse_order(row: &Map<String, Value>, _index: usize) -> Option<ArmyBattleplan
         || row.get("assigned_units_status")?.as_str()? != "exact"
         || row.get("order_linkage_status")?.as_str()? != "exact"
         || row.get("active_status")?.as_str()? != "exact"
-        || row.get("stance_status")?.as_str()? != "unknown"
-        || row.get("aggressiveness_status")?.as_str()? != "unknown"
     {
         return None;
     }
+    let style = parse_style(row)?;
     let active = row.get("active")?.as_bool()?;
     let target_states = strict_id_array(row.get("target_states")?, MAX_MAP_ID)?;
     let path_provinces = strict_id_array(row.get("path_provinces")?, MAX_MAP_ID)?;
@@ -383,7 +411,32 @@ fn parse_order(row: &Map<String, Value>, _index: usize) -> Option<ArmyBattleplan
         geometry,
         assigned_division_ids,
         active,
+        style,
     })
+}
+
+/// `Some(None)` is the producer's own refusal; `None` is a malformed carrier.
+fn parse_style(row: &Map<String, Value>) -> Option<Option<ArmyBattleplanStyle>> {
+    let flags = required_u32(row, "style_flags")?;
+    let has = |bit: u32| flags & bit != 0;
+    match row.get("style_status")?.as_str()? {
+        "exact" => {
+            if flags & !portable_render_stream::XMAP15_D54_STYLE_FLAG_MASK != 0 {
+                return None;
+            }
+            Some(Some(ArmyBattleplanStyle {
+                move_special: has(portable_render_stream::XMAP15_D54_STYLE_MOVE_SPECIAL),
+                withdraw: has(portable_render_stream::XMAP15_D54_STYLE_WITHDRAW),
+                fallback: has(portable_render_stream::XMAP15_D54_STYLE_FALLBACK),
+                virtual_line: has(portable_render_stream::XMAP15_D54_STYLE_VIRTUAL),
+                owner_override: has(portable_render_stream::XMAP15_D54_STYLE_OWNER_OVERRIDE),
+                owner_grouped: has(portable_render_stream::XMAP15_D54_STYLE_OWNER_GROUPED),
+            }))
+        }
+        "validation_failed" | "unknown" | "overflow" | "unsupported" | "fixture_required"
+        | "cold_preflight_only" if flags == 0 => Some(None),
+        _ => None,
+    }
 }
 
 fn required_u32(row: &Map<String, Value>, key: &str) -> Option<u32> {
@@ -451,6 +504,8 @@ mod tests {
 
     fn line_order() -> Value {
         json!({
+            "owner_kind": "army",
+            "owner_id": 17,
             "army_id": 17,
             "engine_order_instance_id": 2025,
             "generation": 4,
@@ -467,9 +522,16 @@ mod tests {
             "order_linkage_status": "exact",
             "active": false,
             "active_status": "exact",
-            "stance_status": "unknown",
-            "aggressiveness_status": "unknown"
+            "style_flags": 0,
+            "style_status": "exact"
         })
+    }
+
+    fn owned_line_order(owner_id: u64) -> Value {
+        let mut order = line_order();
+        order["owner_id"] = json!(owner_id);
+        order["army_id"] = json!(owner_id);
+        order
     }
 
     #[test]
@@ -524,6 +586,9 @@ mod tests {
             census.registered_entry_count = Some(2);
             let mut at_bound = line_order();
             at_bound[field] = json!(bound);
+            if field == "army_id" {
+                at_bound["owner_id"] = json!(bound);
+            }
             assert_eq!(
                 parse_army_battleplans(&raw(at_bound.clone()), &census).status,
                 ViewStatus::Present,
@@ -531,6 +596,9 @@ mod tests {
             );
             let mut past = at_bound;
             past[field] = json!(u64::from(bound) + 1);
+            if field == "army_id" {
+                past["owner_id"] = json!(u64::from(bound) + 1);
+            }
             assert_eq!(
                 parse_army_battleplans(&raw(past), &census).status,
                 ViewStatus::DomainUnavailable,
@@ -566,16 +634,42 @@ mod tests {
         );
     }
 
+    /// kills: dropping the producer's own omission counts on a withheld hour,
+    /// which left every consumer with "unavailable" and no cause to name.
+    #[test]
+    fn a_withheld_hour_carries_the_producers_own_omission_counts() {
+        let mut raw = raw(line_order());
+        let domain = raw["order_of_battle"]["extra"]["army_battleplans_depth_live"]
+            .as_object_mut()
+            .expect("d54 carrier");
+        domain.insert("known".into(), json!(false));
+        domain.insert("omitted_non_exact_rows_this_hour".into(), json!(742));
+        let view = parse_army_battleplans(&raw, &manager());
+        assert_eq!(view.status, ViewStatus::DomainUnavailable);
+        let diagnostic = view.diagnostic.expect("a withheld hour names its cause");
+        assert!(diagnostic.contains("742 non-exact"), "{diagnostic}");
+
+        // A withheld hour that omitted nothing has nothing to name, and must
+        // not invent a count.
+        let mut silent = raw.clone();
+        silent["order_of_battle"]["extra"]["army_battleplans_depth_live"]
+            ["omitted_non_exact_rows_this_hour"] = json!(0);
+        assert_eq!(
+            parse_army_battleplans(&silent, &manager()).diagnostic,
+            None
+        );
+    }
+
     #[test]
     fn rejects_fabricated_semantics_and_orphan_armies() {
         let mut fabricated = line_order();
-        fabricated["stance_status"] = json!("exact");
+        fabricated["style_flags"] =
+            json!(portable_render_stream::XMAP15_D54_STYLE_FLAG_MASK + 1);
         let view = parse_army_battleplans(&raw(fabricated), &manager());
         assert_eq!(view.status, ViewStatus::DomainUnavailable);
         assert!(view.orders.is_empty());
 
-        let mut orphan = line_order();
-        orphan["army_id"] = json!(18);
+        let orphan = owned_line_order(18);
         let view = parse_army_battleplans(&raw(orphan), &manager());
         assert_eq!(view.status, ViewStatus::DomainUnavailable);
         assert!(view.orders.is_empty());

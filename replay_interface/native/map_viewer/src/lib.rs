@@ -683,6 +683,12 @@ pub use production_map_target::{
 pub use province_positions::{
     engine_province_anchors, province_anchors_from_resolver, EngineProvinceAnchor, ProvinceAnchors,
 };
+
+mod xmap15_orders;
+pub use xmap15_orders::{
+    derive_xmap15_orders, xmap15_arrow_definition, Xmap15DerivedAnchor, Xmap15DerivedOrder,
+    Xmap15OrderDerivation, Xmap15OrderRefusal, Xmap15RefusedOrder,
+};
 pub use rail_files::{
     bind_exact_rail_construction_arrows, bind_exact_rail_d80_draws, compute_province_centroids,
     country_tags_from_resolver, cubic_bezier, exact_rail_segments_from_replay,
