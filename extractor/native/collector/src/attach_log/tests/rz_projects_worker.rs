@@ -310,9 +310,9 @@ fn the_row_accessors_compose_to_exactly_what_rows_returned() {
             ) && !too_many;
 
             let composed = cache.rows(base);
-            let facilities = cache.facility_rows(base);
+            let facilities = cache.facility_rows(base, &mut Domain41MaterialiseLoss::default());
             let projects = cache.legacy_project_rows(base);
-            let scientists = cache.scientist_rows(base);
+            let scientists = cache.scientist_rows(base, &mut Domain41MaterialiseLoss::default());
 
             assert_eq!(
                 projects.len(),
@@ -542,18 +542,26 @@ fn the_rows_split_keeps_one_predicate_and_one_order() {
     assert_eq!(
         calls,
         vec![
-            "self.facility_rows(base),",
+            "self.facility_rows(base, &mut Domain41MaterialiseLoss::default()),",
             "self.legacy_project_rows(base),",
-            "self.scientist_rows(base),",
+            "self.scientist_rows(base, &mut Domain41MaterialiseLoss::default()),",
         ],
         "rows() must be exactly the three accessors in the original \
          guarded-read order"
     );
 
     for signature in [
-        "fn facility_rows(&self, base: usize) -> Vec<ProjectFacilityRow>",
+        "fn facility_rows(
+        &self,
+        base: usize,
+        loss: &mut Domain41MaterialiseLoss,
+    ) -> Vec<ProjectFacilityRow>",
         "fn legacy_project_rows(&self, base: usize) -> Vec<ProjectRow>",
-        "fn scientist_rows(&self, base: usize) -> Vec<ProjectScientistRow>",
+        "fn scientist_rows(
+        &self,
+        base: usize,
+        loss: &mut Domain41MaterialiseLoss,
+    ) -> Vec<ProjectScientistRow>",
     ] {
         let body = function_body(&source, signature);
         assert_eq!(

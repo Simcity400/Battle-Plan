@@ -38,7 +38,7 @@ fn read_with_phase(status_flags: u32) -> CompactProjectsRead {
     read_with_phase_and_shortfall(status_flags, 0, 0)
 }
 
-fn read_with_phase_and_shortfall(
+pub(super) fn read_with_phase_and_shortfall(
     status_flags: u32,
     facility_row_shortfall: u32,
     scientist_row_shortfall: u32,
@@ -90,6 +90,9 @@ fn read_with_phase_and_shortfall(
         breakthrough_specializations_resolved: true,
         facility_row_shortfall,
         scientist_row_shortfall,
+        facility_loss: Domain41MaterialiseLoss::default(),
+        scientist_loss: Domain41MaterialiseLoss::default(),
+        cache_too_many: false,
         root_reasons: ProjectRootReasonCounters::default(),
         lifecycle: Vec::new(),
         lifecycle_countries: 0,

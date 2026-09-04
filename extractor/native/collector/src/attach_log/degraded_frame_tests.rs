@@ -315,6 +315,7 @@ fn d18_d65_d66_and_d91_emit_sites_route_their_status_word_through_the_ledger() {
             "COMPACT_DOMAIN_DELAYED_EVENTS_LIVE",
             "COMPACT_DOMAIN_MARKET_TRADE_LIVE",
             "COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE",
+            "COMPACT_DOMAIN_PROJECTS",
             "COMPACT_DOMAIN_RAID_INSTANCES_LIVE",
             "COMPACT_DOMAIN_SHIPS",
             "COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE",
@@ -327,7 +328,8 @@ fn d18_d65_d66_and_d91_emit_sites_route_their_status_word_through_the_ledger() {
          joined on rc_vanilla4, which carried the stand-in on 719, 74, 53 and 4 frames, \
          D67 joined on rc_vanilla5, which carried it on 2, and D32/D44/D54/D92/D96 \
          joined on e2e_03, which carried it on 1, 10 and 4 frames and, for D96 under the \
-         reserved undeclared code, on 2"
+         reserved undeclared code, on 2, and D41 joined on e2e_05, which carried it on 65 \r
+         consecutive hours"
     );
 }
 
