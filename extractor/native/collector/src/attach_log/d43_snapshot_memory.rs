@@ -19,6 +19,16 @@ pub(super) const D43_SNAPSHOT_TRACE_RESERVE_READS: usize = 1 << 20;
 /// inside the bracket, so the count is taken at plan time and the bracket's
 /// query budget is the same number.
 pub(super) const D43_SNAPSHOT_MAX_OS_REGIONS: u32 = 4_096;
+/// Bytes the widened plan aims at. Half the byte cap, so widening can never
+/// push a plan the unwidened walk would have carried over `max_bytes` and
+/// refuse it; the slack is whatever fits in the gap between the traced
+/// demand and this number.
+pub(super) const D43_SNAPSHOT_WIDEN_TARGET_BYTES: usize = 8 << 20;
+/// The widest neighbourhood one traced range may claim on each side. A read
+/// further out than this from every byte the walk touched last hour is a new
+/// allocation, not the next element of something already planned, and
+/// `misses_in_span` is what counts those.
+pub(super) const D43_SNAPSHOT_MAX_WIDEN_SLACK_BYTES: u64 = 512;
 
 pub(super) const D43_SNAPSHOT_REGION_CAP_CAUSE: &str = "d43_snapshot_region_cap";
 pub(super) const D43_SNAPSHOT_BYTE_CAP_CAUSE: &str = "d43_snapshot_byte_cap";
@@ -34,6 +44,8 @@ pub(super) struct Domain43SnapshotLimits {
     pub max_trace_reads: usize,
     pub trace_reserve_reads: usize,
     pub max_os_regions: u32,
+    pub widen_target_bytes: usize,
+    pub max_widen_slack: u64,
 }
 
 impl Default for Domain43SnapshotLimits {
@@ -45,6 +57,8 @@ impl Default for Domain43SnapshotLimits {
             max_trace_reads: D43_SNAPSHOT_MAX_TRACE_READS,
             trace_reserve_reads: D43_SNAPSHOT_TRACE_RESERVE_READS,
             max_os_regions: D43_SNAPSHOT_MAX_OS_REGIONS,
+            widen_target_bytes: D43_SNAPSHOT_WIDEN_TARGET_BYTES,
+            max_widen_slack: D43_SNAPSHOT_MAX_WIDEN_SLACK_BYTES,
         }
     }
 }
@@ -193,6 +207,14 @@ pub(super) struct Domain43SnapshotPlan {
     byte_count: usize,
     probe_region_count: u32,
     os_region_count: u32,
+    /// The distinct operating-system regions the plan lies inside, in address
+    /// order. A missed read inside one of these is a read a wider plan over
+    /// the same regions could have carried; a missed read outside all of them
+    /// is in memory this plan never touched.
+    os_spans: Vec<(u64, u64)>,
+    /// Bytes claimed on each side of every traced range by
+    /// [`Self::fit_to_os_regions`].
+    widen_slack: u64,
 }
 
 impl Domain43SnapshotPlan {
@@ -296,61 +318,168 @@ impl Domain43SnapshotPlan {
             byte_count,
             probe_region_count: probes.len().min(u32::MAX as usize) as u32,
             os_region_count: 0,
+            os_spans: Vec::new(),
+            widen_slack: 0,
         })
     }
 
-    /// Split every region at the boundaries `boundary` names: for a region
-    /// `[start, start + len)` it answers `Some(b)` with `start < b < end` to
-    /// cut there (and is asked again about `[b, end)`), `None` to keep the
-    /// region whole. The arena and the byte count are unchanged; the region
-    /// cap is re-checked.
-    pub fn split_regions_at(
+    /// Cut every region at the operating-system boundaries `region_of` names,
+    /// then give each DATA piece as much of the memory around it as the plan's
+    /// unspent byte budget affords.
+    ///
+    /// `region_of(address)` answers the committed operating-system region
+    /// `[start, end)` that holds `address`, or `None` where it cannot be
+    /// queried. It is asked once per region and once more per boundary
+    /// crossed; consecutive regions inside one operating-system region reuse
+    /// the previous answer, so the plan spends one query per region it spans
+    /// rather than one per range it holds.
+    ///
+    /// **Why widen at all.** The plan is armed from one hour's addresses and
+    /// served to the next, and the walk that meets it reads one element past
+    /// the end of a roster, a wing the vector grew by, a table slot no wing
+    /// indexed last hour. Those addresses are inside memory the plan already
+    /// spans and a byte-exact region table refuses them. On
+    /// `captures/e2e_05` the traced demand is 2.15 MB against a 16 MiB cap
+    /// and 8 reads of 1,035,107 miss.
+    ///
+    /// The slack is clipped to the operating-system region the piece was cut
+    /// inside and to its neighbours' own bounds, so widening never crosses a
+    /// region boundary (which the copy's gate would refuse), never reaches a
+    /// page the arming walk did not prove committed, and never overlaps
+    /// another region. A probe region -- a read the arming walk could NOT
+    /// make -- is never widened and never merged into a data region: the two
+    /// carry different answers on a copy that comes up short.
+    pub fn fit_to_os_regions(
         mut self,
         limits: Domain43SnapshotLimits,
-        mut boundary: impl FnMut(u64, usize) -> Option<u64>,
+        mut region_of: impl FnMut(u64) -> Option<(u64, u64)>,
     ) -> Result<Self, Domain43SnapshotPlanRefusal> {
-        let mut starts = Vec::with_capacity(self.starts.len());
-        let mut ends = Vec::with_capacity(self.ends.len());
-        let mut probe = Vec::with_capacity(self.probe.len());
+        // Cut at the boundaries first: after this every piece lies inside one
+        // operating-system region (or inside none, where the query failed).
+        let mut pieces: Vec<(u64, u64, bool, Option<(u64, u64)>)> =
+            Vec::with_capacity(self.starts.len());
+        let mut cached: Option<(u64, u64)> = None;
+        let mut span_of = |address: u64| -> Option<(u64, u64)> {
+            if let Some((start, end)) = cached {
+                if start <= address && address < end {
+                    return cached;
+                }
+            }
+            cached = region_of(address);
+            cached.filter(|(start, end)| *start <= address && address < *end)
+        };
         for index in 0..self.starts.len() {
             let (start, end, is_probe) = (self.starts[index], self.ends[index], self.probe[index]);
             let mut cursor = start;
             loop {
-                match boundary(cursor, (end - cursor) as usize) {
-                    Some(cut) if cut > cursor && cut < end => {
-                        starts.push(cursor);
-                        ends.push(cut);
-                        probe.push(is_probe);
+                let span = span_of(cursor);
+                let cut = span.map(|(_, span_end)| span_end).filter(|cut| *cut < end);
+                match cut {
+                    Some(cut) => {
+                        pieces.push((cursor, cut, is_probe, span));
                         cursor = cut;
                     }
-                    _ => {
-                        starts.push(cursor);
-                        ends.push(end);
-                        probe.push(is_probe);
+                    None => {
+                        pieces.push((cursor, end, is_probe, span));
                         break;
                     }
                 }
             }
         }
-        if starts.len() > limits.max_regions {
+        if pieces.len() > limits.max_regions {
             return Err(Domain43SnapshotPlanRefusal {
                 cause: D43_SNAPSHOT_REGION_CAP_CAUSE,
-                region_count: starts.len() as u64,
+                region_count: pieces.len() as u64,
                 byte_count: self.byte_count as u64,
             });
+        }
+        // The slack every data piece may claim on each side, from the gap
+        // between the traced demand and the widen target. Computed once,
+        // against the piece count the widening is actually applied to, so the
+        // widened plan cannot pass the target however the pieces fall.
+        let slack = limits
+            .widen_target_bytes
+            .saturating_sub(self.byte_count)
+            .checked_div(pieces.len().saturating_mul(2))
+            .unwrap_or(0) as u64;
+        let slack = slack.min(limits.max_widen_slack);
+        if slack > 0 {
+            for index in 0..pieces.len() {
+                let (start, end, is_probe, span) = pieces[index];
+                let Some((span_start, span_end)) = span else {
+                    continue;
+                };
+                if is_probe {
+                    continue;
+                }
+                let floor = index
+                    .checked_sub(1)
+                    .map_or(span_start, |prev| pieces[prev].1.max(span_start));
+                let ceiling = pieces
+                    .get(index + 1)
+                    .map_or(span_end, |next| next.0.min(span_end));
+                pieces[index].0 = start.saturating_sub(slack).max(floor);
+                pieces[index].1 = end.saturating_add(slack).min(ceiling).max(end);
+            }
+        }
+        let mut starts: Vec<u64> = Vec::with_capacity(pieces.len());
+        let mut ends: Vec<u64> = Vec::with_capacity(pieces.len());
+        let mut probe: Vec<bool> = Vec::with_capacity(pieces.len());
+        let mut os_spans: Vec<(u64, u64)> = Vec::new();
+        let mut last_span: Option<(u64, u64)> = None;
+        for (start, end, is_probe, span) in pieces {
+            if let Some(span) = span {
+                if os_spans.last() != Some(&span) {
+                    os_spans.push(span);
+                }
+            }
+            // Merged only inside ONE operating-system region and only between
+            // pieces of the same kind, so a merged region still answers the
+            // copy gate's question with one query and a probe never hides
+            // inside a data region.
+            let mergeable = last_span == span
+                && probe.last() == Some(&is_probe)
+                && ends.last().is_some_and(|last_end| start <= *last_end);
+            if mergeable {
+                if let Some(last_end) = ends.last_mut() {
+                    *last_end = (*last_end).max(end);
+                    continue;
+                }
+            }
+            starts.push(start);
+            ends.push(end);
+            probe.push(is_probe);
+            last_span = span;
         }
         let mut offsets = Vec::with_capacity(starts.len());
         let mut byte_count = 0usize;
         for (start, end) in starts.iter().zip(&ends) {
             offsets.push(byte_count);
-            byte_count += (end - start) as usize;
+            byte_count = byte_count
+                .checked_add((end - start) as usize)
+                .ok_or(Domain43SnapshotPlanRefusal {
+                    cause: D43_SNAPSHOT_BYTE_CAP_CAUSE,
+                    region_count: starts.len() as u64,
+                    byte_count: u64::MAX,
+                })?;
         }
-        debug_assert_eq!(byte_count, self.byte_count);
+        if byte_count > limits.max_bytes {
+            return Err(Domain43SnapshotPlanRefusal {
+                cause: D43_SNAPSHOT_BYTE_CAP_CAUSE,
+                region_count: starts.len() as u64,
+                byte_count: byte_count as u64,
+            });
+        }
+        debug_assert!(byte_count >= self.byte_count);
         self.copied = vec![0u32; starts.len()];
+        self.arena = vec![0u8; byte_count].into_boxed_slice();
+        self.byte_count = byte_count;
         self.starts = starts;
         self.ends = ends;
         self.offsets = offsets;
         self.probe = probe;
+        self.os_spans = os_spans;
+        self.widen_slack = slack;
         Ok(self)
     }
 
@@ -368,6 +497,26 @@ impl Domain43SnapshotPlan {
 
     pub fn os_region_count(&self) -> u32 {
         self.os_region_count
+    }
+
+    pub fn widen_slack(&self) -> u64 {
+        self.widen_slack
+    }
+
+    /// Whether `[address, address + len)` lies wholly inside one of the
+    /// operating-system regions this plan spans.
+    fn inside_one_os_span(&self, address: u64, len: usize) -> bool {
+        let Some(end) = address.checked_add(len as u64) else {
+            return false;
+        };
+        let Some(index) = self
+            .os_spans
+            .partition_point(|(start, _)| *start <= address)
+            .checked_sub(1)
+        else {
+            return false;
+        };
+        end <= self.os_spans[index].1
     }
 
     pub fn note_os_region_count(&mut self, count: u32) {
@@ -432,6 +581,7 @@ impl Domain43SnapshotPlan {
             plan: self,
             first_miss: Cell::new(None),
             misses: Cell::new(0),
+            misses_in_span: Cell::new(0),
             last_hit: Cell::new(0),
             served: Cell::new(0),
         }
@@ -450,6 +600,7 @@ pub(super) struct Domain43SnapshotMemory<'a> {
     plan: &'a Domain43SnapshotPlan,
     first_miss: Cell<Option<(u64, usize)>>,
     misses: Cell<u64>,
+    misses_in_span: Cell<u64>,
     last_hit: Cell<usize>,
     served: Cell<u64>,
 }
@@ -479,6 +630,14 @@ impl Domain43SnapshotMemory<'_> {
     /// instant) is the live gate's own answer and is not counted here.
     pub fn misses(&self) -> u64 {
         self.misses.get()
+    }
+
+    /// The subset of [`Self::misses`] whose address lies inside an
+    /// operating-system region the plan already spans. Those are reads a
+    /// wider plan over the same regions could have carried; the remainder are
+    /// in memory this plan never touched, and no widening reaches them.
+    pub fn misses_in_span(&self) -> u64 {
+        self.misses_in_span.get()
     }
 
     pub fn reads_served(&self) -> u64 {
@@ -531,6 +690,10 @@ impl Domain81Memory for Domain43SnapshotMemory<'_> {
                 self.first_miss.set(Some((address, len)));
             }
             self.misses.set(self.misses.get().saturating_add(1));
+            if self.plan.inside_one_os_span(address, len) {
+                self.misses_in_span
+                    .set(self.misses_in_span.get().saturating_add(1));
+            }
             COPY_SHORT_READS.with(|reads| reads.set(reads.get().wrapping_add(1)));
             return false;
         };
@@ -583,12 +746,46 @@ mod tests {
         }
     }
 
+    /// Slack zero: the split's own behaviour, with no widening on top.
     fn limits(merge_gap: u64, max_regions: usize, max_bytes: usize) -> Domain43SnapshotLimits {
         Domain43SnapshotLimits {
             merge_gap,
             max_regions,
             max_bytes,
+            widen_target_bytes: 0,
             ..Domain43SnapshotLimits::default()
+        }
+    }
+
+    fn widening_limits(
+        merge_gap: u64,
+        max_regions: usize,
+        max_bytes: usize,
+        widen_target_bytes: usize,
+        max_widen_slack: u64,
+    ) -> Domain43SnapshotLimits {
+        Domain43SnapshotLimits {
+            merge_gap,
+            max_regions,
+            max_bytes,
+            widen_target_bytes,
+            max_widen_slack,
+            ..Domain43SnapshotLimits::default()
+        }
+    }
+
+    /// One operating-system region per entry, in address order; the last runs
+    /// to the top of the space.
+    fn spans(bounds: &[u64]) -> impl FnMut(u64) -> Option<(u64, u64)> + '_ {
+        move |address| {
+            let mut start = 0u64;
+            for bound in bounds {
+                if address < *bound {
+                    return Some((start, *bound));
+                }
+                start = *bound;
+            }
+            Some((start, u64::MAX))
         }
     }
 
@@ -784,19 +981,16 @@ mod tests {
             Domain43SnapshotPlan::from_trace(tracing.into_trace(), limits(64, 16, 4096)).unwrap();
         assert_eq!(plan.region_count(), 2);
         let mut asked = Vec::new();
+        // Two boundaries inside the data region, one outside it.
+        let mut bounds = spans(&[0x1010, 0x1030, 0x2000]);
         let mut plan = plan
-            .split_regions_at(limits(64, 16, 4096), |start, len| {
-                asked.push((start, len));
-                // Two boundaries inside the data region, one outside it.
-                [0x1010u64, 0x1030, 0x2000]
-                    .into_iter()
-                    .find(|cut| *cut > start && *cut < start + len as u64)
+            .fit_to_os_regions(limits(64, 16, 4096), |address| {
+                asked.push(address);
+                bounds(address)
             })
             .unwrap();
-        assert_eq!(
-            asked,
-            vec![(0x1000, 0x40), (0x1010, 0x30), (0x1030, 0x10), (0x4000, 8)]
-        );
+        // One query per region the plan enters, not one per range it holds.
+        assert_eq!(asked, vec![0x1000, 0x1010, 0x1030, 0x4000]);
         assert_eq!(
             plan.region_specs().collect::<Vec<_>>(),
             vec![
@@ -846,7 +1040,7 @@ mod tests {
         let plan =
             Domain43SnapshotPlan::from_trace(tracing.into_trace(), limits(0, 1, 4096)).unwrap();
         assert_eq!(
-            plan.split_regions_at(limits(0, 1, 4096), |start, _| Some(start + 4))
+            plan.fit_to_os_regions(limits(0, 1, 4096), spans(&[0x1004]))
                 .unwrap_err(),
             Domain43SnapshotPlanRefusal {
                 cause: D43_SNAPSHOT_REGION_CAP_CAUSE,
@@ -854,6 +1048,124 @@ mod tests {
                 byte_count: 8,
             }
         );
+    }
+
+    /// kills: the widening dropped, or spent past its own target. The plan is
+    /// armed from a walk that read four slots of a roster; the next hour's
+    /// walk reads the fifth and the object it points at, neither of which the
+    /// traced walk touched. With no slack both are misses, both typed as
+    /// inside a region the plan spans; with slack both are served out of the
+    /// copy, and the byte count stays under the target.
+    #[test]
+    fn the_next_element_of_a_grown_roster_is_served_out_of_the_plans_slack() {
+        let memory = FixtureMemory::spanning(&[(0x1000, 0x400)]);
+        let trace = || {
+            let tracing =
+                Domain43TracingMemory::new(&memory, Domain43AccessTrace::with_capacity(16));
+            let mut buf = [0u8; 8];
+            for slot in 0..4u64 {
+                assert!(tracing.read_into(0x1000 + slot * 8, &mut buf));
+            }
+            tracing.into_trace()
+        };
+        let mut buf = [0u8; 8];
+        // Slack zero: the fifth slot and the object are outside the plan.
+        let mut narrow = Domain43SnapshotPlan::from_trace(trace(), limits(64, 16, 4096))
+            .unwrap()
+            .fit_to_os_regions(limits(64, 16, 4096), spans(&[0x1000]))
+            .unwrap();
+        assert_eq!(narrow.widen_slack(), 0);
+        assert_eq!(narrow.byte_count(), 32);
+        narrow.capture_with(|address, out| memory.read_into(address, out).then_some(1));
+        let view = narrow.view();
+        assert!(!view.read_into(0x1020, &mut buf), "the fifth slot");
+        assert!(!view.read_into(0x1100, &mut buf), "the object it points at");
+        // A read in memory the plan never entered is a miss no widening
+        // reaches, and is typed apart from the two above.
+        assert!(!view.read_into(0x800, &mut buf), "below every region the plan spans");
+        assert_eq!(view.misses(), 3);
+        assert_eq!(
+            view.misses_in_span(),
+            2,
+            "two are inside the operating-system region the plan spans"
+        );
+        drop(view);
+
+        let wide_limits = widening_limits(64, 16, 4096, 1024, 512);
+        let mut wide = Domain43SnapshotPlan::from_trace(trace(), wide_limits)
+            .unwrap()
+            .fit_to_os_regions(wide_limits, spans(&[0x1000]))
+            .unwrap();
+        // (1024 - 32) / (2 * 1) = 496, under the 512 ceiling; the region's own
+        // lower edge stops the slack below the traced range.
+        assert_eq!(wide.widen_slack(), 496);
+        assert_eq!(
+            wide.region_specs().collect::<Vec<_>>(),
+            vec![spec(0x1000, 32 + 496, false)]
+        );
+        assert!(wide.byte_count() <= wide_limits.widen_target_bytes);
+        wide.capture_with(|address, out| memory.read_into(address, out).then_some(1));
+        let view = wide.view();
+        assert!(view.read_into(0x1020, &mut buf), "the fifth slot");
+        assert_eq!(buf, [0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27]);
+        assert!(view.read_into(0x1100, &mut buf), "the object it points at");
+        assert_eq!(view.misses(), 0);
+        assert_eq!(view.misses_in_span(), 0);
+    }
+
+    /// kills: slack that crosses an operating-system boundary (the copy's gate
+    /// refuses such a region and the whole frame is lost), slack over memory
+    /// no region answers for, slack that swallows a probe region into a data
+    /// one, and slack that makes two regions overlap.
+    #[test]
+    fn slack_stops_at_the_regions_edge_at_a_probe_and_where_no_region_answers() {
+        let memory =
+            FixtureMemory::spanning(&[(0x1000, 0x1000), (0x2000, 0x400), (0x2408, 0x600)]);
+        let tracing = Domain43TracingMemory::new(&memory, Domain43AccessTrace::with_capacity(16));
+        let mut buf = [0u8; 8];
+        assert!(tracing.read_into(0x1FF8, &mut buf), "the last bytes of one region");
+        assert!(tracing.read_into(0x2000, &mut buf), "the first bytes of the next");
+        assert!(!tracing.read_into(0x2400, &mut buf), "a probe between them");
+        assert!(tracing.read_into(0x2500, &mut buf), "data past the probe");
+        assert!(tracing.read_into(0x2900, &mut buf), "data no region answers for");
+        let limits = widening_limits(0, 16, 4096, 4096, 256);
+        let mut asked = Vec::new();
+        let plan = Domain43SnapshotPlan::from_trace(tracing.into_trace(), limits)
+            .unwrap()
+            .fit_to_os_regions(limits, |address| {
+                asked.push(address);
+                match address {
+                    a if a < 0x2000 => Some((0x1000, 0x2000)),
+                    a if a < 0x2800 => Some((0x2000, 0x2800)),
+                    _ => None,
+                }
+            })
+            .unwrap();
+        assert_eq!(
+            plan.region_specs().collect::<Vec<_>>(),
+            vec![
+                // Clipped at its own region's top edge, never across it.
+                spec(0x1EF8, 0x108, false),
+                // Clipped at the probe above it.
+                spec(0x2000, 0x108, false),
+                // A probe is never widened and never merged into data.
+                spec(0x2400, 8, true),
+                // Clipped at the probe below it.
+                spec(0x2408, 0x200, false),
+                // No region answers here, so nothing is claimed around it.
+                spec(0x2900, 8, false),
+            ]
+        );
+        // One query per region entered, and one for the range above them all.
+        assert_eq!(asked, vec![0x1FF8, 0x2000, 0x2900]);
+        let mut previous: Option<(u64, u64)> = None;
+        for region in plan.region_specs() {
+            if let Some((start, end)) = previous {
+                assert!(start < region.address, "regions stay ordered");
+                assert!(end <= region.address, "and disjoint");
+            }
+            previous = Some((region.address, region.address + region.len as u64));
+        }
     }
 
     /// kills: a probe cut at an operating-system boundary whose replay
@@ -867,9 +1179,7 @@ mod tests {
         assert!(!tracing.read_into(0x2FFC, &mut buf));
         let mut plan = Domain43SnapshotPlan::from_trace(tracing.into_trace(), limits(64, 16, 4096))
             .unwrap()
-            .split_regions_at(limits(64, 16, 4096), |start, len| {
-                (start < 0x3000 && start + len as u64 > 0x3000).then_some(0x3000)
-            })
+            .fit_to_os_regions(limits(64, 16, 4096), spans(&[0x3000]))
             .unwrap();
         assert_eq!(
             plan.region_specs().collect::<Vec<_>>(),

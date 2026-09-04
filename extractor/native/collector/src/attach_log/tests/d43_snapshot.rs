@@ -1739,10 +1739,10 @@ fn d43_snapshot_units_ride_every_frame_in_order() {
 /// replays ACROSS the cut -- refused without a miss while the reserved side
 /// stays unreadable, refused without a miss while the two sides are two
 /// operating-system regions (the live gate's rule, both readable or not), and
-/// served the hour they are one; the plan is kept throughout. The
-/// healed hour is a MISS (the walk goes on into regions the plan never
-/// covered), named and counted rather than sealed, re-armed the next, and the
-/// plan after it carries the healed read as data.
+/// served the hour they are one; the plan is kept throughout. On the healed
+/// hour the walk goes on past the read that used to refuse, into the items'
+/// variants -- addresses the traced walk never reached, inside the same
+/// operating-system region, which the plan's slack carries.
 #[test]
 fn d43_snapshot_probe_regions_replay_a_failed_read_and_serve_it_once_readable() {
     let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
@@ -1777,7 +1777,6 @@ fn d43_snapshot_probe_regions_replay_a_failed_read_and_serve_it_once_readable() 
         "the blob read that failed (twice) is one probe"
     );
     let region_count = unit(&arming, "d43_snapshot_region_count");
-    let trace_reads = unit(&arming, "d43_snapshot_arm_trace_reads");
 
     let probed = session.frame();
     assert_mode(&probed, D43_SNAPSHOT_MODE_SNAPSHOT, "probed");
@@ -1823,40 +1822,22 @@ fn d43_snapshot_probe_regions_replay_a_failed_read_and_serve_it_once_readable() 
 
     // One region again: the probe copies inside it, the decode serves the
     // current bytes, and the walk goes on past the read that used to refuse
-    // -- into the items' variants, regions this plan never covered.
+    // -- into the items' variants, which the traced walk never reached. They
+    // are inside the operating-system region the plan already spans, so the
+    // slack carries them and the frame is whole on the hour it heals.
     protect_page(boundary, PAGE_READWRITE);
     let healed = session.frame();
     assert_mode(&healed, D43_SNAPSHOT_MODE_SNAPSHOT, "healed");
     assert_eq!(unit(&healed, "d43_snapshot_probe_regions"), 1);
     assert_eq!(unit(&healed, "d43_snapshot_probe_unreadable"), 0, "the probe copied");
-    assert_eq!(unit(&healed, "d43_snapshot_region_miss"), 1, "the walk went further");
-    assert!(unit(&healed, "d43_snapshot_miss_reads") > 0, "healed: counted");
-    assert_eq!(
-        status(&healed) & partial,
-        partial,
-        "healed: the reads past the probe fell outside the plan and are named"
-    );
-    assert_eq!(
-        status(&healed) & compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE,
-        0,
-        "healed: everything the copy carried is still published"
-    );
-    assert!(session.snapshot_tracker().plan().is_none());
-    let rearmed = session.frame();
-    assert_mode(&rearmed, D43_SNAPSHOT_MODE_ARMING, "re-armed");
-    assert_clean(&rearmed, "re-armed");
-    assert_eq!(unit(&rearmed, "d43_snapshot_probe_regions"), 0, "nothing fails now");
-    assert!(
-        unit(&rearmed, "d43_snapshot_arm_trace_reads") > trace_reads,
-        "the healed walk reads what the refusal cut short"
-    );
-    let served = session.frame();
-    assert_mode(&served, D43_SNAPSHOT_MODE_SNAPSHOT, "served");
-    assert_clean(&served, "served");
-    assert_eq!(unit(&served, "d43_snapshot_region_miss"), 0);
-    assert_eq!(payload(&served), payload(&session.live_reference()));
-    assert_payload_carries_every_family(&payload(&served));
-    assert_ne!(payload(&served), payload(&probed));
+    assert!(unit(&healed, "d43_snapshot_widen_slack") > 0, "healed: the plan was widened");
+    assert_eq!(unit(&healed, "d43_snapshot_region_miss"), 0, "healed: the slack carried it");
+    assert_eq!(unit(&healed, "d43_snapshot_miss_reads"), 0);
+    assert_clean(&healed, "healed");
+    assert_eq!(payload(&healed), payload(&session.live_reference()));
+    assert_payload_carries_every_family(&payload(&healed));
+    assert_ne!(payload(&healed), payload(&probed));
+    assert!(session.snapshot_tracker().plan().is_some(), "the plan is kept");
     release_pages(pages);
 }
 

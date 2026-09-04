@@ -86,6 +86,8 @@ pub(super) struct Domain43SnapshotDiag {
     pub copy_refused: u64,
     pub region_miss: u64,
     pub miss_reads: u64,
+    pub miss_reads_in_span: u64,
+    pub widen_slack: u64,
     pub engine_call_mismatch: u64,
     pub probe_regions: u64,
     pub probe_unreadable: u64,
@@ -94,7 +96,7 @@ pub(super) struct Domain43SnapshotDiag {
     pub os_regions: u64,
 }
 
-pub(super) const D43_SNAPSHOT_UNIT_NAMES: [&str; 20] = [
+pub(super) const D43_SNAPSHOT_UNIT_NAMES: [&str; 22] = [
     "d43_snapshot_mode",
     "d43_snapshot_region_count",
     "d43_snapshot_byte_count",
@@ -109,6 +111,8 @@ pub(super) const D43_SNAPSHOT_UNIT_NAMES: [&str; 20] = [
     "d43_snapshot_copy_refused",
     "d43_snapshot_region_miss",
     "d43_snapshot_miss_reads",
+    "d43_snapshot_miss_reads_in_span",
+    "d43_snapshot_widen_slack",
     "d43_snapshot_engine_call_mismatch",
     "d43_snapshot_probe_regions",
     "d43_snapshot_probe_unreadable",
@@ -118,7 +122,7 @@ pub(super) const D43_SNAPSHOT_UNIT_NAMES: [&str; 20] = [
 ];
 
 impl Domain43SnapshotDiag {
-    pub(super) fn values(&self) -> [u64; 20] {
+    pub(super) fn values(&self) -> [u64; 22] {
         [
             self.mode,
             self.region_count,
@@ -134,6 +138,8 @@ impl Domain43SnapshotDiag {
             self.copy_refused,
             self.region_miss,
             self.miss_reads,
+            self.miss_reads_in_span,
+            self.widen_slack,
             self.engine_call_mismatch,
             self.probe_regions,
             self.probe_unreadable,
@@ -462,13 +468,19 @@ pub(super) fn finish_compact_market_trade_snapshot(
     read
 }
 
-/// Outside the bracket: the operating-system region that holds `start`, so a
-/// merged range straddling two regions is cut where they meet and the copy
-/// asks the gate the question the live reader asked of each read.
-fn os_region_boundary(start: u64, len: usize) -> Option<u64> {
-    let region = query_region(usize::try_from(start).ok()?)?;
-    let region_end = region.start.checked_add(region.size)? as u64;
-    (region_end > start && region_end < start.checked_add(len as u64)?).then_some(region_end)
+/// Outside the bracket: the committed operating-system region that holds
+/// `address`, so a merged range straddling two regions is cut where they meet,
+/// the plan's slack stops at the same line, and the copy asks the gate the
+/// question the live reader asked of each read. A region the live gate would
+/// refuse -- not committed, no-access, or a guard page -- answers `None`, so
+/// the plan never widens into memory the copy cannot take.
+fn os_region_bounds(address: u64) -> Option<(u64, u64)> {
+    let region = query_region(usize::try_from(address).ok()?)?;
+    if region.state != MEM_COMMIT || region.protect & (PAGE_NOACCESS | PAGE_GUARD) != 0 {
+        return None;
+    }
+    let end = region.start.checked_add(region.size)? as u64;
+    (end > address).then_some((region.start as u64, end))
 }
 
 fn arm_plan(
@@ -496,7 +508,7 @@ fn arm_plan(
     } else {
         let limits = snapshot.limits;
         let planned = Domain43SnapshotPlan::from_trace(trace, limits)
-            .and_then(|plan| plan.split_regions_at(limits, os_region_boundary))
+            .and_then(|plan| plan.fit_to_os_regions(limits, os_region_bounds))
             .and_then(|mut plan| {
                 // The distinct operating-system regions the plan spans,
                 // counted with the bracket's own gate so the two agree; the
@@ -523,6 +535,7 @@ fn arm_plan(
                 diag.byte_count = plan.byte_count() as u64;
                 diag.probe_regions = u64::from(plan.probe_region_count());
                 diag.os_regions = u64::from(plan.os_region_count());
+                diag.widen_slack = plan.widen_slack();
                 snapshot.plan = Some(plan);
             }
             Err(refusal) => {
@@ -564,6 +577,7 @@ fn decode_from_plan(
         gate_queries: u64::from(gate_queries),
         gate_budget_exhausted: u64::from(gate_budget_exhausted),
         os_regions: u64::from(plan.os_region_count()),
+        widen_slack: plan.widen_slack(),
         ..Domain43SnapshotDiag::default()
     };
     if receipt.failure_region_ordinal.is_some() {
@@ -589,6 +603,7 @@ fn decode_from_plan(
     );
     diag.engine_call_mismatch = mismatches;
     diag.miss_reads = view.misses();
+    diag.miss_reads_in_span = view.misses_in_span();
     diag.region_miss = u64::from(diag.miss_reads > 0);
     drop(view);
     if mismatches > 0 {
