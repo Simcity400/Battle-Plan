@@ -207,6 +207,9 @@ pub struct FoundationFeatureContext<'a> {
     pub prepared_terrain: Option<&'a crate::PreparedTerrainFrame>,
     pub prepared_political: Option<&'a crate::PreparedPoliticalFrame>,
     pub prepared_units: Option<&'a crate::PreparedXmap13Frame>,
+    /// The map objects XMAP12 placed earlier in this same frame; `None` when
+    /// XMAP12 did not vouch this hour, which is not a measured-empty placement.
+    pub prepared_map_objects: Option<&'a crate::PreparedXmap12RenderFrame>,
     pub xmap15_units:
         Option<&'a dyn crate::production_features::xmap15::Xmap15UnitIdentityProvider>,
     pub xmap15_selection: &'a crate::production_features::xmap15::Xmap15ViewerSelection,
@@ -238,6 +241,7 @@ impl<'a> FoundationFeatureContext<'a> {
             prepared_terrain: None,
             prepared_political: None,
             prepared_units: None,
+            prepared_map_objects: None,
             xmap15_units: None,
             xmap15_selection,
         }
@@ -1242,6 +1246,7 @@ fn prepare_foundation_frame_inner(
             prepared_terrain: prepared_terrain.as_ref(),
             prepared_political: prepared_political.as_ref(),
             prepared_units: prepared_units.as_ref(),
+            prepared_map_objects: prepared_xmap12.as_ref(),
             xmap15_units: prepared_units.as_ref().map(|frame| {
                 &frame.identity_provider
                     as &dyn crate::production_features::xmap15::Xmap15UnitIdentityProvider
@@ -3791,7 +3796,11 @@ pub fn ")
             element_diagnostics: Vec::new(),
         };
         let deferred = crate::production_features::xmap10::Xmap10GradingPostFxAdapter::deferred_disposition();
-        envelope.families[8].disposition = deferred;
+        envelope.families[MapVisualFamily::ALL
+            .iter()
+            .position(|family| *family == MapVisualFamily::GradingPostFx)
+            .expect("every family is in ALL")]
+        .disposition = deferred;
         let discharged = std::collections::BTreeSet::from([
             FoundationRenderEnvelope::draw_contract_key(
                 MapVisualFamily::GradingPostFx,
@@ -3809,7 +3818,11 @@ pub fn ")
 
         // ...but the two refusing families still stop the frame, and no amount
         // of draw-time discharging changes that.
-        envelope.families[18].disposition = FamilyDisposition::Unavailable {
+        envelope.families[MapVisualFamily::ALL
+            .iter()
+            .position(|family| *family == MapVisualFamily::ParticlesEffects)
+            .expect("every family is in ALL")]
+        .disposition = FamilyDisposition::Unavailable {
             gap: FoundationGap {
                 gap_id: crate::XMAP20_CARRIER_ABSENT_GAP_ID.into(),
                 first_unavailable_hour: hour,

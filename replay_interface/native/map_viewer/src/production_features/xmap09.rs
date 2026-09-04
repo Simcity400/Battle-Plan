@@ -16,7 +16,7 @@ use snapshot::sha256::Sha256;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-pub const XMAP09_INPUT_SCHEMA: &str = "hoi4.xmap09.semantic-lighting-input.a729.v1";
+pub const XMAP09_INPUT_SCHEMA: &str = "hoi4.xmap09.semantic-lighting-input.a729.v2";
 pub const XMAP09_PREPARED_SCHEMA: &str = "hoi4.xmap09.prepared-lighting-shadow.a729.v1";
 pub const XMAP09_A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
@@ -93,6 +93,9 @@ pub struct Xmap09LightingInput {
     pub point_light_grid_start_inv_cell_size_f32_bits: [u32; 4],
     pub point_lights: Vec<Xmap09PointLight>,
     pub point_light_cell_indices: Vec<[u8; 4]>,
+    /// Map objects XMAP12 placed earlier in this same frame. `None` is XMAP12
+    /// not vouching this hour; `Some(0)` is a measured-empty placement.
+    pub placed_map_object_count: Option<u32>,
     pub point_light_census_sha256: String,
     pub source_observation_sha256: String,
     pub payload_sha256: String,
@@ -1014,6 +1017,7 @@ impl Xmap09LightingAdapter {
         product_modset_sha256: &str,
         effective_vfs_manifest_sha256: &str,
         camera: &crate::ViewerMapCameraState,
+        placed_map_object_count: Option<u32>,
     ) -> Result<Xmap09LightingInput> {
         let game_hour_raw = hour_index
             .checked_add(GAME_HOUR_RAW_EPOCH)
@@ -1077,14 +1081,19 @@ impl Xmap09LightingAdapter {
             ),
             point_lights: Vec::new(),
             point_light_cell_indices: vec![[u8::MAX; 4]; LIGHT_INDEX_WIDTH * LIGHT_INDEX_HEIGHT],
+            placed_map_object_count,
             point_light_census_sha256: String::new(),
             source_observation_sha256: Sha256::hex(
                 format!(
-                    "{XMAP09_INPUT_SCHEMA}\0{}\0{}\0{}\0{}",
+                    "{XMAP09_INPUT_SCHEMA}\0{}\0{}\0{}\0{}\0{}",
                     self.defines_source_sha256,
                     camera.deterministic_sha256,
                     effective_vfs_manifest_sha256,
-                    hour_index
+                    hour_index,
+                    match placed_map_object_count {
+                        Some(count) => format!("placed:{count}"),
+                        None => "placed:unvouched".to_string(),
+                    }
                 )
                 .as_bytes(),
             ),
@@ -1112,6 +1121,11 @@ impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
             context.product_modset_sha256,
             context.effective_vfs_manifest_sha256,
             camera,
+            context
+                .prepared_map_objects
+                .map(|frame| u32::try_from(frame.ordered_draws.len()))
+                .transpose()
+                .map_err(|_| "XMAP09 placed map-object population does not fit its counter")?,
         )?;
         let prepare_stage = context
             .require_assigned_stage(XMAP09_PREPARE_STAGE_NAME, XMAP09_PREPARE_OPERATION_NAME)?;
@@ -1622,6 +1636,7 @@ mod tests {
             shadow_pass_active: true,
             point_light_grid_start_inv_cell_size_f32_bits: [0.0f32, 0.0, 0.01, 0.01]
                 .map(f32::to_bits),
+            placed_map_object_count: Some(1),
             point_lights: vec![light()],
             point_light_cell_indices: cells,
             point_light_census_sha256: String::new(),
@@ -1710,7 +1725,7 @@ mod tests {
         let camera = camera();
         let hour_index = 17_000_000i64;
         let input = adapter
-            .derive_lighting_input(hour_index, &"1".repeat(64), &"2".repeat(64), &camera)
+            .derive_lighting_input(hour_index, &"1".repeat(64), &"2".repeat(64), &camera, Some(3))
             .expect("file-derived lighting input");
         input.validate_for_hour(hour_index).expect("seals for hour");
         assert_eq!(input.schema, XMAP09_INPUT_SCHEMA);
@@ -1794,10 +1809,10 @@ mod tests {
         assert_eq!(modded.defines.sun_latitude, 1200.0);
         let camera = camera();
         let base = vanilla
-            .derive_lighting_input(17_000_000, &"1".repeat(64), &"2".repeat(64), &camera)
+            .derive_lighting_input(17_000_000, &"1".repeat(64), &"2".repeat(64), &camera, Some(3))
             .unwrap();
         let other = modded
-            .derive_lighting_input(17_000_000, &"1".repeat(64), &"2".repeat(64), &camera)
+            .derive_lighting_input(17_000_000, &"1".repeat(64), &"2".repeat(64), &camera, Some(3))
             .unwrap();
         assert_ne!(
             base.virtual_sun_position_f32_bits[2],
