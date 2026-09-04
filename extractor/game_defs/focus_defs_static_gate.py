@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and verify the production national-focus definition artifact."""
+"""Build and verify the production focus definition artifact (tree + continuous)."""
 
 from __future__ import annotations
 
@@ -78,15 +78,24 @@ def _validate_catalog(parsed: dict[str, Any]) -> None:
     trees = parsed["trees"]
     focuses = parsed["focuses"]
     styles = parsed["focus_background_styles"]
+    palettes = parsed["continuous_focus_palettes"]
+    continuous = parsed["continuous_focuses"]
     if (
         meta["tree_count"] != len(trees)
         or meta["focus_count"] != len(focuses)
         or meta["focus_background_style_count"] != len(styles)
-        or meta["files_parsed"] <= 0
+        or meta["continuous_focus_count"] != len(continuous)
+        or meta["continuous_focus_palette_count"] != len(palettes)
+        or meta["files_parsed"]
+        != meta["national_files_parsed"] + meta["continuous_files_parsed"]
+        or meta["national_files_parsed"] <= 0
+        or meta["continuous_files_parsed"] <= 0
     ):
         raise RuntimeError("focus definition declared counts disagree with parsed objects")
-    if not trees or not focuses or not styles:
+    if not trees or not focuses or not styles or not palettes or not continuous:
         raise RuntimeError("focus definition catalog is empty")
+    if set(focuses) & set(continuous):
+        raise RuntimeError("focus ids collide across the national and continuous namespaces")
     if meta["id_collisions_last_wins"]:
         raise RuntimeError("focus definition IDs collide across effective source files")
     overrides = meta["focus_text_loc_key_overrides"]
@@ -112,7 +121,7 @@ def _validate_catalog(parsed: dict[str, Any]) -> None:
             or any(not style.get(state) for state in ("unavailable", "available", "current", "completed"))
         ):
             raise RuntimeError(f"focus background style {style_id!r} is incomplete")
-    kind_counts = {"focus": 0, "shared_focus": 0, "joint_focus": 0}
+    kind_counts = {"focus": 0, "shared_focus": 0, "joint_focus": 0, "continuous_focus": 0}
     for focus_id, focus in focuses.items():
         kind = focus.get("kind")
         if (
@@ -152,10 +161,59 @@ def _validate_catalog(parsed: dict[str, Any]) -> None:
             raise RuntimeError(f"focus definition {focus_id!r} has inconsistent style binding")
         if kind == "joint_focus" and not focus.get("text_icon"):
             raise RuntimeError(f"joint focus {focus_id!r} has no authored style family")
+    for focus_id, focus in continuous.items():
+        if (
+            focus.get("id") != focus_id
+            or focus.get("kind") != "continuous_focus"
+            or not _PORTABLE_ID.fullmatch(focus_id)
+            or focus.get("title_loc_key") != focus_id
+            or focus.get("description_loc_key") != f"{focus_id}_desc"
+            or focus.get("title_loc_key_from_text_override") is not False
+            or focus.get("palette_id") not in palettes
+            or not focus.get("source_file")
+            or not focus.get("source_layer")
+            or not isinstance(focus.get("modifier_blocks"), int)
+            or isinstance(focus.get("modifier_blocks"), bool)
+            or focus["modifier_blocks"] < 0
+        ):
+            raise RuntimeError(f"continuous focus {focus_id!r} has inconsistent identity")
+        if not focus["loc"]["title"] or not focus["loc"]["desc"]:
+            raise RuntimeError(
+                f"continuous focus {focus_id!r} has no effective localisation for its "
+                "title/description keys"
+            )
+        kind_counts["continuous_focus"] += 1
+    owned_continuous = [
+        focus_id for palette in palettes.values() for focus_id in palette["focuses"]
+    ]
+    if (
+        len(owned_continuous) != len(set(owned_continuous))
+        or set(owned_continuous) != set(continuous)
+    ):
+        raise RuntimeError(
+            "continuous focus palettes must own every continuous definition exactly once"
+        )
+    for palette_id, palette in palettes.items():
+        if (
+            palette.get("id") != palette_id
+            or not _PORTABLE_ID.fullmatch(palette_id)
+            or palette.get("focus_count") != len(palette.get("focuses", []))
+            or not palette.get("source_file")
+            or not palette.get("source_layer")
+            or any(
+                continuous[focus_id]["palette_id"] != palette_id
+                for focus_id in palette["focuses"]
+            )
+        ):
+            raise RuntimeError(f"continuous focus palette {palette_id!r} is inconsistent")
     if kind_counts["shared_focus"] != meta["shared_focus_count"]:
         raise RuntimeError("shared focus count disagrees with parsed definition kinds")
     if kind_counts["joint_focus"] != meta["joint_focus_count"]:
         raise RuntimeError("joint focus count disagrees with parsed definition kinds")
+    if kind_counts["continuous_focus"] != meta["continuous_focus_count"]:
+        raise RuntimeError("continuous focus count disagrees with parsed definition kinds")
+    if kind_counts != meta["focus_kind_counts"]:
+        raise RuntimeError("meta.focus_kind_counts disagrees with the parsed definition kinds")
     for tree_id, tree in trees.items():
         if (
             tree.get("id") != tree_id
@@ -215,15 +273,16 @@ def build_catalog(args: argparse.Namespace) -> dict[str, Any]:
     parsed = parse_focus_def.parse_focus_defs(layers, loc, strict=True)
     _validate_catalog(parsed)
     definition_files = R.ordered_files(
-        layers, "common/national_focus", (".txt",)
-    )
+        layers, parse_focus_def.NATIONAL_FOCUS_DIR, (".txt",)
+    ) + R.ordered_files(layers, parse_focus_def.CONTINUOUS_FOCUS_DIR, (".txt",))
     catalog = {
         "schema": SCHEMA,
         "artifact_kind": "deterministic_static_replay_enrichment",
         "scope": {
             "closed_rows": [
                 "focus tree local node ids and imported shared/joint roots",
-                "local/shared/joint definition kind and authored geometry",
+                "the continuous-focus id namespace and its owning palettes",
+                "local/shared/joint/continuous definition kind and authored geometry",
                 "exact icon, overlay, title/description localisation keys,"
                 " including the `text = <key>` override of the title key",
                 "authored focus state background style families",
@@ -237,7 +296,9 @@ def build_catalog(args: argparse.Namespace) -> dict[str, Any]:
         "join_keys": {
             "runtime_tree_id": "trees.<id>",
             "runtime_visible_focus_id": "focuses.<id>",
+            "runtime_current_continuous_focus_id": "continuous_focuses.<id>",
             "localisation_title_key": "focuses.<id>.title_loc_key",
+            "continuous_localisation_title_key": "continuous_focuses.<id>.title_loc_key",
             "compatibility_status": (
                 "exact string ids; runtime visible order selects joint nodes and "
                 "the replay consumer rejects non-joint topology extras"
@@ -262,6 +323,7 @@ def main() -> int:
     )
     parser.add_argument("--min-trees", type=int, default=1)
     parser.add_argument("--min-focuses", type=int, default=1)
+    parser.add_argument("--min-continuous-focuses", type=int, default=1)
     args = parser.parse_args()
 
     catalog = build_catalog(args)
@@ -283,6 +345,7 @@ def main() -> int:
     passed = bool(
         catalog["meta"]["tree_count"] >= args.min_trees
         and catalog["meta"]["focus_count"] >= args.min_focuses
+        and catalog["meta"]["continuous_focus_count"] >= args.min_continuous_focuses
         and store_verify["passed"]
     )
     report = {

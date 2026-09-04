@@ -74,12 +74,41 @@ fn focus_row(id: &str, title_loc_key: &str) -> Value {
     })
 }
 
+fn continuous_focus_row(id: &str) -> Value {
+    json!({
+        "id": id,
+        "kind": "continuous_focus",
+        "palette_id": "generic_focus",
+        "title_loc_key": id,
+        "description_loc_key": format!("{id}_desc"),
+        "title_loc_key_from_text_override": false,
+        "icon": format!("GFX_goal_{id}"),
+        "has_available": true,
+        "has_enable": false,
+        "modifier_blocks": 1,
+        "source_file": "common/continuous_focus/generic.txt",
+        "source_layer": "vanilla",
+    })
+}
+
 /// `overrides` is what the artifact DECLARES; callers pass a wrong roster to
 /// exercise the admission cross-check.
 fn focus_defs_artifact(rows: &[(&str, &str)], overrides: &[&str]) -> Value {
+    focus_defs_artifact_with_continuous(rows, overrides, &["continuous_non_factory_construct"])
+}
+
+fn focus_defs_artifact_with_continuous(
+    rows: &[(&str, &str)],
+    overrides: &[&str],
+    continuous_ids: &[&str],
+) -> Value {
     let mut focuses = Map::new();
     for (id, title) in rows {
         focuses.insert((*id).to_string(), focus_row(id, title));
+    }
+    let mut continuous = Map::new();
+    for id in continuous_ids {
+        continuous.insert((*id).to_string(), continuous_focus_row(id));
     }
     json!({
         "schema": "focus_defs_static.static_artifact.v1",
@@ -90,12 +119,22 @@ fn focus_defs_artifact(rows: &[(&str, &str)], overrides: &[&str]) -> Value {
             "focus_count": rows.len(),
             "shared_focus_count": 0,
             "joint_focus_count": 0,
+            "continuous_focus_count": continuous_ids.len(),
+            "continuous_focus_palette_count": 1,
+            "focus_kind_counts": {
+                "focus": rows.len(),
+                "shared_focus": 0,
+                "joint_focus": 0,
+                "continuous_focus": continuous_ids.len(),
+            },
             "focus_background_style_count": 1,
             "focus_text_loc_key_overrides": overrides,
             "default_focus_background_styles": ["default_style"],
             "unresolved_focus_background_styles": [],
             "id_collisions_last_wins": [],
-            "files_parsed": 1,
+            "files_parsed": 2,
+            "national_files_parsed": 1,
+            "continuous_files_parsed": 1,
         },
         "trees": {
             "uk_tree": {
@@ -108,12 +147,31 @@ fn focus_defs_artifact(rows: &[(&str, &str)], overrides: &[&str]) -> Value {
             }
         },
         "focuses": focuses,
+        "continuous_focus_palettes": {
+            "generic_focus": {
+                "id": "generic_focus",
+                "default": true,
+                "reset_on_civilwar": false,
+                "focus_count": continuous_ids.len(),
+                "focuses": continuous_ids,
+                "source_file": "common/continuous_focus/generic.txt",
+                "source_layer": "vanilla",
+            }
+        },
+        "continuous_focuses": continuous,
         "focus_background_styles": {"default_style": style()},
-        "source_files": [{
-            "relpath": "common/national_focus/uk.txt",
-            "bytes": 4096,
-            "sha256": "a".repeat(64),
-        }],
+        "source_files": [
+            {
+                "relpath": "common/national_focus/uk.txt",
+                "bytes": 4096,
+                "sha256": "a".repeat(64),
+            },
+            {
+                "relpath": "common/continuous_focus/generic.txt",
+                "bytes": 2048,
+                "sha256": "b".repeat(64),
+            },
+        ],
     })
 }
 
@@ -400,5 +458,179 @@ fn the_bare_catalog_keeps_the_focus_id_when_no_text_is_declared() {
                 "industrial_effort".to_string()
             ),
         ])
+    );
+}
+
+#[test]
+fn a_current_continuous_focus_resolves_through_the_packaged_continuous_namespace() {
+    let catalog = admit(
+        focus_defs_artifact(&[("uk_industrial_focus", "industrial_effort")], &["uk_industrial_focus"]),
+        &[
+            ("industrial_effort", "Industrial Effort"),
+            (
+                "continuous_non_factory_construct",
+                "Construction Engineering",
+            ),
+        ],
+    )
+    .expect("the packaged catalogs are admitted");
+
+    let labels = catalog
+        .bind_focus(&replay_core::FocusView {
+            focus_tree: replay_core::Leaf::Absent,
+            current: replay_core::Leaf::Absent,
+            current_set: replay_core::Leaf::Measured(vec![]),
+            current_continuous: replay_core::Leaf::Absent,
+            current_continuous_set: replay_core::Leaf::Measured(vec![
+                "continuous_non_factory_construct".to_string(),
+            ]),
+            completed_count: replay_core::Leaf::Measured(0),
+            progress: replay_core::Leaf::Absent,
+            completed: replay_core::Leaf::Measured(vec![]),
+            available: replay_core::Leaf::Absent,
+            visible_order: replay_core::Leaf::Unobtained,
+            paused: replay_core::Leaf::Absent,
+        })
+        .expect("a continuous focus binds through the continuous namespace");
+    assert_eq!(
+        match &labels.current_continuous {
+            replay_core::Leaf::Measured(rows) => rows
+                .iter()
+                .map(|row| (row.id.clone(), row.display_name.clone()))
+                .collect::<Vec<_>>(),
+            other => panic!("{other:?}"),
+        },
+        vec![(
+            "continuous_non_factory_construct".to_string(),
+            "Construction Engineering".to_string()
+        )]
+    );
+}
+
+#[test]
+fn a_continuous_focus_id_the_recording_did_not_package_is_refused_by_name_and_kind() {
+    let catalog = admit(
+        focus_defs_artifact_with_continuous(
+            &[("uk_industrial_focus", "industrial_effort")],
+            &["uk_industrial_focus"],
+            &["continuous_repair"],
+        ),
+        &[
+            ("industrial_effort", "Industrial Effort"),
+            ("continuous_repair", "Reinforced Concrete"),
+        ],
+    )
+    .expect("the packaged catalogs are admitted");
+
+    let error = catalog
+        .continuous_focus_label("continuous_non_factory_construct")
+        .expect_err("an unpackaged continuous focus has no localisation key");
+    assert!(
+        error
+            .message
+            .contains("has no focus \"continuous_non_factory_construct\"")
+            && error.message.contains("continuous focuses"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn a_focus_id_named_in_the_wrong_namespace_is_refused_by_kind() {
+    let catalog = admit(
+        focus_defs_artifact(&[("uk_industrial_focus", "industrial_effort")], &["uk_industrial_focus"]),
+        &[
+            ("industrial_effort", "Industrial Effort"),
+            (
+                "continuous_non_factory_construct",
+                "Construction Engineering",
+            ),
+        ],
+    )
+    .expect("the packaged catalogs are admitted");
+
+    let error = catalog
+        .continuous_focus_label("uk_industrial_focus")
+        .expect_err("a tree focus is not a continuous focus");
+    assert!(
+        error
+            .message
+            .contains("is packaged as a tree/shared/joint focus"),
+        "{}",
+        error.message
+    );
+    let error = catalog
+        .focus_label("continuous_non_factory_construct")
+        .expect_err("a continuous focus is not a tree focus");
+    assert!(
+        error.message.contains("is packaged as a continuous focus"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn a_catalog_that_packages_no_continuous_namespace_is_refused_at_admission() {
+    let mut artifact =
+        focus_defs_artifact(&[("uk_industrial_focus", "industrial_effort")], &["uk_industrial_focus"]);
+    let object = artifact.as_object_mut().unwrap();
+    object.remove("continuous_focuses");
+    object.remove("continuous_focus_palettes");
+    let error = replay_core::admit_static_focus_definitions(&packaged(
+        replay_core::FOCUS_DEFS_STATIC_ARTIFACT,
+        "static/focus_defs_static/focus_defs_static.json",
+        artifact,
+    ))
+    .expect_err("a catalog predating the continuous namespace is not admitted");
+    assert!(
+        error
+            .reason
+            .contains("missing field `continuous_focuses`"),
+        "{}",
+        error.reason
+    );
+}
+
+#[test]
+fn a_continuous_focus_a_palette_does_not_own_is_refused() {
+    let mut artifact = focus_defs_artifact_with_continuous(
+        &[("uk_industrial_focus", "industrial_effort")],
+        &["uk_industrial_focus"],
+        &["continuous_repair"],
+    );
+    artifact["continuous_focuses"]["continuous_repair"]["palette_id"] =
+        Value::from("other_palette");
+    let error = replay_core::admit_static_focus_definitions(&packaged(
+        replay_core::FOCUS_DEFS_STATIC_ARTIFACT,
+        "static/focus_defs_static/focus_defs_static.json",
+        artifact,
+    ))
+    .expect_err("a palette cannot claim a focus that names another palette");
+    assert!(
+        error.reason.contains("absent/foreign continuous focus"),
+        "{}",
+        error.reason
+    );
+}
+
+#[test]
+fn an_id_packaged_in_both_focus_namespaces_is_refused() {
+    let artifact = focus_defs_artifact_with_continuous(
+        &[("uk_industrial_focus", "industrial_effort")],
+        &["uk_industrial_focus"],
+        &["uk_industrial_focus"],
+    );
+    let error = replay_core::admit_static_focus_definitions(&packaged(
+        replay_core::FOCUS_DEFS_STATIC_ARTIFACT,
+        "static/focus_defs_static/focus_defs_static.json",
+        artifact,
+    ))
+    .expect_err("one id cannot be both a tree node and a continuous focus");
+    assert!(
+        error
+            .reason
+            .contains("packaged in both the national and continuous namespaces"),
+        "{}",
+        error.reason
     );
 }

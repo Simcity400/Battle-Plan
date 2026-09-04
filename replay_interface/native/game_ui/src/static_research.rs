@@ -57,6 +57,23 @@ pub struct TechnologySharingUiGroup {
 pub struct StaticResearchUiCatalog {
     admitted: AdmittedStaticResearchCatalogs,
     focus_title_loc_keys: BTreeMap<String, String>,
+    continuous_focus_title_loc_keys: BTreeMap<String, String>,
+}
+
+/// Which packaged focus id namespace a runtime leaf is allowed to name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FocusIdNamespace {
+    National,
+    Continuous,
+}
+
+impl FocusIdNamespace {
+    fn artifact_section(self) -> &'static str {
+        match self {
+            Self::National => "tree/shared/joint focuses",
+            Self::Continuous => "continuous focuses",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -120,9 +137,14 @@ impl StaticResearchUiCatalog {
             .definitions()
             .map(|(id, definition)| (id.to_string(), definition.title_loc_key.clone()))
             .collect();
+        let continuous_focus_title_loc_keys = focus_definitions
+            .continuous_definitions()
+            .map(|(id, definition)| (id.to_string(), definition.title_loc_key.clone()))
+            .collect();
         Ok(Self {
             admitted,
             focus_title_loc_keys,
+            continuous_focus_title_loc_keys,
         })
     }
 
@@ -133,6 +155,7 @@ impl StaticResearchUiCatalog {
         idea_technology: &PackagedStaticArtifact,
         technology_sharing: &PackagedStaticArtifact,
         focus_title_loc_keys: BTreeMap<String, String>,
+        continuous_focus_title_loc_keys: BTreeMap<String, String>,
     ) -> Result<Self> {
         let admitted =
             admit_core_static_research_catalogs(localisation, idea_technology, technology_sharing)
@@ -144,6 +167,7 @@ impl StaticResearchUiCatalog {
         Ok(Self {
             admitted,
             focus_title_loc_keys,
+            continuous_focus_title_loc_keys,
         })
     }
 
@@ -152,14 +176,50 @@ impl StaticResearchUiCatalog {
     }
 
     pub fn focus_label(&self, id: &str) -> Result<CatalogLabel> {
+        self.namespaced_focus_label(id, FocusIdNamespace::National)
+    }
+
+    pub fn continuous_focus_label(&self, id: &str) -> Result<CatalogLabel> {
+        self.namespaced_focus_label(id, FocusIdNamespace::Continuous)
+    }
+
+    fn namespaced_focus_label(
+        &self,
+        id: &str,
+        namespace: FocusIdNamespace,
+    ) -> Result<CatalogLabel> {
         if id.trim().is_empty() {
             return Err(GameUiError::parse("focus id is empty"));
         }
-        let title_loc_key = self.focus_title_loc_keys.get(id).ok_or_else(|| {
-            GameUiError::missing(format!(
-                "recorder-packaged focus_defs_static has no focus {id:?}, so its localisation key is unknown"
-            ))
-        })?;
+        let (own, other) = match namespace {
+            FocusIdNamespace::National => (
+                &self.focus_title_loc_keys,
+                &self.continuous_focus_title_loc_keys,
+            ),
+            FocusIdNamespace::Continuous => (
+                &self.continuous_focus_title_loc_keys,
+                &self.focus_title_loc_keys,
+            ),
+        };
+        let title_loc_key = match own.get(id) {
+            Some(key) => key,
+            None if other.contains_key(id) => {
+                return Err(GameUiError::parse(format!(
+                    "focus {id:?} is packaged as {} but the recording names it as {}",
+                    match namespace {
+                        FocusIdNamespace::National => "a continuous focus",
+                        FocusIdNamespace::Continuous => "a tree/shared/joint focus",
+                    },
+                    namespace.artifact_section(),
+                )));
+            }
+            None => {
+                return Err(GameUiError::missing(format!(
+                    "recorder-packaged focus_defs_static has no focus {id:?} among its {}, so its localisation key is unknown",
+                    namespace.artifact_section(),
+                )));
+            }
+        };
         let display_name = self
             .admitted
             .focus_title_display_name(title_loc_key)
@@ -256,7 +316,11 @@ impl StaticResearchUiCatalog {
     pub fn bind_focus(&self, focus: &FocusView) -> Result<FocusCatalogLabels> {
         Ok(FocusCatalogLabels {
             current: self.resolve_focus_leaf(&focus.current_set)?,
-            current_continuous: self.resolve_focus_leaf(&focus.current_continuous_set)?,
+            current_continuous: self
+                .resolve_namespaced_focus_leaf(
+                    &focus.current_continuous_set,
+                    FocusIdNamespace::Continuous,
+                )?,
             completed: self.resolve_focus_leaf(&focus.completed)?,
             available: self.resolve_focus_leaf(&focus.available)?,
             visible_order: self.resolve_focus_leaf(&focus.visible_order)?,
@@ -456,12 +520,20 @@ impl StaticResearchUiCatalog {
     }
 
     fn resolve_focus_leaf(&self, ids: &Leaf<Vec<String>>) -> Result<Leaf<Vec<CatalogLabel>>> {
+        self.resolve_namespaced_focus_leaf(ids, FocusIdNamespace::National)
+    }
+
+    fn resolve_namespaced_focus_leaf(
+        &self,
+        ids: &Leaf<Vec<String>>,
+        namespace: FocusIdNamespace,
+    ) -> Result<Leaf<Vec<CatalogLabel>>> {
         match ids {
             Leaf::Absent => Ok(Leaf::Absent),
             Leaf::Unobtained => Ok(Leaf::Unobtained),
             Leaf::Measured(ids) => ids
                 .iter()
-                .map(|id| self.focus_label(id))
+                .map(|id| self.namespaced_focus_label(id, namespace))
                 .collect::<Result<Vec<_>>>()
                 .map(Leaf::Measured),
         }

@@ -112,3 +112,62 @@ def test_focus_text_declaration_replaces_the_title_localisation_key():
     assert loc.resolve("PRC_found_the_academy_of_science") != loc.resolve(
         "PRC_form_the_academy_of_sciences"
     )
+
+
+def test_continuous_focus_namespace_is_packaged_and_localised():
+    """`common/continuous_focus` is the second current-focus id namespace."""
+    import resolver as R
+
+    assert GAME.is_dir(), f"pinned game root is missing: {GAME}"
+    layers = R.build_layers(vanilla=str(GAME), mods=[])
+    loc = R.load_loc(layers)
+    result = parse_focus_def.parse_focus_defs(layers, loc, strict=True)
+    meta = result["meta"]
+    assert meta["continuous_focus_count"] == 14
+    assert meta["continuous_focus_palette_count"] == 1
+    assert meta["continuous_files_parsed"] == 1
+    assert meta["national_files_parsed"] == 81
+    assert meta["files_parsed"] == 82
+    assert meta["focus_kind_counts"] == {
+        "focus": 10273,
+        "shared_focus": 335,
+        "joint_focus": 280,
+        "continuous_focus": 14,
+    }
+    assert sum(meta["focus_kind_counts"].values()) == meta["focus_count"] + 14
+
+    continuous = result["continuous_focuses"]
+    assert sorted(continuous) == [
+        "DEN_undermine_overlord_continuous_focus",
+        "ETH_strengthen_the_black_lions",
+        "ETH_supporting_the_arbegnoch",
+        "SWI_build_up_military_readiness",
+        "SWI_support_active_militias_continuous_focus",
+        "continuous_air_production",
+        "continuous_boost_freedom",
+        "continuous_naval_production",
+        "continuous_non_factory_construct",
+        "continuous_reduce_training_time",
+        "continuous_repair",
+        "continuous_restrict_freedom",
+        "continuous_suppression",
+        "continuous_tech_share",
+    ]
+    assert not set(continuous) & set(result["focuses"])
+    for focus_id, focus in continuous.items():
+        assert focus["kind"] == "continuous_focus"
+        assert focus["title_loc_key"] == focus_id
+        assert focus["description_loc_key"] == focus_id + "_desc"
+        assert focus["loc"]["title"] and focus["loc"]["desc"], focus_id
+        assert focus["icon"], focus_id
+
+    palettes = result["continuous_focus_palettes"]
+    assert list(palettes) == ["generic_focus"]
+    assert palettes["generic_focus"]["default"] is True
+    assert sorted(palettes["generic_focus"]["focuses"]) == sorted(continuous)
+    assert "generic_focus" not in continuous
+
+    assert (
+        continuous["continuous_non_factory_construct"]["loc"]["title"]
+        == "Construction Engineering"
+    )

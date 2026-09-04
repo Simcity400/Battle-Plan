@@ -144,6 +144,8 @@ pub fn focus_catalog_from_static(definitions: &AdmittedStaticFocusDefinitions) -
             StaticFocusDefinitionKind::Local => FocusDefinitionKind::Local,
             StaticFocusDefinitionKind::Shared => FocusDefinitionKind::Shared,
             StaticFocusDefinitionKind::Joint => FocusDefinitionKind::Joint,
+            // a continuous focus is a separate id namespace with no focus-tree node
+            StaticFocusDefinitionKind::Continuous => continue,
         };
         let authored_state_backgrounds = Some(FocusStateBackgroundSprites {
             unavailable: definition.background_style.unavailable.clone(),

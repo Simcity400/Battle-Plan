@@ -35,6 +35,46 @@ pub enum StaticFocusDefinitionKind {
     Local,
     Shared,
     Joint,
+    Continuous,
+}
+
+impl StaticFocusDefinitionKind {
+    pub fn is_continuous(self) -> bool {
+        matches!(self, Self::Continuous)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "focus",
+            Self::Shared => "shared_focus",
+            Self::Joint => "joint_focus",
+            Self::Continuous => "continuous_focus",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StaticContinuousFocusDefinition {
+    pub id: String,
+    pub palette_id: String,
+    pub icon_sprite: Option<String>,
+    pub title_loc_key: String,
+    pub description_loc_key: String,
+    pub has_available: bool,
+    pub has_enable: bool,
+    pub modifier_blocks: u32,
+    pub source_file: String,
+    pub source_layer: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StaticContinuousFocusPalette {
+    pub id: String,
+    pub default: bool,
+    pub reset_on_civilwar: bool,
+    pub focus_ids: BTreeSet<String>,
+    pub source_file: String,
+    pub source_layer: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -87,6 +127,8 @@ pub struct AdmittedStaticFocusDefinitions {
     embedded_artifact_sha256: String,
     trees: BTreeMap<String, StaticFocusTree>,
     focuses: BTreeMap<String, StaticFocusDefinition>,
+    continuous_focus_palettes: BTreeMap<String, StaticContinuousFocusPalette>,
+    continuous_focuses: BTreeMap<String, StaticContinuousFocusDefinition>,
     imported_shared_by_tree: BTreeMap<String, BTreeSet<String>>,
 }
 
@@ -119,6 +161,36 @@ impl AdmittedStaticFocusDefinitions {
             .map(|(id, definition)| (id.as_str(), definition))
     }
 
+    pub fn continuous_definition(
+        &self,
+        id: &str,
+    ) -> Option<&StaticContinuousFocusDefinition> {
+        self.continuous_focuses.get(id)
+    }
+
+    pub fn continuous_definitions(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&str, &StaticContinuousFocusDefinition)> {
+        self.continuous_focuses
+            .iter()
+            .map(|(id, definition)| (id.as_str(), definition))
+    }
+
+    pub fn continuous_palette(
+        &self,
+        id: &str,
+    ) -> Option<&StaticContinuousFocusPalette> {
+        self.continuous_focus_palettes.get(id)
+    }
+
+    pub fn continuous_palettes(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&str, &StaticContinuousFocusPalette)> {
+        self.continuous_focus_palettes
+            .iter()
+            .map(|(id, palette)| (id.as_str(), palette))
+    }
+
     pub fn imported_shared_node_ids(
         &self,
         tree_id: &str,
@@ -135,6 +207,8 @@ struct Root {
     meta: Meta,
     trees: BTreeMap<String, TreeRow>,
     focuses: BTreeMap<String, FocusRow>,
+    continuous_focuses: BTreeMap<String, ContinuousFocusRow>,
+    continuous_focus_palettes: BTreeMap<String, ContinuousPaletteRow>,
     focus_background_styles: BTreeMap<String, StaticFocusBackgroundStyle>,
     source_files: Vec<SourceFileRow>,
 }
@@ -145,6 +219,11 @@ struct Meta {
     focus_count: u64,
     shared_focus_count: u64,
     joint_focus_count: u64,
+    continuous_focus_count: u64,
+    continuous_focus_palette_count: u64,
+    focus_kind_counts: BTreeMap<String, u64>,
+    national_files_parsed: u64,
+    continuous_files_parsed: u64,
     focus_background_style_count: u64,
     focus_text_loc_key_overrides: Vec<String>,
     default_focus_background_styles: Vec<String>,
@@ -190,6 +269,35 @@ struct FocusRow {
     allow_branch_blocks: u32,
     background_style_name: String,
     background_style: StaticFocusBackgroundStyle,
+    source_file: String,
+    source_layer: String,
+}
+
+#[derive(Deserialize)]
+struct ContinuousPaletteRow {
+    id: String,
+    default: bool,
+    reset_on_civilwar: bool,
+    focus_count: u64,
+    #[serde(default)]
+    focuses: Vec<String>,
+    source_file: String,
+    source_layer: String,
+}
+
+#[derive(Deserialize)]
+struct ContinuousFocusRow {
+    id: String,
+    kind: String,
+    palette_id: String,
+    title_loc_key: String,
+    description_loc_key: String,
+    title_loc_key_from_text_override: bool,
+    #[serde(default)]
+    icon: Option<String>,
+    has_available: bool,
+    has_enable: bool,
+    modifier_blocks: u32,
     source_file: String,
     source_layer: String,
 }
@@ -255,6 +363,33 @@ pub fn admit_static_focus_definitions(
         root.meta.files_parsed,
         root.source_files.len(),
     )?;
+    count_matches(
+        "meta.continuous_focus_count",
+        root.meta.continuous_focus_count,
+        root.continuous_focuses.len(),
+    )?;
+    count_matches(
+        "meta.continuous_focus_palette_count",
+        root.meta.continuous_focus_palette_count,
+        root.continuous_focus_palettes.len(),
+    )?;
+    if root.meta.national_files_parsed == 0
+        || root.meta.continuous_files_parsed == 0
+        || root
+            .meta
+            .national_files_parsed
+            .checked_add(root.meta.continuous_files_parsed)
+            != Some(root.meta.files_parsed)
+    {
+        return Err(StaticFocusDefsError::new(
+            "meta.files_parsed is not the national plus continuous source-file counts",
+        ));
+    }
+    if root.continuous_focuses.is_empty() || root.continuous_focus_palettes.is_empty() {
+        return Err(StaticFocusDefsError::new(
+            "catalog packages no continuous-focus namespace",
+        ));
+    }
     if root.meta.files_parsed == 0
         || root.trees.is_empty()
         || root.focuses.is_empty()
@@ -316,6 +451,16 @@ pub fn admit_static_focus_definitions(
     {
         return Err(StaticFocusDefsError::new(
             "default background style declaration disagrees with style rows",
+        ));
+    }
+
+    if root
+        .continuous_focuses
+        .keys()
+        .any(|id| root.focuses.contains_key(id))
+    {
+        return Err(StaticFocusDefsError::new(
+            "a focus id is packaged in both the national and continuous namespaces",
         ));
     }
 
@@ -439,6 +584,111 @@ pub fn admit_static_focus_definitions(
         joint_count,
     )?;
 
+    let mut continuous_focuses = BTreeMap::new();
+    for (focus_id, row) in root.continuous_focuses {
+        if row.kind != "continuous_focus" {
+            return Err(StaticFocusDefsError::new(format!(
+                "continuous focus {focus_id:?} declares a non-continuous kind"
+            )));
+        }
+        if row.id != focus_id
+            || !portable_id(&focus_id)
+            || row.title_loc_key != focus_id
+            || row.description_loc_key != format!("{focus_id}_desc")
+            || row.title_loc_key_from_text_override
+            || !portable_id(&row.palette_id)
+            || row.source_file.trim().is_empty()
+            || row.source_layer.trim().is_empty()
+            || !source_relpaths.contains(row.source_file.as_str())
+        {
+            return Err(StaticFocusDefsError::new(format!(
+                "continuous focus {focus_id:?} has malformed identity or localisation keys"
+            )));
+        }
+        continuous_focuses.insert(
+            focus_id.clone(),
+            StaticContinuousFocusDefinition {
+                id: focus_id,
+                palette_id: row.palette_id,
+                icon_sprite: row.icon,
+                title_loc_key: row.title_loc_key,
+                description_loc_key: row.description_loc_key,
+                has_available: row.has_available,
+                has_enable: row.has_enable,
+                modifier_blocks: row.modifier_blocks,
+                source_file: row.source_file,
+                source_layer: row.source_layer,
+            },
+        );
+    }
+
+    let mut continuous_focus_palettes = BTreeMap::new();
+    let mut continuous_owners = BTreeMap::new();
+    for (palette_id, row) in root.continuous_focus_palettes {
+        if row.id != palette_id
+            || !portable_id(&palette_id)
+            || row.source_file.trim().is_empty()
+            || row.source_layer.trim().is_empty()
+            || !source_relpaths.contains(row.source_file.as_str())
+        {
+            return Err(StaticFocusDefsError::new(format!(
+                "continuous focus palette {palette_id:?} has malformed identity/provenance"
+            )));
+        }
+        let focus_ids = unique_ids(&row.focuses, &format!("palette {palette_id} focuses"))?;
+        count_matches("palette.focus_count", row.focus_count, focus_ids.len())?;
+        for focus_id in &focus_ids {
+            match continuous_focuses.get(focus_id) {
+                Some(definition) if definition.palette_id == palette_id => {}
+                _ => {
+                    return Err(StaticFocusDefsError::new(format!(
+                        "palette {palette_id:?} claims absent/foreign continuous focus {focus_id:?}"
+                    )));
+                }
+            }
+            if continuous_owners
+                .insert(focus_id.clone(), palette_id.clone())
+                .is_some()
+            {
+                return Err(StaticFocusDefsError::new(format!(
+                    "continuous focus {focus_id:?} belongs to more than one palette"
+                )));
+            }
+        }
+        continuous_focus_palettes.insert(
+            palette_id.clone(),
+            StaticContinuousFocusPalette {
+                id: palette_id,
+                default: row.default,
+                reset_on_civilwar: row.reset_on_civilwar,
+                focus_ids,
+                source_file: row.source_file,
+                source_layer: row.source_layer,
+            },
+        );
+    }
+    if continuous_owners.len() != continuous_focuses.len() {
+        return Err(StaticFocusDefsError::new(
+            "continuous palettes do not own every continuous focus definition exactly once",
+        ));
+    }
+
+    let declared_kind_counts = &root.meta.focus_kind_counts;
+    let actual_kind_counts: BTreeMap<String, u64> = [
+        ("focus", focuses.len() - shared_count - joint_count),
+        ("shared_focus", shared_count),
+        ("joint_focus", joint_count),
+        ("continuous_focus", continuous_focuses.len()),
+    ]
+    .into_iter()
+    .map(|(kind, count)| (kind.to_string(), count as u64))
+    .collect();
+    if declared_kind_counts != &actual_kind_counts {
+        return Err(StaticFocusDefsError::new(
+            "meta.focus_kind_counts disagrees with the admitted definition kinds",
+        ));
+    }
+
     let mut trees = BTreeMap::new();
     let mut local_owners = BTreeMap::new();
     for (tree_id, row) in root.trees {
@@ -524,6 +774,8 @@ pub fn admit_static_focus_definitions(
         embedded_artifact_sha256: claimed_self_hash,
         trees,
         focuses,
+        continuous_focus_palettes,
+        continuous_focuses,
         imported_shared_by_tree,
     })
 }

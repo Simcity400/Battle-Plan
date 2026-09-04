@@ -1032,7 +1032,10 @@ def _lookup_sets(catalogs: dict[str, dict[str, Any]]) -> dict[str, set[str]]:
             if isinstance(row, dict) and row.get("name") is not None
         },
         "gfx_sprite": keys(gfx.get("sprites")),
-        "focus": keys(focus_defs.get("focuses")),
+        # a recorded focus id comes from either engine database, so both count as packaged
+        "focus": keys(focus_defs.get("focuses")) | keys(focus_defs.get("continuous_focuses")),
+        "continuous_focus": keys(focus_defs.get("continuous_focuses")),
+        "continuous_focus_palette": keys(focus_defs.get("continuous_focus_palettes")),
         "focus_tree": keys(focus_defs.get("trees")),
     }
 

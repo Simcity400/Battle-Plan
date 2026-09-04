@@ -249,7 +249,8 @@ pub use source::{
     REQUIRED_PACKAGED_STATIC_ARTIFACTS,
 };
 pub use static_focus_defs::{
-    admit_static_focus_definitions, AdmittedStaticFocusDefinitions, StaticFocusBackgroundStyle,
+    admit_static_focus_definitions, AdmittedStaticFocusDefinitions,
+    StaticContinuousFocusDefinition, StaticContinuousFocusPalette, StaticFocusBackgroundStyle,
     StaticFocusDefinition, StaticFocusDefinitionKind, StaticFocusDefsError, StaticFocusTree,
     FOCUS_DEFS_STATIC_ARTIFACT,
 };
