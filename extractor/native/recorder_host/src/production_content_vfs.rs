@@ -866,6 +866,11 @@ mod tests {
                     authority: Some(crate::modset::SettingsAuthority::PreLaunchBracketed),
                     errors: Vec::new(),
                     language: language.map(Into::into),
+                    map_render: Some(crate::modset::MapRenderSettings {
+                        draw_hires_terrain: false,
+                        high_gfx_shaders: true,
+                        texture_quality: 0,
+                    }),
                     display: Some(DisplayVariantSettings {
                         physical_width: 1920,
                         physical_height: 1080,

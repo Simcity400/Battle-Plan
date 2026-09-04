@@ -55,3 +55,60 @@ def test_current_focus_style_registry_is_complete():
         for path in (GAME / "interface").glob("*.gfx")
     )
     assert all(token in all_gfx for token in overlay_tokens)
+
+
+def test_focus_text_declaration_replaces_the_title_localisation_key():
+    """`focus = { id = X text = Y }` localises under Y, not X."""
+    import resolver as R
+
+    assert GAME.is_dir(), f"pinned game root is missing: {GAME}"
+    layers = R.build_layers(vanilla=str(GAME), mods=[])
+    loc = R.load_loc(layers)
+    result = parse_focus_def.parse_focus_defs(layers, loc)
+    focuses = result["focuses"]
+
+    assert result["meta"]["focus_text_loc_key_overrides"] == [
+        "CHI_the_soviet_volunteer_group",
+        "CZE_join_comintern_pfot",
+        "ETH_peoples_army",
+        "PRC_found_the_academy_of_science",
+        "USA_CAS",
+        "uk_extra_tech_slot",
+        "uk_industrial_focus",
+    ]
+    assert {
+        focus_id: focuses[focus_id]["title_loc_key"]
+        for focus_id in result["meta"]["focus_text_loc_key_overrides"]
+    } == {
+        "CHI_the_soviet_volunteer_group": "CHI_the_soviet_volunteer_group_focus",
+        "CZE_join_comintern_pfot": "CZE_join_comintern",
+        "ETH_peoples_army": "ETH_peoples_army_focus",
+        "PRC_found_the_academy_of_science": "PRC_form_the_academy_of_sciences",
+        "USA_CAS": "CAS_effort",
+        "uk_extra_tech_slot": "extra_tech_slot",
+        "uk_industrial_focus": "industrial_effort",
+    }
+
+    for focus in focuses.values():
+        assert focus["description_loc_key"] == focus["title_loc_key"] + "_desc"
+    # Every declared key resolves; the ids the old join used mostly do not.
+    assert [
+        focus_id
+        for focus_id in result["meta"]["focus_text_loc_key_overrides"]
+        if focuses[focus_id]["loc"]["title"] is None
+    ] == []
+    assert [
+        focus_id
+        for focus_id in result["meta"]["focus_text_loc_key_overrides"]
+        if loc.resolve(focus_id) is None
+    ] == [
+        "CHI_the_soviet_volunteer_group",
+        "CZE_join_comintern_pfot",
+        "ETH_peoples_army",
+        "USA_CAS",
+        "uk_extra_tech_slot",
+        "uk_industrial_focus",
+    ]
+    assert loc.resolve("PRC_found_the_academy_of_science") != loc.resolve(
+        "PRC_form_the_academy_of_sciences"
+    )

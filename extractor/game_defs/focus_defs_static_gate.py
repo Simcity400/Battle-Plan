@@ -89,6 +89,17 @@ def _validate_catalog(parsed: dict[str, Any]) -> None:
         raise RuntimeError("focus definition catalog is empty")
     if meta["id_collisions_last_wins"]:
         raise RuntimeError("focus definition IDs collide across effective source files")
+    overrides = meta["focus_text_loc_key_overrides"]
+    if sorted(set(overrides)) != overrides or any(
+        focuses[focus_id]["title_loc_key"] == focus_id for focus_id in overrides
+    ):
+        raise RuntimeError("focus text-override roster disagrees with the parsed title keys")
+    if {
+        focus_id
+        for focus_id, focus in focuses.items()
+        if focus["title_loc_key"] != focus_id
+    } != set(overrides):
+        raise RuntimeError("focus text-override roster is not the exact set of overridden focuses")
     if meta["unresolved_focus_background_styles"]:
         raise RuntimeError("focus definitions reference unresolved background styles")
     if len(meta["default_focus_background_styles"]) != 1:
@@ -108,8 +119,11 @@ def _validate_catalog(parsed: dict[str, Any]) -> None:
             focus.get("id") != focus_id
             or not _PORTABLE_ID.fullmatch(focus_id)
             or kind not in kind_counts
-            or focus.get("title_loc_key") != focus_id
-            or focus.get("description_loc_key") != f"{focus_id}_desc"
+            or not _PORTABLE_ID.fullmatch(str(focus.get("title_loc_key") or ""))
+            or focus.get("description_loc_key")
+            != f"{focus.get('title_loc_key')}_desc"
+            or focus.get("title_loc_key_from_text_override")
+            != (focus.get("title_loc_key") != focus_id)
             or not focus.get("source_file")
             or not focus.get("source_layer")
         ):
@@ -210,7 +224,8 @@ def build_catalog(args: argparse.Namespace) -> dict[str, Any]:
             "closed_rows": [
                 "focus tree local node ids and imported shared/joint roots",
                 "local/shared/joint definition kind and authored geometry",
-                "exact icon, overlay, title/description localisation keys",
+                "exact icon, overlay, title/description localisation keys,"
+                " including the `text = <key>` override of the title key",
                 "authored focus state background style families",
             ],
             "not_closed_rows": [

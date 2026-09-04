@@ -104,12 +104,15 @@ def parse_focus(node: Node, loc, rel, source_layer=None) -> dict:
     fid = _scalar(node.get("id"))
     if not fid:
         return None
-    title = loc.resolve(fid) if loc else None
-    desc = loc.resolve(fid + "_desc") if loc else None
+    # `text = <key>` replaces the id as the title localisation key; the description is `<key>_desc`.
+    title_key = _scalar(node.get("text")) or fid
+    title = loc.resolve(title_key) if loc else None
+    desc = loc.resolve(title_key + "_desc") if loc else None
     return {
         "id": fid,
-        "title_loc_key": fid,
-        "description_loc_key": fid + "_desc",
+        "title_loc_key": title_key,
+        "description_loc_key": title_key + "_desc",
+        "title_loc_key_from_text_override": title_key != fid,
         "icon": _scalar(node.get("icon")),
         "overlay": _scalar(node.get("overlay")),
         "text_icon": _scalar(node.get("text_icon")),
@@ -243,6 +246,10 @@ def parse_focus_defs(layers, loc, *, strict=False) -> dict:
         "meta": {
             "tree_count": len(trees),
             "focus_count": len(focuses),
+            "focus_text_loc_key_overrides": sorted(
+                rec["id"] for rec in focuses.values()
+                if rec["title_loc_key_from_text_override"]
+            ),
             "shared_focus_count": len(shared),
             "joint_focus_count": len(joint),
             "focus_background_style_count": len(styles),

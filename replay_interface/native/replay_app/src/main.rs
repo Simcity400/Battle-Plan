@@ -1499,18 +1499,19 @@ fn run_validate_playback(
     };
     content_compatibility::validate_timeline_content(&timeline, &paths)
         .map_err(|error| -> Box<dyn Error> { error.into() })?;
-    let static_research = game_ui::static_research::admit_static_research_catalogs(
-        timeline.static_artifact(replay_core::LOCALISATION_JOIN_ARTIFACT),
-        timeline.static_artifact(replay_core::IDEA_TECH_LOC_XREF_ARTIFACT),
-        timeline.static_artifact(replay_core::TECHNOLOGY_SHARING_ARTIFACT),
-    )
-    .map_err(|error| format!("admit packaged static research catalogs: {error}"))?;
-    replay_core::admit_static_focus_definitions(
+    let static_focus_definitions = replay_core::admit_static_focus_definitions(
         timeline
             .static_artifact(replay_core::FOCUS_DEFS_STATIC_ARTIFACT)
             .ok_or("portable playback has no authenticated focus_defs_static artifact")?,
     )
     .map_err(|error| format!("admit packaged static focus definitions: {error}"))?;
+    let static_research = game_ui::static_research::admit_static_research_catalogs(
+        timeline.static_artifact(replay_core::LOCALISATION_JOIN_ARTIFACT),
+        timeline.static_artifact(replay_core::IDEA_TECH_LOC_XREF_ARTIFACT),
+        timeline.static_artifact(replay_core::TECHNOLOGY_SHARING_ARTIFACT),
+        &static_focus_definitions,
+    )
+    .map_err(|error| format!("admit packaged static research catalogs: {error}"))?;
     for &hour in timeline.hours() {
         let frame = timeline.frame(hour)?;
         static_research.bind_frame(&frame).map_err(|error| {

@@ -59,11 +59,19 @@ def _clone_layer(layer, *, meta_extra: dict[str, Any] | None = None):
     return _new_layer(layer.label, Path(layer.root), getattr(layer, "replace_paths", []), meta)
 
 
+def _has_dlc_descriptor(directory: Path) -> bool:
+    return any(child.suffix.casefold() == ".dlc" for child in directory.iterdir() if child.is_file())
+
+
 def _installed_dlc_dirs(vanilla: Path, bucket: str) -> list[Path]:
+    """Only directories with a *.dlc descriptor are mounted by the engine."""
     root = vanilla / bucket
     if not root.is_dir():
         return []
-    return sorted((p.resolve() for p in root.iterdir() if p.is_dir()), key=lambda p: p.name.casefold())
+    return sorted(
+        (p.resolve() for p in root.iterdir() if p.is_dir() and _has_dlc_descriptor(p)),
+        key=lambda p: p.name.casefold(),
+    )
 
 
 def _staged_dlc_roots(userdata: Path) -> dict[str, dict[str, Any]]:
@@ -239,6 +247,16 @@ def build_gfx_asset_layers(
 
     integrated_dirs = _installed_dlc_dirs(vanilla_root, "integrated_dlc")
     installed_dlc_dirs = _installed_dlc_dirs(vanilla_root, "dlc")
+    descriptorless_dlc_dirs = sorted(
+        (
+            path.name
+            for path in (vanilla_root / "dlc").iterdir()
+            if path.is_dir() and not _has_dlc_descriptor(path)
+        )
+        if (vanilla_root / "dlc").is_dir()
+        else [],
+        key=str.casefold,
+    )
     dlc_selection = _load_dlc_selection(userdata_root, installed_dlc_dirs)
     enabled_set = {name.casefold() for name in dlc_selection["enabled_dlcs"]}
     enabled_dlc_dirs = [path for path in installed_dlc_dirs if path.name.casefold() in enabled_set]
@@ -371,6 +389,7 @@ def build_gfx_asset_layers(
         ),
         "integrated_dlcs": inventory_integrated_dlcs,
         "installed_dlcs": dlc_selection["installed_dlcs"],
+        "dlc_dirs_without_descriptor": descriptorless_dlc_dirs,
         "enabled_dlcs": inventory_enabled_dlcs,
         "excluded_asset_only_dlcs": excluded_asset_only_dlcs,
         "disabled_dlcs": dlc_selection["disabled_dlcs"],

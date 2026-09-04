@@ -383,11 +383,13 @@ spriteTypes = {
   SpriteType = { name = "GFX_shared" texturefile = "gfx/interface/shared.dds" }
 }
 """)
+    _write(vanilla, "integrated_dlc/dlc001/dlc001.dlc", 'name = "Integrated"')
     _write(vanilla, "integrated_dlc/dlc001/interface/integrated.gfx", """
 spriteTypes = {
   SpriteType = { name = "GFX_integrated" texturefile = "gfx/interface/integrated.dds" }
 }
 """)
+    _write(vanilla, "dlc/dlc010/dlc010.dlc", 'name = "Ten"')
     _write(vanilla, "dlc/dlc010/interface/dlc.gfx", """
 spriteTypes = {
   SpriteType = { name = "GFX_dlc" texturefile = "gfx/interface/dlc.dds" }
@@ -623,11 +625,13 @@ def test_gfx_disabled_dlc_is_excluded(tmp_path, monkeypatch):
         "dlc_load.json",
         json.dumps({"enabled_mods": [], "disabled_dlcs": ["dlc/dlc020_disabled/dlc020.dlc"]}),
     )
+    _write(vanilla, "dlc/dlc010_enabled/dlc010.dlc", 'name = "Enabled"')
     _write(vanilla, "dlc/dlc010_enabled/interface/enabled.gfx", """
 spriteTypes = {
   SpriteType = { name = "GFX_enabled" texturefile = "gfx/interface/enabled.dds" }
 }
 """)
+    _write(vanilla, "dlc/dlc020_disabled/dlc020.dlc", 'name = "Disabled"')
     _write(vanilla, "dlc/dlc020_disabled/interface/disabled.gfx", """
 spriteTypes = {
   SpriteType = { name = "GFX_disabled" texturefile = "gfx/interface/disabled.dds" }
@@ -643,6 +647,44 @@ spriteTypes = {
     assert "GFX_disabled" not in catalog["sprites"]
     assert "dlc020_disabled" in catalog["meta"]["asset_layer_model"]["disabled_dlcs"]
     assert [row["label"] for row in catalog["layers"]] == ["vanilla", "dlc/dlc010_enabled"]
+
+
+def test_gfx_dlc_directory_without_a_descriptor_is_not_mounted(tmp_path, monkeypatch):
+    """A payload directory with no `*.dlc` descriptor is not a mounted DLC."""
+    vanilla = tmp_path / "vanilla"
+    userdata = tmp_path / "userdata"
+    userdata.mkdir()
+    _write(userdata, "dlc_load.json", '{"enabled_mods":[],"disabled_dlcs":[]}')
+    _write(vanilla, "interface/base.gfx", """
+spriteTypes = {
+  SpriteType = { name = "GFX_base" texturefile = "gfx/interface/base.dds" }
+}
+""")
+    _write_bytes(vanilla, "gfx/interface/base.dds", b"base")
+    _write(vanilla, "dlc/dlc010_real/dlc010.dlc", 'name = "Real"')
+    _write(vanilla, "dlc/dlc010_real/interface/real.gfx", """
+spriteTypes = {
+  SpriteType = { name = "GFX_real" texturefile = "gfx/interface/real.dds" }
+}
+""")
+    _write_bytes(vanilla, "dlc/dlc010_real/gfx/interface/real.dds", b"real")
+    _write(vanilla, "dlc/dlc014_wallpaper/interface/wallpaper.gfx", """
+spriteTypes = {
+  SpriteType = { name = "GFX_wallpaper" texturefile = "gfx/interface/wallpaper.dds" }
+}
+""")
+    _write_bytes(vanilla, "dlc/dlc014_wallpaper/gfx/interface/wallpaper.dds", b"wallpaper")
+    _patch_layers(monkeypatch, vanilla)
+
+    catalog = gfx_icon_manifest_gate.build_catalog(_gfx_args(vanilla, userdata, _allowlist(tmp_path)))
+    model = catalog["meta"]["asset_layer_model"]
+
+    assert [row["label"] for row in catalog["layers"]] == ["vanilla", "dlc/dlc010_real"]
+    assert model["installed_dlcs"] == ["dlc010_real"]
+    assert model["enabled_dlcs"] == ["dlc010_real"]
+    assert model["dlc_dirs_without_descriptor"] == ["dlc014_wallpaper"]
+    assert "GFX_real" in catalog["sprites"]
+    assert "GFX_wallpaper" not in catalog["sprites"]
 
 
 def test_gfx_extension_fallback_records_real_path(tmp_path, monkeypatch):

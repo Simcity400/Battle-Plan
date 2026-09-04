@@ -146,6 +146,7 @@ struct Meta {
     shared_focus_count: u64,
     joint_focus_count: u64,
     focus_background_style_count: u64,
+    focus_text_loc_key_overrides: Vec<String>,
     default_focus_background_styles: Vec<String>,
     unresolved_focus_background_styles: Vec<Value>,
     id_collisions_last_wins: Vec<Value>,
@@ -340,8 +341,8 @@ pub fn admit_static_focus_definitions(
         };
         if row.id != focus_id
             || !portable_id(&focus_id)
-            || row.title_loc_key != focus_id
-            || row.description_loc_key != format!("{focus_id}_desc")
+            || !portable_id(&row.title_loc_key)
+            || row.description_loc_key != format!("{}_desc", row.title_loc_key)
             || row.source_file.trim().is_empty()
             || row.source_layer.trim().is_empty()
             || !source_relpaths.contains(row.source_file.as_str())
@@ -407,6 +408,25 @@ pub fn admit_static_focus_definitions(
                 source_layer: row.source_layer,
             },
         );
+    }
+    let declared_overrides = root
+        .meta
+        .focus_text_loc_key_overrides
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let actual_overrides = focuses
+        .values()
+        .filter(|definition| definition.title_loc_key != definition.id)
+        .map(|definition| definition.id.clone())
+        .collect::<BTreeSet<_>>();
+    if declared_overrides.len() != root.meta.focus_text_loc_key_overrides.len()
+        || declared_overrides != actual_overrides
+    {
+        return Err(StaticFocusDefsError::new(
+            "meta.focus_text_loc_key_overrides is not the exact set of focuses \
+             whose title key differs from their id",
+        ));
     }
     count_matches(
         "meta.shared_focus_count",

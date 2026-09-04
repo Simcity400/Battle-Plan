@@ -250,8 +250,10 @@ impl AdmittedStaticResearchCatalogs {
         &self.technology_sharing
     }
 
-    pub fn focus_display_name(&self, focus_id: &str) -> Option<&str> {
-        self.localisation.text(focus_id)
+    /// Keyed by the focus's `title_loc_key` from `focus_defs_static`, which is
+    /// the focus id only when the focus block declares no `text = <key>`.
+    pub fn focus_title_display_name(&self, title_loc_key: &str) -> Option<&str> {
+        self.localisation.text(title_loc_key)
     }
 
     pub fn technology_display_name(&self, technology_id: &str) -> Option<&str> {

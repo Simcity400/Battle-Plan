@@ -354,7 +354,26 @@ impl PortableLaunchBinding {
         let display = report
             .display_variant()
             .ok_or("resolved launch binding omitted display settings")?;
-        let required_settings = BTreeMap::new();
+        let map_render = report
+            .settings
+            .map_render
+            .as_ref()
+            .ok_or("resolved launch binding omitted map rendering options")?;
+        // Spelled as `replay_app::install_paths::RENDER_SETTING_KEYS` reads them back.
+        let required_settings = BTreeMap::from([
+            (
+                "map_draw_hires_terrain".to_string(),
+                map_render.draw_hires_terrain.to_string(),
+            ),
+            (
+                "map_high_gfx_shaders".to_string(),
+                map_render.high_gfx_shaders.to_string(),
+            ),
+            (
+                "map_texture_quality".to_string(),
+                map_render.texture_quality.to_string(),
+            ),
+        ]);
         let recorder_local_settings = BTreeMap::from([
             ("physical_width".into(), display.physical_width.to_string()),
             (
@@ -4448,6 +4467,11 @@ mod tests {
                 authority: Some(crate::modset::SettingsAuthority::PreLaunchBracketed),
                 errors: Vec::new(),
                 language: Some("english".into()),
+                map_render: Some(crate::modset::MapRenderSettings {
+                    draw_hires_terrain: false,
+                    high_gfx_shaders: true,
+                    texture_quality: 2,
+                }),
                 display: Some(DisplayVariantSettings {
                     physical_width: 1920,
                     physical_height: 1080,
@@ -4517,11 +4541,21 @@ mod tests {
             ]),
         };
         let portable = PortableLaunchBinding::from_modset(&report).unwrap();
-        assert!(
-            portable.required_settings.is_empty(),
-            "the recorder demands no setting of the replaying install: {:?}",
-            portable.required_settings
+        assert_eq!(
+            portable.required_settings,
+            BTreeMap::from([
+                ("map_draw_hires_terrain".to_string(), "false".to_string()),
+                ("map_high_gfx_shaders".to_string(), "true".to_string()),
+                ("map_texture_quality".to_string(), "2".to_string()),
+            ]),
+            "the recorder pins exactly the settings a replay must reproduce"
         );
+        for key in portable.required_settings.keys() {
+            assert!(
+                !portable_content_manifest::is_recorder_local_settings(key),
+                "{key:?} is a recorder-local setting demanded of the replaying install"
+            );
+        }
         for key in portable.recorder_local_settings.keys() {
             assert!(
                 portable_content_manifest::is_recorder_local_settings(key),

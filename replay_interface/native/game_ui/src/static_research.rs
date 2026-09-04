@@ -3,9 +3,9 @@ use crate::{GameUiError, Result};
 use replay_core::{
     admit_static_research_catalogs as admit_core_static_research_catalogs,
     technology_sharing_runtime,
-    AdmittedStaticResearchCatalogs, FocusView, IdeaTechnologyDefinition, Leaf,
-    PackagedStaticArtifact, PoliticsDetailView, ResearchView, TechnologySharingDefinition,
-    TechnologySharingRuntimeMember, WorldFrame,
+    AdmittedStaticFocusDefinitions, AdmittedStaticResearchCatalogs, FocusView,
+    IdeaTechnologyDefinition, Leaf, PackagedStaticArtifact, PoliticsDetailView, ResearchView,
+    TechnologySharingDefinition, TechnologySharingRuntimeMember, WorldFrame,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -56,6 +56,7 @@ pub struct TechnologySharingUiGroup {
 #[derive(Clone, Debug, PartialEq)]
 pub struct StaticResearchUiCatalog {
     admitted: AdmittedStaticResearchCatalogs,
+    focus_title_loc_keys: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -74,6 +75,7 @@ pub fn admit_static_research_catalogs(
     localisation: Option<&PackagedStaticArtifact>,
     idea_technology: Option<&PackagedStaticArtifact>,
     technology_sharing: Option<&PackagedStaticArtifact>,
+    focus_definitions: &AdmittedStaticFocusDefinitions,
 ) -> Result<StaticResearchUiCatalog> {
     StaticResearchUiCatalog::from_packaged_artifacts(
         require_packaged_artifact(localisation, replay_core::LOCALISATION_JOIN_ARTIFACT)?,
@@ -85,6 +87,7 @@ pub fn admit_static_research_catalogs(
             technology_sharing,
             replay_core::TECHNOLOGY_SHARING_ARTIFACT,
         )?,
+        focus_definitions,
     )
 }
 
@@ -104,6 +107,7 @@ impl StaticResearchUiCatalog {
         localisation: &PackagedStaticArtifact,
         idea_technology: &PackagedStaticArtifact,
         technology_sharing: &PackagedStaticArtifact,
+        focus_definitions: &AdmittedStaticFocusDefinitions,
     ) -> Result<Self> {
         let admitted =
             admit_core_static_research_catalogs(localisation, idea_technology, technology_sharing)
@@ -112,7 +116,35 @@ impl StaticResearchUiCatalog {
                         "recorder-packaged static research catalog rejected: {error}"
                     ))
                 })?;
-        Ok(Self { admitted })
+        let focus_title_loc_keys = focus_definitions
+            .definitions()
+            .map(|(id, definition)| (id.to_string(), definition.title_loc_key.clone()))
+            .collect();
+        Ok(Self {
+            admitted,
+            focus_title_loc_keys,
+        })
+    }
+
+    /// The technology/idea half alone, for tests that never bind a focus.
+    #[cfg(test)]
+    pub(crate) fn from_packaged_artifacts_with_focus_title_keys(
+        localisation: &PackagedStaticArtifact,
+        idea_technology: &PackagedStaticArtifact,
+        technology_sharing: &PackagedStaticArtifact,
+        focus_title_loc_keys: BTreeMap<String, String>,
+    ) -> Result<Self> {
+        let admitted =
+            admit_core_static_research_catalogs(localisation, idea_technology, technology_sharing)
+                .map_err(|error| {
+                    GameUiError::parse(format!(
+                        "recorder-packaged static research catalog rejected: {error}"
+                    ))
+                })?;
+        Ok(Self {
+            admitted,
+            focus_title_loc_keys,
+        })
     }
 
     pub fn admitted(&self) -> &AdmittedStaticResearchCatalogs {
@@ -123,12 +155,17 @@ impl StaticResearchUiCatalog {
         if id.trim().is_empty() {
             return Err(GameUiError::parse("focus id is empty"));
         }
+        let title_loc_key = self.focus_title_loc_keys.get(id).ok_or_else(|| {
+            GameUiError::missing(format!(
+                "recorder-packaged focus_defs_static has no focus {id:?}, so its localisation key is unknown"
+            ))
+        })?;
         let display_name = self
             .admitted
-            .focus_display_name(id)
+            .focus_title_display_name(title_loc_key)
             .ok_or_else(|| {
                 GameUiError::missing(format!(
-                    "recorder-packaged localisation has no focus key {id:?}"
+                    "recorder-packaged localisation has no focus title key {title_loc_key:?} for focus {id:?}"
                 ))
             })?
             .to_string();

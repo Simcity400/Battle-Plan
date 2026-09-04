@@ -264,6 +264,7 @@ pub struct SettingsBinding {
     pub errors: Vec<ModsetError>,
     pub language: Option<String>,
     pub display: Option<DisplayVariantSettings>,
+    pub map_render: Option<MapRenderSettings>,
     pub attach_sha256: Option<String>,
     pub seal_sha256: Option<String>,
     pub endpoint_semantics_equal: Option<bool>,
@@ -278,11 +279,15 @@ impl SettingsBinding {
         self.authority = None;
         self.language = None;
         self.display = None;
+        self.map_render = None;
         self.errors.push(ModsetError::new(code, detail));
     }
 
     pub fn is_readable(&self) -> bool {
-        self.authority.is_some() && self.language.is_some() && self.display.is_some()
+        self.authority.is_some()
+            && self.language.is_some()
+            && self.display.is_some()
+            && self.map_render.is_some()
     }
 
     pub fn as_json(&self) -> Value {
@@ -305,6 +310,11 @@ impl SettingsBinding {
                 "fullscreen": display.fullscreen,
                 "borderless": display.borderless,
                 "display_mode": display.display_mode,
+            })),
+            "map_rendering_options": self.map_render.as_ref().map(|map_render| json!({
+                "draw_hires_terrain": map_render.draw_hires_terrain,
+                "high_gfx_shaders": map_render.high_gfx_shaders,
+                "texture_quality": map_render.texture_quality,
             })),
             "attach_settings_sha256": self.attach_sha256,
             "seal_settings_sha256": self.seal_sha256,
@@ -366,6 +376,16 @@ pub struct DisplayVariantSettings {
     pub settings_file_sha256: String,
 }
 
+/// `settings.txt mapRenderingOptions`: what the map draws, not which machine
+/// draws it, so these are `required_settings`, not recorder-local.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MapRenderSettings {
+    pub draw_hires_terrain: bool,
+    pub high_gfx_shaders: bool,
+    pub texture_quality: u8,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SameProcessSettingsAuthority {
@@ -376,6 +396,7 @@ struct SameProcessSettingsAuthority {
     user_dir: String,
     localisation_language: String,
     display_variant: DisplayVariantSettings,
+    map_render: MapRenderSettings,
 }
 
 const SAME_PROCESS_SETTINGS_AUTHORITY_SCHEMA: &str = "hoi4_same_process_settings_authority_v1";
@@ -416,6 +437,9 @@ pub fn apply_same_process_settings_authority(
         let Some(display_variant) = report.settings.display.as_ref() else {
             return Err("launch-proven settings lack a display variant".into());
         };
+        let Some(map_render) = report.settings.map_render.as_ref() else {
+            return Err("launch-proven settings lack map rendering options".into());
+        };
         let authority = SameProcessSettingsAuthority {
             schema: SAME_PROCESS_SETTINGS_AUTHORITY_SCHEMA.to_string(),
             pid,
@@ -424,6 +448,7 @@ pub fn apply_same_process_settings_authority(
             user_dir: user_dir.display().to_string(),
             localisation_language: localisation_language.clone(),
             display_variant: display_variant.clone(),
+            map_render: map_render.clone(),
         };
         return create_or_validate_same_process_settings_authority(authority_path, &authority);
     }
@@ -467,16 +492,18 @@ pub fn apply_same_process_settings_authority(
     let settings_path = user_dir.join("settings.txt");
     let current_text = read_text_stable(&settings_path)
         .map_err(|error| format!("reread same-process settings authority: {error}"))?;
-    let (current_language, current_display) = parse_settings_text(&current_text)
+    let (current_language, current_display, current_map_render) = parse_settings_text(&current_text)
         .map_err(|error| format!("reparse same-process settings authority: {error}"))?;
     if current_language.as_deref() != Some(authority.localisation_language.as_str())
         || !same_display_semantics(&current_display, &authority.display_variant)
+        || current_map_render != authority.map_render
     {
         return Err("same-process settings authority current semantic settings mismatch".into());
     }
     report.settings.language = Some(authority.localisation_language);
     report.settings.attach_sha256 = Some(authority.display_variant.settings_file_sha256.clone());
     report.settings.display = Some(authority.display_variant);
+    report.settings.map_render = Some(authority.map_render);
     report.settings.authority = Some(SettingsAuthority::SameProcessAuthority);
     Ok(())
 }
@@ -740,13 +767,14 @@ fn resolve_modset_inner(
                     },
                 };
                 match outcome {
-                    Ok((Some(language), display)) => {
+                    Ok((Some(language), display, map_render)) => {
                         report.settings.attach_sha256 = Some(display.settings_file_sha256.clone());
                         report.settings.language = Some(language);
                         report.settings.display = Some(display);
+                        report.settings.map_render = Some(map_render);
                         report.settings.authority = Some(authority);
                     }
-                    Ok((None, display)) => {
+                    Ok((None, display, _)) => {
                         report.settings.attach_sha256 = Some(display.settings_file_sha256.clone());
                         report.settings.fail(
                             codes::SETTINGS_LANGUAGE_ABSENT,
@@ -1084,7 +1112,7 @@ fn read_bytes_stable_before_start(
 fn read_launch_settings(
     user_dir: &Path,
     process_start: SystemTime,
-) -> Result<(Option<String>, DisplayVariantSettings), String> {
+) -> Result<(Option<String>, DisplayVariantSettings, MapRenderSettings), String> {
     let path = user_dir.join("settings.txt");
     let text = read_text_stable_before_start(&path, process_start)?;
     parse_settings_text(&text)
@@ -1092,7 +1120,7 @@ fn read_launch_settings(
 
 fn read_launch_settings_observed(
     user_dir: &Path,
-) -> Result<(Option<String>, DisplayVariantSettings), String> {
+) -> Result<(Option<String>, DisplayVariantSettings, MapRenderSettings), String> {
     let path = user_dir.join("settings.txt");
     let text = read_text_stable(&path)?;
     parse_settings_text(&text)
@@ -1121,11 +1149,12 @@ pub fn observe_settings_at_capture_close(report: &mut ModsetReport, pid: u32) {
         }
     }
     match read_launch_settings_observed(&user_dir) {
-        Ok((language, display)) => {
+        Ok((language, display, map_render)) => {
             report.settings.seal_sha256 = Some(display.settings_file_sha256.clone());
             report.settings.endpoint_semantics_equal = Some(
                 language.as_deref() == report.settings.language.as_deref()
-                    && same_display_semantics(&display, &attach_display),
+                    && same_display_semantics(&display, &attach_display)
+                    && Some(&map_render) == report.settings.map_render.as_ref(),
             );
         }
         Err(e) => report.settings.errors.push(ModsetError::new(
@@ -1135,8 +1164,37 @@ pub fn observe_settings_at_capture_close(report: &mut ModsetReport, pid: u32) {
     }
 }
 
-fn parse_settings_text(text: &str) -> Result<(Option<String>, DisplayVariantSettings), String> {
+fn parse_settings_text(
+    text: &str,
+) -> Result<(Option<String>, DisplayVariantSettings, MapRenderSettings), String> {
     let language = clausewitz_string_field(&text, "language")?;
+    let map_rendering = clausewitz_object_field(&text, "mapRenderingOptions")
+        .map_err(|e| format!("mapRenderingOptions object: {e}"))?
+        .ok_or("settings.txt mapRenderingOptions object is absent")?;
+    let texture_quality = required_u32(
+        map_rendering,
+        "texture_quality",
+        "mapRenderingOptions.texture_quality",
+    )?;
+    if texture_quality > 2 {
+        return Err(format!(
+            "settings.txt mapRenderingOptions.texture_quality is outside the \
+             engine domain 0..=2: {texture_quality}"
+        ));
+    }
+    let map_render = MapRenderSettings {
+        draw_hires_terrain: required_yes_no(
+            map_rendering,
+            "draw_hires_terrain",
+            "mapRenderingOptions.draw_hires_terrain",
+        )?,
+        high_gfx_shaders: required_yes_no(
+            map_rendering,
+            "high_gfx_shaders",
+            "mapRenderingOptions.high_gfx_shaders",
+        )?,
+        texture_quality: texture_quality as u8,
+    };
     let graphics = clausewitz_object_field(&text, "graphics")
         .map_err(|e| format!("graphics object: {e}"))?
         .ok_or("settings.txt graphics object is absent")?;
@@ -1199,6 +1257,7 @@ fn parse_settings_text(text: &str) -> Result<(Option<String>, DisplayVariantSett
             display_mode: display_mode.to_string(),
             settings_file_sha256: Sha256::hex(text.as_bytes()),
         },
+        map_render,
     ))
 }
 
@@ -2209,6 +2268,11 @@ mod tests {
                 authority: Some(SettingsAuthority::PreLaunchBracketed),
                 errors: Vec::new(),
                 language: Some("english".into()),
+                map_render: Some(MapRenderSettings {
+                    draw_hires_terrain: false,
+                    high_gfx_shaders: true,
+                    texture_quality: 0,
+                }),
                 display: Some(DisplayVariantSettings {
                     physical_width: 1920,
                     physical_height: 1080,
@@ -2250,7 +2314,9 @@ mod tests {
         let initial = "language=\"english\"\ngraphics={\n\
             size={ x=1920 y=1080 }\nmin_gui={ x=1280 y=720 }\n\
             gui_scale=1.0\nrefreshRate=60\nmax_refresh_rate=75\n\
-            fullScreen=no\nborderless=yes\n}\n";
+            fullScreen=no\nborderless=yes\n}\n\
+            mapRenderingOptions={ draw_hires_terrain=no \
+            high_gfx_shaders=yes texture_quality=0 }\n";
         fs::write(dir.join("settings.txt"), initial).unwrap();
         let settings_sha256 = Sha256::hex(initial.as_bytes());
         let authority_path = dir.join("authority.json");
@@ -2260,7 +2326,9 @@ mod tests {
         let rewritten_text = "graphics={ borderless=yes fullScreen=no \
             max_refresh_rate=75 refreshRate=60 gui_scale=1.000000 \
             min_gui={y=720 x=1280} size={y=1080 x=1920} }\n\
-            language=\"english\"\n";
+            language=\"english\"\n\
+            mapRenderingOptions={ texture_quality=0 \
+            high_gfx_shaders=yes draw_hires_terrain=no }\n";
         fs::write(dir.join("settings.txt"), rewritten_text).unwrap();
         let mut rewritten = proven.clone();
         rewritten.settings.authority = Some(SettingsAuthority::PostLaunchDiskObservation);
@@ -2455,7 +2523,9 @@ mod tests {
         let text = "language=\"l_english\"\ngraphics={\n\
              size={ x=2752 y=1152 }\nmin_gui={ x=1280 y=720 }\n\
              gui_scale=1.000000\nrefreshRate=60\nmax_refresh_rate=75\n\
-             fullScreen=no\nborderless=yes\n}\n";
+             fullScreen=no\nborderless=yes\n}\n\
+            mapRenderingOptions={ draw_hires_terrain=no \
+            high_gfx_shaders=yes texture_quality=0 }\n";
         fs::write(dir.join("settings.txt"), text).unwrap();
 
         let launched_before_the_write = std::time::UNIX_EPOCH;
@@ -2465,7 +2535,9 @@ mod tests {
         );
         assert!(read_launch_settings(&dir, launched_before_the_write).is_err());
 
-        let (language, display) = read_launch_settings_observed(&dir).expect("observed read");
+        let (language, display, map_render) =
+            read_launch_settings_observed(&dir).expect("observed read");
+        assert_eq!(map_render.texture_quality, 0);
         assert_eq!(language.as_deref(), Some("l_english"));
         assert_eq!(display.physical_width, 2752);
         assert_eq!(display.settings_file_sha256, Sha256::hex(text.as_bytes()));
@@ -2521,7 +2593,9 @@ mod tests {
         let text = "language=\"english\"\ngraphics={\n\
              size={ x=1920 y=1080 }\nmin_gui={ x=1280 y=720 }\n\
              gui_scale=1.0\nrefreshRate=60\nmax_refresh_rate=75\n\
-             fullScreen=no\nborderless=yes\n}\n";
+             fullScreen=no\nborderless=yes\n}\n\
+            mapRenderingOptions={ draw_hires_terrain=no \
+            high_gfx_shaders=yes texture_quality=0 }\n";
         fs::write(dir.join("settings.txt"), text).unwrap();
         let mut report = authority_report(&dir, Sha256::hex(text.as_bytes()));
 
@@ -2549,7 +2623,9 @@ mod tests {
             dir.join("settings.txt"),
             "graphics={ borderless=yes fullScreen=no max_refresh_rate=75 \
              refreshRate=60 gui_scale=1.000000 min_gui={y=720 x=1280} \
-             size={y=1080 x=1920} }\nlanguage=\"english\"\n",
+             size={y=1080 x=1920} }\nlanguage=\"english\"\n\
+             mapRenderingOptions={ texture_quality=0 \
+             high_gfx_shaders=yes draw_hires_terrain=no }\n",
         )
         .unwrap();
         observe_settings_at_capture_close(&mut report, std::process::id());
@@ -2569,6 +2645,49 @@ mod tests {
     }
 
     #[test]
+    fn the_map_render_tier_is_read_exactly_and_refused_when_it_is_not_stated() {
+        let dir = temp_dir("map_render_settings");
+        let base = "language=\"l_english\"\ngraphics={\n\
+             size={ x=1920 y=1080 }\nmin_gui={ x=1280 y=720 }\n\
+             gui_scale=1.000000\nrefreshRate=60\nmax_refresh_rate=75\n\
+             fullScreen=no\nborderless=yes\n}\n";
+
+        let stated = format!(
+            "{base}mapRenderingOptions={{\n\tdraw_terrain=yes\n\tdraw_hires_terrain=yes\n\
+             \thigh_gfx_shaders=no\n\tdraw_shadows=yes\n\ttexture_quality=2\n}}\n"
+        );
+        let (_, _, map_render) = parse_settings_text(&stated).expect("stated options parse");
+        assert_eq!(
+            map_render,
+            MapRenderSettings {
+                draw_hires_terrain: true,
+                high_gfx_shaders: false,
+                texture_quality: 2,
+            }
+        );
+
+        let absent = parse_settings_text(base).expect_err("an unstated block is a refusal");
+        assert!(absent.contains("mapRenderingOptions object is absent"), "{absent}");
+
+        let out_of_domain = format!(
+            "{base}mapRenderingOptions={{ draw_hires_terrain=no high_gfx_shaders=yes \
+             texture_quality=3 }}\n"
+        );
+        let error = parse_settings_text(&out_of_domain)
+            .expect_err("texture_quality outside 0..=2 is a refusal");
+        assert!(error.contains("outside the"), "{error}");
+
+        let partial = format!(
+            "{base}mapRenderingOptions={{ draw_hires_terrain=no texture_quality=1 }}\n"
+        );
+        let error =
+            parse_settings_text(&partial).expect_err("a missing key is a refusal, not a default");
+        assert!(error.contains("high_gfx_shaders"), "{error}");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn launch_language_and_display_read_one_stable_settings_snapshot() {
         let dir = temp_dir("language");
         fs::write(
@@ -2576,12 +2695,22 @@ mod tests {
             "\u{feff}language=\"l_english\"\ngraphics={\n\
              size={ x=2752 y=1152 }\nmin_gui={ x=1280 y=720 }\n\
              gui_scale=1.000000\nrefreshRate=60\nmax_refresh_rate=75\n\
-             fullScreen=no\nborderless=yes\n}\n",
+             fullScreen=no\nborderless=yes\n}\n\
+             mapRenderingOptions={ draw_hires_terrain=no \
+             high_gfx_shaders=yes texture_quality=0 }\n",
         )
         .unwrap();
-        let (language, display) =
+        let (language, display, map_render) =
             read_launch_settings(&dir, SystemTime::now() + std::time::Duration::from_secs(60))
                 .unwrap();
+        assert_eq!(
+            map_render,
+            MapRenderSettings {
+                draw_hires_terrain: false,
+                high_gfx_shaders: true,
+                texture_quality: 0,
+            }
+        );
         assert_eq!(language.as_deref(), Some("l_english"));
         assert_eq!(
             (display.physical_width, display.physical_height),
