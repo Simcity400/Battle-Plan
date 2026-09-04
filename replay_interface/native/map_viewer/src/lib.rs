@@ -294,13 +294,16 @@ pub use light_law::{
 };
 pub use xmap09_lighting_law::{
     engine_hour_of_day, engine_hour_of_day_fraction, virtual_rig,
-    xmap09_point_light_census_is_sourceless, xmap09_point_light_creators_out_of_reach,
-    xmap09_shadow_fade_factor, whole_map_point_light_grid, Xmap09LightingDefines,
-    Xmap09PointLightCreator, Xmap09PointLightInstanceSource, Xmap09VirtualRig,
+    xmap09_point_light_census_is_incomplete, xmap09_shadow_fade_factor,
+    xmap09_tiled_point_light_grid, xmap09_undeliverable_point_light_creators,
+    Xmap09LightingDefines, Xmap09PointLightCreator, Xmap09PointLightCreatorReach,
+    Xmap09VirtualRig, XMAP09_CITY_POINT_LIGHT_GATE_READ_RVA, XMAP09_CITY_POINT_LIGHT_GATE_RVA,
     XMAP09_CITY_POINT_LIGHT_TEMPLATE_NAME, XMAP09_ENGINE_HOUR_EPOCH,
     XMAP09_GRAPHICS_DEFINES_DIR, XMAP09_POINT_LIGHT_CREATORS,
     XMAP09_POINT_LIGHT_INSTANCE_CONSTRUCTOR_RVA, XMAP09_REPLAY_DAY_NIGHT_FACTOR,
-    XMAP09_TILED_POINT_LIGHT_QUERY_MASK, XMAP09_TILED_POINT_LIGHT_WRITER_RVA,
+    XMAP09_TILED_POINT_LIGHT_ANCHOR_FORWARD_SCALE, XMAP09_TILED_POINT_LIGHT_CELL_SIZE,
+    XMAP09_TILED_POINT_LIGHT_INVERSE_CELL_SIZE, XMAP09_TILED_POINT_LIGHT_QUERY_MASK,
+    XMAP09_TILED_POINT_LIGHT_WRITER_RVA,
 };
 pub use luminance_law::{
     adapt_luminance_temporal, f16_bits_to_f32 as luminance_f16_bits_to_f32,

@@ -1039,7 +1039,7 @@ impl Xmap09LightingAdapter {
         )? > 0.0;
         let ambient = self.defines.ambient_rig();
         // The empty census below is lawful only while this holds.
-        crate::xmap09_point_light_census_is_sourceless()?;
+        crate::xmap09_point_light_census_is_incomplete()?;
         let input = Xmap09LightingInput {
             schema: XMAP09_INPUT_SCHEMA.into(),
             executable_sha256: XMAP09_A729_EXECUTABLE_SHA256.into(),
@@ -1068,7 +1068,12 @@ impl Xmap09LightingAdapter {
             draw_shadows_fade_length_f32_bits: self.defines.draw_shadows_fade_length.to_bits(),
             shadow_pass_active,
             point_light_grid_start_inv_cell_size_f32_bits: bits4(
-                crate::whole_map_point_light_grid(map_width, map_height)?,
+                crate::xmap09_tiled_point_light_grid(
+                    camera.current_eye(),
+                    camera.current_look_at_direction()?,
+                    map_width,
+                    map_height,
+                )?,
             ),
             point_lights: Vec::new(),
             point_light_cell_indices: vec![[u8::MAX; 4]; LIGHT_INDEX_WIDTH * LIGHT_INDEX_HEIGHT],
