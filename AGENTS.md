@@ -1,66 +1,85 @@
 # Agent guidance
 
-Changes only with the owner's permission. Read `PROJECT.md` before changing product behaviour, formats, or architecture. This file is read by every harness (Claude Code, Codex, others); the roles below are the same everywhere, only the launch mechanics at the end differ.
+Do not change `AGENTS.md` or `PROJECT.md` without the owner: propose the diff and wait. Read `PROJECT.md` before changing product behaviour, formats, or architecture. Every harness reads this file. Read "Everyone", then only the parts that name your role and your harness.
 
-## Roles
+Roles. The **orchestrator** is the one agent the owner has explicitly named orchestrator this session; nobody assumes the role. A **lane** is an agent with its own worktree and branch that implements one scoped piece of work end to end. The orchestrator is the only reviewer.
 
-- **Orchestrator**: the top-level agent the owner has EXPLICITLY designated as orchestrator for the session. Nobody assumes this role on their own. Staffs lanes, lands their work, runs the gate, runs measurement captures, asks the owner. Never implements lane work itself.
-- **Lane**: an agent with its own worktree and branch. Implements one scoped piece of work end to end, gets it reviewed, pushes, reports once.
-- **Reviewer**: the orchestrator. It reviews each lane's pushed tip read-only against origin/landing-tmp, production behaviour first, and bounces findings to the lane by message. Lanes never review their own work and never run a review tool.
+## Everyone
 
-If the owner has not designated you orchestrator, you are a lane or a reviewer per your brief: ignore the "Orchestration" section and the launch mechanics entirely.
+- Questions to the owner: plain words, no jargon, say what the end user sees. The orchestrator batches them and gives options with a recommendation.
+- No backwards compatibility. Delete what you replace in the same change and prove it dead with `git grep` from the repo root. A grep from a subdirectory proves nothing.
+- Code comments state only what the code cannot show: invariants, engine quirks, traps. No essays, no history.
+- Evidence is data: raw artifacts, JSON or TSV, asserting tests. One short `POINTER.md` per run dir under `extractor/native/runs/<run>/`. Claims live as tests or structured data, never prose.
+- No residuals. Fix what you can now. Never park work in a task list. What you legitimately cannot fix (owner decision, live probe, missing capture, another lane's file) goes in your final report with its class and the exact artifact path.
+- Report once, when everything is finished, numbers first: tip, what landed, tests run, review record, residuals.
+- Git: never resolve a conflict with `git checkout --ours` or `--theirs`; it replaces the whole file. Resolve hunks by hand. Never stash. Hash-pinned files carry `.gitattributes` `text eol=lf`. The repo is CRLF: source-scanning tests use `str::lines()`, never raw `\n`.
+- Build: sccache is the shared cache; never delete `C:\sccache_cache`. Target dirs are per worktree (`.cargo-target`); never point `CARGO_TARGET_DIR` at a shared path.
+- Clean up: worktree, branch, build output, temp files. Scratch stays on `C:`.
+- `hoi4_re`: `re_status` first. Add to its registry only by running the tool, never by hand. Four-job offline queue. `hoi4_ghidra` (pinned a729/870ebf): `ghidra_status` first, `ghidra_verify` before relying on indexed evidence. Census and cross-analysis outputs are discovery, not proof. Pinned artifacts use the `engine_evidence` crate pattern with literal byte sizes and must pass `reverify_engine_evidence.py`.
+- Lanes never launch the game. A needed live probe goes back to the orchestrator as a bounded SPEC.
 
-## How every agent behaves
+## Lane
 
-- Questions to the owner: plain language, no jargon, say how it affects what the end user sees. The orchestrator batches them and gives options with a recommendation.
-- No backwards compatibility: delete what you replace in the same change and prove it dead.
-- Code comments state only what the code cannot show (invariants, engine quirks, traps). No essays, no narration, no review notes.
-- Evidence is data: raw artifacts, JSON/TSV, asserting tests. One short `POINTER.md` per run dir under `extractor/native/runs/<run>/`; claims live as tests or structured data, never prose.
-- Residuals are never left behind. Anything you can fix, fix now. Anything you legitimately cannot (owner decision, live probe, missing capture, another lane's file) goes in your final report with its class and the exact artifact path so the orchestrator staffs it immediately.
-- Report once, numbers first, when everything is finished: tip, what landed, tests run, review record, residuals.
-- Clean up: worktree, branch, build output, temp files. Never stash. Hash-pinned files carry `.gitattributes` `text eol=lf`.
-- (Claude only) Long calls: the blocking wait from "Tools and traps"; never a monitor with an ended turn.
+1. Start: `git worktree lock`, one empty commit, and check `git rev-parse HEAD` equals the brief's base commit.
+2. Verify the brief's premise with file:line before you build. A false premise is a valid outcome; report it.
+3. Work only in your worktree. Implement everything yourself. Between review rounds run only `cargo check` on the crates you touched.
+4. Review with the orchestrator until it approves with zero blocking findings. Push back on a finding you can refute with code or a measurement.
+5. After approve, once: the full test modules of every crate and file you changed (no hand-picked subsets), then `bash extractor/native/scripts/lane_law_tests.sh` (`--collector` when the collector was touched). A step that starts zero tests fails. A failure is fixed and gets one confirmation round.
+6. Merge `origin/master` (or the branch the brief names) before you finish. Commit early and often, push when converged, report.
 
-## Lane workflow
+Never run the full workspace suite. Never run the whole-capture decode tests (`game_ui::uz_rc_vanilla8_operands`, the xmap00 ledger audit); the gate runs those once per batch.
 
-1. Work only in your worktree. Start pin = your branch's first commit. Merge `origin/master` (or the branch the brief names) before you finish.
-2. Implement everything yourself; the reviewer is not a delegate. Between review rounds run only `cargo check` on the crates you touched.
-3. Review until the reviewer approves with zero blocking findings (contract below).
-4. Then, once: the full test modules of every crate and file you changed (no hand-picked subsets), plus the law-test script below. A failure is fixed and gets one confirmation round.
-5. Commit early and often, push your branch when converged, report.
+Fold equivalence, when a fold change needs proof: fold `captures/rc_vanilla8/collector_stream.bin` once with your tree and compare against `extractor/native/runs/fold_reference/<master-sha>/` (same `--game-id`, spool sha256 verified). Never re-fold master.
 
-Never run a full workspace suite; the gate does that once per batch. Never run the whole-capture decode tests (`game_ui::uz_rc_vanilla8_operands`, the xmap00 ledger audit); they are gate-only.
+## Orchestrator
 
-After convergence run `bash extractor/native/scripts/lane_law_tests.sh` once (`--collector` when the collector was touched): the cross-crate scans the gate would otherwise catch a batch later; a step that starts zero tests fails.
+Staffs lanes, reviews, lands, runs the gate, runs captures, asks the owner. Never implements lane work itself. Cap: 7 running agents; queue past it, never drop. After a restart or limit kill, resume each agent by its id. Never relaunch a lane that has an id. Never replace a slow lane.
 
-**Fold equivalence** when a fold change needs proof: fold `captures/rc_vanilla8/collector_stream.bin` once with your tree and compare against `extractor/native/runs/fold_reference/<master-sha>/` (same `--game-id`, spool sha256 verified). Never re-fold master.
+### Review, every lane, before any merge
 
-## Review contract
+You are the final reviewer and own every merged line. The lane's report is a claim, not evidence.
 
-Applies to every harness. The reviewer is a fresh agent each round.
+1. Read the full production diff, never truncated. Read every new or changed test; each must assert something that can fail.
+2. Consumer sweep: `git grep` every crate that references a changed public item, wire name, contract, schema, or config. Run those suites yourself.
+3. Run the touched crates' suites and the law script yourself when the lane's counts are the only evidence.
+4. Simplify: duplicated logic, dead branches, one-caller abstractions, comments narrating history. Bounce with the concrete cut.
+5. Correctness against `PROJECT.md`: zero silent loss, mirror the engine, typed refusals by name, no default in place of a measurement.
 
-- The review prompt carries full context: the defect class, the diff scope, raw evidence paths, an out-of-scope list, and "this job is read-only, do not modify files". The reviewer has no project memory.
-- Review scope is code behaviour only. A finding is valid only if it names production or test code whose behaviour is wrong, unproven, or unsafe. Prose, wording, naming, comments, and claim phrasing are discarded without a round.
-- Round 1 demands every blocking finding, ranked. Later rounds review the delta plus each prior fix. Push back on findings you can refute with code or a measurement.
-- No round limit while rounds fix real defects. At round 7, stop and diagnose: if one class keeps recurring, close the class structurally (a counted, asserted number) instead of playing round 8, and write the diagnosis into the run dir.
-- A commit after an approve gets one confirmation round.
-- Persist the review's identity (thread or transcript id) to the run dir before anything else, so a killed review is resumed, never re-run.
+A finding names production or test code whose behaviour is wrong, unproven, or unsafe. Prose, naming, and wording are not findings. Bounce until zero findings. A commit after approve gets one more look.
 
-## Tools and traps
+### Landing, per batch
 
-- `hoi4_re` is the RE facade: `re_status` first, never edit its registry, four-job offline queue. `hoi4_ghidra` (pinned a729/870ebf): `ghidra_status` first, `ghidra_verify` before relying on indexed evidence. Census and cross-analysis outputs are discovery, not proof. Pinned artifacts use the `engine_evidence` crate pattern with literal byte sizes and must pass `reverify_engine_evidence.py`.
-- Live instrumentation needs explicit owner authorization and a running matching game; lanes never launch the game. A needed probe is handed back as a bounded SPEC.
-- **Waiting is a blocking call, never an ended turn.** A lane that has ended its turn is finished, and a report is due; so a lane never ends its turn while a review, build, test run, fold or dump of its own is still running. Launch the long job inside a background bash subshell and capture that subshell's `$!` (`( job … > log 2>&1; echo $? > log.exit ) & PID=$!`), then hold the turn with a foreground `timeout 590 tail --pid=$PID -f /dev/null`, repeated while it exits 124, until it exits 0; then read the log and the exit file. The PID must be bash's `$!`; `tail --pid` cannot follow a native Windows PID taken from `tasklist`, and the subshell keeps `$!` alive for wrappers that detach. No polling loops, no `sleep`, no monitor-and-end-turn. One long job at a time; own scratch subdir under the session scratchpad.
+0. Kill orphaned `cargo.exe` and hung test binaries by PID.
+1. `git merge --no-ff` each converged branch onto `landing-tmp`. Check the exit code. Assert `HEAD^2` is the lane tip.
+2. Content survival: `git diff <lane tip> HEAD -- <lane files>` is empty or explained.
+3. `verify_citation_integrity.py`, then `reverify_engine_evidence.py`.
+4. Gate: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-Validation.ps1 -Mode Landing`. Capture the exit code.
+5. Green: push `landing-tmp:master`, verify every tip is an ancestor, retire worktrees and branches. Red: attribute each failure against pure master and bounce it to the owning lane.
+6. Publish one pure-master fold reference per master commit under `runs/fold_reference/<sha>/`.
 
-## Orchestration (designated orchestrator only)
+### Captures
 
-- Landing, per batch: `git merge --no-ff` each converged branch onto `landing-tmp`, check the merge exit code before anything else, assert `HEAD^2` is the lane tip, `verify_citation_integrity.py`, `reverify_engine_evidence.py`, then one gate: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-Validation.ps1 -Mode Landing`, exit code captured. Green: push `landing-tmp:master`, verify every tip is an ancestor, retire worktrees and branches. Red: attribute each failure against pure master and bounce it to the owning lane. Hold the gate for batches; never restart a running gate.
-- Publish one pure-master fold reference per master commit under `runs/fold_reference/<sha>/`.
-- After a restart or limit kill, resume existing agents with their transcripts; never relaunch a lane that has one.
+- Bounded live reads on a matching build have standing authorization; do not ask per instance. One at a time. Results as data.
+- A capture is a long job: use the wait rule. Kill the leftover hooked game when done.
+- Never kill `collector_record` after a capture; finalize takes minutes. Watch `RECORDER_FINALIZE_PROGRESS_V1.json`.
+- Game clock stuck at 0 percent means the end-game stats screen. Relaunch with `-StopExistingGame`. Never leave the game running between captures.
+- Measurement captures: `-KeepSpoolAfterSeal`, `-StreamCompression none`, one capture at a time. Check "records seen" before trusting an audit.
+- Build the collector with `cargo build -p collector` and check the DLL is newer than every `.rs`. A count mismatch is version skew first.
+- Capture windows are 60 seconds. No longer soaks.
+- Release-candidate captures: vanilla first, solo. Modded last; the owner hosts.
 
-## How to launch, per harness (designated orchestrator and its lanes only)
+## Claude Code only
 
-**Claude Code.** Lanes run on the Codex CLI (owner directive 2026-09-04: GPT-6 Astra, high reasoning, never the priority tier). The orchestrator creates the worktree, writes the brief to a file, and launches from Bash:
+- Never use the PowerShell tool. Run `powershell.exe -NoProfile -File ...` from Bash.
+- Wait rule: never end your turn while your own job (review, build, test, fold, dump, capture, lane) is still running. Bound every child; a hung child is a finding. Launch inside a background bash subshell, capture bash's `$!`, and hold the turn with a foreground tail:
+
+```bash
+( job ... > log 2>&1; echo $? > log.exit ) & PID=$!
+timeout 590 tail --pid=$PID -f /dev/null   # repeat while it exits 124; then read log and log.exit
+```
+
+  `$PID` must be bash's `$!`. `tail --pid` cannot follow a Windows PID from `tasklist`. No polling loops, no `sleep`. One long job at a time.
+- Launching a lane (orchestrator only): Codex CLI, GPT-6 Astra, high reasoning, never the priority tier.
 
 ```bash
 git fetch origin && git worktree add ".claude\worktrees\lane-<name>" -b lane-<name> origin/landing-tmp
@@ -68,12 +87,9 @@ OUT=$(mktemp /tmp/cdx_XXXXXX.txt); AJ=$(mktemp /tmp/cdx_XXXXXX.jsonl)
 cd ".claude\worktrees\lane-<name>" && codex exec --json -s danger-full-access -c approval_policy=never --skip-git-repo-check -m gpt-6-astra -c model_reasoning_effort=high -o "$OUT" - < brief.txt > "$AJ"
 ```
 
-Flags as written; never `--ephemeral`, never a sandboxed `-s` mode, never `-c service_tier=priority`. Thread id = first line of `$AJ`; the report = `$OUT`. On a usage-limit or credit signature, keep the thread id and resume it later by id (`codex exec ... resume <id> -`, same flags); never relaunch a lane that has a thread. Lanes launched earlier on `subagent_type: "lane-opus"` finish as launched. Reviewer: the orchestrator, from the lane's pushed tip; it greps every consumer of a changed public item and runs their suites before merging.
+  Flags as written: never `--ephemeral`, never a sandboxed `-s` mode, never `-c service_tier=priority`. Thread id = first line of `$AJ`; the report = `$OUT`. On a usage-limit or credit signature, resume by id with the same flags: `codex exec ... resume <id> -`.
 
-**Codex.**
-- Codex review Lanes are sub-agents. Never call the Codex CLI from inside Codex.
-- If asked to use claude as the reviewer, Launch: `claude --bg --name "$REVIEW_NAME" --model fable --effort xhigh --permission-mode auto "$PROMPT"`. Never use `-p`
-- Claude reviews read-only: no implementation, edits, commits, or worktrees. Record the session id, wait in-turn
-- On failure, login expiry, API billing, or limits, preserve and resume the same session id; never launch a replacement. Findings return to the implementing lane.
+## Codex only
 
-**Any other harness.** Same roles and contract; the reviewer must be a separate agent with no shared memory of the implementation. Record how reviews are launched and resumed in the run dir's POINTER.
+- Lanes are your sub-agents, each in its own worktree.
+- Never call the Codex CLI from inside Codex.
