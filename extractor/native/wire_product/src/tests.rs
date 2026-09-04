@@ -232,7 +232,7 @@ fn append_d81_hour(
         COMPACT_DOMAIN_FRAME,
         COMPACT_RECORD_TYPE_FRAME_END,
         0,
-        &frame_end_payload(1, 1, perf_status),
+        &frame_end_payload(1, 1, 0),
     );
     *next_sequence += 1;
     (first, last)
@@ -344,11 +344,6 @@ fn d18_country_payload_families(
     payload
 }
 
-/// The frame seal is checked BEFORE the D18 authority binder, against the OR of
-/// every PERF word after global interpretation. A fixture that hardcodes zero
-/// there never reaches the binder on any case whose PERF word carries a real
-/// failure bit -- which is two of the three positive cases below.
-/// (Codex review 01a03bfb, finding 1.)
 fn d18_binding_stream(perf_status: u32, data: Vec<u8>) -> Vec<u8> {
     let tick = valid_hour(0);
     let mut stream = Vec::new();
@@ -370,11 +365,6 @@ fn d18_binding_stream(perf_status: u32, data: Vec<u8>) -> Vec<u8> {
         push_h4cr_record(&mut stream, sequence, tick, domain, record_type, 0, &payload);
         sequence += 1;
     }
-    // The d81 PERF word is 0, so the frame status is d18's alone -- AFTER
-    // global interpretation, which strips the lane-local badge. So a badge-only
-    // hour seals at 0 and an hour with a real failure bit seals carrying it,
-    // and this fixture exercises both.
-    let frame_status = compact_contract::compact_status_for_global_interpretation(18, perf_status);
     push_h4cr_record(
         &mut stream,
         sequence,
@@ -382,7 +372,7 @@ fn d18_binding_stream(perf_status: u32, data: Vec<u8>) -> Vec<u8> {
         COMPACT_DOMAIN_FRAME,
         COMPACT_RECORD_TYPE_FRAME_END,
         0,
-        &frame_end_payload(2, 2, frame_status),
+        &frame_end_payload(2, 2, 0),
     );
     stream
 }
@@ -575,7 +565,7 @@ fn d18_country_authority_requires_status_bound_perf_data_in_the_closed_frame() {
         COMPACT_DOMAIN_FRAME,
         COMPACT_RECORD_TYPE_FRAME_END,
         0,
-        &frame_end_payload(2, 2, compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE),
+        &frame_end_payload(2, 2, 0),
     );
     let error = inspect_d81_session(H4crSession {
         branch: 0,
@@ -1930,6 +1920,12 @@ fn frame_end_is_mandatory_and_forward_discontinuity_requires_h4dg() {
         .to_string()
         .contains("unclosed frame 10"));
 
+    let mut unsealed_first = missing_end.clone();
+    let mut sequence = 3;
+    append_d81_hour(&mut unsealed_first, &mut sequence, 11, 0, 0);
+    assert!(inspect_d81_session(legacy_bytes_session(&unsealed_first))
+        .unwrap_err().to_string().contains("without FRAME_END"));
+
     let mut discontinuous = Vec::new();
     let mut sequence = 1;
     append_d81_hour(&mut discontinuous, &mut sequence, 10, 0, 0);
@@ -2458,6 +2454,27 @@ fn duplicate_and_regressing_closed_hours_remain_hard_errors() {
 }
 
 #[test]
+fn frame_end_outcome_is_independent_and_refuses_fatal_or_unknown_status() {
+    let failure = compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE;
+    for perf in [0, failure, COMPACT_STATUS_DELTA_DATA] {
+        for status in [0, failure, 1 << 31] {
+            let mut stream = Vec::new();
+            let mut sequence = 1;
+            let (_, end) = append_d81_hour(&mut stream, &mut sequence, valid_hour(0), perf, perf);
+            let offset = end.start as usize + COMPACT_RECORD_HEADER_LEN + 24;
+            stream[offset..offset + 4].copy_from_slice(&status.to_le_bytes());
+            let result = inspect_d81_session(legacy_bytes_session(&stream));
+            if status == 0 {
+                let inspection = result.unwrap();
+                assert_eq!(inspection.publication_authoritative_records, u64::from(perf != failure));
+            } else {
+                assert!(result.unwrap_err().to_string().contains("FRAME_END seal mismatch"));
+            }
+        }
+    }
+}
+
+#[test]
 fn frame_end_emitted_and_scheduled_domain_counts_must_match() {
     let mut stream = Vec::new();
     push_h4cr_record(
@@ -2757,4 +2774,77 @@ fn retained_selection_preserves_internal_gap_and_post_gap_baseline() {
     )
     .unwrap();
     assert_eq!(reopened, verified);
+}
+
+/// Env-gated capture probe: runs only with BATTLE_PLAN_D81I_STREAM, BATTLE_PLAN_D81I_CONTENT_MANIFEST and BATTLE_PLAN_D81I_DEFINITION_CSV set.
+#[test]
+fn a_real_late_attach_capture_inspects_and_builds_its_d81_product() {
+    fn input(var: &str) -> Option<PathBuf> {
+        let path = PathBuf::from(std::env::var_os(var)?);
+        path.is_file().then_some(path)
+    }
+    let (stream_path, manifest_path, definition_path) = match (
+        input("BATTLE_PLAN_D81I_STREAM"),
+        input("BATTLE_PLAN_D81I_CONTENT_MANIFEST"),
+        input("BATTLE_PLAN_D81I_DEFINITION_CSV"),
+    ) {
+        (Some(stream), Some(manifest), Some(definition)) => (stream, manifest, definition),
+        _ => return,
+    };
+    let catalog = AuthenticatedProvinceCatalog::from_content_manifest(
+        &std::fs::read(&manifest_path).unwrap(),
+        &std::fs::read(&definition_path).unwrap(),
+    )
+    .unwrap();
+    let session = H4crSession {
+        branch: 0,
+        identity_mode: StreamIdentityMode::IdentityV1,
+        source: H4crSource::File(&stream_path),
+    };
+    let inspection = match inspect_d81_session_with_catalog(session, &catalog) {
+        Ok(inspection) => inspection,
+        Err(error) => {
+            println!(
+                "D81I_CAPTURE06 {{\"stream_bytes\":{},\"inspected\":false,\"refusal\":\"{}\"}}",
+                std::fs::metadata(&stream_path).unwrap().len(),
+                error.to_string().replace('"', "'")
+            );
+            panic!("capture inspection refused: {error}");
+        }
+    };
+    let branch = BranchSpec {
+        branch: 0,
+        parent: None,
+        first_tick: inspection.first_tick,
+        session_fingerprint: inspection.decoded_sha256,
+    };
+    let product = match build_d81_bundle(
+        BundleBuildConfig::default(),
+        std::slice::from_ref(&branch),
+        &catalog,
+        std::slice::from_ref(&session),
+    ) {
+        Ok(bundle) => format!(
+            "{{\"built\":true,\"entries\":{},\"bytes\":{}}}",
+            bundle.entries().len(),
+            bundle.entries().iter().map(|entry| entry.len).sum::<u64>(),
+        ),
+        Err(error) => panic!("capture product build refused: {error}"),
+    };
+    println!(
+        "D81I_CAPTURE06 {{\"stream_bytes\":{},\"inspected\":true,\"decoded_sha256\":\"{}\",\"first_tick\":{},\"last_tick\":{},\"d81_data_records\":{},\"d81_publication_authoritative_records\":{},\"d81_failure_records\":{},\"d81_unreconstructed_records\":{},\"product\":{}}}",
+        std::fs::metadata(&stream_path).unwrap().len(),
+        hex_encode_sha256(&inspection.decoded_sha256),
+        inspection.first_tick,
+        inspection.last_tick,
+        inspection.data_records,
+        inspection.publication_authoritative_records,
+        inspection.failure_records,
+        inspection.unreconstructed_records,
+        product,
+    );
+}
+
+fn hex_encode_sha256(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

@@ -77,6 +77,13 @@ impl core::fmt::Display for UnknownRecordType {
 
 pub const COMPACT_DOMAIN_FRAME: u16 = 1000;
 
+/// Reserved diagnostic probe domain. NOT a producer domain: several
+/// independent probes emit DOMAIN_PERF diagnostic-unit trailers on it in the
+/// same frame, it never emits DOMAIN_DATA, it never folds, and FRAME_END's
+/// emitted/scheduled domain counts exclude it. Any consumer that accounts
+/// per-domain terminal outcomes must skip it.
+pub const COMPACT_DOMAIN_RESERVED_PROBE: u16 = 250;
+
 pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 = 1 << 31;
 pub const COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER: u32 = 1 << 30;
 /// This DOMAIN_DATA payload is a `PSD1` envelope

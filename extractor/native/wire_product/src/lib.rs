@@ -14,7 +14,8 @@ pub use catalog::{AuthenticatedProvinceCatalog, ProvinceBinding};
 pub use model::{
     ArtifactRole, BranchParent, BranchSpec, BundleBuildConfig, BundleEntry, BundleEntryDescriptor,
     D81LeadingGap, D81LeadingGapKind, D81SessionInspection, H4crSelection, H4crSession, H4crSource,
-    MaterializedBundle, MaterializedEntry, PreparedBundle, ProductError, VerifiedBranch,
+    MaterializedBundle, MaterializedEntry, PreparedBundle, ProductError,
+    VerifiedBranch,
     VerifiedBundle,
 };
 pub use verify::{

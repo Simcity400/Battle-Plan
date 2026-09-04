@@ -43,6 +43,18 @@ struct ScannedBranch {
     country_bindings: BTreeMap<u32, String>,
 }
 
+/// The three census kinds are stream-scoped: the validator admits them only at
+/// a frame boundary, and they carry the stream's hour stamp rather than the
+/// tick of a frame they belong to.
+fn record_type_is_frame_scoped(record_type: u16) -> bool {
+    !matches!(
+        record_type,
+        compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS
+            | compact_contract::COMPACT_RECORD_TYPE_CONTENT_IDENTITY_CENSUS
+            | compact_contract::COMPACT_RECORD_TYPE_STATE_TOPOLOGY_CENSUS
+    )
+}
+
 struct D18CountryCarrier {
     /// The COMPLETE D18 data authority: the outer roster status word OR the
     /// three CIM1 family status words. This is the word the PERF record binds
@@ -90,10 +102,23 @@ impl StreamingGapWriter {
                 && pending.reason == gap.reason
                 && pending.part == gap.part
                 && pending.domains == gap.domains
-                && pending.witness == gap.witness
             {
-                pending.tick_end = gap.tick_end;
-                return Ok(());
+                let witness = match (&pending.witness, &gap.witness) {
+                    (GapWitness::Counter { counter_id, observed },
+                     GapWitness::Counter { counter_id: next_id, observed: next })
+                        if counter_id == next_id => Some(GapWitness::Counter {
+                            counter_id: *counter_id,
+                            observed: observed.checked_add(*next)
+                                .ok_or_else(|| ProductError::new("d81 gap counter overflows"))?,
+                        }),
+                    (left, right) if left == right => Some(left.clone()),
+                    _ => None,
+                };
+                if let Some(witness) = witness {
+                    pending.tick_end = gap.tick_end;
+                    pending.witness = witness;
+                    return Ok(());
+                }
             }
         }
         self.flush(sink)?;
@@ -1168,16 +1193,26 @@ where
                     header.game_hour_raw
                 ))
             })?;
-            if header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP {
+            // STREAM-SCOPED RECORDS ARE NOT FRAME CONTENT. The three census
+            // kinds are placed by the stream validator only at a frame
+            // boundary (stream preamble, or after FRAME_END/FRAME_REFUSED)
+            // and carry the stream's own hour stamp, not a frame tick;
+            // letting one open or advance a frame refused every real capture,
+            // whose preamble censuses are stamped hour 0.
+            if record_type_is_frame_scoped(header.record_type)
+                && header.record_type != compact_contract::COMPACT_RECORD_TYPE_FRAME_END
+            {
                 match pending_frame_tick {
                     None => pending_frame_tick = Some(record_tick),
                     Some(open) if open == record_tick => {}
                     Some(open) => {
                         return Err(ProductError::new(format!(
-                            "branch {branch} DOMAIN_GAP advanced from frame {open} to {record_tick} without FRAME_END"
+                            "branch {branch} advanced from frame {open} to {record_tick} without FRAME_END"
                         )))
                     }
                 }
+            }
+            if header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP {
                 let carrier = decoded_domain_gap.ok_or_else(|| {
                     ProductError::new("selected ordinary DOMAIN_GAP bypassed full-source decoding")
                 })?;
@@ -1218,25 +1253,17 @@ where
                         "branch {branch} frame {record_tick} has no exact D81 terminal PERF or H4DG outcome"
                     )));
                 }
-                let expected_status =
-                    pending_perf_domains
-                        .iter()
-                        .fold(0u32, |status_or, (domain, status)| {
-                            status_or
-                                | compact_contract::compact_status_for_global_interpretation(
-                                    *domain, *status,
-                                )
-                        });
+                let fatal_status = frame_status & compact_contract::COMPACT_STATUS_FAILURE_MASK;
                 let unknown_status =
                     compact_contract::compact_status_unknown_flags_v1(frame_status);
                 if reserved != 0
                     || emitted_domains != scheduled_domains
                     || emitted_domains != observed_domains
-                    || frame_status != expected_status
+                    || fatal_status != 0
                     || unknown_status != 0
                 {
                     return Err(ProductError::new(format!(
-                        "branch {branch} FRAME_END seal mismatch at {record_tick}: emitted={emitted_domains}, scheduled={scheduled_domains}, terminal={observed_domains}, status={frame_status:#x}, expected_status={expected_status:#x}, unknown={unknown_status:#x}, reserved={reserved:#x}"
+                        "branch {branch} FRAME_END seal mismatch at {record_tick}: emitted={emitted_domains}, scheduled={scheduled_domains}, terminal={observed_domains}, status={frame_status:#x}, fatal={fatal_status:#x}, unknown={unknown_status:#x}, reserved={reserved:#x}"
                     )));
                 }
                 // THE D18 AUTHORITY EQUATION, which is what binds these two
@@ -1445,19 +1472,15 @@ where
                 // unrelated missing D18 DATA record (Codex review round 14,
                 // finding 2).
                 pending_d18_lost = None;
-            } else {
-                match pending_frame_tick {
-                    None => pending_frame_tick = Some(record_tick),
-                    Some(open) if open == record_tick => {}
-                    Some(open) => {
-                        return Err(ProductError::new(format!(
-                            "branch {branch} advanced from frame {open} to {record_tick} without FRAME_END"
-                        )))
-                    }
-                }
             }
         }
-        if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_PERF {
+        // THE RESERVED PROBE DOMAIN IS NOT A PRODUCER. Several independent
+        // probes emit a DOMAIN_PERF trailer on it in the same frame, and the
+        // collector's FRAME_END emitted/scheduled counts exclude it, so
+        // counting it here refuses every real capture twice over.
+        if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_PERF
+            && header.domain_id != compact_contract::COMPACT_DOMAIN_RESERVED_PROBE
+        {
             let status_flags = u32::from_le_bytes(
                 payload
                     .get(32..36)
@@ -2397,6 +2420,31 @@ mod streaming_gap_tests {
         )
         .unwrap();
         assert_eq!(sink.descriptors[0], BundleEntryDescriptor::from(&rebuilt));
+    }
+
+    #[test]
+    fn adjacent_counter_gaps_sum_witnesses_and_keep_counter_identity() {
+        let overrun = u64::from(compact_contract::gap_record::GAP_COUNTER_CODE_QUEUE_OVERRUN_HOURS);
+        let backpressure = u64::from(compact_contract::gap_record::GAP_COUNTER_CODE_SINK_BACKPRESSURE_HOURS);
+        let mut sink = TestSink::default();
+        let mut gaps = writer(0);
+        for (start, end, counter_id) in [(10, 11, overrun), (11, 13, overrun), (13, 14, overrun), (14, 15, backpressure)] {
+            let record = gap(0, start, end, GapReason::Backpressure,
+                GapWitness::Counter { counter_id, observed: end - start });
+            crate::verify::validate_d81_gap(&record).unwrap();
+            gaps.push(record, &mut sink).unwrap();
+        }
+        gaps.finish(&mut sink).unwrap();
+        assert_eq!(sink.bodies.len(), 2);
+        for (body, start, end, counter_id) in [
+            (&sink.bodies[0], 10, 14, overrun),
+            (&sink.bodies[1], 14, 15, backpressure),
+        ] {
+            let record = decode_gap(body).unwrap();
+            crate::verify::validate_d81_gap(&record).unwrap();
+            assert_eq!((record.tick_start, record.tick_end), (start, end));
+            assert_eq!(record.witness, GapWitness::Counter { counter_id, observed: end - start });
+        }
     }
 
     #[test]
