@@ -2744,10 +2744,11 @@ fn a_slot_outside_the_engine_table_is_excluded_and_named_rather_than_refused() {
     let perf = outcome
         .perf(COMPACT_DOMAIN_MARKET_TRADE_LIVE)
         .expect("d43 emitted its perf record");
+    // The walk is unchanged -- the other 440 slots' contracts still reach the wire; only the word changed, because a contract owned by an excluded country is never a candidate and the census's own words would read exact over a short set.
     assert_eq!(
-        perf.status_flags & COMPACT_STATUS_SOURCE_UNAVAILABLE,
-        0,
-        "an excluded slot is not a missing source; status {:#010x}",
+        perf.status_flags & (COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA),
+        COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
+        "an excluded slot is a scope the census could not reach; status {:#010x}",
         perf.status_flags
     );
     assert_eq!(
