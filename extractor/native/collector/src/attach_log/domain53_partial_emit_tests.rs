@@ -530,6 +530,10 @@ fn causes_with_no_per_row_key_are_undeclarable() {
             relation_subject: 2,
             relation_container: 3,
             operative: 71,
+            // Lane D53C: cryptology joined the declarable classes when its
+            // skips gained the owner/target key. Capture e2e_04 lost 101
+            // frames to it as an undeclarable cause.
+            cryptology: 5,
             ..Default::default()
         },
         0,
@@ -554,10 +558,6 @@ fn causes_with_no_per_row_key_are_undeclarable() {
         },
         diplomacy53::extractor::Domain53SkipCounts {
             agency: 1,
-            ..Default::default()
-        },
-        diplomacy53::extractor::Domain53SkipCounts {
-            cryptology: 1,
             ..Default::default()
         },
         diplomacy53::extractor::Domain53SkipCounts {
