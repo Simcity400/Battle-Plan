@@ -1,5 +1,5 @@
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Instant;
 
@@ -18,7 +18,26 @@ struct HourReport {
     map_authority_error: Option<String>,
     admitted_inputs: Vec<String>,
     gap_inputs: Vec<GapRow>,
+    recorder_domain_problems: Vec<RecorderDomainProblem>,
+    wing_anchor_refusals: Vec<WingAnchorRefusalCensus>,
     frame_decode_ms: f64,
+}
+
+/// Whether the recorder delivered this hour's carrier at all, and under which
+/// of its own typed causes it did not.
+#[derive(serde::Serialize)]
+struct RecorderDomainProblem {
+    domain_id: i64,
+    problem: String,
+}
+
+/// The wings one placement refusal accounts for, and the bases they name; the
+/// ledger row itself refuses the whole hour for any one of them.
+#[derive(serde::Serialize)]
+struct WingAnchorRefusalCensus {
+    cause: String,
+    wings: usize,
+    air_base_ids: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -43,7 +62,7 @@ struct ReachReport {
     gap_input_hour_counts: BTreeMap<String, usize>,
 }
 
-const REACH_REPORT_SCHEMA: &str = "hoi4.replay.recording_reach.v1";
+const REACH_REPORT_SCHEMA: &str = "hoi4.replay.recording_reach.v2";
 
 fn select_hours(all_hours: &[i64], selection: HourSelection) -> Vec<i64> {
     match selection {
@@ -64,6 +83,46 @@ fn select_hours(all_hours: &[i64], selection: HourSelection) -> Vec<i64> {
             picks
         }
     }
+}
+
+fn recorder_domain_problems(frame: &replay_core::WorldFrame) -> Vec<RecorderDomainProblem> {
+    frame
+        .provenance()
+        .channels
+        .get("collector")
+        .map(|collector| {
+            collector
+                .problems
+                .iter()
+                .map(|problem| RecorderDomainProblem {
+                    domain_id: problem.domain,
+                    problem: problem.problem.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// From the same single placement law `units.air_base_location` and XMAP13 call.
+fn wing_anchor_refusals(frame: &replay_core::WorldFrame) -> Vec<WingAnchorRefusalCensus> {
+    let mut by_cause: BTreeMap<String, (usize, BTreeSet<String>)> = BTreeMap::new();
+    for wing in frame.wings() {
+        if let Err(refusal) = frame.wing_anchor_province(wing) {
+            let entry = by_cause.entry(format!("{refusal:?}")).or_default();
+            entry.0 += 1;
+            if let Some(air_base) = wing.air_base.measured() {
+                entry.1.insert(air_base.clone());
+            }
+        }
+    }
+    by_cause
+        .into_iter()
+        .map(|(cause, (wings, air_base_ids))| WingAnchorRefusalCensus {
+            cause,
+            wings,
+            air_base_ids: air_base_ids.into_iter().collect(),
+        })
+        .collect()
 }
 
 pub(crate) fn write_report_create_new_or_equal(out: &Path, bytes: &[u8]) -> crate::Result<()> {
@@ -161,6 +220,8 @@ pub(crate) fn run(
             map_authority_error,
             admitted_inputs,
             gap_inputs,
+            recorder_domain_problems: recorder_domain_problems(&frame),
+            wing_anchor_refusals: wing_anchor_refusals(&frame),
             frame_decode_ms,
         });
     }

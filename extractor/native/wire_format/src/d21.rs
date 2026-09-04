@@ -13,12 +13,14 @@
 //! when the status is not a failure.
 //!
 //! The fold retains combat identity, optional location, and the two optional
-//! participant lists. It validates `day` and `duration` packing but drops both
-//! words. They are consequently boundary invariants rather than portable state
-//! fields. This is a shipping-fold fidelity gap, not permission for a mapper to
-//! reinterpret either word.
+//! participant lists. Every other row word -- `day`, `duration`, the
+//! first-live-attacker word and the indicator block -- is validated here and
+//! reaches no portable field: they are boundary invariants, not permission for
+//! a mapper to reinterpret any of them.
 
 use std::collections::{BTreeMap, BTreeSet};
+
+use portable_engine_evidence::xmap14_land_indicator_operands as land_indicator;
 
 use crate::body::{key, Key};
 use crate::record::Record;
@@ -46,7 +48,7 @@ pub mod field {
 }
 
 pub const HEADER_LEN: usize = 32;
-pub const COMBAT_ROW_LEN: usize = 40;
+pub const COMBAT_ROW_LEN: usize = 96;
 pub const PARTICIPANT_ROW_LEN: usize = 24;
 
 pub const FLAG_HAS_LOCATION: u32 = 1 << 0;
@@ -54,11 +56,21 @@ pub const FLAG_HAS_DAY: u32 = 1 << 1;
 pub const FLAG_HAS_DURATION: u32 = 1 << 2;
 pub const FLAG_ATTACKERS_EXACT: u32 = 1 << 3;
 pub const FLAG_DEFENDERS_EXACT: u32 = 1 << 4;
+pub const FLAG_FIRST_LIVE_ATTACKER: u32 = 1 << 5;
+pub const FLAG_INDICATOR_OPERANDS: u32 = 1 << 6;
+pub const FLAG_FRAME_SELECTOR: u32 = 1 << 7;
+pub const FLAG_ATTACKER_ORG_LOSS_WINDOW: u32 = 1 << 8;
+pub const FLAG_DEFENDER_ORG_LOSS_WINDOW: u32 = 1 << 9;
 pub const KNOWN_COMBAT_FLAGS: u32 = FLAG_HAS_LOCATION
     | FLAG_HAS_DAY
     | FLAG_HAS_DURATION
     | FLAG_ATTACKERS_EXACT
-    | FLAG_DEFENDERS_EXACT;
+    | FLAG_DEFENDERS_EXACT
+    | FLAG_FIRST_LIVE_ATTACKER
+    | FLAG_INDICATOR_OPERANDS
+    | FLAG_FRAME_SELECTOR
+    | FLAG_ATTACKER_ORG_LOSS_WINDOW
+    | FLAG_DEFENDER_ORG_LOSS_WINDOW;
 
 pub const SIDE_ATTACKER: u32 = 1;
 pub const SIDE_DEFENDER: u32 = 2;
@@ -409,6 +421,17 @@ fn parse_combat_row(
     let duration = u32_at(row, 24);
     let attacker_count = u32_at(row, 28) as usize;
     let defender_count = u32_at(row, 32) as usize;
+    let first_live_attacker = u32_at(row, 36);
+    let attacker_flag_word = u32_at(row, 40);
+    let defender_flag_word = u32_at(row, 44);
+    let frame_word = u32_at(row, 48);
+    let indicator_reserved = u32_at(row, 52);
+    let attacker_organisation = i64_at(row, 56);
+    let defender_organisation = i64_at(row, 64);
+    let attacker_org_loss_count = u32_at(row, 72);
+    let defender_org_loss_count = u32_at(row, 76);
+    let attacker_org_loss_window = i64_at(row, 80);
+    let defender_org_loss_window = i64_at(row, 88);
 
     if combat_id == 0 {
         return Err(format!("land combat row {row_index} has zero combat_id"));
@@ -446,9 +469,86 @@ fn parse_combat_row(
             "land combat row {row_index} has defenders without exact flag"
         ));
     }
-    if u32_at(row, 36) != 0 {
+    if flags & FLAG_FIRST_LIVE_ATTACKER != 0 && flags & FLAG_ATTACKERS_EXACT == 0 {
+        return Err(format!(
+            "land combat row {row_index} states attacker liveness without an exact attacker census"
+        ));
+    }
+    if flags & FLAG_FIRST_LIVE_ATTACKER == 0 && first_live_attacker != 0 {
         return Err(format!(
             "land combat row {row_index} reserved field is nonzero"
+        ));
+    }
+    let indicator_stated = flags & FLAG_INDICATOR_OPERANDS != 0;
+    if !indicator_stated
+        && (attacker_flag_word != 0
+            || defender_flag_word != 0
+            || attacker_organisation != 0
+            || defender_organisation != 0
+            || attacker_org_loss_count != 0
+            || defender_org_loss_count != 0)
+    {
+        return Err(format!(
+            "land combat row {row_index} carries indicator operands without the flag"
+        ));
+    }
+    if indicator_reserved != 0 {
+        return Err(format!(
+            "land combat row {row_index} indicator reserved word is nonzero"
+        ));
+    }
+    if flags & FLAG_FRAME_SELECTOR == 0 && frame_word != 0 {
+        return Err(format!(
+            "land combat row {row_index} carries a frame selector without the flag"
+        ));
+    }
+    if frame_word > 1 {
+        return Err(format!(
+            "land combat row {row_index} frame selector word {frame_word} is not a boolean"
+        ));
+    }
+    for (flag, side, count, window) in [
+        (
+            FLAG_ATTACKER_ORG_LOSS_WINDOW,
+            "attacker",
+            attacker_org_loss_count,
+            attacker_org_loss_window,
+        ),
+        (
+            FLAG_DEFENDER_ORG_LOSS_WINDOW,
+            "defender",
+            defender_org_loss_count,
+            defender_org_loss_window,
+        ),
+    ] {
+        let stated = flags & flag != 0;
+        if stated && !indicator_stated {
+            return Err(format!(
+                "land combat row {row_index} states the {side} org-loss window without the indicator operands it belongs to"
+            ));
+        }
+        // The engine picks the window branch on the sample count alone, so a
+        // window stated below the threshold, or withheld above it, is a row
+        // whose two halves disagree.
+        if stated != (indicator_stated && count as usize >= land_indicator::ORG_LOSS_WINDOW) {
+            return Err(format!(
+                "land combat row {row_index} {side} org-loss window flag disagrees with its sample count {count}"
+            ));
+        }
+        if !stated && window != 0 {
+            return Err(format!(
+                "land combat row {row_index} carries a {side} org-loss window without the flag"
+            ));
+        }
+        if window < 0 {
+            return Err(format!(
+                "land combat row {row_index} {side} org-loss window {window} is negative"
+            ));
+        }
+    }
+    if attacker_organisation < 0 || defender_organisation < 0 {
+        return Err(format!(
+            "land combat row {row_index} carries a negative organisation sum"
         ));
     }
     Ok(CombatRow {
@@ -615,9 +715,19 @@ fn u64_at(bytes: &[u8], offset: usize) -> u64 {
     )
 }
 
+fn i64_at(bytes: &[u8], offset: usize) -> i64 {
+    i64::from_le_bytes(
+        bytes[offset..offset + 8]
+            .try_into()
+            .expect("validated fixed-width row"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ORG_LOSS_WINDOW_THRESHOLD: u32 = land_indicator::ORG_LOSS_WINDOW as u32;
 
     fn combat_row(
         combat_id: u32,
@@ -684,6 +794,84 @@ mod tests {
             .expect("field exists")
     }
 
+    fn wo4_combat_row(flags: u32, org_loss_count: u32) -> [u8; COMBAT_ROW_LEN] {
+        let mut row = combat_row(271, 3, flags, 118, 12, 34, 1, 0);
+        row[36..40].copy_from_slice(&1_053u32.to_le_bytes());
+        row[40..44].copy_from_slice(&5u32.to_le_bytes());
+        row[44..48].copy_from_slice(&6u32.to_le_bytes());
+        row[48..52].copy_from_slice(&1u32.to_le_bytes());
+        row[56..64].copy_from_slice(&420_000i64.to_le_bytes());
+        row[64..72].copy_from_slice(&390_000i64.to_le_bytes());
+        row[72..76].copy_from_slice(&org_loss_count.to_le_bytes());
+        row[76..80].copy_from_slice(&org_loss_count.to_le_bytes());
+        row[80..88].copy_from_slice(&11_000i64.to_le_bytes());
+        row[88..96].copy_from_slice(&9_000i64.to_le_bytes());
+        row
+    }
+
+    /// kills: reading the row at any width, or with any flag mask, but the
+    /// shipping producer's.
+    #[test]
+    fn wo4_row_words_are_packed_against_their_own_flags() {
+        const ALL: u32 = 0b11_1110_1111;
+        let schema = schema();
+        let good = payload(
+            0,
+            &[wo4_combat_row(ALL, ORG_LOSS_WINDOW_THRESHOLD)],
+            &[participant_row(271, 3, SIDE_ATTACKER, 1_053)],
+        );
+        assert_eq!(good.len(), HEADER_LEN + COMBAT_ROW_LEN + PARTICIPANT_ROW_LEN);
+        decode_success_payload(&schema, &good, 0).expect("a WO4 row is the shipping grammar");
+
+        for (mutate, expected) in [
+            (
+                (|row: &mut [u8; COMBAT_ROW_LEN]| {
+                    row[12..16].copy_from_slice(&(ALL & !FLAG_INDICATOR_OPERANDS).to_le_bytes());
+                }) as fn(&mut [u8; COMBAT_ROW_LEN]),
+                "indicator operands without the flag",
+            ),
+            (
+                |row: &mut [u8; COMBAT_ROW_LEN]| {
+                    row[52..56].copy_from_slice(&1u32.to_le_bytes());
+                },
+                "indicator reserved word is nonzero",
+            ),
+            (
+                |row: &mut [u8; COMBAT_ROW_LEN]| {
+                    row[48..52].copy_from_slice(&2u32.to_le_bytes());
+                },
+                "is not a boolean",
+            ),
+            (
+                |row: &mut [u8; COMBAT_ROW_LEN]| {
+                    row[72..76].copy_from_slice(&(ORG_LOSS_WINDOW_THRESHOLD - 1).to_le_bytes());
+                },
+                "org-loss window flag disagrees with its sample count",
+            ),
+            (
+                |row: &mut [u8; COMBAT_ROW_LEN]| {
+                    row[64..72].copy_from_slice(&(-1i64).to_le_bytes());
+                },
+                "negative organisation sum",
+            ),
+            (
+                |row: &mut [u8; COMBAT_ROW_LEN]| {
+                    row[12..16].copy_from_slice(
+                        &(ALL & !FLAG_FIRST_LIVE_ATTACKER).to_le_bytes(),
+                    );
+                },
+                "reserved field is nonzero",
+            ),
+        ] {
+            let mut row = wo4_combat_row(ALL, ORG_LOSS_WINDOW_THRESHOLD);
+            mutate(&mut row);
+            let bad = payload(0, &[row], &[participant_row(271, 3, SIDE_ATTACKER, 1_053)]);
+            let error = decode_success_payload(&schema, &bad, 0)
+                .expect_err("the mutated row is refused");
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
+    }
+
     #[test]
     fn schema_pins_lifecycle_identity_and_local_participant_order() {
         let schema = schema();
@@ -704,18 +892,17 @@ mod tests {
         );
     }
 
+    /// Not `KNOWN_COMBAT_FLAGS`: the two window bits are legal only above the
+    /// sample-count threshold, so the full mask is no row's packing.
+    const PACKED_HERE: u32 = FLAG_HAS_LOCATION
+        | FLAG_HAS_DAY
+        | FLAG_HAS_DURATION
+        | FLAG_ATTACKERS_EXACT
+        | FLAG_DEFENDERS_EXACT;
+
     #[test]
     fn success_payload_maps_fold_state_without_day_or_duration() {
-        let combat = combat_row(
-            7,
-            44,
-            KNOWN_COMBAT_FLAGS,
-            123,
-            9,
-            3,
-            2,
-            1,
-        );
+        let combat = combat_row(7, 44, PACKED_HERE, 123, 9, 3, 2, 1);
         let participants = [
             participant_row(7, 44, SIDE_ATTACKER, 1001),
             participant_row(7, 44, SIDE_ATTACKER, 1002),

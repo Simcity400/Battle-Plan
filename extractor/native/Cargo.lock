@@ -1418,6 +1418,7 @@ dependencies = [
  "d68_grammar",
  "portable_admission",
  "portable_content_manifest",
+ "portable_engine_evidence",
  "serde_json",
  "sha2",
 ]
