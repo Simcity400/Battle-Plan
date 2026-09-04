@@ -998,13 +998,31 @@ fn d53_an_hour_the_ledger_cannot_pay_for_costs_the_frame_nothing() {
     );
     assert!(finish.contains("return domain53_keep_up_deferred_read("));
 
-    // A dropped plan waits before walking again, so a layout that keeps
-    // drifting cannot put the walk thread back on the machine every hour.
+    // A dropped plan is re-walked from the hour that dropped it, so no LATER
+    // hour is spent waiting for the walk to start. The timer that used to
+    // stand here cost capture e2e_05 114 pending hours against 60 drops
+    // (runs/d53d_capture05_gaps/FINDING.json) and is gone, not renamed.
     assert_eq!(
-        finish.matches("DOMAIN53_PLAN_DROP_BACKOFF").count(),
+        finish.matches("domain53_spawn_plan_job(").count(),
         2,
-        "the copy-refusal and region-miss exits both back the walk off"
+        "the copy-refusal and region-miss exits both re-arm the walk"
     );
+    assert!(
+        !source.contains("DOMAIN53_PLAN_DROP_BACKOFF"),
+        "the plan-drop backoff is deleted, not renamed"
+    );
+    // The region-miss exit ran the whole observe half before the miss
+    // surfaced, so it is priced from THAT clock and charges the ledger what
+    // the frame spent. A fresh clock reported ~0 us there and collapsed the
+    // ledger's measured cost: capture e2e_05's d53 read_time p50 was 9 us
+    // against a 165.5 ms p95.
+    let miss = finish
+        .find("if snapshot.first_miss().is_some() {")
+        .expect("the region-miss arm");
+    assert!(finish[miss..].contains("let read_started = domain53_observed_read_started(&observed);"));
+    assert!(finish[miss..].contains("domain53_source_unavailable_read(\nread_started,"));
+    let started = code_only(item_body(&source, "fn domain53_observed_read_started("));
+    assert!(started.contains("Domain53ObservedRead::Pending(work) => work.read_started,"));
 }
 
 /// The plan's arena is one page-aligned allocation, every page of which is

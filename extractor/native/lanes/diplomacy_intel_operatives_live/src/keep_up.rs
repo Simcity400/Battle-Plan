@@ -208,6 +208,107 @@ mod tests {
         );
     }
 
+    /// WHAT A DROPPED SNAPSHOT PLAN COSTS. The frame that drops the plan
+    /// spent a whole read before refusing, so the ledger charges that read
+    /// and the hours it then defers are typed gaps that spend nothing --
+    /// which is exactly the window the off-frame replacement walk needs.
+    ///
+    /// Run against capture e2e_05's measured shape
+    /// (`runs/d53d_capture05_gaps/FINDING.json`): 1,244 frames in 120 s, a
+    /// 158.7 ms read, an 80.1 ms mean walk (4,162,835 us over 52), one plan
+    /// drop every sixth read (60 drops, 362 admitted hours), and 9 us as the
+    /// read time a refusal that read nothing reports.
+    ///
+    /// Both halves of the e2e_05 defect are pinned here. The walk could not
+    /// START for 221 ms after a drop, and because the refusal was charged its
+    /// wire read time instead of what it spent, every hour of that window was
+    /// ADMITTED and lost -- just under three per drop, which is the 177
+    /// pending hours the capture counted against its 60 drops.
+    #[test]
+    fn a_dropped_plan_costs_at_most_the_hour_it_was_dropped_in() {
+        const FRAME_US: u64 = 96_500;
+        const READ_US: u64 = 158_710;
+        const WALK_MEAN_US: u64 = 80_054;
+        /// The slowest walk either capture measured (e2e_04), which outlasts
+        /// a frame; the mean is what e2e_05 actually paid.
+        const WALK_MAX_US: u64 = 221_000;
+        const REFUSAL_WIRE_US: u64 = 9;
+        const HOURS: u64 = 1_244;
+        const READS_PER_DROP: u64 = 6;
+
+        /// `(drops, pending_hours)` over the run. `drop_backoff_us` is how
+        /// long the replacement walk waits before it may start; `drop_cost_us`
+        /// is what the ledger is charged for the hour that dropped the plan.
+        fn run(drop_backoff_us: u64, drop_cost_us: u64, walk_us: u64) -> (u64, u64) {
+            let mut ledger = Domain53KeepUp::default();
+            let mut plan = false;
+            let mut walk_ends_at: Option<u64> = None;
+            let mut walk_may_start_at = 0u64;
+            let (mut reads, mut drops, mut pending) = (0u64, 0u64, 0u64);
+            for hour in 0..HOURS {
+                let now = hour * FRAME_US;
+                if walk_ends_at.is_some_and(|at| at <= now) {
+                    plan = true;
+                    walk_ends_at = None;
+                }
+                if matches!(ledger.admit(), Domain53KeepUpVerdict::Defer { .. }) {
+                    continue;
+                }
+                if !plan {
+                    if walk_ends_at.is_none() && now >= walk_may_start_at {
+                        walk_ends_at = Some(now + walk_us);
+                    }
+                    pending += 1;
+                    ledger.charge(REFUSAL_WIRE_US);
+                    continue;
+                }
+                reads += 1;
+                if reads % READS_PER_DROP == 0 {
+                    drops += 1;
+                    plan = false;
+                    walk_may_start_at = now + drop_backoff_us;
+                    if drop_backoff_us == 0 {
+                        walk_ends_at = Some(now + walk_us);
+                    }
+                    ledger.charge(drop_cost_us);
+                } else {
+                    ledger.charge(READ_US);
+                }
+            }
+            (drops, pending)
+        }
+
+        let (drops, pending) = run(0, READ_US, WALK_MEAN_US);
+        assert!(drops > 0, "the run must actually drop plans");
+        assert_eq!(
+            pending, 1,
+            "only the cold start has no plan: {drops} drop(s) cost {pending} pending hour(s)"
+        );
+
+        // The 221 ms backoff, charged the refusal's wire time: the capture's
+        // own ratio, just under three lost hours for every plan dropped.
+        let (drops_before, pending_before) = run(221_000, REFUSAL_WIRE_US, WALK_MEAN_US);
+        assert!(
+            pending_before >= 2 * drops_before,
+            "{pending_before} pending hour(s) for {drops_before} drop(s)"
+        );
+
+        // At the slowest walk ever measured the drop hour still bounds the
+        // loss: the walk outlasts one frame, so a drop can cost the hour
+        // after it as well -- and NOT MORE, because the charge defers the
+        // rest. Uncharged, the same walk loses strictly more.
+        let (drops_max, pending_max) = run(0, READ_US, WALK_MAX_US);
+        assert!(
+            pending_max <= 1 + drops_max,
+            "{pending_max} pending hour(s) for {drops_max} drop(s) at the slowest walk"
+        );
+        let (_, pending_uncharged) = run(0, REFUSAL_WIRE_US, WALK_MAX_US);
+        assert!(
+            pending_uncharged > pending_max,
+            "an uncharged drop admits the very next hour into a walk still running"
+        );
+    }
+
     /// The share is d53's own published read-time budget, and the frame fits
     /// with it: capture e2e_03's critical path without d53 plus the share is
     /// inside both the global critical-path budget and the game hour.
