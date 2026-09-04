@@ -247,12 +247,6 @@ fn parse_definition_csv(bytes: &[u8]) -> Result<Vec<ProvinceBinding>, ProductErr
             })
         };
         let province_id = parse(0, "province id")?;
-        if province_id == 0 {
-            return Err(ProductError::new(format!(
-                "definition.csv line {} uses reserved province id zero",
-                line_index + 1
-            )));
-        }
         let red = parse(1, "red component")?;
         let green = parse(2, "green component")?;
         let blue = parse(3, "blue component")?;
@@ -265,6 +259,20 @@ fn parse_definition_csv(bytes: &[u8]) -> Result<Vec<ProvinceBinding>, ProductErr
         if !rgb_seen.insert((red, green, blue)) {
             return Err(ProductError::new(format!(
                 "definition.csv line {} repeats RGB {red},{green},{blue}",
+                line_index + 1
+            )));
+        }
+        if province_id == 0 {
+            // The engine's own definition.csv opens with its reserved
+            // no-province row, `0;0;0;0;land;false;unknown;0`. It is not a
+            // province and must not enter the catalog. Its RGB is still
+            // claimed above, so nothing else may take black. An id-zero row
+            // that is NOT that sentinel remains a defect.
+            if red == 0 && green == 0 && blue == 0 {
+                continue;
+            }
+            return Err(ProductError::new(format!(
+                "definition.csv line {} uses reserved province id zero",
                 line_index + 1
             )));
         }
@@ -306,4 +314,38 @@ pub(crate) fn decode_sha256(value: &str) -> Result<[u8; 32], ProductError> {
             .map_err(|_| ProductError::new("SHA-256 text is not hexadecimal"))?;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod definition_csv_tests {
+    use super::parse_definition_csv;
+
+    /// The engine's own `map/definition.csv` opens with `0;0;0;0;...`. Refusing
+    /// it meant no capture could ever build the D81 province catalog from the
+    /// installed game, which is what lost capture 06's rebuilt-wire product.
+    #[test]
+    fn the_engine_reserved_row_is_skipped_and_a_real_id_zero_row_is_not() {
+        let vanilla = b"0;0;0;0;land;false;unknown;0\n\
+                        1;230;81;119;lake;false;lakes;7\n\
+                        2;0;0;55;land;false;forest;1\n";
+        let bindings = parse_definition_csv(vanilla).expect("the vanilla header row is skipped");
+        assert_eq!(bindings.len(), 2);
+        assert!(bindings.iter().all(|binding| binding.province_id != 0));
+
+        let impostor = b"0;12;34;56;land;false;unknown;0\n\
+                         1;230;81;119;lake;false;lakes;7\n";
+        let error = parse_definition_csv(impostor)
+            .expect_err("an id-zero row that is not the black sentinel stays a defect");
+        assert!(
+            error.to_string().contains("reserved province id zero"),
+            "{error}"
+        );
+
+        // Black stays claimed by the sentinel, so nothing else may take it.
+        let stolen = b"0;0;0;0;land;false;unknown;0\n\
+                       1;0;0;0;land;false;forest;1\n";
+        let error = parse_definition_csv(stolen)
+            .expect_err("a province may not reuse the sentinel's RGB");
+        assert!(error.to_string().contains("repeats RGB 0,0,0"), "{error}");
+    }
 }
