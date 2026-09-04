@@ -1666,7 +1666,7 @@ fn admit_fired_event(
         Leaf::Absent | Leaf::Unobtained => None,
     };
 
-    let effective_timeout_hours = measured_positive(&row.effective_timeout_hours)
+    let effective_timeout_hours = measured_nonnegative(&row.effective_timeout_hours)
         .ok_or(EventHistoryRejection::InvalidTimeout)?;
     if let Some(days) = def.timeout_days {
         let scripted = i64::from(days) * 24;
@@ -2022,10 +2022,6 @@ fn measured_nonempty(value: &Leaf<String>) -> Option<&str> {
 
 fn measured_nonnegative(value: &Leaf<i64>) -> Option<i64> {
     value.measured().copied().filter(|value| *value >= 0)
-}
-
-fn measured_positive(value: &Leaf<i64>) -> Option<i64> {
-    value.measured().copied().filter(|value| *value > 0)
 }
 
 #[cfg(test)]
@@ -2853,8 +2849,33 @@ mod tests {
     }
 
     #[test]
+    fn zero_day_timeout_observer_history_preserves_immediate_expiry() {
+        for reason in ["pending", "selected", "timeout"] {
+            let (mut row, mut def, loc, sprites, runtime) = popup_fixture();
+            def.timeout_days = Some(0);
+            row.effective_timeout_hours = Leaf::Measured(0);
+            row.timeout_tick = row.fire_tick.clone();
+            row.resolved_tick = if reason == "pending" { Leaf::Unobtained } else { row.fire_tick.clone() };
+            if reason == "pending" {
+                row.chosen_option_ordinal = Leaf::Unobtained;
+            }
+            row.resolution_reason = Leaf::Measured(reason.into());
+            let admitted = admit_fixture(row, def, &loc, &sprites, &runtime);
+            assert_eq!(admitted.effective_timeout_hours, 0);
+            assert_eq!(admitted.timeout_tick, admitted.fire_tick);
+            assert_eq!(admitted.resolution_reason, reason);
+            assert!(admitted.popup.is_some());
+            for tick in [admitted.fire_tick - 1, admitted.fire_tick, admitted.fire_tick + 1] {
+                assert!(!admitted.lifecycle_window_contains(tick));
+                assert!(!admitted.visible_at(1, tick));
+            }
+        }
+    }
+
+    #[test]
     fn xui21_rejects_contradictory_timeout_arithmetic_and_pre_due_timeout_resolution() {
-        let (row, def, loc, sprites, runtime) = popup_fixture();
+        let (row, mut def, loc, sprites, runtime) = popup_fixture();
+        def.timeout_days = Some(13);
         let definitions = BTreeMap::from([(def.id.clone(), def)]);
         let reject = |row: RecordedFiredEventRow| {
             let history = FiredEventsView {
@@ -2880,6 +2901,15 @@ mod tests {
             reject(wrong_arithmetic),
             EventHistoryRejection::InvalidTimeout
         );
+
+        let mut negative = row.clone();
+        negative.effective_timeout_hours = Leaf::Measured(-1);
+        assert_eq!(reject(negative), EventHistoryRejection::InvalidTimeout);
+
+        let mut substituted_zero = row.clone();
+        substituted_zero.effective_timeout_hours = Leaf::Measured(0);
+        substituted_zero.timeout_tick = substituted_zero.fire_tick.clone();
+        assert_eq!(reject(substituted_zero), EventHistoryRejection::InvalidTimeout);
 
         let mut pre_due_timeout = row;
         pre_due_timeout.resolution_reason = Leaf::Measured("timeout".into());

@@ -528,7 +528,6 @@ impl A729EventLedger {
             .timeout_tick
             .checked_sub(fire_tick)
             .and_then(|value| u32::try_from(value).ok())
-            .filter(|value| *value != 0)
         else {
             state.telemetry.lost_row_resolutions =
                 state.telemetry.lost_row_resolutions.saturating_add(1);
@@ -779,8 +778,10 @@ pub fn validate_frame(frame: &FiredEventFrame) -> Result<(), CarrierError> {
                 return invalid("runtime option text context is not a visible ordinal");
             }
         }
-        if row.effective_timeout_hours == 0 || row.timeout_tick <= row.fire_tick {
-            return invalid("timeout is not after fire");
+        if row.fire_tick.checked_add(u64::from(row.effective_timeout_hours))
+            != Some(row.timeout_tick)
+        {
+            return invalid("timeout_tick must equal fire_tick + effective_timeout_hours");
         }
         match row.resolution_reason {
             ResolutionReason::Pending
@@ -1233,6 +1234,89 @@ mod tests {
             runtime_description_text_context_id: None,
             runtime_option_text_contexts: Vec::new(),
         }
+    }
+
+    #[test]
+    fn zero_day_timeout_wire_round_trip_and_invalid_arithmetic() {
+        let mut frame = FiredEventFrame {
+            elapsed_wall_ms: 1,
+            frame_hour: 12,
+            producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
+            telemetry: telemetry(),
+            fired_events_complete: true,
+            capture_start_fired_event_ids: Some(Vec::new()),
+            capture_start_pending_unresolved: Vec::new(),
+            rows: vec![FiredEventRow {
+                effective_timeout_hours: 0,
+                timeout_tick: 12,
+                resolved_tick: Some(12),
+                resolution_reason: ResolutionReason::Timeout,
+                ..row()
+            }],
+        };
+        for reason in [ResolutionReason::Pending, ResolutionReason::Selected, ResolutionReason::Timeout] {
+            frame.rows[0].resolution_reason = reason;
+            frame.rows[0].resolved_tick = (reason != ResolutionReason::Pending).then_some(12);
+            frame.rows[0].chosen_option_ordinal = (reason != ResolutionReason::Pending).then_some(2);
+            let payload = encode_payload(&frame).unwrap();
+            assert_eq!(u32::from_le_bytes(payload[4..8].try_into().unwrap()), 7);
+            assert_eq!(decode_payload(&payload).unwrap(), frame);
+        }
+        for (hours, due) in [(0, 11), (0, 13), (1, 12), (u32::MAX, 12)] {
+            frame.rows[0].effective_timeout_hours = hours;
+            frame.rows[0].timeout_tick = due;
+            assert_eq!(
+                encode_payload(&frame),
+                Err(CarrierError::Invalid("timeout_tick must equal fire_tick + effective_timeout_hours".into()))
+            );
+        }
+    }
+
+    #[test]
+    fn zero_day_timeout_collector_materialisation_and_resolution_are_preserved() {
+        let ledger = A729EventLedger::new(8);
+        ledger.authenticate_installation_and_route_certification(true, true, true);
+        ledger.record_fire(FireInput {
+            event_id: "germany.1".into(),
+            scope_country_tag_db_id: 1,
+            recipient: Some(FiredEventRecipient { tag_db_id: 1, tag: "GER".into() }),
+            fire_date: "1936.1.1.12".into(),
+            fire_hour: 0,
+            fire_tick: 12,
+            event_sequence: 1,
+            popup_subtype: PopupSubtype::Country,
+            effective_timeout_hours: 0,
+            timeout_tick: 12,
+        });
+        let pending = decode_payload(&collect_and_encode(&ledger, 0, 1).unwrap()).unwrap();
+        assert_eq!(pending.rows[0].effective_timeout_hours, 0);
+        assert_eq!(pending.rows[0].resolution_reason, ResolutionReason::Pending);
+        ledger.record_materialisation(MaterialisationInput {
+            event_sequence: 1,
+            visible_option_ordinals: vec![0],
+            selected_desc_key: Some("germany.1.d".into()),
+            shown_picture_gfx: None,
+            popup_subtype: PopupSubtype::Country,
+            timeout_tick: 12,
+            runtime_title_text_context_id: None,
+            runtime_description_text_context_id: None,
+            runtime_option_text_contexts: Vec::new(),
+        });
+        ledger.record_resolution(ResolutionInput {
+            event_sequence: 1,
+            chosen_option_ordinal: Some(0),
+            resolved_tick: 12,
+            reason: ResolutionReason::Timeout,
+        });
+        let frame = decode_payload(&collect_and_encode(&ledger, 0, 2).unwrap()).unwrap();
+        assert!(frame.fired_events_complete);
+        assert_eq!(frame.telemetry.lost_row_resolutions, 0);
+        assert_eq!(frame.rows.len(), 1);
+        assert_eq!(frame.rows[0].effective_timeout_hours, 0);
+        assert_eq!(frame.rows[0].timeout_tick, frame.rows[0].fire_tick);
+        assert_eq!(frame.rows[0].resolved_tick, Some(frame.rows[0].fire_tick));
+        assert_eq!(frame.rows[0].resolution_reason, ResolutionReason::Timeout);
+        assert_eq!(frame.rows[0].visible_option_ordinals, vec![0]);
     }
     /// The recipient's three spellings: measured as a country (id beside its
     /// tag), measured as "addressed to no country" (0 beside the engine's own

@@ -1,0 +1,22 @@
+{
+  "event_id": "germany.1",
+  "scope_country_tag_db_id": 1,
+  "recipient_tag_db_id": 1,
+  "recipient_tag": "GER",
+  "fire_date": "1936.1.1.0",
+  "fire_hour": 16959360,
+  "fire_tick": 60759359,
+  "event_sequence": 1,
+  "visible_option_ordinals": [0, 2],
+  "chosen_option_ordinal": 2,
+  "selected_desc_key": "germany.1.d",
+  "shown_picture_gfx": "GFX_report_event_german_reich",
+  "popup_subtype": "country",
+  "effective_timeout_hours": 0,
+  "timeout_tick": 60759359,
+  "resolved_tick": 60759359,
+  "resolution_reason": "timeout",
+  "runtime_title_text_context_id": null,
+  "runtime_description_text_context_id": null,
+  "runtime_option_text_contexts": []
+}
