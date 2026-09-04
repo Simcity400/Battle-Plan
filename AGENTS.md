@@ -60,7 +60,15 @@ Applies to every harness. The reviewer is a fresh agent each round.
 
 ## How to launch, per harness (designated orchestrator and its lanes only)
 
-**Claude Code.** Lanes: `subagent_type: "lane-opus"` (Opus 5, high; the owner may name another model per lane); verify the resolved model in `subagents/agent-*.jsonl`; resume by agent id with `SendMessage`. Reviewer: the orchestrator, from the lane's pushed tip; no Codex CLI.
+**Claude Code.** Lanes run on the Codex CLI (owner directive 2026-09-04: GPT-6 Astra, high reasoning, never the priority tier). The orchestrator creates the worktree, writes the brief to a file, and launches from Bash:
+
+```bash
+git fetch origin && git worktree add ".claude\worktrees\lane-<name>" -b lane-<name> origin/landing-tmp
+OUT=$(mktemp /tmp/cdx_XXXXXX.txt); AJ=$(mktemp /tmp/cdx_XXXXXX.jsonl)
+cd ".claude\worktrees\lane-<name>" && codex exec --json -s danger-full-access -c approval_policy=never --skip-git-repo-check -m gpt-6-astra -c model_reasoning_effort=high -o "$OUT" - < brief.txt > "$AJ"
+```
+
+Flags as written; never `--ephemeral`, never a sandboxed `-s` mode, never `-c service_tier=priority`. Thread id = first line of `$AJ`; the report = `$OUT`. On a usage-limit or credit signature, keep the thread id and resume it later by id (`codex exec ... resume <id> -`, same flags); never relaunch a lane that has a thread. Lanes launched earlier on `subagent_type: "lane-opus"` finish as launched. Reviewer: the orchestrator, from the lane's pushed tip; it greps every consumer of a changed public item and runs their suites before merging.
 
 **Codex.**
 - Codex review Lanes are sub-agents. Never call the Codex CLI from inside Codex.
