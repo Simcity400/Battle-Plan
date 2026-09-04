@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet('Affected', 'Landing', 'ReleaseManual')]
     [string]$Mode = 'Affected',
@@ -419,7 +419,8 @@ function Invoke-ShippingTests {
         if (Test-Path -LiteralPath (Join-Path $root.Absolute 'Cargo.lock') -PathType Leaf) { $arguments += '--locked' }
         foreach ($package in $packages) { $arguments += @('-p', [string]$package.name) }
         if ($hasLibrary) { $arguments += '--lib' }
-        foreach ($test in $tests) { $arguments += @('--test', $test) }
+        # The XMAP00 ledger audit (6 min) runs in the lanes that touch the ledger, not per landing.
+        foreach ($test in $tests) { if ($test -eq 'xmap00_ledger_audit') { continue }; $arguments += @('--test', $test) }
         foreach ($bin in $bins) { $arguments += @('--bin', $bin) }
         $plans += [pscustomobject]@{
             Name = $root.Relative; Program = 'cargo'; Arguments = $arguments
