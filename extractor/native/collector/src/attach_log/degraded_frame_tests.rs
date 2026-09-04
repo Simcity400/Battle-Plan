@@ -305,22 +305,29 @@ fn d18_d65_d66_and_d91_emit_sites_route_their_status_word_through_the_ledger() {
             "COMPACT_DOMAIN_AIR_COMBAT_LOSSES_LIVE",
             "COMPACT_DOMAIN_AIR_SUPERIORITY_INPUTS",
             "COMPACT_DOMAIN_AIR_VARIANT_RESERVES",
+            "COMPACT_DOMAIN_AIR_WING_LOADOUTS",
+            "COMPACT_DOMAIN_ARMY_BATTLEPLANS_DEPTH_LIVE",
             "COMPACT_DOMAIN_COUNTRY_ARMY_UPGRADE_REQUESTS_LIVE",
             "COMPACT_DOMAIN_COUNTRY_DYNAMIC_MODIFIERS_LIVE",
             "COMPACT_DOMAIN_COUNTRY_IDENTITY",
+            "COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_LIVE",
+            "COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_WEIGHT_LIVE",
             "COMPACT_DOMAIN_DELAYED_EVENTS_LIVE",
             "COMPACT_DOMAIN_MARKET_TRADE_LIVE",
             "COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE",
             "COMPACT_DOMAIN_RAID_INSTANCES_LIVE",
             "COMPACT_DOMAIN_SHIPS",
             "COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE",
+            "COMPACT_DOMAIN_SUPPLY_LOGISTICS_ATTRITION_LIVE",
         ],
         "every emit site that publishes a reader-computed status word must substantiate it; \
          D36 and D38 joined D18/D65/D66/D91 when lane LC closed the silent-PERF class, D43 \
          joined them when the release-candidate capture showed all 324 of its frames \
          substantiated from the record instead of by their producer, D29/D42/D64/D93 \
-         joined on rc_vanilla4, which carried the stand-in on 719, 74, 53 and 4 frames, and \
-         D67 joined on rc_vanilla5, which carried it on 2"
+         joined on rc_vanilla4, which carried the stand-in on 719, 74, 53 and 4 frames, \
+         D67 joined on rc_vanilla5, which carried it on 2, and D32/D44/D54/D92/D96 \
+         joined on e2e_03, which carried it on 1, 10 and 4 frames and, for D96 under the \
+         reserved undeclared code, on 2"
     );
 }
 

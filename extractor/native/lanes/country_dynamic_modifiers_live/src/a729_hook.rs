@@ -318,6 +318,36 @@ pub fn production_callbacks_active() -> bool {
     ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0
 }
 
+/// Yield until no production callback is in flight, up to `max_yields`.
+///
+/// Returns whether quiescence was reached, and writes how many yields it cost.
+///
+/// A callback that is merely EXECUTING is not a change to the zero-removal
+/// queue, but every fence in this module refuses on it identically to a queue
+/// that actually mutated. D67's post-walk fence therefore failed the whole
+/// hour -- discarding a complete 439-country instance walk -- whenever the
+/// hooked engine routine happened to be running as the walk finished. Waiting
+/// the callback out and then asking the mutation generation separates the two:
+/// if it pushed an event the generation moved and the fence still refuses; if
+/// it did not, nothing changed and there is nothing to refuse.
+///
+/// Passive: this yields the COLLECTOR thread. The game is never waited on,
+/// signalled or paused, and the budget is bounded so an unquiesced fence is a
+/// named refusal rather than a stall.
+pub fn await_production_callback_quiescence(max_yields: u32, yields_spent: &mut u32) -> bool {
+    let mut spent = 0u32;
+    while ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
+        if spent >= max_yields {
+            *yields_spent = spent;
+            return false;
+        }
+        spent = spent.saturating_add(1);
+        std::thread::yield_now();
+    }
+    *yields_spent = spent;
+    true
+}
+
 pub fn production_callback_epoch() -> u64 {
     NEXT_SEQUENCE.load(Ordering::Acquire)
 }
