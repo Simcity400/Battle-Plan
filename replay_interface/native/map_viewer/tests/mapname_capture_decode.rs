@@ -4,8 +4,8 @@ use map_viewer::{
     MAPNAME_VERTEX_STRIDE,
 };
 
-const SOVIETUNION_VB: &[u8] = include_bytes!("../fixtures/mapname/sovietunion_gaps4_vb_slot0.bin");
-const SOVIETUNION_CB0: &[u8] = include_bytes!("../fixtures/mapname/sovietunion_gaps4_cb0.bin");
+const SOVIETUNION_VB: &[u8] = include_bytes!("fixtures/mapname/sovietunion_gaps4_vb_slot0.bin");
+const SOVIETUNION_CB0: &[u8] = include_bytes!("fixtures/mapname/sovietunion_gaps4_cb0.bin");
 
 fn cb0_floats() -> Vec<f32> {
     SOVIETUNION_CB0

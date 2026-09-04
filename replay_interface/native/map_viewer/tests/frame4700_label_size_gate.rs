@@ -21,7 +21,7 @@ struct KeyRow {
 }
 
 fn fixture_rows() -> Vec<KeyRow> {
-    let raw = include_str!("../fixtures/mapname/frame4700_labels.json");
+    let raw = include_str!("fixtures/mapname/frame4700_labels.json");
     let v: serde_json::Value = serde_json::from_str(raw).expect("answer key parses");
     assert_eq!(
         v["schema"].as_str(),
@@ -256,7 +256,7 @@ fn frame4700_engine_anchors_reproduce() {
     };
     let placements = compute_country_label_placements(&inputs);
 
-    let raw = include_str!("../fixtures/mapname/frame4700_placement_gate.json");
+    let raw = include_str!("fixtures/mapname/frame4700_placement_gate.json");
     let v: serde_json::Value = serde_json::from_str(raw).expect("placement gate parses");
     assert_eq!(
         v["schema"].as_str(),

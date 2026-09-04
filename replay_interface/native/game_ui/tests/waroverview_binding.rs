@@ -5,7 +5,6 @@ use game_ui::gui::{GuiElement, LayoutSet};
 use game_ui::waroverview_binding::{war_overview_from_frame, WarRelationSummary};
 use replay_core::{open_recording, Leaf, WorldTimeline};
 
-#[path = "../identity_support/mod.rs"]
 mod identity_support;
 use identity_support::identity;
 use std::path::{Path, PathBuf};

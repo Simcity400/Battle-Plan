@@ -12,7 +12,7 @@ fn temp_root(label: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "hoi4_xui22_{label}_{}_{}",
         std::process::id(),
-        std::thread::current().name().unwrap_or("test").replace("::", "_")
+        std::thread::current().name().unwrap_or("test")
     ));
     if path.exists() {
         portable_test_fs_retry::remove_dir_all(&path).unwrap();

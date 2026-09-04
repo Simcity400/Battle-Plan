@@ -12,7 +12,6 @@ use game_ui::occupation_binding::{
 };
 use replay_core::{open_recording, Leaf, OccupationEquipmentExactRow, OccupationRow, WorldTimeline};
 
-#[path = "../identity_support/mod.rs"]
 mod identity_support;
 use identity_support::identity;
 use std::collections::BTreeMap;

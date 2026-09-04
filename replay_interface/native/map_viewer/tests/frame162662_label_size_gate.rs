@@ -20,7 +20,7 @@ struct KeyRow {
 }
 
 fn fixture_rows() -> Vec<KeyRow> {
-    let raw = include_str!("../fixtures/mapname/frame162662_labels.json");
+    let raw = include_str!("fixtures/mapname/frame162662_labels.json");
     let v: serde_json::Value = serde_json::from_str(raw).expect("answer key parses");
     assert_eq!(
         v["schema"].as_str(),

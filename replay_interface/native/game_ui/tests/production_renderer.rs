@@ -421,7 +421,7 @@ fn xui23_consumer_is_promoted_with_exact_external_dependency() {
 #[test]
 fn legacy_a36_envelope_contract_still_refuses_engine_impossible_rows() {
     const CANONICAL: &str = include_str!(
-        "../../../../re_evidence/rendering_laws/XUI23/canonical_active_abilities_envelope.json"
+        "../../../re_evidence/rendering_laws/XUI23/canonical_active_abilities_envelope.json"
     );
     let envelope: CommandAbilityEnvelope =
         serde_json::from_str(CANONICAL).expect("canonical d88 envelope");

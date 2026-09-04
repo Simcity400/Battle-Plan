@@ -73,7 +73,7 @@ struct Iran {
 }
 
 fn iran_row() -> Iran {
-    let raw = include_str!("../fixtures/mapname/frame4700_labels.json");
+    let raw = include_str!("fixtures/mapname/frame4700_labels.json");
     let v: serde_json::Value = serde_json::from_str(raw).expect("answer key parses");
     assert_eq!(
         v["schema"].as_str(),

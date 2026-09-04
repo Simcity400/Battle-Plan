@@ -9,7 +9,6 @@ use replay_core::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-#[path = "../identity_support/mod.rs"]
 mod identity_support;
 use identity_support::identity;
 

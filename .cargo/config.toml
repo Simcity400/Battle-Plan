@@ -1,13 +1,15 @@
+# Shared local build policy for the extractor and replay workspaces.
+# Cargo and the selected test runner manage their own execution.
+
 [build]
 target-dir = ".cargo-target"
 
+# Full PDB generation dominates local build time and disk usage. Level 1 keeps
+# line information for useful backtraces while avoiding full debug symbols.
 [profile.dev]
-debug = 0
-incremental = false
+debug = 1
+incremental = true
 
 [profile.test]
-debug = 0
-incremental = false
-
-[target.x86_64-pc-windows-msvc]
-linker = "lld-link"
+debug = 1
+incremental = true

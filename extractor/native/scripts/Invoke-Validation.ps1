@@ -292,22 +292,22 @@ function Test-ShippingTestTarget {
     #     (verify_citation_integrity.py below, scheduled when its inputs change
     #     or -AllValidators is passed), and the name stays listed so a duplicate
     #     Rust reimplementation cannot shadow that authority;
-    #   replay_app_soak - long-run soak binaries with their own [profile.soak];
-    #   map_viewer_capture_gates - fow_hidden_counter_evidence
-    #     (gate_renderdoc_mined: mined RenderDoc capture evidence) plus
-    #     frame162662_label_size_gate / frame4700_label_size_gate /
-    #     mapname_oracle63_gate (gate_map_bundle(_with_hoi4): map bundle
-    #     generated from live captures; oracle63 also needs the install);
+    #   soak / soak_f2 - long-run soak binaries with their own [profile.soak];
+    #   fow_hidden_counter_evidence - gate_renderdoc_mined: mined RenderDoc
+    #     capture evidence;
+    #   frame162662_label_size_gate / frame4700_label_size_gate /
+    #     mapname_oracle63_gate - gate_map_bundle(_with_hoi4): map bundle
+    #     generated from live captures (oracle63 also needs the install);
     #   c07_generated_library_matches_generator - the generator verifies
     #     against PINNED vanilla installed content and refuses anything else, while
     #     Landing forwards no game root (only ReleaseManual takes
     #     -C07GameRoot), so this is install-backed like the gates above;
     #   xui09_installed_game_evidence / xui22_installed_game_evidence -
     #     gate_hoi4_install;
-    #   game_ui_evidence - decision_chrome / event_chrome / flag_precedence /
-    #     markup_law / topbar_quads / xui01_definition_admission /
-    #     xui02_window_manager / xui17_characters, the install-backed game_ui
-    #     evidence harnesses, run manually under [profile.evidence].
+    #   decision_chrome / event_chrome / flag_precedence / markup_law /
+    #     topbar_quads / xui01_definition_admission / xui02_window_manager /
+    #     xui17_characters - install-backed game_ui evidence harness binaries,
+    #     run manually under [profile.evidence].
     # Everything else runs in the gate: no_silent_skip (the false-green early-
     # return scanner; it was red on master for days precisely because it was
     # not planned), gate_currency, script_status_vocabulary_sweep,
@@ -321,9 +321,13 @@ function Test-ShippingTestTarget {
     return $Name -notin @(
         'citation_integrity',
         'c07_generated_library_matches_generator',
-        'replay_app_soak', 'map_viewer_capture_gates',
+        'soak', 'soak_f2', 'fow_hidden_counter_evidence',
+        'frame162662_label_size_gate', 'frame4700_label_size_gate',
+        'mapname_oracle63_gate',
         'xui09_installed_game_evidence',
-        'xui22_installed_game_evidence', 'game_ui_evidence'
+        'xui22_installed_game_evidence', 'decision_chrome', 'event_chrome',
+        'flag_precedence', 'markup_law', 'topbar_quads',
+        'xui01_definition_admission', 'xui02_window_manager', 'xui17_characters'
     )
 }
 
@@ -369,7 +373,7 @@ function Invoke-ShippingTests {
         }
         if (-not $hasLibrary -and $tests.Count -eq 0 -and $bins.Count -eq 0) { continue }
 
-        # The base config's binary() clauses (replay_app_soak, the game_ui evidence
+        # The base config's binary() clauses (soak, soak_f2, the game_ui evidence
         # binaries) all name replay_interface test targets; nextest validates every
         # profile's filter against the running workspace and hard-fails on a
         # binary() that matches nothing, so every other workspace gets the
