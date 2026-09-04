@@ -17,6 +17,7 @@ Roles. The **orchestrator** is the one agent the owner has explicitly named orch
 - Clean up: worktree, branch, build output, temp files. Scratch stays on `C:`.
 - `hoi4_re`: `re_status` first. Add to its registry only by running the tool, never by hand. Four-job offline queue. `hoi4_ghidra` (pinned a729/870ebf): `ghidra_status` first, `ghidra_verify` before relying on indexed evidence. Census and cross-analysis outputs are discovery, not proof. Pinned artifacts use the `engine_evidence` crate pattern with literal byte sizes and must pass `reverify_engine_evidence.py`.
 - Lanes never launch the game. A needed live probe goes back to the orchestrator as a bounded SPEC.
+- Testing: a lane runs the suites of the crates it touched, once, after approve. The gate runs everything else. Nobody reruns suites after a merge.
 
 ## Lane
 
@@ -79,6 +80,7 @@ timeout 590 tail --pid=$PID -f /dev/null   # repeat while it exits 124; then rea
 ```
 
   `$PID` must be bash's `$!`. `tail --pid` cannot follow a Windows PID from `tasklist`. No polling loops, no `sleep`. One long job at a time.
+- The orchestrator is exempt from the wait rule: launch gates and lanes in the background, end the turn, act on the completion notification. Never block a turn on TaskOutput.
 - Launching a lane (orchestrator only): Codex CLI, GPT-6 Astra, high reasoning, never the priority tier.
 
 ```bash
