@@ -949,6 +949,7 @@ fn fx_division_movement(seed: u64) -> Scenario {
                 // and the replay reads, so this fixture cannot spell a shape
                 // the replay refuses.
                 snap["combats"] = serde_json::to_value(vec![LandCombatRecord {
+                    strength_inputs: Leaf::Unobtained,
                     combat_id: Leaf::Measured(9001),
                     generation: Leaf::Measured(1),
                     kind: Leaf::Measured("land".into()),

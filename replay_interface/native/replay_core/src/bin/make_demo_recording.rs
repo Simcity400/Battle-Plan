@@ -324,6 +324,7 @@ impl WarScript {
             if battle_here && !destroyed {
                 // The shared record the recorder writes and the replay reads.
                 let record = portable_render_stream::combat_records::LandCombatRecord {
+                    strength_inputs: Leaf::Unobtained,
                     combat_id: Leaf::Measured(500 + i as i64),
                     generation: Leaf::Measured(1),
                     kind: Leaf::Measured("land".into()),

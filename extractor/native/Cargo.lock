@@ -1046,6 +1046,7 @@ dependencies = [
  "sunk_ship_history_live_lane",
  "supply_logistics_attrition_live_lane",
  "theatre_selector_live_lane",
+ "wire_format",
  "wire_product",
  "xmap15_orders_semantic",
  "zip",
@@ -1416,6 +1417,7 @@ dependencies = [
  "portable_admission",
  "portable_content_manifest",
  "portable_engine_evidence",
+ "portable_render_stream",
  "serde_json",
  "sha2",
 ]

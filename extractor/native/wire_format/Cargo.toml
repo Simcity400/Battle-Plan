@@ -5,6 +5,7 @@ edition = "2021"
 description = "Primitives, records, frames, and schemas for the rebuilt replay stream. Golden vectors live beside the code and are the byte-identity gate."
 
 [dependencies]
+portable_render_stream = { path = "../../../portable_replay/native/render_stream" }
 # D34's air-base-status byte grammar (lane UT). Dependency-free leaf: the
 # anchor kinds and row shape live in one place so this crate and the three
 # others that read them cannot drift on what a coded anchor MEANS.

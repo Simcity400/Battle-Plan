@@ -619,6 +619,7 @@ pub use production_features::xmap14_place::{
     Xmap14LocatorSource, XMAP14_LAND_ANCHOR_CAUSE_IDS, XMAP14_LAND_INDICATOR_CAUSE_IDS,
     XMAP14_LAND_MIDPOINT_FACTOR,
 };
+pub use production_features::xmap14_strength::{young_combat_comparison_fixed, LandCombatStrengthDefines};
 pub use production_features::xmap15::{
     prepare_xmap15_frame, xmap15_viewer_selection, PreparedXmap15Frame,
     PreparedXmap15MovementDefinition, PreparedXmap15PlanDefinition, Xmap15LifecycleState,

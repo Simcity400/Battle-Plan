@@ -237,6 +237,7 @@ replay_interface/tools/hoi4_re/tests/reference_trace_script_before_the_knob.py.t
 
 # Lane PR: the v3 stage reports pin their binaries by SHA-256 text; keep the hashes LF on Windows.
 extractor/native/runs/perf_finalize/**/*.sha256 text eol=lf
+extractor/native/runs/cmb_combat_display_value/** text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141227360.decompile.c text eol=lf
 portable_replay/fixtures/fired_event_zero_day.json text eol=lf
 extractor/native/runs/evt0_zero_day_timeout/*.json text eol=lf
