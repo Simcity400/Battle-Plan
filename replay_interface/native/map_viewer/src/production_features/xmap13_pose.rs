@@ -193,7 +193,11 @@ pub(crate) fn authored_state_variants(
         // is the authored half of the pose and never the drawn half.
         animation_speed: state.animation_speed.unwrap_or(1.0),
         weight,
-        clip: match mesh_clips.get(&state.animation) {
+        clip: match state
+            .animation
+            .as_deref()
+            .and_then(|animation| mesh_clips.get(animation))
+        {
             None => Err(format!(
                 "state {:?} of entity {:?} names animation id {:?}, which its pdxmesh does not \
                  declare",
@@ -1974,7 +1978,8 @@ mod tests {
     fn one_units_pick_is_the_same_every_time_and_the_population_splits_by_the_weights() {
         let variant = |name: &str, animation: &str, chance: f32| BuildingEntityState {
             name: name.into(),
-            animation: animation.into(),
+            animation: Some(animation.into()),
+            events: Vec::new(),
             animation_speed: Some(1.0),
             chance: Some(chance),
         };
@@ -2091,7 +2096,8 @@ mod tests {
     fn a_variant_that_cannot_be_played_does_not_take_a_playable_ones_turn() {
         let variant = |animation: &str, chance: f32| BuildingEntityState {
             name: "attack".into(),
-            animation: animation.into(),
+            animation: Some(animation.into()),
+            events: Vec::new(),
             animation_speed: Some(2.0),
             chance: Some(chance),
         };
@@ -2167,7 +2173,8 @@ mod tests {
         // or that kept the unplayable one's share, misses this.
         let weighted = |animation: &str, chance: f32| BuildingEntityState {
             name: "attack".into(),
-            animation: animation.into(),
+            animation: Some(animation.into()),
+            events: Vec::new(),
             animation_speed: Some(2.0),
             chance: Some(chance),
         };
@@ -2250,7 +2257,8 @@ mod tests {
     fn the_draw_is_over_the_state_the_unit_actually_plays() {
         let idle = |animation: &str, chance: f32| BuildingEntityState {
             name: "idle".into(),
-            animation: animation.into(),
+            animation: Some(animation.into()),
+            events: Vec::new(),
             animation_speed: None,
             chance: Some(chance),
         };
@@ -2279,7 +2287,8 @@ mod tests {
         let unique = BuildingEntityPose {
             states: vec![BuildingEntityState {
                 name: "idle".into(),
-                animation: "a".into(),
+                animation: Some("a".into()),
+                events: Vec::new(),
                 animation_speed: None,
                 chance: None,
             }],
@@ -2332,7 +2341,8 @@ mod tests {
             default_state: None,
             states: vec![BuildingEntityState {
                 name: "attack".into(),
-                animation: "swing".into(),
+                animation: Some("swing".into()),
+                events: Vec::new(),
                 animation_speed: None,
                 chance: None,
             }],
@@ -2374,7 +2384,8 @@ mod tests {
     fn a_state_with_no_usable_clip_is_at_rest_with_its_own_cause() {
         let state = |name: &str, animation: &str, chance: Option<f32>| BuildingEntityState {
             name: name.into(),
-            animation: animation.into(),
+            animation: Some(animation.into()),
+            events: Vec::new(),
             animation_speed: Some(2.0),
             chance,
         };
@@ -2423,25 +2434,29 @@ mod tests {
             states: vec![
                 BuildingEntityState {
                     name: "idle".into(),
-                    animation: "idle".into(),
+                    animation: Some("idle".into()),
+                    events: Vec::new(),
                     animation_speed: None,
                     chance: None,
                 },
                 BuildingEntityState {
                     name: "moving".into(),
-                    animation: "move".into(),
+                    animation: Some("move".into()),
+                    events: Vec::new(),
                     animation_speed: Some(2.5),
                     chance: None,
                 },
                 BuildingEntityState {
                     name: "attack".into(),
-                    animation: "attack".into(),
+                    animation: Some("attack".into()),
+                    events: Vec::new(),
                     animation_speed: Some(0.5),
                     chance: None,
                 },
                 BuildingEntityState {
                     name: "orphan".into(),
-                    animation: "orphan".into(),
+                    animation: Some("orphan".into()),
+                    events: Vec::new(),
                     animation_speed: Some(3.0),
                     chance: None,
                 },

@@ -115,6 +115,7 @@ mod xmap07_d3d_handoff;
 mod xmap08_d3d_handoff;
 mod xmap09_d3d_handoff;
 mod xmap07_snow_mud_law;
+mod xmap09_light_template;
 mod xmap09_lighting_law;
 mod xmap10_d3d_handoff;
 mod xmap10_scene_cb0;
@@ -209,7 +210,8 @@ pub use building_files::{
     parse_building_entity_bindings, parse_building_entity_poses, parse_building_pdxmesh_bindings,
     parse_pdxmesh_animation_bindings,
     resolve_building_material_textures, resolve_show_on_map_building_bindings,
-    BuildingBindingCoverageRow, BuildingEntityBinding, BuildingEntityPose, BuildingEntityState,
+    BuildingBindingCoverageRow, BuildingEntityBinding, BuildingEntityEvent, BuildingEntityPose,
+    BuildingEntityState,
     EntityStateChoice,
     BuildingFileDerivedLayer,
     BuildingFileDerivedLayerStats, BuildingMaterialTextureRef, BuildingMaterialTextureReport,
@@ -300,6 +302,12 @@ pub use xmap07_snow_mud_law::{
     XMAP07_SNOW_MUD_FADE_SCENE_LANE, XMAP07_SNOW_MUD_SAMPLER_SPELLINGS,
     XMAP07_SNOW_MUD_SHADER_READER,
 };
+pub use xmap09_light_template::{
+    parse_light_templates, resolve_light_event, xmap09_attach_node_object_transform,
+    xmap09_event_age_seconds, xmap09_event_playhead_phase, xmap09_light_world_position,
+    Xmap09LightAnimation, Xmap09LightAnimationOp, Xmap09LightEventRefusal, Xmap09LightTemplate,
+    Xmap09ResolvedLightEvent, XMAP09_LIGHT_INTENSITY_LAW_UNPINNED,
+};
 pub use xmap09_lighting_law::{
     engine_hour_of_day, engine_hour_of_day_fraction, virtual_rig,
     xmap09_point_light_census_is_incomplete, xmap09_shadow_fade_factor,
@@ -311,7 +319,7 @@ pub use xmap09_lighting_law::{
     XMAP09_POINT_LIGHT_INSTANCE_CONSTRUCTOR_RVA, XMAP09_REPLAY_DAY_NIGHT_FACTOR,
     XMAP09_TILED_POINT_LIGHT_ANCHOR_FORWARD_SCALE, XMAP09_TILED_POINT_LIGHT_CELL_SIZE,
     XMAP09_TILED_POINT_LIGHT_INVERSE_CELL_SIZE, XMAP09_TILED_POINT_LIGHT_QUERY_MASK,
-    XMAP09_TILED_POINT_LIGHT_WRITER_RVA,
+    XMAP09_TILED_POINT_LIGHT_WRITER_RVA, XMAP09_ANIMATION_EVENT_PLAYHEAD_BLOCKERS,
 };
 pub use luminance_law::{
     adapt_luminance_temporal, f16_bits_to_f32 as luminance_f16_bits_to_f32,
