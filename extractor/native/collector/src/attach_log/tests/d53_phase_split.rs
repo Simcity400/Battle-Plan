@@ -20,17 +20,17 @@ pub(super) fn code_only(body: &str) -> String {
 }
 
 #[test]
-fn d53_clock_bracket_calls_only_the_bounded_capture_function() {
+fn d53_clock_bracket_resolves_the_snapshot_before_deferred_identity() {
     let source = super::collector_source_lf();
     let anchor = source
-        .find("COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE,\n                move || {\n                    capture_compact_diplomacy_intel_operatives_live_snapshot(")
+        .find("COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE,\n                move || {\n                    let captured = capture_compact_diplomacy_intel_operatives_live_snapshot(")
         .expect("d53 must put its snapshot capture in the bracket");
     let spawn = source[..anchor]
         .rfind("spawn_gated_finishing(")
         .expect("d53 must use the split finishing helper");
     let tail = &source[anchor..];
     let finish = tail
-        .find("finish_compact_diplomacy_intel_operatives_live_snapshot,")
+        .find("resolve_compact_diplomacy_intel_operatives_live_snapshot(captured)\n                },\n                std::convert::identity,")
         .expect("d53 must name its snapshot decoder as the finish half");
     let next_spawn = tail[1..]
         .find("spawn_gated")
@@ -78,7 +78,7 @@ fn d53_clock_bracket_calls_only_the_bounded_capture_function() {
 }
 
 #[test]
-fn d53_allocation_and_walk_are_before_or_after_the_bracket() {
+fn d53_failed_snapshot_is_discarded_before_one_guarded_live_walk() {
     let source = super::collector_source_lf();
     let arm = source
         .find("let snapshot_arm = arm_compact_diplomacy_intel_operatives_live_snapshot(")
@@ -91,12 +91,18 @@ fn d53_allocation_and_walk_are_before_or_after_the_bracket() {
 
     let finish = code_only(item_body(
         &source,
-        "fn finish_compact_diplomacy_intel_operatives_live_snapshot(",
+        "fn resolve_compact_diplomacy_intel_operatives_live_snapshot(",
     ));
     assert!(finish.contains("let snapshot = plan.view();"));
     assert!(finish.contains("read_compact_diplomacy_intel_operatives_live_observe("));
-    assert!(finish.contains("let Some(first_miss) = snapshot.first_miss()"));
-    assert!(finish.contains("DOMAIN53_SNAPSHOT_REGION_MISS_CAUSE"));
+    assert!(finish.contains("snapshot.first_miss().is_some()"));
+    let discard = finish.find("drop(observed);").unwrap();
+    let fallback = finish[discard..].find("return domain53_live_fallback(").unwrap() + discard;
+    assert!(discard < fallback);
+    let live = code_only(item_body(&source, "fn domain53_live_fallback("));
+    assert_eq!(live.matches("read_compact_diplomacy_intel_operatives_live_observe(").count(), 1);
+    assert!(live.contains("domain53_live_fallback_deadline"));
+    assert!(!live.contains("domain53_spawn_plan_job("));
     assert!(
         finish.contains("tracker.snapshot_plan = Some(plan);"),
         "a successful frame must reuse its preallocated plan instead of live-walking to arm every hour"
@@ -164,13 +170,13 @@ fn d53_copy_refusal_drops_the_plan_and_the_miss_keeps_none() {
     let source = super::collector_source_lf();
     let finish = code_only(item_body(
         &source,
-        "fn finish_compact_diplomacy_intel_operatives_live_snapshot(",
+        "fn resolve_compact_diplomacy_intel_operatives_live_snapshot(",
     ));
     let copy_refused = finish
         .find("if receipt.failure_region_ordinal.is_some() || receipt.gate_budget_exhausted {")
         .expect("the copy-refusal arm drops the plan on a refused data page and on an exhausted gate budget");
     let miss = finish
-        .find("if let Some(first_miss) = snapshot.first_miss() {")
+        .find("if snapshot.first_miss().is_some() {")
         .expect("the region-miss arm");
     let success = finish
         .rfind("tracker.snapshot_plan = Some(plan);")
@@ -989,7 +995,7 @@ fn d53_an_hour_the_ledger_cannot_pay_for_costs_the_frame_nothing() {
     // does not is the deferred hour, which spent nothing to charge.
     let finish = code_only(item_body(
         &source,
-        "fn finish_compact_diplomacy_intel_operatives_live_snapshot(",
+        "fn resolve_compact_diplomacy_intel_operatives_live_snapshot(",
     ));
     assert_eq!(
         finish.matches("tracker.keep_up.charge(read.read_time_us);").count(),
@@ -998,31 +1004,12 @@ fn d53_an_hour_the_ledger_cannot_pay_for_costs_the_frame_nothing() {
     );
     assert!(finish.contains("return domain53_keep_up_deferred_read("));
 
-    // A dropped plan is re-walked from the hour that dropped it, so no LATER
-    // hour is spent waiting for the walk to start. The timer that used to
-    // stand here cost capture e2e_05 114 pending hours against 60 drops
-    // (runs/d53d_capture05_gaps/FINDING.json) and is gone, not renamed.
-    assert_eq!(
-        finish.matches("domain53_spawn_plan_job(").count(),
-        2,
-        "the copy-refusal and region-miss exits both re-arm the walk"
-    );
-    assert!(
-        !source.contains("DOMAIN53_PLAN_DROP_BACKOFF"),
-        "the plan-drop backoff is deleted, not renamed"
-    );
-    // The region-miss exit ran the whole observe half before the miss
-    // surfaced, so it is priced from THAT clock and charges the ledger what
-    // the frame spent. A fresh clock reported ~0 us there and collapsed the
-    // ledger's measured cost: capture e2e_05's d53 read_time p50 was 9 us
-    // against a 165.5 ms p95.
-    let miss = finish
-        .find("if let Some(first_miss) = snapshot.first_miss() {")
-        .expect("the region-miss arm");
-    assert!(finish[miss..].contains("let read_started = domain53_observed_read_started(&observed);"));
-    assert!(finish[miss..].contains("domain53_source_unavailable_read(\nread_started,"));
-    let started = code_only(item_body(&source, "fn domain53_observed_read_started("));
-    assert!(started.contains("Domain53ObservedRead::Pending(work) => work.read_started,"));
+    assert!(!finish.contains("domain53_spawn_plan_job("));
+    assert_eq!(finish.matches("return domain53_live_fallback(").count(), 3);
+    let fallback = code_only(item_body(&source, "fn domain53_live_fallback("));
+    assert!(fallback.contains("tracker.keep_up.charge(read.read_time_us);"));
+    assert!(fallback.contains("duration_micros_u64(started.elapsed())"));
+
 }
 
 /// The plan's arena is one page-aligned allocation, every page of which is
@@ -1074,4 +1061,170 @@ fn snapshot08_d53_miss_locator_survives_the_perf_channel_without_invented_zeroes
     }
     let absent = domain53_diag_units(&Domain53Diag::default());
     assert!(!absent.iter().any(|unit| unit.name.starts_with("domain53_bulk_snapshot_miss_")));
+}
+
+#[test]
+fn snapshot09_copy_failure_keeps_its_exact_range_separate_from_a_plan_miss() {
+    let diag = Domain53Diag {
+        snapshot_copy_refused: true,
+        snapshot_copy_failure_range: Some((0x2F0_1234_5FF0, 16)),
+        ..Domain53Diag::default()
+    };
+    let units = domain53_diag_units(&diag);
+    for (name, expected) in [
+        ("domain53_bulk_snapshot_copy_failure_address_sample", 0x2F0_1234_5FF0),
+        ("domain53_bulk_snapshot_copy_failure_bytes_sample", 16),
+    ] {
+        assert_eq!(units.iter().find(|unit| unit.name == name).map(|unit| unit.value), Some(expected));
+    }
+    assert!(!units.iter().any(|unit| unit.name == "domain53_bulk_snapshot_region_miss"));
+    let absent = domain53_diag_units(&Domain53Diag::default());
+    assert!(!absent.iter().any(|unit| unit.name.starts_with("domain53_bulk_snapshot_copy_failure_")));
+}
+
+#[test]
+fn d53_expired_live_fallback_refuses_bytes_without_manufacturing_absence() {
+    use diplomacy53::extractor::{Domain53Memory, ExtractError};
+    let value = 123u64;
+    let address = &value as *const u64 as u64;
+    let live = Domain53FallbackMemory { deadline: Instant::now() };
+    let mut out = [0xA5; 8];
+    assert_eq!(live.read_into(address, &mut out), Err(ExtractError::MemoryRead { address, len: 8 }));
+    assert_eq!(out, [0xA5; 8]);
+    assert_eq!(live.read_bytes(address, 8), Err(ExtractError::MemoryRead { address, len: 8 }));
+    assert!(!live.probe_not_committed(0));
+}
+
+thread_local! {
+    static RESOLVER_WALKS: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
+}
+
+fn resolver_fixture_observe<'t>(
+    memory: &dyn diplomacy53::extractor::Domain53Memory,
+    address: u64,
+    tracker: &'t mut CompactDiplomacyIntelOperativesLiveTracker,
+) -> Domain53ObservedRead<'t> {
+    assert!(!tracker.baseline_seeded, "the discarded attempt must not seed a baseline");
+    assert!(tracker.last_emitted.is_empty());
+    let first = memory.read_u32(address).expect("first fixture field");
+    let second = memory.read_u32(address + 8);
+    RESOLVER_WALKS.with(|walks| {
+        let (snapshot, live) = walks.get();
+        walks.set(if second.is_ok() { (snapshot, live + 1) } else { (snapshot + 1, live) });
+    });
+    let tag = second.unwrap_or(first);
+    let rows = diplomacy53::extractor::ExtractedDomain53Rows {
+        countries: vec![diplomacy53::compact::CountryDiplomacyRow {
+            tag_db_id: tag, faction_group: -1, at_war_count: 0, casualties: 0,
+        }],
+        subject_name_inputs: vec![diplomacy53::compact::SubjectNamingRow {
+            tag_db_id: tag, presence: Ok((false, 0)),
+        }],
+        subject_autonomy_status_complete: true,
+        faction_roster_complete: true,
+        operation_tokens_complete: true,
+        ..Default::default()
+    };
+    let source_proofs = diplomacy53::extractor::KNOWN_SOURCE_PROOFS
+        & !diplomacy53::extractor::SOURCE_PROOF_WAR_LIFECYCLE_DETAIL_870EBF
+        & !diplomacy53::extractor::SOURCE_PROOF_INTEL_MAP_PERCENTAGES_870EBF;
+    let fixture_report = diplomacy53::extractor::build_domain53_payload(rows.clone(), source_proofs);
+    assert!(fixture_report.ok(), "invalid resolver fixture: {:?}", fixture_report.errors);
+    Domain53ObservedRead::Pending(Box::new(Domain53PayloadWork {
+        tracker, rows, a30: None, read_started: Instant::now(), status_flags: 0,
+        emit_mode: D53EmitMode::Delta,
+        source_proofs,
+        observed_rows: 1, skipped_rows: 0, omissions_from_extract: Default::default(),
+        stale_dropped_total: 0, relation_shadow_mismatches: 0, operation_emitted: 0,
+        operation_stale_liveness: 0, operation_filtered: 0, rejection_counts: Default::default(),
+        intel_map_copy: None, skip_counts: Default::default(), skip_causes: Default::default(),
+        stable_rejects: Default::default(), uncommitted: Default::default(), roster: Default::default(),
+        phase: Default::default(), relflag: Default::default(), relation_pair_census: Default::default(),
+        relation_walk_profile: Default::default(), diag_ctx: Default::default(),
+        seg_snapshot_us: 0, seg_root_resolve_us: 0, seg_war_validation_us: 0,
+        seg_discovery_rebuild_us: 0, seg_extract_us: 0,
+    }))
+}
+
+#[test]
+fn d53_resolver_discards_failed_attempt_and_retains_its_locator_with_complete_live_payload() {
+    let _counters = super::super::lock_rc_counters();
+    struct Restore(Option<Domain53TestObserver>);
+    impl Drop for Restore {
+        fn drop(&mut self) { DOMAIN53_TEST_OBSERVER.with(|slot| slot.set(self.0)); }
+    }
+    let _restore = Restore(DOMAIN53_TEST_OBSERVER.with(|slot| slot.replace(Some(resolver_fixture_observe))));
+    let values = Box::new([11u64, 29u64]);
+    let address = values.as_ptr() as u64;
+    page_cache_new_frame();
+    let mut independent = CompactDiplomacyIntelOperativesLiveTracker::default();
+    let reference = finish_compact_diplomacy_intel_operatives_live(
+        resolver_fixture_observe(&Domain53InProcessMemory, address, &mut independent),
+    );
+    assert_eq!(reference.diag.failure_reason, None, "reference must publish measured rows");
+    assert!(independent.baseline_seeded);
+    let mut expected = diplomacy53::compact::decode_snapshot_payload(0, &reference.payload).unwrap();
+    expected.elapsed_wall_ms = 0;
+    assert_eq!(expected.countries[0].tag_db_id, 29);
+    assert_eq!(expected.subject_name_inputs[0].presence, Ok((false, 0)));
+
+    for copy_refused in [false, true] {
+        let mut tracker = CompactDiplomacyIntelOperativesLiveTracker::default();
+        let mut plan = bench_plan_for(vec![(address, 4)], 16, 1024);
+        let receipt = if copy_refused {
+            plan.capture_with(|_| None, domain53_batch_copy, 128)
+        } else {
+            bench_capture(&mut plan, 128)
+        };
+        assert_eq!(receipt.failure_region_ordinal.is_some(), copy_refused);
+        RESOLVER_WALKS.with(|walks| walks.set((0, 0)));
+        let read = resolve_compact_diplomacy_intel_operatives_live_snapshot(Domain53CapturedRead {
+            tracker: &mut tracker,
+            arm: Domain53CapturedArm::Snapshot { plan, receipt },
+            module_base: address, game_state: 0, status_flags: 0,
+            relation_read_mode: diplomacy53::extractor::Domain53RelationReadMode::Scan,
+            intel_map_mode: diplomacy53::extractor::Domain53IntelMapMode::Off,
+            emit_mode: D53EmitMode::Delta,
+        });
+        assert_eq!(RESOLVER_WALKS.with(Cell::get), (u32::from(!copy_refused), 1));
+        assert_eq!(read.status_flags, reference.status_flags);
+        assert_eq!(read.diag.failure_reason, None);
+        assert!(read.diag.snapshot_live_fallback);
+        assert_eq!(read.diag.snapshot_copy_failure_range, copy_refused.then_some((address, 4)));
+        assert_eq!(read.diag.snapshot_first_miss, (!copy_refused).then_some((address + 8, 4)));
+        assert_eq!(read.diag.snapshot_byte_count, receipt.byte_count);
+        assert_eq!(read.diag.snapshot_copied_byte_count, receipt.copied_byte_count);
+        let units = domain53_diag_units(&read.diag);
+        let locator = if copy_refused { "domain53_bulk_snapshot_copy_failure_address_sample" }
+            else { "domain53_bulk_snapshot_miss_address_sample" };
+        assert_eq!(units.iter().find(|unit| unit.name == locator).unwrap().value,
+            if copy_refused { address } else { address + 8 });
+        let mut actual = diplomacy53::compact::decode_snapshot_payload(0, &read.payload).unwrap();
+        actual.elapsed_wall_ms = 0;
+        assert_eq!(actual, expected);
+        assert!(tracker.baseline_seeded);
+        assert_eq!(tracker.last_emitted.countries.len(), 1);
+        assert!(tracker.last_emitted.countries.contains_key(&29));
+        assert!(!tracker.last_emitted.countries.contains_key(&11));
+        assert!(tracker.snapshot_plan.is_none());
+    }
+}
+
+#[test]
+fn d53_fallback_deadline_keeps_attempt_locator_without_committing_baseline() {
+    let _counters = super::super::lock_rc_counters();
+    let mut tracker = CompactDiplomacyIntelOperativesLiveTracker::default();
+    let read = domain53_live_fallback(
+        &mut tracker, 0, 0, COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        diplomacy53::extractor::Domain53RelationReadMode::Scan,
+        diplomacy53::extractor::Domain53IntelMapMode::Off, D53EmitMode::Delta,
+        Instant::now() - Duration::from_secs(2),
+        Domain53SnapshotAttempt { receipt: None, first_miss: Some((0x1234, 8)) },
+    );
+    assert_eq!(read.diag.failure_reason, Some("domain53_live_fallback_deadline"));
+    assert_eq!(read.diag.snapshot_first_miss, Some((0x1234, 8)));
+    assert!(read.diag.snapshot_live_fallback);
+    assert!(!tracker.baseline_seeded);
+    assert!(tracker.last_emitted.is_empty());
+    assert_ne!(read.status_flags & COMPACT_STATUS_SOURCE_UNAVAILABLE, 0);
 }

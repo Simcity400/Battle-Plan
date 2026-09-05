@@ -11,7 +11,7 @@ use super::state_fixture::{
 use super::*;
 use crate::attach_log::d43_snapshot_bracket::{
     capture_compact_market_trade_snapshot, domain43_eligibility_mask,
-    finish_compact_market_trade_snapshot, with_engine_call_override,
+    resolve_compact_market_trade_snapshot, with_engine_call_override,
     CompactMarketTradeSnapshotTracker, Domain43CapturedRead, Domain43EngineCallCapture,
     Domain43RegionGate, D43_SNAPSHOT_MODE_ARMING, D43_SNAPSHOT_MODE_LIVE,
     D43_SNAPSHOT_MODE_SNAPSHOT,
@@ -1176,7 +1176,7 @@ fn d43_snapshot_decode_serves_the_copy_and_never_the_live_word() {
             &mut trackers.market_trade_live,
             &mut trackers.market_trade_live_snapshot,
         );
-        finish_compact_market_trade_snapshot(captured)
+        resolve_compact_market_trade_snapshot(captured)
     };
     let live = read(&mut trackers);
     assert_eq!(live.snapshot.mode, D43_SNAPSHOT_MODE_LIVE);
@@ -1197,7 +1197,7 @@ fn d43_snapshot_decode_serves_the_copy_and_never_the_live_word() {
         &mut trackers.market_trade_live_snapshot,
     );
     world.mutate(7);
-    let decoded = finish_compact_market_trade_snapshot(captured);
+    let decoded = resolve_compact_market_trade_snapshot(captured);
     assert_eq!(decoded.snapshot.mode, D43_SNAPSHOT_MODE_SNAPSHOT);
     assert_eq!(decoded.status_flags, 0);
     assert_all_families(&decoded, P4_SHAPE, "decoded");
@@ -1209,7 +1209,7 @@ fn d43_snapshot_decode_serves_the_copy_and_never_the_live_word() {
 
     let mut fresh = CompactPerfGateTrackers::default();
     page_cache_new_frame();
-    let reference = finish_compact_market_trade_snapshot(capture_compact_market_trade_snapshot(
+    let reference = resolve_compact_market_trade_snapshot(capture_compact_market_trade_snapshot(
         &state,
         0,
         &mut fresh.market_trade_live,
@@ -1227,7 +1227,7 @@ fn d43_snapshot_decode_serves_the_copy_and_never_the_live_word() {
 /// leaving the copy's shortfall uncounted or attributed to the engine, and not
 /// re-arming after it.
 #[test]
-fn d43_snapshot_region_miss_costs_the_reads_it_touched_and_re_arms() {
+fn d43_snapshot_region_miss_replaces_the_attempt_with_one_complete_live_walk() {
     let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
     let mut session = Session::new(build_world(SMALL_SHAPE));
     assert_mode(&session.frame(), D43_SNAPSHOT_MODE_LIVE, "live");
@@ -1279,11 +1279,12 @@ fn d43_snapshot_region_miss_costs_the_reads_it_touched_and_re_arms() {
     );
     assert_payload_carries_every_family(&payload(&missed));
     assert_eq!(unit(&missed, "d43_resource_skipped_roots"), 0, "miss frame");
-    assert_eq!(unit(&missed, "d43_resource_oil_unavailable_roots"), 2, "miss frame");
+    assert_eq!(unit(&missed, "d43_resource_oil_unavailable_roots"), 1, "only the engine refusal remains");
+    assert_eq!(unit(&missed, "d43_snapshot_live_fallback"), 1);
     assert_eq!(
         unit(&missed, "d43_resource_oil_unavailable_copy_short_roots"),
-        1,
-        "one of the two roots lost its trio to the copy and one to the engine,          and the frame says which is which"
+        0,
+        "the incomplete snapshot contributes no rows or refusal words"
     );
     assert!(session.snapshot_tracker().plan().is_none(), "the plan is dropped");
 
@@ -1291,6 +1292,7 @@ fn d43_snapshot_region_miss_costs_the_reads_it_touched_and_re_arms() {
     // same world: the engine refusal survives both, the copy's does not.
     let rearmed = session.frame();
     assert_mode(&rearmed, D43_SNAPSHOT_MODE_ARMING, "re-arm");
+    assert_eq!(payload(&missed), payload(&rearmed), "fallback replaces the complete domain with the live result");
     let recovered = session.frame();
     assert_mode(&recovered, D43_SNAPSHOT_MODE_SNAPSHOT, "recovered");
     for (outcome, what) in [(&rearmed, "re-arm"), (&recovered, "recovered")] {
@@ -1430,14 +1432,14 @@ fn d43_snapshot_trace_overflow_doubles_the_buffer_up_to_the_ceiling() {
 /// kills: a copy failure that publishes the arena as if it were copied, and a
 /// copy failure that keeps the plan.
 #[test]
-fn d43_snapshot_copy_refusal_seals_the_hour_by_name_and_re_arms() {
+fn d43_snapshot_copy_refusal_replaces_the_attempt_with_live_rows() {
     let _rc_counters = super::super::lock_rc_counters();
     let world = build_world(SMALL_SHAPE);
     let state = world.state();
     let mut trackers = CompactPerfGateTrackers::default();
     let mut read = |trackers: &mut CompactPerfGateTrackers| {
         page_cache_new_frame();
-        finish_compact_market_trade_snapshot(capture_compact_market_trade_snapshot(
+        resolve_compact_market_trade_snapshot(capture_compact_market_trade_snapshot(
             &state,
             0,
             &mut trackers.market_trade_live,
@@ -1464,22 +1466,16 @@ fn d43_snapshot_copy_refusal_seals_the_hour_by_name_and_re_arms() {
     assert_eq!(refused.snapshot.copy_refused, 1);
     assert_eq!(refused.snapshot.region_count, 1);
     assert_eq!(refused.snapshot.copied_region_count, 0);
-    assert_eq!(
-        refused.status_flags,
-        compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE
-            | compact_contract::COMPACT_STATUS_PARTIAL_DATA
-    );
-    assert!(refused.rows.is_empty() && refused.resource_rows.is_empty());
-    let reason = compact_market_trade_failure_reason(&refused);
-    assert!(
-        reason.contains("snapshot_copy_refused"),
-        "the reason names the copy refusal: {reason}"
-    );
+    assert_eq!(refused.status_flags, 0);
+    assert_eq!(refused.snapshot.live_fallback, 1);
+    assert_all_families(&refused, SMALL_SHAPE, "live fallback");
     assert!(trackers.market_trade_live_snapshot.plan().is_none());
 
     let rearmed = read(&mut trackers);
     assert_eq!(rearmed.snapshot.mode, D43_SNAPSHOT_MODE_ARMING);
     assert_eq!(rearmed.status_flags, 0);
+    assert_eq!(compact_market_trade_data_payload(&refused, ELAPSED_WALL_MS),
+        compact_market_trade_data_payload(&rearmed, ELAPSED_WALL_MS));
     let recovered = read(&mut trackers);
     assert_eq!(recovered.snapshot.mode, D43_SNAPSHOT_MODE_SNAPSHOT);
     assert_eq!(recovered.status_flags, 0);
@@ -1660,19 +1656,14 @@ fn d43_snapshot_bracket_copies_and_the_decode_walks_the_copy() {
     let walk = decode.find("read_compact_market_trade(").expect("the walk");
     assert!(view < walk, "the walk runs under the snapshot view");
     assert!(decode.contains("view.misses()"));
-    assert!(decode.contains("domain43_degraded_cause::SNAPSHOT_REGION_MISS"));
-    assert!(decode.contains("domain43_degraded_cause::SNAPSHOT_COPY_REFUSED"));
-    assert!(decode.contains("domain43_degraded_cause::SNAPSHOT_ENGINE_CALL_MISMATCH"));
-    assert_eq!(
-        decode.matches("domain43_snapshot_unavailable_read(").count(),
-        2,
-        "a copy refusal and an engine-call mismatch each seal the hour; a region          miss publishes the walk it did complete"
-    );
-    assert_eq!(
-        decode.matches("read.status_flags |=").count(),
-        1,
-        "the region miss is the one snapshot outcome that publishes rows, and it          publishes them under a status bit"
-    );
+    assert!(decode.contains("drop(read);"));
+    assert!(decode.contains("let mut attempt_market = market.clone();"));
+    assert_eq!(decode.matches("return live_fallback(").count(), 2);
+    assert!(!decode.contains("read.status_flags |="));
+    let fallback = fn_body(&source, "fn live_fallback(");
+    assert_eq!(fallback.matches("read_compact_market_trade(").count(), 1);
+    assert!(fallback.contains("domain43_reset_frame_words();"));
+    assert!(fallback.contains("domain43_degraded_cause::LIVE_FALLBACK_DEADLINE"));
 
     let attach_log = super::collector_source_lf();
     // The executable check the capture calls reads through the override too:
@@ -1705,7 +1696,7 @@ fn d43_snapshot_bracket_copies_and_the_decode_walks_the_copy() {
     let window = &attach_log[call_site.saturating_sub(600)..call_site];
     assert!(window.contains("spawn_gated_finishing("));
     assert!(window.contains("COMPACT_DOMAIN_MARKET_TRADE_LIVE,"));
-    assert!(attach_log.contains("d43_snapshot_bracket::finish_compact_market_trade_snapshot,"));
+    assert!(attach_log.contains("d43_snapshot_bracket::resolve_compact_market_trade_snapshot(captured)\n                },\n                std::convert::identity,"));
     assert_eq!(
         attach_log.matches("read_compact_market_trade(").count(),
         1,
@@ -1773,14 +1764,14 @@ fn d43_snapshot_probe_regions_replay_a_failed_read_and_serve_it_once_readable() 
     assert_mode(&arming, D43_SNAPSHOT_MODE_ARMING, "arming");
     assert_eq!(
         unit(&arming, "d43_snapshot_probe_regions"),
-        1,
-        "the blob read that failed (twice) is one probe"
+        2,
+        "the failed blob is split into its two current OS regions"
     );
     let region_count = unit(&arming, "d43_snapshot_region_count");
 
     let probed = session.frame();
     assert_mode(&probed, D43_SNAPSHOT_MODE_SNAPSHOT, "probed");
-    assert_eq!(unit(&probed, "d43_snapshot_probe_regions"), 1);
+    assert_eq!(unit(&probed, "d43_snapshot_probe_regions"), 2);
     assert_eq!(
         unit(&probed, "d43_snapshot_probe_unreadable"),
         1,
@@ -1828,7 +1819,7 @@ fn d43_snapshot_probe_regions_replay_a_failed_read_and_serve_it_once_readable() 
     protect_page(boundary, PAGE_READWRITE);
     let healed = session.frame();
     assert_mode(&healed, D43_SNAPSHOT_MODE_SNAPSHOT, "healed");
-    assert_eq!(unit(&healed, "d43_snapshot_probe_regions"), 1);
+    assert_eq!(unit(&healed, "d43_snapshot_probe_regions"), 2);
     assert_eq!(unit(&healed, "d43_snapshot_probe_unreadable"), 0, "the probe copied");
     assert!(unit(&healed, "d43_snapshot_widen_slack") > 0, "healed: the plan was widened");
     assert_eq!(unit(&healed, "d43_snapshot_region_miss"), 0, "healed: the slack carried it");
@@ -1846,7 +1837,7 @@ fn d43_snapshot_probe_regions_replay_a_failed_read_and_serve_it_once_readable() 
 /// engine call is real (an executable stub the eligibility slot points at), so
 /// the count comes from the decode's own walk.
 #[test]
-fn d43_snapshot_engine_call_mismatch_seals_the_hour_by_name_and_re_arms() {
+fn d43_snapshot_engine_call_mismatch_discards_rows_and_runs_live_once() {
     let _rc_counters = super::super::lock_rc_counters();
     let mut world = build_world_with_engine_callback(SMALL_SHAPE);
     let stub = world.engine_stub.expect("the stub is staged");
@@ -1872,11 +1863,11 @@ fn d43_snapshot_engine_call_mismatch_seals_the_hour_by_name_and_re_arms() {
         )
     }
     let mut trackers = CompactPerfGateTrackers::default();
-    let live = finish_compact_market_trade_snapshot(capture(&state, &mut trackers));
+    let live = resolve_compact_market_trade_snapshot(capture(&state, &mut trackers));
     assert_eq!(live.snapshot.mode, D43_SNAPSHOT_MODE_LIVE);
     assert_eq!(live.status_flags, 0);
     assert_all_families(&live, SMALL_SHAPE, "live");
-    let arming = finish_compact_market_trade_snapshot(capture(&state, &mut trackers));
+    let arming = resolve_compact_market_trade_snapshot(capture(&state, &mut trackers));
     assert_eq!(arming.snapshot.mode, D43_SNAPSHOT_MODE_ARMING);
     assert_eq!(arming.status_flags, 0);
     let reference = compact_market_trade_data_payload(&arming, ELAPSED_WALL_MS);
@@ -1890,7 +1881,7 @@ fn d43_snapshot_engine_call_mismatch_seals_the_hour_by_name_and_re_arms() {
         })),
         "the bracket captured the stub's answer"
     );
-    let served = finish_compact_market_trade_snapshot(captured);
+    let served = resolve_compact_market_trade_snapshot(captured);
     assert_eq!(served.snapshot.mode, D43_SNAPSHOT_MODE_SNAPSHOT);
     assert_eq!(served.status_flags, 0);
     assert_eq!(served.snapshot.engine_call_mismatch, 0);
@@ -1908,31 +1899,25 @@ fn d43_snapshot_engine_call_mismatch_seals_the_hour_by_name_and_re_arms() {
     ] {
         let mut captured = capture(&state, &mut trackers);
         assert!(captured.override_engine_call(bracket_saw), "{label}: a snapshot arm");
-        let sealed = finish_compact_market_trade_snapshot(captured);
+        let sealed = resolve_compact_market_trade_snapshot(captured);
         assert_eq!(sealed.snapshot.mode, D43_SNAPSHOT_MODE_SNAPSHOT, "{label}");
         assert_eq!(
             sealed.snapshot.engine_call_mismatch, 1,
             "{label}: the decode reached the call exactly once, so `>= 2` cannot pass"
         );
         assert_eq!(sealed.snapshot.region_miss, 0, "{label}");
-        assert_eq!(
-            sealed.status_flags,
-            compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE
-                | compact_contract::COMPACT_STATUS_PARTIAL_DATA,
-            "{label}: sealed"
-        );
-        assert!(sealed.rows.is_empty() && sealed.resource_rows.is_empty(), "{label}: no rows");
-        let reason = compact_market_trade_failure_reason(&sealed);
-        assert!(reason.contains("snapshot_engine_call_mismatch"), "{label}: {reason}");
+        assert_eq!(sealed.status_flags, 0, "{label}: complete live fallback");
+        assert_eq!(sealed.snapshot.live_fallback, 1, "{label}");
+        assert_eq!(compact_market_trade_data_payload(&sealed, ELAPSED_WALL_MS), reference);
         assert!(
             trackers.market_trade_live_snapshot.plan().is_none(),
             "{label}: the plan is dropped"
         );
-        let rearmed = finish_compact_market_trade_snapshot(capture(&state, &mut trackers));
+        let rearmed = resolve_compact_market_trade_snapshot(capture(&state, &mut trackers));
         assert_eq!(rearmed.snapshot.mode, D43_SNAPSHOT_MODE_ARMING, "{label}");
         assert_eq!(rearmed.status_flags, 0, "{label}");
     }
-    let recovered = finish_compact_market_trade_snapshot(capture(&state, &mut trackers));
+    let recovered = resolve_compact_market_trade_snapshot(capture(&state, &mut trackers));
     assert_eq!(recovered.snapshot.mode, D43_SNAPSHOT_MODE_SNAPSHOT);
     assert_eq!(recovered.status_flags, 0);
     assert_eq!(recovered.snapshot.engine_call_mismatch, 0);
@@ -1961,7 +1946,7 @@ fn d43_snapshot_engine_call_capture_reads_the_copy_not_live_memory() {
     let mut trackers = CompactPerfGateTrackers::default();
     let mut read = |trackers: &mut CompactPerfGateTrackers| {
         page_cache_new_frame();
-        finish_compact_market_trade_snapshot(capture_compact_market_trade_snapshot(
+        resolve_compact_market_trade_snapshot(capture_compact_market_trade_snapshot(
             &state,
             0,
             &mut trackers.market_trade_live,
@@ -1984,7 +1969,7 @@ fn d43_snapshot_engine_call_capture_reads_the_copy_not_live_memory() {
         Some(None),
         "the slot is not in the plan: no call captured"
     );
-    let served = finish_compact_market_trade_snapshot(captured);
+    let served = resolve_compact_market_trade_snapshot(captured);
     assert_eq!(served.snapshot.mode, D43_SNAPSHOT_MODE_SNAPSHOT);
     assert_eq!(served.status_flags, 0);
     assert_eq!(served.snapshot.engine_call_mismatch, 0);
@@ -2014,7 +1999,7 @@ fn d43_snapshot_engine_call_capture_reads_the_module_header_from_the_copy() {
     let mut trackers = CompactPerfGateTrackers::default();
     let mut read = |trackers: &mut CompactPerfGateTrackers| {
         page_cache_new_frame();
-        finish_compact_market_trade_snapshot(capture_compact_market_trade_snapshot(
+        resolve_compact_market_trade_snapshot(capture_compact_market_trade_snapshot(
             &state,
             0,
             &mut trackers.market_trade_live,
@@ -2044,13 +2029,14 @@ fn d43_snapshot_engine_call_capture_reads_the_module_header_from_the_copy() {
         Some(None),
         "the copied slot names the stub but the header is not in the plan: no call"
     );
-    let missed = finish_compact_market_trade_snapshot(captured);
+    let missed = resolve_compact_market_trade_snapshot(captured);
     assert_eq!(missed.snapshot.mode, D43_SNAPSHOT_MODE_SNAPSHOT);
     assert_eq!(
         missed.snapshot.region_miss, 1,
         "the decode reaches the header the plan never covered"
     );
-    assert_eq!(missed.status_flags, compact_contract::COMPACT_STATUS_PARTIAL_DATA);
+    assert_eq!(missed.status_flags, 0);
+    assert_eq!(missed.snapshot.live_fallback, 1);
     assert!(missed.snapshot.miss_reads > 0);
     assert!(trackers.market_trade_live_snapshot.plan().is_none());
 
@@ -2072,7 +2058,7 @@ fn d43_snapshot_engine_call_capture_reads_the_module_header_from_the_copy() {
         })),
         "the header is in the plan now"
     );
-    let served = finish_compact_market_trade_snapshot(captured);
+    let served = resolve_compact_market_trade_snapshot(captured);
     assert_eq!(served.snapshot.mode, D43_SNAPSHOT_MODE_SNAPSHOT);
     assert_eq!(served.status_flags, 0);
     assert_eq!(served.snapshot.engine_call_mismatch, 0);
@@ -2135,7 +2121,7 @@ fn d43_snapshot_capture_allocates_nothing_and_takes_the_live_read_path_zero_time
     let mut trackers = CompactPerfGateTrackers::default();
     let mut read = |trackers: &mut CompactPerfGateTrackers| {
         page_cache_new_frame();
-        finish_compact_market_trade_snapshot(capture_compact_market_trade_snapshot(
+        resolve_compact_market_trade_snapshot(capture_compact_market_trade_snapshot(
             &state,
             0,
             &mut trackers.market_trade_live,
@@ -2151,7 +2137,7 @@ fn d43_snapshot_capture_allocates_nothing_and_takes_the_live_read_path_zero_time
     let mut fresh = CompactPerfGateTrackers::default();
     page_cache_new_frame();
     let (live, allocations, reads, gate, probes) = bracket_footprint(|| {
-        finish_compact_market_trade_snapshot(capture_compact_market_trade_snapshot(
+        resolve_compact_market_trade_snapshot(capture_compact_market_trade_snapshot(
             &state,
             0,
             &mut fresh.market_trade_live,
@@ -2188,7 +2174,7 @@ fn d43_snapshot_capture_allocates_nothing_and_takes_the_live_read_path_zero_time
         (0, 0, 0, 0),
         "the bracket half allocated or took the live read path"
     );
-    let served = finish_compact_market_trade_snapshot(captured);
+    let served = resolve_compact_market_trade_snapshot(captured);
     assert_eq!(served.snapshot.mode, D43_SNAPSHOT_MODE_SNAPSHOT);
     assert_eq!(served.status_flags, 0);
     assert_eq!(
@@ -2321,7 +2307,7 @@ fn d43_gated_copy_bench_receipt() {
     let mut trackers = CompactPerfGateTrackers::default();
     let mut read = |trackers: &mut CompactPerfGateTrackers| {
         page_cache_new_frame();
-        finish_compact_market_trade_snapshot(capture_compact_market_trade_snapshot(
+        resolve_compact_market_trade_snapshot(capture_compact_market_trade_snapshot(
             &state,
             0,
             &mut trackers.market_trade_live,
@@ -2344,7 +2330,7 @@ fn d43_gated_copy_bench_receipt() {
             &mut trackers.market_trade_live_snapshot,
         );
         bracket_samples.push(started.elapsed().as_micros() as u64);
-        let out = finish_compact_market_trade_snapshot(captured);
+        let out = resolve_compact_market_trade_snapshot(captured);
         assert_eq!(out.snapshot.mode, D43_SNAPSHOT_MODE_SNAPSHOT);
         assert_eq!(out.status_flags, 0);
         gate_queries = out.snapshot.gate_queries as u32;
@@ -2466,7 +2452,7 @@ fn measure_layout(layout: Layout) -> String {
             &mut trackers.market_trade_live_snapshot,
         );
         let capture_us = started.elapsed().as_micros();
-        let out = finish_compact_market_trade_snapshot(captured);
+        let out = resolve_compact_market_trade_snapshot(captured);
         (out, capture_us, started.elapsed().as_micros())
     };
     let _ = read(&mut trackers);
@@ -2574,4 +2560,22 @@ fn snapshot08_idle_wing_activation_carries_both_oil_arms_without_slack() {
     assert_ne!(payload(&before), payload(&activated), "activation changes measured oil");
     assert_eq!(payload(&activated), payload(&session.live_reference()));
     assert!(session.snapshot_tracker().plan().is_some());
+}
+
+#[test]
+fn snapshot09_d43_plan_miss_locator_is_present_only_for_a_measured_miss() {
+    let diag = d43_snapshot_bracket::Domain43SnapshotDiag {
+        region_miss: 1, miss_reads: 1,
+        first_miss: Some((0x2F0_1234_5000, 8)),
+        ..d43_snapshot_bracket::Domain43SnapshotDiag::default()
+    };
+    let units = diag.units().collect::<Vec<_>>();
+    for (name, expected) in [
+        ("d43_snapshot_miss_address_sample", 0x2F0_1234_5000),
+        ("d43_snapshot_miss_width_sample", 8),
+    ] {
+        assert_eq!(units.iter().find(|unit| unit.name == name).map(|unit| unit.value), Some(expected));
+    }
+    assert!(!d43_snapshot_bracket::Domain43SnapshotDiag::default().units()
+        .any(|unit| unit.name == "d43_snapshot_miss_address_sample"));
 }

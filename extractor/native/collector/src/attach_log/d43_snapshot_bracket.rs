@@ -45,7 +45,6 @@ impl CompactMarketTradeSnapshotTracker {
         }
     }
 
-    /// Outside the bracket only: the one allocation the arming walk needs.
     fn prepare_trace_buffer(&mut self) {
         if self.refusal.is_some() || self.plan.is_some() || self.trace_buffer.is_some() {
             return;
@@ -87,6 +86,7 @@ pub(super) struct Domain43SnapshotDiag {
     pub region_miss: u64,
     pub miss_reads: u64,
     pub miss_reads_in_span: u64,
+    pub first_miss: Option<(u64, usize)>,
     pub widen_slack: u64,
     pub engine_call_mismatch: u64,
     pub probe_regions: u64,
@@ -94,9 +94,10 @@ pub(super) struct Domain43SnapshotDiag {
     pub gate_queries: u64,
     pub gate_budget_exhausted: u64,
     pub os_regions: u64,
+    pub live_fallback: u64,
 }
 
-pub(super) const D43_SNAPSHOT_UNIT_NAMES: [&str; 22] = [
+pub(super) const D43_SNAPSHOT_UNIT_NAMES: [&str; 23] = [
     "d43_snapshot_mode",
     "d43_snapshot_region_count",
     "d43_snapshot_byte_count",
@@ -119,10 +120,11 @@ pub(super) const D43_SNAPSHOT_UNIT_NAMES: [&str; 22] = [
     "d43_snapshot_gate_queries",
     "d43_snapshot_gate_budget_exhausted",
     "d43_snapshot_os_regions",
+    "d43_snapshot_live_fallback",
 ];
 
 impl Domain43SnapshotDiag {
-    pub(super) fn values(&self) -> [u64; 22] {
+    pub(super) fn values(&self) -> [u64; 23] {
         [
             self.mode,
             self.region_count,
@@ -146,6 +148,7 @@ impl Domain43SnapshotDiag {
             self.gate_queries,
             self.gate_budget_exhausted,
             self.os_regions,
+            self.live_fallback,
         ]
     }
 
@@ -154,6 +157,10 @@ impl Domain43SnapshotDiag {
             .into_iter()
             .zip(self.values())
             .map(|(name, value)| CompactDomainPerfDiagnosticUnit { name, value })
+            .chain(self.first_miss.into_iter().flat_map(|(address, bytes)| [
+                CompactDomainPerfDiagnosticUnit { name: "d43_snapshot_miss_address_sample", value: address },
+                CompactDomainPerfDiagnosticUnit { name: "d43_snapshot_miss_width_sample", value: bytes as u64 },
+            ]))
     }
 
     fn with_refusal(mut self, refusal: Option<&'static str>) -> Self {
@@ -415,9 +422,8 @@ fn capture_from_plan(
     }
 }
 
-/// The outside half: arm a plan from a trace, or decode the copy through the
-/// same walk over the snapshot view.
-pub(super) fn finish_compact_market_trade_snapshot(
+/// Must run before the reader clock guard closes: an incomplete copy needs one live walk.
+pub(super) fn resolve_compact_market_trade_snapshot(
     captured: Domain43CapturedRead<'_>,
 ) -> CompactMarketTradeRead {
     let Domain43CapturedRead {
@@ -580,62 +586,77 @@ fn decode_from_plan(
         widen_slack: plan.widen_slack(),
         ..Domain43SnapshotDiag::default()
     };
-    if receipt.failure_region_ordinal.is_some() {
-        diag.copy_refused = 1;
+    if receipt.failure_region_ordinal.is_some() || gate_budget_exhausted {
+        diag.copy_refused = u64::from(receipt.failure_region_ordinal.is_some());
         snapshot.prepare_trace_buffer();
-        domain43_reset_frame_words();
-        return domain43_snapshot_unavailable_read(
-            status_flags,
-            domain43_degraded_cause::SNAPSHOT_COPY_REFUSED,
-            diag,
-        );
+        drop(plan);
+        return live_fallback(state, status_flags, market, diag);
     }
+    let mut attempt_market = market.clone();
     let view = plan.view();
     let (read, mismatches) = crate::x15_trade_activation_hook::with_snapshot_override(
         activation,
         || {
             with_engine_call_override(engine_call, || {
                 with_d81_memory_override(&view, || {
-                    read_compact_market_trade(state, status_flags, market)
+                    read_compact_market_trade(state, status_flags, &mut attempt_market)
                 })
             })
         },
     );
     diag.engine_call_mismatch = mismatches;
+    diag.first_miss = view.first_miss();
     diag.miss_reads = view.misses();
     diag.miss_reads_in_span = view.misses_in_span();
     diag.region_miss = u64::from(diag.miss_reads > 0);
     drop(view);
-    if mismatches > 0 {
-        // The decode reached a callback the bracket did not capture, so the
-        // rows it produced are not the copy's hour: nothing it walked is
-        // publishable and the frame words it wrote describe a discarded walk.
-        // The plan is dropped so the next hour arms against the new slot.
+    if mismatches > 0 || diag.miss_reads > 0 {
+        drop(read);
+        drop(plan);
         snapshot.prepare_trace_buffer();
-        domain43_reset_frame_words();
-        return domain43_snapshot_unavailable_read(
-            status_flags,
-            domain43_degraded_cause::SNAPSHOT_ENGINE_CALL_MISMATCH,
-            diag,
-        );
+        return live_fallback(state, status_flags, market, diag);
     }
+    *market = attempt_market;
+    snapshot.plan = Some(plan);
     let mut read = read;
-    if diag.miss_reads > 0 {
-        // A read the plan does not cover is a read that FAILED, and this walk
-        // types every failed read where it happens: the country whose oil trio
-        // could not be derived, the owner whose deal list is not exhaustive,
-        // the family that refuses whole. Discarding the frame instead threw
-        // away every root the copy did serve to represent the handful it did
-        // not -- on e2e_03, 319 of 339 snapshot frames, ~439 countries each.
-        // The plan is dropped so the next hour re-arms live.
-        domain43_record_degraded_cause(domain43_degraded_cause::SNAPSHOT_REGION_MISS);
-        read.status_flags |= COMPACT_STATUS_PARTIAL_DATA;
-        snapshot.prepare_trace_buffer();
-    } else {
-        snapshot.plan = Some(plan);
-    }
     read.snapshot = diag;
     read
+}
+
+fn live_fallback(
+    state: &CollectorState,
+    status_flags: u32,
+    market: &mut CompactMarketTradeTracker,
+    mut diag: Domain43SnapshotDiag,
+) -> CompactMarketTradeRead {
+    domain43_reset_frame_words();
+    let live = Domain43FallbackMemory { deadline: Instant::now() + Duration::from_secs(1) };
+    let mut attempt_market = market.clone();
+    let mut read = with_d81_memory_override(&live, || {
+        read_compact_market_trade(state, status_flags, &mut attempt_market)
+    });
+    diag.live_fallback = 1;
+    if Instant::now() >= live.deadline {
+        drop(read);
+        domain43_reset_frame_words();
+        return domain43_snapshot_unavailable_read(
+            status_flags, domain43_degraded_cause::LIVE_FALLBACK_DEADLINE, diag,
+        );
+    }
+    *market = attempt_market;
+    read.snapshot = diag;
+    read
+}
+
+struct Domain43FallbackMemory {
+    deadline: Instant,
+}
+
+impl super::d81_snapshot_memory::Domain81Memory for Domain43FallbackMemory {
+    fn read_into(&self, address: u64, out: &mut [u8]) -> bool {
+        Instant::now() < self.deadline
+            && super::d81_snapshot_memory::Domain81Memory::read_into(&D81LiveMemory, address, out)
+    }
 }
 
 fn domain43_snapshot_unavailable_read(
@@ -676,5 +697,20 @@ fn domain43_snapshot_unavailable_read(
         amount_valid_rows: 0,
         partial_field_rows: 0,
         snapshot: diag,
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+    use super::super::d81_snapshot_memory::Domain81Memory;
+
+    #[test]
+    fn expired_fallback_refuses_a_read_without_touching_the_destination() {
+        let value = 123u64;
+        let live = Domain43FallbackMemory { deadline: Instant::now() };
+        let mut out = [0xA5; 8];
+        assert!(!live.read_into(&value as *const u64 as u64, &mut out));
+        assert_eq!(out, [0xA5; 8]);
     }
 }

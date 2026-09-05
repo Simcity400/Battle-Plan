@@ -357,6 +357,7 @@ pub struct Domain53SnapshotCaptureReceipt {
     pub copied_byte_count: u64,
     /// First DATA range that did not copy; a probe range never sets it.
     pub failure_region_ordinal: Option<u32>,
+    pub failure_range: Option<(u64, u64)>,
     pub probe_region_count: u32,
     pub probe_regions_unreadable: u32,
     pub probe_bytes_unreadable: u64,
@@ -484,7 +485,11 @@ impl Domain53SnapshotPlan {
         }
         probe_raw.sort_unstable();
         let probe = subtract_sorted(coalesce_sorted(probe_raw), &data);
-        let probe_region_count = probe.len() as u64;
+        let page_pieces = |start: u64, end: u64| {
+            (end - 1) / DOMAIN53_SNAPSHOT_PAGE_BYTES as u64
+                - start / DOMAIN53_SNAPSHOT_PAGE_BYTES as u64 + 1
+        };
+        let probe_region_count = probe.iter().map(|&(start, end)| page_pieces(start, end)).sum();
         let probe_byte_count = probe
             .iter()
             .try_fold(0u64, |total, (start, end)| total.checked_add(end - start))
@@ -493,7 +498,7 @@ impl Domain53SnapshotPlan {
         let demand = Domain53SnapshotPlanDemand {
             trace_read_count,
             successful_read_count,
-            data_region_count: data.len() as u64,
+            data_region_count: data.iter().map(|&(start, end)| page_pieces(start, end)).sum(),
             data_byte_count,
             probe_region_count,
             probe_byte_count,
@@ -518,19 +523,20 @@ impl Domain53SnapshotPlan {
         let mut specs = Vec::with_capacity(ordered.len());
         let mut state = Vec::with_capacity(ordered.len());
         let mut dst_offset = 0u64;
-        for (start, end, probe) in ordered {
-            let len = end - start;
-            specs.push(Domain53SnapshotCopySpec {
-                src: start,
-                dst_offset,
-                len,
-            });
-            state.push(Domain53SnapshotRegionState {
-                region_key: 0,
-                probe,
-                copied: false,
-            });
-            dst_offset += len;
+        for (mut start, end, probe) in ordered {
+            // OS region boundaries are page-aligned. Coalescing must not make
+            // two readable source ranges fail the whole-range copy gate.
+            while start < end {
+                let page_remaining = DOMAIN53_SNAPSHOT_PAGE_BYTES as u64
+                    - start % DOMAIN53_SNAPSHOT_PAGE_BYTES as u64;
+                let len = (end - start).min(page_remaining);
+                specs.push(Domain53SnapshotCopySpec { src: start, dst_offset, len });
+                state.push(Domain53SnapshotRegionState {
+                    region_key: 0, probe, copied: false,
+                });
+                dst_offset += len;
+                start += len;
+            }
         }
 
         // The arena is committed and touched HERE, on the plan-walk thread,
@@ -669,6 +675,7 @@ impl Domain53SnapshotPlan {
                     receipt.probe_bytes_unreadable.saturating_add(spec.len);
             } else if receipt.failure_region_ordinal.is_none() {
                 receipt.failure_region_ordinal = Some(ordinal.min(u32::MAX as usize) as u32);
+                receipt.failure_range = Some((spec.src, spec.len));
             }
         }
         receipt
@@ -1327,6 +1334,45 @@ mod tests {
     /// failed cross-region read is replayed as failed until the ranges are one
     /// region -- and a read the walk never made across two regions is a miss.
     #[test]
+    fn coalescing_cannot_refuse_two_readable_ranges_at_an_os_boundary() {
+        let mut source = FixtureMemory::default();
+        source.insert(0x1ff0, &[7; 16]);
+        source.insert(0x2000, &[9; 24]);
+        let mut plan = plan_from_reads(&[(0x1ff0, 16), (0x2000, 24)]);
+        assert_eq!(plan.byte_count(), 40);
+        assert_eq!(plan.region_count(), 2);
+        source.regions = vec![(0, 0x2000, true), (0x2000, u64::MAX, true)];
+        let receipt = source.capture(&mut plan);
+        assert_eq!(receipt.failure_range, None);
+        assert_eq!(receipt.copied_byte_count, 40);
+        let view = plan.view();
+        assert_eq!(view.read_bytes(0x1ff0, 16).unwrap(), [7; 16]);
+        assert_eq!(view.read_bytes(0x2000, 24).unwrap(), [9; 24]);
+        assert!(view.read_bytes(0x1ff0, 40).is_err());
+        drop(view);
+        source.regions[1].2 = false;
+        let receipt = source.capture(&mut plan);
+        assert_eq!(receipt.failure_range, Some((0x2000, 24)));
+        assert_eq!(receipt.copied_byte_count, 16);
+        assert!(plan.view().read_bytes(0x2000, 24).is_err());
+        source.regions.clear();
+        assert_eq!(source.capture(&mut plan).failure_range, None);
+        assert_eq!(plan.view().read_bytes(0x1ff0, 40).unwrap(), [&[7; 16][..], &[9; 24][..]].concat());
+    }
+
+    #[test]
+    fn page_splits_count_against_the_plan_region_cap() {
+        let trace = Domain53AccessTrace {
+            reads: vec![Domain53ReadTrace { address: 0x1ff0, len: 40, succeeded: true }],
+            ..Domain53AccessTrace::default()
+        };
+        let refusal = Domain53SnapshotPlan::from_trace_with_limits(1, trace, 1, 40).unwrap_err();
+        assert_eq!(refusal.cause, DOMAIN53_SNAPSHOT_REGION_CAP_CAUSE);
+        assert_eq!(refusal.demand.data_region_count, 2);
+        assert_eq!(refusal.demand.data_byte_count, 40);
+    }
+
+    #[test]
     fn a_read_across_two_os_regions_is_refused_until_they_are_one() {
         let mut source = FixtureMemory::default();
         source.insert(0x1ff8, &[7; 8]);
@@ -1522,6 +1568,10 @@ mod tests {
         // no later range can be swallowed by them.
         let short = MEASURED_MERGED_BYTES - len * MEASURED_MERGED_RANGES as u64;
         reads.last_mut().expect("ranges").len += short as usize;
+        let split_regions: usize = reads.iter().map(|read| {
+            ((read.address + read.len as u64 - 1) / DOMAIN53_SNAPSHOT_PAGE_BYTES as u64
+                - read.address / DOMAIN53_SNAPSHOT_PAGE_BYTES as u64 + 1) as usize
+        }).sum();
         let plan = Domain53SnapshotPlan::from_trace(
             1,
             Domain53AccessTrace {
@@ -1530,7 +1580,8 @@ mod tests {
             },
         )
         .expect("the measured production demand plans inside the caps");
-        assert_eq!(plan.region_count(), MEASURED_MERGED_RANGES);
+        assert_eq!(plan.region_count(), split_regions);
+        assert!(split_regions <= DOMAIN53_SNAPSHOT_MAX_REGIONS);
         assert_eq!(plan.byte_count() as u64, MEASURED_MERGED_BYTES);
         assert!(plan.demand().trace_read_count <= MEASURED_TRACE_READS);
         assert!(

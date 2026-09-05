@@ -284,20 +284,23 @@ impl Domain43SnapshotPlan {
                 _ => merged.push((start, end)),
             }
         }
-        // Probe regions: the failed reads that touch no data region. One that
-        // overlaps a data region is left out; a read there is served from the
-        // data region or misses, and either answer is the live reader's.
-        let overlaps_data = |start: u64, end: u64| {
-            let index = merged.partition_point(|(data_start, _)| *data_start < end);
-            index
-                .checked_sub(1)
-                .is_some_and(|i| merged[i].1 > start)
-        };
-        let mut probes: Vec<(u64, u64)> = Vec::new();
+        // A failed read may overlap a successful scalar without being wholly
+        // covered. Retain each uncovered byte as a probe, never as measured data.
+        let mut uncovered = Vec::new();
         for (start, end) in failed {
-            if overlaps_data(start, end) {
-                continue;
+            let mut cursor = start;
+            let first = merged.partition_point(|(_, data_end)| *data_end <= start);
+            for &(data_start, data_end) in &merged[first..] {
+                if data_start >= end { break; }
+                if cursor < data_start { uncovered.push((cursor, data_start.min(end))); }
+                cursor = cursor.max(data_end);
+                if cursor >= end { break; }
             }
+            if cursor < end { uncovered.push((cursor, end)); }
+        }
+        uncovered.sort_unstable();
+        let mut probes: Vec<(u64, u64)> = Vec::new();
+        for (start, end) in uncovered {
             match probes.last_mut() {
                 Some(last) if start <= last.1 => last.1 = last.1.max(end),
                 _ => probes.push((start, end)),
@@ -505,6 +508,7 @@ impl Domain43SnapshotPlan {
         self.starts = starts;
         self.ends = ends;
         self.offsets = offsets;
+        self.probe_region_count = probe.iter().filter(|is_probe| **is_probe).count() as u32;
         self.probe = probe;
         self.line_cache.borrow_mut().fill((u64::MAX, 0));
         self.os_spans = os_spans;
@@ -915,39 +919,60 @@ mod tests {
         assert!(tracing.read_into(0x1000, &mut buf));
         assert!(!tracing.read_into(0x2000, &mut buf));
         assert!(!tracing.read_into(0x2000, &mut buf));
-        // A failed read overlapping a data region is not a probe: the data
-        // region answers for it, or the read misses.
+        // The uncovered tail remains a probe even though the read overlaps data.
         assert!(!tracing.read_into(0x1004, &mut [0u8; 0x100]));
         let mut plan =
             Domain43SnapshotPlan::from_trace(tracing.into_trace(), limits(0, 16, 4096)).unwrap();
         assert_eq!(
             plan.region_specs().collect::<Vec<_>>(),
-            vec![spec(0x1000, 8, false), spec(0x2000, 8, true)]
+            vec![spec(0x1000, 8, false), spec(0x1008, 0xFC, true), spec(0x2000, 8, true)]
         );
-        assert_eq!(plan.probe_region_count(), 1);
-        assert_eq!(plan.byte_count(), 16);
+        assert_eq!(plan.probe_region_count(), 2);
+        assert_eq!(plan.byte_count(), 268);
 
         let receipt = plan.capture_with(|address, out| memory.read_into(address, out).then_some(1));
         assert_eq!(receipt.copied_region_count, 1);
         assert_eq!(receipt.failure_region_ordinal, None, "a probe failure is tolerated");
-        assert_eq!(receipt.probe_region_count, 1);
-        assert_eq!(receipt.probe_regions_unreadable, 1);
+        assert_eq!(receipt.probe_region_count, 2);
+        assert_eq!(receipt.probe_regions_unreadable, 2);
         {
             let view = plan.view();
             assert!(!view.read_into(0x2000, &mut buf));
             assert_eq!(view.first_miss(), None, "an unreadable probe is not a miss");
             assert!(!view.read_into(0x1004, &mut [0u8; 0x100]));
-            assert_eq!(view.first_miss(), Some((0x1004, 0x100)));
+            assert_eq!(view.first_miss(), None);
         }
 
-        let healed = FixtureMemory::spanning(&[(0x1000, 0x100), (0x2000, 0x10)]);
+        let healed = FixtureMemory::spanning(&[(0x1000, 0x104), (0x2000, 0x10)]);
         let receipt = plan.capture_with(|address, out| healed.read_into(address, out).then_some(1));
-        assert_eq!(receipt.copied_region_count, 2);
+        assert_eq!(receipt.copied_region_count, 3);
         assert_eq!(receipt.probe_regions_unreadable, 0);
         let view = plan.view();
         assert!(view.read_into(0x2000, &mut buf));
         assert_eq!(buf, [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]);
         assert_eq!(view.first_miss(), None);
+    }
+
+    #[test]
+    fn failed_read_overlap_keeps_its_uncovered_probe_tail() {
+        let mut memory = FixtureMemory::spanning(&[(0x1000, 8)]);
+        let tracing = Domain43TracingMemory::new(&memory, Domain43AccessTrace::with_capacity(8));
+        assert!(tracing.read_into(0x1000, &mut [0; 8]));
+        assert!(!tracing.read_into(0x1000, &mut [0; 24]));
+        let mut plan = Domain43SnapshotPlan::from_trace(tracing.into_trace(), limits(0, 8, 1024)).unwrap();
+        assert_eq!(plan.region_specs().collect::<Vec<_>>(), [spec(0x1000, 8, false), spec(0x1008, 16, true)]);
+        let receipt = plan.capture_with(|address, out| memory.read_into(address, out).then_some(1));
+        assert_eq!(receipt.failure_region_ordinal, None);
+        assert_eq!(receipt.probe_regions_unreadable, 1);
+        let view = plan.view();
+        assert!(!view.read_into(0x1000, &mut [0; 24]));
+        assert_eq!(view.first_miss(), None);
+        drop(view);
+        memory = FixtureMemory::spanning(&[(0x1000, 24)]);
+        assert_eq!(plan.capture_with(|address, out| memory.read_into(address, out).then_some(1)).copied_byte_count, 24);
+        let mut bytes = [0; 24];
+        assert!(plan.view().read_into(0x1000, &mut bytes));
+        assert_eq!(bytes, core::array::from_fn(|i| i as u8));
     }
 
     #[test]
@@ -1247,6 +1272,7 @@ mod tests {
             vec![spec(0x1000, 8, false), spec(0x2FFC, 4, true), spec(0x3000, 4, true)]
         );
         let receipt = plan.capture_with(|address, out| memory.read_into(address, out).then_some(1));
+        assert_eq!(receipt.probe_region_count, 2);
         assert_eq!(receipt.probe_regions_unreadable, 2);
         assert_eq!(receipt.failure_region_ordinal, None);
         {
