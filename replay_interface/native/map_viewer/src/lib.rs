@@ -14,8 +14,10 @@ pub use portable_render_stream::{
     FOUNDATION_RENDER_SCHEMA, MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY,
 };
 pub use portable_render_stream::collapse_element_diagnostics;
+pub use portable_render_stream::Xmap15PreparedRow;
 
 mod bloom;
+pub mod arrow_submission_order;
 mod border_capture_evidence;
 mod border_classification;
 mod border_law;
@@ -194,7 +196,7 @@ pub use map_scene_draw_order::{
     map_scene_submissions_for, viewer_scene_stage_order, MapSceneBinding, MapSceneGate,
     MapSceneSubmission, MapSceneUncomposed, ViewerSceneStage, MAP_SCENE_DRAW_ORDER,
     MAP_SCENE_RESIDUALS, RESIDUAL_ARROWS_LIGHT_DEPTH, RESIDUAL_ARROW_LATE_PASSES,
-    RESIDUAL_ARROW_LIST_INTERLEAVE, RESIDUAL_ENTITY_PASSES_AFTER_POST, RESIDUAL_GFX_SUPPLY_DRAW,
+    RESIDUAL_ENTITY_PASSES_AFTER_POST, RESIDUAL_GFX_SUPPLY_DRAW,
     RESIDUAL_LINE_LIST_DRAWS, RESIDUAL_MAP_BODY_TRAILING_QUAD, RESIDUAL_PARTITION_MAJOR_ORDER,
     RESIDUAL_POST_QUAD,
 };
@@ -636,7 +638,7 @@ pub use production_features::xmap14_place::{
 };
 pub use production_features::xmap14_strength::{young_combat_comparison_fixed, LandCombatStrengthDefines};
 pub use production_features::xmap15::{
-    prepare_xmap15_frame, xmap15_viewer_selection, PreparedXmap15Frame,
+    prepare_xmap15_frame, xmap15_viewer_selection, PreparedXmap15Frame, PreparedXmap15Orders,
     PreparedXmap15MovementDefinition, PreparedXmap15PlanDefinition, Xmap15LifecycleState,
     Xmap15LifecycleUpdate, Xmap15UnitIdentityProvider, Xmap15ViewerSelection,
     XMAP15_ASSIGNED_OPERATION_NAME, XMAP15_ASSIGNED_STAGE_NAME, XMAP15_HEIGHTMAP_PATH,
@@ -725,7 +727,7 @@ pub use province_positions::{
 mod xmap15_orders;
 pub use xmap15_orders::{
     derive_xmap15_orders, xmap15_arrow_definition, Xmap15DerivedAnchor, Xmap15DerivedOrder,
-    Xmap15OrderDerivation, Xmap15OrderRefusal, Xmap15RefusedOrder,
+    Xmap15OrderDerivation, Xmap15OrderRefusal, Xmap15PlanProvider,
 };
 pub use rail_files::{
     bind_exact_rail_construction_arrows, bind_exact_rail_d80_draws, compute_province_centroids,

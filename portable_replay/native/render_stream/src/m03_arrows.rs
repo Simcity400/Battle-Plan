@@ -949,7 +949,12 @@ impl Xmap15PlanSemanticRow {
                 vertices.push(Xmap15MapArrowVertex {
                     position: [x, y, z],
                     padding: 0.0,
-                    uv_is_head_variant: [t, v, 0.0, self.texture_variant as f32],
+                    uv_is_head_variant: [
+                        t,
+                        v,
+                        0.0,
+                        self.route.point_width_classes[index] as i8 as f32,
+                    ],
                 });
             }
         }
@@ -1335,5 +1340,37 @@ mod tests {
         assert_eq!(mesh.vertices[2].position, [1.0, 0.01, 1.0]);
         assert_eq!(mesh.vertices[3].position, [1.0, 0.01, -1.0]);
         assert_eq!(mesh.vertices[3].uv_is_head_variant, [1.0, 1.0, 0.0, 0.0]);
+
+        let mut mixed = row;
+        mixed.route.builder_input_points_fixed5 =
+            vec![[0, 0], [100_000, 0], [200_000, 0], [300_000, 0]];
+        mixed.route.point_width_classes = vec![0, 1, 128, 255];
+        mixed.texture_variant = 7;
+        let mixed_profile = Xmap15PlanGeometryProfile {
+            width_class_zero_f32_bits: 2.0f32.to_bits(),
+            width_class_one_f32_bits: 3.0f32.to_bits(),
+            ..profile
+        };
+        let mixed_mesh = mixed
+            .build_map_arrow_mesh(mixed_profile, |_x, _z| Ok(0.0))
+            .unwrap();
+        assert_eq!(mixed_mesh.body_vertex_count, 8);
+        assert_eq!(mixed_mesh.head_first_vertex, None);
+        assert_eq!(mixed_mesh.vertices.len(), 8);
+        for (pair, (signed_class, width)) in mixed_mesh
+            .vertices
+            .chunks_exact(2)
+            .zip([(0.0, 2.0), (1.0, 3.0), (-128.0, 1.0), (-1.0, 1.0)])
+        {
+            assert_eq!(pair[0].uv_is_head_variant[3], signed_class);
+            assert_eq!(pair[1].uv_is_head_variant[3], signed_class);
+            assert_eq!(pair[0].position[2], width);
+            assert_eq!(pair[1].position[2], -width);
+        }
+        mixed.texture_variant = 13;
+        let other_texture = mixed
+            .build_map_arrow_mesh(mixed_profile, |_x, _z| Ok(0.0))
+            .unwrap();
+        assert_eq!(other_texture.vertices, mixed_mesh.vertices);
     }
 }

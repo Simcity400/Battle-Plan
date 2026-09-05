@@ -12,6 +12,9 @@ struct CountingAlloc;
 
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 
+// LIVE measures the whole process, so independent measurement windows must not overlap.
+pub static MEASUREMENT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let p = System.alloc(layout);

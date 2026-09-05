@@ -1,7 +1,7 @@
 
 use crate::{
     derive_xmap15_orders, FoundationFeatureContext, FoundationFeatureOutput, GameFileResolver,
-    ProductionMapFeatureAdapter, ProvinceAnchors, Result, Xmap15OrderDerivation,
+    ProductionMapFeatureAdapter, ProvinceAnchors, Result, Xmap15PlanProvider,
 };
 use portable_render_stream::{
     AssignedStage, FamilyDisposition, FoundationGap, MapVisualFamily, UsedContentKey,
@@ -85,6 +85,11 @@ pub trait Xmap15UnitIdentityProvider {
     fn division_identity_match_count(&self, stable_id: u32, owner_country: &str) -> usize;
 }
 
+pub struct PreparedXmap15Orders {
+    pub plans: Xmap15PlanProvider,
+    pub native: Option<PreparedXmap15Frame>,
+}
+
 #[derive(Clone)]
 pub(crate) struct Xmap15OrdersAdapter {
     resolver: GameFileResolver,
@@ -130,6 +135,9 @@ impl ProductionMapFeatureAdapter for Xmap15OrdersAdapter {
             .find(|gap| gap.input_id == XMAP15_AUTHORITY_GAP_ID)
             .ok_or("XMAP15 canonical map-authority gap is absent")?;
         let registration = xmap15_registration_sha256();
+        let anchors = self.province_anchors();
+        let order_derivation = derive_xmap15_orders(context.world_frame, anchors.as_ref().ok().copied());
+        order_derivation.validate(context.world_frame.hour_index())?;
         let unavailable = |detail: &str| FoundationFeatureOutput {
             disposition: FamilyDisposition::Unavailable {
                 gap: xmap15_unavailable_gap(
@@ -147,31 +155,22 @@ impl ProductionMapFeatureAdapter for Xmap15OrdersAdapter {
             prepared_water: None,
             prepared_units: None,
             prepared_combat: None,
-            prepared_orders: None,
+            prepared_orders: Some(PreparedXmap15Orders {
+                plans: order_derivation.clone(),
+                native: None,
+            }),
             prepared_rail_supply: None,
             prepared_map_modes: None,
             element_diagnostics: Vec::new(),
             consumed_gap_ids: vec![XMAP15_AUTHORITY_GAP_ID.into()],
         };
 
-        // The recorded order census is this family's own semantic input, and its
-        // arrows are placed from the province identities it carries. The
-        // derivation runs before anything else so an hour that cannot draw says
-        // which orders it could place and which it refused, by name and count.
-        let order_derivation = match self.province_anchors() {
-            Ok(anchors) => {
-                let derived = derive_xmap15_orders(context.world_frame, anchors);
-                if let Some(derived) = derived.as_ref() {
-                    derived.validate()?;
-                }
-                derived
-            }
-            Err(error) => {
-                return Ok(unavailable(&format!(
-                    "this recording's effective map yields no province positions to place a recorded order route against: {error}"
-                )));
-            }
-        };
+        if let Err(error) = anchors {
+            return Ok(unavailable(&format!(
+                "authenticated province anchors unavailable: {error}; {}",
+                xmap15_order_derivation_account(context.world_frame, &order_derivation),
+            )));
+        }
 
         if semantic_value(context.world_frame).is_none() {
             // WHY the key is absent is the recorder's answer. A recording made
@@ -185,7 +184,7 @@ impl ProductionMapFeatureAdapter for Xmap15OrdersAdapter {
                  semantic sidecar is absent; {}; {}",
                 replay_core::XMAP15_ORDERS_FRONTS_MOVEMENT_SEMANTIC_PATH.join("."),
                 xmap15_unavailable_account(context.world_frame),
-                xmap15_order_derivation_account(context.world_frame, order_derivation.as_ref())
+                xmap15_order_derivation_account(context.world_frame, &order_derivation)
             )));
         }
         let Some(units) = context.xmap15_units else {
@@ -251,7 +250,10 @@ impl ProductionMapFeatureAdapter for Xmap15OrdersAdapter {
             prepared_water: None,
             prepared_units: None,
             prepared_combat: None,
-            prepared_orders: Some(prepared),
+            prepared_orders: Some(PreparedXmap15Orders {
+                plans: order_derivation,
+                native: Some(prepared),
+            }),
             prepared_rail_supply: None,
             prepared_map_modes: None,
             element_diagnostics: Vec::new(),
@@ -499,7 +501,7 @@ impl Xmap15LifecycleState {
     }
 }
 
-fn prepared_row_key(row: &Xmap15PreparedRow) -> String {
+pub(crate) fn prepared_row_key(row: &Xmap15PreparedRow) -> String {
     match row {
         Xmap15PreparedRow::Plan { semantic, .. } => format!(
             "plan:{:?}:{}:{}:{}:{}",
@@ -525,6 +527,7 @@ fn lifecycle_update_sha256(update: &Xmap15LifecycleUpdate) -> Result<String> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedXmap15PlanDefinition {
     pub name: String,
+    pub definition_index: u32,
     pub technique: String,
     pub body_width_f32_bits: [u32; 2],
     pub body_uv_scale_f32_bits: u32,
@@ -1420,9 +1423,9 @@ fn xmap15_account_from_gate(gate: Option<&serde_json::Value>, hour_index: i64) -
 /// why the family cannot draw without pretending the orders were not there.
 fn xmap15_order_derivation_account(
     world: &WorldFrame,
-    derivation: Option<&Xmap15OrderDerivation>,
+    derivation: &Xmap15PlanProvider,
 ) -> String {
-    if let Some(derivation) = derivation {
+    if let Xmap15PlanProvider::Present(derivation) = derivation {
         return derivation.refusal_account();
     }
     let view = world.army_battleplans();
@@ -1563,6 +1566,7 @@ fn prepare_plan_definitions(
     let source =
         std::str::from_utf8(&source_bytes).map_err(|_| "effective maparrows.txt is not UTF-8")?;
     let blocks = parse_arrow_blocks(source)?;
+    let definition_indices = arrow_definition_indices(source)?;
     let mut definitions = Vec::new();
     let mut all_content = vec![source_key.clone()];
     all_content.extend(shader_content.iter().cloned());
@@ -1583,6 +1587,7 @@ fn prepare_plan_definitions(
         content.dedup();
         let mut definition = PreparedXmap15PlanDefinition {
             name: name.clone(),
+            definition_index: definition_indices[&name],
             technique: required_atom(fields, "technique", &name)?,
             body_width_f32_bits: required_f32_pair(fields, "body_width", &name)?.map(f32::to_bits),
             body_uv_scale_f32_bits: required_f32(fields, "body_uv_scale", &name)?.to_bits(),
@@ -1733,9 +1738,20 @@ enum FieldValue {
 }
 
 fn parse_arrow_blocks(source: &str) -> Result<BTreeMap<String, BTreeMap<String, FieldValue>>> {
+    Ok(parse_arrow_entries(source)?.into_iter().collect())
+}
+
+pub(crate) fn arrow_definition_indices(source: &str) -> Result<BTreeMap<String, u32>> {
+    parse_arrow_entries(source)?.into_iter().enumerate().map(|(i, (name, _))| {
+        Ok((name, u32::try_from(i)?))
+    }).collect()
+}
+
+fn parse_arrow_entries(source: &str) -> Result<Vec<(String, BTreeMap<String, FieldValue>)>> {
     let tokens = tokenize(source)?;
     let mut cursor = 0usize;
-    let mut blocks = BTreeMap::new();
+    let mut blocks = Vec::new();
+    let mut names = BTreeSet::new();
     while cursor + 2 < tokens.len() {
         if tokens[cursor] != "arrowType" || tokens[cursor + 1] != "=" || tokens[cursor + 2] != "{" {
             cursor += 1;
@@ -1747,9 +1763,10 @@ fn parse_arrow_blocks(source: &str) -> Result<BTreeMap<String, BTreeMap<String, 
             Some(FieldValue::Atom(value)) if !value.is_empty() => value.clone(),
             _ => return Err("arrowType omits a scalar name".into()),
         };
-        if blocks.insert(name.clone(), fields).is_some() {
+        if !names.insert(name.clone()) {
             return Err(format!("effective arrow definitions duplicate {name}").into());
         }
+        blocks.push((name, fields));
     }
     Ok(blocks)
 }

@@ -112,6 +112,8 @@ fn scrub_and_measure(hour_count: usize, seeks: usize, cap: usize) -> (usize, usi
 
 #[test]
 fn f2_correctness_budget_and_trend_gates() {
+    let _measurement = crate::soak_support::MEASUREMENT_LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     gate_b_shrunken_cache_seek_equals_play_to();
 
     let seeks = env_usize("BATTLE_PLAN_SOAK_SCRUB", 20_000);

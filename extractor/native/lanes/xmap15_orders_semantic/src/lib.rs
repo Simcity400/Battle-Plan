@@ -41,38 +41,16 @@ pub const PENDING: PendingProducerCrate = PendingProducerCrate {
     crate_name: "xmap15_orders_semantic",
     ledger_row: "XMAP00 orders.army_battleplans_semantic",
     blocked_on:
-        "every leaf of the movement row and 26 of the 38 plan-row leaves, counted in \
-portable_render_stream::XMAP15_MOVEMENT_ROW_CONTRACT and XMAP15_PLAN_ROW_CONTRACT. They are \
-not all one blocker. The MOVEMENT CENSUS is the one that decides the family: \
-Xmap15SemanticFrame::validate requires omitted_movement_rows == 0 and movement_object_census \
-== movements.len(), so an empty movement vector is not a smaller census but the positive \
-claim that the engine had no movement arrow objects this hour, and nothing recorded says \
-which divisions owe a row - cross_check_d54_and_units touches movement rows once, only to \
-require that a named division exists in the XMAP13 census, and no d54 order corresponds to a \
-movement row. Seven movement leaves are the engine's SUBMITTED MESH rather than a \
-description of it - exact_vertex_stride_bytes, exact_vertex_count, exact_vertex_bytes, \
-exact_index_format_u32, exact_index_count, exact_index_bytes and \
-exact_primitive_topology_u32 - because map_viewer/src/xmap15_d3d_handoff.rs uploads the \
-vertex and index bytes into D3D buffers and then issues DrawIndexed(exact_index_count) for \
-an indexed row or Draw(exact_vertex_count) for a non-indexed one, under \
-exact_primitive_topology_u32; their only observer is domain 77's render session, which \
-compact_contract::EARLY_LAUNCH_ONLY_PRODUCERS records as held off an attach capture by three \
-independent gates. The plan row's own 26 are the engine's order flag bits, the arrow \
-builder's exact input geometry, the draw ORDER among all arrow objects - which \
-Xmap15SemanticFrame::validate makes unique across plans and movements TOGETHER, so it orders \
-a set including the census this producer cannot state - the arrow object's runtime \
-appearance, and its lifecycle tombstone. What is NOT owed is the eleven plan-row leaves this \
-producer already mints, nor resolved_definition_name, which \
-Xmap15PlanDefinitionSelector::resolved_definition_name derives from the selector and \
-Xmap15SemanticFrame::validate refuses any other value for. A second blocker sits behind all \
-of it: prepare refuses without context.xmap15_units, the XMAP13 identity provider, whose own \
-carrier (map_unit_presentation) is unfed on every recording",
+        "every movement-row leaf and 20 of the 38 plan-row leaves remain unproven. \
+         Existing D54 records exact plan identities, routes and style predicates; the viewer \
+         derives definitions and province anchors independently. Those anchors do not prove \
+         builder control points, widths, runtime appearance, lifecycle or complete movement \
+         census. The full native carrier cannot honestly claim measured-empty movement rows",
     reason:
-        "the recorded half of the plan census is built and runs - project_fold_sections mints the \
-eleven pinned leaves of every visual d54 order from the fold's own published sections and the \
-XMAP13 formation census, and the fold writes the per-hour gate saying so beside the omitted \
-carrier key. What refuses is the INSTALL, because there is no hook: none of the gated leaves \
-has a proven a729 address, and the movement census has no honest value to emit at all",
+        "project_fold_sections publishes the existing per-hour gate from admitted D54 and \
+         formation inputs. There is no scheduled producer for the full native carrier; \
+         deriving plan inputs does not establish its geometry or movement census",
+
 };
 
 pub const OWED_CARRIERS: [PendingProducerSlot; 1] = [PendingProducerSlot {
@@ -568,6 +546,17 @@ fn d54_order(order: &Map<String, Value>) -> D54Order {
     else {
         return D54Order::Refused;
     };
+    // Keep producer admission identical to replay_core::army_battleplans::parse_style.
+    let Some(style_flags) = u32_of(order, "style_flags") else {
+        return D54Order::Refused;
+    };
+    match order.get("style_status").and_then(Value::as_str) {
+        Some("exact")
+            if style_flags & !portable_render_stream::XMAP15_D54_STYLE_FLAG_MASK == 0 => {}
+        Some("validation_failed" | "unknown" | "overflow" | "unsupported" | "fixture_required"
+            | "cold_preflight_only") if style_flags == 0 => {}
+        _ => return D54Order::Refused,
+    }
     let target_declared_count_is_null = order
         .get("target_declared_count")
         .is_some_and(Value::is_null);
@@ -752,6 +741,37 @@ mod tests {
              {published}"
         );
         assert!(!xmap15_contract_gate_leaves().is_empty());
+    }
+
+    #[test]
+    fn style_admission_matches_reader_without_defaulting_unread_predicates() {
+        let statuses = [
+            "exact", "validation_failed", "unknown", "overflow", "unsupported",
+            "fixture_required", "cold_preflight_only", "unrecognized",
+        ];
+        for status in statuses {
+            for flags in 0..=128u32 {
+                let (mut folded, formations) = one_folded_hour();
+                let row = &mut folded["extra"]["army_battleplans_depth_live"]["orders"][0];
+                row["style_flags"] = json!(flags);
+                row["style_status"] = json!(status);
+                let admitted = match status {
+                    "exact" => flags <= portable_render_stream::XMAP15_D54_STYLE_FLAG_MASK,
+                    "unrecognized" => false,
+                    _ => flags == 0,
+                };
+                let hour = project(&folded, &formations, &formations, None);
+                assert_eq!(hour.plans.len(), usize::from(admitted), "{status} {flags}");
+                assert_eq!(hour.hour_gates.is_empty(), admitted, "{status} {flags}");
+            }
+        }
+        for bad_flags in [Value::Null, json!(-1), json!(1u64 << 32), json!("0"), json!(0.5)] {
+            let (mut folded, formations) = one_folded_hour();
+            folded["extra"]["army_battleplans_depth_live"]["orders"][0]["style_flags"] = bad_flags;
+            let hour = project(&folded, &formations, &formations, None);
+            assert!(hour.plans.is_empty());
+            assert!(!hour.hour_gates.is_empty());
+        }
     }
 
     /// The handoff for an hour whose MANAGER census stands.

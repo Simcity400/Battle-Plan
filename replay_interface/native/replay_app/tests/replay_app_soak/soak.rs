@@ -44,6 +44,8 @@ fn scrub_and_measure(hour_count: usize, seeks: usize) -> (usize, usize) {
 
 #[test]
 fn soak_leakfree_invariant_and_f2_ceiling() {
+    let _measurement = crate::soak_support::MEASUREMENT_LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let sweeps = env_usize("BATTLE_PLAN_SOAK_SWEEPS", 2000);
 
     let path = fixture_path("fx_owner_controller_flip.battleplan");

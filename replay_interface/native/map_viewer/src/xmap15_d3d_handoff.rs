@@ -10,6 +10,7 @@ pub const XMAP15_MOVEMENT_CB1_BYTES: u32 = 112;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Xmap15NativeRowReceipt {
+    pub outer_pass: Option<bool>,
     pub final_engine_draw_ordinal: u32,
     pub stable_key: String,
     pub definition_name: String,
@@ -23,6 +24,7 @@ pub struct Xmap15NativeRowReceipt {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Xmap15NativeExecutionReceipt {
+    pub arrow_refusals: Vec<crate::arrow_submission_order::ArrowOrderRefusal>,
     pub prepared_frame_sha256: String,
     pub assigned_stage_name: String,
     pub assigned_operation_name: String,
@@ -38,6 +40,32 @@ pub struct Xmap15NativeExecutionReceipt {
 }
 
 impl Xmap15NativeExecutionReceipt {
+    pub fn record_arrow_refusals(&mut self, refusals: &[crate::arrow_submission_order::ArrowOrderRefusal]) -> Result<()> {
+        self.validate()?;
+        self.arrow_refusals = refusals.to_vec();
+        self.deterministic_sha256 = execution_digest(self)?;
+        self.validate()
+    }
+
+    pub fn append_batch(&mut self, batch: Self) -> Result<()> {
+        self.validate()?;
+        batch.validate()?;
+        let header = |mut value: Self| {
+            value.ordered_rows.clear();
+            value.arrow_refusals.clear();
+            value.authenticated_empty = true;
+            value.deterministic_sha256.clear();
+            value
+        };
+        if header(self.clone()) != header(batch.clone()) {
+            return Err("arrow-order:XMAP15-batch-identity-mismatch".into());
+        }
+        self.ordered_rows.extend(batch.ordered_rows);
+        self.authenticated_empty &= batch.authenticated_empty;
+        self.deterministic_sha256 = execution_digest(self)?;
+        self.validate()
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.prepared_frame_sha256.len() != 64
             || self.assigned_stage_name != crate::XMAP15_ASSIGNED_STAGE_NAME
@@ -47,14 +75,14 @@ impl Xmap15NativeExecutionReceipt {
             || self.target_sha256.len() != 64
             || self.scene_cb0_payload_sha256.len() != 64
             || self.point_lights_cb2_payload_sha256.len() != 64
-            || self.authenticated_empty != self.ordered_rows.is_empty()
+            || (self.authenticated_empty && !self.ordered_rows.is_empty())
             || self.deterministic_sha256 != execution_digest(self)?
         {
             return Err("XMAP15 native execution receipt is invalid".into());
         }
         let mut ordinals = BTreeSet::new();
         if self.ordered_rows.iter().any(|row| {
-            !ordinals.insert(row.final_engine_draw_ordinal)
+            !ordinals.insert((row.final_engine_draw_ordinal, row.outer_pass))
                 || row.geometry_sha256.len() != 64
                 || row.constant_payload_sha256.len() != 64
                 || (!row.visible && row.submitted_draw_count != 0)
@@ -159,6 +187,8 @@ mod native {
         pub target: &'a dyn NativeXmap16MainSceneTargetView,
         pub target_sha256: &'a str,
         pub prepared_frame: &'a PreparedXmap15Frame,
+        pub outer_pass: bool,
+        pub row_indices: &'a [usize],
         pub lifecycle_update_sha256: &'a str,
         pub scene_cb0: &'a S,
         pub point_lights_cb2: &'a NativeXmap16ExternalConstantBufferView,
@@ -308,6 +338,7 @@ mod native {
             S: NativeXmap16SceneConstantBufferView,
         {
             inputs.prepared_frame.validate()?;
+            crate::arrow_submission_order::validate_arrow_row_selection(inputs.row_indices, self.rows.len())?;
             if self.prepared_frame_sha256 != inputs.prepared_frame.portable.deterministic_sha256
                 || self.rows.len() != inputs.prepared_frame.portable.ordered_rows.len()
                 || inputs.context.is_null()
@@ -347,13 +378,9 @@ mod native {
             let mut scene_cb0 = inputs.scene_cb0.raw_buffer();
             let mut point_cb2 = inputs.point_lights_cb2.as_raw();
             let mut receipts = Vec::with_capacity(self.rows.len());
-            for (row, native) in inputs
-                .prepared_frame
-                .portable
-                .ordered_rows
-                .iter()
-                .zip(&self.rows)
-            {
+            for &row_index in inputs.row_indices {
+                let row = &inputs.prepared_frame.portable.ordered_rows[row_index];
+                let native = &self.rows[row_index];
                 let receipt = match (row, &native.geometry) {
                     (
                         Xmap15PreparedRow::Plan { semantic, .. },
@@ -408,7 +435,7 @@ mod native {
                         let mut draws = 0u32;
                         let mut submitted_vertices = 0u32;
                         if semantic.visible {
-                            for outer in [false, true] {
+                            for outer in [inputs.outer_pass] {
                                 let bytes = plan_cb3(
                                     definition,
                                     semantic,
@@ -435,6 +462,7 @@ mod native {
                             }
                         }
                         Xmap15NativeRowReceipt {
+                            outer_pass: Some(inputs.outer_pass),
                             final_engine_draw_ordinal: semantic.final_engine_draw_ordinal,
                             stable_key: plan_key(&semantic.key),
                             definition_name: semantic.resolved_definition_name.clone(),
@@ -519,6 +547,7 @@ mod native {
                             }
                         }
                         Xmap15NativeRowReceipt {
+                            outer_pass: None,
                             final_engine_draw_ordinal: semantic.final_engine_draw_ordinal,
                             stable_key: format!(
                                 "movement:{}:{}:{}",
@@ -550,6 +579,7 @@ mod native {
             let mut null_srvs = [ptr::null_mut(); 11];
             (*context).PSSetShaderResources(0, 11, null_srvs.as_mut_ptr());
             let mut receipt = Xmap15NativeExecutionReceipt {
+                arrow_refusals: Vec::new(),
                 prepared_frame_sha256: inputs.prepared_frame.portable.deterministic_sha256.clone(),
                 assigned_stage_name: inputs.prepared_frame.assigned_stage.stage_name.clone(),
                 assigned_operation_name: inputs
@@ -567,7 +597,7 @@ mod native {
                 target_sha256: inputs.target_sha256.into(),
                 scene_cb0_payload_sha256: inputs.scene_cb0.payload_sha256().into(),
                 point_lights_cb2_payload_sha256: inputs.point_lights_cb2.payload_sha256.clone(),
-                authenticated_empty: receipts.is_empty(),
+                authenticated_empty: inputs.prepared_frame.portable.ordered_rows.is_empty(),
                 ordered_rows: receipts,
                 deterministic_sha256: String::new(),
             };
@@ -1614,8 +1644,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn execution_receipt_rejects_empty_mismatch() {
+    fn execution_receipt_distinguishes_refused_selection_from_measured_empty() {
         let mut receipt = Xmap15NativeExecutionReceipt {
+                arrow_refusals: Vec::new(),
             prepared_frame_sha256: "a".repeat(64),
             assigned_stage_name: crate::XMAP15_ASSIGNED_STAGE_NAME.into(),
             assigned_operation_name: crate::XMAP15_ASSIGNED_OPERATION_NAME.into(),
@@ -1630,6 +1661,15 @@ mod tests {
             deterministic_sha256: String::new(),
         };
         receipt.deterministic_sha256 = execution_digest(&receipt).unwrap();
+        assert!(receipt.validate().is_ok());
+        assert!(!receipt.authenticated_empty);
+        let before = receipt.deterministic_sha256.clone();
+        let reason = crate::arrow_submission_order::ArrowOrderRefusal::MissingDefinition {
+            family: crate::arrow_submission_order::ArrowFamily::Orders, row: 0 };
+        receipt.record_arrow_refusals(&[reason.clone()]).unwrap();
+        assert_ne!(before, receipt.deterministic_sha256);
+        assert_eq!(receipt.arrow_refusals, [reason]);
+        receipt.arrow_refusals.clear();
         assert!(receipt.validate().is_err());
     }
 }

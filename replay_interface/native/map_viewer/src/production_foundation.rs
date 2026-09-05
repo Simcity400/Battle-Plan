@@ -276,7 +276,7 @@ pub struct FoundationFeatureOutput {
     pub prepared_water: Option<crate::PreparedWaterFrame>,
     pub prepared_units: Option<crate::PreparedXmap13Frame>,
     pub prepared_combat: Option<crate::PreparedXmap14Frame>,
-    pub prepared_orders: Option<crate::production_features::xmap15::PreparedXmap15Frame>,
+    pub prepared_orders: Option<crate::production_features::xmap15::PreparedXmap15Orders>,
     pub prepared_rail_supply: Option<crate::PreparedXmap16Frame>,
     pub prepared_map_modes: Option<crate::PreparedMapModeFrame>,
     /// Per-element doubts this family raised while preparing, at element grain.
@@ -900,6 +900,7 @@ pub struct PreparedFoundationFrame {
     pub units: Option<crate::PreparedXmap13Frame>,
     pub combat: Option<crate::PreparedXmap14Frame>,
     pub orders: Option<crate::production_features::xmap15::PreparedXmap15Frame>,
+    pub order_inputs: Option<crate::Xmap15PlanProvider>,
     pub rail_supply: Option<crate::PreparedXmap16Frame>,
     pub map_modes: crate::PreparedMapModeFrame,
     pub labels: Option<crate::PreparedMapLabelFrame>,
@@ -1232,6 +1233,7 @@ fn prepare_foundation_frame_inner(
     let mut prepared_units = None;
     let mut prepared_combat = None;
     let mut prepared_orders = None;
+    let mut order_inputs = None;
     let mut prepared_rail_supply = None;
     let mut prepared_labels = None;
     let mut prepared_map_modes = None;
@@ -1582,15 +1584,19 @@ fn prepare_foundation_frame_inner(
                     );
                     }
                     if let Some(orders) = output.prepared_orders {
+                        orders.plans.validate(world_frame.hour_index())?;
                         if family != MapVisualFamily::OrdersFrontsArrows
-                            || prepared_orders.replace(orders).is_some()
+                            || order_inputs.replace(orders.plans).is_some()
                         {
                             return Err(
                             "foundation adapter produced duplicate or non-XMAP15 orders payload"
                                 .into(),
                         );
                         }
-                    } else if family == MapVisualFamily::OrdersFrontsArrows
+                        prepared_orders = orders.native;
+                    }
+                    if family == MapVisualFamily::OrdersFrontsArrows
+                        && prepared_orders.is_none()
                         && matches!(
                             &output.disposition,
                             FamilyDisposition::Present { .. }
@@ -2057,6 +2063,7 @@ fn prepare_foundation_frame_inner(
         units: prepared_units,
         combat: prepared_combat,
         orders: prepared_orders,
+        order_inputs,
         rail_supply: prepared_rail_supply,
         labels,
         map_modes,
