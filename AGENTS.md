@@ -34,13 +34,9 @@ Roles. The **orchestrator** is the one agent the owner has explicitly named orch
 
 Never run the full workspace suite.
 
-### Review
+## Orchestrator (Skip if not referred to explicitly as the orchestrator)
 
-
-
-## Orchestrator (Skip if not reffered to explicitly as the orchestrator)
-
-Staffs lanes, reviews, lands, runs the gate, runs captures, asks the owner. Never implements lane work itself. Cap: 7 running agents; queue past it, never drop. After a restart or limit kill, resume each agent by its id. Never relaunch a lane that has an id. Never replace a slow lane.
+Staffs lanes, reviews, lands, runs the gate, runs captures, asks the owner. Never implements lane work itself. After a restart or limit kill, resume each agent by its id. Never relaunch a lane that has an id. Never replace a slow lane.
 
 ### Review, every lane, before any merge
 
