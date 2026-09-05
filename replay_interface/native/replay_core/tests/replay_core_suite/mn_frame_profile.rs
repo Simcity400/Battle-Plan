@@ -147,12 +147,11 @@ fn price_the_typed_frame_per_builder() {
             schema_version: body.schema_version.clone(),
             rest: body.rest.into(),
         };
-        let _ = frame_profile::take();
         let t1 = Instant::now();
-        let frame = WorldFrame::profile_from_raw(raw, None);
+        let (frame, spans) = frame_profile::measure(|| WorldFrame::profile_from_raw(raw, None));
         frame_ms.push(t1.elapsed().as_secs_f64() * 1e3);
         std::hint::black_box(&frame);
-        for (name, span) in frame_profile::take() {
+        for (name, span) in spans {
             per_builder.entry(name).or_default().push(span);
         }
     }
@@ -222,7 +221,6 @@ fn digest_the_typed_frame_every_hour() {
             schema_version: body.schema_version.clone(),
             rest: body.rest.into(),
         };
-        let _ = frame_profile::take();
         let frame = WorldFrame::profile_from_raw(raw, None);
         let dip = frame.diplomacy();
         let mut pair_text = String::new();

@@ -338,7 +338,7 @@ mod tests {
             std::process::id(), std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         replay_core::decode_stages::record("outside report", 99.0);
-        run(&recording, &out, None, HourSelection::First(2)).unwrap();
+        run(&recording, &out, None, HourSelection::First(2), 2).unwrap();
         let report: serde_json::Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
         std::fs::remove_file(&out).unwrap();
         let hours = report["hours"].as_array().unwrap();

@@ -4232,11 +4232,11 @@ fn frame_cache_budget_is_content_neutral() {
 
     assert_eq!(
         TimelineConfig::default().frame_cache_entries,
-        16,
-        "default budget is the soak-proven 16-entry cap"
+        2,
+        "default frame budget"
     );
     let reference = open_timeline(&root);
-    assert_eq!(reference.frame_cache_entries(), 16);
+    assert_eq!(reference.frame_cache_entries(), 2);
 
     for cap in [4usize, 1, 0] {
         let timeline = WorldTimeline::open_with_config(

@@ -1974,7 +1974,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_frame_cache_shrinks_recording_budget() {
+    fn cli_frame_cache_sets_recording_budget() {
         let options = parse_cli(&args_with_bundle(&[
             "--recording",
             "some/session.battleplan",
@@ -1995,7 +1995,7 @@ mod tests {
         );
         assert_eq!(
             replay_core::TimelineConfig::default().frame_cache_entries,
-            16
+            2
         );
     }
 
