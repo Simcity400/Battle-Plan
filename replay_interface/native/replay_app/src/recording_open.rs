@@ -1339,6 +1339,16 @@ impl ReplaySource for ProductReplaySource {
     fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
         self.inner.frame(hour_index)
     }
+    fn reference_frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
+        self.inner.reference_frame(hour_index)
+    }
+    fn frame_member(
+        &self,
+        hour_index: i64,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>, SourceError> {
+        self.inner.frame_member(hour_index, key)
+    }
 }
 
 #[cfg(test)]
