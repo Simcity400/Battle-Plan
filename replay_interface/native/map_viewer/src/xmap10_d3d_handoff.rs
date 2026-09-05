@@ -3152,6 +3152,11 @@ mod native {
     }
 
     impl NativeXmap10ScreenShadowHandoff {
+        pub fn retained_before_frame(&self, frame: &Xmap10ShadowHistoryFrame)
+            -> std::result::Result<NativeXmap10RetainedShadowView<'_>, Xmap10RetainedShadowRefusal> {
+            self.targets.retained_before_frame(frame)
+        }
+
         pub unsafe fn create_on_device(
             device: *mut ID3D11Device,
             resolver: &GameFileResolver,
@@ -3258,7 +3263,7 @@ mod native {
             terrain.validate()?;
             light_depth_execution.validate()?;
             validate_context_for_device(&self.device, context)?;
-            if terrain.deterministic_sha256 != self.terrain_frame_sha256
+            if terrain.program.deterministic_sha256 != self.terrain_program_sha256
                 || terrain_handoff.receipt().terrain_frame_sha256 != terrain.deterministic_sha256
                 || shadow_matrix.input_payload_sha256 != light_depth_execution.input_payload_sha256
                 || !light_depth_execution.active

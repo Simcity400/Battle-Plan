@@ -68,7 +68,7 @@ fn recovered_06_whole_recording_viewer_light_census() {
     )
     .unwrap();
     let mut viewer = ViewerOwnedMapState {
-        viewport_width: 1920,
+            sky_enabled: true,        viewport_width: 1920,
         viewport_height: 1080,
         camera: Some(camera),
         observer_country_id: None,

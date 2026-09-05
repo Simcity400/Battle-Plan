@@ -1154,6 +1154,7 @@ pub use xmap10_d3d_handoff::{
     Xmap10LuminanceReductionPlan, Xmap10LutExecutionReceipt, Xmap10LutPassExecutionReceipt,
     Xmap10NativeShaderResourceBinding, Xmap10PostFxExecutionInput, Xmap10PostFxFrameReceipt,
     Xmap10ReductionStep, Xmap10ScreenShadowExecutionReceipt, Xmap10TargetBoundPassReceipt,
+    Xmap10ShadowHistoryFrame, Xmap10RetainedShadowRefusal, Xmap10RetainedShadowReadReceipt,
     Xmap10TemporalExecutionInput, Xmap10TemporalPolicy,
     XMAP10_LUMINANCE_DOWNSAMPLE_CHAIN_RECEIPT_SCHEMA,
     XMAP10_LUMINANCE_DOWNSAMPLE_SUBPASS_RECEIPT_SCHEMA, XMAP10_LUMINANCE_REDUCTION_EVIDENCE_SHA256,

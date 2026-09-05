@@ -843,7 +843,7 @@ mod tests {
             })
             .collect();
         let viewer = ViewerOwnedMapState {
-            viewport_width: 1,
+            sky_enabled: true,            viewport_width: 1,
             viewport_height: 1,
             camera: None,
             observer_country_id: None,
@@ -1255,7 +1255,7 @@ entity = {
             world_matrix_f32_bits: world.map(f32::to_bits),
         }];
         let mut viewer = ViewerOwnedMapState {
-            viewport_width: 1,
+            sky_enabled: true,            viewport_width: 1,
             viewport_height: 1,
             camera: None,
             observer_country_id: None,

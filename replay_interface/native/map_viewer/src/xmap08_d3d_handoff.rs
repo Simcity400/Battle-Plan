@@ -2623,60 +2623,7 @@ unsafe fn create_blend_state(
     device: *mut winapi::um::d3d11::ID3D11Device,
     program: &PreparedMapEffectProgram,
 ) -> Result<crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11BlendState>> {
-    use crate::d3d11_device::{native_d3d11_hr, D3dPtr};
-    use std::ptr;
-    use winapi::um::d3d11::{
-        ID3D11BlendState, D3D11_BLEND_DESC, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_ONE,
-        D3D11_BLEND_OP_ADD, D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_ZERO, D3D11_COLOR_WRITE_ENABLE_ALL,
-        D3D11_COLOR_WRITE_ENABLE_BLUE, D3D11_COLOR_WRITE_ENABLE_GREEN,
-        D3D11_COLOR_WRITE_ENABLE_RED,
-    };
-    let values = state_map(&program.pipeline.blend_state);
-    require_state(&values, "BlendEnable", "yes", &program.effect_name)?;
-    require_state_any(
-        &values,
-        "SourceBlend",
-        &["src_alpha", "SRC_ALPHA"],
-        &program.effect_name,
-    )?;
-    require_state_any(
-        &values,
-        "DestBlend",
-        &["inv_src_alpha", "INV_SRC_ALPHA"],
-        &program.effect_name,
-    )?;
-    let write_mask = match values.get("WriteMask").copied() {
-        None => D3D11_COLOR_WRITE_ENABLE_ALL as u8,
-        Some("RED|GREEN|BLUE") => {
-            (D3D11_COLOR_WRITE_ENABLE_RED
-                | D3D11_COLOR_WRITE_ENABLE_GREEN
-                | D3D11_COLOR_WRITE_ENABLE_BLUE) as u8
-        }
-        Some(other) => {
-            return Err(format!(
-                "XMAP08 {} has unsupported WriteMask {other}",
-                program.effect_name
-            )
-            .into())
-        }
-    };
-    let mut descriptor: D3D11_BLEND_DESC = std::mem::zeroed();
-    descriptor.AlphaToCoverageEnable = 0;
-    descriptor.IndependentBlendEnable = 0;
-    descriptor.RenderTarget[0].BlendEnable = 1;
-    descriptor.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
-    descriptor.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
-    descriptor.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
-    descriptor.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
-    descriptor.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
-    descriptor.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
-    descriptor.RenderTarget[0].RenderTargetWriteMask = write_mask;
-    let mut raw = ptr::null_mut::<ID3D11BlendState>();
-    native_d3d11_hr(
-        (*device).CreateBlendState(&descriptor, &mut raw),
-        &format!("CreateBlendState(XMAP08 {})", program.effect_name),
-    )?;
-    D3dPtr::from_raw(raw, "XMAP08 blend state")
+    crate::xmap12_d3d_handoff::create_blend_state(device, &program.pipeline.blend_state)
 }
 
 #[cfg(windows)]
