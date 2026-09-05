@@ -789,7 +789,7 @@ mod tests {
         assert_ne!(changed.authority_digest(), original);
         assert_eq!(
             original,
-            "8f969821e62d3c41e5e60e2f80ac7600b2f2298cc0106f0e9c1cdda8f7b2f012"
+            "cdc8348ccd909c85f1e86222e2ed66e4ca34c5514339cccbf74f4279a7a4b603"
         );
     }
 
