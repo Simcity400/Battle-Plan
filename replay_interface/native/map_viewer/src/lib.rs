@@ -306,8 +306,8 @@ pub use xmap09_light_template::{
     parse_light_templates, resolve_light_event, xmap09_attach_node_object_transform,
     xmap09_event_age_seconds, xmap09_event_playhead_phase, xmap09_light_world_position,
     Xmap09LightAnimation, Xmap09LightAnimationOp, Xmap09LightEvaluationRefusal,
-    Xmap09LightInstanceClock, Xmap09LightEventRefusal, Xmap09LightTemplate,
-    Xmap09ResolvedLightEvent, XMAP09_LIGHT_INTENSITY_LAW_UNPINNED,
+    Xmap09LightEventRefusal, Xmap09LightFrameValues, Xmap09LightInstanceClock,
+    Xmap09LightTemplate, Xmap09LightTrack, Xmap09ResolvedLightEvent,
 };
 pub use xmap09_lighting_law::{
     engine_hour_of_day, engine_hour_of_day_fraction, virtual_rig,

@@ -105,8 +105,8 @@ impl Xmap09LightAnimation {
         {
             return Err(Xmap09LightEvaluationRefusal::InvalidAnimation);
         }
-        let (sample_denominator, lookup_scale) = XMAP09_CURVE_TABLE_SCALARS
-            .ok_or(Xmap09LightEvaluationRefusal::CurveTableScalarsUnpinned)?;
+        let (sample_denominator, lookup_scale) =
+            XMAP09_CURVE_TABLE_SCALARS.expect("a729 table scalar data export is pinned");
         let mut samples = [0.0; 64];
         for (index, sample) in samples.iter_mut().enumerate() {
             *sample = self
@@ -147,11 +147,10 @@ impl Xmap09LightAnimation {
     }
 }
 
-const XMAP09_CURVE_TABLE_SCALARS: Option<(f32, f32)> = None;
+const XMAP09_CURVE_TABLE_SCALARS: Option<(f32, f32)> = Some((63.0, 64.0));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Xmap09LightEvaluationRefusal {
-    CurveTableScalarsUnpinned,
     InvalidAnimation,
     InvalidRendererDelta,
 }
@@ -159,7 +158,6 @@ pub enum Xmap09LightEvaluationRefusal {
 impl std::fmt::Display for Xmap09LightEvaluationRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::CurveTableScalarsUnpinned => XMAP09_LIGHT_INTENSITY_LAW_UNPINNED,
             Self::InvalidAnimation => "XMAP09_LIGHT_ANIMATION_INVALID",
             Self::InvalidRendererDelta => "XMAP09_LIGHT_RENDERER_DELTA_INVALID",
         })
@@ -197,20 +195,50 @@ impl Xmap09LightInstanceClock {
     }
 }
 
-/// One `light = { ... }` template block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Xmap09LightTrack {
+    pub base: f32,
+    pub animations: Vec<String>,
+}
+
+impl Xmap09LightTrack {
+    fn evaluate(
+        &self,
+        animations: &[Xmap09LightAnimation],
+        clock: &Xmap09LightInstanceClock,
+    ) -> std::result::Result<f32, Xmap09LightEvaluationRefusal> {
+        if !self.base.is_finite() {
+            return Err(Xmap09LightEvaluationRefusal::InvalidAnimation);
+        }
+        self.animations.iter().try_fold(self.base, |value, name| {
+            animations
+                .iter()
+                .find(|animation| animation.name == *name)
+                .ok_or(Xmap09LightEvaluationRefusal::InvalidAnimation)?
+                .evaluate_at_renderer_age(value, clock.age_seconds())
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Xmap09LightTemplate {
     pub name: String,
     pub source: String,
+    pub color: [Xmap09LightTrack; 3],
+    pub intensity: Xmap09LightTrack,
+    pub radius: Xmap09LightTrack,
+    pub falloff: Xmap09LightTrack,
+    pub position: [Xmap09LightTrack; 3],
+    pub animations: Vec<Xmap09LightAnimation>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Xmap09LightFrameValues {
     pub color: [f32; 3],
     pub intensity: f32,
-    /// The bare `fade` token the shipped files write after `intensity`.
-    pub intensity_fades: bool,
     pub radius: f32,
     pub falloff: f32,
-    /// The offset from the attach node, in the node's own space.
     pub position: [f32; 3],
-    pub animation: Option<Xmap09LightAnimation>,
 }
 
 impl Xmap09LightTemplate {
@@ -218,24 +246,35 @@ impl Xmap09LightTemplate {
         &self,
         clock: &Xmap09LightInstanceClock,
     ) -> std::result::Result<f32, Xmap09LightEvaluationRefusal> {
-        if self.intensity_fades {
-            let animation = self
-                .animation
-                .as_ref()
-                .filter(|animation| animation.name == "fade")
-                .ok_or(Xmap09LightEvaluationRefusal::InvalidAnimation)?;
-            return animation.evaluate_at_renderer_age(self.intensity, clock.age_seconds());
-        }
-        if self.intensity.is_finite() {
-            Ok(self.intensity)
-        } else {
-            Err(Xmap09LightEvaluationRefusal::InvalidAnimation)
-        }
+        self.intensity.evaluate(&self.animations, clock)
+    }
+
+    pub fn values_at_frame(
+        &self,
+        clock: &Xmap09LightInstanceClock,
+    ) -> std::result::Result<Xmap09LightFrameValues, Xmap09LightEvaluationRefusal> {
+        let falloff = self.falloff.evaluate(&self.animations, clock)?;
+        let radius = self.radius.evaluate(&self.animations, clock)?;
+        let intensity = self.intensity_at_frame(clock)?;
+        let color = [
+            self.color[0].evaluate(&self.animations, clock)?,
+            self.color[1].evaluate(&self.animations, clock)?,
+            self.color[2].evaluate(&self.animations, clock)?,
+        ];
+        let position = [
+            self.position[0].evaluate(&self.animations, clock)?,
+            self.position[1].evaluate(&self.animations, clock)?,
+            self.position[2].evaluate(&self.animations, clock)?,
+        ];
+        Ok(Xmap09LightFrameValues {
+            color,
+            intensity,
+            radius,
+            falloff,
+            position,
+        })
     }
 }
-
-pub const XMAP09_LIGHT_INTENSITY_LAW_UNPINNED: &str =
-    "XMAP09_LIGHT_CURVE_TABLE_SCALARS_UNPINNED: a729 curve builder 0x1424f0720 and evaluator 0x1424efc80 are exported; scalar bytes at 0x142b00318 and 0x142a8a308 are not pinned from a729";
 
 /// Every `light = { ... }` block one asset source declares.
 pub fn parse_light_templates(text: &str, source: &str) -> Result<Vec<Xmap09LightTemplate>> {
@@ -249,9 +288,9 @@ pub fn parse_light_templates(text: &str, source: &str) -> Result<Vec<Xmap09Light
             .first()
             .and_then(|block| {
                 Some([
-                    braced_f32(block, "r")?,
-                    braced_f32(block, "g")?,
-                    braced_f32(block, "b")?,
+                    parse_light_track(block, "r").ok()?,
+                    parse_light_track(block, "g").ok()?,
+                    parse_light_track(block, "b").ok()?,
                 ])
             })
             .ok_or_else(|| format!("{source}: light {name:?} declares no complete colour"))?;
@@ -259,81 +298,103 @@ pub fn parse_light_templates(text: &str, source: &str) -> Result<Vec<Xmap09Light
             .first()
             .and_then(|block| {
                 Some([
-                    parse_f32_value(block, "x")?,
-                    parse_f32_value(block, "y")?,
-                    parse_f32_value(block, "z")?,
+                    parse_light_track(block, "x").ok()?,
+                    parse_light_track(block, "y").ok()?,
+                    parse_light_track(block, "z").ok()?,
                 ])
             })
             .ok_or_else(|| format!("{source}: light {name:?} declares no complete position"))?;
-        let intensity = leading_f32(&body, "intensity")
-            .ok_or_else(|| format!("{source}: light {name:?} declares no intensity"))?;
-        let radius = parse_f32_value(&body, "radius")
-            .ok_or_else(|| format!("{source}: light {name:?} declares no radius"))?;
-        let falloff = parse_f32_value(&body, "falloff")
-            .ok_or_else(|| format!("{source}: light {name:?} declares no falloff"))?;
-        let animation = match line_first_blocks(&body, "animation").first() {
-            None => None,
-            Some(block) => {
-                let op = parse_string_value(block, "op")
-                    .as_deref()
-                    .and_then(Xmap09LightAnimationOp::parse)
-                    .ok_or_else(|| {
-                        format!(
-                            "{source}: light {name:?} declares an animation op it does not name"
-                        )
-                    })?;
-                let value = |key: &str| -> Result<f32> {
-                    parse_f32_value(block, key).ok_or_else(|| {
-                        format!("{source}: light {name:?} animation declares no {key}").into()
-                    })
-                };
-                let curve = line_first_blocks(block, "curve")
-                    .first()
-                    .map(|curve| parse_curve_pairs(curve))
-                    .transpose()?
-                    .unwrap_or_default();
-                Some(Xmap09LightAnimation {
-                    name: parse_string_value(block, "name").unwrap_or_default(),
-                    start: value("start")?,
-                    duration: value("duration")?,
-                    repeat: parse_string_value(block, "repeat").as_deref() == Some("yes"),
-                    op,
-                    min_value: value("minValue")?,
-                    max_value: value("maxValue")?,
-                    curve,
+        let intensity = parse_light_track(&body, "intensity")?;
+        let radius = parse_light_track(&body, "radius")?;
+        let falloff = parse_light_track(&body, "falloff")?;
+        let mut animations = Vec::new();
+        for block in line_first_blocks(&body, "animation") {
+            let block = &block;
+            let op = parse_string_value(block, "op")
+                .as_deref()
+                .and_then(Xmap09LightAnimationOp::parse)
+                .ok_or_else(|| {
+                    format!("{source}: light {name:?} declares an animation op it does not name")
+                })?;
+            let value = |key: &str| -> Result<f32> {
+                parse_f32_value(block, key).ok_or_else(|| {
+                    format!("{source}: light {name:?} animation declares no {key}").into()
                 })
-            }
-        };
+            };
+            let curve = line_first_blocks(block, "curve")
+                .first()
+                .map(|curve| parse_curve_pairs(curve))
+                .transpose()?
+                .unwrap_or_default();
+            animations.push(Xmap09LightAnimation {
+                name: parse_string_value(block, "name").unwrap_or_default(),
+                start: value("start")?,
+                duration: value("duration")?,
+                repeat: parse_string_value(block, "repeat").as_deref() == Some("yes"),
+                op,
+                min_value: value("minValue")?,
+                max_value: value("maxValue")?,
+                curve,
+            });
+        }
         out.push(Xmap09LightTemplate {
             name,
             source: source.to_string(),
             color,
             intensity,
-            intensity_fades: intensity_carries_fade(&body),
             radius,
             falloff,
             position,
-            animation,
+            animations,
         });
     }
     Ok(out)
 }
 
-/// `intensity = 3, fade` - the value up to the comma the shipped emitters write.
-fn leading_f32(text: &str, key: &str) -> Option<f32> {
-    let at = crate::find_assignment(text, key, 0)?;
-    let value: String = text[at..]
-        .trim_start()
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit() || *ch == '.' || *ch == '-' || *ch == '+')
-        .collect();
-    value.parse::<f32>().ok()
-}
-
-/// `key = { value }` - the shipped emitters brace every colour channel.
-fn braced_f32(text: &str, key: &str) -> Option<f32> {
-    let at = crate::find_assignment(text, key, 0)?;
-    crate::parse_f32_at(text[at..].trim_start().trim_start_matches('{'))
+fn parse_light_track(text: &str, key: &str) -> Result<Xmap09LightTrack> {
+    let at = crate::find_assignment(text, key, 0)
+        .ok_or_else(|| format!("XMAP09_LIGHT_TRACK_MISSING: {key}"))?;
+    let mut rest = text[at..].trim_start();
+    let braced = rest.starts_with('{');
+    if braced {
+        rest = rest[1..].trim_start();
+    }
+    let mut base = 0.0;
+    let mut animations = Vec::new();
+    loop {
+        let (value, tail) = if let Some(quoted) = rest.strip_prefix('"') {
+            let end = quoted
+                .find('"')
+                .ok_or("XMAP09_LIGHT_TRACK_UNCLOSED_STRING")?;
+            (&quoted[..end], &quoted[end + 1..])
+        } else {
+            let end = rest
+                .find(|ch: char| ch.is_whitespace() || matches!(ch, ',' | '}' | '{' | '='))
+                .unwrap_or(rest.len());
+            (&rest[..end], &rest[end..])
+        };
+        if value.is_empty() {
+            return Err(format!("XMAP09_LIGHT_TRACK_INVALID: {key}").into());
+        }
+        if let Ok(number) = value.parse::<f32>() {
+            if !number.is_finite() {
+                return Err("XMAP09_LIGHT_TRACK_NONFINITE".into());
+            }
+            base = number;
+        } else {
+            animations.push(value.to_string());
+        }
+        rest = tail.trim_start();
+        if let Some(tail) = rest.strip_prefix(',') {
+            rest = tail.trim_start();
+        } else {
+            if braced && !rest.starts_with('}') {
+                return Err("XMAP09_LIGHT_TRACK_UNCLOSED_BLOCK".into());
+            }
+            break;
+        }
+    }
+    Ok(Xmap09LightTrack { base, animations })
 }
 
 /// Every `key = { ... }` body whose key is the first token of its own line.
@@ -379,18 +440,6 @@ fn line_first_blocks(text: &str, key: &str) -> Vec<String> {
     out
 }
 
-/// `intensity = 3, fade` - the bare token after the value.
-fn intensity_carries_fade(body: &str) -> bool {
-    let Some(at) = crate::find_assignment(body, "intensity", 0) else {
-        return false;
-    };
-    body[at..]
-        .lines()
-        .next()
-        .map(|line| line.split(',').skip(1).any(|rest| rest.trim() == "fade"))
-        .unwrap_or(false)
-}
-
 /// The `curve = { t v t v ... }` pairs, whitespace separated.
 fn parse_curve_pairs(body: &str) -> Result<Vec<[f32; 2]>> {
     let values: std::result::Result<Vec<f32>, _> = body
@@ -417,6 +466,7 @@ pub struct Xmap09ResolvedLightEvent {
     pub node: String,
     /// Seconds into the state's clip at which the engine fires it.
     pub event_time: f32,
+    pub values: Xmap09LightFrameValues,
 }
 
 /// Why one authored `light` event of a placed entity is not accounted for.
@@ -426,6 +476,10 @@ pub enum Xmap09LightEventRefusal {
     NoNode,
     /// The event carries no `time`, so nothing times it against the playhead.
     NoTime,
+    Evaluation {
+        light: String,
+        reason: Xmap09LightEvaluationRefusal,
+    },
     /// No admitted source declares that `light` template.
     UndeclaredTemplate { light: String },
     /// The mesh declares neither a locator nor a bone of that name.
@@ -438,13 +492,14 @@ pub fn resolve_light_event(
     templates: &[Xmap09LightTemplate],
     locators: &[PdxLocator],
     skeleton: &[PdxJoint],
+    instance_clock: &Xmap09LightInstanceClock,
 ) -> std::result::Result<Xmap09ResolvedLightEvent, Option<Xmap09LightEventRefusal>> {
     // An event with no `light` is another domain's (particle, sound); it is not
     // a refusal of this one.
     let light = event.light.clone().ok_or(None)?;
-    if !templates.iter().any(|template| template.name == light) {
+    let Some(template) = templates.iter().find(|template| template.name == light) else {
         return Err(Some(Xmap09LightEventRefusal::UndeclaredTemplate { light }));
-    }
+    };
     let Some(node) = event.node.clone() else {
         return Err(Some(Xmap09LightEventRefusal::NoNode));
     };
@@ -456,10 +511,17 @@ pub fn resolve_light_event(
     let Some(event_time) = event.time.filter(|time| time.is_finite() && *time >= 0.0) else {
         return Err(Some(Xmap09LightEventRefusal::NoTime));
     };
+    let values = template.values_at_frame(instance_clock).map_err(|reason| {
+        Some(Xmap09LightEventRefusal::Evaluation {
+            light: light.clone(),
+            reason,
+        })
+    })?;
     Ok(Xmap09ResolvedLightEvent {
         light,
         node,
         event_time,
+        values,
     })
 }
 
@@ -595,10 +657,8 @@ mod tests {
 
     #[test]
     fn curve_table_samples_remap_cubic_overshoot_without_clamping() {
-        let mut animation = parse_light_templates(CITYLIGHT, "t.asset").unwrap()[0]
-            .animation
-            .clone()
-            .unwrap();
+        let mut animation =
+            parse_light_templates(CITYLIGHT, "t.asset").unwrap()[0].animations[0].clone();
         animation.curve = vec![[0.0, 0.0], [0.25, 1.0], [0.75, 1.0], [1.0, 0.0]];
         animation.min_value = 2.0;
         animation.max_value = 6.0;
@@ -612,10 +672,8 @@ mod tests {
 
     #[test]
     fn curve_table_samples_refuse_unproven_or_nonfinite_domains() {
-        let mut animation = parse_light_templates(CITYLIGHT, "t.asset").unwrap()[0]
-            .animation
-            .clone()
-            .unwrap();
+        let mut animation =
+            parse_light_templates(CITYLIGHT, "t.asset").unwrap()[0].animations[0].clone();
         assert_eq!(animation.sample_curve_for_table(f32::NAN), None);
         animation.curve[0][0] = 0.1;
         assert_eq!(animation.sample_curve_for_table(0.0), None);
@@ -649,18 +707,144 @@ mod tests {
     }
 
     #[test]
-    fn animated_intensity_refuses_until_both_table_scalars_are_pinned() {
-        let templates = parse_light_templates(CITYLIGHT, "t.asset").unwrap();
-        let mut clock = Xmap09LightInstanceClock::default();
-        clock.advance(0.16, true).unwrap();
-        let refusal = templates[1].intensity_at_frame(&clock).unwrap_err();
+    fn curve_lookup_uses_64_over_duration_and_holds_endpoints() {
+        let mut animation =
+            parse_light_templates(CITYLIGHT, "t.asset").unwrap()[0].animations[0].clone();
+        animation.start = 1.0;
+        animation.duration = 2.0;
+        animation.repeat = false;
+        animation.min_value = 0.0;
+        animation.max_value = 63.0;
+        animation.curve = vec![[0.0, 0.0], [1.0, 1.0]];
+        animation.op = Xmap09LightAnimationOp::Abs;
+        assert_eq!(animation.evaluate_at_renderer_age(10.0, 0.0), Ok(0.0));
+        assert!((animation.evaluate_at_renderer_age(10.0, 2.0).unwrap() - 32.0).abs() < 0.00001);
+        assert_eq!(animation.evaluate_at_renderer_age(10.0, 3.0), Ok(63.0));
+        assert_eq!(animation.evaluate_at_renderer_age(10.0, 30.0), Ok(63.0));
+        animation.repeat = true;
+        assert_eq!(animation.evaluate_at_renderer_age(10.0, 3.0), Ok(0.0));
         assert_eq!(
-            refusal,
-            Xmap09LightEvaluationRefusal::CurveTableScalarsUnpinned
+            animation.evaluate_at_renderer_age(10.0, 5.0),
+            animation.evaluate_at_renderer_age(10.0, 2.0)
         );
-        assert!(refusal.to_string().contains("0x142b00318"));
-        assert!(refusal.to_string().contains("0x142a8a308"));
-        assert_eq!(templates[0].intensity_at_frame(&clock), Ok(0.8));
+        animation.op = Xmap09LightAnimationOp::Add;
+        assert_eq!(animation.evaluate_at_renderer_age(10.0, 1.0), Ok(10.0));
+        animation.op = Xmap09LightAnimationOp::Mul;
+        assert_eq!(animation.evaluate_at_renderer_age(10.0, 1.0), Ok(0.0));
+    }
+
+    #[test]
+    fn named_light_tracks_apply_every_operator_in_reference_order() {
+        let text = r#"
+light = {
+ name = prism
+ color = { r = { 1, twice, plus } g = { 1, plus, twice } b = { 9, replace } }
+ intensity = 3, twice
+ radius = 4, plus
+ falloff = 5, twice
+ position = { x = 0, plus y = 1, twice z = 2, replace }
+ animation = {
+ name = twice
+ start = 0
+ duration = 1
+ repeat = no
+ op = MUL
+ minValue = 2
+ maxValue = 2
+ curve = { 0 0 1 1 }
+ }
+ animation = {
+ name = plus
+ start = 0
+ duration = 1
+ repeat = no
+ op = ADD
+ minValue = 3
+ maxValue = 3
+ curve = { 0 0 1 1 }
+ }
+ animation = {
+ name = replace
+ start = 0
+ duration = 1
+ repeat = no
+ op = ABS
+ minValue = 7
+ maxValue = 7
+ curve = { 0 0 1 1 }
+ }
+}
+"#;
+        let template = parse_light_templates(text, "prism.asset")
+            .unwrap()
+            .remove(0);
+        assert_eq!(template.animations.len(), 3);
+        let mut clock = Xmap09LightInstanceClock::default();
+        clock.advance(0.25, true).unwrap();
+        assert_eq!(
+            template.values_at_frame(&clock).unwrap(),
+            Xmap09LightFrameValues {
+                color: [5.0, 8.0, 7.0],
+                intensity: 6.0,
+                radius: 7.0,
+                falloff: 10.0,
+                position: [3.0, 2.0, 7.0],
+            }
+        );
+        let missing = text.replace("1, twice, plus", "1, undeclared");
+        let missing = parse_light_templates(&missing, "prism.asset")
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            missing.values_at_frame(&clock),
+            Err(Xmap09LightEvaluationRefusal::InvalidAnimation)
+        );
+        assert!(
+            parse_light_templates(&text.replace("{ 1, twice, plus }", "{ NaN }"), "bad.asset")
+                .is_err()
+        );
+        let constant = parse_light_templates(CITYLIGHT, "constant.asset")
+            .unwrap()
+            .remove(0);
+        assert_eq!(constant.values_at_frame(&clock).unwrap().intensity, 0.8);
+    }
+
+    #[test]
+    fn resolved_event_values_follow_the_fired_instances_renderer_clock() {
+        let templates = parse_light_templates(CITYLIGHT, "t.asset").unwrap();
+        let locators = [PdxLocator {
+            name: "lamp".into(),
+            position: [0.0; 3],
+            rotation_quat: [0.0, 0.0, 0.0, 1.0],
+            parent_bone: None,
+            transform_4x4: None,
+        }];
+        let event = BuildingEntityEvent {
+            time: Some(1.1),
+            node: Some("lamp".into()),
+            light: Some("alarm_flash".into()),
+            trigger_once: false,
+        };
+        let mut clock = Xmap09LightInstanceClock::default();
+        let initial = resolve_light_event(&event, &templates, &locators, &[], &clock).unwrap();
+        assert_eq!(initial.values.intensity, 0.0);
+        clock.advance(0.16, true).unwrap();
+        let lit = resolve_light_event(&event, &templates, &locators, &[], &clock).unwrap();
+        assert!(lit.values.intensity > 2.9 && lit.values.intensity < 3.1);
+        assert_eq!(lit.values.color, [1.0, 0.0, 0.0]);
+        clock.advance(30.0, false).unwrap();
+        assert_eq!(
+            resolve_light_event(&event, &templates, &locators, &[], &clock).unwrap(),
+            lit
+        );
+        clock.advance(2.0, true).unwrap();
+        assert_eq!(
+            resolve_light_event(&event, &templates, &locators, &[], &clock)
+                .unwrap()
+                .values
+                .intensity,
+            0.0
+        );
     }
 
     #[test]
@@ -718,13 +902,19 @@ light = {
         assert_eq!(templates.len(), 2);
         let city = &templates[0];
         assert_eq!(city.name, "citylight");
-        assert_eq!(city.color, [1.0, 0.3, 0.1]);
-        assert_eq!(city.intensity, 0.8);
-        assert!(!city.intensity_fades);
-        assert_eq!(city.radius, 12.0);
-        assert_eq!(city.falloff, 6.0);
-        assert_eq!(city.position, [0.0, 3.0, 0.0]);
-        let animation = city.animation.as_ref().expect("animation");
+        assert_eq!(
+            city.color.each_ref().map(|track| track.base),
+            [1.0, 0.3, 0.1]
+        );
+        assert_eq!(city.intensity.base, 0.8);
+        assert!(city.intensity.animations.is_empty());
+        assert_eq!(city.radius.base, 12.0);
+        assert_eq!(city.falloff.base, 6.0);
+        assert_eq!(
+            city.position.each_ref().map(|track| track.base),
+            [0.0, 3.0, 0.0]
+        );
+        let animation = &city.animations[0];
         assert_eq!(animation.op, Xmap09LightAnimationOp::Mul);
         assert!(animation.repeat);
         assert_eq!(animation.curve, vec![[0.0, 0.8], [0.4, 1.0], [1.0, 0.8]]);
@@ -733,8 +923,8 @@ light = {
         assert_eq!(animation.sample_curve_for_table(2.0), None);
 
         let alarm = &templates[1];
-        assert!(alarm.intensity_fades);
-        assert_eq!(alarm.intensity, 3.0);
+        assert_eq!(alarm.intensity.animations, ["fade"]);
+        assert_eq!(alarm.intensity.base, 3.0);
     }
 
     /// kills: an event a commented-out declaration would have fired.
@@ -852,12 +1042,20 @@ light = {
                 &event(Some("alarm_flash"), Some("lamp"), Some(1.1)),
                 &templates,
                 &locators,
-                &[]
+                &[],
+                &Xmap09LightInstanceClock::default()
             ),
             Ok(Xmap09ResolvedLightEvent {
                 light: "alarm_flash".into(),
                 node: "lamp".into(),
                 event_time: 1.1,
+                values: Xmap09LightFrameValues {
+                    color: [1.0, 0.0, 0.0],
+                    intensity: 0.0,
+                    radius: 2.0,
+                    falloff: 5.0,
+                    position: [0.0; 3],
+                },
             })
         );
         // A particle-only event is another domain's, not a refusal.
@@ -866,7 +1064,8 @@ light = {
                 &event(None, Some("lamp"), Some(0.0)),
                 &templates,
                 &locators,
-                &[]
+                &[],
+                &Xmap09LightInstanceClock::default()
             ),
             Err(None)
         );
@@ -875,7 +1074,8 @@ light = {
                 &event(Some("nope"), Some("lamp"), Some(0.0)),
                 &templates,
                 &locators,
-                &[]
+                &[],
+                &Xmap09LightInstanceClock::default()
             ),
             Err(Some(Xmap09LightEventRefusal::UndeclaredTemplate {
                 light: "nope".into()
@@ -886,7 +1086,8 @@ light = {
                 &event(Some("alarm_flash"), Some("gone"), Some(0.0)),
                 &templates,
                 &locators,
-                &[]
+                &[],
+                &Xmap09LightInstanceClock::default()
             ),
             Err(Some(Xmap09LightEventRefusal::UnknownNode {
                 node: "gone".into()
@@ -897,7 +1098,8 @@ light = {
                 &event(Some("alarm_flash"), Some("lamp"), None),
                 &templates,
                 &locators,
-                &[]
+                &[],
+                &Xmap09LightInstanceClock::default()
             ),
             Err(Some(Xmap09LightEventRefusal::NoTime))
         );
@@ -906,7 +1108,8 @@ light = {
                 &event(Some("alarm_flash"), None, Some(0.0)),
                 &templates,
                 &locators,
-                &[]
+                &[],
+                &Xmap09LightInstanceClock::default()
             ),
             Err(Some(Xmap09LightEventRefusal::NoNode))
         );
