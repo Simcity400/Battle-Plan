@@ -1142,7 +1142,7 @@ mod native {
                     let map = heightmap
                         .as_ref()
                         .ok_or("XMAP15 plan frame omitted admitted heightmap")?;
-                    let mesh = semantic.build_map_arrow_mesh(profile, |x, z| {
+                    let mesh = semantic.build_map_arrow_mesh(profile, frame.map_width, |x, z| {
                         Ok(crate::rail_files::sample_exact_supply_arrow_height(
                             map, x, z,
                         ))

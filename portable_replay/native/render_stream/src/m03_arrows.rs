@@ -857,13 +857,24 @@ pub struct Xmap15PlanMapArrowMesh {
 }
 
 impl Xmap15PlanSemanticRow {
+    pub fn uses_native_terrain_height(&self) -> bool {
+        matches!(self.selector.order_type, 1..=3) && self.route.explicit_height_f32_bits.is_none()
+    }
+
     pub fn build_map_arrow_mesh(
         &self,
         profile: Xmap15PlanGeometryProfile,
+        map_width_world: u32,
         mut terrain_height: impl FnMut(f32, f32) -> Result<f32, String>,
     ) -> Result<Xmap15PlanMapArrowMesh, String> {
         self.route.validate()?;
         profile.validate()?;
+        if map_width_world == 0 || map_width_world > i32::MAX as u32 {
+            return Err("XMAP15 authenticated map width is outside the native signed range".into());
+        }
+        if self.route.explicit_height_f32_bits.is_none() && !self.uses_native_terrain_height() {
+            return Err("XMAP15 native height callback inputs are unavailable".into());
+        }
         let smoothed = smooth_xmap15_points(&self.route.builder_input_points_fixed5)?;
         if smoothed.len() > 8_192 {
             return Err("XMAP15 map-arrow point count exceeds the exact builder cap".into());
@@ -900,6 +911,7 @@ impl Xmap15PlanSemanticRow {
         let headed = f32::from_bits(profile.head_length_f32_bits) > 0.0;
         let uv_scale = f32::from_bits(profile.body_uv_scale_f32_bits);
         let mut vertices = Vec::with_capacity(smoothed.len() * 2 + 4);
+        let mut head_geometry = None;
         for (index, mut center) in smoothed.iter().copied().enumerate() {
             let next_index = index.saturating_add(1).min(smoothed.len() - 1);
             let mut next = smoothed[next_index];
@@ -940,10 +952,14 @@ impl Xmap15PlanSemanticRow {
                 1 => f32::from_bits(profile.width_class_one_f32_bits),
                 _ => 1.0,
             };
-            let width = (start + (end - start) * t) * global_scale * class_scale;
-            if !width.is_finite() {
+            let unclassed_width = (start + (end - start) * t) * global_scale;
+            let width = unclassed_width * class_scale;
+            if !width.is_finite() || !unclassed_width.is_finite() || !head_length.is_finite() {
                 return Err("XMAP15 map-arrow width became non-finite".into());
             }
+            head_geometry = Some((center, lateral, if trimmed {
+                normalize_xmap15_direction([next[0] - center[0], next[1] - center[1]])
+            } else { outgoing }, unclassed_width));
             let explicit_height = self
                 .route
                 .explicit_height_f32_bits
@@ -954,7 +970,7 @@ impl Xmap15PlanSemanticRow {
                 let z = center[1] + lateral[1] * width * sign;
                 let y = match explicit_height {
                     Some(value) => value,
-                    None => terrain_height(x + 0.5, z + 0.5)? + 0.01,
+                    None => xmap15_terrain_height([x, z], map_width_world, &mut terrain_height)?,
                 };
                 if [x, y, z].into_iter().any(|value| !value.is_finite()) {
                     return Err("XMAP15 terrain projection produced non-finite geometry".into());
@@ -983,27 +999,63 @@ impl Xmap15PlanSemanticRow {
             u32::try_from(vertices.len()).map_err(|_| "XMAP15 body vertices exceed u32")?;
         vertices.reverse();
         let head_first_vertex = if headed {
-            let exact = self
-                .exact_head_vertices_f32_bits
-                .as_ref()
-                .ok_or("XMAP15 headed definition lacks exact engine-authored final vertex order")?;
-            vertices.extend(exact.iter().map(|vertex| {
-                Xmap15MapArrowVertex {
-                    position: vertex[..3]
-                        .iter()
-                        .map(|bits| f32::from_bits(*bits))
-                        .collect::<Vec<_>>()
-                        .try_into()
-                        .expect("three position fields"),
-                    padding: f32::from_bits(vertex[3]),
-                    uv_is_head_variant: vertex[4..]
-                        .iter()
-                        .map(|bits| f32::from_bits(*bits))
-                        .collect::<Vec<_>>()
-                        .try_into()
-                        .expect("four UV fields"),
+            let head = if self.uses_native_terrain_height() {
+                let (center, lateral, direction, width) = head_geometry
+                    .ok_or("XMAP15 terrain head has no body endpoint")?;
+                let mut head = Vec::with_capacity(4);
+                for (tip, sign, uv) in [
+                    (false, 1.0, [0.0, 0.0, 1.0, 0.0]),
+                    (false, -1.0, [0.0, 1.0, 1.0, 0.0]),
+                    (true, 1.0, [1.0, 0.0, 1.0, 0.0]),
+                    (true, -1.0, [1.0, 1.0, 1.0, 0.0]),
+                ] {
+                    let lateral_offset = [lateral[0] * width, lateral[1] * width];
+                    let mut position = if sign > 0.0 {
+                        [center[0] + lateral_offset[0], center[1] + lateral_offset[1]]
+                    } else {
+                        [center[0] - lateral_offset[0], center[1] - lateral_offset[1]]
+                    };
+                    if tip {
+                        position = [direction[0] * head_length + position[0],
+                            direction[1] * head_length + position[1]];
+                    }
+                    let y = xmap15_terrain_height(position, map_width_world, &mut terrain_height)?;
+                    head.push(Xmap15MapArrowVertex {
+                        position: [position[0], y, position[1]], padding: 0.0,
+                        uv_is_head_variant: uv,
+                    });
                 }
-            }));
+                head.reverse();
+                // Native +0x80/+0xa0 are the final body's negative/positive sides.
+                let negative = vertices[0].position;
+                let positive = vertices[1].position;
+                let delta = std::array::from_fn(|axis| positive[axis] - negative[axis]);
+                let midpoint: [f32; 3] = std::array::from_fn(|axis| delta[axis] * 0.5 + negative[axis]);
+                let direction = normalize_xmap15_head_base(delta)?;
+                head[3].position = std::array::from_fn(|axis| direction[axis] * width + midpoint[axis]);
+                head[2].position = std::array::from_fn(|axis| midpoint[axis] - direction[axis] * width);
+                if head.iter().any(|vertex| vertex.position.iter().any(|value| !value.is_finite())) {
+                    return Err("XMAP15 terrain head produced non-finite geometry".into());
+                }
+                if let Some(exact) = &self.exact_head_vertices_f32_bits {
+                    for (derived, exact) in head.iter().zip(exact) {
+                        if derived.position.map(f32::to_bits) != exact[..3]
+                            || derived.uv_is_head_variant.map(f32::to_bits) != exact[4..] {
+                            return Err("XMAP15 exact head disagrees with native terrain derivation".into());
+                        }
+                    }
+                }
+                head
+            } else {
+                let exact = self.exact_head_vertices_f32_bits.as_ref()
+                    .ok_or("XMAP15 native height callback lacks exact head inputs")?;
+                exact.iter().map(|vertex| Xmap15MapArrowVertex {
+                    position: std::array::from_fn(|axis| f32::from_bits(vertex[axis])),
+                    padding: f32::from_bits(vertex[3]),
+                    uv_is_head_variant: std::array::from_fn(|axis| f32::from_bits(vertex[axis + 4])),
+                }).collect()
+            };
+            vertices.extend(head);
             vertices.rotate_right(4);
             Some(0)
         } else {
@@ -1020,6 +1072,32 @@ impl Xmap15PlanSemanticRow {
             wrap_offset_world: self.route.wrap_offset_world,
         })
     }
+}
+
+fn xmap15_terrain_height(
+    position: [f32; 2], map_width_world: u32,
+    terrain_height: &mut impl FnMut(f32, f32) -> Result<f32, String>,
+) -> Result<f32, String> {
+    if position.iter().any(|value| !value.is_finite()) {
+        return Err("XMAP15 terrain vertex is non-finite".into());
+    }
+    let width = map_width_world as f32;
+    let x = if position[0] < width {
+        if position[0] < 0.0 { position[0] + width } else { position[0] }
+    } else { position[0] - width };
+    let height = terrain_height(x + 0.5, position[1] + 0.5)? + 0.01;
+    if !height.is_finite() {
+        return Err("XMAP15 terrain projection produced a non-finite height".into());
+    }
+    Ok(height)
+}
+
+fn normalize_xmap15_head_base(value: [f32; 3]) -> Result<[f32; 3], String> {
+    let length = ((value[0] * value[0] + value[1] * value[1]) + value[2] * value[2]).sqrt();
+    if !length.is_finite() {
+        return Err("XMAP15 native head base normalization is non-finite".into());
+    }
+    Ok(if length != 0.0 { value.map(|axis| axis / length) } else { value })
 }
 
 fn smooth_xmap15_points(points: &[[i64; 2]]) -> Result<Vec<[f32; 2]>, String> {
@@ -1294,8 +1372,7 @@ mod tests {
         assert_eq!(smoothed[2], [3.00007, 1.50009]);
     }
 
-    #[test]
-    fn exact_no_head_body_builder_emits_stride32_strip() {
+    fn terrain_arrow_fixture() -> (Xmap15PlanSemanticRow, Xmap15PlanGeometryProfile) {
         let row = Xmap15PlanSemanticRow {
             key: Xmap15PlanKey {
                 owner_kind: Xmap15OwnerKind::Army,
@@ -1354,7 +1431,13 @@ mod tests {
             global_scale_max_points: 1,
             head_length_f32_bits: 0.0f32.to_bits(),
         };
-        let mesh = row.build_map_arrow_mesh(profile, |_x, _z| Ok(0.0)).unwrap();
+        (row, profile)
+    }
+
+    #[test]
+    fn exact_no_head_body_builder_emits_stride32_strip() {
+        let (row, profile) = terrain_arrow_fixture();
+        let mesh = row.build_map_arrow_mesh(profile, 100, |_x, _z| Ok(0.0)).unwrap();
         assert_eq!(mesh.body_vertex_count, 4);
         assert_eq!(mesh.head_first_vertex, None);
         assert_eq!(mesh.vertices[0].position, [1.0, 0.01, -1.0]);
@@ -1374,7 +1457,7 @@ mod tests {
             ..profile
         };
         let mixed_mesh = mixed
-            .build_map_arrow_mesh(mixed_profile, |_x, _z| Ok(0.0))
+            .build_map_arrow_mesh(mixed_profile, 100, |_x, _z| Ok(0.0))
             .unwrap();
         assert_eq!(mixed_mesh.body_vertex_count, 8);
         assert_eq!(mixed_mesh.head_first_vertex, None);
@@ -1391,16 +1474,16 @@ mod tests {
         }
         mixed.texture_variant = 13;
         let other_texture = mixed
-            .build_map_arrow_mesh(mixed_profile, |_x, _z| Ok(0.0))
+            .build_map_arrow_mesh(mixed_profile, 100, |_x, _z| Ok(0.0))
             .unwrap();
         assert_eq!(other_texture.vertices, mixed_mesh.vertices);
 
         let normalized = mixed.build_map_arrow_mesh(Xmap15PlanGeometryProfile {
             body_uv_scale_f32_bits: 0.0f32.to_bits(), ..mixed_profile
-        }, |_x, _z| Ok(0.0)).unwrap();
+        }, 100, |_x, _z| Ok(0.0)).unwrap();
         let negative_zero = mixed.build_map_arrow_mesh(Xmap15PlanGeometryProfile {
             body_uv_scale_f32_bits: (-0.0f32).to_bits(), ..mixed_profile
-        }, |_x, _z| Ok(0.0)).unwrap();
+        }, 100, |_x, _z| Ok(0.0)).unwrap();
         assert_eq!(normalized.vertices, negative_zero.vertices);
         assert_eq!(normalized.vertices[0].uv_is_head_variant[0], 1.0);
         assert_eq!(mixed_mesh.vertices[0].uv_is_head_variant[0], 3.0);
@@ -1419,7 +1502,7 @@ mod tests {
             body_uv_scale_f32_bits: 5.0f32.to_bits(),
             head_length_f32_bits: 18.0f32.to_bits(),
             ..profile
-        }, |_x, _z| panic!("explicit heights must not read terrain")).unwrap();
+        }, 100, |_x, _z| panic!("explicit heights must not read terrain")).unwrap();
         assert_eq!(headed.head_first_vertex, Some(0));
         assert_eq!(headed.body_vertex_count, 8);
         assert_eq!(headed.vertices.len(), 12);
@@ -1434,4 +1517,79 @@ mod tests {
         assert_eq!(headed.vertices[8].position, [10.0, 3.0, -2.0]);
         assert_eq!(headed.vertices[10].position, [0.0, 2.0, -1.0]);
     }
+    #[test]
+    fn terrain_heads_use_unclassed_width_wrap_sampling_and_rewrite_the_sloping_base() {
+        let (mut row, mut profile) = terrain_arrow_fixture();
+        row.route.builder_input_points_fixed5 = vec![[0, 0], [1_000_000, 0], [2_000_000, 0], [3_000_000, 0]];
+        row.route.point_width_classes = vec![0; 4];
+        row.route.wrap_offset_world = 20;
+        profile.body_end_width_f32_bits = 4.0f32.to_bits();
+        profile.width_class_zero_f32_bits = 2.0f32.to_bits();
+        profile.head_length_f32_bits = 18.0f32.to_bits();
+        let mut samples = Vec::new();
+        let mesh = row.build_map_arrow_mesh(profile, 20, |x, z| {
+            samples.push([x, z]); Ok(0.0)
+        }).unwrap();
+        assert_eq!(mesh.head_first_vertex, Some(0));
+        assert_eq!(mesh.body_vertex_count, 8);
+        assert_eq!(mesh.vertices.len(), 12);
+        assert_eq!(samples, [
+            [0.5, 2.5], [0.5, -1.5], [10.5, 4.5], [10.5, -3.5],
+            [12.5, 6.5], [12.5, -5.5], [12.5, 3.5], [12.5, -2.5],
+            [10.5, 3.5], [10.5, -2.5],
+        ]);
+        for (vertex, (position, uv)) in mesh.vertices[..4].iter().zip([
+            ([30.0, 0.01, -3.0], [1.0, 1.0, 1.0, 0.0]),
+            ([30.0, 0.01, 3.0], [1.0, 0.0, 1.0, 0.0]),
+            ([12.0, 0.01, -3.0], [0.0, 1.0, 1.0, 0.0]),
+            ([12.0, 0.01, 3.0], [0.0, 0.0, 1.0, 0.0]),
+        ]) {
+            assert_eq!(vertex.position.map(f32::to_bits), position.map(f32::to_bits));
+            assert_eq!(vertex.uv_is_head_variant, uv);
+        }
+        assert_eq!(mesh.vertices[4].position, [12.0, 0.01, -6.0]);
+        let slope = row.build_map_arrow_mesh(profile, 20, |_x, z| Ok(z)).unwrap();
+        let a = slope.vertices[2].position;
+        let b = slope.vertices[3].position;
+        let span = ((b[0]-a[0]).powi(2)+(b[1]-a[1]).powi(2)+(b[2]-a[2]).powi(2)).sqrt();
+        assert!((span - 6.0).abs() < 0.000002);
+        assert!((b[2] - 3.0).abs() > 0.5, "head base must be rebuilt along the 3D body cross-section");
+        assert_eq!(slope.vertices[0].position, [30.0, -2.5 + 0.01, -3.0]);
+        let mut samples = Vec::new();
+        row.build_map_arrow_mesh(profile, 10, |x, z| { samples.push([x,z]); Ok(0.0) }).unwrap();
+        assert_eq!(samples[8][0], 20.5, "native wrapping subtracts width once, not modulo");
+        row.route.builder_input_points_fixed5 = vec![[0, 0], [0, 1_000_000], [0, 2_000_000], [0, 3_000_000]];
+        let mut samples = Vec::new();
+        row.build_map_arrow_mesh(profile, 20, |x,z| { samples.push([x,z]); Ok(0.0) }).unwrap();
+        assert_eq!(samples[6], [17.5, 12.5]);
+        assert_eq!(samples[8], [17.5, 30.5]);
+    }
+
+    #[test]
+    fn terrain_head_inputs_fail_by_name_without_fabricating_callback_or_width() {
+        let (mut row, mut profile) = terrain_arrow_fixture();
+        profile.head_length_f32_bits = 0.25f32.to_bits();
+        for width in [0, u32::MAX] {
+            assert!(row.build_map_arrow_mesh(profile, width, |_,_| panic!("unadmitted width"))
+                .unwrap_err().contains("authenticated map width"));
+        }
+        let mesh = row.build_map_arrow_mesh(profile, 100, |_,_| Ok(0.0)).unwrap();
+        row.exact_head_vertices_f32_bits = Some(std::array::from_fn(|index| {
+            let v = mesh.vertices[index];
+            [v.position[0], v.position[1], v.position[2], v.padding,
+                v.uv_is_head_variant[0], v.uv_is_head_variant[1], v.uv_is_head_variant[2], v.uv_is_head_variant[3]].map(f32::to_bits)
+        }));
+        assert_eq!(row.build_map_arrow_mesh(profile, 100, |_,_| Ok(0.0)).unwrap(), mesh);
+        row.exact_head_vertices_f32_bits.as_mut().unwrap()[0][0] = 4.0f32.to_bits();
+        assert!(row.build_map_arrow_mesh(profile, 100, |_,_| Ok(0.0)).unwrap_err().contains("disagrees"));
+        row.exact_head_vertices_f32_bits = None;
+        row.route.explicit_height_f32_bits = Some(vec![0; 2]);
+        assert!(row.build_map_arrow_mesh(profile, 100, |_,_| panic!("callback path"))
+            .unwrap_err().contains("callback lacks exact head"));
+        row.route.explicit_height_f32_bits = None;
+        row.selector.order_type = 4;
+        assert!(row.build_map_arrow_mesh(profile, 100, |_,_| panic!("missing paradrop callback"))
+            .unwrap_err().contains("height callback inputs are unavailable"));
+    }
+
 }

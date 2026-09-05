@@ -537,6 +537,42 @@ mod tests {
     }
 
     #[test]
+    fn prepared_frame_admits_derived_terrain_heads_and_refuses_missing_callback_inputs() {
+        let mut frame = prepared_orders(1, true, None);
+        let definition = &mut frame.plan_definitions[0];
+        definition.technique = "MapArrowDefault".into();
+        definition.head_length_f32_bits = Some(0.25f32.to_bits());
+        definition.deterministic_sha256.clear();
+        definition.deterministic_sha256 = snapshot::sha256::Sha256::hex(
+            &serde_json::to_vec(&serde_json::to_value(&definition).unwrap()).unwrap());
+        let digest = definition.deterministic_sha256.clone();
+        for row in &mut frame.portable.ordered_rows {
+            let Xmap15PreparedRow::Plan { semantic, definition_sha256 } = row else { unreachable!() };
+            assert!(semantic.exact_head_vertices_f32_bits.is_none());
+            *definition_sha256 = digest.clone();
+        }
+        frame.portable = frame.portable.seal().unwrap();
+        frame.validate().unwrap();
+        let profile = frame.plan_definitions[0].geometry_profile().unwrap();
+        let Xmap15PreparedRow::Plan { semantic, .. } = &frame.portable.ordered_rows[0] else { unreachable!() };
+        let mesh = semantic.build_map_arrow_mesh(profile, frame.map_width, |_,_| Ok(0.0)).unwrap();
+        assert_eq!(mesh.head_first_vertex, Some(0));
+        assert_eq!(mesh.body_vertex_count, 4);
+        assert_eq!(mesh.vertices.len(), 8);
+        assert!(mesh.vertices[..4].iter().all(|vertex| vertex.uv_is_head_variant[2] == 1.0));
+        let mut missing_map = frame.clone();
+        missing_map.heightmap = None;
+        assert!(missing_map.validate().is_err());
+        let mut missing_width = frame.clone();
+        missing_width.map_width = 0;
+        assert!(missing_width.validate().is_err());
+        let Xmap15PreparedRow::Plan { semantic, .. } = &mut frame.portable.ordered_rows[0] else { unreachable!() };
+        semantic.route.explicit_height_f32_bits = Some(vec![0; semantic.route.builder_input_points_fixed5.len()]);
+        frame.portable = frame.portable.seal().unwrap();
+        assert!(frame.validate().unwrap_err().to_string().contains("callback lacks exact head inputs"));
+    }
+
+    #[test]
     fn prepared_frame_lifecycle_join_preserves_selection_until_witnessed_deletion() {
         let mut lifecycle = crate::Xmap15LifecycleState::default();
         let mut viewer = ArrowViewerSortState::default();

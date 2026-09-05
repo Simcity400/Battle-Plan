@@ -414,15 +414,18 @@ impl PreparedXmap15Frame {
                     )
                     .into());
                 }
-                if definition
-                    .head_length_f32_bits
-                    .is_some_and(|bits| f32::from_bits(bits) > 0.0)
-                    != semantic.exact_head_vertices_f32_bits.is_some()
-                {
-                    return Err(format!(
-                        "XMAP15 headed/no-head geometry closure disagrees for {name}"
-                    )
-                    .into());
+                let headed = definition.head_length_f32_bits
+                    .is_some_and(|bits| f32::from_bits(bits) > 0.0);
+                if semantic.route.explicit_height_f32_bits.is_none()
+                    && !semantic.uses_native_terrain_height() {
+                    return Err(format!("XMAP15 native height callback inputs are unavailable for {name}").into());
+                }
+                if headed && semantic.exact_head_vertices_f32_bits.is_none()
+                    && !semantic.uses_native_terrain_height() {
+                    return Err(format!("XMAP15 native height callback lacks exact head inputs for {name}").into());
+                }
+                if !headed && semantic.exact_head_vertices_f32_bits.is_some() {
+                    return Err(format!("XMAP15 no-head definition carries head vertices for {name}").into());
                 }
             }
         }
