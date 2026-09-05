@@ -419,13 +419,13 @@ pub struct PanelTerminalReservation {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct RawWrapperResult {
-    wrapper_ptr: usize,
+    division_id: Option<u32>,
     width_raw: i64,
-    identity_validated: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawWidthCallCapture {
+    pub observed_game_hour_raw: Option<i32>,
     pub side_ptr: usize,
     pub combat_id: u32,
     pub generation: u64,
@@ -558,6 +558,8 @@ struct WidthDiagnostics {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawLossWriterObservation {
+    pub captured_epoch: (u32, u64, CombatSide),
+    pub observed_game_hour_raw: Option<i32>,
     pub combat_ptr: usize,
     pub side_ptr: usize,
     pub capture_sequence: u64,
@@ -570,6 +572,7 @@ pub struct RawLossWriterObservation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RawEquipmentLossDelta {
+    pub equipment_id: Option<u32>,
     pub equipment_key_ptr: usize,
     pub before_bytes: [u8; 8],
     pub after_bytes: [u8; 8],
@@ -589,27 +592,20 @@ pub trait LossIdentityResolver {
     fn equipment_id(&self, equipment_key_ptr: usize) -> Option<u32>;
 }
 
-struct SealedLossIdentityResolver<'a> {
-    bindings: &'a BTreeMap<usize, LossSideBinding>,
-    module_base: usize,
+impl LossIdentityResolver for RawLossWriterObservation {
+    fn active_epoch(&self, combat_ptr: usize, side_ptr: usize) -> Option<(u32, u64, CombatSide)> {
+        (combat_ptr == self.combat_ptr && side_ptr == self.side_ptr).then_some(self.captured_epoch)
+    }
+    fn equipment_id(&self, equipment_key_ptr: usize) -> Option<u32> {
+        self.equipment.iter().find(|row| row.equipment_key_ptr == equipment_key_ptr)?.equipment_id
+    }
 }
 
-impl LossIdentityResolver for SealedLossIdentityResolver<'_> {
-    fn active_epoch(&self, combat_ptr: usize, side_ptr: usize) -> Option<(u32, u64, CombatSide)> {
-        let owner_ptr = side_ptr.checked_add(LOSS_OWNER_OFFSET_FROM_SIDE)?;
-        let binding = self.bindings.get(&owner_ptr)?;
-        (binding.combat_ptr == combat_ptr && binding.side_ptr == side_ptr).then_some((
-            binding.combat_id,
-            binding.generation,
-            binding.side,
-        ))
-    }
-
-    fn equipment_id(&self, equipment_key_ptr: usize) -> Option<u32> {
-        if self.module_base == 0
+fn capture_loss_equipment_id(equipment_key_ptr: usize) -> Option<u32> {
+        let module_base = MODULE_BASE.load(Ordering::Acquire);
+        if module_base == 0
             || read_usize(equipment_key_ptr)?
-                != self
-                    .module_base
+                != module_base
                     .checked_add(DIVISION_EQUIPMENT_VARIANT_VTABLE_RVA)?
             || read_u32(equipment_key_ptr.checked_add(DIVISION_EQUIPMENT_VARIANT_TYPE_OFFSET)?)?
                 != DIVISION_EQUIPMENT_VARIANT_TYPE_ID
@@ -619,7 +615,6 @@ impl LossIdentityResolver for SealedLossIdentityResolver<'_> {
         let id = read_u32(equipment_key_ptr.checked_add(DIVISION_EQUIPMENT_VARIANT_ID_OFFSET)?)?;
         (id > 0 && id <= MAX_DIVISION_EQUIPMENT_VARIANT_ID).then_some(id)
     }
-}
 
 struct LossState {
     bindings: BTreeMap<usize, LossSideBinding>,
@@ -753,6 +748,7 @@ impl<const N: usize> HookReceiptCustody<N> {
 
 #[derive(Clone)]
 struct LossWriterBefore {
+    observed_hour_before: Option<i32>,
     binding: LossSideBinding,
     capture_sequence: u64,
     writer: AuthenticatedLossWriterSite,
@@ -3262,15 +3258,8 @@ pub(crate) fn publish_combined_final_bindings(
         ));
     }
     let mut width_rows = Vec::new();
-    let width_module_base = MODULE_BASE.load(Ordering::Acquire);
     for capture in &width_state.calls {
-        let binding = next_width.get(&capture.side_ptr).ok_or_else(|| {
-            format!(
-                "combined X2 width capture {} lacks a final side binding",
-                capture.capture_sequence
-            )
-        })?;
-        let mut rows = project_width_call_with_binding(capture, binding, width_module_base)
+        let mut rows = project_width_call(capture)
             .map_err(|error| {
                 format!(
                     "combined X2 width capture {} failed exact projection: {error}",
@@ -3285,13 +3274,9 @@ pub(crate) fn publish_combined_final_bindings(
             "combined X2 loss projection is not lossless: diagnostics={loss_diagnostics:?}"
         ));
     }
-    let loss_resolver = SealedLossIdentityResolver {
-        bindings: &next_loss,
-        module_base: LOSS_MODULE_BASE.load(Ordering::Acquire),
-    };
     let mut loss_rows = Vec::new();
     for observation in &loss_state.observations {
-        let mut rows = project_loss_observation(observation, &loss_resolver).map_err(|error| {
+        let mut rows = project_loss_observation(observation, observation).map_err(|error| {
             format!(
                 "combined X2 loss capture {} failed exact projection: {error}",
                 observation.capture_sequence
@@ -3455,13 +3440,8 @@ fn publish_release_and_seal_width() -> Result<(), String> {
     } else {
         let mut rows = Vec::new();
         let mut projection_failures = 0u64;
-        let module_base = MODULE_BASE.load(Ordering::Acquire);
         for capture in &state.calls {
-            let projected = state
-                .bindings
-                .get(&capture.side_ptr)
-                .ok_or_else(|| "width capture side is not bound to an active epoch".to_string())
-                .and_then(|binding| project_width_call_with_binding(capture, binding, module_base));
+            let projected = project_width_call(capture);
             match projected {
                 Ok(mut projected) => rows.append(&mut projected),
                 Err(_) => projection_failures += 1,
@@ -3526,14 +3506,10 @@ fn publish_release_and_seal_loss() -> Result<(), String> {
             .take()
             .ok_or_else(|| "combined X2 loss exact preprojection is missing".to_string())?
     } else {
-        let resolver = SealedLossIdentityResolver {
-            bindings: &state.bindings,
-            module_base: LOSS_MODULE_BASE.load(Ordering::Acquire),
-        };
         let mut rows = Vec::new();
         let mut projection_failures = 0u64;
         for observation in &state.observations {
-            match project_loss_observation(observation, &resolver) {
+            match project_loss_observation(observation, observation) {
                 Ok(mut projected) => rows.append(&mut projected),
                 Err(_) => projection_failures += 1,
             }
@@ -4740,45 +4716,15 @@ pub fn drain_width_calls() -> Result<WidthDrain, String> {
     Err("destructive X2 width drain is disabled; use transactional width reservation APIs".into())
 }
 
-pub fn project_width_call(
-    capture: &RawWidthCallCapture,
-) -> Result<Vec<WidthObservationRow>, String> {
-    let state = WIDTH_STATE
-        .get_or_init(|| Mutex::new(WidthState::default()))
-        .lock()
-        .map_err(|_| "X2 width state mutex poisoned".to_string())?;
-    let binding = state
-        .bindings
-        .get(&capture.side_ptr)
-        .ok_or_else(|| "width capture side is not bound to an active epoch".to_string())?;
-    project_width_call_with_binding(capture, binding, MODULE_BASE.load(Ordering::Acquire))
-}
-
-fn project_width_call_with_binding(
-    capture: &RawWidthCallCapture,
-    binding: &SideBinding,
-    module_base: usize,
-) -> Result<Vec<WidthObservationRow>, String> {
-    if !capture.byte_gates_validated || capture.wrapper_count == 0 || module_base == 0 {
-        return Err("width capture lacks byte gates, wrapper rows, or module identity".into());
-    }
-    if binding.side_ptr != capture.side_ptr {
-        return Err("width capture side binding pointer changed before pointer erasure".into());
-    }
-    if (binding.combat_id, binding.generation, binding.side)
-        != (capture.combat_id, capture.generation, capture.side)
-    {
-        return Err("width capture active epoch changed before pointer erasure".into());
+pub fn project_width_call(capture: &RawWidthCallCapture) -> Result<Vec<WidthObservationRow>, String> {
+    if !capture.byte_gates_validated || capture.wrapper_count == 0 {
+        return Err("width capture lacks byte gates or wrapper rows".into());
     }
     let mut sum = 0i64;
     let mut rows = Vec::with_capacity(capture.wrapper_count);
     let mut division_ids = BTreeSet::new();
     for (ordinal, raw) in capture.wrappers[..capture.wrapper_count].iter().enumerate() {
-        if !raw.identity_validated {
-            return Err("width wrapper identity gate failed".into());
-        }
-        let division_id = resolve_wrapper_division_id_at_base(raw.wrapper_ptr, module_base)
-            .ok_or_else(|| "width wrapper division identity became unreadable".to_string())?;
+        let division_id = raw.division_id.ok_or("width wrapper identity was unavailable at capture")?;
         if !division_ids.insert(division_id) {
             return Err("width wrapper division identity repeats within one call".into());
         }
@@ -4786,9 +4732,10 @@ fn project_width_call_with_binding(
             .checked_add(raw.width_raw)
             .ok_or_else(|| "width exact sum overflow".to_string())?;
         rows.push(WidthObservationRow {
-            combat_id: binding.combat_id,
-            generation: binding.generation,
-            side: binding.side,
+        observed_game_hour_raw: capture.observed_game_hour_raw,
+            combat_id: capture.combat_id,
+            generation: capture.generation,
+            side: capture.side,
             capture_sequence: capture.capture_sequence,
             ordinal: ordinal as u32,
             wrapper_count: capture.wrapper_count as u32,
@@ -5052,6 +4999,7 @@ pub fn project_loss_observation(
             return Err("X2 loss equipment identity repeats or has no delta".into());
         }
         rows.push(CurrentLossObservationRow {
+        observed_game_hour_raw: observation.observed_game_hour_raw,
             combat_id,
             generation,
             side,
@@ -5269,6 +5217,7 @@ fn begin_loss_writer(
         return None;
     };
     Some(LossWriterBefore {
+        observed_hour_before: crate::hour_custody::current_game_hour_raw(),
         binding,
         capture_sequence: NEXT_LOSS_CAPTURE_SEQUENCE.fetch_add(1, Ordering::AcqRel),
         writer,
@@ -5321,6 +5270,7 @@ fn finish_loss_writer(before: LossWriterBefore) {
             .unwrap_or(0);
         if before_raw != after_raw {
             equipment.push(RawEquipmentLossDelta {
+                equipment_id: capture_loss_equipment_id(equipment_key_ptr),
                 equipment_key_ptr,
                 before_bytes: before_raw.to_le_bytes(),
                 after_bytes: after_raw.to_le_bytes(),
@@ -5356,6 +5306,8 @@ fn finish_loss_writer(before: LossWriterBefore) {
     }
     drop(state);
     let observation = RawLossWriterObservation {
+        captured_epoch: (before.binding.combat_id, before.binding.generation, before.binding.side),
+        observed_game_hour_raw: crate::hour_custody::witnessed_event_hour(before.observed_hour_before, crate::hour_custody::current_game_hour_raw()),
         combat_ptr: before.binding.combat_ptr,
         side_ptr: before.binding.side_ptr,
         capture_sequence: before.capture_sequence,
@@ -5428,6 +5380,7 @@ unsafe extern "system" fn hook_width_producer(side_ptr: usize, out: *mut i64) ->
         WIDTH_CONTEXT.with(|slot| *slot.borrow_mut() = outer);
         return returned;
     }
+    let observed_hour_before = crate::hour_custody::current_game_hour_raw();
     let sequence = NEXT_CAPTURE_SEQUENCE.fetch_add(1, Ordering::AcqRel);
     WIDTH_CONTEXT.with(|slot| *slot.borrow_mut() = Some(WidthContext::new(side_ptr, sequence)));
     let returned = unsafe { original(side_ptr, out) };
@@ -5477,6 +5430,7 @@ unsafe extern "system" fn hook_width_producer(side_ptr: usize, out: *mut i64) ->
         return returned;
     }
     state.calls.push_back(RawWidthCallCapture {
+        observed_game_hour_raw: crate::hour_custody::witnessed_event_hour(observed_hour_before, crate::hour_custody::current_game_hour_raw()),
         side_ptr: context.side_ptr,
         combat_id: binding.combat_id,
         generation: binding.generation,
@@ -5508,8 +5462,8 @@ unsafe extern "system" fn hook_division_width_leaf(
         let Some(context) = slot.as_mut() else {
             return;
         };
-        record_leaf_result(context, wrapper_ptr, width_raw, || {
-            resolve_wrapper_division_id(wrapper_ptr).is_some()
+        record_leaf_result(context, width_raw, || {
+            resolve_wrapper_division_id(wrapper_ptr)
         });
     });
     returned
@@ -5517,9 +5471,8 @@ unsafe extern "system" fn hook_division_width_leaf(
 
 fn record_leaf_result(
     context: &mut WidthContext,
-    wrapper_ptr: usize,
     width_raw: Option<i64>,
-    identity_validated: impl FnOnce() -> bool,
+    division_id: impl FnOnce() -> Option<u32>,
 ) {
     if context.wrapper_count >= MAX_WRAPPERS_PER_CALL {
         context.overflowed = true;
@@ -5530,9 +5483,8 @@ fn record_leaf_result(
         return;
     };
     context.wrappers[context.wrapper_count] = RawWrapperResult {
-        wrapper_ptr,
+        division_id: division_id(),
         width_raw,
-        identity_validated: identity_validated(),
     };
     context.wrapper_count += 1;
 }
@@ -5578,6 +5530,7 @@ unsafe extern "system" fn hook_panel_side_materializer(
         PANEL_DROPPED_INVALID.fetch_add(1, Ordering::Relaxed);
         return unsafe { original(view_ptr, side_ptr, is_attacker, gui_ptr) };
     }
+    let observed_hour_before = crate::hour_custody::current_game_hour_raw();
     let capture_sequence = NEXT_PANEL_CAPTURE_SEQUENCE.fetch_add(1, Ordering::AcqRel);
     PANEL_CONTEXT.with(|slot| {
         *slot.borrow_mut() = Some(PanelContext {
@@ -5603,6 +5556,7 @@ unsafe extern "system" fn hook_panel_side_materializer(
         return returned;
     }
     let row = PanelObservationRow {
+        observed_game_hour_raw: crate::hour_custody::witnessed_event_hour(observed_hour_before, crate::hour_custody::current_game_hour_raw()),
         combat_id: context.binding.combat_id,
         generation: context.binding.generation,
         side: context.binding.side,
@@ -6604,6 +6558,8 @@ mod tests {
 
     fn observation(writer: AuthenticatedLossWriterSite) -> RawLossWriterObservation {
         RawLossWriterObservation {
+        captured_epoch: (5, 2, CombatSide::Attacker),
+        observed_game_hour_raw: None,
             combat_ptr: 0x1000,
             side_ptr: 0x2000,
             capture_sequence: 44,
@@ -6612,6 +6568,7 @@ mod tests {
             manpower_before_bytes: 100i64.to_le_bytes(),
             manpower_after_bytes: 95i64.to_le_bytes(),
             equipment: vec![RawEquipmentLossDelta {
+                equipment_id: None,
                 equipment_key_ptr: 0x3000,
                 before_bytes: 30i64.to_le_bytes(),
                 after_bytes: 27i64.to_le_bytes(),
@@ -6701,6 +6658,7 @@ mod tests {
 
     fn queued_capture(side_ptr: usize) -> RawWidthCallCapture {
         RawWidthCallCapture {
+        observed_game_hour_raw: None,
             side_ptr,
             combat_id: 5,
             generation: 2,
@@ -6713,7 +6671,47 @@ mod tests {
         }
     }
 
-    /// A rollback releases the reservation but leaves both the counters and the
+    #[test]
+    fn d55_hour_custody_reserved_drain_publishes_each_observed_hour() {
+        reset_width_carrier();
+        for (index, hour) in [100, 101].into_iter().enumerate() {
+            let mut capture = queued_capture(0x4000);
+            capture.observed_game_hour_raw = Some(hour);
+            capture.capture_sequence = index as u64 + 1;
+            capture.final_width_raw = 50;
+            capture.wrapper_count = 1;
+            capture.wrappers[0] = RawWrapperResult {
+                division_id: Some(7),
+                width_raw: 50,
+            };
+            WIDTH_STATE.get().unwrap().lock().unwrap().calls.push_back(capture);
+        }
+        let reservation = peek_width_calls(8_192).unwrap().unwrap();
+        let rows = reservation.drain.calls.iter()
+            .flat_map(|capture| project_width_call(capture).unwrap())
+            .collect::<Vec<_>>();
+        let custody = crate::hour_custody::FrameHourCustody {
+            snapshot: crate::hour_custody::ReadHours { before: Some(100), after: Some(100) },
+            carrier: crate::hour_custody::ReadHours { before: Some(100), after: Some(101) },
+        };
+        let payload = crate::encode_detail_events_payload_v10(
+            1, crate::STATUS_DELTA_DATA, &[], &[], &[], &[], &[], &rows, &[], &[],
+            &Default::default(), custody,
+        );
+        let decoded = crate::decode_detail_events_payload(0, &payload).unwrap();
+        let published = crate::hour_custody::PublishedHookCustody::admit(&decoded, 100).unwrap();
+        assert_eq!(published.width_observation_row_count, 2);
+        assert_eq!(decoded.width_observation_rows[0].observed_game_hour_raw, Some(100));
+        assert_eq!(decoded.width_observation_rows[1].observed_game_hour_raw, Some(101));
+        assert_eq!(decoded.width_observation_rows, rows);
+        assert_eq!(published.carrier_refusal, Some(crate::hour_custody::ReadRefusal::Torn));
+        rollback_width_calls(reservation.reservation_id).unwrap();
+        let retry = peek_width_calls(8_192).unwrap().unwrap();
+        assert_eq!(retry.drain.calls, reservation.drain.calls);
+        commit_width_calls(retry.reservation_id).unwrap();
+        assert!(peek_width_calls(8_192).unwrap().is_none());
+    }
+
     #[test]
     fn a_self_rejected_width_batch_clears_only_when_it_is_committed() {
         reset_width_carrier();
@@ -6766,18 +6764,18 @@ mod tests {
     fn a_full_wrapper_buffer_and_an_unreadable_width_are_separate_faults() {
         let mut context = WidthContext::new(0x4000, 1);
         for index in 0..MAX_WRAPPERS_PER_CALL {
-            record_leaf_result(&mut context, 0x5000 + index, Some(20), || true);
+            record_leaf_result(&mut context, Some(20), || Some(7));
         }
         assert_eq!(context.wrapper_count, MAX_WRAPPERS_PER_CALL);
         assert!(!context.overflowed && !context.unreadable);
-        record_leaf_result(&mut context, 0x9000, Some(20), || true);
+        record_leaf_result(&mut context, Some(20), || Some(7));
         assert!(
             context.overflowed && !context.unreadable,
             "exceeding the per-call wrapper bound is a capacity overflow"
         );
 
         let mut unreadable = WidthContext::new(0x4000, 2);
-        record_leaf_result(&mut unreadable, 0x5000, None, || true);
+        record_leaf_result(&mut unreadable, None, || Some(7));
         assert!(
             unreadable.unreadable && !unreadable.overflowed,
             "a width word that could not be read is a read failure, not an overflow"
@@ -6789,12 +6787,12 @@ mod tests {
     fn a_dropped_wrapper_never_pays_for_an_identity_read() {
         let mut full = WidthContext::new(0x4000, 1);
         for index in 0..MAX_WRAPPERS_PER_CALL {
-            record_leaf_result(&mut full, 0x5000 + index, Some(20), || true);
+            record_leaf_result(&mut full, Some(20), || Some(7));
         }
         let mut resolved = false;
-        record_leaf_result(&mut full, 0x9000, Some(20), || {
+        record_leaf_result(&mut full, Some(20), || {
             resolved = true;
-            true
+            Some(7)
         });
         assert!(
             !resolved,
@@ -6803,9 +6801,9 @@ mod tests {
 
         let mut unreadable = WidthContext::new(0x4000, 2);
         let mut resolved = false;
-        record_leaf_result(&mut unreadable, 0x5000, None, || {
+        record_leaf_result(&mut unreadable, None, || {
             resolved = true;
-            true
+            Some(7)
         });
         assert!(
             !resolved,
@@ -6814,12 +6812,12 @@ mod tests {
 
         let mut good = WidthContext::new(0x4000, 3);
         let mut resolved = false;
-        record_leaf_result(&mut good, 0x5000, Some(20), || {
+        record_leaf_result(&mut good, Some(20), || {
             resolved = true;
-            true
+            Some(7)
         });
         assert!(resolved, "a wrapper that is actually recorded is resolved");
-        assert!(good.wrappers[0].identity_validated);
+        assert_eq!(good.wrappers[0].division_id, Some(7));
     }
 
     #[test]
@@ -6833,5 +6831,37 @@ mod tests {
             rows[0].control_flags,
             CURRENT_LOSS_REQUIRED_FLAG_MASK | CURRENT_LOSS_FLAG_SOURCE_PARTICIPANT_LIFECYCLE
         );
+    }
+}
+
+
+#[cfg(test)]
+mod observed_identity_custody_tests {
+    use super::*;
+    #[test]
+    fn d55_hour_custody_width_projection_never_rereads_released_wrappers() {
+        let mut wrappers = [RawWrapperResult::default(); MAX_WRAPPERS_PER_CALL];
+        wrappers[0] = RawWrapperResult { division_id: Some(7), width_raw: 50 };
+        let capture = RawWidthCallCapture { observed_game_hour_raw: Some(100), side_ptr: 0xdead,
+            combat_id: 5, generation: 2, side: CombatSide::Attacker, capture_sequence: 1,
+            final_width_raw: 50, wrappers, wrapper_count: 1, byte_gates_validated: true };
+        let rows = project_width_call(&capture).unwrap();
+        assert_eq!(rows[0].division_id, 7);
+        assert_eq!(rows[0].observed_game_hour_raw, Some(100));
+        assert_eq!((rows[0].combat_id, rows[0].generation), (5, 2));
+    }
+    #[test]
+    fn d55_hour_custody_loss_projection_uses_captured_epoch_and_equipment() {
+        let writer = AUTHENTICATED_LOSS_WRITER.unwrap().active_damage;
+        let observation = RawLossWriterObservation { captured_epoch: (5, 2, CombatSide::Attacker),
+            observed_game_hour_raw: Some(101), combat_ptr: 0xdead, side_ptr: 0xbeef, capture_sequence: 2,
+            writer_rva: writer.writer_rva, observed_entry_bytes: writer.sentinel,
+            manpower_before_bytes: 100i64.to_le_bytes(), manpower_after_bytes: 90i64.to_le_bytes(),
+            equipment: vec![RawEquipmentLossDelta { equipment_id: Some(91), equipment_key_ptr: 0xdeadbeef,
+                before_bytes: 10i64.to_le_bytes(), after_bytes: 9i64.to_le_bytes() }] };
+        let rows = project_loss_observation(&observation, &observation).unwrap();
+        assert_eq!(rows[0].equipment_id, 91);
+        assert_eq!(rows[0].observed_game_hour_raw, Some(101));
+        assert_eq!((rows[0].combat_id, rows[0].generation), (5, 2));
     }
 }

@@ -492,7 +492,7 @@ fn every_pin_commit_is_guarded_by_the_predicate_its_own_fold_uses() {
         (
             "commit_staged_baseline()",
             "roll_back_staged_baseline()",
-            "if compact_contract::compact_delta_pin_may_advance(",
+            "if read.frame.hour_custody.snapshot.admits(game_hour_raw)",
         ),
     ] {
         let commits = source.matches(commit).count();
@@ -510,6 +510,10 @@ fn every_pin_commit_is_guarded_by_the_predicate_its_own_fold_uses() {
             window.contains(guard),
             "{commit} is called but is not guarded by {guard}"
         );
+
+        if commit == "commit_staged_baseline()" {
+            assert!(window.contains("&& compact_contract::compact_delta_pin_may_advance("));
+        }
 
         let around = &source[window_start..(at + 900).min(source.len())];
         assert!(

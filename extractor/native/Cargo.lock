@@ -701,6 +701,7 @@ dependencies = [
  "inline_detour",
  "minhook_h4",
  "production_hook_receipt",
+ "serde",
  "serde_json",
  "snapshot",
  "windows-sys",

@@ -165,6 +165,7 @@ pub struct CombatBinding {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawTerminalRecordCapture {
+    pub observed_game_hour_raw: Option<i32>,
     pub combat_id: u32,
     pub generation: u64,
     pub record_index: u32,
@@ -1893,7 +1894,6 @@ pub fn requeue(records: Vec<RawTerminalRecordCapture>) -> Result<(), String> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TerminalRecordUnpublishable {
-    EndedPhaseUnreachable,
     AuthenticationFailed,
     LocationDisagreesWithEndedPhase,
 }
@@ -1901,7 +1901,6 @@ pub enum TerminalRecordUnpublishable {
 impl TerminalRecordUnpublishable {
     pub const fn name(self) -> &'static str {
         match self {
-            Self::EndedPhaseUnreachable => "ended_phase_unreachable",
             Self::AuthenticationFailed => "authentication_failed",
             Self::LocationDisagreesWithEndedPhase => "location_disagrees_with_ended_phase",
         }
@@ -1909,7 +1908,6 @@ impl TerminalRecordUnpublishable {
 
     pub const fn code(self) -> u64 {
         match self {
-            Self::EndedPhaseUnreachable => 1,
             Self::AuthenticationFailed => 2,
             Self::LocationDisagreesWithEndedPhase => 3,
         }
@@ -1919,22 +1917,14 @@ impl TerminalRecordUnpublishable {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalRecordVerdict {
     Publishable(crate::TerminalCombatRecordRow),
-    EndedPhasePending,
     Unpublishable(TerminalRecordUnpublishable),
 }
 
 pub fn judge_terminal_record(
     capture: &RawTerminalRecordCapture,
     ended_location: Option<Option<u32>>,
-    epoch_is_live: bool,
 ) -> TerminalRecordVerdict {
-    let Some(expected_location) = ended_location else {
-        return if epoch_is_live {
-            TerminalRecordVerdict::EndedPhasePending
-        } else {
-            TerminalRecordVerdict::Unpublishable(TerminalRecordUnpublishable::EndedPhaseUnreachable)
-        };
-    };
+    let expected_location = ended_location.flatten();
     let Ok(row) = project_pointer_free_record(capture) else {
         return TerminalRecordVerdict::Unpublishable(
             TerminalRecordUnpublishable::AuthenticationFailed,
@@ -1980,6 +1970,7 @@ pub fn project_pointer_free_record(
         ));
     }
     let row = crate::TerminalCombatRecordRow {
+        observed_game_hour_raw: capture.observed_game_hour_raw,
         combat_id: capture.combat_id,
         generation: capture.generation,
         record_index: capture.record_index,
@@ -2089,6 +2080,7 @@ unsafe extern "system" fn hook_record_allocator(record_ptr: usize) -> u64 {
 }
 
 fn capture_record(context: WriterContext, record_index: u64, record_ptr: usize) {
+    let observed_hour_before = crate::hour_custody::current_game_hour_raw();
     let Some(identity_addr) = context.combat_ptr.checked_add(0x08) else {
         DROPPED_UNREADABLE.fetch_add(1, Ordering::Relaxed);
         return;
@@ -2160,6 +2152,7 @@ fn capture_record(context: WriterContext, record_index: u64, record_ptr: usize) 
         DROPPED_OVERFLOW.fetch_add(1, Ordering::Relaxed);
     }
     state.records.push_back(RawTerminalRecordCapture {
+        observed_game_hour_raw: crate::hour_custody::witnessed_event_hour(observed_hour_before, crate::hour_custody::current_game_hour_raw()),
         combat_id,
         generation,
         record_index,
@@ -2375,6 +2368,7 @@ mod terminal_diagnostic_release_tests {
         state.reservation = None;
         state.reservation_admission_sealed = false;
         state.records.push_back(RawTerminalRecordCapture {
+        observed_game_hour_raw: None,
             combat_id: 7,
             generation: 3,
             record_index: 0,
@@ -2432,6 +2426,7 @@ mod terminal_record_verdict_tests {
         record_bytes[0x440..0x444].copy_from_slice(&location.to_le_bytes());
         record_bytes[0x446] = 1;
         RawTerminalRecordCapture {
+        observed_game_hour_raw: None,
             combat_id,
             generation,
             record_index,
@@ -2454,25 +2449,14 @@ mod terminal_record_verdict_tests {
     }
 
     #[test]
-    fn a_live_epoch_is_pending_and_an_absent_one_is_proven_unreachable() {
-        let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    fn d55_hour_custody_terminal_publishes_without_a_later_ended_snapshot() {
+        let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _base = publish_test_module_base();
-        let capture = authentic_capture(11, 4, 0, 77);
-
-        assert_eq!(
-            judge_terminal_record(&capture, None, true),
-            TerminalRecordVerdict::EndedPhasePending,
-            "an epoch the roster still lists has its one publishable frame ahead of it"
-        );
-        assert_eq!(
-            judge_terminal_record(&capture, None, false),
-            TerminalRecordVerdict::Unpublishable(
-                TerminalRecordUnpublishable::EndedPhaseUnreachable
-            ),
-            "an epoch in neither set has already spent its one publishable frame"
-        );
+        let mut capture = authentic_capture(11, 4, 0, 77);
+        capture.observed_game_hour_raw = Some(100);
+        let TerminalRecordVerdict::Publishable(row) = judge_terminal_record(&capture, None) else { panic!("captured terminal event refused"); };
+        assert_eq!(row.observed_game_hour_raw, Some(100));
+        assert_eq!(row.location, 77);
     }
 
     #[test]
@@ -2485,14 +2469,14 @@ mod terminal_record_verdict_tests {
         capture.record_bytes[0] ^= 0xFF;
 
         assert_eq!(
-            judge_terminal_record(&capture, Some(None), false),
+            judge_terminal_record(&capture, Some(None)),
             TerminalRecordVerdict::Unpublishable(TerminalRecordUnpublishable::AuthenticationFailed),
         );
 
         let mut capture = authentic_capture(11, 4, 0, 77);
         capture.record_bytes[0x446] = 0;
         assert_eq!(
-            judge_terminal_record(&capture, Some(None), false),
+            judge_terminal_record(&capture, Some(None)),
             TerminalRecordVerdict::Unpublishable(TerminalRecordUnpublishable::AuthenticationFailed),
         );
     }
@@ -2506,19 +2490,19 @@ mod terminal_record_verdict_tests {
         let capture = authentic_capture(11, 4, 0, 77);
 
         assert_eq!(
-            judge_terminal_record(&capture, Some(Some(77)), false),
+            judge_terminal_record(&capture, Some(Some(77))),
             TerminalRecordVerdict::Publishable(
                 project_pointer_free_record(&capture).expect("authentic capture projects")
             ),
         );
         assert_eq!(
-            judge_terminal_record(&capture, Some(Some(78)), false),
+            judge_terminal_record(&capture, Some(Some(78))),
             TerminalRecordVerdict::Unpublishable(
                 TerminalRecordUnpublishable::LocationDisagreesWithEndedPhase
             ),
         );
         assert!(matches!(
-            judge_terminal_record(&capture, Some(None), false),
+            judge_terminal_record(&capture, Some(None)),
             TerminalRecordVerdict::Publishable(_)
         ));
     }
@@ -2557,6 +2541,7 @@ mod terminal_reservation_consumption_tests {
             state.reservation_admission_sealed = false;
             for (combat_id, generation) in captures {
                 state.records.push_back(RawTerminalRecordCapture {
+        observed_game_hour_raw: None,
                     combat_id: *combat_id,
                     generation: *generation,
                     record_index: 0,
@@ -2772,6 +2757,7 @@ mod terminal_reservation_consumption_tests {
                 .unwrap_or_else(|p| p.into_inner());
             state.records.pop_front();
             state.records.push_back(RawTerminalRecordCapture {
+        observed_game_hour_raw: None,
                 combat_id: 63,
                 generation: 1,
                 record_index: 0,

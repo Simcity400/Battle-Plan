@@ -352,7 +352,7 @@ pub use world::{
     HudSurfaceActivationRoot, HudSurfaceActivationView, IntelLevelRow, IntelNetworkGraphRow,
     IntelNetworkNationalCoverage, IntelView, IntelligenceUiExactSources,
     LandCombatCurrentLossObservation, LandCombatDetail, LandCombatEquipmentLossDelta,
-    LandCombatSideDetail, LandCombatTacticIdentity, LandCombatWidthObservation,
+    LandCombatSideDetail, LandCombatTacticIdentity, LandCombatPanelObservation, LandCombatWidthObservation,
     LandCombatWidthWrapper, LandDamageAttributionRow, LeaderRosterView, LeaderRow, Leaf,
     MapLayerSource, MarketStockpileRow, MarketTradeActivation, MarketTradeActivationView,
     NationalFocusPresentationExact, NationalFocusPresentationExactView,

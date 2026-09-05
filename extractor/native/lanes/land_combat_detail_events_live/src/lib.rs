@@ -1,3 +1,4 @@
+pub mod hour_custody;
 use std::collections::{BTreeMap, BTreeSet};
 
 use compact_contract::{parse_compact_record_header, RecordFramingError};
@@ -20,7 +21,7 @@ pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 pub const DOMAIN_LAND_COMBAT_DETAIL_EVENTS: u16 = 55;
 pub const DOMAIN_LAND_COMBAT_DETAIL_EVENTS_NAME: &str = "land_combat_detail_events_live";
 
-pub const SCHEMA_VERSION: u16 = 9;
+pub const SCHEMA_VERSION: u16 = 10;
 pub const SCHEMA_VERSION_V1_NO_SIDE_DETAIL: u16 = 1;
 pub const SCHEMA_VERSION_V2_SIDE_DETAIL: u16 = 2;
 pub const SCHEMA_VERSION_V3_ATTRIBUTION: u16 = 3;
@@ -29,6 +30,7 @@ pub const SCHEMA_VERSION_V5_RESERVE_MEMBERS: u16 = 5;
 pub const SCHEMA_VERSION_V6_TERMINAL_RECORDS: u16 = 6;
 pub const SCHEMA_VERSION_V7_WIDTH_LOSS: u16 = 7;
 pub const SCHEMA_VERSION_V8_PANEL: u16 = 8;
+pub const SCHEMA_VERSION_V9_CARRIERS: u16 = 9;
 pub const PAYLOAD_HEADER_LEN_V1: usize = 28;
 pub const PAYLOAD_HEADER_LEN_V2: usize = 32;
 pub const PAYLOAD_HEADER_LEN_V4: usize = 36;
@@ -133,10 +135,10 @@ pub const MAX_DETAIL_EVENT_ROWS: usize = 4_000 * (4 * MAX_SIDE_UNITS + 1);
 pub const MAX_LAND_COMBATS_SIDE_DETAIL: usize = 8_000;
 pub const MAX_LAND_COMBATS_ATTRIBUTION: usize = 32_000;
 pub const MAX_LAND_COMBATS_RESERVE_MEMBERS: usize = 8_000 * MAX_SIDE_UNITS;
-pub const MAX_LAND_COMBAT_TERMINAL_ROWS: usize = 8_000;
-pub const MAX_LAND_COMBAT_WIDTH_ROWS: usize = 8_000 * MAX_SIDE_UNITS;
-pub const MAX_LAND_COMBAT_LOSS_ROWS: usize = 8_000 * MAX_SIDE_UNITS;
-pub const MAX_LAND_COMBAT_PANEL_ROWS: usize = 8_000;
+pub const MAX_LAND_COMBAT_TERMINAL_ROWS: usize = 8_192;
+pub const MAX_LAND_COMBAT_WIDTH_ROWS: usize = 8_192 * MAX_SIDE_UNITS;
+pub const MAX_LAND_COMBAT_LOSS_ROWS: usize = 8_192 * MAX_SIDE_UNITS;
+pub const MAX_LAND_COMBAT_PANEL_ROWS: usize = 8_192;
 
 pub const PANEL_OBSERVATION_ROW_LEN: usize = 40;
 pub const PANEL_FLAG_OUTER_SENTINEL: u32 = 1 << 0;
@@ -200,7 +202,7 @@ pub const RESERVE_MEMBER_KNOWN_FLAG_MASK: u32 = RESERVE_MEMBER_FLAG_ATTACKER
     | RESERVE_MEMBER_FLAG_SIDE_VALIDATED
     | RESERVE_MEMBER_FLAG_VECTOR_STABLE;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub enum CombatSide {
     Attacker,
     Defender,
@@ -276,8 +278,9 @@ pub struct ReserveMemberRow {
     pub division_id: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct TerminalCombatRecordRow {
+    pub observed_game_hour_raw: Option<i32>,
     pub combat_id: u32,
     pub generation: u64,
     pub record_index: u32,
@@ -292,8 +295,9 @@ pub struct TerminalCombatRecordRow {
     pub layout_side_raw: u8,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct WidthObservationRow {
+    pub observed_game_hour_raw: Option<i32>,
     pub combat_id: u32,
     pub generation: u64,
     pub side: CombatSide,
@@ -306,8 +310,9 @@ pub struct WidthObservationRow {
     pub final_width_raw: i64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct CurrentLossObservationRow {
+    pub observed_game_hour_raw: Option<i32>,
     pub combat_id: u32,
     pub generation: u64,
     pub side: CombatSide,
@@ -322,8 +327,9 @@ pub struct CurrentLossObservationRow {
     pub equipment_after_raw: i64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct PanelObservationRow {
+    pub observed_game_hour_raw: Option<i32>,
     pub combat_id: u32,
     pub generation: u64,
     pub side: CombatSide,
@@ -697,6 +703,7 @@ impl GateBoundaryState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CaptureFrame {
+    pub hour_custody: hour_custody::FrameHourCustody,
     pub compact_stream: Vec<u8>,
     pub rows: Vec<DetailEventRow>,
     pub side_detail_rows: Vec<SideDetailRow>,
@@ -799,7 +806,7 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
         let side_detail_rows = side_detail_rows_from_snapshots(&current);
         let attribution_rows = attribution_rows_from_snapshots(&current);
         let reserve_member_rows = reserve_member_rows_from_snapshots(&current);
-        let payload = encode_detail_events_payload_v9(
+        let payload = encode_detail_events_payload_v10(
             elapsed_wall_ms,
             STATUS_DELTA_DATA | STATUS_PARTIAL_DATA | STATUS_TRANSITION_BASELINE_RESET,
             &[],
@@ -811,7 +818,8 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
             &[],
             &[],
             &carrier_rows,
-        );
+            hour_custody::FrameHourCustody::witnessed(game_hour_raw),
+);
         let mut compact_stream = Vec::new();
         append_compact_record(
             &mut compact_stream,
@@ -825,6 +833,7 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
         tracker.stage_baseline(current, false);
         tracker.last_frame_rebaselined = true;
         return Ok(CaptureFrame {
+            hour_custody: hour_custody::FrameHourCustody::witnessed(game_hour_raw),
             compact_stream,
             rows: Vec::new(),
             side_detail_rows,
@@ -844,7 +853,7 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
         game_hour_raw,
         elapsed_wall_ms,
     )?;
-    let payload = encode_detail_events_payload_v9(
+    let payload = encode_detail_events_payload_v10(
         elapsed_wall_ms,
         STATUS_DELTA_DATA,
         &frame.rows,
@@ -856,7 +865,8 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
         &[],
         &[],
         &carrier_rows,
-    );
+        hour_custody::FrameHourCustody::witnessed(game_hour_raw),
+);
     frame.compact_stream.clear();
     append_compact_record(
         &mut frame.compact_stream,
@@ -952,6 +962,7 @@ pub fn reserve_member_rows_from_snapshots(current: &[LandCombatSnapshot]) -> Vec
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedDetailEventsPayload {
+    pub hour_custody: hour_custody::FrameHourCustody,
     pub elapsed_wall_ms: u64,
     pub status_flags: u32,
     pub rows: Vec<DetailEventRow>,
@@ -976,7 +987,7 @@ pub fn build_transition_capture_frame(
     let side_detail_rows = side_detail_rows_from_snapshots(current);
     let attribution_rows = attribution_rows_from_snapshots(current);
     let reserve_member_rows = reserve_member_rows_from_snapshots(current);
-    let payload = encode_detail_events_payload_v9(
+    let payload = encode_detail_events_payload_v10(
         elapsed_wall_ms,
         STATUS_DELTA_DATA,
         &rows,
@@ -988,7 +999,8 @@ pub fn build_transition_capture_frame(
         &[],
         &[],
         &passive_modifier_carrier::CarrierRows::default(),
-    );
+        hour_custody::FrameHourCustody::witnessed(game_hour_raw),
+);
     let mut compact_stream = Vec::new();
     append_compact_record(
         &mut compact_stream,
@@ -1000,6 +1012,7 @@ pub fn build_transition_capture_frame(
         &payload,
     );
     Ok(CaptureFrame {
+            hour_custody: hour_custody::FrameHourCustody::witnessed(game_hour_raw),
         compact_stream,
         rows,
         side_detail_rows,
@@ -1394,7 +1407,7 @@ pub fn encode_detail_events_payload_v8(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn encode_detail_events_payload_v9(
+pub fn encode_detail_events_payload_v10(
     elapsed_wall_ms: u64,
     status_flags: u32,
     rows: &[DetailEventRow],
@@ -1406,6 +1419,7 @@ pub fn encode_detail_events_payload_v9(
     current_loss_observation_rows: &[CurrentLossObservationRow],
     panel_observation_rows: &[PanelObservationRow],
     carrier_rows: &passive_modifier_carrier::CarrierRows,
+    hour_custody: hour_custody::FrameHourCustody,
 ) -> Vec<u8> {
     let mut payload = encode_detail_events_payload_v8(
         elapsed_wall_ms,
@@ -1421,6 +1435,13 @@ pub fn encode_detail_events_payload_v9(
     );
     payload[0..2].copy_from_slice(&SCHEMA_VERSION.to_le_bytes());
     passive_modifier_carrier::append_carrier_trailer(&mut payload, carrier_rows);
+    hour_custody.encode(&mut payload);
+    for hour in terminal_record_rows.iter().map(|row| row.observed_game_hour_raw)
+        .chain(width_observation_rows.iter().map(|row| row.observed_game_hour_raw))
+        .chain(current_loss_observation_rows.iter().map(|row| row.observed_game_hour_raw))
+        .chain(panel_observation_rows.iter().map(|row| row.observed_game_hour_raw)) {
+        payload.extend_from_slice(&hour.unwrap_or(-1).to_le_bytes());
+    }
     payload
 }
 
@@ -2152,7 +2173,7 @@ pub fn decode_detail_events_payload(
                 SIDE_DETAIL_ROW_LEN,
             )
         }
-        SCHEMA_VERSION_V8_PANEL | SCHEMA_VERSION => {
+        SCHEMA_VERSION_V8_PANEL | SCHEMA_VERSION_V9_CARRIERS | SCHEMA_VERSION => {
             if payload.len() < PAYLOAD_HEADER_LEN {
                 return Err(vec![format!(
                     "offset {offset}: detail v8 payload too short"
@@ -2215,9 +2236,10 @@ pub fn decode_detail_events_payload(
             | SCHEMA_VERSION_V6_TERMINAL_RECORDS
             | SCHEMA_VERSION_V7_WIDTH_LOSS
             | SCHEMA_VERSION_V8_PANEL
+            | SCHEMA_VERSION_V9_CARRIERS
             | SCHEMA_VERSION
     ) && string_count != 0)
-        || (!matches!(version, SCHEMA_VERSION_V8_PANEL | SCHEMA_VERSION) && reserved != 0)
+        || (!matches!(version, SCHEMA_VERSION_V8_PANEL | SCHEMA_VERSION_V9_CARRIERS | SCHEMA_VERSION) && reserved != 0)
     {
         errors.push(format!(
             "offset {offset}: detail payload header reserved/string fields nonzero"
@@ -2331,24 +2353,23 @@ pub fn decode_detail_events_payload(
         strings.push(value);
         string_cursor += len;
     }
-    let carrier_rows = if version == SCHEMA_VERSION {
-        let (carrier_rows, end) =
-            passive_modifier_carrier::decode_carrier_trailer(payload, string_cursor)
-                .map_err(|error| vec![format!("offset {offset}: {error}")])?;
-        if end != payload.len() {
-            return Err(vec![format!(
-                "offset {offset}: detail payload has {} trailing bytes after the carrier trailer",
-                payload.len() - end
-            )]);
+    let mut hour_cursor = 0;
+    let mut hour_custody = hour_custody::FrameHourCustody::default();
+    let carrier_rows = if version >= SCHEMA_VERSION_V9_CARRIERS {
+        let (carrier_rows, end) = passive_modifier_carrier::decode_carrier_trailer(payload, string_cursor)
+            .map_err(|error| vec![format!("offset {offset}: {error}")])?;
+        if version == SCHEMA_VERSION {
+        hour_cursor = end;
+        hour_custody = hour_custody::FrameHourCustody::decode(payload, &mut hour_cursor)
+            .map_err(|error| vec![error])?;
+        let expected_end = hour_cursor + 4 * (terminal_record_row_count + width_observation_row_count + current_loss_observation_row_count + panel_observation_row_count);
+        if expected_end != payload.len() { return Err(vec!["D55 observation hours length mismatch".into()]); }
+        } else if end != payload.len() {
+            return Err(vec!["detail payload has trailing bytes".into()]);
         }
         carrier_rows
     } else {
-        if string_cursor != payload.len() {
-            return Err(vec![format!(
-                "offset {offset}: detail payload has {} trailing bytes after tactic strings",
-                payload.len() - string_cursor
-            )]);
-        }
+        if string_cursor != payload.len() { return Err(vec!["detail payload has trailing bytes".into()]); }
         passive_modifier_carrier::CarrierRows::default()
     };
     let mut seen = BTreeSet::new();
@@ -2481,11 +2502,20 @@ pub fn decode_detail_events_payload(
         cursor += PANEL_OBSERVATION_ROW_LEN;
     }
 
+    if version == SCHEMA_VERSION {
+        for hour in terminal_record_rows.iter_mut().map(|row| &mut row.observed_game_hour_raw)
+            .chain(width_observation_rows.iter_mut().map(|row| &mut row.observed_game_hour_raw))
+            .chain(current_loss_observation_rows.iter_mut().map(|row| &mut row.observed_game_hour_raw))
+            .chain(panel_observation_rows.iter_mut().map(|row| &mut row.observed_game_hour_raw)) {
+            *hour = hour_custody::decode_hour(payload, &mut hour_cursor).map_err(|error| vec![error])?;
+        }
+    }
     validate_width_observation_groups(offset, &width_observation_rows, &mut errors);
     validate_current_loss_observation_groups(offset, &current_loss_observation_rows, &mut errors);
 
     validate_payload_referential_consistency(
         offset,
+        version,
         &rows,
         &side_detail_rows,
         &attribution_rows,
@@ -2499,6 +2529,7 @@ pub fn decode_detail_events_payload(
 
     if errors.is_empty() {
         Ok(DecodedDetailEventsPayload {
+            hour_custody,
             elapsed_wall_ms,
             status_flags,
             rows,
@@ -2521,11 +2552,12 @@ fn decode_panel_observation_row(
     row_index: usize,
     payload: &[u8],
     cursor: usize,
-    seen: &mut BTreeSet<(u32, u64, CombatSide)>,
+    seen: &mut BTreeSet<(u32, u64, CombatSide, u64)>,
 ) -> Result<PanelObservationRow, String> {
     let side = decode_observation_side(read_u32(payload, cursor + 12))
         .ok_or_else(|| format!("offset {offset}: panel row {row_index}: side invalid"))?;
     let row = PanelObservationRow {
+            observed_game_hour_raw: None,
         combat_id: read_u32(payload, cursor),
         generation: read_u64(payload, cursor + 4),
         side,
@@ -2537,7 +2569,7 @@ fn decode_panel_observation_row(
     let reserved = read_u32(payload, cursor + 36);
     validate_panel_observation_row(&row)
         .map_err(|error| format!("offset {offset}: panel row {row_index}: {error}"))?;
-    if reserved != 0 || !seen.insert((row.combat_id, row.generation, row.side)) {
+    if reserved != 0 || !seen.insert((row.combat_id, row.generation, row.side, row.capture_sequence)) {
         return Err(format!(
             "offset {offset}: panel row {row_index}: reserved nonzero or duplicate side"
         ));
@@ -2554,6 +2586,7 @@ fn decode_width_observation_row(
     let side = decode_observation_side(read_u32(payload, cursor + 12))
         .ok_or_else(|| format!("offset {offset}: width row {row_index}: side invalid"))?;
     let row = WidthObservationRow {
+            observed_game_hour_raw: None,
         combat_id: read_u32(payload, cursor),
         generation: read_u64(payload, cursor + 4),
         side,
@@ -2579,6 +2612,7 @@ fn decode_current_loss_observation_row(
     let side = decode_observation_side(read_u32(payload, cursor + 12))
         .ok_or_else(|| format!("offset {offset}: loss row {row_index}: side invalid"))?;
     let row = CurrentLossObservationRow {
+            observed_game_hour_raw: None,
         combat_id: read_u32(payload, cursor),
         generation: read_u64(payload, cursor + 4),
         side,
@@ -2725,6 +2759,7 @@ fn decode_terminal_record_row(
     seen: &mut BTreeSet<(u32, u64)>,
 ) -> Result<TerminalCombatRecordRow, String> {
     let row = TerminalCombatRecordRow {
+            observed_game_hour_raw: None,
         combat_id: read_u32(payload, cursor),
         generation: read_u64(payload, cursor + 4),
         record_index: read_u32(payload, cursor + 12),
@@ -2782,6 +2817,7 @@ fn decode_side_detail_row(
             | SCHEMA_VERSION_V6_TERMINAL_RECORDS
             | SCHEMA_VERSION_V7_WIDTH_LOSS
             | SCHEMA_VERSION_V8_PANEL
+            | SCHEMA_VERSION_V9_CARRIERS
             | SCHEMA_VERSION
     );
     let progress_raw = has_tactic_progress.then(|| read_i32(payload, cursor + 100));
@@ -2956,6 +2992,7 @@ struct ParticipantDeltaSet {
 
 fn validate_payload_referential_consistency(
     offset: usize,
+    version: u16,
     rows: &[DetailEventRow],
     side_detail_rows: &[SideDetailRow],
     attribution_rows: &[AttributionRow],
@@ -3125,44 +3162,47 @@ fn validate_payload_referential_consistency(
             ));
         }
     }
-    for row in terminal_record_rows {
-        match phase_by_combat.get(&(row.combat_id, row.generation)) {
-            Some(&EVENT_PHASE_ENDED) => {}
-            _ => errors.push(format!(
-                "offset {offset}: terminal record {} for combat {}:{} lacks the matching ended phase",
-                row.record_index, row.combat_id, row.generation
-            )),
+
+    if version < SCHEMA_VERSION {
+        for row in terminal_record_rows {
+            match phase_by_combat.get(&(row.combat_id, row.generation)) {
+                Some(&EVENT_PHASE_ENDED) => {}
+                _ => errors.push(format!(
+                    "offset {offset}: terminal record {} for combat {}:{} lacks the matching ended phase",
+                    row.record_index, row.combat_id, row.generation
+                )),
+            }
         }
-    }
-    for row in width_observation_rows {
-        match side_details.get(&(row.combat_id, row.generation, row.side)) {
-            Some(detail)
-                if detail.detail.counts_incomplete
-                    || detail.detail.committed == row.wrapper_count => {}
-            Some(detail) => errors.push(format!(
-                "offset {offset}: width wrapper count {} disagrees with side-detail committed {} for combat {}:{}",
-                row.wrapper_count, detail.detail.committed, row.combat_id, row.generation
-            )),
-            None => errors.push(format!(
-                "offset {offset}: width observation for combat {}:{} has no matching side-detail row",
-                row.combat_id, row.generation
-            )),
+        for row in width_observation_rows {
+            match side_details.get(&(row.combat_id, row.generation, row.side)) {
+                Some(detail)
+                    if detail.detail.counts_incomplete
+                        || detail.detail.committed == row.wrapper_count => {}
+                Some(detail) => errors.push(format!(
+                    "offset {offset}: width wrapper count {} disagrees with side-detail committed {} for combat {}:{}",
+                    row.wrapper_count, detail.detail.committed, row.combat_id, row.generation
+                )),
+                None => errors.push(format!(
+                    "offset {offset}: width observation for combat {}:{} has no matching side-detail row",
+                    row.combat_id, row.generation
+                )),
+            }
         }
-    }
-    for row in current_loss_observation_rows {
-        if !side_details.contains_key(&(row.combat_id, row.generation, row.side)) {
-            errors.push(format!(
-                "offset {offset}: current-loss observation for combat {}:{} has no matching side-detail row",
-                row.combat_id, row.generation
-            ));
+        for row in current_loss_observation_rows {
+            if !side_details.contains_key(&(row.combat_id, row.generation, row.side)) {
+                errors.push(format!(
+                    "offset {offset}: current-loss observation for combat {}:{} has no matching side-detail row",
+                    row.combat_id, row.generation
+                ));
+            }
         }
-    }
-    for row in panel_observation_rows {
-        if !side_details.contains_key(&(row.combat_id, row.generation, row.side)) {
-            errors.push(format!(
-                "offset {offset}: panel observation for combat {}:{} has no matching side-detail row",
-                row.combat_id, row.generation
-            ));
+        for row in panel_observation_rows {
+            if !side_details.contains_key(&(row.combat_id, row.generation, row.side)) {
+                errors.push(format!(
+                    "offset {offset}: panel observation for combat {}:{} has no matching side-detail row",
+                    row.combat_id, row.generation
+                ));
+            }
         }
     }
 }
@@ -5225,6 +5265,7 @@ mod tests {
                 | FLAG_FROM_VALIDATED_DOMAIN21_ROOT,
         };
         let terminal = TerminalCombatRecordRow {
+            observed_game_hour_raw: None,
             combat_id: 21_381,
             generation: 7,
             record_index: 14,
@@ -5266,6 +5307,7 @@ mod tests {
         };
         let widths = [
             WidthObservationRow {
+            observed_game_hour_raw: None,
                 combat_id: 21_381,
                 generation: 7,
                 side: CombatSide::Attacker,
@@ -5278,9 +5320,11 @@ mod tests {
                 final_width_raw: 4_000_000,
             },
             WidthObservationRow {
+            observed_game_hour_raw: None,
                 ordinal: 1,
                 division_id: 8002,
                 ..WidthObservationRow {
+            observed_game_hour_raw: None,
                     combat_id: 21_381,
                     generation: 7,
                     side: CombatSide::Attacker,
@@ -5296,6 +5340,7 @@ mod tests {
         ];
         let losses = [
             CurrentLossObservationRow {
+            observed_game_hour_raw: None,
                 combat_id: 21_381,
                 generation: 7,
                 side: CombatSide::Attacker,
@@ -5311,11 +5356,13 @@ mod tests {
                 equipment_after_raw: 48,
             },
             CurrentLossObservationRow {
+            observed_game_hour_raw: None,
                 ordinal: 1,
                 equipment_id: 71,
                 equipment_before_raw: 40,
                 equipment_after_raw: 39,
                 ..CurrentLossObservationRow {
+            observed_game_hour_raw: None,
                     combat_id: 21_381,
                     generation: 7,
                     side: CombatSide::Attacker,
@@ -5333,6 +5380,7 @@ mod tests {
             },
         ];
         let panel = PanelObservationRow {
+            observed_game_hour_raw: None,
             combat_id: 21_381,
             generation: 7,
             side: CombatSide::Attacker,
@@ -5515,5 +5563,200 @@ mod tests {
         let frame = build_transition_capture_frame(&[], &current, 1, 60_787_539, 1).unwrap();
         let payload = &frame.compact_stream[COMPACT_RECORD_HEADER_LEN..];
         assert!(decode_detail_events_payload(0, payload).is_err());
+    }
+}
+
+
+pub fn admit_frame_to_hour(frame: &mut CaptureFrame, frame_hour: i32) {
+    if !frame.hour_custody.snapshot.admits(frame_hour) {
+        frame.rows.clear();
+        frame.side_detail_rows.clear();
+        frame.attribution_rows.clear();
+        frame.reserve_member_rows.clear();
+    }
+    if !frame.hour_custody.carrier.admits(frame_hour) {
+        frame.carrier_rows = Default::default();
+    }
+}
+
+pub fn validate_frame_hour(frame: &DecodedDetailEventsPayload, frame_hour: i32) -> Result<(), String> {
+    if !frame.hour_custody.snapshot.admits(frame_hour)
+        && (!frame.rows.is_empty() || !frame.side_detail_rows.is_empty() || !frame.attribution_rows.is_empty() || !frame.reserve_member_rows.is_empty()) {
+        return Err("D55 snapshot rows lack an admitted observation hour".into());
+    }
+    if !frame.hour_custody.carrier.admits(frame_hour) && frame.carrier_rows != Default::default() {
+        return Err("D55 passive carrier rows lack an admitted observation hour".into());
+    }
+    Ok(())
+}
+
+
+#[cfg(test)]
+mod hour_custody_tests {
+    use super::*;
+    fn width(hour: i32, sequence: u64) -> WidthObservationRow {
+        WidthObservationRow { observed_game_hour_raw: Some(hour), combat_id: 1, generation: 1,
+            side: CombatSide::Attacker, capture_sequence: sequence, ordinal: 0, wrapper_count: 1,
+            division_id: 7, control_flags: WIDTH_REQUIRED_FLAG_MASK, wrapper_width_raw: 50, final_width_raw: 50 }
+    }
+    #[test]
+    fn d55_hour_custody_legacy_payloads_keep_all_hook_referential_checks() {
+        let terminal = TerminalCombatRecordRow { observed_game_hour_raw: Some(100), combat_id: 1, generation: 1,
+            record_index: 3, writer_kind: TERMINAL_WRITER_KIND_NORMAL, attacker_manpower_loss_raw: 10,
+            defender_manpower_loss_raw: 20, end_date_raw: 100, location: 42,
+            winner_side_raw: 0, winter_raw: 0, result_selector_raw: 1, layout_side_raw: 0 };
+        let loss = CurrentLossObservationRow { observed_game_hour_raw: Some(100), combat_id: 1, generation: 1,
+            side: CombatSide::Attacker, capture_sequence: 1, ordinal: 0, equipment_count: 1, equipment_id: 7,
+            control_flags: CURRENT_LOSS_REQUIRED_FLAG_MASK | CURRENT_LOSS_FLAG_SOURCE_ACTIVE_DAMAGE,
+            manpower_before_raw: 10, manpower_after_raw: 5, equipment_before_raw: 10, equipment_after_raw: 5 };
+        let panel = PanelObservationRow { observed_game_hour_raw: Some(100), combat_id: 1, generation: 1,
+            side: CombatSide::Attacker, capture_sequence: 1, leader_id: 7, modifier_bits: 1, control_flags: PANEL_REQUIRED_FLAG_MASK };
+        for (terminals, widths, losses, panels, message) in [
+            (vec![terminal], vec![], vec![], vec![], "lacks the matching ended phase"),
+            (vec![], vec![width(100, 1)], vec![], vec![], "width observation"),
+            (vec![], vec![], vec![loss], vec![], "current-loss observation"),
+            (vec![], vec![], vec![], vec![panel], "panel observation"),
+        ] {
+            let payload = encode_detail_events_payload_v10(1, STATUS_DELTA_DATA, &[], &[], &[], &[], &terminals, &widths, &losses, &panels, &Default::default(), hour_custody::FrameHourCustody::witnessed(100));
+            decode_detail_events_payload(0, &payload).unwrap();
+            let custody_start = payload.len() - 24;
+            let mut legacy = payload[..custody_start].to_vec();
+            legacy[..2].copy_from_slice(&SCHEMA_VERSION_V9_CARRIERS.to_le_bytes());
+            assert!(decode_detail_events_payload(0, &legacy).unwrap_err().iter().any(|error| error.contains(message)), "{message}");
+            let legacy = encode_detail_events_payload_v8(1, STATUS_DELTA_DATA, &[], &[], &[], &[], &terminals, &widths, &losses, &panels);
+            assert!(decode_detail_events_payload(0, &legacy).unwrap_err().iter().any(|error| error.contains(message)), "{message}");
+        }
+        let mut legacy = encode_detail_events_payload_v10(1, STATUS_DELTA_DATA, &[], &[], &[], &[], &[], &[], &[], &[], &Default::default(), hour_custody::FrameHourCustody::witnessed(100));
+        legacy.truncate(legacy.len() - 20);
+        legacy[..2].copy_from_slice(&SCHEMA_VERSION_V9_CARRIERS.to_le_bytes());
+        decode_detail_events_payload(0, &legacy).unwrap();
+    }
+
+    #[test]
+    fn d55_hour_custody_drain_spanning_tick_preserves_both_hours() {
+        let custody = hour_custody::FrameHourCustody {
+            snapshot: hour_custody::ReadHours { before: Some(100), after: Some(100) },
+            carrier: hour_custody::ReadHours { before: Some(100), after: Some(101) },
+        };
+        let rows = vec![width(100, 1), width(101, 2)];
+        let mut frame = CaptureFrame { hour_custody: custody, compact_stream: vec![], rows: vec![],
+            side_detail_rows: vec![], attribution_rows: vec![], reserve_member_rows: vec![], terminal_record_rows: vec![],
+            width_observation_rows: rows.clone(), current_loss_observation_rows: vec![], panel_observation_rows: vec![], carrier_rows: Default::default() };
+        admit_frame_to_hour(&mut frame, 100);
+        assert_eq!(frame.width_observation_rows, rows);
+        let payload = encode_detail_events_payload_v10(1, STATUS_DELTA_DATA, &[], &[], &[], &[], &[], &rows, &[], &[], &Default::default(), custody);
+        let decoded = decode_detail_events_payload(0, &payload).unwrap();
+        let admitted = hour_custody::PublishedHookCustody::admit(&decoded, 100).unwrap();
+        assert_eq!(decoded.width_observation_rows, rows);
+        assert_eq!(admitted.width_observation_row_count, rows.len());
+        assert_eq!(admitted.carrier_refusal, Some(hour_custody::ReadRefusal::Torn));
+        assert_eq!(admitted.snapshot_refusal, None);
+    }
+    #[test]
+    #[ignore = "requires the read-only e2e_07 capture spool"]
+    fn d55_hour_custody_capture07_decodes_every_legacy_data_record() {
+        use std::io::{BufReader, Read, Seek, SeekFrom};
+        let path = r"captures\e2e_07\collector_stream.bin";
+        let file = std::fs::File::open(path).expect("e2e_07 capture spool must exist");
+        let file_len = file.metadata().unwrap().len();
+        let evidence: serde_json::Value = serde_json::from_str(include_str!("../../../runs/d55gap_hour_custody/e2e_07_spool.json")).unwrap();
+        assert_eq!(file_len, evidence["stored_bytes"].as_u64().unwrap());
+        let mut stream = BufReader::new(file);
+        let mut offset = 0u64;
+        let mut records = 0usize;
+        let mut data_records = 0usize;
+        let mut hours = BTreeSet::new();
+        let mut versions = BTreeMap::<u16, usize>::new();
+        let mut row_totals = [0usize; 4];
+        let mut refusals = Vec::new();
+        while offset < file_len {
+            let mut bytes = [0u8; COMPACT_RECORD_HEADER_LEN];
+            stream.read_exact(&mut bytes).expect("complete compact header");
+            let header = compact_contract::parse_compact_record_header(&bytes).unwrap();
+            let end = offset.checked_add(header.record_len() as u64).unwrap();
+            assert!(end <= file_len, "record at {offset} overruns capture");
+            records += 1;
+            if header.domain_id == DOMAIN_LAND_COMBAT_DETAIL_EVENTS
+                && header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
+            {
+                let mut payload = vec![0u8; header.payload_len];
+                stream.read_exact(&mut payload).expect("complete D55 payload");
+                data_records += 1;
+                hours.insert(header.game_hour_raw);
+                *versions.entry(read_u16(&payload, 0)).or_default() += 1;
+                match decode_detail_events_payload(offset as usize, &payload) {
+                    Ok(decoded) => {
+                        row_totals[0] += decoded.terminal_record_rows.len();
+                        row_totals[1] += decoded.width_observation_rows.len();
+                        row_totals[2] += decoded.current_loss_observation_rows.len();
+                        row_totals[3] += decoded.panel_observation_rows.len();
+                    }
+                    Err(errors) => refusals.push((offset, header.game_hour_raw, errors)),
+                }
+            } else {
+                stream.seek(SeekFrom::Current(header.payload_len as i64)).unwrap();
+            }
+            offset = end;
+        }
+        println!("{}", serde_json::json!({
+            "records": records, "d55_data_records": data_records, "d55_data_hours": hours.len(),
+            "schemas": versions, "refusals": refusals.len(), "terminal_rows": row_totals[0],
+            "width_rows": row_totals[1], "loss_rows": row_totals[2], "panel_rows": row_totals[3]
+        }));
+        assert_eq!(offset, file_len);
+        assert_eq!(records, 49_882);
+        assert_eq!(data_records, 153);
+        assert_eq!(hours.len(), 153);
+        assert_eq!(versions, BTreeMap::from([(9, 153)]));
+        assert!(refusals.is_empty(), "D55 decoder refusals: {refusals:?}");
+        assert_eq!(row_totals, [0, 22_499, 1_421, 0]);
+    }
+
+    #[test]
+    fn d55_hour_custody_capture07_fixture_proves_late_not_spanning() {
+        let evidence: serde_json::Value = serde_json::from_str(include_str!("../../../runs/d55gap_hour_custody/e2e_07_spool.json")).unwrap();
+        assert_eq!(evidence["records_seen"], 49882);
+        assert_eq!(evidence["frame_end_count"], 399);
+        for fixture in evidence["fixture_records"].as_array().unwrap() {
+            let hex = fixture["record_hex"].as_str().unwrap();
+            let bytes: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i+2], 16).unwrap()).collect();
+            let header = compact_contract::parse_compact_record_header(&bytes).unwrap();
+            let gap = compact_contract::DomainGapRecordV1::decode(&bytes[32..]).unwrap();
+            assert_eq!(header.domain_id, 55);
+            assert_eq!(gap.reason, compact_contract::domain_gap::DomainGapReason::HourLabelMismatch);
+            assert_eq!(gap.tick_before, gap.tick_after);
+            assert!(gap.tick_before > header.game_hour_raw as u64);
+        }
+    }
+    #[test]
+    fn d55_hour_custody_unreadable_event_hour_keeps_row_and_names_refusal() {
+        let mut row = width(100, 1);
+        row.observed_game_hour_raw = None;
+        let payload = encode_detail_events_payload_v10(
+            1, STATUS_DELTA_DATA, &[], &[], &[], &[], &[],
+            std::slice::from_ref(&row), &[], &[], &Default::default(),
+            hour_custody::FrameHourCustody::witnessed(100),
+        );
+        let decoded = decode_detail_events_payload(0, &payload).unwrap();
+        let admitted = hour_custody::PublishedHookCustody::admit(&decoded, 100).unwrap();
+        assert_eq!(decoded.width_observation_rows, vec![row]);
+        assert_eq!(admitted.width_observation_row_count, 1);
+        assert_eq!(admitted.event_hour_refusals, vec![hour_custody::EventHourRefusal {
+            family: hour_custody::HookFamily::Width,
+            row_index: 0,
+            reason: hour_custody::EventHourRefusalReason::ObservationHourUnavailable,
+        }]);
+    }
+
+    #[test]
+    fn d55_hour_custody_truncated_and_invalid_hours_are_refused() {
+        let mut payload = encode_detail_events_payload_v10(1, STATUS_DELTA_DATA, &[], &[], &[], &[], &[], &[width(100, 1)], &[], &[], &Default::default(), hour_custody::FrameHourCustody::witnessed(100));
+        let end = payload.len();
+        payload[end-4..].copy_from_slice(&(-2i32).to_le_bytes());
+        assert!(decode_detail_events_payload(0, &payload).is_err());
+        payload.pop();
+        assert!(decode_detail_events_payload(0, &payload).is_err());
+        assert_eq!(hour_custody::witnessed_event_hour(Some(100), Some(101)), None);
+        assert_eq!(hour_custody::witnessed_event_hour(None, Some(101)), None);
     }
 }
