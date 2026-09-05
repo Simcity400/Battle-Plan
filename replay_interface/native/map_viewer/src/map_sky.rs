@@ -130,6 +130,10 @@ mod tests {
         let geometry = D3dPtr::from_raw(geometry, "sky hostile GS").unwrap();
         (*context).GSSetShader(geometry.as_raw(), ptr::null(), 0);
         sky.bind_and_draw(context);
+        let mut bound_sampler = ptr::null_mut();
+        (*context).PSGetSamplers(0, 1, &mut bound_sampler);
+        assert_eq!(bound_sampler, sky.sampler.as_ref().map_or(ptr::null_mut(), |sampler| sampler.as_raw()));
+        if !bound_sampler.is_null() { drop(D3dPtr::from_raw(bound_sampler, "sky bound sampler").unwrap()); }
         let staging_desc = D3D11_TEXTURE2D_DESC {
             Usage: D3D11_USAGE_STAGING,
             BindFlags: 0,
@@ -180,9 +184,9 @@ VertexShader = {
 }
 PixelShader = {
     Samplers = {
-        ReflectionCubeMap = { Index = 0 Type = "Cube" MagFilter = "Linear" MinFilter = "Linear" MipFilter = "Linear" AddressU = "Clamp" AddressV = "Clamp" }
+        ReflectionCubeMap = { Index = 0 Type = "Cube" MagFilter = "Point" MinFilter = "Point" MipFilter = "Point" AddressU = "Clamp" AddressV = "Clamp" }
     }
-    MainCode PS [[ float4 main() : SV_Target { return float4(0.25, 0.5, 0.75, 1); } ]]
+    MainCode PS [[ float4 main() : SV_Target { return ReflectionCubeMap_Texture.Sample(ReflectionCubeMap_Sampler, float3(1, 0, 0)); } ]]
 }
 BlendState BlendState { BlendEnable = no WriteMask = "ALL" }
 BlendState SelectedRed { BlendEnable = no WriteMask = "RED" }
@@ -203,6 +207,24 @@ STextureSamplerCube CreateSamplerCube(TextureCube t, SamplerState s) { STextureS
             let device = D3dPtr::from_raw(device, "sky red device").unwrap();
             let context = D3dPtr::from_raw(context, "sky red context").unwrap();
             let mut sky = NativeMapSky::create(device.as_raw(), &resolver, 5632, 2048, &"a".repeat(64)).unwrap();
+            let mut sampler: D3D11_SAMPLER_DESC = std::mem::zeroed();
+            (*sky.sampler.as_ref().unwrap().as_raw()).GetDesc(&mut sampler);
+            assert_eq!(sampler.Filter, D3D11_FILTER_MIN_MAG_MIP_POINT);
+            assert_eq!(sampler.AddressU, D3D11_TEXTURE_ADDRESS_CLAMP);
+            let linear_root = crate::test_support::temp_test_dir("sky_linear_sampler");
+            let linear_fx = linear_root.join("gfx/FX");
+            fs::create_dir_all(&linear_fx).unwrap();
+            fs::write(linear_fx.join("sky.shader"), fs::read_to_string(fx.join("sky.shader")).unwrap().replace("\"Point\"", "\"Linear\"")).unwrap();
+            fs::copy(fx.join("defines_hlsl_dx11.fxh"), linear_fx.join("defines_hlsl_dx11.fxh")).unwrap();
+            let linear_source = GameFileResolver::vanilla(&linear_root).unwrap();
+            let (linear_resolver, _) = crate::test_support::admitted_vanilla_resolver(&linear_source, &paths, "sky-linear");
+            let linear = NativeMapSky::create(device.as_raw(), &linear_resolver, 5632, 2048, &"a".repeat(64)).unwrap();
+            assert_eq!(sky.program_sha256, linear.program_sha256);
+            assert_eq!(sky.blend_sha256, linear.blend_sha256);
+            assert_ne!(sky.sampler_sha256, linear.sampler_sha256);
+            assert_ne!(sky.draw_digest(&"b".repeat(64), &"c".repeat(64), &"d".repeat(64)).unwrap(),
+                linear.draw_digest(&"b".repeat(64), &"c".repeat(64), &"d".repeat(64)).unwrap());
+            drop(linear); drop(linear_resolver); drop(linear_source); fs::remove_dir_all(linear_root).unwrap();
             let mut desc: D3D11_BLEND_DESC = std::mem::zeroed();
             (*sky.blend.as_raw()).GetDesc(&mut desc);
             assert_eq!(desc.RenderTarget[0].BlendEnable, 0);
@@ -234,6 +256,47 @@ STextureSamplerCube CreateSamplerCube(TextureCube t, SamplerState s) { STextureS
         drop(resolver);
         drop(source);
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn sky_constant_effect_creates_without_sampler_and_clears_prior_binding() {
+        use crate::d3d11_device::{native_d3d11_hr, D3dPtr};
+        use std::{fs, ptr};
+        use winapi::um::{d3d11::*, d3dcommon::*};
+        let root = crate::test_support::temp_test_dir("sky_without_sampler");
+        let fx = root.join("gfx/FX");
+        fs::create_dir_all(&fx).unwrap();
+        fs::write(fx.join("sky.shader"), r#"
+VertexStruct Input { int2 p : POSITION; }
+VertexShader = { MainCode VS [[ float4 main(Input i) : SV_POSITION { return float4(i.p, 1, 1); } ]] }
+PixelShader = { MainCode PS [[ float4 main() : SV_Target { return float4(0.25, 0.5, 0.75, 1); } ]] }
+Effect sky { VertexShader = "VS" PixelShader = "PS" }
+"#).unwrap();
+        fs::write(fx.join("defines_hlsl_dx11.fxh"), "").unwrap();
+        let source = GameFileResolver::vanilla(&root).unwrap();
+        let paths = [SKY_SHADER.to_ascii_lowercase(), crate::shader_compile::DX11_PLATFORM_HEADER.to_ascii_lowercase()].into_iter().collect();
+        let (resolver, _) = crate::test_support::admitted_vanilla_resolver(&source, &paths, "sky-no-sampler");
+        unsafe {
+            let mut device = ptr::null_mut(); let mut context = ptr::null_mut();
+            native_d3d11_hr(D3D11CreateDevice(ptr::null_mut(), D3D_DRIVER_TYPE_WARP, ptr::null_mut(), 0,
+                &D3D_FEATURE_LEVEL_11_0, 1, D3D11_SDK_VERSION, &mut device, ptr::null_mut(), &mut context), "sky constant WARP").unwrap();
+            let device = D3dPtr::from_raw(device, "sky constant device").unwrap();
+            let context_owner = D3dPtr::from_raw(context, "sky constant context").unwrap();
+            let mut sky = NativeMapSky::create(device.as_raw(), &resolver, 5632, 2048, &"a".repeat(64)).unwrap();
+            assert!(sky.sampler.is_none());
+            assert!(sky.sampler_sha256.is_none());
+            let descriptor = D3D11_SAMPLER_DESC { Filter: D3D11_FILTER_MIN_MAG_MIP_POINT,
+                AddressU: D3D11_TEXTURE_ADDRESS_WRAP, AddressV: D3D11_TEXTURE_ADDRESS_WRAP,
+                AddressW: D3D11_TEXTURE_ADDRESS_WRAP, MipLODBias: 0.0, MaxAnisotropy: 1,
+                ComparisonFunc: D3D11_COMPARISON_NEVER, BorderColor: [0.0; 4], MinLOD: 0.0, MaxLOD: f32::MAX };
+            let mut previous = ptr::null_mut();
+            native_d3d11_hr((*device.as_raw()).CreateSamplerState(&descriptor, &mut previous), "sky previous sampler").unwrap();
+            let previous = D3dPtr::from_raw(previous, "sky previous sampler").unwrap();
+            (*context).PSSetSamplers(0, 1, &previous.as_raw());
+            draw_after_conflicting_rasterizer(&mut sky, device.as_raw(), context, [64, 128, 191, 255]);
+            drop(context_owner);
+        }
+        drop(resolver); drop(source); fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -322,7 +385,7 @@ STextureSamplerCube CreateSamplerCube(TextureCube t, SamplerState s) { STextureS
                 (12, D3D11_BIND_VERTEX_BUFFER)
             );
             let mut sampler: D3D11_SAMPLER_DESC = std::mem::zeroed();
-            (*sky.sampler.as_raw()).GetDesc(&mut sampler);
+            (*sky.sampler.as_ref().unwrap().as_raw()).GetDesc(&mut sampler);
             assert_eq!(sampler.Filter, D3D11_FILTER_MIN_MAG_MIP_LINEAR);
             assert_eq!(sampler.AddressU, D3D11_TEXTURE_ADDRESS_CLAMP);
             draw_after_conflicting_rasterizer(&mut sky, device.as_raw(), context, [64, 128, 191, 255]);
@@ -339,7 +402,8 @@ pub struct NativeMapSky {
     layout: crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11InputLayout>,
     vertices: crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11Buffer>,
     depth: crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11DepthStencilState>,
-    sampler: crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11SamplerState>,
+    sampler: Option<crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11SamplerState>>,
+    sampler_sha256: Option<String>,
     blend: crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11BlendState>,
     blend_sha256: String,
     program_sha256: String,
@@ -369,30 +433,6 @@ impl NativeMapSky {
         );
         let files = crate::shader_compile::effect_translation_unit_files(resolver, SKY_SHADER)?;
         let (blend, blend_sha256) = create_sky_blend(device, &files)?;
-        let stage = crate::shader_compile::merged_effect_translation_unit_stage(
-            &files,
-            crate::ShaderStage::Pixel,
-        );
-        let sampler = stage
-            .samplers
-            .iter()
-            .find(|s| s.name == "ReflectionCubeMap")
-            .ok_or("sky shader omits ReflectionCubeMap")?;
-        if stage.samplers.len() != 1
-            || sampler.index != 0
-            || sampler.sampler_type.as_deref() != Some("Cube")
-            || sampler.mag_filter.as_deref() != Some("Linear")
-            || sampler.min_filter.as_deref() != Some("Linear")
-            || sampler.mip_filter.as_deref() != Some("Linear")
-            || sampler.address_u.as_deref() != Some("Clamp")
-            || sampler.address_v.as_deref() != Some("Clamp")
-            || sampler.mip_map_lod_bias.is_some()
-            || sampler.mip_map_min_lod.is_some()
-            || sampler.mip_map_max_lod.is_some()
-            || sampler.max_anisotropy.is_some()
-        {
-            return Err("sky reflection sampler differs from the admitted engine contract".into());
-        }
         let compile = |stage| -> Result<Vec<u8>> {
             let hlsl = crate::shader_compile::build_stage_hlsl_with_defines(
                 resolver, SKY_SHADER, "sky", stage, &defines,
@@ -485,24 +525,10 @@ impl NativeMapSky {
             "CreateDepthStencilState(sky)",
         )?;
         let depth = D3dPtr::from_raw(depth, "sky depth")?;
-        let sampler_desc = D3D11_SAMPLER_DESC {
-            Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
-            MipLODBias: 0.0,
-            MaxAnisotropy: 1,
-            ComparisonFunc: D3D11_COMPARISON_NEVER,
-            BorderColor: [0.0; 4],
-            MinLOD: 0.0,
-            MaxLOD: f32::MAX,
-        };
-        let mut sampler = ptr::null_mut();
-        native_d3d11_hr(
-            (*device).CreateSamplerState(&sampler_desc, &mut sampler),
-            "CreateSamplerState(sky)",
-        )?;
-        let sampler = D3dPtr::from_raw(sampler, "sky sampler")?;
+        let (sampler, sampler_sha256) = if crate::parse_dxbc_reflection(&ps)?.resources.iter().any(|resource| resource.resource_type == 3) {
+            let (sampler, identity) = crate::xmap12_d3d_handoff::create_effect_sampler_on_device(device, resolver, SKY_SHADER, 0)?;
+            (Some(sampler), Some(identity))
+        } else { (None, None) };
         Ok(Self {
             source_identity: source_identity.into(),
             rasterizer: crate::xmap16_supply_arrow_handoff::create_supply_arrow_rasterizer_state(
@@ -514,6 +540,7 @@ impl NativeMapSky {
             vertices,
             depth,
             sampler,
+            sampler_sha256,
             blend,
             blend_sha256,
             program_sha256: Sha256::hex(&[vs, ps].concat()),
@@ -560,17 +587,21 @@ impl NativeMapSky {
         (*context).VSSetConstantBuffers(0, 1, &mut cb);
         (*context).PSSetConstantBuffers(0, 1, &mut cb);
         let mut srv = cube.as_raw();
-        let mut sampler = self.sampler.as_raw();
         (*context).PSSetShaderResources(0, 1, &mut srv);
-        (*context).PSSetSamplers(0, 1, &mut sampler);
         self.bind_and_draw(context);
         (*context).PSSetShaderResources(0, 1, &mut ptr::null_mut());
+        self.draw_digest(target_sha256, scene.payload_sha256(), &cube.binding.resource_sha256)
+    }
+
+    fn draw_digest(&self, target_sha256: &str, scene_sha256: &str, cube_sha256: &str) -> Result<String> {
         Ok(Sha256::hex(&serde_json::to_vec(&(
+            self.source_identity.as_str(),
             self.program_sha256.as_str(),
             self.blend_sha256.as_str(),
+            self.sampler_sha256.as_deref(),
             target_sha256,
-            scene.payload_sha256(),
-            cube.binding.resource_sha256.as_str(),
+            scene_sha256,
+            cube_sha256,
             3u32,
         ))?))
     }
@@ -579,6 +610,8 @@ impl NativeMapSky {
         (*context).RSSetState(self.rasterizer.as_raw());
         (*context).OMSetDepthStencilState(self.depth.as_raw(), 0);
         (*context).OMSetBlendState(self.blend.as_raw(), &[0.0; 4], u32::MAX);
+        let sampler = self.sampler.as_ref().map_or(ptr::null_mut(), |sampler| sampler.as_raw());
+        (*context).PSSetSamplers(0, 1, &sampler);
         (*context).VSSetShader(self.vertex.as_raw(), ptr::null_mut(), 0);
         (*context).PSSetShader(self.pixel.as_raw(), ptr::null_mut(), 0);
         (*context).GSSetShader(ptr::null_mut(), ptr::null(), 0);
