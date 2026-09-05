@@ -12,6 +12,7 @@ pub(crate) mod xmap12;
 pub mod xmap13;
 pub mod xmap13_combat_identity;
 pub(crate) mod xmap13_pose;
+pub(crate) mod xmap13_model;
 pub mod xmap14;
 pub mod xmap14_place;
 pub mod xmap14_strength;
