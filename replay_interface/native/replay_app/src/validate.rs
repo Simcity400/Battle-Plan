@@ -134,6 +134,7 @@ impl ProductMapFoundationSession {
         manifest: &replay_core::ContentManifest,
         building_visual: Option<&map_viewer::Xmap12BuildingVisualFrame>,
         fixed_runtime: Option<&map_viewer::Xmap12FixedRuntimeState>,
+        snow_mud_phase: &map_viewer::xmap07_snow_mud_phase::Xmap07SnowMudPhaseSample,
     ) -> crate::Result<map_viewer::PreparedFoundationFrame> {
         // Cleared FIRST: a failure before the family loop must not leave the
         // previous hour's account standing as this one's.
@@ -149,6 +150,7 @@ impl ProductMapFoundationSession {
             &self.content_receipt,
             building_visual,
             fixed_runtime,
+            Some(snow_mud_phase),
         )?;
         self.last_candidate_envelope = Some(candidate.envelope.clone());
         self.last_family_costs = candidate.family_costs.clone();
@@ -172,6 +174,7 @@ impl ProductMapFoundationSession {
         building_visual: Option<&map_viewer::Xmap12BuildingVisualFrame>,
         fixed_runtime: Option<&map_viewer::Xmap12FixedRuntimeState>,
         selection: &map_viewer::Xmap15ViewerSelection,
+        snow_mud_phase: &map_viewer::xmap07_snow_mud_phase::Xmap07SnowMudPhaseSample,
     ) -> crate::Result<map_viewer::PreparedFoundationFrame> {
         // Cleared FIRST: a failure before the family loop must not leave the
         // previous hour's account standing as this one's.
@@ -187,6 +190,7 @@ impl ProductMapFoundationSession {
             building_visual,
             fixed_runtime,
             selection,
+            Some(snow_mud_phase),
         )?;
         self.last_candidate_envelope = Some(candidate.envelope.clone());
         self.last_family_costs = candidate.family_costs.clone();
@@ -227,6 +231,7 @@ pub(crate) fn prepare_product_map_foundation(
     content_admission: &replay_core::ValidatedContentAdmission,
     manifest: &replay_core::ContentManifest,
     terrain_options: map_viewer::TerrainLodCullOptions,
+    snow_mud_phase: &map_viewer::xmap07_snow_mud_phase::Xmap07SnowMudPhaseSample,
 ) -> crate::Result<map_viewer::PreparedFoundationFrame> {
     // A single-frame entry point has no previous frame, which is the engine's own cold start
     // for a freshly created map-building render slot.
@@ -237,7 +242,7 @@ pub(crate) fn prepare_product_map_foundation(
         terrain_options,
         None,
     )?
-    .prepare_with_xmap12_inputs(frame, viewer, manifest, None, None)
+    .prepare_with_xmap12_inputs(frame, viewer, manifest, None, None, snow_mud_phase)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -86,6 +86,9 @@ fn whole_capture_prepared_land_measurement() {
     )
     .unwrap();
     eprintln!("content authenticated; preparing frames");
+    let mut phase_state = map_viewer::xmap07_snow_mud_phase::Xmap07SnowMudPhaseState::default();
+    let phase_durations = map_viewer::xmap07_snow_mud_phase::Xmap07SnowMudPhaseDurations::load(&resolver).unwrap();
+    let phase_clock = std::time::Instant::now();
     let mut rows = Vec::new();
     for hour in selected {
         eprintln!("preparing hour {hour}");
@@ -106,6 +109,7 @@ fn whole_capture_prepared_land_measurement() {
             "named_land_exclusion_counts": {}, "prepared_indicator_rows": null,
             "carrier": raw,
         });
+        let phase = phase_state.sample(&world, phase_clock.elapsed().as_secs_f64(), crate::transport::DEFAULT_SPEED_STEP, &phase_durations).unwrap();
         match session.adapters.prepare_with_xmap12_inputs(
             &world,
             &viewer,
@@ -113,6 +117,7 @@ fn whole_capture_prepared_land_measurement() {
             &session.content_receipt,
             None,
             None,
+            Some(&phase),
         ) {
             Ok(prepared) => {
                 let mut causes = BTreeMap::<String, u64>::new();

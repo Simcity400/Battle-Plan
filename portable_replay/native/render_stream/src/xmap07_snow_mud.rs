@@ -6,16 +6,16 @@ use crate::{
     SNOW_MUD_PRODUCER_INSTRUCTIONS_SHA256,
 };
 
-pub const XMAP07_PASSIVE_SNOW_MUD_SCHEMA: &str = "hoi4.xmap07.passive-snow-mud.a729.v2";
+pub const XMAP07_PASSIVE_SNOW_MUD_SCHEMA: &str = "hoi4.xmap07.passive-snow-mud.a729.v3";
 pub const XMAP07_PASSIVE_SNOW_MUD_KEY: &str = "_xmap07_snow_mud_runtime";
 pub const XMAP07_PASSIVE_SNOW_MUD_SCOPE: &str = "world_global";
 /// Size-tuning constant for the replay-cache tile array. In the worst case where every tile is
 /// dirty, tiling costs only the per-tile framing overhead over the former single payload replace;
 /// retune it only by measurement on a recording that actually schedules domain 100.
 pub const XMAP07_SNOW_MUD_TILE_EDGE: u32 = 16;
-/// Matches the XSM2 producer contract's maximum admitted grid axis.
+/// Matches the XSM3 producer contract's maximum admitted grid axis.
 const XMAP07_SNOW_MUD_MAX_GRID_AXIS: u32 = 16_384;
-/// Matches the XSM2 producer contract's maximum admitted decoded grid size.
+/// Matches the XSM3 producer contract's maximum admitted decoded grid size.
 const XMAP07_SNOW_MUD_MAX_GRID_BYTES: usize = 64 * 1024 * 1024;
 pub const XMAP07_SNOW_MUD_FADE_UPDATER_RVA: u32 = 0x0126_7270;
 pub const XMAP07_SNOW_MUD_FADE_UPDATER_INSTRUCTIONS_SHA256: &str =
@@ -33,8 +33,6 @@ pub struct Xmap07PassiveSnowMudCarrier {
     pub executable_sha256: String,
     pub texture_producer_rva: u32,
     pub texture_producer_instructions_sha256: String,
-    pub fade_updater_rva: u32,
-    pub fade_updater_instructions_sha256: String,
     pub scene_copy_rva: u32,
     pub scene_copy_instructions_sha256: String,
     pub process_epoch: String,
@@ -43,18 +41,15 @@ pub struct Xmap07PassiveSnowMudCarrier {
     pub reset_epoch_ordinal: u64,
     pub capture_frontier_ordinal: u64,
     pub texture_observation_ordinal: u64,
-    pub fade_observation_ordinal: u64,
     pub reset_hour: i64,
     pub initial_snapshot_hour: i64,
     pub payload_origin_hour: i64,
     pub texture_observation_hour: i64,
-    pub fade_observation_hour: i64,
     pub displayed_hour: i64,
     pub carry_forward: bool,
     pub reset_complete: bool,
     pub initial_snapshot_complete: bool,
     pub texture_complete: bool,
-    pub fade_complete: bool,
     pub width: u32,
     pub height: u32,
     pub row_pitch: u32,
@@ -64,7 +59,6 @@ pub struct Xmap07PassiveSnowMudCarrier {
     pub tiles: Vec<String>,
     pub payload_sha256: String,
     pub payload_blob_sha256: String,
-    pub fade_f32_bits: u32,
     pub authority_sha256: String,
 }
 
@@ -375,8 +369,6 @@ impl Xmap07PassiveSnowMudCarrier {
         append(&mut preimage, &self.executable_sha256);
         preimage.extend_from_slice(&self.texture_producer_rva.to_le_bytes());
         append(&mut preimage, &self.texture_producer_instructions_sha256);
-        preimage.extend_from_slice(&self.fade_updater_rva.to_le_bytes());
-        append(&mut preimage, &self.fade_updater_instructions_sha256);
         preimage.extend_from_slice(&self.scene_copy_rva.to_le_bytes());
         append(&mut preimage, &self.scene_copy_instructions_sha256);
         append(&mut preimage, &self.process_epoch);
@@ -386,7 +378,6 @@ impl Xmap07PassiveSnowMudCarrier {
             self.reset_epoch_ordinal,
             self.capture_frontier_ordinal,
             self.texture_observation_ordinal,
-            self.fade_observation_ordinal,
         ] {
             preimage.extend_from_slice(&value.to_le_bytes());
         }
@@ -395,7 +386,6 @@ impl Xmap07PassiveSnowMudCarrier {
             self.initial_snapshot_hour,
             self.payload_origin_hour,
             self.texture_observation_hour,
-            self.fade_observation_hour,
             self.displayed_hour,
         ] {
             preimage.extend_from_slice(&value.to_le_bytes());
@@ -405,7 +395,6 @@ impl Xmap07PassiveSnowMudCarrier {
             self.reset_complete,
             self.initial_snapshot_complete,
             self.texture_complete,
-            self.fade_complete,
         ] {
             preimage.push(value as u8);
         }
@@ -417,7 +406,6 @@ impl Xmap07PassiveSnowMudCarrier {
         append(&mut preimage, &self.format);
         append(&mut preimage, &self.payload_sha256);
         append(&mut preimage, &self.payload_blob_sha256);
-        preimage.extend_from_slice(&self.fade_f32_bits.to_le_bytes());
         sha256(&preimage)
     }
 
@@ -438,9 +426,6 @@ impl Xmap07PassiveSnowMudCarrier {
             || self.executable_sha256 != A729_EXECUTABLE_SHA256
             || self.texture_producer_rva != SNOW_MUD_PRODUCER_FUNCTION_RVA
             || self.texture_producer_instructions_sha256 != SNOW_MUD_PRODUCER_INSTRUCTIONS_SHA256
-            || self.fade_updater_rva != XMAP07_SNOW_MUD_FADE_UPDATER_RVA
-            || self.fade_updater_instructions_sha256
-                != XMAP07_SNOW_MUD_FADE_UPDATER_INSTRUCTIONS_SHA256
             || self.scene_copy_rva != XMAP07_SNOW_MUD_SCENE_COPY_RVA
             || self.scene_copy_instructions_sha256 != XMAP07_SNOW_MUD_SCENE_COPY_INSTRUCTIONS_SHA256
         {
@@ -461,21 +446,17 @@ impl Xmap07PassiveSnowMudCarrier {
         if self.reset_epoch_ordinal == 0
             || self.capture_frontier_ordinal == 0
             || self.texture_observation_ordinal == 0
-            || self.fade_observation_ordinal == 0
             || self.texture_observation_ordinal > self.capture_frontier_ordinal
-            || self.fade_observation_ordinal > self.capture_frontier_ordinal
         {
             return Err("passive SnowMud frontier/observation authority is invalid".into());
         }
         if !self.reset_complete
             || !self.initial_snapshot_complete
             || !self.texture_complete
-            || !self.fade_complete
             || self.reset_hour > self.initial_snapshot_hour
             || self.initial_snapshot_hour > self.payload_origin_hour
             || self.payload_origin_hour > self.displayed_hour
             || self.texture_observation_hour != self.payload_origin_hour
-            || self.fade_observation_hour != self.displayed_hour
             || (self.carry_forward && self.payload_origin_hour >= self.displayed_hour)
             || (!self.carry_forward && self.payload_origin_hour != self.displayed_hour)
         {
@@ -519,10 +500,7 @@ impl Xmap07PassiveSnowMudCarrier {
         {
             return Err("passive SnowMud texture payload is incomplete or inauthentic".into());
         }
-        let fade = f32::from_bits(self.fade_f32_bits);
-        if !fade.is_finite() || !(0.0..=1.0).contains(&fade) {
-            return Err("passive SnowMud fade is not a finite unit interval value".into());
-        }
+
         if self.authority_sha256 != self.authority_digest() {
             return Err("passive SnowMud authority digest mismatch".into());
         }
@@ -595,9 +573,6 @@ mod tests {
             executable_sha256: A729_EXECUTABLE_SHA256.into(),
             texture_producer_rva: SNOW_MUD_PRODUCER_FUNCTION_RVA,
             texture_producer_instructions_sha256: SNOW_MUD_PRODUCER_INSTRUCTIONS_SHA256.into(),
-            fade_updater_rva: XMAP07_SNOW_MUD_FADE_UPDATER_RVA,
-            fade_updater_instructions_sha256: XMAP07_SNOW_MUD_FADE_UPDATER_INSTRUCTIONS_SHA256
-                .into(),
             scene_copy_rva: XMAP07_SNOW_MUD_SCENE_COPY_RVA,
             scene_copy_instructions_sha256: XMAP07_SNOW_MUD_SCENE_COPY_INSTRUCTIONS_SHA256.into(),
             process_epoch: "process-1".into(),
@@ -606,18 +581,15 @@ mod tests {
             reset_epoch_ordinal: 1,
             capture_frontier_ordinal: 13,
             texture_observation_ordinal: 11,
-            fade_observation_ordinal: 13,
             reset_hour: 10,
             initial_snapshot_hour: 10,
             payload_origin_hour: 11,
             texture_observation_hour: 11,
-            fade_observation_hour: 12,
             displayed_hour: 12,
             carry_forward: true,
             reset_complete: true,
             initial_snapshot_complete: true,
             texture_complete: true,
-            fade_complete: true,
             width: 2,
             height: 1,
             row_pitch: 8,
@@ -627,7 +599,6 @@ mod tests {
             tiles: tiles.clone(),
             payload_sha256: sha256(&bytes),
             payload_blob_sha256: Xmap07PassiveSnowMudCarrier::payload_blob_sha256(&tiles),
-            fade_f32_bits: 0.5f32.to_bits(),
             authority_sha256: String::new(),
         };
         value.authority_sha256 = value.authority_digest();
@@ -638,6 +609,18 @@ mod tests {
         carrier.payload_blob_sha256 =
             Xmap07PassiveSnowMudCarrier::payload_blob_sha256(&carrier.tiles);
         carrier.authority_sha256 = carrier.authority_digest();
+    }
+
+    #[test]
+    fn grid_carrier_refuses_captured_renderer_phase_fields() {
+        let value = carrier();
+        let encoded = value.encode_json().unwrap();
+        assert!(!String::from_utf8(encoded.clone()).unwrap().contains("fade"));
+        for field in ["fade_f32_bits", "fade_complete", "fade_observation_hour"] {
+            let mut previous: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+            previous.as_object_mut().unwrap().insert(field.into(), serde_json::json!(0));
+            assert!(Xmap07PassiveSnowMudCarrier::decode_value(&previous).is_err());
+        }
     }
 
     #[test]
@@ -853,7 +836,7 @@ mod tests {
         bad.reset_complete = false;
         assert!(bad.validate().is_err());
         let mut bad = value.clone();
-        bad.fade_f32_bits = f32::NAN.to_bits();
+        bad.row_pitch = 0;
         assert!(bad.validate().is_err());
         let mut bad = value;
         bad.width = 3;

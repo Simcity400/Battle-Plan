@@ -2166,6 +2166,69 @@ mod tests {
     }
 
     #[test]
+    fn viewer_phase_reaches_scene_bytes_through_foundation_water_binding() {
+        use crate::xmap07_snow_mud_phase::{Xmap07SnowMudPhaseDurations, Xmap07SnowMudPhaseState};
+        use crate::production_features::xmap07::{Xmap07SceneSnowMudInput, Xmap07WaterTemporalBinding};
+        struct Source;
+        impl replay_core::ReplaySource for Source {
+            fn game_id(&self) -> &str { "snow-mud-phase-scene" }
+            fn hours(&self) -> &[i64] { &[25, 37] }
+            fn warnings(&self) -> &[String] { &[] }
+            fn frame(&self, hour_index: i64) -> std::result::Result<replay_core::RawFrame, replay_core::SourceError> {
+                Ok(replay_core::RawFrame {
+                    hour_index, date: Some("1936.1.1".into()), save_version: None,
+                    schema_version: None, rest: serde_json::Map::new().into(),
+                })
+            }
+        }
+        let timeline = replay_core::WorldTimeline::open(Box::new(Source)).unwrap();
+        let first = timeline.frame(25).unwrap();
+        let next = timeline.frame(37).unwrap();
+        let durations = Xmap07SnowMudPhaseDurations::from_sources(&[("00.lua".into(),
+            "NDefines = { NGame = { GAME_SPEED_SECONDS = {2, 1, 0.5, 0.25, 0} } }".into())]).unwrap();
+        let mut state = Xmap07SnowMudPhaseState::default();
+        let viewer = crate::test_support::bare_viewer();
+        let selection = crate::Xmap15ViewerSelection::default();
+        let mut previous_provenance = String::new();
+        for (world, now, speed, expected) in [
+            (&first, 100.0, 0, 0.0f32), (&next, 100.5, 0, 0.125),
+            (&next, 101.0, 0, 0.25), (&next, 101.25, 4, 0.5),
+        ] {
+            let phase = state.sample(world, now, speed, &durations).unwrap();
+            let mut context = crate::FoundationFeatureContext::new_for_owned_accounting_tests(
+                world, &viewer, &[], &[], &selection,
+            );
+            context.snow_mud_phase = Some(&phase);
+            let temporal = Xmap07WaterTemporalBinding::from_foundation(&context).unwrap();
+            assert_eq!(temporal.season_lerp_f32_bits, expected.to_bits());
+            assert_eq!(temporal.phase_provenance_sha256, phase.provenance_sha256);
+            assert_ne!(temporal.phase_provenance_sha256, previous_provenance);
+            previous_provenance = temporal.phase_provenance_sha256.clone();
+            let input = Xmap07SceneSnowMudInput::from_temporal(
+                world.date().unwrap().into(), world.hour_index(), &temporal,
+                sha("grid-bytes"), sha("grid-custody"), sha("water-frame"),
+            ).unwrap();
+            assert_eq!(input.phase_provenance_sha256, temporal.phase_provenance_sha256);
+            let mut composition = sample_input();
+            composition.frame_identity = Xmap10SceneFrameIdentity::new(
+                sha("content"), sha("modset"), sha("vfs"), input.date.clone(), input.hour_index,
+                5632, 2048, 1920, 1080, input.replay_frame_identity_sha256.clone(), sha("camera"),
+                &[Xmap04MapCopyReceiptRow { render_view_mask: 1, map_copy_offset_f32_bits: 0 }],
+                1, input.deterministic_sha256.clone(),
+            ).unwrap();
+            composition.presentation.replay_frame_identity_sha256 = input.replay_frame_identity_sha256.clone();
+            composition.snow_mud = Xmap07SnowMudScenePatch::from_xmap07(&input, &composition.frame_identity).unwrap();
+            let bytes = compose_xmap10_scene_cb0(composition).unwrap();
+            assert_eq!(&bytes.bytes[248..252], &expected.to_bits().to_le_bytes());
+            assert_eq!(bytes.frame_identity.snow_mud_input_sha256, input.deterministic_sha256);
+            if world.hour_index() == 37 {
+                context.world_frame = &first;
+                assert!(Xmap07WaterTemporalBinding::from_foundation(&context).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn canonical_reflected_layout_identity_is_stable() {
         let canonical_from_rows = scene_cb0_reflected_layout_digest(
             "dx11_cb0",

@@ -152,10 +152,26 @@ pub struct Xmap07WaterTemporalBinding {
     pub replay_frame_identity_sha256: String,
     pub animation_time_f32_bits: u32,
     pub season_lerp_f32_bits: u32,
+    pub phase_provenance_sha256: String,
     pub deterministic_sha256: String,
 }
 
 impl Xmap07WaterTemporalBinding {
+    pub(crate) fn from_foundation(context: &FoundationFeatureContext<'_>) -> Result<Self> {
+        let phase = context.snow_mud_phase.ok_or("XMAP07 requires viewer-owned SnowMud phase history")?;
+        let fade = phase.for_frame(context.world_frame)?;
+        let mut temporal = Self {
+            replay_frame_identity_sha256: crate::xmap04_replay_frame_identity_sha256(context.world_frame)?,
+            animation_time_f32_bits: context.viewer.animation_time_f32_bits,
+            season_lerp_f32_bits: fade.to_bits(),
+            phase_provenance_sha256: phase.provenance_sha256.clone(),
+            deterministic_sha256: String::new(),
+        };
+        temporal.deterministic_sha256 = temporal_digest(&temporal);
+        temporal.validate()?;
+        Ok(temporal)
+    }
+
     pub fn validate(&self) -> Result<()> {
         let animation = f32::from_bits(self.animation_time_f32_bits);
         let season = f32::from_bits(self.season_lerp_f32_bits);
@@ -164,6 +180,7 @@ impl Xmap07WaterTemporalBinding {
             "water temporal replay frame",
         )
         .is_err()
+            || validate_sha256(&self.phase_provenance_sha256, "water phase provenance").is_err()
             || !animation.is_finite()
             || animation < 0.0
             || !season.is_finite()
@@ -215,6 +232,7 @@ pub struct Xmap07SceneSnowMudInput {
     pub hour_index: i64,
     pub replay_frame_identity_sha256: String,
     pub snow_mud_fade_f32_bits: u32,
+    pub phase_provenance_sha256: String,
     pub snow_mud_payload_sha256: String,
     pub snow_mud_authority_sha256: String,
     pub water_frame_sha256: String,
@@ -222,6 +240,25 @@ pub struct Xmap07SceneSnowMudInput {
 }
 
 impl Xmap07SceneSnowMudInput {
+    pub(crate) fn from_temporal(
+        date: String, hour_index: i64, temporal: &Xmap07WaterTemporalBinding,
+        snow_mud_payload_sha256: String, snow_mud_authority_sha256: String,
+        water_frame_sha256: String,
+    ) -> Result<Self> {
+        temporal.validate()?;
+        let mut input = Self {
+            date, hour_index,
+            replay_frame_identity_sha256: temporal.replay_frame_identity_sha256.clone(),
+            snow_mud_fade_f32_bits: temporal.season_lerp_f32_bits,
+            phase_provenance_sha256: temporal.phase_provenance_sha256.clone(),
+            snow_mud_payload_sha256, snow_mud_authority_sha256, water_frame_sha256,
+            deterministic_sha256: String::new(),
+        };
+        input.deterministic_sha256 = scene_snow_mud_input_digest(&input);
+        input.validate()?;
+        Ok(input)
+    }
+
     pub fn validate(&self) -> Result<()> {
         let fade = f32::from_bits(self.snow_mud_fade_f32_bits);
         if self.date.trim().is_empty()
@@ -232,6 +269,7 @@ impl Xmap07SceneSnowMudInput {
             .is_err()
             || !fade.is_finite()
             || !(0.0..=1.0).contains(&fade)
+            || validate_sha256(&self.phase_provenance_sha256, "scene SnowMud phase provenance").is_err()
             || validate_sha256(&self.snow_mud_payload_sha256, "scene SnowMud payload").is_err()
             || validate_sha256(&self.snow_mud_authority_sha256, "scene SnowMud authority").is_err()
             || validate_sha256(&self.water_frame_sha256, "scene SnowMud water frame").is_err()
@@ -616,6 +654,9 @@ impl PreparedWaterFrame {
         }
         validate_generated_texture(&self.snow_mud)?;
         validate_sha256(&self.snow_mud_authority_sha256, "water SnowMud authority")?;
+        if self.snow_mud_fade_f32_bits != self.temporal.season_lerp_f32_bits {
+            return Err("XMAP07 water phase differs from its viewer temporal binding".into());
+        }
         let snow_mud_fade = f32::from_bits(self.snow_mud_fade_f32_bits);
         if !snow_mud_fade.is_finite() || !(0.0..=1.0).contains(&snow_mud_fade) {
             return Err("XMAP07 SnowMud fade is invalid".into());
@@ -647,19 +688,11 @@ impl PreparedWaterFrame {
 
     pub fn scene_snow_mud_input(&self) -> Result<Xmap07SceneSnowMudInput> {
         self.validate()?;
-        let mut input = Xmap07SceneSnowMudInput {
-            date: self.date.clone(),
-            hour_index: self.hour_index,
-            replay_frame_identity_sha256: self.replay_frame_identity_sha256.clone(),
-            snow_mud_fade_f32_bits: self.snow_mud_fade_f32_bits,
-            snow_mud_payload_sha256: self.snow_mud.payload_sha256.clone(),
-            snow_mud_authority_sha256: self.snow_mud_authority_sha256.clone(),
-            water_frame_sha256: self.deterministic_sha256.clone(),
-            deterministic_sha256: String::new(),
-        };
-        input.deterministic_sha256 = scene_snow_mud_input_digest(&input);
-        input.validate()?;
-        Ok(input)
+        Xmap07SceneSnowMudInput::from_temporal(
+            self.date.clone(), self.hour_index, &self.temporal,
+            self.snow_mud.payload_sha256.clone(), self.snow_mud_authority_sha256.clone(),
+            self.deterministic_sha256.clone(),
+        )
     }
 
     pub fn static_resource(&self, symbol: &str) -> Option<&UsedContentKey> {
@@ -883,22 +916,11 @@ impl ProductionMapFeatureAdapter for Xmap07WaterAdapter {
             snow_mud_addressing.texture_height,
         )?;
         let supply = crate::xmap07_snow_mud_supply(snow_packet)?;
-        let fade_phase = supply.fade;
-        let snow_mud_fade_f32_bits = supply.fade_f32_bits;
+        let temporal = Xmap07WaterTemporalBinding::from_foundation(context)?;
+        let snow_mud_fade_f32_bits = temporal.season_lerp_f32_bits;
         let snow_mud_authority_sha256 = supply.authority_sha256;
-        let animation_time = f32::from_bits(context.viewer.animation_time_f32_bits);
-        if !animation_time.is_finite() || animation_time < 0.0 {
-            return Err("XMAP07 viewer animation time is invalid".into());
-        }
-        let replay_frame_identity_sha256 =
-            crate::xmap04_replay_frame_identity_sha256(context.world_frame)?;
-        let mut temporal = Xmap07WaterTemporalBinding {
-            replay_frame_identity_sha256: replay_frame_identity_sha256.clone(),
-            animation_time_f32_bits: animation_time.to_bits(),
-            season_lerp_f32_bits: fade_phase.to_bits(),
-            deterministic_sha256: String::new(),
-        };
-        temporal.deterministic_sha256 = temporal_digest(&temporal);
+        let animation_time = f32::from_bits(temporal.animation_time_f32_bits);
+        let replay_frame_identity_sha256 = temporal.replay_frame_identity_sha256.clone();
         let refraction_descriptor_sha256 = crate::xmap04_underwater_color_descriptor_sha256(
             context.viewer.viewport_width,
             context.viewer.viewport_height,
@@ -1391,6 +1413,7 @@ fn temporal_digest(temporal: &Xmap07WaterTemporalBinding) -> String {
     bytes.extend_from_slice(temporal.replay_frame_identity_sha256.as_bytes());
     bytes.extend_from_slice(&temporal.animation_time_f32_bits.to_le_bytes());
     bytes.extend_from_slice(&temporal.season_lerp_f32_bits.to_le_bytes());
+    bytes.extend_from_slice(temporal.phase_provenance_sha256.as_bytes());
     Sha256::hex(&bytes)
 }
 
@@ -1483,6 +1506,7 @@ fn scene_snow_mud_input_digest(input: &Xmap07SceneSnowMudInput) -> String {
     bytes.extend_from_slice(input.snow_mud_payload_sha256.as_bytes());
     bytes.extend_from_slice(input.snow_mud_authority_sha256.as_bytes());
     bytes.extend_from_slice(input.water_frame_sha256.as_bytes());
+    bytes.extend_from_slice(input.phase_provenance_sha256.as_bytes());
     Sha256::hex(&bytes)
 }
 
@@ -1649,6 +1673,7 @@ mod tests {
             replay_frame_identity_sha256: Sha256::hex(b"replay-frame"),
             animation_time_f32_bits: 15.16874f32.to_bits(),
             season_lerp_f32_bits: 0.25f32.to_bits(),
+            phase_provenance_sha256: Sha256::hex(b"phase-history"),
             deterministic_sha256: String::new(),
         };
         temporal.deterministic_sha256 = temporal_digest(&temporal);
@@ -1668,6 +1693,7 @@ mod tests {
             hour_index: 23,
             replay_frame_identity_sha256: Sha256::hex(b"replay-frame"),
             snow_mud_fade_f32_bits: 0.375f32.to_bits(),
+            phase_provenance_sha256: Sha256::hex(b"viewer-phase"),
             snow_mud_payload_sha256: Sha256::hex(b"snow-mud-payload"),
             snow_mud_authority_sha256: Sha256::hex(b"snow-mud-authority"),
             water_frame_sha256: Sha256::hex(b"water-frame"),

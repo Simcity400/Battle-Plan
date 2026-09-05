@@ -127,6 +127,7 @@ mod xmap07_d3d_handoff;
 mod xmap08_d3d_handoff;
 mod xmap09_d3d_handoff;
 mod xmap07_snow_mud_law;
+pub mod xmap07_snow_mud_phase;
 pub mod xmap09_light_census;
 pub mod xmap09_light_lifecycle;
 mod xmap09_light_template;

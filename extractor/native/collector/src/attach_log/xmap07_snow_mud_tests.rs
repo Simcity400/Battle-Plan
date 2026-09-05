@@ -402,7 +402,6 @@ fn xsm2_read(grid: Vec<u8>, hour: i32, ordinal: u64) -> CompactXmap07SnowMudRead
             source_present: true,
             width: 32,
             height: 32,
-            fade_f32_bits: 0.25f32.to_bits(),
             grid_sha256,
             grid,
         },
@@ -488,7 +487,7 @@ fn an_encode_failure_publishes_no_diagnostics_for_the_body_it_failed_to_encode()
 
     // Same grid (so NoChange is selected) but a fade the encoder must reject.
     let mut broken = xsm2_read(grid, 44_000_001, 2);
-    broken.snapshot.fade_f32_bits = f32::NAN.to_bits();
+    broken.snapshot.width = 0;
     finalize_compact_xmap07_snow_mud_read(&mut broken, &mut baseline, &mut ledger);
 
     let names = unit_names(&broken);

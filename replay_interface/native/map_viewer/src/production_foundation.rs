@@ -213,6 +213,7 @@ pub struct FoundationFeatureContext<'a> {
     pub prepared_map_objects: Option<&'a crate::PreparedXmap12RenderFrame>,
     pub xmap15_units:
         Option<&'a dyn crate::production_features::xmap15::Xmap15UnitIdentityProvider>,
+    pub snow_mud_phase: Option<&'a crate::xmap07_snow_mud_phase::Xmap07SnowMudPhaseSample>,
     pub xmap15_selection: &'a crate::production_features::xmap15::Xmap15ViewerSelection,
 }
 
@@ -245,6 +246,7 @@ impl<'a> FoundationFeatureContext<'a> {
             prepared_map_objects: None,
             xmap15_units: None,
             xmap15_selection,
+            snow_mud_phase: None,
         }
     }
 }
@@ -510,6 +512,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
         content_receipt: &FoundationContentExecutionReceipt,
         previous_building_visual: Option<&crate::Xmap12BuildingVisualFrame>,
         previous_fixed_runtime: Option<&crate::Xmap12FixedRuntimeState>,
+        snow_mud_phase: Option<&crate::xmap07_snow_mud_phase::Xmap07SnowMudPhaseSample>,
     ) -> Result<PreparedFoundationFrame> {
         let selection = crate::production_features::xmap15::Xmap15ViewerSelection::default();
         prepare_foundation_frame_inner(
@@ -521,6 +524,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
             previous_building_visual,
             previous_fixed_runtime,
             &selection,
+        snow_mud_phase,
         )
     }
 
@@ -533,6 +537,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
         previous_building_visual: Option<&crate::Xmap12BuildingVisualFrame>,
         previous_fixed_runtime: Option<&crate::Xmap12FixedRuntimeState>,
         selection: &crate::production_features::xmap15::Xmap15ViewerSelection,
+        snow_mud_phase: Option<&crate::xmap07_snow_mud_phase::Xmap07SnowMudPhaseSample>,
     ) -> Result<PreparedFoundationFrame> {
         prepare_foundation_frame_inner(
             world_frame,
@@ -543,6 +548,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
             previous_building_visual,
             previous_fixed_runtime,
             selection,
+            snow_mud_phase,
         )
     }
 
@@ -1100,6 +1106,7 @@ pub fn prepare_foundation_frame(
     manifest: &ContentManifest,
     content_receipt: &FoundationContentExecutionReceipt,
     adapters: &ProductionMapFeatureAdapters<'_>,
+    snow_mud_phase: Option<&crate::xmap07_snow_mud_phase::Xmap07SnowMudPhaseSample>,
 ) -> Result<PreparedFoundationFrame> {
     let selection = crate::production_features::xmap15::Xmap15ViewerSelection::default();
     prepare_foundation_frame_inner(
@@ -1111,6 +1118,7 @@ pub fn prepare_foundation_frame(
         None,
         None,
         &selection,
+        snow_mud_phase,
     )
 }
 
@@ -1187,6 +1195,7 @@ fn prepare_foundation_frame_inner(
     xmap12_previous_building_visual: Option<&crate::Xmap12BuildingVisualFrame>,
     xmap12_previous_fixed_runtime: Option<&crate::Xmap12FixedRuntimeState>,
     xmap15_selection: &crate::production_features::xmap15::Xmap15ViewerSelection,
+    snow_mud_phase: Option<&crate::xmap07_snow_mud_phase::Xmap07SnowMudPhaseSample>,
 ) -> Result<PreparedFoundationFrame> {
     viewer.validate()?;
     content_receipt.validate()?;
@@ -1260,6 +1269,7 @@ fn prepare_foundation_frame_inner(
                     as &dyn crate::production_features::xmap15::Xmap15UnitIdentityProvider
             }),
             xmap15_selection,
+            snow_mud_phase,
         };
         // A family that cannot vouch is recorded and the loop goes on; only a
         // contract violation stops the preparation here.

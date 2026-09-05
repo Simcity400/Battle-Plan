@@ -176,22 +176,16 @@ pub struct Xmap07SnowMudSupply {
     pub row_pitch: u32,
     pub payload_sha256: String,
     pub authority_sha256: String,
-    pub fade: f32,
-    pub fade_f32_bits: u32,
+
 }
 
-/// Both faces of the row, certified together.
-///
-/// The texture planes and the fade lane are one observation: the fade selects
-/// between the plane pairs, so a grid without its fade renders a state the game
-/// never displayed. The carrier's own per-hour validation runs in `replay_core`;
-/// this is the additional law that neither half may be admitted alone.
+/// The recorded grid remains required independently of viewer phase.
 pub fn xmap07_snow_mud_supply(
     carrier: &Xmap07PassiveSnowMudCarrier,
 ) -> Result<Xmap07SnowMudSupply> {
-    if !carrier.texture_complete || !carrier.fade_complete {
+    if !carrier.texture_complete {
         return Err(
-            "XMAP07 SnowMud carrier certifies the texture and the fade together or not at all"
+            "XMAP07 SnowMud carrier has no complete grid"
                 .into(),
         );
     }
@@ -208,18 +202,12 @@ pub fn xmap07_snow_mud_supply(
     {
         return Err("XMAP07 SnowMud carrier row pitch is not its own tight grid pitch".into());
     }
-    let fade = f32::from_bits(carrier.fade_f32_bits);
-    if !fade.is_finite() || !(0.0..=1.0).contains(&fade) {
-        return Err("XMAP07 SnowMud carrier fade is outside the engine unit interval".into());
-    }
     Ok(Xmap07SnowMudSupply {
         width: carrier.width,
         height: carrier.height,
         row_pitch: carrier.row_pitch,
         payload_sha256: carrier.payload_sha256.clone(),
         authority_sha256: carrier.authority_sha256.clone(),
-        fade,
-        fade_f32_bits: carrier.fade_f32_bits,
     })
 }
 
@@ -323,9 +311,6 @@ PixelShader =
             executable_sha256: A729_EXECUTABLE_SHA256.into(),
             texture_producer_rva: SNOW_MUD_PRODUCER_FUNCTION_RVA,
             texture_producer_instructions_sha256: SNOW_MUD_PRODUCER_INSTRUCTIONS_SHA256.into(),
-            fade_updater_rva: XMAP07_SNOW_MUD_FADE_UPDATER_RVA,
-            fade_updater_instructions_sha256: XMAP07_SNOW_MUD_FADE_UPDATER_INSTRUCTIONS_SHA256
-                .into(),
             scene_copy_rva: XMAP07_SNOW_MUD_SCENE_COPY_RVA,
             scene_copy_instructions_sha256: XMAP07_SNOW_MUD_SCENE_COPY_INSTRUCTIONS_SHA256.into(),
             process_epoch: "process-1".into(),
@@ -334,18 +319,15 @@ PixelShader =
             reset_epoch_ordinal: 1,
             capture_frontier_ordinal: 3,
             texture_observation_ordinal: 3,
-            fade_observation_ordinal: 3,
             reset_hour: 10,
             initial_snapshot_hour: 10,
             payload_origin_hour: 10,
             texture_observation_hour: 10,
-            fade_observation_hour: 10,
             displayed_hour: 10,
             carry_forward: false,
             reset_complete: true,
             initial_snapshot_complete: true,
             texture_complete: true,
-            fade_complete: true,
             width,
             height,
             row_pitch: width * 4,
@@ -355,7 +337,6 @@ PixelShader =
             tiles: tiles.clone(),
             payload_sha256: snapshot::sha256::Sha256::hex(&grid),
             payload_blob_sha256: Xmap07PassiveSnowMudCarrier::payload_blob_sha256(&tiles),
-            fade_f32_bits: 0.25f32.to_bits(),
             authority_sha256: String::new(),
         };
         carrier.authority_sha256 = carrier.authority_digest();
@@ -400,23 +381,17 @@ PixelShader =
     }
 
     #[test]
-    fn supply_certifies_the_grid_and_the_fade_together() {
+    fn supply_requires_the_complete_grid() {
         let supply = xmap07_snow_mud_supply(&carrier()).unwrap();
         assert_eq!(supply.width, 2);
         assert_eq!(supply.row_pitch, 8);
-        assert_eq!(supply.fade, 0.25);
 
         for break_half in [
             |carrier: &mut Xmap07PassiveSnowMudCarrier| carrier.texture_complete = false,
-            |carrier: &mut Xmap07PassiveSnowMudCarrier| carrier.fade_complete = false,
             |carrier: &mut Xmap07PassiveSnowMudCarrier| carrier.reset_complete = false,
             |carrier: &mut Xmap07PassiveSnowMudCarrier| carrier.initial_snapshot_complete = false,
             |carrier: &mut Xmap07PassiveSnowMudCarrier| carrier.bytes_per_texel = 1,
             |carrier: &mut Xmap07PassiveSnowMudCarrier| carrier.row_pitch = 7,
-            |carrier: &mut Xmap07PassiveSnowMudCarrier| {
-                carrier.fade_f32_bits = f32::NAN.to_bits()
-            },
-            |carrier: &mut Xmap07PassiveSnowMudCarrier| carrier.fade_f32_bits = 1.5f32.to_bits(),
             |carrier: &mut Xmap07PassiveSnowMudCarrier| carrier.format = "DXGI_FORMAT_R8_UNORM".into(),
         ] {
             let mut broken = carrier();
