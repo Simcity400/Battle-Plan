@@ -1509,6 +1509,16 @@ fn a_post_bracket_decode_that_leaves_the_copied_regions_refuses_instead_of_answe
         read.plan.bulk_snapshot_region_miss, 1,
         "the miss must be counted where a reader of the wire can see it"
     );
+    assert_ne!(failure.read_address, 0);
+    assert_ne!(failure.read_width, 0);
+    assert_eq!(failure.read_success_mask, 0);
+    let units = d81_failure_diagnostic_units(Some(failure));
+    for (name, expected) in [
+        ("d81_failure_read_address_sample", failure.read_address),
+        ("d81_failure_read_width_sample", u64::from(failure.read_width)),
+    ] {
+        assert_eq!(units.iter().find(|unit| unit.name == name).unwrap().value, expected);
+    }
     assert!(
         read.hub_simulation.is_none() && read.provinces.is_empty(),
         "a refused snapshot must publish no rows at all"

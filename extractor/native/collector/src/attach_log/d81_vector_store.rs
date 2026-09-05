@@ -1968,6 +1968,7 @@ d81_rail_tap_outcomes! {
     /// The tap was clean but condition 2 failed: a table slot, a root or an
     /// offset moved, so the remembered windows are not this frame's windows.
     D81_RAIL_TAP_GEOMETRY_CHANGED = 5 => geometry_changed,
+    D81_RAIL_TAP_SNAPSHOT_ISOLATED = 6 => snapshot_isolated,
 }
 
 
@@ -2686,7 +2687,12 @@ pub fn d81_vector_observe(
     // end. A copy taken while a writer was inside the engine is bytes that may
     // be half-written, and remembering it would republish them for as long as
     // the epoch stayed put.
-    if !reused && capture.rail_tap_outcome != D81_RAIL_TAP_HOOKS_NOT_INSTALLED {
+    if !reused
+        && !matches!(
+            capture.rail_tap_outcome,
+            D81_RAIL_TAP_HOOKS_NOT_INSTALLED | D81_RAIL_TAP_SNAPSHOT_ISOLATED
+        )
+    {
         let rail_complete = capture.opening[D81Family::RailHeader as usize]
             .every_window_fully_imaged(2)
             && capture.header_close.every_window_fully_imaged(2)
@@ -4123,7 +4129,7 @@ mod shape_tests {
     /// not, and it is the case `every_window_fully_imaged` exists for.
     fn rail_frame(
         world: &[u8],
-        tap: &ScriptedTap,
+        tap: &dyn D81RailTap,
         refuse: impl FnMut(u64, usize) -> bool,
     ) -> (D81VectorCapture, Vec<u64>) {
         let (capture, log, _refusals) = rail_frame_counting(world, tap, refuse);
@@ -4178,7 +4184,7 @@ mod shape_tests {
     /// than from the refusal.
     fn rail_frame_counting(
         world: &[u8],
-        tap: &ScriptedTap,
+        tap: &dyn D81RailTap,
         mut refuse: impl FnMut(u64, usize) -> bool,
     ) -> (D81VectorCapture, Vec<u64>, usize) {
         let mut refusals = 0usize;
@@ -4332,6 +4338,7 @@ mod shape_tests {
             (D81_RAIL_TAP_HOOKS_NOT_INSTALLED, true),
             (D81_RAIL_TAP_BASELINE_PENDING, true),
             (D81_RAIL_TAP_RAIL_WRITTEN, true),
+            (D81_RAIL_TAP_SNAPSHOT_ISOLATED, true),
         ] {
             seed_memory(&world);
             let tap = ScriptedTap::new(reason, clean);
@@ -4607,6 +4614,36 @@ mod shape_tests {
             );
             assert!(log.contains(&target), "{label}");
         }
+    }
+
+    #[test]
+    fn snapshot_isolation_copies_its_own_image_without_touching_live_reuse() {
+        let _guard = rail_tap_lock();
+        let world = rail_world();
+        let tap = super::super::D81RailTapSnapshot;
+        d81_rail_reuse_forget();
+        let (isolated, _) = rail_frame(&world, &tap, |_, _| false);
+        assert_eq!(isolated.rail_tap_outcome, D81_RAIL_TAP_SNAPSHOT_ISOLATED);
+        assert_eq!(isolated.rail_tap_copies_avoided, 0);
+        assert!(!d81_rail_reuse_present());
+
+        let remembered = seed_memory(&world);
+        let mut snapshot = world.clone();
+        snapshot[0x3000..0x3008].copy_from_slice(&[0x5a; 8]);
+        let (isolated, log) = rail_frame(&snapshot, &tap, |_, _| false);
+        assert_eq!(isolated.rail_tap_outcome, D81_RAIL_TAP_SNAPSHOT_ISOLATED);
+        assert_ne!(rail_image(&isolated), remembered);
+        assert!(matches!(
+            isolated.read(RAIL_BASE + 0x3000, 8, VectorImage::Opening),
+            VectorAnswer::Served(bytes) if bytes == &[0x5a; 8]
+        ));
+        for (address, count) in rail_call_counts() {
+            assert_eq!(calls_for(&log, address), count);
+        }
+        let clean = ScriptedTap::new(D81_RAIL_TAP_REUSED, true);
+        let (reused, _) = rail_frame(&world, &clean, |_, _| false);
+        assert_eq!(reused.rail_tap_outcome, D81_RAIL_TAP_REUSED);
+        assert_eq!(rail_image(&reused), remembered);
     }
 
     #[test]
