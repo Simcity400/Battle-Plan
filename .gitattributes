@@ -667,3 +667,9 @@ portable_replay/native/engine_evidence/artifacts/particle_sort_cases.json text e
 extractor/native/runs/paired_particle_viewer_runtime/author_sort_cases.py text eol=lf
 portable_replay/native/engine_evidence/artifacts/20260905T195213Z-particle-runtime-sort-phase-gaps-e2ab9d0b.datdump.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/20260905T195213Z-particle-runtime-sort-phase-gaps-e2ab9d0b.job.json text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_140ff3450.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140ff2890.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140ff1d40.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424005a0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/postfx_sampler_binder.datdump.txt text eol=lf

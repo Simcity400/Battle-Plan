@@ -1538,6 +1538,47 @@ mod native {
         }
     }
 
+    struct NativePostFxBlend {
+        state: D3dPtr<ID3D11BlendState>,
+        sha256: String,
+    }
+
+    struct NativePostFxSampler {
+        state: D3dPtr<ID3D11SamplerState>,
+        sha256: String,
+    }
+
+    struct NativePostFxProgram {
+        program: NativeProgram,
+        samplers: Vec<Option<NativePostFxSampler>>,
+        blend: Option<NativePostFxBlend>,
+    }
+
+    impl NativePostFxProgram {
+        fn selected_blend<'a>(&'a self, bright: &'a Self) -> Result<&'a NativePostFxBlend> {
+            self.blend.as_ref().or(bright.blend.as_ref())
+                .ok_or_else(|| "XMAP10 inherited Bright blend state is absent".into())
+        }
+
+        unsafe fn bind(&self, context: *mut ID3D11DeviceContext, sampler_source: &Self, bright: &Self) -> Result<()> {
+            let blend = self.selected_blend(bright)?;
+            self.program.bind_stages(context);
+            let samplers = sampler_source.samplers.iter().map(|sampler|
+                sampler.as_ref().map_or(ptr::null_mut(), |sampler| sampler.state.as_raw())).collect::<Vec<_>>();
+            (*context).PSSetSamplers(0, samplers.len() as u32, samplers.as_ptr());
+            (*context).OMSetBlendState(blend.state.as_raw(), &[0.0; 4], u32::MAX);
+            Ok(())
+        }
+
+        fn binding_identity(&self, samplers: &Self, bright: &Self) -> Result<String> {
+            canonical_packet_sha256(&(
+                native_program_identity(&self.program),
+                samplers.samplers.iter().map(|sampler| sampler.as_ref().map(|s| &s.sha256)).collect::<Vec<_>>(),
+                &self.selected_blend(bright)?.sha256,
+            ))
+        }
+    }
+
     struct NativeShadowBlurProgram {
         program: NativeProgram,
         blend: D3dPtr<ID3D11BlendState>,
@@ -1599,8 +1640,8 @@ mod native {
         main_scene_resource_identity_sha256: String,
         main_scene_allocation_generation: u64,
         main_scene_texture: D3dPtr<ID3D11Texture2D>,
-        programs: Vec<(Xmap10ProgramRole, NativeProgram)>,
-        scalar_downsample: NativeProgram,
+        programs: Vec<(Xmap10ProgramRole, NativePostFxProgram)>,
+        scalar_downsample: NativePostFxProgram,
         lut_blend1: NativeLutProgram,
         lut_blend2: NativeLutProgram,
         program_receipt: Xmap10NativeProgramReceiptRef,
@@ -1622,9 +1663,7 @@ mod native {
         luminance_gather_cb: D3dPtr<ID3D11Buffer>,
         bloom_cb: D3dPtr<ID3D11Buffer>,
         lut_cb: D3dPtr<ID3D11Buffer>,
-        linear_clamp: D3dPtr<ID3D11SamplerState>,
         point_clamp: D3dPtr<ID3D11SamplerState>,
-        opaque_blend: D3dPtr<ID3D11BlendState>,
         rgb_only_blend: D3dPtr<ID3D11BlendState>,
         depth_disabled: D3dPtr<ID3D11DepthStencilState>,
         rasterizer: D3dPtr<ID3D11RasterizerState>,
@@ -1944,9 +1983,9 @@ mod native {
                 identities.push(Xmap10CompiledProgramIdentity {
                     role: effect.role,
                     active_effect_sha256: effect.deterministic_sha256.clone(),
-                    vertex_bytecode_sha256: Sha256::hex(&program.vertex_bytecode),
-                    pixel_bytecode_sha256: Sha256::hex(&program.pixel_bytecode),
-                    reflection_sha256: program.reflection_sha256.clone(),
+                    vertex_bytecode_sha256: Sha256::hex(&program.program.vertex_bytecode),
+                    pixel_bytecode_sha256: Sha256::hex(&program.program.pixel_bytecode),
+                    reflection_sha256: program.program.reflection_sha256.clone(),
                 });
                 programs.push((effect.role, program));
             }
@@ -1969,7 +2008,7 @@ mod native {
                 .filter(|define| !define.eq_ignore_ascii_case("LUMINANCE_SAMPLE_ALPHA"))
                 .cloned()
                 .collect::<Vec<_>>();
-            let scalar_downsample = compile_program(
+            let mut scalar_downsample = compile_program(
                 &device,
                 resolver,
                 LUMINANCE_SHADER,
@@ -1977,6 +2016,10 @@ mod native {
                 Xmap10ProgramRole::LuminanceDownsample,
                 &scalar_defines,
             )?;
+
+            let alpha_program = programs.iter().find(|(role, _)| *role == Xmap10ProgramRole::LuminanceDownsample)
+                .ok_or("XMAP10 alpha downsample program is absent")?;
+            complete_postfx_sampler_source(&device, resolver, LUMINANCE_SHADER, &alpha_program.1, &mut scalar_downsample)?;
 
             frame.grade.lut_program.validate()?;
             let lut_blend1 = NativeLutProgram {
@@ -1997,6 +2040,7 @@ mod native {
             program_receipt.receipt_sha256 = native_program_receipt_digest(
                 &program_receipt,
                 &scalar_downsample,
+                &programs,
                 [&lut_blend1, &lut_blend2],
             );
 
@@ -2110,7 +2154,7 @@ mod native {
                 .first()
                 .ok_or("XMAP10 compiled no active programs")?;
             let input_layout =
-                create_fullscreen_input_layout(&device, &first_program.1.vertex_bytecode)?;
+                create_fullscreen_input_layout(&device, &first_program.1.program.vertex_bytecode)?;
             let fullscreen_vertices = create_fullscreen_vertices(&device)?;
             let post_effect_cb = create_constant_buffer(
                 &device,
@@ -2137,9 +2181,7 @@ mod native {
                 mem::size_of::<LutBlendCb>() as u32,
                 "XMAP10 LUT cb0",
             )?;
-            let linear_clamp = create_sampler(&device, false)?;
             let point_clamp = create_sampler(&device, true)?;
-            let opaque_blend = create_blend(&device, false)?;
             let rgb_only_blend = create_blend(&device, true)?;
             let depth_disabled = create_depth_disabled(&device)?;
             let rasterizer = create_rasterizer(&device)?;
@@ -2176,9 +2218,7 @@ mod native {
                 luminance_gather_cb,
                 bloom_cb,
                 lut_cb,
-                linear_clamp,
                 point_clamp,
-                opaque_blend,
                 rgb_only_blend,
                 depth_disabled,
                 rasterizer,
@@ -2242,6 +2282,7 @@ mod native {
             self.program_receipt.receipt_sha256 = native_program_receipt_digest(
                 &self.program_receipt,
                 &self.scalar_downsample,
+                &self.programs,
                 [&self.lut_blend1, &self.lut_blend2],
             );
             Ok(())
@@ -2312,11 +2353,9 @@ mod native {
                 self.bright.width,
                 self.bright.height,
                 &[self.main_scene_srv.as_raw()],
-                &[self.linear_clamp.as_raw()],
-                self.opaque_blend.as_raw(),
             )?;
             let bright_program_identity =
-                native_program_identity(self.program(Xmap10ProgramRole::BrightPass)?);
+                self.program_identity(Xmap10ProgramRole::BrightPass)?;
             let bright_inputs = vec![self.main_scene_resource_identity_sha256.clone()];
             let bright_output = self.bright.resource_identity_sha256.clone();
             let bright_resources = vec![
@@ -2353,8 +2392,8 @@ mod native {
             let luminance_program_identity = native_identity_set(
                 "postfx.luminance_downsample_chain.programs",
                 &[
-                    native_program_identity(self.program(Xmap10ProgramRole::LuminanceDownsample)?),
-                    native_program_identity(&self.scalar_downsample),
+                    self.program_identity(Xmap10ProgramRole::LuminanceDownsample)?,
+                    self.postfx_program_identity(&self.scalar_downsample, &self.scalar_downsample)?,
                 ],
             );
             let luminance_inputs = vec![self.bright.resource_identity_sha256.clone()];
@@ -2409,7 +2448,7 @@ mod native {
                 assignments[2].clone(),
                 gather_inputs,
                 gather_output,
-                native_program_identity(self.program(Xmap10ProgramRole::LuminanceGather)?),
+                self.program_identity(Xmap10ProgramRole::LuminanceGather)?,
                 gather_resources,
                 gather_constant_buffers,
                 gather_draw,
@@ -2428,7 +2467,7 @@ mod native {
                 assignments[3].clone(),
                 vec![self.bright.resource_identity_sha256.clone()],
                 self.bloom_horizontal.resource_identity_sha256.clone(),
-                native_program_identity(self.program(Xmap10ProgramRole::BloomHorizontal)?),
+                self.program_identity(Xmap10ProgramRole::BloomHorizontal)?,
                 vec![
                     self.bright.resource_identity_sha256.clone(),
                     self.bloom_horizontal.resource_identity_sha256.clone(),
@@ -2441,7 +2480,7 @@ mod native {
                 assignments[4].clone(),
                 vec![self.bloom_horizontal.resource_identity_sha256.clone()],
                 self.restore_bloom.resource_identity_sha256.clone(),
-                native_program_identity(self.program(Xmap10ProgramRole::BloomVertical)?),
+                self.program_identity(Xmap10ProgramRole::BloomVertical)?,
                 vec![
                     self.bloom_horizontal.resource_identity_sha256.clone(),
                     self.restore_bloom.resource_identity_sha256.clone(),
@@ -2461,13 +2500,6 @@ mod native {
                     self.color_cubes[self.final_color_cube_index].srv.as_raw(),
                     self.temporal[temporal_write].srv.as_raw(),
                 ],
-                &[
-                    self.linear_clamp.as_raw(),
-                    self.linear_clamp.as_raw(),
-                    self.linear_clamp.as_raw(),
-                    self.linear_clamp.as_raw(),
-                ],
-                self.rgb_only_blend.as_raw(),
             )?;
             let restore_inputs = vec![
                 self.main_scene_resource_identity_sha256.clone(),
@@ -2482,7 +2514,7 @@ mod native {
             let mut restore_resources = restore_inputs.clone();
             restore_resources.push(final_target.target_identity_sha256.clone());
             let restore_program_identity =
-                native_program_identity(self.program(Xmap10ProgramRole::RestoreScene)?);
+                self.program_identity(Xmap10ProgramRole::RestoreScene)?;
             let restore_draw = native_draw_receipt(
                 &assignments[5],
                 "postfx.restore_scene",
@@ -2931,7 +2963,7 @@ mod native {
                 } else {
                     &self.scalar_downsample
                 };
-                let program_identity_sha256 = native_program_identity(program);
+                let program_identity_sha256 = self.postfx_program_identity(program, &self.scalar_downsample)?;
                 let cbuffer_receipt_sha256 = native_constant_buffer_receipt(
                     &format!("postfx.luminance_downsample_chain.{index}.cb2"),
                     &constants.values,
@@ -2941,14 +2973,13 @@ mod native {
                 let output_identity = self.luminance_ping[destination_index]
                     .resource_identity_sha256
                     .clone();
-                self.draw_native_program(
+                self.draw_postfx_program(
                     program,
+                    &self.scalar_downsample,
                     self.luminance_ping[destination_index].rtv.as_raw(),
                     step.destination_width,
                     step.destination_height,
                     &[source],
-                    &[self.linear_clamp.as_raw()],
-                    self.opaque_blend.as_raw(),
                 )?;
                 let ordered_inputs = vec![source_identity.clone()];
                 let ordered_resources = vec![source_identity.clone(), output_identity.clone()];
@@ -3079,8 +3110,6 @@ mod native {
                     self.luminance_ping[source_index].srv.as_raw(),
                     self.temporal[self.temporal_read].srv.as_raw(),
                 ],
-                &[self.linear_clamp.as_raw(), self.point_clamp.as_raw()],
-                self.opaque_blend.as_raw(),
             )?;
             let input_identities = vec![
                 self.luminance_ping[source_index]
@@ -3098,7 +3127,7 @@ mod native {
             let draw_receipt_sha256 = native_draw_receipt(
                 assigned_stage,
                 "postfx.luminance_gather",
-                &native_program_identity(self.program(Xmap10ProgramRole::LuminanceGather)?),
+                &self.program_identity(Xmap10ProgramRole::LuminanceGather)?,
                 &input_identities,
                 &output_identity,
                 &resource_identities,
@@ -3171,8 +3200,6 @@ mod native {
                     target.width,
                     target.height,
                     &[source],
-                    &[self.linear_clamp.as_raw()],
-                    self.opaque_blend.as_raw(),
                 )?;
                 let input_identities = vec![source_identity.to_owned()];
                 let output_identity = target.resource_identity_sha256.clone();
@@ -3185,7 +3212,7 @@ mod native {
                         } else {
                             "postfx.bloom.vertical"
                         },
-                        &native_program_identity(self.program(role)?),
+                        &self.program_identity(role)?,
                         &input_identities,
                         &output_identity,
                         &resource_identities,
@@ -3199,18 +3226,32 @@ mod native {
             Ok(receipts)
         }
 
+        fn postfx_program_identity(&self, program: &NativePostFxProgram, samplers: &NativePostFxProgram) -> Result<String> {
+            program.binding_identity(samplers, self.program(Xmap10ProgramRole::BrightPass)?)
+        }
+
+        fn program_identity(&self, role: Xmap10ProgramRole) -> Result<String> {
+            let program = self.program(role)?;
+            let samplers = if role == Xmap10ProgramRole::LuminanceDownsample { &self.scalar_downsample } else { program };
+            self.postfx_program_identity(program, samplers)
+        }
+
         unsafe fn draw_pass(
-            &self,
-            role: Xmap10ProgramRole,
-            rtv: *mut ID3D11RenderTargetView,
-            width: u32,
-            height: u32,
-            srvs: &[*mut ID3D11ShaderResourceView],
-            samplers: &[*mut ID3D11SamplerState],
-            blend: *mut ID3D11BlendState,
+            &self, role: Xmap10ProgramRole, rtv: *mut ID3D11RenderTargetView,
+            width: u32, height: u32, srvs: &[*mut ID3D11ShaderResourceView],
         ) -> Result<()> {
             let program = self.program(role)?;
-            self.draw_native_program(program, rtv, width, height, srvs, samplers, blend)
+            let samplers = if role == Xmap10ProgramRole::LuminanceDownsample { &self.scalar_downsample } else { program };
+            self.draw_postfx_program(program, samplers, rtv, width, height, srvs)
+        }
+
+        unsafe fn draw_postfx_program(
+            &self, program: &NativePostFxProgram, sampler_source: &NativePostFxProgram,
+            rtv: *mut ID3D11RenderTargetView, width: u32, height: u32,
+            srvs: &[*mut ID3D11ShaderResourceView],
+        ) -> Result<()> {
+            program.bind(self.context.as_raw(), sampler_source, self.program(Xmap10ProgramRole::BrightPass)?)?;
+            self.draw_bound_program(rtv, width, height, srvs)
         }
 
         unsafe fn draw_native_program(
@@ -3222,6 +3263,16 @@ mod native {
             srvs: &[*mut ID3D11ShaderResourceView],
             samplers: &[*mut ID3D11SamplerState],
             blend: *mut ID3D11BlendState,
+        ) -> Result<()> {
+            program.bind_stages(self.context.as_raw());
+            (*self.context.as_raw()).OMSetBlendState(blend, &[0.0; 4], u32::MAX);
+            (*self.context.as_raw()).PSSetSamplers(0, samplers.len() as u32, samplers.as_ptr());
+            self.draw_bound_program(rtv, width, height, srvs)
+        }
+
+        unsafe fn draw_bound_program(
+            &self, rtv: *mut ID3D11RenderTargetView, width: u32, height: u32,
+            srvs: &[*mut ID3D11ShaderResourceView],
         ) -> Result<()> {
             if rtv.is_null() || width == 0 || height == 0 || srvs.iter().any(|srv| srv.is_null()) {
                 return Err("XMAP10 draw received a null target/resource or empty viewport".into());
@@ -3237,17 +3288,14 @@ mod native {
             (*self.context.as_raw()).OMSetRenderTargets(1, &rtv, ptr::null_mut());
             (*self.context.as_raw()).RSSetViewports(1, &viewport);
             (*self.context.as_raw()).RSSetScissorRects(0, ptr::null());
-            (*self.context.as_raw()).OMSetBlendState(blend, &[0.0; 4], u32::MAX);
-            program.bind_stages(self.context.as_raw());
             (*self.context.as_raw()).PSSetShaderResources(0, srvs.len() as u32, srvs.as_ptr());
-            (*self.context.as_raw()).PSSetSamplers(0, samplers.len() as u32, samplers.as_ptr());
             (*self.context.as_raw()).Draw(4, 0);
             let nulls = vec![ptr::null_mut(); srvs.len()];
             (*self.context.as_raw()).PSSetShaderResources(0, nulls.len() as u32, nulls.as_ptr());
             native_d3d11_check_void_upload_device(&self.device, "XMAP10 postfx draw")
         }
 
-        fn program(&self, role: Xmap10ProgramRole) -> Result<&NativeProgram> {
+        fn program(&self, role: Xmap10ProgramRole) -> Result<&NativePostFxProgram> {
             self.programs
                 .iter()
                 .find(|(candidate, _)| *candidate == role)
@@ -3833,6 +3881,102 @@ mod native {
     }
 
     #[cfg(test)]
+    mod postfx_authored_state_tests {
+        use super::*;
+        const SHADER: &str = r#"
+VertexStruct Input { int2 p : POSITION; }
+VertexShader = { MainCode VS [[ float4 main(Input i) : SV_POSITION { return float4(i.p * 2 - 1, 0, 1); } ]] }
+ConstantBuffer(2, 0) { float4 InvSize_TauDeltaTime; float4 GatherSize_PixelSize; float4 unused; };
+PixelShader = {
+    Samplers = { Image = { Index = 0 MagFilter = "Point" MinFilter = "Point" MipFilter = "None" MipMapMaxLod = 2 AddressU = "Clamp" AddressV = "Clamp" } }
+    MainCode PS [[ float4 main() : SV_Target { return Image_Texture.Sample(Image_Sampler, float2(0.25,0.25)); } ]]
+    MainCode Constant [[ float4 main() : SV_Target { return float4(0.25,0.5,0.75,1); } ]]
+    MainCode Alpha [[ float4 main() : SV_Target {
+#ifdef LUMINANCE_SAMPLE_ALPHA
+        return Image_Texture.Sample(Image_Sampler, float2(0.25,0.25));
+#else
+        return float4(0.25,0.5,0.75,1);
+#endif
+    } ]]
+}
+BlendState Red { BlendEnable = no WriteMask = "RED" }
+BlendState Green { BlendEnable = no WriteMask = "GREEN" }
+Effect Bright { VertexShader = "VS" PixelShader = "PS" BlendState = "Red" }
+Effect Other { VertexShader = "VS" PixelShader = "PS" BlendState = "Green" }
+Effect Constant { VertexShader = "VS" PixelShader = "Constant" BlendState = "Red" }
+Effect Alpha { VertexShader = "VS" PixelShader = "Alpha" BlendState = "Green" }
+"#;
+
+        fn fixture(root: &std::path::Path, filter: &str) -> GameFileResolver {
+            std::fs::create_dir_all(root.join("gfx/FX")).unwrap();
+            let shader = if filter == "absent" { SHADER.lines().filter(|line| !line.contains("Samplers =")).collect::<Vec<_>>().join("\n") } else { SHADER.replace("Point", filter) };
+            std::fs::write(root.join("gfx/FX/postfx.shader"), shader).unwrap();
+            std::fs::write(root.join("gfx/FX/defines_hlsl_dx11.fxh"), "struct STextureSampler2D { Texture2D tex; SamplerState state; }; STextureSampler2D CreateSampler2D(Texture2D t, SamplerState s) { STextureSampler2D r = {t,s}; return r; }").unwrap();
+            let source = GameFileResolver::vanilla(root).unwrap();
+            let paths = ["gfx/fx/postfx.shader".into(), crate::shader_compile::DX11_PLATFORM_HEADER.to_ascii_lowercase()].into_iter().collect();
+            crate::test_support::admitted_vanilla_resolver(&source, &paths, "postfx-authored-state").0
+        }
+
+        #[test]
+        fn authored_postfx_binding_preserves_selected_masks_inherited_bright_and_sampler_identity() {
+            use winapi::um::d3dcommon::{D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0};
+            let root = crate::test_support::temp_test_dir("postfx_authored_state");
+            let resolver = fixture(&root.join("point"), "Point"); let linear = fixture(&root.join("linear"), "Linear"); let absent = fixture(&root.join("absent"), "absent");
+            unsafe {
+                let mut device = ptr::null_mut(); let mut context = ptr::null_mut();
+                hr(D3D11CreateDevice(ptr::null_mut(), D3D_DRIVER_TYPE_WARP, ptr::null_mut(), 0, &D3D_FEATURE_LEVEL_11_0, 1, D3D11_SDK_VERSION, &mut device, ptr::null_mut(), &mut context), "authored postfx WARP").unwrap();
+                let device = D3dPtr::from_raw(device, "authored postfx device").unwrap(); let context_owner = D3dPtr::from_raw(context, "authored postfx context").unwrap();
+                let no_sampler = compile_program(&device, &absent, "gfx/FX/postfx.shader", "Constant", Xmap10ProgramRole::BrightPass, &[]).unwrap();
+                assert!(no_sampler.samplers.iter().all(Option::is_none));
+                let bright = compile_program(&device, &resolver, "gfx/FX/postfx.shader", "Bright", Xmap10ProgramRole::BrightPass, &[]).unwrap();
+                let linear_bright = compile_program(&device, &linear, "gfx/FX/postfx.shader", "Bright", Xmap10ProgramRole::BrightPass, &[]).unwrap();
+                assert_eq!(native_program_identity(&bright.program), native_program_identity(&linear_bright.program));
+                assert_eq!(bright.blend.as_ref().unwrap().sha256, linear_bright.blend.as_ref().unwrap().sha256);
+                assert_ne!(bright.binding_identity(&bright, &bright).unwrap(), linear_bright.binding_identity(&linear_bright, &linear_bright).unwrap());
+                let mut desc: D3D11_SAMPLER_DESC = mem::zeroed(); (*bright.samplers[0].as_ref().unwrap().state.as_raw()).GetDesc(&mut desc);
+                assert_eq!(desc.Filter, D3D11_FILTER_MIN_MAG_MIP_POINT); assert_eq!(desc.AddressU, D3D11_TEXTURE_ADDRESS_CLAMP); assert_eq!(desc.MaxLOD, 2.0);
+                let input = create_target(&device, &"a".repeat(64), 8, 8, 28, "authored postfx input").unwrap();
+                let target = create_target(&device, &"b".repeat(64), 8, 8, 28, "authored postfx output").unwrap();
+                (*context).ClearRenderTargetView(input.rtv.as_raw(), &[0.25,0.5,0.75,1.0]);
+                let vertices = create_fullscreen_vertices(&device).unwrap(); let layout = create_fullscreen_input_layout(&device, &bright.program.vertex_bytecode).unwrap();
+                let raster = create_rasterizer(&device).unwrap(); let depth = create_depth_disabled(&device).unwrap();
+                (*context).IASetInputLayout(layout.as_raw()); (*context).IASetVertexBuffers(0,1,&vertices.as_raw(),&8,&0); (*context).IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+                (*context).RSSetState(raster.as_raw()); (*context).OMSetDepthStencilState(depth.as_raw(),0);
+                (*context).RSSetViewports(1,&D3D11_VIEWPORT { TopLeftX:0.0,TopLeftY:0.0,Width:8.0,Height:8.0,MinDepth:0.0,MaxDepth:1.0 });
+                let mut desc: D3D11_TEXTURE2D_DESC = mem::zeroed(); (*target._texture.as_raw()).GetDesc(&mut desc); desc.Usage=D3D11_USAGE_STAGING;desc.BindFlags=0;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+                let mut staging=ptr::null_mut();hr((*device.as_raw()).CreateTexture2D(&desc,ptr::null(),&mut staging),"authored postfx staging").unwrap();let staging=D3dPtr::from_raw(staging,"authored postfx staging").unwrap();
+                for (effect,role,expected) in [
+                    ("Bright",Xmap10ProgramRole::BrightPass,[64u8,0,255,64]),
+                    ("Other",Xmap10ProgramRole::LuminanceDownsample,[64,0,255,64]),
+                    ("Other",Xmap10ProgramRole::LuminanceGather,[64,0,255,64]),
+                    ("Other",Xmap10ProgramRole::BloomHorizontal,[255,128,255,64]),
+                    ("Other",Xmap10ProgramRole::BloomVertical,[255,128,255,64]),
+                    ("Other",Xmap10ProgramRole::RestoreScene,[255,128,255,64]),
+                    ("Constant",Xmap10ProgramRole::BrightPass,[64,0,255,64]),
+                ] {
+                    let program=compile_program(&device,&resolver,"gfx/FX/postfx.shader",effect,role,&[]).unwrap();
+                    (*context).PSSetSamplers(0,1,&linear_bright.samplers[0].as_ref().unwrap().state.as_raw());
+                    (*context).ClearRenderTargetView(target.rtv.as_raw(),&[1.0,0.0,1.0,0.25]);(*context).OMSetRenderTargets(1,&target.rtv.as_raw(),ptr::null_mut());(*context).PSSetShaderResources(0,1,&input.srv.as_raw());
+                    program.bind(context,&program,&bright).unwrap();
+                    let mut bound=ptr::null_mut();(*context).PSGetSamplers(0,1,&mut bound);
+                    assert_eq!(bound,program.samplers[0].as_ref().map_or(ptr::null_mut(),|s|s.state.as_raw()));if !bound.is_null(){drop(D3dPtr::from_raw(bound,"postfx sampler readback").unwrap());}
+                    (*context).Draw(4,0);(*context).OMSetRenderTargets(0,ptr::null(),ptr::null_mut());(*context).PSSetShaderResources(0,1,&ptr::null_mut());
+                    (*context).CopyResource(staging.as_raw().cast(),target._texture.as_raw().cast());let mut mapped:D3D11_MAPPED_SUBRESOURCE=mem::zeroed();hr((*context).Map(staging.as_raw().cast(),0,D3D11_MAP_READ,0,&mut mapped),"authored postfx readback").unwrap();
+                    for row in 0..8 {let bytes=std::slice::from_raw_parts((mapped.pData as *const u8).add(row*mapped.RowPitch as usize),32);assert!(bytes.chunks_exact(4).all(|pixel|pixel==expected),"{role:?}");}(*context).Unmap(staging.as_raw().cast(),0);
+                }
+                let alpha=compile_program(&device,&resolver,"gfx/FX/postfx.shader","Alpha",Xmap10ProgramRole::LuminanceDownsample,&["LUMINANCE_SAMPLE_ALPHA".into()]).unwrap();
+                let mut scalar=compile_program(&device,&resolver,"gfx/FX/postfx.shader","Alpha",Xmap10ProgramRole::LuminanceDownsample,&[]).unwrap();
+                assert!(alpha.samplers[0].is_some() && scalar.samplers[0].is_none());
+                complete_postfx_sampler_source(&device,&resolver,"gfx/FX/postfx.shader",&alpha,&mut scalar).unwrap();
+                alpha.bind(context,&scalar,&bright).unwrap();let mut bound=ptr::null_mut();(*context).PSGetSamplers(0,1,&mut bound);assert_eq!(bound,scalar.samplers[0].as_ref().unwrap().state.as_raw());drop(D3dPtr::from_raw(bound,"alpha scalar sampler").unwrap());
+                assert_ne!(alpha.binding_identity(&scalar,&bright).unwrap(),alpha.binding_identity(&linear_bright,&bright).unwrap());
+                drop(context_owner);
+            }
+            drop(resolver);drop(linear);drop(absent);std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(test)]
     mod postfx_binding_tests {
         use super::*;
 
@@ -4327,32 +4471,11 @@ Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" }
         effect_name: &str,
         role: Xmap10ProgramRole,
         ordered_defines: &[String],
-    ) -> Result<NativeProgram> {
+    ) -> Result<NativePostFxProgram> {
         let effect_file = effect_file_from_resolver(resolver, shader_root)?;
         let effect = effect_file
             .effect(effect_name)
             .ok_or_else(|| format!("XMAP10 effect {shader_root}:{effect_name} is absent"))?;
-        if role == Xmap10ProgramRole::RestoreScene {
-            let state_name = effect
-                .blend_state
-                .as_deref()
-                .ok_or("XMAP10 RestoreScene effective effect omits its blend state")?;
-            let state = effect_file
-                .blend_states
-                .get(state_name)
-                .ok_or("XMAP10 RestoreScene effective blend state is unresolved")?;
-            let value = |key: &str| {
-                state
-                    .iter()
-                    .find(|(name, _)| name.eq_ignore_ascii_case(key))
-                    .map(|(_, value)| value.trim_matches('"'))
-            };
-            if value("BlendEnable") != Some("no") || value("WriteMask") != Some("RED|GREEN|BLUE") {
-                return Err(
-                    "XMAP10 RestoreScene effective blend state is not RGB-only overwrite".into(),
-                );
-            }
-        }
         let effect_defines = effect
             .defines
             .iter()
@@ -4387,14 +4510,52 @@ Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" }
         let vertex_reflection = parse_dxbc_reflection(&vertex_bytecode)?;
         let pixel_reflection = parse_dxbc_reflection(&pixel_bytecode)?;
         validate_program_reflection(role, &vertex_reflection, &pixel_reflection)?;
-        create_program(
+        let blend = if matches!(role, Xmap10ProgramRole::LuminanceDownsample | Xmap10ProgramRole::LuminanceGather) {
+            None
+        } else {
+            let name = effect.blend_state.as_deref().unwrap_or("BlendState");
+            let rows = match effect_file.blend_states.get(name) {
+                Some(rows) => rows.as_slice(),
+                None if effect.blend_state.is_none() => &[],
+                None => return Err(format!("XMAP10 selected blend state {name} is absent").into()),
+            };
+            let state = crate::xmap12_d3d_handoff::create_blend_state(device.as_raw(), rows)?;
+            let sha256 = canonical_packet_sha256(&(name, rows))?;
+            Some(NativePostFxBlend { state, sha256 })
+        };
+        let resource_count = match role { Xmap10ProgramRole::RestoreScene => 4, Xmap10ProgramRole::LuminanceGather => 2, _ => 1 };
+        let mut samplers = (0..resource_count).map(|_| None).collect::<Vec<_>>();
+        for resource in pixel_reflection.resources.iter().filter(|resource| resource.resource_type == 3) {
+            for slot in resource.bind_point..resource.bind_point + resource.bind_count {
+                let (state, sha256) = crate::xmap12_d3d_handoff::create_effect_sampler_on_device(device.as_raw(), resolver, shader_root, slot)?;
+                samplers[slot as usize] = Some(NativePostFxSampler { state, sha256 });
+            }
+        }
+        let program = create_program(
             device,
             vertex_bytecode,
             pixel_bytecode,
             vertex_reflection,
             pixel_reflection,
             effect_name,
-        )
+        )?;
+        Ok(NativePostFxProgram { program, samplers, blend })
+    }
+
+    unsafe fn complete_postfx_sampler_source(
+        device: &D3dPtr<ID3D11Device>, resolver: &GameFileResolver, shader_root: &str,
+        consumer: &NativePostFxProgram, source: &mut NativePostFxProgram,
+    ) -> Result<()> {
+        if consumer.samplers.len() != source.samplers.len() {
+            return Err("XMAP10 downsample sampler census differs between alpha and scalar".into());
+        }
+        for (slot, (required, supplied)) in consumer.samplers.iter().zip(&mut source.samplers).enumerate() {
+            if required.is_some() && supplied.is_none() {
+                let (state, sha256) = crate::xmap12_d3d_handoff::create_effect_sampler_on_device(device.as_raw(), resolver, shader_root, slot as u32)?;
+                *supplied = Some(NativePostFxSampler { state, sha256 });
+            }
+        }
+        Ok(())
     }
 
     unsafe fn compile_lut_program(
@@ -4679,7 +4840,8 @@ Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" }
 
     fn native_program_receipt_digest(
         receipt: &Xmap10NativeProgramReceiptRef,
-        scalar: &NativeProgram,
+        scalar: &NativePostFxProgram,
+        programs: &[(Xmap10ProgramRole, NativePostFxProgram)],
         luts: [&NativeLutProgram; 2],
     ) -> String {
         let mut bytes = Vec::new();
@@ -4692,9 +4854,13 @@ Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" }
             push_string(&mut bytes, &program.pixel_bytecode_sha256);
             push_string(&mut bytes, &program.reflection_sha256);
         }
-        push_string(&mut bytes, &Sha256::hex(&scalar.vertex_bytecode));
-        push_string(&mut bytes, &Sha256::hex(&scalar.pixel_bytecode));
-        push_string(&mut bytes, &scalar.reflection_sha256);
+        for program in programs.iter().map(|(_, program)| program).chain(std::iter::once(scalar)) {
+            push_string(&mut bytes, &native_program_identity(&program.program));
+            push_string(&mut bytes, &canonical_packet_sha256(&(
+                program.samplers.iter().map(|sampler| sampler.as_ref().map(|s| &s.sha256)).collect::<Vec<_>>(),
+                program.blend.as_ref().map(|blend| &blend.sha256),
+            )).expect("postfx state identity serialization cannot fail"));
+        }
         for lut in luts {
             push_string(&mut bytes, &lut.effect_name);
             push_string(&mut bytes, &Sha256::hex(&lut.program.vertex_bytecode));
