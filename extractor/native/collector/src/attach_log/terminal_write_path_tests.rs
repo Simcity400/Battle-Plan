@@ -20,7 +20,7 @@ fn terminal_data_region() -> String {
             .split_once("let terminal_write_attempt =")
             .expect("terminal DATA publication")
             .1
-            .split_once("} else if !frame_complete && terminal_control_error.is_none() {")
+            .split_once("} else if !frame_publishable && terminal_control_error.is_none() {")
             .expect("terminal DATA publication terminator")
             .0,
     )

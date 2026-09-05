@@ -170,3 +170,4 @@ production_hook_receipt = { path = "../lanes/production_hook_receipt", features 
 # `recorder_host` dev-depends on this crate, so the edge back is a dev edge,
 # exactly as it already is through `focus_research_decisions_depth_live`.
 recorder_host = { path = "../recorder_host" }
+wire_format = { path = "../wire_format" }

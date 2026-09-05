@@ -31,11 +31,17 @@ $script:ProductionPromotionUnknownStatusMask =
 # `compact_contract/tests/compact_contract_suite/script_status_vocabulary_sweep.rs`.
 $script:ProductionPromotionLaneLocalStatusMask = @{
     18 = [uint32]0x00010000
+    45 = [uint32]0x80000000
     49 = [uint32]0x00000800
     51 = [uint32]0x00003800
     53 = [uint32]0x00FF0000
-    55 = [uint32]0x00010000
+    55 = [uint32]0x80010000
     60 = [uint32]0x00030000
+    64 = [uint32]0x80000000
+    67 = [uint32]0x80000000
+    75 = [uint32]0x80000000
+    86 = [uint32]0x80000000
+    90 = [uint32]0x80000000
     99 = [uint32]0x00070000
 }
 

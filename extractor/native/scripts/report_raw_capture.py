@@ -108,6 +108,7 @@ FAILURE_MASK = (
 )
 LANE_LOCAL_BITS = {
     18: {16: "d18:membership_states_unmeasured"},
+    45: {31: "d45:terminal_custody"},
     49: {11: "d49:location_candidate_unvalidated"},
     51: {
         11: "d51:flag_names_partial",
@@ -126,11 +127,17 @@ LANE_LOCAL_BITS = {
     },
     55: {
         16: "d55:event_carrier_incomplete",
+        31: "d55:terminal_custody",
     },
     60: {
         16: "d60:war_casualties_running_accumulator",
         17: "d60:war_residuals_exact",
     },
+    64: {31: "d64:terminal_custody"},
+    67: {31: "d67:terminal_custody"},
+    75: {31: "d75:terminal_custody"},
+    86: {31: "d86:terminal_custody"},
+    90: {31: "d90:terminal_custody"},
     99: {
         16: "d99:torn_rows_present",
         17: "d99:stat_block_null_present",

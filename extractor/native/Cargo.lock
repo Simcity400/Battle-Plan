@@ -208,6 +208,7 @@ dependencies = [
  "theatre_selector_live_lane",
  "victory_points",
  "windows-sys",
+ "wire_format",
  "xmap15_orders_semantic",
  "xmap20_effects",
  "xui26_frontend",

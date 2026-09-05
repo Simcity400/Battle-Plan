@@ -63,13 +63,17 @@ GLOBAL_STATUS_BITS: Mapping[int, StatusSpec] = {
 
 DOMAIN_STATUS_BITS: Mapping[int, Mapping[int, StatusSpec]] = {
     18: {16: StatusSpec('LANE:MEMBERSHIP_STATES_UNMEASURED', False)},
+    45: {31: StatusSpec('LANE:TERMINAL_CUSTODY', False)},
     49: {11: StatusSpec('LANE:LOCATION_CANDIDATE_UNVALIDATED', True)},
     51: {
         11: StatusSpec('LANE:FLAG_NAMES_PARTIAL', True),
         12: StatusSpec('LANE:DELAYED_EVENTS_ROOT_UNRESOLVED', True),
         13: StatusSpec('LANE:SCRIPTED_GUI_ROOT_UNRESOLVED', True),
     },
-    55: {16: StatusSpec('LANE:EVENT_CARRIER_INCOMPLETE', False)},
+    55: {
+        16: StatusSpec('LANE:EVENT_CARRIER_INCOMPLETE', False),
+        31: StatusSpec('LANE:TERMINAL_CUSTODY', False),
+    },
     53: {
         16: StatusSpec('LANE:OPERATIONS_DETAIL_RESISTED', True),
         17: StatusSpec('LANE:INTEL_MAP_RESISTED', True),
@@ -84,6 +88,11 @@ DOMAIN_STATUS_BITS: Mapping[int, Mapping[int, StatusSpec]] = {
         16: StatusSpec('LANE:WAR_CASUALTIES_RUNNING_ACCUMULATOR', False),
         17: StatusSpec('LANE:WAR_RESIDUALS_EXACT', False),
     },
+    64: {31: StatusSpec('LANE:TERMINAL_CUSTODY', False)},
+    67: {31: StatusSpec('LANE:TERMINAL_CUSTODY', False)},
+    75: {31: StatusSpec('LANE:TERMINAL_CUSTODY', False)},
+    86: {31: StatusSpec('LANE:TERMINAL_CUSTODY', False)},
+    90: {31: StatusSpec('LANE:TERMINAL_CUSTODY', False)},
     99: {
         16: StatusSpec('LANE:TORN_ROWS_PRESENT', True),
         17: StatusSpec('LANE:STAT_BLOCK_NULL_PRESENT', True),

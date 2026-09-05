@@ -206,6 +206,8 @@ pub const COLLECTION_COUNT: usize = 5;
 // These mirror compact_contract's COMPACT_STATUS_* values without a crate dependency.
 const COMPACT_STATUS_FAILURE_MASK: u32 = 0x13cf;
 const COMPACT_STATUS_PARTIAL_DATA: u32 = 0x200;
+/// `compact_contract::COMPACT_STATUS_TERMINAL_CUSTODY`: the instance set was never sampled.
+const COMPACT_STATUS_TERMINAL_CUSTODY: u32 = 1 << 31;
 const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 = 0x100;
 
 /// Field ids are stable and append-only; schema-identity contract forbids reuse for a different
@@ -1135,10 +1137,14 @@ pub fn fold_payload(
 ) -> core::result::Result<State, String> {
     let source_named = frame.partiality.iter().any(|gap| gap.causes & SOURCE_UNAVAILABLE_CAUSES != 0);
     let admitted_failures = COMPACT_STATUS_PARTIAL_DATA | if source_named { COMPACT_STATUS_SOURCE_UNAVAILABLE } else { 0 };
+    let terminal_custody = frame.header.status_flags & COMPACT_STATUS_TERMINAL_CUSTODY != 0;
     if frame.header.status_flags & COMPACT_STATUS_FAILURE_MASK & !admitted_failures != 0
-        || frame.header.status_flags & !0xffff != 0
+        || frame.header.status_flags & !0xffff & !COMPACT_STATUS_TERMINAL_CUSTODY != 0
     {
         return Err("country_dynamic_modifiers hard producer failure".into());
+    }
+    if terminal_custody && !frame.instances.is_empty() {
+        return Err("country_dynamic_modifiers terminal custody contains a sampled base".into());
     }
     if schema.collections.len() != COLLECTION_COUNT {
         return Err(format!(
@@ -1149,17 +1155,21 @@ pub fn fold_payload(
     // `world_fold.rs::fold_country_dynamic_modifier_instances`.
     let frame_hour = frame_hour
         .ok_or_else(|| "country_dynamic_modifiers DMI2 has invalid frame hour".to_string())?;
-    // `:9869`-`:9874`.
-    let roster = roster.ok_or_else(|| {
-        "country_dynamic_modifiers DMI2 requires a current-hour country_identity roster".to_string()
-    })?;
+    // `:9869`-`:9874`; the fold's terminal-custody branch consults no roster.
+    let roster = if terminal_custody {
+        None
+    } else {
+        Some(roster.ok_or_else(|| {
+            "country_dynamic_modifiers DMI2 requires a current-hour country_identity roster".to_string()
+        })?)
+    };
 
     // `:9876`-`:9888`: group by owner, refusing an owner the roster does not
     // carry. `BTreeMap` reproduces the fold's own container, so the owner order
     // and the within-owner payload order are the fold's.
     let mut per_owner: BTreeMap<u32, Vec<&Instance>> = BTreeMap::new();
     for instance in &frame.instances {
-        if !roster.contains(instance.owner_tag_db_id) {
+        if !roster.is_some_and(|roster| roster.contains(instance.owner_tag_db_id)) {
             return Err(format!(
                 "country_dynamic_modifiers DMI2 instance owner {} has no current country_identity \
                  mapping",
@@ -1174,12 +1184,19 @@ pub fn fold_payload(
 
     for event in &frame.zero_removals {
         let hour = hour_index_from_raw(event.observed_game_hour_raw);
-        if !roster.contains(event.owner_tag_db_id)
-            || !hour.is_some_and(|hour| hour == frame_hour || hour < frame_hour
-                && frame.partiality.iter().any(|gap| gap.owner_tag_db_id == event.owner_tag_db_id
-                    && gap.first_tick <= hour as u64 && gap.last_tick == frame_tick))
-        {
-            return Err("country_dynamic_modifiers synchronous zero-removal event failed owner/hour/current-set admission".into());
+        let admitted = match roster {
+            None => hour.is_some_and(|hour| hour <= frame_hour),
+            Some(roster) => roster.contains(event.owner_tag_db_id)
+                && hour.is_some_and(|hour| hour == frame_hour || hour < frame_hour
+                    && frame.partiality.iter().any(|gap| gap.owner_tag_db_id == event.owner_tag_db_id
+                        && gap.first_tick <= hour as u64 && gap.last_tick == frame_tick)),
+        };
+        if !admitted {
+            return Err(if terminal_custody {
+                "country_dynamic_modifiers terminal zero-removal has a future or invalid hour".into()
+            } else {
+                "country_dynamic_modifiers synchronous zero-removal event failed owner/hour/current-set admission".into()
+            });
         }
     }
 
@@ -1219,7 +1236,7 @@ pub fn fold_payload(
                 instance,
                 source_ordinal,
                 frame_tick,
-                roster,
+                roster.ok_or("country_dynamic_modifiers DMI2 requires a current-hour country_identity roster")?,
             )?;
             // Unreachable while `decode_payload` enforces identity uniqueness,
             // but the insert is where a silent overwrite would happen, so the
@@ -2183,6 +2200,37 @@ mod tests {
         let (decoded, end) = decode_baseline(&schema(), &encoded, 0).unwrap();
         assert_eq!(end, encoded.len());
         assert_eq!(decoded, state.as_slice());
+    }
+
+    #[test]
+    fn d67_terminal_custody_frame_folds_its_events_without_a_roster_or_a_sampled_base() {
+        let event = ZeroRemoval { owner_tag_db_id: 7, modifier_id: "beta".into(),
+            enabled: true, values_raw: vec![5], observed_game_hour_raw: TEST_HOUR_RAW - 1 };
+        let payload = raw_payload(COMPACT_STATUS_TERMINAL_CUSTODY, &[], &[event.clone()]);
+        let frame = decode_payload(&payload, true).unwrap();
+        let state = fold_payload(&schema(), &frame, Some(TEST_HOUR), None, &symbols(), TEST_HOUR as u64).unwrap();
+        assert_eq!(state.zero_removals.len(), 1);
+        assert!(state.instances.is_empty());
+        assert!(fold_payload(&schema(), &frame, Some(TEST_HOUR), Some(&roster()), &symbols(), TEST_HOUR as u64).is_ok());
+
+        let hourly = decode_payload(&raw_payload(0, &[], &[event.clone()]), true).unwrap();
+        assert!(fold_payload(&schema(), &hourly, Some(TEST_HOUR), Some(&roster()), &symbols(), TEST_HOUR as u64).is_err());
+
+        let sampled = raw_payload(COMPACT_STATUS_TERMINAL_CUSTODY, &[instance(7, "alpha", Some(3), vec![42])], &[]);
+        let frame = decode_payload(&sampled, true).unwrap();
+        assert!(fold_payload(&schema(), &frame, Some(TEST_HOUR), Some(&roster()), &symbols(), TEST_HOUR as u64).is_err());
+
+        let mut partial = raw_payload(COMPACT_STATUS_TERMINAL_CUSTODY | COMPACT_STATUS_PARTIAL_DATA, &[], &[event]);
+        partial.extend_from_slice(PARTIALITY_MAGIC);
+        partial.extend_from_slice(&1u32.to_le_bytes());
+        partial.extend_from_slice(&0u32.to_le_bytes());
+        partial.extend_from_slice(&(1u32 << 1).to_le_bytes());
+        partial.extend_from_slice(&(TEST_HOUR as u64).to_le_bytes());
+        partial.extend_from_slice(&(TEST_HOUR as u64).to_le_bytes());
+        let frame = decode_payload(&partial, true).unwrap();
+        let state = fold_payload(&schema(), &frame, Some(TEST_HOUR), None, &symbols(), TEST_HOUR as u64).unwrap();
+        assert_eq!(state.partiality.len(), 1);
+        assert_eq!(state.zero_removals.len(), 1);
     }
 
     #[test]

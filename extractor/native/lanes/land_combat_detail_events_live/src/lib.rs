@@ -4621,7 +4621,7 @@ mod tests {
     #[test]
     fn compact_gate_rejects_noncanonical_and_fatal_d55_status() {
         let unknown =
-            encode_detail_events_payload_v4(1, STATUS_DELTA_DATA | (1 << 31), &[], &[], &[]);
+            encode_detail_events_payload_v4(1, STATUS_DELTA_DATA | (1 << 30), &[], &[], &[]);
         assert!(gate_d55_payload(&unknown)
             .errors
             .iter()

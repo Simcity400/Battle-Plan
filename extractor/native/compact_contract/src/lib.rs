@@ -167,10 +167,19 @@ pub const DOMAIN60_LANE_LOCAL_STATUS_MASK: u32 =
 /// did project are each proven against this frame's own census before they are
 /// published, so no misattribution hides behind the badge.
 pub const DOMAIN55_STATUS_EVENT_CARRIER_INCOMPLETE: u32 = 1 << 16;
-pub const DOMAIN55_LANE_LOCAL_STATUS_MASK: u32 = DOMAIN55_STATUS_EVENT_CARRIER_INCOMPLETE;
+pub const DOMAIN55_LANE_LOCAL_STATUS_MASK: u32 = DOMAIN55_STATUS_EVENT_CARRIER_INCOMPLETE
+    | COMPACT_STATUS_TERMINAL_CUSTODY;
+
+/// The base collection was not sampled; only authenticated terminal hook custody is present.
+pub const COMPACT_STATUS_TERMINAL_CUSTODY: u32 = 1 << 31;
+
+pub const fn compact_status_is_terminal_custody(status_flags: u32) -> bool {
+    status_flags & COMPACT_STATUS_TERMINAL_CUSTODY != 0
+}
 
 pub const fn lane_local_status_mask(domain_id: CompactDomainId) -> u32 {
     match domain_id {
+        45 | 64 | 67 | 75 | 86 | 90 => COMPACT_STATUS_TERMINAL_CUSTODY,
         18 => DOMAIN18_LANE_LOCAL_STATUS_MASK,
         49 => DOMAIN49_LANE_LOCAL_STATUS_MASK,
         51 => DOMAIN51_LANE_LOCAL_STATUS_MASK,
@@ -3536,10 +3545,11 @@ mod tests {
         for domain_id in 0..=u16::MAX {
             let expected: u32 = match domain_id {
                 18 => 0x0001_0000,
+                45 | 64 | 67 | 75 | 86 | 90 => 1 << 31,
                 49 => 1 << 11,
                 51 => (1 << 11) | (1 << 12) | (1 << 13),
                 53 => 0x00FF_0000,
-                55 => 0x0001_0000,
+                55 => 0x0001_0000 | (1 << 31),
                 60 => 0x0003_0000,
                 99 => 0x0007_0000,
                 _ => 0,
