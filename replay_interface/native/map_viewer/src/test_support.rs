@@ -59,6 +59,7 @@ pub(crate) fn frame_with_rest(rest: serde_json::Value) -> std::sync::Arc<replay_
 /// selection, a mode no family answers to.
 pub(crate) fn bare_viewer() -> ViewerOwnedMapState {
     ViewerOwnedMapState {
+        sky_enabled: true,
         viewport_width: 16,
         viewport_height: 16,
         camera: None,

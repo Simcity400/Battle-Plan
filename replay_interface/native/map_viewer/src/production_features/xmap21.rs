@@ -230,6 +230,7 @@ mod tests {
             Self {
                 timeline: WorldTimeline::open(Box::new(EmptySource)).expect("timeline"),
                 viewer: ViewerOwnedMapState {
+                    sky_enabled: true,
                     viewport_width: 16,
                     viewport_height: 16,
                     camera: None,

@@ -550,6 +550,7 @@ mod tests {
     #[test]
     fn viewer_main_scene_inputs_follow_xmap10_plan_without_recorder_outputs() {
         let viewer = ViewerOwnedMapState {
+            sky_enabled: true,
             viewport_width: 1920,
             viewport_height: 1080,
             camera: None,
@@ -571,6 +572,7 @@ mod tests {
         inputs.validate(&viewer, &plan).unwrap();
 
         let resized = ViewerOwnedMapState {
+            sky_enabled: true,
             viewport_width: 1919,
             ..viewer
         };

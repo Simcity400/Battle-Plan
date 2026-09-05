@@ -3619,6 +3619,7 @@ mod tests {
 
     fn test_viewer(observer_country_id: Option<&str>) -> ViewerOwnedMapState {
         ViewerOwnedMapState {
+            sky_enabled: true,
             viewport_width: 1920,
             viewport_height: 1080,
             camera: None,
@@ -3674,6 +3675,7 @@ mod tests {
     fn viewer_clock_uses_xmap10_presentation_time_without_selected_present() {
         let presentation = Xmap10ViewerPresentationState::new().unwrap();
         let viewer = ViewerOwnedMapState {
+            sky_enabled: true,
             viewport_width: 1920,
             viewport_height: 1080,
             camera: None,
@@ -3696,6 +3698,7 @@ mod tests {
         );
 
         let drifted = ViewerOwnedMapState {
+            sky_enabled: true,
             animation_time_f32_bits: 1.0f32.to_bits(),
             ..viewer
         };

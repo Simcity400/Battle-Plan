@@ -1100,7 +1100,7 @@ impl<'a> NativeXmap12LightDepthCaster<'a> {
                         stable_typed_upstream_id,
                         ..
                     } => ids.contains(stable_typed_upstream_id.as_str()),
-                    crate::L03LightDepthSubmission::Tree { .. } => false,
+                    crate::L03LightDepthSubmission::Tree { .. } | crate::L03LightDepthSubmission::MapArrow { .. } => false,
                 }),
             "XMAP12 L03 owned submissions",
         )?;
@@ -1171,7 +1171,7 @@ impl<'a> NativeXmap12LightDepthCaster<'a> {
                 crate::L03LightDepthSubmission::Pdxmesh { partition_mask, .. } => {
                     Some(*partition_mask)
                 }
-                crate::L03LightDepthSubmission::Tree { .. } => None,
+                crate::L03LightDepthSubmission::Tree { .. } | crate::L03LightDepthSubmission::MapArrow { .. } => None,
             })
             .collect::<BTreeSet<_>>();
         let mut bound_partitions = BTreeSet::new();
@@ -2625,7 +2625,7 @@ fn normalized_state_value(value: &str) -> String {
 }
 
 #[cfg(windows)]
-unsafe fn create_blend_state(
+pub(crate) unsafe fn create_blend_state(
     device: *mut winapi::um::d3d11::ID3D11Device,
     rows: &[(String, String)],
 ) -> Result<crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11BlendState>> {
@@ -2643,6 +2643,7 @@ unsafe fn create_blend_state(
     target.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL as u8;
     for (key, value) in rows {
         match key.as_str() {
+            "AlphaTest" if !yes_no(value, key)? => {},
             "BlendEnable" => target.BlendEnable = i32::from(yes_no(value, key)?),
             "SourceBlend" | "SrcBlend" => target.SrcBlend = blend_factor(value)?,
             "DestBlend" => target.DestBlend = blend_factor(value)?,
@@ -2664,8 +2665,16 @@ unsafe fn create_blend_state(
             }
         }
     }
-    if desc.IndependentBlendEnable != 0 {
-        return Err("XMAP12 independent blend state requires per-target authored rows".into());
+    if desc.IndependentBlendEnable != 0 || desc.AlphaToCoverageEnable != 0 {
+        return Err("effect blend coverage/independent state has no engine lowering".into());
+    }
+    if target.SrcBlendAlpha == D3D11_BLEND_ONE
+        && target.DestBlendAlpha == D3D11_BLEND_ZERO
+        && target.BlendOpAlpha == D3D11_BLEND_OP_ADD
+    {
+        target.SrcBlendAlpha = target.SrcBlend;
+        target.DestBlendAlpha = target.DestBlend;
+        target.BlendOpAlpha = target.BlendOp;
     }
     let mut raw = std::ptr::null_mut();
     native_d3d11_hr(
@@ -3719,6 +3728,42 @@ fn validate_sha256(value: &str, label: &str) -> Result<()> {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effect_blend_alpha_sentinel_and_separate_rgba_lower_through_native_helper() {
+        use crate::d3d11_device::{native_d3d11_hr, D3dPtr};
+        use winapi::um::{d3d11::*, d3dcommon::*};
+        use std::ptr;
+        unsafe {
+            let mut raw = ptr::null_mut();
+            native_d3d11_hr(D3D11CreateDevice(ptr::null_mut(), D3D_DRIVER_TYPE_WARP,
+                ptr::null_mut(), 0, &D3D_FEATURE_LEVEL_11_0, 1, D3D11_SDK_VERSION,
+                &mut raw, ptr::null_mut(), ptr::null_mut()), "effect blend WARP").unwrap();
+            let device = D3dPtr::from_raw(raw, "effect blend device").unwrap();
+            let base = [("BlendEnable", "yes"), ("SourceBlend", "SRC_ALPHA"),
+                ("DestBlend", "INV_SRC_ALPHA"), ("BlendOp", "REV_SUBTRACT"), ("WriteMask", "ALL")]
+                .map(|(k, v)| (k.to_owned(), v.to_owned()));
+            for (alpha, expected) in [
+                (vec![], (D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_OP_REV_SUBTRACT)),
+                (vec![("SourceBlendAlpha", "ONE"), ("DestBlendAlpha", "ZERO"), ("BlendOpAlpha", "ADD")],
+                    (D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_OP_REV_SUBTRACT)),
+                (vec![("SourceBlendAlpha", "DEST_ALPHA"), ("DestBlendAlpha", "ONE"), ("BlendOpAlpha", "SUBTRACT")],
+                    (D3D11_BLEND_DEST_ALPHA, D3D11_BLEND_ONE, D3D11_BLEND_OP_SUBTRACT)),
+            ] {
+                let mut rows = base.to_vec();
+                rows.extend(alpha.into_iter().map(|(k, v)| (k.to_owned(), v.to_owned())));
+                let state = create_blend_state(device.as_raw(), &rows).unwrap();
+                let mut desc: D3D11_BLEND_DESC = std::mem::zeroed();
+                (*state.as_raw()).GetDesc(&mut desc);
+                let target = desc.RenderTarget[0];
+                assert_eq!((target.BlendEnable, target.SrcBlend, target.DestBlend, target.BlendOp,
+                    target.RenderTargetWriteMask),
+                    (1, D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_OP_REV_SUBTRACT, 15));
+                assert_eq!((target.SrcBlendAlpha, target.DestBlendAlpha, target.BlendOpAlpha), expected);
+            }
+        }
+    }
+
 
     /// kills: a streamed identity sequence that is not byte-identical to the collected
     /// `Vec<(&id, &sha)>` it replaced - an empty slice serialised as anything but an empty

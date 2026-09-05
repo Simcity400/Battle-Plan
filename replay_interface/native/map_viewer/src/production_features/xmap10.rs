@@ -19,7 +19,8 @@ pub const XMAP10_READY_SCHEMA: &str = "hoi4.xmap10.postfx-ready.a729.v1";
 
 const POSTEFFECT_VOLUMES: &str = "gfx/posteffect_volumes.txt";
 const GRAPHICS_DEFINES: &str = "common/defines/00_graphics.lua";
-const EFFECT_ROOTS: [&str; 7] = [
+const EFFECT_ROOTS: [&str; 8] = [
+    "gfx/FX/sky.shader",
     "gfx/FX/downsample.shader",
     "gfx/FX/downsample_luminance.shader",
     "gfx/FX/bloom.shader",
@@ -105,7 +106,7 @@ impl Xmap10ContentClosure {
             }
             translation_units.push(unit);
         }
-        for path in [POSTEFFECT_VOLUMES, GRAPHICS_DEFINES] {
+        for path in [POSTEFFECT_VOLUMES, GRAPHICS_DEFINES, crate::shader_compile::DX11_PLATFORM_HEADER] {
             let normalized = path.to_ascii_lowercase();
             if seen_paths.insert(normalized.clone()) {
                 ordered_paths.push(normalized);
@@ -206,6 +207,9 @@ impl Xmap10ContentClosure {
             if !self.ordered_used_content.contains(required) {
                 return Err("XMAP10 scalar source is outside the admitted content closure".into());
             }
+        }
+        if !paths.contains(crate::shader_compile::DX11_PLATFORM_HEADER.to_ascii_lowercase().as_str()) {
+            return Err("XMAP10 shader platform header is outside the admitted content closure".into());
         }
         for lut in &self.selected_luts {
             if !self.ordered_used_content.contains(lut)
@@ -2375,5 +2379,30 @@ mod tests {
         };
         assert_ne!(compositor.prepared_frame_sha256, sha(6));
         assert!(validate_sha256(&compositor.receipt_sha256, "receipt").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod scene_content_tests {
+    use super::*;
+    #[test]
+    fn postfx_closure_admits_and_requires_the_injected_shader_header() {
+        let root = crate::test_support::temp_test_dir("postfx_shader_header");
+        let lut = "gfx/world/test.tga";
+        let paths = EFFECT_ROOTS.into_iter().chain([POSTEFFECT_VOLUMES, GRAPHICS_DEFINES, crate::shader_compile::DX11_PLATFORM_HEADER, lut])
+            .map(str::to_ascii_lowercase).collect::<BTreeSet<_>>();
+        for path in &paths {
+            let file = root.join(path); std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "Effect test { VertexShader = \"vs\" PixelShader = \"ps\" }\n").unwrap();
+        }
+        let resolver = GameFileResolver::vanilla(root.clone()).unwrap();
+        let (resolver, admission) = crate::test_support::admitted_vanilla_resolver(&resolver, &paths, "postfx-header-test");
+        let mut closure = Xmap10ContentClosure::admit(&resolver, &admission, &[lut.into()]).unwrap();
+        let header = crate::shader_compile::DX11_PLATFORM_HEADER.to_ascii_lowercase();
+        assert!(closure.ordered_used_content.iter().any(|row| row.normalized_game_relative_path == header));
+        closure.ordered_used_content.retain(|row| row.normalized_game_relative_path != header);
+        closure.deterministic_sha256 = content_closure_digest(&closure);
+        assert!(closure.validate().is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

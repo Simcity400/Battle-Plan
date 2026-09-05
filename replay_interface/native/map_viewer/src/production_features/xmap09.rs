@@ -611,7 +611,7 @@ pub struct Xmap09ShadowResourcePlan {
     pub producer_and_final_target: ShadowScreenTarget,
     pub blur_intermediate_target: ShadowScreenTarget,
     pub screen_passes: Vec<ShadowScreenPassPlan>,
-    pub exact_caster_owner_packets: [&'static str; 3],
+    pub exact_caster_owner_packets: [&'static str; 5],
     pub exact_caster_global_order_required: bool,
     pub final_consumer_symbol: &'static str,
 }
@@ -1452,7 +1452,7 @@ fn prepare_lighting(
         producer_and_final_target,
         blur_intermediate_target,
         screen_passes,
-        exact_caster_owner_packets: ["XMAP11", "XMAP12", "XMAP13"],
+        exact_caster_owner_packets: ["XMAP12", "XMAP13", "XMAP11", "XMAP15", "XMAP16"],
         exact_caster_global_order_required: true,
         final_consumer_symbol: "ShadowMap",
     };

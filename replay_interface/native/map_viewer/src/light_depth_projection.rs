@@ -140,6 +140,7 @@ pub struct L03ProjectionRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum L03LightDepthSubmission {
+    MapArrow { draw: crate::MapArrowLightDraw },
     Pdxmesh {
         partition_mask: u8,
         stable_typed_upstream_id: String,

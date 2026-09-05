@@ -982,7 +982,210 @@ fn xmap10_identity_set(label: &str, ordered_identities: &[String]) -> String {
     )
 }
 
-pub const XMAP10_SCREEN_SHADOW_RECEIPT_SCHEMA: &str = "hoi4.xmap10.screen-shadow-execution.v1";
+pub const XMAP10_SCREEN_SHADOW_RECEIPT_SCHEMA: &str = "hoi4.xmap10.screen-shadow-execution.v2";
+pub const XMAP10_SCREEN_CLEAR_BITS: [u32; 4] = [0x3f800000, 0, 0, 0x3f800000];
+
+#[cfg(test)]
+mod retained_history_tests {
+    use super::*;
+    fn frame(sequence: u64) -> Xmap10ShadowHistoryFrame {
+        Xmap10ShadowHistoryFrame { epoch: 1, sequence, camera_sha256: "a".repeat(64),
+            replay_sha256: "b".repeat(64), content_sha256: "c".repeat(64) }
+    }
+    #[test]
+    fn retained_history_requires_actual_complete_predecessor_and_exact_epoch() {
+        let mut history = Xmap10ShadowHistory::new(1, "d".repeat(64)).unwrap();
+        assert_eq!(history.read(&frame(1)).unwrap_err(), Xmap10RetainedShadowRefusal::FirstAllocationUndefined);
+        history.begin(&frame(1)).unwrap();
+        assert_eq!(history.read(&frame(2)).unwrap_err(), Xmap10RetainedShadowRefusal::WriteInProgress);
+        history.complete(&frame(1), "e".repeat(64)).unwrap();
+        let mut next = frame(2);
+        next.camera_sha256 = "f".repeat(64);
+        let read = history.read(&next).unwrap();
+        assert_eq!(read.allocation_generation, 1);
+        assert_eq!(read.producer.camera_sha256, "a".repeat(64));
+        assert_eq!(read.consumer.camera_sha256, "f".repeat(64));
+        assert_eq!(read.age_in_render_frames, 1);
+        assert_eq!(history.read(&frame(3)).unwrap_err(), Xmap10RetainedShadowRefusal::HistorySequenceMismatch);
+        next.epoch = 2;
+        assert_eq!(history.read(&next).unwrap_err(), Xmap10RetainedShadowRefusal::HistoryReset);
+        next.epoch = 1;
+        next.content_sha256 = "0".repeat(64);
+        assert_eq!(history.read(&next).unwrap_err(), Xmap10RetainedShadowRefusal::ContentMismatch);
+    }
+    #[test]
+    fn failed_or_partial_write_never_reuses_prior_complete_contents() {
+        let mut history = Xmap10ShadowHistory::new(1, "d".repeat(64)).unwrap();
+        history.begin(&frame(1)).unwrap();
+        history.complete(&frame(1), "e".repeat(64)).unwrap();
+        history.begin(&frame(2)).unwrap();
+        history.fail(Xmap10RetainedShadowRefusal::UpstreamCasterUnavailable);
+        assert_eq!(history.read(&frame(3)).unwrap_err(), Xmap10RetainedShadowRefusal::UpstreamCasterUnavailable);
+        assert!(history.complete(&frame(2), "f".repeat(64)).is_err());
+        history.begin(&frame(3)).unwrap();
+        history.complete(&frame(3), "f".repeat(64)).unwrap();
+        assert_eq!(history.read(&frame(4)).unwrap().completed_write_sha256, "f".repeat(64));
+        assert_eq!(Xmap10ShadowHistory::new(2, "d".repeat(64)).unwrap().read(&frame(4)).unwrap_err(),
+            Xmap10RetainedShadowRefusal::RecreatedUndefined);
+    }
+}
+
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Xmap10ShadowHistoryFrame {
+    pub epoch: u64,
+    pub sequence: u64,
+    pub camera_sha256: String,
+    pub replay_sha256: String,
+    pub content_sha256: String,
+}
+
+impl Xmap10ShadowHistoryFrame {
+    pub fn validate(&self) -> Result<()> {
+        if [&self.camera_sha256, &self.replay_sha256, &self.content_sha256]
+            .iter().any(|hash| !is_sha256(hash)) {
+            return Err("XMAP10 shadow history frame has invalid identities".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Xmap10RetainedShadowRefusal {
+    FirstAllocationUndefined,
+    RecreatedUndefined,
+    HistoryReset,
+    HistorySequenceMismatch,
+    AllocationMismatch,
+    DeviceMismatch,
+    ContentMismatch,
+    WriteInProgress,
+    FailedHistory,
+    UpstreamCasterUnavailable,
+    ScreenTreeProducerUnavailable,
+}
+
+impl std::fmt::Display for Xmap10RetainedShadowRefusal {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(out, "map-arrow-light-depth-retained-shadow-map-unavailable: {self:?}")
+    }
+}
+impl std::error::Error for Xmap10RetainedShadowRefusal {}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Xmap10RetainedShadowReadReceipt {
+    pub allocation_generation: u64,
+    pub allocation_descriptor_sha256: String,
+    pub producer: Xmap10ShadowHistoryFrame,
+    pub consumer: Xmap10ShadowHistoryFrame,
+    pub completed_write_sha256: String,
+    pub age_in_render_frames: u64,
+}
+
+impl Xmap10RetainedShadowReadReceipt {
+    pub fn validate(&self) -> Result<()> {
+        self.producer.validate()?;
+        self.consumer.validate()?;
+        if self.allocation_generation == 0
+            || !is_sha256(&self.allocation_descriptor_sha256)
+            || !is_sha256(&self.completed_write_sha256)
+            || self.producer.epoch != self.consumer.epoch
+            || self.producer.content_sha256 != self.consumer.content_sha256
+            || self.producer.sequence.checked_add(1) != Some(self.consumer.sequence)
+            || self.age_in_render_frames != 1 {
+            return Err("XMAP10 retained shadow read has a stale allocation/history join".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Xmap10RetainedShadowState {
+    Undefined(Xmap10RetainedShadowRefusal),
+    Writing(Xmap10ShadowHistoryFrame),
+    Complete { frame: Xmap10ShadowHistoryFrame, write_sha256: String },
+    Failed(Xmap10RetainedShadowRefusal),
+}
+
+#[derive(Clone, Debug)]
+struct Xmap10ShadowHistory {
+    allocation_generation: u64,
+    descriptor_sha256: String,
+    state: std::rc::Rc<std::cell::RefCell<Xmap10RetainedShadowState>>,
+}
+
+impl Xmap10ShadowHistory {
+    fn new(allocation_generation: u64, descriptor_sha256: String) -> Result<Self> {
+        if allocation_generation == 0 || !is_sha256(&descriptor_sha256) {
+            return Err("XMAP10 shadow allocation identity is invalid".into());
+        }
+        Ok(Self { allocation_generation, descriptor_sha256,
+            state: std::rc::Rc::new(std::cell::RefCell::new(Xmap10RetainedShadowState::Undefined(if allocation_generation == 1 {
+                Xmap10RetainedShadowRefusal::FirstAllocationUndefined
+            } else { Xmap10RetainedShadowRefusal::RecreatedUndefined }))) })
+    }
+
+    fn read(&self, consumer: &Xmap10ShadowHistoryFrame) -> std::result::Result<Xmap10RetainedShadowReadReceipt, Xmap10RetainedShadowRefusal> {
+        let state = self.state.borrow();
+        let (producer, write) = match &*state {
+            Xmap10RetainedShadowState::Undefined(reason) | Xmap10RetainedShadowState::Failed(reason) => return Err(reason.clone()),
+            Xmap10RetainedShadowState::Writing(_) => return Err(Xmap10RetainedShadowRefusal::WriteInProgress),
+            Xmap10RetainedShadowState::Complete { frame, write_sha256 } => (frame, write_sha256),
+        };
+        if producer.epoch != consumer.epoch { return Err(Xmap10RetainedShadowRefusal::HistoryReset); }
+        if producer.content_sha256 != consumer.content_sha256 { return Err(Xmap10RetainedShadowRefusal::ContentMismatch); }
+        if producer.sequence.checked_add(1) != Some(consumer.sequence) { return Err(Xmap10RetainedShadowRefusal::HistorySequenceMismatch); }
+        let read = Xmap10RetainedShadowReadReceipt { allocation_generation: self.allocation_generation,
+            allocation_descriptor_sha256: self.descriptor_sha256.clone(), producer: producer.clone(),
+            consumer: consumer.clone(), completed_write_sha256: write.clone(), age_in_render_frames: 1 };
+        read.validate().map_err(|_| Xmap10RetainedShadowRefusal::FailedHistory)?;
+        Ok(read)
+    }
+
+    fn begin(&mut self, frame: &Xmap10ShadowHistoryFrame) -> Result<()> {
+        frame.validate()?;
+        if matches!(*self.state.borrow(), Xmap10RetainedShadowState::Writing(_)) {
+            return Err(Xmap10RetainedShadowRefusal::WriteInProgress.into());
+        }
+        *self.state.borrow_mut() = Xmap10RetainedShadowState::Writing(frame.clone());
+        Ok(())
+    }
+
+    fn complete(&mut self, frame: &Xmap10ShadowHistoryFrame, write_sha256: String) -> Result<()> {
+        if *self.state.borrow() != Xmap10RetainedShadowState::Writing(frame.clone()) || !is_sha256(&write_sha256) {
+            self.fail(Xmap10RetainedShadowRefusal::FailedHistory);
+            return Err("XMAP10 screen write cannot publish an unmatched completion".into());
+        }
+        *self.state.borrow_mut() = Xmap10RetainedShadowState::Complete { frame: frame.clone(), write_sha256 };
+        Ok(())
+    }
+
+    fn fail(&mut self, reason: Xmap10RetainedShadowRefusal) {
+        *self.state.borrow_mut() = Xmap10RetainedShadowState::Failed(reason);
+    }
+}
+
+
+struct Xmap10ShadowWriteGuard {
+    state: std::rc::Rc<std::cell::RefCell<Xmap10RetainedShadowState>>,
+    finished: bool,
+}
+
+impl Xmap10ShadowWriteGuard {
+    fn new(history: &Xmap10ShadowHistory) -> Self { Self { state: history.state.clone(), finished: false } }
+    fn finish(mut self) { self.finished = true; }
+}
+
+impl Drop for Xmap10ShadowWriteGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            *self.state.borrow_mut() = Xmap10RetainedShadowState::Failed(Xmap10RetainedShadowRefusal::FailedHistory);
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1368,6 +1571,73 @@ mod native {
         last_frame_sequence: Option<u64>,
     }
 
+    pub struct NativeXmap10ScreenTargets {
+        final_target: NativeTarget,
+        intermediate_target: NativeTarget,
+        depth: D3dPtr<ID3D11DepthStencilView>,
+        device_identity: usize,
+        history: Xmap10ShadowHistory,
+    }
+
+    pub struct NativeXmap10RetainedShadowView<'a> {
+        raw_srv: *mut ID3D11ShaderResourceView,
+        receipt: Xmap10RetainedShadowReadReceipt,
+        device_identity: usize,
+        _owner: std::marker::PhantomData<&'a NativeXmap10ScreenTargets>,
+    }
+
+    impl NativeXmap10RetainedShadowView<'_> {
+        pub fn receipt(&self) -> &Xmap10RetainedShadowReadReceipt { &self.receipt }
+        pub(crate) fn as_raw(&self) -> *mut ID3D11ShaderResourceView { self.raw_srv }
+        pub(crate) fn device_identity(&self) -> usize { self.device_identity }
+    }
+
+    impl NativeXmap10ScreenTargets {
+        unsafe fn create(device: &D3dPtr<ID3D11Device>, plan: &ShadowScreenChainPlan, generation: u64) -> Result<Self> {
+            validate_screen_shadow_plan(plan)?;
+            let target = &plan.producer_and_final_target;
+            let descriptor_sha256 = Sha256::hex(&serde_json::to_vec(&(
+                target.width, target.height, target.dxgi_format, target.mip_levels,
+                target.bind_flags, 1_u32, 45_u32,
+            ))?);
+            let allocation_sha256 = Sha256::hex(&serde_json::to_vec(&(&descriptor_sha256, generation))?);
+            let history = Xmap10ShadowHistory::new(generation, descriptor_sha256)?;
+            let final_target = create_target(device, &allocation_sha256, target.width, target.height,
+                target.dxgi_format, "retained-shadow-producer")?;
+            let intermediate_target = create_target(device, &allocation_sha256, target.width, target.height,
+                target.dxgi_format, "retained-shadow-intermediate")?;
+            let depth_desc = D3D11_TEXTURE2D_DESC { Width: target.width, Height: target.height,
+                MipLevels: 1, ArraySize: 1, Format: 45, SampleDesc: winapi::shared::dxgitype::DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                Usage: D3D11_USAGE_DEFAULT, BindFlags: D3D11_BIND_DEPTH_STENCIL, CPUAccessFlags: 0, MiscFlags: 0 };
+            let mut texture = ptr::null_mut();
+            hr((*device.as_raw()).CreateTexture2D(&depth_desc, ptr::null(), &mut texture), "CreateTexture2D(screen shadow depth)")?;
+            let texture = D3dPtr::from_raw(texture, "screen shadow depth texture")?;
+            let mut depth = ptr::null_mut();
+            hr((*device.as_raw()).CreateDepthStencilView(texture.as_raw() as *mut _, ptr::null(), &mut depth), "CreateDepthStencilView(screen shadow)")?;
+            Ok(Self { final_target, intermediate_target, depth: D3dPtr::from_raw(depth, "screen shadow depth")?,
+                device_identity: device.as_raw() as usize, history })
+        }
+
+        pub fn retained_before_frame(&self, frame: &Xmap10ShadowHistoryFrame)
+            -> std::result::Result<NativeXmap10RetainedShadowView<'_>, Xmap10RetainedShadowRefusal> {
+            let receipt = self.history.read(frame)?;
+            Ok(NativeXmap10RetainedShadowView { raw_srv: self.final_target.srv.as_raw(), receipt,
+                device_identity: self.device_identity, _owner: std::marker::PhantomData })
+        }
+
+        unsafe fn begin_write(&mut self, context: *mut ID3D11DeviceContext, frame: &Xmap10ShadowHistoryFrame) -> Result<()> {
+            self.history.begin(frame)?;
+            let nulls = [ptr::null_mut(); 16];
+            (*context).PSSetShaderResources(0, 16, nulls.as_ptr());
+            (*context).VSSetShaderResources(0, 16, nulls.as_ptr());
+            let rtv = self.final_target.rtv.as_raw();
+            (*context).OMSetRenderTargets(1, &rtv, self.depth.as_raw());
+            (*context).ClearRenderTargetView(rtv, &XMAP10_SCREEN_CLEAR_BITS.map(f32::from_bits));
+            (*context).ClearDepthStencilView(self.depth.as_raw(), D3D11_CLEAR_DEPTH, 1.0, 0);
+            Ok(())
+        }
+    }
+
     pub struct NativeXmap10ScreenShadowHandoff {
         device: D3dPtr<ID3D11Device>,
         terrain_unlit: NativeProgram,
@@ -1381,8 +1651,7 @@ mod native {
         static_textures: BTreeMap<u32, crate::xmap04_d3d_handoff::NativeXmap04UnderwaterTexture>,
         terrain_samplers: BTreeMap<u32, D3dPtr<ID3D11SamplerState>>,
         blur_sampler: D3dPtr<ID3D11SamplerState>,
-        final_target: NativeTarget,
-        intermediate_target: NativeTarget,
+        targets: NativeXmap10ScreenTargets,
         opaque_blend: D3dPtr<ID3D11BlendState>,
         depth_disabled: D3dPtr<ID3D11DepthStencilState>,
         terrain_rasterizer: D3dPtr<ID3D11RasterizerState>,
@@ -1390,7 +1659,7 @@ mod native {
         plan: ShadowScreenChainPlan,
         plan_sha256: String,
         content_closure_sha256: String,
-        terrain_frame_sha256: String,
+        terrain_program_sha256: String,
         receipt: Option<Xmap10ScreenShadowExecutionReceipt>,
     }
 
@@ -2887,30 +3156,16 @@ mod native {
             device: *mut ID3D11Device,
             resolver: &GameFileResolver,
             terrain: &PreparedTerrainFrame,
-            xmap10: &PreparedXmap10Frame,
             plan: ShadowScreenChainPlan,
+            allocation_generation: u64,
         ) -> Result<Self> {
             terrain.validate()?;
-            xmap10.validate()?;
             if device.is_null() || !resolver.has_content_admission() {
                 return Err(
                     "XMAP10 screen shadow requires a live device and admission-bound VFS".into(),
                 );
             }
             validate_screen_shadow_plan(&plan)?;
-            for root in ["gfx/fx/pdxmap.shader", "gfx/fx/shadowblur.shader"] {
-                if !xmap10
-                    .content
-                    .shader_translation_units
-                    .iter()
-                    .any(|unit| unit.root_path == root)
-                {
-                    return Err(format!(
-                        "XMAP10 screen shadow shader {root} is outside the admitted content closure"
-                    )
-                    .into());
-                }
-            }
             (*(device as *mut IUnknown)).AddRef();
             let device = D3dPtr::from_raw(device, "XMAP10 screen-shadow device")?;
             let plan_sha256 = Sha256::hex(&serde_json::to_vec(&plan)?);
@@ -2954,22 +3209,7 @@ mod native {
                     );
                 }
             }
-            let final_target = create_target(
-                &device,
-                &plan_sha256,
-                plan.producer_and_final_target.width,
-                plan.producer_and_final_target.height,
-                plan.producer_and_final_target.dxgi_format,
-                &plan.producer_and_final_target.stable_resource_id,
-            )?;
-            let intermediate_target = create_target(
-                &device,
-                &plan_sha256,
-                plan.blur_intermediate_target.width,
-                plan.blur_intermediate_target.height,
-                plan.blur_intermediate_target.dxgi_format,
-                &plan.blur_intermediate_target.stable_resource_id,
-            )?;
+            let targets = NativeXmap10ScreenTargets::create(&device, &plan, allocation_generation)?;
             let blur_sampler = create_shadow_blur_sampler(device.as_raw())?;
             let terrain_rasterizer = create_terrain_rasterizer(device.as_raw())?;
             let opaque_blend = create_blend(&device, false)?;
@@ -2988,16 +3228,15 @@ mod native {
                 static_textures,
                 terrain_samplers,
                 blur_sampler,
-                final_target,
-                intermediate_target,
+                targets,
                 opaque_blend,
                 depth_disabled,
                 terrain_rasterizer,
                 fullscreen_rasterizer,
                 plan,
                 plan_sha256,
-                content_closure_sha256: xmap10.content.deterministic_sha256.clone(),
-                terrain_frame_sha256: terrain.deterministic_sha256.clone(),
+                content_closure_sha256: terrain.program.deterministic_sha256.clone(),
+                terrain_program_sha256: terrain.program.deterministic_sha256.clone(),
                 receipt: None,
             })
         }
@@ -3074,7 +3313,7 @@ mod native {
                 MinDepth: 0.0,
                 MaxDepth: 1.0,
             };
-            let final_rtv = self.final_target.rtv.as_raw();
+            let final_rtv = self.targets.final_target.rtv.as_raw();
             (*context).OMSetRenderTargets(1, &final_rtv, ptr::null_mut());
             (*context).RSSetViewports(1, &viewport);
             (*context).RSSetScissorRects(0, ptr::null());
@@ -3149,8 +3388,8 @@ mod native {
             self.draw_shadow_blur(
                 context,
                 &self.blur_horizontal,
-                &self.final_target,
-                &self.intermediate_target,
+                &self.targets.final_target,
+                &self.targets.intermediate_target,
                 horizontal_bits,
             )?;
             let vertical_bits = self.plan.passes[2]
@@ -3159,8 +3398,8 @@ mod native {
             self.draw_shadow_blur(
                 context,
                 &self.blur_vertical,
-                &self.intermediate_target,
-                &self.final_target,
+                &self.targets.intermediate_target,
+                &self.targets.final_target,
                 vertical_bits,
             )?;
             (*context).OMSetRenderTargets(0, ptr::null(), ptr::null_mut());
@@ -3390,7 +3629,7 @@ mod native {
             receipt.validate()?;
             Ok(NativeXmap10ShaderResourceView {
                 binding: receipt.binding.clone(),
-                raw_srv: self.final_target.srv.as_raw(),
+                raw_srv: self.targets.final_target.srv.as_raw(),
                 device_identity: self.device.as_raw() as usize,
                 shader_register: None,
                 _owner: std::marker::PhantomData,
@@ -4721,6 +4960,8 @@ mod native {
 pub use native::exported_final_rtv_resource_identity_sha256 as xmap10_final_rtv_resource_identity_sha256;
 #[cfg(windows)]
 pub use native::ExportedNativeXmap10PostFxExecutor as NativeXmap10PostFxExecutor;
+#[cfg(windows)]
+pub use native::{NativeXmap10ScreenTargets, NativeXmap10RetainedShadowView};
 #[cfg(windows)]
 pub use native::ExportedNativeXmap10ScreenShadowHandoff as NativeXmap10ScreenShadowHandoff;
 #[cfg(windows)]

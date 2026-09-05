@@ -2240,6 +2240,7 @@ BlendState BlendState { BlendEnable = yes SourceBlend = src_alpha DestBlend = in
             .unwrap();
         assert!(!frame.strait_draws.is_empty());
         let viewer = crate::ViewerOwnedMapState {
+            sky_enabled: true,
             viewport_width: 64,
             viewport_height: 64,
             camera: Some(camera),

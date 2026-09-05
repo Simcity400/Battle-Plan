@@ -25,6 +25,7 @@ pub struct Xmap15NativeRowReceipt {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Xmap15NativeExecutionReceipt {
     pub arrow_refusals: Vec<crate::arrow_submission_order::ArrowOrderRefusal>,
+    pub map_arrow_pass: u8,
     pub prepared_frame_sha256: String,
     pub assigned_stage_name: String,
     pub assigned_operation_name: String,
@@ -67,7 +68,8 @@ impl Xmap15NativeExecutionReceipt {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.prepared_frame_sha256.len() != 64
+        if !matches!(self.map_arrow_pass, 0 | 3 | 1)
+            || self.prepared_frame_sha256.len() != 64
             || self.assigned_stage_name != crate::XMAP15_ASSIGNED_STAGE_NAME
             || self.assigned_operation_name != crate::XMAP15_ASSIGNED_OPERATION_NAME
             || self.assigned_stage_assignment_sha256.len() != 64
@@ -159,6 +161,7 @@ mod native {
     pub struct NativeXmap15Handoff {
         prepared_frame_sha256: String,
         plan_programs: BTreeMap<String, Program>,
+        light_programs: BTreeMap<String, std::result::Result<crate::map_arrow_light_depth::MapArrowLightProgram, String>>,
         movement_program: Option<Program>,
         plan_layout: Option<D3dPtr<ID3D11InputLayout>>,
         movement_layout: Option<D3dPtr<ID3D11InputLayout>>,
@@ -170,6 +173,7 @@ mod native {
         blend: D3dPtr<ID3D11BlendState>,
         normal_depth: D3dPtr<ID3D11DepthStencilState>,
         see_through_depth: D3dPtr<ID3D11DepthStencilState>,
+        late_depths: BTreeMap<String, D3dPtr<ID3D11DepthStencilState>>,
         depth_write: D3dPtr<ID3D11DepthStencilState>,
         depth_test_only: D3dPtr<ID3D11DepthStencilState>,
         no_depth: D3dPtr<ID3D11DepthStencilState>,
@@ -183,6 +187,7 @@ mod native {
     where
         S: NativeXmap16SceneConstantBufferView,
     {
+        pub pass: crate::Xmap16SupplyArrowPass,
         pub context: *mut ID3D11DeviceContext,
         pub target: &'a dyn NativeXmap16MainSceneTargetView,
         pub target_sha256: &'a str,
@@ -216,24 +221,12 @@ mod native {
                 0,
             )?;
             let defines = crate::engine_map_shader_defines(constants);
-            let mut effects = frame
-                .plan_definitions
-                .iter()
-                .map(|definition| definition.technique.clone())
-                .collect::<BTreeSet<_>>();
-            for row in &frame.portable.ordered_rows {
-                if let Xmap15PreparedRow::Plan { semantic, .. } = row {
-                    if semantic.see_through {
-                        effects.insert(see_through_effect(
-                            frame.plan_definition(&semantic.resolved_definition_name)?,
-                        )?);
-                    }
-                }
-            }
+            let effects = crate::production_features::xmap15::xmap15_scene_effects(resolver, &frame.plan_definitions)?;
             crate::production_features::xmap15::validate_xmap15_plan_effect_contracts(
                 resolver, &effects,
             )?;
             let mut compiled = BTreeMap::new();
+            let mut light_programs = BTreeMap::new();
             let mut first_plan_vs = None;
             let mut required_external_resources = BTreeSet::new();
             for effect in effects {
@@ -241,6 +234,9 @@ mod native {
                     resolver, &effect, &defines,
                 )?;
                 validate_plan_program_reflection(&stage.vertex_bytecode, &stage.pixel_bytecode)?;
+                if frame.plan_definitions.iter().any(|d| d.draw_last && d.draw_shadows && d.technique == effect) {
+                    light_programs.insert(effect.clone(), crate::map_arrow_light_depth::MapArrowLightProgram::create(device, resolver, &effect, &defines, &stage.pixel_bytecode).map_err(|e| e.to_string()));
+                }
                 collect_plan_external_resources(
                     &stage.pixel_bytecode,
                     &mut required_external_resources,
@@ -302,9 +298,10 @@ mod native {
             let plan_samplers = create_plan_samplers(device)?;
             let movement_samplers = create_movement_samplers(device)?;
 
-            Ok(Self {
+            let mut handoff = Self {
                 prepared_frame_sha256: frame.portable.deterministic_sha256.clone(),
                 plan_programs: compiled,
+                light_programs,
                 movement_program,
                 plan_layout,
                 movement_layout,
@@ -316,6 +313,7 @@ mod native {
                 blend,
                 normal_depth,
                 see_through_depth,
+                late_depths: BTreeMap::new(),
                 depth_write,
                 depth_test_only,
                 no_depth,
@@ -323,11 +321,75 @@ mod native {
                 plan_samplers,
                 movement_samplers,
                 required_external_resources: required_external_resources.into_iter().collect(),
-            })
+            };
+            for definition in &frame.plan_definitions {
+                let (base, _) = plan_depth_state(&handoff, &definition.technique);
+                let mut desc = std::mem::zeroed::<D3D11_DEPTH_STENCIL_DESC>();
+                (*base).GetDesc(&mut desc);
+                desc.StencilReadMask = 2;
+                desc.StencilWriteMask = 2;
+                let mut raw = ptr::null_mut();
+                native_d3d11_hr((*device).CreateDepthStencilState(&desc, &mut raw), "CreateDepthStencilState(XMAP15 late)")?;
+                handoff.late_depths.insert(definition.technique.clone(), D3dPtr::from_raw(raw, "XMAP15 late depth")?);
+            }
+            Ok(handoff)
         }
 
         pub fn prepared_frame_sha256(&self) -> &str {
             &self.prepared_frame_sha256
+        }
+
+        pub unsafe fn light_depth_caster<'a>(&'a self, frame: &PreparedXmap15Frame,
+            scene: &'a crate::NativeMapArrowLightScene,
+            point: &'a NativeXmap16ExternalConstantBufferView,
+            external: &'a [NativeXmap16ExternalResourceView],
+            retained: std::result::Result<&'a crate::xmap10_d3d_handoff::NativeXmap10RetainedShadowView<'a>, crate::xmap10_d3d_handoff::Xmap10RetainedShadowRefusal>) -> Result<crate::NativeMapArrowLightCaster<'a>> {
+            use crate::map_arrow_light_depth::{MapArrowLightCommand, NativeMapArrowLightCaster};
+            frame.validate()?;
+            if self.prepared_frame_sha256 != frame.portable.deterministic_sha256 || self.rows.len() != frame.portable.ordered_rows.len() {
+                return Err("XMAP15 light caster differs from the retained frame".into());
+            }
+            let mut commands = Vec::new();
+            let mut refusals = Vec::new();
+            for (row, native) in frame.portable.ordered_rows.iter().zip(&self.rows) {
+                let (Xmap15PreparedRow::Plan { semantic, .. }, RowGeometry::Plan { buffer, vertex_count, total_length_f32_bits, wrap_offset_world }) = (row, &native.geometry) else { continue; };
+                let definition = frame.plan_definition(&semantic.resolved_definition_name)?;
+                if !semantic.visible || !definition.draw_last || !definition.draw_shadows { continue; }
+                let light_program = self.light_programs.get(&definition.technique).ok_or("XMAP15 light program vanished")?
+                    .as_ref().map_err(|e| format!("XMAP15 {}: {e}", definition.name))?;
+                let program = self.plan_programs.get(&definition.technique).ok_or("XMAP15 normal program vanished")?;
+                if light_program.retained_t2_required {
+                    if let Err(reason) = &retained {
+                        for outer in [false, true] {
+                            refusals.push(crate::map_arrow_light_depth::MapArrowLightDrawRefusal {
+                                owner_packet: "XMAP15".into(), prepared_frame_sha256: self.prepared_frame_sha256.clone(),
+                                row_ordinal: semantic.final_engine_draw_ordinal, outer, reason: reason.clone() });
+                        }
+                        continue;
+                    }
+                }
+                let retained_view = retained.as_ref().ok().copied();
+                let mut srvs = light_program.external_views(external, retained_view, scene)?;
+                let textures = self.plan_textures.get(&semantic.resolved_definition_name).ok_or("XMAP15 light textures vanished")?;
+                srvs[0] = textures.masks.get(semantic.texture_variant as usize).ok_or("XMAP15 light mask variant unavailable")?.view.as_raw();
+                srvs[1] = textures.patterns.get(semantic.texture_variant as usize).ok_or("XMAP15 light pattern variant unavailable")?.view.as_raw();
+                let (depth, stencil) = plan_depth_state(self, &definition.technique);
+                for outer in [false, true] {
+                    let mut cb3 = plan_cb3(definition, semantic, *total_length_f32_bits, *wrap_offset_world,
+                        scene.application_elapsed_seconds, frame.portable.selected_plan.as_ref() == Some(&semantic.key), outer)?;
+                    cb3[96..104].fill(0);
+                    let submission = crate::MapArrowLightDraw { owner_packet: "XMAP15".into(), prepared_frame_sha256: self.prepared_frame_sha256.clone(),
+                        row_ordinal: semantic.final_engine_draw_ordinal, outer, geometry_sha256: native.geometry_sha256.clone(),
+                        scene_cb0_sha256: scene.payload_sha256.clone(), cb3_sha256: Sha256::hex(&cb3), pixel_bytecode_sha256: light_program.pixel_bytecode_sha256.clone(),
+                    retained_shadow: if light_program.retained_t2_required { retained_view.map(|v| v.receipt().clone()) } else { None },
+                        vertex_count: *vertex_count, first_vertex: 0 };
+                    commands.push(MapArrowLightCommand { submission, vertex: program.vertex.as_raw(), pixel: light_program.pixel.as_raw(),
+                        layout: self.plan_layout.as_ref().ok_or("XMAP15 light input layout vanished")?.as_raw(), vertices: buffer.as_raw(), stride: 32,
+                        depth, stencil, rasterizer: self.rasterizer.as_raw(), srvs,
+                        samplers: self.plan_samplers.iter().map(|(slot,s)| (*slot,s.as_raw())).collect(), cb3_buffer: self.cb3.as_raw(), cb3: cb3.to_vec() });
+                }
+            }
+            NativeMapArrowLightCaster::new("XMAP15", scene, point, commands, refusals)
         }
 
         pub unsafe fn draw<S>(
@@ -377,7 +439,8 @@ mod native {
             }
             let mut scene_cb0 = inputs.scene_cb0.raw_buffer();
             let mut point_cb2 = inputs.point_lights_cb2.as_raw();
-            let mut receipts = Vec::with_capacity(self.rows.len());
+            let mut receipts: Vec<Xmap15NativeRowReceipt> = Vec::with_capacity(self.rows.len());
+            let pass = inputs.pass.engine_mode();
             for &row_index in inputs.row_indices {
                 let row = &inputs.prepared_frame.portable.ordered_rows[row_index];
                 let native = &self.rows[row_index];
@@ -394,11 +457,13 @@ mod native {
                         let definition = inputs
                             .prepared_frame
                             .plan_definition(&semantic.resolved_definition_name)?;
-                        let effect = if semantic.see_through {
-                            see_through_effect(definition)?
+                        let effect = if pass == 3 {
+                            format!("{}Seethrough", definition.technique)
                         } else {
                             definition.technique.clone()
                         };
+                        if pass == 3 && !self.plan_programs.contains_key(&effect) { continue; }
+                        let pass_enabled = inputs.pass.draws_definition(definition.draw_last);
                         let program = self
                             .plan_programs
                             .get(&effect)
@@ -416,6 +481,9 @@ mod native {
                         let offset = 0u32;
                         (*context).IASetVertexBuffers(0, 1, &mut raw, &stride, &offset);
                         bind_plan_state(self, context, &effect);
+                        if pass == 1 {
+                            (*context).OMSetDepthStencilState(self.late_depths.get(&effect).ok_or("XMAP15 late depth vanished")?.as_raw(), 2);
+                        }
                         bind_plan_resources(
                             self,
                             context,
@@ -434,9 +502,9 @@ mod native {
                         let mut constant_hashes = Vec::new();
                         let mut draws = 0u32;
                         let mut submitted_vertices = 0u32;
-                        if semantic.visible {
+                        if semantic.visible && pass_enabled {
                             for outer in [inputs.outer_pass] {
-                                let bytes = plan_cb3(
+                                let mut bytes = plan_cb3(
                                     definition,
                                     semantic,
                                     *total_length_f32_bits,
@@ -445,6 +513,7 @@ mod native {
                                     selected,
                                     outer,
                                 )?;
+                                inputs.pass.apply_cb3_lighting(&mut bytes)?;
                                 (*context).UpdateSubresource(
                                     self.cb3.as_raw() as *mut _,
                                     0,
@@ -483,6 +552,7 @@ mod native {
                             index_buffer,
                         },
                     ) => {
+                        if pass != 0 { continue; }
                         let program = self
                             .movement_program
                             .as_ref()
@@ -580,6 +650,7 @@ mod native {
             (*context).PSSetShaderResources(0, 11, null_srvs.as_mut_ptr());
             let mut receipt = Xmap15NativeExecutionReceipt {
                 arrow_refusals: Vec::new(),
+                map_arrow_pass: pass,
                 prepared_frame_sha256: inputs.prepared_frame.portable.deterministic_sha256.clone(),
                 assigned_stage_name: inputs.prepared_frame.assigned_stage.stage_name.clone(),
                 assigned_operation_name: inputs
@@ -1229,12 +1300,6 @@ mod native {
         Ok(out)
     }
 
-    fn see_through_effect(definition: &PreparedXmap15PlanDefinition) -> Result<String> {
-        crate::production_features::xmap15::xmap15_see_through_effect(&definition.technique)
-            .map(str::to_string)
-            .map_err(|error| format!("XMAP15 definition {}: {error}", definition.name).into())
-    }
-
     fn bind_program(context: *mut ID3D11DeviceContext, program: &Program) {
         unsafe {
             (*context).VSSetShader(program.vertex.as_raw(), ptr::null_mut(), 0);
@@ -1247,15 +1312,7 @@ mod native {
         context: *mut ID3D11DeviceContext,
         effect: &str,
     ) {
-        let (state, stencil) = match effect {
-            "MapArrowNoHeadSeethrough" => (handoff.see_through_depth.as_raw(), 8),
-            "MapArrowNoHeadWidthDepthSeethrough" => (handoff.see_through_depth.as_raw(), 8),
-            "MapArrowDefaultWithDepth" | "MapArrowNoHeadWidthDepth" => {
-                (handoff.depth_write.as_raw(), 0)
-            }
-            "MapArrowDefaultWithDepthTestOnly" => (handoff.depth_test_only.as_raw(), 1),
-            _ => (handoff.normal_depth.as_raw(), 1),
-        };
+        let (state, stencil) = plan_depth_state(handoff, effect);
         (*context).OMSetDepthStencilState(state, stencil);
         let blend_factor = [0.0f32; 4];
         let blend = if effect.ends_with("Seethrough") {
@@ -1264,6 +1321,18 @@ mod native {
             ptr::null_mut()
         };
         (*context).OMSetBlendState(blend, &blend_factor, u32::MAX);
+    }
+
+    fn plan_depth_state(handoff: &NativeXmap15Handoff, effect: &str) -> (*mut ID3D11DepthStencilState, u32) {
+        match effect {
+            "MapArrowNoHeadSeethrough" => (handoff.see_through_depth.as_raw(), 8),
+            "MapArrowNoHeadWidthDepthSeethrough" => (handoff.see_through_depth.as_raw(), 8),
+            "MapArrowDefaultWithDepth" | "MapArrowNoHeadWidthDepth" => {
+                (handoff.depth_write.as_raw(), 0)
+            }
+            "MapArrowDefaultWithDepthTestOnly" => (handoff.depth_test_only.as_raw(), 1),
+            _ => (handoff.normal_depth.as_raw(), 1),
+        }
     }
 
     unsafe fn bind_plan_resources(
@@ -1647,6 +1716,7 @@ mod tests {
     fn execution_receipt_distinguishes_refused_selection_from_measured_empty() {
         let mut receipt = Xmap15NativeExecutionReceipt {
                 arrow_refusals: Vec::new(),
+            map_arrow_pass: 0,
             prepared_frame_sha256: "a".repeat(64),
             assigned_stage_name: crate::XMAP15_ASSIGNED_STAGE_NAME.into(),
             assigned_operation_name: crate::XMAP15_ASSIGNED_OPERATION_NAME.into(),

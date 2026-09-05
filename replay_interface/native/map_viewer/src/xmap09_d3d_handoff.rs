@@ -45,6 +45,7 @@ pub struct Xmap09LightDepthExecutionReceipt {
     pub target_descriptor_sha256: String,
     pub ordered_registered_caster_sha256: Vec<String>,
     pub ordered_submission_sha256: Vec<String>,
+    pub refused_map_arrow_draws: Vec<crate::map_arrow_light_depth::MapArrowLightDrawRefusal>,
     pub cleared_depth_f32_bits: Option<u32>,
     pub binding: Option<Xmap09NativeShaderResourceBinding>,
     pub deterministic_sha256: String,
@@ -76,26 +77,29 @@ impl Xmap09LightDepthExecutionReceipt {
         {
             validate_sha256(identity, "execution ordered identity")?;
         }
-        match (
-            self.active,
-            self.cleared_depth_f32_bits,
-            self.binding.as_ref(),
-        ) {
-            (true, Some(bits), Some(binding))
-                if bits == 1.0f32.to_bits()
-                    && binding.symbol == "LightDepthMap"
-                    && binding.owner_packet == "XMAP09"
-                    && binding.camera_frame_sha256 == self.camera_frame_sha256
-                    && binding.replay_frame_identity_sha256
-                        == self.replay_frame_identity_sha256
-                    && binding.descriptor_sha256 == self.target_descriptor_sha256 =>
-            {
-                validate_sha256(&binding.resource_sha256, "executed light depth")?;
+        if self.cleared_depth_f32_bits != Some(1.0f32.to_bits())
+            || (!self.active && (!self.ordered_registered_caster_sha256.is_empty()
+                || !self.ordered_submission_sha256.is_empty() || !self.refused_map_arrow_draws.is_empty())) {
+            return Err("XMAP09 light-depth receipt omits unconditional clear or has inactive casters".into());
+        }
+        let mut refused = std::collections::BTreeSet::new();
+        for row in &self.refused_map_arrow_draws {
+            validate_sha256(&row.prepared_frame_sha256, "refused arrow frame")?;
+            if !matches!(row.owner_packet.as_str(), "XMAP15" | "XMAP16")
+                || !refused.insert((&row.owner_packet, row.row_ordinal, row.outer)) {
+                return Err("XMAP09 refused arrow census is invalid".into());
             }
-            (false, None, None)
-                if self.ordered_registered_caster_sha256.is_empty()
-                    && self.ordered_submission_sha256.is_empty() => {}
-            _ => return Err("XMAP09 execution active/inactive target law mismatch".into()),
+        }
+        match self.binding.as_ref() {
+            Some(binding) if self.refused_map_arrow_draws.is_empty()
+                && binding.symbol == "LightDepthMap" && binding.owner_packet == "XMAP09"
+                && binding.camera_frame_sha256 == self.camera_frame_sha256
+                && binding.replay_frame_identity_sha256 == self.replay_frame_identity_sha256
+                && binding.descriptor_sha256 == self.target_descriptor_sha256 => {
+                    validate_sha256(&binding.resource_sha256, "executed light depth")?;
+                }
+            None if !self.refused_map_arrow_draws.is_empty() => {}
+            _ => return Err("XMAP09 light-depth binding does not match actual clear/caster completeness".into()),
         }
         validate_sha256(&self.deterministic_sha256, "execution receipt")?;
         if self.deterministic_sha256 != light_depth_execution_digest(self)? {
@@ -269,6 +273,7 @@ pub trait NativeXmap09LightDepthCaster {
     fn camera_frame_sha256(&self) -> &str;
     fn replay_frame_identity_sha256(&self) -> &str;
     fn registered_submission_sha256s(&self) -> &[String];
+    fn refused_map_arrow_draws(&self) -> &[crate::map_arrow_light_depth::MapArrowLightDrawRefusal] { &[] }
 
     unsafe fn draw_light_depth_submission(
         &mut self,
@@ -409,14 +414,12 @@ impl NativeXmap09LightingHandoff {
             .light_depth_execution
             .as_ref()
             .ok_or("XMAP09 light-depth pass has not executed")?;
-        if !execution.active {
-            return Err("XMAP09 inactive light-depth frame has no sampled output".into());
-        }
+        execution.validate()?;
         Ok(NativeXmap09ShaderResourceView {
             binding: execution
                 .binding
                 .clone()
-                .ok_or("XMAP09 active light-depth receipt omitted its binding")?,
+                .ok_or("XMAP09 light-depth output is incomplete because a caster was refused")?,
             raw_srv: self.light_depth_target.shader_view.as_raw(),
             shader_register: None,
             _owner: std::marker::PhantomData,
@@ -432,6 +435,9 @@ impl NativeXmap09LightingHandoff {
         validate_context_device(self.device.as_raw(), context)?;
         let projection_sha256 = Sha256::hex(&serde_json::to_vec(projection)?);
         let plan = self.frame.plan_shadow_consumer(projection)?;
+        self.light_depth_execution = None;
+        self.receipt.light_depth_execution = None;
+        let mut refused_map_arrow_draws = Vec::new();
         let mut registration_by_submission = BTreeMap::new();
         let mut ordered_registered_caster_sha256 = Vec::with_capacity(casters.len());
         let mut registered_owners = BTreeSet::new();
@@ -449,18 +455,23 @@ impl NativeXmap09LightingHandoff {
             if caster.owner_packet().trim().is_empty()
                 || caster.camera_frame_sha256() != self.frame.camera_frame_sha256
                 || caster.replay_frame_identity_sha256() != self.frame.replay_frame_identity_sha256
-                || caster.registered_submission_sha256s().is_empty()
+                || (caster.registered_submission_sha256s().is_empty() && caster.refused_map_arrow_draws().is_empty())
                 || prior_owner_rank.is_some_and(|prior| owner_rank <= prior)
                 || !registered_owners.insert(caster.owner_packet().to_owned())
             {
                 return Err("XMAP09 caster registration has an invalid/duplicate owner, empty census, or another camera frame".into());
             }
+            if caster.refused_map_arrow_draws().iter().any(|row| row.owner_packet != caster.owner_packet()) {
+                return Err("XMAP09 refused arrow belongs to another caster owner".into());
+            }
+            refused_map_arrow_draws.extend_from_slice(caster.refused_map_arrow_draws());
             prior_owner_rank = Some(owner_rank);
             let registration_sha256 = Sha256::hex(&serde_json::to_vec(&(
                 caster.owner_packet(),
                 caster.camera_frame_sha256(),
                 caster.replay_frame_identity_sha256(),
                 caster.registered_submission_sha256s(),
+                caster.refused_map_arrow_draws(),
             ))?);
             ordered_registered_caster_sha256.push(registration_sha256);
             for submission_sha256 in caster.registered_submission_sha256s() {
@@ -495,12 +506,6 @@ impl NativeXmap09LightingHandoff {
             return Err("XMAP09 registered caster census differs from the exact projection".into());
         }
 
-        let (active, cleared_depth_f32_bits, mut binding) = if plan.is_none() {
-            if !projection.submissions.is_empty() || !casters.is_empty() {
-                return Err("XMAP09 inactive pass contains casters or submissions".into());
-            }
-            (false, None, None)
-        } else {
             bind_and_clear_light_depth(
                 context,
                 self.light_depth_target.depth_view.as_raw(),
@@ -515,6 +520,13 @@ impl NativeXmap09LightingHandoff {
                     .light_depth_target
                     .height,
             )?;
+        let (active, cleared_depth_f32_bits, mut binding) = if plan.is_none() {
+            if !projection.submissions.is_empty() || !casters.is_empty() {
+                return Err("XMAP09 inactive pass contains casters or submissions".into());
+            }
+            (*context).OMSetRenderTargets(0, std::ptr::null(), std::ptr::null_mut());
+            (false, Some(1.0f32.to_bits()), Some(self.light_depth_target.binding.clone()))
+        } else {
             let mut draw_error = None;
             for (submission, submission_sha256) in projection
                 .submissions
@@ -543,6 +555,8 @@ impl NativeXmap09LightingHandoff {
                 Some(self.light_depth_target.binding.clone()),
             )
         };
+        if !refused_map_arrow_draws.is_empty() { binding = None; }
+        crate::d3d11_device::native_d3d11_check_void_upload_device(&self.device, "XMAP09 clear and caster writes")?;
         if let Some(binding) = binding.as_mut() {
             binding.resource_sha256 = Sha256::hex(&serde_json::to_vec(&(
                 &self.frame.input_payload_sha256,
@@ -569,6 +583,7 @@ impl NativeXmap09LightingHandoff {
             target_descriptor_sha256: self.light_depth_target.binding.descriptor_sha256.clone(),
             ordered_registered_caster_sha256,
             ordered_submission_sha256,
+            refused_map_arrow_draws,
             cleared_depth_f32_bits,
             binding,
             deterministic_sha256: String::new(),
@@ -862,6 +877,9 @@ unsafe fn bind_and_clear_light_depth(
         MaxDepth: 1.0,
     };
     (*context).RSSetViewports(1, &viewport);
+    let null_srvs = [std::ptr::null_mut(); 16];
+    (*context).PSSetShaderResources(0, 16, null_srvs.as_ptr());
+    (*context).VSSetShaderResources(0, 16, null_srvs.as_ptr());
     (*context).OMSetRenderTargets(0, std::ptr::null(), depth_view);
     (*context).ClearDepthStencilView(depth_view, winapi::um::d3d11::D3D11_CLEAR_DEPTH, 1.0, 0);
     Ok(())
@@ -931,7 +949,7 @@ mod tests {
     }
 
     #[test]
-    fn inactive_execution_receipt_is_typed_and_has_no_fake_binding() {
+    fn inactive_execution_requires_real_clear_and_complete_binding() {
         let mut receipt = Xmap09LightDepthExecutionReceipt {
             input_payload_sha256: "1".repeat(64),
             prepared_frame_sha256: "2".repeat(64),
@@ -949,14 +967,19 @@ mod tests {
             target_descriptor_sha256: "6".repeat(64),
             ordered_registered_caster_sha256: Vec::new(),
             ordered_submission_sha256: Vec::new(),
-            cleared_depth_f32_bits: None,
-            binding: None,
+            refused_map_arrow_draws: Vec::new(),
+            cleared_depth_f32_bits: Some(1.0f32.to_bits()),
+            binding: Some(Xmap09NativeShaderResourceBinding {
+                symbol: "LightDepthMap".into(), owner_packet: "XMAP09".into(),
+                camera_frame_sha256: "3".repeat(64), replay_frame_identity_sha256: "7".repeat(64),
+                stable_resource_id: "test-depth".into(), resource_sha256: "8".repeat(64), descriptor_sha256: "6".repeat(64),
+            }),
             deterministic_sha256: String::new(),
         };
         receipt.deterministic_sha256 = light_depth_execution_digest(&receipt).unwrap();
         receipt.validate().unwrap();
         let mut forged = receipt;
-        forged.cleared_depth_f32_bits = Some(1.0f32.to_bits());
+        forged.cleared_depth_f32_bits = None;
         forged.deterministic_sha256 = light_depth_execution_digest(&forged).unwrap();
         assert!(forged.validate().is_err());
     }

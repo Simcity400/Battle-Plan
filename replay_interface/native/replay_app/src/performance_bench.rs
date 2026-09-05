@@ -243,6 +243,7 @@ pub(crate) fn run(
         map_viewer::DEFAULT_VIEWER_CAMERA_SPEED_SETTING,
     )?;
     let mut viewer = map_viewer::ViewerOwnedMapState {
+        sky_enabled: true,
         viewport_width: REQUIRED_WIDTH,
         viewport_height: REQUIRED_HEIGHT,
         input_revision: camera.input_revision,
@@ -1381,6 +1382,7 @@ mod tests {
     #[test]
     fn recording_benchmark_warmups_and_samples_advance_route_equivalent_viewer_clock() {
         let mut viewer = map_viewer::ViewerOwnedMapState {
+            sky_enabled: true,
             viewport_width: REQUIRED_WIDTH,
             viewport_height: REQUIRED_HEIGHT,
             input_revision: 0,
@@ -1421,7 +1423,7 @@ mod tests {
         let (topology, schedule) =
             crate::validate::product_foundation_assigned_stage_plan().unwrap();
         assert_eq!(topology.ordered_stages().len(), 22);
-        assert_eq!(topology.ordered_edges().len(), 18);
+        assert_eq!(topology.ordered_edges().len(), 19);
         schedule
             .require(
                 map_viewer::XMAP06_EARLY_STAGE_NAME,

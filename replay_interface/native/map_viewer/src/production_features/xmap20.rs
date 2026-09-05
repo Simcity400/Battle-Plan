@@ -795,6 +795,7 @@ mod carrier_tests {
 
         let timeline = WorldTimeline::open(Box::new(EmptySource)).expect("timeline");
         let viewer = ViewerOwnedMapState {
+            sky_enabled: true,
             viewport_width: 16,
             viewport_height: 16,
             camera: None,

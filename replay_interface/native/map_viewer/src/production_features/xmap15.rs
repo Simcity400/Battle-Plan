@@ -546,6 +546,7 @@ pub struct PreparedXmap15PlanDefinition {
     pub texture_variant_count: Option<u32>,
     pub culling_direction: Option<i32>,
     pub draw_last: bool,
+    pub draw_shadows: bool,
     pub ordered_texture_masks: Vec<String>,
     pub ordered_texture_patterns: Vec<String>,
     pub ordered_shader_translation_unit_paths: Vec<String>,
@@ -668,12 +669,17 @@ fn xmap15_plan_technique_supported(technique: &str) -> bool {
     )
 }
 
-pub(crate) fn xmap15_see_through_effect(technique: &str) -> Result<&'static str> {
-    match technique {
-        "MapArrowNoHead" => Ok("MapArrowNoHeadSeethrough"),
-        "MapArrowNoHeadWidthDepth" => Ok("MapArrowNoHeadWidthDepthSeethrough"),
-        other => Err(format!("XMAP15 has no exact see-through sibling for {other}").into()),
+pub(crate) fn xmap15_scene_effects(resolver: &GameFileResolver, definitions: &[PreparedXmap15PlanDefinition]) -> Result<BTreeSet<String>> {
+    if definitions.is_empty() { return Ok(BTreeSet::new()); }
+    let files = crate::shader_compile::effect_translation_unit_files(resolver, XMAP15_MAPARROW_SHADER_PATH)?;
+    let root = files.last().ok_or("XMAP15 shader translation unit is empty")?;
+    let mut effects = BTreeSet::new();
+    for definition in definitions {
+        effects.insert(definition.technique.clone());
+        let sibling = format!("{}Seethrough", definition.technique);
+        if root.1.effect(&sibling).is_some() { effects.insert(sibling); }
     }
+    Ok(effects)
 }
 
 #[derive(Clone, Copy)]
@@ -1248,19 +1254,7 @@ pub fn prepare_xmap15_frame(
     let (movement_definitions, movement_content) =
         prepare_movement_definitions(resolver, admission, &mut movement_names)?;
     used_content.extend(movement_content);
-    let mut plan_effects = plan_definitions
-        .iter()
-        .map(|definition| definition.technique.clone())
-        .collect::<BTreeSet<_>>();
-    for row in &semantic.plans {
-        if row.see_through {
-            let definition = plan_definitions
-                .iter()
-                .find(|definition| definition.name == row.resolved_definition_name)
-                .ok_or("XMAP15 see-through plan omitted its effective definition")?;
-            plan_effects.insert(xmap15_see_through_effect(&definition.technique)?.into());
-        }
-    }
+    let plan_effects = xmap15_scene_effects(resolver, &plan_definitions)?;
     validate_xmap15_plan_effect_contracts(resolver, &plan_effects)?;
     if !movement_definitions.is_empty() {
         validate_xmap15_movement_effect_contract(resolver)?;
@@ -1618,6 +1612,7 @@ fn prepare_plan_definitions(
             texture_variant_count: optional_u32(fields, "texture_variant_count", &name)?,
             culling_direction: optional_i32(fields, "culling_direction", &name)?,
             draw_last: optional_bool(fields, "draw_last", &name)?.unwrap_or(false),
+            draw_shadows: optional_bool(fields, "draw_shadows", &name)?.unwrap_or(true),
             ordered_texture_masks: masks,
             ordered_texture_patterns: patterns,
             ordered_shader_translation_unit_paths: shader_paths.clone(),
@@ -2053,6 +2048,19 @@ mod tests {
             required_f32_pair(fields, "body_width", "offence_line").unwrap(),
             [1.1, 1.0]
         );
+    }
+
+    #[test]
+    fn authored_shadow_flags_preserve_defaults_false_and_invalid() {
+        for (value, expected) in [("yes", true), ("no", false)] {
+            let source = format!("arrowType = {{ name = arrow draw_shadows = {value} }}");
+            let blocks = parse_arrow_blocks(&source).unwrap();
+            assert_eq!(optional_bool(&blocks["arrow"], "draw_shadows", "arrow").unwrap(), Some(expected));
+        }
+        let blocks = parse_arrow_blocks("arrowType = { name = arrow }").unwrap();
+        assert_eq!(optional_bool(&blocks["arrow"], "draw_shadows", "arrow").unwrap().unwrap_or(true), true);
+        let blocks = parse_arrow_blocks("arrowType = { name = arrow draw_shadows = perhaps }").unwrap();
+        assert!(optional_bool(&blocks["arrow"], "draw_shadows", "arrow").is_err());
     }
 
     #[test]

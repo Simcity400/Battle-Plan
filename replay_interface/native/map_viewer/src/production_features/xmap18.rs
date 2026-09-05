@@ -3828,6 +3828,7 @@ mod tests {
         let timeline = WorldTimeline::open(Box::new(EmptySource)).expect("timeline");
         let frame = timeline.frame(7).expect("frame");
         let viewer = ViewerOwnedMapState {
+            sky_enabled: true,
             viewport_width: 16,
             viewport_height: 16,
             camera: None,

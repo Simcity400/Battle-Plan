@@ -69,6 +69,7 @@ pub(crate) fn bmp_dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ViewerOwnedMapState {
+    pub sky_enabled: bool,
     pub viewport_width: u32,
     pub viewport_height: u32,
     pub camera: Option<crate::ViewerMapCameraState>,
@@ -745,13 +746,14 @@ pub fn product_foundation_assigned_stage_topology(
             furniture_execute.clone(),
         ],
         vec![
-            AssignedStageEdge::new(border_early, rivers),
+            AssignedStageEdge::new(border_early, rivers.clone()),
             rivers_before_straits,
-            AssignedStageEdge::new(straits, rail_execute.clone()),
+            AssignedStageEdge::new(rivers, rail_execute.clone()),
             AssignedStageEdge::new(rail_execute, trees.clone()),
             AssignedStageEdge::new(trees, water_surface.clone()),
             AssignedStageEdge::new(water_surface.clone(), border_late.clone()),
-            AssignedStageEdge::new(border_late, supply_arrow_execute.clone()),
+            AssignedStageEdge::new(border_late, straits.clone()),
+            AssignedStageEdge::new(straits, supply_arrow_execute.clone()),
             AssignedStageEdge::new(lighting_prepare, shadow_execute),
             AssignedStageEdge::new(supply_arrow_execute.clone(), particles.clone()),
             AssignedStageEdge::new(supply_arrow_execute, labels_prepare.clone()),
@@ -3338,14 +3340,15 @@ mod tests {
             .unwrap();
 
         assert_eq!(topology.ordered_stages().len(), 22);
-        assert_eq!(topology.ordered_edges().len(), 18);
+        assert_eq!(topology.ordered_edges().len(), 19);
         assert!(border_early.assigned_ordinal < rivers.assigned_ordinal);
         assert!(rivers.assigned_ordinal < straits.assigned_ordinal);
-        assert!(straits.assigned_ordinal < rail_execute.assigned_ordinal);
+        assert!(rivers.assigned_ordinal < rail_execute.assigned_ordinal);
         assert!(rail_execute.assigned_ordinal < trees.assigned_ordinal);
         assert!(trees.assigned_ordinal < water_surface.assigned_ordinal);
         assert!(water_surface.assigned_ordinal < border_late.assigned_ordinal);
-        assert!(border_late.assigned_ordinal < supply_arrow_execute.assigned_ordinal);
+        assert!(border_late.assigned_ordinal < straits.assigned_ordinal);
+        assert!(straits.assigned_ordinal < supply_arrow_execute.assigned_ordinal);
         assert!(supply_arrow_execute.assigned_ordinal < particles.assigned_ordinal);
         assert!(supply_arrow_execute.assigned_ordinal < labels_prepare.assigned_ordinal);
         assert!(labels_prepare.assigned_ordinal < labels_execute.assigned_ordinal);
@@ -3358,11 +3361,11 @@ mod tests {
         assert!(furniture_prepare.assigned_ordinal < furniture_execute.assigned_ordinal);
         assert!(lighting_prepare.assigned_ordinal < shadow_execute.assigned_ordinal);
         assert_eq!(rivers.assigned_ordinal, 2);
-        assert_eq!(straits.assigned_ordinal, 3);
-        assert_eq!(rail_execute.assigned_ordinal, 4);
-        assert_eq!(trees.assigned_ordinal, 5);
-        assert_eq!(water_surface.assigned_ordinal, 6);
-        assert_eq!(border_late.assigned_ordinal, 7);
+        assert_eq!(straits.assigned_ordinal, 7);
+        assert_eq!(rail_execute.assigned_ordinal, 3);
+        assert_eq!(trees.assigned_ordinal, 4);
+        assert_eq!(water_surface.assigned_ordinal, 5);
+        assert_eq!(border_late.assigned_ordinal, 6);
         assert_eq!(supply_arrow_execute.assigned_ordinal, 8);
         assert_eq!(weather_prepare.assigned_ordinal, 11);
         assert_eq!(unit_entities.assigned_ordinal, 12);
@@ -3390,23 +3393,27 @@ mod tests {
                     straits.identity(),
                 ),
                 portable_render_stream::AssignedStageEdge::new(
+                    rivers.identity(),
+                    rail_execute.identity(),
+                ),
+                portable_render_stream::AssignedStageEdge::new(
+                    rail_execute.identity(),
+                    trees.identity(),
+                ),
+                portable_render_stream::AssignedStageEdge::new(
+                    trees.identity(),
+                    water_surface.identity(),
+                ),
+                portable_render_stream::AssignedStageEdge::new(
+                    water_surface.identity(),
+                    border_late.identity(),
+                ),
+                portable_render_stream::AssignedStageEdge::new(
+                    border_late.identity(),
                     straits.identity(),
-                    rail_execute.identity(),
                 ),
                 portable_render_stream::AssignedStageEdge::new(
-                    rail_execute.identity(),
-                    trees.identity(),
-                ),
-                portable_render_stream::AssignedStageEdge::new(
-                    trees.identity(),
-                    water_surface.identity(),
-                ),
-                portable_render_stream::AssignedStageEdge::new(
-                    water_surface.identity(),
-                    border_late.identity(),
-                ),
-                portable_render_stream::AssignedStageEdge::new(
-                    border_late.identity(),
+                    straits.identity(),
                     supply_arrow_execute.identity(),
                 ),
                 portable_render_stream::AssignedStageEdge::new(
@@ -3559,7 +3566,7 @@ mod tests {
                 )
                 .unwrap()
                 .assigned_ordinal,
-            7
+            6
         );
 
         let original_schedule = adapters.assigned_stage_schedule.clone().unwrap();
