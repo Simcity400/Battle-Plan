@@ -982,7 +982,7 @@ fn xmap10_identity_set(label: &str, ordered_identities: &[String]) -> String {
     )
 }
 
-pub const XMAP10_SCREEN_SHADOW_RECEIPT_SCHEMA: &str = "hoi4.xmap10.screen-shadow-execution.v2";
+pub const XMAP10_SCREEN_SHADOW_RECEIPT_SCHEMA: &str = "hoi4.xmap10.screen-shadow-execution.v3";
 pub const XMAP10_SCREEN_CLEAR_BITS: [u32; 4] = [0x3f800000, 0, 0, 0x3f800000];
 
 #[cfg(test)]
@@ -1206,7 +1206,9 @@ pub struct Xmap10NativeShaderResourceBinding {
 pub struct Xmap10ScreenShadowExecutionReceipt {
     pub schema: String,
     pub active: bool,
-    pub prior_screen_shadow_execution_sha256: Option<String>,
+    pub cleared_color_f32_bits: [u32; 4],
+    pub tree_partitions: Vec<crate::xmap11_d3d_handoff::Xmap11UnlitPartitionReceipt>,
+    pub ordered_partition_matrix_sha256s: Vec<String>,
     pub terrain_frame_sha256: String,
     pub map_copy_receipt_set_sha256: String,
     pub xmap09_light_depth_execution_sha256: String,
@@ -1233,27 +1235,26 @@ impl Xmap10ScreenShadowExecutionReceipt {
         {
             return Err("XMAP10 screen-shadow receipt identity is invalid".into());
         }
-        match (
-            self.active,
-            self.draw_count,
-            self.ordered_scene_cb0_composition_sha256s.is_empty(),
-            self.prior_screen_shadow_execution_sha256.as_ref(),
-        ) {
-            (true, draw_count, false, None) if draw_count > 0 => {}
-            (false, 0, true, Some(prior)) if is_sha256(prior) => {}
-            _ => {
-                return Err(
-                    "XMAP10 screen-shadow receipt active/retained-frame law is invalid".into(),
-                )
-            }
+        if self.cleared_color_f32_bits != XMAP10_SCREEN_CLEAR_BITS
+            || (self.active && (self.ordered_scene_cb0_composition_sha256s.is_empty()
+                || self.tree_partitions.len() != self.ordered_partition_matrix_sha256s.len()
+                || self.tree_partitions.len() != self.ordered_scene_cb0_composition_sha256s.len()))
+            || (!self.active && (self.draw_count != 0 || !self.tree_partitions.is_empty()
+                || !self.ordered_partition_matrix_sha256s.is_empty() || !self.ordered_scene_cb0_composition_sha256s.is_empty()))
+            || self.binding.producer_camera_frame_sha256 != self.binding.consumer_camera_frame_sha256
+            || self.binding.producer_replay_frame_identity_sha256 != self.binding.consumer_replay_frame_identity_sha256 {
+            return Err("XMAP10 screen-shadow receipt violates current clear/producer law".into());
         }
-        if self.active
-            && (self.binding.producer_camera_frame_sha256
-                != self.binding.consumer_camera_frame_sha256
-                || self.binding.producer_replay_frame_identity_sha256
-                    != self.binding.consumer_replay_frame_identity_sha256)
-        {
-            return Err("XMAP10 active screen-shadow producer/consumer frame mismatch".into());
+        let mut previous_partition = 0;
+        let mut batches = std::collections::BTreeSet::new();
+        for (tree, matrix) in self.tree_partitions.iter().zip(&self.ordered_partition_matrix_sha256s) {
+            tree.validate()?;
+            if tree.partition <= previous_partition || (previous_partition == 0 && tree.partition != 1)
+                || tree.matrix_payload_sha256 != *matrix
+                || tree.ordered_batch_indices.iter().any(|index| !batches.insert(*index)) {
+                return Err("XMAP10 tree/matrix partition receipt census mismatch".into());
+            }
+            previous_partition = tree.partition;
         }
         for hash in [
             &self.terrain_frame_sha256,
@@ -1638,6 +1639,75 @@ mod native {
         }
     }
 
+    #[cfg(test)]
+    mod retained_target_tests {
+        use super::*;
+        #[test]
+        fn native_screen_clear_writes_engine_color_and_failed_guard_invalidates_history() {
+            use winapi::um::d3dcommon::{D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0};
+            unsafe {
+                let mut device = ptr::null_mut();
+                let mut context = ptr::null_mut();
+                hr(D3D11CreateDevice(ptr::null_mut(), D3D_DRIVER_TYPE_WARP, ptr::null_mut(), 0,
+                    &D3D_FEATURE_LEVEL_11_0, 1, D3D11_SDK_VERSION, &mut device, ptr::null_mut(), &mut context), "screen clear WARP").unwrap();
+                let device = D3dPtr::from_raw(device, "screen clear device").unwrap();
+                let context = D3dPtr::from_raw(context, "screen clear context").unwrap();
+                let final_desc = crate::ShadowScreenTarget { stable_resource_id: "screen".into(), width: 8, height: 8,
+                    dxgi_format: 87, mip_levels: 1, bind_flags: 0x28 };
+                let mut intermediate = final_desc.clone(); intermediate.stable_resource_id = "intermediate".into();
+                let plan = ShadowScreenChainPlan {
+                    light_depth_target: crate::L03LightDepthTarget { stable_resource_id: "depth".into(), width: 2048, height: 2048, dxgi_format: 44, mip_levels: 1 },
+                    producer_and_final_target: final_desc, blur_intermediate_target: intermediate,
+                    passes: [(ShadowScreenPassKind::TerrainUnlitProducer, "depth", "screen", None),
+                        (ShadowScreenPassKind::HorizontalBlur, "screen", "intermediate", Some([0; 8])),
+                        (ShadowScreenPassKind::VerticalBlur, "intermediate", "screen", Some([0; 8]))].into_iter()
+                        .map(|(kind, source, target, cb0_f32_bits)| crate::ShadowScreenPassPlan { kind, source_resource_id: source.into(), target_resource_id: target.into(), cb0_f32_bits }).collect(),
+                };
+                let mut targets = NativeXmap10ScreenTargets::create(&device, &plan, 1).unwrap();
+                let frame = Xmap10ShadowHistoryFrame { epoch: 1, sequence: 1, camera_sha256: "a".repeat(64),
+                    replay_sha256: "b".repeat(64), content_sha256: "c".repeat(64) };
+                assert!(matches!(targets.retained_before_frame(&frame), Err(Xmap10RetainedShadowRefusal::FirstAllocationUndefined)));
+                (*context.as_raw()).ClearRenderTargetView(targets.final_target.rtv.as_raw(), &[0.0, 1.0, 1.0, 0.0]);
+                targets.begin_write(context.as_raw(), &frame).unwrap();
+                let guard = Xmap10ShadowWriteGuard::new(&targets.history);
+                let mut desc: D3D11_TEXTURE2D_DESC = mem::zeroed();
+                (*targets.final_target._texture.as_raw()).GetDesc(&mut desc);
+                desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ; desc.MiscFlags = 0;
+                let mut staging = ptr::null_mut();
+                hr((*device.as_raw()).CreateTexture2D(&desc, ptr::null(), &mut staging), "screen clear staging").unwrap();
+                let staging = D3dPtr::from_raw(staging, "screen clear staging").unwrap();
+                (*context.as_raw()).OMSetRenderTargets(0, ptr::null(), ptr::null_mut());
+                (*context.as_raw()).CopyResource(staging.as_raw().cast(), targets.final_target._texture.as_raw().cast());
+                let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
+                hr((*context.as_raw()).Map(staging.as_raw().cast(), 0, D3D11_MAP_READ, 0, &mut mapped), "screen clear readback").unwrap();
+                let pixel = std::slice::from_raw_parts(mapped.pData.cast::<u8>(), 4).to_vec();
+                (*context.as_raw()).Unmap(staging.as_raw().cast(), 0);
+                assert_eq!(pixel, [0, 0, 255, 255]);
+                drop(guard);
+                let mut next = frame.clone(); next.sequence += 1;
+                assert_eq!(targets.history.read(&next).unwrap_err(), Xmap10RetainedShadowRefusal::FailedHistory);
+                targets.begin_write(context.as_raw(), &next).unwrap();
+                let guard = Xmap10ShadowWriteGuard::new(&targets.history);
+                targets.history.complete(&next, "d".repeat(64)).unwrap(); guard.finish();
+                next.sequence += 1;
+                assert_eq!(targets.retained_before_frame(&next).unwrap().receipt.completed_write_sha256, "d".repeat(64));
+            }
+        }
+    }
+
+    pub(crate) struct NativeXmap10ScreenWriteLease<'a> {
+        pub(crate) device: *mut ID3D11Device,
+        pub(crate) context: *mut ID3D11DeviceContext,
+        pub(crate) color_rtv: *mut ID3D11RenderTargetView,
+        pub(crate) depth_dsv: *mut ID3D11DepthStencilView,
+        pub(crate) width: u32,
+        pub(crate) height: u32,
+        pub(crate) frame: &'a Xmap10ShadowHistoryFrame,
+        pub(crate) viewer_sha256: &'a str,
+        pub(crate) map_copy_sha256: &'a str,
+        _owner: std::marker::PhantomData<&'a NativeXmap10ScreenTargets>,
+    }
+
     pub struct NativeXmap10ScreenShadowHandoff {
         device: D3dPtr<ID3D11Device>,
         terrain_unlit: NativeProgram,
@@ -1648,7 +1718,6 @@ mod native {
         blur_vertices: D3dPtr<ID3D11Buffer>,
         blur_cb0: D3dPtr<ID3D11Buffer>,
         terrain_cb1: D3dPtr<ID3D11Buffer>,
-        static_textures: BTreeMap<u32, crate::xmap04_d3d_handoff::NativeXmap04UnderwaterTexture>,
         terrain_samplers: BTreeMap<u32, D3dPtr<ID3D11SamplerState>>,
         blur_sampler: D3dPtr<ID3D11SamplerState>,
         targets: NativeXmap10ScreenTargets,
@@ -1660,6 +1729,12 @@ mod native {
         plan_sha256: String,
         content_closure_sha256: String,
         terrain_program_sha256: String,
+        draw_fow_cutoff: f32,
+        texture_quality: u8,
+        admission_sha256: String,
+        static_resources: Vec<(D3dPtr<ID3D11Texture2D>, D3dPtr<ID3D11ShaderResourceView>, crate::TreeGpuResourceIdentity)>,
+        terrain_blend: D3dPtr<ID3D11BlendState>,
+        terrain_depth: D3dPtr<ID3D11DepthStencilState>,
         receipt: Option<Xmap10ScreenShadowExecutionReceipt>,
     }
 
@@ -3163,6 +3238,8 @@ mod native {
             terrain: &PreparedTerrainFrame,
             plan: ShadowScreenChainPlan,
             allocation_generation: u64,
+            admission: &replay_core::ValidatedContentAdmission,
+            texture_quality: u8,
         ) -> Result<Self> {
             terrain.validate()?;
             if device.is_null() || !resolver.has_content_admission() {
@@ -3188,9 +3265,8 @@ mod native {
                 "XMAP10 terrainunlit cb1",
             )?;
 
-            let mut static_textures = BTreeMap::new();
             let mut terrain_samplers = BTreeMap::new();
-            for slot in [0u32, 1, 2, 12] {
+            for slot in parse_dxbc_reflection(&terrain_unlit.pixel_bytecode)?.resources.iter().filter(|r| r.resource_type == 3).map(|r| r.bind_point) {
                 let sampler = terrain
                     .program
                     .samplers
@@ -3203,17 +3279,36 @@ mod native {
                     slot,
                     crate::xmap04_d3d_handoff::create_underwater_sampler(device.as_raw(), sampler)?,
                 );
-                if slot != 12 {
-                    static_textures.insert(
-                        slot,
-                        crate::xmap04_d3d_handoff::create_underwater_static_texture(
-                            device.as_raw(),
-                            resolver,
-                            sampler,
-                        )?,
-                    );
-                }
             }
+            if texture_quality > 2 { return Err("XMAP10 fog texture quality is outside 0..=2".into()); }
+            let mut static_resources = Vec::new();
+            for (slot, semantic, path) in [
+                (2, "FOWNoise_Texture", format!("map/terrain/fow_noise_{texture_quality}.dds")),
+                (3, "FOWHeight_Texture", "map/terrain/fow_rgb_waterspec_a.dds".into()),
+                (9, "EnvironmentMap", "map/terrain/reflection.dds".into()),
+            ] {
+                let content = admission.require_used_content(&path)?;
+                let (texture, view, descriptor_sha256) = if slot == 9 {
+                    crate::xmap12_d3d_handoff::create_admitted_environment_cube_on_device(device.as_raw(), resolver, admission, content)?
+                } else {
+                    crate::xmap12_d3d_handoff::create_admitted_material_dds_on_device(device.as_raw(), resolver, admission, content)?
+                };
+                static_resources.push((texture, view, crate::TreeGpuResourceIdentity { semantic: semantic.into(), slot,
+                    content_payload_sha256: content.payload_sha256.clone(), descriptor_sha256 }));
+            }
+            let files = crate::shader_compile::effect_translation_unit_files(resolver, "gfx/FX/pdxmap.shader")?;
+            let root = &files.last().ok_or("terrainunlit translation unit is empty")?.1;
+            if root.effect_count("terrainunlit") != 1 { return Err("terrainunlit effect selection is ambiguous".into()); }
+            let effect = root.effect("terrainunlit").ok_or("terrainunlit effect is absent")?;
+            if effect.depth_stencil_state.is_some() || effect.rasterizer_state.is_some()
+                || files.iter().any(|(_, file)| !file.depth_stencil_states.is_empty() || !file.rasterizer_states.is_empty()) {
+                return Err("XMAP10 terrainunlit declares depth/raster state outside the verified default producer".into());
+            }
+            let blend_name = effect.blend_state.as_deref().unwrap_or("BlendState");
+            let blend_rows = files.iter().rev().find_map(|(_, file)| file.blend_states.get(blend_name))
+                .map(Vec::as_slice).unwrap_or(&[]);
+            let terrain_blend = crate::xmap12_d3d_handoff::create_blend_state(device.as_raw(), blend_rows)?;
+            let terrain_depth = create_terrain_unlit_depth(&device)?;
             let targets = NativeXmap10ScreenTargets::create(&device, &plan, allocation_generation)?;
             let blur_sampler = create_shadow_blur_sampler(device.as_raw())?;
             let terrain_rasterizer = create_terrain_rasterizer(device.as_raw())?;
@@ -3230,7 +3325,6 @@ mod native {
                 blur_vertices,
                 blur_cb0,
                 terrain_cb1,
-                static_textures,
                 terrain_samplers,
                 blur_sampler,
                 targets,
@@ -3240,91 +3334,130 @@ mod native {
                 fullscreen_rasterizer,
                 plan,
                 plan_sha256,
-                content_closure_sha256: terrain.program.deterministic_sha256.clone(),
+                content_closure_sha256: Sha256::hex(&serde_json::to_vec(&(admission.manifest_digest_sha256(), &terrain.program.deterministic_sha256, texture_quality))?),
+                admission_sha256: admission.manifest_digest_sha256().to_owned(), texture_quality,
+                static_resources, terrain_blend, terrain_depth,
                 terrain_program_sha256: terrain.program.deterministic_sha256.clone(),
+                draw_fow_cutoff: crate::xmap09_lighting_law::EffectiveDefines::from_resolver(resolver)?.scalar("NGraphics", "DRAW_FOW_CUTOFF")?,
                 receipt: None,
             })
         }
 
+        pub fn allocation_matches(&self, device: *mut ID3D11Device, terrain: &PreparedTerrainFrame,
+            plan: &ShadowScreenChainPlan, admission_sha256: &str, texture_quality: u8) -> bool {
+            let a = &self.plan.producer_and_final_target;
+            let b = &plan.producer_and_final_target;
+            self.admission_sha256 == admission_sha256 && self.texture_quality == texture_quality
+                && self.device.as_raw() == device && self.terrain_program_sha256 == terrain.program.deterministic_sha256
+                && (a.width, a.height, a.dxgi_format, a.mip_levels, a.bind_flags)
+                    == (b.width, b.height, b.dxgi_format, b.mip_levels, b.bind_flags)
+        }
+
+        pub fn update_plan(&mut self, terrain: &PreparedTerrainFrame, plan: ShadowScreenChainPlan) -> Result<()> {
+            validate_screen_shadow_plan(&plan)?;
+            if !self.allocation_matches(self.device.as_raw(), terrain, &plan, &self.admission_sha256, self.texture_quality) {
+                return Err("XMAP10 screen-shadow plan requires allocation recreation".into());
+            }
+            self.plan_sha256 = Sha256::hex(&serde_json::to_vec(&plan)?);
+            self.plan = plan;
+            Ok(())
+        }
+
+        pub fn content_identity_sha256(&self) -> &str { &self.content_closure_sha256 }
+
+        pub fn producer_active(&self, light_active: bool, camera_height: f32) -> Result<bool> {
+            if !camera_height.is_finite() || !self.draw_fow_cutoff.is_finite() {
+                return Err("XMAP10 screen-shadow gate has a non-finite camera/define".into());
+            }
+            Ok(light_active || camera_height < self.draw_fow_cutoff)
+        }
+
         pub unsafe fn execute(
-            &mut self,
-            context: *mut ID3D11DeviceContext,
-            terrain: &PreparedTerrainFrame,
-            terrain_handoff: &NativeXmap04TerrainHandoff,
+            &mut self, context: *mut ID3D11DeviceContext,
+            terrain: &PreparedTerrainFrame, terrain_handoff: &NativeXmap04TerrainHandoff,
             scene_cb0s: &[&NativeXmap10MapCopySceneCb0View<'_>],
-            shadow_matrix: &crate::Xmap09ShadowMatrixBinding,
-            light_depth: &NativeXmap09ShaderResourceView<'_>,
+            lighting: &crate::PreparedXmap09LightingFrame,
+            light_depth: Option<&NativeXmap09ShaderResourceView<'_>>,
             light_depth_execution: &crate::Xmap09LightDepthExecutionReceipt,
+            history_frame: &Xmap10ShadowHistoryFrame, viewer_sha256: &str, camera_height: f32,
+            trees: Option<(&crate::PreparedTreeFrame, &crate::NativeXmap11ResourceOwner)>,
+            shared: &[crate::NativeTreeShaderResource], point_lights: *mut ID3D11Buffer,
         ) -> Result<&Xmap10ScreenShadowExecutionReceipt> {
             use crate::NativeXmap04UnderwaterSceneConstantBuffer;
             use winapi::shared::dxgiformat::DXGI_FORMAT_R16_UINT;
             use winapi::um::d3dcommon::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-
-            terrain.validate()?;
-            light_depth_execution.validate()?;
             validate_context_for_device(&self.device, context)?;
+            self.receipt = None;
+            self.targets.begin_write(context, history_frame)?;
+            let write_guard = Xmap10ShadowWriteGuard::new(&self.targets.history);
+            terrain.validate()?;
+            lighting.validate()?;
+            light_depth_execution.validate()?;
             if terrain.program.deterministic_sha256 != self.terrain_program_sha256
                 || terrain_handoff.receipt().terrain_frame_sha256 != terrain.deterministic_sha256
-                || shadow_matrix.input_payload_sha256 != light_depth_execution.input_payload_sha256
-                || !light_depth_execution.active
-                || light_depth.binding.owner_packet != "XMAP09"
-                || light_depth.binding.symbol != "LightDepthMap"
-                || light_depth.binding.camera_frame_sha256 != terrain.camera_frame_sha256
-                || light_depth.binding.replay_frame_identity_sha256
-                    != terrain.replay_frame_identity_sha256
-                || light_depth.binding
-                    != light_depth_execution
-                        .binding
-                        .clone()
-                        .ok_or("XMAP10 active XMAP09 execution omitted LightDepthMap")?
-            {
-                return Err(
-                    "XMAP10 screen shadow received a stale terrain or XMAP09 light-depth frame"
-                        .into(),
-                );
+                || history_frame.camera_sha256 != terrain.camera_frame_sha256
+                || history_frame.replay_sha256 != terrain.replay_frame_identity_sha256
+                || history_frame.content_sha256 != self.content_closure_sha256
+                || lighting.input_payload_sha256 != light_depth_execution.input_payload_sha256 {
+                return Err("XMAP10 screen-shadow frame/content custody mismatch".into());
             }
+            let mut screen_resources = self.static_resources.iter().map(|(_, view, identity)| crate::NativeTreeShaderResource {
+                identity: identity.clone(), view: view.as_raw(),
+            }).collect::<Vec<_>>();
+            screen_resources.extend(shared.iter().map(|row| crate::NativeTreeShaderResource { identity: row.identity.clone(), view: row.view }));
+            let shared = screen_resources.as_slice();
             let rows = terrain.ordered_map_copy_receipts()?;
             let map_copy_receipt_set_sha256 = terrain.map_copy_receipt_set_sha256()?;
-            if scene_cb0s.len() != rows.len() {
-                return Err("XMAP10 screen shadow has the wrong SceneCB0 map-copy census".into());
+            if scene_cb0s.len() != rows.len() || scene_cb0s.iter().zip(&rows).any(|(scene, row)|
+                scene.device_identity() != self.device.as_raw() as usize || scene.raw_buffer().is_null()
+                || scene.owner_packet() != "XMAP10" || scene.symbol() != "SceneCB0"
+                || scene.shader_register() != 0 || scene.byte_len() != 416
+                || scene.frame_identity_sha256() != terrain.camera_frame_sha256
+                || scene.replay_frame_identity_sha256() != terrain.replay_frame_identity_sha256
+                || scene.map_copy_receipt_set_sha256() != map_copy_receipt_set_sha256
+                || scene.render_view_mask() != row.render_view_mask
+                || scene.map_copy_offset_f32_bits() != row.map_copy_offset_f32_bits) {
+                return Err("XMAP10 screen-shadow partition SceneCB0 census mismatch".into());
             }
-            for (scene, row) in scene_cb0s.iter().zip(&rows) {
-                if scene.owner_packet() != "XMAP10"
-                    || scene.symbol() != "SceneCB0"
-                    || scene.shader_register() != 0
-                    || scene.byte_len() != 416
-                    || scene.frame_identity_sha256() != terrain.camera_frame_sha256
-                    || scene.replay_frame_identity_sha256() != terrain.replay_frame_identity_sha256
-                    || scene.map_copy_receipt_set_sha256() != map_copy_receipt_set_sha256
-                    || scene.render_view_mask() != row.render_view_mask
-                    || scene.map_copy_offset_f32_bits() != row.map_copy_offset_f32_bits
-                    || scene.device_identity() != self.device.as_raw() as usize
-                    || scene.raw_buffer().is_null()
-                {
-                    return Err(
-                        "XMAP10 screen shadow SceneCB0 rows differ from XMAP04 map-copy order"
-                            .into(),
-                    );
-                }
-            }
-
+            let producer_active = self.producer_active(light_depth_execution.active, camera_height)?;
+            let mut tree_partitions = Vec::new();
+            let mut ordered_partition_matrix_sha256s = Vec::new();
             let width = self.plan.producer_and_final_target.width;
             let height = self.plan.producer_and_final_target.height;
-            let viewport = D3D11_VIEWPORT {
-                TopLeftX: 0.0,
-                TopLeftY: 0.0,
-                Width: width as f32,
-                Height: height as f32,
-                MinDepth: 0.0,
-                MaxDepth: 1.0,
-            };
-            let final_rtv = self.targets.final_target.rtv.as_raw();
-            (*context).OMSetRenderTargets(1, &final_rtv, ptr::null_mut());
-            (*context).RSSetViewports(1, &viewport);
+            let mut draw_count = 0u32;
+            if producer_active {
+                let light_depth = light_depth.ok_or(Xmap10RetainedShadowRefusal::UpstreamCasterUnavailable)?;
+                if light_depth.binding != light_depth_execution.binding.clone().ok_or(Xmap10RetainedShadowRefusal::UpstreamCasterUnavailable)?
+                    || light_depth.binding.camera_frame_sha256 != history_frame.camera_sha256
+                    || light_depth.binding.replay_frame_identity_sha256 != history_frame.replay_sha256 {
+                    return Err("XMAP10 screen-shadow light-depth identity mismatch".into());
+                }
+                let (tree_frame, tree_owner) = trees.ok_or(Xmap10RetainedShadowRefusal::ScreenTreeProducerUnavailable)?;
+                let mut terrain_views = [ptr::null_mut(); 16];
+                for (target_slot, source_slot) in [(0, 2u8), (1, 3), (2, 4), (7, 6)] {
+                    let candidates = shared.iter().filter(|r| r.identity.slot == source_slot).collect::<Vec<_>>();
+                    if candidates.len() != 1 || candidates[0].view.is_null() {
+                        return Err(format!("XMAP10 terrainunlit missing exact fog/province provider t{target_slot}").into());
+                    }
+                    terrain_views[target_slot] = candidates[0].view;
+                }
+                terrain_views[12] = light_depth.as_raw();
+                let enabled_mask = rows.iter().fold(0, |mask, row| mask | row.render_view_mask);
+                for scene in scene_cb0s {
+                    let matrix = lighting.shadow_map_texture_matrix_for_partition(enabled_mask, scene.render_view_mask())?;
+                    let lease = NativeXmap10ScreenWriteLease { device: self.device.as_raw(), context,
+                        color_rtv: self.targets.final_target.rtv.as_raw(), depth_dsv: self.targets.depth.as_raw(),
+                        width, height, frame: history_frame, viewer_sha256,
+                        map_copy_sha256: &map_copy_receipt_set_sha256, _owner: std::marker::PhantomData };
+                    let tree_receipt = tree_owner.draw_unlit_partition(tree_frame, &lease, scene, &matrix, shared, point_lights)?;
+                    draw_count = draw_count.checked_add(u32::try_from(tree_receipt.ordered_batch_indices.len())?)
+                        .ok_or("XMAP10 screen draw count overflow")?;
+                    tree_partitions.push(tree_receipt);
+                    ordered_partition_matrix_sha256s.push(matrix.payload_sha256.clone());
             (*context).RSSetScissorRects(0, ptr::null());
             (*context).RSSetState(self.terrain_rasterizer.as_raw());
-            (*context).OMSetBlendState(self.opaque_blend.as_raw(), &[0.0; 4], u32::MAX);
-            (*context).OMSetDepthStencilState(self.depth_disabled.as_raw(), 0);
+            (*context).OMSetBlendState(self.terrain_blend.as_raw(), &[0.0; 4], u32::MAX);
+            (*context).OMSetDepthStencilState(self.terrain_depth.as_raw(), 0);
             (*context).IASetInputLayout(self.terrain_input_layout.as_raw());
             (*context).IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             (*context).IASetIndexBuffer(
@@ -3334,27 +3467,12 @@ mod native {
             );
             (*context).VSSetShader(self.terrain_unlit.vertex.as_raw(), ptr::null_mut(), 0);
             (*context).PSSetShader(self.terrain_unlit.pixel.as_raw(), ptr::null_mut(), 0);
-            for (slot, texture) in &self.static_textures {
-                let raw = texture.view.as_raw();
-                (*context).PSSetShaderResources(*slot, 1, &raw);
-            }
-            let raw_light_depth = light_depth.as_raw();
-            (*context).PSSetShaderResources(12, 1, &raw_light_depth);
-            for (slot, sampler) in &self.terrain_samplers {
-                let raw = sampler.as_raw();
-                (*context).PSSetSamplers(*slot, 1, &raw);
-            }
-            let slot0 = terrain_handoff.xmap10_shared_slot0();
-            let mut strides = [
-                crate::TERRAIN_CHUNK_SLOT0_STRIDE,
-                crate::TERRAIN_CHUNK_SLOT1_STRIDE,
-            ];
-            let mut offsets = [0u32, 0u32];
-            for (draw_index, draw) in terrain.draws.iter().enumerate() {
-                let scene = scene_cb0s
-                    .iter()
-                    .find(|scene| scene.render_view_mask() == draw.render_view_mask)
-                    .ok_or("XMAP10 terrain draw has no matching map-copy SceneCB0")?;
+                    (*context).PSSetShaderResources(0, 16, terrain_views.as_ptr());
+                    for (slot, sampler) in &self.terrain_samplers { (*context).PSSetSamplers(*slot, 1, &sampler.as_raw()); }
+                    let slot0 = terrain_handoff.xmap10_shared_slot0();
+                    let mut strides = [crate::TERRAIN_CHUNK_SLOT0_STRIDE, crate::TERRAIN_CHUNK_SLOT1_STRIDE];
+                    let mut offsets = [0u32; 2];
+                    for (draw_index, draw) in terrain.draws.iter().enumerate().filter(|(_, draw)| draw.render_view_mask == scene.render_view_mask()) {
                 let slot1 = terrain_handoff.xmap10_draw_slot1(draw_index)?;
                 let buffers = [slot0, slot1];
                 (*context).IASetVertexBuffers(
@@ -3367,7 +3485,7 @@ mod native {
                 let scene_raw = scene.raw_buffer();
                 (*context).VSSetConstantBuffers(0, 1, &scene_raw);
                 (*context).PSSetConstantBuffers(0, 1, &scene_raw);
-                let joined_cb1 = xmap10_terrain_unlit_cb1_bytes(&draw.cb1, shadow_matrix)?;
+                let joined_cb1 = xmap10_terrain_unlit_cb1_bytes(&draw.cb1, &matrix)?;
                 (*context).UpdateSubresource(
                     self.terrain_cb1.as_raw() as *mut _,
                     0,
@@ -3378,187 +3496,60 @@ mod native {
                 );
                 let terrain_cb1 = self.terrain_cb1.as_raw();
                 (*context).VSSetConstantBuffers(1, 1, &terrain_cb1);
+                (*context).PSSetConstantBuffers(1, 1, &terrain_cb1);
                 (*context).DrawIndexed(crate::TERRAIN_CHUNK_INDEX_COUNT, 0, 0);
+                        draw_count = draw_count.checked_add(1).ok_or("XMAP10 screen draw count overflow")?;
+                    }
+                }
+                let actual_batches = tree_partitions.iter().flat_map(|r| r.ordered_batch_indices.iter().copied()).collect::<Vec<_>>();
+                if actual_batches != tree_frame.ordered_main_draw_batch_indices {
+                    return Err("XMAP10 screen-shadow tree census is incomplete or reordered".into());
+                }
             }
-            native_d3d11_check_void_upload_device(
-                &self.device,
-                "UpdateSubresource(XMAP10 terrainunlit cb1)",
-            )?;
-            let null_srv = ptr::null_mut();
-            (*context).PSSetShaderResources(12, 1, &null_srv);
-
-            let horizontal_bits = self.plan.passes[1]
-                .cb0_f32_bits
-                .ok_or("XMAP10 horizontal blur omitted CB0")?;
-            self.draw_shadow_blur(
-                context,
-                &self.blur_horizontal,
-                &self.targets.final_target,
-                &self.targets.intermediate_target,
-                horizontal_bits,
-            )?;
-            let vertical_bits = self.plan.passes[2]
-                .cb0_f32_bits
-                .ok_or("XMAP10 vertical blur omitted CB0")?;
-            self.draw_shadow_blur(
-                context,
-                &self.blur_vertical,
-                &self.targets.intermediate_target,
-                &self.targets.final_target,
-                vertical_bits,
-            )?;
+            let nulls = [ptr::null_mut(); 16];
+            (*context).PSSetShaderResources(0, 16, nulls.as_ptr());
+            if light_depth_execution.active {
+                self.draw_shadow_blur(context, &self.blur_horizontal, &self.targets.final_target,
+                    &self.targets.intermediate_target, self.plan.passes[1].cb0_f32_bits.ok_or("XMAP10 horizontal blur constants missing")?)?;
+                self.draw_shadow_blur(context, &self.blur_vertical, &self.targets.intermediate_target,
+                    &self.targets.final_target, self.plan.passes[2].cb0_f32_bits.ok_or("XMAP10 vertical blur constants missing")?)?;
+            }
             (*context).OMSetRenderTargets(0, ptr::null(), ptr::null_mut());
-
-            let descriptor_sha256 = Sha256::hex(&serde_json::to_vec(&(
-                "hoi4.xmap10.screen-shadow-descriptor.v1",
-                width,
-                height,
-                self.plan.producer_and_final_target.dxgi_format,
-                self.plan.producer_and_final_target.mip_levels,
-                self.plan.producer_and_final_target.bind_flags,
-            ))?);
-            let mut binding = Xmap10NativeShaderResourceBinding {
-                symbol: "ShadowMap".into(),
-                owner_packet: "XMAP10".into(),
-                producer_camera_frame_sha256: terrain.camera_frame_sha256.clone(),
-                producer_replay_frame_identity_sha256: terrain.replay_frame_identity_sha256.clone(),
-                consumer_camera_frame_sha256: terrain.camera_frame_sha256.clone(),
-                consumer_replay_frame_identity_sha256: terrain.replay_frame_identity_sha256.clone(),
-                stable_resource_id: self
-                    .plan
-                    .producer_and_final_target
-                    .stable_resource_id
-                    .clone(),
-                resource_sha256: String::new(),
-                descriptor_sha256,
+            native_d3d11_check_void_upload_device(&self.device, "XMAP10 complete tree/terrain screen write")?;
+            let primary_matrix = lighting.shadow_map_texture_matrix()?;
+            let binding = Xmap10NativeShaderResourceBinding {
+                symbol: "ShadowMap".into(), owner_packet: "XMAP10".into(),
+                producer_camera_frame_sha256: history_frame.camera_sha256.clone(),
+                producer_replay_frame_identity_sha256: history_frame.replay_sha256.clone(),
+                consumer_camera_frame_sha256: history_frame.camera_sha256.clone(),
+                consumer_replay_frame_identity_sha256: history_frame.replay_sha256.clone(),
+                stable_resource_id: format!("xmap10/screen-shadow/{}/{}", self.targets.history.allocation_generation, self.targets.history.descriptor_sha256),
+                resource_sha256: Sha256::hex(&serde_json::to_vec(&(history_frame, &self.plan_sha256, &tree_partitions,
+                    &ordered_partition_matrix_sha256s, &light_depth_execution.deterministic_sha256, XMAP10_SCREEN_CLEAR_BITS, draw_count))?),
+                descriptor_sha256: self.targets.history.descriptor_sha256.clone(),
             };
-            binding.resource_sha256 = Sha256::hex(&serde_json::to_vec(&(
-                "hoi4.xmap10.screen-shadow-resource.v1",
-                &self.plan_sha256,
-                &terrain.deterministic_sha256,
-                &light_depth_execution.deterministic_sha256,
-                &shadow_matrix.payload_sha256,
-                scene_cb0s
-                    .iter()
-                    .map(|scene| scene.composition_receipt_sha256())
-                    .collect::<Vec<_>>(),
-                &binding.descriptor_sha256,
-            ))?);
             let mut receipt = Xmap10ScreenShadowExecutionReceipt {
-                schema: XMAP10_SCREEN_SHADOW_RECEIPT_SCHEMA.into(),
-                active: true,
-                prior_screen_shadow_execution_sha256: None,
-                terrain_frame_sha256: terrain.deterministic_sha256.clone(),
-                map_copy_receipt_set_sha256,
-                xmap09_light_depth_execution_sha256: light_depth_execution
-                    .deterministic_sha256
-                    .clone(),
-                xmap09_shadow_matrix_payload_sha256: shadow_matrix.payload_sha256.clone(),
-                screen_chain_plan_sha256: self.plan_sha256.clone(),
-                content_closure_sha256: self.content_closure_sha256.clone(),
-                ordered_scene_cb0_composition_sha256s: scene_cb0s
-                    .iter()
-                    .map(|scene| scene.composition_receipt_sha256().into())
-                    .collect(),
-                terrain_unlit_vertex_bytecode_sha256: Sha256::hex(
-                    &self.terrain_unlit.vertex_bytecode,
-                ),
-                terrain_unlit_pixel_bytecode_sha256: Sha256::hex(
-                    &self.terrain_unlit.pixel_bytecode,
-                ),
-                blur_horizontal_vertex_bytecode_sha256: Sha256::hex(
-                    &self.blur_horizontal.vertex_bytecode,
-                ),
-                blur_horizontal_pixel_bytecode_sha256: Sha256::hex(
-                    &self.blur_horizontal.pixel_bytecode,
-                ),
-                blur_vertical_vertex_bytecode_sha256: Sha256::hex(
-                    &self.blur_vertical.vertex_bytecode,
-                ),
-                blur_vertical_pixel_bytecode_sha256: Sha256::hex(
-                    &self.blur_vertical.pixel_bytecode,
-                ),
-                draw_count: u32::try_from(terrain.draws.len())?,
-                binding,
-                deterministic_sha256: String::new(),
+                schema: XMAP10_SCREEN_SHADOW_RECEIPT_SCHEMA.into(), active: producer_active,
+                cleared_color_f32_bits: XMAP10_SCREEN_CLEAR_BITS, tree_partitions, ordered_partition_matrix_sha256s,
+                terrain_frame_sha256: terrain.deterministic_sha256.clone(), map_copy_receipt_set_sha256,
+                xmap09_light_depth_execution_sha256: light_depth_execution.deterministic_sha256.clone(),
+                xmap09_shadow_matrix_payload_sha256: primary_matrix.payload_sha256,
+                screen_chain_plan_sha256: self.plan_sha256.clone(), content_closure_sha256: self.content_closure_sha256.clone(),
+                ordered_scene_cb0_composition_sha256s: if producer_active { scene_cb0s.iter().map(|s| s.composition_receipt_sha256().to_owned()).collect() } else { Vec::new() },
+                terrain_unlit_vertex_bytecode_sha256: Sha256::hex(&self.terrain_unlit.vertex_bytecode),
+                terrain_unlit_pixel_bytecode_sha256: Sha256::hex(&self.terrain_unlit.pixel_bytecode),
+                blur_horizontal_vertex_bytecode_sha256: Sha256::hex(&self.blur_horizontal.vertex_bytecode),
+                blur_horizontal_pixel_bytecode_sha256: Sha256::hex(&self.blur_horizontal.pixel_bytecode),
+                blur_vertical_vertex_bytecode_sha256: Sha256::hex(&self.blur_vertical.vertex_bytecode),
+                blur_vertical_pixel_bytecode_sha256: Sha256::hex(&self.blur_vertical.pixel_bytecode),
+                draw_count, binding, deterministic_sha256: String::new(),
             };
             receipt.deterministic_sha256 = canonical_packet_sha256(&receipt)?;
             receipt.validate()?;
+            self.targets.history.complete(history_frame, receipt.deterministic_sha256.clone())?;
+            write_guard.finish();
             self.receipt = Some(receipt);
-            native_d3d11_check_void_upload_device(&self.device, "XMAP10 screen shadow")?;
-            Ok(self.receipt.as_ref().expect("receipt inserted"))
-        }
-
-        pub fn retain_inactive(
-            &mut self,
-            terrain: &PreparedTerrainFrame,
-            light_depth_execution: &crate::Xmap09LightDepthExecutionReceipt,
-        ) -> Result<&Xmap10ScreenShadowExecutionReceipt> {
-            terrain.validate()?;
-            light_depth_execution.validate()?;
-            if light_depth_execution.active
-                || light_depth_execution.binding.is_some()
-                || light_depth_execution.camera_frame_sha256 != terrain.camera_frame_sha256
-                || light_depth_execution.replay_frame_identity_sha256
-                    != terrain.replay_frame_identity_sha256
-            {
-                return Err(
-                    "XMAP10 inactive screen shadow received an active or cross-frame XMAP09 receipt"
-                        .into(),
-                );
-            }
-            let prior = self
-                .receipt
-                .as_ref()
-                .ok_or("XMAP10 inactive screen shadow has no defined prior target contents")?
-                .clone();
-            prior.validate()?;
-            let map_copy_receipt_set_sha256 = terrain.map_copy_receipt_set_sha256()?;
-            let mut binding = prior.binding.clone();
-            binding.consumer_camera_frame_sha256 = terrain.camera_frame_sha256.clone();
-            binding.consumer_replay_frame_identity_sha256 =
-                terrain.replay_frame_identity_sha256.clone();
-            let mut receipt = Xmap10ScreenShadowExecutionReceipt {
-                schema: XMAP10_SCREEN_SHADOW_RECEIPT_SCHEMA.into(),
-                active: false,
-                prior_screen_shadow_execution_sha256: Some(prior.deterministic_sha256.clone()),
-                terrain_frame_sha256: terrain.deterministic_sha256.clone(),
-                map_copy_receipt_set_sha256,
-                xmap09_light_depth_execution_sha256: light_depth_execution
-                    .deterministic_sha256
-                    .clone(),
-                xmap09_shadow_matrix_payload_sha256: prior
-                    .xmap09_shadow_matrix_payload_sha256
-                    .clone(),
-                screen_chain_plan_sha256: self.plan_sha256.clone(),
-                content_closure_sha256: self.content_closure_sha256.clone(),
-                ordered_scene_cb0_composition_sha256s: Vec::new(),
-                terrain_unlit_vertex_bytecode_sha256: prior
-                    .terrain_unlit_vertex_bytecode_sha256
-                    .clone(),
-                terrain_unlit_pixel_bytecode_sha256: prior
-                    .terrain_unlit_pixel_bytecode_sha256
-                    .clone(),
-                blur_horizontal_vertex_bytecode_sha256: prior
-                    .blur_horizontal_vertex_bytecode_sha256
-                    .clone(),
-                blur_horizontal_pixel_bytecode_sha256: prior
-                    .blur_horizontal_pixel_bytecode_sha256
-                    .clone(),
-                blur_vertical_vertex_bytecode_sha256: prior
-                    .blur_vertical_vertex_bytecode_sha256
-                    .clone(),
-                blur_vertical_pixel_bytecode_sha256: prior
-                    .blur_vertical_pixel_bytecode_sha256
-                    .clone(),
-                draw_count: 0,
-                binding,
-                deterministic_sha256: String::new(),
-            };
-            receipt.deterministic_sha256 = canonical_packet_sha256(&receipt)?;
-            receipt.validate()?;
-            self.receipt = Some(receipt);
-            Ok(self.receipt.as_ref().expect("receipt inserted"))
+            Ok(self.receipt.as_ref().expect("screen write receipt stored"))
         }
 
         unsafe fn draw_shadow_blur(
@@ -3712,6 +3703,21 @@ mod native {
         Ok(())
     }
 
+    unsafe fn create_terrain_unlit_depth(device: &D3dPtr<ID3D11Device>) -> Result<D3dPtr<ID3D11DepthStencilState>> {
+        let mut desc: D3D11_DEPTH_STENCIL_DESC = mem::zeroed();
+        desc.DepthEnable = 1;
+        desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+        desc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+        desc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+        desc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+        desc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_KEEP;
+        desc.FrontFace.StencilFunc = D3D11_COMPARISON_ALWAYS;
+        desc.BackFace = desc.FrontFace;
+        let mut raw = ptr::null_mut();
+        hr((*device.as_raw()).CreateDepthStencilState(&desc, &mut raw), "CreateDepthStencilState(terrainunlit)")?;
+        D3dPtr::from_raw(raw, "terrainunlit depth")
+    }
+
     unsafe fn compile_terrain_unlit(
         device: &D3dPtr<ID3D11Device>,
         resolver: &GameFileResolver,
@@ -3745,11 +3751,25 @@ mod native {
         let vertex_reflection = parse_dxbc_reflection(&vertex_bytecode)?;
         let pixel_reflection = parse_dxbc_reflection(&pixel_bytecode)?;
         require_cbuffer(&vertex_reflection, 0, 416)?;
-        require_cbuffer(&vertex_reflection, 1, 32)?;
+        require_cbuffer(&vertex_reflection, 1, crate::TERRAIN_CHUNK_CB1_BYTES as u32)?;
         require_cbuffer(&pixel_reflection, 0, 416)?;
         for slot in [0u32, 1, 2, 12] {
             require_texture(&pixel_reflection, slot)?;
             require_sampler(&pixel_reflection, slot)?;
+        }
+        for (reflection, vertex) in [(&vertex_reflection, true), (&pixel_reflection, false)] {
+            for resource in &reflection.resources {
+                if resource.bind_count != 1 || match resource.resource_type {
+                    0 => resource.bind_point > 1,
+                    2 => vertex || resource.bind_point > 15 || (matches!(resource.bind_point, 0 | 1 | 2 | 7 | 12) && resource.dimension != 4),
+                    3 => vertex || resource.bind_point > 15,
+                    _ => true,
+                } { return Err("XMAP10 terrainunlit reflection requires an unproven producer input".into()); }
+                if resource.resource_type == 0 {
+                    let size = if resource.bind_point == 0 { 416 } else { crate::TERRAIN_CHUNK_CB1_BYTES as u32 };
+                    require_cbuffer(reflection, resource.bind_point, size)?;
+                }
+            }
         }
         let input_layout = create_terrain_unlit_input_layout(device, &vertex_bytecode)?;
         let program = create_program(
@@ -4968,6 +4988,8 @@ pub use native::ExportedNativeXmap10PostFxExecutor as NativeXmap10PostFxExecutor
 #[cfg(windows)]
 pub use native::{NativeXmap10ScreenTargets, NativeXmap10RetainedShadowView};
 #[cfg(windows)]
+pub(crate) use native::NativeXmap10ScreenWriteLease;
+#[cfg(windows)]
 pub use native::ExportedNativeXmap10ScreenShadowHandoff as NativeXmap10ScreenShadowHandoff;
 #[cfg(windows)]
 pub use native::ExportedNativeXmap10ShaderResourceView as NativeXmap10ShaderResourceView;
@@ -5031,7 +5053,17 @@ mod tests {
         let mut receipt = Xmap10ScreenShadowExecutionReceipt {
             schema: XMAP10_SCREEN_SHADOW_RECEIPT_SCHEMA.into(),
             active: true,
-            prior_screen_shadow_execution_sha256: None,
+            cleared_color_f32_bits: XMAP10_SCREEN_CLEAR_BITS,
+            tree_partitions: [1, 4].into_iter().map(|partition| {
+                let mut tree = crate::xmap11_d3d_handoff::Xmap11UnlitPartitionReceipt {
+                    partition, prepared_frame_sha256: sha("trees"), program_sha256: sha("tree-program"),
+                    matrix_payload_sha256: sha(&format!("matrix-{partition}")), cb1_sha256: sha("tree-cb1"),
+                    ordered_batch_indices: vec![partition as u32], resource_sha256: sha("tree-resources"), deterministic_sha256: String::new(),
+                };
+                tree.deterministic_sha256 = canonical_packet_sha256(&tree).unwrap();
+                tree
+            }).collect(),
+            ordered_partition_matrix_sha256s: vec![sha("matrix-1"), sha("matrix-4")],
             terrain_frame_sha256: sha("terrain"),
             map_copy_receipt_set_sha256: sha("copies"),
             xmap09_light_depth_execution_sha256: sha("light-depth"),
@@ -5067,7 +5099,8 @@ mod tests {
         receipt.draw_count -= 1;
         receipt.active = false;
         receipt.ordered_scene_cb0_composition_sha256s.clear();
-        receipt.prior_screen_shadow_execution_sha256 = Some(sha("prior"));
+        receipt.tree_partitions.clear();
+        receipt.ordered_partition_matrix_sha256s.clear();
         receipt.deterministic_sha256.clear();
         receipt.deterministic_sha256 = canonical_packet_sha256(&receipt).unwrap();
         assert!(
@@ -5075,11 +5108,14 @@ mod tests {
             "inactive receipt must record zero draws"
         );
         receipt.draw_count = 0;
-        receipt.binding.consumer_camera_frame_sha256 = sha("next-camera");
-        receipt.binding.consumer_replay_frame_identity_sha256 = sha("next-replay");
+
         receipt.deterministic_sha256.clear();
         receipt.deterministic_sha256 = canonical_packet_sha256(&receipt).unwrap();
         receipt.validate().unwrap();
+        receipt.binding.consumer_camera_frame_sha256 = sha("next-camera");
+        receipt.deterministic_sha256.clear();
+        receipt.deterministic_sha256 = canonical_packet_sha256(&receipt).unwrap();
+        assert!(receipt.validate().is_err(), "inactive clear is a current write, never a retained prior frame");
         assert_eq!(receipt.binding.producer_camera_frame_sha256, sha("camera"));
         assert_eq!(
             receipt.binding.producer_replay_frame_identity_sha256,

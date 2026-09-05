@@ -238,7 +238,7 @@ fn trunc_grid_a729(value: f32) -> Result<f32> {
     Ok(((value as i32 / 10) * 10) as f32)
 }
 
-fn look_at_row_vector_a729(eye: [f32; 3], target: [f32; 3]) -> Result<ShadowMat4> {
+pub(crate) fn look_at_row_vector_a729(eye: [f32; 3], target: [f32; 3]) -> Result<ShadowMat4> {
     let forward = [target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]];
     let right = [forward[2], 0.0, flip_sign(forward[0])];
     let up = [
@@ -311,6 +311,15 @@ pub fn fit_shadow_map_matrices(
     center: [f32; 3],
     selected_direction: [f32; 3],
 ) -> Result<(ShadowMat4, ShadowMat4)> {
+    let (view_projection, texture, _) = fit_shadow_map_basis(fit_points, center, selected_direction)?;
+    Ok((view_projection, texture))
+}
+
+pub(crate) fn fit_shadow_map_basis(
+    fit_points: [[f32; 3]; 4],
+    center: [f32; 3],
+    selected_direction: [f32; 3],
+) -> Result<(ShadowMat4, ShadowMat4, [[f32; 3]; 4])> {
     if !finite3(center)
         || !finite3(selected_direction)
         || fit_points.into_iter().any(|point| !finite3(point))
@@ -416,7 +425,7 @@ pub fn fit_shadow_map_matrices(
         return Err("shadow L02 blocked: fitted LightViewProjectionRaw is non-finite".into());
     }
     let shadow_map_texture_matrix = compose_shadow_map_texture_matrix(light_view_projection)?;
-    Ok((light_view_projection, shadow_map_texture_matrix))
+    Ok((light_view_projection, shadow_map_texture_matrix, [eye, snapped_center, scale, translate]))
 }
 
 pub fn build_shadow_frame(input: &ShadowFrameInput) -> Result<ShadowFrameMatrices> {

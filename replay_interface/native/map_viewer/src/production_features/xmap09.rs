@@ -604,6 +604,8 @@ pub struct Xmap09ShadowMatrixBinding {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Xmap09ShadowResourcePlan {
+    pub wrapped_fit_basis_f32_bits: [[u32; 3]; 4],
+    pub map_width_f32_bits: u32,
     pub selected_light_frame: L03SelectedLightFrame,
     pub light_depth_bind_flags: u32,
     pub shadow_pass_active: bool,
@@ -614,6 +616,44 @@ pub struct Xmap09ShadowResourcePlan {
     pub exact_caster_owner_packets: [&'static str; 5],
     pub exact_caster_global_order_required: bool,
     pub final_consumer_symbol: &'static str,
+}
+
+fn partition_shadow_texture_matrix(plan: &Xmap09ShadowResourcePlan, enabled_mask: u8, partition: u8)
+    -> Result<[u32; 16]> {
+    if enabled_mask & 1 == 0 || enabled_mask & !7 != 0 || !matches!(partition, 1 | 2 | 4)
+        || enabled_mask & partition == 0 {
+        return Err("XMAP09 shadow matrix partition is outside the selected render views".into());
+    }
+    if partition == 1 { return Ok(plan.selected_light_frame.shadow_map_texture_matrix_f32_bits); }
+    let [mut eye, mut center, scale, translate] = plan.wrapped_fit_basis_f32_bits.map(|row| row.map(f32::from_bits));
+    let width = f32::from_bits(plan.map_width_f32_bits);
+    if !width.is_finite() || width <= 0.0 { return Err("XMAP09 wrapped shadow map width is invalid".into()); }
+    if partition == 2 {
+        eye[0] -= width;
+        center[0] -= width;
+    } else {
+        if enabled_mask & 2 != 0 {
+            eye[0] = (eye[0] - width) + width;
+            center[0] = (center[0] - width) + width;
+        }
+        eye[0] += width;
+        center[0] += width;
+    }
+    let view = crate::shadow_law::look_at_row_vector_a729(eye, center)?;
+    let projection = [[scale[0], 0.0, 0.0, 0.0], [0.0, scale[1], 0.0, 0.0],
+        [0.0, 0.0, scale[2], 0.0], [translate[0], translate[1], translate[2], 1.0]];
+    let multiply = |left: [[f32; 4]; 4], right: [[f32; 4]; 4]| -> [[f32; 4]; 4] {
+        std::array::from_fn(|row| std::array::from_fn(|col|
+            left[row][1] * right[1][col] + left[row][0] * right[0][col]
+                + left[row][2] * right[2][col] + left[row][3] * right[3][col]))
+    };
+    let projected = multiply(view, projection);
+    let texture = multiply(projected, [[0.5, 0.0, 0.0, 0.0], [0.0, -0.5, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0], [0.5, 0.5, 0.0, 1.0]]);
+    if texture.iter().flatten().any(|value| !value.is_finite()) {
+        return Err("XMAP09 wrapped shadow matrix is non-finite".into());
+    }
+    Ok(std::array::from_fn(|lane| texture[lane / 4][lane % 4].to_bits()))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -902,11 +942,13 @@ impl PreparedXmap09LightingFrame {
     }
 
     pub fn shadow_map_texture_matrix(&self) -> Result<Xmap09ShadowMatrixBinding> {
+        self.shadow_map_texture_matrix_for_partition(1, 1)
+    }
+
+    pub fn shadow_map_texture_matrix_for_partition(&self, enabled_mask: u8, partition: u8)
+        -> Result<Xmap09ShadowMatrixBinding> {
         self.validate()?;
-        let bits = self
-            .shadow
-            .selected_light_frame
-            .shadow_map_texture_matrix_f32_bits;
+        let bits = partition_shadow_texture_matrix(&self.shadow, enabled_mask, partition)?;
         let bytes = bits
             .iter()
             .flat_map(|lane| lane.to_le_bytes())
@@ -1444,7 +1486,11 @@ fn prepare_lighting(
             cb0_f32_bits: Some(blur.vertical_f32_bits),
         },
     ];
+    let (_, _, wrapped_fit_basis) = crate::shadow_law::fit_shadow_map_basis(
+        input_frame.fit_points, input_frame.fit_center, matrices.selected_light.direction)?;
     let shadow = Xmap09ShadowResourcePlan {
+        wrapped_fit_basis_f32_bits: wrapped_fit_basis.map(|row| row.map(f32::to_bits)),
+        map_width_f32_bits: input_frame.map_width.to_bits(),
         selected_light_frame,
         light_depth_bind_flags: D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE,
         shadow_pass_active: input.shadow_pass_active,
@@ -2223,6 +2269,31 @@ mod tests {
             }],
         )
         .is_err());
+    }
+
+    #[test]
+    fn wrapped_shadow_partitions_bind_distinct_matrices_to_terrain_and_tree_cb1() {
+        let frame = prepared(&input(), &camera());
+        let matrices = [1, 2, 4].map(|partition| frame.shadow_map_texture_matrix_for_partition(7, partition).unwrap());
+        assert_eq!(matrices[0].shadow_map_texture_matrix_f32_bits, frame.shadow.selected_light_frame.shadow_map_texture_matrix_f32_bits);
+        assert_ne!(matrices[0].payload_sha256, matrices[1].payload_sha256);
+        assert_ne!(matrices[0].payload_sha256, matrices[2].payload_sha256);
+        assert_ne!(matrices[1].payload_sha256, matrices[2].payload_sha256);
+        for matrix in &matrices {
+            let mut terrain = vec![0; crate::TERRAIN_CHUNK_CB1_BYTES];
+            terrain[64..].fill(0xa5);
+            let terrain = crate::xmap10_d3d_handoff::xmap10_terrain_unlit_cb1_bytes(&terrain, matrix).unwrap();
+            let tree = crate::xmap11_d3d_handoff::tree_unlit_cb1_bytes(matrix, 0.375f32.to_bits()).unwrap();
+            let expected = matrix.shadow_map_texture_matrix_f32_bits.iter().flat_map(|bits| bits.to_le_bytes()).collect::<Vec<_>>();
+            assert_eq!(&terrain[..64], expected);
+            assert_eq!(&tree[..64], expected);
+            assert!(terrain[64..].iter().all(|byte| *byte == 0xa5));
+            assert_eq!(&tree[64..72], &[0; 8]);
+            assert_eq!(&tree[72..76], &0.375f32.to_le_bytes());
+            assert_eq!(&tree[76..], &[0; 4]);
+        }
+        assert!(frame.shadow_map_texture_matrix_for_partition(5, 2).is_err());
+        assert!(frame.shadow_map_texture_matrix_for_partition(6, 4).is_err());
     }
 
     #[test]
