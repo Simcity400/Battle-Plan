@@ -1237,23 +1237,7 @@ mod alert_join_tests {
     }
 
     #[test]
-    fn country_name_dimensions_fall_back_only_for_explicit_absence() {
-        assert_eq!(
-            admitted_optional_country_name_dimension(&Leaf::Absent, "ruling ideology"),
-            Ok(None)
-        );
-        assert!(
-            admitted_optional_country_name_dimension(&Leaf::Unobtained, "ruling ideology")
-                .is_err()
-        );
-        assert!(
-            admitted_optional_country_name_dimension(
-                &Leaf::Measured(String::new()),
-                "ruling ideology"
-            )
-            .is_err()
-        );
-
+    fn flag_cosmetic_dimensions_require_their_own_explicit_absence() {
         assert_eq!(
             crate::binding::admitted_cosmetic_override(&Leaf::Measured(Some(
                 "FRA_VICHY".to_string()

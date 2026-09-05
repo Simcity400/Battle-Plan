@@ -91,7 +91,8 @@ impl Localisation {
             let files = resolver.list_files_recursive("common/autonomous_states", Some("txt"))?;
             let sources = files.iter().map(|file| {
                 let bytes = resolver.read_file(file)?;
-                String::from_utf8(bytes).map_err(|error| crate::GameUiError::parse(error.to_string()))
+                portable_content_manifest::paradox_text::decode_text_strict(&bytes)
+                    .map_err(|error| crate::GameUiError::parse(format!("autonomy definitions: {error:?}")))
             }).collect::<Result<Vec<_>>>()?;
             replay_core::country_name::AutonomyNameTokens::from_sources(sources.iter().map(String::as_str))
                 .map_err(crate::GameUiError::parse)
