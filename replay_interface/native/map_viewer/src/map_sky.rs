@@ -120,6 +120,15 @@ mod tests {
                 bottom: 1,
             },
         );
+        let gs = crate::d3d11_device::native_d3d11_compile_shader(
+            "struct V { float4 p : SV_POSITION; }; [maxvertexcount(3)] void main(triangle V input[3], inout TriangleStream<V> stream) { }",
+            "main", "gs_5_0",
+        ).unwrap();
+        let mut geometry = ptr::null_mut();
+        native_d3d11_hr((*device).CreateGeometryShader((*gs.as_raw()).GetBufferPointer(),
+            (*gs.as_raw()).GetBufferSize(), ptr::null_mut(), &mut geometry), "sky hostile GS").unwrap();
+        let geometry = D3dPtr::from_raw(geometry, "sky hostile GS").unwrap();
+        (*context).GSSetShader(geometry.as_raw(), ptr::null(), 0);
         sky.bind_and_draw(context);
         let staging_desc = D3D11_TEXTURE2D_DESC {
             Usage: D3D11_USAGE_STAGING,
@@ -180,7 +189,7 @@ BlendState SelectedRed { BlendEnable = no WriteMask = "RED" }
 Effect sky { VertexShader = "VS" PixelShader = "PS" BlendState = "SelectedRed" }
 "#).unwrap();
         fs::write(fx.join("defines_hlsl_dx11.fxh"), r#"
-struct STextureSamplerCube { TextureCube texture; SamplerState sampler; };
+struct STextureSamplerCube { TextureCube cube_texture; SamplerState cube_sampler; };
 STextureSamplerCube CreateSamplerCube(TextureCube t, SamplerState s) { STextureSamplerCube r = { t, s }; return r; }
 "#).unwrap();
         let source = GameFileResolver::vanilla(&root).unwrap();
@@ -225,6 +234,29 @@ STextureSamplerCube CreateSamplerCube(TextureCube t, SamplerState s) { STextureS
         drop(resolver);
         drop(source);
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn sky_reflected_inputs_require_exact_bound_providers() {
+        let vertex = "cbuffer Scene : register(b0) { float4 offset; }; float4 main(int2 p : POSITION) : SV_POSITION { return float4(p, 1, 1) + offset; }";
+        let pixel = "cbuffer Scene : register(b0) { float4 direction; }; TextureCube cube : register(t0); SamplerState sample_state : register(s0); float4 main() : SV_Target { return cube.Sample(sample_state, direction.xyz); }";
+        let check = |stage, source: &str| {
+            let bytes = crate::d3d_compile_stage(source, stage, crate::shader_compile::ENGINE_COMPILE_FLAGS).unwrap();
+            require_sky_shader_providers(stage, &bytes)
+        };
+        check(crate::ShaderStage::Vertex, vertex).unwrap();
+        check(crate::ShaderStage::Pixel, pixel).unwrap();
+        for (stage, source) in [
+            (crate::ShaderStage::Vertex, vertex.replace("b0", "b1")),
+            (crate::ShaderStage::Pixel, pixel.replace("b0", "b1")),
+            (crate::ShaderStage::Pixel, pixel.replace("t0", "t1")),
+            (crate::ShaderStage::Pixel, pixel.replace("s0", "s1")),
+            (crate::ShaderStage::Pixel, pixel.replace("TextureCube", "Texture2D").replace("direction.xyz", "direction.xy")),
+            (crate::ShaderStage::Vertex, vertex.replace("float4 offset;", "float4 padding[26]; float4 offset;")),
+            (crate::ShaderStage::Vertex, "Texture2D tex : register(t0); float4 main(int2 p : POSITION) : SV_POSITION { return tex.Load(int3(p, 0)); }".into()),
+        ] {
+            assert!(check(stage, &source).unwrap_err().to_string().contains("sky-reflected-provider-unavailable"));
+        }
     }
 
     #[test]
@@ -373,6 +405,8 @@ impl NativeMapSky {
         };
         let vs = compile(crate::ShaderStage::Vertex)?;
         let ps = compile(crate::ShaderStage::Pixel)?;
+        require_sky_shader_providers(crate::ShaderStage::Vertex, &vs)?;
+        require_sky_shader_providers(crate::ShaderStage::Pixel, &ps)?;
         let mut vertex = ptr::null_mut();
         native_d3d11_hr(
             (*device).CreateVertexShader(
@@ -547,6 +581,10 @@ impl NativeMapSky {
         (*context).OMSetBlendState(self.blend.as_raw(), &[0.0; 4], u32::MAX);
         (*context).VSSetShader(self.vertex.as_raw(), ptr::null_mut(), 0);
         (*context).PSSetShader(self.pixel.as_raw(), ptr::null_mut(), 0);
+        (*context).GSSetShader(ptr::null_mut(), ptr::null(), 0);
+        (*context).HSSetShader(ptr::null_mut(), ptr::null(), 0);
+        (*context).DSSetShader(ptr::null_mut(), ptr::null(), 0);
+        (*context).SOSetTargets(0, ptr::null(), ptr::null());
         (*context).IASetInputLayout(self.layout.as_raw());
         (*context)
             .IASetPrimitiveTopology(winapi::um::d3dcommon::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -554,6 +592,29 @@ impl NativeMapSky {
         (*context).IASetVertexBuffers(0, 1, &mut vertices, &4, &0);
         (*context).Draw(3, 0);
     }
+}
+
+#[cfg(windows)]
+fn require_sky_shader_providers(stage: crate::ShaderStage, bytecode: &[u8]) -> Result<()> {
+    let reflection = crate::parse_dxbc_reflection(bytecode)?;
+    for resource in &reflection.resources {
+        let supplied = resource.bind_count == 1 && resource.bind_point == 0
+            && match resource.resource_type {
+                0 => reflection.cbuffers.iter().any(|buffer|
+                    buffer.name == resource.name && buffer.size <= 416),
+                2 => stage == crate::ShaderStage::Pixel && resource.dimension == 9,
+                3 => stage == crate::ShaderStage::Pixel,
+                _ => false,
+            };
+        if !supplied {
+            return Err(format!(
+                "sky-reflected-provider-unavailable: {stage:?} {} type {} register {} count {} dimension {}",
+                resource.name, resource.resource_type, resource.bind_point, resource.bind_count,
+                resource.dimension,
+            ).into());
+        }
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
