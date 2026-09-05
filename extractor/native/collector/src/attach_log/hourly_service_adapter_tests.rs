@@ -367,20 +367,28 @@ fn committed_data_survives_later_gap_failure_without_falsely_missing_a_stage() {
     let actual = std::fs::read(&path).unwrap();
     portable_test_fs_retry::remove_file(&path).unwrap();
     assert_eq!(actual, expected);
+    assert_eq!(report.samples.len(), 1);
     assert_eq!(report.samples[0].outcome, HourlyServiceOutcomeV1::Complete);
     assert_eq!(report.samples[0].data_sequence, Some((1, 2)));
-    assert_eq!(
-        report.samples[0].fault_bits
-            & (1 << hourly_service_capture::TimingFault::MissingStages as u8),
-        0,
-    );
-    assert!(report.samples[0].stage_ns[ServiceStage::Commit as usize].is_some());
-    assert_eq!(report.census.unattributed_service_ns, 0);
-    assert_eq!(
-        report.census.fault_bits
-            & (1 << hourly_service_capture::TimingFault::UnmeasuredHours as u8),
-        0
-    );
+    assert_eq!(report.samples[0].fault_bits, 0);
+    for stage in [
+        ServiceStage::Capture,
+        ServiceStage::Finish,
+        ServiceStage::BuildTail,
+        ServiceStage::PublicationPrepare,
+        ServiceStage::Sink,
+        ServiceStage::Commit,
+    ] {
+        assert!(
+            report.samples[0].stage_ns[stage as usize].is_some(),
+            "{stage:?}"
+        );
+    }
+    // Setup after the DATA close is session loss, not a missing stage of that closed request.
+    assert_eq!(report.census.unmeasured_hours, 0);
+    let unowned_fault = u32::from(report.census.unattributed_service_ns != 0)
+        << hourly_service_capture::TimingFault::UnmeasuredHours as u8;
+    assert_eq!(report.census.fault_bits, unowned_fault);
     assert_eq!(report.census.complete_measurements, 1);
     assert_eq!(report.census.incomplete_measurements, 0);
 }

@@ -1,5 +1,5 @@
 use super::hourly_service_timing::{
-    elapsed_ns, ClosedServiceMeasurement, HourlyServiceTiming, SERVICE_LIMIT_NS,
+    elapsed_ns, ClosedServiceMeasurement, HourlyServiceTiming, Preselection, SERVICE_LIMIT_NS,
 };
 pub(crate) use super::hourly_service_timing::{
     RequestOutcome, ServiceOwner, ServiceStage, TimingFault,
@@ -44,6 +44,8 @@ struct Runtime {
     owners: [Option<OwnerState>; OWNER_CAPACITY],
     setup: [(u64, u64); SETUP_CAPACITY],
     setup_len: usize,
+    setup_prefix: Preselection,
+    setup_unretained_ns: u64,
     samples: Vec<HourlyServiceSampleV1>,
     unattributed_ns: u64,
     retired_scheduled: u64,
@@ -71,6 +73,8 @@ impl Runtime {
             owners: [None; OWNER_CAPACITY],
             setup: [(0, 0); SETUP_CAPACITY],
             setup_len: 0,
+            setup_prefix: Preselection::default(),
+            setup_unretained_ns: 0,
             samples,
             unattributed_ns: 0,
             retired_scheduled: 0,
@@ -95,12 +99,30 @@ impl Runtime {
             let _ = self.timing.record_fault(owner, fault);
         }
     }
+    fn refuse_setup_overflow(&mut self, owner: Option<ServiceOwner>) {
+        if self.setup_unretained_ns != 0 {
+            self.timing.note_fault(TimingFault::IntervalCapacity);
+            if let Some(owner) = owner {
+                let _ = self
+                    .timing
+                    .record_fault(owner, TimingFault::IntervalCapacity);
+            }
+            self.unattributed_ns = self.checked_add(self.unattributed_ns, self.setup_unretained_ns);
+        }
+    }
+    fn clear_setup(&mut self) {
+        self.setup_len = 0;
+        self.setup_prefix = Preselection::default();
+        self.setup_unretained_ns = 0;
+    }
     fn claim_setup(&mut self, owner: ServiceOwner, stage: ServiceStage) {
+        // A previous owner's late sink may overlap setup; only retained spans prove its union.
+        self.refuse_setup_overflow(Some(owner));
         for index in 0..self.setup_len {
             let (start, end) = self.setup[index];
             self.record_ns(owner, stage, start, end);
         }
-        self.setup_len = 0;
+        self.clear_setup();
     }
     fn checked_add(&mut self, a: u64, b: u64) -> u64 {
         match a.checked_add(b) {
@@ -137,14 +159,20 @@ impl Runtime {
             Phase::Owned(owner, stage) => self.record_ns(owner, stage, start, end),
             Phase::Unattributed => self.unowned_ns(start, end),
             Phase::Setup if start != end => {
+                if let Err(fault) = self.setup_prefix.record(start, end) {
+                    self.clock_fault(fault);
+                    self.unowned_ns(start, end);
+                    self.mark = now;
+                    return;
+                }
                 if self.setup_len != 0 && self.setup[self.setup_len - 1].1 == start {
                     self.setup[self.setup_len - 1].1 = end;
                 } else if self.setup_len < SETUP_CAPACITY {
                     self.setup[self.setup_len] = (start, end);
                     self.setup_len += 1;
                 } else {
-                    self.timing.note_fault(TimingFault::IntervalCapacity);
-                    self.unowned_ns(start, end);
+                    self.setup_unretained_ns =
+                        self.checked_add(self.setup_unretained_ns, end - start);
                 }
             }
             Phase::Setup | Phase::Idle => {}
@@ -172,11 +200,11 @@ impl Runtime {
         }
         let claimed = self.stamp(now).is_some_and(|completed| {
             self.timing
-                .record_preselection(owner, &self.setup[..self.setup_len], completed)
+                .record_preselection(owner, self.setup_prefix, completed)
                 .is_ok()
         });
         if claimed {
-            self.setup_len = 0;
+            self.clear_setup();
         } else {
             self.claim_setup(owner, ServiceStage::Capture);
         }
@@ -316,13 +344,7 @@ impl Runtime {
             .and_then(|value| value.checked_add(ns));
         self.mark = end;
     }
-    fn retire_scheduler(
-        &mut self,
-        scheduled: u64,
-        boundary: u64,
-        overrun: u64,
-        unknown: u64,
-    ) {
+    fn retire_scheduler(&mut self, scheduled: u64, boundary: u64, overrun: u64, unknown: u64) {
         self.retired_scheduled = self.checked_add(self.retired_scheduled, scheduled);
         self.retired_boundary = self.checked_add(self.retired_boundary, boundary);
         self.retired_overrun = self.checked_add(self.retired_overrun, overrun);
@@ -338,7 +360,12 @@ impl Runtime {
     ) -> Report {
         let report_started = Instant::now();
         self.flush(now);
-        self.setup_len = 0;
+        self.refuse_setup_overflow(None);
+        for index in 0..self.setup_len {
+            let (start, end) = self.setup[index];
+            self.unowned_ns(start, end);
+        }
+        self.clear_setup();
         self.retire_scheduler(scheduled, boundary, overrun, unknown);
         let admitted = self.timing.census().admitted_requests;
         match self
@@ -673,12 +700,7 @@ pub(crate) fn close(
         }
     });
 }
-pub(crate) fn note_scheduler_retired(
-    scheduled: u64,
-    boundary: u64,
-    overrun: u64,
-    unknown: u64,
-) {
+pub(crate) fn note_scheduler_retired(scheduled: u64, boundary: u64, overrun: u64, unknown: u64) {
     with_runtime(|runtime| runtime.retire_scheduler(scheduled, boundary, overrun, unknown));
 }
 pub(crate) fn finish_with_scheduler(
@@ -1098,7 +1120,12 @@ mod tests {
 
     #[test]
     fn capture_runtime_preselection_fragments_leave_capacity_for_owned_stages() {
-        for fragments in [SETUP_CAPACITY - 1, SETUP_CAPACITY] {
+        for fragments in [
+            SETUP_CAPACITY - 1,
+            SETUP_CAPACITY,
+            SETUP_CAPACITY + 1,
+            100_000,
+        ] {
             let now = Instant::now();
             let mut runtime = Runtime::new(now);
             for index in 0..fragments {
@@ -1146,39 +1173,131 @@ mod tests {
             assert_eq!(sample.fault_bits, 0);
             assert_eq!(report.census.fault_bits, 0);
             assert_eq!(report.census.complete_measurements, 1);
+            assert_eq!(report.census.unattributed_service_ns, 0);
         }
     }
 
     #[test]
-    fn capture_runtime_preselection_overflow_still_names_unowned_loss() {
+    fn capture_runtime_terminal_setup_overflow_refuses_an_inexact_union() {
         let now = Instant::now();
         let mut runtime = Runtime::new(now);
+        runtime.begin_at(owner(1), None, now);
+        runtime.switch(Phase::Setup, now);
         for index in 0..=SETUP_CAPACITY {
             let start = index as u64 * 20;
             runtime.switch(Phase::Idle, at(now, start + 5));
             runtime.switch(Phase::Setup, at(now, start + 20));
         }
-        let admitted = (SETUP_CAPACITY as u64 + 1) * 20;
-        runtime.begin_at(owner(1), None, at(now, admitted));
-        runtime.close_at(
-            owner(1),
-            RequestOutcome::Refused,
-            None,
-            at(now, admitted + 10),
+        let terminal = (SETUP_CAPACITY as u64 + 1) * 20;
+        runtime.switch(
+            Phase::Owned(owner(1), ServiceStage::Terminal),
+            at(now, terminal),
         );
-        let report = runtime.report(1, 0, 0, 0, at(now, admitted + 10));
+        runtime.claim_setup(owner(1), ServiceStage::Terminal);
+        runtime.close_at(owner(1), RequestOutcome::Refused, None, at(now, terminal));
+        let report = runtime.report(1, 0, 0, 0, at(now, terminal));
         assert_eq!(
             report.samples[0].observed_service_ns,
-            Some(SETUP_CAPACITY as u64 * 5 + 10)
+            Some(SETUP_CAPACITY as u64 * 5)
         );
-        assert_eq!(report.census.unattributed_service_ns, 5);
         assert_ne!(
-            report.census.fault_bits & (1 << TimingFault::IntervalCapacity as u8),
+            report.samples[0].fault_bits & (1 << TimingFault::IntervalCapacity as u8),
             0
         );
+        assert_eq!(report.census.complete_measurements, 0);
+        assert_eq!(report.census.incomplete_measurements, 1);
+        assert_eq!(report.census.unattributed_service_ns, 5);
         assert_ne!(
             report.census.fault_bits & (1 << TimingFault::UnmeasuredHours as u8),
             0
+        );
+    }
+
+    #[test]
+    fn capture_runtime_fragmented_terminal_setup_keeps_late_sink_union_exact() {
+        let now = Instant::now();
+        let mut runtime = Runtime::new(now);
+        runtime.begin_at(owner(1), None, now);
+        runtime.switch(Phase::Setup, at(now, 10));
+        for index in 0..16 {
+            let start = 10 + index * 20;
+            runtime.switch(Phase::Idle, at(now, start + 5));
+            runtime.switch(Phase::Setup, at(now, start + 20));
+        }
+        runtime.switch(Phase::Owned(owner(1), ServiceStage::Terminal), at(now, 330));
+        runtime.claim_setup(owner(1), ServiceStage::Terminal);
+        runtime.interval(owner(1), ServiceStage::Sink, at(now, 12), at(now, 116));
+        runtime.close_at(owner(1), RequestOutcome::Refused, None, at(now, 340));
+        let report = runtime.report(1, 0, 0, 0, at(now, 340));
+        // Independent point census includes sink work in idle gaps, without counting overlaps twice.
+        let expected = (0..340)
+            .filter(|&ns| {
+                ns < 10
+                    || ns >= 330
+                    || (10..330).contains(&ns) && (ns - 10) % 20 < 5
+                    || (12..116).contains(&ns)
+            })
+            .count() as u64;
+        assert_eq!(report.samples[0].observed_service_ns, Some(expected));
+        assert_eq!(
+            report.samples[0].stage_ns[ServiceStage::Terminal as usize],
+            Some(90)
+        );
+        assert_eq!(
+            report.samples[0].stage_ns[ServiceStage::Sink as usize],
+            Some(104)
+        );
+        assert_eq!(report.census.fault_bits, 0);
+        assert_eq!(report.census.unattributed_service_ns, 0);
+    }
+
+    #[test]
+    fn capture_runtime_all_unclaimed_setup_is_unmeasured_and_excludes_idle() {
+        for fragments in [0, 1, 63, 64, 65] {
+            let now = Instant::now();
+            let mut runtime = Runtime::new(now);
+            for index in 0..fragments {
+                let start = index * 20;
+                runtime.switch(Phase::Idle, at(now, start + 5));
+                runtime.switch(Phase::Setup, at(now, start + 20));
+            }
+            let end = fragments * 20;
+            let report = runtime.report(181, 0, 0, 0, at(now, end));
+            let expected = (0..end).filter(|ns| ns % 20 < 5).count() as u64;
+            assert_eq!(
+                report.census.unattributed_service_ns, expected,
+                "{fragments} fragments"
+            );
+            assert_eq!(report.census.unmeasured_hours, 181);
+            assert_eq!(report.census.complete_measurements, 0);
+            assert!(report.samples.is_empty());
+            let expected_faults = (1 << TimingFault::UnmeasuredHours as u8)
+                | if fragments > SETUP_CAPACITY as u64 {
+                    1 << TimingFault::IntervalCapacity as u8
+                } else {
+                    0
+                };
+            assert_eq!(report.census.fault_bits, expected_faults);
+        }
+    }
+
+    #[test]
+    fn capture_runtime_report_does_not_recount_rejected_setup_work() {
+        let now = Instant::now();
+        let mut runtime = Runtime::new(now);
+        runtime.flush(at(now, 5));
+        assert_eq!(
+            runtime.setup_prefix.record(9, 8),
+            Err(TimingFault::ClockReversed)
+        );
+        runtime.switch(Phase::Idle, at(now, 10));
+        assert_eq!(runtime.unattributed_ns, 5);
+        let report = runtime.report(181, 0, 0, 0, at(now, 30));
+        assert_eq!(report.census.unattributed_service_ns, 10);
+        assert_eq!(report.census.unmeasured_hours, 181);
+        assert_eq!(
+            report.census.fault_bits,
+            (1 << TimingFault::ClockReversed as u8) | (1 << TimingFault::UnmeasuredHours as u8)
         );
     }
 
@@ -1240,7 +1359,10 @@ mod tests {
         assert_eq!(report.census.boundary_excluded_hours, 1);
         assert_eq!(report.census.partial_requests, 1);
         assert_eq!(report.census.refused_requests, 1);
-        assert_eq!(report.census.aborted_requests, 2, "the cut is counted with the aborts");
+        assert_eq!(
+            report.census.aborted_requests, 2,
+            "the cut is counted with the aborts"
+        );
         assert_eq!(
             report.census.total_service_ns,
             report.samples[..4]

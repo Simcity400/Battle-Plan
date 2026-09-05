@@ -190,6 +190,43 @@ impl ClosedServiceMeasurement {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Preselection {
+    measured_ns: u64,
+    bounds: Option<(u64, u64)>,
+    fault: Option<TimingFault>,
+}
+
+impl Preselection {
+    pub(crate) fn record(&mut self, start: u64, end: u64) -> Result<(), TimingFault> {
+        if let Some(fault) = self.fault {
+            return Err(fault);
+        }
+        let result = if end < start
+            || self
+                .bounds
+                .is_some_and(|(_, previous_end)| start < previous_end)
+        {
+            Err(TimingFault::ClockReversed)
+        } else {
+            self.measured_ns
+                .checked_add(end - start)
+                .ok_or(TimingFault::CounterOverflow)
+        };
+        match result {
+            Ok(total) => {
+                self.bounds = Some((self.bounds.map_or(start, |(first, _)| first), end));
+                self.measured_ns = total;
+                Ok(())
+            }
+            Err(fault) => {
+                self.fault = Some(fault);
+                Err(fault)
+            }
+        }
+    }
+}
+
 struct ActiveMeasurement {
     owner: ServiceOwner,
     observed_edge_ns: u64,
@@ -224,32 +261,30 @@ impl ActiveMeasurement {
     }
     fn record_preselection(
         &mut self,
-        intervals: &[(u64, u64)],
+        prefix: Preselection,
         completed_ns: u64,
     ) -> Result<(), TimingFault> {
         if self.completed_prefix.is_some() || self.observed_stages != 0 || self.closed_stages != 0 {
             return self.refuse(TimingFault::AlreadyClosed);
         }
-        if completed_ns < self.observed_edge_ns {
+        if let Some(fault) = prefix.fault {
+            return self.refuse(fault);
+        }
+        if completed_ns < self.observed_edge_ns
+            || prefix
+                .bounds
+                .is_some_and(|(first, _)| first < self.observed_edge_ns)
+        {
             return self.refuse(TimingFault::BeforeObservedEdge);
         }
-        let mut total = 0u64;
-        let mut previous_end = self.observed_edge_ns;
-        for &(start, end) in intervals {
-            if start < previous_end || end < start || end > completed_ns {
-                return self.refuse(TimingFault::ClockReversed);
-            }
-            let Some(next) = total.checked_add(end - start) else {
-                return self.refuse(TimingFault::CounterOverflow);
-            };
-            total = next;
-            previous_end = end;
+        if prefix.bounds.is_some_and(|(_, last)| last > completed_ns) {
+            return self.refuse(TimingFault::ClockReversed);
         }
         // Admission closes this prefix; later owned intervals may not overlap it.
-        self.completed_prefix = Some((total, completed_ns));
-        if !intervals.is_empty() {
+        self.completed_prefix = Some((prefix.measured_ns, completed_ns));
+        if let Some((_, last)) = prefix.bounds {
             self.observed_stages |= ServiceStage::Capture.bit();
-            self.stage_last_end_ns[ServiceStage::Capture as usize] = Some(previous_end);
+            self.stage_last_end_ns[ServiceStage::Capture as usize] = Some(last);
         }
         Ok(())
     }
@@ -559,11 +594,11 @@ impl HourlyServiceTiming {
     pub(crate) fn record_preselection(
         &mut self,
         owner: ServiceOwner,
-        intervals: &[(u64, u64)],
+        prefix: Preselection,
         completed_ns: u64,
     ) -> Result<(), TimingFault> {
         self.active(owner)?
-            .record_preselection(intervals, completed_ns)
+            .record_preselection(prefix, completed_ns)
     }
     pub(crate) fn record_interval(
         &mut self,
@@ -601,9 +636,7 @@ impl HourlyServiceTiming {
             } else if stage == ServiceStage::Terminal
                 || matches!(
                     outcome,
-                    RequestOutcome::Refused
-                        | RequestOutcome::Aborted
-                        | RequestOutcome::TeardownCut
+                    RequestOutcome::Refused | RequestOutcome::Aborted | RequestOutcome::TeardownCut
                 )
             {
                 let _ = active.stage_not_applicable(stage);
@@ -1168,13 +1201,21 @@ mod tests {
         assert!(sample.faults.contains(TimingFault::ClockOverflow));
     }
 
+    fn preselection(spans: &[(u64, u64)]) -> Preselection {
+        let mut prefix = Preselection::default();
+        for &(start, end) in spans {
+            prefix.record(start, end).unwrap();
+        }
+        prefix
+    }
+
     #[test]
     fn completed_preselection_counts_only_work_and_keeps_late_sink_overlap_exact() {
         let who = owner(1);
         let mut timing = HourlyServiceTiming::default();
         timing.begin(who, 0).unwrap();
         timing
-            .record_preselection(who, &[(0, 10), (100, 110)], 200)
+            .record_preselection(who, preselection(&[(0, 10), (100, 110)]), 200)
             .unwrap();
         timing
             .record_interval(who, ServiceStage::Capture, 200, 220)
@@ -1196,24 +1237,36 @@ mod tests {
 
     #[test]
     fn completed_preselection_rejects_overlapping_or_reopened_history() {
-        for spans in [vec![(10, 5)], vec![(0, 10), (5, 15)], vec![(0, 21)]] {
+        for spans in [vec![(10, 5)], vec![(0, 10), (5, 15)]] {
+            let mut prefix = Preselection::default();
+            for (start, end) in spans {
+                let _ = prefix.record(start, end);
+            }
+            assert_eq!(prefix.record(20, 21), Err(TimingFault::ClockReversed));
             let mut active = ActiveMeasurement::new(owner(1), 0);
             assert_eq!(
-                active.record_preselection(&spans, 20),
+                active.record_preselection(prefix, 30),
                 Err(TimingFault::ClockReversed)
             );
             assert!(active.completed_prefix.is_none());
-            active.record_preselection(&[(0, 10)], 20).unwrap();
             assert!(active
-                .close(RequestOutcome::Aborted, 20)
+                .close(RequestOutcome::Aborted, 30)
                 .faults
                 .contains(TimingFault::ClockReversed));
         }
+        let mut active = ActiveMeasurement::new(owner(1), 0);
+        assert_eq!(
+            active.record_preselection(preselection(&[(0, 21)]), 20),
+            Err(TimingFault::ClockReversed)
+        );
+        assert!(active.completed_prefix.is_none());
         for spans in [Vec::new(), vec![(0, 10)]] {
             let mut active = ActiveMeasurement::new(owner(1), 0);
-            active.record_preselection(&spans, 20).unwrap();
+            active
+                .record_preselection(preselection(&spans), 20)
+                .unwrap();
             assert_eq!(
-                active.record_preselection(&[], 20),
+                active.record_preselection(Preselection::default(), 20),
                 Err(TimingFault::AlreadyClosed)
             );
             assert_eq!(
@@ -1230,8 +1283,34 @@ mod tests {
         let mut active = ActiveMeasurement::new(owner(1), 0);
         active.record(ServiceStage::Capture, 0, 1).unwrap();
         assert_eq!(
-            active.record_preselection(&[], 1),
+            active.record_preselection(Preselection::default(), 1),
             Err(TimingFault::AlreadyClosed)
+        );
+    }
+
+    #[test]
+    fn completed_preselection_validates_observed_edge_and_preserves_full_u64_work() {
+        for (spans, completed) in [(vec![(9, 11)], 20), (vec![], 9)] {
+            let mut active = ActiveMeasurement::new(owner(1), 10);
+            assert_eq!(
+                active.record_preselection(preselection(&spans), completed),
+                Err(TimingFault::BeforeObservedEdge)
+            );
+            assert!(active.completed_prefix.is_none());
+        }
+        let mut active = ActiveMeasurement::new(owner(1), 0);
+        active
+            .record_preselection(preselection(&[(0, u64::MAX)]), u64::MAX)
+            .unwrap();
+        active.finish_stage(ServiceStage::Capture).unwrap();
+        for stage in &STAGES[1..] {
+            active.stage_not_applicable(*stage).unwrap();
+        }
+        let sample = active.close(RequestOutcome::Refused, u64::MAX);
+        assert_eq!(sample.complete_service_ns(), Some(u64::MAX));
+        assert_eq!(
+            sample.stage_ns[ServiceStage::Capture as usize],
+            Some(u64::MAX)
         );
     }
 }
