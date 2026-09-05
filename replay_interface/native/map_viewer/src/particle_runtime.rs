@@ -80,6 +80,12 @@ pub struct ParticleLightBinding {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParticleSortCamera {
+    pub position_f32_bits: [u32; 3],
+    pub forward_f32_bits: [u32; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParticleGpuRecord(pub [u8; 48]);
 
 #[derive(Clone, Copy, Debug)]
@@ -100,6 +106,9 @@ impl<'a> ParticleGpuView<'a> {
     }
     pub fn world_matrix_f32_bits(self) -> [u32; 16] {
         self.instance.world
+    }
+    pub fn sorted_presentation_id(self) -> Option<u64> {
+        self.instance.last_sort.map(|(id, _)| id)
     }
     pub fn root_subsystems(self) -> impl ExactSizeIterator<Item = ParticleGpuSubsystem<'a>> {
         self.instance
@@ -426,6 +435,7 @@ struct Subsystem {
     retained: usize,
     children: Vec<Subsystem>,
     force_scratch: Vec<[f32; 3]>,
+    sort_phase: usize,
 }
 
 impl Subsystem {
@@ -519,6 +529,7 @@ impl Subsystem {
             retained: 0,
             children,
             force_scratch,
+            sort_phase: 1,
         })
     }
 
@@ -533,6 +544,69 @@ impl Subsystem {
 
     fn finished(&self) -> bool {
         !(self.end < 0.0 || self.local_time <= self.end || self.retained != 0)
+    }
+
+    fn sort_for_draw(
+        &mut self,
+        authored: &AuthoredSubsystem,
+        camera: ParticleSortCamera,
+    ) -> ParticleResult<()> {
+        if self.live != 0 && authored.sort != ParticleSort::None {
+            let gap = [1, 4, 1, 16, 1, 64][self.sort_phase];
+            self.sort_phase = (self.sort_phase + 1) % 6;
+            let key = |particle: &LiveParticle| -> ParticleResult<f32> {
+                let relative: [f32; 3] = std::array::from_fn(|axis| {
+                    particle.visual.position[axis] - f32::from_bits(camera.position_f32_bits[axis])
+                });
+                let value = match authored.sort {
+                    ParticleSort::None => unreachable!(),
+                    ParticleSort::Age => particle.age,
+                    ParticleSort::Depth => {
+                        relative[0] * f32::from_bits(camera.forward_f32_bits[0])
+                            + relative[1] * f32::from_bits(camera.forward_f32_bits[1])
+                            + relative[2] * f32::from_bits(camera.forward_f32_bits[2])
+                    }
+                    ParticleSort::Distance => {
+                        relative[1] * relative[1]
+                            + relative[0] * relative[0]
+                            + relative[2] * relative[2]
+                    }
+                };
+                if !value.is_finite() {
+                    return Err(ParticleInputRefusal::new(
+                        "",
+                        Some(&authored.name),
+                        "particle_sort_key",
+                        ParticleRefusalReason::ArithmeticOverflow,
+                    ));
+                }
+                Ok(value)
+            };
+            // 1423dfd30 performs two gap passes with a strict end bound, not a complete sort.
+            for first_end in [gap * 2, gap * 3] {
+                for end in (first_end..self.live).step_by(gap * 2) {
+                    for left in end - gap * 2..end - gap {
+                        let right = left + gap;
+                        let a = key(&self.particles[left])?;
+                        let b = key(&self.particles[right])?;
+                        if if authored.invert { b < a } else { a < b } {
+                            self.particles.swap(left, right);
+                        }
+                    }
+                }
+            }
+        }
+        let count = authored.children.len();
+        for parent in &self.particles[..self.retained] {
+            let first = parent.child_slot * count;
+            for (state, definition) in self.children[first..first + count]
+                .iter_mut()
+                .zip(&authored.children)
+            {
+                state.sort_for_draw(definition, camera)?;
+            }
+        }
+        Ok(())
     }
 
     fn swap_cpu_copy_gpu(&mut self, source: usize, destination: usize) {
@@ -894,6 +968,7 @@ struct Instance {
     attached: bool,
     subsystems: Vec<Subsystem>,
     failure: Option<ParticleInputRefusal>,
+    last_sort: Option<(u64, ParticleSortCamera)>,
 }
 
 /// Call light_binding during entity-event preparation, then advance once in the
@@ -1013,8 +1088,69 @@ impl ParticleRuntime {
             attached: true,
             subsystems,
             failure: None,
+            last_sort: None,
         });
         Ok(handle)
+    }
+
+    pub fn sort_for_draw(
+        &mut self,
+        handle: ParticleHandle,
+        presentation_id: u64,
+        camera: ParticleSortCamera,
+    ) -> ParticleResult<()> {
+        let instance = self.instance(handle)?;
+        if let Some(error) = &instance.failure {
+            return Err(error.clone());
+        }
+        if self.presentation != Some(presentation_id) {
+            return Err(runtime_refusal(
+                "sort_presentation_id",
+                ParticleRefusalReason::PresentationOutOfOrder,
+            )
+            .event(handle.event_instance_id));
+        }
+        if let Some((prior, previous_camera)) = instance.last_sort {
+            if prior == presentation_id {
+                return if camera == previous_camera {
+                    Ok(())
+                } else {
+                    Err(runtime_refusal(
+                        "sort_camera",
+                        ParticleRefusalReason::DuplicatePresentation,
+                    )
+                    .event(handle.event_instance_id))
+                };
+            }
+        }
+        if camera
+            .position_f32_bits
+            .iter()
+            .chain(camera.forward_f32_bits.iter())
+            .any(|bits| !f32::from_bits(*bits).is_finite())
+        {
+            return Err(
+                runtime_refusal("sort_camera", ParticleRefusalReason::InvalidNumber)
+                    .event(handle.event_instance_id),
+            );
+        }
+        let instance = self.instances[handle.slot].as_mut().unwrap();
+        if instance.attached {
+            for (state, authored) in instance
+                .subsystems
+                .iter_mut()
+                .zip(instance.definition.subsystems.iter())
+            {
+                if let Err(mut error) = state.sort_for_draw(authored, camera) {
+                    error.definition = instance.definition.name().into();
+                    error.event_instance_id = Some(handle.event_instance_id);
+                    instance.failure = Some(error.clone());
+                    return Err(error);
+                }
+            }
+        }
+        instance.last_sort = Some((presentation_id, camera));
+        Ok(())
     }
 
     pub fn gpu_view(&self, handle: ParticleHandle) -> ParticleResult<ParticleGpuView<'_>> {
@@ -1295,6 +1431,120 @@ mod tests {
             .records()
             .collect::<ParticleResult<Vec<_>>>()
             .unwrap()
+    }
+
+    #[test]
+    fn sort_orders_match_native_cpu_and_gpu_instruction_fixtures() {
+        let data: serde_json::Value =
+            serde_json::from_str(portable_engine_evidence::particle_runtime::SORT_CASES).unwrap();
+        let read_vector =
+            |value: &serde_json::Value| std::array::from_fn(|i| value[i].as_u64().unwrap() as u32);
+        let camera = ParticleSortCamera {
+            position_f32_bits: read_vector(&data["camera_position_f32_bits"]),
+            forward_f32_bits: read_vector(&data["camera_forward_f32_bits"]),
+        };
+        let mut calls = 0;
+        for case in data["cases"].as_array().unwrap() {
+            let sort = [
+                ParticleSort::None,
+                ParticleSort::Depth,
+                ParticleSort::Distance,
+                ParticleSort::Age,
+            ][case["sort"].as_u64().unwrap() as usize];
+            let (_fixture, mut runtime, handle) =
+                setup("subsystem={name=s max_amount=129 duration=0 emission=0 life=4}");
+            let instance = runtime.instances[handle.slot].as_mut().unwrap();
+            let mut authored = instance.definition.subsystems[0].clone();
+            authored.sort = sort;
+            authored.invert = case["invert"].as_bool().unwrap();
+            let state = &mut instance.subsystems[0];
+            let slots = case["slots"].as_array().unwrap();
+            state.live = slots.len();
+            state.retained = slots.len();
+            for (index, (particle, input)) in state.particles.iter_mut().zip(slots).enumerate() {
+                particle.age = f32::from_bits(input["age_f32_bits"].as_u64().unwrap() as u32);
+                particle.visual.position =
+                    read_vector(&input["position_f32_bits"]).map(f32::from_bits);
+                particle.visual.atlas_draws = [index as u32, 0];
+            }
+            assert_eq!(state.sort_phase, 1);
+            for (frame, expected) in case["frames"].as_array().unwrap().iter().enumerate() {
+                state.sort_for_draw(&authored, camera).unwrap();
+                let cpu_order: Vec<usize> = state.particles[..state.live]
+                    .iter()
+                    .map(|p| p.child_slot)
+                    .collect();
+                let gpu_order: Vec<u32> = state.particles[..state.live]
+                    .iter()
+                    .map(|p| p.visual.atlas_draws[0])
+                    .collect();
+                assert_eq!(
+                    serde_json::json!(cpu_order),
+                    expected["cpu_order"],
+                    "{sort:?} / {} / {} / {frame}",
+                    authored.invert,
+                    slots.len()
+                );
+                assert_eq!(serde_json::json!(gpu_order), expected["gpu_order"]);
+                assert_eq!(state.sort_phase as u64, expected["phase"].as_u64().unwrap());
+                calls += 1;
+            }
+        }
+        assert_eq!(calls, 1344);
+    }
+
+    #[test]
+    fn public_sort_runs_once_per_presentation_and_preserves_native_detach_gate() {
+        let (_fixture, mut runtime, handle) =
+            setup("subsystem={name=s max_amount=9 duration=0 emission=36 life=4 sort=age}");
+        let camera = ParticleSortCamera {
+            position_f32_bits: [0; 3],
+            forward_f32_bits: [0, 0, 1.0_f32.to_bits()],
+        };
+        assert_eq!(
+            runtime.sort_for_draw(handle, 1, camera).unwrap_err().reason,
+            ParticleRefusalReason::PresentationOutOfOrder
+        );
+        runtime.advance(1, 0.25, &[]).unwrap();
+        runtime.sort_for_draw(handle, 1, camera).unwrap();
+        assert_eq!(
+            runtime.instance(handle).unwrap().subsystems[0].sort_phase,
+            2
+        );
+        runtime.sort_for_draw(handle, 1, camera).unwrap();
+        assert_eq!(
+            runtime.instance(handle).unwrap().subsystems[0].sort_phase,
+            2
+        );
+        assert_eq!(
+            runtime.gpu_view(handle).unwrap().sorted_presentation_id(),
+            Some(1)
+        );
+        let other = ParticleSortCamera {
+            position_f32_bits: [1.0_f32.to_bits(); 3],
+            ..camera
+        };
+        assert_eq!(
+            runtime.sort_for_draw(handle, 1, other).unwrap_err().reason,
+            ParticleRefusalReason::DuplicatePresentation
+        );
+        runtime
+            .advance(
+                2,
+                0.25,
+                &[ParticleInstanceUpdate {
+                    handle,
+                    parent_world_matrix_f32_bits: None,
+                    inherited_speed: None,
+                    action: ParticleAction::Detach,
+                }],
+            )
+            .unwrap();
+        runtime.sort_for_draw(handle, 2, camera).unwrap();
+        assert_eq!(
+            runtime.instance(handle).unwrap().subsystems[0].sort_phase,
+            2
+        );
     }
 
     #[test]
