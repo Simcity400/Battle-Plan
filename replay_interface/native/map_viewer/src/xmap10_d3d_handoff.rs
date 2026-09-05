@@ -1297,6 +1297,39 @@ impl Xmap10ScreenShadowExecutionReceipt {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct UnlitTextureProviderRefusal {
+    program: &'static str,
+    shader_register: u32,
+    symbol: String,
+}
+
+impl std::fmt::Display for UnlitTextureProviderRefusal {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(out, "unlit-reflected-texture-provider-unavailable: {} t{} ({})", self.program, self.shader_register, self.symbol)
+    }
+}
+impl std::error::Error for UnlitTextureProviderRefusal {}
+
+pub(crate) fn require_unlit_texture_providers(
+    program: &'static str,
+    resources: &[crate::shader_compile::DxbcResource],
+) -> Result<()> {
+    for resource in resources.iter().filter(|resource| resource.resource_type == 2) {
+        let supplied = match program {
+            "terrainunlit" => matches!(resource.bind_point, 0 | 1 | 2 | 7 | 12),
+            "treeunlit" => matches!(resource.bind_point, 0..=4 | 6 | 8..=15),
+            _ => false,
+        };
+        if !supplied {
+            return Err(UnlitTextureProviderRefusal {
+                program, shader_register: resource.bind_point, symbol: resource.name.clone(),
+            }.into());
+        }
+    }
+    Ok(())
+}
+
 pub fn xmap10_terrain_unlit_cb1_bytes(
     xmap04_draw_cb1: &[u8],
     shadow_matrix: &crate::Xmap09ShadowMatrixBinding,
@@ -3757,6 +3790,7 @@ mod native {
             require_texture(&pixel_reflection, slot)?;
             require_sampler(&pixel_reflection, slot)?;
         }
+        require_unlit_texture_providers("terrainunlit", &pixel_reflection.resources)?;
         for (reflection, vertex) in [(&vertex_reflection, true), (&pixel_reflection, false)] {
             for resource in &reflection.resources {
                 if resource.bind_count != 1 || match resource.resource_type {
@@ -5121,6 +5155,33 @@ mod tests {
             receipt.binding.producer_replay_frame_identity_sha256,
             sha("replay")
         );
+    }
+
+    #[test]
+    fn unlit_reflected_textures_require_exact_producer_slot_coverage() {
+        use crate::shader_compile::DxbcResource;
+        for (program, supplied) in [
+            ("terrainunlit", vec![0, 1, 2, 7, 12]),
+            ("treeunlit", vec![0, 1, 2, 3, 4, 6, 8, 9, 10, 11, 12, 13, 14, 15]),
+        ] {
+            let texture = |slot| DxbcResource { name: format!("AuthoredTexture{slot}"), resource_type: 2,
+                dimension: 4, bind_point: slot, bind_count: 1 };
+            let exact = supplied.iter().copied().map(texture).collect::<Vec<_>>();
+            require_unlit_texture_providers(program, &exact).unwrap();
+            for slot in (0..=16).filter(|slot| !supplied.contains(slot)) {
+                let mut with_missing_provider = exact.clone();
+                with_missing_provider.push(texture(slot));
+                let error = require_unlit_texture_providers(program, &with_missing_provider).unwrap_err();
+                let refusal = error.downcast_ref::<UnlitTextureProviderRefusal>().unwrap();
+                assert_eq!(refusal.program, program);
+                assert_eq!(refusal.shader_register, slot);
+                assert_eq!(refusal.symbol, format!("AuthoredTexture{slot}"));
+                assert!(error.to_string().contains("unlit-reflected-texture-provider-unavailable"));
+            }
+            let sampler = DxbcResource { name: "UnusedSampler".into(), resource_type: 3,
+                dimension: 0, bind_point: 5, bind_count: 1 };
+            require_unlit_texture_providers(program, &[sampler]).unwrap();
+        }
     }
 
     #[test]
