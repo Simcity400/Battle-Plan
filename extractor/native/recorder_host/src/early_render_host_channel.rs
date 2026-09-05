@@ -204,6 +204,11 @@ impl PreparedEarlyRenderVfsIndex {
         self.index_sha256
     }
 
+    #[cfg(test)]
+    pub(crate) fn encoded_rows_for_test(&self) -> Vec<Vec<u8>> {
+        self.rows.iter().map(|row| compact_contract::early_render_vfs::encode_early_render_vfs_winner_row(row).unwrap()).collect()
+    }
+
     pub fn row_count(&self) -> u32 {
         self.rows.len() as u32
     }

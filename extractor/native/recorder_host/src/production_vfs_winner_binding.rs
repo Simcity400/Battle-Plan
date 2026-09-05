@@ -741,6 +741,62 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "run the three stored-spelling chain stages with MODVFS_CASE_CHAIN_DIR"]
+    fn stored_spelling_chain_producer() {
+        use portable_content_manifest::{ContentManifest, SourceGameIdentity, SourceProfileIdentity};
+        let root = std::path::PathBuf::from(std::env::var_os("MODVFS_CASE_CHAIN_DIR").expect("case-chain directory"));
+        let mut source = inventory();
+        source.rows.remove(1);
+        source.rows[0].relpath = "gfx/models/shared/texture.dds".into();
+        source.rows[1].relpath = "gfx/models/shared/Texture.dds".into();
+        source.rows[1].layer_id = "mod".into();
+        source.rows[1].storage_kind = "directory".into();
+        source.rows[1].source_container_sha256 = None;
+        source.rows[1].source_byte_offset = 0;
+        source.rows[1].source_byte_count = source.rows[1].bytes;
+        source.rows[1].source_range_sha256 = source.rows[1].sha256.clone();
+        source.namespaces[1].id = "mod".into();
+        source.namespaces[1].storage_kind = "directory".into();
+        source.namespaces[1].source_container_sha256 = None;
+        source.namespaces[1].source_container_bytes = None;
+        source.namespaces[1].replace_paths.clear();
+        for (index, bytes) in [b"base".as_slice(), b"override".as_slice()].into_iter().enumerate() {
+            let path = root.join(if index == 0 { "game" } else { "mod" }).join(&source.rows[index].relpath);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, bytes).unwrap();
+            assert_eq!(payload_sha(&fs::read(path).unwrap()), source.rows[index].sha256);
+        }
+        reseal(&mut source);
+        let inventory_path = root.join("source_inventory.json");
+        write_inventory(&inventory_path, &source);
+        let mut layers = ordered_layers();
+        layers[1].layer_id = "mod".into();
+        layers[1].descriptor_sha256 = None;
+        layers[1].source_container_sha256 = None;
+        layers[1].storage_kind = LayerStorageKind::Directory;
+        layers[1].replace_paths.clear();
+        for layer in &mut layers { layer.required_for_playback = true; }
+        let authority = "a".repeat(64);
+        let binding = build_effective_vfs_winner_binding_from_inventory(&inventory_path, &layers, 7, &authority).unwrap();
+        assert_eq!(binding.declared_row_count, 1);
+        assert_eq!(binding.ordered_rows[0].content.stored_game_relative_path, "gfx/models/shared/Texture.dds");
+        let prepared = crate::early_render_host_channel::PreparedEarlyRenderVfsIndex::from_winner_binding(&binding).unwrap();
+        let encoded = prepared.encoded_rows_for_test();
+        assert_eq!(encoded.len(), 1);
+        assert_eq!(&encoded[0][4..6], &2u16.to_le_bytes());
+        fs::write(root.join("winner.evrw"), &encoded[0]).unwrap();
+        let mut manifest = ContentManifest {
+            schema: portable_content_manifest::SCHEMA.into(), product_modset_sha256: "9".repeat(64),
+            source_game: SourceGameIdentity { version: "1.19.2".into(), build: "a729".into(), executable_sha256: "7".repeat(64), build_profile: "case-chain".into() },
+            source_profile: SourceProfileIdentity { profile_id: "case-chain".into(), playset_id: "case-chain".into(), selection_sha256: "0".repeat(64) },
+            effective_vfs_manifest_sha256: authority, ordered_layers: layers, dlc_selection: Vec::new(),
+            localisation_language: "l_english".into(), required_settings: BTreeMap::new(), recorder_local_settings: BTreeMap::new(), required_content: Vec::new(), manifest_digest_sha256: None,
+        };
+        manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
+        fs::write(root.join("selection.json"), manifest.with_computed_digest().unwrap().encode_json().unwrap()).unwrap();
+    }
+
+    #[test]
     fn builder_applies_archive_mod_replace_path_and_is_relocation_invariant() {
         let first = TestRoot::new("a");
         let second = TestRoot::new("b");
