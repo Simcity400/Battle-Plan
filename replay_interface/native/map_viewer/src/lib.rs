@@ -80,6 +80,7 @@ mod occupation_stripe_law;
 mod pass_graph;
 mod pdx_mesh;
 pub mod pdxmesh_asset_law;
+pub mod equipment_model_law;
 mod political_color_synthesis;
 mod posteffect_region_weights;
 mod production_d3d;
