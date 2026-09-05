@@ -20,6 +20,8 @@ Roles. The **orchestrator** is the one agent the owner has explicitly named orch
 - `hoi4_re`: `re_status` first. Add to its registry only by running the tool, never by hand. Four-job offline queue. `hoi4_ghidra` (pinned a729/870ebf): `ghidra_status` first, `ghidra_verify` before relying on indexed evidence. Census and cross-analysis outputs are discovery, not proof. Pinned artifacts use the `engine_evidence` crate pattern with literal byte sizes and must pass `reverify_engine_evidence.py`.
 - Lanes never launch the game. A needed live probe goes back to the orchestrator as a bounded SPEC.
 - Testing: a lane runs the suites of the crates it touched, once, after approve. The gate runs everything else. Nobody reruns suites after a merge.
+- After implementation and validation, spawn exactly one reviewer subagent of your own kind and model.
+- Give it the requirements, diff, and raw validation evidence. Keep it read-only, fix every finding, and re-review with the same subagent until it approves. If the commit changes afterward, get one final confirmation.
 
 ## Lane
 
@@ -34,10 +36,9 @@ Never run the full workspace suite.
 
 ### Review
 
-- After implementation and validation, spawn exactly one reviewer subagent of your own kind and model.
-- Give it the requirements, diff, and raw validation evidence. Keep it read-only, fix every finding, and re-review with the same subagent until it approves. If the commit changes afterward, get one final confirmation.
 
-## Orchestrator
+
+## Orchestrator (Skip if not reffered to explicitly as the orchestrator)
 
 Staffs lanes, reviews, lands, runs the gate, runs captures, asks the owner. Never implements lane work itself. Cap: 7 running agents; queue past it, never drop. After a restart or limit kill, resume each agent by its id. Never relaunch a lane that has an id. Never replace a slow lane.
 
