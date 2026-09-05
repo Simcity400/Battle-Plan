@@ -451,13 +451,6 @@ portable_replay/native/engine_evidence/artifacts/func_1408434c0.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_1408434c0.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1422c6bc0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1422c6bc0.instructions.txt text eol=lf
-portable_replay/native/engine_evidence/artifacts/func_141019d60.decompile.c -text -eol
-portable_replay/native/engine_evidence/artifacts/func_14101ae30.decompile.c -text -eol
-portable_replay/native/engine_evidence/artifacts/func_14101ed30.decompile.c -text -eol
-portable_replay/native/engine_evidence/artifacts/func_14101ed60.decompile.c -text -eol
-portable_replay/native/engine_evidence/artifacts/func_141030720.decompile.c -text -eol
-portable_replay/native/engine_evidence/artifacts/func_141030b50.decompile.c -text -eol
-portable_replay/native/engine_evidence/artifacts/func_14123fd20.decompile.c -text -eol
 portable_replay/native/engine_evidence/artifacts/func_140bee1a0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_140bf0230.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141633050.decompile.c text eol=lf
@@ -466,3 +459,10 @@ portable_replay/native/engine_evidence/artifacts/func_141917d00.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_141917d00.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_140c80240.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1424d8760.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_141019d60.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14101ae30.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14101ed30.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14101ed60.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_141030720.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_141030b50.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14123fd20.decompile.c text eol=lf

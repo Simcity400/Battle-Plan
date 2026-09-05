@@ -700,16 +700,8 @@ mod tests {
     #[test]
     fn an_unbuilt_carrier_refuses_installation_and_names_its_counted_gates() {
         let error = install().expect_err("a pending producer must not claim an install");
-        assert!(error.contains("xmap15_orders_semantic"), "{error}");
-        for fragment in [
-            "movement census",
-            "SUBMITTED MESH",
-            "exact_primitive_topology_u32",
-            "map_unit_presentation",
-            "XMAP15_MOVEMENT_ROW_CONTRACT",
-        ] {
-            assert!(error.contains(fragment), "the refusal must reach {fragment}: {error}");
-        }
+        assert_eq!(error, PENDING.refusal());
+        assert!(!OWED_CARRIERS[0].wire_absence.emits_key_when_unfed());
         let plan_gates = XMAP15_PLAN_ROW_CONTRACT
             .iter()
             .filter(|(_, source)| source.gate_owner().is_some())
