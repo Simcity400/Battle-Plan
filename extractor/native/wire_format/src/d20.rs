@@ -50,6 +50,11 @@ pub mod field {
     pub const MOVEMENT_ROUTE_COUNT: u32 = 27;
     pub const CURRENT_TEMPLATE_STATUS: u32 = 28;
     pub const CURRENT_TEMPLATE_ID: u32 = 29;
+    pub const ROUTE_HEAD_STATUS: u32 = 30;
+    pub const ROUTE_HEAD_PROVINCE: u32 = 31;
+    pub const MODEL_TEMPLATE_ID: u32 = 32;
+    pub const MODEL_ENTITY: u32 = 33;
+    pub const MODEL_CATEGORY: u32 = 34;
 }
 
 /// Declared precision for every continuous field except `move_progress`.
@@ -82,6 +87,11 @@ pub fn schema() -> Schema {
         Field::new(f::TEMPLATE_ID, Kind::Unsigned).optional().nullable(),
         Field::new(f::CURRENT_TEMPLATE_STATUS, Kind::Unsigned),
         Field::new(f::CURRENT_TEMPLATE_ID, Kind::Unsigned).optional().nullable(),
+        Field::new(f::ROUTE_HEAD_STATUS, Kind::Unsigned),
+        Field::new(f::ROUTE_HEAD_PROVINCE, Kind::Unsigned).optional().nullable(),
+        Field::new(f::MODEL_TEMPLATE_ID, Kind::Unsigned).optional().nullable(),
+        Field::new(f::MODEL_ENTITY, Kind::ContentId).optional().nullable(),
+        Field::new(f::MODEL_CATEGORY, Kind::Unsigned).optional().nullable(),
     ];
 
     // Bar-drawn continuous values: quantized.
@@ -258,8 +268,8 @@ mod tests {
         let s = schema();
         assert_eq!(
             s.collections[0].fields.len(),
-            29,
-            "2 key + 25 sampleable non-key fields"
+            34,
+            "2 key + 32 sampleable non-key fields"
         );
     }
 

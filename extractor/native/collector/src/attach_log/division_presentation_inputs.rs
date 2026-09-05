@@ -80,6 +80,7 @@ fn template_once<M: DecodeMemory + ?Sized>(
     })
 }
 
+#[cfg(test)]
 fn stable_template<M: DecodeMemory + ?Sized>(
     mem: &M,
     module: usize,
@@ -93,8 +94,128 @@ fn stable_template<M: DecodeMemory + ?Sized>(
     (first == second).then_some(first.template)
 }
 
-pub(super) fn current_template(module: usize, body: usize, id: u32) -> Option<Option<u32>> {
-    stable_template(&LIVE_MEMORY, module, body, id, || {})
+#[derive(PartialEq, Eq)]
+struct PreferenceRead {
+    string_custody: [usize; 3],
+    preference: compact_contract::division_routes::TemplateModelPreference,
+}
+
+fn preference_once<M: DecodeMemory + ?Sized>(
+    mem: &M,
+    selected: &TemplateRead,
+) -> Option<PreferenceRead> {
+    let template_id = selected.template?;
+    let pointer = selected.selected_pointer;
+    let entity = read_msvc_string_snapshot_once_in(
+        mem,
+        pointer.checked_add(0x210)?,
+        compact_contract::division_routes::MAX_MODEL_ENTITY_BYTES,
+    )?;
+    let present = mem.scalar::<1>(pointer.checked_add(0x208)?)?[0];
+    let category = if present == 0 {
+        None
+    } else {
+        Some(mem.u64(pointer.checked_add(0x200)?)?)
+    };
+    Some(PreferenceRead {
+        string_custody: [entity.size, entity.cap, entity.chars_addr],
+        preference: compact_contract::division_routes::TemplateModelPreference {
+            template_id,
+            entity: String::from_utf8(entity.bytes).ok()?,
+            category,
+        },
+    })
+}
+
+fn stable_template_inputs<M: DecodeMemory + ?Sized>(
+    mem: &M,
+    module: usize,
+    body: usize,
+    id: u32,
+    between: impl FnOnce(),
+) -> (
+    Option<Option<u32>>,
+    Option<compact_contract::division_routes::TemplateModelPreference>,
+) {
+    let Some(first) = template_once(mem, module, body, id) else {
+        return (None, None);
+    };
+    let preference = preference_once(mem, &first);
+    between();
+    let Some(second) = template_once(mem, module, body, id) else {
+        return (None, None);
+    };
+    if first != second {
+        return (None, None);
+    }
+    let after = preference_once(mem, &second);
+    let preference = if preference == after {
+        preference.map(|value| value.preference)
+    } else {
+        None
+    };
+    (Some(first.template), preference)
+}
+
+pub(super) fn current_template_inputs(
+    module: usize,
+    body: usize,
+    id: u32,
+) -> (
+    Option<Option<u32>>,
+    Option<compact_contract::division_routes::TemplateModelPreference>,
+) {
+    stable_template_inputs(&LIVE_MEMORY, module, body, id, || {})
+}
+
+#[derive(PartialEq, Eq)]
+struct HeadRead {
+    identity: [u64; 4],
+    pointer: usize,
+    province: Option<u32>,
+}
+
+fn head_once<M: DecodeMemory + ?Sized>(
+    mem: &M,
+    module: usize,
+    body: usize,
+    id: u32,
+) -> Option<HeadRead> {
+    let identity = division_identity(mem, module, body, id)?;
+    let pointer = mem.u64(body.checked_add(0x1e0)?)? as usize;
+    let province = if pointer == 0 {
+        None
+    } else {
+        if !is_map_control_heap_pointer(pointer)
+            || mem.u64(pointer)? != module.checked_add(CPROVINCE_VTABLE_RVA)? as u64
+        {
+            return None;
+        }
+        let province = mem.u32(pointer.checked_add(CPROVINCE_OFF_ID)?)?;
+        if !valid_division_province_id(province) {
+            return None;
+        }
+        Some(province)
+    };
+    Some(HeadRead {
+        identity,
+        pointer,
+        province,
+    })
+}
+
+#[cfg(test)]
+fn stable_head<M: DecodeMemory + ?Sized>(
+    mem: &M,
+    module: usize,
+    body: usize,
+    id: u32,
+    between: impl FnOnce(),
+) -> Option<Option<u32>> {
+    let first = head_once(mem, module, body, id)?;
+    between();
+    let second = head_once(mem, module, body, id)?;
+    (first == second).then_some(first.province)
 }
 
 fn route_once<M: DecodeMemory + ?Sized>(
@@ -139,6 +260,7 @@ fn route_once<M: DecodeMemory + ?Sized>(
     })
 }
 
+#[cfg(test)]
 fn stable_route<M: DecodeMemory + ?Sized>(
     mem: &M,
     module: usize,
@@ -152,8 +274,33 @@ fn stable_route<M: DecodeMemory + ?Sized>(
     (first == second).then_some(first.provinces)
 }
 
-pub(super) fn current_route(module: usize, body: usize, id: u32) -> Option<Vec<u32>> {
-    stable_route(&LIVE_MEMORY, module, body, id, || {})
+fn stable_route_inputs<M: DecodeMemory + ?Sized>(
+    mem: &M,
+    module: usize,
+    body: usize,
+    id: u32,
+    between: impl FnOnce(),
+) -> (Option<Vec<u32>>, Option<Option<u32>>) {
+    let route = route_once(mem, module, body, id);
+    let head = head_once(mem, module, body, id);
+    between();
+    let next_route = route_once(mem, module, body, id);
+    let next_head = head_once(mem, module, body, id);
+    if route != next_route || head != next_head {
+        return (None, None);
+    }
+    (
+        route.map(|value| value.provinces),
+        head.map(|value| value.province),
+    )
+}
+
+pub(super) fn current_route_inputs(
+    module: usize,
+    body: usize,
+    id: u32,
+) -> (Option<Vec<u32>>, Option<Option<u32>>) {
+    stable_route_inputs(&LIVE_MEMORY, module, body, id, || {})
 }
 
 #[cfg(test)]
@@ -217,6 +364,104 @@ mod tests {
         mem.vector(body, ALTERNATE_ROUTE, 0, &[]);
         (mem, module, body)
     }
+    #[test]
+    fn route_head_uses_province_pointer_and_preserves_unknown_null_and_changed() {
+        let (mem, module, body) = fixture();
+        let province = body + 0x50000;
+        assert_eq!(stable_head(&mem, module, body, 7, || {}), None);
+        mem.put64(body + 0x1e0, 0);
+        assert_eq!(stable_head(&mem, module, body, 7, || {}), Some(None));
+        mem.put64(body + 0x1e0, province as u64);
+        mem.put64(province, (module + CPROVINCE_VTABLE_RVA) as u64);
+        mem.put32(province + CPROVINCE_OFF_ID, 23);
+        mem.put32(body + DIVISION_OFF_LOCATION, 12);
+        assert_eq!(stable_head(&mem, module, body, 7, || {}), Some(Some(23)));
+        assert_eq!(
+            stable_route_inputs(&mem, module, body, 7, || {}),
+            (Some(vec![19, 17, 19]), Some(Some(23)))
+        );
+        assert_eq!(
+            stable_route_inputs(&mem, module, body, 7, || mem.put32(body + 0x10000, 18)),
+            (None, None)
+        );
+        mem.put32(body + 0x10000, 19);
+        assert_eq!(
+            stable_head(&mem, module, body, 7, || mem
+                .put32(province + CPROVINCE_OFF_ID, 24)),
+            None
+        );
+        mem.put64(province, 0);
+        assert_eq!(stable_head(&mem, module, body, 7, || {}), None);
+        mem.put64(province, (module + CPROVINCE_VTABLE_RVA) as u64);
+        mem.put32(province + CPROVINCE_OFF_ID, 0);
+        assert_eq!(stable_head(&mem, module, body, 7, || {}), None);
+        mem.put32(province + CPROVINCE_OFF_ID, 23);
+        assert_eq!(
+            stable_head(&mem, module, body, 7, || mem
+                .put32(body + DIVISION_OFF_ID_ID, 8)),
+            None
+        );
+    }
+
+    #[test]
+    fn template_preferences_bind_current_identity_and_preserve_empty_optional_and_torn_values() {
+        let (mem, module, body) = fixture();
+        let template = body + 0x30000;
+        mem.put64(body + 0x3b8, template as u64);
+        mem.put64(template, (module + DIVISION_TEMPLATE_VTABLE_RVA) as u64);
+        mem.put32(
+            template + DIVISION_TEMPLATE_OFF_TYPE,
+            DIVISION_TEMPLATE_TYPE,
+        );
+        mem.put32(template + DIVISION_TEMPLATE_OFF_ID, 73);
+        mem.put(template + 0x210, b"tank_entity\0");
+        mem.put64(template + 0x220, 11);
+        mem.put64(template + 0x228, 15);
+        mem.put(template + 0x208, &[0]);
+        let (id, preference) = stable_template_inputs(&mem, module, body, 7, || {});
+        assert_eq!(id, Some(Some(73)));
+        let preference = preference.unwrap();
+        assert_eq!(preference.template_id, 73);
+        assert_eq!(preference.entity, "tank_entity");
+        assert_eq!(preference.category, None);
+        mem.put(template + 0x208, &[1]);
+        assert_eq!(
+            stable_template_inputs(&mem, module, body, 7, || {}),
+            (Some(Some(73)), None)
+        );
+        mem.put64(template + 0x200, 0);
+        assert_eq!(
+            stable_template_inputs(&mem, module, body, 7, || {})
+                .1
+                .unwrap()
+                .category,
+            Some(0)
+        );
+        mem.put(template + 0x210, b"\0");
+        mem.put64(template + 0x220, 0);
+        assert_eq!(
+            stable_template_inputs(&mem, module, body, 7, || {})
+                .1
+                .unwrap()
+                .entity,
+            ""
+        );
+        assert_eq!(
+            stable_template_inputs(&mem, module, body, 7, || mem.put64(template + 0x200, 9)),
+            (Some(Some(73)), None)
+        );
+        assert_eq!(
+            stable_template_inputs(&mem, module, body, 7, || mem
+                .put32(template + DIVISION_TEMPLATE_OFF_ID, 74)),
+            (None, None)
+        );
+        mem.put32(template + DIVISION_TEMPLATE_OFF_ID, 73);
+        assert_eq!(
+            stable_template_inputs(&mem, module, body, 7, || mem.put64(body + 0x3b8, 0)),
+            (None, None)
+        );
+    }
+
     #[test]
     fn current_template_uses_only_witnessed_null_fallback_and_preserves_absence() {
         let (mem, module, body) = fixture();

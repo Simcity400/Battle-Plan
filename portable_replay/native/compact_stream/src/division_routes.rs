@@ -1,12 +1,22 @@
-pub const FORMAT_MARKER: u32 = u32::from_le_bytes(*b"D2R2");
-pub const ROW_LEN: usize = 136;
+pub const FORMAT_MARKER: u32 = u32::from_le_bytes(*b"D2R3");
+pub const ROW_LEN: usize = 168;
 pub const MAX_ROUTE_PROVINCES: usize = 65_536;
+pub const MAX_MODEL_ENTITY_BYTES: usize = 4096;
 
-pub fn append_routes<'a>(
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TemplateModelPreference {
+    pub template_id: u32,
+    pub entity: String,
+    pub category: Option<u64>,
+}
+
+pub fn append_inputs<'a>(
     payload: &mut Vec<u8>,
     routes: impl ExactSizeIterator<Item = Option<&'a [u32]>>,
+    preferences: impl ExactSizeIterator<Item = Option<&'a TemplateModelPreference>>,
 ) {
     let rows = routes.len();
+    assert_eq!(rows, preferences.len());
     assert_eq!(payload.len(), 32 + rows * ROW_LEN);
     payload[28..32].copy_from_slice(&FORMAT_MARKER.to_le_bytes());
     let mut cursor = 0u32;
@@ -24,6 +34,27 @@ pub fn append_routes<'a>(
             .checked_add(route.len() as u32)
             .expect("bounded division route pool");
     }
+    let mut cursor = 0u32;
+    for (index, preference) in preferences.enumerate() {
+        let Some(preference) = preference else {
+            continue;
+        };
+        assert!(preference.entity.len() <= MAX_MODEL_ENTITY_BYTES);
+        let base = 32 + index * ROW_LEN;
+        assert!(preference.template_id > 0 && preference.template_id <= i32::MAX as u32);
+        payload[base + 144..base + 148].copy_from_slice(&preference.template_id.to_le_bytes());
+        payload[base + 148..base + 152]
+            .copy_from_slice(&u32::from(preference.category.is_some()).to_le_bytes());
+        payload[base + 152..base + 160]
+            .copy_from_slice(&preference.category.unwrap_or(0).to_le_bytes());
+        payload[base + 160..base + 164].copy_from_slice(&cursor.to_le_bytes());
+        payload[base + 164..base + 168]
+            .copy_from_slice(&(preference.entity.len() as u32 + 1).to_le_bytes());
+        payload.extend_from_slice(preference.entity.as_bytes());
+        cursor = cursor
+            .checked_add(preference.entity.len() as u32)
+            .expect("bounded template entity pool");
+    }
 }
 
 pub fn write_current_template(payload: &mut [u8], index: usize, value: Option<Option<u32>>) {
@@ -40,10 +71,25 @@ pub fn write_current_template(payload: &mut [u8], index: usize, value: Option<Op
     payload[base + 132..base + 136].copy_from_slice(&id.to_le_bytes());
 }
 
+pub fn write_route_head(payload: &mut [u8], index: usize, value: Option<Option<u32>>) {
+    let base = 32 + index * ROW_LEN;
+    let (status, id) = match value {
+        None => (0u32, 0),
+        Some(None) => (1, 0),
+        Some(Some(id)) => {
+            assert!(id > 0 && id <= i32::MAX as u32);
+            (2, id)
+        }
+    };
+    payload[base + 136..base + 140].copy_from_slice(&status.to_le_bytes());
+    payload[base + 140..base + 144].copy_from_slice(&id.to_le_bytes());
+}
+
 pub struct DivisionRoutes<'a> {
     payload: &'a [u8],
     rows: usize,
     pool: usize,
+    entity_pool: usize,
 }
 
 impl<'a> DivisionRoutes<'a> {
@@ -59,7 +105,7 @@ impl<'a> DivisionRoutes<'a> {
             .checked_mul(ROW_LEN)
             .and_then(|size| size.checked_add(32))
             .ok_or("division route row length overflow")?;
-        if pool > payload.len() || (payload.len() - pool) % 4 != 0 {
+        if pool > payload.len() {
             return Err("division route row or pool length invalid".into());
         }
         let mut consumed = 0usize;
@@ -74,6 +120,16 @@ impl<'a> DivisionRoutes<'a> {
             }
             if word(payload, base + 8) & (1 << 12) != 0 && template_status != 0 {
                 return Err("deleted division carries current template".into());
+            }
+            let head_status = word(payload, base + 136);
+            let head_id = word(payload, base + 140);
+            if !matches!((head_status, head_id), (0 | 1, 0))
+                && !(head_status == 2 && head_id > 0 && head_id <= i32::MAX as u32)
+            {
+                return Err("division route head has invalid status or identity".into());
+            }
+            if word(payload, base + 8) & (1 << 12) != 0 && head_status != 0 {
+                return Err("deleted division carries route head".into());
             }
             let start = word(payload, base + 120) as usize;
             let count = word(payload, base + 124) as usize;
@@ -97,10 +153,45 @@ impl<'a> DivisionRoutes<'a> {
                 return Err("division route extends beyond pool".into());
             }
         }
-        if consumed != (payload.len() - pool) / 4 {
-            return Err("division route pool contains unowned provinces".into());
+        let entity_pool = pool + consumed * 4;
+        let mut text_consumed = 0usize;
+        for index in 0..rows {
+            let base = 32 + index * ROW_LEN;
+            let template = word(payload, base + 144);
+            let present = word(payload, base + 148);
+            let category = u64::from_le_bytes(payload[base + 152..base + 160].try_into().unwrap());
+            let start = word(payload, base + 160) as usize;
+            let count = word(payload, base + 164) as usize;
+            if template == 0 {
+                if present != 0 || category != 0 || start != 0 || count != 0 {
+                    return Err("unavailable template preference carries values".into());
+                }
+                continue;
+            }
+            if word(payload, base + 8) & (1 << 12) != 0
+                || word(payload, base + 128) != 2
+                || word(payload, base + 132) != template
+            {
+                return Err("template preference current-template custody mismatch".into());
+            }
+            if present > 1 || (present == 0 && category != 0) {
+                return Err("template preference category presence invalid".into());
+            }
+            if count == 0 || count - 1 > MAX_MODEL_ENTITY_BYTES || start != text_consumed {
+                return Err("template preference entity length or pool custody invalid".into());
+            }
+            text_consumed = text_consumed
+                .checked_add(count - 1)
+                .ok_or("template entity pool overflow")?;
+            let bytes = payload
+                .get(entity_pool + start..entity_pool + text_consumed)
+                .ok_or("template preference entity truncated")?;
+            std::str::from_utf8(bytes).map_err(|_| "template preference entity invalid UTF-8")?;
         }
-        for province in payload[pool..].chunks_exact(4) {
+        if entity_pool + text_consumed != payload.len() {
+            return Err("division input pool contains unowned bytes".into());
+        }
+        for province in payload[pool..entity_pool].chunks_exact(4) {
             let id = u32::from_le_bytes(province.try_into().unwrap());
             if id == 0 || id >= i32::MAX as u32 {
                 return Err("division route contains invalid province identity".into());
@@ -110,6 +201,7 @@ impl<'a> DivisionRoutes<'a> {
             payload,
             rows,
             pool,
+            entity_pool,
         })
     }
 
@@ -122,6 +214,38 @@ impl<'a> DivisionRoutes<'a> {
             2 => Some(Some(word(self.payload, base + 132))),
             _ => unreachable!("validated template status"),
         }
+    }
+
+    pub fn route_head(&self, index: usize) -> Option<Option<u32>> {
+        assert!(index < self.rows);
+        let base = 32 + index * ROW_LEN;
+        match word(self.payload, base + 136) {
+            0 => None,
+            1 => Some(None),
+            2 => Some(Some(word(self.payload, base + 140))),
+            _ => unreachable!("validated route head status"),
+        }
+    }
+
+    pub fn template_preference(&self, index: usize) -> Option<TemplateModelPreference> {
+        assert!(index < self.rows);
+        let base = 32 + index * ROW_LEN;
+        let template_id = word(self.payload, base + 144);
+        if template_id == 0 {
+            return None;
+        }
+        let category = (word(self.payload, base + 148) == 1)
+            .then(|| u64::from_le_bytes(self.payload[base + 152..base + 160].try_into().unwrap()));
+        let start = self.entity_pool + word(self.payload, base + 160) as usize;
+        let len = word(self.payload, base + 164) as usize - 1;
+        let entity = std::str::from_utf8(&self.payload[start..start + len])
+            .unwrap()
+            .to_owned();
+        Some(TemplateModelPreference {
+            template_id,
+            entity,
+            category,
+        })
     }
 
     pub fn route(&self, index: usize) -> Option<Vec<u32>> {
@@ -152,7 +276,11 @@ mod tests {
     fn payload(routes: &[Option<Vec<u32>>]) -> Vec<u8> {
         let mut bytes = vec![0; 32 + routes.len() * ROW_LEN];
         bytes[8..12].copy_from_slice(&(routes.len() as u32).to_le_bytes());
-        append_routes(&mut bytes, routes.iter().map(|route| route.as_deref()));
+        append_inputs(
+            &mut bytes,
+            routes.iter().map(|route| route.as_deref()),
+            std::iter::repeat_n(None, routes.len()),
+        );
         bytes
     }
 
@@ -162,7 +290,7 @@ mod tests {
         legacy[8..12].copy_from_slice(&1u32.to_le_bytes());
         legacy[32..36].copy_from_slice(&7u32.to_le_bytes());
         legacy[36..40].copy_from_slice(&4713u32.to_le_bytes());
-        legacy.extend_from_slice(&[0; 16]);
+        legacy.extend_from_slice(&[0; 48]);
         assert_eq!(
             DivisionRoutes::parse(&legacy).err().unwrap(),
             "unsupported division route format marker"
@@ -191,6 +319,68 @@ mod tests {
             DivisionRoutes::parse(&bytes).err().unwrap(),
             "unsupported division route format marker"
         );
+    }
+
+    #[test]
+    fn template_preferences_share_pool_without_aliasing_routes_or_current_identity() {
+        let preferences = [
+            None,
+            Some(TemplateModelPreference {
+                template_id: 73,
+                entity: String::new(),
+                category: None,
+            }),
+            Some(TemplateModelPreference {
+                template_id: 74,
+                entity: "armour_entity".into(),
+                category: Some(0),
+            }),
+        ];
+        let routes = [None, Some(vec![]), Some(vec![19, 17, 19])];
+        let mut bytes = vec![0; 32 + 3 * ROW_LEN];
+        bytes[8..12].copy_from_slice(&3u32.to_le_bytes());
+        for (index, preference) in preferences.iter().enumerate() {
+            if let Some(preference) = preference {
+                write_current_template(&mut bytes, index, Some(Some(preference.template_id)));
+            }
+            write_route_head(&mut bytes, index, [None, Some(None), Some(Some(23))][index]);
+        }
+        append_inputs(
+            &mut bytes,
+            routes.iter().map(|r| r.as_deref()),
+            preferences.iter().map(|p| p.as_ref()),
+        );
+        let parsed = DivisionRoutes::parse(&bytes).unwrap();
+        for index in 0..3 {
+            assert_eq!(parsed.template_preference(index), preferences[index]);
+            assert_eq!(parsed.route(index), routes[index]);
+        }
+        assert_eq!(parsed.route_head(0), None);
+        assert_eq!(parsed.route_head(1), Some(None));
+        assert_eq!(parsed.route_head(2), Some(Some(23)));
+        for (offset, value) in [
+            (32 + 136, 3),
+            (32 + 140, 1),
+            (32 + ROW_LEN + 132, 74),
+            (32 + ROW_LEN + 148, 2),
+            (32 + ROW_LEN + 152, 1),
+            (32 + 2 * ROW_LEN + 160, 1),
+            (32 + 2 * ROW_LEN + 164, MAX_MODEL_ENTITY_BYTES as u32 + 2),
+            (32 + 2 * ROW_LEN + 8, 1 << 12),
+        ] {
+            let mut invalid = bytes.clone();
+            invalid[offset..offset + 4].copy_from_slice(&u32::to_le_bytes(value));
+            assert!(DivisionRoutes::parse(&invalid).is_err(), "offset {offset}");
+        }
+        let mut invalid = bytes.clone();
+        *invalid.last_mut().unwrap() = 0xff;
+        assert!(DivisionRoutes::parse(&invalid).is_err());
+        assert!(DivisionRoutes::parse(&bytes[..bytes.len() - 1]).is_err());
+        bytes[28..32].copy_from_slice(b"D2R2");
+        assert!(DivisionRoutes::parse(&bytes)
+            .err()
+            .unwrap()
+            .contains("unsupported"));
     }
 
     #[test]
