@@ -114,11 +114,10 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
     ),
     (
         "tech_country_delta",
-        "d13's wire baseline advances UNCONDITIONALLY once per frame wherever its \
-         publication is encoded (lane RU: in the tech child during the bundle \
-         fan-out, or in the tail's substitute fallback for a panicked lane), so no \
-         reader bracket decides whether it survived; the blanket reset is what keeps \
-         the pin and the fold's mirror in step",
+        "d13 takes PRE-FRAME RESTORATION like d45 and d55: its wire baseline advances at \
+         emission with the frame's entry journalled, its own rejection (or a refused frame) \
+         restores the entry and re-opens the change gate's baseline obligation, any other \
+         domain's rejection leaves the advance standing, and the frame seal drops the entry",
     ),
     (
         "air_wings",
@@ -1468,4 +1467,112 @@ fn rejecting_every_domain_is_the_old_blanket_reset() {
             probe.field
         );
     }
+}
+
+fn seeded_tech_tracker(seed: u32) -> CompactTechCountryDeltaTracker {
+    let mut tracker = CompactTechCountryDeltaTracker::default();
+    let dictionary = TechnologyIdDictionary {
+        by_definition_index: (0..8u32)
+            .map(|index| (index, (0usize, format!("tech_{index}"))))
+            .collect(),
+    };
+    let rows = [super::domain13_tech_delta_tests::tech_row(1, seed)];
+    let _ = compact_tech_data_payload_delta(&rows, 0, 0, &mut tracker, &dictionary);
+    tracker
+}
+
+fn tech_pin_bytes(trackers: &CompactPerfGateTrackers) -> Vec<Vec<u8>> {
+    trackers
+        .tech_country_delta
+        .pin
+        .blocks
+        .rows
+        .iter()
+        .map(|block| block.country_row.to_vec())
+        .collect()
+}
+
+#[test]
+fn a_rejected_tech_bracket_restores_the_pin_the_frame_found() {
+    let mut trackers = CompactPerfGateTrackers::default();
+    trackers.tech_country_delta = seeded_tech_tracker(1);
+    trackers.tech_country_delta.close_frame_transaction();
+    let entry = tech_pin_bytes(&trackers);
+    let dictionary = TechnologyIdDictionary {
+        by_definition_index: (0..8u32)
+            .map(|index| (index, (0usize, format!("tech_{index}"))))
+            .collect(),
+    };
+    let rows = [super::domain13_tech_delta_tests::tech_row(1, 2)];
+    let _ = compact_tech_data_payload_delta(&rows, 1, 0, &mut trackers.tech_country_delta, &dictionary);
+    assert_ne!(tech_pin_bytes(&trackers), entry, "the frame advanced the pin");
+    let rejected: BTreeSet<u16> = [COMPACT_DOMAIN_TECH].into_iter().collect();
+    reset_trackers_after_rejected_bracket(&mut trackers, &rejected);
+    assert_eq!(
+        tech_pin_bytes(&trackers),
+        entry,
+        "d13's own rejection puts the pin back where the frame found it"
+    );
+    assert!(
+        trackers.tech_country_delta.pin.baseline_seeded,
+        "the restored pin is the seeded baseline, not Default"
+    );
+}
+
+#[test]
+fn an_unrelated_rejection_keeps_the_advanced_tech_pin() {
+    let mut trackers = CompactPerfGateTrackers::default();
+    trackers.tech_country_delta = seeded_tech_tracker(1);
+    trackers.tech_country_delta.close_frame_transaction();
+    let dictionary = TechnologyIdDictionary {
+        by_definition_index: (0..8u32)
+            .map(|index| (index, (0usize, format!("tech_{index}"))))
+            .collect(),
+    };
+    let rows = [super::domain13_tech_delta_tests::tech_row(1, 2)];
+    let _ = compact_tech_data_payload_delta(&rows, 1, 0, &mut trackers.tech_country_delta, &dictionary);
+    let advanced = tech_pin_bytes(&trackers);
+    let rejected: BTreeSet<u16> = [COMPACT_DOMAIN_FUEL, UNRELATED_DOMAIN].into_iter().collect();
+    reset_trackers_after_rejected_bracket(&mut trackers, &rejected);
+    assert_eq!(
+        tech_pin_bytes(&trackers),
+        advanced,
+        "d13 survived its own bracket, so its record reached the fold and the advance stands"
+    );
+    assert!(
+        trackers.tech_country_delta.frame_entry.is_some(),
+        "the entry is still journalled until the frame seals"
+    );
+    let mut retired = Vec::new();
+    commit_delta_pin_transactions(&mut trackers, &mut retired);
+    assert!(trackers.tech_country_delta.frame_entry.is_none(), "the seal drops the entry");
+    reset_trackers_after_rejected_bracket(&mut trackers, &[COMPACT_DOMAIN_TECH].into_iter().collect());
+    assert_eq!(
+        tech_pin_bytes(&trackers),
+        advanced,
+        "a later frame's rejection cannot undo a sealed advance"
+    );
+}
+
+#[test]
+fn a_refused_frame_returns_the_restored_tech_pin() {
+    let mut refused = CompactPerfGateTrackers::default();
+    refused.tech_country_delta = seeded_tech_tracker(1);
+    refused.tech_country_delta.close_frame_transaction();
+    let entry = tech_pin_bytes(&refused);
+    let dictionary = TechnologyIdDictionary {
+        by_definition_index: (0..8u32)
+            .map(|index| (index, (0usize, format!("tech_{index}"))))
+            .collect(),
+    };
+    let rows = [super::domain13_tech_delta_tests::tech_row(1, 2)];
+    let _ = compact_tech_data_payload_delta(&rows, 1, 0, &mut refused.tech_country_delta, &dictionary);
+    let mut published = CompactPerfGateTrackers::default();
+    restore_country_trackers_after_refused_frame(&mut refused, &mut published);
+    assert_eq!(
+        tech_pin_bytes(&published),
+        entry,
+        "a refused frame published nothing; the pre-frame pin comes back to the published slot"
+    );
+    assert!(published.tech_country_delta.pin.baseline_seeded);
 }

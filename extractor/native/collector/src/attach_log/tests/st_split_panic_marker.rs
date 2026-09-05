@@ -1288,21 +1288,22 @@ fn the_split_helper_serves_exactly_d47_d81_d101_d102_and_d103() {
 ///    arm -- lane LE split the tag that used to cover d12 as well);
 /// 3. `replace_rejected_domain_records_with_gaps` replaces the record the join's
 ///    substitute would have published with a `WorkerPanic` gap;
-/// 4. `reset_trackers_after_rejected_bracket` takes the advanced baseline away.
-///    It also calls `d13_tech_change_gate_lane::gate::note_pin_lost()` on the way
-///    -- which is the accounting the lost XUI09 pins are owed -- and that is NOT
+/// 4. `reset_trackers_after_rejected_bracket` restores the pin the frame found
+///    (the cold entry here). It also calls
+///    `d13_tech_change_gate_lane::gate::note_pin_lost()` on the way -- the
+///    accounting the discarded walk's consumed marks are owed -- and that is NOT
 ///    asserted here: it sets a process-global latch that a parallel test could
-///    observe, and the wipe is what this test is for.
+///    observe, and the restoration is what this test is for.
 ///
 /// PRODUCTION CHANGE THAT WOULD MAKE THIS FAIL: deleting
 /// `let _panic_marker = ClosedBracketPanicMarker { lanes, tag };` from
-/// `spawn_gated_country_child`, moving it below the encode, or carrying
-/// `tech_country_delta` through the reset.
+/// `spawn_gated_country_child`, moving it below the encode, or carrying the
+/// advanced `tech_country_delta` pin through d13's own rejection.
 ///
 /// kills: the marker deleted or moved in `spawn_gated_country_child`; the
 /// encode hoisted out of the helper (which
 /// `every_country_child_publishes_through_the_gated_child_helper` also
-/// catches); `tech_country_delta` added to a carry-over list;
+/// catches); `tech_country_delta`'s restoration skipped on its own rejection;
 /// `COMPACT_DOMAIN_TECH` given a covered-domain arm that names another domain.
 #[test]
 fn a_panic_in_the_tech_childs_publish_tail_gaps_d13_and_takes_its_baseline() {
@@ -1312,7 +1313,7 @@ fn a_panic_in_the_tech_childs_publish_tail_gaps_d13_and_takes_its_baseline() {
     // The frame's tracker as the tech child receives it: COLD, so the advance
     // below is observable and the test cannot pass on a tail that never ran.
     let mut trackers = CompactPerfGateTrackers::default();
-    assert!(!trackers.tech_country_delta.baseline_seeded);
+    assert!(!trackers.tech_country_delta.pin.baseline_seeded);
 
     let joined = thread::scope(|scope| {
         let tech_delta = &mut trackers.tech_country_delta;
@@ -1329,7 +1330,10 @@ fn a_panic_in_the_tech_childs_publish_tail_gaps_d13_and_takes_its_baseline() {
                 // once per frame during the payload build; this is that
                 // advance, standing in for the whole of
                 // `country_bundle_publication_records`.
-                tech_delta.baseline_seeded = true;
+                tech_delta.advance(CompactTechDeltaPin {
+                    baseline_seeded: true,
+                    ..Default::default()
+                });
                 panic!("a latent bug in the publication encode, after the pin advanced");
             },
         )
@@ -1342,7 +1346,7 @@ fn a_panic_in_the_tech_childs_publish_tail_gaps_d13_and_takes_its_baseline() {
          badged zero-row read",
     );
     assert!(
-        trackers.tech_country_delta.baseline_seeded,
+        trackers.tech_country_delta.pin.baseline_seeded,
         "THE HARM, before the repair: the pin the encode advanced survives the unwind, \
          because it lives on the frame's tracker and not on the worker",
     );
@@ -1404,10 +1408,11 @@ fn a_panic_in_the_tech_childs_publish_tail_gaps_d13_and_takes_its_baseline() {
     let rejected_ids: BTreeSet<u16> = rejected.keys().copied().collect();
     reset_trackers_after_rejected_bracket(&mut trackers, &rejected_ids);
     assert!(
-        !trackers.tech_country_delta.baseline_seeded,
-        "the pin the panicking encode advanced must be gone: the wire carries a gap for \
-         this hour, so a producer that kept the baseline would send the next hour as a \
-         patch against a block the fold never received",
+        !trackers.tech_country_delta.pin.baseline_seeded
+            && trackers.tech_country_delta.frame_entry.is_none(),
+        "the pin the panicking encode advanced must be gone, restored to the entry the \
+         frame found: the wire carries a gap for this hour, so a producer that kept the \
+         advance would send the next hour as a patch against a block the fold never received",
     );
 }
 

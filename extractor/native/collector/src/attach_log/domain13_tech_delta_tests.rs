@@ -170,7 +170,7 @@ fn test_technology_dictionary() -> TechnologyIdDictionary {
     }
 }
 
-fn tech_row(tag_db_id: u32, seed: u32) -> CountryObjectRow {
+pub(crate) fn tech_row(tag_db_id: u32, seed: u32) -> CountryObjectRow {
     let mut row = bare_country_row(tag_db_id);
     row.research = Some(CountryResearchRow {
         completed_tech_count: tech_witness_completed_count(seed),
@@ -449,7 +449,7 @@ fn a_key_leaving_the_roster_forces_a_whole_payload_and_re_seeds() {
         2,
         "the whole payload carries what the frame measured"
     );
-    assert!(!tracker.baseline_seeded, "the pin is dropped, not advanced");
+    assert!(!tracker.pin.baseline_seeded, "the pin is dropped, not advanced");
 }
 
 #[test]
@@ -475,7 +475,7 @@ fn a_repeated_key_forces_a_whole_payload_instead_of_an_inconsistent_patch() {
         0,
         "a repeated key must force a whole payload, not a patch whose pin and payload disagree"
     );
-    assert!(!tracker.baseline_seeded, "the pin is dropped, not advanced");
+    assert!(!tracker.pin.baseline_seeded, "the pin is dropped, not advanced");
 }
 
 #[test]
@@ -489,7 +489,7 @@ fn a_withheld_baseline_emits_whole_and_unseeds_the_pin() {
         &test_technology_dictionary(),
     );
     assert!(
-        tracker.baseline_seeded,
+        tracker.pin.baseline_seeded,
         "the first clean read seeds the pin"
     );
 
@@ -510,7 +510,7 @@ fn a_withheld_baseline_emits_whole_and_unseeds_the_pin() {
         0,
         "a withheld-baseline frame is not a patch"
     );
-    assert!(!tracker.baseline_seeded, "the pin is dropped, not advanced");
+    assert!(!tracker.pin.baseline_seeded, "the pin is dropped, not advanced");
 
     let after = compact_tech_data_payload_delta(
         &[tech_row(1, 1), tech_row(2, 2)],
@@ -731,5 +731,172 @@ fn the_derivation_uses_the_live_factor_and_reports_the_one_it_used() {
     assert_eq!(
         super::a29_ahead_values_from_inputs(1945, date_raw, -1, 100_000),
         None
+    );
+}
+
+/// One country's XUI09 witness as the fold holds it after a record: the bytes
+/// the tail carried, or the bytes retained for a measured-and-unchanged tag.
+#[derive(Default, Clone, PartialEq, Debug)]
+struct ReferenceXui09Fold {
+    witnesses: BTreeMap<u32, Vec<u8>>,
+}
+
+impl ReferenceXui09Fold {
+    /// Mirrors `world_fold`: a carried vector replaces, a measured tag without
+    /// a vector re-seals the retained bytes (and must hold some), and every tag
+    /// outside the measured set loses its witness.
+    fn apply(&mut self, payload: &[u8], body_end: usize) {
+        let Some((mut tail, unknown)) =
+            d13_grammar::Xui09Cursor::begin(payload, body_end).expect("a well-formed tail or none")
+        else {
+            self.witnesses.clear();
+            return;
+        };
+        assert_eq!(unknown, None);
+        let mut measured = BTreeSet::new();
+        let mut carried: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
+        let mut current_tag = None;
+        loop {
+            match tail.next_step().expect("a well-formed tail") {
+                d13_grammar::Xui09Step::MeasuredTag { tag_db_id } => {
+                    measured.insert(tag_db_id);
+                }
+                d13_grammar::Xui09Step::CountryVectorHeader { tag_db_id, .. } => {
+                    current_tag = Some(tag_db_id);
+                }
+                d13_grammar::Xui09Step::CountryVectorRows { states, completed } => {
+                    let mut bytes = payload[states].to_vec();
+                    bytes.extend_from_slice(&payload[completed]);
+                    carried.insert(current_tag.expect("a header precedes rows"), bytes);
+                }
+                d13_grammar::Xui09Step::DictionaryEntry { .. }
+                | d13_grammar::Xui09Step::Refusal { .. } => {}
+                d13_grammar::Xui09Step::Recoverable(violation) => panic!("{violation:?}"),
+                d13_grammar::Xui09Step::End(_) => break,
+            }
+        }
+        let mut next = BTreeMap::new();
+        for tag in measured {
+            let bytes = match carried.remove(&tag) {
+                Some(bytes) => bytes,
+                None => self
+                    .witnesses
+                    .get(&tag)
+                    .cloned()
+                    .unwrap_or_else(|| panic!("tag {tag} is measured and unchanged but the fold holds no witness")),
+            };
+            next.insert(tag, bytes);
+        }
+        assert!(carried.is_empty(), "a carried vector for an unmeasured tag: {carried:?}");
+        self.witnesses = next;
+    }
+}
+
+fn body_end(payload: &[u8]) -> usize {
+    let header = d13_grammar::read_header(payload).unwrap();
+    let layout = d13_grammar::body_layout(payload, &header).unwrap();
+    let mut cursor = layout.active_start;
+    for _ in 0..header.active_count {
+        cursor += d13_grammar::active_row_len(payload, cursor).unwrap();
+    }
+    cursor
+}
+
+fn is_patch(payload: &[u8]) -> bool {
+    u32::from_le_bytes(payload[16..20].try_into().unwrap()) & COMPACT_STATUS_DELTA_DATA != 0
+}
+
+/// The frame transaction: a frame whose d13 record became a gap (its own
+/// bracket rejected, or the whole frame refused) restores the pin the frame
+/// found, and the next frame's PATCH folds -- rows and XUI09 witnesses -- to
+/// exactly the world the whole payloads describe. Every skipped byte on such a
+/// patch is a row or vector the frame measured and found equal to what the
+/// fold holds.
+#[test]
+fn a_patch_after_a_rejected_frame_folds_to_the_same_world_as_the_whole_payload() {
+    let mut tracker = CompactTechCountryDeltaTracker::default();
+    let mut patched_rows = ReferenceTechFold::default();
+    let mut patched_witnesses = ReferenceXui09Fold::default();
+    let mut whole_rows = ReferenceTechFold::default();
+    let mut whole_witnesses = ReferenceXui09Fold::default();
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let dictionary = test_technology_dictionary();
+    let mut patches_after_rejection = 0usize;
+    let mut previous_rejected = false;
+    for frame in 0..400u32 {
+        let mut rows = Vec::new();
+        for tag in 1..=12u32 {
+            let roll = next() % 100;
+            if roll < 10 {
+                rows.push(bare_country_row(tag));
+                continue;
+            }
+            let seed = if roll < 70 { tag } else { tag + frame };
+            rows.push(tech_row(tag, seed));
+        }
+        let patched = compact_tech_data_payload_delta(&rows, frame as u64, 0, &mut tracker, &dictionary);
+        let whole = compact_tech_data_payload(&rows, frame as u64, 0, &dictionary);
+        let rejected = next() % 100 < 40;
+        if rejected {
+            // The record became a DOMAIN_GAP (or the frame was refused): the
+            // fold received nothing, the pin goes back to the frame's entry.
+            tracker.restore_frame_entry();
+            previous_rejected = true;
+            continue;
+        }
+        tracker.close_frame_transaction();
+        if previous_rejected && is_patch(&patched) {
+            patches_after_rejection += 1;
+        }
+        previous_rejected = false;
+        assert_eq!(
+            patched_rows.apply(&patched),
+            whole_rows.apply(&whole),
+            "frame {frame}: the patch stream folds to a different world than the whole payload"
+        );
+        patched_witnesses.apply(&patched, body_end(&patched));
+        whole_witnesses.apply(&whole, body_end(&whole));
+        assert_eq!(
+            patched_witnesses, whole_witnesses,
+            "frame {frame}: the patch stream folds to different XUI09 witnesses"
+        );
+    }
+    assert!(
+        patches_after_rejection > 60,
+        "only {patches_after_rejection} frames after a rejection were patches; the gate barely \
+         exercised the restored pin"
+    );
+}
+
+#[test]
+fn a_restored_pin_reopens_the_change_gates_baseline_obligation() {
+    d13_tech_change_gate_lane::gate::reset_for_install();
+    let dictionary = test_technology_dictionary();
+    let mut tracker = CompactTechCountryDeltaTracker::default();
+    let _ = compact_tech_data_payload_delta(&[tech_row(1, 1)], 0, 0, &mut tracker, &dictionary);
+    tracker.close_frame_transaction();
+    d13_tech_change_gate_lane::gate::note_baseline_seeded();
+    let _ = d13_tech_change_gate_lane::gate::open_hour_window(true);
+    d13_tech_change_gate_lane::gate::note_witness_captured(0x1000);
+    let _ = d13_tech_change_gate_lane::gate::open_hour_window(true);
+    assert!(
+        d13_tech_change_gate_lane::gate::probe_witness_clean(0x1000),
+        "a captured, unmarked manager probes clean while the pin is trusted"
+    );
+    let _ = compact_tech_data_payload_delta(&[tech_row(1, 2)], 1, 0, &mut tracker, &dictionary);
+    tracker.restore_frame_entry();
+    assert!(
+        !d13_tech_change_gate_lane::gate::probe_witness_clean(0x1000),
+        "the discarded walk consumed the marks, so the restored pin owes a full measurement"
+    );
+    assert!(
+        tracker.frame_entry.is_none(),
+        "restoration is idempotent: a second call finds no entry"
     );
 }
