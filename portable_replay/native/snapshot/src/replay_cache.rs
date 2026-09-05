@@ -22,7 +22,7 @@
 //! classes involved.
 //!
 //! Nothing here assumes the representation is lossless. The encoder takes each
-//! hour's `world_json_sha256` from the SOURCE bytes while the record it writes
+//! hour's `world_digest` from the SOURCE bytes while the record it writes
 //! carries the PARSE, so any token shape nobody anticipated makes the two
 //! disagree and fails the seal loudly instead of corrupting a seek quietly.
 //!
@@ -34,7 +34,7 @@
 //! all -- is proved by
 //! [`ReplayCacheReader::verify_every_hour`], which decodes the finished
 //! artifact's own bytes and compares every reconstructed hour against its
-//! recorded `world_json_sha256`. A caller that builds a cache and skips that
+//! recorded `world_digest`. A caller that builds a cache and skips that
 //! call has an unverified cache, whatever `push` returned. The production seal
 //! path (`replay_decoder::build_certified_replay_artifacts`) runs it
 //! unconditionally before it returns artifacts, and nothing else in this
@@ -144,6 +144,50 @@ pub mod cacheprof {
     pub static TEXT_MEMO_HITS: AtomicU64 = AtomicU64::new(0);
     pub static TEXT_MEMO_MISSES: AtomicU64 = AtomicU64::new(0);
     pub static TEXT_MEMO_MISS_BYTES: AtomicU64 = AtomicU64::new(0);
+    /// Containers whose digest was computed (not answered from the memo).
+    pub static DIGEST_CONTAINERS_HASHED: AtomicU64 = AtomicU64::new(0);
+    pub static DIGEST_MEMO_HITS: AtomicU64 = AtomicU64::new(0);
+    /// Scalar bytes absorbed into container hashes.
+    pub static DIGEST_BYTES_ABSORBED: AtomicU64 = AtomicU64::new(0);
+
+    /// One encoded hour: its document length, its record's bytes before the
+    /// seal, and the encode counters' total at that point (deltas are the
+    /// reader's).
+    pub struct HourLap {
+        pub hour_index: i64,
+        pub json_len: u64,
+        pub raw_record_len: u64,
+        pub checkpoint: bool,
+        pub encode_ns: u64,
+    }
+    pub static PER_HOUR: std::sync::Mutex<Vec<HourLap>> = std::sync::Mutex::new(Vec::new());
+
+    pub fn note_hour(hour_index: i64, json_len: u64, raw_record_len: u64, checkpoint: bool) {
+        if !enabled() {
+            return;
+        }
+        let encode_ns = [
+            &JSON_HASH_NS,
+            &DIFF_NS,
+            &ENCODE_PATCH_NS,
+            &APPLY_NS,
+            &CHECKPOINT_ENCODE_NS,
+            &VERIFY_DECODE_NS,
+        ]
+        .iter()
+        .map(|counter| counter.load(Ordering::Relaxed))
+        .sum();
+        PER_HOUR
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(HourLap {
+                hour_index,
+                json_len,
+                raw_record_len,
+                checkpoint,
+                encode_ns,
+            });
+    }
 
     #[inline]
     pub fn enabled() -> bool {
@@ -176,7 +220,7 @@ pub mod cacheprof {
         }
         let ms = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e6;
         Some(format!(
-            "cache phase breakdown (ms): parse={:.1} json_hash={:.1} diff={:.1} encode_patch={:.1} apply={:.1} checkpoint_encode={:.1} record_hash={:.1} write={:.1} | verify: decode={:.1} apply={:.1} project={:.1} hash={:.1} | hours={} json_bytes={} cache_bytes={} | text memo: hits={} misses={} miss_bytes={}",
+            "cache phase breakdown (ms): parse={:.1} json_hash={:.1} diff={:.1} encode_patch={:.1} apply={:.1} checkpoint_encode={:.1} record_hash={:.1} write={:.1} | verify: decode={:.1} apply={:.1} project={:.1} hash={:.1} | hours={} json_bytes={} cache_bytes={} | text memo: hits={} misses={} miss_bytes={} | tree digest: containers_hashed={} memo_hits={} scalar_bytes_absorbed={}",
             ms(&PARSE_NS),
             ms(&JSON_HASH_NS),
             ms(&DIFF_NS),
@@ -195,6 +239,9 @@ pub mod cacheprof {
             TEXT_MEMO_HITS.load(Ordering::Relaxed),
             TEXT_MEMO_MISSES.load(Ordering::Relaxed),
             TEXT_MEMO_MISS_BYTES.load(Ordering::Relaxed),
+            DIGEST_CONTAINERS_HASHED.load(Ordering::Relaxed),
+            DIGEST_MEMO_HITS.load(Ordering::Relaxed),
+            DIGEST_BYTES_ABSORBED.load(Ordering::Relaxed),
         ))
     }
 }
@@ -224,10 +271,13 @@ const CACHE_MAGIC: &[u8; 4] = b"H4CP";
 /// [`PATCH_NUMBER_DELTA`]. Every recording of an earlier version stops opening,
 /// which is what pre-production means: the header carries this number and a
 /// reader refuses a cache that does not state it.
-const FORMAT_VERSION: u16 = 8;
+const FORMAT_VERSION: u16 = 9;
 const RECORD_CHECKPOINT: u8 = 1;
 const RECORD_DELTA: u8 = 2;
-const CACHE_HEADER_LEN: u64 = 4 + 2 + 2 + 32;
+const CACHE_HEADER_LEN: u64 = 4 + 2 + 2;
+/// The H4CR source digest closes the cache so a live encoder can seal a
+/// stream whose identity it learns only at the end.
+const CACHE_TRAILER_LEN: u64 = 32;
 const MAX_STRING_BYTES: usize = 256 * 1024 * 1024;
 const MAX_HOURS: usize = 2_000_000;
 /// An exclusion reason is PROSE naming one injured hour, not a payload. The
@@ -241,34 +291,93 @@ const MAX_EXCLUSION_REASON_BYTES: usize = 4096;
 /// Fixed prefix of every cache record: kind, three reserved bytes, the hour,
 /// the payload length, and one trailing reserved byte.
 const RECORD_HEADER_LEN: u64 = 1 + 3 + 8 + 8 + 1;
+/// A record payload on disk is one method byte then the bytes: raw when
+/// compression would not shrink it, else a zstd frame carrying its content
+/// size. The cache shrinks as it is written, so a session's spill never holds
+/// the raw world.
+const PAYLOAD_METHOD_RAW: u8 = 0;
+const PAYLOAD_METHOD_ZSTD: u8 = 1;
+const CACHE_RECORD_ZSTD_LEVEL: i32 = 3;
 
-/// Largest single cache RECORD a reader will materialize.
-///
-/// This is the old whole-entry ceiling, re-scoped to the unit a reader now
-/// actually materializes, and it is deliberately the SAME number rather than a
-/// tighter one. Before this existed a record was bounded by the cache and the
-/// cache was bounded by the container's in-RAM cap, so no reader ever admitted
-/// a record above 2 GiB; keeping the number identical means the re-scoping
-/// introduced no new refusal.
-///
-/// It stays that number at v4. The old rationale — "no previously sealed
-/// container can be refused by it" — retired with the format bump (v4 makes
-/// every older H4CP unreadable anyway, which is what pre-production means), and
-/// what remains is the reason that never depended on compatibility: the encoder
-/// has no per-record ceiling of its own, and a whole-world CHECKPOINT can be
-/// arbitrarily large without violating the 256 MiB per-string bound, so any
-/// tighter figure would be an unrelated new restriction on how big one game
-/// hour may be. A smaller derived figure (512 MiB — twice [`MAX_STRING_BYTES`],
-/// a sixteenth of the 8 GiB floor) was considered and rejected for exactly that
-/// reason.
-///
-/// It is not a formality. The cache entry itself is now packed under the 2 TiB
-/// streaming ceiling, so without this a corrupted or hostile `cache_record_len`
-/// could ask a reader for terabytes. What the reader may hold at once has not
-/// changed; only what counts as "one thing".
-///
-/// For scale: the largest real record is 30,710,425 bytes in t31's 602 and
-/// 28,451,685 in t32's 656 — about 70x under the bound.
+pub fn seal_cache_payload(raw: &[u8]) -> Result<Vec<u8>, ReplayCacheError> {
+    let frame = zstd::bulk::compress(raw, CACHE_RECORD_ZSTD_LEVEL)
+        .map_err(|error| ReplayCacheError::new(format!("seal cache record payload: {error}")))?;
+    let mut out = Vec::with_capacity(1 + frame.len().min(raw.len()));
+    if frame.len() < raw.len() {
+        out.push(PAYLOAD_METHOD_ZSTD);
+        out.extend_from_slice(&frame);
+    } else {
+        out.push(PAYLOAD_METHOD_RAW);
+        out.extend_from_slice(raw);
+    }
+    Ok(out)
+}
+
+/// The allocation follows the bytes that actually decode, never the declared
+/// content size alone, so a hostile frame header cannot buy a large reservation.
+pub fn open_cache_payload(sealed: &[u8]) -> Result<Vec<u8>, ReplayCacheError> {
+    let (method, body) = sealed
+        .split_first()
+        .ok_or_else(|| ReplayCacheError::new("cache record payload is empty"))?;
+    match *method {
+        PAYLOAD_METHOD_RAW => Ok(body.to_vec()),
+        PAYLOAD_METHOD_ZSTD => {
+            if !body.starts_with(&compact_stream::ZSTD_FRAME_MAGIC) {
+                return Err(ReplayCacheError::new("cache record payload requires a standard zstd frame"));
+            }
+            let declared = zstd::zstd_safe::get_frame_content_size(body)
+                .map_err(|_| ReplayCacheError::new("cache record zstd frame has no content size"))?
+                .ok_or_else(|| ReplayCacheError::new("cache record zstd frame has no content size"))?;
+            if declared > MAX_CACHE_RECORD_BYTES {
+                return Err(ReplayCacheError::new(format!(
+                    "cache record declares a {declared}-byte decoded payload, over the                      {MAX_CACHE_RECORD_BYTES}-byte per-record reader bound"
+                )));
+            }
+            // zstd's single-pass shortcut can bypass its decoder window limit.
+            let window_size = if body[4] & 0x20 != 0 {
+                declared
+            } else {
+                let descriptor = body[5];
+                let base = 1u64 << (10 + (descriptor >> 3));
+                base + (base >> 3) * u64::from(descriptor & 7)
+            };
+            if window_size > (1u64 << compact_stream::ZSTD_WINDOW_LOG) {
+                return Err(ReplayCacheError::new(format!(
+                    "cache record zstd window {window_size} exceeds the decoder window bound"
+                )));
+            }
+            let mut decoder = zstd::stream::read::Decoder::with_buffer(body).map_err(|error| {
+                ReplayCacheError::new(format!("open cache record payload: {error}"))
+            })?.single_frame();
+            decoder.window_log_max(compact_stream::ZSTD_WINDOW_LOG).map_err(|error| {
+                ReplayCacheError::new(format!("bound cache record zstd window: {error}"))
+            })?;
+            let mut out = Vec::with_capacity(usize::try_from(declared.min(1 << 20)).unwrap_or(0));
+            std::io::Read::take(&mut decoder, declared.saturating_add(1))
+                .read_to_end(&mut out)
+                .map_err(|error| {
+                    ReplayCacheError::new(format!("open cache record payload: {error}"))
+                })?;
+            if out.len() as u64 != declared {
+                return Err(ReplayCacheError::new(format!(
+                    "cache record payload decodes to {} byte(s) but declares {declared}",
+                    out.len()
+                )));
+            }
+            let trailing = decoder.finish().len();
+            if trailing != 0 {
+                return Err(ReplayCacheError::new(format!(
+                    "cache record payload has {trailing} byte(s) that follow its single zstd frame"
+                )));
+            }
+            Ok(out)
+        }
+        other => Err(ReplayCacheError::new(format!(
+            "cache record payload method {other} is unknown"
+        ))),
+    }
+}
+
 pub const MAX_CACHE_RECORD_BYTES: u64 = MAX_CONTAINER_ENTRY_BYTES;
 
 /// Bytes read per pass when hashing a file-backed cache.
@@ -560,11 +669,11 @@ pub struct ReplayHourEntry {
     cache_record_len: u64,
     checkpoint_position: u32,
     delta_steps: u32,
-    world_json_sha256: String,
+    world_digest: String,
     /// SHA-256 over this hour's CACHE RECORD — its 21-byte header and its
     /// payload, exactly the `[cache_record_offset, +cache_record_len)` window.
     ///
-    /// This is the field that makes H4CP damage confinable. `world_json_sha256`
+    /// This is the field that makes H4CP damage confinable. `world_digest`
     /// answers "did this hour reconstruct correctly", which can only be asked
     /// after the record decodes; this answers "are these the bytes the seal
     /// wrote", which can be asked of a record that no longer decodes at all,
@@ -602,8 +711,8 @@ impl ReplayHourEntry {
     pub fn delta_steps(&self) -> u32 {
         self.delta_steps
     }
-    pub fn world_json_sha256(&self) -> &str {
-        &self.world_json_sha256
+    pub fn world_digest(&self) -> &str {
+        &self.world_digest
     }
     /// The digest of this hour's cache record bytes. See the field.
     pub fn cache_record_sha256(&self) -> &str {
@@ -767,7 +876,7 @@ impl ReplayHourIndex {
             put_u64(&mut out, hour.cache_record_len);
             put_u32(&mut out, hour.checkpoint_position);
             put_u32(&mut out, hour.delta_steps);
-            out.extend_from_slice(&decode_hex32(&hour.world_json_sha256)?);
+            out.extend_from_slice(&decode_hex32(&hour.world_digest)?);
             out.extend_from_slice(&decode_hex32(&hour.cache_record_sha256)?);
             put_index_string(&mut out, &hour.date)?;
         }
@@ -827,7 +936,7 @@ impl ReplayHourIndex {
                 cache_record_len: reader.u64()?,
                 checkpoint_position: reader.u32()?,
                 delta_steps: reader.u32()?,
-                world_json_sha256: to_hex(reader.array32()?),
+                world_digest: to_hex(reader.array32()?),
                 cache_record_sha256: to_hex(reader.array32()?),
                 date: reader.index_string()?,
             });
@@ -875,7 +984,7 @@ impl ReplayHourIndex {
                 "hour index game/schema identity is empty",
             ));
         }
-        if self.source_len < 4 || self.cache_len < CACHE_HEADER_LEN {
+        if self.source_len < 4 || self.cache_len < CACHE_HEADER_LEN + CACHE_TRAILER_LEN {
             return Err(ReplayCacheError::new(
                 "hour index source/cache length is invalid",
             ));
@@ -897,7 +1006,7 @@ impl ReplayHourIndex {
         let mut previous_cache_end = CACHE_HEADER_LEN;
         let mut active_checkpoint = usize::MAX;
         for (position, hour) in self.hours.iter().enumerate() {
-            decode_hex32(&hour.world_json_sha256)?;
+            decode_hex32(&hour.world_digest)?;
             decode_hex32(&hour.cache_record_sha256)?;
             if hour.date.trim().is_empty()
                 || previous_hour.is_some_and(|value| hour.hour_index <= value)
@@ -947,7 +1056,7 @@ impl ReplayHourIndex {
             previous_hour = Some(hour.hour_index);
             previous_cache_end = hour.cache_record_offset + hour.cache_record_len;
         }
-        if previous_cache_end != self.cache_len {
+        if previous_cache_end + CACHE_TRAILER_LEN != self.cache_len {
             return Err(ReplayCacheError::new(
                 "hour index does not cover the checkpoint cache through its final record",
             ));
@@ -1195,6 +1304,7 @@ impl ConfinedHour {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheAuditVerdict {
     header: Vec<u8>,
+    trailer: Vec<u8>,
     whole_cache_sha256: String,
     damaged_positions: Vec<usize>,
     truncated: Option<CacheTruncation>,
@@ -1244,6 +1354,11 @@ impl CacheAuditVerdict {
     pub fn header(&self) -> &[u8] {
         &self.header
     }
+    /// The [`CACHE_TRAILER_LEN`]-byte source digest closing the cache; empty
+    /// for a cache that ran out before it.
+    pub fn trailer(&self) -> &[u8] {
+        &self.trailer
+    }
     /// SHA-256 over every byte that went past. Kept because it is the one check
     /// that does not depend on the per-record account being complete; see
     /// `admit_cache`'s totality argument.
@@ -1287,6 +1402,7 @@ pub struct CacheAudit<'a> {
     /// Bytes consumed so far — also the absolute cache offset of the next byte.
     seen: u64,
     header: Vec<u8>,
+    trailer: Vec<u8>,
     whole: Sha256,
     /// The record being hashed, and how many of its bytes are still to come.
     position: usize,
@@ -1301,6 +1417,7 @@ impl<'a> CacheAudit<'a> {
             index,
             seen: 0,
             header: Vec::with_capacity(CACHE_HEADER_LEN as usize),
+            trailer: Vec::with_capacity(CACHE_TRAILER_LEN as usize),
             whole: Sha256::new(),
             position: 0,
             record: Sha256::new(),
@@ -1364,6 +1481,12 @@ impl<'a> CacheAudit<'a> {
                     self.seen
                 )));
             }
+            if self.position >= self.index.hours.len() {
+                return Err(ReplayCacheError::new(format!(
+                    "the checkpoint cache is {} bytes, short of the {CACHE_TRAILER_LEN}-byte                      source digest that seals it after its last record; every record is present                      but the artifact's binding to its recording is not",
+                    self.seen
+                )));
+            }
             // Every position from the one in flight on is unvouched: its bytes
             // either arrived incomplete or did not arrive. Positions already in
             // `self.damaged` closed and disagreed, and stay named.
@@ -1384,10 +1507,18 @@ impl<'a> CacheAudit<'a> {
             // spelled out so a future format change that broke the tiling
             // cannot close an unclosed record silently.
             self.close_record_if_complete();
+            if self.trailer.len() as u64 != CACHE_TRAILER_LEN {
+                return Err(ReplayCacheError::new(format!(
+                    "the checkpoint cache ends with {} byte(s) past its last record, not the \
+                     {CACHE_TRAILER_LEN}-byte source digest that seals it",
+                    self.trailer.len()
+                )));
+            }
             None
         };
         Ok(CacheAuditVerdict {
             header: self.header,
+            trailer: self.trailer,
             whole_cache_sha256: to_hex(&self.whole.finalize()),
             damaged_positions: self.damaged,
             truncated,
@@ -1438,11 +1569,11 @@ impl<'a> CacheAudit<'a> {
                 continue;
             }
             if self.record_remaining == 0 {
-                // Bytes belonging to no record. The index's tiling rule makes
-                // this unreachable for an index that parsed (the rows abut from
-                // the header through `cache_len`), and a stream longer than
-                // `cache_len` is refused by `finish`; they are still hashed so
-                // the whole-cache digest stays a digest of everything.
+                // Past the last record: the trailer, then bytes belonging to
+                // nothing (refused by `finish`); all hashed so the whole-cache
+                // digest stays a digest of everything.
+                let room = (CACHE_TRAILER_LEN as usize).saturating_sub(self.trailer.len());
+                self.trailer.extend_from_slice(&bytes[..room.min(bytes.len())]);
                 self.whole.update(bytes);
                 self.seen += bytes.len() as u64;
                 return;
@@ -1511,7 +1642,7 @@ pub struct CanonicalWorldHour {
     /// it is redundant with, for the whole of the most memory-expensive stretch
     /// of finalize. Hashing at parse and dropping the bytes changes no output:
     /// the digest is of exactly the same bytes it always was.
-    world_json_sha256: String,
+    world_digest: String,
     value: CanonValue,
     /// What [`Self::value`]'s tree owns, counted during the parse that built
     /// it. Carried so the encoder can price its retained delta base without
@@ -1534,7 +1665,7 @@ impl CanonicalWorldHour {
     /// than what the seal path proves anyway:
     /// [`ReplayCacheReader::verify_every_hour`] decodes every record of the
     /// FINISHED artifact, applies the decoded patches, re-serializes each
-    /// reconstructed hour and requires the recorded `world_json_sha256` -- and
+    /// reconstructed hour and requires the recorded `world_digest` -- and
     /// that digest is taken from THESE source bytes, never from the parse. So a
     /// token shape that survives parsing but not serialization still fails the
     /// build loudly, and it fails it on the bytes a reader will actually follow
@@ -1550,14 +1681,19 @@ impl CanonicalWorldHour {
                 "hour {hour_index} is not strict canonical world JSON: {error}"
             ))
         })?;
-        let world_json_sha256 =
-            cacheprof::timed(&cacheprof::JSON_HASH_NS, || Sha256::hex(&world_json));
-        cacheprof::add(&cacheprof::JSON_BYTES, world_json.len() as u64);
+        let (world_digest, json_len) =
+            cacheprof::timed(&cacheprof::JSON_HASH_NS, || value.tree_digest_hex());
+        cacheprof::add(&cacheprof::JSON_BYTES, json_len);
         cacheprof::add(&cacheprof::HOURS, 1);
-        let json_len = world_json.len() as u64;
+        if json_len != world_json.len() as u64 {
+            return Err(ReplayCacheError::new(format!(
+                "hour {hour_index}'s canonical text length {} disagrees with the tree walk's {json_len}",
+                world_json.len()
+            )));
+        }
         drop(world_json);
         Ok(Self {
-            world_json_sha256,
+            world_digest,
             value,
             value_heap_bytes,
             json_len,
@@ -1593,8 +1729,8 @@ impl CanonicalWorldHour {
     }
 
     /// The digest of the canonical world JSON this value was parsed from.
-    pub fn world_json_sha256(&self) -> &str {
-        &self.world_json_sha256
+    pub fn world_digest(&self) -> &str {
+        &self.world_digest
     }
 }
 
@@ -1629,15 +1765,14 @@ impl UnhashedWorldHour {
         self.value_heap_bytes
     }
 
-    /// Take the digest over exactly the canonical text the value model spells,
-    /// streamed through the per-node text memo.
+    /// Take the tree digest; an untouched subtree keeps last hour's.
     pub fn hashed(self) -> CanonicalWorldHour {
-        let (world_json_sha256, json_len) =
-            cacheprof::timed(&cacheprof::JSON_HASH_NS, || self.value.json_sha256_hex());
+        let (world_digest, json_len) =
+            cacheprof::timed(&cacheprof::JSON_HASH_NS, || self.value.tree_digest_hex());
         cacheprof::add(&cacheprof::JSON_BYTES, json_len);
         cacheprof::add(&cacheprof::HOURS, 1);
         CanonicalWorldHour {
-            world_json_sha256,
+            world_digest,
             value: self.value,
             value_heap_bytes: self.value_heap_bytes,
             json_len,
@@ -1649,9 +1784,12 @@ pub struct ReplayCacheEncoder<W: Write> {
     writer: W,
     hasher: Sha256,
     offset: u64,
-    source_sha256: String,
+    source_sha256: Option<String>,
     checkpoint_interval_hours: u32,
     previous: Option<CanonValue>,
+    /// The reader's view of the open window's names, rebuilt from the bytes
+    /// written, so every record is proven to decode to the hour it encodes.
+    reader_names: NameDictionary,
     /// Whether this encoder may EMIT revives. On.
     ///
     /// THE DECODER ALWAYS UNDERSTANDS THEM; only the writer is gated, so an
@@ -1727,8 +1865,18 @@ impl<W: Write> ReplayCacheEncoder<W> {
         source_sha256: impl Into<String>,
         checkpoint_interval_hours: u32,
     ) -> Result<Self, ReplayCacheError> {
-        let source_sha256 = source_sha256.into();
-        let source_digest = decode_hex32(&source_sha256)?;
+        let mut encoder = Self::new_deferred_source(writer, checkpoint_interval_hours)?;
+        encoder.set_source_sha256(source_sha256)?;
+        Ok(encoder)
+    }
+
+    /// An encoder for a source whose digest is learned at the end: the live
+    /// recorder folds the spool while it is still being written. `finish`
+    /// refuses until `set_source_sha256` has been called.
+    pub fn new_deferred_source(
+        writer: W,
+        checkpoint_interval_hours: u32,
+    ) -> Result<Self, ReplayCacheError> {
         if !(1..=MAX_CHECKPOINT_INTERVAL_HOURS).contains(&checkpoint_interval_hours) {
             return Err(ReplayCacheError::new(format!(
                 "checkpoint interval {checkpoint_interval_hours} is outside 1..={MAX_CHECKPOINT_INTERVAL_HOURS}"
@@ -1743,9 +1891,10 @@ impl<W: Write> ReplayCacheEncoder<W> {
             writer,
             hasher: Sha256::new(),
             offset: 0,
-            source_sha256,
+            source_sha256: None,
             checkpoint_interval_hours,
             previous: None,
+            reader_names: NameDictionary::default(),
             entries: Vec::new(),
             excluded: Vec::new(),
             next_h4cr_offset: 0,
@@ -1757,8 +1906,24 @@ impl<W: Write> ReplayCacheEncoder<W> {
         encoder.write_hashed(CACHE_MAGIC)?;
         encoder.write_hashed(&FORMAT_VERSION.to_le_bytes())?;
         encoder.write_hashed(&0u16.to_le_bytes())?;
-        encoder.write_hashed(&source_digest)?;
         Ok(encoder)
+    }
+
+    pub fn set_source_sha256(
+        &mut self,
+        source_sha256: impl Into<String>,
+    ) -> Result<(), ReplayCacheError> {
+        let source_sha256 = source_sha256.into();
+        decode_hex32(&source_sha256)?;
+        if let Some(existing) = &self.source_sha256 {
+            if *existing != source_sha256 {
+                return Err(ReplayCacheError::new(
+                    "cache encoder source digest was already bound to a different source",
+                ));
+            }
+        }
+        self.source_sha256 = Some(source_sha256);
+        Ok(())
     }
 
     pub fn push(&mut self, hour: CacheBuildHour) -> Result<(), ReplayCacheError> {
@@ -1890,10 +2055,10 @@ impl<W: Write> ReplayCacheEncoder<W> {
         prepared: CanonicalWorldHour,
     ) -> Result<(), ReplayCacheError> {
         let CanonicalWorldHour {
-            world_json_sha256,
+            world_digest,
             value,
             value_heap_bytes,
-            json_len: _,
+            json_len,
         } = prepared;
         // `meta` used to be re-wrapped into a `CacheBuildHour` so it could
         // carry the body alongside; with the body gone there is nothing to wrap
@@ -1902,6 +2067,7 @@ impl<W: Write> ReplayCacheEncoder<W> {
         validate_world_identity(&value, hour.hour_index, &hour.date)?;
         let position = self.entries.len();
         let is_checkpoint = position % self.checkpoint_interval_hours as usize == 0;
+        let mut raw_record_len = 0u64;
         let (record_kind, payload, delta_steps) = if is_checkpoint {
             self.checkpoint_position = position;
             // A SEEK STARTS AT A CHECKPOINT AND KNOWS NOTHING BEFORE IT, so the
@@ -1913,11 +2079,22 @@ impl<W: Write> ReplayCacheEncoder<W> {
             // again: the record itself spells every name in full and a reader
             // that seeks here has read nothing before it.
             self.names = NameDictionary::default();
-            (
-                RECORD_CHECKPOINT,
-                cacheprof::timed(&cacheprof::CHECKPOINT_ENCODE_NS, || encode_value(&value))?,
-                0,
-            )
+            self.reader_names = NameDictionary::default();
+            let payload = cacheprof::timed(&cacheprof::CHECKPOINT_ENCODE_NS, || {
+                let raw = encode_value(&value)?;
+                raw_record_len = raw.len() as u64;
+                seal_cache_payload(&raw)
+            })?;
+            let decoded = cacheprof::timed(&cacheprof::VERIFY_DECODE_NS, || {
+                decode_value_exact(&open_cache_payload(&payload)?)
+            })?;
+            if decoded != value {
+                return Err(ReplayCacheError::new(format!(
+                    "checkpoint record for game hour {} does not decode to the hour it encodes",
+                    hour.hour_index
+                )));
+            }
+            (RECORD_CHECKPOINT, payload, 0)
         } else {
             let previous = self
                 .previous
@@ -1938,7 +2115,9 @@ impl<W: Write> ReplayCacheEncoder<W> {
             // as an id whose literal no reader ever saw.
             let mark = self.names.mark();
             let payload = match cacheprof::timed(&cacheprof::ENCODE_PATCH_NS, || {
-                encode_patch(&patch, &mut self.names)
+                let raw = encode_patch(&patch, &mut self.names)?;
+                raw_record_len = raw.len() as u64;
+                seal_cache_payload(&raw)
             }) {
                 Ok(payload) => payload,
                 Err(error) => {
@@ -1946,27 +2125,33 @@ impl<W: Write> ReplayCacheEncoder<W> {
                     return Err(error);
                 }
             };
-            // CARRY THE SHADOW over the step the reader is about to take, using
-            // the reader's own function, over the previous hour this encoder is
-            // about to drop anyway. It costs a walk of what CHANGED -- not a
-            // clone of the world, which is what the note below refuses.
+            // The reader's step, taken here: the patch DECODED from the bytes
+            // about to be written is applied to the previous hour with the
+            // reader's own function, and the result must equal this hour.
+            // That carries the shadow and proves the record in one walk of
+            // what changed, so the seal needs no second pass over the cache.
+            let decoded = match cacheprof::timed(&cacheprof::VERIFY_DECODE_NS, || {
+                decode_patch_record(&open_cache_payload(&payload)?, &mut self.reader_names)
+            }) {
+                Ok(decoded) => decoded,
+                Err(error) => {
+                    self.names.rollback(mark);
+                    return Err(error);
+                }
+            };
             if let Err(error) = cacheprof::timed(&cacheprof::APPLY_NS, || {
-                apply_patch(previous, &patch, &mut self.shadow, &mut self.shadow_budget, 0)
+                apply_patch(previous, &decoded, &mut self.shadow, &mut self.shadow_budget, 0)
             }) {
                 self.names.rollback(mark);
                 return Err(error);
             }
-            // No in-memory replay of the patch here. The delta a reader will
-            // actually follow is the one DECODED from `payload`, applied to a
-            // value decoded from the cache -- and that is exactly what
-            // `ReplayCacheReader::verify_every_hour` does, over every record of
-            // the finished artifact, against each hour's recorded
-            // `world_json_sha256`. Re-applying the in-memory `patch` to a clone
-            // of the in-memory `previous` proves a strictly weaker statement
-            // (it never touches the encoding) at the price of cloning a
-            // whole-world `CanonValue` -- tens of megabytes of `String`
-            // allocations -- once per delta hour. The seal path runs
-            // `verify_every_hour` unconditionally, so nothing is left unproved.
+            if *previous != value {
+                self.names.rollback(mark);
+                return Err(ReplayCacheError::new(format!(
+                    "delta record for game hour {} does not reconstruct the hour it encodes",
+                    hour.hour_index
+                )));
+            }
             let steps = match u32::try_from(position - self.checkpoint_position) {
                 Ok(steps) => steps,
                 Err(_) => {
@@ -1976,6 +2161,7 @@ impl<W: Write> ReplayCacheEncoder<W> {
             };
             (RECORD_DELTA, payload, steps)
         };
+        cacheprof::note_hour(hour.hour_index, json_len, raw_record_len, is_checkpoint);
         let record_offset = self.offset;
         // From here the bytes go out; anything that fails past this point has
         // moved the encoder without moving the artifact.
@@ -2017,7 +2203,7 @@ impl<W: Write> ReplayCacheEncoder<W> {
             checkpoint_position: u32::try_from(self.checkpoint_position)
                 .map_err(|_| ReplayCacheError::new("checkpoint position does not fit u32"))?,
             delta_steps,
-            world_json_sha256,
+            world_digest,
             cache_record_sha256: to_hex(&record_digest.finalize()),
         });
         self.next_h4cr_offset = hour.h4cr_end_offset;
@@ -2025,7 +2211,7 @@ impl<W: Write> ReplayCacheEncoder<W> {
         if let Some(entry) = self.entries.last() {
             self.entries_string_bytes = self.entries_string_bytes.saturating_add(
                 (entry.date.capacity()
-                    + entry.world_json_sha256.capacity()
+                    + entry.world_digest.capacity()
                     + entry.cache_record_sha256.capacity()) as u64,
             );
         }
@@ -2110,7 +2296,7 @@ impl<W: Write> ReplayCacheEncoder<W> {
     }
 
     pub fn finish(
-        self,
+        mut self,
         game_id: impl Into<String>,
         schema_version: impl Into<String>,
         identity_mode: CacheIdentityMode,
@@ -2123,12 +2309,17 @@ impl<W: Write> ReplayCacheEncoder<W> {
                 "cannot finish an empty replay checkpoint cache",
             ));
         }
+        let source_sha256 = self.source_sha256.take().ok_or_else(|| {
+            ReplayCacheError::new("cannot finish a replay checkpoint cache without its source digest")
+        })?;
+        let source_digest = decode_hex32(&source_sha256)?;
+        self.write_hashed(&source_digest)?;
         let index = ReplayHourIndex {
             game_id: game_id.into(),
             schema_version: schema_version.into(),
             identity_mode,
             source_len,
-            source_sha256: self.source_sha256,
+            source_sha256,
             checkpoint_interval_hours: self.checkpoint_interval_hours,
             cache_len: self.offset,
             cache_sha256: to_hex(&self.hasher.finalize()),
@@ -2528,6 +2719,7 @@ pub struct ReplayCacheReader<'a> {
 /// A consumer that only needs to prove the cache's identity — not to seek in it
 /// — need retain no more of the entry than this.
 pub const CHECKPOINT_CACHE_HEADER_LEN: u64 = CACHE_HEADER_LEN;
+pub const CHECKPOINT_CACHE_TRAILER_LEN: u64 = CACHE_TRAILER_LEN;
 
 /// Prove an H4CP header names this format, this version, and this H4CR source.
 ///
@@ -2536,18 +2728,24 @@ pub const CHECKPOINT_CACHE_HEADER_LEN: u64 = CACHE_HEADER_LEN;
 /// seeking reader proves, from the same code, instead of a second spelling of
 /// the check that could drift.
 pub fn validate_checkpoint_cache_header(
-    header: &[u8],
+    verdict: &CacheAuditVerdict,
     expected_source_sha256: &str,
 ) -> Result<(), ReplayCacheError> {
-    let mut header = ByteReader::new(header);
-    if header.take(4)? != CACHE_MAGIC
-        || header.u16()? != FORMAT_VERSION
-        || header.u16()? != 0
-        || to_hex(header.array32()?) != expected_source_sha256
-    {
+    let mut header = ByteReader::new(verdict.header());
+    if header.take(4)? != CACHE_MAGIC || header.u16()? != FORMAT_VERSION || header.u16()? != 0 {
         return Err(ReplayCacheError::new(
             "checkpoint cache header identity is invalid",
         ));
+    }
+    // A truncated cache lost its trailer with its tail; the index still binds
+    // the source and the audit confines the tail by name.
+    if verdict.truncation().is_none() {
+        let mut trailer = ByteReader::new(verdict.trailer());
+        if to_hex(trailer.array32()?) != expected_source_sha256 {
+            return Err(ReplayCacheError::new(
+                "checkpoint cache trailer is not bound to the expected H4CR source",
+            ));
+        }
     }
     Ok(())
 }
@@ -2599,7 +2797,7 @@ fn admit_cache(
     let mut audit = CacheAudit::new(&index);
     cache.read_all(&mut audit)?;
     let verdict = audit.finish()?;
-    validate_checkpoint_cache_header(verdict.header(), expected_source_sha256)?;
+    validate_checkpoint_cache_header(&verdict, expected_source_sha256)?;
     // THE TWO ACCOUNTS MUST AGREE. The index states one whole-cache digest and
     // one digest per record; over a cache of the published length those are two
     // accounts of the same bytes, because `validate` has already proved the
@@ -3228,18 +3426,19 @@ impl CertifiedReplayCache {
     /// See [`ReplayCacheReader::verify_every_hour`]. Identical proof, over
     /// whichever backing this cache was opened with.
     pub fn verify_every_hour(&self) -> Result<u32, ReplayCacheError> {
-        self.verify_every_hour_observed(&mut || {})
+        refuse_confinement_in_a_total_proof(&self.confined)?;
+        self.cache
+            .with_records(|records| verify_every_hour_from(&self.index, records))
     }
 
-    /// [`Self::verify_every_hour`], calling `on_hour` after each hour is
-    /// proved, so a supervisor can see the proof advancing.
-    pub fn verify_every_hour_observed(
+    /// [`Self::verify_every_hour`], handing each proven hour to `visit`.
+    pub fn walk_every_hour(
         &self,
-        on_hour: &mut dyn FnMut(),
+        visit: &mut dyn FnMut(&CanonValue, &ReplayHourEntry) -> Result<(), ReplayCacheError>,
     ) -> Result<u32, ReplayCacheError> {
         refuse_confinement_in_a_total_proof(&self.confined)?;
         self.cache
-            .with_records(|records| verify_every_hour_from(&self.index, records, on_hour))
+            .with_records(|records| walk_every_hour(&self.index, records, visit))
     }
 }
 
@@ -3349,14 +3548,21 @@ impl<'a> ReplayCacheReader<'a> {
     /// it asks for ~54,000 patch applications where ~640 carry the same proof.
     pub fn verify_every_hour(&self) -> Result<u32, ReplayCacheError> {
         refuse_confinement_in_a_total_proof(&self.confined)?;
-        verify_every_hour_from(&self.index, &SliceCache(self.cache), &mut || {})
+        verify_every_hour_from(&self.index, &SliceCache(self.cache))
     }
 }
 
 fn verify_every_hour_from(
     index: &ReplayHourIndex,
     cache: &dyn CacheRecords,
-    on_hour: &mut dyn FnMut(),
+) -> Result<u32, ReplayCacheError> {
+    walk_every_hour(index, cache, &mut |_, _| Ok(()))
+}
+
+fn walk_every_hour(
+    index: &ReplayHourIndex,
+    cache: &dyn CacheRecords,
+    visit: &mut dyn FnMut(&CanonValue, &ReplayHourEntry) -> Result<(), ReplayCacheError>,
 ) -> Result<u32, ReplayCacheError> {
     let mut value: Option<CanonValue> = None;
     let mut shadow = Shadow::default();
@@ -3374,7 +3580,7 @@ fn verify_every_hour_from(
         match (kind, entry.delta_steps) {
             (RECORD_CHECKPOINT, 0) => {
                 value = Some(cacheprof::timed(&cacheprof::VERIFY_DECODE_NS, || {
-                    decode_value_exact(payload.as_ref())
+                    decode_value_exact(&open_cache_payload(payload.as_ref())?)
                 })?);
                 shadow = Shadow::default();
                 budget = ShadowBudget::default();
@@ -3385,7 +3591,7 @@ fn verify_every_hour_from(
                     ReplayCacheError::new("a delta record precedes its checkpoint")
                 })?;
                 let patch = cacheprof::timed(&cacheprof::VERIFY_DECODE_NS, || {
-                    decode_patch_record(payload.as_ref(), &mut names)
+                    decode_patch_record(&open_cache_payload(payload.as_ref())?, &mut names)
                 })?;
                 cacheprof::timed(&cacheprof::VERIFY_APPLY_NS, || {
                     apply_patch(running, &patch, &mut shadow, &mut budget, 0)
@@ -3401,15 +3607,15 @@ fn verify_every_hour_from(
         let running = value.as_ref().expect("a value exists once a checkpoint decoded");
         validate_world_identity(running, entry.hour_index, &entry.date)?;
         let (projected_sha256, _) =
-            cacheprof::timed(&cacheprof::VERIFY_HASH_NS, || running.json_sha256_hex());
-        if projected_sha256 != entry.world_json_sha256 {
+            cacheprof::timed(&cacheprof::VERIFY_HASH_NS, || running.tree_digest_hex());
+        if projected_sha256 != entry.world_digest {
             return Err(ReplayCacheError::new(format!(
                 "reconstructed hour {} does not byte-match replay_decoder parity hash",
                 entry.hour_index
             )));
         }
+        visit(running, entry)?;
         max_seek_deltas = max_seek_deltas.max(entry.delta_steps);
-        on_hour();
     }
     if max_seek_deltas >= index.checkpoint_interval_hours {
         return Err(ReplayCacheError::new(
@@ -3437,7 +3643,7 @@ fn reconstruct_json_from(
             "checkpoint index points at a non-checkpoint cache record",
         ));
     }
-    let mut value = decode_value_exact(payload.as_ref())?;
+    let mut value = decode_value_exact(&open_cache_payload(payload.as_ref())?)?;
     drop(payload);
     // Rebuilt from the checkpoint forward, which is the whole reason a revive
     // may only ever name a value recorded since one.
@@ -3454,18 +3660,18 @@ fn reconstruct_json_from(
                 "delta index points at an invalid cache record",
             ));
         }
-        let patch = decode_patch_record(payload.as_ref(), &mut names)?;
+        let patch = decode_patch_record(&open_cache_payload(payload.as_ref())?, &mut names)?;
         drop(payload);
         apply_patch(&mut value, &patch, &mut shadow, &mut budget, 0)?;
     }
     validate_world_identity(&value, target.hour_index, &target.date)?;
-    let json = value.to_json_bytes();
-    if Sha256::hex(&json) != target.world_json_sha256 {
+    if value.tree_digest_hex().0 != target.world_digest {
         return Err(ReplayCacheError::new(format!(
             "reconstructed hour {} does not byte-match replay_decoder parity hash",
             target.hour_index
         )));
     }
+    let json = value.to_json_bytes();
     let receipt = ReplaySeekReceipt {
         checkpoint_hour: checkpoint.hour_index,
         target_hour: target.hour_index,
@@ -3518,14 +3724,13 @@ fn reconstruct_json_cursored(
     keep_going: &dyn Fn() -> bool,
 ) -> Result<ScrubOutcome, ReplayCacheError> {
     match reconstruct_cursored(index, cache, hour_index, cursor, rungs, keep_going, &|value, target, _| {
-        let json = value.to_json_bytes();
-        if Sha256::hex(&json) != target.world_json_sha256 {
+        if value.tree_digest_hex().0 != target.world_digest {
             return Err(ReplayCacheError::new(format!(
                 "reconstructed hour {} does not byte-match replay_decoder parity hash",
                 target.hour_index
             )));
         }
-        Ok((json, None))
+        Ok((value.to_json_bytes(), None))
     })? {
         CursoredOutcome::Produced { produced, receipt } => Ok(ScrubOutcome::Reconstructed {
             json: produced,
@@ -3546,13 +3751,13 @@ fn reconstruct_json_cursored(
 /// `serde_json::Value`, with no text spelled and no digest taken.
 ///
 /// WHY NO DIGEST HERE, STATED WHERE IT IS SKIPPED. The per-hour
-/// `world_json_sha256` is not what makes a served hour authentic — [`admit_cache`]
+/// `world_digest` is not what makes a served hour authentic — [`admit_cache`]
 /// is, ONCE, when the reader is opened: it streams the whole cache, compares it
 /// to the whole-cache digest the index is bound to, compares EVERY record
 /// against the per-record digest the same index publishes, proves the records
 /// tile the cache exactly, and confines by name any record that disagrees. And
 /// the producer proves, before it publishes, that decoding exactly those
-/// records reproduces every hour's `world_json_sha256`
+/// records reproduces every hour's `world_digest`
 /// ([`ReplayCacheReader::verify_every_hour`], run by the seal path). So on an
 /// admitted cache the per-draw digest re-derives a sealed, already-authenticated
 /// determinism — at the cost of spelling 31.6 MB of text per drawn hour on
@@ -3710,7 +3915,7 @@ fn reconstruct_cursored<T>(
                     "checkpoint index points at a non-checkpoint cache record",
                 ));
             }
-            let value = decode_value_exact(payload.as_ref())?;
+            let value = decode_value_exact(&open_cache_payload(payload.as_ref())?)?;
             drop(payload);
             if rungs.wants(checkpoint_position, checkpoint_position) {
                 rungs.offer(ScrubCursor {
@@ -3767,7 +3972,7 @@ fn reconstruct_cursored<T>(
         }
         walk_read_ms += stage.elapsed().as_secs_f64() * 1e3;
         let stage = std::time::Instant::now();
-        let patch = decode_patch_record(payload.as_ref(), &mut names)?;
+        let patch = decode_patch_record(&open_cache_payload(payload.as_ref())?, &mut names)?;
         drop(payload);
         walk_decode_ms += stage.elapsed().as_secs_f64() * 1e3;
         if let Some(changed) = changed_roots.as_mut() {
@@ -6602,6 +6807,70 @@ mod tests {
     use crate::canon_value::NON_IDENTITY_TOKENS;
     use serde_json::Value;
 
+    #[test]
+    fn cache_payload_preserves_level3_writer_frames_and_one_empty_frame() {
+        let raw = vec![0x42; 4096];
+        let sealed = seal_cache_payload(&raw).unwrap();
+        assert_eq!(sealed[0], PAYLOAD_METHOD_ZSTD);
+        assert_eq!(&sealed[1..], zstd::bulk::compress(&raw, 3).unwrap());
+        assert_eq!(open_cache_payload(&sealed).unwrap(), raw);
+        assert_eq!(seal_cache_payload(&[]).unwrap(), [PAYLOAD_METHOD_RAW]);
+        assert!(open_cache_payload(&[PAYLOAD_METHOD_RAW]).unwrap().is_empty());
+        let mut empty = vec![PAYLOAD_METHOD_ZSTD];
+        empty.extend(zstd::bulk::compress(&[], 3).unwrap());
+        assert!(open_cache_payload(&empty).unwrap().is_empty());
+    }
+
+    #[test]
+    fn cache_payload_rejects_every_suffix_including_zero_output_frames() {
+        let sealed = seal_cache_payload(&vec![0x42; 4096]).unwrap();
+        assert_eq!(sealed[0], PAYLOAD_METHOD_ZSTD);
+        let mut skippable = 0x184d2a50u32.to_le_bytes().to_vec();
+        skippable.extend(0u32.to_le_bytes());
+        let mut skippable_data = 0x184d2a5fu32.to_le_bytes().to_vec();
+        skippable_data.extend(3u32.to_le_bytes());
+        skippable_data.extend(b"abc");
+        for (name, suffix) in [
+            ("empty frame", zstd::bulk::compress(&[], 3).unwrap()),
+            ("nonempty frame", zstd::bulk::compress(b"x", 3).unwrap()),
+            ("empty skippable frame", skippable.clone()),
+            ("skippable frame with data", skippable_data),
+            ("trailing byte", vec![0]),
+        ] {
+            let mut hostile = sealed.clone();
+            hostile.extend(suffix);
+            let error = open_cache_payload(&hostile).unwrap_err().to_string();
+            assert!(error.contains("follow its single zstd frame"), "{name}: {error}");
+        }
+        let mut only_skippable = vec![PAYLOAD_METHOD_ZSTD];
+        only_skippable.extend(skippable);
+        assert!(open_cache_payload(&only_skippable).unwrap_err().to_string()
+            .contains("requires a standard zstd frame"));
+        for cut in 1..sealed.len() {
+            assert!(open_cache_payload(&sealed[..cut]).is_err(), "truncated at {cut}");
+        }
+    }
+
+    #[test]
+    fn cache_payload_refuses_an_oversized_window_even_for_one_decoded_byte() {
+        // Non-single-segment header, four-byte content size, last raw block.
+        let frame = |window_log: u32| {
+            let mut sealed = vec![PAYLOAD_METHOD_ZSTD];
+            sealed.extend(compact_stream::ZSTD_FRAME_MAGIC);
+            sealed.extend([0x80, ((window_log - 10) << 3) as u8]);
+            sealed.extend(1u32.to_le_bytes());
+            sealed.extend([9, 0, 0, b'x']);
+            sealed
+        };
+        let at_limit = frame(compact_stream::ZSTD_WINDOW_LOG);
+        assert_eq!(open_cache_payload(&at_limit).unwrap(), b"x");
+        let over_limit = frame(compact_stream::ZSTD_WINDOW_LOG + 1);
+        assert_eq!(zstd::zstd_safe::get_frame_content_size(&over_limit[1..]).unwrap(), Some(1));
+        assert_eq!(zstd::bulk::decompress(&over_limit[1..], 1).unwrap(), b"x");
+        let error = open_cache_payload(&over_limit).unwrap_err().to_string();
+        assert!(error.contains("exceeds the decoder window bound"), "{error}");
+    }
+
     /// HAND-BUILD ONE DELTA RECORD from its streams, so a test can spell a
     /// patch the ENCODER would never write and still hand it to the reader.
     ///
@@ -6671,25 +6940,29 @@ mod tests {
         decode_patch_record(bytes, &mut NameDictionary::default())
     }
 
-    /// The recorded per-hour digest is of the SOURCE body, and it stayed that
-    /// way when the body stopped being retained.
-    ///
-    /// `CanonicalWorldHour` used to hold `world_json` all the way through the
-    /// delta encode so the digest could be taken at the end; now the digest is
-    /// taken at parse and the body is released. The number a reader follows
-    /// must not have moved. This fails if the digest is ever re-derived from
-    /// the parsed value (re-serializing a `CanonValue` is NOT guaranteed to
-    /// reproduce a body byte for byte) or taken over a different input.
+    /// The recorded per-hour digest is the tree digest of the parsed value:
+    /// the same number whether the tree was parsed, converted, or rebuilt
+    /// from a memoised subtree, and a different one for any changed token.
     #[test]
-    fn the_recorded_hour_digest_is_of_the_source_body_not_of_the_parse() {
+    fn the_recorded_hour_digest_is_the_tree_digest_of_the_value() {
         let body = world_json(0, r#"{"n":189352.52932739258}"#);
-        let expected = Sha256::hex(&body);
+        let (expected, text_len) = CanonValue::parse(&body).unwrap().tree_digest_hex();
+        assert_eq!(text_len, body.len() as u64);
         let prepared = CanonicalWorldHour::parse(body.clone(), 0).unwrap();
-        assert_eq!(prepared.world_json_sha256(), expected);
+        assert_eq!(prepared.world_digest(), expected);
+        assert_eq!(prepared.json_len(), body.len() as u64);
 
         // And it survives the encode: the index row carries the same value.
         let (_, index, _) = build(1, &[(0, r#"{"n":189352.52932739258}"#)]);
-        assert_eq!(index.hours()[0].world_json_sha256(), expected);
+        assert_eq!(index.hours()[0].world_digest(), expected);
+
+        // A memoised subtree answers the same digest a fresh walk takes.
+        let fresh = CanonValue::parse(&body).unwrap();
+        let again = fresh.tree_digest_hex();
+        assert_eq!(again.0, expected);
+        assert_eq!(fresh.tree_digest_hex(), again);
+        let changed = world_json(0, r#"{"n":189352.52932739259}"#);
+        assert_ne!(CanonValue::parse(&changed).unwrap().tree_digest_hex().0, expected);
     }
 
     /// `push` (which parses internally) and `push_prepared` (which is handed an
@@ -7398,7 +7671,7 @@ mod tests {
         // seven surviving rows could not fit in this.
         let mixed_delta = mixed_index.hours()[1].cache_record_len() - RECORD_HEADER_LEN;
         assert!(
-            mixed_delta < 90,
+            mixed_delta < 91,
             "a middle removal beside a changed row must cost the two, not the seven: \
              {mixed_delta} bytes"
         );
@@ -7973,13 +8246,14 @@ mod tests {
         // flight when the bytes run out. Hour 0's record closed and matched
         // before it, so position 0 is vouched.
         let mut short = CacheAudit::new(&index);
-        short.write_all(&cache[..cache.len() - 1]).unwrap();
+        let cut = cache.len() - CACHE_TRAILER_LEN as usize - 1;
+        short.write_all(&cache[..cut]).unwrap();
         let verdict = short.finish().unwrap();
         let truncation = verdict
             .truncation()
             .expect("a stream that stopped short is reported as truncated");
         assert_eq!(truncation.published_len(), index.cache_len());
-        assert_eq!(truncation.seen_len(), cache.len() as u64 - 1);
+        assert_eq!(truncation.seen_len(), cut as u64);
         assert_eq!(truncation.first_unvouched_position(), 1);
         assert_eq!(verdict.damaged_positions(), &[1]);
         assert!(!verdict.is_intact());
@@ -8453,7 +8727,7 @@ mod tests {
         let index_bytes = index.to_bytes().unwrap();
 
         let mut flipped = cache.clone();
-        let last = flipped.len() - 1;
+        let last = flipped.len() - 1 - CACHE_TRAILER_LEN as usize;
         flipped[last] ^= 0x01;
         let scratch = TempCacheFile::write("flipped", &flipped);
         let confined =
@@ -8477,7 +8751,7 @@ mod tests {
         // hour 0 still serves and hour 1 is refused by a name that says the
         // record is not wholly in the artifact.
         let mut truncated = cache.clone();
-        truncated.pop();
+        truncated.truncate(truncated.len() - CACHE_TRAILER_LEN as usize - 1);
         let scratch = TempCacheFile::write("truncated", &truncated);
         let short = CertifiedReplayCache::open_file(&index_bytes, scratch.open(), 200, &source_sha)
             .expect("a truncated cache serves its verified prefix");
@@ -8707,18 +8981,11 @@ mod tests {
         }
     }
 
-    /// A world body the cache model cannot spell back is a BUILD failure, never
-    /// a silently different seek.
-    ///
-    /// `push` no longer re-serializes each hour to prove that inline -- it is
-    /// the SEAL that proves it, over the finished artifact, and this test holds
-    /// that seal to the same defect. The recorded `world_json_sha256` is taken
-    /// from the source bytes; the record carries the parse; so a body whose
-    /// spelling the value model does not preserve makes the two disagree and
-    /// `verify_every_hour` refuses the artifact. Delete the digest comparison
-    /// in `verify_every_hour` and this test fails.
+    /// A world body the cache model cannot spell back is refused at push: the
+    /// tree walk counts the canonical text length and a body of any other
+    /// length is not the canonical spelling of its own parse.
     #[test]
-    fn a_body_that_does_not_round_trip_is_refused_when_the_artifact_is_sealed() {
+    fn a_body_that_does_not_round_trip_is_refused_at_push() {
         let source_sha = "cd".repeat(32);
         let mut encoder = ReplayCacheEncoder::new(Vec::new(), &source_sha, 2).unwrap();
         let mut hour = world(0, r#"{"v":1}"#);
@@ -8728,21 +8995,8 @@ mod tests {
             .unwrap()
             .replace(r#""world":"#, r#""world": "#)
             .into_bytes();
-        let source_len = hour.h4cr_end_offset;
-        encoder
-            .push(hour)
-            .expect("the body parses; only its spelling is unreproducible");
-        let (cache, index) = encoder
-            .finish("g", "1", CacheIdentityMode::IdentityV1, source_len)
-            .unwrap();
-        let index_bytes = index.to_bytes().unwrap();
-        let reader =
-            ReplayCacheReader::open(&index_bytes, &cache, source_len, &source_sha).unwrap();
-        let error = reader.verify_every_hour().unwrap_err().to_string();
-        assert!(
-            error.contains("does not byte-match replay_decoder parity hash"),
-            "{error}"
-        );
+        let error = encoder.push(hour).unwrap_err().to_string();
+        assert!(error.contains("canonical text length"), "{error}");
     }
 
     #[test]
@@ -8836,7 +9090,8 @@ mod tests {
         // replacement's two, so it only became a delta when
         // `NUMBER_DELTA_SLACK` did -- and that is the whole of what the slack
         // buys, a hundred thousand times an hour.
-        assert_eq!(count_number_deltas(&decode_patch_exact(payload).unwrap()), 4);
+        let payload = open_cache_payload(payload).unwrap();
+        assert_eq!(count_number_deltas(&decode_patch_exact(&payload).unwrap()), 4);
 
         // And each one is shorter than the replacement it stands in for.
         for (from, to) in [
@@ -9877,7 +10132,7 @@ mod tests {
         // delta — so hour 0 still serves and hour 1 does not.
         let index_bytes = index.to_bytes().unwrap();
         let mut corrupt_cache = cache;
-        let last = corrupt_cache.len() - 1;
+        let last = corrupt_cache.len() - 1 - CACHE_TRAILER_LEN as usize;
         corrupt_cache[last] ^= 1;
         let reader =
             ReplayCacheReader::open(&index_bytes, &corrupt_cache, 200, &source_sha).unwrap();
@@ -11850,7 +12105,7 @@ mod tests {
     /// LANE MY, BATCH B PROOF ON A REAL RECORDING: at every hour of the
     /// fixture, the shared projected world materialises to exactly the world
     /// the digest-checked byte route serves. The byte route hashes each hour
-    /// against the sealed `world_json_sha256`, so this is equality against the
+    /// against the sealed `world_digest`, so this is equality against the
     /// recording's own authority, not against a second copy of the same walk —
     /// it is the "projected == to_value(canon) at every cursor position"
     /// requirement of the batch-B differential, on the real artifact.

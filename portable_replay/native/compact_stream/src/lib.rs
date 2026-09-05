@@ -1,6 +1,9 @@
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use zstd::stream::raw::{DParameter, Decoder as RawDecoder, InBuffer, Operation, OutBuffer};
 
@@ -44,7 +47,7 @@ impl StreamCompression {
 }
 
 pub struct DecodedFile {
-    reader: Box<dyn Read>,
+    reader: Box<dyn Read + Send>,
     compression: StreamCompression,
     encoded_len: u64,
 }
@@ -224,7 +227,7 @@ pub fn open_with_compression_at(
     if stored_offset != 0 {
         file.seek(SeekFrom::Start(stored_offset))?;
     }
-    let reader: Box<dyn Read> = match compression {
+    let reader: Box<dyn Read + Send> = match compression {
         StreamCompression::None => Box::new(BufReader::with_capacity(BUFFER_BYTES, file)),
         StreamCompression::Zstd => {
             let buffered = BufReader::with_capacity(BUFFER_BYTES, file);
@@ -242,7 +245,7 @@ pub fn open_with_compression_at(
 pub fn decode_open_file(mut file: File, compression: StreamCompression) -> io::Result<DecodedFile> {
     let encoded_len = file.metadata()?.len();
     file.seek(SeekFrom::Start(0))?;
-    let reader: Box<dyn Read> = match compression {
+    let reader: Box<dyn Read + Send> = match compression {
         StreamCompression::None => Box::new(BufReader::with_capacity(BUFFER_BYTES, file)),
         StreamCompression::Zstd => {
             let buffered = BufReader::with_capacity(BUFFER_BYTES, file);
@@ -269,6 +272,193 @@ pub struct StreamWriteReceipt {
     pub stored_len: u64,
     pub compression: StreamCompression,
     pub frame_boundaries: Vec<FrameBoundary>,
+}
+
+/// OS-visible byte count of a spool storage file, shared between its writer
+/// and a same-process tail reader. `finished` closes the tail: after it the
+/// reader returns EOF once it has read every visible byte.
+#[derive(Default)]
+pub struct StoredProgress {
+    visible_len: AtomicU64,
+    finished: AtomicBool,
+    reader_wait: Mutex<()>,
+    changed: Condvar,
+}
+
+impl StoredProgress {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    fn advance(&self, bytes: u64) {
+        // One storage file owns the counter; only completed writes publish bytes.
+        self.visible_len.fetch_add(bytes, Ordering::Release);
+        self.changed.notify_all();
+    }
+
+    pub fn finish(&self) {
+        self.finished.store(true, Ordering::Release);
+        self.changed.notify_all();
+    }
+
+    pub fn visible_len(&self) -> u64 {
+        self.visible_len.load(Ordering::Acquire)
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
+    }
+
+    fn snapshot(&self) -> (u64, bool) {
+        // Acquiring finish before length includes the writer's final publication.
+        let finished = self.is_finished();
+        (self.visible_len(), finished)
+    }
+
+    fn wait_past(&self, seen: u64) -> (u64, bool) {
+        let state = self.snapshot();
+        if state.0 > seen || state.1 {
+            return state;
+        }
+        let mut guard = self.reader_wait.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            let state = self.snapshot();
+            if state.0 > seen || state.1 {
+                return state;
+            }
+            // The writer never locks reader_wait. A notification can race the
+            // predicate-to-wait transition, so the reader must recheck on timeout.
+            guard = self.changed.wait_timeout(guard, Duration::from_millis(20))
+                .unwrap_or_else(|e| e.into_inner()).0;
+        }
+    }
+}
+
+enum SpoolFile {
+    Plain(File),
+    Observed { file: File, progress: Arc<StoredProgress> },
+}
+
+impl SpoolFile {
+    fn sync_all(&self) -> io::Result<()> {
+        match self {
+            SpoolFile::Plain(file) | SpoolFile::Observed { file, .. } => file.sync_all(),
+        }
+    }
+}
+
+impl Write for SpoolFile {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            SpoolFile::Plain(file) => file.write(buf),
+            SpoolFile::Observed { file, progress } => {
+                let written = file.write(buf)?;
+                progress.advance(written as u64);
+                Ok(written)
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            SpoolFile::Plain(file) | SpoolFile::Observed { file, .. } => file.flush(),
+        }
+    }
+}
+
+impl Drop for SpoolFile {
+    fn drop(&mut self) {
+        if let SpoolFile::Observed { progress, .. } = self {
+            progress.finish();
+        }
+    }
+}
+
+/// Reads a spool storage file while it is still being written, never past the
+/// bytes its writer has made visible; EOF only after the writer finished.
+pub struct TailReader {
+    file: Option<File>,
+    path: std::path::PathBuf,
+    progress: Arc<StoredProgress>,
+    pos: u64,
+    known_len: u64,
+    finished: bool,
+}
+
+impl TailReader {
+    pub fn new(path: impl AsRef<Path>, progress: Arc<StoredProgress>) -> Self {
+        Self {
+            file: None,
+            path: path.as_ref().to_path_buf(),
+            progress,
+            pos: 0,
+            known_len: 0,
+            finished: false,
+        }
+    }
+}
+
+impl Read for TailReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if self.pos >= self.known_len {
+            if self.finished {
+                return Ok(0);
+            }
+            let (len, finished) = self.progress.wait_past(self.pos);
+            self.known_len = len;
+            self.finished = finished;
+            if self.pos >= self.known_len {
+                return Ok(0);
+            }
+        }
+        if self.file.is_none() {
+            let mut file = File::open(&self.path)?;
+            file.seek(SeekFrom::Start(self.pos))?;
+            self.file = Some(file);
+        }
+        let file = self.file.as_mut().expect("opened above");
+        let room = usize::try_from(self.known_len - self.pos).unwrap_or(usize::MAX);
+        let want = room.min(buf.len());
+        let n = file.read(&mut buf[..want])?;
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "spool tail is shorter than its writer reported",
+            ));
+        }
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+/// Decoded view of a spool still being written by `StreamWriter::create_with_frames_observed`.
+pub fn open_tail(
+    path: impl AsRef<Path>,
+    compression: StreamCompression,
+    progress: Arc<StoredProgress>,
+) -> io::Result<DecodedFile> {
+    decode_reader(TailReader::new(path, progress), compression)
+}
+
+pub fn decode_reader(
+    source: impl Read + Send + 'static,
+    compression: StreamCompression,
+) -> io::Result<DecodedFile> {
+    let reader: Box<dyn Read + Send> = match compression {
+        StreamCompression::None => Box::new(BufReader::with_capacity(BUFFER_BYTES, source)),
+        StreamCompression::Zstd => {
+            let buffered = BufReader::with_capacity(BUFFER_BYTES, source);
+            Box::new(StrictZstdReader::new(buffered)?)
+        }
+    };
+    Ok(DecodedFile {
+        reader,
+        compression,
+        encoded_len: 0,
+    })
 }
 
 struct CountingWriter<W> {
@@ -308,8 +498,8 @@ pub struct StreamWriter {
 }
 
 enum WriterInner {
-    Raw(CountingWriter<BufWriter<File>>),
-    Zstd(PeriodicZstdWriter<CountingWriter<BufWriter<File>>>),
+    Raw(CountingWriter<BufWriter<SpoolFile>>),
+    Zstd(PeriodicZstdWriter<CountingWriter<BufWriter<SpoolFile>>>),
 }
 
 struct StrictZstdReader<R: BufRead> {
@@ -528,7 +718,35 @@ impl StreamWriter {
         refuse_trimmed_write_target(path)?;
         let file = File::create(path)?;
         Self::over_file(
-            file,
+            SpoolFile::Plain(file),
+            compression,
+            frame_bytes,
+            FrameBoundary {
+                decoded_offset: 0,
+                stored_offset: 0,
+            },
+        )
+    }
+
+    /// Like `create_with_frames`, publishing every storage write to `progress`
+    /// so a `TailReader` can follow the file while it grows.
+    pub fn create_with_frames_observed(
+        path: impl AsRef<Path>,
+        compression: StreamCompression,
+        frame_bytes: Option<u64>,
+        progress: Arc<StoredProgress>,
+    ) -> io::Result<Self> {
+        if frame_bytes == Some(0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "stream frame size must be non-zero",
+            ));
+        }
+        let path = path.as_ref();
+        refuse_trimmed_write_target(path)?;
+        let file = File::create(path)?;
+        Self::over_file(
+            SpoolFile::Observed { file, progress },
             compression,
             frame_bytes,
             FrameBoundary {
@@ -567,11 +785,11 @@ impl StreamWriter {
                 ),
             ));
         }
-        Self::over_file(file, compression, frame_bytes, resume)
+        Self::over_file(SpoolFile::Plain(file), compression, frame_bytes, resume)
     }
 
     fn over_file(
-        file: File,
+        file: SpoolFile,
         compression: StreamCompression,
         frame_bytes: Option<u64>,
         resume: FrameBoundary,
@@ -655,7 +873,7 @@ impl StreamWriter {
         self.rotate_frame()
     }
 
-    fn storage_file(&mut self) -> io::Result<&mut BufWriter<File>> {
+    fn storage_file(&mut self) -> io::Result<&mut BufWriter<SpoolFile>> {
         Ok(match &mut self.inner {
             WriterInner::Raw(writer) => &mut writer.inner,
             WriterInner::Zstd(writer) => &mut writer.encoder_mut()?.get_mut().inner,
@@ -1344,4 +1562,139 @@ mod tests {
             "1 MiB flush ratio cost unexpectedly high: {overhead_percent:.6}%"
         );
     }
+
+    #[test]
+    fn tail_reader_follows_an_observed_writer_to_its_finish() {
+        let path = std::env::temp_dir().join(format!(
+            "compact_stream_tail_{}_{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let progress = StoredProgress::new();
+        let mut writer = StreamWriter::create_with_frames_observed(
+            &path,
+            StreamCompression::Zstd,
+            Some(DEFAULT_FRAME_BYTES),
+            progress.clone(),
+        )
+        .unwrap();
+        let mut tail = open_tail(&path, StreamCompression::Zstd, progress.clone()).unwrap();
+        let payload: Vec<u8> = (0..3u32 << 20)
+            .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
+            .collect();
+        let expected = payload.clone();
+        let writer_thread = std::thread::spawn(move || {
+            for piece in payload.chunks(64 << 10) {
+                writer.write_all(piece).unwrap();
+                writer.flush().unwrap();
+            }
+            writer.finish().unwrap()
+        });
+        let mut decoded = Vec::new();
+        tail.read_to_end(&mut decoded).unwrap();
+        let receipt = writer_thread.join().unwrap();
+        assert!(progress.is_finished());
+        assert_eq!(progress.visible_len(), receipt.stored_len);
+        assert_eq!(decoded, expected);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn observed_writer_finishes_while_reader_bookkeeping_is_contended() {
+        for compression in [StreamCompression::None, StreamCompression::Zstd] {
+            let dir = TmpDir::new("progress_contended");
+            let path = dir.0.join("observed.bin");
+            let progress = StoredProgress::new();
+            let mut writer = StreamWriter::create_with_frames_observed(
+                &path, compression, Some(128), progress.clone(),
+            ).unwrap();
+            let payload = b"only completed storage writes become visible".repeat(100);
+            let expected = payload.clone();
+            let guard = progress.reader_wait.lock().unwrap();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let writer_thread = std::thread::spawn(move || {
+                writer.write_all(&payload).unwrap();
+                writer.flush().unwrap();
+                done_tx.send(writer.finish().unwrap()).unwrap();
+            });
+            let result = done_rx.recv_timeout(Duration::from_secs(5));
+            let state_while_contended = progress.snapshot();
+            // Always release bookkeeping and join before asserting a timeout.
+            drop(guard);
+            writer_thread.join().unwrap();
+            let receipt = result.expect("storage write and finish must not wait on reader bookkeeping");
+            assert_eq!(state_while_contended, (receipt.stored_len, true));
+            assert_eq!(receipt.decoded_len, expected.len() as u64);
+            assert_eq!(receipt.stored_len, fs::metadata(&path).unwrap().len());
+            let mut tail = open_tail(&path, compression, progress).unwrap();
+            let mut decoded = Vec::new();
+            tail.read_to_end(&mut decoded).unwrap();
+            assert_eq!(decoded, expected);
+        }
+    }
+
+    #[test]
+    fn progress_finish_notifies_a_parked_reader_without_waiting_for_its_mutex() {
+        let progress = StoredProgress::new();
+        let reader_progress = progress.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut guard = reader_progress.reader_wait.lock().unwrap();
+            ready_tx.send(()).unwrap();
+            let mut timed_out = false;
+            while !reader_progress.is_finished() {
+                let (next, timeout) = reader_progress.changed.wait_timeout(guard, Duration::from_secs(5)).unwrap();
+                guard = next;
+                if timeout.timed_out() { timed_out = true; break; }
+            }
+            (timed_out, reader_progress.snapshot())
+        });
+        ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Acquiring this proves the reader released it into its condition wait.
+        let guard = progress.reader_wait.lock().unwrap();
+        let writer_progress = progress.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let finisher = std::thread::spawn(move || {
+            writer_progress.finish();
+            done_tx.send(()).unwrap();
+        });
+        let finished = done_rx.recv_timeout(Duration::from_secs(2));
+        drop(guard);
+        finisher.join().unwrap();
+        let (timed_out, state) = reader.join().unwrap();
+        finished.expect("finish cannot wait for reader bookkeeping");
+        assert!(!timed_out, "finish must notify an already parked reader");
+        assert_eq!(state, (0, true));
+    }
+
+    #[test]
+    fn completed_progress_never_hides_the_final_storage_bytes() {
+        let progress = StoredProgress::new();
+        let writer_progress = progress.clone();
+        let writer = std::thread::spawn(move || {
+            for _ in 0..10_000 { writer_progress.advance(7); }
+            writer_progress.finish();
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader_progress = progress.clone();
+        let reader = std::thread::spawn(move || {
+            let mut seen = 0;
+            loop {
+                let (visible, finished) = reader_progress.wait_past(seen);
+                assert!(visible >= seen);
+                assert_eq!(visible % 7, 0);
+                seen = visible;
+                if finished { tx.send(visible).unwrap(); break; }
+            }
+        });
+        writer.join().unwrap();
+        let final_len = rx.recv_timeout(Duration::from_secs(5));
+        if final_len.is_err() { progress.finish(); }
+        reader.join().unwrap();
+        assert_eq!(final_len.unwrap(), 70_000);
+    }
+
 }

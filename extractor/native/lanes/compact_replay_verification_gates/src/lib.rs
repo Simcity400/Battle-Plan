@@ -5116,7 +5116,7 @@ fn certify_cache_only_recording(
             ),
         )
     })?;
-    snapshot::validate_checkpoint_cache_header(verdict.header(), &attested_sha256).map_err(
+    snapshot::validate_checkpoint_cache_header(&verdict, &attested_sha256).map_err(
         |error| {
             cache_only_link_refusal(
                 CACHE_ONLY_LINK_CHECKPOINT_CACHE,
@@ -14065,7 +14065,9 @@ mod tests {
             replace_unique_digest(&mut index_bytes, &header_sha256, &folded_sha256);
         }
         if breakage.corrupt_cache_bytes {
-            *cache_bytes.last_mut().unwrap() ^= 0xff;
+            let last_record_byte =
+                cache_bytes.len() - 1 - snapshot::CHECKPOINT_CACHE_TRAILER_LEN as usize;
+            cache_bytes[last_record_byte] ^= 0xff;
         }
         let sealed_cache_bytes = cache_bytes.clone();
         let record_windows: Vec<(u64, u64)> = replay_index
@@ -14211,7 +14213,11 @@ mod tests {
             );
         }
         if breakage.rot_cache_header {
-            rot_sealed_cache_byte(&mut packed, &sealed_cache_bytes, 8);
+            rot_sealed_cache_byte(
+                &mut packed,
+                &sealed_cache_bytes,
+                sealed_cache_bytes.len() - snapshot::CHECKPOINT_CACHE_TRAILER_LEN as usize,
+            );
         }
         fs::write(dir.join("native_session.battleplan"), packed).unwrap();
         if !breakage.omit_run_dir_stream {

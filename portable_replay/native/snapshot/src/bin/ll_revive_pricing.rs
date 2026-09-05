@@ -12,7 +12,7 @@
 //! HOW THE HOURS GET HERE. The already-sealed caches on disk are format 4 and
 //! this build reads format 5, so the hours arrive on stdin from the read-only
 //! Python probe that walks the old records (`h4cp_probe.py`). That is a
-//! transport, not a re-encoding: every hour carries the `world_json_sha256` the
+//! transport, not a re-encoding: every hour carries the `world_digest` the
 //! ORIGINAL recording published, this instrument requires the JSON it receives
 //! to hash to it, and the reader afterwards requires each reconstructed hour to
 //! hash to it again. A transport that altered a byte could not pass either.
@@ -21,7 +21,7 @@
 //!
 //! stdin framing, little-endian, repeated until tag 0:
 //!   u8 tag (1 = hour, 0 = end)
-//!   i64 hour_index | u32 len + date | u32 len + world_json_sha256
+//!   i64 hour_index | u32 len + date | u32 len + world_digest
 //!   u64 h4cr_start | u64 h4cr_end | u64 len + world JSON
 use std::io::{Read, Write};
 
@@ -111,7 +111,7 @@ fn run() -> Result<(), String> {
         // An EMPTY digest means the caller is deliberately feeding a modified
         // document -- the wire-deletion comparison -- and says so explicitly
         // rather than by passing a digest that happens not to match.
-        if !stated_sha.is_empty() && prepared.world_json_sha256() != stated_sha {
+        if !stated_sha.is_empty() && prepared.world_digest() != stated_sha {
             return Err(format!(
                 "hour {hour_index} arrived as different bytes from the ones the recording sealed"
             ));

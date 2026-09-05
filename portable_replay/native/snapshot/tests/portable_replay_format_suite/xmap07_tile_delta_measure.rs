@@ -65,10 +65,16 @@ fn delta_bytes(before: serde_json::Value, after: serde_json::Value) -> u64 {
     let mut encoder = ReplayCacheEncoder::new(Vec::new(), &source_sha256, 744).unwrap();
     encoder.push(hour(0, before)).unwrap();
     encoder.push(hour(1, after)).unwrap();
-    let (_cache, index) = encoder
+    let (cache, index) = encoder
         .finish("g", "1", CacheIdentityMode::IdentityV1, 200)
         .unwrap();
-    index.hours()[1].cache_record_len()
+    // The encoder's spelling, not its storage: the sealed payload is opened.
+    let row = &index.hours()[1];
+    let start = row.cache_record_offset() as usize;
+    let end = start + row.cache_record_len() as usize;
+    let header = 1 + 3 + 8 + 8 + 1;
+    let decoded = portable_replay_format::open_cache_payload(&cache[start + header..end]).unwrap();
+    (header + decoded.len()) as u64
 }
 
 fn tiles(count: usize, dirty: usize) -> Vec<String> {

@@ -6,6 +6,16 @@ use crate::sha256::{to_hex, Sha256};
 
 pub(crate) const MAX_RECURSION_DEPTH: usize = 256;
 
+const TAG_NULL: u8 = 0;
+const TAG_FALSE: u8 = 1;
+const TAG_TRUE: u8 = 2;
+const TAG_NUMBER: u8 = 3;
+const TAG_STRING: u8 = 4;
+const TAG_ARRAY: u8 = 5;
+const TAG_OBJECT: u8 = 6;
+const TAG_ARRAY_DIGEST: u8 = 7;
+const TAG_OBJECT_DIGEST: u8 = 8;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CanonValue {
     Null,
@@ -40,6 +50,8 @@ pub struct ArrayNode {
     /// [`CanonValue::TEXT_MEMO_DEPTH`]; cleared with the projection memo by the
     /// one door to mutable contents, invisible to value semantics like it.
     text: OnceLock<Box<[u8]>>,
+    /// The node's tree digest and canonical text length; same cell rules.
+    digest: OnceLock<Box<DigestMemo>>,
 }
 
 impl ArrayNode {
@@ -48,6 +60,7 @@ impl ArrayNode {
             items,
             memo: OnceLock::new(),
             text: OnceLock::new(),
+            digest: OnceLock::new(),
         }
     }
 
@@ -59,6 +72,7 @@ impl ArrayNode {
     pub fn contents_mut(&mut self) -> &mut Vec<CanonValue> {
         self.memo.take();
         self.text.take();
+        self.digest.take();
         &mut self.items
     }
 
@@ -68,6 +82,10 @@ impl ArrayNode {
 
     fn text_cell(&self) -> &OnceLock<Box<[u8]>> {
         &self.text
+    }
+
+    fn digest_cell(&self) -> &OnceLock<Box<DigestMemo>> {
+        &self.digest
     }
 }
 
@@ -108,6 +126,7 @@ pub struct ObjectNode {
     memo: OnceLock<Box<ProjectionMemo>>,
     /// See [`ArrayNode`]: the same text memo, for objects.
     text: OnceLock<Box<[u8]>>,
+    digest: OnceLock<Box<DigestMemo>>,
 }
 
 impl ObjectNode {
@@ -116,6 +135,7 @@ impl ObjectNode {
             members,
             memo: OnceLock::new(),
             text: OnceLock::new(),
+            digest: OnceLock::new(),
         }
     }
 
@@ -123,6 +143,7 @@ impl ObjectNode {
     pub fn contents_mut(&mut self) -> &mut Vec<(String, CanonValue)> {
         self.memo.take();
         self.text.take();
+        self.digest.take();
         &mut self.members
     }
 
@@ -133,6 +154,19 @@ impl ObjectNode {
     fn text_cell(&self) -> &OnceLock<Box<[u8]>> {
         &self.text
     }
+
+    fn digest_cell(&self) -> &OnceLock<Box<DigestMemo>> {
+        &self.digest
+    }
+}
+
+/// A container's tree digest and the length of its canonical text.
+#[derive(Clone, Copy, Debug)]
+pub struct DigestMemo {
+    pub digest: [u8; 32],
+    pub text_len: u64,
+    /// [`CanonValue::heap_bytes`] of the node, counted by the same walk.
+    pub heap_bytes: u64,
 }
 
 impl std::ops::Deref for ObjectNode {
@@ -271,6 +305,12 @@ impl CanonValue {
             total = total.saturating_add(match value {
                 Self::Null | Self::Bool(_) => 0,
                 Self::Number(token) | Self::String(token) => token.capacity() as u64,
+                Self::Array(items) if items.digest_cell().get().is_some() => {
+                    items.digest_cell().get().map_or(0, |memo| memo.heap_bytes)
+                }
+                Self::Object(members) if members.digest_cell().get().is_some() => {
+                    members.digest_cell().get().map_or(0, |memo| memo.heap_bytes)
+                }
                 Self::Array(items) => {
                     stack.extend(items.iter());
                     ((items.capacity() * std::mem::size_of::<CanonValue>()) as u64)
@@ -425,6 +465,175 @@ impl CanonValue {
         let mut scratch = Vec::new();
         self.write_json_memo(&mut sink, 0, &mut scratch);
         sink.finish()
+    }
+
+    /// Below this canonical length a container's digest is recomputed rather
+    /// than remembered: the memo costs more than the walk it saves.
+    pub const DIGEST_MEMO_MIN_BYTES: u64 = 256;
+    /// A container with fewer direct children than this is absorbed into its
+    /// parent's hash inline (kind, length, children) instead of by its own
+    /// digest: one hash per fresh subtree of any size, not one per node.
+    pub const DIGEST_INLINE_BELOW_CHILDREN: usize = 8;
+
+    /// The tree digest: SHA-256 over a container's kind, length and children,
+    /// where a scalar child is absorbed as its tagged, length-prefixed bytes
+    /// and a container child as its own digest, so an untouched subtree keeps
+    /// its digest across hours and no scalar costs a hash of its own. A scalar
+    /// root digests the same way as a one-element array's element. Returned
+    /// with the canonical text length, which the same walk counts.
+    pub fn tree_digest(&self) -> DigestMemo {
+        let memo = match self {
+            Self::Array(node) => node.digest_cell().get().map(|memo| **memo),
+            Self::Object(node) => node.digest_cell().get().map(|memo| **memo),
+            _ => None,
+        };
+        if let Some(memo) = memo {
+            crate::replay_cache::cacheprof::add(&crate::replay_cache::cacheprof::DIGEST_MEMO_HITS, 1);
+            return memo;
+        }
+        crate::replay_cache::cacheprof::add(
+            &crate::replay_cache::cacheprof::DIGEST_CONTAINERS_HASHED,
+            1,
+        );
+        let mut hasher = Sha256::new();
+        let mut heap_bytes = 0u64;
+        let text_len = self.absorb_children(&mut hasher, &mut heap_bytes);
+        let memo = DigestMemo {
+            digest: hasher.finalize(),
+            text_len,
+            heap_bytes,
+        };
+        if text_len >= Self::DIGEST_MEMO_MIN_BYTES {
+            match self {
+                Self::Array(node) => {
+                    let _ = node.digest_cell().set(Box::new(memo));
+                }
+                Self::Object(node) => {
+                    let _ = node.digest_cell().set(Box::new(memo));
+                }
+                _ => {}
+            }
+        }
+        memo
+    }
+
+    /// Feeds this value's contribution to a parent's hash; returns its
+    /// canonical text length.
+    fn absorb(&self, hasher: &mut Sha256, heap_bytes: &mut u64) -> u64 {
+        match self {
+            Self::Null => {
+                hasher.update(&[TAG_NULL]);
+                4
+            }
+            Self::Bool(false) => {
+                hasher.update(&[TAG_FALSE]);
+                5
+            }
+            Self::Bool(true) => {
+                hasher.update(&[TAG_TRUE]);
+                4
+            }
+            Self::Number(token) => {
+                hasher.update(&[TAG_NUMBER]);
+                hasher.update(&(token.len() as u64).to_le_bytes());
+                hasher.update(token.as_bytes());
+                crate::replay_cache::cacheprof::add(
+                    &crate::replay_cache::cacheprof::DIGEST_BYTES_ABSORBED,
+                    token.len() as u64,
+                );
+                *heap_bytes += token.capacity() as u64;
+                token.len() as u64
+            }
+            Self::String(body) => {
+                hasher.update(&[TAG_STRING]);
+                hasher.update(&(body.len() as u64).to_le_bytes());
+                hasher.update(body.as_bytes());
+                crate::replay_cache::cacheprof::add(
+                    &crate::replay_cache::cacheprof::DIGEST_BYTES_ABSORBED,
+                    body.len() as u64,
+                );
+                *heap_bytes += body.capacity() as u64;
+                body.len() as u64 + 2
+            }
+            Self::Array(node) => {
+                if node.len() < Self::DIGEST_INLINE_BELOW_CHILDREN {
+                    return self.absorb_children(hasher, heap_bytes);
+                }
+                let memo = match node.digest_cell().get() {
+                    Some(memo) => {
+                        crate::replay_cache::cacheprof::add(
+                            &crate::replay_cache::cacheprof::DIGEST_MEMO_HITS,
+                            1,
+                        );
+                        **memo
+                    }
+                    None => self.tree_digest(),
+                };
+                hasher.update(&[TAG_ARRAY_DIGEST]);
+                hasher.update(&memo.digest);
+                *heap_bytes += memo.heap_bytes;
+                memo.text_len
+            }
+            Self::Object(node) => {
+                if node.len() < Self::DIGEST_INLINE_BELOW_CHILDREN {
+                    return self.absorb_children(hasher, heap_bytes);
+                }
+                let memo = match node.digest_cell().get() {
+                    Some(memo) => {
+                        crate::replay_cache::cacheprof::add(
+                            &crate::replay_cache::cacheprof::DIGEST_MEMO_HITS,
+                            1,
+                        );
+                        **memo
+                    }
+                    None => self.tree_digest(),
+                };
+                hasher.update(&[TAG_OBJECT_DIGEST]);
+                hasher.update(&memo.digest);
+                *heap_bytes += memo.heap_bytes;
+                memo.text_len
+            }
+        }
+    }
+
+    /// The hash a container feeds its own digest from: kind, length, and
+    /// each child absorbed (object keys as length-prefixed bytes).
+    fn absorb_children(&self, hasher: &mut Sha256, heap_bytes: &mut u64) -> u64 {
+        match self {
+            Self::Array(node) => {
+                hasher.update(&[TAG_ARRAY]);
+                hasher.update(&(node.len() as u64).to_le_bytes());
+                let mut text_len = 2 + node.len().saturating_sub(1) as u64;
+                for item in node.iter() {
+                    text_len += item.absorb(hasher, heap_bytes);
+                }
+                *heap_bytes += (node.capacity() * std::mem::size_of::<CanonValue>()) as u64
+                    + Self::shared_container_bytes::<ArrayNode>();
+                text_len
+            }
+            Self::Object(node) => {
+                hasher.update(&[TAG_OBJECT]);
+                hasher.update(&(node.len() as u64).to_le_bytes());
+                let mut text_len = 2 + node.len().saturating_sub(1) as u64;
+                for (key, value) in node.iter() {
+                    hasher.update(&(key.len() as u64).to_le_bytes());
+                    hasher.update(key.as_bytes());
+                    *heap_bytes += key.capacity() as u64;
+                    text_len += key.len() as u64 + 3 + value.absorb(hasher, heap_bytes);
+                }
+                *heap_bytes += (node.capacity() * std::mem::size_of::<(String, CanonValue)>())
+                    as u64
+                    + Self::shared_container_bytes::<ObjectNode>();
+                text_len
+            }
+            scalar => scalar.absorb(hasher, heap_bytes),
+        }
+    }
+
+    /// [`Self::tree_digest`] as lowercase hex, with the canonical text length.
+    pub fn tree_digest_hex(&self) -> (String, u64) {
+        let memo = self.tree_digest();
+        (to_hex(&memo.digest), memo.text_len)
     }
 
     /// Bytes held by filled text memo cells reachable from this value.
@@ -1007,7 +1216,40 @@ mod heap_bytes_tests {
                 "counted parse disagrees with the walk on {}",
                 String::from_utf8_lossy(document)
             );
+            // A filled digest memo answers the same number the walk took.
+            let memo = value.tree_digest();
+            assert_eq!(memo.heap_bytes, counted);
+            assert_eq!(value.heap_bytes(), counted);
+            assert_eq!(memo.text_len, document.len() as u64);
         }
+        // Large enough to be remembered on the node, then mutated through the
+        // one door: the memo goes with the old contents.
+        let big = format!("[{}]", (0..200).map(|i| i.to_string()).collect::<Vec<_>>().join(","));
+        let (mut value, counted) = CanonValue::parse_counted(big.as_bytes()).unwrap();
+        let memo = value.tree_digest();
+        assert_eq!(memo.heap_bytes, counted);
+        assert_eq!(memo.text_len, big.len() as u64);
+        if let CanonValue::Array(node) = &mut value {
+            Arc::make_mut(node).contents_mut().push(CanonValue::Null);
+        }
+        let again = value.tree_digest();
+        assert_ne!(again.digest, memo.digest);
+        assert_eq!(again.text_len, memo.text_len + 5);
+        let walk = {
+            let mut total = 0u64;
+            if let CanonValue::Array(node) = &value {
+                total += (node.capacity() * std::mem::size_of::<CanonValue>()) as u64
+                    + CanonValue::shared_container_bytes::<ArrayNode>();
+                for item in node.iter() {
+                    if let CanonValue::Number(token) = item {
+                        total += token.capacity() as u64;
+                    }
+                }
+            }
+            total
+        };
+        assert_eq!(again.heap_bytes, walk);
+        assert_eq!(value.heap_bytes(), walk);
     }
 
     /// per node regardless of ownership would inflate every world document by

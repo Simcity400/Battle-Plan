@@ -641,6 +641,8 @@ pub fn adopt(
         campaign_identity_manifest: receipt.campaign_identity_manifest,
         durable_decoded_end_offset: receipt.durable_decoded_end_offset,
         published_coverage_path: coverage_path,
+        live_fold: None,
+        live_seal_refusal: None,
     }))
 }
 

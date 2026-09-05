@@ -37,7 +37,6 @@ pub const STAGE_ATTACH_PROOF_JOIN: &str = "attach_content_proof_join";
 pub const STAGE_CONTENT_CENSUS: &str = "content_census";
 pub const STAGE_D81_WIRE_PRODUCT: &str = "d81_wire_product";
 pub const STAGE_FOLD_AND_ENCODE: &str = "fold_and_encode";
-pub const STAGE_PARITY_VERIFY: &str = "parity_verify";
 pub const STAGE_CONTAINER_PUBLISH: &str = "container_publish";
 pub const STAGE_MANIFEST_TELEMETRY: &str = "manifest_telemetry";
 pub const STAGE_ROLLOVER_PACKAGE_SET: &str = "rollover_package_set";

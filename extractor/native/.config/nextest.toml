@@ -51,3 +51,9 @@ final-status-level = "slow"
 [profile.evidence]
 slow-timeout = { period = "120s", terminate-after = 5, grace-period = "10s", on-timeout = "fail" }
 final-status-level = "slow"
+
+# Capture-scale receipts (ignored; run by name against a real spool) fold a
+# whole capture: bounded at two hours, still a TIMEOUT failure past that.
+[[profile.default.overrides]]
+filter = 'test(capture05_)'
+slow-timeout = { period = "600s", terminate-after = 12, grace-period = "10s", on-timeout = "fail" }

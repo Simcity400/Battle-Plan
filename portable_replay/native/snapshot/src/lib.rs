@@ -53,7 +53,7 @@ pub use recording_composition::{
     RAW_STREAM_OMITTED_REASON, RAW_STREAM_PACKAGING_FIELD,
 };
 pub use replay_cache::{
-    validate_checkpoint_cache_header, CacheAudit, CacheAuditVerdict, CacheBuildHour,
+    open_cache_payload, seal_cache_payload, validate_checkpoint_cache_header, CacheAudit, CacheAuditVerdict, CacheBuildHour,
     CacheBuildHourMeta, CacheIdentityMode, CacheTruncation, CanonicalWorldHour, CertifiedCacheFile,
     CertifiedReplayCache, ConfinedHour, FrameOutcome, ProjectedOutcome, ReplayCacheEncoder,
     ReplayCacheError,
@@ -61,6 +61,7 @@ pub use replay_cache::{
     ReplaySeekReceipt, RootReuse,
     ResumeSource, RungPolicy, UnhashedWorldHour, DEFAULT_MAX_RUNGS, DEFAULT_RUNG_STRIDE,
     ScrubOutcome, CHECKPOINT_CACHE_FILE, CHECKPOINT_CACHE_HEADER_LEN, CHECKPOINT_CACHE_ROLE,
+    CHECKPOINT_CACHE_TRAILER_LEN,
     DEFAULT_CHECKPOINT_INTERVAL_HOURS, HOUR_INDEX_FILE, HOUR_INDEX_ROLE, MAX_CACHE_RECORD_BYTES,
     MAX_CHECKPOINT_INTERVAL_HOURS, PUBLISHED_COVERAGE_FILE, PUBLISHED_COVERAGE_SCHEMA,
 };

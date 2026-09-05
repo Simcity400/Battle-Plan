@@ -66,7 +66,7 @@ fn format_version() -> u16 {
         .expect("finish");
     u16::from_le_bytes([cache[4], cache[5]])
 }
-const CACHE_HEADER_LEN: u64 = 40;
+const CACHE_HEADER_LEN: u64 = 8;
 
 fn hex32(byte: u8) -> String {
     format!("{byte:02x}").repeat(32)
@@ -115,15 +115,16 @@ fn cache_around_payload(payload: &[u8]) -> (Vec<u8>, Vec<u8>, u64, String) {
     cache.extend_from_slice(CACHE_MAGIC);
     cache.extend_from_slice(&format_version().to_le_bytes());
     cache.extend_from_slice(&0u16.to_le_bytes());
-    cache.extend_from_slice(&digest_of(&source_sha));
     let record_offset = cache.len() as u64;
     cache.push(1);
     cache.extend_from_slice(&[0, 0, 0]);
     cache.extend_from_slice(&0i64.to_le_bytes());
+    let payload = portable_replay_format::seal_cache_payload(payload).unwrap();
     cache.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     cache.push(0);
-    cache.extend_from_slice(payload);
+    cache.extend_from_slice(&payload);
     let record_len = cache.len() as u64 - record_offset;
+    cache.extend_from_slice(&digest_of(&source_sha));
     let cache_len = cache.len() as u64;
     let cache_sha = Sha256::hex(&cache);
 

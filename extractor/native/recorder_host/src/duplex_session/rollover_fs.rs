@@ -1525,11 +1525,11 @@ pub fn sync_directory(path: &Path) -> Result<(), String> {
     }
 }
 
-fn open_path(root: &Path, id: u64) -> PathBuf {
+pub fn open_path(root: &Path, id: u64) -> PathBuf {
     root.join(format!("logical-stream-{id}.open.h4cr"))
 }
 
-fn sealed_path(root: &Path, id: u64) -> PathBuf {
+pub fn sealed_path(root: &Path, id: u64) -> PathBuf {
     root.join(format!("logical-stream-{id}.sealed.h4cr"))
 }
 

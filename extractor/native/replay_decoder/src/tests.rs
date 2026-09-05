@@ -93,7 +93,7 @@ const HOUR_A: i64 = 16_959_360;
 const HOUR_B: i64 = 16_959_361;
 const HOUR_C: i64 = 16_959_362;
 
-fn three_hour_stream() -> Vec<u8> {
+pub(super) fn three_hour_stream() -> Vec<u8> {
     let mut s = Vec::new();
     let mut seq = 1u64;
     for (h, rows) in [
@@ -3286,4 +3286,746 @@ fn a_recording_whose_first_hour_is_excluded_claims_no_cheap_seek_point() {
         .validate_structure()
         .expect_err("a non-zero-offset cheap seek point must refuse")
         .contains("cheap seek point"));
+}
+
+#[test]
+fn live_fold_over_a_growing_spool_seals_the_same_artifacts_as_the_file_fold() {
+    let dir = TmpDir::new("live_fold_tail");
+    let stream = three_hour_stream();
+    let source_sha256 = to_hex(&Sha256::digest(&stream));
+
+    let offline_source = dir.0.join("offline_stream.bin");
+    std::fs::write(&offline_source, &stream).unwrap();
+    let offline_root = dir.0.join("offline_spill");
+    std::fs::create_dir(&offline_root).unwrap();
+    let offline = build_certified_replay_artifacts(
+        &offline_source,
+        &offline_root,
+        "fold_check",
+        StreamIdentityMode::Legacy,
+        stream.len() as u64,
+        &source_sha256,
+        2,
+    )
+    .unwrap();
+
+    let live_source = dir.0.join("live_stream.bin");
+    let live_root = dir.0.join("live_spill");
+    std::fs::create_dir(&live_root).unwrap();
+    let progress = compact_stream::StoredProgress::new();
+    let mut writer = compact_stream::StreamWriter::create_with_frames_observed(
+        &live_source,
+        compact_stream::StreamCompression::Zstd,
+        Some(compact_stream::DEFAULT_FRAME_BYTES),
+        progress.clone(),
+    )
+    .unwrap();
+    let tail =
+        compact_stream::open_tail(&live_source, compact_stream::StreamCompression::Zstd, progress)
+            .unwrap();
+    let builder = LiveReplayArtifactBuilder::start(
+        Box::new(tail),
+        true,
+        0,
+        &live_source,
+        &live_root,
+        "fold_check",
+        StreamIdentityMode::Legacy,
+        2,
+    )
+    .unwrap();
+    let pieces = stream.clone();
+    let writer_thread = std::thread::spawn(move || {
+        for piece in pieces.chunks(pieces.len() / 5 + 1) {
+            std::io::Write::write_all(&mut writer, piece).unwrap();
+            std::io::Write::flush(&mut writer).unwrap();
+        }
+        writer.finish().unwrap()
+    });
+    let receipt = writer_thread.join().unwrap();
+    assert_eq!(receipt.decoded_len, stream.len() as u64);
+    let unrequested_refold = dir.0.join("refold_spill");
+    let (live, telemetry) = builder
+        .finish_or_refold(
+            &live_source,
+            || {
+                std::fs::create_dir(&unrequested_refold)?;
+                Ok(unrequested_refold.clone())
+            },
+            stream.len() as u64,
+            &source_sha256,
+        )
+        .unwrap();
+
+    assert_eq!(live.live_seal_refusal, None);
+    assert!(!unrequested_refold.exists(), "a seal that succeeds asks for no refold directory");
+    assert_eq!(telemetry.hours_folded, offline.hour_count);
+    assert_eq!(live.live_fold.as_ref(), Some(&telemetry));
+    assert!(offline.live_fold.is_some());
+    assert_eq!(offline.live_seal_refusal, None);
+    assert_eq!(live.hour_count, offline.hour_count);
+    assert_eq!(live.hour_index_sha256, offline.hour_index_sha256);
+    assert_eq!(live.checkpoint_cache_len, offline.checkpoint_cache_len);
+    assert_eq!(live.checkpoint_cache_sha256, offline.checkpoint_cache_sha256);
+    assert_eq!(
+        std::fs::read(&live.checkpoint_cache_path).unwrap(),
+        std::fs::read(&offline.checkpoint_cache_path).unwrap()
+    );
+    let reader = snapshot::CertifiedReplayCache::open_file(
+        &std::fs::read(&live.hour_index_path).unwrap(),
+        std::fs::File::open(&live.checkpoint_cache_path).unwrap(),
+        stream.len() as u64,
+        &source_sha256,
+    )
+    .unwrap();
+    assert_eq!(reader.verify_every_hour().unwrap(), 1);
+}
+
+/// A spool tail that breaks before the spool is complete: one way the fold
+/// beside the capture cannot seal.
+struct BreaksAfter<R> {
+    inner: R,
+    remaining: usize,
+}
+
+impl<R: Read> Read for BreaksAfter<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Err(std::io::Error::other("injected: the spool tail broke"));
+        }
+        let take = buf.len().min(self.remaining);
+        let read = self.inner.read(&mut buf[..take])?;
+        self.remaining -= read;
+        Ok(read)
+    }
+}
+
+#[test]
+fn a_live_fold_that_cannot_seal_refolds_the_sealed_spool_to_the_file_fold_artifacts() {
+    let dir = TmpDir::new("live_fold_refold");
+    let stream = three_hour_stream();
+    let source_sha256 = to_hex(&Sha256::digest(&stream));
+
+    let offline_source = dir.0.join("offline_stream.bin");
+    std::fs::write(&offline_source, &stream).unwrap();
+    let offline_root = dir.0.join("offline_spill");
+    std::fs::create_dir(&offline_root).unwrap();
+    let offline = build_certified_replay_artifacts(
+        &offline_source,
+        &offline_root,
+        "fold_check",
+        StreamIdentityMode::Legacy,
+        stream.len() as u64,
+        &source_sha256,
+        2,
+    )
+    .unwrap();
+
+    let live_source = dir.0.join("live_stream.bin");
+    let live_root = dir.0.join("live_spill");
+    std::fs::create_dir(&live_root).unwrap();
+    let progress = compact_stream::StoredProgress::new();
+    let mut writer = compact_stream::StreamWriter::create_with_frames_observed(
+        &live_source,
+        compact_stream::StreamCompression::Zstd,
+        Some(compact_stream::DEFAULT_FRAME_BYTES),
+        progress.clone(),
+    )
+    .unwrap();
+    let tail =
+        compact_stream::open_tail(&live_source, compact_stream::StreamCompression::Zstd, progress)
+            .unwrap();
+    let builder = LiveReplayArtifactBuilder::start(
+        Box::new(BreaksAfter {
+            inner: tail,
+            remaining: stream.len() / 2,
+        }),
+        true,
+        0,
+        &live_source,
+        &live_root,
+        "fold_check",
+        StreamIdentityMode::Legacy,
+        2,
+    )
+    .unwrap();
+    std::io::Write::write_all(&mut writer, &stream).unwrap();
+    let receipt = writer.finish().unwrap();
+    assert_eq!(receipt.decoded_len, stream.len() as u64);
+
+    let refold_root = dir.0.join("refold_spill");
+    let (refolded, telemetry) = builder
+        .finish_or_refold(
+            &live_source,
+            || {
+                std::fs::create_dir(&refold_root)?;
+                Ok(refold_root.clone())
+            },
+            stream.len() as u64,
+            &source_sha256,
+        )
+        .unwrap();
+
+    let refusal = refolded
+        .live_seal_refusal
+        .as_deref()
+        .expect("the refusal is named on the artifacts");
+    assert!(refusal.contains("injected: the spool tail broke"), "{refusal}");
+    let refold_root = std::fs::canonicalize(&refold_root).unwrap();
+    assert!(refolded.hour_index_path.starts_with(&refold_root));
+    assert!(refolded.checkpoint_cache_path.starts_with(&refold_root));
+    assert_eq!(refolded.live_fold.as_ref(), Some(&telemetry));
+    assert_eq!(telemetry.hours_folded, offline.hour_count);
+    assert_eq!(refolded.hour_count, offline.hour_count);
+    assert_eq!(refolded.hour_index_sha256, offline.hour_index_sha256);
+    assert_eq!(refolded.checkpoint_cache_len, offline.checkpoint_cache_len);
+    assert_eq!(refolded.checkpoint_cache_sha256, offline.checkpoint_cache_sha256);
+    assert_eq!(
+        std::fs::read(&refolded.hour_index_path).unwrap(),
+        std::fs::read(&offline.hour_index_path).unwrap()
+    );
+    assert_eq!(
+        std::fs::read(&refolded.checkpoint_cache_path).unwrap(),
+        std::fs::read(&offline.checkpoint_cache_path).unwrap()
+    );
+    assert_eq!(
+        std::fs::read(&refolded.published_coverage_path).unwrap(),
+        std::fs::read(&offline.published_coverage_path).unwrap()
+    );
+    let reader = snapshot::CertifiedReplayCache::open_file(
+        &std::fs::read(&refolded.hour_index_path).unwrap(),
+        std::fs::File::open(&refolded.checkpoint_cache_path).unwrap(),
+        stream.len() as u64,
+        &source_sha256,
+    )
+    .unwrap();
+    assert_eq!(reader.verify_every_hour().unwrap(), 1);
+}
+
+/// CPU-seconds per game hour on each live thread, from the builder's telemetry.
+fn cpu_s_per_game_hour(live: &LiveFoldTelemetry) -> serde_json::Value {
+    let hours = live.hours_folded.max(1) as f64;
+    serde_json::json!({
+        "fold_thread": live.fold_thread_cpu_ns as f64 / 1e9 / hours,
+        "encode_thread": live.encode_thread_cpu_ns as f64 / 1e9 / hours,
+        "total": (live.fold_thread_cpu_ns + live.encode_thread_cpu_ns) as f64 / 1e9 / hours,
+    })
+}
+
+/// The baseline must name the integrated base; historical receipts cannot certify a new fold.
+#[test]
+#[ignore = "capture-scale: folds captures/e2e_05 (1512 game hours); run explicitly"]
+fn capture05_every_hour_folds_to_the_digest_the_old_pipeline_published() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let baseline_path = PathBuf::from(std::env::var_os("BATTLE_PLAN_FIN_BASELINE").or_else(|| std::env::var_os("HOI4_FIN_BASELINE")).expect("integrated-base digest receipt"));
+    let receipt_path = PathBuf::from(std::env::var_os("BATTLE_PLAN_FIN_RECEIPT").or_else(|| std::env::var_os("HOI4_FIN_RECEIPT")).expect("new equivalence receipt path"));
+    let base_commit = std::env::var("BATTLE_PLAN_FIN_BASE_COMMIT").or_else(|_| std::env::var("HOI4_FIN_BASE_COMMIT")).expect("parent-approved base commit");
+    let baseline_bytes = std::fs::read(&baseline_path).unwrap();
+    let fixture: serde_json::Value = serde_json::from_slice(&baseline_bytes).unwrap();
+    assert_eq!(fixture["base_commit"].as_str(), Some(base_commit.as_str()), "stale baseline cannot certify this integration");
+    let capture_dir = std::env::var_os("BATTLE_PLAN_CAPTURE05_DIR").or_else(|| std::env::var_os("HOI4_CAPTURE05_DIR"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo.join("captures/e2e_05"));
+    let spool = capture_dir.join("collector_stream.bin");
+    let dir = TmpDir::new("capture05_equivalence");
+    let root = dir.0.join("spill");
+    std::fs::create_dir(&root).unwrap();
+    let source_len = fixture["source_len"].as_u64().unwrap();
+    let source_sha256 = fixture["source_sha256"].as_str().unwrap();
+    let started = std::time::Instant::now();
+    let artifacts = build_certified_replay_artifacts(
+        &spool,
+        &root,
+        fixture["game_id"].as_str().unwrap(),
+        StreamIdentityMode::IdentityV1,
+        source_len,
+        source_sha256,
+        fixture["checkpoint_interval_hours"].as_u64().unwrap() as u32,
+    )
+    .unwrap();
+    let wall_ms = started.elapsed().as_millis() as u64;
+    let profile = [
+        recorder_host::world_fold::foldprof::report(),
+        recorder_host::world_fold::foldprof::section_sharing_report(),
+        finprof::report(),
+        snapshot::replay_cache::cacheprof::report(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    for line in &profile {
+        eprintln!("profile: {line}");
+    }
+    let index_bytes = std::fs::read(&artifacts.hour_index_path).unwrap();
+    let index = snapshot::ReplayHourIndex::from_bytes(&index_bytes).unwrap();
+    // The sealed cache replayed hour by hour; each hour's canonical text is
+    // spelled and hashed whole, which is the digest the baseline recorded.
+    let cache = snapshot::CertifiedReplayCache::open_file(
+        &index_bytes,
+        std::fs::File::open(&artifacts.checkpoint_cache_path).unwrap(),
+        source_len,
+        source_sha256,
+    )
+    .unwrap();
+    let mut full_text_sha256: std::collections::BTreeMap<i64, String> =
+        std::collections::BTreeMap::new();
+    let walk_started = std::time::Instant::now();
+    cache
+        .walk_every_hour(&mut |value, entry| {
+            full_text_sha256.insert(entry.hour_index(), value.json_sha256_hex().0);
+            Ok(())
+        })
+        .unwrap();
+    let walk_ms = walk_started.elapsed().as_millis() as u64;
+    let old_hours = fixture["hours"].as_array().unwrap();
+    let mut mismatches = Vec::new();
+    let mut compared = 0u64;
+    let mut old_iter = old_hours.iter();
+    for new in index.hours() {
+        match old_iter.next() {
+            Some(old) => {
+                compared += 1;
+                let new_text_sha256 = full_text_sha256
+                    .get(&new.hour_index())
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let same = old["hour_index"].as_i64() == Some(new.hour_index())
+                    && old["date"].as_str() == Some(new.date())
+                    && old["world_json_sha256"].as_str() == Some(new_text_sha256)
+                    && old["h4cr_start_offset"]
+                        .as_u64()
+                        .is_none_or(|start| start == new.h4cr_start_offset())
+                    && old["h4cr_end_offset"]
+                        .as_u64()
+                        .is_none_or(|end| end == new.h4cr_end_offset());
+                if !same {
+                    mismatches.push(serde_json::json!({
+                        "old": old,
+                        "new": {
+                            "hour_index": new.hour_index(),
+                            "date": new.date(),
+                            "world_json_sha256": new_text_sha256,
+                            "world_digest": new.world_digest(),
+                            "h4cr_start_offset": new.h4cr_start_offset(),
+                            "h4cr_end_offset": new.h4cr_end_offset(),
+                        },
+                    }));
+                }
+            }
+            None => mismatches.push(serde_json::json!({
+                "old": null,
+                "new": { "hour_index": new.hour_index(), "date": new.date() },
+            })),
+        }
+    }
+    for old in old_iter {
+        mismatches.push(serde_json::json!({ "old": old, "new": null }));
+    }
+    let old_excluded = fixture["excluded"].as_array().cloned().unwrap_or_default();
+    let new_excluded = index
+        .excluded_hours()
+        .iter()
+        .map(|hole| {
+            serde_json::json!({
+                "hour_index": hole.hour_index(),
+                "h4cr_start_offset": hole.h4cr_start_offset(),
+                "h4cr_end_offset": hole.h4cr_end_offset(),
+                "reason": hole.reason(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let live = artifacts
+        .live_fold
+        .clone()
+        .expect("the file fold carries its own telemetry");
+    let receipt = serde_json::json!({
+        "schema": "hoi4.fin.capture05_equivalence_receipt.v3",
+        "base_commit": base_commit,
+        "baseline_sha256": Sha256::hex(&baseline_bytes),
+        "fold_source_fingerprint": fold_cache::FOLD_SOURCE_FINGERPRINT,
+        "coverage_equal": fixture["hour_coverage"] == artifacts.hour_coverage.to_json(),
+        "campaign_identity_equal": fixture["campaign_identity_manifest"] == serde_json::json!(artifacts.campaign_identity_manifest),
+        "spool": "captures/e2e_05/collector_stream.bin",
+        "source_len": source_len,
+        "source_sha256": source_sha256,
+        "old_hours": old_hours.len(),
+        "new_hours": index.hours().len(),
+        "hours_compared": compared,
+        "world_digest_mismatches": mismatches,
+        "digest_compared": "full canonical text SHA-256 of every replayed hour against the baseline world_json_sha256; the sealed index carries tree digests (world_digest)",
+        "replay_walk_ms": walk_ms,
+        "old_excluded": old_excluded,
+        "new_excluded": new_excluded,
+        "new_index_format_version": 9,
+        "new_hour_index_sha256": artifacts.hour_index_sha256,
+        "new_checkpoint_cache_len": artifacts.checkpoint_cache_len,
+        "new_checkpoint_cache_sha256": artifacts.checkpoint_cache_sha256,
+        "old_checkpoint_cache_len": fixture["cache_len"],
+        "fold_wall_ms": wall_ms,
+        "cpu_s_per_game_hour": cpu_s_per_game_hour(&live),
+        "live_fold": live,
+        "profile": profile,
+    });
+    std::fs::write(
+        receipt_path,
+        serde_json::to_vec_pretty(&receipt).unwrap(),
+    )
+    .unwrap();
+    assert!(!old_hours.is_empty());
+    assert_eq!(fixture["hour_coverage"], artifacts.hour_coverage.to_json());
+    assert_eq!(fixture["campaign_identity_manifest"], serde_json::json!(artifacts.campaign_identity_manifest));
+    assert_eq!(index.hours().len(), old_hours.len());
+    assert!(
+        mismatches.is_empty(),
+        "{} hour(s) differ from the old pipeline",
+        mismatches.len()
+    );
+    if let Some(old_excluded) = fixture["excluded"].as_array() {
+        assert_eq!(&new_excluded, old_excluded);
+    }
+}
+
+/// Wire census of capture 05: per hour, which domains arrived as a full record,
+/// a span delta, or a repeat, so the fold's reuse rules are sized from data.
+#[test]
+#[ignore]
+fn capture05_wire_census() {
+    use compact_contract::record_header::parse_compact_record_header;
+    use std::collections::BTreeMap;
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let capture_dir = std::env::var_os("BATTLE_PLAN_CAPTURE05_DIR").or_else(|| std::env::var_os("HOI4_CAPTURE05_DIR"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo.join("captures/e2e_05"));
+    let mut reader = compact_stream::open(capture_dir.join("collector_stream.bin")).unwrap();
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).unwrap();
+    const REPEAT: u16 = 14;
+    const GAP: u16 = 5;
+    let mut pos = 0usize;
+    // per domain: [full, span_delta, repeat, gap, identical_full_payload]
+    let mut per_domain: BTreeMap<u16, [u64; 5]> = BTreeMap::new();
+    let mut last_payload_sha: BTreeMap<u16, [u8; 32]> = BTreeMap::new();
+    let mut hour_full = 0u64;
+    let mut hour_span = 0u64;
+    let mut hour_repeat = 0u64;
+    let mut hour_bytes = 0u64;
+    let mut hours: Vec<(i32, u64, u64, u64, u64)> = Vec::new();
+    while pos + COMPACT_RECORD_HEADER_LEN <= bytes.len() {
+        let header = parse_compact_record_header(&bytes[pos..]).unwrap();
+        let len = header.record_len();
+        if pos + len > bytes.len() {
+            break;
+        }
+        let payload = &bytes[pos + COMPACT_RECORD_HEADER_LEN..pos + len];
+        match header.record_type {
+            COMPACT_RECORD_TYPE_DOMAIN_DATA => {
+                let slot = per_domain.entry(header.domain_id).or_default();
+                if header.record_flags & compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA != 0 {
+                    slot[1] += 1;
+                    hour_span += 1;
+                } else {
+                    slot[0] += 1;
+                    hour_full += 1;
+                }
+                let sha = Sha256::digest(payload);
+                if last_payload_sha.insert(header.domain_id, sha) == Some(sha) {
+                    slot[4] += 1;
+                }
+                hour_bytes += payload.len() as u64;
+            }
+            REPEAT => {
+                per_domain.entry(header.domain_id).or_default()[2] += 1;
+                hour_repeat += 1;
+            }
+            GAP => {
+                per_domain.entry(header.domain_id).or_default()[3] += 1;
+            }
+            COMPACT_RECORD_TYPE_FRAME_END => {
+                hours.push((header.game_hour_raw, hour_full, hour_span, hour_repeat, hour_bytes));
+                hour_full = 0;
+                hour_span = 0;
+                hour_repeat = 0;
+                hour_bytes = 0;
+            }
+            _ => {}
+        }
+        pos += len;
+    }
+    let mut hist: BTreeMap<u64, u64> = BTreeMap::new();
+    for (_, full, _, _, _) in &hours {
+        *hist.entry(*full).or_default() += 1;
+    }
+    let out = serde_json::json!({
+        "records_walked_bytes": pos,
+        "hours": hours.len(),
+        "hours_by_full_record_count": hist.iter().map(|(k, v)| (k.to_string(), v)).collect::<BTreeMap<_, _>>(),
+        "hours_with_no_full_and_no_span": hours.iter().filter(|h| h.1 == 0 && h.2 == 0).count(),
+        "hours_with_repeats_only": hours.iter().filter(|h| h.1 == 0 && h.2 == 0 && h.3 > 0).count(),
+        "per_domain_full_span_repeat_gap_identicalfull": per_domain.iter().map(|(k, v)| (format!("d{k}"), v.to_vec())).collect::<BTreeMap<_, _>>(),
+        "first_60_hours": hours.iter().take(60).map(|h| format!("{}:{}/{}/{}/{}", h.0, h.1, h.2, h.3, h.4)).collect::<Vec<_>>(),
+    });
+    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+}
+
+/// Folds the first `BATTLE_PLAN_FIN_PREFIX_HOURS` hours of capture 05 (the decoded
+/// spool cut at that hour's end offset) and writes the per-hour CPU cost per
+/// thread with the phase profiles, so a fold change is priced in minutes.
+#[test]
+#[ignore]
+fn capture05_prefix_fold_measure() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let run_dir = repo.join("extractor/native/runs/fin_finalize_time");
+    let fixture: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(run_dir.join("capture05_hour_digests_landing_tmp.json")).unwrap(),
+    )
+    .unwrap();
+    let capture_dir = std::env::var_os("BATTLE_PLAN_CAPTURE05_DIR").or_else(|| std::env::var_os("HOI4_CAPTURE05_DIR"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo.join("captures/e2e_05"));
+    let prefix_hours: usize = std::env::var("BATTLE_PLAN_FIN_PREFIX_HOURS").or_else(|_| std::env::var("HOI4_FIN_PREFIX_HOURS"))
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(300);
+    let label = std::env::var("BATTLE_PLAN_FIN_LABEL").or_else(|_| std::env::var("HOI4_FIN_LABEL")).unwrap_or_else(|_| "unlabeled".to_string());
+    let rows = fixture["hours"].as_array().unwrap();
+    let cut = rows[prefix_hours - 1]["h4cr_end_offset"].as_u64().unwrap();
+    let dir = TmpDir::new("capture05_prefix");
+    let prefix_path = dir.0.join("prefix.h4cr");
+    {
+        let mut reader = compact_stream::open(capture_dir.join("collector_stream.bin")).unwrap();
+        let mut bytes = vec![0u8; cut as usize];
+        reader.read_exact(&mut bytes).unwrap();
+        std::fs::write(&prefix_path, &bytes).unwrap();
+    }
+    let prefix_sha256 = to_hex(&Sha256::digest(&std::fs::read(&prefix_path).unwrap()));
+    let root = dir.0.join("spill");
+    std::fs::create_dir(&root).unwrap();
+    let started = std::time::Instant::now();
+    let artifacts = build_certified_replay_artifacts(
+        &prefix_path,
+        &root,
+        fixture["game_id"].as_str().unwrap(),
+        StreamIdentityMode::IdentityV1,
+        cut,
+        &prefix_sha256,
+        fixture["checkpoint_interval_hours"].as_u64().unwrap() as u32,
+    )
+    .unwrap();
+    let wall_ms = started.elapsed().as_millis() as u64;
+    let live = artifacts.live_fold.clone().unwrap();
+    let hours = live.hours_folded.max(1) as f64;
+    let profile = [
+        recorder_host::world_fold::foldprof::report(),
+        recorder_host::world_fold::foldprof::section_sharing_report(),
+        finprof::report(),
+        snapshot::replay_cache::cacheprof::report(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    let fold_laps = std::mem::take(
+        &mut *recorder_host::world_fold::foldprof::PER_HOUR
+            .lock()
+            .unwrap(),
+    );
+    let cache_laps =
+        std::mem::take(&mut *snapshot::replay_cache::cacheprof::PER_HOUR.lock().unwrap());
+    let mut per_hour: BTreeMap<i64, serde_json::Map<String, serde_json::Value>> = BTreeMap::new();
+    let mut previous = (0u64, 0u64, 0u64);
+    for lap in &fold_laps {
+        let row = per_hour.entry(lap.hour_index).or_default();
+        row.insert("fresh_domains".into(), lap.fresh_domains.into());
+        row.insert("domains".into(), lap.domains.into());
+        row.insert("fold_apply_ms".into(), ((lap.apply_ns - previous.0) as f64 / 1e6).into());
+        row.insert("fold_build_ms".into(), ((lap.build_ns - previous.1) as f64 / 1e6).into());
+        row.insert(
+            "fold_convert_ms".into(),
+            ((lap.serialize_ns - previous.2) as f64 / 1e6).into(),
+        );
+        previous = (lap.apply_ns, lap.build_ns, lap.serialize_ns);
+    }
+    let mut previous_encode = 0u64;
+    for lap in &cache_laps {
+        let row = per_hour.entry(lap.hour_index).or_default();
+        row.insert("json_len".into(), lap.json_len.into());
+        row.insert("raw_record_bytes".into(), lap.raw_record_len.into());
+        row.insert("checkpoint".into(), lap.checkpoint.into());
+        row.insert("encode_ms".into(), ((lap.encode_ns - previous_encode) as f64 / 1e6).into());
+        previous_encode = lap.encode_ns;
+    }
+    let class_of = |row: &serde_json::Map<String, serde_json::Value>| -> &'static str {
+        match row.get("fresh_domains").and_then(serde_json::Value::as_u64) {
+            Some(0) => "fresh_0",
+            Some(1..=3) => "fresh_1_to_3",
+            Some(_) => "fresh_4_plus",
+            None => "unfolded",
+        }
+    };
+    let keys = [
+        "fold_apply_ms",
+        "fold_build_ms",
+        "fold_convert_ms",
+        "encode_ms",
+        "json_len",
+        "raw_record_bytes",
+    ];
+    let mut by_class: BTreeMap<&str, (u64, [f64; 6])> = BTreeMap::new();
+    for row in per_hour.values() {
+        let slot = by_class.entry(class_of(row)).or_default();
+        slot.0 += 1;
+        for (index, key) in keys.iter().enumerate() {
+            slot.1[index] += row.get(*key).and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        }
+    }
+    let per_hour_by_class: serde_json::Map<String, serde_json::Value> = by_class
+        .into_iter()
+        .map(|(class, (count, sums))| {
+            let mut summary = serde_json::Map::new();
+            summary.insert("hours".into(), count.into());
+            for (index, key) in keys.iter().enumerate() {
+                summary.insert(format!("mean_{key}"), (sums[index] / count.max(1) as f64).into());
+            }
+            (class.to_string(), serde_json::Value::Object(summary))
+        })
+        .collect();
+    let out = serde_json::json!({
+        "schema": "hoi4.fin.capture05_prefix_measure.v1",
+        "label": label,
+        "spool": "captures/e2e_05/collector_stream.bin",
+        "prefix_hours_requested": prefix_hours,
+        "prefix_decoded_len": cut,
+        "prefix_sha256": prefix_sha256,
+        "hours_folded": live.hours_folded,
+        "hours_served": artifacts.hour_count,
+        "wall_ms": wall_ms,
+        "cpu_s_per_hour": cpu_s_per_game_hour(&live),
+        "wall_s_per_hour": wall_ms as f64 / 1e3 / hours,
+        "cache_bytes": artifacts.checkpoint_cache_len,
+        "cache_bytes_per_hour": artifacts.checkpoint_cache_len as f64 / hours,
+        "hour_index_sha256": artifacts.hour_index_sha256,
+        "checkpoint_cache_sha256": artifacts.checkpoint_cache_sha256,
+        "live_fold": live,
+        "profile": profile,
+        "per_hour_by_class": per_hour_by_class,
+        "per_hour": per_hour
+            .into_iter()
+            .map(|(hour, mut row)| {
+                row.insert("hour_index".into(), hour.into());
+                serde_json::Value::Object(row)
+            })
+            .collect::<Vec<_>>(),
+    });
+    let path = run_dir.join(format!("capture05_prefix_measure_{}.json", out["label"].as_str().unwrap()));
+    std::fs::write(&path, serde_json::to_vec_pretty(&out).unwrap()).unwrap();
+    eprintln!("{}", serde_json::to_string_pretty(&out["cpu_s_per_hour"]).unwrap());
+}
+
+
+#[test]
+fn rollover_live_fold_seals_every_member_and_refolds_a_broken_tail() {
+    use recorder_host::duplex_session::rollover_fs::{open_path, sealed_path};
+    use std::io::Write;
+    for compression in [compact_stream::StreamCompression::None, compact_stream::StreamCompression::Zstd] {
+        for broken_tail in [false, true] {
+            let dir = TmpDir::new("rollover_live_fold");
+            let raw_root = dir.0.join("logical-streams");
+            let spill_root = dir.0.join("live");
+            fs::create_dir(&raw_root).unwrap();
+            fs::create_dir(&spill_root).unwrap();
+            let stream = three_hour_stream();
+            let digest = to_hex(&Sha256::digest(&stream));
+            // A wrong transport decoder breaks only the live attempt; the
+            // sealed-file recovery independently detects actual storage.
+            let tail_compression = if broken_tail {
+                if compression == compact_stream::StreamCompression::None {
+                    compact_stream::StreamCompression::Zstd
+                } else { compact_stream::StreamCompression::None }
+            } else { compression };
+            let worker = rollover_live::RolloverLiveFold::start(
+                raw_root.clone(), spill_root, "rollover-game".into(), 2,
+                tail_compression, StreamIdentityMode::Legacy, 2,
+            ).unwrap();
+            for id in 2..5 {
+                let open = open_path(&raw_root, id);
+                let mut writer = compact_stream::StreamWriter::create_with_frames(
+                    &open, compression, Some(128),
+                ).unwrap();
+                for part in stream.chunks(100) {
+                    writer.write_all(part).unwrap();
+                    writer.flush().unwrap();
+                }
+                writer.finish_durable().unwrap();
+                fs::rename(open, sealed_path(&raw_root, id)).unwrap();
+            }
+            let results = worker.finish().unwrap();
+            assert_eq!(results.keys().copied().collect::<Vec<_>>(), vec![2, 3, 4]);
+            for (id, stored) in results {
+                let stored = stored.unwrap();
+                let receipt_path = stored.spill_dir.join("live-artifacts.json");
+                let live = stored.load(stream.len() as u64, &digest).unwrap();
+                assert_eq!(live.live_seal_refusal.is_some(), broken_tail);
+                let offline_dir = dir.0.join(format!("offline-{id}"));
+                fs::create_dir(&offline_dir).unwrap();
+                let game_id = if id == 2 { "rollover-game".into() }
+                    else { format!("rollover-game-logical-stream-{id}") };
+                let offline = build_certified_replay_artifacts(
+                    sealed_path(&raw_root, id), offline_dir, game_id,
+                    StreamIdentityMode::Legacy, stream.len() as u64, &digest, 2,
+                ).unwrap();
+                assert_eq!(fs::read(live.hour_index_path).unwrap(), fs::read(offline.hour_index_path).unwrap());
+                assert_eq!(fs::read(live.checkpoint_cache_path).unwrap(), fs::read(offline.checkpoint_cache_path).unwrap());
+                assert_eq!(live.hour_coverage, offline.hour_coverage);
+                assert_eq!(live.campaign_identity_manifest, offline.campaign_identity_manifest);
+                assert!(receipt_path.is_file());
+            }
+        }
+    }
+}
+
+#[test]
+fn rollover_live_artifact_custody_refuses_modified_metadata_and_wrong_source() {
+    use recorder_host::duplex_session::rollover_fs::sealed_path;
+    let dir = TmpDir::new("rollover_custody");
+    let raw_root = dir.0.join("raw");
+    let spill_root = dir.0.join("live");
+    fs::create_dir(&raw_root).unwrap();
+    fs::create_dir(&spill_root).unwrap();
+    let stream = three_hour_stream();
+    let digest = to_hex(&Sha256::digest(&stream));
+    fs::write(sealed_path(&raw_root, 0), &stream).unwrap();
+    fs::write(sealed_path(&raw_root, 1), &stream).unwrap();
+    let worker = rollover_live::RolloverLiveFold::start(raw_root, spill_root,
+        "custody-game".into(), 0, compact_stream::StreamCompression::None,
+        StreamIdentityMode::Legacy, 2).unwrap();
+    let mut results = worker.finish().unwrap();
+    let first = results.remove(&0).unwrap().unwrap();
+    let path = first.spill_dir.join("live-artifacts.json");
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[0] ^= 1;
+    fs::write(path, bytes).unwrap();
+    assert!(first.load(stream.len() as u64, &digest).unwrap_err().contains("digest changed"));
+    let second = results.remove(&1).unwrap().unwrap();
+    assert!(second.load(stream.len() as u64 + 1, &digest).unwrap_err().contains("sealed member identity"));
+}
+
+
+#[test]
+fn rollover_capture_termination_joins_the_fold_and_preserves_the_unsealed_source() {
+    use recorder_host::duplex_session::rollover_fs::open_path;
+    let dir = TmpDir::new("rollover_termination");
+    let raw_root = dir.0.join("raw");
+    let spill_root = dir.0.join("live");
+    fs::create_dir(&raw_root).unwrap();
+    fs::create_dir(&spill_root).unwrap();
+    let stream = three_hour_stream();
+    let partial = &stream[..stream.len() / 2];
+    let source = open_path(&raw_root, 0);
+    fs::write(&source, partial).unwrap();
+    let worker = rollover_live::RolloverLiveFold::start(raw_root, spill_root.clone(),
+        "terminated-game".into(), 0, compact_stream::StreamCompression::None,
+        StreamIdentityMode::Legacy, 2).unwrap();
+    let mut results = worker.finish().unwrap();
+    assert!(results.remove(&0).unwrap().is_err());
+    assert_eq!(fs::read(source).unwrap(), partial);
+    assert!(fs::read_dir(spill_root).unwrap().next().is_none());
 }
