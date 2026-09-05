@@ -88,6 +88,47 @@ impl VariedScalar {
             range_animations: Vec::new(),
         }
     }
+    pub(crate) fn update_particle(
+        &self,
+        sampled: f32,
+        current: f32,
+        system_time: f32,
+        age: f32,
+        life: f32,
+    ) -> f32 {
+        // The update callback is a no-op unless the base has a non-initial track.
+        if !self
+            .base_animations
+            .iter()
+            .any(|animation| animation.time != 0)
+        {
+            return current;
+        }
+        let mut result = sampled;
+        // 1424ee010 appends initial tracks before update tracks to the same evaluator list.
+        for animation in self
+            .base_animations
+            .iter()
+            .filter(|a| a.time == 0)
+            .chain(self.base_animations.iter().filter(|a| a.time != 0))
+        {
+            let time = match animation.time {
+                0 | 1 => system_time,
+                2 => age,
+                3 if life == 0.0
+                    && animation.op
+                        == crate::xmap09_light_template::Xmap09LightAnimationOp::Mul =>
+                {
+                    age
+                }
+                3 => age / life,
+                _ => unreachable!(),
+            };
+            result = animation.apply(result, time);
+        }
+        result
+    }
+
     pub(crate) fn initial(&self, time: f32) -> (f32, f32, bool) {
         let mut base = if !self.base_constant && !self.base_animations.iter().any(|a| a.time == 0) {
             0.0
@@ -95,17 +136,49 @@ impl VariedScalar {
             self.base
         };
         let mut range = self.range;
-        for animation in self.base_animations.iter().filter(|a| a.time == 0) {
-            base = animation.apply(base, time);
+        // Callback selection sees initial tracks; the shared list later also holds update tracks.
+        // Birth has no age/life pointers, so only initial and system clocks enter that callback.
+        if self.base_animations.iter().any(|a| a.time == 0) {
+            for animation in self
+                .base_animations
+                .iter()
+                .filter(|a| a.time == 0)
+                .chain(self.base_animations.iter().filter(|a| a.time == 1))
+            {
+                base = animation.apply(base, time);
+            }
         }
-        for animation in self.range_animations.iter().filter(|a| a.time == 0) {
-            range = animation.apply(range, time);
+        if self.range_animations.iter().any(|a| a.time == 0) {
+            for animation in self
+                .range_animations
+                .iter()
+                .filter(|a| a.time == 0)
+                .chain(self.range_animations.iter().filter(|a| a.time == 1))
+            {
+                range = animation.apply(range, time);
+            }
         }
         (
             base,
             range,
             self.range_constant || self.range_animations.iter().any(|a| a.time == 0),
         )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ParticleEmitterShape {
+    Point,
+    Sphere([VariedScalar; 3]),
+    Box([VariedScalar; 3]),
+}
+
+impl ParticleEmitterShape {
+    pub(crate) fn properties(&self) -> Option<&[VariedScalar; 3]> {
+        match self {
+            Self::Point => None,
+            Self::Sphere(properties) | Self::Box(properties) => Some(properties),
+        }
     }
 }
 
@@ -121,7 +194,10 @@ pub(crate) struct AuthoredSubsystem {
     pub pulse_silence: VariedScalar,
     pub emitter_angles: [VariedScalar; 2],
     pub velocity_angles_and_speed: [VariedScalar; 3],
-    pub shape: Option<[VariedScalar; 3]>,
+    pub local_space: bool,
+    pub trail: bool,
+    pub billboard: bool,
+    pub shape: ParticleEmitterShape,
     pub origin: [VariedScalar; 3],
     pub spawn_draw_columns: [VariedScalar; 12],
     pub children: Vec<AuthoredSubsystem>,
@@ -682,7 +758,8 @@ fn compile_subsystem(
             | "box_emitter_z" => {}
             "emitter_type"
                 if matches!(field.value.as_scalar(), Some("point" | "sphere" | "box")) => {}
-            "local_space" if matches!(field.value.as_scalar(), Some("yes" | "no")) => {}
+            "local_space" | "trail" | "billboard"
+                if matches!(field.value.as_scalar(), Some("yes" | "no")) => {}
             _ => return Err(fail(key, ParticleRefusalReason::UnsupportedAuthoredInput)),
         }
     }
@@ -701,30 +778,37 @@ fn compile_subsystem(
         }
     }
     let shape = match body.first_scalar_ci("emitter_type") {
-        None | Some("point") => None,
-        Some("sphere" | "box") => Some([
-            varied_aliases(
-                body,
-                &["sphere_emitter_radius", "box_emitter_x"],
-                name,
-                subsystem,
-                animations,
-            )?,
-            varied_aliases(
-                body,
-                &["sphere_emitter_yaw", "box_emitter_y"],
-                name,
-                subsystem,
-                animations,
-            )?,
-            varied_aliases(
-                body,
-                &["sphere_emitter_pitch", "box_emitter_z"],
-                name,
-                subsystem,
-                animations,
-            )?,
-        ]),
+        None | Some("point") => ParticleEmitterShape::Point,
+        Some(kind @ ("sphere" | "box")) => {
+            let properties = [
+                varied_aliases(
+                    body,
+                    &["sphere_emitter_radius", "box_emitter_x"],
+                    name,
+                    subsystem,
+                    animations,
+                )?,
+                varied_aliases(
+                    body,
+                    &["sphere_emitter_yaw", "box_emitter_y"],
+                    name,
+                    subsystem,
+                    animations,
+                )?,
+                varied_aliases(
+                    body,
+                    &["sphere_emitter_pitch", "box_emitter_z"],
+                    name,
+                    subsystem,
+                    animations,
+                )?,
+            ];
+            if kind == "sphere" {
+                ParticleEmitterShape::Sphere(properties)
+            } else {
+                ParticleEmitterShape::Box(properties)
+            }
+        }
         _ => unreachable!(),
     };
     let origin = vector_tracks(body, "position", false, name, subsystem, animations)?;
@@ -792,6 +876,13 @@ fn compile_subsystem(
             varied(body, "velocity_yaw", name, subsystem, animations)?,
             varied(body, "velocity", name, subsystem, animations)?,
         ],
+        local_space: body.first_scalar_ci("local_space") == Some("yes"),
+        trail: body.first_scalar_ci("trail") == Some("yes"),
+        billboard: body
+            .first_scalar_ci("billboard")
+            .map_or(body.first_scalar_ci("trail") != Some("yes"), |value| {
+                value == "yes"
+            }),
         shape,
         origin: [origin[0].clone(), origin[1].clone(), origin[2].clone()],
         spawn_draw_columns,
@@ -920,7 +1011,15 @@ impl AnimationCatalog<'_> {
             }
             if !matches!(
                 field_key.as_str(),
-                "name" | "time" | "start" | "duration" | "repeat" | "op" | "min" | "max" | "curve"
+                "name"
+                    | "time"
+                    | "start"
+                    | "duration"
+                    | "repeat"
+                    | "op"
+                    | "minvalue"
+                    | "maxvalue"
+                    | "curve"
             ) {
                 return Err(fail(ParticleRefusalReason::UnsupportedAuthoredInput));
             }
@@ -980,8 +1079,8 @@ impl AnimationCatalog<'_> {
             duration,
             repeat,
             op,
-            min_value: number("min")?,
-            max_value: number("max")?,
+            min_value: number("minValue")?,
+            max_value: number("maxValue")?,
             curve,
         };
         let mut samples = [0.0; 64];
@@ -1150,6 +1249,26 @@ mod tests {
     }
 
     #[test]
+    fn trail_controls_the_implicit_billboard_but_explicit_billboard_wins() {
+        for (fields, trail, billboard) in [
+            ("", false, true),
+            ("trail=no", false, true),
+            ("trail=yes", true, false),
+            ("trail=yes billboard=yes", true, true),
+            ("billboard=yes trail=yes", true, true),
+            ("trail=no billboard=no", false, false),
+        ] {
+            let fixture = Fixture::new(
+                REGISTRATION,
+                &format!("particle={{name=effect subsystem={{name=s max_amount=1 {fields}}}}}"),
+            );
+            let definition = fixture.definitions().resolve("paired").unwrap();
+            assert_eq!(definition.subsystems[0].trail, trail, "{fields}");
+            assert_eq!(definition.subsystems[0].billboard, billboard, "{fields}");
+        }
+    }
+
+    #[test]
     fn invalid_fields_refuse_the_named_subsystem() {
         for field in [
             "life=1 life=2",
@@ -1241,7 +1360,7 @@ mod tests {
         let fixture = Fixture::new(REGISTRATION, "particle={name=effect subsystem={name=s max_amount=1 emitter_type=box sphere_emitter_radius={2 1} box_emitter_x=3 rotation_speed={0 2} rotation_speed_roll={0 0} position={x=1 y=2 z=3} color={r=1 g=2 b=3 a=4}}}");
         let definition = fixture.definitions().resolve("paired").unwrap();
         let s = &definition.subsystems[0];
-        let shape = s.shape.as_ref().unwrap();
+        let shape = s.shape.properties().unwrap();
         assert_eq!(shape[0].initial(0.0), (3.0, 1.0, true));
         assert_eq!(s.spawn_draw_columns[6].initial(0.0), (0.0, 0.0, true));
         assert_eq!(
@@ -1259,7 +1378,7 @@ mod tests {
 
     #[test]
     fn once_curve_uses_post_read_duration_and_shares_prepared_table() {
-        let fixture = Fixture::new(REGISTRATION, "particle={name=effect animation={name=fade min=2 max=2 curve={0 0 1 1}} subsystem={name=s max_amount=1 life={1, fade 0.25} emission=1, fade}}");
+        let fixture = Fixture::new(REGISTRATION, "particle={name=effect animation={name=fade minValue=2 maxValue=2 curve={0 0 1 1}} subsystem={name=s max_amount=1 life={1, fade 0.25} emission=1, fade}}");
         let definition = fixture.definitions().resolve("paired").unwrap();
         let s = &definition.subsystems[0];
         assert_eq!(s.life.initial(0.0), (3.0, 0.25, true));
@@ -1272,9 +1391,40 @@ mod tests {
     }
 
     #[test]
+    fn initial_callback_includes_system_tracks_only_when_selected_by_initial_tracks() {
+        let fixture = Fixture::new(REGISTRATION,
+            "particle={name=effect animation={name=once minValue=2 maxValue=2 curve={0 0 1 1}} animation={name=system time=system minValue=4 maxValue=4 curve={0 0 1 1}} animation={name=age time=life_abs minValue=8 maxValue=8 curve={0 0 1 1}} subsystem={name=s max_amount=1 size={3,system,once,age 1,system,once} mass=3,system}");
+        let definition = fixture.definitions().resolve("paired").unwrap();
+        let columns = &definition.subsystems[0].spawn_draw_columns;
+        assert_eq!(columns[0].initial(0.25), (9.0, 7.0, true));
+        assert_eq!(columns[7].initial(0.25), (3.0, 0.0, false));
+        assert_eq!(columns[0].update_particle(9.0, 9.0, 0.25, 0.0, 1.0), 23.0);
+    }
+
+    #[test]
+    fn normalized_visual_tracks_preserve_the_zero_life_multiply_branch() {
+        let fixture = Fixture::new(REGISTRATION,
+            "particle={name=effect animation={name=mul time=life op=MUL minValue=2 maxValue=4 curve={0 0 1 1}}              animation={name=add time=life op=ADD minValue=2 maxValue=4 curve={0 0 1 1}}              subsystem={name=s max_amount=1 size=3,mul mass=3,add}}");
+        let definition = fixture.definitions().resolve("paired").unwrap();
+        let s = &definition.subsystems[0];
+        assert_eq!(
+            s.spawn_draw_columns[0].update_particle(3.0, 99.0, 5.0, 0.0, 0.0),
+            6.0
+        );
+        assert_eq!(
+            s.spawn_draw_columns[7].update_particle(3.0, 99.0, 5.0, 0.0, 0.0),
+            7.0
+        );
+        assert_eq!(
+            s.spawn_draw_columns[0].update_particle(3.0, 99.0, 5.0, 1.0, 1.0),
+            12.0
+        );
+    }
+
+    #[test]
     fn dynamic_curves_do_not_change_birth_life_or_consume_birth_randomness() {
         for time in ["system", "life_abs", "life"] {
-            let fixture = Fixture::new(REGISTRATION, &format!("particle={{name=effect animation={{name=dynamic time={time} min=99 max=99 curve={{0 0 1 1}}}} subsystem={{name=s max_amount=1 life={{2,dynamic 0,dynamic}}}}}}"));
+            let fixture = Fixture::new(REGISTRATION, &format!("particle={{name=effect animation={{name=dynamic time={time} minValue=99 maxValue=99 curve={{0 0 1 1}}}} subsystem={{name=s max_amount=1 life={{2,dynamic 0,dynamic}}}}}}"));
             let definition = fixture.definitions().resolve("paired").unwrap();
             assert_eq!(
                 definition.subsystems[0].life.initial(9.0),

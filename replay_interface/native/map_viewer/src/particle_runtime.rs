@@ -96,15 +96,59 @@ pub struct ParticleInstanceUpdate {
     pub action: ParticleAction,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct ParticleVisualState {
+    birth_columns: [f32; 12],
+    columns: [f32; 12],
+    atlas_draws: [u32; 2],
+    emitter_angles: [f32; 2],
+    velocity_angles_and_speed: [f32; 3],
+    shape_coordinates: [f32; 3],
+}
+
+impl ParticleVisualState {
+    fn initialize(&mut self) {
+        // The birth writer clamps both the CPU color samples and uploaded colors.
+        for color in &mut self.birth_columns[8..] {
+            *color = if 0.0 <= *color { color.min(255.0) } else { 0.0 };
+        }
+        self.columns = self.birth_columns;
+    }
+
+    fn advance(
+        &mut self,
+        authored: &AuthoredSubsystem,
+        time: f32,
+        age: f32,
+        life: f32,
+        delta: f32,
+    ) {
+        for (index, property) in authored.spawn_draw_columns.iter().enumerate() {
+            self.columns[index] = property.update_particle(
+                self.birth_columns[index],
+                self.columns[index],
+                time,
+                age,
+                life,
+            );
+        }
+        for axis in 0..3 {
+            self.columns[1 + axis] = delta * self.columns[4 + axis] + self.columns[1 + axis];
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct LiveParticle {
     age: f32,
     life: f32,
     child_slot: usize,
+    visual: ParticleVisualState,
 }
 
 #[derive(Debug)]
 struct Subsystem {
+    origin: [f32; 3],
     local_time: f32,
     end: f32,
     fractional_emission: f32,
@@ -156,14 +200,13 @@ impl Subsystem {
                 age: 0.0,
                 life: 0.0,
                 child_slot: slot,
+                visual: ParticleVisualState::default(),
             });
             for child in &authored.children {
                 children.push(Self::new(child, random)?);
             }
         }
-        for origin in &authored.origin {
-            random.sample(origin, 0.0);
-        }
+        let origin = std::array::from_fn(|axis| random.sample(&authored.origin[axis], 0.0));
         // 1423dcc80 evaluates end before delay and negates delay by flipping its sign bit.
         let end = random.sample(&authored.duration, 0.0);
         let local_time =
@@ -182,6 +225,7 @@ impl Subsystem {
             ));
         }
         Ok(Self {
+            origin,
             local_time,
             end,
             fractional_emission: 0.0,
@@ -233,7 +277,12 @@ impl Subsystem {
             }
             if particle.age < 0.0 || particle.age > particle.life {
                 self.live -= 1;
-                self.particles.swap(index, self.live);
+                if authored.trail {
+                    // The tail remains a duplicate of the final survivor, including child identity.
+                    self.particles.copy_within(index + 1..self.live + 1, index);
+                } else {
+                    self.particles.swap(index, self.live);
+                }
             } else {
                 index += 1;
             }
@@ -249,7 +298,12 @@ impl Subsystem {
                 index += 1;
             } else {
                 self.retained -= 1;
-                self.particles.swap(index, self.retained);
+                if authored.trail {
+                    self.particles
+                        .copy_within(index + 1..self.retained + 1, index);
+                } else {
+                    self.particles.swap(index, self.retained);
+                }
             }
         }
         if self.end < 0.0 && self.pulse_duration > 0.0 && self.pulse_silence > 0.0 {
@@ -283,56 +337,76 @@ impl Subsystem {
                 self.fractional_emission = 0.0;
             }
             let amount = (self.fractional_emission as usize).min(authored.capacity - self.retained);
-            for index in 0..amount.min(self.retained - self.live) {
-                self.particles.swap(
-                    self.live + index,
-                    self.live + amount.max(self.retained - self.live) + index,
-                );
-            }
-            // Births occupy the live prefix; dead parents retain their child-slot identities.
-            for index in self.live..self.live + amount {
-                let life = random.sample(&authored.life, self.local_time);
-                if !life.is_finite() {
-                    return Err(fail());
+            // 1423e5cd0 returns before initializing an overlapping trail birth batch.
+            // Its caller still advances both counts and consumes the emission fraction.
+            if !authored.trail || amount.min(self.retained - self.live) == 0 {
+                for index in 0..amount.min(self.retained - self.live) {
+                    self.particles.swap(
+                        self.live + index,
+                        self.live + amount.max(self.retained - self.live) + index,
+                    );
                 }
-                self.particles[index].age = 0.0;
-                self.particles[index].life = life;
-                let first = self.particles[index].child_slot * child_count;
-                // Reuse resets child counts only; their clocks, sampled end and fraction persist.
-                for child in &mut self.children[first..first + child_count] {
-                    child.live = 0;
-                    child.retained = 0;
-                }
-            }
-            if amount > 0 {
-                for property in &authored.spawn_draw_columns {
-                    for _ in 0..amount {
-                        random.sample(property, self.local_time);
+                // Births occupy the live prefix; dead parents retain their child-slot identities.
+                for index in self.live..self.live + amount {
+                    let life = random.sample(&authored.life, self.local_time);
+                    if !life.is_finite() {
+                        return Err(fail());
+                    }
+                    self.particles[index].age = 0.0;
+                    self.particles[index].life = life;
+                    let first = self.particles[index].child_slot * child_count;
+                    // Reuse resets child counts only; their clocks, sampled end and fraction persist.
+                    for child in &mut self.children[first..first + child_count] {
+                        child.live = 0;
+                        child.retained = 0;
                     }
                 }
-                for property in &authored.emitter_angles {
-                    random.sample(property, self.local_time);
-                }
-                for property in &authored.velocity_angles_and_speed {
-                    for _ in 0..amount {
-                        random.sample(property, self.local_time);
+                if amount > 0 {
+                    for (column, property) in authored.spawn_draw_columns.iter().enumerate() {
+                        for particle in &mut self.particles[self.live..self.live + amount] {
+                            particle.visual.birth_columns[column] =
+                                random.sample(property, self.local_time);
+                        }
                     }
-                }
-                if let Some(properties) = &authored.shape {
-                    for property in properties {
-                        for _ in 0..amount {
-                            random.sample(property, self.local_time);
+                    let emitter_angles = std::array::from_fn(|axis| {
+                        random.sample(&authored.emitter_angles[axis], self.local_time)
+                    });
+                    for particle in &mut self.particles[self.live..self.live + amount] {
+                        particle.visual.emitter_angles = emitter_angles;
+                    }
+                    for (column, property) in authored.velocity_angles_and_speed.iter().enumerate()
+                    {
+                        for particle in &mut self.particles[self.live..self.live + amount] {
+                            particle.visual.velocity_angles_and_speed[column] =
+                                random.sample(property, self.local_time);
+                        }
+                    }
+                    if let Some(properties) = authored.shape.properties() {
+                        for (column, property) in properties.iter().enumerate() {
+                            for particle in &mut self.particles[self.live..self.live + amount] {
+                                particle.visual.shape_coordinates[column] =
+                                    random.sample(property, self.local_time);
+                            }
                         }
                     }
                 }
-            }
-            for _ in 0..amount {
-                random.draw();
-                random.draw();
+                for particle in &mut self.particles[self.live..self.live + amount] {
+                    particle.visual.initialize();
+                    particle.visual.atlas_draws = [random.draw(), random.draw()];
+                }
             }
             self.live += amount;
             self.retained += amount;
             self.fractional_emission -= amount as f32;
+        }
+        for particle in &mut self.particles[..self.live] {
+            particle.visual.advance(
+                authored,
+                self.local_time,
+                particle.age,
+                particle.life,
+                delta,
+            );
         }
         for index in 0..self.retained {
             let first = self.particles[index].child_slot * child_count;
@@ -718,6 +792,117 @@ mod tests {
             )
             .unwrap();
         (fixture, runtime, handle)
+    }
+
+    #[test]
+    fn visual_tracks_use_birth_samples_and_rotation_integrates_after_track_update() {
+        let (_fixture, mut runtime, handle) = setup(
+            "animation={name=grow time=life_abs minValue=8 maxValue=8 curve={0 0 1 1}}              subsystem={name=s max_amount=1 duration=0 emission=4 life=2              size=2,grow particle_roll=3 rotation_speed=4 color={r=300 g=-2 b=10 a=128}}",
+        );
+        runtime.advance(1, 0.25, &[]).unwrap();
+        let first = runtime.instance(handle).unwrap().subsystems[0].particles[0];
+        assert_eq!(first.visual.birth_columns[0], 2.0);
+        assert_eq!(first.visual.columns[0], 10.0);
+        assert_eq!(first.visual.columns[3], 4.0);
+        assert_eq!(&first.visual.birth_columns[8..], &[10.0, 0.0, 255.0, 128.0]);
+        let random = runtime.instance(handle).unwrap().random;
+        runtime.advance(2, 0.25, &[]).unwrap();
+        let second = runtime.instance(handle).unwrap().subsystems[0].particles[0];
+        assert_eq!(second.visual.columns[0], 10.0);
+        assert_eq!(second.visual.columns[3], 5.0);
+        assert_eq!(second.visual.atlas_draws, first.visual.atlas_draws);
+        assert_eq!(runtime.instance(handle).unwrap().random, random);
+        assert_eq!(second.age, 0.25);
+    }
+
+    #[test]
+    fn retained_visual_samples_follow_particle_compaction_without_resampling() {
+        let (_fixture, mut runtime, handle) =
+            setup("subsystem={name=s max_amount=3 duration=0 emission=12 life=2 size={2 1}}");
+        runtime.advance(1, 0.25, &[]).unwrap();
+        let instance = runtime.instances[handle.slot].as_mut().unwrap();
+        let survivor = instance.subsystems[0].particles[2];
+        instance.subsystems[0].particles[0].life = 0.0;
+        let random = instance.random;
+        runtime.advance(2, 0.25, &[]).unwrap();
+        let instance = runtime.instance(handle).unwrap();
+        let subsystem = &instance.subsystems[0];
+        assert_eq!(subsystem.live, 2);
+        assert_eq!(subsystem.particles[0].child_slot, survivor.child_slot);
+        assert_eq!(
+            subsystem.particles[0].visual.birth_columns,
+            survivor.visual.birth_columns
+        );
+        assert_eq!(
+            subsystem.particles[0].visual.atlas_draws,
+            survivor.visual.atlas_draws
+        );
+        assert_eq!(instance.random, random);
+    }
+
+    #[test]
+    fn trail_death_preserves_order_and_duplicates_the_final_child_identity() {
+        let (_fixture, mut runtime, handle) =
+            setup("subsystem={name=s max_amount=4 duration=0 emission=16 life=2 trail=yes}");
+        runtime.advance(1, 0.25, &[]).unwrap();
+        let instance = runtime.instances[handle.slot].as_mut().unwrap();
+        instance.subsystems[0].particles[1].life = 0.0;
+        let random = instance.random;
+        runtime.advance(2, 0.25, &[]).unwrap();
+        let instance = runtime.instance(handle).unwrap();
+        let system = &instance.subsystems[0];
+        assert_eq!((system.live, system.retained), (3, 3));
+        assert_eq!(
+            system
+                .particles
+                .iter()
+                .map(|p| p.child_slot)
+                .collect::<Vec<_>>(),
+            [0, 2, 3, 3]
+        );
+        assert_eq!(instance.random, random);
+    }
+
+    #[test]
+    fn trail_overlapping_retained_parent_skips_birth_writers_but_advances_counts() {
+        for amount in [1, 3] {
+            let (_fixture, mut runtime, handle) = setup(
+                "subsystem={name=s max_amount=4 duration=-1 emission=4 life={2 1} trail=yes childsystem={name=c max_amount=1 duration=-1 emission=0 life=8}}");
+            runtime.advance(1, 0.25, &[]).unwrap();
+            let instance = runtime.instances[handle.slot].as_mut().unwrap();
+            let system = &mut instance.subsystems[0];
+            system.live = 0;
+            system.fractional_emission = (amount - 1) as f32;
+            system.children[0].live = 1;
+            system.children[0].retained = 1;
+            system.children[0].particles[0].life = 8.0;
+            let prior = system.particles[0];
+            let random = instance.random;
+            runtime.advance(2, 0.25, &[]).unwrap();
+            let instance = runtime.instance(handle).unwrap();
+            let system = &instance.subsystems[0];
+            assert_eq!((system.live, system.retained), (amount, amount + 1));
+            assert_eq!(system.fractional_emission.to_bits(), 0.0_f32.to_bits());
+            assert_eq!(system.particles[0].life.to_bits(), prior.life.to_bits());
+            assert_eq!(
+                system.particles[0].visual.atlas_draws,
+                prior.visual.atlas_draws
+            );
+            assert_eq!(system.children[0].retained, 1);
+            assert_eq!(instance.random, random);
+            for slot in &system.particles[1..amount] {
+                assert_eq!([slot.age.to_bits(), slot.life.to_bits()], [0; 2]);
+                assert_eq!(slot.visual.birth_columns.map(f32::to_bits), [0; 12]);
+                assert_eq!(slot.visual.columns.map(f32::to_bits), [0; 12]);
+                assert_eq!(slot.visual.atlas_draws, [0; 2]);
+                assert_eq!(slot.visual.emitter_angles.map(f32::to_bits), [0; 2]);
+                assert_eq!(
+                    slot.visual.velocity_angles_and_speed.map(f32::to_bits),
+                    [0; 3]
+                );
+                assert_eq!(slot.visual.shape_coordinates.map(f32::to_bits), [0; 3]);
+            }
+        }
     }
 
     #[test]
