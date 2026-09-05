@@ -253,3 +253,28 @@ portable_replay/native/engine_evidence/artifacts/func_1421978c0.instructions.txt
 portable_replay/native/engine_evidence/artifacts/func_14205a4e0.decompile.c text eol=lf
 
 portable_replay/native/engine_evidence/artifacts/func_1421a5660.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_140dedfc0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260905T022944Z-cmb3-strategic-air-full-token-e16198df.datdump.txt text eol=lf
+extractor/native/runs/cmb3_mapmode_and_measurement/** text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_142338c30.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1423370b0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1423370b0.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424abb40.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424a9730.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424ab0f0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14233bf40.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260905T040102Z-cmb3-asset-entity-parser-vtable-e24f7f39.datdump.txt text eol=lf
+replay_interface/native/map_viewer/tests/fixtures/ger_train_coal_equipment_1.asset text eol=lf
+replay_interface/native/map_viewer/tests/fixtures/aat_units_planes.asset text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_142336ae0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_142336ae0.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_142218e80.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260905T051634Z-cmb3-asset-factory-reader-vtable-ef686487.datdump.txt text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_142287830.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1423f17e0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1423f2ff0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1423f3320.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260905T062422Z-font-texture-extension-order-25445298.datdump.txt text eol=lf

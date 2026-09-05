@@ -572,7 +572,8 @@ mod tests {
             "gfx/fonts/modfont.fnt",
             b"info face=\"mod\" size=16\npage id=0 file=\"modfont_0.dds\"\n",
         );
-        write(&modification, "gfx/fonts/modfont_0.dds", b"font atlas");
+        write(&modification, "gfx/fonts/modfont.dds", b"font atlas");
+        write(&modification, "gfx/fonts/modfont_0.dds", b"ignored declaration");
         write(&modification, "gfx/FX/text.shader", b"font text effect");
         write(
             &modification,
@@ -634,7 +635,7 @@ mod tests {
             ),
             (DEPENDENCY_CLOSURE_CONSUMER, "gfx/interface/mod_panel.dds"),
             (DEPENDENCY_CLOSURE_CONSUMER, "gfx/fonts/modfont.fnt"),
-            (DEPENDENCY_CLOSURE_CONSUMER, "gfx/fonts/modfont_0.dds"),
+            (DEPENDENCY_CLOSURE_CONSUMER, "gfx/fonts/modfont.dds"),
             (DEPENDENCY_CLOSURE_CONSUMER, "gfx/fx/text.shader"),
         ] {
             assert!(paths.contains(&expected), "missing {expected:?}");

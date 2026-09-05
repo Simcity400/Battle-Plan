@@ -3,6 +3,10 @@ use std::path::Path;
 
 use replay_core::{SourceError, WorldTimeline};
 
+#[cfg(all(test, windows))]
+#[path = "combat_measurement.rs"]
+mod combat_measurement;
+
 #[cfg(windows)]
 pub(crate) struct ProductMapFoundationSession {
     content_receipt: map_viewer::FoundationContentExecutionReceipt,

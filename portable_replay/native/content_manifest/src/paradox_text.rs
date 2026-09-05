@@ -102,6 +102,24 @@ pub fn parse_bytes(bytes: &[u8]) -> Document {
     parse_str(&text)
 }
 
+// Asset readers terminate at the first root close, and EOF closes open persistent blocks.
+pub fn parse_asset_str(text: &str) -> std::result::Result<(Value, std::borrow::Cow<'_, str>), Recovery> {
+    let mut parser = Parser::new(text);
+    let root = Value::Object(parser.parse_entries(true, 0));
+    let mut eof_closures = 0usize;
+    for recovery in parser.recoveries {
+        if recovery.message != ENGINE_TOLERATED_EOF_CLOSE_RECOVERY { return Err(recovery); }
+        eof_closures += 1;
+    }
+    let consumed = text.len() - parser.chars.as_str().len()
+        - parser.lookahead_char.map(char::len_utf8).unwrap_or(0);
+    let prefix = &text[..consumed];
+    let normalized = if eof_closures > 1 {
+        std::borrow::Cow::Owned(format!("{prefix}\n{}", "}".repeat(eof_closures - 1)))
+    } else { std::borrow::Cow::Borrowed(prefix) };
+    Ok((root, normalized))
+}
+
 pub fn parse_str(text: &str) -> Document {
     Parser::new(text).parse_document()
 }
@@ -859,6 +877,27 @@ pub fn required_object<'a>(value: &'a Value, label: &str) -> Result<&'a [Entry]>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn asset_reader_terminates_at_root_close_without_reading_later_declarations() {
+        let text = "entity = { name = \"\u{e9}t\u{e9}}\" } } entity = { name = discarded }";
+        let (root, prefix) = super::parse_asset_str(text).unwrap();
+        assert_eq!(root.values_ci("entity").count(), 1);
+        assert_eq!(root.values_ci("entity").next().unwrap().first_scalar_ci("name"), Some("\u{e9}t\u{e9}}"));
+        assert_eq!(prefix, "entity = { name = \"\u{e9}t\u{e9}}\" } }");
+    }
+
+    #[test]
+    fn asset_reader_eof_closes_persistent_blocks_but_refuses_missing_values() {
+        let (root, normalized) = super::parse_asset_str("entity = { state = { name = idle").unwrap();
+        assert_eq!(normalized, "entity = { state = { name = idle\n}}");
+        assert_eq!(root.values_ci("entity").next().unwrap().values_ci("state").next().unwrap().first_scalar_ci("name"), Some("idle"));
+        let (_, commented) = super::parse_asset_str("entity = { name = idle # }").unwrap();
+        assert_eq!(commented, "entity = { name = idle # }\n}");
+        assert!(super::parse_str_strict(&commented).is_ok());
+        assert!(super::parse_asset_str("entity = { name = }").is_err());
+        assert!(super::parse_asset_str("entity = { name =").is_err());
+    }
+
     use super::*;
 
     /// The strict parse accepts the one recovery the engine itself tolerates

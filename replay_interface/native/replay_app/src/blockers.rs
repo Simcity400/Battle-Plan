@@ -575,7 +575,14 @@ pub const ENV_INPUTS: &[EnvInput] = &[
 ];
 
 #[cfg_attr(not(test), allow(dead_code))]
-pub const TEST_ONLY_ENV_READS: &[&str] = &["XMAP_NATIVE_EVIDENCE_REPLAY"];
+pub const TEST_ONLY_ENV_READS: &[&str] = &[
+    "XMAP_NATIVE_EVIDENCE_REPLAY",
+    "XMAP14_MEASUREMENT_REPLAY",
+    "XMAP14_MEASUREMENT_OUT",
+    "XMAP14_MEASUREMENT_COMMAND",
+    "BATTLE_PLAN_GAME_DIR",
+    "BATTLE_PLAN_USER_DIR",
+];
 
 pub fn render_list() -> String {
     let mut out = String::new();

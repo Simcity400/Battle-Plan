@@ -920,53 +920,20 @@ fn resolve_bitmap_font_page_path(
     resolver: &GameFileResolver,
     name: &str,
     page_id: u32,
-    declared: Option<&str>,
+    _declared: Option<&str>,
 ) -> Result<(String, PathBuf)> {
-    if let Some(declared) = declared {
-        for rel in font_page_declared_candidates(name, declared) {
-            if let Some(path) = resolver.resolve(&rel)? {
-                return Ok((rel, path));
-            }
-        }
+    if page_id != 0 {
+        return Err(format!("font {name} has no engine atlas page {page_id}").into());
     }
-
-    for rel in inferred_font_page_candidates(name, page_id) {
+    for rel in portable_content_manifest::bitmap_font_texture_candidates(&format!("gfx/fonts/{name}")) {
+        if resolver.has_content_admission() && resolver.admitted_used_content_key(&rel)?.is_none() {
+            continue;
+        }
         if let Some(path) = resolver.resolve(&rel)? {
             return Ok((rel, path));
         }
     }
-    Err(format!("no texture page found for font {name} page {page_id}").into())
-}
-
-fn font_page_declared_candidates(name: &str, declared: &str) -> Vec<String> {
-    let rel = normalize_rel_path(declared);
-    let mut candidates = Vec::new();
-    let explicit_vfs_path = rel
-        .get(..4)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("gfx/"));
-    if !explicit_vfs_path {
-        if let Some((dir, _)) = name.rsplit_once('/') {
-            candidates.push(normalize_rel_path(&format!("gfx/fonts/{dir}/{rel}")));
-        }
-    }
-    candidates.push(if rel.contains('/') {
-        rel
-    } else {
-        normalize_rel_path(&format!("gfx/fonts/{rel}"))
-    });
-    candidates.dedup();
-    candidates
-}
-
-fn inferred_font_page_candidates(name: &str, page_id: u32) -> Vec<String> {
-    let mut candidates = Vec::new();
-    if page_id == 0 {
-        candidates.push(format!("gfx/fonts/{name}.dds"));
-        candidates.push(format!("gfx/fonts/{name}.tga"));
-    }
-    candidates.push(format!("gfx/fonts/{name}_{page_id}.dds"));
-    candidates.push(format!("gfx/fonts/{name}_{page_id}.tga"));
-    candidates
+    Err(format!("no engine stem texture found for font {name}").into())
 }
 
 fn decode_resolved_font_page(
@@ -1071,7 +1038,6 @@ fn parse_fnt_text(bytes: &[u8], source: &str) -> Result<ParsedFnt> {
     let text = decode_text(bytes);
 
     let mut common: Option<(i32, i32, u32, u32, usize, Option<usize>)> = None;
-    let mut page_files: Vec<(u32, String)> = Vec::new();
     let mut glyphs = Vec::new();
     let mut kernings = Vec::new();
     let mut saw_info = false;
@@ -1094,17 +1060,9 @@ fn parse_fnt_text(bytes: &[u8], source: &str) -> Result<ParsedFnt> {
                     )?,
                     required_unsigned(&fields, "scaleW", source, MAX_GLYPH_EXTENT)? as u32,
                     required_unsigned(&fields, "scaleH", source, MAX_GLYPH_EXTENT)? as u32,
-                    required_unsigned(&fields, "pages", source, MAX_PAGE_COUNT)? as usize,
+                    1,
                     bmfont_glyph_channel_from_common(&fields),
                 ));
-            }
-            "page" => {
-                let id = required_unsigned(&fields, "id", source, MAX_PAGE_COUNT)? as u32;
-                let file = fields
-                    .get("file")
-                    .cloned()
-                    .ok_or_else(|| format!("{source}: page line has no file attribute"))?;
-                page_files.push((id, file));
             }
             "char" => {
                 let id = required_int(&fields, "id", source)?;
@@ -1113,13 +1071,6 @@ fn parse_fnt_text(bytes: &[u8], source: &str) -> Result<ParsedFnt> {
                 }
                 let id = u32::try_from(id)
                     .map_err(|_| format!("{source}: char id={id} does not fit in u32"))?;
-                let page = optional_int(&fields, "page").unwrap_or(0);
-                if !(0..=MAX_PAGE_COUNT).contains(&page) {
-                    return Err(format!(
-                        "{source}: char id={id} page={page} is outside 0..={MAX_PAGE_COUNT}"
-                    )
-                    .into());
-                }
                 glyphs.push((
                     id,
                     Glyph {
@@ -1144,7 +1095,7 @@ fn parse_fnt_text(bytes: &[u8], source: &str) -> Result<ParsedFnt> {
                             "xadvance",
                             source,
                         )?,
-                        page: page as usize,
+                        page: 0,
                     },
                 ));
             }
@@ -1164,20 +1115,10 @@ fn parse_fnt_text(bytes: &[u8], source: &str) -> Result<ParsedFnt> {
         }
     }
 
-    let (line_height, base, scale_w, scale_h, page_count, glyph_channel) =
+    let (line_height, base, scale_w, scale_h, _page_count, glyph_channel) =
         common.ok_or_else(|| format!("{source} has no \"common\" line; not a BMFont text file"))?;
     if !saw_info {
         return Err(format!("{source} has no \"info\" line; not a BMFont text file").into());
-    }
-    if page_count == 0 {
-        return Err(format!("{source} declares pages=0").into());
-    }
-    let mut files: Vec<Option<String>> = vec![None; page_count];
-    for (id, file) in page_files {
-        let slot = files
-            .get_mut(id as usize)
-            .ok_or_else(|| format!("{source}: page id={id} but common declares {page_count}"))?;
-        *slot = Some(file);
     }
     Ok(ParsedFnt {
         line_height,
@@ -1185,7 +1126,7 @@ fn parse_fnt_text(bytes: &[u8], source: &str) -> Result<ParsedFnt> {
         scale_w,
         scale_h,
         glyph_channel,
-        page_files: files,
+        page_files: vec![None],
         glyphs,
         kernings,
     })
@@ -1250,23 +1191,7 @@ fn required_int(fields: &HashMap<String, String>, key: &str, source: &str) -> Re
 const MAX_GLYPH_EXTENT: i64 = 1 << 26;
 /// Page count ceiling: the AngelCode BINARY common block stores `pages` as a
 /// `u16`, so this is the format's own field width, not an invented limit.
-const MAX_PAGE_COUNT: i64 = u16::MAX as i64;
 
-/// Read a BMFont field that the format defines as unsigned, refusing a
-/// negative or out-of-range value BEFORE any cast or allocation.
-///
-/// `required_int` yields `i64` and every call site cast it with `as u32` /
-/// `as usize` / `as i32`. A negative value therefore became an enormous
-/// unsigned one: `pages=-1` produced `usize::MAX`, and `vec![None; usize::MAX]`
-/// is an infallible allocation — an abort, not an error; `x=-1` produced
-/// `u32::MAX`, and `x + width` then overflows, which is a panic under the
-/// workspace's release `overflow-checks = true`. Neither is reachable through
-/// `game_ui`'s bounds: this is a separate BMFont parser.
-///
-/// Measured against the shipped corpus (415 .fnt files, the game 1.19.2): every
-/// one of these fields is non-negative, and the extremes are
-/// `scaleW <= 8212`, `char.y <= 5418`, `char.width <= 164`, `pages <= 2` —
-/// far inside these bounds, so nothing shipped is refused.
 fn required_unsigned(
     fields: &HashMap<String, String>,
     key: &str,
@@ -1504,73 +1429,116 @@ pub fn decode_tga(bytes: &[u8], source: &str) -> Result<FontPage> {
 mod tests {
     use super::*;
 
-    /// A nested descriptor must probe its OWN directory before the flat legacy
-    /// root. `gfx/fonts/korean/hoi_18.fnt` shares its file name with the Latin
-    /// `gfx/fonts/hoi_18.*`, and binding the Latin atlas to a Korean font is a
-    /// wrong picture rather than an honest refusal.
     #[test]
-    fn declared_page_candidates_put_the_descriptor_directory_first() {
-        assert_eq!(
-            font_page_declared_candidates("korean/hoi_18", "hoi_18_0.dds"),
-            vec![
-                "gfx/fonts/korean/hoi_18_0.dds".to_string(),
-                "gfx/fonts/hoi_18_0.dds".to_string(),
-            ]
-        );
+    fn bitmap_font_rendering_uses_the_engine_stem_despite_page_metadata() {
+        let root = crate::bundle::tests::unique_temp_dir("font-engine-stem");
+        let text = CG_STYLE_FNT.replace("pages=1", "pages=2").replace("page=0", "page=1")
+            + "\npage id=1 file=\"other.tga\"\n";
+        write_font(&root, "probe", &text, [10, 20, 30, 255]);
+        write_font_tga(&root.join("gfx/fonts/declared_page.tga"), [90, 80, 70, 255]);
+        use portable_content_manifest::*;
+        let bytes = fs::read(root.join("gfx/fonts/probe.tga")).unwrap();
+        let hash = snapshot::sha256::Sha256::hex(&bytes);
+        let required = UsedContentKey {
+            effective_vfs_manifest_sha256: "11".repeat(32),
+            normalized_game_relative_path: "gfx/fonts/probe.tga".into(),
+            winning_layer_ordinal: 0, layer_kind: ContentLayerKind::Base, layer_id: "base".into(),
+            source_sha256: hash.clone(), payload_sha256: hash, payload_bytes: bytes.len() as u64,
+        };
+        let resolver = admitted_font_resolver(&root, required);
+        assert!(resolver.has_content_admission());
+        assert!(resolver.resolve("gfx/fonts/probe.dds").is_err());
+        let parsed = parse_fnt_text(text.as_bytes(), "probe.fnt").unwrap();
+        assert_eq!(parsed.page_files, vec![None]);
+        assert_eq!(parsed.glyphs[0].1.page, 0);
+        let (path, _) = resolve_bitmap_font_page_path(&resolver, "probe", 0, Some("declared_page.tga")).unwrap();
+        assert_eq!(path, "gfx/fonts/probe.tga");
+        let pages = load_bitmap_font_pages_from_resolver(&resolver, "probe", &parsed).unwrap();
+        assert_eq!(pages.len(), 1);
+        assert_eq!(&pages[0].image.pixels[..4], &[10, 20, 30, 255]);
+        fs::remove_dir_all(root).unwrap();
     }
 
-    /// A flat font has exactly one place to look, and dedup must not leave a
-    /// duplicated probe behind.
-    #[test]
-    fn declared_page_candidates_do_not_duplicate_for_a_flat_font() {
-        assert_eq!(
-            font_page_declared_candidates("hoi_18mbs", "hoi_18mbs_0.dds"),
-            vec!["gfx/fonts/hoi_18mbs_0.dds".to_string()]
-        );
-    }
-
-    /// An explicit `gfx/...` name is already an effective-VFS path and is never
-    /// rebased onto the descriptor's directory.
-    #[test]
-    fn explicit_vfs_declared_page_is_not_rebased() {
-        assert_eq!(
-            font_page_declared_candidates("korean/hoi_18", "gfx/fonts/shared.dds"),
-            vec!["gfx/fonts/shared.dds".to_string()]
-        );
-    }
-
-    /// A declared name that merely CONTAINS a separator is still relative to
-    /// the descriptor, so it is rebased first; the old raw-VFS reading is kept
-    /// only as the second tier. This pins the "relative, but not explicit
-    #[test]
-    fn relative_declared_subpath_is_rebased_before_the_raw_vfs_reading() {
-        assert_eq!(
-            font_page_declared_candidates("korean/hoi_18", "pages/atlas.dds"),
-            vec![
-                "gfx/fonts/korean/pages/atlas.dds".to_string(),
-                "pages/atlas.dds".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn inferred_candidates_offer_the_unsuffixed_atlas_only_for_page_zero() {
-        assert_eq!(
-            inferred_font_page_candidates("hoi_mapfont4", 0),
-            vec![
-                "gfx/fonts/hoi_mapfont4.dds".to_string(),
-                "gfx/fonts/hoi_mapfont4.tga".to_string(),
-                "gfx/fonts/hoi_mapfont4_0.dds".to_string(),
-                "gfx/fonts/hoi_mapfont4_0.tga".to_string(),
-            ]
-        );
-        assert_eq!(
-            inferred_font_page_candidates("hoi_mapfont4", 1),
-            vec![
-                "gfx/fonts/hoi_mapfont4_1.dds".to_string(),
-                "gfx/fonts/hoi_mapfont4_1.tga".to_string(),
-            ]
-        );
+    fn admitted_font_resolver(
+        root: &std::path::Path,
+        required: portable_content_manifest::UsedContentKey,
+    ) -> GameFileResolver {
+        use portable_content_manifest::*;
+        use std::collections::BTreeMap;
+        fs::create_dir_all(root).unwrap();
+        let mut manifest = ContentManifest {
+            schema: SCHEMA.into(),
+            product_modset_sha256: "09".repeat(32),
+            source_game: SourceGameIdentity {
+                version: "1.19.2".into(),
+                build: "a729".into(),
+                executable_sha256:
+                    "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad".into(),
+                build_profile: "release".into(),
+            },
+            source_profile: SourceProfileIdentity {
+                profile_id: "font-atlas-test".into(),
+                playset_id: "font-atlas-test".into(),
+                selection_sha256: String::new(),
+            },
+            effective_vfs_manifest_sha256: "11".repeat(32),
+            ordered_layers: vec![RecordedContentLayer {
+                ordinal: 0,
+                layer_kind: ContentLayerKind::Base,
+                layer_id: "base".into(),
+                display_name: "the game".into(),
+                descriptor_sha256: None,
+                source_container_sha256: None,
+                storage_kind: LayerStorageKind::Directory,
+                replace_paths: Vec::new(),
+                required_for_playback: true,
+            }],
+            dlc_selection: Vec::new(),
+            localisation_language: "l_english".into(),
+            required_settings: BTreeMap::new(),
+            recorder_local_settings: BTreeMap::new(),
+            required_content: vec![RequiredContent {
+                content_key: "font-atlas".into(),
+                kind: RequiredContentKind::Other,
+                content: required.clone(),
+                observation_count: 1,
+                consumers: vec!["font-atlas-test".into()],
+            }],
+            manifest_digest_sha256: None,
+        };
+        manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
+        let manifest = manifest.with_computed_digest().unwrap();
+        let inventory = PlaybackContentInventory {
+            source_game: manifest.source_game.clone(),
+            source_profile: manifest.source_profile.clone(),
+            layers: vec![PlaybackContentLayer {
+                recorded_ordinal: 0,
+                layer_kind: ContentLayerKind::Base,
+                layer_id: "base".into(),
+                descriptor_sha256: None,
+                source_container_sha256: None,
+                storage_kind: LayerStorageKind::Directory,
+                replace_paths: Vec::new(),
+            }],
+            dlc_selection: Vec::new(),
+            localisation_language: "l_english".into(),
+            settings: BTreeMap::new(),
+            resolved_content: vec![ResolvedPlaybackContent {
+                normalized_game_relative_path: required.normalized_game_relative_path.clone(),
+                winning_layer_ordinal: required.winning_layer_ordinal,
+                layer_kind: required.layer_kind,
+                layer_id: required.layer_id.clone(),
+                source_sha256: required.source_sha256.clone(),
+                payload_sha256: required.payload_sha256.clone(),
+                payload_bytes: required.payload_bytes,
+            }],
+        };
+        let admission = manifest.admit_playback(&inventory).unwrap();
+        let resolver = GameFileResolver::vanilla(root)
+            .unwrap()
+            .with_content_admission(&admission)
+            .unwrap();
+        resolver
     }
 
     const GARAMOND_STYLE_FNT: &str = "\
@@ -1691,7 +1659,7 @@ kernings count=0
         let parsed = parse_fnt_text(CG_STYLE_FNT.as_bytes(), "test.fnt").expect("parses");
         assert_eq!(
             parsed.page_files,
-            vec![Some("declared_page.tga".to_string())]
+            vec![None]
         );
         assert_eq!(parsed.glyphs.len(), 1);
         assert_eq!(parsed.glyphs[0].0, 66);
@@ -2100,14 +2068,10 @@ kernings count=0
     }
 
     #[test]
-    fn negative_bmfont_counts_and_coordinates_are_typed_refusals() {
+    fn negative_bmfont_dimensions_are_typed_refusals() {
         // under the workspace's release overflow-checks.
         let head = "info face=\"T\"\n";
         let cases = [
-            (
-                format!("{head}common lineHeight=1 base=0 scaleW=1 scaleH=1 pages=-1\n"),
-                "pages=-1",
-            ),
             (
                 format!("{head}common lineHeight=-1 base=0 scaleW=1 scaleH=1 pages=1\n"),
                 "lineHeight=-1",
@@ -2115,13 +2079,6 @@ kernings count=0
             (
                 format!("{head}common lineHeight=1 base=0 scaleW=-1 scaleH=1 pages=1\n"),
                 "scaleW=-1",
-            ),
-            (
-                format!(
-                    "{head}common lineHeight=1 base=0 scaleW=1 scaleH=1 pages=1\n\
-                     page id=-1 file=\"a.tga\"\n"
-                ),
-                "id=-1",
             ),
         ];
         for (source, expected) in cases {

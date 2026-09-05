@@ -15,7 +15,7 @@ use crate::paradox_text::{
 use crate::{normalize_game_relative_path, UsedContentKey};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, Path};
+use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedHudFile {
@@ -819,32 +819,9 @@ fn portable_plan_descriptor(
             "binary BMFont page name is not valid UTF-8; decoded with replacement characters",
         );
     }
-    let mut pages = Vec::new();
-    if parsed.pages.is_empty() {
-        pages.push(
-            first_resolved_font_page(vfs, inferred_font_page_candidates(&parent, &stem, 0))?
-                .ok_or_else(|| format!("font {symbolic_name} has no inferred atlas page"))?,
-        );
-    } else {
-        for (page_id, page) in parsed.pages {
-            reject_unsafe_font_page(symbolic_name, page_id, &page)?;
-            let declared = normalize_path(&page);
-            let selected = match first_resolved_font_page(
-                vfs,
-                declared_font_page_candidates(&parent, &declared),
-            )? {
-                Some(path) => Some(path),
-                None => first_resolved_font_page(
-                    vfs,
-                    inferred_font_page_candidates(&parent, &stem, page_id),
-                )?,
-            }
-            .ok_or_else(|| {
-                format!("bitmap-font page {page} and inferred {stem} page {page_id} are absent")
-            })?;
-            pages.push(selected);
-        }
-    }
+    let pages = vec![first_resolved_font_page(vfs,
+        crate::bitmap_font_texture_candidates(&format!("{parent}/{stem}")).to_vec())?
+        .ok_or_else(|| format!("font {symbolic_name} has no engine stem atlas"))?];
     Ok(AuthoredBitmapFontDescriptorDependencies {
         descriptor: descriptor.to_string(),
         pages,
@@ -948,36 +925,10 @@ fn bitmap_font_dependency_paths(
             "binary BMFont page name is not valid UTF-8; decoded with replacement characters",
         );
     }
-    let page_files = parsed.pages;
-    // release descriptor bytes before any atlas candidate is materialized.
     drop(resolved);
-    let mut pages = Vec::new();
-    if page_files.is_empty() {
-        pages.push(
-            first_resolved_font_page(vfs, inferred_font_page_candidates(&parent, &stem, 0))?
-                .ok_or_else(|| format!("font {symbolic_name} has no inferred atlas page"))?,
-        );
-    } else {
-        for (id, page) in page_files {
-            reject_unsafe_font_page(symbolic_name, id, &page)?;
-            let declared = normalize_path(&page);
-            let selected = match first_resolved_font_page(
-                vfs,
-                declared_font_page_candidates(&parent, &declared),
-            )? {
-                Some(path) => Some(path),
-                None => first_resolved_font_page(
-                    vfs,
-                    inferred_font_page_candidates(&parent, &stem, id),
-                )?,
-            };
-            pages.push(selected.ok_or_else(|| {
-                format!("bitmap-font page {page} and inferred {stem} page {id} are absent")
-            })?);
-        }
-    }
-    pages.sort();
-    pages.dedup();
+    let pages = vec![first_resolved_font_page(vfs,
+        crate::bitmap_font_texture_candidates(&format!("{parent}/{stem}")).to_vec())?
+        .ok_or_else(|| format!("font {symbolic_name} has no engine stem atlas"))?];
     Ok(BitmapFontDependencyPaths {
         alias_source,
         descriptor,
@@ -1004,75 +955,6 @@ fn font_override_applies(entry: &Value, resolved_language: &str) -> Result<bool,
         .iter()
         .filter_map(|entry| entry.value.as_scalar())
         .any(|language| language == resolved_language))
-}
-
-const LEGACY_FONT_ROOT: &str = "gfx/fonts";
-
-fn reject_unsafe_font_page(font: &str, id: u32, page: &str) -> Result<(), String> {
-    let normalized = page.replace('\\', "/");
-    let raw = Path::new(page);
-    let normalized_path = Path::new(&normalized);
-    let unsafe_component = |path: &Path| {
-        path.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::RootDir | Component::Prefix(_)
-            )
-        })
-    };
-    if raw.is_absolute()
-        || normalized_path.is_absolute()
-        || page.starts_with('/')
-        || page.starts_with('\\')
-        || page.contains(':')
-        || unsafe_component(raw)
-        || unsafe_component(normalized_path)
-    {
-        return Err(format!(
-            "font {font} page {id} has unsafe declared path {page}"
-        ));
-    }
-    Ok(())
-}
-
-fn declared_font_page_candidates(parent: &str, declared: &str) -> Vec<String> {
-    let mut candidates = Vec::new();
-    let explicit = declared
-        .get(..4)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("gfx/"));
-    if !explicit && !parent.is_empty() {
-        candidates.push(normalize_path(&format!("{parent}/{declared}")));
-    }
-    candidates.push(if declared.contains('/') {
-        declared.to_string()
-    } else {
-        normalize_path(&format!("{LEGACY_FONT_ROOT}/{declared}"))
-    });
-    dedup_font_candidates(&mut candidates);
-    candidates
-}
-
-fn inferred_font_page_candidates(parent: &str, stem: &str, id: u32) -> Vec<String> {
-    let mut candidates = Vec::new();
-    let mut push_dir = |directory: &str| {
-        if id == 0 {
-            candidates.push(normalize_path(&format!("{directory}/{stem}.dds")));
-            candidates.push(normalize_path(&format!("{directory}/{stem}.tga")));
-        }
-        candidates.push(normalize_path(&format!("{directory}/{stem}_{id}.dds")));
-        candidates.push(normalize_path(&format!("{directory}/{stem}_{id}.tga")));
-    };
-    if !parent.is_empty() {
-        push_dir(parent);
-    }
-    push_dir(LEGACY_FONT_ROOT);
-    dedup_font_candidates(&mut candidates);
-    candidates
-}
-
-fn dedup_font_candidates(candidates: &mut Vec<String>) {
-    let mut seen = BTreeSet::new();
-    candidates.retain(|candidate| seen.insert(candidate.clone()));
 }
 
 fn first_resolved_font_page(
@@ -1623,7 +1505,7 @@ mod tests {
                     .as_slice(),
             ),
             ("gfx/fonts/myfont.fnt", fnt.as_slice()),
-            ("gfx/fonts/myfont_0.dds", b"\x00binary-atlas".as_slice()),
+            ("gfx/fonts/myfont.dds", b"\x00binary-atlas".as_slice()),
         ]);
         let document = emit_effective_vfs_hud_role_index(
             &vfs,
@@ -1784,7 +1666,7 @@ mod tests {
                 "gfx/fonts/myfont.fnt",
                 b"info face=\"myfont\" size=16\npage id=0 file=\"myfont_0.dds\"\n".as_slice(),
             ),
-            ("gfx/fonts/myfont_0.dds", b"\x00binary-atlas".as_slice()),
+            ("gfx/fonts/myfont.dds", b"\x00binary-atlas".as_slice()),
         ]);
         let document = emit_effective_vfs_hud_role_index(
             &vfs,
@@ -1885,7 +1767,7 @@ mod tests {
                 "gfx/fonts/alias_source.fnt",
                 b"info face=\"myfont\" size=16\npage id=0 file=\"alias_source_0.dds\"\n".as_slice(),
             ),
-            ("gfx/fonts/alias_source_0.dds", b"\x00binary-atlas".as_slice()),
+            ("gfx/fonts/alias_source.dds", b"\x00binary-atlas".as_slice()),
         ]);
         let paths = bitmap_font_dependency_paths(
             &vfs,
@@ -1897,7 +1779,7 @@ mod tests {
         .expect("the engine-tolerated EOF close must not refuse the core.gfx alias");
         assert_eq!(paths.alias_source.as_deref(), Some("interface/core.gfx"));
         assert_eq!(paths.descriptor, "gfx/fonts/alias_source.fnt");
-        assert_eq!(paths.pages, vec!["gfx/fonts/alias_source_0.dds"]);
+        assert_eq!(paths.pages, vec!["gfx/fonts/alias_source.dds"]);
     }
 
     #[test]
@@ -1922,9 +1804,10 @@ mod tests {
     #[test]
     fn font_dependency_planner_uses_loader_page_priority_not_candidate_uniqueness() {
         let vfs = MapVfs::new(&[
-            ("gfx/fonts/dual.fnt", b"info face=\"dual\" size=16\n"),
+            ("gfx/fonts/dual.fnt", b"info face=\"dual\" size=16\ncommon pages=2\npage id=0 file=\"declared.dds\"\npage id=1 file=\"other.dds\"\n"),
             ("gfx/fonts/dual.dds", b"dds"),
             ("gfx/fonts/dual.tga", b"tga"),
+            ("gfx/fonts/declared.dds", b"declared"),
         ]);
         let paths = bitmap_font_dependency_paths(
             &vfs,
