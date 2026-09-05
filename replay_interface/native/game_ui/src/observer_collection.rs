@@ -1598,9 +1598,7 @@ fn merge_report(target: &mut ComposeReport, source: ComposeReport) {
             .or_default()
             .extend(glyphs);
     }
-    target
-        .unresolved_loc_keys
-        .extend(source.unresolved_loc_keys);
+    target.localisation_misses.absorb(source.localisation_misses);
     for (element, issues) in source.unresolved_text_inputs {
         target
             .unresolved_text_inputs

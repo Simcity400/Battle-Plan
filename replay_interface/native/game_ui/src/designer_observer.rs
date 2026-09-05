@@ -1062,7 +1062,7 @@ fn merge_report(base: &mut ComposeReport, next: ComposeReport) {
     for (font, glyphs) in next.missing_glyphs {
         base.missing_glyphs.entry(font).or_default().extend(glyphs);
     }
-    base.unresolved_loc_keys.extend(next.unresolved_loc_keys);
+    base.localisation_misses.absorb(next.localisation_misses);
     for (element, issues) in next.unresolved_text_inputs {
         base.unresolved_text_inputs
             .entry(element)
@@ -1077,17 +1077,15 @@ pub fn validate_complete_designer_report(report: &ComposeReport) -> Result<()> {
         || !report.undecodable_sprites.is_empty()
         || !report.missing_fonts.is_empty()
         || !report.missing_glyphs.is_empty()
-        || !report.unresolved_loc_keys.is_empty()
         || !report.unresolved_text_inputs.is_empty()
     {
         return Err(GameUiError::missing(format!(
-            "XUI13 composition incomplete: drawn={}; missing_sprites={:?}; undecodable_sprites={:?}; missing_fonts={:?}; missing_glyphs={:?}; unresolved_loc={:?}; unresolved_text={:?}",
+            "XUI13 composition incomplete: drawn={}; missing_sprites={:?}; undecodable_sprites={:?}; missing_fonts={:?}; missing_glyphs={:?}; unresolved_text={:?}",
             report.drawn_elements,
             report.missing_sprites,
             report.undecodable_sprites,
             report.missing_fonts,
             report.missing_glyphs,
-            report.unresolved_loc_keys,
             report.unresolved_text_inputs,
         )));
     }

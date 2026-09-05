@@ -12,9 +12,8 @@ pub fn localisation_table_from_resolver(
     let rel_dir = format!("{LOCALISATION_ROOT}/{language}");
     let files = resolver.resolve_dir_files(&rel_dir, Some("yml"))?;
     let mut table = BTreeMap::new();
-    for (rel, path) in files {
-        let bytes =
-            std::fs::read(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    for (rel, _) in files {
+        let bytes = resolver.read_required_bytes(&rel, "map-text localisation")?;
         let text = String::from_utf8_lossy(&bytes);
         merge_localisation_source(&mut table, &text, &rel);
     }
@@ -260,6 +259,34 @@ mod tests {
         let table = localisation_table_from_resolver(&resolver, "english").expect("replaced loc");
         assert!(table.is_empty(), "replace_path must drop the vanilla file");
         assert_eq!(resolver.stats().replace_path_excluded_file_count, 1);
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn admitted_localisation_reads_refuse_a_tampered_snapshot() {
+        let root = temp_test_dir("map_text_loc_admitted_snapshot");
+        let vanilla = root.join("vanilla");
+        write_text(
+            &vanilla,
+            "localisation/english/countries_l_english.yml",
+            VANILLA_LOC,
+        );
+        let resolver = GameFileResolver::vanilla(vanilla.clone())
+            .expect("resolver")
+            .bind_all_test_content(&"11".repeat(32))
+            .expect("admission");
+        let table = localisation_table_from_resolver(&resolver, "english").expect("admitted loc");
+        assert_eq!(table.get("GER").map(String::as_str), Some("Germany"));
+        let (_, snapshot) = resolver
+            .resolve_dir_files("localisation/english", Some("yml"))
+            .expect("admitted listing")
+            .remove(0);
+        assert!(!snapshot.starts_with(&vanilla), "admitted listing names the live file");
+        crate::test_support::overwrite_readonly(&snapshot, b"l_english:\n GER:0 \"Tampered\"\n");
+        let error = localisation_table_from_resolver(&resolver, "english")
+            .expect_err("tampered snapshot")
+            .to_string();
+        assert!(error.contains("immutable admitted content snapshot changed"), "{error}");
         fs::remove_dir_all(root).ok();
     }
 

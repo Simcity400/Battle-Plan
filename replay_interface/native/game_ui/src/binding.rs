@@ -683,19 +683,22 @@ pub fn topbar_flag_key_candidates(tag: &str, identity: &CountryIdentity) -> Vec<
     )
 }
 
+/// has-key probes a longer chain than this one (a cosmetic-or-tag base,
+/// tag+party, `_subject`) before it yields an empty key, so a miss here is
+/// unproven, never a blank name.
 pub fn resolve_country_name(
     loc: &crate::loc::Localisation,
     tag: &str,
     ideology: Option<&str>,
     cosmetic_tag: Option<&str>,
-) -> (String, String) {
-    for key in country_name_key_candidates(tag, ideology, cosmetic_tag) {
-        if let Some(value) = loc.get(&key) {
-            return (key, value.to_string());
+) -> std::result::Result<(String, String), Vec<String>> {
+    let candidates = country_name_key_candidates(tag, ideology, cosmetic_tag);
+    for key in &candidates {
+        if let Some(value) = loc.get(key) {
+            return Ok((key.clone(), value.to_string()));
         }
     }
-    let tag_upper = tag.to_ascii_uppercase();
-    (tag_upper.clone(), tag_upper)
+    Err(candidates)
 }
 
 

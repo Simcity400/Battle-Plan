@@ -278,3 +278,23 @@ portable_replay/native/engine_evidence/artifacts/func_1423f17e0.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_1423f2ff0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1423f3320.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/20260905T062422Z-font-texture-extension-order-25445298.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14222f900.decompile.c text eol=lf whitespace=-trailing-space
+portable_replay/native/engine_evidence/artifacts/func_14118e5a0.decompile.c text eol=lf whitespace=-trailing-space
+portable_replay/native/engine_evidence/artifacts/func_14066b190.decompile.c text eol=lf whitespace=-trailing-space
+portable_replay/native/engine_evidence/artifacts/func_1401fee40.decompile.c text eol=lf whitespace=-trailing-space
+portable_replay/native/engine_evidence/artifacts/func_14011fa50.decompile.c text eol=lf whitespace=-trailing-space
+portable_replay/native/engine_evidence/artifacts/func_14011fac0.decompile.c text eol=lf whitespace=-trailing-space
+portable_replay/native/engine_evidence/artifacts/func_140fb59c0.decompile.c text eol=lf whitespace=-trailing-space
+portable_replay/native/engine_evidence/artifacts/func_140fb6af0.decompile.c text eol=lf whitespace=-trailing-space
+portable_replay/native/engine_evidence/artifacts/func_1424b8790.decompile.c text eol=lf whitespace=-trailing-space
+portable_replay/native/engine_evidence/artifacts/func_1424b87f0.decompile.c text eol=lf whitespace=-trailing-space
+portable_replay/native/engine_evidence/artifacts/func_14254f1d0.decompile.c text eol=lf whitespace=-trailing-space
+portable_replay/native/engine_evidence/artifacts/func_14254f1fc.decompile.c text eol=lf whitespace=-trailing-space
+portable_replay/native/engine_evidence/artifacts/func_1401ad1d0.decompile.c text eol=lf whitespace=-trailing-space
+portable_replay/native/engine_evidence/artifacts/func_1406e0440.instructions.txt text eol=lf whitespace=-trailing-space
+portable_replay/native/engine_evidence/artifacts/locmiss_chooser_prefixes.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/locmiss_chooser_prefixes.job.json text eol=lf
+
+extractor/native/runs/locmiss_engine_miss_behaviour/*.json text eol=lf
+extractor/native/runs/locmiss_engine_miss_behaviour/*.py text eol=lf
+extractor/native/runs/locmiss_engine_miss_behaviour/POINTER.md text eol=lf

@@ -1,4 +1,5 @@
 
+use replay_core::{LocalisationMiss, LocalisationMisses};
 use crate::{GameUiError, Result};
 use replay_core::{
     admit_static_research_catalogs as admit_core_static_research_catalogs,
@@ -13,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct CatalogLabel {
     pub id: String,
     pub display_name: String,
+    pub localisation_miss: Option<LocalisationMiss>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -86,6 +88,7 @@ pub struct StaticResearchFrameBindings {
     pub research_unavailable: BTreeMap<String, String>,
     pub technology_sharing_groups: usize,
     pub technology_sharing_definition_unavailable_ordinals: BTreeSet<u32>,
+    pub localisation_misses: LocalisationMisses,
 }
 
 pub fn admit_static_research_catalogs(
@@ -220,18 +223,21 @@ impl StaticResearchUiCatalog {
                 )));
             }
         };
-        let display_name = self
-            .admitted
-            .focus_title_display_name(title_loc_key)
-            .ok_or_else(|| {
-                GameUiError::missing(format!(
-                    "recorder-packaged localisation has no focus title key {title_loc_key:?} for focus {id:?}"
-                ))
-            })?
-            .to_string();
+        let (display_name, localisation_miss) =
+            match self.admitted.focus_title_display_name(title_loc_key) {
+                Some(text) => (text.to_string(), None),
+                None => (
+                    title_loc_key.clone(),
+                    Some(LocalisationMiss::recorder_packaged(
+                        title_loc_key,
+                        replay_core::LOCALISATION_JOIN_ARTIFACT,
+                    )),
+                ),
+            };
         Ok(CatalogLabel {
             id: id.to_string(),
             display_name,
+            localisation_miss,
         })
     }
 
@@ -274,29 +280,11 @@ impl StaticResearchUiCatalog {
     }
 
     pub fn idea_label(&self, id: &str) -> Result<CatalogLabel> {
-        let definition = self.idea_definition(id)?;
-        let display_name = definition.localised_name.as_ref().ok_or_else(|| {
-            GameUiError::missing(format!(
-                "recorder-packaged idea {id:?} has no resolved display name"
-            ))
-        })?;
-        Ok(CatalogLabel {
-            id: id.to_string(),
-            display_name: display_name.clone(),
-        })
+        packaged_definition_label("idea", id, self.idea_definition(id)?)
     }
 
     pub fn technology_label(&self, id: &str) -> Result<CatalogLabel> {
-        let definition = self.technology_definition(id)?;
-        let display_name = definition.localised_name.as_ref().ok_or_else(|| {
-            GameUiError::missing(format!(
-                "recorder-packaged technology {id:?} has no resolved display name"
-            ))
-        })?;
-        Ok(CatalogLabel {
-            id: id.to_string(),
-            display_name: display_name.clone(),
-        })
+        packaged_definition_label("technology", id, self.technology_definition(id)?)
     }
 
     pub fn technology_sharing_definition(
@@ -460,11 +448,16 @@ impl StaticResearchUiCatalog {
             out.focus_countries += 1;
             match self.bind_focus(focus) {
                 Ok(labels) => {
-                    out.focus_labels += focus_label_count(&labels.current)
-                        + focus_label_count(&labels.current_continuous)
-                        + focus_label_count(&labels.completed)
-                        + focus_label_count(&labels.available)
-                        + focus_label_count(&labels.visible_order);
+                    for leaf in [
+                        &labels.current,
+                        &labels.current_continuous,
+                        &labels.completed,
+                        &labels.available,
+                        &labels.visible_order,
+                    ] {
+                        out.focus_labels += focus_label_count(leaf);
+                        record_label_misses(leaf, &mut out.localisation_misses);
+                    }
                 }
                 Err(error) => {
                     return Err(GameUiError::new(
@@ -481,8 +474,10 @@ impl StaticResearchUiCatalog {
             out.research_countries += 1;
             match self.bind_research(research) {
                 Ok(labels) => {
-                    out.technology_labels += focus_label_count(&labels.in_progress)
-                        + focus_label_count(&labels.completed);
+                    for leaf in [&labels.in_progress, &labels.completed] {
+                        out.technology_labels += focus_label_count(leaf);
+                        record_label_misses(leaf, &mut out.localisation_misses);
+                    }
                 }
                 Err(error) => {
                     return Err(GameUiError::new(
@@ -598,4 +593,92 @@ impl StaticResearchUiCatalog {
 
 fn focus_label_count(labels: &Leaf<Vec<CatalogLabel>>) -> usize {
     labels.measured().map_or(0, Vec::len)
+}
+
+/// A packaged idea/technology label: the joined text, or for a row the
+/// recorder marked `missing_localisation_key` the key a729 displays verbatim.
+fn packaged_definition_label(
+    kind: &str,
+    id: &str,
+    definition: &IdeaTechnologyDefinition,
+) -> Result<CatalogLabel> {
+    if let Some(display_name) = &definition.localised_name {
+        return Ok(CatalogLabel {
+            id: id.to_string(),
+            display_name: display_name.clone(),
+            localisation_miss: None,
+        });
+    }
+    match (definition.localisation_status.as_str(), &definition.loc_key) {
+        ("missing_localisation_key", Some(key)) => Ok(CatalogLabel {
+            id: id.to_string(),
+            display_name: key.clone(),
+            localisation_miss: Some(LocalisationMiss::recorder_packaged(
+                key,
+                replay_core::IDEA_TECH_LOC_XREF_ARTIFACT,
+            )),
+        }),
+        (status, _) => Err(GameUiError::missing(format!(
+            "recorder-packaged {kind} {id:?} has no resolved display name (status {status:?}, no derivable key)"
+        ))),
+    }
+}
+
+fn record_label_misses(leaf: &Leaf<Vec<CatalogLabel>>, misses: &mut LocalisationMisses) {
+    if let Leaf::Measured(labels) = leaf {
+        misses.record_all(labels.iter().filter_map(|label| label.localisation_miss.clone()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn definition(status: &str, loc_key: Option<&str>, name: Option<&str>) -> IdeaTechnologyDefinition {
+        serde_json::from_value(serde_json::json!({
+            "id": "infantry_weapons",
+            "kind": "technology",
+            "localisation_status": status,
+            "loc_key": loc_key,
+            "localised_name": name,
+            "source_file": "common/technologies/infantry.txt",
+            "source_layer": "vanilla",
+        }))
+        .expect("a minimal packaged definition")
+    }
+
+    #[test]
+    fn a_packaged_row_the_recorder_marked_missing_displays_its_key_and_is_named() {
+        let resolved = packaged_definition_label(
+            "technology",
+            "infantry_weapons",
+            &definition("resolved", Some("infantry_weapons"), Some("Infantry Weapons")),
+        )
+        .unwrap();
+        assert_eq!(resolved.display_name, "Infantry Weapons");
+        assert_eq!(resolved.localisation_miss, None);
+
+        let missed = packaged_definition_label(
+            "technology",
+            "infantry_weapons",
+            &definition("missing_localisation_key", Some("infantry_weapons"), None),
+        )
+        .unwrap();
+        assert_eq!(missed.display_name, "infantry_weapons");
+        assert_eq!(
+            missed.localisation_miss,
+            Some(LocalisationMiss::recorder_packaged(
+                "infantry_weapons",
+                replay_core::IDEA_TECH_LOC_XREF_ARTIFACT
+            ))
+        );
+
+        let underivable = packaged_definition_label(
+            "technology",
+            "infantry_weapons",
+            &definition("no_derivable_loc_key", None, None),
+        )
+        .unwrap_err();
+        assert!(underivable.message.contains("no derivable key"), "{}", underivable.message);
+    }
 }

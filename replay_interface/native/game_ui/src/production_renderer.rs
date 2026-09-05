@@ -1,6 +1,7 @@
 //!    all-country product carriers do not acquire that dependency. A type that
 //! content; recorder panel ownership, recorder cursor state and legacy
 
+use replay_core::{LocalisationMiss, LocalisationMisses};
 use crate::assets::AssetResolver;
 use crate::binding::{
     apply_clock, clock_binding_from_frame, topbar_flag_identity_from_frame,
@@ -417,6 +418,7 @@ pub fn admit_composed_xui05_tooltip_route(
                             .map_err(ProductionUiRejection::Asset)?;
                     }
                 }
+                AdmittedTooltipSource::LocalisationMiss(_) => {}
                 AdmittedTooltipSource::EffectiveSprite {
                     definition_file,
                     texture_file,
@@ -1609,6 +1611,7 @@ pub struct ProductionUiRenderer {
     content_admission: ValidatedContentAdmission,
     playback_variant_key: Option<DisplayVariantKey>,
     asset_cache: Mutex<UiAssetCache>,
+    localisation_misses: LocalisationMissSink,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1660,13 +1663,21 @@ fn resolve_xui21_authored_tooltip_text(
         key,
         &crate::text_law::RuntimeTextContext::default(),
     );
-    if !resolved.admitted() || resolved.text.is_empty() {
+    let (misses, issues): (Vec<_>, Vec<_>) = resolved.issues.into_iter().partition(|issue| {
+        issue.kind == crate::text_law::TextIssueKind::MissingLocalisationKey
+    });
+    if !issues.is_empty() || resolved.text.is_empty() {
         return Err(ProductionUiRejection::IncompleteComposition(format!(
-            "XUI21 authored tooltip {key} did not resolve exactly: {:?}",
-            resolved.issues
+            "XUI21 authored tooltip {key} did not resolve exactly: {issues:?}"
         )));
     }
-    let mut sources = Vec::with_capacity(resolved.source_keys.len());
+    let mut sources = Vec::with_capacity(resolved.source_keys.len() + misses.len());
+    sources.extend(misses.into_iter().map(|issue| {
+        AdmittedTooltipSource::LocalisationMiss(LocalisationMiss::effective_vfs(
+            issue.token,
+            &localisation.language,
+        ))
+    }));
     for source_key in resolved.source_keys {
         if let Some(ambiguous) = localisation.ambiguous_sources_for_key(&source_key) {
             return Err(ProductionUiRejection::IncompleteComposition(format!(
@@ -1779,6 +1790,7 @@ impl ProductionUiRenderer {
             content_admission: content_admission.clone(),
             playback_variant_key: profile.map(|profile| profile.key().clone()),
             asset_cache: Mutex::new(UiAssetCache::default()),
+            localisation_misses: LocalisationMissSink::default(),
         })
     }
 
@@ -1826,6 +1838,27 @@ impl ProductionUiRenderer {
         }
         crate::research_compositor::available_authored_research_folders(&self.resolver, catalog)
             .map_err(|error| ProductionUiRejection::Asset(error.to_string()))
+    }
+
+    /// A composition is admitted only when complete; the misses it drew as raw
+    /// keys are kept for the runtime's sink, never dropped with the report.
+    fn admit_compose_report(
+        &self,
+        report: &crate::compose::ComposeReport,
+    ) -> std::result::Result<(), String> {
+        validate_complete_compose_report(report)?;
+        self.localisation_misses
+            .record(report.localisation_misses.iter().cloned());
+        Ok(())
+    }
+
+    pub fn record_localisation_misses(&self, misses: impl IntoIterator<Item = LocalisationMiss>) {
+        self.localisation_misses.record(misses);
+    }
+
+    /// Every miss named since the last drain; the runtime drains once per frame.
+    pub fn take_localisation_misses(&self) -> LocalisationMisses {
+        self.localisation_misses.take()
     }
 
     pub fn compose_xui09_research_surface(
@@ -1877,7 +1910,7 @@ impl ProductionUiRenderer {
                 "XUI09 authored research composition rejected: {error}"
             ))
         })?;
-        validate_complete_compose_report(&composed.output.report)
+        self.admit_compose_report(&composed.output.report)
             .map_err(ProductionUiRejection::IncompleteComposition)?;
         let report = ProductionUiReport {
             viewport: [viewport_width, viewport_height],
@@ -1976,7 +2009,7 @@ impl ProductionUiRenderer {
         else {
             return Ok(None);
         };
-        validate_complete_compose_report(&composed.output.report)
+        self.admit_compose_report(&composed.output.report)
             .map_err(ProductionUiRejection::IncompleteComposition)?;
         let report = ProductionUiReport {
             viewport: [viewport_width, viewport_height],
@@ -2068,7 +2101,7 @@ impl ProductionUiRenderer {
             viewport_height,
         )
         .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?;
-        validate_complete_compose_report(&output.report)
+        self.admit_compose_report(&output.report)
             .map_err(ProductionUiRejection::IncompleteComposition)?;
         let input_region = crate::politics_state::politics_input_region(
             &layout,
@@ -2184,7 +2217,7 @@ impl ProductionUiRenderer {
             viewport_height,
         )
         .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?;
-        validate_complete_compose_report(&composed.output.report)
+        self.admit_compose_report(&composed.output.report)
             .map_err(ProductionUiRejection::IncompleteComposition)?;
         let report = ProductionUiReport {
             viewport: [viewport_width, viewport_height],
@@ -2322,7 +2355,7 @@ impl ProductionUiRenderer {
             Compositor::with_cache(&self.resolver, &self.registry, &mut cache)
                 .compose(&root, &options)
         };
-        validate_complete_compose_report(&preliminary.report)
+        self.admit_compose_report(&preliminary.report)
             .map_err(ProductionUiRejection::IncompleteComposition)?;
         let grid_rect = preliminary
             .debug_rects
@@ -2675,7 +2708,7 @@ impl ProductionUiRenderer {
                     Compositor::with_cache(&self.resolver, &self.registry, &mut cache)
                         .compose(&description, &options)
                 };
-                validate_complete_compose_report(&measured.report)
+                self.admit_compose_report(&measured.report)
                     .map_err(ProductionUiRejection::IncompleteComposition)?;
                 let root_rect = measured
                     .debug_rects
@@ -3084,7 +3117,7 @@ impl ProductionUiRenderer {
             Compositor::with_cache(&self.resolver, &self.registry, &mut cache)
                 .compose(&root, &options)
         };
-        validate_complete_compose_report(&composed.report)
+        self.admit_compose_report(&composed.report)
             .map_err(ProductionUiRejection::IncompleteComposition)?;
         let mut card_hit_targets = Vec::new();
         for (name, source_record_id, decision_id, availability, interface_state, tooltip_text) in
@@ -3274,7 +3307,7 @@ impl ProductionUiRenderer {
             viewport_height,
         )
         .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?;
-        validate_complete_compose_report(&rendered.output.report)
+        self.admit_compose_report(&rendered.output.report)
             .map_err(ProductionUiRejection::IncompleteComposition)?;
         let report = ProductionUiReport {
             viewport: [viewport_width, viewport_height],
@@ -3354,7 +3387,7 @@ impl ProductionUiRenderer {
             viewport_height,
         )
         .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?;
-        validate_complete_compose_report(&composed.output.report)
+        self.admit_compose_report(&composed.output.report)
             .map_err(ProductionUiRejection::IncompleteComposition)?;
         let report = ProductionUiReport {
             viewport: [viewport_width, viewport_height],
@@ -3487,6 +3520,8 @@ impl ProductionUiRenderer {
         viewport_width: usize,
         viewport_height: usize,
     ) -> std::result::Result<crate::compose::ComposeOutput, ProductionUiRejection> {
+        self.localisation_misses
+            .record(panel.localisation_misses().iter().cloned());
         panel
             .validate_for_frame_and_viewer(frame, viewer)
             .map_err(|error| {
@@ -3514,7 +3549,7 @@ impl ProductionUiRenderer {
             viewport_height,
         )
         .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?;
-        validate_complete_compose_report(&output.report)
+        self.admit_compose_report(&output.report)
             .map_err(ProductionUiRejection::IncompleteComposition)?;
         Ok(output)
     }
@@ -4029,6 +4064,12 @@ impl ProductionUiRenderer {
         viewport_width: usize,
         viewport_height: usize,
     ) -> std::result::Result<ProductionXui05Disposition, ProductionUiRejection> {
+        if let Some(payloads) = payloads {
+            self.localisation_misses.record(payloads.primary.localisation_misses());
+            if let Some(delayed) = &payloads.delayed {
+                self.localisation_misses.record(delayed.localisation_misses());
+            }
+        }
         let key = self.playback_variant_key.as_ref().ok_or_else(|| {
             ProductionUiRejection::IncompleteComposition(
                 "XUI05 product composition requires a playback-admitted display profile".into(),
@@ -4661,7 +4702,7 @@ impl ProductionUiRenderer {
             ))
         })?;
         drop(asset_cache);
-        validate_complete_compose_report(&composed.report)
+        self.admit_compose_report(&composed.report)
             .map_err(ProductionUiRejection::IncompleteComposition)?;
         let authored_root = composed.authored_roots.first().cloned().ok_or_else(|| {
             ProductionUiRejection::IncompleteComposition(
@@ -4706,6 +4747,33 @@ impl ProductionUiRenderer {
             tooltip_targets: composed.tooltip_targets,
             semantic_state: composed.semantic_state,
         }))
+    }
+
+    /// One effective-localisation row source: the text a729 shows and where it
+    /// came from, a miss included.
+    fn effective_text_source(
+        &self,
+        key: &str,
+    ) -> std::result::Result<(String, AdmittedTooltipSource), ProductionUiRejection> {
+        use crate::tooltip_compositor::AdmittedTooltipSource;
+        let (text, miss) = self.localisation.localise(key).display().map_err(|ambiguous| {
+            ProductionUiRejection::IncompleteComposition(ambiguous.to_string())
+        })?;
+        if let Some(miss) = miss {
+            return Ok((text, AdmittedTooltipSource::LocalisationMiss(miss)));
+        }
+        let source = self.localisation.source_file_for_key(key).ok_or_else(|| {
+            ProductionUiRejection::IncompleteComposition(format!(
+                "XUI17 {key} has no sole effective source file"
+            ))
+        })?;
+        Ok((
+            text,
+            AdmittedTooltipSource::EffectiveLocalisation {
+                key: key.into(),
+                source_files: vec![source.into()],
+            },
+        ))
     }
 
     pub fn xui17_tooltip_payloads(
@@ -4772,14 +4840,7 @@ impl ProductionUiRenderer {
             )?;
             let (heading_key, heading_text) =
                 format_xui17_leader_skill_heading(&self.localisation, skill, experience)?;
-            let heading_source = self
-                .localisation
-                .source_file_for_key(heading_key)
-                .ok_or_else(|| {
-                    ProductionUiRejection::IncompleteComposition(format!(
-                        "XUI17 {heading_key} has no sole effective source file"
-                    ))
-                })?;
+            let (_, heading_source) = self.effective_text_source(heading_key)?;
             rows.push(TooltipRow {
                 source_ordinal: 0,
                 line_kind: TooltipLineKind::Description,
@@ -4799,10 +4860,7 @@ impl ProductionUiRenderer {
                         role: "leader_skill_next_level_definition".into(),
                         game_relative_path: crate::character_ui::LEADER_SKILLS_FILE.into(),
                     },
-                    AdmittedTooltipSource::EffectiveLocalisation {
-                        key: heading_key.into(),
-                        source_files: vec![heading_source.into()],
-                    },
+                    heading_source,
                 ],
             });
             let description_key = match kind {
@@ -4812,30 +4870,16 @@ impl ProductionUiRenderer {
                 }
                 crate::character_ui::LeaderSkillKind::Navy => "UNIT_LEADER_SKILL_NAVY_DESC",
             };
-            let description_text = self.localisation.get(description_key).ok_or_else(|| {
-                ProductionUiRejection::IncompleteComposition(format!(
-                    "XUI17 effective {description_key} localisation is unavailable"
-                ))
-            })?;
-            let description_source = self
-                .localisation
-                .source_file_for_key(description_key)
-                .ok_or_else(|| {
-                    ProductionUiRejection::IncompleteComposition(format!(
-                        "XUI17 {description_key} has no sole effective source file"
-                    ))
-                })?;
+            let (description_text, description_source) =
+                self.effective_text_source(description_key)?;
             let description_row = || TooltipRow {
                 source_ordinal: 0,
                 line_kind: TooltipLineKind::Description,
                 source_identity: format!("d47:{}/skill-description", target.unit_leader_id),
                 evaluation_context: format!("unit_leader_id={}", target.unit_leader_id),
                 availability: RowAvailability::Resolved,
-                text: description_text.to_string(),
-                admitted_sources: vec![AdmittedTooltipSource::EffectiveLocalisation {
-                    key: description_key.into(),
-                    source_files: vec![description_source.into()],
-                }],
+                text: description_text.clone(),
+                admitted_sources: vec![description_source.clone()],
             };
             let effect_row = || TooltipRow {
                 source_ordinal: 0,
@@ -4878,23 +4922,8 @@ impl ProductionUiRenderer {
                         .into(),
                 ));
             }
-            let progress_template =
-                self.localisation
-                    .get("UNIT_LEADER_TRAIT_XP")
-                    .ok_or_else(|| {
-                        ProductionUiRejection::IncompleteComposition(
-                            "XUI17 effective UNIT_LEADER_TRAIT_XP localisation is unavailable"
-                                .into(),
-                        )
-                    })?;
-            let progress_localisation_source = self
-                .localisation
-                .source_file_for_key("UNIT_LEADER_TRAIT_XP")
-                .ok_or_else(|| {
-                    ProductionUiRejection::IncompleteComposition(
-                        "XUI17 UNIT_LEADER_TRAIT_XP has no sole effective source file".into(),
-                    )
-                })?;
+            let (progress_template, progress_localisation_source) =
+                self.effective_text_source("UNIT_LEADER_TRAIT_XP")?;
             let progress_cost_source = target
                 .progress_max_source_file
                 .as_deref()
@@ -4939,10 +4968,7 @@ impl ProductionUiRenderer {
                         role: "unit_leader_trait_progress_cost".into(),
                         game_relative_path: progress_cost_source.into(),
                     },
-                    AdmittedTooltipSource::EffectiveLocalisation {
-                        key: "UNIT_LEADER_TRAIT_XP".into(),
-                        source_files: vec![progress_localisation_source.into()],
-                    },
+                    progress_localisation_source,
                 ],
             });
         }
@@ -5109,7 +5135,11 @@ impl ProductionUiRenderer {
             return route;
         };
         let catalog = match &self.ability_catalog {
-            Ok(catalog) => catalog,
+            Ok(catalog) => {
+                self.localisation_misses
+                    .record(catalog.localisation_misses.iter().cloned());
+                catalog
+            }
             Err(error) => {
                 route.gaps.push(ObserverUiGap {
                     surface: "XUI23/command_abilities",
@@ -5507,7 +5537,7 @@ impl ProductionUiRenderer {
         )
         .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?;
         if let Some(surface) = composed.as_ref() {
-            validate_complete_compose_report(&surface.pixels.report)
+            self.admit_compose_report(&surface.pixels.report)
                 .map_err(ProductionUiRejection::IncompleteComposition)?;
         }
         Ok(composed)
@@ -5595,6 +5625,12 @@ impl ProductionUiRenderer {
                 return route;
             }
         };
+        self.localisation_misses.record(
+            admitted
+                .iter()
+                .filter_map(|event| event.popup.as_ref())
+                .flat_map(|popup| popup.localisation_misses.iter().cloned()),
+        );
         let tick = match crate::event_chrome::current_event_tick(frame.hour_index(), &admitted) {
             Ok(value) => value,
             Err(error) => {
@@ -5692,10 +5728,14 @@ impl ProductionUiRenderer {
             .require_used_content(root_source)
             .map_err(ProductionUiRejection::Asset)?;
         for source in &localisation_sources {
-            let AdmittedTooltipSource::EffectiveLocalisation { source_files, .. } = source else {
-                return Err(ProductionUiRejection::IncompleteComposition(
-                    "XUI21 tooltip resolver returned a non-localisation source".into(),
-                ));
+            let source_files = match source {
+                AdmittedTooltipSource::EffectiveLocalisation { source_files, .. } => source_files,
+                AdmittedTooltipSource::LocalisationMiss(_) => continue,
+                _ => {
+                    return Err(ProductionUiRejection::IncompleteComposition(
+                        "XUI21 tooltip resolver returned a non-localisation source".into(),
+                    ))
+                }
             };
             for source_file in source_files {
                 self.content_admission
@@ -5816,7 +5856,7 @@ impl ProductionUiRenderer {
                     .require_used_content(source)
                     .map_err(ProductionUiRejection::Asset)?;
             }
-            validate_complete_compose_report(&composed.output.report)
+            self.admit_compose_report(&composed.output.report)
                 .map_err(ProductionUiRejection::IncompleteComposition)?;
             outputs.push(ProductionXui21Output {
                 image: composed.output.image,
@@ -6568,11 +6608,10 @@ fn format_xui17_leader_skill_heading(
             ))
         }
     };
-    let template = localisation.get(key).ok_or_else(|| {
-        ProductionUiRejection::IncompleteComposition(format!(
-            "XUI17 effective {key} localisation is unavailable"
-        ))
-    })?;
+    let (template, _) = localisation
+        .localise(key)
+        .display()
+        .map_err(|ambiguous| ProductionUiRejection::IncompleteComposition(ambiguous.to_string()))?;
     let mut text = template.replace("$SKILL|Y$", &skill.to_string());
     if let Some(percent) = percent {
         text = text.replace("$PROGRESS|%Y0$", &format!("{percent}%"));
@@ -6585,6 +6624,24 @@ fn format_xui17_leader_skill_heading(
     Ok((key, text))
 }
 
+/// The misses a renderer's inputs and compositions named since the runtime
+/// last drained it. Interior mutability: the compose methods take `&self`.
+#[derive(Default)]
+pub struct LocalisationMissSink(Mutex<LocalisationMisses>);
+
+impl LocalisationMissSink {
+    pub fn record(&self, misses: impl IntoIterator<Item = LocalisationMiss>) {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .record_all(misses);
+    }
+
+    pub fn take(&self) -> LocalisationMisses {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+    }
+}
+
 pub(crate) fn validate_complete_compose_report(
     report: &crate::compose::ComposeReport,
 ) -> std::result::Result<(), String> {
@@ -6592,16 +6649,14 @@ pub(crate) fn validate_complete_compose_report(
         || !report.undecodable_sprites.is_empty()
         || !report.missing_fonts.is_empty()
         || !report.missing_glyphs.is_empty()
-        || !report.unresolved_loc_keys.is_empty()
         || !report.unresolved_text_inputs.is_empty()
     {
         return Err(format!(
-            "production UI composition is incomplete: missing_sprites={:?}; undecodable_sprites={:?}; missing_fonts={:?}; missing_glyphs={:?}; unresolved_loc={:?}; unresolved_runtime_text={:?}",
+            "production UI composition is incomplete: missing_sprites={:?}; undecodable_sprites={:?}; missing_fonts={:?}; missing_glyphs={:?}; unresolved_runtime_text={:?}",
             report.missing_sprites,
             report.undecodable_sprites,
             report.missing_fonts,
             report.missing_glyphs,
-            report.unresolved_loc_keys,
             report.unresolved_text_inputs,
         ));
     }
@@ -7234,6 +7289,7 @@ mod tests {
             content_admission,
             playback_variant_key: None,
             asset_cache: Mutex::new(UiAssetCache::default()),
+            localisation_misses: LocalisationMissSink::default(),
         };
         let authored_gui_sha256 = layout.source_payload_sha256.clone();
         let mut carrier = NationalFocusObserverExact {
@@ -8263,6 +8319,7 @@ mod tests {
             content_admission: content_admission(&[]),
             playback_variant_key: None,
             asset_cache: Mutex::new(UiAssetCache::default()),
+            localisation_misses: LocalisationMissSink::default(),
         };
         // AUTHENTICATED, not stamped: even in-crate, an identity comes from a
         // frame. A struct literal here would be the one forge the private
@@ -8530,6 +8587,7 @@ mod tests {
             content_admission: content_admission(&[]),
             playback_variant_key,
             asset_cache: Mutex::new(UiAssetCache::default()),
+            localisation_misses: LocalisationMissSink::default(),
         }
     }
 
@@ -8829,5 +8887,24 @@ mod tests {
             omniscient.theatre.is_none(),
             "no country selected must leave every country-scoped surface absent"
         );
+    }
+}
+
+#[cfg(test)]
+mod localisation_miss_sink_tests {
+    use super::*;
+
+    #[test]
+    fn the_sink_keeps_every_named_miss_once_until_drained() {
+        let sink = LocalisationMissSink::default();
+        let miss = LocalisationMiss::effective_vfs("SINK_KEY", "l_english");
+        sink.record([miss.clone(), miss.clone()]);
+        sink.record([LocalisationMiss::recorder_packaged("SINK_KEY", "localisation_join")]);
+        let drained = sink.take();
+        assert_eq!(drained.len(), 2);
+        assert!(drained.contains_key("SINK_KEY"));
+        assert!(sink.take().is_empty());
+        sink.record([miss]);
+        assert_eq!(sink.take().len(), 1);
     }
 }

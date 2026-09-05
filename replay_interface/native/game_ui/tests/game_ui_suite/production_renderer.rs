@@ -1068,6 +1068,7 @@ fn installed_xui21_shipping_renderer_admits_complete_event_namespace_and_compose
             runtime_description_text_context_id: Some(format!("ctx:description:{index}")),
             runtime_option_text_context_ids: BTreeMap::from([(0, format!("ctx:option:{index}:0"))]),
             popup: Some(AdmittedEventPopup {
+                localisation_misses: Default::default(),
                 subtype,
                 window_name: subtype.window_name(),
                 title: format!("Replay event {index}"),

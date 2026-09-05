@@ -508,7 +508,7 @@ fn effective_vfs_compositor_executes_all_surfaces_and_preserves_exact_owners() {
             .unwrap_or_else(|error| panic!("compose {surface:?}, network={with_network}: {error}"));
             assert!(composed.output.report.missing_sprites.is_empty());
             assert!(composed.output.report.undecodable_sprites.is_empty());
-            assert!(composed.output.report.unresolved_loc_keys.is_empty());
+            assert!(composed.output.report.localisation_misses.is_empty());
             assert!(composed.output.report.unresolved_text_inputs.is_empty());
             assert!(composed
                 .tooltip_targets

@@ -31,6 +31,7 @@ use crate::window_manager_law::{
     AuthenticatedReplayFrameAuthority, AuthenticatedReplayPanelLease, ReplayOwnedWindowManager,
 };
 use crate::{GameUiError, Result};
+use replay_core::{LocalisationLayerSet, LocalisationMiss, LocalisationMisses};
 use replay_core::{RuntimeTextLayout, RuntimeTextSource, ValidatedContentAdmission};
 use snapshot::sha256::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
@@ -44,6 +45,9 @@ pub struct ComposeOptions {
     pub root_height: usize,
     pub text_color: [u8; 4],
     pub text_overrides: BTreeMap<String, String>,
+    /// Misses observed while the scene was bound; copied into the report.
+    pub localisation_misses: LocalisationMisses,
+    pub localisation_language: String,
     pub localisation: BTreeMap<String, String>,
     pub localisation_source_by_key: BTreeMap<String, String>,
     pub localisation_ambiguous_sources_by_key: BTreeMap<String, Vec<String>>,
@@ -83,6 +87,8 @@ impl ComposeOptions {
             root_height: viewport_height,
             text_color: [221, 214, 190, 255],
             text_overrides: BTreeMap::new(),
+            localisation_misses: LocalisationMisses::default(),
+            localisation_language: String::new(),
             localisation: BTreeMap::new(),
             localisation_source_by_key: BTreeMap::new(),
             localisation_ambiguous_sources_by_key: BTreeMap::new(),
@@ -121,6 +127,7 @@ impl ComposeOptions {
     }
 
     pub fn with_localisation(mut self, localisation: &Localisation) -> Self {
+        self.localisation_language = localisation.language.clone();
         self.localisation = localisation.entries.clone();
         self.localisation_source_by_key = localisation.source_by_key.clone();
         self.localisation_ambiguous_sources_by_key = localisation.ambiguous_sources_by_key.clone();
@@ -136,7 +143,7 @@ pub struct ComposeReport {
     pub undecodable_sprites: Vec<String>,
     pub missing_fonts: BTreeSet<String>,
     pub missing_glyphs: BTreeMap<String, BTreeSet<char>>,
-    pub unresolved_loc_keys: BTreeSet<String>,
+    pub localisation_misses: LocalisationMisses,
     pub localisation_sources_used: BTreeMap<String, String>,
     pub unresolved_text_inputs: BTreeMap<String, Vec<TextIssue>>,
 }
@@ -2115,7 +2122,10 @@ impl<'a> Compositor<'a> {
 
     pub fn compose(&mut self, root: &GuiElement, options: &ComposeOptions) -> ComposeOutput {
         let mut image = blank_image(options.viewport_width, options.viewport_height);
-        let mut report = ComposeReport::default();
+        let mut report = ComposeReport {
+            localisation_misses: options.localisation_misses.clone(),
+            ..ComposeReport::default()
+        };
         let mut debug_rects = Vec::new();
         let parent = Rect {
             x: 0,
@@ -2639,7 +2649,10 @@ impl<'a> Compositor<'a> {
         }
 
         validate_authenticated_dimensions(options, Some(final_framebuffer))?;
-        let mut report = ComposeReport::default();
+        let mut report = ComposeReport {
+            localisation_misses: options.localisation_misses.clone(),
+            ..ComposeReport::default()
+        };
         let mut debug_rects = Vec::new();
         let mut elements = Vec::with_capacity(surface.elements.len());
         let mut materialized_census = Vec::new();
@@ -4553,13 +4566,21 @@ impl<'a> Compositor<'a> {
         };
         if let Some(key) = requested_loc_key {
             if !options.localisation.contains_key(&key) {
-                report.unresolved_loc_keys.insert(key);
+                report.localisation_misses.record(LocalisationMiss::effective_vfs(
+                    key,
+                    &options.localisation_language,
+                ));
             }
         }
-        if !resolved.admitted() {
+        let issues = resolved
+            .issues
+            .into_iter()
+            .filter(|issue| issue.kind != crate::text_law::TextIssueKind::MissingLocalisationKey)
+            .collect::<Vec<_>>();
+        if !issues.is_empty() {
             report
                 .unresolved_text_inputs
-                .insert(element.name.clone(), resolved.issues);
+                .insert(element.name.clone(), issues);
             return;
         }
         if options.require_localisation_provenance {
@@ -8815,8 +8836,7 @@ spriteTypes = {
         horizontal = no
         textureFile1 = "gfx/a.dds"
         textureFile2 = "gfx/b.dds"
-    }
-}
+    }}
 "#,
             ),
         );
@@ -9043,6 +9063,52 @@ spriteTypes = {
         };
         set_image_pixel_f32(&mut output, 0, 0, pixel);
         assert_eq!(output.pixels, vec![72, 72, 71, 255]);
+    }
+
+    #[test]
+    fn a_missed_authored_key_is_drawn_as_itself_and_the_report_names_it() {
+        let label = GuiElement {
+            element_type: "instantTextBoxType".to_string(),
+            name: "Label".to_string(),
+            position: None,
+            size: None,
+            orientation: None,
+            sprite_refs: Vec::new(),
+            font: None,
+            text: Some("TOPBAR_MISSING_KEY".to_string()),
+            format: None,
+            children: Vec::new(),
+            raw: Value::Object(Vec::new()),
+        };
+        let resolver = AssetResolver::new(Vec::new());
+        let registry = SpriteRegistry::new();
+        let localisation = Localisation {
+            language: "l_english".into(),
+            entries: BTreeMap::from([("OTHER".to_string(), "Other".to_string())]),
+            source_by_key: BTreeMap::from([(
+                "OTHER".to_string(),
+                "localisation/english/core_l_english.yml".to_string(),
+            )]),
+            provenance_complete: true,
+            ..Localisation::default()
+        };
+        let mut options = ComposeOptions::new(10, 10).with_localisation(&localisation);
+        options
+            .localisation_misses
+            .record(LocalisationMiss::effective_vfs("SCENE_KEY", "l_english"));
+        let output = Compositor::new(&resolver, &registry).compose(&label, &options);
+        assert!(!output.report.unresolved_text_inputs.contains_key("Label"));
+        assert!(output.report.localisation_misses.contains_key("TOPBAR_MISSING_KEY"));
+        assert!(output.report.localisation_misses.contains_key("SCENE_KEY"));
+        assert_eq!(output.report.localisation_misses.len(), 2);
+        assert!(output
+            .report
+            .localisation_misses
+            .iter()
+            .all(|miss| miss.layer_set
+                == LocalisationLayerSet::EffectiveVfs {
+                    language: "l_english".into()
+                }));
     }
 }
 

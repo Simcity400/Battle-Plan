@@ -188,6 +188,7 @@ fn positive_event_popup_reaches_the_shipping_compositor_with_shipped_assets() {
             runtime_description_text_context_id: Some("ctx:description".into()),
             runtime_option_text_context_ids: BTreeMap::from([(0, "ctx:option:0".into())]),
             popup: Some(AdmittedEventPopup {
+                localisation_misses: Default::default(),
                 subtype,
                 window_name: subtype.window_name(),
                 title: "Replay event".into(),

@@ -839,7 +839,12 @@ fn report_from_output(
         sample_missing_fonts: output.report.missing_fonts.len(),
         sample_missing_font_errors: output.report.missing_fonts.iter().cloned().collect(),
         sample_missing_glyphs: stringify_missing_glyphs(&output.report.missing_glyphs),
-        sample_unresolved_loc_keys: output.report.unresolved_loc_keys.iter().cloned().collect(),
+        sample_unresolved_loc_keys: output
+            .report
+            .localisation_misses
+            .keys()
+            .map(str::to_string)
+            .collect(),
         documented_skips,
         proof_png: None,
     }

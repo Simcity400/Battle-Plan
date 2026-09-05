@@ -171,3 +171,22 @@ def test_continuous_focus_namespace_is_packaged_and_localised():
         continuous["continuous_non_factory_construct"]["loc"]["title"]
         == "Construction Engineering"
     )
+
+
+def test_a_continuous_focus_with_no_text_is_packaged_not_refused():
+    """A key with no text is data the viewer displays as a729 does: the raw key."""
+    import pytest
+    import resolver as R
+    import focus_defs_static_gate as gate
+
+    assert GAME.is_dir(), f"pinned game root is missing: {GAME}"
+    layers = R.build_layers(vanilla=str(GAME), mods=[])
+    loc = R.load_loc(layers)
+    result = parse_focus_def.parse_focus_defs(layers, loc, strict=True)
+    focus = result["continuous_focuses"]["continuous_non_factory_construct"]
+    assert focus["loc"]["title"]
+    focus["loc"] = {"title": None, "desc": None}
+    gate._validate_catalog(result)
+    del focus["loc"]
+    with pytest.raises(RuntimeError, match="no loc record"):
+        gate._validate_catalog(result)

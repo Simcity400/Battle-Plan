@@ -905,6 +905,9 @@ pub struct PreparedFoundationFrame {
     pub labels: Option<crate::PreparedMapLabelFrame>,
     /// One row per family in `MapVisualFamily::ALL` order, present or not.
     pub family_costs: Vec<FamilyPreparationCost>,
+    /// Every localisation miss the map families named this hour (XMAP17
+    /// labels drawn as their raw key, XMAP14 progress text); the app logs them.
+    pub localisation_misses: replay_core::LocalisationMisses,
 }
 
 /// How much the XMAP12 payload carries this hour: the counts a footprint row
@@ -1210,6 +1213,7 @@ fn prepare_foundation_frame_inner(
     let viewer_state_sha256 = Sha256::hex(&serde_json::to_vec(viewer)?);
 
     let mut consumed = BTreeSet::new();
+    let mut localisation_misses = replay_core::LocalisationMisses::default();
     let mut adapter_element_diagnostics: Vec<portable_render_stream::ElementDiagnostic> =
         Vec::new();
     let mut families = Vec::with_capacity(MapVisualFamily::ALL.len());
@@ -1325,6 +1329,7 @@ fn prepare_foundation_frame_inner(
             }
             output.disposition
         } else if let Some(xmap17) = xmap17_preparation {
+            localisation_misses.absorb(xmap17.localisation_misses);
             if prepared_labels.replace(xmap17.prepared).is_some() {
                 return Err("foundation produced duplicate XMAP17 label payload".into());
             }
@@ -2031,6 +2036,12 @@ fn prepare_foundation_frame_inner(
         None
     };
     Ok(PreparedFoundationFrame {
+        localisation_misses: {
+            if let Some(combat) = &prepared_combat {
+                localisation_misses.absorb(combat.localisation_misses.clone());
+            }
+            localisation_misses
+        },
         envelope,
         terrain,
         political,

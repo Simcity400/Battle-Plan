@@ -1800,7 +1800,7 @@ fn merge_report(dst: &mut ComposeReport, src: ComposeReport) {
             .or_default()
             .extend(glyphs);
     }
-    dst.unresolved_loc_keys.extend(src.unresolved_loc_keys);
+    dst.localisation_misses.absorb(src.localisation_misses);
     for (key, source) in src.localisation_sources_used {
         match dst.localisation_sources_used.entry(key) {
             std::collections::btree_map::Entry::Vacant(entry) => {

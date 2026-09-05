@@ -598,8 +598,10 @@ fn localisation_sources(
         Err(error) => return Err(error.to_string()),
     };
     let mut out = BTreeMap::new();
-    for (rel, path) in files {
-        let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    for (rel, _) in files {
+        let bytes = resolver
+            .read_required_bytes(&rel, "HUD localisation")
+            .map_err(|error| error.to_string())?;
         record_decode_damage(decode_damaged, &rel, &bytes)?;
         let text = decode_text(&bytes);
         let mut lines = text.lines().filter(|line| {
@@ -1088,6 +1090,35 @@ mod tests {
         assert!(
             damaged.is_empty(),
             "unselected-language decode damage entered the selected closure: {damaged:?}"
+        );
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn localisation_sources_read_only_the_admission_snapshot() {
+        let root = temp("admitted_localisation_snapshot");
+        let game = root.join("game");
+        let source = "localisation/english/panel_l_english.yml";
+        fs::create_dir_all(game.join("localisation/english")).unwrap();
+        fs::write(game.join(source), b"l_english:\n PANEL_KEY:0 \"Panel\"\n").unwrap();
+        let (resolver, _admission) =
+            crate::test_admission::admit_vanilla(&game, "l_english", &[source], "hud_loc");
+        let mut damaged = BTreeMap::new();
+        let sources = localisation_sources(&resolver, "l_english", &mut damaged).unwrap();
+        assert_eq!(sources.get("panel_key").map(String::as_str), Some(source));
+        let (_, snapshot) = resolver
+            .resolve_dir_files_recursive("localisation/english", Some("yml"))
+            .unwrap()
+            .remove(0);
+        assert!(!snapshot.starts_with(&game), "admitted listing names the live file");
+        crate::test_admission::overwrite_readonly(
+            &snapshot,
+            b"l_english:\n PANEL_KEY:0 \"Tampered\"\n",
+        );
+        let error = localisation_sources(&resolver, "l_english", &mut damaged).unwrap_err();
+        assert!(
+            error.contains("immutable admitted content snapshot changed"),
+            "{error}"
         );
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }

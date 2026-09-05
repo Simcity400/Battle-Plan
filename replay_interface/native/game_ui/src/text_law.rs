@@ -319,6 +319,9 @@ impl<'a> ExpansionState<'a> {
     }
 
     fn expand_key(&mut self, key: &str, depth: usize) {
+        if key.is_empty() {
+            return;
+        }
         if depth > MAX_EXPANSION_DEPTH {
             self.issue(TextIssueKind::ExpansionDepthExceeded, key);
             return;
@@ -328,6 +331,7 @@ impl<'a> ExpansionState<'a> {
             return;
         }
         let Some(value) = self.entries.get(key) else {
+            self.output.push_str(key);
             self.issue(TextIssueKind::MissingLocalisationKey, key);
             return;
         };
@@ -637,5 +641,43 @@ mod tests {
         assert!(element_bound.admitted());
         assert_eq!(element_bound.text, "74%");
         assert!(element_bound.source_keys.is_empty());
+    }
+
+    #[test]
+    fn a_missed_top_level_key_renders_as_itself_and_is_named() {
+        let entries = BTreeMap::from([("ROOT".to_string(), "$GONE$ here".to_string())]);
+        let missed = resolve_localisation(&entries, "NOT_THERE", &RuntimeTextContext::default());
+        assert_eq!(missed.text, "NOT_THERE");
+        assert_eq!(
+            missed.issues,
+            vec![TextIssue {
+                kind: TextIssueKind::MissingLocalisationKey,
+                token: "NOT_THERE".to_string(),
+            }]
+        );
+        assert!(missed.source_keys.is_empty());
+        // a nested token that is neither a key nor a bound variable stays unbound
+        let nested = resolve_localisation(&entries, "ROOT", &RuntimeTextContext::default());
+        assert_eq!(nested.text, " here");
+        assert_eq!(
+            nested.issues,
+            vec![TextIssue {
+                kind: TextIssueKind::MissingRuntimeVariable,
+                token: "GONE".to_string(),
+            }]
+        );
+    }
+}
+
+#[cfg(test)]
+mod empty_lookup_tests {
+    use super::*;
+    #[test]
+    fn empty_key_bypasses_the_table_without_a_miss() {
+        let entries = BTreeMap::from([(String::new(), "not an engine lookup".into())]);
+        for table in [BTreeMap::new(), entries] {
+            let result = resolve_localisation(&table, "", &RuntimeTextContext::default());
+            assert_eq!(result, ResolvedText::default());
+        }
     }
 }

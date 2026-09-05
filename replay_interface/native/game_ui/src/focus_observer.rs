@@ -720,7 +720,6 @@ fn validate_complete_report(output: &ComposeOutput) -> Result<()> {
         || !report.undecodable_sprites.is_empty()
         || !report.missing_fonts.is_empty()
         || !report.missing_glyphs.is_empty()
-        || !report.unresolved_loc_keys.is_empty()
         || !report.unresolved_text_inputs.is_empty()
     {
         return Err(GameUiError::missing(

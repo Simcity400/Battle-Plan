@@ -3016,3 +3016,10 @@ pub(crate) fn write_modvfs_provinces(root: &Path, width: usize, height: usize) {
     write_modvfs_fixture(root, "map/definition.csv", "0;0;0;0;land;false;plains;0\n1;1;2;3;land;false;plains;0\n");
     write_indexed_bmp(&root.join("map/heightmap.bmp"), width, height, 100);
 }
+/// Admission snapshots are written read-only; a tamper has to clear that first.
+pub(crate) fn overwrite_readonly(path: &Path, bytes: &[u8]) {
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_readonly(false);
+    fs::set_permissions(path, permissions).unwrap();
+    fs::write(path, bytes).unwrap();
+}

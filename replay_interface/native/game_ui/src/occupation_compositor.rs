@@ -2302,17 +2302,15 @@ fn complete(
         || !report.undecodable_sprites.is_empty()
         || !report.missing_fonts.is_empty()
         || !report.missing_glyphs.is_empty()
-        || !report.unresolved_loc_keys.is_empty()
         || !report.unresolved_text_inputs.is_empty()
     {
         return Err(OccupationPixelRejection::IncompleteComposition(format!(
             "XUI16 composition is incomplete: missing_sprites={:?}; undecodable={:?}; \
-             missing_fonts={:?}; missing_glyphs={:?}; unresolved_loc={:?}; unresolved_text={:?}",
+             missing_fonts={:?}; missing_glyphs={:?}; unresolved_text={:?}",
             report.missing_sprites,
             report.undecodable_sprites,
             report.missing_fonts,
             report.missing_glyphs,
-            report.unresolved_loc_keys,
             report.unresolved_text_inputs
         )));
     }

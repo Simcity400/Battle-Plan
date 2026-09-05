@@ -2,11 +2,12 @@ use crate::assets::AssetResolver;
 use crate::font::strip_color_codes;
 use crate::paradox_text::{decode_text, destructive_event_count, diagnose_text_decode};
 use crate::Result;
+use replay_core::LocalisationMiss;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Localisation {
+    pub language: String,
     pub entries: BTreeMap<String, String>,
     pub source_by_key: BTreeMap<String, String>,
     pub ambiguous_sources_by_key: BTreeMap<String, Vec<String>>,
@@ -34,58 +35,55 @@ impl Localisation {
                 &right.rel_path,
             )
         });
-        let mut loc = Self::default();
+        let mut loc = Self {
+            language: language.clone(),
+            ..Self::default()
+        };
         for file in files {
-            match fs::read(&file.path) {
-                Ok(bytes) => {
-                    let decode_events = destructive_event_count(&diagnose_text_decode(&bytes));
-                    if decode_events != 0 {
-                        loc.decode_lossy_files.push(format!(
-                            "{}: {decode_events} destructive decode events",
-                            file.rel_path
-                        ));
-                    }
-                    let text = decode_text(&bytes);
-                    let mut file_entries = BTreeMap::new();
-                    let (failures, duplicate_keys) =
-                        parse_language_yml_with_duplicates(&text, &language, &mut file_entries);
-                    for failure in failures {
-                        loc.parse_failures
-                            .push(format!("{}: {failure}", file.rel_path));
-                    }
-                    for (key, value) in file_entries {
-                        let duplicate_in_file = duplicate_keys.contains(&key);
-                        if duplicate_in_file {
-                            let prior = loc.source_by_key.remove(&key);
-                            let sources =
-                                loc.ambiguous_sources_by_key.entry(key.clone()).or_default();
-                            if let Some(prior) = prior {
-                                sources.push(prior);
-                            }
-                            if !sources.contains(&file.rel_path) {
-                                sources.push(file.rel_path.clone());
-                            }
-                        } else if let Some(sources) =
-                            loc.ambiguous_sources_by_key.get_mut(&key)
-                        {
-                            if !sources.contains(&file.rel_path) {
-                                sources.push(file.rel_path.clone());
-                            }
-                        } else if let Some(prior) =
-                            loc.source_by_key.insert(key.clone(), file.rel_path.clone())
-                        {
-                            loc.source_by_key.remove(&key);
-                            loc.ambiguous_sources_by_key
-                                .insert(key.clone(), vec![prior, file.rel_path.clone()]);
-                        }
-                        loc.entries.insert(key.clone(), value);
-                    }
-                    loc.source_files.push(file.rel_path);
-                }
-                Err(err) => loc
-                    .parse_failures
-                    .push(format!("{}: {}", file.rel_path, err)),
+            let bytes = resolver.read_file(&file)?;
+            let decode_events = destructive_event_count(&diagnose_text_decode(&bytes));
+            if decode_events != 0 {
+                loc.decode_lossy_files.push(format!(
+                    "{}: {decode_events} destructive decode events",
+                    file.rel_path
+                ));
             }
+            let text = decode_text(&bytes);
+            let mut file_entries = BTreeMap::new();
+            let (failures, duplicate_keys) =
+                parse_language_yml_with_duplicates(&text, &language, &mut file_entries);
+            for failure in failures {
+                loc.parse_failures
+                    .push(format!("{}: {failure}", file.rel_path));
+            }
+            for (key, value) in file_entries {
+                let duplicate_in_file = duplicate_keys.contains(&key);
+                if duplicate_in_file {
+                    let prior = loc.source_by_key.remove(&key);
+                    let sources =
+                        loc.ambiguous_sources_by_key.entry(key.clone()).or_default();
+                    if let Some(prior) = prior {
+                        sources.push(prior);
+                    }
+                    if !sources.contains(&file.rel_path) {
+                        sources.push(file.rel_path.clone());
+                    }
+                } else if let Some(sources) =
+                    loc.ambiguous_sources_by_key.get_mut(&key)
+                {
+                    if !sources.contains(&file.rel_path) {
+                        sources.push(file.rel_path.clone());
+                    }
+                } else if let Some(prior) =
+                    loc.source_by_key.insert(key.clone(), file.rel_path.clone())
+                {
+                    loc.source_by_key.remove(&key);
+                    loc.ambiguous_sources_by_key
+                        .insert(key.clone(), vec![prior, file.rel_path.clone()]);
+                }
+                loc.entries.insert(key.clone(), value);
+            }
+            loc.source_files.push(file.rel_path);
         }
         loc.parse_failures.sort();
         loc.decode_lossy_files.sort();
@@ -149,6 +147,25 @@ impl Localisation {
         self.entries.get(key).map(String::as_str)
     }
 
+    /// The a729 lookup: an empty key is empty text without a lookup, a key with
+    /// no text displays as itself and is named as a miss, and a key with two
+    /// disagreeing definitions is neither.
+    pub fn localise(&self, key: &str) -> Localised<'_> {
+        if key.is_empty() {
+            return Localised::Present("");
+        }
+        if let Some(sources) = self.ambiguous_sources_by_key.get(key) {
+            return Localised::Ambiguous(AmbiguousLocalisation {
+                key: key.to_string(),
+                sources: sources.clone(),
+            });
+        }
+        match self.entries.get(key) {
+            Some(text) => Localised::Present(text),
+            None => Localised::Missed(LocalisationMiss::effective_vfs(key, &self.language)),
+        }
+    }
+
     pub fn source_file_for_key(&self, key: &str) -> Option<&str> {
         self.source_by_key.get(key).map(String::as_str)
     }
@@ -163,6 +180,46 @@ impl Localisation {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Localised<'a> {
+    Present(&'a str),
+    Missed(LocalisationMiss),
+    Ambiguous(AmbiguousLocalisation),
+}
+
+impl Localised<'_> {
+    /// The display text and, for a miss, the named observation.
+    pub fn display(self) -> std::result::Result<(String, Option<LocalisationMiss>), AmbiguousLocalisation> {
+        match self {
+            Self::Present(text) => Ok((text.to_string(), None)),
+            Self::Missed(miss) => Ok((miss.display().to_string(), Some(miss))),
+            Self::Ambiguous(ambiguous) => Err(ambiguous),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AmbiguousLocalisation {
+    pub key: String,
+    pub sources: Vec<String>,
+}
+
+impl std::fmt::Display for AmbiguousLocalisation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "localisation key {:?} has ambiguous definitions in {:?}",
+            self.key, self.sources
+        )
+    }
+}
+
+impl From<AmbiguousLocalisation> for crate::GameUiError {
+    fn from(ambiguous: AmbiguousLocalisation) -> Self {
+        crate::GameUiError::parse(ambiguous.to_string())
     }
 }
 
@@ -540,6 +597,34 @@ mod tests {
     }
 
     #[test]
+    fn language_load_reads_only_the_admission_snapshot() {
+        let root = temp_root("loc_admission_snapshot");
+        let game = root.join("game");
+        let source = "localisation/english/panel_l_english.yml";
+        fs::create_dir_all(game.join("localisation/english")).unwrap();
+        fs::write(game.join(source), b"l_english:\n PANEL_KEY:0 \"Panel\"\n").unwrap();
+        let (resolver, admission) =
+            crate::test_admission::admit_vanilla(&game, "l_english", &[source], "loc_load");
+        let assets = AssetResolver::from_content_admission(&resolver, &admission).unwrap();
+        let localisation = Localisation::load_admitted_language(&assets, "l_english").unwrap();
+        assert_eq!(localisation.entries.get("PANEL_KEY").map(String::as_str), Some("Panel"));
+        let file = assets
+            .list_files_recursive("localisation/english", Some("yml"))
+            .unwrap()
+            .remove(0);
+        assert!(!file.path.starts_with(&game), "admitted listing names the live file");
+        crate::test_admission::overwrite_readonly(
+            &file.path,
+            b"l_english:\n PANEL_KEY:0 \"Tampered\"\n",
+        );
+        let error = Localisation::load_admitted_language(&assets, "l_english")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("admitted content payload changed"), "{error}");
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn detects_raw_localisation_keys() {
         assert!(is_localisation_key("MAP_MODE_CLICK_INFO"));
         assert!(is_localisation_key("$MAIN_MENU$"));
@@ -585,5 +670,28 @@ mod tests {
             "production lookup must still refuse an unproven duplicate winner"
         );
         portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn localise_mirrors_the_a729_lookup_and_names_a_miss() {
+        let mut loc = Localisation {
+            language: "l_english".into(),
+            ..Localisation::default()
+        };
+        loc.entries.insert("PRESENT".into(), "Present".into());
+        loc.entries.insert("DUP".into(), "x".into());
+        loc.ambiguous_sources_by_key
+            .insert("DUP".into(), vec!["a.yml".into(), "b.yml".into()]);
+        assert_eq!(loc.localise("PRESENT"), Localised::Present("Present"));
+        assert_eq!(loc.localise(""), Localised::Present(""));
+        let (text, miss) = loc.localise("ABSENT").display().unwrap();
+        assert_eq!(text, "ABSENT");
+        assert_eq!(
+            miss,
+            Some(LocalisationMiss::effective_vfs("ABSENT", "l_english"))
+        );
+        let ambiguous = loc.localise("DUP").display().unwrap_err();
+        assert_eq!(ambiguous.key, "DUP");
+        assert_eq!(ambiguous.sources, vec!["a.yml".to_string(), "b.yml".to_string()]);
     }
 }

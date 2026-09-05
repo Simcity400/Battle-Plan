@@ -19,6 +19,7 @@ mod game_file_ledger;
 mod grading_law;
 mod gui_definition_admission;
 mod install_paths;
+mod localisation_miss_log;
 mod observer;
 mod palette;
 #[cfg(test)]
@@ -1535,11 +1536,17 @@ fn run_validate_playback(
         &static_focus_definitions,
     )
     .map_err(|error| format!("admit packaged static research catalogs: {error}"))?;
-    // One pass: every hour is validated and bound in the same decode.
+    let mut localisation_misses = replay_core::LocalisationMisses::default();
+    println!("{}", serde_json::json!({
+        "schema": "replay.validate_playback.stage.v1",
+        "stage": "all_frame_payloads_and_static_catalog_bindings",
+        "result": "STARTED",
+        "expected_hours": timeline.hours().len(),
+    }));
     let timing = validate::validate_all_frame_payloads(&timeline, &mut |hour, frame| {
         static_research
             .bind_frame(frame)
-            .map(|_| ())
+            .map(|bindings| localisation_misses.absorb(bindings.localisation_misses))
             .map_err(|error| {
                 format!("bind packaged static research catalogs at hour {hour}: {error}")
             })
@@ -1549,6 +1556,9 @@ fn run_validate_playback(
         println!("{summary}");
         summary
     })?;
+    if timing.hours == 0 || timing.hours != timeline.hours().len() {
+        return Err("validate-playback did not validate a nonempty whole timeline".into());
+    }
     println!(
         "validate-playback: opened in {open_ms:.1} ms; {} hour(s) decoded and bound in {:.1} ms \
          ({:.1} ms/hour, slowest hour {} at {:.1} ms)",
@@ -1558,6 +1568,16 @@ fn run_validate_playback(
         timing.max_hour,
         timing.max_hour_ms
     );
+    for miss in &localisation_misses {
+        println!("replay_app: {miss}");
+    }
+    println!("{}", serde_json::json!({
+        "schema": "replay.validate_playback.completed.v1",
+        "stage": "all_frame_payloads_and_static_catalog_bindings",
+        "result": "PASS",
+        "hours_validated": timing.hours,
+        "localisation_misses": localisation_misses.len(),
+    }));
     Ok(())
 }
 

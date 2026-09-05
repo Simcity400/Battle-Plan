@@ -1,4 +1,5 @@
 
+use replay_core::LocalisationMisses;
 use crate::assets::AssetResolver;
 use crate::compose::{
     draw_nine_slice, draw_scaled, ComposeOptions, ComposeOutput, ComposeReport, Compositor, Rect,
@@ -148,7 +149,13 @@ pub enum Xui15ProducerRejection {
     /// above, which are the producer's payload disagreeing with a complete
     /// roster: a recorder gap and a carrier defect are different findings.
     IncompleteD18Roster(String),
-    MissingEffectiveLocalisation,
+    /// A present key whose text is empty.
+    EmptyEffectiveLocalisation,
+    /// A key defined twice with disagreeing text: which one a729 keeps is unread.
+    AmbiguousEffectiveLocalisation,
+    /// No candidate of the viewer's NAME chain has text; a729's chooser probes
+    /// candidates this layer does not model, so no blank name is shown.
+    CountryNameChainUnproven(Vec<String>),
     MissingEffectiveFlag,
 }
 
@@ -178,6 +185,7 @@ pub struct StrictXui15PanelInput {
     presentation: TradePresentation,
     catalogue_rows: Vec<ObserverTradeCatalogueRow>,
     country_filters: Vec<ObserverTradeCountryFilterRow>,
+    localisation_misses: LocalisationMisses,
     authority: StrictXui15PanelAuthority,
 }
 
@@ -204,6 +212,10 @@ impl StrictXui15PanelInput {
 
     pub fn country_filter_count(&self) -> usize {
         self.country_filters.len()
+    }
+
+    pub fn localisation_misses(&self) -> &LocalisationMisses {
+        &self.localisation_misses
     }
 
     pub(crate) fn presentation(&self) -> &TradePresentation {
@@ -342,19 +354,24 @@ impl AuthenticatedXui15Producer {
         {
             return Err(Xui15ProducerRejection::StaleViewer);
         }
+        let mut localisation_misses = LocalisationMisses::default();
         let country_filters = self
             .payload
             .country_filters
             .iter()
             .map(|row| {
-                let display_name = localisation
-                    .get(&row.localisation_key)
-                    .filter(|value| !value.trim().is_empty())
-                    .ok_or(Xui15ProducerRejection::MissingEffectiveLocalisation)?;
+                let (display_name, miss) = localisation
+                    .localise(&row.localisation_key)
+                    .display()
+                    .map_err(|_| Xui15ProducerRejection::AmbiguousEffectiveLocalisation)?;
+                if display_name.trim().is_empty() {
+                    return Err(Xui15ProducerRejection::EmptyEffectiveLocalisation);
+                }
+                localisation_misses.record_all(miss);
                 Ok(ObserverTradeCountryFilterRow {
                     token_id: row.token_id,
                     source_ordinal: row.source_ordinal,
-                    display_name: display_name.to_string(),
+                    display_name,
                 })
             })
             .collect::<std::result::Result<Vec<_>, Xui15ProducerRejection>>()?;
@@ -367,14 +384,15 @@ impl AuthenticatedXui15Producer {
             let ideology = measured_or_absent(&identity.ruling_ideology)?;
             let cosmetic = crate::binding::admitted_cosmetic_override(&identity.cosmetic_tag)
                 .map_err(|_| Xui15ProducerRejection::IncompleteCountryCatalogue)?;
-            let (name_key, country_name) = crate::binding::resolve_country_name(
+            let (_, country_name) = crate::binding::resolve_country_name(
                 localisation,
                 &row.country_tag,
                 ideology,
                 cosmetic,
-            );
-            if localisation.get(&name_key).is_none() || country_name.trim().is_empty() {
-                return Err(Xui15ProducerRejection::MissingEffectiveLocalisation);
+            )
+            .map_err(Xui15ProducerRejection::CountryNameChainUnproven)?;
+            if country_name.trim().is_empty() {
+                return Err(Xui15ProducerRejection::EmptyEffectiveLocalisation);
             }
             let flag = resolve_xui15_small_flag(
                 resolver,
@@ -435,6 +453,7 @@ impl AuthenticatedXui15Producer {
             presentation: presentation.clone(),
             catalogue_rows,
             country_filters,
+            localisation_misses,
             authority: StrictXui15PanelAuthority {
                 replay_frame_identity_sha256: self.payload.replay_frame_identity_sha256,
                 viewer_state_identity_sha256: xui15_viewer_identity_sha256(viewer),
@@ -1477,9 +1496,7 @@ fn merge_report(target: &mut ComposeReport, source: ComposeReport) -> Result<()>
             .or_default()
             .extend(glyphs);
     }
-    target
-        .unresolved_loc_keys
-        .extend(source.unresolved_loc_keys);
+    target.localisation_misses.absorb(source.localisation_misses);
     for (key, source_file) in source.localisation_sources_used {
         if target
             .localisation_sources_used

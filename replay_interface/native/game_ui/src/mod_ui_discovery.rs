@@ -121,7 +121,7 @@ fn discover_with_resolver(
     };
     let mut scripted_localisation = Vec::new();
     for file in &scripted_files {
-        scripted_localisation.extend(parse_scripted_localisation(file)?);
+        scripted_localisation.extend(parse_scripted_localisation(resolver, file)?);
     }
     let panels = catalog
         .admitted_windows
@@ -209,8 +209,11 @@ fn is_mod_layer_winner(resolver: &AssetResolver, rel: &str) -> Option<bool> {
         .map(|row| row.layer_kind == replay_core::ContentLayerKind::Mod)
 }
 
-fn parse_scripted_localisation(file: &ResolvedFile) -> Result<Vec<ScriptedLocalisationDefinition>> {
-    let bytes = std::fs::read(&file.path)?;
+fn parse_scripted_localisation(
+    resolver: &AssetResolver,
+    file: &ResolvedFile,
+) -> Result<Vec<ScriptedLocalisationDefinition>> {
+    let bytes = resolver.read_file(file)?;
     let decode_events = destructive_event_count(&diagnose_text_decode(&bytes));
     if decode_events != 0 {
         return Err(GameUiError::parse(format!(
@@ -389,4 +392,49 @@ fn is_mod_added(game_root: &Path, rel: &str, files: &[ResolvedFile]) -> bool {
 fn rel_path(rel: &str) -> std::path::PathBuf {
     rel.split('/')
         .fold(std::path::PathBuf::new(), |path, part| path.join(part))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scripted_localisation_is_read_only_from_the_admission_snapshot() {
+        let root = std::env::temp_dir().join(format!(
+            "game_ui_xui24_scripted_loc_admission_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let game = root.join("game");
+        let source = "common/scripted_localisation/mod_text.txt";
+        std::fs::create_dir_all(game.join("common/scripted_localisation")).unwrap();
+        std::fs::write(
+            game.join(source),
+            b"defined_text={ name=MOD_DYNAMIC text={ localization_key=MOD_PANEL } }",
+        )
+        .unwrap();
+        let (resolver, admission) =
+            crate::test_admission::admit_vanilla(&game, "l_english", &[source], "scripted_loc");
+        let assets = AssetResolver::from_content_admission(&resolver, &admission).unwrap();
+        let file = assets
+            .list_files_recursive("common/scripted_localisation", Some("txt"))
+            .unwrap()
+            .remove(0);
+        let definitions = parse_scripted_localisation(&assets, &file).unwrap();
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].candidate_keys, vec!["MOD_PANEL"]);
+        assert!(!file.path.starts_with(&game), "admitted listing names the live file");
+        crate::test_admission::overwrite_readonly(
+            &file.path,
+            b"defined_text={ name=MOD_DYNAMIC text={ localization_key=TAMPERED } }",
+        );
+        let error = parse_scripted_localisation(&assets, &file)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("admitted content payload changed"), "{error}");
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
 }

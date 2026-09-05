@@ -299,6 +299,9 @@ pub struct ObserverUiOutcome {
     pub occupation_applied_scroll_row: Option<usize>,
     pub occupation_input_region: Option<game_ui::occupation_compositor::OccupationInputRegion>,
     pub promoted_extension_packets: Vec<String>,
+    /// Every localisation miss this frame's UI named: the renderer's own sink
+    /// plus the occupation surface, which is composed outside the renderer.
+    pub localisation_misses: replay_core::LocalisationMisses,
 }
 
 #[derive(Clone, Debug)]
@@ -2837,6 +2840,8 @@ impl ProductObserverUiRuntime {
                     return None;
                 }
             };
+            self.renderer
+                .record_localisation_misses(model.localisation_misses.iter().cloned());
             Some(Xui09PresentedFrame {
                 country_tag: country.to_string(),
                 frame_hour: model.world_hour,
@@ -4739,6 +4744,14 @@ impl ProductObserverUiRuntime {
             }
         }
         Ok(ObserverUiOutcome {
+            localisation_misses: {
+                let mut misses = self.renderer.take_localisation_misses();
+                if let Some(surface) = occupation_outcome.and_then(|outcome| outcome.surface.as_ref())
+                {
+                    misses.absorb(surface.localisation_misses().clone());
+                }
+                misses
+            },
             authored_roots,
             authored_panel_draw_count,
             authored_window_snapshot,
@@ -8797,6 +8810,7 @@ mod tests {
                 research_slot_count: 0,
                 nodes: Vec::new(),
                 refused_countries: Vec::new(),
+                localisation_misses: Default::default(),
             },
         }
     }

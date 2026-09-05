@@ -156,6 +156,7 @@ impl<'a> ProductionContentInterpreter<'a> {
         Ok(Interpreted {
             provenance: bytes.provenance,
             value: Localisation {
+                language: self.localisation_language.clone(),
                 source_by_key,
                 ambiguous_sources_by_key,
                 provenance_complete: true,

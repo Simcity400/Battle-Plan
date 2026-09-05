@@ -410,7 +410,7 @@ fn inspect_topbar_composition(
         sample_undecodable_sprites: sample.output.report.undecodable_sprites.len(),
         sample_missing_glyphs: stringify_missing_glyphs(&sample.output.report.missing_glyphs),
         sample_unresolved_loc_keys: stringify_unresolved_loc_keys(
-            &sample.output.report.unresolved_loc_keys,
+            &sample.output.report.localisation_misses,
         ),
         sample_flag_texture: sample.flag_texture_used,
         empty_drawn_elements: empty.output.report.drawn_elements,
@@ -418,7 +418,7 @@ fn inspect_topbar_composition(
         empty_undecodable_sprites: empty.output.report.undecodable_sprites.len(),
         empty_missing_glyphs: stringify_missing_glyphs(&empty.output.report.missing_glyphs),
         empty_unresolved_loc_keys: stringify_unresolved_loc_keys(
-            &empty.output.report.unresolved_loc_keys,
+            &empty.output.report.localisation_misses,
         ),
     })
 }
@@ -473,7 +473,7 @@ fn inspect_hud_composition(
             + sample.sprite_stats.undecodable.len(),
         sample_missing_glyphs: stringify_missing_glyphs(&sample.output.report.missing_glyphs),
         sample_unresolved_loc_keys: stringify_unresolved_loc_keys(
-            &sample.output.report.unresolved_loc_keys,
+            &sample.output.report.localisation_misses,
         ),
         empty_drawn_elements: empty.output.report.drawn_elements,
         empty_missing_sprites: empty.output.report.missing_sprites.len()
@@ -482,7 +482,7 @@ fn inspect_hud_composition(
             + empty.sprite_stats.undecodable.len(),
         empty_missing_glyphs: stringify_missing_glyphs(&empty.output.report.missing_glyphs),
         empty_unresolved_loc_keys: stringify_unresolved_loc_keys(
-            &empty.output.report.unresolved_loc_keys,
+            &empty.output.report.localisation_misses,
         ),
     })
 }
@@ -496,8 +496,8 @@ fn stringify_missing_glyphs(
         .collect()
 }
 
-fn stringify_unresolved_loc_keys(keys: &BTreeSet<String>) -> Vec<String> {
-    keys.iter().cloned().collect()
+fn stringify_unresolved_loc_keys(misses: &replay_core::LocalisationMisses) -> Vec<String> {
+    misses.keys().map(str::to_string).collect()
 }
 
 fn inspect_fonts(resolver: &AssetResolver) -> Result<FontProbeReport> {

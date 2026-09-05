@@ -1775,7 +1775,7 @@ fn localisation_sources(
         .map_err(|error| error.to_string())?;
     files.sort_by(|left, right| engine_recursive_path_cmp(&left.rel_path, &right.rel_path));
     for file in files {
-        let bytes = std::fs::read(&file.path).map_err(|error| error.to_string())?;
+        let bytes = resolver.read_file(&file).map_err(|error| error.to_string())?;
         let losses = crate::paradox_text::diagnose_text_decode(&bytes);
         let destructive = crate::paradox_text::destructive_event_count(&losses);
         if destructive != 0 {
@@ -1821,6 +1821,39 @@ mod tests {
     use super::*;
     use portable_content_manifest::paradox_text::Value;
     use portable_content_manifest::ContentLayerKind;
+
+    #[test]
+    fn localisation_sources_read_only_the_admission_snapshot() {
+        let root = std::env::temp_dir().join(format!(
+            "game_ui_authored_loc_admission_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let game = root.join("game");
+        let source = "localisation/english/panel_l_english.yml";
+        std::fs::create_dir_all(game.join("localisation/english")).unwrap();
+        std::fs::write(game.join(source), b"l_english:\n PANEL_KEY:0 \"Panel\"\n").unwrap();
+        let (resolver, admission) =
+            crate::test_admission::admit_vanilla(&game, "l_english", &[source], "authored_loc");
+        let assets = AssetResolver::from_content_admission(&resolver, &admission).unwrap();
+        let sources = localisation_sources(&assets, "l_english").unwrap();
+        assert_eq!(sources.get("panel_key").map(String::as_str), Some(source));
+        let file = assets
+            .list_files_recursive("localisation/english", Some("yml"))
+            .unwrap()
+            .remove(0);
+        assert!(!file.path.starts_with(&game), "admitted listing names the live file");
+        crate::test_admission::overwrite_readonly(
+            &file.path,
+            b"l_english:\n PANEL_KEY:0 \"Tampered\"\n",
+        );
+        let error = localisation_sources(&assets, "l_english").unwrap_err();
+        assert!(error.contains("admitted content payload changed"), "{error}");
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
 
     fn element(name: &str, children: Vec<GuiElement>) -> GuiElement {
         GuiElement {

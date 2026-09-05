@@ -1,4 +1,5 @@
 
+use replay_core::LocalisationMisses;
 use crate::assets::{normalize_rel_path, AssetResolver};
 use crate::compose::{ComposeOptions, ComposeOutput, Compositor, UiAssetCache};
 use crate::gfx::SpriteRegistry;
@@ -43,6 +44,7 @@ pub struct AdmittedAbilityDefinition {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AdmittedAbilityCatalog {
     pub abilities: Vec<AdmittedAbilityDefinition>,
+    pub localisation_misses: LocalisationMisses,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -483,24 +485,17 @@ fn admit_ability_catalog(
         ));
     }
     let mut abilities = Vec::with_capacity(definitions.len());
+    let mut localisation_misses = LocalisationMisses::default();
     for (authored_order, definition) in definitions.into_iter().enumerate() {
         let authored_order = u32::try_from(authored_order).map_err(|_| {
             GameUiError::parse("effective active ability catalog exceeds u32 authored order")
         })?;
-        let name = localisation.get(&definition.name_key).ok_or_else(|| {
-            GameUiError::parse(format!(
-                "active ability {} name localisation {} is missing",
-                definition.ability_id, definition.name_key
-            ))
-        })?;
-        let description = localisation
-            .get(&definition.description_key)
-            .ok_or_else(|| {
-                GameUiError::parse(format!(
-                    "active ability {} description localisation {} is missing",
-                    definition.ability_id, definition.description_key
-                ))
-            })?;
+        let (name, name_miss) = localisation.localise(&definition.name_key).display()?;
+        localisation_misses.record_all(name_miss);
+        let (description, description_miss) = localisation
+            .localise(&definition.description_key)
+            .display()?;
+        localisation_misses.record_all(description_miss);
         abilities.push(AdmittedAbilityDefinition {
             authored_order,
             ability_id: definition.ability_id,
@@ -516,7 +511,10 @@ fn admit_ability_catalog(
             authored_cooldown_hours: definition.authored_cooldown_hours,
         });
     }
-    Ok(AdmittedAbilityCatalog { abilities })
+    Ok(AdmittedAbilityCatalog {
+        abilities,
+        localisation_misses,
+    })
 }
 
 fn timer_hours(
@@ -2161,6 +2159,7 @@ mod tests {
 
     fn observer_catalog() -> AdmittedAbilityCatalog {
         AdmittedAbilityCatalog {
+            localisation_misses: LocalisationMisses::default(),
             abilities: vec![AdmittedAbilityDefinition {
                 authored_order: 0,
                 ability_id: "force_attack".into(),

@@ -15,6 +15,7 @@ pub mod design_catalog;
 pub mod frd_depth;
 pub mod intelligence_controller_companion;
 pub mod intelligence_presentation;
+pub mod localisation_miss;
 pub mod fog_derivation_inputs;
 pub mod naval_combat_results;
 pub mod map_furniture;
@@ -306,6 +307,10 @@ pub use rollover_package_set::{
     RolloverPackageSegment, RolloverPackageSet, RolloverPackageTransition,
     ROLLOVER_PACKAGE_SET_FILE, ROLLOVER_PACKAGE_SET_SCHEMA, ROLLOVER_SOURCE_SET_FILE,
 };
+pub use localisation_miss::{
+    LocalisationLayerSet, LocalisationMiss, LocalisationMisses, A729_LOCALISATION_LOOKUP_RVA,
+    A729_LOCALISATION_MISS_DISPLAY_RVA,
+};
 pub use runtime_text::{
     admit_runtime_text, RuntimeGlyphRun, RuntimeInlineIconRun, RuntimeTextAdmissionError,
     RuntimeTextCapturedLayout, RuntimeTextCatalog, RuntimeTextIdentitySource, RuntimeTextLayout,
@@ -491,3 +496,5 @@ pub use world::{
 pub use world::{
     sunk_ship_event_sink_hour_is_admissible, sunk_ship_history_rows_are_admissible, NamedCountry,
 };
+
+pub mod country_name;

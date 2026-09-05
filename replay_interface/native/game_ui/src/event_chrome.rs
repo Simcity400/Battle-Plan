@@ -1,5 +1,6 @@
 //! lifetime ledger plus independent A25 title/description/option text contexts
 
+use replay_core::{LocalisationMiss, LocalisationMisses};
 use crate::assets::AssetResolver;
 use crate::compose::{ComposeOptions, ComposeOutput, Compositor, UiAssetCache};
 use crate::gfx::SpriteRegistry;
@@ -714,6 +715,7 @@ pub struct AdmittedEventPopup {
     pub leader_codename: Option<(String, RuntimeTextContext)>,
     pub agency_insignia: Option<EventRuntimeImageIdentity>,
     pub options: Vec<AdmittedEventOption>,
+    pub localisation_misses: LocalisationMisses,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1438,7 +1440,6 @@ pub fn compose_event_popup_surface(
         || !output.report.undecodable_sprites.is_empty()
         || !output.report.missing_fonts.is_empty()
         || !output.report.missing_glyphs.is_empty()
-        || !output.report.unresolved_loc_keys.is_empty()
         || !output.report.unresolved_text_inputs.is_empty()
     {
         return Err(EventPresentationRejection::IncompleteComposition);
@@ -1821,18 +1822,21 @@ fn admit_popup_materialisation(
     let description_runtime = description_context_id
         .and_then(|id| request.runtime_text.get(id))
         .unwrap_or(&empty_runtime);
+    let mut localisation_misses = LocalisationMisses::default();
     let title = resolve_exact_text(
         request.localisation,
         def.title_key
             .as_deref()
             .ok_or(PopupSuppression::TitleKeyMissing)?,
         title_runtime,
+        &mut localisation_misses,
     )
     .map_err(|_| PopupSuppression::TitleTextUnresolved)?;
     let description = resolve_exact_text(
         request.localisation,
         &selected_desc_key,
         description_runtime,
+        &mut localisation_misses,
     )
     .map_err(|_| PopupSuppression::DescriptionTextUnresolved)?;
     let mut options = Vec::with_capacity(visible_ordinals.len());
@@ -1847,8 +1851,13 @@ fn admit_popup_materialisation(
             .unwrap_or(&empty_runtime);
         options.push(AdmittedEventOption {
             definition_ordinal: ordinal,
-            text: resolve_exact_text(request.localisation, key, option_runtime)
-                .map_err(|_| PopupSuppression::OptionTextUnresolved)?,
+            text: resolve_exact_text(
+                request.localisation,
+                key,
+                option_runtime,
+                &mut localisation_misses,
+            )
+            .map_err(|_| PopupSuppression::OptionTextUnresolved)?,
             runtime_text: option_runtime.clone(),
             selected: chosen_option_ordinal == Some(ordinal),
         });
@@ -1969,6 +1978,7 @@ fn admit_popup_materialisation(
         leader_codename,
         agency_insignia,
         options,
+        localisation_misses,
     })
 }
 
@@ -1976,13 +1986,19 @@ fn resolve_exact_text(
     localisation: &Localisation,
     key: &str,
     runtime: &RuntimeTextContext,
+    misses: &mut LocalisationMisses,
 ) -> std::result::Result<String, EventHistoryRejection> {
     let resolved = resolve_localisation(&localisation.entries, key, runtime);
-    if resolved.admitted() {
-        Ok(resolved.text)
-    } else {
-        Err(EventHistoryRejection::TextUnresolved(resolved.issues))
+    let (missed, issues): (Vec<_>, Vec<_>) = resolved.issues.into_iter().partition(|issue| {
+        issue.kind == crate::text_law::TextIssueKind::MissingLocalisationKey
+    });
+    if !issues.is_empty() {
+        return Err(EventHistoryRejection::TextUnresolved(issues));
     }
+    misses.record_all(missed.into_iter().map(|issue| {
+        LocalisationMiss::effective_vfs(issue.token, &localisation.language)
+    }));
+    Ok(resolved.text)
 }
 
 fn measured_option_text_context_ids(
@@ -4007,5 +4023,30 @@ mod tests {
             source_file: "test.gfx".to_string(),
             raw: parse_str("x = 1").root,
         }
+    }
+
+    #[test]
+    fn a_missed_popup_key_renders_as_itself_and_is_named() {
+        let mut localisation = Localisation::default();
+        localisation.language = "l_english".into();
+        localisation
+            .entries
+            .insert("EVT_TITLE".into(), "A Title".into());
+        let mut misses = LocalisationMisses::default();
+        let runtime = RuntimeTextContext::default();
+        assert_eq!(
+            resolve_exact_text(&localisation, "EVT_TITLE", &runtime, &mut misses).unwrap(),
+            "A Title"
+        );
+        assert!(misses.is_empty());
+        assert_eq!(
+            resolve_exact_text(&localisation, "EVT_GONE", &runtime, &mut misses).unwrap(),
+            "EVT_GONE"
+        );
+        assert!(misses.contains_key("EVT_GONE"));
+        localisation
+            .entries
+            .insert("EVT_VAR".into(), "$RUNTIME_ONLY$".into());
+        assert!(resolve_exact_text(&localisation, "EVT_VAR", &runtime, &mut misses).is_err());
     }
 }

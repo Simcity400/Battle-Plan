@@ -941,9 +941,6 @@ pub enum Xui12ProductionLineRejection {
     AuthoredFontMissing {
         font: String,
     },
-    AuthoredLocalisationMissing {
-        key: String,
-    },
     AuthoredRowTemplateIdentityInvalid {
         line_subtype: String,
     },
@@ -1134,11 +1131,6 @@ fn admit_authored_element_dependencies(
             return Err(Xui12ProductionLineRejection::AuthoredGuiNotStrict {
                 path: "localisation".into(),
             });
-        }
-        for key in loc_keys {
-            if localisation.get(&key).is_none() {
-                return Err(Xui12ProductionLineRejection::AuthoredLocalisationMissing { key });
-            }
         }
         for source in &localisation.source_files {
             require_admitted(admission, source)?;

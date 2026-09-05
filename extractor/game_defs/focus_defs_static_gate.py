@@ -177,11 +177,9 @@ def _validate_catalog(parsed: dict[str, Any]) -> None:
             or focus["modifier_blocks"] < 0
         ):
             raise RuntimeError(f"continuous focus {focus_id!r} has inconsistent identity")
-        if not focus["loc"]["title"] or not focus["loc"]["desc"]:
-            raise RuntimeError(
-                f"continuous focus {focus_id!r} has no effective localisation for its "
-                "title/description keys"
-            )
+        # a key with no text is packaged as data; a729 displays the raw key
+        if not isinstance(focus.get("loc"), dict) or set(focus["loc"]) != {"title", "desc"}:
+            raise RuntimeError(f"continuous focus {focus_id!r} has no loc record")
         kind_counts["continuous_focus"] += 1
     owned_continuous = [
         focus_id for palette in palettes.values() for focus_id in palette["focuses"]

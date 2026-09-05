@@ -1,5 +1,6 @@
 //! These laws and their sealed cross-packet payload ABI are non-promoting on
 
+use replay_core::{LocalisationMiss, LocalisationMisses};
 use crate::assets::AssetResolver;
 use crate::gui::{GuiElement, LayoutSet};
 use crate::loc::Localisation;
@@ -309,6 +310,8 @@ pub enum AdmittedTooltipSource {
         field: String,
         manifest_sha256: String,
     },
+    /// The row's text is what a729 shows for this miss.
+    LocalisationMiss(LocalisationMiss),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -321,6 +324,17 @@ pub struct TooltipPayload {
 impl TooltipPayload {
     pub fn owner(&self) -> &TooltipOwner {
         &self.owner
+    }
+
+    pub fn localisation_misses(&self) -> LocalisationMisses {
+        self.rows
+            .iter()
+            .flat_map(|row| row.admitted_sources.iter())
+            .filter_map(|source| match source {
+                AdmittedTooltipSource::LocalisationMiss(miss) => Some(miss.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn tooltip_root_name(&self) -> &str {
@@ -423,7 +437,7 @@ pub enum TooltipRefusal {
         field: String,
         reason: String,
     },
-    MissingLocalisationKey {
+    EmptyLocalisationText {
         key: String,
     },
     TextEvaluationIssues {
@@ -1478,27 +1492,18 @@ pub(crate) fn compose_payload_from_facts(
                     &key,
                     &RuntimeTextContext::default(),
                 );
-                if !resolved.issues.is_empty() {
-                    if resolved.issues.len() == 1
-                        && matches!(
-                            &resolved.issues[0].kind,
-                            crate::text_law::TextIssueKind::MissingLocalisationKey
-                        )
-                    {
-                        return Err(TooltipRefusal::MissingLocalisationKey {
-                            key: resolved.issues[0].token.clone(),
-                        });
-                    }
-                    return Err(TooltipRefusal::TextEvaluationIssues {
-                        key,
-                        issues: resolved.issues,
+                let (misses, issues): (Vec<_>, Vec<_>) =
+                    resolved.issues.into_iter().partition(|issue| {
+                        issue.kind == crate::text_law::TextIssueKind::MissingLocalisationKey
                     });
+                if !issues.is_empty() {
+                    return Err(TooltipRefusal::TextEvaluationIssues { key, issues });
                 }
                 let text = resolved.text;
                 if text.is_empty() {
-                    return Err(TooltipRefusal::MissingLocalisationKey { key });
+                    return Err(TooltipRefusal::EmptyLocalisationText { key });
                 }
-                let localisation_sources = resolved
+                let mut localisation_sources = resolved
                     .source_keys
                     .into_iter()
                     .map(|key| {
@@ -1524,6 +1529,12 @@ pub(crate) fn compose_payload_from_facts(
                         })
                     })
                     .collect::<std::result::Result<Vec<_>, TooltipRefusal>>()?;
+                localisation_sources.extend(misses.into_iter().map(|issue| {
+                    AdmittedTooltipSource::LocalisationMiss(LocalisationMiss::effective_vfs(
+                        issue.token,
+                        &localisation.language,
+                    ))
+                }));
                 rows.push(TooltipRow {
                     source_ordinal: facts
                         .source_ordinal
@@ -2466,15 +2477,13 @@ mod tests {
 
     #[test]
     fn f3_localisation_key_and_internal_identity_never_render_as_display_text() {
-        assert_eq!(
-            compose_payload_from_facts(
-                authored_facts(RecordedFact::Value("MISSING_TOOLTIP_KEY".into())),
-                &localisation()
-            ),
-            Err(TooltipRefusal::MissingLocalisationKey {
-                key: "MISSING_TOOLTIP_KEY".into()
-            })
-        );
+        let missed = compose_payload_from_facts(
+            authored_facts(RecordedFact::Value("MISSING_TOOLTIP_KEY".into())),
+            &localisation(),
+        )
+        .expect("a missed key renders as a729 renders it");
+        assert_eq!(missed.rows[0].text, "MISSING_TOOLTIP_KEY");
+        assert!(missed.localisation_misses().contains_key("MISSING_TOOLTIP_KEY"));
         let payload = compose_payload_from_facts(
             authored_facts(RecordedFact::Value("PAUSE_TOOLTIP".into())),
             &localisation(),

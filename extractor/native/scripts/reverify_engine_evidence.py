@@ -166,6 +166,24 @@ def broker_verdicts(requests: list[tuple[str, str]]) -> dict[tuple[str, str], di
     return verdicts
 
 
+def matches_lf_export(
+    committed: bytes,
+    exported: bytes,
+    raw_pin: tuple[int, str] | None,
+    committed_pin: tuple[int, str] | None,
+) -> bool:
+    if raw_pin is None or committed_pin is None:
+        return False
+    return (
+        len(exported) == raw_pin[0]
+        and hashlib.sha256(exported).hexdigest() == raw_pin[1]
+        and len(committed) == committed_pin[0]
+        and hashlib.sha256(committed).hexdigest() == committed_pin[1]
+        and b"\r" not in committed
+        and committed == exported.replace(b"\r\n", b"\n")
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -233,8 +251,23 @@ def main() -> int:
             entry["verdict"] = "BROKER_DISAGREES_WITH_ITS_OWN_INDEX"
             mismatches.append(entry)
         elif verdict.get("actual_sha256") != row["sha256"]:
-            entry["verdict"] = "CRATE_BYTES_DIFFER_FROM_BINARY_EXPORT"
-            mismatches.append(entry)
+            exported = Path(verdict["canonical_path"]).read_bytes()
+            committed = (ARTIFACTS / row["artifact"]).read_bytes()
+            raw_pin = pins.get((address, verdict["actual_sha256"]))
+            if (
+                len(exported) == verdict["actual_bytes"]
+                and matches_lf_export(
+                    committed, exported,
+                    (raw_pin[0], verdict["actual_sha256"]) if raw_pin else None,
+                    (pin[0], row["sha256"]) if pin else None,
+                )
+            ):
+                entry["comparison"] = "lf_normalized"
+                entry["raw_export_pinned_in_source"] = raw_pin[1]
+                entry["verdict"] = "MATCHES"
+            else:
+                entry["verdict"] = "CRATE_BYTES_DIFFER_FROM_BINARY_EXPORT"
+                mismatches.append(entry)
         elif not pin:
             entry["verdict"] = "MATCHES_BINARY_BUT_NO_SOURCE_PIN"
             mismatches.append(entry)

@@ -139,7 +139,7 @@ fn installed_xui17_layouts_and_portrait_declarations_are_complete() {
             && composed.report.undecodable_sprites.is_empty()
             && composed.report.missing_fonts.is_empty()
             && composed.report.missing_glyphs.is_empty()
-            && composed.report.unresolved_loc_keys.is_empty()
+            && composed.report.localisation_misses.is_empty()
             && composed.report.unresolved_text_inputs.is_empty(),
         "incomplete installed XUI17 composition: {:#?}",
         composed.report

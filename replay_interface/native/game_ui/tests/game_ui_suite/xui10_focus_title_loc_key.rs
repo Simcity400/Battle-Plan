@@ -323,7 +323,7 @@ fn a_focus_id_the_packaged_definitions_do_not_carry_is_refused_by_name() {
 }
 
 #[test]
-fn a_declared_title_key_the_packaged_localisation_lacks_is_refused_by_key() {
+fn a_declared_title_key_the_packaged_localisation_lacks_displays_the_key_and_is_named() {
     let catalog = admit(
         focus_defs_artifact(
             &[("uk_industrial_focus", "industrial_effort")],
@@ -333,15 +333,38 @@ fn a_declared_title_key_the_packaged_localisation_lacks_is_refused_by_key() {
     )
     .expect("the packaged catalogs are admitted");
 
-    let error = catalog
+    let label = catalog
         .focus_label("uk_industrial_focus")
-        .expect_err("an unresolvable title key is a refusal, never a fallback to the id");
-    assert!(
-        error.message.contains("no focus title key \"industrial_effort\"")
-            && error.message.contains("uk_industrial_focus"),
-        "{}",
-        error.message
+        .expect("a missed title key is displayed as a729 displays it");
+    assert_eq!(label.display_name, "industrial_effort");
+    assert_eq!(
+        label.localisation_miss,
+        Some(replay_core::LocalisationMiss::recorder_packaged(
+            "industrial_effort",
+            replay_core::LOCALISATION_JOIN_ARTIFACT
+        ))
     );
+
+    let labels = catalog
+        .bind_focus(&replay_core::FocusView {
+            focus_tree: replay_core::Leaf::Measured("uk_tree".to_string()),
+            current: replay_core::Leaf::Absent,
+            current_set: replay_core::Leaf::Measured(vec!["uk_industrial_focus".to_string()]),
+            current_continuous: replay_core::Leaf::Absent,
+            current_continuous_set: replay_core::Leaf::Absent,
+            completed_count: replay_core::Leaf::Measured(0),
+            progress: replay_core::Leaf::Absent,
+            completed: replay_core::Leaf::Absent,
+            available: replay_core::Leaf::Absent,
+            visible_order: replay_core::Leaf::Unobtained,
+            paused: replay_core::Leaf::Absent,
+        })
+        .expect("a frame naming a focus with a missed title still binds");
+    let replay_core::Leaf::Measured(current) = &labels.current else {
+        panic!("the current set was measured");
+    };
+    assert_eq!(current[0].display_name, "industrial_effort");
+    assert!(current[0].localisation_miss.is_some());
 }
 
 #[test]

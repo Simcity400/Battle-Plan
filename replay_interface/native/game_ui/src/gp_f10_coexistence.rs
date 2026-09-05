@@ -294,6 +294,7 @@ fn xui15_payload(manifest_sha256: &str, frame_identity: String) -> Xui15Producer
 
 fn xui23_catalog() -> AdmittedAbilityCatalog {
     AdmittedAbilityCatalog {
+        localisation_misses: replay_core::LocalisationMisses::default(),
         abilities: vec![AdmittedAbilityDefinition {
             authored_order: 0,
             ability_id: "force_attack".into(),
