@@ -1092,6 +1092,10 @@ mod alert_join_tests {
             .expect("complete all-country D18/D52/D66 product carrier must admit");
         assert!(surface.is_product_authority());
         assert_eq!(surface.states()[0].state_id, 891);
+        // This fixture predates naming witnesses; its other state remains usable.
+        assert!(surface.states()[0].text.occupied_country_name.is_empty());
+        assert_eq!(surface.states()[0].text.occupied_country_name_issue.as_ref().unwrap().kind,
+            crate::text_law::TextIssueKind::CountryNameInputsUnavailable);
         assert_eq!(surface.states()[0].equipment[0].amount, 800.0);
         assert_eq!(surface.activities().len(), 2);
         assert_eq!(surface.equipment_losses()[0].amount_lost, 3.0);

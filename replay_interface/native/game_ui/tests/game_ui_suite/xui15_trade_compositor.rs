@@ -199,7 +199,16 @@ fn flag(rgb: [u8; 3]) -> RgbaImage {
 
 #[test]
 fn complete_panel_clones_all_four_authored_collections() {
-    let root = fixture_root("complete");
+    assert_country_name_panel(false);
+}
+
+#[test]
+fn unavailable_country_name_preserves_the_panel_and_other_country_rows() {
+    assert_country_name_panel(true);
+}
+
+fn assert_country_name_panel(unavailable_name: bool) {
+    let root = fixture_root(if unavailable_name { "unavailable-name" } else { "complete" });
     write_gui(&root);
     let presentation = presentation();
     let mut catalogue = vec![
@@ -257,6 +266,14 @@ fn complete_panel_clones_all_four_authored_collections() {
         },
         ..CountryTradeViewerState::default()
     };
+    let issue = game_ui::text_law::TextIssue {
+        kind: game_ui::text_law::TextIssueKind::CountryNameInputsUnavailable,
+        token: "current leader subtype unavailable".into(),
+    };
+    if unavailable_name {
+        catalogue[0].country_name.clear();
+        catalogue[0].country_name_issue = Some(issue.clone());
+    }
     let registry = scrollbar_registry(&root);
     let output = compose_observer_trade_panel(
         &AssetResolver::new(vec![root.clone()]),
@@ -283,6 +300,14 @@ fn complete_panel_clones_all_four_authored_collections() {
     assert!(names.contains(&"resource-filter:oil::resources_filter_entry"));
     assert!(names.contains(&"country-filter:10::filter_entry"));
     assert!(names.contains(&"country:1::country_trade_entry"));
+    assert!(names.contains(&"country:2::country_trade_entry"));
+    assert_eq!(catalogue[1].country_name, "France");
+    if unavailable_name {
+        assert_eq!(output.report.unresolved_text_inputs.get("xui15:country-name:1"), Some(&vec![issue]));
+    } else {
+        assert!(!output.report.unresolved_text_inputs.contains_key("xui15:country-name:1"));
+    }
+    assert!(!output.report.unresolved_text_inputs.contains_key("xui15:country-name:2"));
     assert_eq!(
         output
             .debug_rects
