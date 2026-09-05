@@ -2265,6 +2265,9 @@ mod tests {
                 usize::from(id == 301 && country == "GER")
             }
         }
+        let linked_orders = serde_json::json!({"version": 3, "status": 1,
+            "predecessors": [], "successors": [],
+            "virtual_predecessors": [], "virtual_successors": []});
         let world = crate::test_support::frame_with_rest(serde_json::json!({
             "tag_db_id_index": {"country_composition_version": 2},
             "order_of_battle": {"extra": {"army_battleplans_depth_live": {
@@ -2283,7 +2286,7 @@ mod tests {
                     "assigned_division_ids": [301], "assigned_units_status": "exact",
                     "order_linkage_status": "exact", "active": false, "active_status": "exact",
                     "style_flags": 0, "style_status": "exact",
-                    "linked_orders": {"version": 2, "status": 1, "predecessors": [], "successors": []}}]
+                    "linked_orders": linked_orders}]
             }}}
         }));
         let route = portable_render_stream::Xmap15PreparedRoute::from_paradrop_province_anchors(

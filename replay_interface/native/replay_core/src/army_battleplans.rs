@@ -526,7 +526,7 @@ mod tests {
             "active_status": "exact",
             "style_flags": 0,
             "style_status": "exact",
-            "linked_orders": {"version": 2, "status": 2, "predecessors": [], "successors": []}
+            "linked_orders": {"version": 3, "status": 2, "predecessors": [], "successors": [], "virtual_predecessors": [], "virtual_successors": []}
         })
     }
 
@@ -549,8 +549,29 @@ mod tests {
         let mut row = line_order();
         row.as_object_mut().unwrap().remove("linked_orders");
         assert_eq!(parse_army_battleplans(&raw(row), &manager()).status, ViewStatus::DomainUnavailable);
-        let mut row = line_order(); row["linked_orders"]["version"] = json!(1);
+        let mut row = line_order(); row["linked_orders"]["version"] = json!(2);
         assert_eq!(parse_army_battleplans(&raw(row), &manager()).status, ViewStatus::DomainUnavailable);
+    }
+
+    #[test]
+    fn virtual_link_vectors_keep_order_generation_and_require_current_grammar() {
+        let a = json!({"owner_kind": 0, "owner_id": 17, "generation": 4, "engine_order_instance_id": 2025});
+        let b = json!({"owner_kind": 1, "owner_id": 23, "generation": 5, "engine_order_instance_id": 2026});
+        let mut row = line_order();
+        row["linked_orders"]["status"] = json!(1);
+        row["linked_orders"]["virtual_predecessors"] = json!([b, a]);
+        row["linked_orders"]["virtual_successors"] = json!([a, b]);
+        let view = parse_army_battleplans(&raw(row.clone()), &manager());
+        assert_eq!(view.status, ViewStatus::Present);
+        let links = &view.orders[0].linked_orders;
+        assert_eq!(links.virtual_predecessors.iter().map(|id| id.generation).collect::<Vec<_>>(), [5, 4]);
+        assert_eq!(links.virtual_successors.iter().map(|id| id.owner_kind).collect::<Vec<_>>(), [0, 1]);
+        for field in ["virtual_predecessors", "virtual_successors"] {
+            let mut missing = row.clone(); missing["linked_orders"].as_object_mut().unwrap().remove(field);
+            assert_eq!(parse_army_battleplans(&raw(missing), &manager()).status, ViewStatus::DomainUnavailable);
+            let mut duplicate = row.clone(); duplicate["linked_orders"][field] = json!([a, a]);
+            assert_eq!(parse_army_battleplans(&raw(duplicate), &manager()).status, ViewStatus::DomainUnavailable);
+        }
     }
 
     #[test]

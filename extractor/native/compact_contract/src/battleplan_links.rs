@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
-pub const D54_LINK_VERSION: u32 = 2;
+pub const D54_LINK_VERSION: u32 = 3;
 pub const D54_LINK_MAGIC: [u8; 4] = *b"D54L";
 pub const MAX_LINKS_PER_DIRECTION: usize = 4096;
 const HEADER_BYTES: usize = 16;
-const ROW_BYTES: usize = 12;
+const ROW_BYTES: usize = 20;
 const IDENTITY_BYTES: usize = 20;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -29,6 +29,8 @@ pub struct OrderedOrderLinks {
     pub status: OrderLinkStatus,
     pub predecessors: Vec<OrderLinkIdentity>,
     pub successors: Vec<OrderLinkIdentity>,
+    pub virtual_predecessors: Vec<OrderLinkIdentity>,
+    pub virtual_successors: Vec<OrderLinkIdentity>,
 }
 
 impl OrderedOrderLinks {
@@ -38,10 +40,11 @@ impl OrderedOrderLinks {
 
     pub fn validate(&self) -> Result<(), String> {
         if self.status != OrderLinkStatus::Exact
-            && (!self.predecessors.is_empty() || !self.successors.is_empty()) {
+            && (!self.predecessors.is_empty() || !self.successors.is_empty()
+                || !self.virtual_predecessors.is_empty() || !self.virtual_successors.is_empty()) {
             return Err("D54 non-exact order links contain identities".into());
         }
-        for links in [&self.predecessors, &self.successors] {
+        for links in [&self.predecessors, &self.successors, &self.virtual_predecessors, &self.virtual_successors] {
             if links.len() > MAX_LINKS_PER_DIRECTION {
                 return Err("D54 ordered link vector exceeds its bound".into());
             }
@@ -65,15 +68,15 @@ pub fn encode_order_links(rows: &[OrderedOrderLinks]) -> Vec<u8> {
     out.extend_from_slice(&D54_LINK_MAGIC);
     out.extend_from_slice(&D54_LINK_VERSION.to_le_bytes());
     out.extend_from_slice(&(rows.len() as u32).to_le_bytes());
-    let count = rows.iter().map(|row| row.predecessors.len() + row.successors.len()).sum::<usize>();
+    let count = rows.iter().map(|row| row.predecessors.len() + row.successors.len() + row.virtual_predecessors.len() + row.virtual_successors.len()).sum::<usize>();
     out.extend_from_slice(&(count as u32).to_le_bytes());
     for row in rows {
-        for value in [row.status as u32, row.predecessors.len() as u32, row.successors.len() as u32] {
+        for value in [row.status as u32, row.predecessors.len() as u32, row.successors.len() as u32, row.virtual_predecessors.len() as u32, row.virtual_successors.len() as u32] {
             out.extend_from_slice(&value.to_le_bytes());
         }
     }
     for row in rows {
-        for identity in row.predecessors.iter().chain(&row.successors) {
+        for identity in row.predecessors.iter().chain(&row.successors).chain(&row.virtual_predecessors).chain(&row.virtual_successors) {
             out.extend_from_slice(&identity.owner_kind.to_le_bytes());
             out.extend_from_slice(&identity.owner_id.to_le_bytes());
             out.extend_from_slice(&identity.generation.to_le_bytes());
@@ -87,7 +90,7 @@ pub fn decode_order_links(bytes: &[u8], expected_rows: usize) -> Result<(Vec<Ord
     let u32_at = |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
     if bytes.len() < HEADER_BYTES || bytes[..4] != D54_LINK_MAGIC
         || u32_at(4) != D54_LINK_VERSION || u32_at(8) as usize != expected_rows {
-        return Err("D54 requires its version-2 ordered semantic link block".into());
+        return Err("D54 requires its version-3 ordered semantic link block".into());
     }
     let count = u32_at(12) as usize;
     let rows_end = expected_rows.checked_mul(ROW_BYTES).and_then(|n| n.checked_add(HEADER_BYTES))
@@ -105,7 +108,7 @@ pub fn decode_order_links(bytes: &[u8], expected_rows: usize) -> Result<(Vec<Ord
             2 => OrderLinkStatus::Unavailable,
             _ => return Err("D54 ordered link status is invalid".into()),
         };
-        let mut vectors = [Vec::new(), Vec::new()];
+        let mut vectors: [Vec<OrderLinkIdentity>; 4] = std::array::from_fn(|_| Vec::new());
         for (direction, vector) in vectors.iter_mut().enumerate() {
             let count = u32_at(at + 4 + direction * 4) as usize;
             if count > MAX_LINKS_PER_DIRECTION || count > (end - cursor) / IDENTITY_BYTES {
@@ -120,8 +123,8 @@ pub fn decode_order_links(bytes: &[u8], expected_rows: usize) -> Result<(Vec<Ord
                 cursor += IDENTITY_BYTES;
             }
         }
-        let [predecessors, successors] = vectors;
-        let row = OrderedOrderLinks { status, predecessors, successors };
+        let [predecessors, successors, virtual_predecessors, virtual_successors] = vectors;
+        let row = OrderedOrderLinks { status, predecessors, successors, virtual_predecessors, virtual_successors };
         row.validate()?;
         rows.push(row);
     }
@@ -134,23 +137,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn version_two_preserves_order_typed_identity_and_three_truth_states() {
+    fn version_three_preserves_order_typed_identity_and_three_truth_states() {
         let a = OrderLinkIdentity { owner_kind: 0, owner_id: 7, generation: 12, engine_order_instance_id: 3 };
         let b = OrderLinkIdentity { owner_kind: 1, owner_id: 7, generation: 18, engine_order_instance_id: 3 };
         let rows = vec![OrderedOrderLinks::default(), OrderedOrderLinks::unavailable(),
-            OrderedOrderLinks { status: OrderLinkStatus::Exact, predecessors: vec![], successors: vec![] },
-            OrderedOrderLinks { status: OrderLinkStatus::Exact, predecessors: vec![b, a], successors: vec![a] }];
+            OrderedOrderLinks { status: OrderLinkStatus::Exact, predecessors: vec![], successors: vec![], virtual_predecessors: vec![], virtual_successors: vec![] },
+            OrderedOrderLinks { status: OrderLinkStatus::Exact, predecessors: vec![b, a], successors: vec![a], virtual_predecessors: vec![a, b], virtual_successors: vec![b, a] }];
         let bytes = encode_order_links(&rows);
+        let mut changed = rows.clone();
+        changed[3].virtual_successors.reverse();
+        assert_ne!(encode_order_links(&changed), bytes);
+        assert_eq!(changed[3].predecessors, rows[3].predecessors);
+        assert_eq!(changed[3].successors, rows[3].successors);
         assert_eq!(decode_order_links(&bytes, rows.len()).unwrap(), (rows.clone(), bytes.len()));
         for len in 0..bytes.len() { assert!(decode_order_links(&bytes[..len], rows.len()).is_err()); }
-        let mut old = bytes.clone(); old[4..8].copy_from_slice(&1u32.to_le_bytes());
+        let mut old = bytes.clone(); old[4..8].copy_from_slice(&2u32.to_le_bytes());
         assert!(decode_order_links(&old, rows.len()).is_err());
         assert!(decode_order_links(&[], 0).is_err());
         assert!(decode_order_links(&bytes, rows.len() + 1).is_err());
+        for direction in 0..2 {
+            let mut malformed = rows[3].clone();
+            if direction == 0 { malformed.virtual_predecessors = vec![a, a]; }
+            else { malformed.virtual_successors = vec![a; MAX_LINKS_PER_DIRECTION + 1]; }
+            assert!(decode_order_links(&encode_order_links(&[malformed]), 1).is_err());
+            let mut nonexact = OrderedOrderLinks::unavailable();
+            nonexact.virtual_successors = vec![a];
+            assert!(decode_order_links(&encode_order_links(&[nonexact]), 1).is_err());
+        }
         for malformed in [
-            OrderedOrderLinks { status: OrderLinkStatus::Unavailable, predecessors: vec![a], successors: vec![] },
-            OrderedOrderLinks { status: OrderLinkStatus::Exact, predecessors: vec![a, a], successors: vec![] },
-            OrderedOrderLinks { status: OrderLinkStatus::Exact, predecessors: vec![OrderLinkIdentity { generation: 0, ..a }], successors: vec![] },
+            OrderedOrderLinks { status: OrderLinkStatus::Unavailable, predecessors: vec![a], successors: vec![], virtual_predecessors: vec![], virtual_successors: vec![] },
+            OrderedOrderLinks { status: OrderLinkStatus::Exact, predecessors: vec![a, a], successors: vec![], virtual_predecessors: vec![], virtual_successors: vec![] },
+            OrderedOrderLinks { status: OrderLinkStatus::Exact, predecessors: vec![OrderLinkIdentity { generation: 0, ..a }], successors: vec![], virtual_predecessors: vec![], virtual_successors: vec![] },
         ] { assert!(decode_order_links(&encode_order_links(&[malformed]), 1).is_err()); }
     }
 }

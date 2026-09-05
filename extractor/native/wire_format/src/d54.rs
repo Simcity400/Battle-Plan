@@ -1816,7 +1816,8 @@ impl State {
                 Some((record, targets, paths, assigned)) => {
                     self.orders.insert(row_key.clone(), record);
                     for (direction, identities) in [&split.linked_orders[index].predecessors,
-                        &split.linked_orders[index].successors].into_iter().enumerate() {
+                        &split.linked_orders[index].successors, &split.linked_orders[index].virtual_predecessors,
+                        &split.linked_orders[index].virtual_successors].into_iter().enumerate() {
                         for (ordinal, identity) in identities.iter().enumerate() {
                             let mut key = row_key.clone();
                             key.0.push(direction as i128);
@@ -2146,7 +2147,7 @@ mod tests {
     // ---- 1. Schema validity --------------------------------------------------
 
     #[test]
-    fn version_two_links_survive_fold_codec_and_tombstone() {
+    fn version_three_links_survive_fold_codec_and_tombstone() {
         let mut frame = full_frame();
         let raw = frame.encode();
         let split = split_payload(&raw).unwrap();
@@ -2158,7 +2159,7 @@ mod tests {
         let b = links::OrderLinkIdentity { owner_kind: 1, generation: 100, ..a };
         let mut link_rows = split.linked_orders.clone();
         link_rows[0] = links::OrderedOrderLinks { status: links::OrderLinkStatus::Exact,
-            predecessors: vec![b, a], successors: vec![a] };
+            predecessors: vec![b, a], successors: vec![a], virtual_predecessors: vec![a, b], virtual_successors: vec![b, a] };
         let mut payload = raw[..base].to_vec();
         payload.extend(links::encode_order_links(&link_rows));
         payload.extend_from_slice(&raw[base + old_link_len..]);
@@ -2167,11 +2168,15 @@ mod tests {
         let schema = schema();
         let mut state = State::new();
         fold_ok(&mut state, &schema, &payload);
-        assert_eq!(state.order_links.len(), 3);
+        assert_eq!(state.order_links.len(), 7);
         let parent = key_from_order_row(split.order_row(0)).unwrap();
         let mut key = parent.clone(); key.0.extend([0, 0]);
         assert_eq!(state.order_links[&key].values,
             vec![Value::Enum(1), Value::Unsigned(7), Value::Unsigned(4), Value::Unsigned(100)]);
+        for direction in [2, 3] {
+            let mut virtual_key = parent.clone(); virtual_key.0.extend([direction, 0]);
+            assert_eq!(state.order_links[&virtual_key].values[3], Value::Unsigned(if direction == 2 { 99 } else { 100 }));
+        }
         let states = state.collections();
         let mut bytes = Vec::new();
         encode_baseline(&schema, &states, &mut bytes).unwrap();

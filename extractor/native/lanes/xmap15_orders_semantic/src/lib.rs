@@ -822,7 +822,7 @@ mod tests {
             "active_status": "exact",
             "style_flags": 0,
             "style_status": "exact",
-            "linked_orders": {"version": 2, "status": 2, "predecessors": [], "successors": []},
+            "linked_orders": {"version": 3, "status": 2, "predecessors": [], "successors": [], "virtual_predecessors": [], "virtual_successors": []},
         });
         let order_of_battle = json!({
             "extra": {
@@ -928,10 +928,15 @@ mod tests {
                 }),
             ));
         }
+        for field in ["virtual_predecessors", "virtual_successors"] {
+            mutations.push((format!("{field} missing from version 3"), Box::new(move |order: &mut Value| {
+                order["linked_orders"].as_object_mut().unwrap().remove(field);
+            })));
+        }
         for (label, mutate) in [
             (
                 "an unsupported link grammar version",
-                Box::new(|order: &mut Value| order["linked_orders"]["version"] = json!(1))
+                Box::new(|order: &mut Value| order["linked_orders"]["version"] = json!(2))
                     as Box<dyn Fn(&mut Value)>,
             ),
             (
