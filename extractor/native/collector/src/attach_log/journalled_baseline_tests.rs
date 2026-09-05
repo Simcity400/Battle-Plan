@@ -13,6 +13,7 @@ struct JournalProbe {
 
 fn division_sample(div_id: u32, raw_organisation: u32) -> DivisionMovementSample {
     DivisionMovementSample {
+        movement_route: None,
         div_id,
         deleted: false,
         moving: false,

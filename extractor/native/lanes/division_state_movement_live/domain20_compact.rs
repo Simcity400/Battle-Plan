@@ -35,8 +35,9 @@ pub const DOMAIN_FRAME: u16 = 1000;
 pub const PROBE_DOMAIN_ID: u16 = 250;
 
 pub const PAYLOAD_HEADER_LEN: usize = 32;
-pub const ROW_LEN: usize = 120;
-pub const LEGACY_ROW_LEN: usize = 104;
+#[path = "../../../../portable_replay/native/compact_stream/src/division_routes.rs"]
+mod division_routes;
+pub const ROW_LEN: usize = division_routes::ROW_LEN;
 pub const FIXED_SCALE_RAW: u32 = 100_000;
 pub const DIVISION_TYPE: u32 = 4_713;
 
@@ -173,6 +174,7 @@ pub enum DivisionOrderLink {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DivisionStateRow {
+    pub movement_route: Option<Vec<u32>>,
     pub div_id: u32,
     pub deleted: bool,
     pub moving: bool,
@@ -383,7 +385,9 @@ pub fn encode_payload(header: &DivisionStateHeader, rows: &[DivisionStateRow]) -
         payload.extend_from_slice(&row.raw_counter_supply_status.unwrap_or(0).to_le_bytes());
         payload.extend_from_slice(&row.raw_dig_in.unwrap_or(0).to_le_bytes());
         payload.extend_from_slice(&row.raw_dig_in_cap.unwrap_or(0).to_le_bytes());
+        payload.extend_from_slice(&[0; 8]);
     }
+    division_routes::append_routes(&mut payload, rows.iter().map(|row| row.movement_route.as_deref()));
     payload
 }
 
@@ -401,7 +405,6 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
     let status_flags = read_u32_le(payload, 16);
     let scale_raw = read_u32_le(payload, 20);
     let root_rows = read_u32_le(payload, 24) as usize;
-    let reserved0 = read_u32_le(payload, 28);
     summary.status_flags_or |= status_for_global_interpretation(DOMAIN_ID, status_flags);
     let unknown_status = compact_status_flags::compact_status_unknown_flags_v1(status_flags);
     if unknown_status != 0 {
@@ -414,26 +417,12 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
             "offset {offset}: divisions scale {scale_raw} != expected {FIXED_SCALE_RAW}"
         ));
     }
-    if reserved0 != 0 {
-        summary.parse_errors.push(format!(
-            "offset {offset}: divisions header reserved field is nonzero"
-        ));
-    }
-    let legacy_expected =
-        PAYLOAD_HEADER_LEN.saturating_add(row_count.saturating_mul(LEGACY_ROW_LEN));
-    let extended_expected = PAYLOAD_HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
-    let row_len = if payload.len() == extended_expected {
-        ROW_LEN
-    } else if payload.len() == legacy_expected {
-        LEGACY_ROW_LEN
-    } else {
-        summary.parse_errors.push(format!(
-            "offset {offset}: divisions payload is {} byte(s), expected legacy {legacy_expected} or extended {extended_expected}",
-            payload.len()
-        ));
+
+    if let Err(error) = division_routes::DivisionRoutes::parse(payload) {
+        summary.parse_errors.push(format!("offset {offset}: {error}"));
         return summary;
-    };
-    let extended = row_len == ROW_LEN;
+    }
+    let row_len = ROW_LEN;
     let delta_data = (status_flags & STATUS_DELTA_DATA) != 0;
     if changed_rows > row_count {
         summary.parse_errors.push(format!(
@@ -515,18 +504,10 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
         let strategic_redeployment_raw = read_u32_le(payload, cursor + 92);
         let current_manpower = read_u32_le(payload, cursor + 96);
         let cumulative_losses = read_u32_le(payload, cursor + 100);
-        let max_organisation_raw = extended
-            .then(|| read_u32_le(payload, cursor + 104))
-            .unwrap_or(0);
-        let counter_supply_status_raw = extended
-            .then(|| read_u32_le(payload, cursor + 108))
-            .unwrap_or(0);
-        let dig_in_raw = extended
-            .then(|| read_u32_le(payload, cursor + 112))
-            .unwrap_or(0);
-        let dig_in_cap_raw = extended
-            .then(|| read_u32_le(payload, cursor + 116))
-            .unwrap_or(0);
+        let max_organisation_raw = read_u32_le(payload, cursor + 104);
+        let counter_supply_status_raw = read_u32_le(payload, cursor + 108);
+        let dig_in_raw = read_u32_le(payload, cursor + 112);
+        let dig_in_cap_raw = read_u32_le(payload, cursor + 116);
         cursor += row_len;
         reserved_tail_zero_rows = reserved_tail_zero_rows.saturating_add((reserved1 == 0) as usize);
 
@@ -579,22 +560,7 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
         let dig_in_ui_capped = has_flag(flags, ROW_FLAG_DIG_IN_UI_CAPPED);
         let invalid_orders_observed = has_flag(flags, ROW_FLAG_INVALID_ORDERS_OBSERVED);
         let invalid_orders_visible = has_flag(flags, ROW_FLAG_INVALID_ORDERS_VISIBLE);
-        let a15_flags = ROW_FLAG_MAX_ORGANISATION
-            | ROW_FLAG_COUNTER_SUPPLY_STATUS
-            | ROW_FLAG_DIG_IN
-            | ROW_FLAG_DIG_IN_CAP
-            | ROW_FLAG_TRAINING_OBSERVED
-            | ROW_FLAG_TRAINING_VISIBLE
-            | ROW_FLAG_DIG_IN_UI_OBSERVED
-            | ROW_FLAG_DIG_IN_UI_VISIBLE
-            | ROW_FLAG_DIG_IN_UI_CAPPED
-            | ROW_FLAG_INVALID_ORDERS_OBSERVED
-            | ROW_FLAG_INVALID_ORDERS_VISIBLE;
-        if !extended && flags & a15_flags != 0 {
-            summary.parse_errors.push(format!(
-                "offset {offset}: legacy divisions row {row_index} carries extended A15 flags"
-            ));
-        }
+
 
         if deleted {
             deleted_rows = deleted_rows.saturating_add(1);
@@ -1621,16 +1587,8 @@ fn update_lifecycle_from_payload(
         return;
     }
     let row_count = read_u32_le(payload, 8) as usize;
-    let legacy_expected =
-        PAYLOAD_HEADER_LEN.saturating_add(row_count.saturating_mul(LEGACY_ROW_LEN));
-    let extended_expected = PAYLOAD_HEADER_LEN.saturating_add(row_count.saturating_mul(ROW_LEN));
-    let row_len = if payload.len() == extended_expected {
-        ROW_LEN
-    } else if payload.len() == legacy_expected {
-        LEGACY_ROW_LEN
-    } else {
-        return;
-    };
+    if division_routes::DivisionRoutes::parse(payload).is_err() { return; }
+    let row_len = ROW_LEN;
     let mut cursor = PAYLOAD_HEADER_LEN;
     for row_index in 0..row_count {
         let div_id = read_u32_le(payload, cursor);
@@ -1953,63 +1911,30 @@ mod tests {
 
     #[test]
     fn row_len_literal_is_stable() {
-        assert_eq!(ROW_LEN, 120);
+        assert_eq!(ROW_LEN, 128);
     }
 
     #[test]
-    fn retained_104_byte_rows_decode_with_a15_fields_unavailable() {
+    fn replaced_fixed_rows_are_refused_and_route_rows_roundtrip() {
         let rows = vec![DivisionStateRow {
-            div_id: 7,
-            location: 12,
-            raw_organisation: 5_000_000,
-            raw_strength: 100_000_000,
+            div_id: 7, location: 12, raw_organisation: 5_000_000,
+            raw_strength: 100_000_000, movement_route: Some(vec![9, 8, 9]),
             ..DivisionStateRow::default()
         }];
-        let header = DivisionStateHeader {
-            elapsed_wall_ms: 0,
-            status_flags: 0,
-            changed_rows: 1,
-            root_rows: 1,
-        };
-        let mut legacy = encode_payload(&header, &rows);
-        legacy.truncate(PAYLOAD_HEADER_LEN + LEGACY_ROW_LEN);
-        let summary = decode_payload(0, &legacy);
-        assert!(
-            summary.parse_errors.is_empty(),
-            "{:?}",
-            summary.parse_errors
-        );
-    }
-
-    #[test]
-    fn retained_104_byte_rows_reject_extended_a15_presence_bits() {
-        let rows = vec![DivisionStateRow {
-            div_id: 7,
-            location: 12,
-            raw_organisation: 5_000_000,
-            raw_strength: 100_000_000,
-            raw_max_organisation: Some(6_000_000),
-            ..DivisionStateRow::default()
-        }];
-        let header = DivisionStateHeader {
-            elapsed_wall_ms: 0,
-            status_flags: 0,
-            changed_rows: 1,
-            root_rows: 1,
-        };
-        let mut forged_legacy = encode_payload(&header, &rows);
-        forged_legacy.truncate(PAYLOAD_HEADER_LEN + LEGACY_ROW_LEN);
-        let summary = decode_payload(0, &forged_legacy);
-        assert!(summary
-            .parse_errors
-            .iter()
-            .any(|error| error.contains("legacy divisions row 0 carries extended A15 flags")));
+        let header = DivisionStateHeader { elapsed_wall_ms: 0, status_flags: 0, changed_rows: 1, root_rows: 1 };
+        let payload = encode_payload(&header, &rows);
+        assert!(decode_payload(0, &payload).parse_errors.is_empty());
+        assert_eq!(division_routes::DivisionRoutes::parse(&payload).unwrap().route(0), Some(vec![9, 8, 9]));
+        for len in [104, 120] {
+            assert!(!decode_payload(0, &payload[..PAYLOAD_HEADER_LEN + len]).parse_errors.is_empty());
+        }
     }
 
     #[test]
     fn encodes_and_decodes_full_state_rows() {
         let rows = vec![
             DivisionStateRow {
+                movement_route: None,
                 div_id: 101,
                 moving: true,
                 location: 12_345,
@@ -2043,6 +1968,7 @@ mod tests {
                 ..DivisionStateRow::default()
             },
             DivisionStateRow {
+                movement_route: None,
                 div_id: 102,
                 location: 99,
                 raw_organisation: 10_000_000,
@@ -2129,6 +2055,7 @@ mod tests {
     #[test]
     fn rejects_corrupt_production_tail_values() {
         let row = DivisionStateRow {
+            movement_route: None,
             div_id: 103,
             location: 99,
             raw_organisation: 1,
@@ -2173,6 +2100,7 @@ mod tests {
     #[test]
     fn rejects_nonzero_production_tail_without_presence_flags() {
         let row = DivisionStateRow {
+            movement_route: None,
             div_id: 104,
             location: 99,
             raw_organisation: 1,
@@ -2210,6 +2138,7 @@ mod tests {
     fn encodes_and_decodes_order_link_rows() {
         let rows = vec![
             DivisionStateRow {
+                movement_route: None,
                 div_id: 201,
                 location: 10,
                 raw_organisation: 1,
@@ -2218,6 +2147,7 @@ mod tests {
                 ..DivisionStateRow::default()
             },
             DivisionStateRow {
+                movement_route: None,
                 div_id: 202,
                 location: 11,
                 raw_organisation: 1,
@@ -2226,6 +2156,7 @@ mod tests {
                 ..DivisionStateRow::default()
             },
             DivisionStateRow {
+                movement_route: None,
                 div_id: 203,
                 location: 12,
                 raw_organisation: 1,
@@ -2234,6 +2165,7 @@ mod tests {
                 ..DivisionStateRow::default()
             },
             DivisionStateRow {
+                movement_route: None,
                 div_id: 204,
                 location: 13,
                 raw_organisation: 1,
@@ -2279,6 +2211,7 @@ mod tests {
     #[test]
     fn rejects_out_of_range_order_instance_id() {
         let rows = vec![DivisionStateRow {
+            movement_route: None,
             div_id: 210,
             location: 10,
             raw_organisation: 1,
@@ -2302,6 +2235,7 @@ mod tests {
     #[test]
     fn rejects_order_instance_id_without_army_flag() {
         let rows = vec![DivisionStateRow {
+            movement_route: None,
             div_id: 211,
             location: 10,
             raw_organisation: 1,
@@ -2327,6 +2261,7 @@ mod tests {
     #[test]
     fn accepts_zero_filled_deleted_rows() {
         let rows = vec![DivisionStateRow {
+            movement_route: None,
             div_id: 404,
             deleted: true,
             ..DivisionStateRow::default()
@@ -2355,6 +2290,7 @@ mod tests {
     #[test]
     fn rejects_movement_fields_when_not_moving() {
         let rows = vec![DivisionStateRow {
+            movement_route: None,
             div_id: 5,
             location: 55,
             move_target_province: Some(56),
@@ -2378,6 +2314,7 @@ mod tests {
     #[test]
     fn decodes_stream_with_domain20_data_record() {
         let rows = vec![DivisionStateRow {
+            movement_route: None,
             div_id: 7,
             moving: true,
             location: 70,
@@ -2562,6 +2499,7 @@ mod tests {
     fn derives_lifecycle_from_ordered_domain20_rows() {
         let baseline = vec![
             DivisionStateRow {
+                movement_route: None,
                 div_id: 7,
                 location: 70,
                 raw_organisation: 5_000_000,
@@ -2573,6 +2511,7 @@ mod tests {
                 ..DivisionStateRow::default()
             },
             DivisionStateRow {
+                movement_route: None,
                 div_id: 8,
                 location: 80,
                 raw_organisation: 5_000_000,
@@ -2586,6 +2525,7 @@ mod tests {
         ];
         let delta = vec![
             DivisionStateRow {
+                movement_route: None,
                 div_id: 7,
                 moving: true,
                 location: 71,
@@ -2601,6 +2541,7 @@ mod tests {
                 ..DivisionStateRow::default()
             },
             DivisionStateRow {
+                movement_route: None,
                 div_id: 9,
                 location: 90,
                 raw_organisation: 5_000_000,
@@ -2612,6 +2553,7 @@ mod tests {
                 ..DivisionStateRow::default()
             },
             DivisionStateRow {
+                movement_route: None,
                 div_id: 8,
                 deleted: true,
                 ..DivisionStateRow::default()

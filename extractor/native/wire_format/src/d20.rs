@@ -17,6 +17,7 @@ use crate::schema::{Collection, Field, Kind, Quant, Schema, Shape};
 
 pub const DOMAIN: u32 = 20;
 pub const DIVISIONS: u32 = 1;
+pub const MOVEMENT_ROUTE: u32 = 2;
 
 /// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
@@ -46,6 +47,7 @@ pub mod field {
     pub const ARMY_ID: u32 = 24;
     pub const ORDER_INSTANCE_ID: u32 = 25;
     pub const ORDER_LINK: u32 = 26;
+    pub const MOVEMENT_ROUTE_COUNT: u32 = 27;
 }
 
 /// Declared precision for every continuous field except `move_progress`.
@@ -58,6 +60,13 @@ pub const BAR_PRECISION: Quant = Quant::Fixed(2);
 
 /// `order_link`: army / army group / unresolved.
 pub const ORDER_LINK_CARDINALITY: u32 = 3;
+
+pub mod route_field {
+    pub const DIV_ID: u32 = 1;
+    pub const DIV_TYPE: u32 = 2;
+    pub const INDEX: u32 = 3;
+    pub const PROVINCE: u32 = 4;
+}
 
 pub fn schema() -> Schema {
     use field as f;
@@ -117,7 +126,6 @@ pub fn schema() -> Schema {
                 .quant(BAR_PRECISION),
         );
     }
-    // Extension fields, unknown rather than absent on a legacy row.
     for id in [f::DIG_IN, f::DIG_IN_CAP] {
         fields.push(
             Field::new(id, Kind::Continuous)
@@ -156,6 +164,8 @@ pub fn schema() -> Schema {
             .enum_card(ORDER_LINK_CARDINALITY),
     );
 
+    fields.push(Field::new(f::MOVEMENT_ROUTE_COUNT, Kind::Unsigned).optional().nullable().unknown_capable());
+
     Schema {
         domain: DOMAIN,
         cadence_log2: 0,
@@ -163,6 +173,15 @@ pub fn schema() -> Schema {
             collection_id: DIVISIONS,
             shape: Shape::KeyedSet,
             fields,
+        }, Collection {
+            collection_id: MOVEMENT_ROUTE,
+            shape: Shape::KeyedSet,
+            fields: vec![
+                Field::new(route_field::DIV_ID, Kind::Unsigned).key(0),
+                Field::new(route_field::DIV_TYPE, Kind::Unsigned).key(1),
+                Field::new(route_field::INDEX, Kind::Unsigned).key(2),
+                Field::new(route_field::PROVINCE, Kind::ContentId),
+            ],
         }],
         event_part: None,
     }
@@ -177,6 +196,17 @@ mod tests {
 
     fn grid() -> TickGrid {
         TickGrid::new(3).expect("3 is a legal grid")
+    }
+
+    #[test]
+    fn route_schema_preserves_identity_order_and_unknown_count() {
+        let schema = schema();
+        let count = schema.collections[0].fields.iter().find(|field| field.field_id == field::MOVEMENT_ROUTE_COUNT).unwrap();
+        assert!(count.nullable && count.unknown_capable);
+        let route = &schema.collections[1];
+        assert_eq!(route.collection_id, MOVEMENT_ROUTE);
+        assert_eq!(route.key_fields().iter().map(|field| field.field_id).collect::<Vec<_>>(), vec![route_field::DIV_ID, route_field::DIV_TYPE, route_field::INDEX]);
+        assert_eq!(route.fields.last().unwrap().kind, Kind::ContentId);
     }
 
     #[test]
@@ -224,8 +254,8 @@ mod tests {
         let s = schema();
         assert_eq!(
             s.collections[0].fields.len(),
-            26,
-            "2 key + 24 sampleable non-key fields"
+            27,
+            "2 key + 25 sampleable non-key fields"
         );
     }
 

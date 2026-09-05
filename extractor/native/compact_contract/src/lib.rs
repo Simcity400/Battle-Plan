@@ -1,4 +1,6 @@
 pub mod battleplan_links;
+#[path = "../../../../portable_replay/native/compact_stream/src/division_routes.rs"]
+pub mod division_routes;
 pub mod country_name_inputs;
 pub mod bound_trips;
 pub mod build_profile;
