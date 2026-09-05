@@ -1260,33 +1260,50 @@ fn project_division_compositions(
                     "A27 division composition {design_id} has inconsistent identity"
                 ));
             }
-            let project = |rows: Vec<RawSubunit>, source_vector| {
-                rows.into_iter()
-                    .map(|row| DivisionSubunit {
-                        x: row.x,
-                        y: row.y,
-                        unit_type: row.unit_type,
-                        source_vector,
-                    })
-                    .collect()
-            };
             let definition = raw.definition;
-            Ok((
-                design_id,
-                DivisionComposition {
-                    regiment_grid_columns: definition.regiment_grid_columns,
-                    regiment_grid_rows: definition.regiment_grid_rows,
-                    regiments: project(definition.regiments, DivisionSubunitVector::Regiment),
-                    support: project(definition.support, DivisionSubunitVector::Support),
-                    regimental_support: project(
-                        definition.regimental_support,
-                        DivisionSubunitVector::RegimentalSupport,
-                    ),
-                },
-            ))
+            let stride = definition.regiment_grid_rows;
+            if stride == 0 || stride > i16::MAX as u32
+                || definition.regiment_grid_columns == 0
+                || definition.regiment_grid_columns > i16::MAX as u32
+                || definition.regiment_pointer_count > i16::MAX as u32
+                || definition.support_pointer_count > i16::MAX as u32
+                || definition.regimental_support_pointer_count > i16::MAX as u32
+            {
+                return Err(format!("A27 division composition {design_id} exceeds the signed-short grid"));
+            }
+            let project = |rows: Vec<RawSubunit>, source_vector| -> Result<Vec<DivisionSubunit>, String> {
+                rows.into_iter().map(|row| {
+                    let expected = match source_vector {
+                        DivisionSubunitVector::Regiment => (row.source_ordinal / stride, row.source_ordinal % stride),
+                        DivisionSubunitVector::Support => (0, row.source_ordinal),
+                        DivisionSubunitVector::RegimentalSupport => (row.source_ordinal, 0),
+                    };
+                    if (row.x, row.y) != expected
+                        || (source_vector == DivisionSubunitVector::Regiment
+                            && row.x >= definition.regiment_grid_columns)
+                    {
+                        return Err(format!("A27 division composition {design_id} {source_vector:?} coordinate differs from source ordinal {}", row.source_ordinal));
+                    }
+                    Ok(DivisionSubunit {
+                        x: row.x, y: row.y, unit_type: row.unit_type, source_vector,
+                    })
+                }).collect()
+            };
+            let composition = DivisionComposition {
+                regiment_grid_columns: definition.regiment_grid_columns,
+                regiment_grid_rows: definition.regiment_grid_rows,
+                regiments: project(definition.regiments, DivisionSubunitVector::Regiment)?,
+                support: project(definition.support, DivisionSubunitVector::Support)?,
+                regimental_support: project(
+                    definition.regimental_support,
+                    DivisionSubunitVector::RegimentalSupport,
+                )?,
+            };
+            Ok((design_id, composition))
         })
         .collect()
 }
+
 
 fn same_native_row_ignoring_catalog_ordinal(left: &Value, right: &Value) -> bool {
     let mut left = left.clone();
@@ -2373,6 +2390,106 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn composition_preserves_native_placeholders_and_certifies_source_coordinates() {
+        let mut raw: Value = serde_json::from_slice(&fixture()).unwrap();
+        let definition = &mut raw["division_templates"][0]["definition"];
+        definition["regiment_pointer_count"] = 8.into();
+        definition["regiment_placeholder_ordinals"] = serde_json::json!([0, 1, 2, 3, 4, 5, 6]);
+        definition["regiments"] = serde_json::json!([{
+            "source_ordinal": 7, "x": 1, "y": 2,
+            "subunit_definition_handle": 101, "type": "infantry",
+            "type_utf8_hex": "696e66616e747279"
+        }]);
+        let decode = |raw: &Value| {
+            PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(raw).unwrap()).unwrap()
+        };
+        let catalog = decode(&raw);
+        let projected = catalog.division_composition_at_hour(900).unwrap();
+        assert_eq!(projected["8:52"].regiments.len(), 1);
+        assert_eq!(
+            (
+                projected["8:52"].regiments[0].x,
+                projected["8:52"].regiments[0].y
+            ),
+            (1, 2)
+        );
+        assert!(projected["8:52"].support.is_empty());
+        assert!(projected["8:52"].regimental_support.is_empty());
+        let mut reordered = raw.clone();
+        let definition = &mut reordered["division_templates"][0]["definition"];
+        let mut zero_cell = definition["regiments"][0].clone();
+        zero_cell["source_ordinal"] = 0.into();
+        zero_cell["x"] = 0.into();
+        zero_cell["y"] = 0.into();
+        definition["regiments"]
+            .as_array_mut()
+            .unwrap()
+            .push(zero_cell);
+        definition["regiment_placeholder_ordinals"] = serde_json::json!([1, 2, 3, 4, 5, 6]);
+        let reordered = decode(&reordered)
+            .division_composition_at_hour(900)
+            .unwrap();
+        assert_eq!(
+            reordered["8:52"]
+                .regiments
+                .iter()
+                .map(|row| (row.x, row.y))
+                .collect::<Vec<_>>(),
+            [(1, 2), (0, 0)]
+        );
+        for (field, value) in [("x", 0), ("y", 1)] {
+            let mut invalid = raw.clone();
+            invalid["division_templates"][0]["definition"]["regiments"][0][field] = value.into();
+            assert!(decode(&invalid)
+                .division_composition_at_hour(900)
+                .unwrap_err()
+                .contains("coordinate differs"));
+        }
+        let mut invalid = raw.clone();
+        invalid["division_templates"][0]["definition"]["regiment_grid_rows"] = 32768.into();
+        assert!(decode(&invalid)
+            .division_composition_at_hour(900)
+            .unwrap_err()
+            .contains("signed-short"));
+        for vector in ["support", "regimental_support"] {
+            let mut invalid = raw.clone();
+            let definition = &mut invalid["division_templates"][0]["definition"];
+            definition[format!("{vector}_pointer_count")] = 1.into();
+            let mut row = definition["regiments"][0].clone();
+            row["source_ordinal"] = 0.into();
+            definition[vector] = serde_json::json!([row]);
+            assert!(decode(&invalid)
+                .division_composition_at_hour(900)
+                .unwrap_err()
+                .contains("coordinate differs"));
+        }
+        let mut empty = raw.clone();
+        empty["division_templates"][0]["definition"]["regiment_placeholder_ordinals"] =
+            serde_json::json!([0, 1, 2, 3, 4, 5, 6, 7]);
+        empty["division_templates"][0]["definition"]["regiments"] = serde_json::json!([]);
+        assert!(
+            decode(&empty).division_composition_at_hour(900).unwrap()["8:52"]
+                .regiments
+                .is_empty()
+        );
+        for unavailable in [false, true] {
+            let mut invalid = raw.clone();
+            let definition = invalid["division_templates"][0]["definition"]
+                .as_object_mut()
+                .unwrap();
+            if unavailable {
+                definition.insert("regiments".into(), Value::Null);
+            } else {
+                definition.remove("regiments");
+            }
+            assert!(PortableDesignCatalog::decode_a27_live_json(
+                &serde_json::to_vec(&invalid).unwrap()
+            )
+            .is_err());
+        }
+    }
+
     fn designer_fixture() -> Vec<u8> {
         let mut value: Value = serde_json::from_slice(&fixture()).unwrap();
         value["schema"] = A27_LIVE_CATALOG_DESIGNER_SCHEMA.into();
@@ -2770,9 +2887,10 @@ mod tests {
     fn division_composition_projects_baseline_upsert_tombstone_and_all_vectors() {
         let mut first: Value = serde_json::from_slice(&fixture()).unwrap();
         let definition = &mut first["division_templates"][0]["definition"];
-        definition["regiment_pointer_count"] = 1.into();
+        definition["regiment_pointer_count"] = 8.into();
+        definition["regiment_placeholder_ordinals"] = serde_json::json!([0,1,2,3,4,5,6]);
         definition["regiments"] = serde_json::json!([{
-            "source_ordinal": 0,
+            "source_ordinal": 7,
             "x": 1,
             "y": 2,
             "subunit_definition_handle": 101,
@@ -2782,8 +2900,8 @@ mod tests {
         definition["support_pointer_count"] = 1.into();
         definition["support"] = serde_json::json!([{
             "source_ordinal": 0,
-            "x": 3,
-            "y": 4,
+            "x": 0,
+            "y": 0,
             "subunit_definition_handle": 102,
             "type": "support_artillery",
             "type_utf8_hex": "737570706f72745f617274696c6c657279"
@@ -2791,8 +2909,8 @@ mod tests {
         definition["regimental_support_pointer_count"] = 1.into();
         definition["regimental_support"] = serde_json::json!([{
             "source_ordinal": 0,
-            "x": 5,
-            "y": 6,
+            "x": 0,
+            "y": 0,
             "subunit_definition_handle": 103,
             "type": "signal_company",
             "type_utf8_hex": "7369676e616c5f636f6d70616e79"
@@ -2803,6 +2921,9 @@ mod tests {
         second["authority"]["capture_hour_index"] = 901_u64.into();
         second["division_templates"][0]["definition"]["regiment_grid_columns"] = 6.into();
         second["division_templates"][0]["definition"]["regiments"][0]["x"] = 4.into();
+        second["division_templates"][0]["definition"]["regiments"][0]["source_ordinal"] = 22.into();
+        second["division_templates"][0]["definition"]["regiment_pointer_count"] = 23.into();
+        second["division_templates"][0]["definition"]["regiment_placeholder_ordinals"] = serde_json::json!((0..22).collect::<Vec<_>>());
         second["division_templates"][0]["definition"]["regiments"][0]["type"] = "motorized".into();
         second["division_templates"][0]["definition"]["regiments"][0]["type_utf8_hex"] =
             "6d6f746f72697a6564".into();
@@ -2902,8 +3023,8 @@ mod tests {
         assert_eq!(
             baseline.support[0],
             DivisionSubunit {
-                x: 3,
-                y: 4,
+                x: 0,
+                y: 0,
                 unit_type: "support_artillery".into(),
                 source_vector: DivisionSubunitVector::Support,
             }
@@ -2911,8 +3032,8 @@ mod tests {
         assert_eq!(
             baseline.regimental_support[0],
             DivisionSubunit {
-                x: 5,
-                y: 6,
+                x: 0,
+                y: 0,
                 unit_type: "signal_company".into(),
                 source_vector: DivisionSubunitVector::RegimentalSupport,
             }
