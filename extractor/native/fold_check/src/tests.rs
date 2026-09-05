@@ -98,7 +98,7 @@ fn country_identity_payload(rows: &[(u32, &str)]) -> Vec<u8> {
         p.extend_from_slice(&tag_db_id.to_le_bytes());
         p.extend_from_slice(&(tag.len() as u16).to_le_bytes());
         p.extend_from_slice(tag.as_bytes());
-        p.push(1); p.extend_from_slice(&[0, 1]);
+        p.push(1); p.extend_from_slice(&[0, 1, 0, 1]);
     }
     p
 }

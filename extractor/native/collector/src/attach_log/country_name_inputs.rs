@@ -139,6 +139,44 @@ pub(super) fn identity(state: &CollectorState, country: usize, id: u32, expected
     }
 }
 
+fn culture_once<M: DecodeMemory + ?Sized>(mem: &M, country: usize, vtable: usize, id: u32) -> Result<MsvcStringSnapshot, Refusal> {
+    if mem.u64(country).ok_or(Refusal::Unreadable)? != vtable as u64
+        || mem.u32(country + OBJ_TAG_DB_ID).ok_or(Refusal::Unreadable)? != id
+    {
+        return Err(Refusal::InvalidIdentity);
+    }
+    token(mem, country + 0x1028)
+}
+
+fn stable_culture<M: DecodeMemory + ?Sized>(mem: &M, country: usize, vtable: usize, id: u32,
+    mut hour: impl FnMut() -> Option<i32>, between: impl FnOnce()) -> NameToken {
+    let read = || -> Result<String, Refusal> {
+        let before = hour().ok_or(Refusal::Unreadable)?;
+        let first = culture_once(mem, country, vtable, id)?;
+        between();
+        let second = culture_once(mem, country, vtable, id)?;
+        if first != second { return Err(Refusal::Changed); }
+        if hour() != Some(before) { return Err(Refusal::ClockChanged); }
+        utf8(&first)
+    };
+    match read() {
+        Ok(value) => NameToken::Present(value),
+        Err(reason) => NameToken::Unavailable(reason),
+    }
+}
+
+pub(super) fn graphical_culture(state: &CollectorState, country: usize, id: u32) -> NameToken {
+    let vtable = state.country_identity.country_vtable;
+    let Some(module) = vtable.checked_sub(COUNTRY_VTABLE_RVA) else {
+        return NameToken::Unavailable(Refusal::InvalidIdentity);
+    };
+    if pointer(&LIVE_MEMORY, module + compact_contract::build_profile::DOMAIN57_CGAMESTATE_SINGLETON_RVA)
+        != Ok(state.date_ptr as usize) {
+        return NameToken::Unavailable(Refusal::InvalidIdentity);
+    }
+    stable_culture(&LIVE_MEMORY, country, vtable, id, || read_research_game_hour_raw(module), || {})
+}
+
 pub(super) fn token_json(token: &NameToken) -> serde_json::Value {
     match token {
         NameToken::Unavailable(reason) => serde_json::json!({"status":"unavailable", "reason":reason.name()}),
@@ -166,6 +204,34 @@ mod tests {
         fn fill(&self, at: usize, buf: &mut [u8]) -> bool {
             let Some(bytes) = self.bytes(at,buf.len()) else { return false; }; buf.copy_from_slice(&bytes); true
         }
+    }
+
+    #[test]
+    fn culture_is_independent_of_cosmetic_and_names_and_keeps_exact_empty_and_loss() {
+        let mem = Memory::default();
+        let country = HEAP_LO + 0x10000;
+        let vtable = 0x140000000 + COUNTRY_VTABLE_RVA;
+        mem.u64(country, vtable as u64);
+        mem.u32(country + OBJ_TAG_DB_ID, 47);
+        let at = country + 0x1028;
+        mem.put(at, b"gfx\0"); mem.u64(at + 0x10, 3); mem.u64(at + 0x18, 15);
+        let sample = || stable_culture(&mem, country, vtable, 47, || Some(17), || {});
+        assert_eq!(sample(), NameToken::Present("gfx".into()));
+        mem.put(country + OBJ_COSMETIC_TAG, b"different");
+        assert_eq!(sample(), NameToken::Present("gfx".into()));
+        mem.put(at, b"\0"); mem.u64(at + 0x10, 0);
+        assert_eq!(sample(), NameToken::Present(String::new()));
+        mem.put(at, b"gfx\0"); mem.u64(at + 0x10, 3);
+        assert_eq!(stable_culture(&mem, country, vtable, 47, || Some(17), || mem.put(at, b"new")), NameToken::Unavailable(Refusal::Changed));
+        let mut tick = 17;
+        assert_eq!(stable_culture(&mem, country, vtable, 47, || { tick += 1; Some(tick) }, || {}), NameToken::Unavailable(Refusal::ClockChanged));
+        mem.u32(country + OBJ_TAG_DB_ID, 48);
+        assert_eq!(sample(), NameToken::Unavailable(Refusal::InvalidIdentity));
+        mem.u32(country + OBJ_TAG_DB_ID, 47);
+        mem.0.borrow_mut().remove(&at);
+        assert_eq!(sample(), NameToken::Unavailable(Refusal::Unreadable));
+        mem.put(at, &[255]);
+        assert_eq!(sample(), NameToken::Unavailable(Refusal::InvalidUtf8));
     }
 
     #[test]

@@ -1,10 +1,15 @@
 pub const DOMAIN_VERSION_HEADER_LEN: usize = 8;
-pub const DOMAIN_VERSION: u16 = 1;
+pub const POLITICS_VERSION: u16 = 1;
+pub const IDENTITY_VERSION: u16 = 2;
+
+fn domain_version(domain: u16) -> u16 {
+    match domain { 14 => POLITICS_VERSION, 18 => IDENTITY_VERSION, _ => unreachable!("validated naming domain") }
+}
 
 pub fn encode_domain_version(domain: u16, out: &mut Vec<u8>) {
     let magic = match domain { 14 => b"CPNI", 18 => b"CIDN", _ => panic!("unsupported naming domain") };
     out.extend_from_slice(magic);
-    out.extend_from_slice(&DOMAIN_VERSION.to_le_bytes());
+    out.extend_from_slice(&domain_version(domain).to_le_bytes());
     out.extend_from_slice(&(DOMAIN_VERSION_HEADER_LEN as u16).to_le_bytes());
 }
 
@@ -16,7 +21,7 @@ pub fn decode_domain_version(domain: u16, bytes: &[u8], cursor: &mut usize) -> R
     };
     let end = cursor.checked_add(DOMAIN_VERSION_HEADER_LEN).ok_or(version_error)?;
     let header = bytes.get(*cursor..end).ok_or(version_error)?;
-    if &header[..4] != magic || header[4..6] != DOMAIN_VERSION.to_le_bytes() { return Err(version_error); }
+    if &header[..4] != magic || header[4..6] != domain_version(domain).to_le_bytes() { return Err(version_error); }
     if header[6..8] != (DOMAIN_VERSION_HEADER_LEN as u16).to_le_bytes() { return Err("country naming invalid version header length"); }
     *cursor = end;
     Ok(())
@@ -102,6 +107,13 @@ pub fn decode_token(bytes: &[u8], cursor: &mut usize) -> Result<NameToken, &'sta
     })
 }
 
+pub fn decode_graphical_culture(bytes: &[u8], cursor: &mut usize) -> Result<NameToken, &'static str> {
+    match decode_token(bytes, cursor)? {
+        NameToken::Absent => Err("country_identity graphical culture cannot claim absent storage"),
+        value => Ok(value),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NameTagSource { Base, Override }
 
@@ -169,9 +181,21 @@ mod tests {
             assert_eq!(decode_domain_version(domain, &[1,0,0,0,3,0,b'G',b'E'], &mut 0), Err(error));
             let mut bytes=Vec::new(); encode_domain_version(domain,&mut bytes);
             let mut cursor=0; assert_eq!(decode_domain_version(domain,&bytes,&mut cursor),Ok(())); assert_eq!(cursor,8);
-            bytes[4]=2; assert_eq!(decode_domain_version(domain,&bytes,&mut 0),Err(error));
-            bytes[4]=1; bytes[6]=9; assert!(decode_domain_version(domain,&bytes,&mut 0).is_err());
+            bytes[4]=0; assert_eq!(decode_domain_version(domain,&bytes,&mut 0),Err(error));
+            bytes[4]=domain_version(domain) as u8; bytes[6]=9; assert!(decode_domain_version(domain,&bytes,&mut 0).is_err());
         }
+    }
+
+    #[test]
+    fn identity_culture_promotes_only_its_domain_grammar() {
+        let mut bytes = Vec::new();
+        encode_domain_version(18, &mut bytes);
+        assert_eq!(&bytes, b"CIDN\x02\0\x08\0");
+        bytes[4] = 1;
+        assert!(decode_domain_version(18, &bytes, &mut 0).is_err());
+        bytes.clear();
+        encode_domain_version(14, &mut bytes);
+        assert_eq!(&bytes, b"CPNI\x01\0\x08\0");
     }
 
     #[test]

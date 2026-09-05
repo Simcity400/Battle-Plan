@@ -12,12 +12,12 @@ struct RouteRead {
     provinces: Vec<u32>,
 }
 
-fn route_once<M: DecodeMemory + ?Sized>(
+fn division_identity<M: DecodeMemory + ?Sized>(
     mem: &M,
     module: usize,
     body: usize,
     id: u32,
-) -> Option<RouteRead> {
+) -> Option<[u64; 4]> {
     let identity = [
         mem.u64(body)?,
         mem.u32(body.checked_add(DIVISION_OFF_ID_TYPE)?)? as u64,
@@ -30,6 +30,80 @@ fn route_once<M: DecodeMemory + ?Sized>(
     {
         return None;
     }
+    Some(identity)
+}
+
+#[derive(PartialEq, Eq)]
+struct TemplateRead {
+    identity: [u64; 4],
+    override_pointer: usize,
+    selected_pointer: usize,
+    template: Option<u32>,
+}
+
+fn template_once<M: DecodeMemory + ?Sized>(
+    mem: &M,
+    module: usize,
+    body: usize,
+    id: u32,
+) -> Option<TemplateRead> {
+    let identity = division_identity(mem, module, body, id)?;
+    // The collector body is CDivision + 0x10; the current template is CDivision + 0x3c8.
+    let override_pointer = mem.u64(body.checked_add(0x3b8)?)? as usize;
+    let selected_pointer = if override_pointer == 0 {
+        mem.u64(body.checked_add(DIVISION_OFF_TEMPLATE)?)? as usize
+    } else {
+        override_pointer
+    };
+    let template = if selected_pointer == 0 {
+        None
+    } else {
+        if !is_map_control_heap_pointer(selected_pointer)
+            || mem.u64(selected_pointer)?
+                != module.checked_add(DIVISION_TEMPLATE_VTABLE_RVA)? as u64
+            || mem.u32(selected_pointer.checked_add(DIVISION_TEMPLATE_OFF_TYPE)?)?
+                != DIVISION_TEMPLATE_TYPE
+        {
+            return None;
+        }
+        let template_id = mem.u32(selected_pointer.checked_add(DIVISION_TEMPLATE_OFF_ID)?)?;
+        if template_id == 0 || template_id > MAX_DIVISION_TEMPLATE_ID {
+            return None;
+        }
+        Some(template_id)
+    };
+    Some(TemplateRead {
+        identity,
+        override_pointer,
+        selected_pointer,
+        template,
+    })
+}
+
+fn stable_template<M: DecodeMemory + ?Sized>(
+    mem: &M,
+    module: usize,
+    body: usize,
+    id: u32,
+    between: impl FnOnce(),
+) -> Option<Option<u32>> {
+    let first = template_once(mem, module, body, id)?;
+    between();
+    let second = template_once(mem, module, body, id)?;
+    (first == second).then_some(first.template)
+}
+
+pub(super) fn current_template(module: usize, body: usize, id: u32) -> Option<Option<u32>> {
+    stable_template(&LIVE_MEMORY, module, body, id, || {})
+}
+
+fn route_once<M: DecodeMemory + ?Sized>(
+    mem: &M,
+    module: usize,
+    body: usize,
+    id: u32,
+) -> Option<RouteRead> {
+    let identity = division_identity(mem, module, body, id)?;
     let alternate_count = mem.u32(body.checked_add(ALTERNATE_ROUTE + 12)?)?;
     let selected = if alternate_count != 0 {
         ALTERNATE_ROUTE
@@ -143,6 +217,51 @@ mod tests {
         mem.vector(body, ALTERNATE_ROUTE, 0, &[]);
         (mem, module, body)
     }
+    #[test]
+    fn current_template_uses_only_witnessed_null_fallback_and_preserves_absence() {
+        let (mem, module, body) = fixture();
+        let standard = body + 0x30000;
+        let current = body + 0x40000;
+        for (at, id) in [(standard, 61), (current, 72)] {
+            mem.put64(at, (module + DIVISION_TEMPLATE_VTABLE_RVA) as u64);
+            mem.put32(at + DIVISION_TEMPLATE_OFF_TYPE, DIVISION_TEMPLATE_TYPE);
+            mem.put32(at + DIVISION_TEMPLATE_OFF_ID, id);
+        }
+        mem.put64(body + DIVISION_OFF_TEMPLATE, standard as u64);
+        assert_eq!(stable_template(&mem, module, body, 7, || {}), None);
+        mem.put64(body + 0x3b8, 0);
+        assert_eq!(
+            stable_template(&mem, module, body, 7, || {}),
+            Some(Some(61))
+        );
+        mem.put64(body + 0x3b8, current as u64);
+        assert_eq!(
+            stable_template(&mem, module, body, 7, || {}),
+            Some(Some(72))
+        );
+        mem.0.borrow_mut().remove(&(body + DIVISION_OFF_TEMPLATE));
+        assert_eq!(
+            stable_template(&mem, module, body, 7, || {}),
+            Some(Some(72))
+        );
+        mem.put32(current + DIVISION_TEMPLATE_OFF_TYPE, 70);
+        assert_eq!(stable_template(&mem, module, body, 7, || {}), None);
+        mem.put32(current + DIVISION_TEMPLATE_OFF_TYPE, DIVISION_TEMPLATE_TYPE);
+        assert_eq!(
+            stable_template(&mem, module, body, 7, || mem
+                .put32(current + DIVISION_TEMPLATE_OFF_ID, 73)),
+            None
+        );
+        mem.put64(body + 0x3b8, 0);
+        mem.put64(body + DIVISION_OFF_TEMPLATE, 0);
+        assert_eq!(stable_template(&mem, module, body, 7, || {}), Some(None));
+        assert_eq!(
+            stable_template(&mem, module, body, 7, || mem
+                .put32(body + DIVISION_OFF_ID_ID, 8)),
+            None
+        );
+    }
+
     #[test]
     fn selected_route_preserves_engine_order_and_alternate_precedence() {
         let (mem, module, body) = fixture();

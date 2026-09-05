@@ -1,5 +1,5 @@
-pub const FORMAT_MARKER: u32 = u32::from_le_bytes(*b"D2R1");
-pub const ROW_LEN: usize = 128;
+pub const FORMAT_MARKER: u32 = u32::from_le_bytes(*b"D2R2");
+pub const ROW_LEN: usize = 136;
 pub const MAX_ROUTE_PROVINCES: usize = 65_536;
 
 pub fn append_routes<'a>(
@@ -24,6 +24,20 @@ pub fn append_routes<'a>(
             .checked_add(route.len() as u32)
             .expect("bounded division route pool");
     }
+}
+
+pub fn write_current_template(payload: &mut [u8], index: usize, value: Option<Option<u32>>) {
+    let base = 32 + index * ROW_LEN;
+    let (status, id) = match value {
+        None => (0u32, 0),
+        Some(None) => (1, 0),
+        Some(Some(id)) => {
+            assert!(id > 0 && id <= i32::MAX as u32);
+            (2, id)
+        }
+    };
+    payload[base + 128..base + 132].copy_from_slice(&status.to_le_bytes());
+    payload[base + 132..base + 136].copy_from_slice(&id.to_le_bytes());
 }
 
 pub struct DivisionRoutes<'a> {
@@ -51,6 +65,16 @@ impl<'a> DivisionRoutes<'a> {
         let mut consumed = 0usize;
         for index in 0..rows {
             let base = 32 + index * ROW_LEN;
+            let template_status = word(payload, base + 128);
+            let template_id = word(payload, base + 132);
+            if !matches!((template_status, template_id), (0 | 1, 0))
+                && !(template_status == 2 && template_id > 0 && template_id <= i32::MAX as u32)
+            {
+                return Err("division current template has invalid status or identity".into());
+            }
+            if word(payload, base + 8) & (1 << 12) != 0 && template_status != 0 {
+                return Err("deleted division carries current template".into());
+            }
             let start = word(payload, base + 120) as usize;
             let count = word(payload, base + 124) as usize;
             if count == 0 {
@@ -87,6 +111,17 @@ impl<'a> DivisionRoutes<'a> {
             rows,
             pool,
         })
+    }
+
+    pub fn current_template(&self, index: usize) -> Option<Option<u32>> {
+        assert!(index < self.rows);
+        let base = 32 + index * ROW_LEN;
+        match word(self.payload, base + 128) {
+            0 => None,
+            1 => Some(None),
+            2 => Some(Some(word(self.payload, base + 132))),
+            _ => unreachable!("validated template status"),
+        }
     }
 
     pub fn route(&self, index: usize) -> Option<Vec<u32>> {
@@ -127,13 +162,35 @@ mod tests {
         legacy[8..12].copy_from_slice(&1u32.to_le_bytes());
         legacy[32..36].copy_from_slice(&7u32.to_le_bytes());
         legacy[36..40].copy_from_slice(&4713u32.to_le_bytes());
-        legacy.extend_from_slice(&[0; 8]);
+        legacy.extend_from_slice(&[0; 16]);
         assert_eq!(
             DivisionRoutes::parse(&legacy).err().unwrap(),
             "unsupported division route format marker"
         );
         legacy[28..32].copy_from_slice(&FORMAT_MARKER.to_le_bytes());
         assert_eq!(DivisionRoutes::parse(&legacy).unwrap().route(0), None);
+    }
+
+    #[test]
+    fn current_template_preserves_unknown_absence_and_identity_and_refuses_previous_grammar() {
+        let mut bytes = payload(&[None, None, None]);
+        for (index, value) in [None, Some(None), Some(Some(73))].into_iter().enumerate() {
+            write_current_template(&mut bytes, index, value);
+        }
+        let parsed = DivisionRoutes::parse(&bytes).unwrap();
+        assert_eq!(parsed.current_template(0), None);
+        assert_eq!(parsed.current_template(1), Some(None));
+        assert_eq!(parsed.current_template(2), Some(Some(73)));
+        for (offset, value) in [(32 + 128, 3), (32 + 132, 1), (32 + 2 * ROW_LEN + 132, 0)] {
+            let mut invalid = bytes.clone();
+            invalid[offset..offset + 4].copy_from_slice(&u32::to_le_bytes(value));
+            assert!(DivisionRoutes::parse(&invalid).is_err());
+        }
+        bytes[28..32].copy_from_slice(b"D2R1");
+        assert_eq!(
+            DivisionRoutes::parse(&bytes).err().unwrap(),
+            "unsupported division route format marker"
+        );
     }
 
     #[test]

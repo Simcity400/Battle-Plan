@@ -124,6 +124,7 @@ fn d18_country_payload_for(status: u32, source_id: u32, tag: &str) -> Vec<u8> {
     payload.extend_from_slice(tag.as_bytes());
     payload.push(1);
     compact_contract::country_name_inputs::encode_effective(&Err(compact_contract::country_name_inputs::NameInputRefusal::Unreadable), &mut payload);
+    payload.extend_from_slice(&[0, 1]);
     payload.extend_from_slice(compact_contract::country_identity_membership::CIM1_MAGIC);
     payload.extend_from_slice(
         &compact_contract::country_identity_membership::CIM1_VERSION.to_le_bytes(),
@@ -307,6 +308,7 @@ fn d18_country_payload_families(
     payload.extend_from_slice(tag.as_bytes());
     payload.push(1);
     compact_contract::country_name_inputs::encode_effective(&Err(compact_contract::country_name_inputs::NameInputRefusal::Unreadable), &mut payload);
+    payload.extend_from_slice(&[0, 1]);
     payload.extend_from_slice(cim::CIM1_MAGIC);
     payload.extend_from_slice(&cim::CIM1_VERSION.to_le_bytes());
     payload.extend_from_slice(&(cim::CIM1_HEADER_LEN as u16).to_le_bytes());

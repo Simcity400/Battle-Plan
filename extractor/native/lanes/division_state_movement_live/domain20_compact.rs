@@ -175,6 +175,7 @@ pub enum DivisionOrderLink {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DivisionStateRow {
     pub movement_route: Option<Vec<u32>>,
+    pub current_template: Option<Option<u32>>,
     pub div_id: u32,
     pub deleted: bool,
     pub moving: bool,
@@ -385,7 +386,10 @@ pub fn encode_payload(header: &DivisionStateHeader, rows: &[DivisionStateRow]) -
         payload.extend_from_slice(&row.raw_counter_supply_status.unwrap_or(0).to_le_bytes());
         payload.extend_from_slice(&row.raw_dig_in.unwrap_or(0).to_le_bytes());
         payload.extend_from_slice(&row.raw_dig_in_cap.unwrap_or(0).to_le_bytes());
-        payload.extend_from_slice(&[0; 8]);
+        payload.extend_from_slice(&[0; 16]);
+    }
+    for (index, row) in rows.iter().enumerate() {
+        division_routes::write_current_template(&mut payload, index, if row.deleted { None } else { row.current_template });
     }
     division_routes::append_routes(&mut payload, rows.iter().map(|row| row.movement_route.as_deref()));
     payload
@@ -1911,14 +1915,14 @@ mod tests {
 
     #[test]
     fn row_len_literal_is_stable() {
-        assert_eq!(ROW_LEN, 128);
+        assert_eq!(ROW_LEN, 136);
     }
 
     #[test]
     fn replaced_fixed_rows_are_refused_and_route_rows_roundtrip() {
         let rows = vec![DivisionStateRow {
             div_id: 7, location: 12, raw_organisation: 5_000_000,
-            raw_strength: 100_000_000, movement_route: Some(vec![9, 8, 9]),
+            raw_strength: 100_000_000, movement_route: Some(vec![9, 8, 9]), current_template: Some(Some(73)),
             ..DivisionStateRow::default()
         }];
         let header = DivisionStateHeader { elapsed_wall_ms: 0, status_flags: 0, changed_rows: 1, root_rows: 1 };
@@ -1934,7 +1938,7 @@ mod tests {
     fn encodes_and_decodes_full_state_rows() {
         let rows = vec![
             DivisionStateRow {
-                movement_route: None,
+                movement_route: None, current_template: None,
                 div_id: 101,
                 moving: true,
                 location: 12_345,
@@ -1968,7 +1972,7 @@ mod tests {
                 ..DivisionStateRow::default()
             },
             DivisionStateRow {
-                movement_route: None,
+                movement_route: None, current_template: None,
                 div_id: 102,
                 location: 99,
                 raw_organisation: 10_000_000,
@@ -2055,7 +2059,7 @@ mod tests {
     #[test]
     fn rejects_corrupt_production_tail_values() {
         let row = DivisionStateRow {
-            movement_route: None,
+            movement_route: None, current_template: None,
             div_id: 103,
             location: 99,
             raw_organisation: 1,
@@ -2100,7 +2104,7 @@ mod tests {
     #[test]
     fn rejects_nonzero_production_tail_without_presence_flags() {
         let row = DivisionStateRow {
-            movement_route: None,
+            movement_route: None, current_template: None,
             div_id: 104,
             location: 99,
             raw_organisation: 1,
@@ -2138,7 +2142,7 @@ mod tests {
     fn encodes_and_decodes_order_link_rows() {
         let rows = vec![
             DivisionStateRow {
-                movement_route: None,
+                movement_route: None, current_template: None,
                 div_id: 201,
                 location: 10,
                 raw_organisation: 1,
@@ -2147,7 +2151,7 @@ mod tests {
                 ..DivisionStateRow::default()
             },
             DivisionStateRow {
-                movement_route: None,
+                movement_route: None, current_template: None,
                 div_id: 202,
                 location: 11,
                 raw_organisation: 1,
@@ -2156,7 +2160,7 @@ mod tests {
                 ..DivisionStateRow::default()
             },
             DivisionStateRow {
-                movement_route: None,
+                movement_route: None, current_template: None,
                 div_id: 203,
                 location: 12,
                 raw_organisation: 1,
@@ -2165,7 +2169,7 @@ mod tests {
                 ..DivisionStateRow::default()
             },
             DivisionStateRow {
-                movement_route: None,
+                movement_route: None, current_template: None,
                 div_id: 204,
                 location: 13,
                 raw_organisation: 1,
@@ -2211,7 +2215,7 @@ mod tests {
     #[test]
     fn rejects_out_of_range_order_instance_id() {
         let rows = vec![DivisionStateRow {
-            movement_route: None,
+            movement_route: None, current_template: None,
             div_id: 210,
             location: 10,
             raw_organisation: 1,
@@ -2235,7 +2239,7 @@ mod tests {
     #[test]
     fn rejects_order_instance_id_without_army_flag() {
         let rows = vec![DivisionStateRow {
-            movement_route: None,
+            movement_route: None, current_template: None,
             div_id: 211,
             location: 10,
             raw_organisation: 1,
@@ -2261,7 +2265,7 @@ mod tests {
     #[test]
     fn accepts_zero_filled_deleted_rows() {
         let rows = vec![DivisionStateRow {
-            movement_route: None,
+            movement_route: None, current_template: None,
             div_id: 404,
             deleted: true,
             ..DivisionStateRow::default()
@@ -2290,7 +2294,7 @@ mod tests {
     #[test]
     fn rejects_movement_fields_when_not_moving() {
         let rows = vec![DivisionStateRow {
-            movement_route: None,
+            movement_route: None, current_template: None,
             div_id: 5,
             location: 55,
             move_target_province: Some(56),
@@ -2314,7 +2318,7 @@ mod tests {
     #[test]
     fn decodes_stream_with_domain20_data_record() {
         let rows = vec![DivisionStateRow {
-            movement_route: None,
+            movement_route: None, current_template: None,
             div_id: 7,
             moving: true,
             location: 70,
@@ -2499,7 +2503,7 @@ mod tests {
     fn derives_lifecycle_from_ordered_domain20_rows() {
         let baseline = vec![
             DivisionStateRow {
-                movement_route: None,
+                movement_route: None, current_template: None,
                 div_id: 7,
                 location: 70,
                 raw_organisation: 5_000_000,
@@ -2511,7 +2515,7 @@ mod tests {
                 ..DivisionStateRow::default()
             },
             DivisionStateRow {
-                movement_route: None,
+                movement_route: None, current_template: None,
                 div_id: 8,
                 location: 80,
                 raw_organisation: 5_000_000,
@@ -2525,7 +2529,7 @@ mod tests {
         ];
         let delta = vec![
             DivisionStateRow {
-                movement_route: None,
+                movement_route: None, current_template: None,
                 div_id: 7,
                 moving: true,
                 location: 71,
@@ -2541,7 +2545,7 @@ mod tests {
                 ..DivisionStateRow::default()
             },
             DivisionStateRow {
-                movement_route: None,
+                movement_route: None, current_template: None,
                 div_id: 9,
                 location: 90,
                 raw_organisation: 5_000_000,
@@ -2553,7 +2557,7 @@ mod tests {
                 ..DivisionStateRow::default()
             },
             DivisionStateRow {
-                movement_route: None,
+                movement_route: None, current_template: None,
                 div_id: 8,
                 deleted: true,
                 ..DivisionStateRow::default()

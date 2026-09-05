@@ -1913,6 +1913,8 @@ fn decode_complete_d18_country_rows(payload: &[u8]) -> Result<D18CountryCarrier,
             .map_err(|error| format!("row {index}: {error}"))?;
         compact_contract::country_name_inputs::decode_effective(payload, &mut cursor, source_id, &tag)
             .map_err(|error| format!("row {index}: {error}"))?;
+        compact_contract::country_name_inputs::decode_graphical_culture(payload, &mut cursor)
+            .map_err(|error| format!("row {index}: {error}"))?;
         if !complete {
             continue;
         }

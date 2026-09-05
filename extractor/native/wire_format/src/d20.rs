@@ -48,6 +48,8 @@ pub mod field {
     pub const ORDER_INSTANCE_ID: u32 = 25;
     pub const ORDER_LINK: u32 = 26;
     pub const MOVEMENT_ROUTE_COUNT: u32 = 27;
+    pub const CURRENT_TEMPLATE_STATUS: u32 = 28;
+    pub const CURRENT_TEMPLATE_ID: u32 = 29;
 }
 
 /// Declared precision for every continuous field except `move_progress`.
@@ -78,6 +80,8 @@ pub fn schema() -> Schema {
         Field::new(f::OWNER, Kind::ContentId).optional().nullable(),
         Field::new(f::LOCATION_PROVINCE, Kind::ContentId),
         Field::new(f::TEMPLATE_ID, Kind::Unsigned).optional().nullable(),
+        Field::new(f::CURRENT_TEMPLATE_STATUS, Kind::Unsigned),
+        Field::new(f::CURRENT_TEMPLATE_ID, Kind::Unsigned).optional().nullable(),
     ];
 
     // Bar-drawn continuous values: quantized.
@@ -254,7 +258,7 @@ mod tests {
         let s = schema();
         assert_eq!(
             s.collections[0].fields.len(),
-            27,
+            29,
             "2 key + 25 sampleable non-key fields"
         );
     }

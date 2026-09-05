@@ -2056,7 +2056,7 @@ mod tests {
             countries.extend_from_slice(&3u16.to_le_bytes());
             countries.extend_from_slice(b"TST");
             countries.push(1);
-            countries.extend_from_slice(&[0, 1]);
+            countries.extend_from_slice(&[0, 1, 0, 1]);
             countries.extend_from_slice(compact_contract::country_identity_membership::CIM1_MAGIC);
             countries.extend_from_slice(
                 &compact_contract::country_identity_membership::CIM1_VERSION.to_le_bytes(),
