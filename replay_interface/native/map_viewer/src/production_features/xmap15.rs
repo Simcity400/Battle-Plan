@@ -1545,7 +1545,7 @@ fn cross_check_d54_and_units(
             ArmyBattleplanGeometry::Paradrop {
                 source_province_id,
                 target_province_id,
-            } => vec![*source_province_id, *target_province_id],
+            } => vec![*target_province_id, *source_province_id],
             _ => return Err("XMAP15 applicable D54 plan geometry is unavailable".into()),
         };
         if d54.slot_index != row.key.slot_index
@@ -2249,6 +2249,78 @@ mod tests {
         }
         assert!(!xmap15_plan_technique_supported("MapSymbolDefault"));
         assert!(!xmap15_plan_technique_supported("modded_unknown_effect"));
+    }
+
+    #[test]
+    fn production_world_join_admits_only_native_paradrop_endpoint_order() {
+        struct Units { census: String, admission: String }
+        impl Xmap15UnitIdentityProvider for Units {
+            fn hour_index(&self) -> i64 { 0 }
+            fn census_sha256(&self) -> &str { &self.census }
+            fn admission_sha256(&self) -> &str { &self.admission }
+            fn formation_identity_match_count(&self, group: bool, id: u32, country: &str) -> usize {
+                usize::from(!group && id == 17 && country == "GER")
+            }
+            fn division_identity_match_count(&self, id: u32, country: &str) -> usize {
+                usize::from(id == 301 && country == "GER")
+            }
+        }
+        let world = crate::test_support::frame_with_rest(serde_json::json!({
+            "tag_db_id_index": {"country_composition_version": 2},
+            "order_of_battle": {"extra": {"army_battleplans_depth_live": {
+                "known": true, "baseline_seen": true, "omitted_non_exact_rows_this_hour": 0,
+                "path_geometry_omitted_rows_this_hour": 0, "identity_or_active_omitted_rows_this_hour": 0,
+                "provenance_notes": [],
+                "orders_group_manager": {"known": true, "complete": true,
+                    "source": portable_render_stream::XMAP13_ORDERS_GROUP_MANAGER_AUTHORITY,
+                    "registered_entry_count": 1, "army_group_count": 0, "army_group_ids": [],
+                    "armies": [{"army_id": 17, "execution_type": 2, "cohesion_type": 3, "leader_proximity": 4}]},
+                "orders": [{"owner_kind": "army", "owner_id": 17, "army_id": 17,
+                    "engine_order_instance_id": 2025, "generation": 4, "slot_index": 1,
+                    "order_type": 4, "target_states": [], "path_provinces": [101, 102],
+                    "target_declared_count": null, "target_status": "unsupported",
+                    "geometry_status": "exact", "execution_status": "exact",
+                    "assigned_division_ids": [301], "assigned_units_status": "exact",
+                    "order_linkage_status": "exact", "active": false, "active_status": "exact",
+                    "style_flags": 0, "style_status": "exact",
+                    "linked_orders": {"version": 2, "status": 1, "predecessors": [], "successors": []}}]
+            }}}
+        }));
+        let route = portable_render_stream::Xmap15PreparedRoute::from_paradrop_province_anchors(
+            [102, 101], [[2, 3], [1, 3]], 10, 0).unwrap();
+        let row = portable_render_stream::Xmap15PlanSemanticRow {
+            key: Xmap15PlanKey { owner_kind: portable_render_stream::Xmap15OwnerKind::Army,
+                owner_id: 17, engine_order_instance_id: 2025, generation: 4, slot_index: 1 },
+            owner_country: "GER".into(),
+            selector: portable_render_stream::Xmap15PlanDefinitionSelector {
+                order_type: 4, move_special_118: false, withdraw_119: false,
+                fallback_298: false, virtual_299: false, blitz_118: false, army_group_style_39_and_378: false },
+            resolved_definition_name: "paradrop".into(), ordered_assigned_division_ids: vec![301],
+            assigned: true, active: false, route, manager_insertion_ordinal: 0, definition_group_ordinal: 0,
+            object_width_multiplier_f32_bits: 0, comparator_tie_17c_f32_bits: 0,
+            fade_in_f32_bits: 0, fade_out_f32_bits: 0, culling_offset_f32_bits: 0,
+            inner_rgba_f32_bits: [1.0f32.to_bits(); 4], outer_rgba_f32_bits: [1.0f32.to_bits(); 4],
+            texture_variant: 0, see_through: false, visible: true, final_engine_draw_ordinal: 0,
+            exact_head_vertices_f32_bits: None, lifecycle_tombstone_sha256: "a".repeat(64),
+        };
+        let mut semantic = Xmap15SemanticFrame {
+            schema: portable_render_stream::XMAP15_SEMANTIC_INPUT_SCHEMA.into(),
+            executable_sha256: portable_render_stream::M03_A729_EXECUTABLE_SHA256.into(),
+            producer_registration_sha256: portable_render_stream::xmap15_semantic_producer_registration_sha256(),
+            hour_index: 0, observation_sequence: 0, baseline_complete: true,
+            omitted_plan_rows: 0, omitted_movement_rows: 0, plan_object_census: 1, movement_object_census: 0,
+            plans: vec![row], movements: vec![], enumerator_witness_sha256: "b".repeat(64),
+        };
+        let units = Units { census: "c".repeat(64), admission: "d".repeat(64) };
+        assert!(cross_check_d54_and_units(&world, &semantic, &units).is_ok());
+        semantic.plans[0].route.ordered_province_ids.reverse();
+        assert!(cross_check_d54_and_units(&world, &semantic, &units).unwrap_err().to_string().contains("disagrees with exact D54 state"));
+        semantic.plans[0].route.ordered_province_ids.reverse();
+        semantic.plans[0].key.generation += 1;
+        assert!(cross_check_d54_and_units(&world, &semantic, &units).is_err());
+        semantic.plans[0].key.generation -= 1;
+        semantic.plans[0].owner_country = "FRA".into();
+        assert!(cross_check_d54_and_units(&world, &semantic, &units).is_err());
     }
 
     #[test]
