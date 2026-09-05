@@ -33,7 +33,7 @@ impl ArrowSortKey {
 pub enum ArrowFamily { Orders, Supply }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-pub enum SupplySortInput { Definition, WidthScale, EngineRegistrationOrdinal }
+pub enum SupplySortInput { Definition, EngineRegistrationOrdinal }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SupplyArrowSortInputs {
@@ -42,6 +42,7 @@ pub struct SupplyArrowSortInputs {
     pub definition_index: Option<u32>,
     pub body_width_bits: Option<[u32; 2]>,
     pub width_scale_bits: Option<u32>,
+    pub effective_width_scale_bits: Option<u32>,
     pub object_width_bits: Option<u32>,
     pub key: Option<ArrowSortKey>,
 }
@@ -279,11 +280,9 @@ impl ArrowSubmissionOrder {
             };
             let definition = definitions.iter().find(|definition| definition.name == name);
             let mut missing = Vec::new();
-            match definition {
-                None => missing.push(SupplySortInput::Definition),
-                Some(definition) if definition.width_scale.is_none() => missing.push(SupplySortInput::WidthScale),
-                Some(_) => {},
-            }
+            if definition.is_none() { missing.push(SupplySortInput::Definition); }
+            // CMapArrowDefinition ctor 14124ff40 initializes getter field +0xc8 to +0.
+            let scale = definition.map(|d| match d.width_scale { Some(scale) => scale, None => 0.0 });
             // Mesh enumeration has no admitted join to native pool registration order.
             missing.push(SupplySortInput::EngineRegistrationOrdinal);
             let inputs = SupplyArrowSortInputs {
@@ -291,9 +290,10 @@ impl ArrowSubmissionOrder {
                 definition_index: definition.map(|d| d.definition_index),
                 body_width_bits: definition.map(|d| d.body_width.map(f32::to_bits)),
                 width_scale_bits: definition.and_then(|d| d.width_scale).map(f32::to_bits),
+                effective_width_scale_bits: scale.map(f32::to_bits),
                 object_width_bits: definition.map(|d| d.object_width_multiplier_bits),
-                key: definition.and_then(|d| d.width_scale.map(|scale| ArrowSortKey::from_operands(
-                    d.body_width, scale, f32::from_bits(d.object_width_multiplier_bits), 0.0))),
+                key: definition.zip(scale).map(|(d, scale)| ArrowSortKey::from_operands(
+                    d.body_width, scale, f32::from_bits(d.object_width_multiplier_bits), 0.0)),
             };
             Err(ArrowOrderRefusal::MissingSupplySortInputs { row, inputs, missing })
         }).collect()
@@ -565,6 +565,20 @@ mod tests {
     }
 
     #[test]
+    fn omitted_supply_scale_is_the_pinned_definition_constructor_value() {
+        let definition = portable_engine_evidence::map_scene_residuals::DECOMPILES.iter()
+            .find(|(address, _)| *address == "14124ff40").unwrap().1;
+        assert!(definition.contains("*(undefined4 *)(param_1 + 0x19) = 0;"));
+        let parser = portable_engine_evidence::map_scene_residuals::DECOMPILES.iter()
+            .find(|(address, _)| *address == "141255760").unwrap().1;
+        assert!(parser.contains("case 0x2efb:"));
+        assert!(parser.contains("param_1 = param_1 + 200;"));
+        let getter = portable_engine_evidence::arrow_manager_buckets::DECOMPILES.iter()
+            .find(|(address, _)| *address == "141253890").unwrap().1;
+        assert!(getter.contains("*(float *)(lVar1 + 200)"));
+    }
+
+    #[test]
     fn supply_refusals_preserve_available_operands_and_account_for_each_draw() {
         use portable_render_stream::{RailSupplyArrowDefinition, RailSupplyMapArrowMeshDraw};
         let mut definition = crate::PreparedXmap16SupplyArrowDefinition {
@@ -612,6 +626,7 @@ mod tests {
                         assert_eq!(inputs.definition_index, None);
                         assert_eq!(inputs.body_width_bits, None);
                         assert_eq!(inputs.width_scale_bits, None);
+                        assert_eq!(inputs.effective_width_scale_bits, None);
                         assert_eq!(inputs.object_width_bits, None);
                         assert_eq!(inputs.key, None);
                     } else {
@@ -621,14 +636,11 @@ mod tests {
                         assert_eq!(inputs.body_width_bits, Some([2.0f32.to_bits(), 3.0f32.to_bits()]));
                         assert_eq!(inputs.width_scale_bits, d.width_scale.map(f32::to_bits));
                         assert_eq!(inputs.object_width_bits, Some(0.0f32.to_bits()));
-                        if d.width_scale.is_none() {
-                            assert_eq!(missing, &[SupplySortInput::WidthScale, SupplySortInput::EngineRegistrationOrdinal]);
-                            assert_eq!(inputs.key, None);
-                        } else {
-                            assert_eq!(missing, &[SupplySortInput::EngineRegistrationOrdinal]);
-                            assert_eq!(inputs.key, Some(ArrowSortKey {
-                                primary_bits: 3.0f32.to_bits(), secondary_bits: 0.0f32.to_bits() }));
-                        }
+                        assert_eq!(inputs.effective_width_scale_bits,
+                            Some(d.width_scale.map(f32::to_bits).unwrap_or(0)));
+                        assert_eq!(missing, &[SupplySortInput::EngineRegistrationOrdinal]);
+                        assert_eq!(inputs.key, Some(ArrowSortKey {
+                            primary_bits: 3.0f32.to_bits(), secondary_bits: 0.0f32.to_bits() }));
                     }
                 }
             }
