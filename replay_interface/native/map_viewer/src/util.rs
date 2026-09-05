@@ -19,6 +19,7 @@ pub(crate) fn require_file(path: &Path, label: &str) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+#[cfg(test)]
 pub(crate) fn read_latin1(path: &Path) -> Result<String> {
     let bytes = fs::read(path)?;
     Ok(latin1_bytes_to_string(&bytes))
@@ -237,13 +238,14 @@ pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 }
 
 pub(crate) fn write_shader_rgba_sources(
+    resolver: &GameFileResolver,
     out: &Path,
     entries: &[(&str, &str, &PathBuf)],
 ) -> Result<(BTreeMap<String, String>, BTreeMap<String, Dimensions>)> {
     let mut files = BTreeMap::new();
     let mut dimensions = BTreeMap::new();
     for (source, output, path) in entries {
-        let image = load_dds_rgba(path)?;
+        let image = decode_dds_rgba(&resolver.read_resolved_bytes(path)?, path)?;
         write_rgba_raw(&out.join(output), &image.pixels)?;
         files.insert((*source).to_string(), (*output).to_string());
         dimensions.insert(
@@ -258,13 +260,14 @@ pub(crate) fn write_shader_rgba_sources(
 }
 
 pub(crate) fn write_material_rgba_sources(
+    resolver: &GameFileResolver,
     out: &Path,
     entries: &[RgbaSourceSpec],
 ) -> Result<(BTreeMap<String, String>, BTreeMap<String, Dimensions>)> {
     let mut files = BTreeMap::new();
     let mut dimensions = BTreeMap::new();
     for spec in entries {
-        let levels = load_dds_rgba_mips(&spec.path)?;
+        let levels = decode_dds_rgba_mips(&resolver.read_resolved_bytes(&spec.path)?, &spec.path)?;
         let image = levels
             .first()
             .ok_or_else(|| format!("{} contains no DDS mip levels", spec.path.display()))?;
@@ -287,26 +290,26 @@ pub(crate) fn write_material_rgba_sources(
     Ok((files, dimensions))
 }
 
-pub(crate) fn copy_shader_source(
+pub(crate) fn copy_shader_source(resolver: &GameFileResolver, 
     out: &Path,
     source: &str,
     output: &str,
     path: &Path,
     files: &mut BTreeMap<String, String>,
 ) -> Result<()> {
-    fs::copy(path, out.join(output))?;
+    fs::write(out.join(output), resolver.read_resolved_bytes(path)?)?;
     files.insert(source.to_string(), output.to_string());
     Ok(())
 }
 
-pub(crate) fn copy_bundle_source(
+pub(crate) fn copy_bundle_source(resolver: &GameFileResolver, 
     out: &Path,
     source: &str,
     output: &str,
     path: &Path,
     files: &mut BTreeMap<String, String>,
 ) -> Result<()> {
-    fs::copy(path, out.join(output))?;
+    fs::write(out.join(output), resolver.read_resolved_bytes(path)?)?;
     files.insert(source.to_string(), output.to_string());
     Ok(())
 }
@@ -427,12 +430,12 @@ pub(crate) fn distinct_count(values: &[u32]) -> usize {
     values.len()
 }
 
-pub(crate) fn visual_input_hashes(
+pub(crate) fn visual_input_hashes(resolver: &GameFileResolver, 
     entries: &[(&str, &PathBuf)],
 ) -> Result<BTreeMap<String, String>> {
     let mut out = BTreeMap::new();
     for (name, path) in entries {
-        out.insert((*name).to_string(), fnv1a64_file(path)?);
+        out.insert((*name).to_string(), fnv1a64_bytes(&resolver.read_resolved_bytes(path)?));
     }
     Ok(out)
 }

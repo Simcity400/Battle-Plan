@@ -23,10 +23,7 @@ fn fixture(name: &str) -> WorldTimeline {
 fn parse_unitview(root: &Path) -> LayoutSet {
     let mut layouts = LayoutSet::default();
     layouts
-        .parse_file(
-            &root.join("interface/unitview.gui"),
-            "interface/unitview.gui",
-        )
+        .parse_content(&map_viewer::GameFileResolver::vanilla(&root).unwrap().read_required_bytes("interface/unitview.gui", "fixture content").unwrap(), "interface/unitview.gui")
         .expect("parse vanilla unitview.gui");
     layouts
 }

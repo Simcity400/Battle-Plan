@@ -16,20 +16,21 @@ pub fn run_cli() -> Result<()> {
             build_bundle(&options)?;
         }
         "render-terrain" => {
+            let resolver = &optional_runtime_game_file_resolver(&args)?.ok_or("terrain render requires --game and effective content selection")?;
             let bundle = value_after(&args, "--bundle")
                 .map(PathBuf::from)
                 .unwrap_or_else(default_bundle_dir);
             if let Some(map_frame_bundle) = value_after(&args, "--map-frame-bundle") {
                 let map_frame_bundle = PathBuf::from(map_frame_bundle);
-                let frame = validate_map_frame_runtime_bundle(&map_frame_bundle)?;
+                let frame = validate_map_frame_runtime_bundle_with_resolver(&map_frame_bundle, resolver)?;
                 let bundle_dir = map_frame_bundle_dir(&map_frame_bundle)?;
                 if args.iter().any(|arg| arg == "--require-post-diffuse") {
-                    validate_map_frame_post_diffuse_inputs(&frame, &bundle, &bundle_dir)?;
+                    validate_map_frame_post_diffuse_inputs(resolver, &frame, &bundle, &bundle_dir)?;
                 }
                 let output = value_after(&args, "--out")
                     .map(PathBuf::from)
                     .unwrap_or_else(|| bundle_dir.join("map_frame_terrain_render.rgbx"));
-                let summary = render_map_frame_terrain(&frame, &bundle_dir, &bundle, &output)?;
+                let summary = render_map_frame_terrain(resolver, &frame, &bundle_dir, &bundle, &output)?;
                 eprintln!(
                     "map-frame terrain rendered: {} draws, {} indices, {} triangles, {} covered pixels of {}, SnowMudData loaded {}, output {}",
                     summary.draw_count,
@@ -45,7 +46,7 @@ pub fn run_cli() -> Result<()> {
             let output = value_after(&args, "--out")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| bundle.join("terrain_render.rgbx"));
-            let summary = render_production_terrain(&bundle, &output)?;
+            let summary = render_production_terrain(resolver, &bundle, &output)?;
             eprintln!(
                 "production terrain rendered: {} inputs, TerrainIDMap {}x{}, MAP_POW2 {}, {}, FOW_POW2 {}, {}, output {}",
                 summary.validated_input_count,
@@ -65,14 +66,11 @@ pub fn run_cli() -> Result<()> {
             let parity_report = value_after(&args, "--parity-report").map(PathBuf::from);
             let repeat = optional_positive_usize_arg(&args, "--repeat")?.unwrap_or(1);
             let compare_each_draw = args.iter().any(|arg| arg == "--compare-each-draw");
-            let resolver = optional_runtime_game_file_resolver(&args)?;
-            let bundle = match resolver.as_ref() {
-                Some(resolver) => {
-                    NativeD3d11TerrainBundle::load_with_resolver(&map_frame_bundle, resolver)?
-                }
-                None => NativeD3d11TerrainBundle::load(&map_frame_bundle)?,
-            };
-            let renderer = NativeD3d11TerrainRenderer::new()?;
+            let resolver = optional_runtime_game_file_resolver(&args)?
+                .ok_or("D3D11 rendering requires --game and effective content selection")?;
+            let bundle = NativeD3d11TerrainBundle::load_with_resolver(&map_frame_bundle, &resolver)?;
+            let renderer = NativeD3d11TerrainRenderer::new()?
+                .with_reflection_resolver(resolver);
             let prepared = renderer.prepare_production_map(&bundle, None)?;
             let mut summary = None;
             for iteration in 0..repeat {
@@ -112,7 +110,7 @@ pub fn run_cli() -> Result<()> {
         "validate-terrain-chunk-synthesis" => {
             let library = PathBuf::from(required_value_after(&args, "--terrain-chunk-library")?);
             let report_path = value_after(&args, "--report").map(PathBuf::from);
-            let report = validate_terrain_chunk_synthesis(&library, report_path.as_deref())?;
+            let report = validate_terrain_chunk_synthesis(&optional_runtime_game_file_resolver(&args)?.ok_or("chunk validation requires --game and effective content selection")?, &library, report_path.as_deref())?;
             eprintln!(
                 "terrain chunk synthesis byte-exact validation: status {}, {} compared records",
                 report.status,
@@ -176,7 +174,7 @@ pub fn run_cli() -> Result<()> {
                     let sibling = capture_dir?.join("map_frame_bundle.json");
                     sibling.is_file().then_some(sibling)
                 });
-            let report = smoke_terrain_chunk_synthesis(
+            let report = smoke_terrain_chunk_synthesis(&optional_runtime_game_file_resolver(&args)?.ok_or("chunk validation requires --game and effective content selection")?, 
                 &library,
                 target_tile_size,
                 output.as_deref(),
@@ -227,65 +225,38 @@ pub fn run_cli() -> Result<()> {
             let compare_final_reference = !args.iter().any(|arg| arg == "--skip-reference-compare");
             let map_clock_time = optional_nonnegative_f32_arg(&args, "--map-clock-time")?;
             let water_full = args.iter().any(|arg| arg == "--water-full");
-            let resolver = optional_runtime_game_file_resolver(&args)?;
-            let terrain_bundle = match resolver.as_ref() {
-                Some(resolver) => NativeD3d11TerrainBundle::load_with_resolver(
-                    &terrain_map_frame_bundle,
-                    resolver,
-                )?,
-                None => NativeD3d11TerrainBundle::load(&terrain_map_frame_bundle)?,
-            };
+            let resolver = optional_runtime_game_file_resolver(&args)?
+                .ok_or("D3D11 rendering requires --game and effective content selection")?;
+            let terrain_bundle = NativeD3d11TerrainBundle::load_with_resolver(
+                &terrain_map_frame_bundle,
+                &resolver,
+            )?;
             let camera = if let Some(camera_path) = value_after(&args, "--camera-json") {
                 production_map_camera_from_json(&PathBuf::from(camera_path))?
             } else {
-                terrain_bundle.production_camera_from_capture()?
+                terrain_bundle.production_camera_from_capture(&resolver)?
             };
-            let mut renderer = NativeD3d11TerrainRenderer::new()?.with_water_full(water_full);
+            let mut renderer = NativeD3d11TerrainRenderer::new()?
+                .with_water_full(water_full)
+                .with_reflection_resolver(resolver.clone());
             if water_full {
-                let resolver = resolver.clone().ok_or(
-                    "--water-full needs a resolvable game directory (pass --game <the game dir> \
-                     [--mod <dir>]...) to reconstruct the underwater WaterRefraction pass",
-                )?;
-                renderer = renderer.with_underwater_resolver(resolver);
-            }
-            if let Some(resolver) = resolver.clone() {
-                renderer = renderer.with_reflection_resolver(resolver);
+                renderer = renderer.with_underwater_resolver(resolver.clone());
             }
             let water_bundle = water_map_frame_bundle
                 .as_ref()
-                .map(|path| match resolver.as_ref() {
-                    Some(resolver) => {
-                        NativeD3d11TerrainBundle::load_water_with_resolver(path, resolver)
-                    }
-                    None => NativeD3d11TerrainBundle::load_water(path),
-                })
+                .map(|path| NativeD3d11TerrainBundle::load_water_with_resolver(path, &resolver))
                 .transpose()?;
             let rivers_bundle = rivers_map_frame_bundle
                 .as_ref()
-                .map(|path| match resolver.as_ref() {
-                    Some(resolver) => {
-                        NativeD3d11TerrainBundle::load_rivers_with_resolver(path, resolver)
-                    }
-                    None => NativeD3d11TerrainBundle::load_rivers(path),
-                })
+                .map(|path| NativeD3d11TerrainBundle::load_rivers_with_resolver(path, &resolver))
                 .transpose()?;
             let borders_bundle = borders_map_frame_bundle
                 .as_ref()
-                .map(|path| match resolver.as_ref() {
-                    Some(resolver) => {
-                        NativeD3d11TerrainBundle::load_borders_with_resolver(path, resolver)
-                    }
-                    None => NativeD3d11TerrainBundle::load_borders(path),
-                })
+                .map(|path| NativeD3d11TerrainBundle::load_borders_with_resolver(path, &resolver))
                 .transpose()?;
             let trees_bundle = trees_map_frame_bundle
                 .as_ref()
-                .map(|path| match resolver.as_ref() {
-                    Some(resolver) => {
-                        NativeD3d11TerrainBundle::load_trees_with_resolver(path, resolver)
-                    }
-                    None => NativeD3d11TerrainBundle::load_trees(path),
-                })
+                .map(|path| NativeD3d11TerrainBundle::load_trees_with_resolver(path, &resolver))
                 .transpose()?;
             let mut prepared = if map_clock_time.is_some() {
                 renderer.prepare_production_map_with_layers(
@@ -367,11 +338,9 @@ pub fn run_cli() -> Result<()> {
                 report,
                 repeat,
             };
-            let resolver = optional_runtime_game_file_resolver(&args)?;
-            let report = match resolver.as_ref() {
-                Some(resolver) => accept_terrain_d3d11_with_resolver(&request, resolver)?,
-                None => accept_terrain_d3d11(&request)?,
-            };
+            let resolver = optional_runtime_game_file_resolver(&args)?
+                .ok_or("D3D11 rendering requires --game and effective content selection")?;
+            let report = accept_terrain_d3d11_with_resolver(&request, &resolver)?;
             eprintln!(
                 "terrain D3D11 acceptance completed: {} repeat(s), {} draws, target {}x{} format {}, final fnv1a64 {}, report {}",
                 report.repeat,
@@ -425,40 +394,40 @@ pub fn run_cli() -> Result<()> {
         }
         "import-terrain-runtime" => {
             let options = ImportTerrainRuntimeOptions::parse(&args)?;
-            import_terrain_runtime_inputs(&options)?;
+            import_terrain_runtime_inputs(&optional_runtime_game_file_resolver(&args)?.ok_or("game source validation requires --game and effective content selection")?, &options)?;
         }
         "import-runtime-texture" => {
             let options = ImportRuntimeTextureOptions::parse(&args)?;
-            import_runtime_texture_input(&options)?;
+            import_runtime_texture_input(&optional_runtime_game_file_resolver(&args)?.ok_or("runtime texture import requires --game and effective content selection")?, &options)?;
         }
         "import-snow-mud-runtime" => {
             let options = ImportRuntimeTextureOptions::parse_snow_mud(SNOW_MUD_DATA_SYMBOL, &args)?;
-            import_runtime_texture_input(&options)?;
+            import_runtime_texture_input(&optional_runtime_game_file_resolver(&args)?.ok_or("runtime texture import requires --game and effective content selection")?, &options)?;
         }
         "import-runtime-constant-buffer" => {
             let options = ImportRuntimeConstantBufferOptions::parse(&args)?;
-            import_runtime_constant_buffer_input(&options)?;
+            import_runtime_constant_buffer_input(&optional_runtime_game_file_resolver(&args)?.ok_or("constant buffer import requires --game and effective content selection")?, &options)?;
         }
         "import-terrain-scene-cb0-runtime" => {
             let options = ImportRuntimeConstantBufferOptions::parse_scene_cb0(
                 TERRAIN_SCENE_CB0_SYMBOL,
                 &args,
             )?;
-            import_runtime_constant_buffer_input(&options)?;
+            import_runtime_constant_buffer_input(&optional_runtime_game_file_resolver(&args)?.ok_or("constant buffer import requires --game and effective content selection")?, &options)?;
         }
         "import-terrain-vertex-buffer-runtime" => {
             let options = ImportRuntimeVertexBufferOptions::parse_terrain_vertex_buffer(
                 TERRAIN_VERTEX_BUFFER_SYMBOL,
                 &args,
             )?;
-            import_runtime_vertex_buffer_input(&options)?;
+            import_runtime_vertex_buffer_input(&optional_runtime_game_file_resolver(&args)?.ok_or("game source validation requires --game and effective content selection")?, &options)?;
         }
         "import-terrain-input-layout-runtime" => {
             let options = ImportRuntimeInputLayoutOptions::parse_terrain_input_layout(
                 TERRAIN_INPUT_LAYOUT_SYMBOL,
                 &args,
             )?;
-            import_runtime_input_layout(&options)?;
+            import_runtime_input_layout(&optional_runtime_game_file_resolver(&args)?.ok_or("game source validation requires --game and effective content selection")?, &options)?;
         }
         "scan-shader-cache" => {
             let shader_cache = PathBuf::from(required_value_after(&args, "--shader-cache")?);
@@ -490,11 +459,11 @@ pub(crate) fn print_help() {
          Commands:\n\
            bundle --game <the game install> [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--out <bundle dir>] [--force]\n\
            render-terrain [--bundle <bundle dir>] [--map-frame-bundle <map_frame_bundle.json|capture dir>] [--require-post-diffuse] [--out <terrain_render.rgbx>]\n\
-render-terrain-d3d11 --map-frame-bundle <map_frame_bundle.json|capture dir> [--game <the game install> [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>]] [--out <terrain_native.r16g16b16a16_float>] [--repeat <n>] [--compare-each-draw] [--parity-report <dir>]\n\
+render-terrain-d3d11 --map-frame-bundle <map_frame_bundle.json|capture dir> --game <the game install> [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--out <terrain_native.r16g16b16a16_float>] [--repeat <n>] [--compare-each-draw] [--parity-report <dir>]\n\
            validate-terrain-chunk-synthesis --terrain-chunk-library <terrain_chunk_library.json|capture dir> [--report <terrain_chunk_synthesis_validation.json>]\n\
            smoke-terrain-chunk-synthesis --terrain-chunk-library <terrain_chunk_library.json|capture dir> [--target-tile-size <world units>] [--scene-frame-bundle <map_frame_bundle.json>] [--out <terrain_chunk_synthesis.raw>] [--report <terrain_chunk_synthesis_smoke.json>]\n\
-render-production-map-d3d11 --terrain-map-frame-bundle <map_frame_bundle.json|capture dir> [--game <the game install> [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>]] [--camera-json <production_camera.json>] [--water-map-frame-bundle <map_frame_water_pass_bundle.json|capture dir>] [--out <map_native.raw>] [--repeat <n>] [--compare-each-draw] [--skip-reference-compare] [--parity-report <dir>]\n\
-accept-terrain-d3d11 --map-frame-bundle <map_frame_bundle.json|capture dir> [--game <the game install> [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>]] [--out <terrain_native.r16g16b16a16_float>] [--report <terrain_d3d11_acceptance.json>] [--repeat <n>]\n\
+render-production-map-d3d11 --terrain-map-frame-bundle <map_frame_bundle.json|capture dir> --game <the game install> [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--camera-json <production_camera.json>] [--water-map-frame-bundle <map_frame_water_pass_bundle.json|capture dir>] [--out <map_native.raw>] [--repeat <n>] [--compare-each-draw] [--skip-reference-compare] [--parity-report <dir>]\n\
+accept-terrain-d3d11 --map-frame-bundle <map_frame_bundle.json|capture dir> --game <the game install> [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--out <terrain_native.r16g16b16a16_float>] [--report <terrain_d3d11_acceptance.json>] [--repeat <n>]\n\
            validate-water-map-frame --map-frame-bundle <map_frame_water_pass_bundle.json|capture dir>\n\
            validate-rivers-map-frame --map-frame-bundle <map_frame_rivers_pass_bundle.json|capture dir>\n\
            validate-borders-map-frame --map-frame-bundle <map_frame_borders_pass_bundle.json|capture dir>\n\

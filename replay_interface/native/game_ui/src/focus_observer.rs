@@ -8,7 +8,6 @@ use crate::national_focus::{AdmittedNationalFocusPresentation, FocusNodeState};
 use crate::{GameUiError, Result};
 use snapshot::sha256::{to_hex, Sha256};
 use std::collections::BTreeSet;
-use std::fs;
 
 pub const XUI10_GUI_SOURCE: &str = "interface/nationalfocusview.gui";
 pub const XUI10_GUI_ROOT: &str = "nationalfocusview";
@@ -349,9 +348,9 @@ pub fn prepare_observer_focus_scene(
 
 pub fn load_authored_focus_layout(resolver: &AssetResolver) -> Result<AuthoredFocusLayout> {
     let resolved = resolver.resolve_file(XUI10_GUI_SOURCE)?;
-    let bytes = fs::read(&resolved.path)?;
+    let bytes = resolver.read_file(&resolved)?;
     let mut layouts = LayoutSet::default();
-    layouts.parse_file(&resolved.path, &resolved.rel_path)?;
+    layouts.parse_content(&bytes, &resolved.rel_path)?;
     if layouts.stats.recovery_count != 0 || layouts.stats.decode_loss_count != 0 {
         return Err(GameUiError::parse(
             "XUI10 authored GUI required parser recovery or destructive decoding",

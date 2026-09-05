@@ -9,7 +9,6 @@ use crate::window_manager_law::{
 };
 use replay_core::ValidatedContentAdmission;
 use snapshot::sha256::Sha256;
-use std::fs;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -399,7 +398,7 @@ pub(crate) fn authenticate_xui23_buttonstate_shader(
             }
         };
         let resolved = resolver.resolve_file(path).map_err(|_| mismatch())?;
-        let bytes = fs::read(&resolved.path).map_err(|_| mismatch())?;
+        let bytes = resolver.read_file(&resolved).map_err(|_| mismatch())?;
         if !resolved.rel_path.eq_ignore_ascii_case(path)
             || bytes.len() as u64 != expected_bytes
             || Sha256::hex(&bytes) != expected_sha256
@@ -422,7 +421,7 @@ pub(crate) fn authenticate_xui23_progress_shader(
     let resolved = resolver
         .resolve_file("gfx/FX/progress.shader")
         .map_err(|_| RuntimeGraphicsRejection::BuiltinShaderLawHashMismatch)?;
-    let bytes = fs::read(&resolved.path)
+    let bytes = resolver.read_file(&resolved)
         .map_err(|_| RuntimeGraphicsRejection::BuiltinShaderLawHashMismatch)?;
     if !resolved
         .rel_path

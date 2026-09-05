@@ -333,7 +333,8 @@ fn a_subject_row_naming_one_country_beside_anothers_id_reaches_no_panel() {
               "direction":"toward_next"
             }}]
           }}}}
-        }}"#
+        }}"#
+
         )
     };
     fs::write(dir.join("000000000900.snapshot.json"), snapshot(1)).unwrap();

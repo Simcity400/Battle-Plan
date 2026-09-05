@@ -37,6 +37,8 @@ mod tooltip_runtime;
 mod transport;
 mod validate;
 mod world_audio_law;
+#[cfg(test)]
+mod modvfs_recording_proof;
 
 #[cfg(windows)]
 mod app;

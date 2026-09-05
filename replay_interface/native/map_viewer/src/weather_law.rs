@@ -1,11 +1,11 @@
 
-use crate::image_load::load_dds_rgba;
+use crate::image_load::decode_dds_rgba;
 use crate::mod_resolver::GameFileResolver;
 use crate::types::RgbaImage;
 use crate::Result;
 use crate::xmap19_weather_lifecycle::{weather_gameplay_visual_law, Xmap19DerivedWeatherEpoch};
 use replay_core::{Leaf, WeatherRegionRow};
-use std::{collections::BTreeSet, path::Path};
+use std::collections::BTreeSet;
 
 pub const WEATHER_EFFECTS_SOURCE: &str = "common/weather.txt";
 pub const WEATHER_ENTITIES_SOURCE: &str = "gfx/entities/weather_entities.asset";
@@ -890,22 +890,6 @@ fn decode_weather_positions(
     Ok(WeatherEmitterTable { emitters })
 }
 
-pub fn weather_fade_defines_from_source(source: &str) -> Result<WeatherFadeDefines> {
-    let get = |name: &str| -> Result<f32> {
-        lua_number(source, name).ok_or_else(|| format!("00_graphics.lua: missing {name}").into())
-    };
-    Ok(WeatherFadeDefines {
-        distance_cutoff: get("WEATHER_DISTANCE_CUTOFF")?,
-        distance_fade_length: get("WEATHER_DISTANCE_FADE_LENGTH")?,
-        zoom_in_cutoff: get("WEATHER_ZOOM_IN_CUTOFF")?,
-        zoom_in_fade_length: get("WEATHER_ZOOM_IN_FADE_LENGTH")?,
-        zoom_in_fade_factor: get("WEATHER_ZOOM_IN_FADE_FACTOR")?,
-        playback_rate: get("WEATHER_PLAYBACK_RATE")?,
-        playback_rate_cutoff: get("WEATHER_PLAYBACK_RATE_CUTOFF")?,
-        playback_rate_length: get("WEATHER_PLAYBACK_RATE_LENGTH")?,
-    })
-}
-
 pub fn weather_distance_fog_defines_from_source(source: &str) -> Result<WeatherDistanceFogDefines> {
     let color = hlsl_static_numbers(source, "FOG_COLOR")
         .filter(|values| values.len() == 3)
@@ -988,9 +972,20 @@ pub fn weather_emitters_from_resolver(resolver: &GameFileResolver) -> Result<Wea
 
 pub fn weather_fade_defines_from_resolver(
     resolver: &GameFileResolver,
-) -> Result<WeatherFadeDefines> {
-    let source = resolve_to_string(resolver, GRAPHICS_DEFINES_SOURCE, "00_graphics.lua")?;
-    weather_fade_defines_from_source(&source)
+) -> Result<(WeatherFadeDefines, Vec<portable_content_manifest::UsedContentKey>)> {
+    let (sources, content) = crate::xmap09_lighting_law::effective_define_sources(resolver, "effective defines")?;
+    let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
+    Ok((WeatherFadeDefines {
+        distance_cutoff: evaluated.scalar("NGraphics", "WEATHER_DISTANCE_CUTOFF")?,
+        distance_fade_length: evaluated.scalar("NGraphics", "WEATHER_DISTANCE_FADE_LENGTH")?,
+        zoom_in_cutoff: evaluated.scalar("NGraphics", "WEATHER_ZOOM_IN_CUTOFF")?,
+        zoom_in_fade_length: evaluated.scalar("NGraphics", "WEATHER_ZOOM_IN_FADE_LENGTH")?,
+        zoom_in_fade_factor: evaluated.scalar("NGraphics", "WEATHER_ZOOM_IN_FADE_FACTOR")?,
+        playback_rate: evaluated.scalar("NGraphics", "WEATHER_PLAYBACK_RATE")?,
+        playback_rate_cutoff: evaluated.scalar("NGraphics", "WEATHER_PLAYBACK_RATE_CUTOFF")?,
+        playback_rate_length: evaluated.scalar("NGraphics", "WEATHER_PLAYBACK_RATE_LENGTH")?,
+    }, content))
+
 }
 
 pub fn cloud_law_from_resolver(
@@ -1031,7 +1026,7 @@ pub fn cloud_texture_rgba_from_resolver(
     law: &CloudRenderLaw,
 ) -> Result<(usize, usize, Vec<u8>)> {
     let path = resolver.resolve_required(&law.texture, "cloud sprite")?;
-    let img: RgbaImage = load_dds_rgba(&path)?;
+    let img: RgbaImage = decode_dds_rgba(&resolver.read_resolved_bytes(&path)?, &path)?;
     Ok((img.width, img.height, img.pixels))
 }
 
@@ -1040,13 +1035,7 @@ pub const MAP_PLANE_Z: f32 = 2048.0;
 
 
 fn resolve_to_string(resolver: &GameFileResolver, rel: &str, label: &str) -> Result<String> {
-    let path = resolver.resolve_required(rel, label)?;
-    read_path_to_string(&path, rel)
-}
-
-fn read_path_to_string(path: &Path, rel: &str) -> Result<String> {
-    let bytes = std::fs::read(path).map_err(|err| format!("failed to read {rel}: {err}"))?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    resolver.read_required_text(rel, label)
 }
 
 fn parse_first_number(raw: &str) -> Option<f32> {
@@ -1089,32 +1078,6 @@ fn sample_piecewise_linear(flat: &[f32], t: f32) -> f32 {
         }
     }
     flat[(n - 1) * 2 + 1]
-}
-
-fn lua_number(source: &str, name: &str) -> Option<f32> {
-    for line in source.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix(name) {
-            let rest = rest.trim_start();
-            if let Some(rest) = rest.strip_prefix('=') {
-                let value = rest
-                    .trim()
-                    .trim_end_matches(',')
-                    .split(|c: char| c.is_whitespace() || c == ',' || c == '-' && false)
-                    .next()
-                    .unwrap_or("")
-                    .trim_end_matches(',');
-                let token: String = value
-                    .chars()
-                    .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-' || *c == '+')
-                    .collect();
-                if let Ok(v) = token.parse::<f32>() {
-                    return Some(v);
-                }
-            }
-        }
-    }
-    None
 }
 
 fn hlsl_static_numbers(source: &str, name: &str) -> Option<Vec<f32>> {
@@ -2170,7 +2133,10 @@ entity = {
 
     #[test]
     fn parses_fade_defines_and_matches_vanilla_constant() {
-        let d = weather_fade_defines_from_source(GRAPHICS_LUA).expect("parse defines");
+        let (d, _) = crate::test_support::with_define_fixture(
+            &format!("NDefines = {{ NGraphics = {{ {GRAPHICS_LUA} }} }}"),
+            weather_fade_defines_from_resolver,
+        ).expect("effective Lua defines");
         assert_eq!(d, VANILLA_WEATHER_FADE_DEFINES);
     }
 
@@ -2266,7 +2232,7 @@ static const float FOG_MAX = 0.35f;
             "gfx/particles/environment/rain_clouds.asset",
             RAIN_CLOUDS_ASSET,
         );
-        write_text(&vanilla, GRAPHICS_DEFINES_SOURCE, GRAPHICS_LUA);
+        write_text(&vanilla, GRAPHICS_DEFINES_SOURCE, &format!("NDefines = {{ NGraphics = {{ {GRAPHICS_LUA} }} }}"));
         write_text(&vanilla, WEATHER_POSITIONS_SOURCE, WEATHER_POSITIONS);
 
         let resolver = GameFileResolver::vanilla(vanilla).expect("resolver");
@@ -2285,7 +2251,7 @@ static const float FOG_MAX = 0.35f;
 
         let positions = weather_emitters_from_resolver(&resolver).expect("positions");
         assert_eq!(positions.for_region(1).count(), 2);
-        let defines = weather_fade_defines_from_resolver(&resolver).expect("defines");
+        let (defines, _) = weather_fade_defines_from_resolver(&resolver).expect("defines");
         assert_eq!(defines, VANILLA_WEATHER_FADE_DEFINES);
     }
 

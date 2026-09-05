@@ -8,7 +8,7 @@ use crate::font::{blank_image, BitmapFont};
 use crate::gfx::SpriteRegistry;
 use crate::gui::{GuiElement, LayoutSet};
 use crate::loc::Localisation;
-use crate::paradox_text::parse_file;
+use crate::paradox_text::parse_checked_bytes;
 use crate::png::write_png;
 use crate::text_law::RuntimeTextContext;
 use crate::{GameUiError, Result};
@@ -263,7 +263,7 @@ pub fn load_topbar_layout(
     registry: &SpriteRegistry,
 ) -> Result<TopbarLayout> {
     let resolved = resolver.resolve_file(TOPBAR_GUI)?;
-    let doc = parse_file(&resolved.path)?;
+    let doc = parse_checked_bytes(&resolver.read_file(&resolved)?, &resolved.rel_path)?;
     let mut layouts = LayoutSet::default();
     layouts.add_document(&resolved.rel_path, &doc);
     let root = layouts
@@ -1368,7 +1368,7 @@ mod tests {
         let resolved = resolver
             .resolve_file(TOPBAR_GUI)
             .expect("resolve topbar.gui");
-        let doc = parse_file(&resolved.path).expect("parse topbar.gui");
+        let doc = parse_checked_bytes(&resolver.read_file(&resolved).unwrap(), &resolved.rel_path).expect("parse topbar.gui");
         let mut layouts = LayoutSet::default();
         layouts.add_document(&resolved.rel_path, &doc);
         let root_el = layouts

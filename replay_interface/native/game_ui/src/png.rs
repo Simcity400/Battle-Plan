@@ -14,13 +14,6 @@ pub struct PngImage {
     pub format: String,
 }
 
-pub fn decode_file(path: &Path) -> Result<PngImage> {
-    let data = fs::read(path)?;
-    decode_bytes(&data).map_err(|mut err| {
-        err.message = format!("{}: {}", path.display(), err.message);
-        err
-    })
-}
 
 pub fn decode_bytes(data: &[u8]) -> Result<PngImage> {
     if data.get(..PNG_SIGNATURE.len()) != Some(PNG_SIGNATURE) {
@@ -424,7 +417,7 @@ mod tests {
             .as_nanos();
         path.push(format!("game_ui_png_roundtrip_{nonce}.png"));
         write_png(&path, &image).unwrap();
-        let decoded = decode_file(&path).unwrap();
+        let decoded = decode_bytes(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(decoded.image, image);
         assert_eq!(decoded.format, "PNG8 color type 6");
         let _ = fs::remove_file(path);

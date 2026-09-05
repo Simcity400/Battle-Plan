@@ -728,7 +728,7 @@ impl TerrainLodCorpusReport {
     }
 }
 
-pub fn terrain_lod_map_validate_corpus(
+pub fn terrain_lod_map_validate_corpus(resolver: &crate::GameFileResolver, 
     library: &NativeD3d11TerrainChunkLibrary,
     map_width: u32,
     map_height: u32,
@@ -754,7 +754,7 @@ pub fn terrain_lod_map_validate_corpus(
         let min_z = round_world(chunk.bounds.min_z)?.max(0) as u32;
         let col = min_x / TERRAIN_LOD_BASE_TILE_SIZE;
         let row = min_z / TERRAIN_LOD_BASE_TILE_SIZE;
-        let scene = decode_map_frame_terrain_scene_cb0(&chunk.draw, bundle_dir)?;
+        let scene = decode_map_frame_terrain_scene_cb0(resolver, &chunk.draw, bundle_dir)?;
         let cam = [scene.v_cam_pos.x, scene.v_cam_pos.y, scene.v_cam_pos.z];
         let key = (
             (cam[0] * 100.0).round() as i64,
@@ -823,8 +823,8 @@ pub fn terrain_lod_map_validate_corpus_with_resolver(
 ) -> Result<TerrainLodCorpusReport> {
     let heightmap_path =
         resolver.resolve_required(TERRAIN_CHUNK_HEIGHTMAP_SOURCE, "heightmap.bmp")?;
-    let heightmap = load_bmp_indexed(&heightmap_path)?;
-    terrain_lod_map_validate_corpus(
+    let heightmap = decode_bmp_indexed(&resolver.read_resolved_bytes(&heightmap_path)?, &heightmap_path)?;
+    terrain_lod_map_validate_corpus(resolver, 
         library,
         heightmap.width as u32,
         heightmap.height as u32,
@@ -1008,7 +1008,7 @@ pub fn terrain_vsnap_law_validate_corpus_with_resolver(
 ) -> Result<TerrainVsnapCorpusReport> {
     let heightmap_path =
         resolver.resolve_required(TERRAIN_CHUNK_HEIGHTMAP_SOURCE, "heightmap.bmp")?;
-    let heightmap = load_bmp_indexed(&heightmap_path)?;
+    let heightmap = decode_bmp_indexed(&resolver.read_resolved_bytes(&heightmap_path)?, &heightmap_path)?;
     terrain_vsnap_law_validate_corpus(
         library,
         heightmap.width as u32,

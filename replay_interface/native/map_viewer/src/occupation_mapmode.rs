@@ -34,11 +34,13 @@ pub fn occupation_palette_from_source(source: &str) -> Result<OccupationMapModeP
 pub fn occupation_palette_from_resolver(
     resolver: &GameFileResolver,
 ) -> Result<OccupationMapModePalette> {
-    let path = resolver.resolve_required(
-        OCCUPATION_GRAPHICS_DEFINES_SOURCE,
-        "occupation resistance/compliance map-mode colors",
-    )?;
-    occupation_palette_from_source(&crate::read_latin1(&path)?)
+    let (sources, _) = crate::xmap09_lighting_law::effective_define_sources(resolver, "effective defines")?;
+    let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
+    Ok(OccupationMapModePalette {
+        non_initialized: evaluated.array("NGraphics", "OCCUPATION_RESISTANCE_NON_INITIALIZED_COLOR")?,
+        resistance: stops_from_values(&evaluated.number_array("NGraphics", "OCCUPATION_RESISTANCE_MAP_MODE_COLORS")?, "OCCUPATION_RESISTANCE_MAP_MODE_COLORS")?,
+        compliance: stops_from_values(&evaluated.number_array("NGraphics", "OCCUPATION_COMPLIANCE_MAP_MODE_COLORS")?, "OCCUPATION_COMPLIANCE_MAP_MODE_COLORS")?,
+    })
 }
 
 pub fn occupation_mapmode_color(
@@ -89,7 +91,12 @@ fn parse_color4(source: &str, key: &str) -> Result<[f32; 4]> {
 }
 
 fn parse_stop_table(source: &str, key: &str) -> Result<Vec<OccupationColorStop>> {
-    let values = parse_table_numbers(source, key)?;
+    stops_from_values(&parse_table_numbers(source, key)?, key)
+}
+
+fn stops_from_values(values: &[f32], key: &str) -> Result<Vec<OccupationColorStop>> {
+
+
     if values.len() < 10 || values.len() % 5 != 0 {
         return Err(format!(
             "{OCCUPATION_GRAPHICS_DEFINES_SOURCE}: {key} expected complete five-value stops, got {} values",
@@ -119,6 +126,7 @@ fn parse_stop_table(source: &str, key: &str) -> Result<Vec<OccupationColorStop>>
         .into());
     }
     Ok(stops)
+
 }
 
 fn parse_table_numbers(source: &str, key: &str) -> Result<Vec<f32>> {

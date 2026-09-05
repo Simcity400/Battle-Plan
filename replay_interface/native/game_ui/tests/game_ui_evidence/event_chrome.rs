@@ -9,7 +9,7 @@ use game_ui::event_chrome::{
 use game_ui::compose::UiAssetCache;
 use game_ui::gfx::SpriteRegistry;
 use game_ui::loc::Localisation;
-use game_ui::paradox_text::parse_file;
+use game_ui::paradox_text::parse_checked_bytes;
 use game_ui::text_law::{ExactRuntimeText, RuntimeTextContext};
 use replay_core::{RuntimeTextLayout, RuntimeTextSource};
 use std::collections::BTreeMap;
@@ -131,7 +131,7 @@ fn positive_event_popup_reaches_the_shipping_compositor_with_shipped_assets() {
         .expect("list shipped GFX")
     {
         registry
-            .parse_file(&file.path, &file.rel_path)
+            .parse_content(&resolver.read_file(&file).unwrap(), &file.rel_path)
             .expect("parse shipped GFX losslessly");
     }
     for required in ["GFX_portrait_unknown", "GFX_intelligence_agency_logo_ger"] {
@@ -263,7 +263,7 @@ fn event_def_to_window_resolution_rate() {
         .list_files_recursive("interface", Some("gfx"))
         .expect("list gfx")
     {
-        if let Ok(doc) = parse_file(&file.path) {
+        if let Ok(doc) = parse_checked_bytes(&resolver.read_file(&file).unwrap(), &file.rel_path) {
             registry.add_document(&file.rel_path, &doc);
         }
     }

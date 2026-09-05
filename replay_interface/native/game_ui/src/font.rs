@@ -1,8 +1,9 @@
 use crate::assets::{normalize_rel_path, AssetResolver};
 use crate::dds::RgbaImage;
-use crate::paradox_text::{destructive_event_count, diagnose_text_decode, parse_file};
+use crate::paradox_text::{destructive_event_count, diagnose_text_decode, parse_checked_bytes};
 use crate::{GameUiError, Result};
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
 use std::fs;
 use std::path::{Component, Path};
 
@@ -115,7 +116,7 @@ impl BitmapFont {
                 resolver.resolve_file(&alias_rel)?
             }
         };
-        let bytes = fs::read(&resolved.path)?;
+        let bytes = resolver.read_file(&resolved)?;
         let page_stem = std::path::Path::new(&resolved.rel_path)
             .file_stem()
             .and_then(|value| value.to_str())
@@ -133,7 +134,7 @@ impl BitmapFont {
         descriptor_path: &str,
     ) -> Result<Self> {
         let resolved = resolver.resolve_file(descriptor_path)?;
-        let bytes = fs::read(&resolved.path)?;
+        let bytes = resolver.read_file(&resolved)?;
         let page_stem = Path::new(&resolved.rel_path)
             .file_stem()
             .and_then(|value| value.to_str())
@@ -618,7 +619,7 @@ pub fn authored_bitmap_font_registry_paths_for_language(
     let mut font_local_textcolors = None;
     let mut global_textcolor_tables = Vec::new();
     for (source, path) in files {
-        let bytes = fs::read(&path)?;
+        let bytes = resolver.read_required_bytes(&source, "font registry").map_err(|error| GameUiError::missing(error.to_string()))?;
         let losses = destructive_event_count(&diagnose_text_decode(&bytes));
         if losses != 0 {
             return Err(GameUiError::parse(format!(
@@ -922,7 +923,7 @@ fn plan_authored_descriptor(
     let resolved = resolver
         .resolve_required_with_provenance(descriptor, "bitmap-font descriptor")
         .map_err(|error| GameUiError::missing(error.to_string()))?;
-    let bytes = fs::read(&resolved.local_path)?;
+    let bytes = resolver.read_required_bytes(&resolved.logical_path, "font descriptor").map_err(|error| GameUiError::missing(error.to_string()))?;
     reject_descriptor_decode_damage(&resolved.logical_path, &bytes)?;
     let stem = Path::new(&resolved.logical_path)
         .file_stem()
@@ -1066,7 +1067,7 @@ pub fn bitmap_font_dependency_paths_for_language(
                 "font {symbolic_name} has no descriptor or core.gfx alias"
             ))
         })?;
-        let document = parse_file(&core.local_path)?;
+        let document = parse_checked_bytes(&resolver.read_required_bytes(&core.logical_path, "font alias registration").map_err(|error| GameUiError::missing(error.to_string()))?, &core.logical_path)?;
         core_gfx_font_alias_for_language(&document, symbolic_name, localisation_language)?
             .ok_or_else(|| {
                 GameUiError::missing(format!("font {symbolic_name} has 0 effective aliases"))
@@ -1075,7 +1076,7 @@ pub fn bitmap_font_dependency_paths_for_language(
     let resolved = resolver
         .resolve_required_with_provenance(&descriptor, "bitmap-font descriptor")
         .map_err(|error| GameUiError::missing(error.to_string()))?;
-    let bytes = fs::read(&resolved.local_path)?;
+    let bytes = resolver.read_required_bytes(&resolved.logical_path, "font descriptor").map_err(|error| GameUiError::missing(error.to_string()))?;
     let stem = Path::new(&resolved.logical_path)
         .file_stem()
         .and_then(|value| value.to_str())
@@ -1242,7 +1243,7 @@ fn bitmap_font_alias_path(resolver: &AssetResolver, name: &str) -> Result<Option
     let Some(core) = resolver.resolve_optional_file("interface/core.gfx")? else {
         return Ok(None);
     };
-    let document = parse_file(&core.path)?;
+    let document = parse_checked_bytes(&resolver.read_file(&core)?, &core.rel_path)?;
     core_gfx_font_alias(&document, name)
 }
 

@@ -1,5 +1,5 @@
 
-use crate::{load_dds_rgba_mips, BorderMaterial, GameFileResolver, Result, RgbaImage};
+use crate::{decode_dds_rgba_mips, BorderMaterial, GameFileResolver, Result, RgbaImage};
 
 pub const BORDER_TILE: f32 = 0.4;
 
@@ -116,7 +116,7 @@ pub fn border_texture_profile_from_resolver(
     let path = resolver
         .resolve_required(source, "border diffuse DDS")
         .map_err(|err| format!("border texture law blocked: {err}"))?;
-    let mips = load_dds_rgba_mips(&path)
+    let mips = decode_dds_rgba_mips(&resolver.read_resolved_bytes(&path)?, &path)
         .map_err(|err| format!("border texture law blocked: failed to decode {source}: {err}"))?;
     let top = mips
         .first()

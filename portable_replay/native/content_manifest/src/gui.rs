@@ -4,7 +4,6 @@ use crate::paradox_text::{
     parse_bytes, Document, Scalar, Value,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DecodeLossReport {
@@ -69,8 +68,7 @@ pub struct LayoutSet {
 }
 
 impl LayoutSet {
-    pub fn parse_file(&mut self, path: &Path, rel: &str) -> Result<()> {
-        let bytes = std::fs::read(path)?;
+    pub fn parse_content(&mut self, bytes: &[u8], rel: &str) -> Result<()> {
         let all = diagnose_text_decode(&bytes);
         let report = DecodeLossReport {
             events: destructive_event_count(&all),

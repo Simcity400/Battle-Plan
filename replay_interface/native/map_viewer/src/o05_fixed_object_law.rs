@@ -3,6 +3,7 @@ use crate::{GameFileResolver, MapBuildingPlacement, Result};
 use serde::{Deserialize, Serialize};
 use snapshot::sha256::Sha256;
 use std::collections::BTreeMap;
+#[cfg(test)]
 use std::fs;
 
 pub const O05_MAP_BUILDINGS_SOURCE: &str = "map/buildings.txt";
@@ -154,7 +155,7 @@ pub fn o05_fixed_object_source_hashes_from_resolver(
     let mut hashes = BTreeMap::new();
     for (source, _) in O05_FIXED_OBJECT_SOURCE_HASHES {
         let path = resolver.resolve_required(source, "O05 fixed-object admission source")?;
-        let bytes = fs::read(&path).map_err(|error| {
+        let bytes = resolver.read_required_bytes(source, source).map_err(|error| {
             format!(
                 "O05 fixed-object admission could not read {}: {error}",
                 path.display()
@@ -210,7 +211,7 @@ pub fn o05_static_building_source_identities_from_resolver(
     let path =
         resolver.resolve_required(O05_MAP_BUILDINGS_SOURCE, "O05 static-building identity")?;
     let bytes =
-        fs::read(&path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        resolver.read_required_bytes(O05_MAP_BUILDINGS_SOURCE, O05_MAP_BUILDINGS_SOURCE).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
     o05_static_building_source_identities_from_source(&bytes)
 }
 

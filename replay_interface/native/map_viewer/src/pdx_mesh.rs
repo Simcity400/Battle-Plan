@@ -1159,7 +1159,7 @@ pub fn validate_pdx_model(model: &PdxModel) -> Vec<PdxMeshValidationRow> {
 
 pub fn pdx_model_from_resolver(resolver: &GameFileResolver, rel_path: &str) -> Result<PdxModel> {
     let path = resolver.resolve_required(rel_path, "pdxasset mesh")?;
-    let bytes = std::fs::read(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    let bytes = resolver.read_required_bytes(rel_path, rel_path).map_err(|err| format!("read {}: {err}", path.display()))?;
     let tree = parse_pdx_asset(&bytes)
         .map_err(|err| format!("{rel_path} (resolved {}): {err}", path.display()))?;
     extract_pdx_model(&tree).map_err(|err| format!("{rel_path}: {err}").into())
@@ -1167,7 +1167,7 @@ pub fn pdx_model_from_resolver(resolver: &GameFileResolver, rel_path: &str) -> R
 
 pub fn pdx_anim_from_resolver(resolver: &GameFileResolver, rel_path: &str) -> Result<PdxAnimData> {
     let path = resolver.resolve_required(rel_path, "pdxasset anim")?;
-    let bytes = std::fs::read(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    let bytes = resolver.read_required_bytes(rel_path, rel_path).map_err(|err| format!("read {}: {err}", path.display()))?;
     let tree = parse_pdx_asset(&bytes)
         .map_err(|err| format!("{rel_path} (resolved {}): {err}", path.display()))?;
     extract_pdx_anim(&tree).map_err(|err| format!("{rel_path}: {err}").into())
@@ -1203,7 +1203,7 @@ pub fn scan_pdx_assets_from_resolver(
         let files = resolver.resolve_dir_files_recursive(rel_root, Some(extension))?;
         for (rel, path) in files {
             let bytes =
-                std::fs::read(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+                resolver.read_required_bytes(&rel, &rel).map_err(|err| format!("read {}: {err}", path.display()))?;
             match bytes.get(..4) {
                 Some(magic) if magic == PDX_ASSET_BINARY_MAGIC => report.binary_files += 1,
                 Some(magic) if magic == PDX_ASSET_TEXT_MAGIC => report.text_files += 1,

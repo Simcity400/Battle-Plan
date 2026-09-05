@@ -1210,6 +1210,7 @@ pub(crate) unsafe fn native_d3d11_clear_targets(
 #[cfg(windows)]
 pub(crate) unsafe fn native_d3d11_prepare_map_frame(
     device: &NativeD3d11Device,
+    resolver: &crate::GameFileResolver,
     frame: &MapFrameRuntimeBundle,
     bundle_dir: &Path,
     app_camera: Option<ProductionMapCamera>,
@@ -1228,7 +1229,7 @@ pub(crate) unsafe fn native_d3d11_prepare_map_frame(
         restore_pre_draw_outputs,
         NativeD3d11WaterRefractionSource::CapturedBundleTexture,
         NativeD3d11ReflectionCubeSource::ShippedFileCube,
-        None,
+        Some(resolver),
         false,
     )?;
     Ok(NativeD3d11PreparedMapFrame {
@@ -1241,6 +1242,7 @@ pub(crate) unsafe fn native_d3d11_prepare_map_frame(
 #[cfg(windows)]
 pub(crate) unsafe fn native_d3d11_prepare_terrain_chunk_library_frame(
     device: &NativeD3d11Device,
+    resolver: &crate::GameFileResolver,
     frame: &MapFrameRuntimeBundle,
     bundle_dir: &Path,
     app_camera: ProductionMapCamera,
@@ -1249,7 +1251,7 @@ pub(crate) unsafe fn native_d3d11_prepare_terrain_chunk_library_frame(
     let render_target = native_d3d11_create_render_target(device, target)?;
     let depth_target = native_d3d11_create_depth_stencil(device, depth)?;
     let pass = native_d3d11_prepare_terrain_chunk_library_pass(
-        device, frame, bundle_dir, app_camera, target, depth,
+        device, resolver, frame, bundle_dir, app_camera, target, depth,
     )?;
     Ok(NativeD3d11PreparedMapFrame {
         render_target,
@@ -1303,6 +1305,7 @@ pub(crate) fn native_d3d11_draw_output_merger_targets(
 #[cfg(windows)]
 pub(crate) unsafe fn native_d3d11_prepare_terrain_chunk_synthesis_frame(
     device: &NativeD3d11Device,
+    resolver: &crate::GameFileResolver,
     plan: &TerrainChunkSynthesisPlan,
     bundle_dir: &Path,
     app_camera: ProductionMapCamera,
@@ -1312,7 +1315,6 @@ pub(crate) unsafe fn native_d3d11_prepare_terrain_chunk_synthesis_frame(
     let (target, depth) = native_d3d11_draw_output_merger_targets(&plan.template_draw)?;
     let render_target = native_d3d11_create_render_target(device, target)?;
     let depth_target = native_d3d11_create_depth_stencil(device, depth)?;
-    // the captured files). Under `--chunks-from-files` it carries the generated
     let template_draw = native_d3d11_prepare_draw(
         device,
         bundle_dir,
@@ -1323,7 +1325,7 @@ pub(crate) unsafe fn native_d3d11_prepare_terrain_chunk_synthesis_frame(
         false,
         NativeD3d11WaterRefractionSource::CapturedBundleTexture,
         NativeD3d11ReflectionCubeSource::ShippedFileCube,
-        None,
+        Some(resolver),
         "terrain chunk synthesis",
         true,
         scene_cb0_override,
@@ -1421,6 +1423,7 @@ pub(crate) unsafe fn native_d3d11_prepare_map_pass(
 #[cfg(windows)]
 unsafe fn native_d3d11_prepare_terrain_chunk_library_pass(
     device: &NativeD3d11Device,
+    resolver: &crate::GameFileResolver,
     frame: &MapFrameRuntimeBundle,
     bundle_dir: &Path,
     app_camera: ProductionMapCamera,
@@ -1441,7 +1444,7 @@ unsafe fn native_d3d11_prepare_terrain_chunk_library_pass(
                 false,
                 NativeD3d11WaterRefractionSource::CapturedBundleTexture,
                 NativeD3d11ReflectionCubeSource::ShippedFileCube,
-                None,
+                Some(resolver),
                 "terrain",
                 false,
                 None,
@@ -2657,7 +2660,7 @@ pub(crate) unsafe fn native_d3d11_prepare_draw(
         native_d3d11_prepare_vertex_buffers(&device.device, bundle_dir, synthetic_payloads, draw)?;
     let index_buffer =
         native_d3d11_prepare_index_buffer(&device.device, bundle_dir, synthetic_payloads, draw)?;
-    let constant_buffers = native_d3d11_prepare_constant_buffers(
+    let constant_buffers = native_d3d11_prepare_constant_buffers(reflection_resolver.ok_or("terrain camera layout requires effective content resolver")?, 
         &device.device,
         bundle_dir,
         synthetic_payloads,
@@ -3317,7 +3320,7 @@ pub(crate) unsafe fn native_d3d11_create_generated_index_buffer_u32(
 }
 
 #[cfg(windows)]
-pub(crate) unsafe fn native_d3d11_prepare_constant_buffers(
+pub(crate) unsafe fn native_d3d11_prepare_constant_buffers(resolver: &GameFileResolver, 
     device: &D3dPtr<ID3D11Device>,
     bundle_dir: &Path,
     synthetic_payloads: &BTreeMap<String, MapFrameSyntheticPayload>,
@@ -3387,7 +3390,7 @@ pub(crate) unsafe fn native_d3d11_prepare_constant_buffers(
             binding,
             &base_bytes,
         )?;
-        let layout = terrain_scene_cb0_camera_layout_for_binding(
+        let layout = terrain_scene_cb0_camera_layout_for_binding(resolver, 
             bundle_dir,
             draw,
             binding,
@@ -5479,6 +5482,74 @@ mod tests {
     use super::*;
     use crate::test_support::*;
     use std::fs;
+
+    #[test]
+    fn modvfs_warp_chunk_library_prepare_draw_uses_admitted_mod_camera_layout() {
+        let root = temp_test_dir("modvfs_warp_chunk_camera");
+        fs::create_dir_all(&root).unwrap();
+        let path = write_valid_map_frame_bundle(&root, |frame| frame);
+        rewrite_terrain_bundle_with_valid_output_merger_state(&path);
+        let mut frame: MapFrameRuntimeBundle = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        frame.draws.truncate(1);
+        let vanilla = minimal_standard_functions_source();
+        let modded = vanilla.replace("ViewProjectionMatrix", "SwappedMatrix")
+            .replace("InvViewProjMatrix", "ViewProjectionMatrix")
+            .replace("SwappedMatrix", "InvViewProjMatrix");
+        write_modvfs_fixture(&root.join("mod"), "gfx/FX/standardfuncsgfx.fxh", &modded);
+        let (resolver, _admission) = admit_modvfs_fixture(&root);
+        let layout = terrain_scene_cb0_layout(&vanilla).unwrap();
+        let mut camera_bytes = valid_scene_cb0_bytes();
+        write_identity_float4x4(&mut camera_bytes, 64);
+        let camera = production_map_camera_from_scene_cb0(
+            decode_terrain_scene_cb0(&camera_bytes, &layout).unwrap(),
+        ).unwrap();
+        unsafe {
+            let mut raw_device = ptr::null_mut();
+            let mut raw_context = ptr::null_mut();
+            let levels = [D3D_FEATURE_LEVEL_11_0];
+            native_d3d11_hr(D3D11CreateDevice(
+                ptr::null_mut(), winapi::um::d3dcommon::D3D_DRIVER_TYPE_WARP,
+                ptr::null_mut(), D3D11_CREATE_DEVICE_SINGLETHREADED,
+                levels.as_ptr(), 1, D3D11_SDK_VERSION,
+                &mut raw_device, ptr::null_mut(), &mut raw_context,
+            ), "create bounded WARP fixture device").unwrap();
+            let device = NativeD3d11Device {
+                device: D3dPtr::from_raw(raw_device, "WARP device").unwrap(),
+                context: D3dPtr::from_raw(raw_context, "WARP context").unwrap(),
+            };
+            let draw = &mut frame.draws[0];
+            for (shader, source, target) in [
+                (draw.vertex_shader.as_mut().unwrap(),
+                 "float4 main(int4 p : POSITION, int2 t : TEXCOORD0) : SV_Position { return float4(p.xy + t, 0, 1); }", "vs_5_0"),
+                (&mut draw.shader,
+                 "float4 main() : SV_Target { return float4(1, 0, 0, 1); }", "ps_5_0"),
+            ] {
+                let code = native_d3d11_compile_shader(source, "main", target).unwrap();
+                let bytes = std::slice::from_raw_parts(
+                    (*code.as_raw()).GetBufferPointer() as *const u8,
+                    (*code.as_raw()).GetBufferSize(),
+                );
+                fs::write(root.join(&shader.bytecode_file), bytes).unwrap();
+                shader.byte_len = bytes.len();
+                shader.fnv1a64 = fnv1a64_bytes(bytes);
+            }
+            let prepared = native_d3d11_prepare_terrain_chunk_library_frame(
+                &device, &resolver, &frame, &root, camera,
+            ).unwrap();
+            assert_eq!(prepared.pass.draws.len(), 1);
+            let patches = prepared.pass.draws[0].constant_buffers.iter()
+                .filter_map(|buffer| buffer.camera_patch.as_ref()).collect::<Vec<_>>();
+            assert_eq!(patches.len(), 2);
+            for patch in patches {
+                let offset = |name: &str| patch.layout.fields.iter()
+                    .find(|field| field.name == name).unwrap().offset;
+                assert_eq!(offset("ViewProjectionMatrix"), 64);
+                assert_eq!(offset("InvViewProjMatrix"), 0);
+            }
+        }
+        drop(resolver);
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
 
     fn tree_shader_input_parameters() -> Vec<MapFrameShaderInputParameter> {
         let mut inputs = vec![MapFrameShaderInputParameter {

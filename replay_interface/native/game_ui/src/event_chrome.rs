@@ -202,7 +202,7 @@ pub fn load_events(resolver: &AssetResolver) -> Result<EventCorpus> {
     let files = resolver.list_files_recursive("events", Some("txt"))?;
     let mut corpus = EventCorpus::default();
     for file in files {
-        let bytes = match std::fs::read(&file.path) {
+        let bytes = match resolver.read_file(&file) {
             Ok(bytes) => bytes,
             Err(err) => {
                 corpus
@@ -407,7 +407,7 @@ pub fn load_event_layout(resolver: &AssetResolver) -> Result<LayoutSet> {
     let mut layouts = LayoutSet::default();
     let mut authority_recovery_files = Vec::new();
     for file in resolver.list_files_recursive("interface", Some("gui"))? {
-        let bytes = std::fs::read(&file.path).map_err(|err| {
+        let bytes = resolver.read_file(&file).map_err(|err| {
             GameUiError::parse(format!(
                 "XUI21 effective GUI {} could not be read: {err}",
                 file.rel_path
@@ -417,7 +417,7 @@ pub fn load_event_layout(resolver: &AssetResolver) -> Result<LayoutSet> {
             let text = decode_text(&bytes).to_ascii_lowercase();
             text.contains("eventwindow") || text.contains("event_option_entry")
         };
-        layouts.parse_file(&file.path, &file.rel_path).map_err(|err| {
+        layouts.parse_content(&bytes, &file.rel_path).map_err(|err| {
             GameUiError::parse(format!(
                 "XUI21 effective GUI {} could not be read/parsed: {}",
                 file.rel_path, err.message

@@ -219,7 +219,7 @@ pub fn load_scripted_gui_registry(resolver: &AssetResolver) -> Result<ScriptedGu
     let mut engine_tolerated_eof_closures = Vec::new();
     let mut source_issues = Vec::new();
     for file in &files {
-        let bytes = std::fs::read(&file.path)?;
+        let bytes = resolver.read_file(file)?;
         let decode_events = destructive_event_count(&diagnose_text_decode(&bytes));
         if decode_events != 0 {
             source_issues.push(format!(

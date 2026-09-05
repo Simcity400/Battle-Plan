@@ -5,7 +5,7 @@ use snapshot::sha256::Sha256;
 use std::fs;
 use std::path::Path;
 
-pub const VIEWER_MAP_CAMERA_SCHEMA: &str = "hoi4.viewer-map-camera.v1";
+pub const VIEWER_MAP_CAMERA_SCHEMA: &str = "hoi4.viewer-map-camera.v2";
 pub const XMAP03_CAMERA_LAW_SCHEMA: &str = "hoi4.xmap03.camera-law.a729.v1";
 pub const XMAP03_A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
@@ -632,7 +632,7 @@ pub struct ViewerMapCameraState {
     pub schema: String,
     pub engine_law_schema: String,
     pub engine_executable_sha256: String,
-    pub graphics_defines_content: UsedContentKey,
+    pub defines_content: Vec<UsedContentKey>,
     pub map_width: u32,
     pub map_height: u32,
     pub viewport_width: u32,
@@ -663,14 +663,16 @@ impl ViewerMapCameraState {
         viewport_height: u32,
         camera_speed_setting: f32,
     ) -> Result<Self> {
-        let content = admission
-            .require_used_content(BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE)
-            .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?
-            .clone();
-        let bytes = resolver.read_admitted_used_content(&content)?;
-        let defines = hoi4_map_camera_defines_from_source(&latin1_bytes_to_string(&bytes))?;
+        let (sources, contents) = crate::xmap09_lighting_law::admitted_effective_define_sources(resolver, "viewer camera defines")?;
+        for content in &contents {
+            if admission.require_used_content(&content.normalized_game_relative_path)? != content {
+                return Err("viewer camera defines belong to another admission".into());
+            }
+        }
+        let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
+        let defines = hoi4_map_camera_defines_from_effective(&evaluated)?;
         Self::new(
-            content,
+            contents,
             defines,
             map_width,
             map_height,
@@ -681,7 +683,7 @@ impl ViewerMapCameraState {
     }
 
     pub fn new(
-        graphics_defines_content: UsedContentKey,
+        defines_content: Vec<UsedContentKey>,
         defines: Hoi4MapCameraDefines,
         map_width: u32,
         map_height: u32,
@@ -707,7 +709,7 @@ impl ViewerMapCameraState {
             schema: VIEWER_MAP_CAMERA_SCHEMA.into(),
             engine_law_schema: XMAP03_CAMERA_LAW_SCHEMA.into(),
             engine_executable_sha256: XMAP03_A729_EXECUTABLE_SHA256.into(),
-            graphics_defines_content,
+            defines_content,
             map_width,
             map_height,
             viewport_width,
@@ -756,17 +758,20 @@ impl ViewerMapCameraState {
         {
             return Err("viewer map camera engine-law identity mismatch".into());
         }
-        self.graphics_defines_content
-            .validate()
-            .map_err(|error| format!("viewer camera graphics defines identity: {error}"))?;
-        if self.graphics_defines_content.normalized_game_relative_path
-            != BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE
-            || self.map_width == 0
-            || self.map_height == 0
-            || self.viewport_width == 0
-            || self.viewport_height == 0
-        {
-            return Err("viewer map camera content/path/extents are invalid".into());
+        let first = self.defines_content.first().ok_or("viewer camera has no defines content")?;
+        let mut paths = std::collections::BTreeSet::new();
+        for content in &self.defines_content {
+            content.validate()?;
+            let path = &content.normalized_game_relative_path;
+            if !path.starts_with("common/defines/") || !path.ends_with(".lua")
+                || content.effective_vfs_manifest_sha256 != first.effective_vfs_manifest_sha256
+                || !paths.insert(path)
+            {
+                return Err("viewer camera defines content identities are inconsistent".into());
+            }
+        }
+        if self.map_width == 0 || self.map_height == 0 || self.viewport_width == 0 || self.viewport_height == 0 {
+            return Err("viewer map camera extents are invalid".into());
         }
         self.defines()?.validate()?;
         let speed = f32::from_bits(self.camera_speed_setting_f32_bits);
@@ -1203,80 +1208,21 @@ fn low_height_footprint_intersections(
     (top, bottom)
 }
 
-pub fn hoi4_map_camera_defines_from_bundle(
-    bundle: &NativeD3d11TerrainBundle,
-) -> Result<Hoi4MapCameraDefines> {
-    let evidence = bundle
-        .frame
-        .vanilla_sources
-        .get(BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE)
-        .ok_or_else(|| {
-            format!(
-                "production map viewer blocked: map-frame bundle is missing vanilla graphics defines evidence for {BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE}"
-            )
-        })?;
-    let bytes = read_verified_map_frame_file(
-        &bundle.bundle_dir,
-        &evidence.file,
-        evidence.byte_len,
-        &evidence.fnv1a64,
-        "graphics defines",
-    )?;
-    hoi4_map_camera_defines_from_source(&latin1_bytes_to_string(&bytes))
+pub fn hoi4_map_camera_defines_from_resolver(resolver: &GameFileResolver) -> Result<Hoi4MapCameraDefines> {
+    let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_resolver(resolver)?;
+    hoi4_map_camera_defines_from_effective(&evaluated)
 }
 
-pub(crate) fn hoi4_map_camera_defines_from_source(source: &str) -> Result<Hoi4MapCameraDefines> {
+pub(crate) fn hoi4_map_camera_defines_from_effective(evaluated: &crate::xmap09_lighting_law::EffectiveDefines) -> Result<Hoi4MapCameraDefines> {
     Hoi4MapCameraDefines::new(
-        parse_lua_number_define(source, "CAMERA_MIN_HEIGHT")?,
-        parse_lua_number_define(source, "CAMERA_MAX_HEIGHT")?,
-        parse_lua_number_define(source, "CAMERA_OUTSIDE_MAP_DISTANCE_TOP")?,
-        parse_lua_number_define(source, "CAMERA_OUTSIDE_MAP_DISTANCE_BOTTOM")?,
-        parse_lua_number_define(source, "CAMERA_ZOOM_SPEED")?,
-        parse_lua_number_define(source, "CAMERA_ZOOM_KEY_SCALE")?,
-        parse_lua_number_define(source, "CAMERA_ZOOM_SPEED_DISTANCE_MULT")?,
+        evaluated.scalar("NFrontend", "CAMERA_MIN_HEIGHT")?,
+        evaluated.scalar("NFrontend", "CAMERA_MAX_HEIGHT")?,
+        evaluated.scalar("NGraphics", "CAMERA_OUTSIDE_MAP_DISTANCE_TOP")?,
+        evaluated.scalar("NGraphics", "CAMERA_OUTSIDE_MAP_DISTANCE_BOTTOM")?,
+        evaluated.scalar("NGraphics", "CAMERA_ZOOM_SPEED")?,
+        evaluated.scalar("NGraphics", "CAMERA_ZOOM_KEY_SCALE")?,
+        evaluated.scalar("NGraphics", "CAMERA_ZOOM_SPEED_DISTANCE_MULT")?,
     )
-}
-
-pub(crate) fn parse_lua_number_define(source: &str, key: &str) -> Result<f32> {
-    let mut parsed = None;
-    for (line_index, line) in source.lines().enumerate() {
-        let code = line.split("--").next().unwrap_or(line).trim();
-        let Some(rest) = code.strip_prefix(key) else {
-            continue;
-        };
-        let rest = rest.trim_start();
-        if !rest.starts_with('=') {
-            continue;
-        }
-        let value = rest[1..]
-            .trim_start()
-            .trim_end_matches(',')
-            .split_whitespace()
-            .next()
-            .ok_or_else(|| {
-                format!(
-                    "production map viewer blocked: {BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE} {key} has no numeric value"
-                )
-            })?
-            .trim_end_matches(',')
-            .parse::<f32>()
-            .map_err(|err| {
-                format!(
-                    "production map viewer blocked: {BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE} {key} on line {} is not a number: {err}",
-                    line_index + 1
-                )
-            })?;
-        if parsed.replace(value).is_some() {
-            return Err(format!(
-                "production map viewer blocked: {BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE} defines {key} more than once"
-            )
-            .into());
-        }
-    }
-    parsed.ok_or_else(|| {
-        format!("production map viewer blocked: {BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE} is missing {key}")
-            .into()
-    })
 }
 
 pub(crate) fn production_map_camera_from_json(path: &Path) -> Result<ProductionMapCamera> {
@@ -1406,6 +1352,25 @@ fn perspective_divide(value: [f32; 4]) -> Result<[f32; 3]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modvfs_camera_production_admission_evaluates_later_mod_script() {
+        use crate::test_support::{admit_modvfs_fixture, write_modvfs_fixture as write};
+        let root = crate::test_support::temp_test_dir("camera_effective_admission");
+        write(&root.join("vanilla"), "common/defines/00_graphics.lua", crate::test_support::minimal_graphics_defines_source());
+        write(&root.join("vanilla"), "common/defines/10_camera.lua", "NDefines.NFrontend.CAMERA_MAX_HEIGHT = 3100");
+        write(&root.join("mod"), "common/defines/10_camera.lua", "local f = NDefines.NFrontend; f.CAMERA_MAX_HEIGHT = 4000 + 100");
+        let (resolver, admission) = admit_modvfs_fixture(&root);
+        let camera = ViewerMapCameraState::from_admitted_content(&resolver, &admission, 256, 128, 800, 600, 50.0).unwrap();
+        assert_eq!(camera.defines().unwrap().max_height(), 4100.0);
+        assert_eq!(hoi4_map_camera_defines_from_resolver(&resolver).unwrap().max_height(), 4100.0);
+        assert_eq!(camera.defines_content.len(), 2);
+        assert_eq!(camera.defines_content[1].winning_layer_ordinal, 1);
+        camera.validate().unwrap();
+        drop(resolver);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     use crate::test_support::*;
 
     use std::fs;
@@ -1655,7 +1620,7 @@ mod tests {
 
     #[test]
     fn hoi4_map_camera_defines_parse_graphics_defines() {
-        let defines = hoi4_map_camera_defines_from_source(&minimal_graphics_defines_source())
+        let defines = crate::test_support::with_define_fixture(&minimal_graphics_defines_source(), hoi4_map_camera_defines_from_resolver)
             .expect("parse the game graphics camera defines");
 
         assert_close(defines.min_height, 50.0);
@@ -1669,7 +1634,7 @@ mod tests {
 
     fn viewer_camera_fixture() -> ViewerMapCameraState {
         ViewerMapCameraState::new(
-            UsedContentKey {
+            vec![UsedContentKey {
                 effective_vfs_manifest_sha256: "a".repeat(64),
                 normalized_game_relative_path: BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE.into(),
                 winning_layer_ordinal: 0,
@@ -1678,7 +1643,7 @@ mod tests {
                 source_sha256: "b".repeat(64),
                 payload_sha256: "c".repeat(64),
                 payload_bytes: 1,
-            },
+            }],
             Hoi4MapCameraDefines::new(50.0, 3000.0, 200.0, 200.0, 50.0, 0.02, 6.0)
                 .expect("camera defines"),
             5632,
@@ -1875,32 +1840,10 @@ mod tests {
     }
 
     #[test]
-    fn hoi4_map_camera_defines_load_from_bundle_evidence() {
-        let root = temp_test_dir("hoi4_map_camera_defines_from_bundle");
-        fs::create_dir_all(&root).expect("create temp bundle dir");
-        let path = write_valid_map_frame_bundle(&root, |mut frame| {
-            frame.active_draw.draw_state = Some(valid_map_frame_draw_state());
-            for draw in &mut frame.draws {
-                draw.draw_state = Some(valid_map_frame_draw_state());
-            }
-            frame
-        });
-        let bundle =
-            NativeD3d11TerrainBundle::load(&path).expect("valid native D3D11 terrain bundle");
-
-        let defines =
-            hoi4_map_camera_defines_from_bundle(&bundle).expect("parse captured graphics defines");
-
-        assert_close(defines.min_height, 50.0);
-        assert_close(defines.max_height, 3000.0);
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn hoi4_map_camera_defines_fail_closed_on_missing_key() {
-        let err = hoi4_map_camera_defines_from_source(
+        let err = crate::test_support::with_define_fixture(
             r#"
-                NDefines_Graphics = {
+                NDefines = {
                     NGraphics = {
                         CAMERA_OUTSIDE_MAP_DISTANCE_TOP = 200.0,
                         CAMERA_OUTSIDE_MAP_DISTANCE_BOTTOM = 200.0,
@@ -1914,6 +1857,7 @@ mod tests {
                     },
                 }
             "#,
+            hoi4_map_camera_defines_from_resolver,
         )
         .expect_err("missing graphics define must fail closed");
 

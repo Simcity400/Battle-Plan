@@ -1736,8 +1736,8 @@ fn decode_game_texture(
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("dds") => Ok(game_ui::dds::decode_file(&path)?.image),
-        Some("tga") => Ok(game_ui::tga::decode_file(&path)?.image),
+        Some("dds") => Ok(game_ui::dds::decode_bytes(&resolver.read_required_bytes(logical_path, "flag texture")?)?.image),
+        Some("tga") => Ok(game_ui::tga::decode_bytes(&resolver.read_required_bytes(logical_path, "flag texture")?)?.image),
         _ => Err(format!("XMAP21 dynamic flag texture {logical_path:?} is not DDS or TGA").into()),
     }
 }

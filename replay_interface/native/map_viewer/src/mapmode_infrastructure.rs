@@ -22,35 +22,17 @@ pub const VANILLA_INFRA_GRADIENT_COLORS: InfraGradientColors = InfraGradientColo
 
 pub const VANILLA_INFRA_STATE_MAX: u32 = 5;
 
-fn parse_color4(source: &str, key: &str) -> Result<[f32; 4]> {
-    let values = crate::map_furniture::parse_lua_number_list(source, key)
-        .ok_or_else(|| format!("{INFRA_GRAPHICS_DEFINES_SOURCE}: missing colour define {key}"))?;
-    if values.len() != 4 {
-        return Err(format!(
-            "{INFRA_GRAPHICS_DEFINES_SOURCE}: {key} expected 4 components, got {}",
-            values.len()
-        )
-        .into());
-    }
-    Ok([values[0], values[1], values[2], values[3]])
-}
-
-pub fn infra_gradient_colors_from_source(source: &str) -> Result<InfraGradientColors> {
-    Ok(InfraGradientColors {
-        from: parse_color4(source, "MAP_MODE_INFRA_RANGE_COLOR_FROM")?,
-        to: parse_color4(source, "MAP_MODE_INFRA_RANGE_COLOR_TO")?,
-    })
-}
-
 pub fn infra_gradient_colors_from_resolver(
     resolver: &GameFileResolver,
 ) -> Result<InfraGradientColors> {
-    let path = resolver.resolve_required(
-        INFRA_GRAPHICS_DEFINES_SOURCE,
-        "infrastructure gradient colours",
-    )?;
-    let source = crate::read_latin1(&path)?;
-    infra_gradient_colors_from_source(&source)
+    let (sources, _) = crate::xmap09_lighting_law::effective_define_sources(resolver, "effective defines")?;
+    let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
+
+    Ok(InfraGradientColors {
+        from: evaluated.array("NMapMode", "MAP_MODE_INFRA_RANGE_COLOR_FROM")?,
+        to: evaluated.array("NMapMode", "MAP_MODE_INFRA_RANGE_COLOR_TO")?,
+    })
+
 }
 
 
@@ -161,7 +143,7 @@ fn parse_int_after_key(block: &str, key: &str) -> Option<u32> {
 pub fn infra_state_max_from_resolver(resolver: &GameFileResolver) -> Result<u32> {
     let path =
         resolver.resolve_required(INFRA_BUILDINGS_SOURCE, "infrastructure level_cap.state_max")?;
-    let source = crate::read_latin1(&path)?;
+    let source = resolver.read_required_text(INFRA_BUILDINGS_SOURCE, INFRA_BUILDINGS_SOURCE)?;
     parse_infrastructure_state_max(&source).ok_or_else(|| {
         format!("{INFRA_BUILDINGS_SOURCE}: infrastructure level_cap.state_max not found").into()
     })
@@ -278,7 +260,7 @@ buildings = {
 
     #[test]
     fn gradient_colors_parse_matches_vanilla_constant() {
-        let parsed = infra_gradient_colors_from_source(GRAPHICS_SNIPPET).expect("parse colours");
+        let parsed = crate::test_support::with_define_fixture(GRAPHICS_SNIPPET, infra_gradient_colors_from_resolver).expect("parse colours");
         assert_eq!(parsed, VANILLA_INFRA_GRADIENT_COLORS);
     }
 

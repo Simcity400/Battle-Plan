@@ -7,7 +7,7 @@ fn installed_game_root() -> std::path::PathBuf {
 fn parse(root: &std::path::Path, relative: &str) -> LayoutSet {
     let mut layouts = LayoutSet::default();
     layouts
-        .parse_file(&root.join(relative), relative)
+        .parse_content(&map_viewer::GameFileResolver::vanilla(&root).unwrap().read_required_bytes(relative, "fixture content").unwrap(), relative)
         .unwrap_or_else(|error| panic!("parse {relative}: {error}"));
     layouts
 }

@@ -8,17 +8,17 @@ use std::time::Instant;
 #[cfg(windows)]
 use winapi::um::d3dcommon::{D3D11_SRV_DIMENSION_TEXTURE2D, D3D11_SRV_DIMENSION_TEXTURECUBE};
 
-pub(crate) fn validate_production_terrain_renderer(bundle: &Path) -> Result<TerrainRendererInputs> {
-    validate_production_terrain_renderer_impl(bundle, true)
+pub(crate) fn validate_production_terrain_renderer(resolver: &crate::GameFileResolver, bundle: &Path) -> Result<TerrainRendererInputs> {
+    validate_production_terrain_renderer_impl(resolver, bundle, true)
 }
 
-pub(crate) fn validate_production_terrain_renderer_for_map_frame(
+pub(crate) fn validate_production_terrain_renderer_for_map_frame(resolver: &crate::GameFileResolver, 
     bundle: &Path,
 ) -> Result<TerrainRendererInputs> {
-    validate_production_terrain_renderer_impl(bundle, false)
+    validate_production_terrain_renderer_impl(resolver, bundle, false)
 }
 
-pub(crate) fn validate_production_terrain_renderer_impl(
+pub(crate) fn validate_production_terrain_renderer_impl(resolver: &GameFileResolver, 
     bundle: &Path,
     require_legacy_runtime_draw_inputs: bool,
 ) -> Result<TerrainRendererInputs> {
@@ -44,7 +44,7 @@ pub(crate) fn validate_production_terrain_renderer_impl(
             &manifest.files.terrain_runtime,
         )?;
         let runtime: TerrainRuntimeInputs = serde_json::from_slice(&fs::read(&terrain_runtime)?)?;
-        validate_terrain_runtime_inputs(&runtime, &manifest, bundle, &terrain_id_map)?;
+        validate_terrain_runtime_inputs(resolver, &runtime, &manifest, bundle, &terrain_id_map)?;
         (Some(terrain_id_map), Some(terrain_runtime), Some(runtime))
     } else {
         (None, None, None)
@@ -89,44 +89,40 @@ pub(crate) fn validate_production_terrain_renderer_impl(
             "height_normal",
             &manifest.files.height_normal,
         )?,
-        constants_source: required_map_source_path(bundle, &manifest, "gfx/FX/constants.fxh")?,
-        pdxmap_shader_source: required_map_source_path(bundle, &manifest, "gfx/FX/pdxmap.shader")?,
-        pdxmap_include_source: required_map_source_path(bundle, &manifest, "gfx/FX/pdxmap.fxh")?,
-        standard_functions_source: required_map_source_path(
-            bundle,
-            &manifest,
-            "gfx/FX/standardfuncsgfx.fxh",
-        )?,
-        shadow_include_source: required_map_source_path(bundle, &manifest, "gfx/FX/shadow.fxh")?,
-        fow_include_source: required_map_source_path(bundle, &manifest, "gfx/FX/fow.fxh")?,
+        constants_source: resolver.resolve_required("gfx/FX/constants.fxh", "authored shader source")?,
+        pdxmap_shader_source: resolver.resolve_required("gfx/FX/pdxmap.shader", "authored shader source")?,
+        pdxmap_include_source: resolver.resolve_required("gfx/FX/pdxmap.fxh", "authored shader source")?,
+        standard_functions_source: resolver.resolve_required("gfx/FX/standardfuncsgfx.fxh", "authored shader source")?,
+        shadow_include_source: resolver.resolve_required("gfx/FX/shadow.fxh", "authored shader source")?,
+        fow_include_source: resolver.resolve_required("gfx/FX/fow.fxh", "authored shader source")?,
         runtime,
     };
-    validate_pdxmap_sampler_contract(&inputs.pdxmap_shader_source)?;
-    validate_standard_function_shader_constant(
+    validate_pdxmap_sampler_contract(resolver, &inputs.pdxmap_shader_source)?;
+    validate_standard_function_shader_constant(resolver, 
         &inputs.standard_functions_source,
         "NIGHT_OPACITY",
         NIGHT_OPACITY,
     )?;
-    validate_standard_function_shader_constant(
+    validate_standard_function_shader_constant(resolver, 
         &inputs.standard_functions_source,
         "NIGHT_DARKNESS",
         NIGHT_DARKNESS,
     )?;
-    validate_occupation_mask_shader_source(&inputs.standard_functions_source)?;
-    validate_shader_source_vector3_constant(
+    validate_occupation_mask_shader_source(resolver, &inputs.standard_functions_source)?;
+    validate_shader_source_vector3_constant(resolver, 
         &inputs.fow_include_source,
         "gfx/FX/fow.fxh",
         "BRIGHT_FOW_COLOR",
         BRIGHT_FOW_COLOR,
     )?;
-    validate_shader_source_vector3_constant(
+    validate_shader_source_vector3_constant(resolver, 
         &inputs.fow_include_source,
         "gfx/FX/fow.fxh",
         "DARK_FOW_COLOR",
         DARK_FOW_COLOR,
     )?;
     if let Some(runtime) = &inputs.runtime {
-        validate_runtime_texture_sampler_contract(runtime, &inputs.pdxmap_shader_source)?;
+        validate_runtime_texture_sampler_contract(resolver, runtime, &inputs.pdxmap_shader_source)?;
     }
     validate_material_mip_outputs(&contract, bundle)?;
     validate_shader_constant(&contract, "TERRAIN_TILE_FREQ", TERRAIN_TILE_FREQ)?;
@@ -223,7 +219,6 @@ pub(crate) fn validate_map_frame_runtime_bundle(path: &Path) -> Result<MapFrameR
     validate_map_frame_runtime_bundle_for(path, TERRAIN_MAP_FRAME_SPEC)
 }
 
-#[cfg(test)]
 pub(crate) fn validate_map_frame_runtime_bundle_with_resolver(
     path: &Path,
     resolver: &GameFileResolver,
@@ -329,7 +324,7 @@ pub(crate) fn validate_map_frame_runtime_bundle_for_with_resolver(
     for draw in &frame.draws {
         validate_map_frame_draw(draw, &frame, &bundle_dir, spec)?;
     }
-    validate_map_frame_resources(&frame, &bundle_dir, spec)?;
+    validate_map_frame_resources(resolver, &frame, &bundle_dir, spec)?;
     Ok(frame)
 }
 
@@ -850,7 +845,7 @@ fn resolve_descriptor_only_static_texture(
             rejected.push(format!("{source}: not resolved"));
             continue;
         };
-        match static_texture_payload_from_source(name, source, &path, resource) {
+        match static_texture_payload_from_source(resolver, name, source, &path, resource) {
             Ok(payload) => matches.push(payload),
             Err(error) => rejected.push(format!("{source}: {error}")),
         }
@@ -876,6 +871,7 @@ fn resolve_descriptor_only_static_texture(
 }
 
 fn static_texture_payload_from_source(
+    resolver: &GameFileResolver,
     name: &str,
     source: &str,
     path: &Path,
@@ -883,9 +879,9 @@ fn static_texture_payload_from_source(
 ) -> Result<ResolvedStaticTexturePayload> {
     validate_static_texture_capture_descriptor(name, resource)?;
     let (bytes, subresources) = if source.ends_with(".bmp") {
-        static_bmp_texture_payload(path, resource)?
+        static_bmp_texture_payload(resolver, path, resource)?
     } else {
-        static_dds_texture_payload(path, resource)?
+        static_dds_texture_payload(resolver, path, resource)?
     };
     let fnv1a64 = fnv1a64_bytes(&bytes);
     Ok(ResolvedStaticTexturePayload {
@@ -942,10 +938,11 @@ fn validate_static_texture_capture_descriptor(
 }
 
 fn static_dds_texture_payload(
+    resolver: &GameFileResolver,
     path: &Path,
     resource: &MapFrameTextureBinding,
 ) -> Result<(Vec<u8>, Vec<MapFrameTextureSubresource>)> {
-    let data = fs::read(path)?;
+    let data = resolver.read_resolved_bytes(path)?;
     if data.len() < 128 || data.get(0..4) != Some(b"DDS ") {
         return Err(format!("{} is not a complete legacy DDS", path.display()).into());
     }
@@ -1062,6 +1059,7 @@ fn static_dds_texture_payload(
 }
 
 fn static_bmp_texture_payload(
+    resolver: &GameFileResolver,
     path: &Path,
     resource: &MapFrameTextureBinding,
 ) -> Result<(Vec<u8>, Vec<MapFrameTextureSubresource>)> {
@@ -1072,7 +1070,7 @@ fn static_bmp_texture_payload(
         )
         .into());
     }
-    let image = load_bmp_rgbx(path)?;
+    let image = decode_bmp_rgbx(&resolver.read_resolved_bytes(path)?, path)?;
     if image.width as u32 != resource.width || image.height as u32 != resource.height {
         return Err(format!(
             "BMP descriptor is {}x{}, captured descriptor is {}x{}",
@@ -1902,8 +1900,8 @@ pub(crate) fn validate_map_frame_vanilla_sources(
                 source,
                 &format!("effective-VFS source required by {}", spec.renderer_label),
             )?;
-            let actual_len = usize::try_from(fs::metadata(&resolved)?.len())?;
-            let actual_hash = fnv1a64_file(&resolved)?;
+            let actual_len = resolver.read_resolved_bytes(&resolved)?.len();
+            let actual_hash = fnv1a64_bytes(&resolver.read_resolved_bytes(&resolved)?);
             if actual_len != evidence.byte_len || actual_hash != evidence.fnv1a64 {
                 return Err(format!(
                     "{} blocked: effective-VFS source {source} at {} does not match the replay-captured content identity (bytes {} vs {}, fnv1a64 {} vs {})",
@@ -2095,12 +2093,12 @@ pub(crate) fn validate_map_frame_base_terrain_shipped_resources(
     .into())
 }
 
-pub(crate) fn validate_map_frame_post_diffuse_inputs(
+pub(crate) fn validate_map_frame_post_diffuse_inputs(resolver: &crate::GameFileResolver, 
     frame: &MapFrameRuntimeBundle,
     bundle: &Path,
     map_frame_bundle_dir: &Path,
 ) -> Result<()> {
-    let blockers = map_frame_post_diffuse_input_blockers(frame, bundle, map_frame_bundle_dir);
+    let blockers = map_frame_post_diffuse_input_blockers(resolver, frame, bundle, map_frame_bundle_dir);
     if blockers.is_empty() {
         return Ok(());
     }
@@ -2111,7 +2109,7 @@ pub(crate) fn validate_map_frame_post_diffuse_inputs(
     .into())
 }
 
-pub(crate) fn map_frame_post_diffuse_input_blockers(
+pub(crate) fn map_frame_post_diffuse_input_blockers(resolver: &crate::GameFileResolver, 
     frame: &MapFrameRuntimeBundle,
     bundle: &Path,
     map_frame_bundle_dir: &Path,
@@ -2154,7 +2152,7 @@ pub(crate) fn map_frame_post_diffuse_input_blockers(
                 &mut blockers,
             );
         }
-        validate_map_frame_post_diffuse_vertex_outputs(
+        validate_map_frame_post_diffuse_vertex_outputs(resolver, 
             frame,
             draw,
             bundle,
@@ -2168,7 +2166,7 @@ pub(crate) fn map_frame_post_diffuse_input_blockers(
     blockers
 }
 
-pub(crate) fn validate_map_frame_post_diffuse_vertex_outputs(
+pub(crate) fn validate_map_frame_post_diffuse_vertex_outputs(resolver: &crate::GameFileResolver, 
     frame: &MapFrameRuntimeBundle,
     draw: &MapFrameDraw,
     bundle: &Path,
@@ -2182,7 +2180,7 @@ pub(crate) fn validate_map_frame_post_diffuse_vertex_outputs(
             return;
         }
     };
-    match decode_map_frame_terrain_draw_outputs(draw, map_frame_bundle_dir, constants) {
+    match decode_map_frame_terrain_draw_outputs(resolver, draw, map_frame_bundle_dir, constants) {
         Ok((outputs, _)) => {
             if outputs.iter().any(|output| {
                 [
@@ -2712,7 +2710,7 @@ pub(crate) fn validate_map_frame_input_layout(
     Ok(())
 }
 
-pub(crate) fn validate_map_frame_resources(
+pub(crate) fn validate_map_frame_resources(resolver: Option<&crate::GameFileResolver>, 
     frame: &MapFrameRuntimeBundle,
     bundle_dir: &Path,
     spec: MapFrameBundleValidationSpec,
@@ -2722,15 +2720,15 @@ pub(crate) fn validate_map_frame_resources(
     }
     for draw in &frame.draws {
         if spec.terrain_strict {
-            validate_map_frame_draw_resources(draw, frame, bundle_dir)?;
+            validate_map_frame_draw_resources(resolver, draw, frame, bundle_dir)?;
         } else {
-            validate_generic_map_frame_draw_resources(draw, frame, bundle_dir, spec)?;
+            validate_generic_map_frame_draw_resources(resolver, draw, frame, bundle_dir, spec)?;
         }
     }
     Ok(())
 }
 
-pub(crate) fn validate_generic_map_frame_draw_resources(
+pub(crate) fn validate_generic_map_frame_draw_resources(resolver: Option<&crate::GameFileResolver>, 
     draw: &MapFrameDraw,
     frame: &MapFrameRuntimeBundle,
     bundle_dir: &Path,
@@ -2764,8 +2762,8 @@ pub(crate) fn validate_generic_map_frame_draw_resources(
             spec.renderer_label,
         )?;
     }
-    if spec.capture_moment == WATER_CAPTURE_MOMENT {
-        validate_map_frame_app_camera_constant_buffer_coverage(
+    if let Some(resolver) = resolver.filter(|_| spec.capture_moment == WATER_CAPTURE_MOMENT) {
+        validate_map_frame_app_camera_constant_buffer_coverage(resolver, 
             draw,
             bundle_dir,
             spec.renderer_label,
@@ -2784,7 +2782,11 @@ pub(crate) fn validate_generic_map_frame_draw_resources(
     validate_map_frame_reflected_resource_bindings(draw, spec.renderer_label)?;
     validate_map_frame_reflected_sampler_bindings(draw, spec.renderer_label)?;
     if spec.capture_moment == WATER_CAPTURE_MOMENT {
-        validate_pdxwater_sampler_contract(draw, frame, bundle_dir, spec.renderer_label)?;
+        if let Some(resolver) = resolver {
+            validate_pdxwater_sampler_contract(resolver, draw, frame, bundle_dir, spec.renderer_label)?;
+        } else if let Some(blocker) = pdxwater_sampler_binding_blockers(draw).into_iter().next() {
+            return Err(blocker.into());
+        }
     }
     for resource in &draw.shader_resources {
         validate_map_frame_texture_file(bundle_dir, resource)?;
@@ -2890,7 +2892,7 @@ pub(crate) fn is_clear_provenance_blocker(blocker: &str) -> bool {
         || blocker.contains("no captured ClearDepthStencilView provenance")
 }
 
-pub(crate) fn validate_map_frame_draw_resources(
+pub(crate) fn validate_map_frame_draw_resources(resolver: Option<&GameFileResolver>, 
     draw: &MapFrameDraw,
     frame: &MapFrameRuntimeBundle,
     bundle_dir: &Path,
@@ -2908,13 +2910,14 @@ pub(crate) fn validate_map_frame_draw_resources(
     for constant_buffer in &draw.constant_buffers {
         validate_map_frame_constant_buffer(bundle_dir, constant_buffer)?;
     }
+    if let Some(resolver) = resolver {
     let mut has_ps_terrain_scene_cb0 = false;
     for buffer in draw
         .constant_buffers
         .iter()
         .filter(|buffer| buffer.stage == "PS" && buffer.slot == TERRAIN_SCENE_CB0_BIND_POINT)
     {
-        if terrain_scene_cb0_camera_layout_for_binding(bundle_dir, draw, buffer, buffer.byte_len)?
+        if terrain_scene_cb0_camera_layout_for_binding(resolver, bundle_dir, draw, buffer, buffer.byte_len)?
             .is_some()
         {
             has_ps_terrain_scene_cb0 = true;
@@ -2927,6 +2930,7 @@ pub(crate) fn validate_map_frame_draw_resources(
             draw.draw_index
         )
         .into());
+    }
     }
     if draw.draw_call.contains("Indexed") {
         let index_buffer = draw.index_buffer.as_ref().ok_or(
@@ -3042,14 +3046,14 @@ pub(crate) fn map_frame_reflected_constant_buffer_binding_blockers(
     blockers
 }
 
-pub(crate) fn validate_map_frame_app_camera_constant_buffer_coverage(
+pub(crate) fn validate_map_frame_app_camera_constant_buffer_coverage(resolver: &GameFileResolver, 
     draw: &MapFrameDraw,
     bundle_dir: &Path,
     renderer_label: &str,
 ) -> Result<()> {
     let mut found = false;
     for binding in &draw.constant_buffers {
-        if terrain_scene_cb0_camera_layout_for_binding(bundle_dir, draw, binding, binding.byte_len)?
+        if terrain_scene_cb0_camera_layout_for_binding(resolver, bundle_dir, draw, binding, binding.byte_len)?
             .is_some()
         {
             validate_camera_constant_buffer_update_binding(
@@ -3144,13 +3148,13 @@ pub(crate) fn map_frame_reflected_sampler_binding_blockers(draw: &MapFrameDraw) 
     blockers
 }
 
-pub(crate) fn validate_pdxwater_sampler_contract(
+pub(crate) fn validate_pdxwater_sampler_contract(resolver: &GameFileResolver,
     draw: &MapFrameDraw,
     frame: &MapFrameRuntimeBundle,
     bundle_dir: &Path,
     renderer_label: &str,
 ) -> Result<()> {
-    let shader_source = map_frame_water_shader_source(frame, bundle_dir, renderer_label)?;
+    let shader_source = map_frame_water_shader_source(resolver, frame, renderer_label)?;
     for expectation in PDXWATER_SAMPLER_EXPECTATIONS {
         validate_shader_sampler_expectation_against_source(
             &shader_source,
@@ -3166,16 +3170,16 @@ pub(crate) fn validate_pdxwater_sampler_contract(
 }
 
 pub(crate) fn map_frame_water_shader_source(
+    resolver: &GameFileResolver,
     frame: &MapFrameRuntimeBundle,
-    bundle_dir: &Path,
     renderer_label: &str,
 ) -> Result<String> {
-    let evidence = frame.vanilla_sources.get(PDXWATER_SHADER_SOURCE).ok_or_else(|| {
+    frame.vanilla_sources.get(PDXWATER_SHADER_SOURCE).ok_or_else(|| {
         format!(
             "{renderer_label} blocked: map-frame bundle is missing vanilla source evidence for {PDXWATER_SHADER_SOURCE}"
         )
     })?;
-    fs::read_to_string(bundle_dir.join(&evidence.file)).map_err(|error| {
+    resolver.read_required_text(PDXWATER_SHADER_SOURCE, renderer_label).map_err(|error| {
         format!(
             "{renderer_label} blocked: vanilla source evidence {PDXWATER_SHADER_SOURCE} is unreadable: {error}"
         )
@@ -3732,7 +3736,7 @@ pub(crate) fn validate_map_frame_index_buffer(
     Ok(())
 }
 
-pub(crate) fn validate_terrain_runtime_inputs(
+pub(crate) fn validate_terrain_runtime_inputs(resolver: &crate::GameFileResolver, 
     runtime: &TerrainRuntimeInputs,
     manifest: &Manifest,
     bundle: &Path,
@@ -3810,7 +3814,7 @@ pub(crate) fn validate_terrain_runtime_inputs(
         validate_runtime_texture_input(symbol, texture, manifest, bundle)?;
     }
     for (symbol, constant_buffer) in &runtime.runtime_constant_buffers {
-        validate_runtime_constant_buffer_input(symbol, constant_buffer, manifest, bundle)?;
+        validate_runtime_constant_buffer_input(resolver, symbol, constant_buffer, manifest, bundle)?;
     }
     for (symbol, vertex_buffer) in &runtime.runtime_vertex_buffers {
         validate_runtime_vertex_buffer_input(symbol, vertex_buffer, bundle)?;
@@ -4425,7 +4429,7 @@ pub(crate) fn validate_material_mip_outputs(
     Ok(())
 }
 
-pub(crate) fn validate_runtime_constant_buffer_input(
+pub(crate) fn validate_runtime_constant_buffer_input(resolver: &GameFileResolver, 
     symbol: &str,
     constant_buffer: &RuntimeConstantBufferRuntimeMeta,
     manifest: &Manifest,
@@ -4455,8 +4459,8 @@ pub(crate) fn validate_runtime_constant_buffer_input(
         .into());
     }
     let standard_functions_source =
-        required_map_source_path(bundle, manifest, "gfx/FX/standardfuncsgfx.fxh")?;
-    let standard_functions_text = read_latin1(&standard_functions_source)?;
+        resolver.resolve_required("gfx/FX/standardfuncsgfx.fxh", "authored shader source")?;
+    let standard_functions_text = resolver.read_resolved_text(&standard_functions_source)?;
     let layout = terrain_scene_cb0_layout(&standard_functions_text)?;
     if constant_buffer.layout_source != TERRAIN_SCENE_CB0_LAYOUT_SOURCE {
         return Err(format!(
@@ -4573,11 +4577,11 @@ pub(crate) fn validate_runtime_texture_input(
     Ok(())
 }
 
-pub(crate) fn validate_runtime_texture_sampler_contract(
+pub(crate) fn validate_runtime_texture_sampler_contract(resolver: &GameFileResolver, 
     runtime: &TerrainRuntimeInputs,
     pdxmap_shader_source: &Path,
 ) -> Result<()> {
-    let text = read_latin1(pdxmap_shader_source)?;
+    let text = resolver.read_resolved_text(pdxmap_shader_source)?;
     for (symbol, texture) in &runtime.runtime_textures {
         let expected = parse_pdxmap_sampler_contract(&text, symbol)?;
         if texture.sampler != expected {
@@ -4712,7 +4716,7 @@ mod tests {
             DXGI_FORMAT_BC3_UNORM_SRGB,
         );
 
-        let payload = static_texture_payload_from_source(
+        let payload = static_texture_payload_from_source(&crate::test_support::fixture_game_resolver(&root), 
             TERRAIN_DIFFUSE_SYMBOL,
             "map/terrain/atlas0.dds",
             &path,
@@ -4741,7 +4745,7 @@ mod tests {
         let resource =
             static_texture_test_descriptor("HeightNormal", 1, 2, 1, 1, DXGI_FORMAT_B8G8R8X8_UNORM);
 
-        let payload = static_texture_payload_from_source(
+        let payload = static_texture_payload_from_source(&crate::test_support::fixture_game_resolver(&root), 
             "HeightNormal",
             "map/world_normal.bmp",
             &path,
@@ -5923,7 +5927,7 @@ mod tests {
         let frame = validate_map_frame_runtime_bundle(&path)
             .expect("base map-frame validation should accept SnowMudData");
 
-        let err = validate_map_frame_post_diffuse_inputs(&frame, &map_bundle, &root)
+        let err = validate_map_frame_post_diffuse_inputs(&crate::test_support::fixture_game_resolver(&root), &frame, &map_bundle, &root)
             .expect_err("post-diffuse shader path must fail closed until all inputs are proven");
         let message = err.to_string();
         assert!(!message.contains(SNOW_TEXTURE_SYMBOL));
@@ -5959,7 +5963,7 @@ mod tests {
             .reflection_resources
             .remove(SNOW_TEXTURE_SYMBOL);
 
-        let err = validate_map_frame_post_diffuse_inputs(&frame, &map_bundle, &root)
+        let err = validate_map_frame_post_diffuse_inputs(&crate::test_support::fixture_game_resolver(&root), &frame, &map_bundle, &root)
             .expect_err("post-diffuse gate must inspect every captured draw");
         let message = err.to_string();
         assert!(message.contains("draw 0"), "{message}");
@@ -5986,7 +5990,7 @@ mod tests {
         let frame = validate_map_frame_runtime_bundle(&path)
             .expect("base map-frame validation should accept PS TerrainSceneCB0");
 
-        let err = validate_map_frame_post_diffuse_inputs(&frame, &map_bundle, &root)
+        let err = validate_map_frame_post_diffuse_inputs(&crate::test_support::fixture_game_resolver(&root), &frame, &map_bundle, &root)
             .expect_err("post-diffuse shader path must fail closed without VS interpolant proof");
         let message = err.to_string();
         assert!(
@@ -6233,7 +6237,7 @@ mod tests {
         let water_bundle = NativeD3d11TerrainBundle::load_water(&path)
             .expect("water bundle can rely on app-owned WaterRefraction bytes");
         let camera = terrain_bundle
-            .production_camera_from_capture()
+            .production_camera_from_capture(&crate::test_support::fixture_game_resolver(&root))
             .expect("derive production camera");
         let graph = ProductionMapPassGraph::from_terrain_capture(&terrain_bundle, camera)
             .expect("terrain graph");
@@ -6697,7 +6701,7 @@ mod tests {
             frame
         });
 
-        let err = validate_map_frame_runtime_bundle_for(&path, WATER_MAP_FRAME_SPEC)
+        let err = validate_map_frame_runtime_bundle_for_with_resolver(&path, WATER_MAP_FRAME_SPEC, Some(&crate::test_support::fixture_game_resolver(&root)))
             .expect_err("water validator must require updateable camera constant buffers");
         let message = err.to_string();
         assert!(message.contains(TERRAIN_SCENE_CB0_SYMBOL));
@@ -6732,7 +6736,7 @@ mod tests {
             frame
         });
 
-        validate_map_frame_runtime_bundle_for(&path, WATER_MAP_FRAME_SPEC)
+        validate_map_frame_runtime_bundle_for_with_resolver(&path, WATER_MAP_FRAME_SPEC, Some(&crate::test_support::fixture_game_resolver(&root)))
             .expect("water validator must accept dynamic dx11_cb0 camera constant buffers");
         let _ = fs::remove_dir_all(root);
     }
@@ -7189,7 +7193,7 @@ mod tests {
         };
         write_json(&root.join("map_material_contract.json"), &contract).expect("write contract");
 
-        let err = validate_production_terrain_renderer(&root)
+        let err = validate_production_terrain_renderer(&crate::test_support::fixture_game_resolver(&root), &root)
             .expect_err("missing TerrainIDMap must block renderer");
         assert!(err.to_string().contains("TerrainIDMap"));
         let _ = fs::remove_dir_all(&root);
@@ -7209,7 +7213,7 @@ mod tests {
         fs::write(root.join(&manifest.files.terrain_id_map), [0u8; 16])
             .expect("write orphan terrain id map");
 
-        let err = validate_production_terrain_renderer(&root)
+        let err = validate_production_terrain_renderer(&crate::test_support::fixture_game_resolver(&root), &root)
             .expect_err("orphan TerrainIDMap without runtime metadata must block renderer");
         assert!(err.to_string().contains("terrain runtime input contract"));
         let _ = fs::remove_dir_all(&root);
@@ -7272,7 +7276,8 @@ mod tests {
         }
         for (source, output) in &manifest.files.map_sources {
             let bytes = minimal_map_source_bytes(source);
-            fs::write(root.join(output), bytes).expect("write map source file");
+            fs::write(root.join(output), &bytes).expect("write map source file");
+            crate::test_support::write_modvfs_fixture(&root.join("vanilla"), source, &bytes);
         }
         fs::write(root.join(&manifest.files.height_normal), [3u8]).expect("write height normal");
         fs::write(root.join(&manifest.files.terrain_diffuse_atlas_mips), [4u8])
@@ -7287,12 +7292,12 @@ mod tests {
         write_json(&root.join(&manifest.files.terrain_runtime), &runtime)
             .expect("write runtime contract");
 
-        let err = validate_production_terrain_renderer(&root)
+        let err = validate_production_terrain_renderer(&crate::test_support::fixture_game_resolver(&root), &root)
             .expect_err("slot 1 terrain input without slot 1 vertex buffer capture must block");
         assert!(err.to_string().contains("input slot(s)"));
         assert!(err.to_string().contains("slot 0"));
 
-        let map_frame_inputs = validate_production_terrain_renderer_for_map_frame(&root).expect(
+        let map_frame_inputs = validate_production_terrain_renderer_for_map_frame(&crate::test_support::fixture_game_resolver(&root), &root).expect(
             "map-frame renderer validates captured draw bundles instead of legacy slot 0 metadata",
         );
         assert!(map_frame_inputs.runtime.is_none());

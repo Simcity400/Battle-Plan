@@ -19,28 +19,17 @@ pub const VANILLA_ADMIN_MAPMODE_DEFINES: AdminMapModeDefines = AdminMapModeDefin
     player_not_selected_transparency: 0.15,
 };
 
-pub fn admin_mapmode_defines_from_source(source: &str) -> Result<AdminMapModeDefines> {
-    Ok(AdminMapModeDefines {
-        ideology_color_transparency: crate::parse_lua_number_define(
-            source,
-            "MAP_MODE_IDEOLOGY_COLOR_TRANSPARENCY",
-        )?,
-        player_not_selected_transparency: crate::parse_lua_number_define(
-            source,
-            "PLAYER_MAPMODE_NOT_SELECTED_COUNTRY_TRANSPARENCY",
-        )?,
-    })
-}
-
 pub fn admin_mapmode_defines_from_resolver(
     resolver: &GameFileResolver,
 ) -> Result<AdminMapModeDefines> {
-    let path = resolver.resolve_required(
-        ADMIN_MAPMODE_GRAPHICS_DEFINES_SOURCE,
-        "admin map-mode graphics defines",
-    )?;
-    let source = crate::read_latin1(&path)?;
-    admin_mapmode_defines_from_source(&source)
+    let (sources, _) = crate::xmap09_lighting_law::effective_define_sources(resolver, "effective defines")?;
+    let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
+
+    Ok(AdminMapModeDefines {
+        ideology_color_transparency: evaluated.scalar("NMapMode", "MAP_MODE_IDEOLOGY_COLOR_TRANSPARENCY")?,
+        player_not_selected_transparency: evaluated.scalar("NMapMode", "PLAYER_MAPMODE_NOT_SELECTED_COUNTRY_TRANSPARENCY")?,
+    })
+
 }
 
 fn alpha_byte(ratio: f32) -> u8 {
@@ -135,7 +124,7 @@ pub fn ideology_colors_from_resolver(resolver: &GameFileResolver) -> Result<Ideo
     let files = resolver.resolve_dir_files_recursive(IDEOLOGIES_DIR, Some("txt"))?;
     let mut out = IdeologyColorTable::default();
     for (_, path) in &files {
-        let source = crate::read_latin1(path)?;
+        let source = resolver.read_resolved_text(path)?;
         parse_ideology_colors_into(&source, &mut out)?;
     }
     if out.colors.is_empty() {
@@ -375,7 +364,7 @@ NDefines = {
 
     #[test]
     fn defines_parse_matches_vanilla_constant() {
-        let parsed = admin_mapmode_defines_from_source(GRAPHICS_SNIPPET).expect("parse defines");
+        let parsed = crate::test_support::with_define_fixture(GRAPHICS_SNIPPET, admin_mapmode_defines_from_resolver).expect("parse defines");
         assert_eq!(parsed, VANILLA_ADMIN_MAPMODE_DEFINES);
         assert_eq!(alpha_byte(parsed.ideology_color_transparency), 255);
         assert_eq!(alpha_byte(parsed.player_not_selected_transparency), 38);

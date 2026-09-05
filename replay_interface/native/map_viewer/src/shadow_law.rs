@@ -490,7 +490,7 @@ fn read_source(resolver: &GameFileResolver, rel: &str) -> Result<String> {
     let path = resolver.resolve(rel)?.ok_or_else(|| {
         Box::<dyn std::error::Error>::from(format!("shadow_law: resolver could not find {rel}"))
     })?;
-    Ok(std::fs::read_to_string(path)?)
+    Ok(resolver.read_required_text(rel, rel)?)
 }
 
 #[cfg(test)]

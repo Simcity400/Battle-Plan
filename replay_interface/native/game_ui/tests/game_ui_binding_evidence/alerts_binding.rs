@@ -289,7 +289,7 @@ mod layout_gate {
     use game_ui::assets::AssetResolver;
     use game_ui::compose::{resolve_element_rect, ComposeOptions, Rect};
     use game_ui::gui::LayoutSet;
-    use game_ui::paradox_text::parse_file;
+    use game_ui::paradox_text::parse_checked_bytes;
     use game_ui::topbar::{resolve_topbar_rects_pure, TopbarLayout, TOPBAR_WINDOW_NAME};
 
     fn hoi4_root() -> PathBuf {
@@ -300,7 +300,7 @@ mod layout_gate {
         let resolved = resolver
             .resolve_file(rel)
             .unwrap_or_else(|err| panic!("resolve {rel}: {err}"));
-        let doc = parse_file(&resolved.path).unwrap_or_else(|err| panic!("parse {rel}: {err}"));
+        let doc = parse_checked_bytes(&resolver.read_file(&resolved).unwrap(), &resolved.rel_path).unwrap_or_else(|err| panic!("parse {rel}: {err}"));
         let mut set = LayoutSet::default();
         set.add_document(&resolved.rel_path, &doc);
         set

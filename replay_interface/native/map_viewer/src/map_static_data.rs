@@ -1,4 +1,5 @@
 use crate::*;
+#[cfg(test)]
 use std::fs;
 
 const MAP_BUILDINGS_SOURCE: &str = "map/buildings.txt";
@@ -423,7 +424,7 @@ fn parse_resolved_game_file<T>(
     parse: impl FnOnce(&str) -> Result<T>,
 ) -> Result<T> {
     let path = resolver.resolve_required(source, source)?;
-    let bytes = fs::read(&path).map_err(|err| {
+    let bytes = resolver.read_required_bytes(source, source).map_err(|err| {
         format!(
             "failed to read {source} resolved to {}: {err}",
             path.display()

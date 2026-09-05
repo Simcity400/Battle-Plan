@@ -285,7 +285,7 @@ pub(crate) fn decode_reflection_cube_payload(
     let path = resolver
         .resolve_required(REFLECTION_CUBE_DDS_SOURCE, "water reflection cubemap DDS")
         .map_err(|e| format!("resolve {REFLECTION_CUBE_DDS_SOURCE}: {e}"))?;
-    let data = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let data = resolver.read_required_bytes(REFLECTION_CUBE_DDS_SOURCE, REFLECTION_CUBE_DDS_SOURCE).map_err(|e| format!("read {}: {e}", path.display()))?;
     let cube = parse_reflection_dds(&data, &path.to_string_lossy())?;
     repack_to_captured_layout(&cube, resource)
 }

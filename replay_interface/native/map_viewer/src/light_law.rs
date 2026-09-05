@@ -235,68 +235,6 @@ pub fn ambient_rig_residual(captured: &[[f32; 3]; 6], composed: &[[f32; 3]; 6]) 
     worst
 }
 
-pub fn ambient_light_hsv_defines_from_graphics_source(
-    source: &str,
-) -> Result<[[f32; 3]; 6], String> {
-    const KEYS: [&str; 6] = [
-        "AMBIENT_LIGHT_POS_X",
-        "AMBIENT_LIGHT_NEG_X",
-        "AMBIENT_LIGHT_POS_Y",
-        "AMBIENT_LIGHT_NEG_Y",
-        "AMBIENT_LIGHT_POS_Z",
-        "AMBIENT_LIGHT_NEG_Z",
-    ];
-    let mut out = [[0.0f32; 3]; 6];
-    let mut found = [false; 6];
-    for raw in source.lines() {
-        let code = raw.split("--").next().unwrap_or(raw).trim();
-        let Some((lhs, rhs)) = code.split_once('=') else {
-            continue;
-        };
-        let key = lhs.trim();
-        let Some(slot) = KEYS.iter().position(|k| *k == key) else {
-            continue;
-        };
-        let open = rhs.find('{').ok_or_else(|| {
-            format!("00_graphics.lua {key} has no {{ h, s, v }} table on its line")
-        })?;
-        let close = rhs[open + 1..]
-            .find('}')
-            .ok_or_else(|| format!("00_graphics.lua {key} table is unterminated on its line"))?;
-        let inner = &rhs[open + 1..open + 1 + close];
-        let mut triple = [0.0f32; 3];
-        let mut count = 0usize;
-        for token in inner.split(',') {
-            let token = token.trim();
-            if token.is_empty() {
-                continue;
-            }
-            if count >= 3 {
-                count += 1;
-                break;
-            }
-            triple[count] = token
-                .parse::<f32>()
-                .map_err(|err| format!("00_graphics.lua {key} component {count}: {err}"))?;
-            count += 1;
-        }
-        if count != 3 {
-            return Err(format!(
-                "00_graphics.lua {key} must have exactly 3 HSV components, found {count}"
-            ));
-        }
-        if found[slot] {
-            return Err(format!("00_graphics.lua defines {key} more than once"));
-        }
-        out[slot] = triple;
-        found[slot] = true;
-    }
-    if let Some(missing) = KEYS.iter().zip(found.iter()).find(|(_, f)| !**f) {
-        return Err(format!("00_graphics.lua is missing {}", missing.0));
-    }
-    Ok(out)
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct LightingLawResidual {
     pub sun_height_residual: f32,
@@ -715,6 +653,17 @@ mod tests {
         );
     }
 
+    fn ambient_from_resolver(resolver: &crate::GameFileResolver) -> crate::Result<[[f32; 3]; 6]> {
+        let (sources, _) = crate::xmap09_lighting_law::effective_define_sources(resolver, "ambient fixture")?;
+        let evaluated = crate::EffectiveDefines::from_sources(&sources)?;
+        let mut values = [[0.0; 3]; 6];
+        for (slot, key) in ["AMBIENT_LIGHT_POS_X", "AMBIENT_LIGHT_NEG_X", "AMBIENT_LIGHT_POS_Y",
+            "AMBIENT_LIGHT_NEG_Y", "AMBIENT_LIGHT_POS_Z", "AMBIENT_LIGHT_NEG_Z"].iter().enumerate() {
+            values[slot] = evaluated.array("NGraphics", key)?;
+        }
+        Ok(values)
+    }
+
     #[test]
     fn ambient_light_defines_parse_from_lua_source() {
         let source = r#"
@@ -726,12 +675,16 @@ mod tests {
 	AMBIENT_LIGHT_POS_Z = { 0.6,  0.2, 0.924 }, -- top
 	AMBIENT_LIGHT_NEG_Z = { 0.55, 0.1, 0.9 }, -- bottom
 "#;
-        let parsed = ambient_light_hsv_defines_from_graphics_source(source)
+        let parsed = crate::test_support::with_define_fixture(
+            &format!("NDefines = {{ NGraphics = {{ {source} }} }}"), ambient_from_resolver,
+        )
             .expect("parse AMBIENT_LIGHT_* from lua source");
         assert_eq!(parsed, vanilla_ambient_light_hsv_defines());
-        let err = ambient_light_hsv_defines_from_graphics_source("AMBIENT_LIGHT_POS_X = { 0 }")
+        let err = crate::test_support::with_define_fixture(
+            "NDefines = { NGraphics = { AMBIENT_LIGHT_POS_X = { 0 } } }", ambient_from_resolver,
+        )
             .expect_err("must fail closed");
-        assert!(err.contains("AMBIENT_LIGHT_POS_X"), "{err}");
+        assert!(err.to_string().contains("AMBIENT_LIGHT_POS_X"), "{err}");
     }
 
     #[test]
@@ -740,10 +693,10 @@ mod tests {
         ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
     )]
     fn gate_vanilla_graphics_lua_ambient_defines_compose_to_captured_rig() {
-        let path =
-            replay_test_gates::require_vanilla_game_root().join("common/defines/00_graphics.lua");
-        let source = std::fs::read_to_string(&path).expect("read shipped 00_graphics.lua");
-        let parsed = ambient_light_hsv_defines_from_graphics_source(&source)
+        let resolver = crate::GameFileResolver::vanilla(
+            replay_test_gates::require_vanilla_game_root(),
+        ).expect("installed resolver");
+        let parsed = ambient_from_resolver(&resolver)
             .expect("parse AMBIENT_LIGHT_* from the shipped 00_graphics.lua");
         assert_eq!(
             parsed,

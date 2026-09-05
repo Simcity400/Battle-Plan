@@ -190,12 +190,12 @@ impl RiverWorldMesh {
 
 pub fn rivers_bmp_from_resolver(resolver: &GameFileResolver) -> Result<IndexImage> {
     let path = resolver.resolve_required(RIVERS_BMP_SOURCE, "rivers.bmp")?;
-    load_bmp_indexed(&path)
+    decode_bmp_indexed(&resolver.read_resolved_bytes(&path)?, &path)
 }
 
 pub fn heightmap_bmp_from_resolver(resolver: &GameFileResolver) -> Result<IndexImage> {
     let path = resolver.resolve_required(HEIGHTMAP_BMP_SOURCE, "heightmap.bmp")?;
-    load_bmp_indexed(&path)
+    decode_bmp_indexed(&resolver.read_resolved_bytes(&path)?, &path)
 }
 
 pub fn synthesize_river_world_mesh_from_resolver(
@@ -1248,8 +1248,9 @@ mod tests {
     }
 
     fn vanilla_palette_defines() -> RiverPaletteDefines {
-        RiverPaletteDefines::from_defines_source(
-            "RIVER_SMALL_START_INDEX = 0,\nRIVER_SMALL_STOP_INDEX = 6,\nRIVER_LARGE_STOP_INDEX = 11,",
+        crate::test_support::with_define_fixture(
+            "NDefines = { NMilitary = { RIVER_SMALL_START_INDEX = 0, RIVER_SMALL_STOP_INDEX = 2 * 3, RIVER_LARGE_STOP_INDEX = 11 } }",
+            RiverPaletteDefines::from_resolver,
         )
         .expect("vanilla palette defines")
     }
@@ -1419,7 +1420,7 @@ mod tests {
         fs::create_dir_all(vanilla.join("common").join("defines")).unwrap();
         fs::write(
             vanilla.join("common").join("defines").join("00_defines.lua"),
-            "RIVER_SMALL_START_INDEX = 0,\nRIVER_SMALL_STOP_INDEX = 6,\nRIVER_LARGE_STOP_INDEX = 11,\n",
+            "NDefines = { NMilitary = { RIVER_SMALL_START_INDEX = 0, RIVER_SMALL_STOP_INDEX = 6, RIVER_LARGE_STOP_INDEX = 11 } }",
         )
         .unwrap();
         fs::write(
@@ -1427,7 +1428,7 @@ mod tests {
                 .join("common")
                 .join("defines")
                 .join("00_graphics.lua"),
-            "RIVER_FADE_FROM = 20.0,\nRIVER_FADE_TO = 3.0,\n",
+            "NDefines.NGraphics = { RIVER_FADE_FROM = 20.0, RIVER_FADE_TO = 3.0 }",
         )
         .unwrap();
         let mesh = synthesize_river_world_mesh_from_resolver(

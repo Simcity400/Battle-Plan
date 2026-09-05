@@ -1727,7 +1727,7 @@ impl ProductionUiRenderer {
             ));
         }
         for file in files {
-            registry.parse_file(&file.path, &file.rel_path)?;
+            registry.parse_content(&resolver.read_file(&file)?, &file.rel_path)?;
         }
         if registry.is_empty() {
             return Err(GameUiError::missing(
@@ -3846,9 +3846,9 @@ impl ProductionUiRenderer {
         if controller.lifecycle.is_none() {
             let (timing, timing_source) = load_authored_tooltip_timing(&self.resolver)
                 .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?;
-            self.content_admission
-                .require_used_content(&timing_source)
-                .map_err(ProductionUiRejection::Asset)?;
+            for source in &timing_source {
+                self.content_admission.require_used_content(source).map_err(ProductionUiRejection::Asset)?;
+            }
             controller.lifecycle = Some(TooltipLifecycle::new(timing));
         }
 
@@ -3963,7 +3963,7 @@ impl ProductionUiRenderer {
                 }
             }
         };
-        let (clamp, clamp_source_file) = load_authored_tooltip_clamp_offsets(&self.resolver)
+        let (clamp, clamp_source_files) = load_authored_tooltip_clamp_offsets(&self.resolver)
             .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?;
         let viewport = (
             i32::try_from(viewport_width).map_err(|_| {
@@ -3987,7 +3987,7 @@ impl ProductionUiRenderer {
                 anchor,
                 viewport,
                 clamp,
-                clamp_source_file,
+                clamp_source_files,
             },
         )
         .map_err(|error| ProductionUiRejection::IncompleteComposition(error.to_string()))?;
@@ -4056,9 +4056,9 @@ impl ProductionUiRenderer {
         if controller.lifecycle.is_none() {
             let (timing, timing_source) = load_authored_tooltip_timing(&self.resolver)
                 .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?;
-            self.content_admission
-                .require_used_content(&timing_source)
-                .map_err(ProductionUiRejection::Asset)?;
+            for source in &timing_source {
+                self.content_admission.require_used_content(source).map_err(ProductionUiRejection::Asset)?;
+            }
             controller.lifecycle = Some(TooltipLifecycle::new(timing));
         }
         let lifecycle = controller
@@ -4133,7 +4133,7 @@ impl ProductionUiRenderer {
         } else {
             &payloads.primary
         };
-        let (clamp, clamp_source_file) = load_authored_tooltip_clamp_offsets(&self.resolver)
+        let (clamp, clamp_source_files) = load_authored_tooltip_clamp_offsets(&self.resolver)
             .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?;
         let prepared = prepare_composed_tooltip(
             &self.resolver,
@@ -4158,7 +4158,7 @@ impl ProductionUiRenderer {
                     })?,
                 ),
                 clamp,
-                clamp_source_file,
+                clamp_source_files,
             },
         )
         .map_err(|error| ProductionUiRejection::IncompleteComposition(error.to_string()))?;
@@ -7216,10 +7216,7 @@ mod tests {
         let manifest_sha256 = content_admission.manifest_digest_sha256().to_string();
         let mut registry = crate::gfx::SpriteRegistry::new();
         registry
-            .parse_file(
-                &authored_root.join("interface/focus_test.gfx"),
-                "interface/focus_test.gfx",
-            )
+            .parse_content(&map_viewer::GameFileResolver::vanilla(&authored_root).unwrap().read_required_bytes("interface/focus_test.gfx", "fixture content").unwrap(), "interface/focus_test.gfx")
             .expect("parse authored XUI10 test sprites");
         let renderer = ProductionUiRenderer {
             resolver,

@@ -780,7 +780,13 @@ impl NativeD3d11TerrainRenderer {
         bundle: &NativeD3d11TerrainBundle,
     ) -> Result<NativeD3d11PreparedTerrainBundle> {
         let native = unsafe {
-            native_d3d11_prepare_map_frame(&self.device, &bundle.frame, &bundle.bundle_dir, None)?
+            native_d3d11_prepare_map_frame(
+                &self.device,
+                self.reflection_resolver.as_ref().ok_or("terrain camera layout requires effective content resolver")?,
+                &bundle.frame,
+                &bundle.bundle_dir,
+                None,
+            )?
         };
         let summary = native.pass.summary.clone();
         Ok(NativeD3d11PreparedTerrainBundle {
@@ -811,6 +817,7 @@ impl NativeD3d11TerrainRenderer {
         let native = unsafe {
             native_d3d11_prepare_map_frame(
                 &self.device,
+                self.reflection_resolver.as_ref().ok_or("terrain camera layout requires effective content resolver")?,
                 &bundle.frame,
                 &bundle.bundle_dir,
                 Some(graph.camera),
@@ -852,7 +859,7 @@ impl NativeD3d11TerrainRenderer {
         let bundle = admitted.bundle();
         let camera = match camera {
             Some(camera) => camera,
-            None => bundle.production_camera_from_capture()?,
+            None => bundle.production_camera_from_capture(self.reflection_resolver.as_ref().ok_or("terrain camera requires effective content resolver")?)?,
         };
         let graph = ProductionMapPassGraph::from_terrain_capture(bundle, camera)?;
         let terrain = self.prepare_production_terrain_admitted(admitted, &graph)?;
@@ -876,6 +883,7 @@ impl NativeD3d11TerrainRenderer {
         let native = unsafe {
             native_d3d11_prepare_terrain_chunk_library_frame(
                 &self.device,
+                self.reflection_resolver.as_ref().ok_or("terrain camera layout requires effective content resolver")?,
                 &frame,
                 &library.bundle_dir,
                 camera,
@@ -965,6 +973,7 @@ impl NativeD3d11TerrainRenderer {
         let native = unsafe {
             native_d3d11_prepare_terrain_chunk_synthesis_frame(
                 &self.device,
+                self.reflection_resolver.as_ref().ok_or("terrain camera layout requires effective content resolver")?,
                 &plan,
                 library.bundle_dir(),
                 camera,
@@ -999,7 +1008,7 @@ impl NativeD3d11TerrainRenderer {
         )?;
         let heightmap_path =
             resolver.resolve_required(TERRAIN_CHUNK_HEIGHTMAP_SOURCE, "heightmap.bmp")?;
-        let heightmap = load_bmp_indexed(&heightmap_path)?;
+        let heightmap = decode_bmp_indexed(&resolver.read_resolved_bytes(&heightmap_path)?, &heightmap_path)?;
         let world_width = (world_rect.max_x - world_rect.min_x).round();
         let world_height = (world_rect.max_z - world_rect.min_z).round();
         if world_width <= 0.0 || world_height <= 0.0 {
@@ -2079,7 +2088,7 @@ impl NativeD3d11TerrainRenderer {
         scene_cb0: Option<&[u8]>,
         resolver: &GameFileResolver,
     ) -> Result<UnderwaterValidationRender> {
-        let camera = library.production_camera_from_capture()?;
+        let camera = library.production_camera_from_capture(resolver)?;
         let world_rect = library.world_rect();
         let prepared = self.prepare_terrain_chunk_synthesis(
             library,
@@ -3075,8 +3084,8 @@ impl NativeD3d11TerrainBundle {
         self.frame.active_draw.draw_index
     }
 
-    pub fn production_camera_from_capture(&self) -> Result<ProductionMapCamera> {
-        production_map_camera_from_terrain_bundle(self)
+    pub fn production_camera_from_capture(&self, resolver: &GameFileResolver) -> Result<ProductionMapCamera> {
+        production_map_camera_from_terrain_bundle(resolver, self)
     }
 
     pub fn scene_cb0_bytes(&self) -> Result<Vec<u8>> {
@@ -3100,9 +3109,6 @@ impl NativeD3d11TerrainBundle {
         read_map_frame_buffer_bytes(&self.bundle_dir, binding, "scene constant buffer")
     }
 
-    pub fn render(&self, options: &NativeD3d11RenderOptions) -> Result<NativeD3d11ReplayResult> {
-        NativeD3d11TerrainRenderer::new()?.render(self, options)
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3275,22 +3281,18 @@ pub fn validate_terrain_d3d11_bundle_with_resolver(
     NativeD3d11TerrainBundle::load_with_resolver(map_frame_bundle, resolver).map(|_| ())
 }
 
-pub fn render_terrain_d3d11(request: &NativeD3d11ReplayRequest) -> Result<NativeD3d11ReplayResult> {
-    let bundle = NativeD3d11TerrainBundle::load(&request.map_frame_bundle)?;
-    render_terrain_d3d11_loaded(request, &bundle)
-}
-
 pub fn render_terrain_d3d11_with_resolver(
     request: &NativeD3d11ReplayRequest,
     resolver: &GameFileResolver,
 ) -> Result<NativeD3d11ReplayResult> {
     let bundle = NativeD3d11TerrainBundle::load_with_resolver(&request.map_frame_bundle, resolver)?;
-    render_terrain_d3d11_loaded(request, &bundle)
+    render_terrain_d3d11_loaded(request, &bundle, resolver)
 }
 
 fn render_terrain_d3d11_loaded(
     request: &NativeD3d11ReplayRequest,
     bundle: &NativeD3d11TerrainBundle,
+    resolver: &GameFileResolver,
 ) -> Result<NativeD3d11ReplayResult> {
     let options = NativeD3d11RenderOptions {
         output: request.output.clone(),
@@ -3298,16 +3300,10 @@ fn render_terrain_d3d11_loaded(
         compare_each_draw: request.compare_each_draw,
         ..NativeD3d11RenderOptions::default()
     };
-    let renderer = NativeD3d11TerrainRenderer::new()?;
+    let renderer = NativeD3d11TerrainRenderer::new()?
+        .with_reflection_resolver(resolver.clone());
     let prepared = renderer.prepare_production_map(bundle, request.production_camera)?;
     renderer.render_prepared_production_map(&prepared, &options)
-}
-
-pub fn render_production_map_d3d11(
-    request: &ProductionMapD3d11ReplayRequest,
-) -> Result<NativeD3d11ReplayResult> {
-    let terrain_bundle = NativeD3d11TerrainBundle::load(&request.terrain_map_frame_bundle)?;
-    render_production_map_d3d11_loaded(request, &terrain_bundle, None)
 }
 
 pub fn render_production_map_d3d11_with_resolver(
@@ -3316,13 +3312,13 @@ pub fn render_production_map_d3d11_with_resolver(
 ) -> Result<NativeD3d11ReplayResult> {
     let terrain_bundle =
         NativeD3d11TerrainBundle::load_with_resolver(&request.terrain_map_frame_bundle, resolver)?;
-    render_production_map_d3d11_loaded(request, &terrain_bundle, Some(resolver))
+    render_production_map_d3d11_loaded(request, &terrain_bundle, resolver)
 }
 
 fn render_production_map_d3d11_loaded(
     request: &ProductionMapD3d11ReplayRequest,
     terrain_bundle: &NativeD3d11TerrainBundle,
-    resolver: Option<&GameFileResolver>,
+    resolver: &GameFileResolver,
 ) -> Result<NativeD3d11ReplayResult> {
     let options = NativeD3d11RenderOptions {
         output: request.output.clone(),
@@ -3330,38 +3326,27 @@ fn render_production_map_d3d11_loaded(
         compare_each_draw: request.compare_each_draw,
         ..NativeD3d11RenderOptions::default()
     };
-    let renderer = NativeD3d11TerrainRenderer::new()?;
+    let renderer = NativeD3d11TerrainRenderer::new()?
+        .with_reflection_resolver(resolver.clone());
     let water_bundle = request
         .water_map_frame_bundle
         .as_ref()
-        .map(|path| match resolver {
-            Some(resolver) => NativeD3d11TerrainBundle::load_water_with_resolver(path, resolver),
-            None => NativeD3d11TerrainBundle::load_water(path),
-        })
+        .map(|path| NativeD3d11TerrainBundle::load_water_with_resolver(path, resolver))
         .transpose()?;
     let rivers_bundle = request
         .rivers_map_frame_bundle
         .as_ref()
-        .map(|path| match resolver {
-            Some(resolver) => NativeD3d11TerrainBundle::load_rivers_with_resolver(path, resolver),
-            None => NativeD3d11TerrainBundle::load_rivers(path),
-        })
+        .map(|path| NativeD3d11TerrainBundle::load_rivers_with_resolver(path, resolver))
         .transpose()?;
     let borders_bundle = request
         .borders_map_frame_bundle
         .as_ref()
-        .map(|path| match resolver {
-            Some(resolver) => NativeD3d11TerrainBundle::load_borders_with_resolver(path, resolver),
-            None => NativeD3d11TerrainBundle::load_borders(path),
-        })
+        .map(|path| NativeD3d11TerrainBundle::load_borders_with_resolver(path, resolver))
         .transpose()?;
     let trees_bundle = request
         .trees_map_frame_bundle
         .as_ref()
-        .map(|path| match resolver {
-            Some(resolver) => NativeD3d11TerrainBundle::load_trees_with_resolver(path, resolver),
-            None => NativeD3d11TerrainBundle::load_trees(path),
-        })
+        .map(|path| NativeD3d11TerrainBundle::load_trees_with_resolver(path, resolver))
         .transpose()?;
     let prepared = renderer.prepare_reference_production_map_with_layers(
         terrain_bundle,
@@ -3374,30 +3359,17 @@ fn render_production_map_d3d11_loaded(
     renderer.render_prepared_production_map(&prepared, &options)
 }
 
-pub fn render_terrain_d3d11_bundle(
-    map_frame_bundle: &Path,
-    output: Option<&Path>,
-) -> Result<NativeD3d11ReplaySummary> {
-    let request = NativeD3d11ReplayRequest {
-        map_frame_bundle: map_frame_bundle.to_path_buf(),
-        output: output.map(Path::to_path_buf),
-        readback: false,
-        compare_each_draw: false,
-        production_camera: None,
-    };
-    Ok(render_terrain_d3d11(&request)?.summary)
-}
-
-pub fn validate_terrain_chunk_synthesis(
+pub fn validate_terrain_chunk_synthesis(resolver: &crate::GameFileResolver, 
     terrain_chunk_library: &Path,
     report: Option<&Path>,
 ) -> Result<TerrainChunkSynthesisValidationReport> {
     let library = NativeD3d11TerrainChunkLibrary::load(terrain_chunk_library)?;
-    let renderer = NativeD3d11TerrainRenderer::new()?;
+    let renderer = NativeD3d11TerrainRenderer::new()?
+        .with_reflection_resolver(resolver.clone());
     let samples = terrain_chunk_synthesis_record_samples(&library)?;
     let mut compared_records = Vec::new();
     for record in samples {
-        let camera = production_map_camera_from_chunk_record(&library, record)?;
+        let camera = production_map_camera_from_chunk_record(resolver, &library, record)?;
         let tile_size = terrain_chunk_world_tile_size(record)?;
         let captured = render_terrain_chunk_record_readback(&renderer, &library, record, camera)?;
         let world_rect = TerrainChunkSynthesisWorldRect::new(
@@ -3450,7 +3422,7 @@ pub fn validate_terrain_chunk_synthesis(
     Ok(report_value)
 }
 
-pub fn smoke_terrain_chunk_synthesis(
+pub fn smoke_terrain_chunk_synthesis(resolver: &crate::GameFileResolver, 
     terrain_chunk_library: &Path,
     target_tile_size: u32,
     output: Option<&Path>,
@@ -3459,9 +3431,9 @@ pub fn smoke_terrain_chunk_synthesis(
 ) -> Result<TerrainChunkSynthesisSmokeReport> {
     let library = NativeD3d11TerrainChunkLibrary::load(terrain_chunk_library)?;
     let (camera, scene_cb0) = if let Some(path) = scene_frame_bundle {
-        let scene_bundle = NativeD3d11TerrainBundle::load(path)?;
+        let scene_bundle = NativeD3d11TerrainBundle::load_with_resolver(path, resolver)?;
         (
-            scene_bundle.production_camera_from_capture()?,
+            scene_bundle.production_camera_from_capture(resolver)?,
             Some(scene_bundle.scene_cb0_bytes()?),
         )
     } else {
@@ -3471,11 +3443,12 @@ pub fn smoke_terrain_chunk_synthesis(
             .first()
             .ok_or("production terrain chunk synthesis blocked: library has no records")?;
         (
-            production_map_camera_from_chunk_record(&library, first_record)?,
+            production_map_camera_from_chunk_record(resolver, &library, first_record)?,
             None,
         )
     };
-    let renderer = NativeD3d11TerrainRenderer::new()?;
+    let renderer = NativeD3d11TerrainRenderer::new()?
+        .with_reflection_resolver(resolver.clone());
     let world_rect = library.world_rect();
     let expected_tile_count =
         terrain_chunk_synthesis_expected_tile_count(world_rect, target_tile_size)?;
@@ -3525,11 +3498,11 @@ pub fn smoke_terrain_chunk_synthesis(
     })
 }
 
-fn production_map_camera_from_chunk_record(
+fn production_map_camera_from_chunk_record(resolver: &crate::GameFileResolver, 
     library: &NativeD3d11TerrainChunkLibrary,
     record: &TerrainChunkRecord,
 ) -> Result<ProductionMapCamera> {
-    production_map_camera_from_scene_cb0(decode_map_frame_terrain_scene_cb0(
+    production_map_camera_from_scene_cb0(decode_map_frame_terrain_scene_cb0(resolver, 
         &record.draw,
         library.bundle_dir(),
     )?)
@@ -3546,6 +3519,7 @@ fn render_terrain_chunk_record_readback(
     let prepared = unsafe {
         native_d3d11_prepare_terrain_chunk_library_frame(
             &renderer.device,
+            renderer.reflection_resolver.as_ref().ok_or("terrain camera layout requires effective content resolver")?,
             &frame,
             library.bundle_dir(),
             camera,
@@ -3636,33 +3610,23 @@ fn terrain_chunk_synthesis_comparison(
     })
 }
 
-pub fn accept_terrain_d3d11(
-    request: &TerrainD3d11AcceptanceRequest,
-) -> Result<TerrainD3d11AcceptanceReport> {
-    accept_terrain_d3d11_impl(request, None)
-}
-
 pub fn accept_terrain_d3d11_with_resolver(
     request: &TerrainD3d11AcceptanceRequest,
     resolver: &GameFileResolver,
 ) -> Result<TerrainD3d11AcceptanceReport> {
-    accept_terrain_d3d11_impl(request, Some(resolver))
+    accept_terrain_d3d11_impl(request, resolver)
 }
 
 fn accept_terrain_d3d11_impl(
     request: &TerrainD3d11AcceptanceRequest,
-    resolver: Option<&GameFileResolver>,
+    resolver: &GameFileResolver,
 ) -> Result<TerrainD3d11AcceptanceReport> {
     if request.repeat == 0 {
         return Err("terrain D3D11 acceptance repeat count must be positive".into());
     }
-    let bundle = match resolver {
-        Some(resolver) => {
-            NativeD3d11TerrainBundle::load_with_resolver(&request.map_frame_bundle, resolver)?
-        }
-        None => NativeD3d11TerrainBundle::load(&request.map_frame_bundle)?,
-    };
-    let renderer = NativeD3d11TerrainRenderer::new()?;
+    let bundle = NativeD3d11TerrainBundle::load_with_resolver(&request.map_frame_bundle, resolver)?;
+    let renderer = NativeD3d11TerrainRenderer::new()?
+        .with_reflection_resolver(resolver.clone());
     let prepared = renderer.prepare_capture_parity_map(&bundle, None)?;
     let mut result = None;
     for iteration in 0..request.repeat {
@@ -4001,12 +3965,12 @@ pub(crate) fn production_map_target_evidence(
     Ok((color, depth))
 }
 
-pub(crate) fn production_map_camera_from_terrain_bundle(
+pub(crate) fn production_map_camera_from_terrain_bundle(resolver: &crate::GameFileResolver, 
     bundle: &NativeD3d11TerrainBundle,
 ) -> Result<ProductionMapCamera> {
     let mut expected = None;
     for draw in &bundle.frame.draws {
-        let decoded = decode_map_frame_terrain_scene_cb0(draw, &bundle.bundle_dir)?;
+        let decoded = decode_map_frame_terrain_scene_cb0(resolver, draw, &bundle.bundle_dir)?;
         let camera = production_map_camera_from_scene_cb0(decoded)?;
         match expected {
             None => expected = Some(camera),
@@ -5243,7 +5207,7 @@ mod tests {
             NativeD3d11TerrainBundle::load(&path).expect("valid native D3D11 terrain bundle");
 
         let camera = bundle
-            .production_camera_from_capture()
+            .production_camera_from_capture(&crate::test_support::fixture_game_resolver(&root))
             .expect("derive app-owned camera from the game TerrainSceneCB0");
 
         assert_eq!(
@@ -5294,7 +5258,7 @@ mod tests {
             NativeD3d11TerrainBundle::load(&path).expect("valid native D3D11 terrain bundle");
 
         let err = bundle
-            .production_camera_from_capture()
+            .production_camera_from_capture(&crate::test_support::fixture_game_resolver(&root))
             .expect_err("per-draw camera drift must fail closed");
 
         assert!(err.to_string().contains("camera constants differ"));

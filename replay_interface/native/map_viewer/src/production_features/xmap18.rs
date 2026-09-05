@@ -703,7 +703,7 @@ fn effective_directory_source(
         source.push_str("\n-- XMAP18 effective source: ");
         source.push_str(relative);
         source.push('\n');
-        source.push_str(&crate::read_latin1(path)?);
+        source.push_str(&resolver.read_resolved_text(path)?);
         source.push('\n');
     }
     Ok(source)
@@ -871,7 +871,7 @@ fn materialize_scripted_scope_payload(
     }
 
     let state_paths = resolver.resolve_dir_files_recursive("history/states", Some("txt"))?;
-    let (_, province_to_state, _) = crate::load_states(&state_paths)?;
+    let (_, province_to_state, _) = crate::load_states(resolver, &state_paths)?;
     let (_, controllers, _) =
         crate::production_features::xmap05::admitted_epoch_keying(context.world_frame)?;
     let mut fills = province_to_state
@@ -950,7 +950,7 @@ fn materialize_scripted_scope_payload(
 fn effective_scripted_definitions(resolver: &GameFileResolver) -> Result<Vec<(String, Value)>> {
     let mut definitions = Vec::<(String, Value)>::new();
     for (relative, path) in resolver.resolve_dir_files_recursive("common/map_modes", Some("txt"))? {
-        let bytes = std::fs::read(&path)?;
+        let bytes = resolver.read_required_bytes(&relative, &relative)?;
         let (source, losses) = decode_text_diagnosed(&bytes);
         if !destructive_losses(&losses).is_empty() {
             return Err(
@@ -1404,9 +1404,9 @@ fn prepare_render_political(
 
     let definition_csv =
         resolver.resolve_required("map/definition.csv", "XMAP18 province definitions")?;
-    let (definitions, _) = crate::load_definition_csv(&definition_csv)?;
+    let (definitions, _) = crate::load_definition_csv(resolver, &definition_csv)?;
     let state_paths = resolver.resolve_dir_files_recursive("history/states", Some("txt"))?;
-    let (states, province_to_state, _) = crate::load_states(&state_paths)?;
+    let (states, province_to_state, _) = crate::load_states(resolver, &state_paths)?;
     let eligible = definitions
         .iter()
         .filter_map(|(&province_id, definition)| {
@@ -1421,13 +1421,7 @@ fn prepare_render_political(
 
     match mode {
         HardcodedMapMode::Resistance | HardcodedMapMode::Compliance => {
-            let graphics = effective_directory_source(
-                resolver,
-                "common/defines",
-                Some("lua"),
-                "XMAP18 graphics defines",
-            )?;
-            let palette = crate::occupation_palette_from_source(&graphics)?;
+            let palette = crate::occupation_palette_from_resolver(resolver)?;
             let occupation_mode = if *mode == HardcodedMapMode::Resistance {
                 crate::OccupationMapMode::Resistance
             } else {
@@ -1461,18 +1455,15 @@ fn prepare_render_political(
             }
         }
         HardcodedMapMode::Manpower => {
-            let source = effective_directory_source(
-                resolver,
-                "common/defines",
-                Some("lua"),
-                "XMAP18 manpower defines",
-            )?;
-            let maximum = crate::parse_lua_number_define(&source, "MAP_MODE_MANPOWER_RANGE_MAX")?;
+                let (sources, _) = crate::xmap09_lighting_law::effective_define_sources(resolver, "effective defines")?;
+    let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
+
+            let maximum = evaluated.scalar("NMapMode", "MAP_MODE_MANPOWER_RANGE_MAX")?;
             if !maximum.is_finite() || maximum <= 0.0 {
                 return Err("XMAP18 manpower range maximum is not positive".into());
             }
-            let from = normalized_color4(&source, "MAP_MODE_MANPOWER_RANGE_COLOR_FROM")?;
-            let to = normalized_color4(&source, "MAP_MODE_MANPOWER_RANGE_COLOR_TO")?;
+            let from = evaluated.array::<4>("NMapMode", "MAP_MODE_MANPOWER_RANGE_COLOR_FROM")?;
+            let to = evaluated.array::<4>("NMapMode", "MAP_MODE_MANPOWER_RANGE_COLOR_TO")?;
             apply_state_rgba_fills_f32(
                 &eligible,
                 &province_to_state,
@@ -1508,13 +1499,7 @@ fn prepare_render_political(
                 resolver,
                 context.world_frame.session_metadata(),
             )?;
-            let graphics = effective_directory_source(
-                resolver,
-                "common/defines",
-                Some("lua"),
-                "XMAP18 player-mode defines",
-            )?;
-            let defines = crate::admin_mapmode_defines_from_source(&graphics)?;
+            let defines = crate::admin_mapmode_defines_from_resolver(resolver)?;
             let Leaf::Measured(players) = &context.world_frame.session_metadata().player_countries
             else {
                 return Err("XMAP18 player-country set is not measured".into());
@@ -1566,13 +1551,7 @@ fn prepare_render_political(
                 ruling.insert(tag.clone(), ideology.clone());
             }
             let colors = crate::ideology_colors_from_resolver(resolver)?;
-            let graphics = effective_directory_source(
-                resolver,
-                "common/defines",
-                Some("lua"),
-                "XMAP18 ideology-mode defines",
-            )?;
-            let defines = crate::admin_mapmode_defines_from_source(&graphics)?;
+            let defines = crate::admin_mapmode_defines_from_resolver(resolver)?;
             let state_fills = crate::ideology_fill(&owners, &ruling, &colors, &defines);
             apply_state_rgba_fills_u8(
                 &eligible,
@@ -1583,13 +1562,7 @@ fn prepare_render_political(
             )?;
         }
         HardcodedMapMode::Infrastructure => {
-            let graphics = effective_directory_source(
-                resolver,
-                "common/defines",
-                Some("lua"),
-                "XMAP18 infrastructure defines",
-            )?;
-            let colors = crate::infra_gradient_colors_from_source(&graphics)?;
+            let colors = crate::infra_gradient_colors_from_resolver(resolver)?;
             let buildings = effective_directory_source(
                 resolver,
                 "common/buildings",
@@ -1615,13 +1588,7 @@ fn prepare_render_political(
                 resolver,
                 context.world_frame.session_metadata(),
             )?;
-            let graphics = effective_directory_source(
-                resolver,
-                "common/defines",
-                Some("lua"),
-                "XMAP18 faction-mode defines",
-            )?;
-            let defines = crate::factions_defines_from_source(&graphics)?;
+            let defines = crate::factions_defines_from_resolver(resolver)?;
             let diplomacy = context.world_frame.diplomacy();
             let Leaf::Measured(roster) = &diplomacy.faction_members else {
                 return Err("XMAP18 faction roster is not measured".into());
@@ -1804,7 +1771,7 @@ fn raw_runtime_layers(
         return Err("XMAP18 raw matrix observer census differs from complete D18 order".into());
     }
     let region_paths = resolver.resolve_dir_files_recursive("map/strategicregions", Some("txt"))?;
-    let (region_to_provinces, _, _) = crate::load_strategic_regions(&region_paths)?;
+    let (region_to_provinces, _, _) = crate::load_strategic_regions(resolver, &region_paths)?;
     let expected_regions = region_to_provinces.keys().copied().collect::<Vec<_>>();
     if runtime.strategic_region_ids != expected_regions
         || !runtime
@@ -1815,7 +1782,7 @@ fn raw_runtime_layers(
         return Err("XMAP18 raw matrix region census differs from the effective VFS".into());
     }
     let state_paths = resolver.resolve_dir_files_recursive("history/states", Some("txt"))?;
-    let (states, province_to_state, _) = crate::load_states(&state_paths)?;
+    let (states, province_to_state, _) = crate::load_states(resolver, &state_paths)?;
     let expected_states = states.keys().copied().collect::<Vec<_>>();
     if runtime.state_ids != expected_states
         || !runtime
@@ -1846,13 +1813,7 @@ fn raw_runtime_layers(
 
     match mode {
         HardcodedMapMode::StrategicAir => {
-            let graphics = effective_directory_source(
-                resolver,
-                "common/defines",
-                Some("lua"),
-                "XMAP18 strategic-air defines",
-            )?;
-            let colors = crate::strategic_air_colors_from_source(&graphics)?;
+            let colors = crate::strategic_air_colors_from_resolver(resolver)?;
             for (region_index, region_id) in runtime.strategic_region_ids.iter().enumerate() {
                 let (friendly, enemy) = air_weights_for(&runtime, observer_index, region_index);
                 let friendly = friendly as i128;
@@ -1917,22 +1878,16 @@ fn raw_runtime_layers(
             }
         }
         HardcodedMapMode::Operatives => {
-            let graphics = effective_directory_source(
-                resolver,
-                "common/defines",
-                Some("lua"),
-                "XMAP18 operative-network defines",
-            )?;
+                let (sources, _) = crate::xmap09_lighting_law::effective_define_sources(resolver, "effective defines")?;
+    let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
+
             let normal_low =
-                normalized_color4(&graphics, "MAP_MODE_INTEL_NETWORK_STRENGTH_COLOR_LOW")?;
+                evaluated.array::<4>("NMapMode", "MAP_MODE_INTEL_NETWORK_STRENGTH_COLOR_LOW")?;
             let normal_high =
-                normalized_color4(&graphics, "MAP_MODE_INTEL_NETWORK_STRENGTH_COLOR_HIGH")?;
+                evaluated.array::<4>("NMapMode", "MAP_MODE_INTEL_NETWORK_STRENGTH_COLOR_HIGH")?;
             let quiet_low =
-                normalized_color4(&graphics, "MAP_MODE_INTEL_NETWORK_STRENGTH_QUIET_COLOR_LOW")?;
-            let quiet_high = normalized_color4(
-                &graphics,
-                "MAP_MODE_INTEL_NETWORK_STRENGTH_QUIET_COLOR_HIGH",
-            )?;
+                evaluated.array::<4>("NMapMode", "MAP_MODE_INTEL_NETWORK_STRENGTH_QUIET_COLOR_LOW")?;
+            let quiet_high = evaluated.array::<4>("NMapMode", "MAP_MODE_INTEL_NETWORK_STRENGTH_QUIET_COLOR_HIGH")?;
             fills.extend(
                 province_to_state
                     .keys()
@@ -2087,7 +2042,7 @@ fn validate_scripted_runtime(
         return Err("XMAP18 scripted runtime mode census differs from the effective VFS".into());
     }
     let state_paths = resolver.resolve_dir_files_recursive("history/states", Some("txt"))?;
-    let (states, _, _) = crate::load_states(&state_paths)?;
+    let (states, _, _) = crate::load_states(resolver, &state_paths)?;
     if runtime.state_ids != states.keys().copied().collect::<Vec<_>>()
         || !runtime
             .state_ids
@@ -2513,17 +2468,6 @@ fn unit_rgba(rgba: [f32; 4]) -> Result<[u8; 4]> {
     Ok(std::array::from_fn(|index| {
         (rgba[index] * 255.0).round() as u8
     }))
-}
-
-fn normalized_color4(source: &str, key: &str) -> Result<[f32; 4]> {
-    let values = crate::map_furniture::parse_lua_number_list(source, key)
-        .ok_or_else(|| format!("XMAP18 graphics defines omit {key}"))?;
-    if values.len() != 4 {
-        return Err(format!("XMAP18 {key} has {} values instead of four", values.len()).into());
-    }
-    let color = [values[0], values[1], values[2], values[3]];
-    unit_rgba(color)?;
-    Ok(color)
 }
 
 fn prepare_fill_source(

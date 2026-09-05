@@ -13,7 +13,7 @@ use crate::font::{blank_image, BitmapFont, RuntimeGlyphDraw, TextAlign};
 use crate::gfx::{Size, SpriteRegistry};
 use crate::gui::{parse_measure, GuiElement, MeasurePair};
 use crate::gui_scene_util::{
-    load_last_top_level_named_element_from_file, load_named_element_from_file, parse_layout_set,
+    load_last_top_level_named_element_from_bytes, load_named_element_from_bytes, parse_layout_set,
     wrap_text_greedy,
 };
 use crate::loc::Localisation;
@@ -212,32 +212,30 @@ pub fn load_hud_layouts(resolver: &AssetResolver) -> Result<HudLayouts> {
     let outliner_file = resolver.resolve_file(OUTLINER_GUI)?;
     let core_file = resolver.resolve_file(CORE_GUI)?;
 
-    let minimap = load_window_from_file(
-        &minimap_file.path,
+    let minimap = load_window_from_bytes(&resolver.read_file(&minimap_file)?,
         &minimap_file.rel_path,
         MINIMAP_WINDOW_NAME,
     )?;
-    let mapmodes = load_window_from_file(
-        &mapmodes_file.path,
+    let mapmodes = load_window_from_bytes(&resolver.read_file(&mapmodes_file)?,
         &mapmodes_file.rel_path,
         MAPMODES_WINDOW_NAME,
     )?;
+    let menubar_bytes = resolver.read_file(&menubar_file)?;
     let zoom_in =
-        load_named_element_from_file(&menubar_file.path, &menubar_file.rel_path, "zoom_in")?;
+        load_named_element_from_bytes(&menubar_bytes, &menubar_file.rel_path, "zoom_in")?;
     let zoom_out =
-        load_named_element_from_file(&menubar_file.path, &menubar_file.rel_path, "zoom_out")?;
-    let outliner_shell = load_window_from_file(
-        &outliner_file.path,
+        load_named_element_from_bytes(&menubar_bytes, &menubar_file.rel_path, "zoom_out")?;
+    let outliner_bytes = resolver.read_file(&outliner_file)?;
+    let outliner_shell = load_window_from_bytes(&outliner_bytes,
         &outliner_file.rel_path,
         OUTLINER_WINDOW_NAME,
     )?;
-    let outliner_row = load_window_from_file(
-        &outliner_file.path,
+    let outliner_row = load_window_from_bytes(&outliner_bytes,
         &outliner_file.rel_path,
         OUTLINER_ROW_WINDOW_NAME,
     )?;
     let tooltip_shell =
-        load_named_element_from_file(&core_file.path, &core_file.rel_path, TOOLTIP_WINDOW_NAME)?;
+        load_named_element_from_bytes(&resolver.read_file(&core_file)?, &core_file.rel_path, TOOLTIP_WINDOW_NAME)?;
 
     Ok(HudLayouts {
         minimap,
@@ -301,8 +299,7 @@ pub fn load_authenticated_tooltip_chrome_for_language(
         )));
     }
     let core_file = resolver.resolve_file(CORE_GUI)?;
-    let element = load_last_top_level_named_element_from_file(
-        &core_file.path,
+    let element = load_last_top_level_named_element_from_bytes(&resolver.read_file(&core_file)?,
         &core_file.rel_path,
         expected_root_name,
     )?;
@@ -354,7 +351,7 @@ pub fn load_authenticated_tooltip_chrome_for_language(
 
 fn legacy_authored_font_base_color(resolver: &AssetResolver, font: &str) -> Result<[u8; 4]> {
     let core = resolver.resolve_file("interface/core.gfx")?;
-    let bytes = std::fs::read(&core.path)?;
+    let bytes = resolver.read_file(&core)?;
     let document = crate::paradox_text::parse_bytes(&bytes);
     if !document.recoveries.is_empty() {
         return Err(GameUiError::parse("core.gfx font colour parse required recovery"));
@@ -468,7 +465,7 @@ pub(crate) struct ComposedTooltipPlacementInput {
     pub anchor: TooltipAnchor,
     pub viewport: (i32, i32),
     pub clamp: AuthoredClampOffsets,
-    pub clamp_source_file: String,
+    pub clamp_source_files: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -646,10 +643,9 @@ pub(crate) fn prepare_composed_tooltip(
         ) {
             row.admitted_sources.extend(icon_sources.iter().cloned());
             row.admitted_sources.extend(asset_sources.iter().cloned());
-            row.admitted_sources
-                .push(AdmittedTooltipSource::EffectivePlacement {
-                    graphics_defines_file: placement_input.clamp_source_file.clone(),
-                });
+            for source in &placement_input.clamp_source_files {
+                row.admitted_sources.push(AdmittedTooltipSource::EffectivePlacement { graphics_defines_file: source.clone() });
+            }
         }
     }
     let placement = place_under_viewer_cursor(ViewerCursorPlacement {
@@ -1823,8 +1819,8 @@ fn merge_report(dst: &mut ComposeReport, src: ComposeReport) {
         .extend(src.unresolved_text_inputs);
 }
 
-fn load_window_from_file(path: &Path, rel: &str, name: &str) -> Result<GuiElement> {
-    parse_layout_set(path, rel)?
+fn load_window_from_bytes(bytes: &[u8], rel: &str, name: &str) -> Result<GuiElement> {
+    parse_layout_set(bytes, rel)?
         .documents
         .iter()
         .flat_map(|document| document.roots.iter())

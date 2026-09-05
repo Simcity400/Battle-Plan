@@ -9,7 +9,7 @@ use game_ui::ability_visibility::{
     AllowedBody, AllowedNode, AllowedScope, AllowedWorldFacts, CasterFacts, CommandedFormation,
     Operand, Verdict, GAP_BORDER_WAR, GAP_DLC_MASK, GAP_LEADER_KIND, GAP_OWNER_TAG,
 };
-use game_ui::paradox_text::{parse_file, Document};
+use game_ui::paradox_text::{parse_checked_bytes, Document};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -22,26 +22,12 @@ fn game_root() -> PathBuf {
 }
 
 fn documents(directory: &Path) -> Vec<(String, Document)> {
-    let mut entries = std::fs::read_dir(directory)
-        .unwrap_or_else(|error| panic!("{} is unreadable: {error}", directory.display()))
-        .map(|entry| entry.expect("directory entry").path())
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("txt"))
-        })
-        .collect::<Vec<_>>();
-    entries.sort();
-    entries
-        .into_iter()
-        .map(|path| {
-            let document = parse_file(&path).unwrap_or_else(|error| {
-                panic!("{} does not parse: {error}", path.display());
-            });
-            (path.display().to_string(), document)
-        })
-        .collect()
+    let resolver = map_viewer::GameFileResolver::vanilla(directory).unwrap();
+    resolver.resolve_dir_files("", Some("txt")).unwrap().into_iter().map(|(relative, path)| {
+        let bytes = resolver.read_resolved_bytes(&path).unwrap();
+        let document = parse_checked_bytes(&bytes, &relative).unwrap();
+        (path.display().to_string(), document)
+    }).collect()
 }
 
 fn allowed_bodies(root: &Path) -> BTreeMap<String, AllowedBody> {

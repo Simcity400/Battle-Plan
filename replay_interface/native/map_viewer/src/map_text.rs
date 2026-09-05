@@ -123,10 +123,9 @@ pub fn merge_localisation_source_exact(
 /// 260.0): the camera distance below which the game stops drawing country
 /// names.
 pub fn draw_country_names_cutoff_from_resolver(resolver: &GameFileResolver) -> Result<f32> {
-    let path = resolver.resolve_required(BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE, "graphics defines lua")?;
-    let bytes = std::fs::read(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
-    let source = latin1_bytes_to_string(&bytes);
-    parse_lua_number_define(&source, DRAW_COUNTRY_NAMES_CUTOFF_KEY)
+    let (sources, _) = crate::xmap09_lighting_law::effective_define_sources(resolver, "effective graphics defines")?;
+    let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
+    evaluated.scalar("NGraphics", DRAW_COUNTRY_NAMES_CUTOFF_KEY)
 }
 
 #[cfg(test)]
@@ -271,7 +270,7 @@ mod tests {
         write_text(
             &vanilla,
             BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE,
-            "NDefines_Graphics = {\n\tNGraphics = {\n\t\tDRAW_COUNTRY_NAMES_CUTOFF = 260,\n\t},\n}\n",
+            "NDefines = {\n\tNGraphics = {\n\t\tDRAW_COUNTRY_NAMES_CUTOFF = 260,\n\t},\n}\n",
         );
         let resolver = GameFileResolver::vanilla(vanilla).expect("resolver");
         let cutoff = draw_country_names_cutoff_from_resolver(&resolver).expect("cutoff");

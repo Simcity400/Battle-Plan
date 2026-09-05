@@ -5,7 +5,6 @@ use crate::paradox_text::{
     Document, Value,
 };
 use std::collections::BTreeMap;
-use std::path::Path;
 
 pub const A729_DEFAULT_SPRITE_EFFECT: &str = "gfx/FX/buttonstate.lua";
 
@@ -161,8 +160,7 @@ impl SpriteRegistry {
         Self::default()
     }
 
-    pub fn parse_file(&mut self, path: &Path, rel: &str) -> Result<usize> {
-        let bytes = std::fs::read(path)?;
+    pub fn parse_content(&mut self, bytes: &[u8], rel: &str) -> Result<usize> {
         let events = destructive_event_count(&diagnose_text_decode(&bytes));
         if events != 0 {
             self.decode_lossy_files.push((rel.to_string(), events));

@@ -325,7 +325,7 @@ fn shipped_a729_countrytradeview_resolves_without_coordinate_literals() {
         .expect("effective gfx files")
     {
         registry
-            .parse_file(&file.path, &file.rel_path)
+            .parse_content(&resolver.read_file(&file).unwrap(), &file.rel_path)
             .expect("parse effective gfx");
     }
     let layout = TradeAuthoredLayout::load_with_registry(&resolver, &registry, 1920, 1080)

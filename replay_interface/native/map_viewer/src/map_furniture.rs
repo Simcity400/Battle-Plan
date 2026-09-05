@@ -206,7 +206,7 @@ impl HeightmapGrid {
 
 pub fn heightmap_grid_from_resolver(resolver: &GameFileResolver) -> Result<HeightmapGrid> {
     let path = resolver.resolve_required("map/heightmap.bmp", "heightmap.bmp")?;
-    let image = load_bmp_indexed(&path)?;
+    let image = decode_bmp_indexed(&resolver.read_resolved_bytes(&path)?, &path)?;
     Ok(HeightmapGrid {
         width: image.width,
         height: image.height,
@@ -219,7 +219,7 @@ pub fn furniture_static_data_from_resolver(
     language: &str,
 ) -> Result<FurnitureStaticData> {
     let state_files = resolver.resolve_dir_files("history/states", Some("txt"))?;
-    let (states, _province_to_state, _state_owners) = load_states(&state_files)?;
+    let (states, _province_to_state, _state_owners) = load_states(resolver, &state_files)?;
     let mut state_victory_points = BTreeMap::new();
     for (state_id, meta) in &states {
         if !meta.victory_points.is_empty() {
@@ -235,21 +235,15 @@ pub fn furniture_static_data_from_resolver(
 }
 
 pub fn vp_icon_defines_from_resolver(resolver: &GameFileResolver) -> Result<VpIconDefines> {
-    let path = resolver.resolve_required(BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE, "graphics defines lua")?;
-    let source = latin1_bytes_to_string(&std::fs::read(&path)?);
-    parse_vp_icon_defines(&source)
-}
-
-pub fn parse_vp_icon_defines(source: &str) -> Result<VpIconDefines> {
-    let scalar = |key: &str| -> Result<f32> { parse_lua_number_define(source, key) };
+    let (sources, _) = crate::xmap09_lighting_law::effective_define_sources(resolver, "effective graphics defines")?;
+    let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
+    let scalar = |key: &str| evaluated.scalar("NGraphics", key);
+    let list_f = |key: &str| evaluated.number_array("NGraphics", key);
     let list_i = |key: &str| -> Result<Vec<i64>> {
-        parse_lua_number_list(source, key)
-            .map(|list| list.into_iter().map(|value| value as i64).collect())
-            .ok_or_else(|| format!("{BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE} missing list {key}").into())
-    };
-    let list_f = |key: &str| -> Result<Vec<f32>> {
-        parse_lua_number_list(source, key)
-            .ok_or_else(|| format!("{BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE} missing list {key}").into())
+        evaluated.number_array("NGraphics", key)?.into_iter().map(|value| {
+            if value.fract() != 0.0 { return Err(format!("{key}: nonintegral threshold").into()); }
+            Ok(value as i64)
+        }).collect()
     };
     let defines = VpIconDefines {
         levels: scalar(VICTORY_POINT_LEVELS_KEY)? as u32,
@@ -267,31 +261,6 @@ pub fn parse_vp_icon_defines(source: &str) -> Result<VpIconDefines> {
     };
     defines.validate()?;
     Ok(defines)
-}
-
-pub(crate) fn parse_lua_number_list(source: &str, key: &str) -> Option<Vec<f32>> {
-    for line in source.lines() {
-        let code = line.split("--").next().unwrap_or(line);
-        let Some(idx) = find_assignment(code, key, 0) else {
-            continue;
-        };
-        let rest = code[idx..].trim_start();
-        let Some(open) = rest.strip_prefix('{') else {
-            continue;
-        };
-        let Some(end) = open.find('}') else {
-            continue;
-        };
-        let values = open[..end]
-            .split(',')
-            .filter_map(|token| token.trim().parse::<f32>().ok())
-            .collect::<Vec<_>>();
-        if values.is_empty() {
-            continue;
-        }
-        return Some(values);
-    }
-    None
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -439,7 +408,7 @@ pub fn capital_states_from_resolver(resolver: &GameFileResolver) -> Result<BTree
         let Some(tag) = country_history_tag_from_rel(rel) else {
             continue;
         };
-        let text = strip_comments(&read_latin1(path)?);
+        let text = strip_comments(&resolver.read_resolved_text(path)?);
         if let Some(capital) = parse_capital_state(&text) {
             out.entry(tag).or_insert(capital);
         }
@@ -456,7 +425,7 @@ pub fn ruling_parties_from_resolver(
         let Some(tag) = country_history_tag_from_rel(rel) else {
             continue;
         };
-        let text = strip_comments(&read_latin1(path)?);
+        let text = strip_comments(&resolver.read_resolved_text(path)?);
         if let Some(party) = parse_word_value(&text, "ruling_party") {
             out.entry(tag).or_insert(party);
         }
@@ -543,8 +512,8 @@ pub fn cosmetic_tags_from_resolver_with_dlc(
     has_dlc: impl Fn(&str) -> bool,
 ) -> Result<BTreeMap<String, String>> {
     let files = resolver.resolve_dir_files_recursive("history/countries", Some("txt"))?;
-    let mut out = crate::cosmetic_tags_1936_from_history_files(&files)?;
-    let conditional = crate::dlc_conditional_cosmetics_1936_from_history_files(&files)?;
+    let mut out = crate::cosmetic_tags_1936_from_history_files(resolver, &files)?;
+    let conditional = crate::dlc_conditional_cosmetics_1936_from_history_files(resolver, &files)?;
     for (tag, entries) in conditional {
         for entry in entries {
             let holds = if entry.negated {
@@ -598,11 +567,11 @@ fn furniture_layer_from_resolver_keyed(
 ) -> Result<FurnitureLayer> {
     let definition_csv = resolver.resolve_required("map/definition.csv", "definition.csv")?;
     let provinces_bmp = resolver.resolve_required("map/provinces.bmp", "provinces.bmp")?;
-    let (_definitions, color_to_id) = load_definition_csv(&definition_csv)?;
-    let bmp = load_provinces_bmp(&provinces_bmp, &color_to_id)?;
+    let (_definitions, color_to_id) = load_definition_csv(resolver, &definition_csv)?;
+    let bmp = decode_provinces_bmp(&resolver.read_resolved_bytes(&provinces_bmp)?, &provinces_bmp, &color_to_id)?;
 
     let state_files = resolver.resolve_dir_files("history/states", Some("txt"))?;
-    let (states, province_to_state, static_owners) = load_states(&state_files)?;
+    let (states, province_to_state, static_owners) = load_states(resolver, &state_files)?;
     let state_owners = owner_override.cloned().unwrap_or(static_owners);
     let mut state_victory_points = BTreeMap::new();
     for (state_id, meta) in &states {
@@ -909,9 +878,9 @@ pub fn parse_bmfont(text: &str) -> Result<BmFont> {
 
 pub fn load_vp_label_font(resolver: &GameFileResolver) -> Result<(BmFont, RgbaFontAtlas)> {
     let fnt_path = resolver.resolve_required(HOI_20BS_FNT_SOURCE, "hoi_20bs.fnt")?;
-    let font = parse_bmfont(&read_latin1(&fnt_path)?)?;
+    let font = parse_bmfont(&resolver.read_resolved_text(&fnt_path)?)?;
     let atlas_path = resolver.resolve_required(HOI_20BS_ATLAS_SOURCE, "hoi_20bs.dds")?;
-    let image = load_dds_rgba(&atlas_path)?;
+    let image = decode_dds_rgba(&resolver.read_resolved_bytes(&atlas_path)?, &atlas_path)?;
     Ok((
         font,
         RgbaFontAtlas {
@@ -1057,17 +1026,13 @@ impl BaseIconDefines {
     }
 }
 
-pub fn parse_base_icon_defines(source: &str) -> Result<BaseIconDefines> {
-    Ok(BaseIconDefines {
-        airbase_cutoff: parse_lua_number_define(source, AIRBASE_ICON_DISTANCE_CUTOFF_KEY)?,
-        navalbase_cutoff: parse_lua_number_define(source, NAVALBASE_ICON_DISTANCE_CUTOFF_KEY)?,
-    })
-}
-
 pub fn base_icon_defines_from_resolver(resolver: &GameFileResolver) -> Result<BaseIconDefines> {
-    let path = resolver.resolve_required(BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE, "graphics defines lua")?;
-    let source = latin1_bytes_to_string(&std::fs::read(&path)?);
-    parse_base_icon_defines(&source)
+    let (sources, _) = crate::xmap09_lighting_law::effective_define_sources(resolver, "effective graphics defines")?;
+    let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
+    Ok(BaseIconDefines {
+        airbase_cutoff: evaluated.scalar("NGraphics", AIRBASE_ICON_DISTANCE_CUTOFF_KEY)?,
+        navalbase_cutoff: evaluated.scalar("NGraphics", NAVALBASE_ICON_DISTANCE_CUTOFF_KEY)?,
+    })
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1103,7 +1068,7 @@ pub fn state_building_levels_from_resolver(
     let mut air_by_state = BTreeMap::new();
     let mut naval_by_province = BTreeMap::new();
     for (_, path) in &files {
-        let text = strip_comments(&read_latin1(path)?);
+        let text = strip_comments(&resolver.read_resolved_text(path)?);
         let Some(state_id) = parse_u32_value(&text, "id") else {
             continue;
         };
@@ -1311,11 +1276,11 @@ pub fn compute_base_icon_markers(inputs: &BaseIconInputs) -> BaseIconLayer {
 pub fn base_icon_layer_from_resolver(resolver: &GameFileResolver) -> Result<BaseIconLayer> {
     let definition_csv = resolver.resolve_required("map/definition.csv", "definition.csv")?;
     let provinces_bmp = resolver.resolve_required("map/provinces.bmp", "provinces.bmp")?;
-    let (_definitions, color_to_id) = load_definition_csv(&definition_csv)?;
-    let bmp = load_provinces_bmp(&provinces_bmp, &color_to_id)?;
+    let (_definitions, color_to_id) = load_definition_csv(resolver, &definition_csv)?;
+    let bmp = decode_provinces_bmp(&resolver.read_resolved_bytes(&provinces_bmp)?, &provinces_bmp, &color_to_id)?;
 
     let state_files = resolver.resolve_dir_files("history/states", Some("txt"))?;
-    let (_states, province_to_state, state_owners) = load_states(&state_files)?;
+    let (_states, province_to_state, state_owners) = load_states(resolver, &state_files)?;
     let (air_base_levels, naval_base_levels) = state_building_levels_from_resolver(resolver)?;
 
     let placements = map_building_placements_from_resolver(resolver)?;
@@ -1716,7 +1681,7 @@ NDefines = {\n\
 \t\tCAPITAL_ICON_CUTOFF = 1100,\n\
 \t},\n\
 }\n";
-        let defines = parse_vp_icon_defines(lua).expect("parse vp icon defines");
+        let defines = crate::test_support::with_define_fixture(lua, vp_icon_defines_from_resolver).expect("evaluate vp icon defines");
         assert_eq!(defines, sample_defines());
     }
 
@@ -1732,7 +1697,10 @@ VICTORY_POINT_MAP_ICON_TEXT_CUTOFF_MAX = 800.0,\n\
 VICTORY_POINT_MAP_ICON_DOT_CUTOFF_MIN = 100.0,\n\
 VICTORY_POINT_MAP_ICON_DOT_CUTOFF_MAX = 1000.0,\n\
 VICTORY_POINT_MAP_ICON_MAX_VICTORY_POINTS_FOR_PERCENT = 22,\n";
-        assert!(parse_vp_icon_defines(lua).is_err());
+        let error = crate::test_support::with_define_fixture(
+            &format!("NDefines = {{ NGraphics = {{ {lua} }} }}"), vp_icon_defines_from_resolver,
+        ).unwrap_err();
+        assert!(error.to_string().contains("CAPITAL_ICON_CUTOFF"));
     }
 
     #[test]
@@ -1981,14 +1949,13 @@ VICTORY_POINT_MAP_ICON_MAX_VICTORY_POINTS_FOR_PERCENT = 22,\n";
     }
 
     #[test]
-    fn parse_lua_number_list_reads_shipped_shapes() {
-        let src = "VICTORY_POINT_MAP_ICON_AFTER = {0, 9, 20}, -- comment\n";
-        assert_eq!(
-            parse_lua_number_list(src, "VICTORY_POINT_MAP_ICON_AFTER"),
-            Some(vec![0.0, 9.0, 20.0])
-        );
-        assert_eq!(parse_lua_number_list(src, "VICTORY_POINT_MAP"), None);
-        assert_eq!(parse_lua_number_list("KEY = 5,\n", "KEY"), None);
+    fn effective_lua_lists_preserve_components_and_refuse_wrong_keys_or_types() {
+        let evaluated = crate::EffectiveDefines::from_sources(&[("fixture.lua".into(),
+            "NDefines = { NGraphics = { VICTORY_POINT_MAP_ICON_AFTER = {0, 3 * 3, 20}, KEY = 5 } }".into(),
+        )]).unwrap();
+        assert_eq!(evaluated.number_array("NGraphics", "VICTORY_POINT_MAP_ICON_AFTER").unwrap(), [0.0, 9.0, 20.0]);
+        assert!(evaluated.number_array("NGraphics", "VICTORY_POINT_MAP").unwrap_err().to_string().contains("value is missing"));
+        assert!(evaluated.number_array("NGraphics", "KEY").unwrap_err().to_string().contains("not a Lua array"));
     }
 
     #[test]
@@ -2229,7 +2196,7 @@ VICTORY_POINT_MAP_ICON_MAX_VICTORY_POINTS_FOR_PERCENT = 22,\n";
             .resolve_required("map/provinces.bmp", "provinces.bmp")
             .expect("provinces.bmp");
         let (definitions, color_to_id) =
-            load_definition_csv(&definition_csv).expect("definition.csv rows");
+            load_definition_csv(&resolver, &definition_csv).expect("definition.csv rows");
         assert!(
             definitions.len() > 10_000,
             "vanilla definition.csv should have many rows, got {}",
@@ -2470,7 +2437,7 @@ NDefines = { NGraphics = {\n\
 \tAIRBASE_ICON_DISTANCE_CUTOFF = 900, -- At what distance air bases are hidden\n\
 \tNAVALBASE_ICON_DISTANCE_CUTOFF = 900, -- 1300, -- naval bases\n\
 } }\n";
-        let d = parse_base_icon_defines(lua).expect("cutoffs");
+        let d = crate::test_support::with_define_fixture(lua, base_icon_defines_from_resolver).expect("cutoffs");
         assert_eq!(d.airbase_cutoff, 900.0);
         assert_eq!(d.navalbase_cutoff, 900.0);
         assert!(d.visible(BaseIconKind::AirBase, 900.0));

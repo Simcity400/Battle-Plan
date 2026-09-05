@@ -6,77 +6,77 @@ use std::path::{Path, PathBuf};
 pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
     let game = require_dir(&options.game, "game directory")?;
     let resolver_setup = BundleResolverSetup::from_options(game.clone(), &options.mod_selection)?;
-    let resolver = &resolver_setup.resolver;
+    let resolver = &GameFileResolver::from(resolver_setup.clone());
     let out = &options.out;
     fs::create_dir_all(out)?;
     if options.force {
         remove_known_bundle_files(out)?;
     }
 
-    let definition_csv = resolver.resolve_file("map/definition.csv", "definition.csv")?;
-    let default_map = resolver.resolve_file("map/default.map", "default.map")?;
-    let provinces_bmp = resolver.resolve_file("map/provinces.bmp", "provinces.bmp")?;
-    let colormap_dds = resolver.resolve_file(
+    let definition_csv = resolver.resolve_required("map/definition.csv", "definition.csv")?;
+    let default_map = resolver.resolve_required("map/default.map", "default.map")?;
+    let provinces_bmp = resolver.resolve_required("map/provinces.bmp", "provinces.bmp")?;
+    let colormap_dds = resolver.resolve_required(
         "map/terrain/colormap_rgb_cityemissivemask_a.dds",
         "terrain colormap DDS",
     )?;
     let water_dds =
-        resolver.resolve_file("map/terrain/colormap_water_0.dds", "water colormap DDS")?;
-    let atlas_dds = resolver.resolve_file("map/terrain/atlas0.dds", "terrain atlas DDS")?;
+        resolver.resolve_required("map/terrain/colormap_water_0.dds", "water colormap DDS")?;
+    let atlas_dds = resolver.resolve_required("map/terrain/atlas0.dds", "terrain atlas DDS")?;
     let atlas_normal_dds =
-        resolver.resolve_file("map/terrain/atlas_normal0.dds", "terrain normal atlas DDS")?;
-    let underwater_dds = resolver.resolve_file(
+        resolver.resolve_required("map/terrain/atlas_normal0.dds", "terrain normal atlas DDS")?;
+    let underwater_dds = resolver.resolve_required(
         "map/terrain/underwater_terrain_0.dds",
         "underwater terrain DDS",
     )?;
     let waterspec_dds =
-        resolver.resolve_file("map/terrain/fow_rgb_waterspec_a.dds", "water spec/fow DDS")?;
-    let lean1_dds = resolver.resolve_file("map/terrain/lean1.dds", "water LEAN 1 DDS")?;
-    let lean2_dds = resolver.resolve_file("map/terrain/lean2.dds", "water LEAN 2 DDS")?;
+        resolver.resolve_required("map/terrain/fow_rgb_waterspec_a.dds", "water spec/fow DDS")?;
+    let lean1_dds = resolver.resolve_required("map/terrain/lean1.dds", "water LEAN 1 DDS")?;
+    let lean2_dds = resolver.resolve_required("map/terrain/lean2.dds", "water LEAN 2 DDS")?;
     let reflection_dds =
-        resolver.resolve_file("map/terrain/reflection.dds", "water reflection cubemap DDS")?;
-    let river_diffuse_dds = resolver.resolve_file(
+        resolver.resolve_required("map/terrain/reflection.dds", "water reflection cubemap DDS")?;
+    let river_diffuse_dds = resolver.resolve_required(
         "map/terrain/RiverSurface_diffuse_0.dds",
         "river diffuse DDS",
     )?;
     let river_normal_dds =
-        resolver.resolve_file("map/terrain/RiverSurface_normal_0.dds", "river normal DDS")?;
+        resolver.resolve_required("map/terrain/RiverSurface_normal_0.dds", "river normal DDS")?;
     let river_masks_dds =
-        resolver.resolve_file("map/terrain/RiverSurface_masks.dds", "river masks DDS")?;
+        resolver.resolve_required("map/terrain/RiverSurface_masks.dds", "river masks DDS")?;
     let border_country_dds =
-        resolver.resolve_file("map/terrain/border_country_0.dds", "country border DDS")?;
+        resolver.resolve_required("map/terrain/border_country_0.dds", "country border DDS")?;
     let border_province_dds =
-        resolver.resolve_file("map/terrain/border_province_0.dds", "province border DDS")?;
-    let border_impassable_dds = resolver.resolve_file(
+        resolver.resolve_required("map/terrain/border_province_0.dds", "province border DDS")?;
+    let border_impassable_dds = resolver.resolve_required(
         "map/terrain/border_impassable_0.dds",
         "impassable border DDS",
     )?;
     let border_state_dds =
-        resolver.resolve_file("map/terrain/border_state_0.dds", "state border DDS")?;
-    let border_sea_dds = resolver.resolve_file("map/terrain/border_sea_0.dds", "sea border DDS")?;
-    let border_sea_region_dds = resolver.resolve_file(
+        resolver.resolve_required("map/terrain/border_state_0.dds", "state border DDS")?;
+    let border_sea_dds = resolver.resolve_required("map/terrain/border_sea_0.dds", "sea border DDS")?;
+    let border_sea_region_dds = resolver.resolve_required(
         "map/terrain/border_sea_region_0.dds",
         "sea-region border DDS",
     )?;
-    let citylights_snowmask_dds = resolver.resolve_file(
+    let citylights_snowmask_dds = resolver.resolve_required(
         "map/terrain/citylights_rgb_snowmask_a_0.dds",
         "city lights/snow mask DDS",
     )?;
-    let snow_normal_dds = resolver.resolve_file(
+    let snow_normal_dds = resolver.resolve_required(
         "map/terrain/snow_normal_rgb_diffuse_a.dds",
         "snow normal/diffuse DDS",
     )?;
-    let mud_diffuse_dds = resolver.resolve_file(
+    let mud_diffuse_dds = resolver.resolve_required(
         "map/terrain/mud_diffuse_rgb_gloss_a_0.dds",
         "mud diffuse/gloss DDS",
     )?;
-    let mud_normal_dds = resolver.resolve_file(
+    let mud_normal_dds = resolver.resolve_required(
         "map/terrain/mud_normal_rgb_spec_a_0.dds",
         "mud normal/spec DDS",
     )?;
     let ice_diffuse_dds =
-        resolver.resolve_file("map/terrain/ice_diffuse.dds", "ice diffuse DDS")?;
-    let ice_noise_dds = resolver.resolve_file("map/terrain/ice_noise_0.dds", "ice noise DDS")?;
+        resolver.resolve_required("map/terrain/ice_diffuse.dds", "ice diffuse DDS")?;
+    let ice_noise_dds = resolver.resolve_required("map/terrain/ice_noise_0.dds", "ice noise DDS")?;
     let material_rgba_specs = material_rgba_specs(resolver)?;
     let raw_material_specs = vec![RawMaterialSpec {
         source: "map/terrain/reflection.dds".to_string(),
@@ -85,53 +85,53 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
         role: "water_reflection_cubemap".to_string(),
         shader_samplers: vec!["ReflectionCubeMap".to_string()],
     }];
-    let terrain_bmp = resolver.resolve_file("map/terrain.bmp", "terrain.bmp")?;
-    let heightmap_bmp = resolver.resolve_file("map/heightmap.bmp", "heightmap.bmp")?;
-    let world_normal_bmp = resolver.resolve_file("map/world_normal.bmp", "world_normal.bmp")?;
-    let rivers_bmp = resolver.resolve_file("map/rivers.bmp", "rivers.bmp")?;
-    let cities_bmp = resolver.resolve_file("map/cities.bmp", "cities.bmp")?;
-    let cities_txt = resolver.resolve_file("map/cities.txt", "cities.txt")?;
-    let trees_bmp = resolver.resolve_file("map/trees.bmp", "trees.bmp")?;
-    let seasons_txt = resolver.resolve_file("map/seasons.txt", "seasons.txt")?;
-    let positions_txt = resolver.resolve_file("map/positions.txt", "positions.txt")?;
+    let terrain_bmp = resolver.resolve_required("map/terrain.bmp", "terrain.bmp")?;
+    let heightmap_bmp = resolver.resolve_required("map/heightmap.bmp", "heightmap.bmp")?;
+    let world_normal_bmp = resolver.resolve_required("map/world_normal.bmp", "world_normal.bmp")?;
+    let rivers_bmp = resolver.resolve_required("map/rivers.bmp", "rivers.bmp")?;
+    let cities_bmp = resolver.resolve_required("map/cities.bmp", "cities.bmp")?;
+    let cities_txt = resolver.resolve_required("map/cities.txt", "cities.txt")?;
+    let trees_bmp = resolver.resolve_required("map/trees.bmp", "trees.bmp")?;
+    let seasons_txt = resolver.resolve_required("map/seasons.txt", "seasons.txt")?;
+    let positions_txt = resolver.resolve_required("map/positions.txt", "positions.txt")?;
     let ambient_object_txt =
-        resolver.resolve_file("map/ambient_object.txt", "ambient_object.txt")?;
-    let buildings_txt = resolver.resolve_file("map/buildings.txt", "buildings.txt")?;
-    let railways_txt = resolver.resolve_file("map/railways.txt", "railways.txt")?;
-    let supply_nodes_txt = resolver.resolve_file("map/supply_nodes.txt", "supply_nodes.txt")?;
-    let unitstacks_txt = resolver.resolve_file("map/unitstacks.txt", "unitstacks.txt")?;
+        resolver.resolve_required("map/ambient_object.txt", "ambient_object.txt")?;
+    let buildings_txt = resolver.resolve_required("map/buildings.txt", "buildings.txt")?;
+    let railways_txt = resolver.resolve_required("map/railways.txt", "railways.txt")?;
+    let supply_nodes_txt = resolver.resolve_required("map/supply_nodes.txt", "supply_nodes.txt")?;
+    let unitstacks_txt = resolver.resolve_required("map/unitstacks.txt", "unitstacks.txt")?;
     let weatherpositions_txt =
-        resolver.resolve_file("map/weatherpositions.txt", "weatherpositions.txt")?;
-    let tree_tint_bmp = resolver.resolve_file("map/terrain/Tree_tint.bmp", "tree tint BMP")?;
+        resolver.resolve_required("map/weatherpositions.txt", "weatherpositions.txt")?;
+    let tree_tint_bmp = resolver.resolve_required("map/terrain/Tree_tint.bmp", "tree tint BMP")?;
     let tree_season_bmp =
-        resolver.resolve_file("map/terrain/Tree_season.bmp", "tree season BMP")?;
+        resolver.resolve_required("map/terrain/Tree_season.bmp", "tree season BMP")?;
     let graphics_defines_lua =
-        resolver.resolve_file("common/defines/00_graphics.lua", "graphics defines")?;
-    let constants_fxh = resolver.resolve_file("gfx/FX/constants.fxh", "shader constants")?;
+        resolver.resolve_required("common/defines/00_graphics.lua", "graphics defines")?;
+    let constants_fxh = resolver.resolve_required("gfx/FX/constants.fxh", "shader constants")?;
     let entity_source_paths = vec![
         (
             "gfx/entities/trees.gfx".to_string(),
-            resolver.resolve_file("gfx/entities/trees.gfx", "tree entity GFX")?,
+            resolver.resolve_required("gfx/entities/trees.gfx", "tree entity GFX")?,
         ),
         (
             "gfx/entities/buildings.gfx".to_string(),
-            resolver.resolve_file("gfx/entities/buildings.gfx", "building entity GFX")?,
+            resolver.resolve_required("gfx/entities/buildings.gfx", "building entity GFX")?,
         ),
         (
             "gfx/entities/buildings.asset".to_string(),
-            resolver.resolve_file("gfx/entities/buildings.asset", "building entity asset")?,
+            resolver.resolve_required("gfx/entities/buildings.asset", "building entity asset")?,
         ),
         (
             "gfx/entities/mapitems.gfx".to_string(),
-            resolver.resolve_file("gfx/entities/mapitems.gfx", "map item entity GFX")?,
+            resolver.resolve_required("gfx/entities/mapitems.gfx", "map item entity GFX")?,
         ),
         (
             "gfx/entities/mapitems.asset".to_string(),
-            resolver.resolve_file("gfx/entities/mapitems.asset", "map item entity asset")?,
+            resolver.resolve_required("gfx/entities/mapitems.asset", "map item entity asset")?,
         ),
         (
             "gfx/entities/landmarks.asset".to_string(),
-            resolver.resolve_file("gfx/entities/landmarks.asset", "landmark entity asset")?,
+            resolver.resolve_required("gfx/entities/landmarks.asset", "landmark entity asset")?,
         ),
         (
             "common/defines/00_graphics.lua".to_string(),
@@ -140,73 +140,73 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
         ("gfx/FX/constants.fxh".to_string(), constants_fxh.clone()),
         (
             "gfx/FX/standardfuncsgfx.fxh".to_string(),
-            resolver.resolve_file("gfx/FX/standardfuncsgfx.fxh", "standard map helpers")?,
+            resolver.resolve_required("gfx/FX/standardfuncsgfx.fxh", "standard map helpers")?,
         ),
         (
             "gfx/FX/pdxmap.shader".to_string(),
-            resolver.resolve_file("gfx/FX/pdxmap.shader", "map shader")?,
+            resolver.resolve_required("gfx/FX/pdxmap.shader", "map shader")?,
         ),
         (
             "gfx/FX/pdxmap.fxh".to_string(),
-            resolver.resolve_file("gfx/FX/pdxmap.fxh", "map shader include")?,
+            resolver.resolve_required("gfx/FX/pdxmap.fxh", "map shader include")?,
         ),
         (
             "gfx/FX/shadow.fxh".to_string(),
-            resolver.resolve_file("gfx/FX/shadow.fxh", "shadow shader include")?,
+            resolver.resolve_required("gfx/FX/shadow.fxh", "shadow shader include")?,
         ),
         (
             "gfx/FX/fow.fxh".to_string(),
-            resolver.resolve_file("gfx/FX/fow.fxh", "fog of war shader include")?,
+            resolver.resolve_required("gfx/FX/fow.fxh", "fog of war shader include")?,
         ),
         (
             "gfx/FX/pdxwater.shader".to_string(),
-            resolver.resolve_file("gfx/FX/pdxwater.shader", "water shader")?,
+            resolver.resolve_required("gfx/FX/pdxwater.shader", "water shader")?,
         ),
         (
             "gfx/FX/river.shader".to_string(),
-            resolver.resolve_file("gfx/FX/river.shader", "river shader")?,
+            resolver.resolve_required("gfx/FX/river.shader", "river shader")?,
         ),
         (
             "gfx/FX/border.shader".to_string(),
-            resolver.resolve_file("gfx/FX/border.shader", "border shader")?,
+            resolver.resolve_required("gfx/FX/border.shader", "border shader")?,
         ),
         (
             "gfx/FX/tree.shader".to_string(),
-            resolver.resolve_file("gfx/FX/tree.shader", "tree shader")?,
+            resolver.resolve_required("gfx/FX/tree.shader", "tree shader")?,
         ),
         (
             "gfx/FX/maparrow.shader".to_string(),
-            resolver.resolve_file("gfx/FX/maparrow.shader", "map arrow shader")?,
+            resolver.resolve_required("gfx/FX/maparrow.shader", "map arrow shader")?,
         ),
         (
             "gfx/FX/tiled_pointlights.fxh".to_string(),
-            resolver.resolve_file("gfx/FX/tiled_pointlights.fxh", "tiled point lights include")?,
+            resolver.resolve_required("gfx/FX/tiled_pointlights.fxh", "tiled point lights include")?,
         ),
         (
             "gfx/FX/pdxmesh.shader".to_string(),
-            resolver.resolve_file("gfx/FX/pdxmesh.shader", "mesh shader")?,
+            resolver.resolve_required("gfx/FX/pdxmesh.shader", "mesh shader")?,
         ),
         (
             "gfx/models/supply/railroad.shader".to_string(),
-            resolver.resolve_file("gfx/models/supply/railroad.shader", "railroad shader")?,
+            resolver.resolve_required("gfx/models/supply/railroad.shader", "railroad shader")?,
         ),
         (
             "gfx/models/buildings/supply_station.gfx".to_string(),
-            resolver.resolve_file(
+            resolver.resolve_required(
                 "gfx/models/buildings/supply_station.gfx",
                 "supply station model GFX",
             )?,
         ),
         (
             "gfx/models/buildings/bridge_railway.gfx".to_string(),
-            resolver.resolve_file(
+            resolver.resolve_required(
                 "gfx/models/buildings/bridge_railway.gfx",
                 "rail bridge model GFX",
             )?,
         ),
         (
             "gfx/models/buildings/bridge_railway_large.gfx".to_string(),
-            resolver.resolve_file(
+            resolver.resolve_required(
                 "gfx/models/buildings/bridge_railway_large.gfx",
                 "large rail bridge model GFX",
             )?,
@@ -215,7 +215,7 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
     let common_building_paths = collect_source_files(resolver, "common/buildings", Some("txt"))?;
     let state_paths = resolver.resolve_dir_files("history/states", Some("txt"))?;
     let strategic_paths = resolver.resolve_dir_files("map/strategicregions", Some("txt"))?;
-    let terrain_defs = resolver.resolve_file(
+    let terrain_defs = resolver.resolve_required(
         "common/terrain/00_terrain.txt",
         "common/terrain/00_terrain.txt",
     )?;
@@ -232,40 +232,40 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
     }
     println!("========================================================================");
 
-    let (mut definitions, color_to_id) = load_definition_csv(&definition_csv)?;
-    let bmp = load_provinces_bmp(&provinces_bmp, &color_to_id)?;
+    let (mut definitions, color_to_id) = load_definition_csv(resolver, &definition_csv)?;
+    let bmp = decode_provinces_bmp(&resolver.read_resolved_bytes(&provinces_bmp)?, &provinces_bmp, &color_to_id)?;
     crate::image_load::admit_invented_provinces(&mut definitions, &bmp.invented);
-    let (state_meta, province_to_state, state_owners) = load_states(&state_paths)?;
+    let (state_meta, province_to_state, state_owners) = load_states(resolver, &state_paths)?;
     let country_colors = load_country_colors(resolver)?;
     let (region_to_provinces, region_meta, province_to_region) =
-        load_strategic_regions(&strategic_paths)?;
-    let constants_source_text = read_latin1(&constants_fxh)?;
+        load_strategic_regions(resolver, &strategic_paths)?;
+    let constants_source_text = resolver.read_resolved_text(&constants_fxh)?;
     let shader_constants = load_shader_constant_meta_from_text(&constants_source_text);
     let shader_vector3_constants =
         load_shader_vector3_constant_meta_from_text(&constants_source_text);
-    let colormap = load_dds_rgbx(&colormap_dds)?;
-    let water = load_dds_rgbx(&water_dds)?;
-    let terrain_atlas = load_dds_rgbx(&atlas_dds)?;
-    let terrain_atlas_mips = load_dds_rgba_mips(&atlas_dds)?;
-    let terrain_normal_atlas = load_dds_rgbx(&atlas_normal_dds)?;
-    let terrain_normal_atlas_mips = load_dds_rgba_mips(&atlas_normal_dds)?;
-    let underwater = load_dds_rgbx(&underwater_dds)?;
-    let waterspec = load_dds_rgbx(&waterspec_dds)?;
-    let river_diffuse = load_dds_rgbx(&river_diffuse_dds)?;
-    let border_country = load_dds_rgbx(&border_country_dds)?;
-    let border_state = load_dds_rgbx(&border_state_dds)?;
-    let border_sea = load_dds_rgbx(&border_sea_dds)?;
-    let terrain_indices = load_bmp_indexed(&terrain_bmp)?;
-    let heightmap = load_bmp_indexed(&heightmap_bmp)?;
-    let height_normal = load_bmp_rgbx(&world_normal_bmp)?;
-    let rivers = load_bmp_indexed(&rivers_bmp)?;
-    let cities = load_bmp_indexed(&cities_bmp)?;
-    let trees = load_bmp_indexed(&trees_bmp)?;
-    let tree_tint = load_bmp_rgbx(&tree_tint_bmp)?;
-    let tree_season = load_bmp_rgbx(&tree_season_bmp)?;
-    let terrain_texture_map = load_terrain_texture_map(&terrain_defs)?;
+    let colormap = decode_dds_rgbx(&resolver.read_resolved_bytes(&colormap_dds)?, &colormap_dds)?;
+    let water = decode_dds_rgbx(&resolver.read_resolved_bytes(&water_dds)?, &water_dds)?;
+    let terrain_atlas = decode_dds_rgbx(&resolver.read_resolved_bytes(&atlas_dds)?, &atlas_dds)?;
+    let terrain_atlas_mips = decode_dds_rgba_mips(&resolver.read_resolved_bytes(&atlas_dds)?, &atlas_dds)?;
+    let terrain_normal_atlas = decode_dds_rgbx(&resolver.read_resolved_bytes(&atlas_normal_dds)?, &atlas_normal_dds)?;
+    let terrain_normal_atlas_mips = decode_dds_rgba_mips(&resolver.read_resolved_bytes(&atlas_normal_dds)?, &atlas_normal_dds)?;
+    let underwater = decode_dds_rgbx(&resolver.read_resolved_bytes(&underwater_dds)?, &underwater_dds)?;
+    let waterspec = decode_dds_rgbx(&resolver.read_resolved_bytes(&waterspec_dds)?, &waterspec_dds)?;
+    let river_diffuse = decode_dds_rgbx(&resolver.read_resolved_bytes(&river_diffuse_dds)?, &river_diffuse_dds)?;
+    let border_country = decode_dds_rgbx(&resolver.read_resolved_bytes(&border_country_dds)?, &border_country_dds)?;
+    let border_state = decode_dds_rgbx(&resolver.read_resolved_bytes(&border_state_dds)?, &border_state_dds)?;
+    let border_sea = decode_dds_rgbx(&resolver.read_resolved_bytes(&border_sea_dds)?, &border_sea_dds)?;
+    let terrain_indices = decode_bmp_indexed(&resolver.read_resolved_bytes(&terrain_bmp)?, &terrain_bmp)?;
+    let heightmap = decode_bmp_indexed(&resolver.read_resolved_bytes(&heightmap_bmp)?, &heightmap_bmp)?;
+    let height_normal = decode_bmp_rgbx(&resolver.read_resolved_bytes(&world_normal_bmp)?, &world_normal_bmp)?;
+    let rivers = decode_bmp_indexed(&resolver.read_resolved_bytes(&rivers_bmp)?, &rivers_bmp)?;
+    let cities = decode_bmp_indexed(&resolver.read_resolved_bytes(&cities_bmp)?, &cities_bmp)?;
+    let trees = decode_bmp_indexed(&resolver.read_resolved_bytes(&trees_bmp)?, &trees_bmp)?;
+    let tree_tint = decode_bmp_rgbx(&resolver.read_resolved_bytes(&tree_tint_bmp)?, &tree_tint_bmp)?;
+    let tree_season = decode_bmp_rgbx(&resolver.read_resolved_bytes(&tree_season_bmp)?, &tree_season_bmp)?;
+    let terrain_texture_map = load_terrain_texture_map(resolver, &terrain_defs)?;
     let terrain_texture_ids = map_terrain_texture_ids(&terrain_indices, &terrain_texture_map);
-    let map_object_meta = load_map_object_meta(
+    let map_object_meta = load_map_object_meta(resolver, 
         &default_map,
         &cities_txt,
         &cities,
@@ -427,22 +427,22 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
         ),
     ];
     let (mut shader_sources, mut shader_source_dimensions) =
-        write_shader_rgba_sources(scope.dir(), &shader_rgba_specs)?;
+        write_shader_rgba_sources(resolver, scope.dir(), &shader_rgba_specs)?;
     let (material_sources, material_dimensions) =
-        write_material_rgba_sources(scope.dir(), &material_rgba_specs)?;
+        write_material_rgba_sources(resolver, scope.dir(), &material_rgba_specs)?;
     shader_sources.extend(material_sources);
     shader_source_dimensions.extend(material_dimensions);
     for spec in &raw_material_specs {
-        copy_shader_source(
+        copy_shader_source(resolver, 
             scope.dir(),
             &spec.source,
             &spec.output,
             &spec.path,
             &mut shader_sources,
         )?;
-        shader_source_dimensions.insert(spec.source.clone(), dds_info(&spec.path)?.dimensions);
+        shader_source_dimensions.insert(spec.source.clone(), dds_info_bytes(&resolver.read_resolved_bytes(&spec.path)?, &spec.path)?.dimensions);
     }
-    let map_material_contract = build_map_material_contract(
+    let map_material_contract = build_map_material_contract(resolver, 
         &material_rgba_specs,
         &raw_material_specs,
         &shader_sources,
@@ -477,7 +477,7 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
     );
     let mut map_sources = BTreeMap::new();
     for (source, output, path) in &map_source_specs {
-        copy_bundle_source(scope.dir(), source, output, path, &mut map_sources)?;
+        copy_bundle_source(resolver, scope.dir(), source, output, path, &mut map_sources)?;
     }
     write_json(&scope.payload("map_object_meta.json"), &map_object_meta)?;
     write_json(
@@ -579,7 +579,7 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
     input_dimensions.extend(shader_source_dimensions);
     input_dimensions.insert(
         "map/terrain/reflection.dds".to_string(),
-        dds_dimensions(&reflection_dds)?,
+        dds_dimensions_bytes(&resolver.read_resolved_bytes(&reflection_dds)?, &reflection_dds)?,
     );
 
     let manifest = Manifest {
@@ -646,9 +646,9 @@ pub(crate) fn build_bundle(options: &BundleOptions) -> Result<()> {
                 .unwrap_or("the game")
                 .to_string(),
             default_map: "map/default.map".to_string(),
-            definition_csv_fnv1a64: fnv1a64_file(&definition_csv)?,
-            provinces_bmp_fnv1a64: fnv1a64_file(&provinces_bmp)?,
-            visual_input_fnv1a64: visual_input_hashes(&[
+            definition_csv_fnv1a64: fnv1a64_bytes(&resolver.read_resolved_bytes(&definition_csv)?),
+            provinces_bmp_fnv1a64: fnv1a64_bytes(&resolver.read_resolved_bytes(&provinces_bmp)?),
+            visual_input_fnv1a64: visual_input_hashes(resolver, &[
                 ("map/default.map", &default_map),
                 ("map/terrain.bmp", &terrain_bmp),
                 ("map/heightmap.bmp", &heightmap_bmp),
@@ -943,7 +943,7 @@ pub(crate) fn remove_known_bundle_files(out: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn import_terrain_runtime_inputs(options: &ImportTerrainRuntimeOptions) -> Result<()> {
+pub(crate) fn import_terrain_runtime_inputs(resolver: &crate::GameFileResolver, options: &ImportTerrainRuntimeOptions) -> Result<()> {
     let manifest_path = options.bundle.join("manifest.json");
     let manifest: Manifest = serde_json::from_slice(&fs::read(&manifest_path)?)?;
     if manifest.schema != "battle-plan-rust-map-bundle-v1" {
@@ -1016,7 +1016,7 @@ pub(crate) fn import_terrain_runtime_inputs(options: &ImportTerrainRuntimeOption
         runtime_input_layouts: BTreeMap::new(),
     };
 
-    validate_terrain_runtime_inputs(&runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
+    validate_terrain_runtime_inputs(resolver, &runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
     write_json(
         &options.bundle.join(&manifest.files.terrain_runtime),
         &runtime,
@@ -1035,7 +1035,7 @@ pub(crate) fn import_terrain_runtime_inputs(options: &ImportTerrainRuntimeOption
     Ok(())
 }
 
-pub(crate) fn import_runtime_texture_input(options: &ImportRuntimeTextureOptions) -> Result<()> {
+pub(crate) fn import_runtime_texture_input(resolver: &GameFileResolver, options: &ImportRuntimeTextureOptions) -> Result<()> {
     let manifest_path = options.bundle.join("manifest.json");
     let manifest: Manifest = serde_json::from_slice(&fs::read(&manifest_path)?)?;
     if manifest.schema != "battle-plan-rust-map-bundle-v1" {
@@ -1048,13 +1048,13 @@ pub(crate) fn import_runtime_texture_input(options: &ImportRuntimeTextureOptions
     )?;
     let mut runtime: TerrainRuntimeInputs = serde_json::from_slice(&fs::read(&terrain_runtime)?)?;
     let terrain_id_map_path = options.bundle.join(&manifest.files.terrain_id_map);
-    validate_terrain_runtime_inputs(&runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
+    validate_terrain_runtime_inputs(resolver, &runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
     let output = runtime_texture_file_for_symbol(&manifest, &options.shader_symbol)?;
 
     let pdxmap_shader_source =
-        required_map_source_path(&options.bundle, &manifest, "gfx/FX/pdxmap.shader")?;
-    validate_pdxmap_sampler_contract(&pdxmap_shader_source)?;
-    let pdxmap_shader_text = read_latin1(&pdxmap_shader_source)?;
+        resolver.resolve_required("gfx/FX/pdxmap.shader", "authored shader source")?;
+    validate_pdxmap_sampler_contract(resolver, &pdxmap_shader_source)?;
+    let pdxmap_shader_text = resolver.read_resolved_text(&pdxmap_shader_source)?;
     let sampler = parse_pdxmap_sampler_contract(&pdxmap_shader_text, &options.shader_symbol)?;
 
     let source_label = format!("runtime-extracted {} RGBA", options.shader_symbol);
@@ -1101,8 +1101,8 @@ pub(crate) fn import_runtime_texture_input(options: &ImportRuntimeTextureOptions
         },
     );
 
-    validate_terrain_runtime_inputs(&runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
-    validate_runtime_texture_sampler_contract(&runtime, &pdxmap_shader_source)?;
+    validate_terrain_runtime_inputs(resolver, &runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
+    validate_runtime_texture_sampler_contract(resolver, &runtime, &pdxmap_shader_source)?;
     write_json(&terrain_runtime, &runtime)?;
     println!(
         "imported {} {}x{} ({} bytes) into {}",
@@ -1115,7 +1115,7 @@ pub(crate) fn import_runtime_texture_input(options: &ImportRuntimeTextureOptions
     Ok(())
 }
 
-pub(crate) fn import_runtime_constant_buffer_input(
+pub(crate) fn import_runtime_constant_buffer_input(resolver: &GameFileResolver, 
     options: &ImportRuntimeConstantBufferOptions,
 ) -> Result<()> {
     let manifest_path = options.bundle.join("manifest.json");
@@ -1130,13 +1130,13 @@ pub(crate) fn import_runtime_constant_buffer_input(
     )?;
     let mut runtime: TerrainRuntimeInputs = serde_json::from_slice(&fs::read(&terrain_runtime)?)?;
     let terrain_id_map_path = options.bundle.join(&manifest.files.terrain_id_map);
-    validate_terrain_runtime_inputs(&runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
+    validate_terrain_runtime_inputs(resolver, &runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
 
     let output = runtime_constant_buffer_file_for_symbol(&manifest, &options.shader_symbol)?;
     let bind_point = runtime_constant_buffer_bind_point_for_symbol(&options.shader_symbol)?;
     let standard_functions_source =
-        required_map_source_path(&options.bundle, &manifest, "gfx/FX/standardfuncsgfx.fxh")?;
-    let standard_functions_text = read_latin1(&standard_functions_source)?;
+        resolver.resolve_required("gfx/FX/standardfuncsgfx.fxh", "authored shader source")?;
+    let standard_functions_text = resolver.read_resolved_text(&standard_functions_source)?;
     let layout = terrain_scene_cb0_layout(&standard_functions_text)?;
     let required_offsets = terrain_scene_cb0_required_offsets(&layout)?;
 
@@ -1178,7 +1178,7 @@ pub(crate) fn import_runtime_constant_buffer_input(
         },
     );
 
-    validate_terrain_runtime_inputs(&runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
+    validate_terrain_runtime_inputs(resolver, &runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
     write_json(&terrain_runtime, &runtime)?;
     println!(
         "imported {} constant buffer {} bytes into {}",
@@ -1189,7 +1189,7 @@ pub(crate) fn import_runtime_constant_buffer_input(
     Ok(())
 }
 
-pub(crate) fn import_runtime_vertex_buffer_input(
+pub(crate) fn import_runtime_vertex_buffer_input(resolver: &crate::GameFileResolver, 
     options: &ImportRuntimeVertexBufferOptions,
 ) -> Result<()> {
     let manifest_path = options.bundle.join("manifest.json");
@@ -1204,7 +1204,7 @@ pub(crate) fn import_runtime_vertex_buffer_input(
     )?;
     let mut runtime: TerrainRuntimeInputs = serde_json::from_slice(&fs::read(&terrain_runtime)?)?;
     let terrain_id_map_path = options.bundle.join(&manifest.files.terrain_id_map);
-    validate_terrain_runtime_inputs(&runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
+    validate_terrain_runtime_inputs(resolver, &runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
 
     if options.shader_symbol != TERRAIN_VERTEX_BUFFER_SYMBOL {
         return Err(format!(
@@ -1288,7 +1288,7 @@ pub(crate) fn import_runtime_vertex_buffer_input(
         },
     );
 
-    validate_terrain_runtime_inputs(&runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
+    validate_terrain_runtime_inputs(resolver, &runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
     write_json(&terrain_runtime, &runtime)?;
     println!(
         "imported {} vertex buffer sample {} bytes, stride {}, draw {} into {}",
@@ -1301,7 +1301,7 @@ pub(crate) fn import_runtime_vertex_buffer_input(
     Ok(())
 }
 
-pub(crate) fn import_runtime_input_layout(options: &ImportRuntimeInputLayoutOptions) -> Result<()> {
+pub(crate) fn import_runtime_input_layout(resolver: &crate::GameFileResolver, options: &ImportRuntimeInputLayoutOptions) -> Result<()> {
     let manifest_path = options.bundle.join("manifest.json");
     let manifest: Manifest = serde_json::from_slice(&fs::read(&manifest_path)?)?;
     if manifest.schema != "battle-plan-rust-map-bundle-v1" {
@@ -1314,7 +1314,7 @@ pub(crate) fn import_runtime_input_layout(options: &ImportRuntimeInputLayoutOpti
     )?;
     let mut runtime: TerrainRuntimeInputs = serde_json::from_slice(&fs::read(&terrain_runtime)?)?;
     let terrain_id_map_path = options.bundle.join(&manifest.files.terrain_id_map);
-    validate_terrain_runtime_inputs(&runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
+    validate_terrain_runtime_inputs(resolver, &runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
 
     if options.shader_symbol != TERRAIN_INPUT_LAYOUT_SYMBOL {
         return Err(format!(
@@ -1361,7 +1361,7 @@ pub(crate) fn import_runtime_input_layout(options: &ImportRuntimeInputLayoutOpti
         },
     );
 
-    validate_terrain_runtime_inputs(&runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
+    validate_terrain_runtime_inputs(resolver, &runtime, &manifest, &options.bundle, &terrain_id_map_path)?;
     write_json(&terrain_runtime, &runtime)?;
     println!(
         "imported {} input layout {} elements, stride {}, draw {} into {}",
@@ -1576,7 +1576,7 @@ mod tests {
             provenance: "unit_test_capture".to_string(),
             force: false,
         };
-        let err = import_terrain_runtime_inputs(&options)
+        let err = import_terrain_runtime_inputs(&crate::test_support::fixture_game_resolver(&root), &options)
             .expect_err("wrong TerrainIDMap byte count must block import");
         assert!(err.to_string().contains("expected 4"));
         let _ = fs::remove_dir_all(&root);
@@ -1638,7 +1638,8 @@ mod tests {
         }
         for (source, output) in &manifest.files.map_sources {
             let bytes = minimal_map_source_bytes(source);
-            fs::write(root.join(output), bytes).expect("write map source file");
+            fs::write(root.join(output), &bytes).expect("write map source file");
+            crate::test_support::write_modvfs_fixture(&root.join("vanilla"), source, &bytes);
         }
         fs::write(root.join(&manifest.files.terrain_id_map), [1u8; 16])
             .expect("write terrain id map");
@@ -1657,7 +1658,7 @@ mod tests {
             provenance: "unit_test_snow_mud_capture".to_string(),
             force: false,
         };
-        import_runtime_texture_input(&options).expect("import SnowMudData runtime texture");
+        import_runtime_texture_input(&crate::test_support::fixture_game_resolver(&root), &options).expect("import SnowMudData runtime texture");
 
         let runtime: TerrainRuntimeInputs =
             serde_json::from_slice(&portable_test_fs_retry::read(
@@ -1700,7 +1701,7 @@ mod tests {
             provenance: "unit_test_snow_mud_capture".to_string(),
             force: false,
         };
-        let err = import_runtime_texture_input(&options)
+        let err = import_runtime_texture_input(&crate::test_support::fixture_game_resolver(&root), &options)
             .expect_err("wrong SnowMudData byte count must block import");
         assert!(err.to_string().contains("expected 4"));
         assert!(!root.join(&manifest.files.snow_mud_data).exists());
@@ -1724,7 +1725,7 @@ mod tests {
             provenance: "unit_test_secondary_color_capture".to_string(),
             force: false,
         };
-        import_runtime_texture_input(&options)
+        import_runtime_texture_input(&crate::test_support::fixture_game_resolver(&root), &options)
             .expect("import ProvinceSecondaryColorMap runtime texture");
 
         let runtime: TerrainRuntimeInputs =
@@ -1772,6 +1773,7 @@ mod tests {
             minimal_standard_functions_source(),
         )
         .expect("write standard functions source");
+        crate::test_support::write_modvfs_fixture(&root.join("vanilla"), "gfx/FX/standardfuncsgfx.fxh", minimal_standard_functions_source());
         let source = root.join("captured_scene_cb0.bin");
         fs::write(&source, valid_scene_cb0_bytes()).expect("write scene cb0 source");
         let options = ImportRuntimeConstantBufferOptions {
@@ -1781,7 +1783,7 @@ mod tests {
             provenance: "unit_test_scene_cb0_capture".to_string(),
             force: false,
         };
-        import_runtime_constant_buffer_input(&options).expect("import TerrainSceneCB0");
+        import_runtime_constant_buffer_input(&crate::test_support::fixture_game_resolver(&root), &options).expect("import TerrainSceneCB0");
 
         let runtime: TerrainRuntimeInputs =
             serde_json::from_slice(&portable_test_fs_retry::read(root.join(&manifest.files.terrain_runtime)).unwrap())
@@ -1833,6 +1835,7 @@ mod tests {
             minimal_standard_functions_source(),
         )
         .expect("write standard functions source");
+        crate::test_support::write_modvfs_fixture(&root.join("vanilla"), "gfx/FX/standardfuncsgfx.fxh", minimal_standard_functions_source());
         let source = root.join("bad_scene_cb0.bin");
         fs::write(&source, [0u8; 16]).expect("write short scene cb0 source");
         let options = ImportRuntimeConstantBufferOptions {
@@ -1842,7 +1845,7 @@ mod tests {
             provenance: "unit_test_scene_cb0_capture".to_string(),
             force: false,
         };
-        let err = import_runtime_constant_buffer_input(&options)
+        let err = import_runtime_constant_buffer_input(&crate::test_support::fixture_game_resolver(&root), &options)
             .expect_err("short TerrainSceneCB0 must fail closed");
         assert!(err.to_string().contains("smaller than shader layout"));
         assert!(!root.join(&manifest.files.terrain_scene_cb0).exists());
@@ -1862,7 +1865,7 @@ mod tests {
             provenance: "unit_test_vertex_capture".to_string(),
             force: false,
         };
-        import_runtime_vertex_buffer_input(&options).expect("import TerrainVertexBuffer");
+        import_runtime_vertex_buffer_input(&crate::test_support::fixture_game_resolver(&root), &options).expect("import TerrainVertexBuffer");
 
         let runtime: TerrainRuntimeInputs =
             serde_json::from_slice(&portable_test_fs_retry::read(root.join(&manifest.files.terrain_runtime)).unwrap())
@@ -1902,7 +1905,7 @@ mod tests {
             provenance: "unit_test_vertex_capture".to_string(),
             force: false,
         };
-        let err = import_runtime_vertex_buffer_input(&options)
+        let err = import_runtime_vertex_buffer_input(&crate::test_support::fixture_game_resolver(&root), &options)
             .expect_err("zero terrain vertex stride must fail closed");
         assert!(err.to_string().contains("stride 0"));
         assert!(!root.join("terrain_vertex_buffer_sample.bin").exists());
@@ -1923,7 +1926,7 @@ mod tests {
             provenance: "unit_test_input_layout_capture".to_string(),
             force: false,
         };
-        import_runtime_input_layout(&options).expect("import TerrainInputLayout");
+        import_runtime_input_layout(&crate::test_support::fixture_game_resolver(&root), &options).expect("import TerrainInputLayout");
 
         let runtime: TerrainRuntimeInputs =
             serde_json::from_slice(&portable_test_fs_retry::read(root.join(&manifest.files.terrain_runtime)).unwrap())
@@ -1962,7 +1965,7 @@ mod tests {
             provenance: "unit_test_input_layout_capture".to_string(),
             force: false,
         };
-        let err = import_runtime_input_layout(&options)
+        let err = import_runtime_input_layout(&crate::test_support::fixture_game_resolver(&root), &options)
             .expect_err("wrong TEXCOORD format must fail closed");
         assert!(err.to_string().contains("TEXCOORD0 format"));
         let _ = fs::remove_dir_all(&root);

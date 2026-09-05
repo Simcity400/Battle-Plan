@@ -44,7 +44,7 @@ fn installed_xui17_layouts_and_portrait_declarations_are_complete() {
         .expect("aces.gfx present");
     let mut sprites = SpriteRegistry::new();
     sprites
-        .parse_file(&aces.path, &aces.rel_path)
+        .parse_content(&resolver.read_file(&aces).unwrap(), &aces.rel_path)
         .expect("parse aces.gfx");
     let named = resolve_named_ace_portrait("FIN", "Ilmari", "Juutilainen", &sprites)
         .expect("documented FIN named ace portrait");
@@ -57,7 +57,7 @@ fn installed_xui17_layouts_and_portrait_declarations_are_complete() {
         .expect("enumerate effective interface GFX")
     {
         complete_registry
-            .parse_file(&file.path, &file.rel_path)
+            .parse_content(&resolver.read_file(&file).unwrap(), &file.rel_path)
             .expect("parse effective interface GFX");
     }
     assert!(complete_registry

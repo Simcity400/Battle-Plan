@@ -102,8 +102,8 @@ impl ObserverDesignerChromeCatalog {
         let catalog = load_effective_definition_catalog(
             files
                 .into_iter()
-                .map(|file| ResolvedGuiDefinitionFile::new(file.rel_path, file.path))
-                .collect(),
+                .map(|file| ResolvedGuiDefinitionFile::read(resolver, &file))
+                .collect::<crate::Result<Vec<_>>>()?,
         )?;
         let row = effective_named_root(&catalog.effective_roots, VARIANT_ROW_TEMPLATE)?;
         let country_row = effective_named_root(&catalog.effective_roots, COUNTRY_ROW_TEMPLATE)?;
@@ -1706,10 +1706,8 @@ mod tests {
         );
         let omitted = missing_window
             .compose_xui13_designer_surface(&frame, named(&frame, "GER"), &resolved, 160, 120)
-            .unwrap();
-        assert!(omitted.ordered_design_ids.is_empty());
-        assert!(omitted.visible_design_ids.is_empty());
-        validate_complete_designer_report(&omitted.output.report).unwrap();
+            .err().expect("omitted effective GUI must be refused");
+        assert!(matches!(omitted, crate::production_renderer::ProductionUiRejection::IncompleteComposition(message) if message.contains("interface/designer_window.gui")));
 
         fs::write(
             root.0.join("interface/designer_window.gui"),

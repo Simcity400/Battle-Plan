@@ -1623,7 +1623,7 @@ mod tests {
 
     fn camera() -> crate::ViewerMapCameraState {
         crate::ViewerMapCameraState::new(
-            UsedContentKey {
+            vec![UsedContentKey {
                 effective_vfs_manifest_sha256: "b".repeat(64),
                 normalized_game_relative_path: "common/defines/00_graphics.lua".into(),
                 winning_layer_ordinal: 0,
@@ -1632,7 +1632,7 @@ mod tests {
                 source_sha256: "c".repeat(64),
                 payload_sha256: "d".repeat(64),
                 payload_bytes: 1,
-            },
+            }],
             crate::Hoi4MapCameraDefines::new(50.0, 3000.0, 200.0, 200.0, 50.0, 0.02, 6.0).unwrap(),
             5632,
             2048,

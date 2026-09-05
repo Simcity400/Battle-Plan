@@ -437,6 +437,35 @@ impl AssetResolver {
         })
     }
 
+    pub fn effective_define_numbers(&self, namespace: &str, keys: &[&str]) -> Result<(Vec<f64>, Vec<String>)> {
+        if let Some(lease) = &self.admission_lease {
+            return lease.effective_define_numbers(namespace, keys)
+                .map_err(|error| GameUiError::missing(error.to_string()));
+        }
+        let mut files = self.list_files_recursive("common/defines", Some("lua"))?;
+        files.sort_by_key(|file| (std::cmp::Reverse(self.roots.iter().position(|root| file.path.starts_with(root))), file.rel_path.clone()));
+        let sources = files.iter().map(|file| {
+            let bytes = self.read_file(file)?;
+            Ok((file.rel_path.clone(), bytes.into_iter().map(char::from).collect()))
+        }).collect::<Result<Vec<_>>>()?;
+        let values = map_viewer::evaluate_effective_define_numbers(&sources, namespace, keys)
+            .map_err(|error| GameUiError::parse(error.to_string()))?;
+        Ok((values, files.into_iter().map(|file| file.rel_path).collect()))
+    }
+
+    pub fn read_file(&self, file: &ResolvedFile) -> Result<Vec<u8>> {
+        let selected = self.resolve_file(&file.rel_path)?;
+        if selected != *file {
+            return Err(GameUiError::missing(format!("asset winner changed for {}", file.rel_path)));
+        }
+        if let Some(lease) = &self.admission_lease {
+            let key = self.admitted_content_key(&file.rel_path)
+                .ok_or_else(|| GameUiError::missing(format!("asset is not admitted: {}", file.rel_path)))?;
+            return lease.read_used_content(key).map_err(|error| GameUiError::missing(error.to_string()));
+        }
+        Ok(fs::read(&selected.path)?)
+    }
+
     pub fn resolve_optional_file(&self, rel: &str) -> Result<Option<ResolvedFile>> {
         let normalized = normalize_rel_path(rel);
         if normalized.is_empty() {
@@ -475,6 +504,15 @@ impl AssetResolver {
         let rel_dir = normalize_rel_path(rel_dir);
         let wanted_ext = extension.map(|ext| ext.trim_start_matches('.').to_ascii_lowercase());
         if let Some(files) = &self.restricted_files {
+            if let Some(lease) = &self.admission_lease {
+                let complete = lease.require_complete_admitted_dir(&rel_dir, extension, true, "UI effective namespace")
+                    .map_err(|error| GameUiError::missing(error.to_string()))?;
+                for content in complete {
+                    if !files.contains_key(&content.normalized_game_relative_path.to_ascii_lowercase()) {
+                        return Err(GameUiError::missing(format!("UI consumer capability omits effective namespace member {}", content.normalized_game_relative_path)));
+                    }
+                }
+            }
             let prefix = if rel_dir.is_empty() {
                 String::new()
             } else {
@@ -542,17 +580,18 @@ impl AssetResolver {
             .and_then(|value| value.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
+        let bytes = self.read_file(&resolved)?;
         let (format, image) = match ext.as_str() {
             "dds" => {
-                let decoded = dds::decode_file(&resolved.path)?;
+                let decoded = dds::decode_bytes(&bytes)?;
                 (decoded.format, decoded.image)
             }
             "tga" => {
-                let decoded = tga::decode_file(&resolved.path)?;
+                let decoded = tga::decode_bytes(&bytes)?;
                 (decoded.format, decoded.image)
             }
             "png" => {
-                let decoded = crate::png::decode_file(&resolved.path)?;
+                let decoded = crate::png::decode_bytes(&bytes)?;
                 (decoded.format, decoded.image)
             }
             _ => {
@@ -664,7 +703,8 @@ fn push_staged_layer(
     }
     let descriptor =
         userdata.join(descriptor_rel.replace('/', &std::path::MAIN_SEPARATOR.to_string()));
-    if Sha256::hex(&fs::read(&descriptor)?) != json_str(row, "descriptor_sha256")? {
+    let descriptor_bytes = fs::read(&descriptor)?;
+    if Sha256::hex(&descriptor_bytes) != json_str(row, "descriptor_sha256")? {
         return Err(GameUiError::parse(format!(
             "staged descriptor hash mismatch: {id}"
         )));
@@ -675,7 +715,7 @@ fn push_staged_layer(
             "staged content root missing: {id}"
         )));
     }
-    let doc = crate::paradox_text::parse_file(&descriptor)?;
+    let doc = crate::paradox_text::parse_checked_bytes(&descriptor_bytes, descriptor_rel)?;
     let mut replacements = BTreeSet::new();
     for value in doc.root.values_ci("replace_path") {
         let raw = value
@@ -889,7 +929,9 @@ mod tests {
         fs::write(mod_root.join("gfx/interface/ICON.dds"), b"mod").unwrap();
         let resolver = AssetResolver::new(vec![mod_root, vanilla]);
         let resolved = resolver.resolve_file("gfx\\interface\\icon.dds").unwrap();
-        assert_eq!(fs::read(resolved.path).unwrap(), b"mod");
+        assert_eq!(resolver.read_file(&resolved).unwrap(), b"mod");
+        let wrong = ResolvedFile { path: root.join("vanilla/GFX/Interface/icon.dds"), ..resolved };
+        assert!(resolver.read_file(&wrong).is_err());
         let _ = fs::remove_dir_all(root);
     }
 

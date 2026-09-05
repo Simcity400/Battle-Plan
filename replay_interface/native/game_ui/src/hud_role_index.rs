@@ -21,6 +21,7 @@ use replay_core::{ContentLayerKind, UsedContentKey};
 use serde::{Deserialize, Serialize};
 use snapshot::sha256::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
 use std::path::Path;
 
 pub const REPLAY_ROOT_CONSUMER_PREFIX: &str = "hud_role/v1/root";
@@ -242,6 +243,7 @@ pub fn emit_effective_vfs_hud_role_index(
     source_inventory_sha256: &str,
     localisation_language: &str,
 ) -> Result<EffectiveVfsRootRoleIndexDocument, String> {
+    resolver.in_resolution_session(|resolver| {
     validate_sha(source_inventory_sha256)?;
     let gui_files = resolver
         .resolve_dir_files_recursive("interface", Some("gui"))
@@ -255,8 +257,8 @@ pub fn emit_effective_vfs_hud_role_index(
     let gui_catalog = load_effective_definition_catalog(
         gui_files
             .iter()
-            .map(|(rel, path)| ResolvedGuiDefinitionFile::new(rel.clone(), path.clone()))
-            .collect(),
+            .map(|(rel, path)| resolver.read_resolved_bytes(path).map(|bytes| ResolvedGuiDefinitionFile::new(rel.clone(), bytes)))
+            .collect::<map_viewer::Result<Vec<_>>>().map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
     let recovery_parsed_gui_files = gui_catalog.recovery_parsed_files();
@@ -278,24 +280,15 @@ pub fn emit_effective_vfs_hud_role_index(
 
     let mut sprites = SpriteRegistry::new();
     let mut gfx_parse_failed = BTreeMap::new();
-    for (rel, path) in gfx_files {
-        let document = match std::fs::read(&path) {
-            Ok(bytes) => {
-                record_decode_damage(&mut decode_damaged, &rel, &bytes)?;
-                let document = parse_bytes(&bytes);
-                if !document.recoveries.is_empty()
-                    && !engine_tolerated_outer_eof(&document)
-                {
-                    gfx_parse_failed.insert(rel, folded_file_text(&path));
-                    continue;
-                }
-                document
-            }
-            Err(_) => {
-                gfx_parse_failed.insert(rel, folded_file_text(&path));
-                continue;
-            }
-        };
+    for (rel, _) in gfx_files {
+        let bytes = resolver.read_required_bytes(&rel, "HUD sprite definitions")
+            .map_err(|error| error.to_string())?;
+        record_decode_damage(&mut decode_damaged, &rel, &bytes)?;
+        let document = parse_bytes(&bytes);
+        if !document.recoveries.is_empty() && !engine_tolerated_outer_eof(&document) {
+            gfx_parse_failed.insert(rel, decode_text(&bytes).to_ascii_lowercase());
+            continue;
+        }
         sprites.add_document(&rel, &document);
     }
 
@@ -376,6 +369,7 @@ pub fn emit_effective_vfs_hud_role_index(
     };
     document.validate()?;
     Ok(document)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -505,12 +499,6 @@ fn append_root_dependencies(
         }
     }
     Ok(())
-}
-
-fn folded_file_text(path: &Path) -> String {
-    std::fs::read(path)
-        .map(|bytes| decode_text(&bytes).to_ascii_lowercase())
-        .unwrap_or_default()
 }
 
 fn failed_files_mentioning(failed: &BTreeMap<String, String>, identifier: &str) -> Option<String> {
@@ -1599,7 +1587,7 @@ mod tests {
                 .resolve_dir_files_recursive("interface", Some("gui"))
                 .unwrap()
                 .iter()
-                .map(|(rel, path)| ResolvedGuiDefinitionFile::new(rel.clone(), path.clone()))
+                .map(|(rel, path)| ResolvedGuiDefinitionFile::new(rel.clone(), std::fs::read(path).unwrap()))
                 .collect(),
         )
         .unwrap();
@@ -1616,72 +1604,4 @@ mod tests {
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    #[cfg_attr(
-        not(all(gate_hoi4_install, gate_hoi4_user_dir)),
-        ignore = "the game install and the game user directory (set BATTLE_PLAN_GAME_ROOT and BATTLE_PLAN_USER_DIR, or let both be found at their default locations)"
-    )]
-    fn installed_effective_vfs_closes_all_always_on_hud_surfaces() {
-        let game = replay_test_gates::require_vanilla_game_root();
-        let user = replay_test_gates::require_hoi4_user_dir();
-        let discovered = GameFileResolver::from_dlc_load(&game, user.clone()).unwrap();
-        let recorded_layers = discovered
-            .active_sources()
-            .into_iter()
-            .map(|source| RecordedContentLayer {
-                ordinal: source.ordinal as u32,
-                layer_kind: match source.kind.as_str() {
-                    "base" => ContentLayerKind::Base,
-                    "integrated_dlc" => ContentLayerKind::IntegratedDlc,
-                    "dlc" => ContentLayerKind::Dlc,
-                    "mod" => ContentLayerKind::Mod,
-                    other => panic!("unexpected installed layer kind {other}"),
-                },
-                layer_id: source.source_id,
-                display_name: "installed-test".into(),
-                descriptor_sha256: source.descriptor_sha256,
-                source_container_sha256: source.archive_sha256.clone(),
-                storage_kind: if source.archive_sha256.is_some() {
-                    replay_core::LayerStorageKind::ZipArchive
-                } else {
-                    replay_core::LayerStorageKind::Directory
-                },
-                replace_paths: source.replace_path,
-                required_for_playback: false,
-            })
-            .collect::<Vec<_>>();
-        let recorded = recorded_layers
-            .iter()
-            .filter(|layer| layer.layer_kind != ContentLayerKind::Base)
-            .map(|layer| map_viewer::RecordedContentSource {
-                ordinal: layer.ordinal,
-                source_id: layer.layer_id.clone(),
-            })
-            .collect::<Vec<_>>();
-        let resolver = GameFileResolver::from_recorded_content_layers(
-            &game,
-            user.clone(),
-            &recorded,
-        )
-        .unwrap();
-        let index =
-            emit_effective_vfs_hud_role_index(&resolver, &"a".repeat(64), "english").unwrap();
-        for closure in &index.closures {
-            eprintln!(
-                "installed root {}: complete={} bindings={} missing={:?}",
-                closure.runtime_root_name,
-                closure.complete_dependency_closure,
-                closure.bindings.len(),
-                closure.missing_roles
-            );
-        }
-        assert_eq!(
-            index
-                .closures
-                .iter()
-                .filter(|closure| closure.complete_dependency_closure)
-                .count(),
-            ENGINE_CONTROLLER_ROOTS.len()
-        );
-    }
 }

@@ -305,7 +305,7 @@ pub fn bind_provider_content(
     Ok((resolver, admission))
 }
 
-fn resolver_for_manifest(
+pub(super) fn resolver_for_manifest(
     paths: &ProductPaths,
     manifest: &ContentManifest,
 ) -> Result<GameFileResolver, String> {

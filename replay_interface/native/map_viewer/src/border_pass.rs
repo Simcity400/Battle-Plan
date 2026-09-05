@@ -28,7 +28,7 @@ mod windows_impl {
     };
     use crate::{
         border_diffuse_source, border_fade_windows_from_resolver, border_transparency,
-        load_dds_rgba_mips, native_d3d11_create_input_layout_from_elements, native_d3d11_hr,
+        decode_dds_rgba_mips, native_d3d11_create_input_layout_from_elements, native_d3d11_hr,
         synthesize_border_world_mesh_from_resolver, BorderClassIndexRange, BorderFadeWindows,
         D3dPtr, GameFileResolver, NativeD3d11DepthStencil, NativeD3d11Device,
         NativeD3d11PreparedDraw, NativeD3d11RenderTarget, RgbaImage, RuntimeInputElementMeta,
@@ -433,7 +433,7 @@ mod windows_impl {
                 let path = resolver
                     .resolve_required(source, "border diffuse DDS")
                     .map_err(|err| blocked(err))?;
-                let mips = load_dds_rgba_mips(&path)
+                let mips = decode_dds_rgba_mips(&resolver.read_resolved_bytes(&path)?, &path)
                     .map_err(|err| blocked(format!("failed to decode {source}: {err}")))?;
                 let (texture, srv) =
                     create_rgba_mip_texture(device, &mips, &format!("border diffuse {source}"))?;

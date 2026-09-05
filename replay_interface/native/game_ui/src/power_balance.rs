@@ -93,7 +93,7 @@ impl PowerBalanceDefinitionCatalog {
         let files = resolver.list_files_recursive("common/bop", Some("txt"))?;
         let mut balances = BTreeMap::new();
         for file in files {
-            let doc = crate::paradox_text::parse_file(&file.path)?;
+            let doc = crate::paradox_text::parse_checked_bytes(&resolver.read_file(&file)?, &file.rel_path)?;
             if !doc.recoveries.is_empty() {
                 return Err(crate::GameUiError::parse(format!(
                     "XUI18 effective definition {:?} required parser recovery",

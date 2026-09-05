@@ -444,10 +444,7 @@ fn effective_vfs_compositor_executes_all_surfaces_and_preserves_exact_owners() {
     let resolver = AssetResolver::new(vec![fixture.0.clone()]);
     let mut sprites = SpriteRegistry::new();
     sprites
-        .parse_file(
-            &fixture.0.join("interface/xui14.gfx"),
-            "interface/xui14.gfx",
-        )
+        .parse_content(&map_viewer::GameFileResolver::vanilla(&fixture.0).unwrap().read_required_bytes("interface/xui14.gfx", "fixture content").unwrap(), "interface/xui14.gfx")
         .expect("parse fixture sprites");
     let producer_manifest = "4".repeat(64);
 

@@ -54,7 +54,7 @@ impl ProductionMapFeatureAdapter for Xmap03CameraAdapter {
             )
             .as_bytes(),
         );
-        let content_identity = Sha256::hex(&serde_json::to_vec(&camera.graphics_defines_content)?);
+        let content_identity = Sha256::hex(&serde_json::to_vec(&camera.defines_content)?);
         let target_identity = Sha256::hex(
             format!(
                 "{}\0{}\0{}\0{}",
@@ -74,7 +74,7 @@ impl ProductionMapFeatureAdapter for Xmap03CameraAdapter {
                     ordered_resources_sha256: content_identity,
                     target_sha256: target_identity,
                 }],
-                ordered_used_content: vec![camera.graphics_defines_content.clone()],
+                ordered_used_content: camera.defines_content.clone(),
             },
             prepared_terrain: None,
             prepared_political: None,

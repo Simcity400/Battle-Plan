@@ -1,8 +1,5 @@
 
-use crate::{
-    parse_lua_number_define, read_latin1, BorderMaterial, GameFileResolver, Result,
-    BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE,
-};
+use crate::{BorderMaterial, GameFileResolver, Result};
 
 pub mod defines {
     pub const PROVINCE_BORDER_FADE_NEAR: f32 = 200.0;
@@ -57,36 +54,15 @@ impl BorderFadeWindows {
 }
 
 pub fn border_fade_windows_from_resolver(resolver: &GameFileResolver) -> Result<BorderFadeWindows> {
-    let path = resolver.resolve_required(BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE, "graphics defines lua")?;
-    let text = read_latin1(&path)?;
-    border_fade_windows_from_graphics_defines(&text)
-}
-
-pub fn border_fade_windows_from_graphics_defines(text: &str) -> Result<BorderFadeWindows> {
-    let province = read_fade_window(text, PROVINCE_FADE_DEFINE_KEYS)?;
-    let state = read_fade_window(text, STATE_FADE_DEFINE_KEYS)?;
-    Ok(BorderFadeWindows { province, state })
-}
-
-fn read_fade_window(text: &str, keys: (&str, &str)) -> Result<BorderFadeWindow> {
-    let (near_key, far_key) = keys;
-    let near = parse_lua_number_define(text, near_key)?;
-    let far = parse_lua_number_define(text, far_key)?;
-    if !near.is_finite() || !far.is_finite() || near < 0.0 {
-        return Err(format!(
-            "border fade law blocked: {BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE} {near_key}/{far_key} has \
-             invalid value near={near} far={far}"
-        )
-        .into());
-    }
-    if far <= near {
-        return Err(format!(
-            "border fade law blocked: {BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE} {far_key}={far} must exceed \
-             {near_key}={near}"
-        )
-        .into());
-    }
-    Ok(BorderFadeWindow { near, far })
+    let (sources, _) = crate::xmap09_lighting_law::effective_define_sources(resolver, "effective defines")?;
+    let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
+    let window = |keys: (&str, &str)| -> Result<BorderFadeWindow> {
+        let near = evaluated.scalar("NGraphics", keys.0)?;
+        let far = evaluated.scalar("NGraphics", keys.1)?;
+        if near < 0.0 || far <= near { return Err("invalid border fade window".into()); }
+        Ok(BorderFadeWindow { near, far })
+    };
+    Ok(BorderFadeWindows { province: window(PROVINCE_FADE_DEFINE_KEYS)?, state: window(STATE_FADE_DEFINE_KEYS)? })
 }
 
 pub fn border_transparency(
@@ -264,10 +240,10 @@ mod tests {
 
     #[test]
     fn fade_windows_parse_from_graphics_defines_body() {
-        let body = "NDefines_Graphics = {\n NGraphics = {\n  \
+        let body = "NDefines = {\n NGraphics = {\n  \
              PROVINCE_BORDER_FADE_NEAR = 200,\n  PROVINCE_BORDER_FADE_FAR = 300,\n  \
              STATE_BORDER_FADE_NEAR = 400,\n  STATE_BORDER_FADE_FAR = 500,\n }\n}\n";
-        let windows = border_fade_windows_from_graphics_defines(body).expect("parse windows");
+        let windows = crate::test_support::with_define_fixture(body, border_fade_windows_from_resolver).expect("evaluate windows");
         assert_eq!(windows, BorderFadeWindows::vanilla());
     }
 
@@ -275,10 +251,11 @@ mod tests {
     fn inverted_fade_window_fails_closed() {
         let body = "PROVINCE_BORDER_FADE_NEAR = 300,\nPROVINCE_BORDER_FADE_FAR = 200,\n\
              STATE_BORDER_FADE_NEAR = 400,\nSTATE_BORDER_FADE_FAR = 500,\n";
-        let err = border_fade_windows_from_graphics_defines(body)
-            .expect_err("far <= near must fail closed");
+        let err = crate::test_support::with_define_fixture(
+            &format!("NDefines = {{ NGraphics = {{ {body} }} }}"), border_fade_windows_from_resolver,
+        ).expect_err("far <= near must fail closed");
         assert!(
-            err.to_string().contains("must exceed"),
+            err.to_string().contains("invalid border fade window"),
             "unexpected error: {err}"
         );
     }
@@ -286,7 +263,9 @@ mod tests {
     #[test]
     fn missing_fade_define_fails_closed() {
         let body = "PROVINCE_BORDER_FADE_NEAR = 200,\nPROVINCE_BORDER_FADE_FAR = 300,\n";
-        assert!(border_fade_windows_from_graphics_defines(body).is_err());
+        assert!(crate::test_support::with_define_fixture(
+            &format!("NDefines = {{ NGraphics = {{ {body} }} }}"), border_fade_windows_from_resolver,
+        ).is_err());
     }
 
     #[test]

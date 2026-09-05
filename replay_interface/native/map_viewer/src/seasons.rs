@@ -1,4 +1,5 @@
 use crate::*;
+#[cfg(test)]
 use std::fs;
 
 const SEASONS_SOURCE: &str = "map/seasons.txt";
@@ -175,7 +176,7 @@ pub fn apply_tree_season_cb_override(cb1_bytes: &mut [u8], values: Option<(f32, 
 
 pub fn seasons_table_from_resolver(resolver: &GameFileResolver) -> Result<SeasonsTable> {
     let path = resolver.resolve_required(SEASONS_SOURCE, "seasons.txt")?;
-    let bytes = fs::read(&path).map_err(|err| {
+    let bytes = resolver.read_required_bytes(SEASONS_SOURCE, SEASONS_SOURCE).map_err(|err| {
         format!(
             "failed to read {SEASONS_SOURCE} resolved to {}: {err}",
             path.display()

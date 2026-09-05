@@ -70,7 +70,7 @@ mod windows_impl {
             "map/terrain/underwater_terrain_0.dds",
             "underwater seabed diffuse DDS",
         )?;
-        let raw = std::fs::read(&path).map_err(|error| {
+        let raw = resolver.read_required_bytes("map/terrain/underwater_terrain_0.dds", "map/terrain/underwater_terrain_0.dds").map_err(|error| {
             format!(
                 "--water-full underwater pass blocked: seabed diffuse {} is not readable: {error}",
                 path.display()

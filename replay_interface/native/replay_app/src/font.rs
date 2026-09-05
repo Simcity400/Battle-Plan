@@ -164,7 +164,7 @@ pub fn game_font_dependency_paths_for_language(
         let resolved_name = game_ui_font_name(relative)?;
         let descriptor = format!("gfx/fonts/{resolved_name}.fnt");
         let descriptor_path = resolver.resolve_required(&descriptor, "font file")?;
-        let descriptor_bytes = fs::read(&descriptor_path)?;
+        let descriptor_bytes = resolver.read_required_bytes(&descriptor, "bitmap font")?;
         let parsed = parse_fnt_text(&descriptor_bytes, &descriptor)?;
         paths.push(descriptor);
         for (page_id, declared) in parsed.page_files.iter().enumerate() {
@@ -187,7 +187,7 @@ fn game_font_spec(
 ) -> Result<FontSpec> {
     let core_gfx_rel = "interface/core.gfx";
     let core_gfx_path = resolver.resolve_required(core_gfx_rel, "core.gfx font registry")?;
-    let core_bytes = fs::read(&core_gfx_path)?;
+    let core_bytes = resolver.read_required_bytes(core_gfx_rel, "bitmap font")?;
     reject_font_decode_damage(&core_bytes, core_gfx_rel)?;
     let core_text = decode_text(&core_bytes);
     let source = format!("{core_gfx_rel} ({})", core_gfx_path.display());
@@ -211,7 +211,7 @@ fn load_game_font_with_mode(
 ) -> Result<Font> {
     let core_gfx_rel = "interface/core.gfx";
     let core_gfx_path = resolver.resolve_required(core_gfx_rel, "core.gfx font registry")?;
-    let bytes = fs::read(&core_gfx_path).map_err(|err| {
+    let bytes = resolver.read_required_bytes(core_gfx_rel, "bitmap font").map_err(|err| {
         format!(
             "failed to read {core_gfx_rel} resolved to {}: {err}",
             core_gfx_path.display()
@@ -869,7 +869,7 @@ fn load_bitmap_font_from_resolver(
 ) -> Result<LoadedBitmapFont> {
     let rel = format!("gfx/fonts/{name}.fnt");
     let fnt_path = resolver.resolve_required(&rel, "font file")?;
-    let bytes = fs::read(&fnt_path).map_err(|err| {
+    let bytes = resolver.read_required_bytes(&rel, "bitmap font").map_err(|err| {
         format!(
             "failed to read font file {rel} resolved to {}: {err}",
             fnt_path.display()
@@ -913,7 +913,7 @@ fn resolve_bitmap_font_page(
     declared: Option<&str>,
 ) -> Result<LoadedBitmapPage> {
     let (rel, path) = resolve_bitmap_font_page_path(resolver, name, page_id, declared)?;
-    decode_resolved_font_page(page_id, rel, path)
+    decode_resolved_font_page(resolver, page_id, rel, path)
 }
 
 fn resolve_bitmap_font_page_path(
@@ -937,6 +937,7 @@ fn resolve_bitmap_font_page_path(
 }
 
 fn decode_resolved_font_page(
+    resolver: &GameFileResolver,
     page_id: u32,
     rel_path: String,
     path: PathBuf,
@@ -948,7 +949,7 @@ fn decode_resolved_font_page(
         .to_ascii_lowercase();
     let (image, mip_images) = match ext.as_str() {
         "dds" => {
-            let bytes = std::fs::read(&path).map_err(|err| {
+            let bytes = resolver.read_required_bytes(&rel_path, "font page").map_err(|err| {
                 format!(
                     "failed to read font page {rel_path} resolved to {}: {err}",
                     path.display()
@@ -988,7 +989,8 @@ fn decode_resolved_font_page(
             }
         }
         "tga" => {
-            let image = tga::decode_file(&path)
+            let bytes = resolver.read_required_bytes(&rel_path, "font page")?;
+            let image = tga::decode_bytes(&bytes)
                 .map_err(|err| {
                     format!(
                         "failed to decode font page {rel_path} resolved to {}: {err}",

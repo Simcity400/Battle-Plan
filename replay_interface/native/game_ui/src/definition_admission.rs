@@ -5,6 +5,7 @@ use portable_content_manifest::authored_ui::engine_recursive_path_cmp;
 use serde::Deserialize;
 use snapshot::sha256::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,14 +17,18 @@ pub const FROZEN_WINDOW_COUNT: usize = 9_155;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedGuiDefinitionFile {
     pub rel_path: String,
-    pub path: PathBuf,
+    pub bytes: Vec<u8>,
 }
 
 impl ResolvedGuiDefinitionFile {
-    pub fn new(rel_path: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+    pub fn read(resolver: &crate::assets::AssetResolver, file: &crate::assets::ResolvedFile) -> Result<Self> {
+        Ok(Self::new(&file.rel_path, resolver.read_file(file)?))
+    }
+
+    pub fn new(rel_path: impl Into<String>, bytes: impl Into<Vec<u8>>) -> Self {
         Self {
             rel_path: normalize_rel(&rel_path.into()),
-            path: path.into(),
+            bytes: bytes.into(),
         }
     }
 }
@@ -181,28 +186,15 @@ struct FrozenFile {
 }
 
 pub fn frozen_playset_files(game_root: &Path) -> Result<Vec<ResolvedGuiDefinitionFile>> {
-    let census = frozen_census()?;
-    census
-        .files
-        .iter()
-        .map(|row| {
-            let path = match row.source_layer_kind.as_str() {
-                "vanilla" => game_root.join(rel_to_path(&row.source_file)),
-                "integrated_dlc" => game_root
-                    .join("integrated_dlc")
-                    .join(&row.source_layer)
-                    .join(rel_to_path(&row.source_file)),
-                kind => {
-                    return Err(GameUiError::new(
-                        ErrorKind::Other,
-                        format!("XUI01 frozen census has unsupported layer kind {kind:?}"),
-                    ))
-                }
-            };
-            Ok(ResolvedGuiDefinitionFile::new(&row.source_file, path))
-        })
-        .collect()
+    let resolver = map_viewer::GameFileResolver::vanilla(game_root)
+        .map_err(|error| GameUiError::missing(error.to_string()))?;
+    frozen_census()?.files.iter().map(|row| {
+        let bytes = resolver.read_required_bytes(&row.source_file, "frozen GUI evidence")
+            .map_err(|error| GameUiError::missing(error.to_string()))?;
+        Ok(ResolvedGuiDefinitionFile::new(&row.source_file, bytes))
+    }).collect()
 }
+
 
 pub fn load_frozen_definition_catalog(
     resolved_files: Vec<ResolvedGuiDefinitionFile>,
@@ -220,7 +212,7 @@ pub fn load_frozen_definition_catalog(
         if !folded.insert(rel.to_ascii_lowercase()) {
             return invalid(format!("duplicate/case-colliding effective GUI path {rel}"));
         }
-        if actual.insert(rel.clone(), row.path).is_some() {
+        if actual.insert(rel.clone(), row.bytes).is_some() {
             return invalid(format!("duplicate effective GUI path {rel}"));
         }
     }
@@ -243,15 +235,9 @@ pub fn load_frozen_definition_catalog(
 
     let mut layouts = LayoutSet::default();
     for (rel, expected_row) in &expected {
-        let path = actual
+        let bytes = actual
             .get(rel)
             .expect("missing rows were rejected before parse");
-        let bytes = fs::read(path).map_err(|err| {
-            GameUiError::new(
-                ErrorKind::Io,
-                format!("read XUI01 GUI {} at {}: {err}", rel, path.display()),
-            )
-        })?;
         if bytes.len() != expected_row.bytes {
             return invalid(format!(
                 "XUI01 GUI byte-count drift for {rel}: expected {}, got {}",
@@ -266,7 +252,7 @@ pub fn load_frozen_definition_catalog(
                 expected_row.sha256
             ));
         }
-        layouts.parse_file(path, rel).map_err(|err| {
+        layouts.parse_content(bytes, rel).map_err(|err| {
             GameUiError::new(
                 ErrorKind::Parse,
                 format!("parse frozen XUI01 GUI {rel}: {err}"),
@@ -318,7 +304,7 @@ pub fn load_effective_definition_catalog(
         if !exact_paths.insert(rel.clone()) {
             return invalid(format!("duplicate effective GUI path {rel}"));
         }
-        layouts.parse_file(&row.path, &rel).map_err(|error| {
+        layouts.parse_content(&row.bytes, &rel).map_err(|error| {
             GameUiError::new(
                 ErrorKind::Parse,
                 format!("parse effective GUI {rel}: {error}"),
@@ -674,9 +660,9 @@ mod tests {
         .unwrap();
 
         let catalog = load_effective_definition_catalog(vec![
-            ResolvedGuiDefinitionFile::new("interface/a.gui", &lowercase),
-            ResolvedGuiDefinitionFile::new("interface/Z.gui", &uppercase),
-            ResolvedGuiDefinitionFile::new("interface/A.gui", &overridden_only),
+            ResolvedGuiDefinitionFile::new("interface/a.gui", std::fs::read(&lowercase).unwrap()),
+            ResolvedGuiDefinitionFile::new("interface/Z.gui", std::fs::read(&uppercase).unwrap()),
+            ResolvedGuiDefinitionFile::new("interface/A.gui", std::fs::read(&overridden_only).unwrap()),
         ])
         .expect("case-insensitive GUI_TYPE override must resolve");
 
@@ -725,8 +711,8 @@ mod tests {
         )
         .unwrap();
         let catalog = load_effective_definition_catalog(vec![
-            ResolvedGuiDefinitionFile::new("interface/clean.gui", clean),
-            ResolvedGuiDefinitionFile::new("interface/damaged.gui", damaged),
+            ResolvedGuiDefinitionFile::new("interface/clean.gui", std::fs::read(&clean).unwrap()),
+            ResolvedGuiDefinitionFile::new("interface/damaged.gui", std::fs::read(&damaged).unwrap()),
         ])
         .expect("a recovery-parsed .gui must still load");
 

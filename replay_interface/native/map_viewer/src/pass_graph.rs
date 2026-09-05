@@ -802,7 +802,7 @@ mod tests {
         let water_bundle =
             NativeD3d11TerrainBundle::load_water(&water_path).expect("valid water bundle");
         let camera = terrain_bundle
-            .production_camera_from_capture()
+            .production_camera_from_capture(&crate::test_support::fixture_game_resolver(&root))
             .expect("derive production camera");
         let graph = ProductionMapPassGraph::from_terrain_capture(&terrain_bundle, camera)
             .expect("terrain graph");
@@ -882,7 +882,7 @@ mod tests {
         let trees_bundle =
             NativeD3d11TerrainBundle::load_trees(&trees_path).expect("valid trees bundle");
         let camera = terrain_bundle
-            .production_camera_from_capture()
+            .production_camera_from_capture(&crate::test_support::fixture_game_resolver(&water_root))
             .expect("derive production camera");
         let graph = ProductionMapPassGraph::from_terrain_capture(&terrain_bundle, camera)
             .expect("terrain graph");
@@ -965,7 +965,7 @@ mod tests {
             spec: WATER_MAP_FRAME_SPEC,
         };
         let camera = terrain_bundle
-            .production_camera_from_capture()
+            .production_camera_from_capture(&crate::test_support::fixture_game_resolver(&root))
             .expect("derive production camera");
         let graph = ProductionMapPassGraph::from_terrain_capture(&terrain_bundle, camera)
             .expect("terrain graph");
@@ -1007,7 +1007,7 @@ mod tests {
         let water_bundle =
             NativeD3d11TerrainBundle::load_water(&water_path).expect("valid water bundle");
         let camera = terrain_bundle
-            .production_camera_from_capture()
+            .production_camera_from_capture(&crate::test_support::fixture_game_resolver(&root))
             .expect("derive production camera");
         let graph = ProductionMapPassGraph::from_terrain_capture(&terrain_bundle, camera)
             .expect("terrain graph");
@@ -1051,7 +1051,7 @@ mod tests {
         let water_bundle =
             NativeD3d11TerrainBundle::load_water(&water_path).expect("valid water bundle");
         let camera = terrain_bundle
-            .production_camera_from_capture()
+            .production_camera_from_capture(&crate::test_support::fixture_game_resolver(&root))
             .expect("derive production camera");
         let graph = ProductionMapPassGraph::from_terrain_capture(&terrain_bundle, camera)
             .expect("terrain graph");
@@ -1094,7 +1094,7 @@ mod tests {
         let water_bundle =
             NativeD3d11TerrainBundle::load_water(&water_path).expect("valid water bundle");
         let camera = terrain_bundle
-            .production_camera_from_capture()
+            .production_camera_from_capture(&crate::test_support::fixture_game_resolver(&root))
             .expect("derive production camera");
         let graph = ProductionMapPassGraph::from_terrain_capture(&terrain_bundle, camera)
             .expect("terrain graph");
@@ -1140,7 +1140,7 @@ mod tests {
         let water_bundle =
             NativeD3d11TerrainBundle::load_water(&water_path).expect("valid water bundle");
         let camera = terrain_bundle
-            .production_camera_from_capture()
+            .production_camera_from_capture(&crate::test_support::fixture_game_resolver(&root))
             .expect("derive production camera");
         let graph = ProductionMapPassGraph::from_terrain_capture(&terrain_bundle, camera)
             .expect("terrain graph");

@@ -1,7 +1,4 @@
 use crate::{ErrorKind, GameUiError, Result};
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::Path;
 
 const DDS_HEADER_LEN: usize = 128;
 const DDPF_FOURCC: u32 = 0x4;
@@ -45,15 +42,7 @@ pub struct DdsInfo {
     pub is_volume: bool,
 }
 
-pub fn decode_file(path: &Path) -> Result<DdsImage> {
-    let data = fs::read(path)?;
-    decode_bytes(&data).map_err(|err| add_path(err, path))
-}
 
-pub fn info_file(path: &Path) -> Result<DdsInfo> {
-    let data = fs::read(path)?;
-    info_bytes(&data).map_err(|err| add_path(err, path))
-}
 
 fn reject_non_2d(header: &Header) -> Result<()> {
     if header.caps2 & DDSCAPS2_CUBEMAP != 0 {
@@ -107,19 +96,6 @@ pub fn info_bytes(data: &[u8]) -> Result<DdsInfo> {
     })
 }
 
-pub fn format_histogram(paths: &[impl AsRef<Path>]) -> BTreeMap<String, usize> {
-    let mut out = BTreeMap::new();
-    for path in paths {
-        let format = info_file(path.as_ref())
-            .map(|info| info.format)
-            .unwrap_or_else(|err| match err.kind {
-                ErrorKind::UnsupportedDdsFormat(format) => format,
-                _ => "UNREADABLE".to_string(),
-            });
-        *out.entry(format).or_insert(0) += 1;
-    }
-    out
-}
 
 #[derive(Clone, Debug)]
 struct Header {
@@ -654,11 +630,6 @@ fn le_u32(data: &[u8], offset: usize) -> Result<u32> {
     Ok(u32::from_le_bytes(
         bytes.try_into().expect("slice length checked"),
     ))
-}
-
-fn add_path(mut err: GameUiError, path: &Path) -> GameUiError {
-    err.message = format!("{}: {}", path.display(), err.message);
-    err
 }
 
 #[cfg(test)]

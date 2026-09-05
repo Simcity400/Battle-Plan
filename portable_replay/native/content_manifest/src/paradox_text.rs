@@ -1,6 +1,4 @@
 use crate::content_parse::{ContentParseError as GameUiError, Result};
-use std::fs;
-use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Document {
@@ -90,11 +88,6 @@ impl Entry {
             .as_deref()
             .is_some_and(|actual| actual.eq_ignore_ascii_case(key))
     }
-}
-
-pub fn parse_file(path: &Path) -> Result<Document> {
-    let bytes = fs::read(path)?;
-    Ok(parse_bytes(&bytes))
 }
 
 pub fn parse_bytes(bytes: &[u8]) -> Document {

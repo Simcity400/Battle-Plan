@@ -3,7 +3,7 @@ use crate::assets::AssetResolver;
 use crate::gfx::SpriteRegistry;
 use crate::gui::{GuiElement, LayoutSet};
 use crate::loc::Localisation;
-use crate::paradox_text::{parse_file, Value};
+use crate::paradox_text::{parse_checked_bytes, Value};
 use crate::{GameUiError, Result};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -125,7 +125,7 @@ fn card_template(layouts: &LayoutSet, name: &str) -> DecisionCardTemplate {
 
 pub fn parse_decision_layout(resolver: &AssetResolver) -> Result<DecisionPanelLayout> {
     let resolved = resolver.resolve_file(DECISION_VIEW_GUI)?;
-    let doc = parse_file(&resolved.path)?;
+    let doc = parse_checked_bytes(&resolver.read_file(&resolved)?, &resolved.rel_path)?;
     let mut layouts = LayoutSet::default();
     layouts.add_document(&resolved.rel_path, &doc);
 
@@ -191,7 +191,7 @@ fn unique_named_kind(layouts: &LayoutSet, name: &str, kind: &str) -> Result<GuiE
 
 pub fn load_decision_authored_scene(resolver: &AssetResolver) -> Result<DecisionAuthoredScene> {
     let resolved = resolver.resolve_file(DECISION_VIEW_GUI)?;
-    let doc = parse_file(&resolved.path)?;
+    let doc = parse_checked_bytes(&resolver.read_file(&resolved)?, &resolved.rel_path)?;
     if !doc.recoveries.is_empty() {
         return Err(GameUiError::parse(format!(
             "{} required parser recovery",
@@ -393,7 +393,7 @@ pub fn parse_decision_categories(
     let mut out = BTreeMap::new();
     let files = resolver.list_files_recursive(DECISION_CATEGORIES_DIR, Some("txt"))?;
     for file in files {
-        let doc = parse_file(&file.path)?;
+        let doc = parse_checked_bytes(&resolver.read_file(&file)?, &file.rel_path)?;
         for entry in doc.root.fields() {
             let Some(id) = entry.key.as_deref() else {
                 continue;
@@ -427,7 +427,7 @@ pub fn parse_decisions(resolver: &AssetResolver) -> Result<DecisionSet> {
             continue;
         }
         set.decision_file_count += 1;
-        let doc = parse_file(&file.path)?;
+        let doc = parse_checked_bytes(&resolver.read_file(&file)?, &file.rel_path)?;
         set.recoveries += doc.recoveries.len();
         for cat_entry in doc.root.fields() {
             let Some(category) = cat_entry.key.as_deref() else {

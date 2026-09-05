@@ -2008,7 +2008,7 @@ mod tests {
             assert_eq!(Sha256::hex(&bytes), family.sha256, "{}", family.family_id);
             resolved.push(ResolvedGuiDefinitionFile::new(
                 family.source_file.clone(),
-                path,
+                bytes,
             ));
         }
         let catalog = load_effective_definition_catalog(resolved).unwrap();

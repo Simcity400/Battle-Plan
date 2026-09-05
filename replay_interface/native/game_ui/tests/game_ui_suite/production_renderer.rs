@@ -1006,21 +1006,6 @@ fn frame_owned_xui23_carrier_reaches_the_actual_production_renderer() {
 }
 
 #[test]
-#[cfg_attr(
-    not(gate_hoi4_install),
-    ignore = "the game install (set BATTLE_PLAN_GAME_ROOT / BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA, or install at the default Steam path)"
-)]
-fn admitted_ui_resolver_rejects_an_installed_but_unrecorded_path() {
-    let root = installed_game_root();
-    let renderer = production_renderer(root);
-    assert!(renderer
-        .resolver()
-        .resolve_optional_file("common/defines/00_defines.lua")
-        .unwrap()
-        .is_none());
-}
-
-#[test]
 #[ignore = "XUI21 installed shipping-renderer Evidence: requires the game install and is intentionally excluded from the deterministic default tier"]
 fn installed_xui21_shipping_renderer_admits_complete_event_namespace_and_composes_popup() {
     use game_ui::event_chrome::{

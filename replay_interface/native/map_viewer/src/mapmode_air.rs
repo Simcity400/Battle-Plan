@@ -91,10 +91,16 @@ pub fn strategic_air_colors_from_source(source: &str) -> Result<StrategicAirColo
 pub fn strategic_air_colors_from_resolver(
     resolver: &GameFileResolver,
 ) -> Result<StrategicAirColors> {
-    let path =
-        resolver.resolve_required(AIR_GRAPHICS_DEFINES_SOURCE, "strategic air status colours")?;
-    let source = crate::read_latin1(&path)?;
-    strategic_air_colors_from_source(&source)
+    let (sources, _) = crate::xmap09_lighting_law::effective_define_sources(resolver, "effective defines")?;
+    let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
+
+    Ok(StrategicAirColors {
+        bad: evaluated.array("NGraphics", "STRATEGIC_AIR_COLOR_BAD")?,
+        good: evaluated.array("NGraphics", "STRATEGIC_AIR_COLOR_GOOD")?,
+        average: evaluated.array("NGraphics", "STRATEGIC_AIR_COLOR_AVERAGE")?,
+        neutral: evaluated.array("NGraphics", "STRATEGIC_AIR_COLOR_NEUTRAL")?,
+    })
+
 }
 
 pub fn air_overlay_alpha(colors: &StrategicAirColors) -> f32 {
@@ -148,7 +154,7 @@ pub fn build_air_regions(
 pub fn air_region_set_from_resolver(resolver: &GameFileResolver) -> Result<AirRegionSet> {
     let region_files = resolver.resolve_dir_files(AIR_STRATEGIC_REGIONS_DIR, Some("txt"))?;
     let (region_to_provinces, region_meta, _province_to_region) =
-        crate::load_strategic_regions(&region_files)?;
+        crate::load_strategic_regions(resolver, &region_files)?;
     Ok(build_air_regions(&region_to_provinces, |id| {
         region_meta
             .get(&id)

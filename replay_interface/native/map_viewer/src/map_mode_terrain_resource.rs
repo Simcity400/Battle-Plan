@@ -134,7 +134,7 @@ pub fn terrain_category_colors_from_resolver(
     let files = resolver.resolve_dir_files_recursive("common/terrain", Some("txt"))?;
     let mut merged = BTreeMap::new();
     for (_, path) in &files {
-        let source = crate::read_latin1(path)?;
+        let source = resolver.read_resolved_text(path)?;
         merged.extend(parse_terrain_category_colors_optional(&source)?);
     }
     if merged.is_empty() {
@@ -174,7 +174,7 @@ pub(crate) fn classify_terrain_map_mode(
 pub fn terrain_map_mode_from_resolver(resolver: &GameFileResolver) -> Result<TerrainMapMode> {
     let definition_csv =
         resolver.resolve_required(TERRAIN_DEFINITION_CSV_SOURCE, "terrain definition.csv")?;
-    let (definitions, _color_to_id) = crate::load_definition_csv(&definition_csv)?;
+    let (definitions, _color_to_id) = crate::load_definition_csv(resolver, &definition_csv)?;
     let category_colors = terrain_category_colors_from_resolver(resolver)?;
     Ok(classify_terrain_map_mode(&definitions, &category_colors))
 }
@@ -184,12 +184,12 @@ pub(crate) fn terrain_province_rgba_from_resolver(
 ) -> Result<BTreeMap<u32, [u8; 4]>> {
     let definition_csv =
         resolver.resolve_required(TERRAIN_DEFINITION_CSV_SOURCE, "terrain definition.csv")?;
-    let (definitions, _) = crate::load_definition_csv(&definition_csv)?;
+    let (definitions, _) = crate::load_definition_csv(resolver, &definition_csv)?;
     let category_colors = terrain_category_colors_from_resolver(resolver)?;
 
     let mut naval_by_province = BTreeMap::<u32, String>::new();
     for (name, path) in resolver.resolve_dir_files_recursive("map/strategicregions", Some("txt"))? {
-        let source = crate::strip_comments(&crate::read_latin1(&path)?);
+        let source = crate::strip_comments(&resolver.read_resolved_text(&path)?);
         let Some(naval_terrain) = crate::parse_word_value(&source, "naval_terrain") else {
             continue;
         };
@@ -273,7 +273,7 @@ pub fn resource_definitions_from_resolver(
     resolver: &GameFileResolver,
 ) -> Result<Vec<ResourceDefinition>> {
     let path = resolver.resolve_required(RESOURCE_DEFINITIONS_SOURCE, "resource definitions")?;
-    let source = crate::read_latin1(&path)?;
+    let source = resolver.read_required_text(RESOURCE_DEFINITIONS_SOURCE, RESOURCE_DEFINITIONS_SOURCE)?;
     parse_resource_definitions(&source)
 }
 
@@ -348,7 +348,7 @@ pub fn resource_deposit_set_from_resolver(
         resolver.resolve_dir_files_recursive(RESOURCE_DEPOSITS_STATES_DIR, Some("txt"))?;
     let mut parsed = Vec::new();
     for (_, path) in &state_files {
-        let text = crate::read_latin1(path)?;
+        let text = resolver.read_resolved_text(path)?;
         if let Some(entry) = parse_state_resource_deposits(&text, &names) {
             parsed.push(entry);
         }

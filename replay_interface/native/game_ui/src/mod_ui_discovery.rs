@@ -107,12 +107,12 @@ fn discover_with_resolver(
     }
     let rows = gui_files
         .iter()
-        .map(|row| ResolvedGuiDefinitionFile::new(&row.rel_path, &row.path))
-        .collect();
+        .map(|row| ResolvedGuiDefinitionFile::read(resolver, row))
+        .collect::<crate::Result<Vec<_>>>()?;
     let catalog = load_effective_definition_catalog(rows)?;
     let mut registry = SpriteRegistry::new();
     for file in &gfx_files {
-        registry.parse_file(&file.path, &file.rel_path)?;
+        registry.parse_content(&resolver.read_file(&file)?, &file.rel_path)?;
     }
     let localisation = if evidence_game_root.is_none() {
         Localisation::load_admitted_language(resolver, localisation_language)?

@@ -409,6 +409,113 @@ fn decode_texture_uses_immutable_admitted_bytes_after_source_mutation() {
 }
 
 #[test]
+fn modvfs_ui_parsers_and_image_codecs_use_admitted_mod_overrides() {
+    use game_ui::assets::AssetResolver;
+    use game_ui::definition_admission::{load_effective_definition_catalog, ResolvedGuiDefinitionFile};
+    let root = temp_root("modvfs-consumers");
+    let game = root.join("game");
+    let mods = root.join("mod");
+    for (dir, name, value) in [(&game, "base_panel", 1u8), (&mods, "mod_panel", 7u8)] {
+        write(dir, "interface/panel.gui", &format!("guiTypes = {{ containerWindowType = {{ name = {name} }} }}"));
+        write(dir, "interface/icons.gfx", &format!("spriteTypes = {{ spriteType = {{ name = GFX_{name} texturefile = \"gfx/interface/icon.dds\" }} }}"));
+        write(dir, "interface/core.gfx", &format!("bitmapfonts = {{ textcolors = {{ R = {{ {value} 8 9 }} }} }}"));
+        let texture_dir = dir.join("gfx/interface");
+        fs::create_dir_all(&texture_dir).unwrap();
+        let mut dds = vec![0u8; 132];
+        dds[..4].copy_from_slice(b"DDS ");
+        for (offset, number) in [(4, 124u32), (12, 1), (16, 1), (28, 1), (76, 32),
+            (80, 0x41), (88, 32), (92, 16711680), (96, 65280), (100, 255),
+            (104, 4278190080), (108, 0x1000)] {
+            dds[offset..offset + 4].copy_from_slice(&number.to_le_bytes());
+        }
+        dds[128..].copy_from_slice(&[9, 8, value, 255]);
+        fs::write(texture_dir.join("icon.dds"), dds).unwrap();
+        let mut tga = vec![0u8; 18];
+        tga[2] = 2;
+        tga[12] = 1;
+        tga[14] = 1;
+        tga[16] = 32;
+        tga[17] = 0x28;
+        tga.extend_from_slice(&[9, 8, value, 255]);
+        fs::write(texture_dir.join("icon.tga"), tga).unwrap();
+        game_ui::png::write_png(&texture_dir.join("icon.png"), &game_ui::dds::RgbaImage {
+            width: 1, height: 1, pixels: vec![value, 8, 9, 255],
+        }).unwrap();
+    }
+    let raw = GameFileResolver::with_mod_paths(&game, vec![mods.clone()]).unwrap();
+    let paths = raw.resolve_dir_files_recursive("", None).unwrap().into_iter().map(|(path, _)| path);
+    let (manifest, environment) = manifest_for(&raw, paths, "l_english", vec![]);
+    let admission = manifest.admit_playback(&raw.playback_inventory(&manifest, environment).unwrap()).unwrap();
+    let resolver = raw.with_content_admission(&admission).unwrap();
+    let assets = AssetResolver::from_content_admission(&resolver, &admission).unwrap();
+    let gui = assets.resolve_file("interface/panel.gui").unwrap();
+    let row = ResolvedGuiDefinitionFile::read(&assets, &gui).unwrap();
+    let catalog = load_effective_definition_catalog(vec![row]).unwrap();
+    assert_eq!(catalog.effective_roots[0].root.name, "mod_panel");
+    let mut sprites = game_ui::gfx::SpriteRegistry::new();
+    let gfx = assets.resolve_file("interface/icons.gfx").unwrap();
+    sprites.parse_content(&assets.read_file(&gfx).unwrap(), &gfx.rel_path).unwrap();
+    assert!(sprites.get("GFX_mod_panel").is_some());
+    assert!(sprites.get("GFX_base_panel").is_none());
+    let (probed, stats) = game_ui::probe::parse_gfx_files(&assets).unwrap();
+    assert_eq!(stats.file_count, 2);
+    assert!(probed.get("GFX_mod_panel").is_some());
+    assert_eq!(game_ui::markup::TextColorTable::load(&assets).unwrap().get('R'), Some([7, 8, 9]));
+    for relative in ["gfx/interface/icon.dds", "gfx/interface/icon.tga"] {
+        assert_eq!(assets.decode_texture(relative).unwrap().image.pixels, [7, 8, 9, 255]);
+    }
+    let png = assets.resolve_file("gfx/interface/icon.png").unwrap();
+    assert_eq!(game_ui::png::decode_bytes(&assets.read_file(&png).unwrap()).unwrap().image.pixels, [7, 8, 9, 255]);
+    let dds = assets.resolve_file("gfx/interface/icon.dds").unwrap();
+    assert_eq!(game_ui::dds::info_bytes(&assets.read_file(&dds).unwrap()).unwrap().width, 1);
+    fs::write(mods.join("interface/panel.gui"), "invalid after admission").unwrap();
+    let document = game_ui::paradox_text::parse_checked_bytes(&assets.read_file(&gui).unwrap(), &gui.rel_path).unwrap();
+    let mut layouts = game_ui::gui::LayoutSet::default();
+    layouts.add_document(&gui.rel_path, &document);
+    assert_eq!(layouts.find_by_name("mod_panel").len(), 1);
+    let foreign = game_ui::assets::ResolvedFile { rel_path: gui.rel_path.clone(), path: game.join("interface/panel.gui") };
+    assert!(assets.read_file(&foreign).is_err());
+    drop(assets);
+    drop(resolver);
+    portable_test_fs_retry::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn modvfs_ui_directory_scan_ignores_unrecorded_gui_added_before_open() {
+    let root = temp_root("modvfs-incomplete-namespace");
+    let game = root.join("game");
+    let mods = root.join("mod");
+    write(&game, "interface/panel.gui", "guiTypes = {} ");
+    write(&mods, "interface/panel.gui", "guiTypes = { containerWindowType = { name = mod_panel } }");
+    let raw = GameFileResolver::with_mod_paths(&game, vec![mods.clone()]).unwrap();
+    let (manifest, environment) = manifest_for(&raw, ["interface/panel.gui".into()], "l_english", vec![]);
+    let admission = manifest.admit_playback(&raw.playback_inventory(&manifest, environment.clone()).unwrap()).unwrap();
+    let before = raw.with_content_admission(&admission).unwrap();
+    let before_assets = game_ui::assets::AssetResolver::from_content_admission(&before, &admission).unwrap();
+    let expected = before_assets.list_files_recursive("interface", Some("gui")).unwrap();
+    assert_eq!(expected.len(), 1);
+    assert_eq!(expected[0].rel_path, "interface/panel.gui");
+    let expected_bytes = before_assets.read_file(&expected[0]).unwrap();
+    assert!(String::from_utf8(expected_bytes.clone()).unwrap().contains("mod_panel"));
+    write(&game, "interface/base-extra.gui", "unused base GUI");
+    write(&mods, "interface/extra.gui", "guiTypes = { containerWindowType = { name = mod_extra } }");
+    let raw = GameFileResolver::with_mod_paths(&game, vec![mods]).unwrap();
+    let reopened = manifest.admit_playback(&raw.playback_inventory(&manifest, environment).unwrap()).unwrap();
+    assert_eq!(reopened, admission);
+    let resolver = raw.with_content_admission(&reopened).unwrap();
+    let assets = game_ui::assets::AssetResolver::from_content_admission(&resolver, &reopened).unwrap();
+    let actual = assets.list_files_recursive("interface", Some("gui")).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(assets.read_file(&actual[0]).unwrap(), expected_bytes);
+    assert!(assets.resolve_file("interface/extra.gui").is_err());
+    drop(before_assets);
+    drop(before);
+    drop(assets);
+    drop(resolver);
+    portable_test_fs_retry::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn portable_manifest_rebinds_after_game_profile_and_replay_relocation() {
     let root = temp_root("relocated");
     let mut resolvers = Vec::new();

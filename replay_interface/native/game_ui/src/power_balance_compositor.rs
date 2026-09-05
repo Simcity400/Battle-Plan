@@ -91,7 +91,7 @@ pub fn compose_power_balance_surface(
     viewport_height: usize,
 ) -> Result<AuthoredPowerBalanceComposeOutput> {
     let resolved = resolver.resolve_file(XUI18_GUI_SOURCE)?;
-    let layouts = parse_layout_set(&resolved.path, &resolved.rel_path)?;
+    let layouts = parse_layout_set(&resolver.read_file(&resolved)?, &resolved.rel_path)?;
     if layouts.stats.recovery_count != 0 || layouts.stats.decode_loss_count != 0 {
         return Err(GameUiError::parse(
             "XUI18 effective powerbalanceview.gui is not losslessly parsed",
@@ -101,7 +101,7 @@ pub fn compose_power_balance_surface(
     let range_template = find_named_element(&layouts, XUI18_GUI_SOURCE, "range_bar")?;
 
     let decision_resolved = resolver.resolve_file(XUI18_DECISION_GUI_SOURCE)?;
-    let decision_layouts = parse_layout_set(&decision_resolved.path, &decision_resolved.rel_path)?;
+    let decision_layouts = parse_layout_set(&resolver.read_file(&decision_resolved)?, &decision_resolved.rel_path)?;
     if decision_layouts.stats.recovery_count != 0 || decision_layouts.stats.decode_loss_count != 0 {
         return Err(GameUiError::parse(
             "XUI18 effective countrydecisionview.gui is not losslessly parsed",

@@ -149,7 +149,7 @@ fn xui22_installed_exact_a729_scripted_gui_census_is_complete() {
     for file in interface_files {
         let mut layouts = LayoutSet::default();
         layouts
-            .parse_file(&file.path, &file.rel_path)
+            .parse_content(&resolver.read_file(&file).unwrap(), &file.rel_path)
             .unwrap_or_else(|error| panic!("parse {}: {error}", file.rel_path));
         for (window_name, files) in &mut owners {
             let roots = layouts.find_by_name(window_name);

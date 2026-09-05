@@ -225,7 +225,7 @@ pub fn region_weather_from_resolver(
     let files = resolver.resolve_dir_files(STRATEGIC_REGIONS_DIR, Some("txt"))?;
     let mut out = BTreeMap::new();
     for (_rel, path) in &files {
-        let text = read_latin1(path)?;
+        let text = resolver.read_resolved_text(path)?;
         if let Some(region) = parse_region_weather(&text).map_err(|e| {
             format!(
                 "failed to parse strategic region weather in {}: {e}",
@@ -377,8 +377,8 @@ pub fn synthesize_snow_floor_from_resolver(
 
     let definition_csv = resolver.resolve_required(SNOW_DEFINITION_CSV_SOURCE, "definition.csv")?;
     let provinces_bmp = resolver.resolve_required(SNOW_PROVINCES_BMP_SOURCE, "provinces.bmp")?;
-    let (_definitions, color_to_id) = load_definition_csv(&definition_csv)?;
-    let bmp = load_provinces_bmp(&provinces_bmp, &color_to_id)?;
+    let (_definitions, color_to_id) = load_definition_csv(resolver, &definition_csv)?;
+    let bmp = decode_provinces_bmp(&resolver.read_resolved_bytes(&provinces_bmp)?, &provinces_bmp, &color_to_id)?;
 
     let inputs = SnowFloorInputs {
         province_ids: &bmp.ids,

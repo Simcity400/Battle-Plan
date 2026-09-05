@@ -182,7 +182,7 @@ pub use border_classification::{
     XMAP06_NAMED_PALETTE_DEFINES,
 };
 pub use border_law::{
-    border_diffuse_source, border_fade_windows_from_graphics_defines,
+    border_diffuse_source,
     border_fade_windows_from_resolver, border_transparency, defines as border_fade_defines,
     BorderFadeWindow, BorderFadeWindows,
 };
@@ -230,7 +230,7 @@ pub use building_files::{
     BUILDING_MESH_VERTEX_STRIDE_BYTES, BUILDING_SHADER_EFFECT, BUILDING_SHADER_SOURCE,
 };
 pub use camera::{
-    hoi4_map_camera_defines_from_bundle, map_wrap_offsets, Hoi4MapCameraDefines,
+    hoi4_map_camera_defines_from_resolver, map_wrap_offsets, Hoi4MapCameraDefines,
     ProductionMapCamera, ProductionMapCameraProjection, ViewerMapCameraState,
     DEFAULT_VIEWER_CAMERA_SPEED_SETTING, VIEWER_MAP_CAMERA_SCHEMA, XMAP03_A729_EXECUTABLE_SHA256,
     XMAP03_CAMERA_LAW_SCHEMA, XMAP03_ZOOM_IN_ACTION_ID, XMAP03_ZOOM_OUT_ACTION_ID,
@@ -262,8 +262,8 @@ pub use counter_render::{
     COUNTER_ORG_BAR_SPRITE, COUNTER_STRENGTH_BAR_SPRITE,
 };
 pub use d3d11_replay::{
-    accept_terrain_d3d11, accept_terrain_d3d11_with_resolver, render_production_map_d3d11,
-    render_production_map_d3d11_with_resolver, render_terrain_d3d11, render_terrain_d3d11_bundle,
+    accept_terrain_d3d11_with_resolver,
+    render_production_map_d3d11_with_resolver,
     render_terrain_d3d11_with_resolver, smoke_terrain_chunk_synthesis,
     validate_terrain_chunk_synthesis, validate_terrain_d3d11_bundle,
     validate_terrain_d3d11_bundle_with_resolver, NativeD3d11PreparedProductionMap,
@@ -319,6 +319,7 @@ pub use xmap09_light_template::{
     Xmap09LightTemplate, Xmap09LightTrack, Xmap09ResolvedLightEvent,
 };
 pub use xmap09_lighting_law::{
+    evaluate_effective_define_numbers, EffectiveDefines,
     engine_hour_of_day, engine_hour_of_day_fraction, virtual_rig,
     xmap09_point_light_census_is_incomplete, xmap09_shadow_fade_factor,
     xmap09_tiled_point_light_grid, xmap09_undeliverable_point_light_creators,
@@ -372,8 +373,8 @@ pub use map_furniture::{
     cosmetic_tags_from_resolver_with_dlc, country_colors_from_game_resolver,
     country_colors_from_game_resolver_with_session_metadata, furniture_layer_from_resolver,
     furniture_layer_with_keying, furniture_static_data_from_resolver, heightmap_grid_from_resolver,
-    load_vp_label_font, load_vp_strip_rgba, parse_base_icon_defines, parse_bmfont,
-    parse_state_building_levels, parse_vp_icon_defines, ruling_parties_from_resolver,
+    load_vp_label_font, load_vp_strip_rgba, parse_bmfont,
+    parse_state_building_levels, ruling_parties_from_resolver,
     state_building_levels_from_resolver, vp_icon_defines_from_resolver, vp_icon_relation_column,
     vp_strip_frame_index, vp_strip_texture_path, ActiveDlcPresentation, BaseIconDefines,
     BaseIconInputs, BaseIconKind, BaseIconLayer, BaseIconMarker, BmFont, BmFontGlyph,
@@ -441,7 +442,7 @@ pub use map_label_law::{
     LABEL_SAMPLE_STEP,
 };
 pub use map_mode_admin::{
-    admin_mapmode_defines_from_resolver, admin_mapmode_defines_from_source,
+    admin_mapmode_defines_from_resolver,
     ideology_colors_from_resolver, ideology_colors_from_source, ideology_fill,
     parse_ideology_colors_into, players_fill, state_boundary_outline, states_admin_fill,
     vanilla_ideology_colors, AdminMapModeDefines, IdeologyColorTable, StateAdminFill,
@@ -493,11 +494,11 @@ pub use mapmode_diplomacy::{
 };
 pub use mapmode_factions::{
     country_faction_memberships, faction_fill, factions_defines_from_resolver,
-    factions_defines_from_source, membership_for, FactionInput, FactionMembership, FactionsDefines,
+    membership_for, FactionInput, FactionMembership, FactionsDefines,
     FACTIONS_GRAPHICS_DEFINES_SOURCE, VANILLA_FACTIONS_DEFINES,
 };
 pub use mapmode_infrastructure::{
-    infra_gradient_colors_from_resolver, infra_gradient_colors_from_source, infra_gradient_rgba,
+    infra_gradient_colors_from_resolver, infra_gradient_rgba,
     infra_ratio, infra_state_max_from_resolver, infra_state_tint, infra_state_tints,
     parse_infrastructure_state_max, InfraGradientColors, InfraLevelInput, InfraStateTint,
     INFRASTRUCTURE_BUILDING_KEY, INFRA_BUILDINGS_SOURCE, INFRA_GRAPHICS_DEFINES_SOURCE,
@@ -512,7 +513,7 @@ pub use mod_resolver::{
 };
 pub use naval_supremacy_tint::{
     classify_naval_regions, naval_region_set_from_resolver, naval_supremacy_tints,
-    naval_tint_defines_from_resolver, naval_tint_defines_from_source, pov_stripe_color,
+    naval_tint_defines_from_resolver, pov_stripe_color,
     province_is_sea, supremacy_alpha, supremacy_ratio, zone_supremacy_status, zone_tint,
     NavalRegionSet, NavalTintDefines, PovNavalRelation, SeaZone, ZoneSupremacyInput,
     ZoneSupremacyStatus, ZoneTint, NAVAL_SUPREMACY_DEFINITION_CSV_SOURCE,
@@ -725,7 +726,7 @@ pub use xmap15_orders::{
 pub use rail_files::{
     bind_exact_rail_construction_arrows, bind_exact_rail_d80_draws, compute_province_centroids,
     country_tags_from_resolver, cubic_bezier, exact_rail_segments_from_replay,
-    parse_rail_geometry_defines, port_building_tokens_from_resolver,
+    port_building_tokens_from_resolver,
     prepare_exact_rail_replay_carrier, rail_control_handle_len, rail_endpoint_placement_arm,
     rail_file_derived_layer_from_resolver, rail_geometry_defines_from_resolver, rail_level_v_band,
     rail_max_level_from_resolver, rail_polylines, rail_render_law, rail_ribbon_edges,
@@ -996,7 +997,7 @@ pub use tree_instance_synthesis::{
 };
 pub use tree_runtime_selection::{
     prepare_xmap11_tree_frame, select_tree_chunk_partition, select_tree_lod_index,
-    synthesize_tree_mask_texture, tree_fade_window_from_graphics_defines,
+    synthesize_tree_mask_texture,
     tree_fade_window_from_resolver, tree_target_bound_draw_receipt, xmap11_assigned_stage_edges,
     xmap11_assigned_stage_rows, xmap11_l03_shadow_batches, xmap11_resident_asset_indices,
     xmap11_resident_batches, PreparedTreeBatch, PreparedTreeFrame,
@@ -1061,7 +1062,7 @@ pub use weather_law::{
     weather_distance_fog_defines_from_source, weather_distance_fog_factor,
     weather_effects_from_resolver, weather_effects_from_source,
     weather_emitters_from_resolver, weather_emitters_from_source,
-    weather_fade_defines_from_resolver, weather_fade_defines_from_source,
+    weather_fade_defines_from_resolver,
     derive_region_weather_membership, weather_emitter_candidates,
     weather_membership_producer_instance_id, weather_selected_candidate_index,
     weather_selection_word, weather_type_for_airborne_code, weather_visibility_law,
@@ -1237,3 +1238,5 @@ pub use xmap16_supply_arrow_handoff::{
     NativeXmap16SceneConstantBufferView, NativeXmap16SupplyArrowDrawInputs,
     NativeXmap16SupplyArrowHandoff,
 };
+#[cfg(test)]
+mod modvfs_effective_read_tests;

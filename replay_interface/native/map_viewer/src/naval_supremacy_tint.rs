@@ -29,51 +29,20 @@ pub const VANILLA_NAVAL_TINT_DEFINES: NavalTintDefines = NavalTintDefines {
     country_color_stripes_transp: 0.0,
 };
 
-fn parse_color4(source: &str, key: &str) -> Result<[f32; 4]> {
-    let values = crate::map_furniture::parse_lua_number_list(source, key).ok_or_else(|| {
-        format!("{NAVAL_SUPREMACY_GRAPHICS_DEFINES_SOURCE}: missing colour define {key}")
-    })?;
-    if values.len() != 4 {
-        return Err(format!(
-            "{NAVAL_SUPREMACY_GRAPHICS_DEFINES_SOURCE}: {key} expected 4 components, got {}",
-            values.len()
-        )
-        .into());
-    }
-    Ok([values[0], values[1], values[2], values[3]])
-}
-
-pub fn naval_tint_defines_from_source(source: &str) -> Result<NavalTintDefines> {
-    Ok(NavalTintDefines {
-        transparency_ratio_min: crate::parse_lua_number_define(
-            source,
-            "NAVAL_REGION_TRANSPARENCY_RATIO_MIN",
-        )?,
-        transparency_ratio_max: crate::parse_lua_number_define(
-            source,
-            "NAVAL_REGION_TRANSPARENCY_RATIO_MAX",
-        )?,
-        transparency_range: crate::parse_lua_number_define(
-            source,
-            "NAVAL_REGION_TRANSPARENCY_RANGE",
-        )?,
-        enemy_stripes_color: parse_color4(source, "STRATEGIC_MODE_ENEMY_STRIPES_COLOR")?,
-        our_stripes_color: parse_color4(source, "STRATEGIC_MODE_OUR_STRIPES_COLOR")?,
-        ally_stripes_color: parse_color4(source, "STRATEGIC_MODE_ALLY_STRIPES_COLOR")?,
-        country_color_stripes_transp: crate::parse_lua_number_define(
-            source,
-            "STRATEGIC_MODE_COUNTRY_COLOR_STRIPES_TRANSP",
-        )?,
-    })
-}
-
 pub fn naval_tint_defines_from_resolver(resolver: &GameFileResolver) -> Result<NavalTintDefines> {
-    let path = resolver.resolve_required(
-        NAVAL_SUPREMACY_GRAPHICS_DEFINES_SOURCE,
-        "naval tint graphics defines",
-    )?;
-    let source = crate::read_latin1(&path)?;
-    naval_tint_defines_from_source(&source)
+    let (sources, _) = crate::xmap09_lighting_law::effective_define_sources(resolver, "effective defines")?;
+    let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
+
+    Ok(NavalTintDefines {
+        transparency_ratio_min: evaluated.scalar("NMapMode", "NAVAL_REGION_TRANSPARENCY_RATIO_MIN")?,
+        transparency_ratio_max: evaluated.scalar("NMapMode", "NAVAL_REGION_TRANSPARENCY_RATIO_MAX")?,
+        transparency_range: evaluated.scalar("NMapMode", "NAVAL_REGION_TRANSPARENCY_RANGE")?,
+        enemy_stripes_color: evaluated.array("NMapMode", "STRATEGIC_MODE_ENEMY_STRIPES_COLOR")?,
+        our_stripes_color: evaluated.array("NMapMode", "STRATEGIC_MODE_OUR_STRIPES_COLOR")?,
+        ally_stripes_color: evaluated.array("NMapMode", "STRATEGIC_MODE_ALLY_STRIPES_COLOR")?,
+        country_color_stripes_transp: evaluated.scalar("NMapMode", "STRATEGIC_MODE_COUNTRY_COLOR_STRIPES_TRANSP")?,
+    })
+
 }
 
 
@@ -157,12 +126,12 @@ pub fn naval_region_set_from_resolver(resolver: &GameFileResolver) -> Result<Nav
     let region_files =
         resolver.resolve_dir_files_recursive(NAVAL_SUPREMACY_STRATEGIC_REGIONS_DIR, Some("txt"))?;
     let (region_to_provinces, region_meta, _province_to_region) =
-        crate::load_strategic_regions(&region_files)?;
+        crate::load_strategic_regions(resolver, &region_files)?;
     let definition_csv = resolver.resolve_required(
         NAVAL_SUPREMACY_DEFINITION_CSV_SOURCE,
         "naval supremacy definition.csv",
     )?;
-    let (definitions, _color_to_id) = crate::load_definition_csv(&definition_csv)?;
+    let (definitions, _color_to_id) = crate::load_definition_csv(resolver, &definition_csv)?;
     Ok(classify_naval_regions(
         &region_to_provinces,
         |id| {
@@ -286,7 +255,7 @@ mod tests {
 
     const GRAPHICS_SNIPPET: &str = r#"
 NDefines = {
-	NGraphics = {
+	NMapMode = {
 		STRATEGIC_MODE_COUNTRY_COLOR_STRIPES_TRANSP = 0.0,
 		STRATEGIC_MODE_ENEMY_STRIPES_COLOR = { 0.827, 0.172, 0.184, 0.0 },
 		STRATEGIC_MODE_OUR_STRIPES_COLOR = { 0.427, 0.619, 0.858, 0.0 },
@@ -301,7 +270,7 @@ NDefines = {
 
     #[test]
     fn defines_parse_matches_vanilla_constant() {
-        let parsed = naval_tint_defines_from_source(GRAPHICS_SNIPPET).expect("parse defines");
+        let parsed = crate::test_support::with_define_fixture(GRAPHICS_SNIPPET, naval_tint_defines_from_resolver).expect("parse defines");
         assert_eq!(parsed, VANILLA_NAVAL_TINT_DEFINES);
     }
 

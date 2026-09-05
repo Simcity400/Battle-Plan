@@ -2,8 +2,6 @@ use map_viewer::GameFileResolver;
 
 use crate::Result;
 
-const GRAPHICS_DEFINES_REL: &str = "common/defines/00_graphics.lua";
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PoliticalSceneDefines {
     pub(crate) outline_cutoff_strategic: f32,
@@ -24,26 +22,12 @@ impl PoliticalSceneDefines {
     }
 
     pub(crate) fn from_resolver(resolver: &GameFileResolver) -> Result<Self> {
-        let path = resolver.resolve_required(GRAPHICS_DEFINES_REL, "graphics defines lua")?;
-        let text =
-            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        Self::from_graphics_defines(&text)
-    }
-
-    fn from_graphics_defines(text: &str) -> Result<Self> {
-        Ok(Self {
-            outline_cutoff_strategic: parse_lua_number(
-                text,
-                "GRADIENT_BORDERS_OUTLINE_CUTOFF_STRATEGIC_REGIONS",
-            )?,
-            outline_cutoff_country: parse_lua_number(
-                text,
-                "GRADIENT_BORDERS_OUTLINE_CUTOFF_COUNTRY",
-            )?,
-            draw_shadows_cutoff: parse_lua_number(text, "DRAW_SHADOWS_CUTOFF")?,
-            draw_shadows_fade_length: parse_lua_number(text, "DRAW_SHADOWS_FADE_LENGTH")?,
-        })
-    }
+        let values = resolver.read_effective_define_numbers("NGraphics", &[
+            "GRADIENT_BORDERS_OUTLINE_CUTOFF_STRATEGIC_REGIONS", "GRADIENT_BORDERS_OUTLINE_CUTOFF_COUNTRY", "DRAW_SHADOWS_CUTOFF", "DRAW_SHADOWS_FADE_LENGTH"
+        ])?;
+        if values.iter().any(|value| !(*value as f32).is_finite()) { return Err("nonfinite political graphics define".into()); }
+        Ok(Self { outline_cutoff_strategic: values[0] as f32, outline_cutoff_country: values[1] as f32, draw_shadows_cutoff: values[2] as f32, draw_shadows_fade_length: values[3] as f32 })
+}
 
     pub(crate) fn to_cb0(self) -> map_viewer::PoliticalSceneCb0 {
         map_viewer::PoliticalSceneCb0 {
@@ -55,27 +39,6 @@ impl PoliticalSceneDefines {
             shadow_map_bound: false,
         }
     }
-}
-
-fn parse_lua_number(text: &str, key: &str) -> Result<f32> {
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.starts_with("--") {
-            continue;
-        }
-        let Some((lhs, rhs)) = line.split_once('=') else {
-            continue;
-        };
-        if lhs.trim() != key {
-            continue;
-        }
-        let rhs = rhs.split("--").next().unwrap_or(rhs);
-        let rhs = rhs.trim().trim_end_matches(',').trim();
-        if let Ok(value) = rhs.parse::<f32>() {
-            return Ok(value);
-        }
-    }
-    Err(format!("{GRAPHICS_DEFINES_REL} missing {key}").into())
 }
 
 #[cfg(test)]
@@ -90,9 +53,16 @@ DRAW_SHADOWS_FADE_LENGTH = 50,
 GRADIENT_BORDERS_OUTLINE_CUTOFF_STRATEGIC_REGIONS = 0.98,
 GRADIENT_BORDERS_OUTLINE_CUTOFF_COUNTRY = 0.973,
 "#;
+        let root = std::env::temp_dir().join(format!("modvfs-political-defines-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("common/defines")).unwrap();
+        std::fs::write(root.join("common/defines/fixture.lua"),
+            format!("NDefines = {{ NGraphics = {{ {body} }} }}")).unwrap();
+        let resolver = GameFileResolver::vanilla(&root).unwrap();
         assert_eq!(
-            PoliticalSceneDefines::from_graphics_defines(body).expect("parse defines"),
+            PoliticalSceneDefines::from_resolver(&resolver).expect("evaluate defines"),
             PoliticalSceneDefines::vanilla()
         );
+        drop(resolver);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

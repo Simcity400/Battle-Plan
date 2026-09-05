@@ -391,9 +391,9 @@ impl AuthenticatedGuiRoleIndex {
             gui_files
                 .iter()
                 .map(|file| {
-                    ResolvedGuiDefinitionFile::new(file.rel_path.clone(), file.path.clone())
+                    ResolvedGuiDefinitionFile::read(resolver, file)
                 })
-                .collect(),
+                .collect::<crate::Result<Vec<_>>>().map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())?;
 
@@ -404,7 +404,7 @@ impl AuthenticatedGuiRoleIndex {
         gfx_files.sort_by(|left, right| engine_recursive_path_cmp(&left.rel_path, &right.rel_path));
         for file in gfx_files {
             sprites
-                .parse_file(&file.path, &file.rel_path)
+                .parse_content(&resolver.read_file(&file).map_err(|error| error.to_string())?, &file.rel_path)
                 .map_err(|error| error.to_string())?;
         }
         if sprites.decode_loss_events() != 0 {

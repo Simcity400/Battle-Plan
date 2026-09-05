@@ -111,8 +111,8 @@ pub fn load_xui20_authored_canvas_catalog(
     let catalog = load_effective_definition_catalog(
         files
             .into_iter()
-            .map(|row| ResolvedGuiDefinitionFile::new(row.rel_path, row.path))
-            .collect(),
+            .map(|row| ResolvedGuiDefinitionFile::read(resolver, &row))
+            .collect::<crate::Result<Vec<_>>>()?,
     )?;
     let winners = catalog
         .effective_roots
@@ -1640,7 +1640,7 @@ mod tests {
             .expect("installed effective GFX files")
         {
             registry
-                .parse_file(&file.path, &file.rel_path)
+                .parse_content(&resolver.read_file(&file).unwrap(), &file.rel_path)
                 .unwrap_or_else(|error| panic!("failed to parse {}: {error}", file.rel_path));
         }
         assert!(

@@ -17,37 +17,15 @@ pub const VANILLA_FACTIONS_DEFINES: FactionsDefines = FactionsDefines {
     member_transparency: 1.0,
 };
 
-fn parse_color4(source: &str, key: &str) -> Result<[f32; 4]> {
-    let values = crate::map_furniture::parse_lua_number_list(source, key).ok_or_else(|| {
-        format!("{FACTIONS_GRAPHICS_DEFINES_SOURCE}: missing colour define {key}")
-    })?;
-    if values.len() != 4 {
-        return Err(format!(
-            "{FACTIONS_GRAPHICS_DEFINES_SOURCE}: {key} expected 4 components, got {}",
-            values.len()
-        )
-        .into());
-    }
-    Ok([values[0], values[1], values[2], values[3]])
-}
-
-pub fn factions_defines_from_source(source: &str) -> Result<FactionsDefines> {
-    Ok(FactionsDefines {
-        not_member_color: parse_color4(source, "FACTIONS_COLOR_NOT_MEMBER")?,
-        member_transparency: crate::parse_lua_number_define(
-            source,
-            "FACTIONS_MEMBER_TRANSPARENCY",
-        )?,
-    })
-}
-
 pub fn factions_defines_from_resolver(resolver: &GameFileResolver) -> Result<FactionsDefines> {
-    let path = resolver.resolve_required(
-        FACTIONS_GRAPHICS_DEFINES_SOURCE,
-        "factions graphics defines",
-    )?;
-    let source = crate::read_latin1(&path)?;
-    factions_defines_from_source(&source)
+    let (sources, _) = crate::xmap09_lighting_law::effective_define_sources(resolver, "effective defines")?;
+    let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
+
+    Ok(FactionsDefines {
+        not_member_color: evaluated.array("NMapMode", "FACTIONS_COLOR_NOT_MEMBER")?,
+        member_transparency: evaluated.scalar("NMapMode", "FACTIONS_MEMBER_TRANSPARENCY")?,
+    })
+
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -157,7 +135,7 @@ NDefines = {
 
     #[test]
     fn defines_parse_matches_vanilla_constant() {
-        let parsed = factions_defines_from_source(GRAPHICS_SNIPPET).expect("parse defines");
+        let parsed = crate::test_support::with_define_fixture(GRAPHICS_SNIPPET, factions_defines_from_resolver).expect("parse defines");
         assert_eq!(parsed, VANILLA_FACTIONS_DEFINES);
     }
 

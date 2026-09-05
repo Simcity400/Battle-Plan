@@ -1,7 +1,5 @@
 use crate::dds::RgbaImage;
 use crate::{ErrorKind, GameUiError, Result};
-use std::fs;
-use std::path::Path;
 
 const TGA_HEADER_LEN: usize = 18;
 const TGA_MAX_PIXELS: usize = 1 << 26;
@@ -23,10 +21,6 @@ struct Header {
     descriptor: u8,
 }
 
-pub fn decode_file(path: &Path) -> Result<TgaImage> {
-    let data = fs::read(path)?;
-    decode_bytes(&data).map_err(|err| add_path(err, path))
-}
 
 pub fn decode_bytes(data: &[u8]) -> Result<TgaImage> {
     let header = Header::parse(data)?;
@@ -289,11 +283,6 @@ fn require_len(data: &[u8], needed: usize, label: &str) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-fn add_path(mut err: GameUiError, path: &Path) -> GameUiError {
-    err.message = format!("{}: {}", path.display(), err.message);
-    err
 }
 
 #[cfg(test)]

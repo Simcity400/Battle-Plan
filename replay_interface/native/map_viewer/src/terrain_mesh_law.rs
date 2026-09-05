@@ -512,7 +512,7 @@ pub fn terrain_mesh_law_validate_corpus_with_resolver(
 ) -> Result<TerrainMeshLawCorpusReport> {
     let heightmap_path =
         resolver.resolve_required(TERRAIN_CHUNK_HEIGHTMAP_SOURCE, "heightmap.bmp")?;
-    let heightmap = load_bmp_indexed(&heightmap_path)?;
+    let heightmap = decode_bmp_indexed(&resolver.read_resolved_bytes(&heightmap_path)?, &heightmap_path)?;
     terrain_mesh_law_validate_corpus(library, &heightmap, session_label)
 }
 

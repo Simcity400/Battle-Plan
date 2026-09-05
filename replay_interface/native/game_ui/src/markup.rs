@@ -1,6 +1,6 @@
 
 use crate::assets::AssetResolver;
-use crate::paradox_text::{block_items, parse_file, scalar_u32, Value};
+use crate::paradox_text::{block_items, parse_checked_bytes, scalar_u32, Value};
 use crate::Result;
 use std::collections::BTreeMap;
 
@@ -104,22 +104,22 @@ impl TextColorTable {
 
     pub fn load(resolver: &AssetResolver) -> Result<Self> {
         let resolved = resolver.resolve_file("interface/core.gfx")?;
-        Self::load_resolved(&resolved.path)
+        Self::load_resolved(&resolver.read_file(&resolved)?)
     }
 
     pub fn load_optional(resolver: &AssetResolver) -> Result<Option<Self>> {
         let Some(resolved) = resolver.resolve_optional_file("interface/core.gfx")? else {
             return Ok(None);
         };
-        Self::load_resolved(&resolved.path).map(Some)
+        Self::load_resolved(&resolver.read_file(&resolved)?).map(Some)
     }
 
-    fn load_resolved(path: &std::path::Path) -> Result<Self> {
-        let doc = parse_file(path)?;
+    fn load_resolved(bytes: &[u8]) -> Result<Self> {
+        let doc = parse_checked_bytes(bytes, "interface/core.gfx")?;
         if !doc.recoveries.is_empty() {
             return Err(crate::GameUiError::parse(format!(
                 "core.gfx parse required recovery at {}: {:?}",
-                path.display(),
+                "interface/core.gfx",
                 doc.recoveries
                     .iter()
                     .take(4)

@@ -200,34 +200,14 @@ impl NativeD3d11TerrainChunkLibrary {
         TerrainChunkSynthesisWorldRect::from(self.manifest.coverage.world_rect)
     }
 
-    pub fn production_camera_from_capture(&self) -> Result<ProductionMapCamera> {
+    pub fn production_camera_from_capture(&self, resolver: &GameFileResolver) -> Result<ProductionMapCamera> {
         let record = self.manifest.chunks.first().ok_or(
             "production terrain chunk library blocked: library has no camera source records",
         )?;
-        production_map_camera_from_scene_cb0(decode_map_frame_terrain_scene_cb0(
+        production_map_camera_from_scene_cb0(decode_map_frame_terrain_scene_cb0(resolver, 
             &record.draw,
             self.bundle_dir(),
         )?)
-    }
-
-    pub fn camera_defines(&self) -> Result<Hoi4MapCameraDefines> {
-        let evidence = self
-            .manifest
-            .vanilla_sources
-            .get(BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE)
-            .ok_or_else(|| {
-                format!(
-                    "production terrain chunk library blocked: chunk library is missing vanilla graphics defines evidence for {BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE}"
-                )
-            })?;
-        let bytes = read_verified_map_frame_file(
-            self.bundle_dir(),
-            &evidence.file,
-            evidence.byte_len,
-            &evidence.fnv1a64,
-            "graphics defines",
-        )?;
-        hoi4_map_camera_defines_from_source(&latin1_bytes_to_string(&bytes))
     }
 
     pub fn visible_chunk_ids(&self, camera: ProductionMapCamera) -> Vec<String> {

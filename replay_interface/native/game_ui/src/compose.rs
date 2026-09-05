@@ -34,7 +34,6 @@ use crate::{GameUiError, Result};
 use replay_core::{RuntimeTextLayout, RuntimeTextSource, ValidatedContentAdmission};
 use snapshot::sha256::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4171,7 +4170,7 @@ impl<'a> Compositor<'a> {
                 child_path: child_path.to_vec(),
                 message: error.message,
             })?;
-        let bytes = fs::read(&resolved.path).map_err(|error| {
+        let bytes = self.resolver.read_file(&resolved).map_err(|error| {
             AuthenticatedComposeRejection::SpriteDecode {
                 child_path: child_path.to_vec(),
                 message: format!(
@@ -4209,7 +4208,7 @@ impl<'a> Compositor<'a> {
         let resolved = self
             .resolver
             .resolve_file(&texture_content.normalized_game_relative_path)?;
-        let texture_bytes = fs::read(&resolved.path)?;
+        let texture_bytes = self.resolver.read_file(&resolved)?;
         if u64::try_from(texture_bytes.len()).ok() != Some(texture_content.payload_bytes)
             || Sha256::hex(&texture_bytes) != texture_content.payload_sha256
         {

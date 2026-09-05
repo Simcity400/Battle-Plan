@@ -146,10 +146,11 @@ pub fn synthesize_terrain_id_map(resolver: &GameFileResolver) -> Result<Synthesi
         "common/terrain/00_terrain.txt",
     )?;
     let default_map = resolver.resolve_required("map/default.map", "map/default.map")?;
-    validate_default_map_terrain_binding(&default_map)?;
-    let terrain_bmp_fnv1a64 = fnv1a64_file(&terrain_bmp)?;
-    let terrain_definitions_fnv1a64 = fnv1a64_file(&terrain_definitions)?;
-    let default_map_fnv1a64 = fnv1a64_file(&default_map)?;
+    validate_default_map_terrain_binding(resolver, &default_map)?;
+    let terrain_bmp_bytes = resolver.read_resolved_bytes(&terrain_bmp)?;
+    let terrain_bmp_fnv1a64 = fnv1a64_bytes(&terrain_bmp_bytes);
+    let terrain_definitions_fnv1a64 = fnv1a64_bytes(&resolver.read_resolved_bytes(&terrain_definitions)?);
+    let default_map_fnv1a64 = fnv1a64_bytes(&resolver.read_resolved_bytes(&default_map)?);
     let cache_key = terrain_id_map_synthesis_cache_key(
         &terrain_bmp_fnv1a64,
         &terrain_definitions_fnv1a64,
@@ -172,12 +173,12 @@ pub fn synthesize_terrain_id_map(resolver: &GameFileResolver) -> Result<Synthesi
         }
     }
 
-    let terrain_indices = load_bmp_indexed(&terrain_bmp)?;
+    let terrain_indices = decode_bmp_indexed(&terrain_bmp_bytes, &terrain_bmp)?;
     if terrain_indices.width == 0 || terrain_indices.height == 0 {
         return Err("terrain.bmp has empty dimensions".into());
     }
 
-    let terrain_texture_map = terrain_id_palette_texture_map(&terrain_definitions)?;
+    let terrain_texture_map = terrain_id_palette_texture_map(resolver, &terrain_definitions)?;
     let source_texture_ids =
         terrain_texture_ids_fail_closed(&terrain_indices, &terrain_texture_map)?;
     let bytes = pack_terrain_id_map_rgba(
@@ -456,8 +457,8 @@ fn terrain_id_map_sampler_descriptor() -> TerrainIdMapSamplerDescriptor {
     }
 }
 
-fn terrain_id_palette_texture_map(path: &Path) -> Result<BTreeMap<u8, u8>> {
-    let map = load_terrain_texture_map(path)?;
+fn terrain_id_palette_texture_map(resolver: &GameFileResolver, path: &Path) -> Result<BTreeMap<u8, u8>> {
+    let map = load_terrain_texture_map(resolver, path)?;
     let expected = [
         (0, 1),
         (1, 4),
@@ -576,8 +577,8 @@ fn pack_terrain_id_map_texel(
     Ok([down, right, center_or_marker, right_down])
 }
 
-fn validate_default_map_terrain_binding(default_map: &Path) -> Result<()> {
-    let text = strip_comments(&read_latin1(default_map)?);
+fn validate_default_map_terrain_binding(resolver: &GameFileResolver, default_map: &Path) -> Result<()> {
+    let text = strip_comments(&resolver.read_resolved_text(default_map)?);
     let Some(value) = parse_quoted_value(&text, "terrain") else {
         return Err(format!(
             "{} does not declare terrain = \"terrain.bmp\"",
@@ -701,8 +702,8 @@ fn terrain_id_map_orientation_evidence(
         "common/terrain/00_terrain.txt",
         "common/terrain/00_terrain.txt",
     )?;
-    let terrain_indices = load_bmp_indexed(&terrain_bmp)?;
-    let terrain_texture_map = terrain_id_palette_texture_map(&terrain_definitions)?;
+    let terrain_indices = decode_bmp_indexed(&resolver.read_resolved_bytes(&terrain_bmp)?, &terrain_bmp)?;
+    let terrain_texture_map = terrain_id_palette_texture_map(resolver, &terrain_definitions)?;
     let source_texture_ids =
         terrain_texture_ids_fail_closed(&terrain_indices, &terrain_texture_map)?;
     let generated_flipped_y = pack_terrain_id_map_texel(
@@ -825,7 +826,7 @@ mod tests {
                 "common/terrain/00_terrain.txt",
             )
             .unwrap();
-        let table = terrain_id_palette_texture_map(&terrain_definitions).unwrap();
+        let table = terrain_id_palette_texture_map(&resolver, &terrain_definitions).unwrap();
         let ordered = [
             0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 17, 18, 20, 21, 22, 27,
             31,
@@ -935,7 +936,7 @@ mod tests {
             )
             .unwrap();
         let terrain_indices = load_bmp_indexed(&terrain_bmp).unwrap();
-        let terrain_texture_map = terrain_id_palette_texture_map(&terrain_definitions).unwrap();
+        let terrain_texture_map = terrain_id_palette_texture_map(&resolver, &terrain_definitions).unwrap();
         let used = terrain_indices
             .pixels
             .iter()

@@ -9,8 +9,7 @@
 default-filter = '''
 not (
   test(/(?x)(^|::)(
-      admitted_ui_resolver_rejects_an_installed_but_unrecorded_path
-      | captured_pixel_shader_prefilter_covers_full_family_classifiers
+      captured_pixel_shader_prefilter_covers_full_family_classifiers
       | corpus_.*_when_session_available
       | gate_a_all_vanilla_mesh_and_anim_files_parse
       | gate_all_vanilla_.*
@@ -71,8 +70,7 @@ slow-timeout = "10s"
 default-filter = '''
 not (
   test(/(?x)(^|::)(
-      admitted_ui_resolver_rejects_an_installed_but_unrecorded_path
-      | alerts_feed_window_resolves_via_shared_parser
+      alerts_feed_window_resolves_via_shared_parser
       | achievements_gridbox_slots_follow_declared_slot_size
       | absent_world_frame_data_is_omitted_by_topbar_composition
       | backend_listbox_declares_vertical_rows_from_file_template_size

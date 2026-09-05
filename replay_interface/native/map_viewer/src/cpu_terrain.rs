@@ -121,13 +121,13 @@ pub(crate) fn map_frame_terrain_srv(draw: &MapFrameDraw) -> Result<&MapFrameText
 }
 
 #[cfg(test)]
-pub(crate) fn replay_map_frame_terrain_draw(
+pub(crate) fn replay_map_frame_terrain_draw(resolver: &crate::GameFileResolver, 
     draw: &MapFrameDraw,
     bundle_dir: &Path,
     constants: MapFrameTerrainShaderConstants,
 ) -> Result<MapFrameTerrainReplaySummary> {
     let (outputs, unique_vertex_count) =
-        decode_map_frame_terrain_draw_outputs(draw, bundle_dir, constants)?;
+        decode_map_frame_terrain_draw_outputs(resolver, draw, bundle_dir, constants)?;
     let mut summary: Option<MapFrameTerrainReplaySummary> = None;
     for output in outputs {
         update_map_frame_replay_summary(
@@ -145,24 +145,24 @@ pub(crate) fn replay_map_frame_terrain_draw(
     Ok(summary)
 }
 
-pub(crate) fn decode_map_frame_terrain_draw_outputs(
+pub(crate) fn decode_map_frame_terrain_draw_outputs(resolver: &crate::GameFileResolver, 
     draw: &MapFrameDraw,
     bundle_dir: &Path,
     constants: MapFrameTerrainShaderConstants,
 ) -> Result<(Vec<TerrainVertexShaderOutput>, usize)> {
-    decode_map_frame_terrain_draw_outputs_impl(draw, bundle_dir, constants, None)
+    decode_map_frame_terrain_draw_outputs_impl(resolver, draw, bundle_dir, constants, None)
 }
 
-pub(crate) fn decode_map_frame_terrain_draw_outputs_with_cb1_layout(
+pub(crate) fn decode_map_frame_terrain_draw_outputs_with_cb1_layout(resolver: &crate::GameFileResolver, 
     draw: &MapFrameDraw,
     bundle_dir: &Path,
     constants: MapFrameTerrainShaderConstants,
     cb1_layout: &ShaderConstantBufferLayout,
 ) -> Result<(Vec<TerrainVertexShaderOutput>, usize)> {
-    decode_map_frame_terrain_draw_outputs_impl(draw, bundle_dir, constants, Some(cb1_layout))
+    decode_map_frame_terrain_draw_outputs_impl(resolver, draw, bundle_dir, constants, Some(cb1_layout))
 }
 
-fn decode_map_frame_terrain_draw_outputs_impl(
+fn decode_map_frame_terrain_draw_outputs_impl(resolver: &GameFileResolver, 
     draw: &MapFrameDraw,
     bundle_dir: &Path,
     constants: MapFrameTerrainShaderConstants,
@@ -204,8 +204,8 @@ fn decode_map_frame_terrain_draw_outputs_impl(
         .as_ref()
         .ok_or("production terrain renderer blocked: DrawIndexed map-frame terrain replay has no index buffer")?;
     let index_bytes = read_map_frame_index_bytes(bundle_dir, index_buffer)?;
-    let cb0 = decode_map_frame_terrain_scene_cb0(draw, bundle_dir)?;
-    let cb1 = decode_map_frame_terrain_draw_cb1_impl(draw, bundle_dir, cb1_layout)?;
+    let cb0 = decode_map_frame_terrain_scene_cb0(resolver, draw, bundle_dir)?;
+    let cb1 = decode_map_frame_terrain_draw_cb1_impl(resolver, draw, bundle_dir, cb1_layout)?;
 
     let mut unique_indices = BTreeSet::new();
     let mut outputs = Vec::with_capacity(usize::try_from(draw.draw_count)?);
@@ -245,21 +245,21 @@ fn decode_map_frame_terrain_draw_outputs_impl(
     Ok((outputs, unique_indices.len()))
 }
 
-pub(crate) fn decode_map_frame_terrain_scene_cb0(
+pub(crate) fn decode_map_frame_terrain_scene_cb0(resolver: &crate::GameFileResolver, 
     draw: &MapFrameDraw,
     bundle_dir: &Path,
 ) -> Result<TerrainSceneCb0Decoded> {
-    decode_map_frame_terrain_scene_cb0_for_stage(draw, bundle_dir, "VS")
+    decode_map_frame_terrain_scene_cb0_for_stage(resolver, draw, bundle_dir, "VS")
 }
 
-pub(crate) fn decode_map_frame_ps_terrain_scene_cb0(
+pub(crate) fn decode_map_frame_ps_terrain_scene_cb0(resolver: &crate::GameFileResolver, 
     draw: &MapFrameDraw,
     bundle_dir: &Path,
 ) -> Result<TerrainSceneCb0Decoded> {
-    decode_map_frame_terrain_scene_cb0_for_stage(draw, bundle_dir, "PS")
+    decode_map_frame_terrain_scene_cb0_for_stage(resolver, draw, bundle_dir, "PS")
 }
 
-pub(crate) fn decode_map_frame_terrain_scene_cb0_for_stage(
+pub(crate) fn decode_map_frame_terrain_scene_cb0_for_stage(resolver: &GameFileResolver, 
     draw: &MapFrameDraw,
     bundle_dir: &Path,
     stage: &str,
@@ -271,7 +271,7 @@ pub(crate) fn decode_map_frame_terrain_scene_cb0_for_stage(
     {
         let bytes = read_map_frame_buffer_bytes(bundle_dir, buffer, "constant buffer")?;
         if let Some(layout) =
-            terrain_scene_cb0_camera_layout_for_binding(bundle_dir, draw, buffer, bytes.len())?
+            terrain_scene_cb0_camera_layout_for_binding(resolver, bundle_dir, draw, buffer, bytes.len())?
         {
             return decode_terrain_scene_cb0(&bytes, &layout);
         }
@@ -462,7 +462,7 @@ pub(crate) fn map_frame_vertex_element_byte_offset(
         })
 }
 
-fn decode_map_frame_terrain_draw_cb1_impl(
+fn decode_map_frame_terrain_draw_cb1_impl(resolver: &GameFileResolver, 
     draw: &MapFrameDraw,
     bundle_dir: &Path,
     layout: Option<&ShaderConstantBufferLayout>,
@@ -488,8 +488,7 @@ fn decode_map_frame_terrain_draw_cb1_impl(
     let layout = match layout {
         Some(layout) => layout,
         None => {
-            let source_path = bundle_dir.join("vanilla").join(source);
-            parsed = terrain_draw_cb1_layout(&read_latin1(&source_path)?)?;
+            parsed = terrain_draw_cb1_layout(&resolver.read_required_text(source, "terrain draw layout")?)?;
             &parsed
         }
     };
@@ -595,16 +594,12 @@ pub(crate) struct MapFrameTerrainCbLayouts {
     pub(crate) point_light_cb2: ShaderConstantBufferLayout,
 }
 
-pub(crate) fn load_map_frame_terrain_cb_layouts(
+pub(crate) fn load_map_frame_terrain_cb_layouts(resolver: &GameFileResolver, 
     bundle_dir: &Path,
 ) -> Result<MapFrameTerrainCbLayouts> {
-    let cb1_path = bundle_dir.join("vanilla").join(TERRAIN_DRAW_CB1_FXH_SOURCE);
-    let cb2_path = bundle_dir
-        .join("vanilla")
-        .join(TERRAIN_POINT_LIGHT_CB2_FXH_SOURCE);
     Ok(MapFrameTerrainCbLayouts {
-        terrain_draw_cb1: terrain_draw_cb1_layout(&read_latin1(&cb1_path)?)?,
-        point_light_cb2: terrain_point_light_cb2_layout(&read_latin1(&cb2_path)?)?,
+        terrain_draw_cb1: terrain_draw_cb1_layout(&resolver.read_required_text(TERRAIN_DRAW_CB1_FXH_SOURCE, "terrain CB1 layout")?)?,
+        point_light_cb2: terrain_point_light_cb2_layout(&resolver.read_required_text(TERRAIN_POINT_LIGHT_CB2_FXH_SOURCE, "terrain CB2 layout")?)?,
     })
 }
 
@@ -892,11 +887,11 @@ pub(crate) fn read_i16_at(bytes: &[u8], offset: usize) -> Result<i16> {
     Ok(i16::from_le_bytes([raw[0], raw[1]]))
 }
 
-pub(crate) fn render_production_terrain(
+pub(crate) fn render_production_terrain(resolver: &crate::GameFileResolver, 
     bundle: &Path,
     output: &Path,
 ) -> Result<ProductionTerrainRenderSummary> {
-    let inputs = validate_production_terrain_renderer(bundle)?;
+    let inputs = validate_production_terrain_renderer(resolver, bundle)?;
     let manifest: Manifest = serde_json::from_slice(&fs::read(bundle.join("manifest.json"))?)?;
     let contract: MapMaterialContract = serde_json::from_slice(&fs::read(
         bundle.join(&manifest.files.map_material_contract),
@@ -973,17 +968,17 @@ pub(crate) fn render_production_terrain(
     })
 }
 
-pub(crate) fn render_map_frame_terrain(
+pub(crate) fn render_map_frame_terrain(resolver: &GameFileResolver, 
     frame: &MapFrameRuntimeBundle,
     bundle_dir: &Path,
     bundle: &Path,
     output: &Path,
 ) -> Result<MapFrameTerrainRenderSummary> {
-    let inputs = validate_production_terrain_renderer_for_map_frame(bundle)?;
+    let inputs = validate_production_terrain_renderer_for_map_frame(resolver, bundle)?;
     let (manifest, contract) = load_post_diffuse_bundle_context(bundle)?;
     let constants = load_map_frame_terrain_shader_constants(frame, bundle)?;
     validate_map_frame_base_terrain_shipped_resources(frame, bundle, &manifest, &contract)?;
-    validate_map_frame_post_diffuse_inputs(frame, bundle, bundle_dir)?;
+    validate_map_frame_post_diffuse_inputs(resolver, frame, bundle, bundle_dir)?;
     let terrain_srv = map_frame_terrain_srv(&frame.active_draw)?;
     let terrain_file = terrain_srv.file.as_ref().ok_or(
         "production terrain renderer blocked: map-frame TerrainIDMap has no captured file",
@@ -1036,7 +1031,7 @@ pub(crate) fn render_map_frame_terrain(
     let mut covered = vec![false; map_w * map_h];
     let mut index_count = 0usize;
     let mut triangle_count = 0usize;
-    let cb_layouts = load_map_frame_terrain_cb_layouts(bundle_dir)?;
+    let cb_layouts = load_map_frame_terrain_cb_layouts(resolver, bundle_dir)?;
     let mut post_diffuse_cache: Option<(
         MapFramePostDiffuseTextureSpecs,
         TerrainPostDiffuseResources,
@@ -1046,7 +1041,7 @@ pub(crate) fn render_map_frame_terrain(
             frame, draw, bundle_dir, bundle, &manifest, &contract,
         )?;
         let shadow_map = map_frame_shadow_map_state(draw)?;
-        let scene_cb0 = decode_map_frame_ps_terrain_scene_cb0(draw, bundle_dir)?;
+        let scene_cb0 = decode_map_frame_ps_terrain_scene_cb0(resolver, draw, bundle_dir)?;
         let point_light_cb2 = decode_map_frame_point_light_cb2_with_layout(
             draw,
             bundle_dir,
@@ -1083,7 +1078,7 @@ pub(crate) fn render_map_frame_terrain(
             post_diffuse: Some(post_diffuse),
             lod,
         };
-        let (outputs, _) = decode_map_frame_terrain_draw_outputs_with_cb1_layout(
+        let (outputs, _) = decode_map_frame_terrain_draw_outputs_with_cb1_layout(resolver, 
             draw,
             bundle_dir,
             constants,
@@ -3399,17 +3394,6 @@ pub(crate) fn required_shader_source_path(
     required_bundle_file(bundle, source, output)
 }
 
-pub(crate) fn required_map_source_path(
-    bundle: &Path,
-    manifest: &Manifest,
-    source: &str,
-) -> Result<PathBuf> {
-    let output = manifest.files.map_sources.get(source).ok_or_else(|| {
-        format!("production terrain renderer blocked: missing map source {source}")
-    })?;
-    required_bundle_file(bundle, source, output)
-}
-
 pub(crate) fn required_bundle_file(bundle: &Path, label: &str, output: &str) -> Result<PathBuf> {
     let path = bundle.join(output);
     if !path.is_file() {
@@ -3442,12 +3426,12 @@ pub(crate) fn validate_shader_constant(
     Ok(())
 }
 
-pub(crate) fn validate_standard_function_shader_constant(
+pub(crate) fn validate_standard_function_shader_constant(resolver: &GameFileResolver, 
     standard_functions_source: &Path,
     key: &str,
     expected: f32,
 ) -> Result<()> {
-    let text = read_latin1(standard_functions_source)?;
+    let text = resolver.read_resolved_text(standard_functions_source)?;
     let actual = parse_shader_float_constant(&strip_comments(&text), key).ok_or_else(|| {
         format!(
             "production terrain renderer blocked: gfx/FX/standardfuncsgfx.fxh missing shader constant {key}"
@@ -3462,10 +3446,10 @@ pub(crate) fn validate_standard_function_shader_constant(
     Ok(())
 }
 
-pub(crate) fn validate_occupation_mask_shader_source(
+pub(crate) fn validate_occupation_mask_shader_source(resolver: &GameFileResolver, 
     standard_functions_source: &Path,
 ) -> Result<()> {
-    let text = strip_comments(&read_latin1(standard_functions_source)?);
+    let text = strip_comments(&resolver.read_resolved_text(standard_functions_source)?);
     let source = text
         .chars()
         .filter(|ch| !ch.is_whitespace())
@@ -3491,13 +3475,13 @@ pub(crate) fn validate_occupation_mask_shader_source(
     Ok(())
 }
 
-pub(crate) fn validate_shader_source_vector3_constant(
+pub(crate) fn validate_shader_source_vector3_constant(resolver: &GameFileResolver, 
     source_path: &Path,
     source_label: &str,
     key: &str,
     expected: Vec3,
 ) -> Result<()> {
-    let text = read_latin1(source_path)?;
+    let text = resolver.read_resolved_text(source_path)?;
     let actual = parse_shader_float3_constant(&strip_comments(&text), key).ok_or_else(|| {
         format!(
             "production terrain renderer blocked: {source_label} missing shader vector constant {key}"
@@ -3603,7 +3587,7 @@ mod tests {
         let path = write_valid_map_frame_bundle(&root, |frame| frame);
 
         let frame = validate_map_frame_runtime_bundle(&path).expect("valid map-frame bundle");
-        let summary = replay_map_frame_terrain_draw(
+        let summary = replay_map_frame_terrain_draw(&crate::test_support::fixture_game_resolver(&root), 
             &frame.active_draw,
             path.parent().expect("bundle dir"),
             test_map_frame_shader_constants(),
@@ -3639,7 +3623,7 @@ mod tests {
 
         let frame = validate_map_frame_runtime_bundle(&path)
             .expect("manifest validation does not decode vertex shader CB1");
-        let err = replay_map_frame_terrain_draw(
+        let err = replay_map_frame_terrain_draw(&crate::test_support::fixture_game_resolver(&root), 
             &frame.active_draw,
             path.parent().expect("bundle dir"),
             test_map_frame_shader_constants(),
@@ -3665,7 +3649,7 @@ mod tests {
 
         let frame = validate_map_frame_runtime_bundle(&path)
             .expect("manifest validation only proves index buffer bytes");
-        let err = replay_map_frame_terrain_draw(
+        let err = replay_map_frame_terrain_draw(&crate::test_support::fixture_game_resolver(&root), 
             &frame.active_draw,
             path.parent().expect("bundle dir"),
             test_map_frame_shader_constants(),
@@ -3693,7 +3677,7 @@ mod tests {
 
         let frame = validate_map_frame_runtime_bundle(&path)
             .expect("manifest validation does not walk indexed vertex addresses");
-        let err = replay_map_frame_terrain_draw(
+        let err = replay_map_frame_terrain_draw(&crate::test_support::fixture_game_resolver(&root), 
             &frame.active_draw,
             path.parent().expect("bundle dir"),
             test_map_frame_shader_constants(),
@@ -5142,7 +5126,7 @@ mod tests {
             b"static const float3 BRIGHT_FOW_COLOR = float3(0.98, 0.93, 0.93);",
         )
         .expect("write fow source");
-        validate_shader_source_vector3_constant(
+        validate_shader_source_vector3_constant(&crate::test_support::fixture_game_resolver(&root), 
             &source,
             "gfx/FX/fow.fxh",
             "BRIGHT_FOW_COLOR",
@@ -5155,7 +5139,7 @@ mod tests {
             b"static const float3 BRIGHT_FOW_COLOR = float3(0.99, 0.93, 0.93);",
         )
         .expect("write changed fow source");
-        let err = validate_shader_source_vector3_constant(
+        let err = validate_shader_source_vector3_constant(&crate::test_support::fixture_game_resolver(&root), 
             &source,
             "gfx/FX/fow.fxh",
             "BRIGHT_FOW_COLOR",
@@ -5187,7 +5171,7 @@ float CalculateOccupationMask( in float2 uv )
 ",
         )
         .expect("write standard functions source");
-        validate_occupation_mask_shader_source(&source).expect("matching occupation law");
+        validate_occupation_mask_shader_source(&crate::test_support::fixture_game_resolver(&root), &source).expect("matching occupation law");
 
         fs::write(
             &source,
@@ -5205,7 +5189,7 @@ float CalculateOccupationMask( in float2 uv )
 ",
         )
         .expect("write changed standard functions source");
-        let err = validate_occupation_mask_shader_source(&source)
+        let err = validate_occupation_mask_shader_source(&crate::test_support::fixture_game_resolver(&root), &source)
             .expect_err("changed occupation camera fade must fail closed");
         assert!(err.to_string().contains("CalculateOccupationMask"));
         let _ = fs::remove_dir_all(&root);

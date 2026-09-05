@@ -36,15 +36,13 @@ const RIVER_EFFECT: &str = "gfx/FX/river.shader";
 const STRAIT_EFFECT: &str = "gfx/FX/strait.shader";
 const PLATFORM_HEADER: &str = "gfx/FX/defines_hlsl_dx11.fxh";
 
-const CORE_FILE_CONTENT: [&str; 12] = [
+const CORE_FILE_CONTENT: [&str; 10] = [
     "map/rivers.bmp",
     "map/heightmap.bmp",
     "map/provinces.bmp",
     "map/definition.csv",
     "map/adjacencies.csv",
     "map/adjacency_rules.txt",
-    "common/defines/00_defines.lua",
-    "common/defines/00_graphics.lua",
     "map/terrain/RiverSurface_masks.dds",
     "map/terrain/citylights_rgb_snowmask_a_0.dds",
     "map/terrain/strait.dds",
@@ -874,14 +872,10 @@ impl Xmap08Content {
             required_bytes(&bytes_for, "map/heightmap.bmp")?,
             Path::new("map/heightmap.bmp"),
         )?;
-        let palette = RiverPaletteDefines::from_defines_source(&latin1(required_bytes(
-            &bytes_for,
-            "common/defines/00_defines.lua",
-        )?))?;
-        let fade = RiverFadeDefines::from_graphics_source(&latin1(required_bytes(
-            &bytes_for,
-            "common/defines/00_graphics.lua",
-        )?))?;
+        let (_, define_content) = crate::xmap09_lighting_law::admitted_effective_define_sources(resolver, "XMAP08 river defines")?;
+        ordered_used_content.extend(define_content);
+        let palette = RiverPaletteDefines::from_resolver(resolver)?;
+        let fade = RiverFadeDefines::from_resolver(resolver)?;
         let mesh = synthesize_river_world_mesh_with_defines(&rivers, &heightmap, palette, fade)?;
         let river_vertices: Arc<[u8]> = mesh.to_captured_layout_bytes().into();
         let mut river_strips = Vec::with_capacity(mesh.strips.len());
@@ -1846,6 +1840,61 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(windows)]
+    fn modvfs_river_production_admission_evaluates_later_mod_script() {
+        use crate::test_support::{admit_modvfs_fixture, write_modvfs_fixture as write};
+        let root = crate::test_support::temp_test_dir("river_effective_admission");
+        let vanilla = root.join("vanilla");
+        for path in CORE_FILE_CONTENT.into_iter().chain([
+            "map/terrain/RiverSurface_diffuse_0.dds", "map/terrain/RiverSurface_normal_0.dds",
+        ]) { write(&vanilla, path, ""); }
+        crate::test_support::write_modvfs_provinces(&vanilla, 32, 8);
+        crate::test_support::write_indexed_bmp_with(&vanilla.join("map/rivers.bmp"), 32, 8, |x, y| {
+            if y == 4 && x == 2 { 0 } else if y == 4 && (3..30).contains(&x) { 3 } else { 255 }
+        });
+        write(&vanilla, PLATFORM_HEADER, r#"
+struct STextureSampler2D { Texture2D _Texture; SamplerState _Sampler; };
+STextureSampler2D CreateSampler2D(Texture2D Texture, SamplerState Sampler) {
+    STextureSampler2D result = { Texture, Sampler }; return result;
+}
+#define tex2D(samp,uv) samp._Texture.Sample(samp._Sampler, uv)
+"#);
+        for (file, effect, sampler) in [(RIVER_EFFECT, "river", "Diffuse"), (STRAIT_EFFECT, "strait", "DiffuseTexture")] {
+            let samplers = format!(r#"Samplers = {{ {sampler} = {{
+                Index = 0 MagFilter = "Linear" MinFilter = "Linear" MipFilter = "Linear"
+                AddressU = "Wrap" AddressV = "Wrap"
+            }} }}"#);
+            let shader = crate::test_support::modvfs_shader(effect, &samplers).replace(
+                "float4 main() : SV_Target { return float4(1,1,1,1); }",
+                &format!("float4 main(float4 p : SV_Position) : SV_Target {{ return tex2D({sampler}, p.xy); }}"),
+            );
+            write(&vanilla, file, format!("{shader}\n{}", r#"
+BlendState BlendState { BlendEnable = yes SourceBlend = src_alpha DestBlend = inv_src_alpha }
+"#));
+        }
+        write(&vanilla, "common/defines/00_defines.lua", "NDefines = { NMilitary = { RIVER_SMALL_START_INDEX = 0, RIVER_SMALL_STOP_INDEX = 6, RIVER_LARGE_STOP_INDEX = 11 }, NGraphics = { RIVER_FADE_FROM = 20, RIVER_FADE_TO = 3 } }");
+        write(&vanilla, "common/defines/10_river.lua", "NDefines.NGraphics.RIVER_FADE_FROM = 21");
+        write(&root.join("mod"), "common/defines/10_river.lua", "local n = NDefines; n.NMilitary.RIVER_SMALL_STOP_INDEX = 2; n.NMilitary.RIVER_LARGE_STOP_INDEX = 3; n.NGraphics.RIVER_FADE_FROM = 2 + 2; n.NGraphics.RIVER_FADE_TO = 1");
+        let (resolver, admission) = admit_modvfs_fixture(&root);
+        let content = Xmap08Content::admit(&resolver, &admission, true, 0).unwrap();
+        let rivers = decode_bmp_indexed(&resolver.read_required_bytes("map/rivers.bmp", "rivers").unwrap(), Path::new("map/rivers.bmp")).unwrap();
+        let height = decode_bmp_indexed(&resolver.read_required_bytes("map/heightmap.bmp", "height").unwrap(), Path::new("map/heightmap.bmp")).unwrap();
+        let expected = synthesize_river_world_mesh_with_defines(&rivers, &height,
+            RiverPaletteDefines { small_start_index: 0, small_stop_index: 2, large_stop_index: 3 },
+            RiverFadeDefines { fade_from: 4.0, fade_to: 1.0 }).unwrap();
+        let vanilla_mesh = synthesize_river_world_mesh_with_defines(&rivers, &height,
+            RiverPaletteDefines { small_start_index: 0, small_stop_index: 6, large_stop_index: 11 },
+            RiverFadeDefines { fade_from: 21.0, fade_to: 3.0 }).unwrap();
+        assert!(!content.river_strips.is_empty());
+        assert_eq!(content.river_vertices.as_ref(), expected.to_captured_layout_bytes());
+        assert_ne!(content.river_vertices.as_ref(), vanilla_mesh.to_captured_layout_bytes());
+        assert!(content.ordered_used_content.iter().any(|key| key.normalized_game_relative_path == "common/defines/10_river.lua" && key.winning_layer_ordinal == 1));
+        drop(content); drop(resolver);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+
+    #[test]
     fn river_texture_quality_selects_one_exact_engine_variant() {
         for quality in 0..=2 {
             assert_eq!(
@@ -2158,6 +2207,7 @@ mod tests {
         ] {
             paths.insert(selected_river_static_content(sampler, 0).unwrap().unwrap());
         }
+        paths.extend(resolver.audit_effective_dir_files_recursive("common/defines", Some("lua")).unwrap());
         let (resolver, admission) = admitted_program_inputs(&resolver, &paths);
         let content = Xmap08Content::admit(&resolver, &admission, true, 0).unwrap();
         let camera = ViewerMapCameraState::from_admitted_content(

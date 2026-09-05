@@ -6,7 +6,7 @@ use crate::political_color_synthesis::{
 };
 use crate::{
     exact_a729_intel_map, exact_a729_land_unit_disclosure, exact_a729_taskforce_disclosure,
-    read_latin1, synthesize_political_colors_with_keying, ExactUnitDisclosure,
+    synthesize_political_colors_with_keying, ExactUnitDisclosure,
     FoundationFeatureContext, FoundationFeatureOutput, GameFileResolver, KeyingTables,
     PoliticalColorSynthesis, ProductionMapFeatureAdapter, Result, ViewerMapCameraState,
     ViewerOwnedMapState, Xmap10ViewerPresentationState, PROVINCE_COLOR_MAP_DXGI_FORMAT,
@@ -32,11 +32,10 @@ pub const INTEL_MAP_DXGI_FORMAT: u32 = 65;
 
 const GRAPHICS_DEFINES: &str = "common/defines/00_graphics.lua";
 const NAVAL_DOMINANCE_DDS: &str = "map/terrain/naval_dominance_fx.dds";
-const STATIC_REQUIRED_FILES: [&str; 5] = [
+const STATIC_REQUIRED_FILES: [&str; 4] = [
     "map/definition.csv",
     "map/provinces.bmp",
     "common/countries/colors.txt",
-    GRAPHICS_DEFINES,
     NAVAL_DOMINANCE_DDS,
 ];
 const REQUIRED_PREFIXES: [&str; 3] = [
@@ -595,9 +594,9 @@ impl PreparedPoliticalFrame {
         let graphics_defines = self
             .ordered_used_content
             .iter()
-            .filter(|content| content.normalized_game_relative_path == GRAPHICS_DEFINES)
+            .filter(|content| content.normalized_game_relative_path.starts_with("common/defines/") && content.normalized_game_relative_path.ends_with(".lua"))
             .collect::<Vec<_>>();
-        if graphics_defines.len() != 1 || graphics_defines[0] != &camera.graphics_defines_content {
+        if graphics_defines.len() != camera.defines_content.len() || graphics_defines.iter().any(|content| !camera.defines_content.contains(content)) {
             return Err(
                 "XMAP05 SceneCB0 camera and political frame use different graphics defines".into(),
             );
@@ -722,13 +721,25 @@ impl Xmap05Content {
             resolver.read_admitted_used_content(&content)?;
             ordered_used_content.push(content);
         }
-        let graphics = admission
-            .require_used_content(GRAPHICS_DEFINES)
-            .map_err(|error| format!("XMAP05 requires admitted graphics defines: {error}"))?;
-        let graphics_bytes = resolver.read_admitted_used_content(graphics)?;
-        let graphics_source = String::from_utf8(graphics_bytes)
-            .map_err(|_| "XMAP05 graphics defines are not UTF-8/ASCII compatible")?;
-        let defines = parse_gradient_border_country_defines(&graphics_source)?;
+        let (_, define_content) = crate::xmap09_lighting_law::admitted_effective_define_sources(resolver, "XMAP05 defines")?;
+        ordered_used_content.extend(define_content);
+        ordered_used_content.sort_by(|a, b| a.normalized_game_relative_path.cmp(&b.normalized_game_relative_path));
+        ordered_used_content.dedup();
+        let graphics_source = effective_graphics_define_values(resolver, &[
+            "GRADIENT_BORDERS_FIELD_COUNTRY_LOW",
+            "GRADIENT_BORDERS_FIELD_COUNTRY_HIGH",
+            "GRADIENT_BORDERS_THICKNESS_COUNTRY_LOW",
+            "GRADIENT_BORDERS_THICKNESS_COUNTRY_HIGH",
+            "GRADIENT_BORDERS_COUNTRY_CENTER_THICKNESS",
+            "GRADIENT_BORDERS_FIELD_COUNTRY_REFRESH",
+            "GRADIENT_BORDERS_OUTLINE_CUTOFF_STRATEGIC_REGIONS",
+            "GRADIENT_BORDERS_OUTLINE_CUTOFF_COUNTRY",
+            "GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_STRATEGIC_REGIONS",
+            "GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_COUNTRY",
+            "DRAW_FOW_CUTOFF",
+            "DRAW_FOW_FADE_LENGTH",
+        ], "XMAP05 defines")?;
+        let defines = gradient_border_country_defines_from_values(&graphics_source)?;
         let channel3 = admission
             .require_used_content(NAVAL_DOMINANCE_DDS)
             .map_err(|error| format!("XMAP05 requires admitted Channel3 DDS: {error}"))?;
@@ -2497,7 +2508,7 @@ pub(crate) fn xmap05_diplomacy_configuration_derivative(
     base: &PreparedPoliticalFrame,
 ) -> Result<PreparedPoliticalFrame> {
     base.validate()?;
-    let source = effective_graphics_defines_source(
+    let source = effective_graphics_define_values(
         resolver,
         &[
             "GRADIENT_BORDERS_OUTLINE_CUTOFF_DIPLOMACY",
@@ -2505,8 +2516,8 @@ pub(crate) fn xmap05_diplomacy_configuration_derivative(
         ],
         "XMAP18 diplomacy defines",
     )?;
-    let outline = unique_define(&source, "GRADIENT_BORDERS_OUTLINE_CUTOFF_DIPLOMACY")?;
-    let camera = unique_define(
+    let outline = required_graphics_define(&source, "GRADIENT_BORDERS_OUTLINE_CUTOFF_DIPLOMACY")?;
+    let camera = required_graphics_define(
         &source,
         "GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_DIPLOMACY",
     )?;
@@ -2657,7 +2668,7 @@ fn xmap05_map_mode_derivative_impl(
             region_areas[region] = region_areas[region].saturating_add(1);
         }
     }
-    let graphics_source = effective_graphics_defines_source(
+    let graphics_source = effective_graphics_define_values(
         resolver,
         &[
             "GRADIENT_BORDERS_FIELD_COUNTRY_LOW",
@@ -2676,8 +2687,8 @@ fn xmap05_map_mode_derivative_impl(
         ],
         "XMAP18 GradientBorder defines",
     )?;
-    let distance_defines = parse_gradient_border_country_defines(&graphics_source)?;
-    let state_thickness = unique_define(&graphics_source, "GRADIENT_BORDERS_THICKNESS_STATE")?;
+    let distance_defines = gradient_border_country_defines_from_values(&graphics_source)?;
+    let state_thickness = required_graphics_define(&graphics_source, "GRADIENT_BORDERS_THICKNESS_STATE")?;
     if !state_thickness.is_finite() || state_thickness <= 0.0 {
         return Err("XMAP18 state GradientBorder thickness is invalid".into());
     }
@@ -3069,30 +3080,30 @@ fn exact_a729_gradient_byte(distance: f32, center: f32, thickness: f32) -> u8 {
     value.clamp(0, 255) as u8
 }
 
-fn parse_gradient_border_country_defines(source: &str) -> Result<GradientBorderCountryDefines> {
+fn gradient_border_country_defines_from_values(source: &BTreeMap<String, f32>) -> Result<GradientBorderCountryDefines> {
     let parsed = GradientBorderCountryDefines {
-        field_low: unique_define(source, "GRADIENT_BORDERS_FIELD_COUNTRY_LOW")?,
-        field_high: unique_define(source, "GRADIENT_BORDERS_FIELD_COUNTRY_HIGH")?,
-        thickness_low: unique_define(source, "GRADIENT_BORDERS_THICKNESS_COUNTRY_LOW")?,
-        thickness_high: unique_define(source, "GRADIENT_BORDERS_THICKNESS_COUNTRY_HIGH")?,
-        center_thickness: unique_define(source, "GRADIENT_BORDERS_COUNTRY_CENTER_THICKNESS")?,
-        refresh_hours: unique_define(source, "GRADIENT_BORDERS_FIELD_COUNTRY_REFRESH")?.trunc()
+        field_low: required_graphics_define(source, "GRADIENT_BORDERS_FIELD_COUNTRY_LOW")?,
+        field_high: required_graphics_define(source, "GRADIENT_BORDERS_FIELD_COUNTRY_HIGH")?,
+        thickness_low: required_graphics_define(source, "GRADIENT_BORDERS_THICKNESS_COUNTRY_LOW")?,
+        thickness_high: required_graphics_define(source, "GRADIENT_BORDERS_THICKNESS_COUNTRY_HIGH")?,
+        center_thickness: required_graphics_define(source, "GRADIENT_BORDERS_COUNTRY_CENTER_THICKNESS")?,
+        refresh_hours: required_graphics_define(source, "GRADIENT_BORDERS_FIELD_COUNTRY_REFRESH")?.trunc()
             as u32,
-        outline_cutoff_strategic: unique_define(
+        outline_cutoff_strategic: required_graphics_define(
             source,
             "GRADIENT_BORDERS_OUTLINE_CUTOFF_STRATEGIC_REGIONS",
         )?,
-        outline_cutoff_country: unique_define(source, "GRADIENT_BORDERS_OUTLINE_CUTOFF_COUNTRY")?,
-        camera_override_strategic: unique_define(
+        outline_cutoff_country: required_graphics_define(source, "GRADIENT_BORDERS_OUTLINE_CUTOFF_COUNTRY")?,
+        camera_override_strategic: required_graphics_define(
             source,
             "GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_STRATEGIC_REGIONS",
         )?,
-        camera_override_country: unique_define(
+        camera_override_country: required_graphics_define(
             source,
             "GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_COUNTRY",
         )?,
-        draw_fow_cutoff: unique_define(source, "DRAW_FOW_CUTOFF")?,
-        draw_fow_fade_length: unique_define(source, "DRAW_FOW_FADE_LENGTH")?,
+        draw_fow_cutoff: required_graphics_define(source, "DRAW_FOW_CUTOFF")?,
+        draw_fow_fade_length: required_graphics_define(source, "DRAW_FOW_FADE_LENGTH")?,
     };
     if ![
         parsed.field_low,
@@ -3201,75 +3212,28 @@ fn decode_gradient_border_channel3_dds(bytes: &[u8]) -> Result<[u8; 8]> {
         .map_err(|_| "XMAP05 Channel3 DDS payload is truncated".into())
 }
 
-fn unique_define(source: &str, key: &str) -> Result<f32> {
-    optional_unique_define(source, key)?
+fn required_graphics_define(values: &BTreeMap<String, f32>, key: &str) -> Result<f32> {
+    values.get(key).copied()
         .ok_or_else(|| format!("XMAP05 graphics define {key} is missing").into())
 }
 
-fn optional_unique_define(source: &str, key: &str) -> Result<Option<f32>> {
-    let mut value = None;
-    for raw in source.lines() {
-        let line = raw.split("--").next().unwrap_or_default();
-        let Some((left, right)) = line.split_once('=') else {
-            continue;
-        };
-        if left.trim().rsplit('.').next() == Some(key) {
-            let token = right
-                .split([',', ' ', '\t', '}'])
-                .find(|value| !value.is_empty())
-                .ok_or_else(|| format!("XMAP05 graphics define {key} has no value"))?;
-            value = Some(
-                token
-                    .parse::<f32>()
-                    .map_err(|_| format!("XMAP05 graphics define {key} is not numeric"))?,
-            );
-        }
-    }
-    Ok(value)
-}
-
-fn effective_graphics_defines_source(
+fn effective_graphics_define_values(
     resolver: &GameFileResolver,
     keys: &[&str],
     label: &str,
-) -> Result<String> {
-    let files = resolver.resolve_dir_files_recursive("common/defines", Some("lua"))?;
-    if files.is_empty() {
-        return Err(format!("{label}: effective common/defines is empty").into());
-    }
-    let mut sources = Vec::with_capacity(files.len());
-    for (relative, path) in files {
-        sources.push((relative, read_latin1(&path)?));
-    }
-    let mut effective = String::new();
-    let mut seen = BTreeSet::new();
-    for key in keys {
-        if !seen.insert(*key) {
+) -> Result<BTreeMap<String, f32>> {
+    let values = resolver.read_effective_define_numbers("NGraphics", keys)?;
+    let mut effective = BTreeMap::new();
+    for (key, value) in keys.iter().zip(values) {
+        let value = value as f32;
+        if !value.is_finite() {
+            return Err(format!("{label}: define {key} is not a finite f32").into());
+        }
+        if effective.insert((*key).to_string(), value).is_some() {
             return Err(format!("{label}: requested define {key} more than once").into());
         }
-        let (relative, value) = effective_define_from_sources(&sources, key)?
-            .ok_or_else(|| format!("{label}: effective graphics define {key} is missing"))?;
-        effective.push_str("-- effective from ");
-        effective.push_str(relative);
-        effective.push('\n');
-        effective.push_str(key);
-        effective.push_str(" = ");
-        effective.push_str(&value.to_string());
-        effective.push('\n');
     }
     Ok(effective)
-}
-
-fn effective_define_from_sources<'a>(
-    sources: &'a [(String, String)],
-    key: &str,
-) -> Result<Option<(&'a str, f32)>> {
-    for (relative, source) in sources.iter().rev() {
-        if let Some(value) = optional_unique_define(source, key)? {
-            return Ok(Some((relative.as_str(), value)));
-        }
-    }
-    Ok(None)
 }
 
 fn texture_descriptor_digest(descriptor: &Xmap05TextureDescriptor) -> String {
@@ -3465,6 +3429,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn modvfs_political_production_admission_evaluates_later_mod_script() {
+        use crate::test_support::{admit_modvfs_fixture, write_modvfs_fixture as write};
+        let root = crate::test_support::temp_test_dir("political_effective_admission");
+        let vanilla = root.join("vanilla");
+        for path in STATIC_REQUIRED_FILES.into_iter().chain(FOW_REQUIRED_SHADER_SOURCES).chain([
+            "gfx/FX/pdxwater.shader", "history/states/1.txt", "common/country_tags/00.txt",
+        ]) { write(&vanilla, path, ""); }
+        write(&vanilla, NAVAL_DOMINANCE_DDS, channel3_legacy_dds());
+        write(&vanilla, "common/defines/00_graphics.lua", r#"NDefines = { NGraphics = {
+            GRADIENT_BORDERS_FIELD_COUNTRY_LOW = 10, GRADIENT_BORDERS_FIELD_COUNTRY_HIGH = 20,
+            GRADIENT_BORDERS_THICKNESS_COUNTRY_LOW = 1, GRADIENT_BORDERS_THICKNESS_COUNTRY_HIGH = 2,
+            GRADIENT_BORDERS_COUNTRY_CENTER_THICKNESS = 1, GRADIENT_BORDERS_FIELD_COUNTRY_REFRESH = 1,
+            GRADIENT_BORDERS_OUTLINE_CUTOFF_STRATEGIC_REGIONS = 0.5, GRADIENT_BORDERS_OUTLINE_CUTOFF_COUNTRY = 0.5,
+            GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_STRATEGIC_REGIONS = 0.5,
+            GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_COUNTRY = 0.5, DRAW_FOW_CUTOFF = 100, DRAW_FOW_FADE_LENGTH = 20
+        } }"#);
+        write(&vanilla, "common/defines/10_political.lua", "NDefines.NGraphics.DRAW_FOW_CUTOFF = 200");
+        write(&root.join("mod"), "common/defines/10_political.lua", "local g = NDefines.NGraphics; g.DRAW_FOW_CUTOFF = 400 + 50; g.GRADIENT_BORDERS_FIELD_COUNTRY_LOW = 12");
+        let (resolver, admission) = admit_modvfs_fixture(&root);
+        let content = Xmap05Content::admit(&resolver, &admission).unwrap();
+        assert_eq!(content.defines.draw_fow_cutoff, 450.0);
+        assert_eq!(content.defines.field_low, 12.0);
+        assert!(content.ordered_used_content.iter().any(|key| key.normalized_game_relative_path == "common/defines/10_political.lua" && key.winning_layer_ordinal == 1));
+        drop(content); drop(resolver);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+
+    #[test]
     fn terrain_reduction_uses_exact_truncating_rgba_average() {
         assert_eq!(
             average_terrain_rgba_block([
@@ -3594,7 +3587,7 @@ mod tests {
             crate::Hoi4MapCameraDefines::new(1.0, camera_height, 100.0, 100.0, 1.0, 1.0, 1.0)
                 .unwrap();
         ViewerMapCameraState::new(
-            graphics_defines_content,
+            vec![graphics_defines_content],
             defines,
             frame.province_primary.descriptor.width,
             frame.province_primary.descriptor.height,
@@ -3733,7 +3726,8 @@ mod tests {
         let other_defines =
             crate::Hoi4MapCameraDefines::new(1.0, 100.0, 100.0, 100.0, 1.0, 1.0, 1.0).unwrap();
         let other_camera =
-            ViewerMapCameraState::new(other_content, other_defines, 1, 1, 1920, 1080, 50.0)
+            ViewerMapCameraState::new(
+            vec![other_content], other_defines, 1, 1, 1920, 1080, 50.0)
                 .unwrap();
         assert!(frame.scene_cb0_patch(&other_camera, &clock).is_err());
     }
@@ -4078,13 +4072,25 @@ mod tests {
             DRAW_FOW_CUTOFF = 400,
             DRAW_FOW_FADE_LENGTH = 350,
         "#;
-        let parsed = parse_gradient_border_country_defines(source).unwrap();
+        let load = |lua: &str| crate::test_support::with_define_fixture(lua, |resolver| {
+            let keys = [
+                "GRADIENT_BORDERS_FIELD_COUNTRY_REFRESH", "GRADIENT_BORDERS_FIELD_COUNTRY_LOW",
+                "GRADIENT_BORDERS_FIELD_COUNTRY_HIGH", "GRADIENT_BORDERS_THICKNESS_COUNTRY_LOW",
+                "GRADIENT_BORDERS_COUNTRY_CENTER_THICKNESS", "GRADIENT_BORDERS_THICKNESS_COUNTRY_HIGH",
+                "GRADIENT_BORDERS_OUTLINE_CUTOFF_STRATEGIC_REGIONS", "GRADIENT_BORDERS_OUTLINE_CUTOFF_COUNTRY",
+                "GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_STRATEGIC_REGIONS",
+                "GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_COUNTRY", "DRAW_FOW_CUTOFF", "DRAW_FOW_FADE_LENGTH",
+            ];
+            gradient_border_country_defines_from_values(
+                &effective_graphics_define_values(resolver, &keys, "fixture").unwrap(),
+            ).unwrap()
+        });
+        let parsed = load(&format!("NDefines = {{ NGraphics = {{ {source} }} }}"));
         assert_eq!(parsed.refresh_hours, 10);
         assert_eq!(parsed.center_thickness, 2.0);
-        let overridden = parse_gradient_border_country_defines(&format!(
-            "{source}\nNDefines_Graphics.NGraphics.GRADIENT_BORDERS_FIELD_COUNTRY_LOW = 301,"
-        ))
-        .unwrap();
+        let overridden = load(&format!(
+            "NDefines = {{ NGraphics = {{ {source} }} }}\nNDefines.NGraphics.GRADIENT_BORDERS_FIELD_COUNTRY_LOW = 300 + 1"
+        ));
         assert_eq!(overridden.field_low, 301.0);
     }
 
@@ -4251,25 +4257,27 @@ mod tests {
         let sources = vec![
             (
                 "common/defines/00_graphics.lua".to_string(),
-                "GRADIENT_BORDERS_THICKNESS_STATE = 5".to_string(),
+                "NDefines = { NGraphics = { GRADIENT_BORDERS_THICKNESS_STATE = 5 } }".to_string(),
             ),
             (
                 "common/defines/nested/mod_override.lua".to_string(),
-                "GRADIENT_BORDERS_THICKNESS_STATE = 9".to_string(),
+                "NDefines.NGraphics.GRADIENT_BORDERS_THICKNESS_STATE = 3 * 3".to_string(),
             ),
         ];
         assert_eq!(
-            effective_define_from_sources(&sources, "GRADIENT_BORDERS_THICKNESS_STATE").unwrap(),
-            Some(("common/defines/nested/mod_override.lua", 9.0))
+            crate::EffectiveDefines::from_sources(&sources).unwrap()
+                .scalar("NGraphics", "GRADIENT_BORDERS_THICKNESS_STATE").unwrap(),
+            9.0
         );
         let malformed = vec![(
             "common/defines/nested/mod_override.lua".to_string(),
-            "GRADIENT_BORDERS_THICKNESS_STATE = 9\nGRADIENT_BORDERS_THICKNESS_STATE = 10"
+            "NDefines = { NGraphics = { GRADIENT_BORDERS_THICKNESS_STATE = 9 } }\nNDefines.NGraphics.GRADIENT_BORDERS_THICKNESS_STATE = 2 * 5"
                 .to_string(),
         )];
         assert_eq!(
-            effective_define_from_sources(&malformed, "GRADIENT_BORDERS_THICKNESS_STATE").unwrap(),
-            Some(("common/defines/nested/mod_override.lua", 10.0))
+            crate::EffectiveDefines::from_sources(&malformed).unwrap()
+                .scalar("NGraphics", "GRADIENT_BORDERS_THICKNESS_STATE").unwrap(),
+            10.0
         );
     }
 

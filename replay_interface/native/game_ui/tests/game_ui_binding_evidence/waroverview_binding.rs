@@ -26,7 +26,7 @@ fn game_root() -> PathBuf {
 fn parse_layout(root: &Path, rel: &str) -> LayoutSet {
     let mut layouts = LayoutSet::default();
     layouts
-        .parse_file(&root.join(rel), rel)
+        .parse_content(&map_viewer::GameFileResolver::vanilla(&root).unwrap().read_required_bytes(rel, "fixture content").unwrap(), rel)
         .expect("parse vanilla gui");
     layouts
 }

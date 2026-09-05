@@ -8,7 +8,7 @@ use crate::hud::{
 };
 use crate::loc::Localisation;
 use crate::major_views::{inspect_major_views, write_major_view_proofs, MajorViewReport};
-use crate::paradox_text::{destructive_event_count, diagnose_text_decode, parse_bytes, parse_file};
+use crate::paradox_text::{destructive_event_count, diagnose_text_decode, parse_bytes, parse_checked_bytes};
 use crate::png::write_png;
 use crate::tga;
 use crate::topbar::{
@@ -208,8 +208,8 @@ pub fn run_probe(config: &ProbeConfig) -> Result<ProbeReport> {
     })
 }
 
-fn load_gfx_document(path: &Path) -> Result<(crate::paradox_text::Document, usize)> {
-    let bytes = std::fs::read(path)?;
+fn load_gfx_document(resolver: &AssetResolver, file: &crate::assets::ResolvedFile) -> Result<(crate::paradox_text::Document, usize)> {
+    let bytes = resolver.read_file(file)?;
     let events = destructive_event_count(&diagnose_text_decode(&bytes));
     Ok((parse_bytes(&bytes), events))
 }
@@ -222,7 +222,7 @@ pub fn parse_gfx_files(resolver: &AssetResolver) -> Result<(SpriteRegistry, GfxP
         ..GfxParseStats::default()
     };
     for file in files {
-        match load_gfx_document(&file.path) {
+        match load_gfx_document(resolver, &file) {
             Ok((doc, decode_events)) => {
                 stats.recovery_count += doc.recoveries.len();
                 if !doc.recoveries.is_empty() {
@@ -251,7 +251,7 @@ pub fn parse_gui_files(resolver: &AssetResolver) -> Result<(LayoutSet, GuiParseS
     let files = resolver.list_files_recursive("interface", Some("gui"))?;
     let mut layouts = LayoutSet::default();
     for file in files {
-        match layouts.parse_file(&file.path, &file.rel_path) {
+        match layouts.parse_content(&resolver.read_file(&file)?, &file.rel_path) {
             Ok(()) => {}
             Err(err) => {
                 layouts.stats.file_count += 1;
@@ -272,7 +272,7 @@ fn inspect_topbar(
     registry: &SpriteRegistry,
 ) -> Result<TopbarDecodeReport> {
     let topbar = resolver.resolve_file("interface/topbar.gui")?;
-    let doc = parse_file(&topbar.path)?;
+    let doc = parse_checked_bytes(&resolver.read_file(&topbar)?, &topbar.rel_path)?;
     let mut layouts = LayoutSet::default();
     layouts.add_document(&topbar.rel_path, &doc);
     let sprite_refs = layouts.sprite_refs();
@@ -324,10 +324,10 @@ fn inspect_topbar(
                 .to_ascii_lowercase();
             match ext.as_str() {
                 "dds" => {
-                    if let Ok(info) = dds::info_file(&resolved.path) {
+                    if let Ok(info) = resolver.read_file(&resolved).and_then(|bytes| dds::info_bytes(&bytes)) {
                         *report.dds_format_histogram.entry(info.format).or_insert(0) += 1;
                     }
-                    match dds::decode_file(&resolved.path) {
+                    match resolver.read_file(&resolved).and_then(|bytes| dds::decode_bytes(&bytes)) {
                         Ok(_) => report.decoded_texture_count += 1,
                         Err(err) => report.undecodable.push(format!(
                             "{sprite_name}: {} decode failed: {}",
@@ -335,7 +335,7 @@ fn inspect_topbar(
                         )),
                     }
                 }
-                "tga" => match tga::decode_file(&resolved.path) {
+                "tga" => match resolver.read_file(&resolved).and_then(|bytes| tga::decode_bytes(&bytes)) {
                     Ok(decoded) => {
                         *report
                             .dds_format_histogram
@@ -562,7 +562,7 @@ fn scan_referenced_dds(resolver: &AssetResolver, registry: &SpriteRegistry) -> R
                     continue;
                 }
             };
-            match dds::info_file(&resolved.path) {
+            match resolver.read_file(&resolved).and_then(|bytes| dds::info_bytes(&bytes)) {
                 Ok(info) => {
                     report.texture_count += 1;
                     *report

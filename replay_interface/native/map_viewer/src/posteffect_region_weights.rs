@@ -99,8 +99,8 @@ pub fn posteffect_region_weights_from_resolver(
         "posteffect province raster",
     )?;
 
-    let (mut definitions, color_to_id) = load_definition_csv(&definition_csv.local_path)?;
-    let raster = load_provinces_bmp(&provinces_bmp.local_path, &color_to_id)?;
+    let (mut definitions, color_to_id) = load_definition_csv(resolver, &definition_csv.local_path)?;
+    let raster = decode_provinces_bmp(&resolver.read_resolved_bytes(&provinces_bmp.local_path)?, &provinces_bmp.local_path, &color_to_id)?;
     crate::image_load::admit_invented_provinces(&mut definitions, &raster.invented);
 
     let enumerated_state_files =
@@ -114,7 +114,7 @@ pub fn posteffect_region_weights_from_resolver(
         .iter()
         .map(|source| (source.logical_path.clone(), source.local_path.clone()))
         .collect::<Vec<_>>();
-    let (states, province_to_state, _state_owners) = load_states(&state_paths)?;
+    let (states, province_to_state, _state_owners) = load_states(resolver, &state_paths)?;
     let passable_land = definitions
         .iter()
         .filter_map(|(&province_id, definition)| {

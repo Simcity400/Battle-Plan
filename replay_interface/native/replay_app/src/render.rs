@@ -9,7 +9,7 @@ use std::ptr;
 use std::time::{Duration, Instant};
 
 use map_viewer::{
-    hoi4_map_camera_defines_from_bundle, load_restore_scene_bundle_session_dir, map_wrap_offsets,
+    hoi4_map_camera_defines_from_resolver, load_restore_scene_bundle_session_dir, map_wrap_offsets,
     scene_average_luminance, tree_second_subdraw_verdict, AverageLuminanceReduction,
     BloomBlurKernel, BloomParams, C03CameraReplayBinding, GameFileResolver, Hoi4MapCameraDefines,
     LuminanceClampBounds, NativeD3d11PreparedProductionMap, NativeD3d11RenderOptions,
@@ -694,8 +694,8 @@ impl CapturedPassLayer {
         let mut layer_gaps = Vec::new();
         let terrain_path = session_dir.join(TERRAIN_BUNDLE_FILE);
         let terrain = load_terrain_bundle_for_replay(&terrain_path, Some(resolver))?;
-        let base_camera = terrain.production_camera_from_capture()?;
-        let camera_defines = hoi4_map_camera_defines_from_bundle(&terrain)?;
+        let base_camera = terrain.production_camera_from_capture(resolver)?;
+        let camera_defines = hoi4_map_camera_defines_from_resolver(resolver)?;
 
         let water_path = session_dir.join(WATER_BUNDLE_FILE);
         let water = if water_path.exists() {
@@ -3166,6 +3166,7 @@ posteffect_volumes = {
         std::fs::write(
             defines.join("00_graphics.lua"),
             r#"
+NDefines = { NGraphics = {
 TONE_MAP_MIDDLE_GREY = 0.5,
 TONE_MAP_LUMINANCE_WHITE = 1.0,
 MIN_HDR_ADJUSTMENT = 0.5,
@@ -3183,6 +3184,7 @@ POSTEFFECT_FEATHER_MIN_DISTANCE = 300.0,
 POSTEFFECT_FEATHER_MAX_DISTANCE = 2000.0,
 POSTEFFECT_FEATHER_AT_MIN = 0.03,
 POSTEFFECT_FEATHER_AT_MAX = 0.80,
+} }
 "#,
         )
         .expect("write graphics defines");

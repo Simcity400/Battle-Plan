@@ -1,7 +1,6 @@
 
 use crate::mod_resolver::GameFileResolver;
 use crate::Result;
-use std::fs;
 
 pub const BLOOM_LUMINANCE_VECTOR: [f32; 3] = [0.2125, 0.7154, 0.0721];
 
@@ -211,7 +210,7 @@ pub fn resolve_bloom_params_for_volume(
 ) -> Result<BloomParams> {
     let volumes_path =
         resolver.resolve_required("gfx/posteffect_volumes.txt", "posteffect volumes")?;
-    let volumes_src = fs::read_to_string(&volumes_path).map_err(|err| {
+    let volumes_src = resolver.read_required_text("gfx/posteffect_volumes.txt", "gfx/posteffect_volumes.txt").map_err(|err| {
         format!(
             "bloom chain blocked: {} is not readable: {err}",
             volumes_path.display()

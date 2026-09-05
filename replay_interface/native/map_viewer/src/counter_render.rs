@@ -512,7 +512,7 @@ pub fn counter_texture_rgba_from_resolver(
         );
     }
     let path = resolver.resolve_required(texture_file, "counter GPU texture")?;
-    let image = crate::image_load::load_dds_rgba(&path)?;
+    let image = crate::image_load::decode_dds_rgba(&resolver.read_resolved_bytes(&path)?, &path)?;
     Ok(CounterTextureRgba {
         texture_file: texture_file.to_string(),
         width: image.width,

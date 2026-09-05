@@ -621,7 +621,7 @@ fn is_generated_slot_zero_cb0_alias(name: &str) -> bool {
     name == "dx11_cb0"
 }
 
-pub(crate) fn terrain_scene_cb0_camera_layout_for_binding(
+pub(crate) fn terrain_scene_cb0_camera_layout_for_binding(resolver: &GameFileResolver, 
     bundle_dir: &Path,
     draw: &MapFrameDraw,
     binding: &MapFrameBufferBinding,
@@ -669,10 +669,7 @@ pub(crate) fn terrain_scene_cb0_camera_layout_for_binding(
                 .into(),
         );
     }
-    let source_path = bundle_dir
-        .join("vanilla")
-        .join("gfx/FX/standardfuncsgfx.fxh");
-    let layout = terrain_scene_cb0_layout(&read_latin1(&source_path)?)?;
+    let layout = terrain_scene_cb0_layout(&resolver.read_required_text("gfx/FX/standardfuncsgfx.fxh", "terrain camera layout")?)?;
     validate_constant_buffer_byte_len(byte_len, layout.byte_len)?;
     Ok(Some(layout))
 }
@@ -744,7 +741,7 @@ pub(crate) fn validate_camera_constant_buffer_update_binding(
 }
 
 #[cfg(test)]
-pub(crate) fn terrain_scene_cb0_bytes_with_app_camera(
+pub(crate) fn terrain_scene_cb0_bytes_with_app_camera(resolver: &crate::GameFileResolver, 
     bundle_dir: &Path,
     draw: &MapFrameDraw,
     binding: &MapFrameBufferBinding,
@@ -752,7 +749,7 @@ pub(crate) fn terrain_scene_cb0_bytes_with_app_camera(
     camera: ProductionMapCamera,
 ) -> Result<Vec<u8>> {
     let Some(layout) =
-        terrain_scene_cb0_camera_layout_for_binding(bundle_dir, draw, binding, bytes.len())?
+        terrain_scene_cb0_camera_layout_for_binding(resolver, bundle_dir, draw, binding, bytes.len())?
     else {
         return Ok(bytes);
     };
@@ -1102,8 +1099,8 @@ pub(crate) fn required_sampler_value(
     })
 }
 
-pub(crate) fn validate_pdxmap_sampler_contract(pdxmap_shader_source: &Path) -> Result<()> {
-    let text = read_latin1(pdxmap_shader_source)?;
+pub(crate) fn validate_pdxmap_sampler_contract(resolver: &GameFileResolver, pdxmap_shader_source: &Path) -> Result<()> {
+    let text = resolver.read_resolved_text(pdxmap_shader_source)?;
     for (sampler_name, expected) in [
         (TERRAIN_DIFFUSE_SYMBOL, terrain_linear_wrap_sampler()),
         ("HeightNormal", terrain_linear_wrap_sampler()),
@@ -1137,7 +1134,7 @@ pub(crate) fn find_shader_cache_map_constants(
     candidates.sort();
 
     for path in candidates {
-        let text = read_latin1(&path)?;
+        let text = latin1_bytes_to_string(&fs::read(&path)?);
         let Some(terrain_id_srv_slot) = terrain_id_slot_from_shader_text(&text) else {
             continue;
         };
@@ -1308,7 +1305,7 @@ mod tests {
         let camera = ProductionMapCamera::new(camera_matrix, [44.0, 55.0, 66.0])
             .expect("finite production camera");
 
-        let patched = terrain_scene_cb0_bytes_with_app_camera(
+        let patched = terrain_scene_cb0_bytes_with_app_camera(&crate::test_support::fixture_game_resolver(&root), 
             &root,
             &frame.active_draw,
             binding,

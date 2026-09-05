@@ -12,6 +12,7 @@ build = "build.rs"
 replay_test_gates = { path = "../replay_test_gates" }
 
 [dev-dependencies]
+map_viewer = { path = "../map_viewer", features = ["test_support"] }
 # Waits out the Windows sharing violation a real-time scanner causes on a
 # freshly written file. Test-only: nothing this package ships calls it.
 portable_test_fs_retry = { path = "../../../portable_replay/native/test_fs_retry" }

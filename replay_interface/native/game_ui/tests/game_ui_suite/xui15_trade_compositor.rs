@@ -147,10 +147,7 @@ fn write_gui(root: &PathBuf) {
 fn scrollbar_registry(root: &PathBuf) -> SpriteRegistry {
     let mut registry = SpriteRegistry::new();
     registry
-        .parse_file(
-            &root.join("interface/xui15_scroll.gfx"),
-            "interface/xui15_scroll.gfx",
-        )
+        .parse_content(&map_viewer::GameFileResolver::vanilla(&root).unwrap().read_required_bytes("interface/xui15_scroll.gfx", "fixture content").unwrap(), "interface/xui15_scroll.gfx")
         .expect("parse synthetic scrollbar sprites");
     registry
 }

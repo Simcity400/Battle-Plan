@@ -1,13 +1,12 @@
 
 use crate::assets::AssetResolver;
 use crate::gui::{parse_measure, parse_measure_pair, GuiElement, LayoutSet, MeasurePair};
-use crate::paradox_text::parse_file;
+use crate::paradox_text::parse_checked_bytes;
 use crate::{GameUiError, Result};
 use std::collections::BTreeMap;
-use std::path::Path;
 
-pub(crate) fn parse_layout_set(path: &Path, rel: &str) -> Result<LayoutSet> {
-    let doc = parse_file(path)?;
+pub(crate) fn parse_layout_set(bytes: &[u8], rel: &str) -> Result<LayoutSet> {
+    let doc = parse_checked_bytes(bytes, rel)?;
     let mut layouts = LayoutSet::default();
     layouts.add_document(rel, &doc);
     Ok(layouts)
@@ -45,20 +44,20 @@ fn find_last_top_level_named_element(
         })
 }
 
-pub(crate) fn load_named_element_from_file(
-    path: &Path,
+pub(crate) fn load_named_element_from_bytes(
+    bytes: &[u8],
     rel: &str,
     name: &str,
 ) -> Result<GuiElement> {
-    find_named_element(&parse_layout_set(path, rel)?, rel, name)
+    find_named_element(&parse_layout_set(bytes, rel)?, rel, name)
 }
 
-pub(crate) fn load_last_top_level_named_element_from_file(
-    path: &Path,
+pub(crate) fn load_last_top_level_named_element_from_bytes(
+    bytes: &[u8],
     rel: &str,
     name: &str,
 ) -> Result<GuiElement> {
-    find_last_top_level_named_element(&parse_layout_set(path, rel)?, rel, name)
+    find_last_top_level_named_element(&parse_layout_set(bytes, rel)?, rel, name)
 }
 
 pub(crate) fn load_named_element(
@@ -69,7 +68,7 @@ pub(crate) fn load_named_element(
 ) -> Result<GuiElement> {
     if !cache.contains_key(file) {
         let resolved = resolver.resolve_file(file)?;
-        let layouts = parse_layout_set(&resolved.path, &resolved.rel_path)?;
+        let layouts = parse_layout_set(&resolver.read_file(&resolved)?, &resolved.rel_path)?;
         cache.insert(file.to_string(), layouts);
     }
     find_named_element(cache.get(file).expect("cache populated"), file, name)
@@ -83,7 +82,7 @@ pub(crate) fn load_last_top_level_named_element(
 ) -> Result<GuiElement> {
     if !cache.contains_key(file) {
         let resolved = resolver.resolve_file(file)?;
-        let layouts = parse_layout_set(&resolved.path, &resolved.rel_path)?;
+        let layouts = parse_layout_set(&resolver.read_file(&resolved)?, &resolved.rel_path)?;
         cache.insert(file.to_string(), layouts);
     }
     find_last_top_level_named_element(cache.get(file).expect("cache populated"), file, name)
@@ -174,7 +173,7 @@ mod tests {
         )
         .unwrap();
         let winner =
-            load_last_top_level_named_element_from_file(&path, "interface/test.gui", "shared")
+            load_last_top_level_named_element_from_bytes(&std::fs::read(&path).unwrap(), "interface/test.gui", "shared")
                 .unwrap();
         assert_eq!(winner.name, "SHARED");
         assert_eq!(winner.position.as_ref().unwrap().x.raw, "9");

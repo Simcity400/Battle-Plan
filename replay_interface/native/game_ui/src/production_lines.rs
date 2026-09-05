@@ -1028,8 +1028,8 @@ pub fn admit_xui12_authored_root(
     let mut candidates = Vec::new();
     for file in files {
         let mut layouts = LayoutSet::default();
-        if layouts.parse_file(&file.path, &file.rel_path).is_err() {
-            let mentions_root = source_mentions_production_root(&file.path).map_err(|_| {
+        if resolver.read_file(&file).and_then(|bytes| layouts.parse_content(&bytes, &file.rel_path).map_err(Into::into)).is_err() {
+            let mentions_root = source_mentions_production_root(resolver, &file).map_err(|_| {
                 Xui12ProductionLineRejection::AuthoredGuiUnreadable {
                     path: file.rel_path.clone(),
                 }
@@ -1042,7 +1042,7 @@ pub fn admit_xui12_authored_root(
             continue;
         }
         if layouts.stats.recovery_count != 0 || layouts.stats.decode_loss_count != 0 {
-            if source_mentions_production_root(&file.path).map_err(|_| {
+            if source_mentions_production_root(resolver, &file).map_err(|_| {
                 Xui12ProductionLineRejection::AuthoredGuiUnreadable {
                     path: file.rel_path.clone(),
                 }
@@ -1159,8 +1159,8 @@ fn validate_semantic_root_sources(
     Ok(())
 }
 
-fn source_mentions_production_root(path: &std::path::Path) -> std::io::Result<bool> {
-    std::fs::read(path).map(|bytes| {
+fn source_mentions_production_root(resolver: &AssetResolver, file: &crate::assets::ResolvedFile) -> crate::Result<bool> {
+    resolver.read_file(file).map(|bytes| {
         crate::paradox_text::decode_text(&bytes)
             .to_ascii_lowercase()
             .contains(COUNTRY_PRODUCTION_LINE_ROOT)
@@ -2380,3 +2380,4 @@ mod tests {
         );
     }
 }
+

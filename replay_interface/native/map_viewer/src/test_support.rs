@@ -1,5 +1,10 @@
 
 use crate::*;
+
+pub(crate) fn fixture_game_resolver(root: &std::path::Path) -> GameFileResolver {
+    let nested = root.join("vanilla");
+    GameFileResolver::vanilla(if nested.is_dir() { nested } else { root.to_path_buf() }).unwrap()
+}
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
@@ -8,6 +13,17 @@ use std::path::{Path, PathBuf};
 use winapi::um::d3d11::{D3D11_DSV_DIMENSION_TEXTURE2D, D3D11_RTV_DIMENSION_TEXTURE2D};
 #[cfg(windows)]
 use winapi::um::d3dcommon::D3D11_SRV_DIMENSION_TEXTURE2D;
+
+pub(crate) fn with_define_fixture<T>(source: &str, read: impl FnOnce(&GameFileResolver) -> T) -> T {
+    let root = temp_test_dir("effective_define_fixture");
+    fs::create_dir_all(root.join("common/defines")).unwrap();
+    fs::write(root.join("common/defines/fixture.lua"), source).unwrap();
+    let resolver = GameFileResolver::vanilla(&root).unwrap();
+    let result = read(&resolver);
+    drop(resolver);
+    portable_test_fs_retry::remove_dir_all(root).unwrap();
+    result
+}
 
 pub(crate) fn assert_close(actual: f32, expected: f32) {
     assert!(
@@ -788,6 +804,7 @@ pub(crate) fn test_map_frame_shader_constants() -> MapFrameTerrainShaderConstant
 
 pub(crate) fn minimal_graphics_defines_source() -> String {
     r#"
+            NDefines = NDefines or {}
             NDefines_Graphics = {
                 NGraphics = {
                     CAMERA_OUTSIDE_MAP_DISTANCE_TOP = 200.0,
@@ -802,6 +819,7 @@ pub(crate) fn minimal_graphics_defines_source() -> String {
                     CAMERA_MAX_HEIGHT = 3000.0,
                 },
             }
+            for k, v in pairs(NDefines_Graphics) do NDefines[k] = v end
         "#
     .to_string()
 }
@@ -2807,7 +2825,8 @@ pub(crate) fn write_minimal_runtime_import_bundle(root: &Path) -> Manifest {
     }
     for (source, output) in &manifest.files.map_sources {
         let bytes = minimal_map_source_bytes(source);
-        fs::write(root.join(output), bytes).expect("write map source file");
+        fs::write(root.join(output), &bytes).expect("write map source file");
+            crate::test_support::write_modvfs_fixture(&root.join("vanilla"), source, &bytes);
     }
     fs::write(root.join(&manifest.files.terrain_id_map), [1u8; 16]).expect("write terrain id map");
     let runtime = minimal_test_runtime(&manifest, &root.join(&manifest.files.terrain_id_map));
@@ -2956,4 +2975,44 @@ fn admitted_content_kind(path: &str) -> replay_core::RequiredContentKind {
         "txt" | "lua" | "csv" | "asset" => RequiredContentKind::Definition,
         _ => RequiredContentKind::Other,
     }
+}
+
+pub(crate) fn write_modvfs_fixture(root: &Path, relative: &str, bytes: impl AsRef<[u8]>) {
+    let path = root.join(relative);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, bytes).unwrap();
+}
+
+pub(crate) fn admit_modvfs_fixture(root: &Path) -> (GameFileResolver, replay_core::ValidatedContentAdmission) {
+    let raw = GameFileResolver::with_mod_paths(root.join("vanilla"), vec![root.join("mod")]).unwrap();
+    let paths = raw.audit_effective_dir_files_recursive("", None).unwrap().into_iter().collect();
+    admitted_vanilla_resolver(&raw, &paths, "effective-fixture")
+}
+
+pub(crate) fn modvfs_shader(effect: &str, samplers: &str) -> String {
+    format!(r#"
+VertexShader = {{
+    MainCode VS [[ float4 main(float4 p : POSITION, float4 t : TEXCOORD0) : SV_Position {{ return p + t; }} ]]
+}}
+PixelShader = {{
+    {samplers}
+    MainCode PS [[ float4 main() : SV_Target {{ return float4(1,1,1,1); }} ]]
+}}
+Effect {effect} {{ VertexShader = "VS" PixelShader = "PS" }}
+"#)
+}
+
+pub(crate) fn write_modvfs_provinces(root: &Path, width: usize, height: usize) {
+    let stride = (width * 3 + 3) & !3;
+    let mut bytes = vec![0; 54 + stride * height];
+    bytes[..2].copy_from_slice(b"BM");
+    for (offset, value) in [(2, bytes.len() as u32), (10, 54), (14, 40), (18, width as u32), (22, height as u32)] {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes[26..28].copy_from_slice(&1u16.to_le_bytes());
+    bytes[28..30].copy_from_slice(&24u16.to_le_bytes());
+    for y in 0..height { for x in 0..width { bytes[54+y*stride+x*3..57+y*stride+x*3].copy_from_slice(&[3,2,1]); } }
+    write_modvfs_fixture(root, "map/provinces.bmp", bytes);
+    write_modvfs_fixture(root, "map/definition.csv", "0;0;0;0;land;false;plains;0\n1;1;2;3;land;false;plains;0\n");
+    write_indexed_bmp(&root.join("map/heightmap.bmp"), width, height, 100);
 }

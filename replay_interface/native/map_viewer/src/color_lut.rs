@@ -105,7 +105,7 @@ pub fn color_correction_lut_from_resolver(
     rel_path: &str,
 ) -> Result<ColorCorrectionLut> {
     let path = resolver.resolve_required(rel_path, "colorcorrection LUT")?;
-    let bytes = std::fs::read(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    let bytes = resolver.read_required_bytes(rel_path, rel_path).map_err(|err| format!("read {}: {err}", path.display()))?;
     parse_color_correction_tga(&bytes, rel_path)
 }
 
@@ -194,7 +194,7 @@ pub fn scan_color_correction_luts_from_resolver(
             continue;
         }
         let bytes =
-            std::fs::read(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
+            resolver.read_required_bytes(&rel, &rel).map_err(|err| format!("read {}: {err}", path.display()))?;
         let lut = parse_color_correction_tga(&bytes, &rel)?;
         rows.push(ColorLutProbeRow {
             rel_path: rel,

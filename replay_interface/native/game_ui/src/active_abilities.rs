@@ -4,7 +4,7 @@ use crate::compose::{ComposeOptions, ComposeOutput, Compositor, UiAssetCache};
 use crate::gfx::SpriteRegistry;
 use crate::gui::{parse_gui_document, GuiElement, Measure, MeasurePair};
 use crate::loc::Localisation;
-use crate::paradox_text::{parse_file_refusing_decode_damage, Document, Value};
+use crate::paradox_text::{parse_checked_bytes, Document, Value};
 use crate::{GameUiError, Result as UiResult};
 use replay_core::NamedCountry;
 use replay_core::{CommandAbilityTimer, CommandAbilityTimerKind};
@@ -311,7 +311,7 @@ fn load_ordered_active_ability_definitions(
     });
     let mut documents = Vec::with_capacity(ability_files.len());
     for file in &ability_files {
-        let document = parse_file_refusing_decode_damage(&file.path, &file.rel_path)?;
+        let document = parse_checked_bytes(&resolver.read_file(&file)?, &file.rel_path)?;
         if !document.recoveries.is_empty() {
             return Err(GameUiError::parse(format!(
                 "active ability definition recoveries in {}: {:?}",
@@ -1014,7 +1014,7 @@ pub fn compose_observer_ability_surface(
     }
 
     let resolved = resolver.resolve_file(ABILITY_LIST_GUI)?;
-    let document = parse_file_refusing_decode_damage(&resolved.path, &resolved.rel_path)?;
+    let document = parse_checked_bytes(&resolver.read_file(&resolved)?, &resolved.rel_path)?;
     if !document.recoveries.is_empty() {
         return Err(GameUiError::parse(format!(
             "ability-list GUI recoveries in {}: {:?}",
@@ -1971,7 +1971,7 @@ mod tests {
             .expect("discover effective interface sprite definitions")
         {
             sprites
-                .parse_file(&file.path, &file.rel_path)
+                .parse_content(&resolver.read_file(&file).unwrap(), &file.rel_path)
                 .expect("parse an effective interface sprite definition");
         }
         let localisation =
@@ -2002,7 +2002,7 @@ mod tests {
         });
         let mut independent_ids = Vec::new();
         for file in independently_discovered {
-            let document = parse_file_refusing_decode_damage(&file.path, &file.rel_path)
+            let document = parse_checked_bytes(&resolver.read_file(&file).unwrap(), &file.rel_path)
                 .expect("independently parse effective ability file");
             assert!(
                 document.recoveries.is_empty(),
@@ -2334,7 +2334,7 @@ mod tests {
             .resolve_file("interface/abilitylist.gfx")
             .expect("synthetic ability GFX");
         registry
-            .parse_file(&gfx.path, &gfx.rel_path)
+            .parse_content(&resolver.read_file(&gfx).unwrap(), &gfx.rel_path)
             .expect("parse synthetic ability GFX");
         let (_, frame) = authenticated_observer_payload();
         let admitted = admit_observer_ability_frame(
@@ -2392,7 +2392,7 @@ mod tests {
         let resolver = AssetResolver::new(vec![root.clone()]);
         let mut registry = SpriteRegistry::new();
         let gfx = resolver.resolve_file("interface/abilitylist.gfx").unwrap();
-        registry.parse_file(&gfx.path, &gfx.rel_path).unwrap();
+        registry.parse_content(&resolver.read_file(&gfx).unwrap(), &gfx.rel_path).unwrap();
         let (_, frame) = authenticated_observer_payload();
         let admitted = admit_observer_ability_frame(
             frame.as_ref(),
@@ -2440,7 +2440,7 @@ mod tests {
         let resolver = AssetResolver::new(vec![root.clone()]);
         let mut registry = SpriteRegistry::new();
         let gfx = resolver.resolve_file("interface/abilitylist.gfx").unwrap();
-        registry.parse_file(&gfx.path, &gfx.rel_path).unwrap();
+        registry.parse_content(&resolver.read_file(&gfx).unwrap(), &gfx.rel_path).unwrap();
         let (_, frame) = authenticated_observer_payload();
         let admitted = admit_observer_ability_frame(
             frame.as_ref(),
@@ -2495,7 +2495,7 @@ mod tests {
         let resolver = AssetResolver::new(vec![root.clone()]);
         let mut registry = SpriteRegistry::new();
         let gfx = resolver.resolve_file("interface/abilitylist.gfx").unwrap();
-        registry.parse_file(&gfx.path, &gfx.rel_path).unwrap();
+        registry.parse_content(&resolver.read_file(&gfx).unwrap(), &gfx.rel_path).unwrap();
         let (_, frame) = authenticated_observer_payload();
         let admitted = admit_observer_ability_frame(
             frame.as_ref(),
@@ -2536,7 +2536,7 @@ mod tests {
         let resolver = AssetResolver::new(vec![root.clone()]);
         let mut registry = SpriteRegistry::new();
         let gfx = resolver.resolve_file("interface/abilitylist.gfx").unwrap();
-        registry.parse_file(&gfx.path, &gfx.rel_path).unwrap();
+        registry.parse_content(&resolver.read_file(&gfx).unwrap(), &gfx.rel_path).unwrap();
         let (_, frame) = authenticated_observer_payload();
         let admitted = admit_observer_ability_frame(
             frame.as_ref(),
@@ -2603,7 +2603,7 @@ mod tests {
             let resolver = AssetResolver::new(vec![root.clone()]);
             let mut registry = SpriteRegistry::new();
             let gfx = resolver.resolve_file("interface/abilitylist.gfx").unwrap();
-            registry.parse_file(&gfx.path, &gfx.rel_path).unwrap();
+            registry.parse_content(&resolver.read_file(&gfx).unwrap(), &gfx.rel_path).unwrap();
             let (_, frame) = authenticated_observer_payload();
             let admitted = admit_observer_ability_frame(
                 frame.as_ref(),
@@ -2647,7 +2647,7 @@ mod tests {
         let resolver = AssetResolver::new(vec![root.clone()]);
         let mut registry = SpriteRegistry::new();
         let gfx = resolver.resolve_file("interface/abilitylist.gfx").unwrap();
-        registry.parse_file(&gfx.path, &gfx.rel_path).unwrap();
+        registry.parse_content(&resolver.read_file(&gfx).unwrap(), &gfx.rel_path).unwrap();
         let (_, frame) = authenticated_observer_payload();
         let admitted = admit_observer_ability_frame(
             frame.as_ref(),
@@ -2691,7 +2691,7 @@ mod tests {
         let resolver = AssetResolver::new(vec![root.clone()]);
         let mut registry = SpriteRegistry::new();
         let gfx = resolver.resolve_file("interface/abilitylist.gfx").unwrap();
-        registry.parse_file(&gfx.path, &gfx.rel_path).unwrap();
+        registry.parse_content(&resolver.read_file(&gfx).unwrap(), &gfx.rel_path).unwrap();
         let (_, frame) = authenticated_observer_payload();
         let admitted = admit_observer_ability_frame(
             frame.as_ref(),

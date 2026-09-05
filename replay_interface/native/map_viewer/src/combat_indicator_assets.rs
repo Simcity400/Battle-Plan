@@ -4,7 +4,7 @@ use crate::unit_counter_assets::{
     sprite_inventory_from_resolver, BitmapFontBinding, CounterSpriteAsset, GuiContainerLayout,
     GuiSize, ProgressBarAsset,
 };
-use crate::{read_latin1, GameFileResolver, Result};
+use crate::{GameFileResolver, Result};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const COMBAT_INDICATOR_MAPICONS_GFX_SOURCE: &str = "interface/mapicons.gfx";
@@ -245,7 +245,7 @@ fn referenced_sprite_inventory(
     let mut assets = BTreeMap::new();
     let mut unresolved = Vec::new();
     for (source_file, path) in resolver.resolve_dir_files_recursive("interface", Some("gfx"))? {
-        let text = read_latin1(&path)?;
+        let text = resolver.read_resolved_text(&path)?;
         if !mentions_wanted_alias(&text, wanted) {
             continue;
         }
@@ -274,7 +274,7 @@ fn referenced_progress_bars(
 ) -> Result<BTreeMap<String, ProgressBarAsset>> {
     let mut bars = BTreeMap::new();
     for (source_file, path) in resolver.resolve_dir_files_recursive("interface", Some("gfx"))? {
-        let text = read_latin1(&path)?;
+        let text = resolver.read_resolved_text(&path)?;
         if !mentions_wanted_alias(&text, wanted) {
             continue;
         }
@@ -403,7 +403,7 @@ fn collect_named_progress_bars(
     bars: &mut BTreeMap<String, ProgressBarAsset>,
 ) -> Result<()> {
     let path = resolver.resolve_required(source_file, source_file)?;
-    let text = read_latin1(&path)?;
+    let text = resolver.read_required_text(source_file, source_file)?;
     let wanted = names.iter().copied().collect::<BTreeSet<_>>();
     for bar in parse_progress_bar_assets(&text, source_file)
         .into_iter()
@@ -418,7 +418,7 @@ pub fn combat_indicator_gui_layouts_from_resolver(
     resolver: &GameFileResolver,
 ) -> Result<CombatIndicatorGuiLayouts> {
     let path = resolver.resolve_required(COMBAT_INDICATOR_MAPICONS_GUI_SOURCE, "map icons gui")?;
-    let text = read_latin1(&path)?;
+    let text = resolver.read_required_text(COMBAT_INDICATOR_MAPICONS_GUI_SOURCE, COMBAT_INDICATOR_MAPICONS_GUI_SOURCE)?;
     let container = |name: &str| -> Result<GuiContainerLayout> {
         container_layout_from_text(&text, name, COMBAT_INDICATOR_MAPICONS_GUI_SOURCE)
     };
@@ -444,7 +444,7 @@ fn referenced_combat_fonts_from_resolver(
     layouts: &CombatIndicatorGuiLayouts,
 ) -> Result<Vec<BitmapFontBinding>> {
     let path = resolver.resolve_required(COMBAT_INDICATOR_CORE_GFX_SOURCE, "core gfx")?;
-    let text = read_latin1(&path)?;
+    let text = resolver.read_required_text(COMBAT_INDICATOR_CORE_GFX_SOURCE, COMBAT_INDICATOR_CORE_GFX_SOURCE)?;
     let wanted = [
         (&layouts.land_combat_mapicon, "combat_progress"),
         (&layouts.ongoing_combat_container, "count"),

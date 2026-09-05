@@ -128,65 +128,6 @@ pub struct TooltipTimingLaw {
     pub delayed_delay_us: u64,
 }
 
-impl TooltipTimingLaw {
-    pub fn from_graphics_defines(source: &str) -> Result<Self> {
-        Ok(Self {
-            show_delay_us: parse_seconds(source, "TOOLTIP_SHOW_DELAY")?,
-            hide_delay_us: parse_seconds(source, "TOOLTIP_HIDE_DELAY")?,
-            delayed_delay_us: parse_seconds(source, "TOOLTIP_DELAYED_DELAY")?,
-        })
-    }
-}
-
-fn parse_seconds(source: &str, key: &str) -> Result<u64> {
-    let mut found = source.lines().filter_map(|line| {
-        let code = line.split_once("--").map_or(line, |(code, _)| code);
-        let (lhs, rhs) = code.split_once('=')?;
-        (lhs.trim() == key).then(|| rhs.trim().trim_end_matches(',').trim())
-    });
-    let raw = found
-        .next()
-        .ok_or_else(|| GameUiError::missing(format!("missing graphics define {key}")))?;
-    if found.next().is_some() {
-        return Err(GameUiError::parse(format!(
-            "duplicate graphics define {key}"
-        )));
-    }
-    let (whole, fraction) = raw.split_once('.').unwrap_or((raw, ""));
-    if whole.is_empty()
-        || !whole.bytes().all(|byte| byte.is_ascii_digit())
-        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
-    {
-        return Err(GameUiError::parse(format!(
-            "invalid exact decimal {key}={raw:?}"
-        )));
-    }
-    let whole = whole
-        .parse::<u64>()
-        .map_err(|_| GameUiError::parse(format!("{key} seconds overflow u64")))?;
-    let significant_fraction = fraction.trim_end_matches('0');
-    if significant_fraction.len() > 6 {
-        return Err(GameUiError::parse(format!(
-            "{key}={raw:?} has sub-microsecond precision"
-        )));
-    }
-    let mut micros = significant_fraction.to_string();
-    while micros.len() < 6 {
-        micros.push('0');
-    }
-    let fractional_us = if micros.is_empty() {
-        0
-    } else {
-        micros
-            .parse::<u64>()
-            .map_err(|_| GameUiError::parse(format!("invalid {key} fraction")))?
-    };
-    whole
-        .checked_mul(1_000_000)
-        .and_then(|value| value.checked_add(fractional_us))
-        .ok_or_else(|| GameUiError::parse(format!("{key} microseconds overflow u64")))
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HoverCandidate {
     pub owner: TooltipOwner,
@@ -962,7 +903,7 @@ fn authenticate_authored_tooltip_target(
     }
     let resolved = resolver.resolve_file(&target.gui_source_path)?;
     let mut layouts = LayoutSet::default();
-    layouts.parse_file(&resolved.path, &resolved.rel_path)?;
+    layouts.parse_content(&resolver.read_file(&resolved)?, &resolved.rel_path)?;
     let document = layouts
         .documents
         .into_iter()
@@ -1243,7 +1184,7 @@ fn scalar_declarations<'a>(element: &'a GuiElement, key: &str) -> Vec<&'a str> {
 pub fn authored_tooltip_shell_name(resolver: &AssetResolver) -> Result<String> {
     let resolved = resolver.resolve_file("interface/core.gui")?;
     let mut layouts = LayoutSet::default();
-    layouts.parse_file(&resolved.path, &resolved.rel_path)?;
+    layouts.parse_content(&resolver.read_file(&resolved)?, &resolved.rel_path)?;
     let document = layouts
         .documents
         .into_iter()
@@ -1296,68 +1237,44 @@ pub fn authored_tooltip_shell_name(resolver: &AssetResolver) -> Result<String> {
 
 pub fn load_authored_tooltip_clamp_offsets(
     resolver: &AssetResolver,
-) -> Result<(AuthoredClampOffsets, String)> {
-    const GRAPHICS_DEFINES: &str = "common/defines/00_graphics.lua";
-    let resolved = resolver.resolve_file(GRAPHICS_DEFINES)?;
-    let source = read_tooltip_graphics_defines(&resolved.path)?;
-    let offsets = AuthoredClampOffsets {
-        left: parse_graphics_define_i32(&source, "TOOLTIP_SCREEN_LEFT_OFFSET_X")?,
-        right: parse_graphics_define_i32(&source, "TOOLTIP_SCREEN_RIGHT_OFFSET_X")?,
-        top: parse_graphics_define_i32(&source, "TOOLTIP_SCREEN_TOP_OFFSET_Y")?,
-        bottom: parse_graphics_define_i32(&source, "TOOLTIP_SCREEN_BOTTOM_OFFSET_Y")?,
+) -> Result<(AuthoredClampOffsets, Vec<String>)> {
+    let (values, sources) = resolver.effective_define_numbers("NGraphics", &[
+        "TOOLTIP_SCREEN_LEFT_OFFSET_X", "TOOLTIP_SCREEN_RIGHT_OFFSET_X", "TOOLTIP_SCREEN_TOP_OFFSET_Y", "TOOLTIP_SCREEN_BOTTOM_OFFSET_Y"
+    ])?;
+    let integer = |value: f64| -> Result<i32> {
+        if !value.is_finite() || value.fract() != 0.0 || value < i32::MIN as f64 || value > i32::MAX as f64 { return Err(GameUiError::parse("invalid tooltip clamp integer")); }
+        Ok(value as i32)
     };
-    Ok((offsets, resolved.rel_path))
+    Ok((AuthoredClampOffsets { left: integer(values[0])?, right: integer(values[1])?, top: integer(values[2])?, bottom: integer(values[3])? }, sources))
 }
 
 pub fn load_authored_tooltip_timing(
     resolver: &AssetResolver,
-) -> Result<(TooltipTimingLaw, String)> {
-    const GRAPHICS_DEFINES: &str = "common/defines/00_graphics.lua";
-    let resolved = resolver.resolve_file(GRAPHICS_DEFINES)?;
-    let source = read_tooltip_graphics_defines(&resolved.path)?;
-    Ok((
-        TooltipTimingLaw::from_graphics_defines(&source)?,
-        resolved.rel_path,
-    ))
+) -> Result<(TooltipTimingLaw, Vec<String>)> {
+    let (values, sources) = resolver.effective_define_numbers("NGraphics", &["TOOLTIP_SHOW_DELAY", "TOOLTIP_HIDE_DELAY", "TOOLTIP_DELAYED_DELAY"])?;
+    let micros = |key: &str, seconds: f64| -> Result<u64> {
+        if !seconds.is_finite() || seconds < 0.0 {
+            return Err(GameUiError::parse(format!("invalid tooltip delay {key}")));
+        }
+        let value = seconds * 1_000_000.0;
+        if !value.is_finite() || value >= u64::MAX as f64 {
+            return Err(GameUiError::parse(format!("{key} microseconds overflow u64")));
+        }
+        if value.fract() != 0.0 {
+            return Err(GameUiError::parse(format!("{key} has sub-microsecond precision")));
+        }
+        Ok(value as u64)
+    };
+    Ok((TooltipTimingLaw {
+        show_delay_us: micros("TOOLTIP_SHOW_DELAY", values[0])?,
+        hide_delay_us: micros("TOOLTIP_HIDE_DELAY", values[1])?,
+        delayed_delay_us: micros("TOOLTIP_DELAYED_DELAY", values[2])?,
+    }, sources))
 }
 
-fn read_tooltip_graphics_defines(path: &std::path::Path) -> Result<String> {
-    let bytes = std::fs::read(path)?;
-    if crate::paradox_text::destructive_event_count(&crate::paradox_text::diagnose_text_decode(
-        &bytes,
-    )) != 0
-    {
-        return Err(GameUiError::parse(
-            "effective graphics defines destroyed bytes while decoding tooltip laws",
-        ));
-    }
-    Ok(crate::paradox_text::decode_text(&bytes))
-}
 
-fn parse_graphics_define_i32(source: &str, key: &str) -> Result<i32> {
-    let mut values = source.lines().filter_map(|line| {
-        let code = line.split_once("--").map_or(line, |(code, _)| code);
-        let (lhs, rhs) = code.split_once('=')?;
-        (lhs.trim().trim_start_matches("NGraphics.").trim() == key).then(|| {
-            rhs.trim()
-                .trim_end_matches(',')
-                .trim()
-                .split_whitespace()
-                .next()
-                .unwrap_or_default()
-        })
-    });
-    let raw = values
-        .next()
-        .ok_or_else(|| GameUiError::missing(format!("missing graphics define {key}")))?;
-    if values.next().is_some() {
-        return Err(GameUiError::parse(format!(
-            "duplicate graphics define {key}"
-        )));
-    }
-    raw.parse::<i32>()
-        .map_err(|_| GameUiError::parse(format!("invalid graphics define {key}={raw:?}")))
-}
+
+
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TooltipFamilyFacts {
@@ -1939,6 +1856,37 @@ fn transform_cursor_axis(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modvfs_tooltip_laws_evaluate_mod_scripts_and_report_every_source() {
+        let base = unique_discovery_root("modvfs-tooltip-base");
+        let mod_root = unique_discovery_root("modvfs-tooltip-mod");
+        for root in [&base, &mod_root] {
+            std::fs::create_dir_all(root.join("common/defines")).unwrap();
+        }
+        std::fs::write(base.join("common/defines/zz_base.lua"),
+            "NDefines = { NGraphics = { TOOLTIP_SHOW_DELAY = 0.125, TOOLTIP_HIDE_DELAY = 0.2, TOOLTIP_DELAYED_DELAY = 0.5, TOOLTIP_SCREEN_LEFT_OFFSET_X = 1, TOOLTIP_SCREEN_RIGHT_OFFSET_X = 2, TOOLTIP_SCREEN_TOP_OFFSET_Y = 3, TOOLTIP_SCREEN_BOTTOM_OFFSET_Y = 4 } }").unwrap();
+        std::fs::write(mod_root.join("common/defines/01_mod.lua"),
+            "NDefines.NGraphics.TOOLTIP_SHOW_DELAY = NDefines.NGraphics.TOOLTIP_SHOW_DELAY * 3\nNDefines.NGraphics.TOOLTIP_SCREEN_LEFT_OFFSET_X = 11\n").unwrap();
+        let resolver = AssetResolver::new(vec![mod_root.clone(), base.clone()]);
+        let (timing, sources) = load_authored_tooltip_timing(&resolver).unwrap();
+        assert_eq!(timing.show_delay_us, 375_000);
+        let candidate = HoverCandidate { owner: owner("mod"), route_identity: "mod:tooltip".into(), delayed: false };
+        let mut life = TooltipLifecycle::new(timing);
+        life.advance(Some(candidate.clone()), 0);
+        life.advance(Some(candidate.clone()), 374_999);
+        assert_eq!(life.visible_owner(), None);
+        life.advance(Some(candidate), 1);
+        assert_eq!(life.visible_owner(), Some(&owner("mod")));
+        assert_eq!(timing.hide_delay_us, 200_000);
+        assert_eq!(timing.delayed_delay_us, 500_000);
+        assert_eq!(sources, vec!["common/defines/zz_base.lua", "common/defines/01_mod.lua"]);
+        let (clamp, clamp_sources) = load_authored_tooltip_clamp_offsets(&resolver).unwrap();
+        assert_eq!((clamp.left, clamp.right, clamp.top, clamp.bottom), (11, 2, 3, 4));
+        assert_eq!(clamp_sources, sources);
+        portable_test_fs_retry::remove_dir_all(base).unwrap();
+        portable_test_fs_retry::remove_dir_all(mod_root).unwrap();
+    }
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2074,10 +2022,10 @@ mod tests {
         .expect("write effective tooltip shell");
         std::fs::write(
             winning_mod.join("common/defines/00_graphics.lua"),
-            "NGraphics.TOOLTIP_SCREEN_LEFT_OFFSET_X = 11\n\
-             NGraphics.TOOLTIP_SCREEN_RIGHT_OFFSET_X = 12\n\
-             NGraphics.TOOLTIP_SCREEN_TOP_OFFSET_Y = 13\n\
-             NGraphics.TOOLTIP_SCREEN_BOTTOM_OFFSET_Y = 14\n",
+            "NDefines = { NGraphics = {} }\nNDefines.NGraphics.TOOLTIP_SCREEN_LEFT_OFFSET_X = 11\n\
+             NDefines.NGraphics.TOOLTIP_SCREEN_RIGHT_OFFSET_X = 12\n\
+             NDefines.NGraphics.TOOLTIP_SCREEN_TOP_OFFSET_Y = 13\n\
+             NDefines.NGraphics.TOOLTIP_SCREEN_BOTTOM_OFFSET_Y = 14\n",
         )
         .expect("write effective graphics defines");
 
@@ -2162,7 +2110,7 @@ mod tests {
                 bottom: 14,
             }
         );
-        assert_eq!(source, "common/defines/00_graphics.lua");
+        assert_eq!(source, vec!["common/defines/00_graphics.lua"]);
 
         let alternate = discover_authored_unscoped_tooltip(
             &resolver,
@@ -2204,13 +2152,15 @@ mod tests {
 
     #[test]
     fn exact_timing_and_lifecycle_boundaries() {
-        let source =
-            "TOOLTIP_DELAYED_DELAY = 1\nTOOLTIP_SHOW_DELAY = 0.05\nTOOLTIP_HIDE_DELAY = 0.05\n";
-        assert_eq!(
-            TooltipTimingLaw::from_graphics_defines(source).unwrap(),
-            timing()
-        );
-        let mut life = TooltipLifecycle::new(timing());
+        let root = unique_discovery_root("timing-lifecycle");
+        std::fs::create_dir_all(root.join("common/defines")).unwrap();
+        std::fs::write(root.join("common/defines/timing.lua"),
+            "NDefines = { NGraphics = { TOOLTIP_DELAYED_DELAY = 2 / 2, TOOLTIP_SHOW_DELAY = 1 / 20, TOOLTIP_HIDE_DELAY = 2 / 40 } }").unwrap();
+        let resolver = AssetResolver::new(vec![root.clone()]);
+        let (authored, sources) = load_authored_tooltip_timing(&resolver).unwrap();
+        assert_eq!(authored, timing());
+        assert_eq!(sources, ["common/defines/timing.lua"]);
+        let mut life = TooltipLifecycle::new(authored);
         let a = HoverCandidate {
             owner: owner("a"),
             route_identity: "ordinary:a".into(),
@@ -2247,6 +2197,54 @@ mod tests {
         assert_eq!(life.visible_owner(), Some(&owner("b")));
         life.advance(None, 1);
         assert_eq!(life.visible_owner(), None);
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn effective_tooltip_timing_refuses_invalid_ranges_and_submicrosecond_values() {
+        let root = unique_discovery_root("invalid-timing");
+        std::fs::create_dir_all(root.join("common/defines")).unwrap();
+        for key in ["TOOLTIP_SHOW_DELAY", "TOOLTIP_HIDE_DELAY", "TOOLTIP_DELAYED_DELAY"] {
+            for expression in ["nil", "true", "'slow'", "0 / 0", "1 / 0", "-1", "-0.0000001", "2 ^ 64", "18446744073709.551616", "0.0000001", "0.0000015", "0.1 * 3"] {
+                let source = format!("NDefines = {{ NGraphics = {{ TOOLTIP_SHOW_DELAY = 0, TOOLTIP_HIDE_DELAY = 0, TOOLTIP_DELAYED_DELAY = 0 }} }}\nNDefines.NGraphics.{key} = {expression}");
+                std::fs::write(root.join("common/defines/timing.lua"), source).unwrap();
+                let resolver = AssetResolver::new(vec![root.clone()]);
+                let error = load_authored_tooltip_timing(&resolver).unwrap_err();
+                assert!(error.message.contains(key), "{key}={expression}: {error}");
+                if ["0.0000001", "0.0000015", "0.1 * 3"].contains(&expression) {
+                    assert_eq!(error.kind, crate::ErrorKind::Parse);
+                    assert!(error.message.contains("sub-microsecond precision"), "{error}");
+                }
+            }
+        }
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn effective_tooltip_timing_preserves_single_microsecond_boundaries() {
+        let root = unique_discovery_root("microsecond-timing");
+        std::fs::create_dir_all(root.join("common/defines")).unwrap();
+        std::fs::write(root.join("common/defines/timing.lua"),
+            "NDefines = { NGraphics = { TOOLTIP_SHOW_DELAY = 1 / 1000000, TOOLTIP_HIDE_DELAY = 2 / 1000000, TOOLTIP_DELAYED_DELAY = 3 / 1000000 } }").unwrap();
+        let resolver = AssetResolver::new(vec![root.clone()]);
+        let (authored, _) = load_authored_tooltip_timing(&resolver).unwrap();
+        assert_eq!(authored, TooltipTimingLaw { show_delay_us: 1, hide_delay_us: 2, delayed_delay_us: 3 });
+        let candidate = HoverCandidate { owner: owner("microsecond"), route_identity: "tiny:tooltip".into(), delayed: true };
+        let mut life = TooltipLifecycle::new(authored);
+        life.advance(Some(candidate.clone()), 0);
+        assert_eq!(life.visible_owner(), None);
+        life.advance(Some(candidate.clone()), 1);
+        assert_eq!(life.visible_owner(), Some(&owner("microsecond")));
+        life.advance(Some(candidate.clone()), 1);
+        assert!(!life.delayed_content_visible());
+        life.advance(Some(candidate), 1);
+        assert!(life.delayed_content_visible());
+        life.advance(None, 0);
+        life.advance(None, 1);
+        assert_eq!(life.visible_owner(), Some(&owner("microsecond")));
+        life.advance(None, 1);
+        assert_eq!(life.visible_owner(), None);
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -2,7 +2,7 @@
 use crate::compose::ComposeOptions;
 use crate::assets::AssetResolver;
 use crate::loc::Localisation;
-use crate::paradox_text::parse_file_refusing_decode_damage;
+use crate::paradox_text::parse_checked_bytes;
 use crate::{GameUiError, Result as UiResult};
 use replay_core::{CountryIdentityRef, Leaf, OccupationRow, ViewStatus, WorldFrame};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1373,7 +1373,7 @@ fn validate_occupation_gui_sources(resolver: &AssetResolver) -> UiResult<()> {
         COUNTRY_STATE_GUI,
     ] {
         let file = resolver.resolve_file(source)?;
-        let document = parse_file_refusing_decode_damage(&file.path, &file.rel_path)?;
+        let document = parse_checked_bytes(&resolver.read_file(&file)?, &file.rel_path)?;
         if !document.recoveries.is_empty() {
             return Err(GameUiError::parse(format!(
                 "{source}: XUI16 effective GUI parse recovered {:?}",
@@ -1404,7 +1404,7 @@ pub fn load_effective_occupation_law_definitions(
     let mut definitions = BTreeMap::new();
     let mut tokens = BTreeSet::new();
     for file in files {
-        let document = parse_file_refusing_decode_damage(&file.path, &file.rel_path)?;
+        let document = parse_checked_bytes(&resolver.read_file(&file)?, &file.rel_path)?;
         if !document.recoveries.is_empty() {
             return Err(GameUiError::parse(format!(
                 "{}: occupation-law parse recovered {:?}",
@@ -2906,5 +2906,159 @@ pub fn fnv1a32(text: &str) -> u32 {
         1
     } else {
         value
+    }
+}
+
+#[cfg(test)]
+mod effective_read_tests {
+    use super::*;
+    use map_viewer::{GameFileResolver, PlaybackEnvironment};
+    use replay_core::{ContentLayerKind, ContentManifest, DlcSelection, LayerStorageKind,
+        RecordedContentLayer, RequiredContent, RequiredContentKind, SourceGameIdentity,
+        SourceProfileIdentity, UsedContentKey};
+fn layer_kind(kind: &str) -> ContentLayerKind {
+    match kind {
+        "integrated_dlc" => ContentLayerKind::IntegratedDlc,
+        "dlc" => ContentLayerKind::Dlc,
+        "mod" => ContentLayerKind::Mod,
+        _ => ContentLayerKind::Base,
+    }
+}
+
+fn manifest_for(
+    resolver: &GameFileResolver,
+    paths: impl IntoIterator<Item = String>,
+    language: &str,
+    dlc_selection: Vec<DlcSelection>,
+) -> (ContentManifest, PlaybackEnvironment) {
+    let resolved = resolver.resolve_used_content(paths).unwrap();
+    let used_ordinals = resolved
+        .iter()
+        .map(|row| row.source.ordinal)
+        .collect::<BTreeSet<_>>();
+    let effective_vfs_manifest_sha256 = "ab".repeat(32);
+    let ordered_layers = resolver
+        .active_sources()
+        .into_iter()
+        .map(|source| RecordedContentLayer {
+            ordinal: source.ordinal as u32,
+            layer_kind: layer_kind(&source.kind),
+            display_name: source.source_id.clone(),
+            layer_id: source.source_id,
+            descriptor_sha256: source.descriptor_sha256,
+            source_container_sha256: source.archive_sha256.clone(),
+            storage_kind: if source.archive_sha256.is_some() {
+                LayerStorageKind::ZipArchive
+            } else {
+                LayerStorageKind::Directory
+            },
+            replace_paths: source.replace_path,
+            required_for_playback: used_ordinals.contains(&source.ordinal),
+        })
+        .collect::<Vec<_>>();
+    let required_content = resolved
+        .into_iter()
+        .map(|row| RequiredContent {
+            content_key: row.logical_path.to_ascii_lowercase(),
+            kind: RequiredContentKind::Other,
+            observation_count: 1,
+            consumers: vec!["game_ui.production_content_interpreter.test".into()],
+            content: UsedContentKey {
+                effective_vfs_manifest_sha256: effective_vfs_manifest_sha256.clone(),
+                normalized_game_relative_path: row.logical_path.to_ascii_lowercase(),
+                winning_layer_ordinal: row.source.ordinal as u32,
+                layer_kind: layer_kind(&row.source.kind),
+                layer_id: row.source.source_id,
+                source_sha256: row
+                    .source
+                    .archive_sha256
+                    .unwrap_or_else(|| row.sha256.clone()),
+                payload_sha256: row.sha256,
+                payload_bytes: row.byte_len,
+            },
+        })
+        .collect();
+    let source_game = SourceGameIdentity {
+        version: "1.19.2.0".into(),
+        build: "a729".into(),
+        executable_sha256: "87".repeat(32),
+        build_profile: "test".into(),
+    };
+    let mut source_profile = SourceProfileIdentity {
+        profile_id: "portable-profile".into(),
+        playset_id: "portable-playset".into(),
+        selection_sha256: "00".repeat(32),
+    };
+    let mut manifest = ContentManifest {
+        schema: replay_core::PORTABLE_CONTENT_MANIFEST_SCHEMA.into(),
+        product_modset_sha256: "99".repeat(32),
+        source_game: source_game.clone(),
+        source_profile: source_profile.clone(),
+        effective_vfs_manifest_sha256,
+        ordered_layers,
+        dlc_selection: dlc_selection.clone(),
+        localisation_language: language.into(),
+        required_settings: BTreeMap::new(),
+        recorder_local_settings: BTreeMap::new(),
+        required_content,
+        manifest_digest_sha256: None,
+    };
+    source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
+    manifest.source_profile = source_profile.clone();
+    let manifest = manifest.with_computed_digest().unwrap();
+    let environment = PlaybackEnvironment {
+        source_game,
+        source_profile,
+        dlc_selection,
+        localisation_language: language.into(),
+        settings: BTreeMap::new(),
+    };
+    (manifest, environment)
+}
+
+
+    #[test]
+    fn modvfs_occupation_readers_propagate_missing_admitted_snapshot() {
+        let root = std::env::temp_dir().join(format!("occupation-read-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let vanilla = root.join("vanilla");
+        let mods = root.join("mod");
+        let paths = [COUNTRY_OCCUPATION_GUI, GARRISON_LOG_GUI, COMBAT_LOG_GUI, COUNTRY_STATE_GUI,
+            "common/occupation_laws/laws.txt"];
+        for dir in [&vanilla, &mods] {
+            for path in paths {
+                let output = dir.join(path);
+                std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+                let value = if path.ends_with(".gui") { "guiTypes = { windowType = { name = panel } }" }
+                    else if dir == &mods { "mod_law = { icon = 7 gui_order = 2 }" }
+                    else { "base_law = { icon = 1 gui_order = 1 }" };
+                std::fs::write(output, value).unwrap();
+            }
+        }
+        for missing in [COUNTRY_OCCUPATION_GUI, "common/occupation_laws/laws.txt"] {
+            let raw = GameFileResolver::with_mod_paths(&vanilla, vec![mods.clone()]).unwrap();
+            let (manifest, environment) = manifest_for(&raw, paths.map(str::to_string), "l_english", Vec::new());
+            let admission = manifest.admit_playback(&raw.playback_inventory(&manifest, environment).unwrap()).unwrap();
+            let (resolver, owned_root) = raw.with_content_admission(&admission).unwrap().isolated_content_snapshot().unwrap();
+            let assets = AssetResolver::from_content_admission(&resolver, &admission).unwrap();
+            validate_occupation_gui_sources(&assets).unwrap();
+            let laws = load_effective_occupation_law_definitions(&assets, &Localisation::default()).unwrap();
+            assert_eq!(laws.values().next().unwrap().token, "mod_law");
+            assert_eq!(laws.values().next().unwrap().icon_frame, 7);
+            let snapshot = assets.resolve_file(missing).unwrap();
+            assert!(snapshot.path.starts_with(&owned_root));
+            let mut permissions = std::fs::metadata(&snapshot.path).unwrap().permissions();
+            permissions.set_readonly(false);
+            std::fs::set_permissions(&snapshot.path, permissions).unwrap();
+            std::fs::remove_file(&snapshot.path).unwrap();
+            if missing.ends_with(".gui") {
+                assert!(validate_occupation_gui_sources(&assets).is_err());
+            } else {
+                assert!(load_effective_occupation_law_definitions(&assets, &Localisation::default()).is_err());
+            }
+            drop(assets); drop(resolver);
+            assert!(!owned_root.exists());
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

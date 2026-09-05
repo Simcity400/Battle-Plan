@@ -302,8 +302,8 @@ pub(crate) fn xmap05_raster_inputs_with_keying(
     let definition_csv = resolver.resolve_required("map/definition.csv", "definition.csv")?;
     let provinces_bmp = resolver.resolve_required("map/provinces.bmp", "provinces.bmp")?;
     let state_paths = resolver.resolve_dir_files("history/states", Some("txt"))?;
-    let (mut definitions, color_to_id) = load_definition_csv(&definition_csv)?;
-    let provinces = load_provinces_bmp(&provinces_bmp, &color_to_id)?;
+    let (mut definitions, color_to_id) = load_definition_csv(resolver, &definition_csv)?;
+    let provinces = decode_provinces_bmp(&resolver.read_resolved_bytes(&provinces_bmp)?, &provinces_bmp, &color_to_id)?;
     crate::image_load::admit_invented_provinces(&mut definitions, &provinces.invented);
     if provinces.width == 0
         || provinces.height == 0
@@ -316,7 +316,7 @@ pub(crate) fn xmap05_raster_inputs_with_keying(
         )
         .into());
     }
-    let (states, province_to_state, _) = load_states(&state_paths)?;
+    let (states, province_to_state, _) = load_states(resolver, &state_paths)?;
     let country_colors =
         country_colors_from_game_resolver_with_cosmetics(resolver, &keying.cosmetic_by_tag)?;
     let effective_state_ids = states.keys().copied().collect::<BTreeSet<_>>();
@@ -455,8 +455,8 @@ fn synthesize_political_colors_impl(
     let state_paths = resolver.resolve_dir_files("history/states", Some("txt"))?;
     let colors_txt = resolver.resolve("common/countries/colors.txt")?;
 
-    let (mut definitions, color_to_id) = load_definition_csv(&definition_csv)?;
-    let provinces = load_provinces_bmp(&provinces_bmp, &color_to_id)?;
+    let (mut definitions, color_to_id) = load_definition_csv(resolver, &definition_csv)?;
+    let provinces = decode_provinces_bmp(&resolver.read_resolved_bytes(&provinces_bmp)?, &provinces_bmp, &color_to_id)?;
     crate::image_load::admit_invented_provinces(&mut definitions, &provinces.invented);
     if provinces.width == 0
         || provinces.height == 0
@@ -473,7 +473,7 @@ fn synthesize_political_colors_impl(
     let texture_width = provinces.width / 2;
     let texture_height = provinces.height / 2;
 
-    let (states, province_to_state, static_owners) = load_states(&state_paths)?;
+    let (states, province_to_state, static_owners) = load_states(resolver, &state_paths)?;
     let static_controls;
     let static_country_colors;
     let keyed_country_colors;
@@ -483,7 +483,7 @@ fn synthesize_political_colors_impl(
         &BTreeMap<String, [u8; 3]>,
     ) = match keying {
         None => {
-            static_controls = load_initial_state_controls(&state_paths)?;
+            static_controls = load_initial_state_controls(resolver, &state_paths)?;
             static_country_colors = load_country_colors_from_game_resolver(resolver)?;
             (&static_owners, &static_controls, &static_country_colors)
         }
@@ -537,11 +537,11 @@ fn synthesize_political_colors_impl(
             provinces_bmp: provinces_bmp.clone(),
             colors_txt: colors_txt.clone(),
             state_files: state_paths.len(),
-            definition_csv_fnv1a64: fnv1a64_file(&definition_csv)?,
-            provinces_bmp_fnv1a64: fnv1a64_file(&provinces_bmp)?,
+            definition_csv_fnv1a64: fnv1a64_bytes(&resolver.read_resolved_bytes(&definition_csv)?),
+            provinces_bmp_fnv1a64: fnv1a64_bytes(&resolver.read_resolved_bytes(&provinces_bmp)?),
             colors_txt_fnv1a64: colors_txt
                 .as_ref()
-                .map(|path| fnv1a64_file(path))
+                .map(|path| resolver.read_resolved_bytes(path).map(|bytes| fnv1a64_bytes(&bytes)))
                 .transpose()?,
             country_color_count: country_colors.len(),
             state_count: states.len(),
@@ -897,12 +897,12 @@ fn rgba_opaque(rgb: [u8; 3]) -> [u8; 4] {
     [rgb[0], rgb[1], rgb[2], 255]
 }
 
-fn load_initial_state_controls(
+fn load_initial_state_controls(resolver: &GameFileResolver, 
     state_files: &[(String, PathBuf)],
 ) -> Result<BTreeMap<u32, InitialStateControl>> {
     let mut out = BTreeMap::new();
     for (_, path) in state_files {
-        let text = strip_comments(&read_latin1(path)?);
+        let text = strip_comments(&resolver.read_resolved_text(path)?);
         let Some(state_id) = parse_u32_value(&text, "id") else {
             continue;
         };
@@ -1168,7 +1168,7 @@ mod tests {
             "#,
         )
         .expect("write fixture colors");
-        let colors = load_colors_txt_overrides(&path).expect("parse colors");
+        let colors = load_colors_txt_overrides(&crate::test_support::fixture_game_resolver(&root), &path).expect("parse colors");
         assert_eq!(colors["GER"], [102, 96, 87]);
         assert_eq!(colors["SOV"], [125, 13, 24]);
         assert_eq!(colors["USA"], [20, 133, 237]);

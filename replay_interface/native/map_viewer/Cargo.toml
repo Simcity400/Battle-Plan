@@ -54,3 +54,6 @@ terrain_fixture = { package = "portable_terrain_fixture", path = "../../../porta
 # production (replay_app is the wiring layer), matching the other recording-fed
 # consumers (naval_supremacy_tint, map_furniture) which take primitive inputs.
 replay_core = { path = "../replay_core" }
+
+[features]
+test_support = []

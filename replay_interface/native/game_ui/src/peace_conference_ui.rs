@@ -188,7 +188,7 @@ pub fn load_peace_conference_authored_layout(
 ) -> Result<PeaceConferenceAuthoredLayout> {
     let resolved = resolver.resolve_file(PEACE_CONFERENCE_GUI)?;
     let mut layouts = LayoutSet::default();
-    layouts.parse_file(&resolved.path, &resolved.rel_path)?;
+    layouts.parse_content(&resolver.read_file(&resolved)?, &resolved.rel_path)?;
     if layouts.stats.parse_failures != 0
         || layouts.stats.recovery_count != 0
         || layouts.stats.decode_loss_count != 0
