@@ -78,6 +78,7 @@ timeout 590 tail --pid=$PID -f /dev/null   # repeat while it exits 124; then rea
 
   `$PID` must be bash's `$!`. `tail --pid` cannot follow a Windows PID from `tasklist`. No polling loops, no `sleep`. One long job at a time.
 - The orchestrator is exempt from the wait rule: launch gates and lanes in the background, end the turn, act on the completion notification. Never block a turn on TaskOutput.
+- Never launch a Fable agent unless the owner explicitly asks for one. Every other Claude subagent runs on Opus.
 - Launching a lane (orchestrator only): Codex CLI, GPT-6 Astra, high reasoning, never the priority tier.
 
 ```bash
