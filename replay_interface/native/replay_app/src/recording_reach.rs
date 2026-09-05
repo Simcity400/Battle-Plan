@@ -216,11 +216,11 @@ pub(crate) fn run(
     let mut decode_total_ms = 0.0f64;
     let mut decode_max_ms = 0.0f64;
     for hour in selected {
-        let _ = replay_core::decode_stages::take();
         let frame_started = Instant::now();
-        let frame = timeline.frame(hour)?;
+        let (frame, decode_stages) = replay_core::decode_stages::measure(|| timeline.frame(hour));
+        let frame = frame?;
         let frame_decode_ms = frame_started.elapsed().as_secs_f64() * 1000.0;
-        let decode_stages_ms = replay_core::decode_stages::take()
+        let decode_stages_ms = decode_stages
             .into_iter()
             .map(|(stage, ms)| (stage.to_string(), ms))
             .collect::<Vec<_>>();
@@ -326,6 +326,27 @@ pub(crate) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timing_report_captures_each_decode_without_unrelated_spans() {
+        let recording = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/positive/fx_owner_controller_flip.battleplan");
+        let out = std::env::temp_dir().join(format!("arroword-reach-timing-{}-{}.json",
+            std::process::id(), std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        replay_core::decode_stages::record("outside report", 99.0);
+        run(&recording, &out, None, HourSelection::First(2)).unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+        std::fs::remove_file(&out).unwrap();
+        let hours = report["hours"].as_array().unwrap();
+        assert_eq!(hours.len(), 2);
+        for hour in hours {
+            let spans = hour["decode_stages_ms"].as_array().unwrap();
+            assert!(spans.iter().any(|span| span[0] == "frame.build"));
+            assert!(spans.iter().all(|span| span[0] != "outside report"
+                && span[1].as_f64().is_some_and(|ms| ms.is_finite() && ms >= 0.0)));
+        }
+    }
 
     #[test]
     fn sample_selection_is_first_middle_last_and_never_repeats() {

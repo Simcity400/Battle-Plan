@@ -31,21 +31,82 @@ pub mod tech_sharing;
 pub mod theatre_selector;
 pub mod world;
 
-/// Per-thread record of what each stage of the last hour decodes cost, drained
-/// by the timing reports; recording is a push onto a thread-local vector.
+/// Timing reports opt into one decode's spans; ordinary playback retains none.
 pub mod decode_stages {
     use std::cell::RefCell;
 
     thread_local! {
-        static SPANS: RefCell<Vec<(&'static str, f64)>> = const { RefCell::new(Vec::new()) };
+        static SPANS: RefCell<Option<Vec<(&'static str, f64)>>> = const { RefCell::new(None) };
     }
 
     pub fn record(stage: &'static str, ms: f64) {
-        SPANS.with(|spans| spans.borrow_mut().push((stage, ms)));
+        SPANS.with(|spans| {
+            if let Some(spans) = spans.borrow_mut().as_mut() {
+                spans.push((stage, ms));
+            }
+        });
     }
 
-    pub fn take() -> Vec<(&'static str, f64)> {
-        SPANS.with(|spans| spans.borrow_mut().drain(..).collect())
+    pub fn measure<T>(decode: impl FnOnce() -> T) -> (T, Vec<(&'static str, f64)>) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                SPANS.with(|spans| { spans.borrow_mut().take(); });
+            }
+        }
+        SPANS.with(|spans| {
+            let mut spans = spans.borrow_mut();
+            assert!(spans.is_none(), "decode timing scopes cannot nest");
+            *spans = Some(Vec::new());
+        });
+        let reset = Reset;
+        let result = decode();
+        let spans = SPANS.with(|spans| spans.borrow_mut().take().expect("active timing scope"));
+        drop(reset);
+        (result, spans)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn ordinary_decodes_retain_no_timing_buffer() {
+            for _ in 0..100_000 { record("frame.build", 1.0); }
+            SPANS.with(|spans| assert!(spans.borrow().is_none()));
+        }
+
+        #[test]
+        fn measured_decode_preserves_result_and_order_then_disables_collection() {
+            let (result, spans) = measure(|| {
+                record("reader.walk", 2.0);
+                record("frame.build", 3.0);
+                Err::<(), _>("decode refused")
+            });
+            assert_eq!(result, Err("decode refused"));
+            assert_eq!(spans, [("reader.walk", 2.0), ("frame.build", 3.0)]);
+            record("unobserved", 4.0);
+            SPANS.with(|spans| assert!(spans.borrow().is_none()));
+        }
+
+        #[test]
+        fn unwinding_discards_the_scope_and_allows_a_later_report() {
+            assert!(std::panic::catch_unwind(|| measure(|| {
+                record("abandoned", 1.0);
+                panic!("decode panic");
+            })).is_err());
+            let (_, spans) = measure(|| record("next", 2.0));
+            assert_eq!(spans, [("next", 2.0)]);
+        }
+
+        #[test]
+        fn another_thread_does_not_enter_the_reporting_scope() {
+            let (_, spans) = measure(|| {
+                std::thread::spawn(|| record("other thread", 1.0)).join().unwrap();
+                record("report thread", 2.0);
+            });
+            assert_eq!(spans, [("report thread", 2.0)]);
+        }
     }
 }
 pub mod xmap17_player_labels;
