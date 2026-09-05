@@ -15,6 +15,8 @@ Roles. The **orchestrator** is the one agent the owner has explicitly named orch
 - Git: never resolve a conflict with `git checkout --ours` or `--theirs`; it replaces the whole file. Resolve hunks by hand. Never stash. Hash-pinned files carry `.gitattributes` `text eol=lf`. The repo is CRLF: source-scanning tests use `str::lines()`, never raw `\n`.
 - Build: sccache is the shared cache; never delete `C:\sccache_cache`. Target dirs are per worktree (`.cargo-target`); never point `CARGO_TARGET_DIR` at a shared path.
 - Clean up: worktree, branch, build output, temp files. Scratch stays on `C:`.
+- Never commit `.log`, `.exit`, or build output; scratch stays outside the repo.
+- No census or dump binaries in the tree; evidence is data plus the script that produced it, under the run dir.
 - `hoi4_re`: `re_status` first. Add to its registry only by running the tool, never by hand. Four-job offline queue. `hoi4_ghidra` (pinned a729/870ebf): `ghidra_status` first, `ghidra_verify` before relying on indexed evidence. Census and cross-analysis outputs are discovery, not proof. Pinned artifacts use the `engine_evidence` crate pattern with literal byte sizes and must pass `reverify_engine_evidence.py`.
 - Lanes never launch the game. A needed live probe goes back to the orchestrator as a bounded SPEC.
 - Testing: a lane runs the suites of the crates it touched, once, after approve. The gate runs everything else. Nobody reruns suites after a merge.
