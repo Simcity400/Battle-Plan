@@ -87,6 +87,7 @@ cd ".claude\worktrees\lane-<name>" && codex exec --json -s danger-full-access -c
 ```
 
   Flags as written: never `--ephemeral`, never a sandboxed `-s` mode, never `-c service_tier=priority`. Thread id = first line of `$AJ`; the report = `$OUT`. On a usage-limit or credit signature, resume by id with the same flags: `codex exec ... resume <id> -`.
+  `CODEX_HOME` selects the account (default `~/.codex`); on a usage-limit signature, relaunch the brief under the next home in `~/.codex-t3/<account>/` (a thread id does not carry across homes). Run the exec in the foreground of one background Bash call, one lane per call; never detach it with `( ... ) &`.
 
 ## Codex only
 
