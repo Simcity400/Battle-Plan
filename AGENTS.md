@@ -6,7 +6,7 @@ Roles. The **orchestrator** is the one agent the owner has explicitly named orch
 
 ## Everyone
 
-- Questions to the owner: plain words, no jargon, say what the end user sees. The orchestrator batches them and gives options with a recommendation.
+- Questions to the owner always use the question tool: plain words, no jargon, say what the end user sees. The orchestrator batches them and gives options with a recommendation.
 - No backwards compatibility. Delete what you replace in the same change and prove it dead with `git grep` from the repo root. A grep from a subdirectory proves nothing.
 - Code comments state only what the code cannot show: invariants, engine quirks, traps. No essays, no history.
 - Evidence is data: raw artifacts, JSON or TSV, asserting tests. One short `POINTER.md` per run dir under `extractor/native/runs/<run>/`. Claims live as tests or structured data, never prose.
