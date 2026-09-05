@@ -584,3 +584,34 @@ fn the_d94_province_slot_count_is_a_budget_not_the_id_space() {
         compact_contract::pov_visibility::MAX_PROVINCE_SLOT_INDEX
     );
 }
+
+#[test]
+fn d67_partial_trailer_producer_and_reader_agree_for_every_cause() {
+    use compact_contract::dynamic_modifiers as producer;
+    use wire_format::d67 as reader;
+    for cause in 0..18 {
+        let frame = producer::DynamicModifierFrame {
+            elapsed_wall_ms: 7, status_flags: compact_contract::COMPACT_STATUS_PARTIAL_DATA,
+            authority: producer::DynamicModifierAuthority::exact_a729(),
+            instances: vec![producer::DynamicModifierInstance {
+                owner_tag_db_id: 1, modifier_id: "complete".into(), enabled: true,
+                values_raw: vec![i64::MIN, 0, i64::MAX], remaining_days: Some(3),
+            }],
+            zero_removals: vec![],
+            partiality: vec![producer::CountryPartiality {
+                owner_tag_db_id: 2, causes: 1 << cause, first_tick: 100, last_tick: 101,
+            }],
+        };
+        let bytes = producer::encode_payload(&frame).unwrap();
+        let decoded = reader::decode_payload(&bytes, true).unwrap();
+        assert_eq!(decoded.instances[0].values_raw, frame.instances[0].values_raw);
+        assert_eq!(decoded.partiality[0].owner_tag_db_id, 2);
+        assert_eq!(decoded.partiality[0].causes, 1 << cause);
+        assert_eq!((decoded.partiality[0].first_tick, decoded.partiality[0].last_tick), (100, 101));
+        let mut malformed = bytes.clone();
+        let start = malformed.len() - producer::PARTIALITY_ROW_LEN;
+        malformed[start + 4..start + 8].copy_from_slice(&(1u32 << 18).to_le_bytes());
+        assert!(producer::decode_payload(&malformed).is_err());
+        assert!(reader::decode_payload(&malformed, true).is_err());
+    }
+}

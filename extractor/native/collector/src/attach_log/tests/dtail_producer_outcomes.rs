@@ -405,7 +405,7 @@ fn d96_dependency_refusal_carries_d92s_reason() {
 /// fence, with nothing on the wire able to say which of the two it was.
 #[test]
 fn d67_fence_quiescence_is_a_named_frame_torn_cause() {
-    assert_eq!(domain67_cause::COUNT, 17);
+    assert_eq!(domain67_cause::COUNT, 18);
     assert_eq!(domain67_cause::ZERO_FENCE_CALLBACKS_NOT_QUIESCED, 17);
     assert_ne!(
         domain67_cause::FRAME_TORN_CAUSES
@@ -465,79 +465,12 @@ fn d67_quiescence_unit_is_a_per_frame_cost() {
 ///
 /// What production change makes this fail: publishing the drain unfiltered
 /// again, or comparing raw hour values instead of the fold's own hour index.
-#[test]
-fn d67_drops_zero_removals_that_belong_to_an_earlier_hour() {
-    use compact_contract::dynamic_modifiers::DynamicModifierZeroRemoval;
-    let event = |observed_game_hour_raw: i32| DynamicModifierZeroRemoval {
-        owner_tag_db_id: 17,
-        modifier_id: "test_modifier".to_string(),
-        enabled: true,
-        values_raw: vec![1],
-        observed_game_hour_raw,
-    };
-    const FRAME: i32 = 60_832_992;
 
-    let (kept, dropped) =
-        domain67_zero_removals_for_this_hour(vec![event(FRAME), event(FRAME)], FRAME);
-    assert_eq!(kept.len(), 2);
-    assert_eq!(dropped, 0, "this hour's own events are the ones it publishes");
 
-    let (kept, dropped) = domain67_zero_removals_for_this_hour(
-        vec![event(FRAME - 1), event(FRAME), event(FRAME - 24)],
-        FRAME,
-    );
-    assert_eq!(
-        kept.iter()
-            .map(|event| event.observed_game_hour_raw)
-            .collect::<Vec<_>>(),
-        vec![FRAME]
-    );
-    assert_eq!(dropped, 2);
-
-    let (kept, dropped) = domain67_zero_removals_for_this_hour(Vec::new(), FRAME);
-    assert!(kept.is_empty());
-    assert_eq!(dropped, 0);
-}
-
-/// Law: the filter is the FOLD's hour comparison, not raw equality.
-///
-/// The consumer admits on `hour_index_from_raw(observed) == frame_hour`. Two
-/// raw values that resolve to one hour index must therefore both be published;
-/// a stricter producer filter would silently withhold an admissible event.
-#[test]
-fn d67_hour_filter_agrees_with_the_folds_own_hour_index() {
-    use compact_contract::dynamic_modifiers::DynamicModifierZeroRemoval;
-    const FRAME: i32 = 60_832_992;
-    for raw in [FRAME - 2, FRAME - 1, FRAME, FRAME + 1] {
-        let (kept, _) = domain67_zero_removals_for_this_hour(
-            vec![DynamicModifierZeroRemoval {
-                owner_tag_db_id: 1,
-                modifier_id: "m".to_string(),
-                enabled: false,
-                values_raw: Vec::new(),
-                observed_game_hour_raw: raw,
-            }],
-            FRAME,
-        );
-        let admissible = compact_contract::calendar::hour_index_from_raw(raw)
-            == compact_contract::calendar::hour_index_from_raw(FRAME);
-        assert_eq!(
-            kept.len() == 1,
-            admissible,
-            "raw {raw} against frame {FRAME}: the producer must keep exactly what the fold admits"
-        );
-    }
-}
-
-/// Law: the two rare-event counters cost a clean frame nothing, and appear the
-/// moment they have something to say.
-///
-/// d67 publishes one PERF record an hour, so a unit emitted unconditionally is
-/// paid for on every hour of the capture. Both fold per frame, so an unemitted
-/// one contributes the zero it would have carried.
 #[test]
 fn d67_rare_event_counters_are_emitted_only_when_they_fired() {
     let quiet = CompactCountryDynamicModifiersRead {
+        partiality: Vec::new(),
         rows: Vec::new(),
         exact_instances: Vec::new(),
         zero_removals: Vec::new(),

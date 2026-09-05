@@ -137,12 +137,7 @@
 //!   (`timed_instance_exact.rs:96`-`:100`). `-1` is the engine's **permanent**
 //!   sentinel, stated as such at `:53`-`:55`. `None` is therefore a measured
 //!   fact about the modifier, not a failed read.
-//! - It cannot be Unknown. Every read failure in this domain fails the **whole
-//!   frame**: any `Err` from the entry decoder, any guard miss, any torn re-read
-//!   sets `torn` and the collector clears every row and raises
-//!   `COMPACT_STATUS_PARTIAL_DATA` (`attach_log.rs:61344`-`:61352`), which the
-//!   fold turns into a retained-accumulator hour. There is no partial row and so
-//!   no per-field "applicable, not captured" state anywhere in d67.
+//! - Failed reads are country gaps; every published instance retains its measured fields.
 //! - Absent rather than Null, on the recipe's first question: a **permanent**
 //!   modifier has no expiry countdown, so the concept does not apply to that row
 //!   — d20's `move_target_province` on a division that is not moving, not d20's
@@ -156,26 +151,13 @@
 //!
 //! # What this port does not carry
 //!
-//! - **`zero_removals` are event-continuity contract events and are stop-reported.** They are a
-//!   happened-at-tick history — a synchronous zero observed inside the engine's
-//!   erase path before the row is destroyed (`dynamic_modifiers.rs:60`-`:63`) —
-//!   admitted only against the frame's own hour and against a lifecycle prior
-//!   (`world_fold.rs::fold_country_dynamic_modifier_instances`). The event-continuity contract event codec is available, but this
-//!   d67 event sub-stream remains independently unported and unevidenced.
-//!   [`fold_payload`] therefore **refuses** a frame carrying one instead of
-//!   dropping the events silently:
-//!   dropping them would measure a shipping arm whose bytes include an event
-//!   stream this arm never encoded. The capture carries **0** zero-removal rows
-//!   in 1033 hours, so no measured hour is lost to the refusal.
+//! - **`zero_removals`** retain their event hour and multiplicity in the ordered event collections.
 //! - **`LifecycleTracker` transitions are not fields.** The fold derives them
 //!   from consecutive observations of the carried state
 //!   (`world_fold.rs::fold_country_dynamic_modifier_instances`, `dynamic_modifiers.rs:560`-`:628`), so they
 //!   are the recipe's "value the fold hard-enforces as a function of carried
 //!   state": a reader recomputes them from this schema's own instance sequence.
-//!   The one input they need that state does not carry is the *continuity* flag,
-//!   which is a stream-level gap signal. The gap contract codec exists, but d67's reader
-//!   integration has not yet wired that continuity input — recorded as a
-//!   caveat, not encoded.
+//!   Per-country partiality carries the continuity gap and its original tick range.
 //! - **`elapsed_wall_ms`** is frame timing, not state.
 //!
 //! # Hard d18 dependency
@@ -213,7 +195,18 @@ pub const VALUES: u32 = 2;
 
 pub const INSTANCES_INDEX: usize = 0;
 pub const VALUES_INDEX: usize = 1;
-pub const COLLECTION_COUNT: usize = 2;
+pub const PARTIALITY: u32 = 3;
+pub const PARTIALITY_INDEX: usize = 2;
+pub const ZERO_REMOVALS_INDEX: usize = 3;
+pub const ZERO_VALUES_INDEX: usize = 4;
+pub const ZERO_REMOVALS: u32 = 4;
+pub const ZERO_VALUES: u32 = 5;
+pub const COLLECTION_COUNT: usize = 5;
+
+// These mirror compact_contract's COMPACT_STATUS_* values without a crate dependency.
+const COMPACT_STATUS_FAILURE_MASK: u32 = 0x13cf;
+const COMPACT_STATUS_PARTIAL_DATA: u32 = 0x200;
+const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 = 0x100;
 
 /// Field ids are stable and append-only; schema-identity contract forbids reuse for a different
 /// field. They are assigned per domain, so the two collections share the ids of
@@ -226,6 +219,10 @@ pub mod field {
     pub const REMAINING_DAYS: u32 = 5;
     pub const VALUE_ORDINAL: u32 = 6;
     pub const VALUE_RAW: u32 = 7;
+    pub const CAUSES: u32 = 8;
+    pub const FIRST_TICK: u32 = 9;
+    pub const LAST_TICK: u32 = 10;
+    pub const EVENT_HOUR: u32 = 11;
 }
 
 // --- Payload grammar constants ----------------------------------------------
@@ -469,11 +466,87 @@ pub fn schema() -> Schema {
         // and the fold enforces at most one DMI2 frame per hour
         // (`world_fold.rs::fold_country_dynamic_modifier_instances`).
         cadence_log2: 0,
-        collections: vec![instances, values],
+        collections: vec![instances, values, Collection {
+            collection_id: PARTIALITY,
+            shape: Shape::KeyedSet,
+            fields: vec![
+                Field::new(f::OWNER_TAG_DB_ID, Kind::ContentId).key(0),
+                Field::new(f::FIRST_TICK, Kind::Unsigned).key(1),
+                Field::new(f::LAST_TICK, Kind::Unsigned).key(2),
+                Field::new(f::CAUSES, Kind::Unsigned),
+            ],
+        }, Collection {
+            collection_id: ZERO_REMOVALS,
+            shape: Shape::KeyedSet,
+            fields: vec![
+                Field::new(f::OWNER_TAG_DB_ID, Kind::ContentId).key(0),
+                Field::new(f::MODIFIER_ID, Kind::ContentId).key(1),
+                Field::new(f::SOURCE_ORDINAL, Kind::Unsigned).key(2),
+                Field::new(f::EVENT_HOUR, Kind::Unsigned),
+                Field::new(f::ENABLED, Kind::Boolean),
+            ],
+        }, Collection {
+            collection_id: ZERO_VALUES,
+            shape: Shape::KeyedSet,
+            fields: vec![
+                Field::new(f::OWNER_TAG_DB_ID, Kind::ContentId).key(0),
+                Field::new(f::MODIFIER_ID, Kind::ContentId).key(1),
+                Field::new(f::SOURCE_ORDINAL, Kind::Unsigned).key(2),
+                Field::new(f::EVENT_HOUR, Kind::Unsigned),
+                Field::new(f::VALUE_ORDINAL, Kind::Unsigned).key(3),
+                Field::new(f::VALUE_RAW, Kind::Signed),
+            ],
+        }],
         // event-continuity contract event bodies have no implementation in this crate (`lib.rs:13`) and
         // `zero_removals` are stop-reported — see the module docs.
         event_part: None,
     }
+}
+
+pub const PARTIALITY_MAGIC: &[u8; 4] = b"DMP1";
+pub const PARTIALITY_ROW_LEN: usize = 24;
+pub const PARTIALITY_CAUSES: u32 = (1 << 18) - 1;
+pub const SOURCE_UNAVAILABLE_CAUSES: u32 = (1 << 14) | (1 << 15) | (1 << 17);
+pub const PREFIX_CAUSES: u32 = (1 << 9) | (1 << 12);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CountryPartiality {
+    pub owner_tag_db_id: u32,
+    pub causes: u32,
+    pub first_tick: u64,
+    pub last_tick: u64,
+}
+
+pub fn decode_partiality(bytes: &[u8]) -> core::result::Result<Vec<CountryPartiality>, String> {
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    if bytes.len() < 8 || &bytes[..4] != PARTIALITY_MAGIC {
+        return Err("country_dynamic_modifiers invalid partiality trailer".to_string());
+    }
+    let count = u32_at(bytes, 4) as usize;
+    if count == 0 || count > MAX_INSTANCES || bytes.len() != 8 + count * PARTIALITY_ROW_LEN {
+        return Err("country_dynamic_modifiers invalid partiality trailer".to_string());
+    }
+    let mut rows = Vec::with_capacity(count);
+    let mut identities = BTreeSet::new();
+    for row in bytes[8..].chunks_exact(PARTIALITY_ROW_LEN) {
+        let gap = CountryPartiality {
+            owner_tag_db_id: u32_at(row, 0),
+            causes: u32_at(row, 4),
+            first_tick: u64_at(row, 8),
+            last_tick: u64_at(row, 16),
+        };
+        if gap.owner_tag_db_id > MAX_OWNER_TAG_DB_ID
+            || gap.causes == 0 || gap.causes & !PARTIALITY_CAUSES != 0
+            || gap.first_tick > gap.last_tick
+            || !identities.insert((gap.owner_tag_db_id, gap.first_tick, gap.last_tick))
+        {
+            return Err("country_dynamic_modifiers invalid partiality trailer".to_string());
+        }
+        rows.push(gap);
+    }
+    Ok(rows)
 }
 
 // --- The decoded payload -----------------------------------------------------
@@ -503,8 +576,6 @@ pub struct Instance {
 }
 
 /// One synchronous zero/removal **event** (`dynamic_modifiers.rs:64`-`:72`).
-/// Decoded so the structural checks match the shipping decoder exactly, and then
-/// stop-reported: [`fold_payload`] refuses a frame that carries any.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ZeroRemoval {
     pub owner_tag_db_id: u32,
@@ -517,6 +588,7 @@ pub struct ZeroRemoval {
 /// A whole decoded `DMI2` payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
+    pub partiality: Vec<CountryPartiality>,
     pub header: PayloadHeader,
     pub instances: Vec<Instance>,
     pub zero_removals: Vec<ZeroRemoval>,
@@ -653,7 +725,7 @@ pub fn decode_payload(
     let expected_len = ids_end
         .checked_add(values_bytes)
         .ok_or_else(|| "country_dynamic_modifiers DMI2 payload length overflow".to_string())?;
-    if payload.len() != expected_len {
+    if payload.len() < expected_len {
         return Err(format!(
             "country_dynamic_modifiers DMI2 payload length {} != {expected_len}",
             payload.len()
@@ -662,10 +734,13 @@ pub fn decode_payload(
 
     let ids = &payload[rows_end..ids_end];
     let values = &payload[ids_end..];
+    let partiality = decode_partiality(&payload[expected_len..])?;
+    if partiality.is_empty() != (header.status_flags & COMPACT_STATUS_PARTIAL_DATA == 0) {
+        return Err("country_dynamic_modifiers partiality without PARTIAL_DATA".into());
+    }
     let mut expected_id_offset = 0usize;
     let mut expected_value_offset = 0usize;
     let mut current_identities: BTreeSet<(u32, &str)> = BTreeSet::new();
-    let mut zero_identities: BTreeSet<(u32, &str)> = BTreeSet::new();
     let mut instances = Vec::with_capacity(instance_count);
     let mut zero_removals = Vec::with_capacity(zero_removal_count);
     for row in 0..total_row_count {
@@ -762,13 +837,7 @@ pub fn decode_payload(
                     .expect("value window is inside the checked payload"),
             ));
         }
-        // `:274`-`:281`: an identity may not repeat within its partition.
-        let identities = if is_zero_removal {
-            &mut zero_identities
-        } else {
-            &mut current_identities
-        };
-        if !identities.insert((owner, modifier_id)) {
+        if !is_zero_removal && !current_identities.insert((owner, modifier_id)) {
             return Err(format!(
                 "country_dynamic_modifiers DMI2 repeats identity ({owner}, {modifier_id})"
             ));
@@ -807,6 +876,7 @@ pub fn decode_payload(
         ));
     }
     Ok(Frame {
+        partiality,
         header,
         instances,
         zero_removals,
@@ -1021,6 +1091,9 @@ fn check_instance(instance: &Instance) -> core::result::Result<(), String> {
 /// tests, the harness and any future caller share one derivation of it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct State {
+    pub partiality: KeyedState,
+    pub zero_removals: KeyedState,
+    pub zero_values: KeyedState,
     pub instances: KeyedState,
     pub values: KeyedState,
 }
@@ -1032,46 +1105,26 @@ impl State {
 
     /// The two collections in schema order, for `encode_baseline`/`encode_delta`.
     pub fn as_slice(&self) -> [KeyedState; COLLECTION_COUNT] {
-        [self.instances.clone(), self.values.clone()]
+        std::array::from_fn(|index| self.get(index).clone())
     }
 
     pub fn get(&self, index: usize) -> &KeyedState {
         match index {
             INSTANCES_INDEX => &self.instances,
-            _ => &self.values,
+            VALUES_INDEX => &self.values,
+            PARTIALITY_INDEX => &self.partiality,
+            ZERO_REMOVALS_INDEX => &self.zero_removals,
+            ZERO_VALUES_INDEX => &self.zero_values,
+            _ => panic!("invalid d67 collection index {index}"),
         }
     }
 
     pub fn rows(&self) -> usize {
-        self.instances.len() + self.values.len()
+        (0..COLLECTION_COUNT).map(|index| self.get(index).len()).sum()
     }
 }
 
-/// Fold one **clean** decoded d67 frame into its hour's state, exactly as
-/// `fold_country_dynamic_modifier_instances` does from `world_fold.rs::fold_country_dynamic_modifier_instances`
-/// onward.
-///
-/// **The caller applies the failure-status exclusion first.**
-/// `handle_compact_failure` (`:9853`-`:9861`) retains the accumulator and folds
-/// nothing before any of the checks reproduced here, so calling this on a
-/// failure-status record would report an error for a record the recorder simply
-/// drops. That order — decode, authority, *then* status — is the fold's own and
-/// is why [`decode_payload`] is a separate entry point.
-///
-/// Typed inputs, each mirroring something the fold reads:
-///
-/// - `frame_hour` — the fold's **own clock**, `hour_index_from_raw(game_hour_raw)`
-///   as `apply_domain_data` computes it (`world_fold.rs::apply_domain_data`), not derived-field contract's
-///   `frame_tick`. `None` reproduces the fold's own refusal (`:9867`-`:9868`),
-///   which is also what the generic `fold_domain_data` dispatcher hands it
-///   (`world_fold.rs::fold_domain_data`).
-/// - `roster` — the current hour's d18 roster; `None` reproduces "no d18 record
-///   folded this hour" (`:9869`-`:9874`).
-/// - `symbols` — content-identity contract symbol resolution for the content-defined `modifier_id`.
-///
-/// **Error contract: all-or-nothing.** The returned state is built in full
-/// before anything is published, mirroring the fold, whose own errors all
-/// precede its first mutation (`world_fold.rs::fold_country_dynamic_modifier_instances` vs `world_fold.rs::fold_country_dynamic_modifier_instances`).
+/// Fold measured rows, original-hour events, and named country gaps atomically.
 pub fn fold_payload(
     schema: &Schema,
     frame: &Frame,
@@ -1080,6 +1133,13 @@ pub fn fold_payload(
     symbols: &Symbols,
     frame_tick: u64,
 ) -> core::result::Result<State, String> {
+    let source_named = frame.partiality.iter().any(|gap| gap.causes & SOURCE_UNAVAILABLE_CAUSES != 0);
+    let admitted_failures = COMPACT_STATUS_PARTIAL_DATA | if source_named { COMPACT_STATUS_SOURCE_UNAVAILABLE } else { 0 };
+    if frame.header.status_flags & COMPACT_STATUS_FAILURE_MASK & !admitted_failures != 0
+        || frame.header.status_flags & !0xffff != 0
+    {
+        return Err("country_dynamic_modifiers hard producer failure".into());
+    }
     if schema.collections.len() != COLLECTION_COUNT {
         return Err(format!(
             "country_dynamic_modifiers schema has {} collections, expected {COLLECTION_COUNT}",
@@ -1112,42 +1172,41 @@ pub fn fold_payload(
             .push(instance);
     }
 
-    // `:9889`-`:9905`: the synchronous zero/removal admission. Mirrored first so
-    // a malformed event is diagnosed as the fold diagnoses it, and only then
-    // stop-reported.
-    if !frame.zero_removals.is_empty() {
-        let current_identities: BTreeSet<(u32, &str)> = frame
-            .instances
-            .iter()
-            .map(|instance| (instance.owner_tag_db_id, instance.modifier_id.as_str()))
-            .collect();
-        for event in &frame.zero_removals {
-            if !roster.contains(event.owner_tag_db_id)
-                || hour_index_from_raw(event.observed_game_hour_raw) != Some(frame_hour)
-                || current_identities.contains(&(event.owner_tag_db_id, event.modifier_id.as_str()))
-            {
-                return Err(
-                    "country_dynamic_modifiers synchronous zero-removal event failed \
-                     owner/hour/current-set admission"
-                        .to_string(),
-                );
-            }
+    for event in &frame.zero_removals {
+        let hour = hour_index_from_raw(event.observed_game_hour_raw);
+        if !roster.contains(event.owner_tag_db_id)
+            || !hour.is_some_and(|hour| hour == frame_hour || hour < frame_hour
+                && frame.partiality.iter().any(|gap| gap.owner_tag_db_id == event.owner_tag_db_id
+                    && gap.first_tick <= hour as u64 && gap.last_tick == frame_tick))
+        {
+            return Err("country_dynamic_modifiers synchronous zero-removal event failed owner/hour/current-set admission".into());
         }
-        // The d67 event-port stop. The generic event-continuity contract grammar exists, but mapping
-        // this frame while dropping its still-unported synchronous events would
-        // charge this arm's size against a shipping arm that carries them.
-        return Err(format!(
-            "country_dynamic_modifiers DMI2 frame carries {} synchronous zero-removal event(s); \
-             the d67 lifecycle event sub-stream is unported and unevidenced, so this port \
-             stop-reports it",
-            frame.zero_removals.len()
-        ));
     }
 
     let instances_collection = &schema.collections[INSTANCES_INDEX];
     let values_collection = &schema.collections[VALUES_INDEX];
     let mut state = State::new();
+    for gap in &frame.partiality {
+        if gap.last_tick != frame_tick {
+            return Err("country_dynamic_modifiers partiality owner/tick rejected".into());
+        }
+        state.partiality.insert(key(&[gap.owner_tag_db_id as u64, gap.first_tick, gap.last_tick]),
+            Record::new(vec![Value::Unsigned(gap.causes as u64)]));
+    }
+    for (ordinal, event) in frame.zero_removals.iter().enumerate() {
+        let modifier = symbol_id(&event.modifier_id, symbols)?;
+        let parts = [event.owner_tag_db_id as u64, modifier as u64, ordinal as u64];
+        state.zero_removals.insert(key(&parts), Record::new(vec![Value::Unsigned(event.observed_game_hour_raw as u64), Value::Bool(event.enabled)]));
+        for (ordinal, &value) in event.values_raw.iter().enumerate() {
+            state.zero_values.insert(key(&[parts[0], parts[1], parts[2], ordinal as u64]),
+                Record::new(vec![Value::Unsigned(event.observed_game_hour_raw as u64), Value::Signed(value)]));
+        }
+    }
     for (owner, instances) in &per_owner {
+        if frame.partiality.iter().any(|gap| gap.owner_tag_db_id == *owner
+            && (gap.causes & PREFIX_CAUSES == 0 || gap.causes & !PREFIX_CAUSES != 0)) {
+            continue;
+        }
         // `:10000`-`:10013`: `source_ordinal` is the enumerate index within this
         // owner's group, in payload order.
         for (source_ordinal, instance) in instances.iter().enumerate() {
@@ -1501,6 +1560,11 @@ mod tests {
                 (INSTANCES, field::MODIFIER_ID),
                 (VALUES, field::OWNER_TAG_DB_ID),
                 (VALUES, field::MODIFIER_ID),
+                (PARTIALITY, field::OWNER_TAG_DB_ID),
+                (ZERO_REMOVALS, field::OWNER_TAG_DB_ID),
+                (ZERO_REMOVALS, field::MODIFIER_ID),
+                (ZERO_VALUES, field::OWNER_TAG_DB_ID),
+                (ZERO_VALUES, field::MODIFIER_ID),
             ]
         );
         assert!(
@@ -1786,7 +1850,7 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_carrying_a_zero_removal_event_is_stop_reported() {
+    fn a_frame_carrying_a_zero_removal_event_preserves_the_event() {
         let s = schema();
         let event = ZeroRemoval {
             owner_tag_db_id: 7,
@@ -1801,31 +1865,8 @@ mod tests {
         let payload = raw_payload(0, &[instance(7, "alpha", None, vec![1])], &[event.clone()]);
         let frame = decode_payload(&payload, true).expect("decodes");
         assert_eq!(frame.zero_removals, vec![event.clone()], "decoded, not dropped");
-        let err = fold_payload(&s, &frame, Some(TEST_HOUR), Some(&roster()), &symbols(), 0)
-            .expect_err("stop-reported");
-        assert!(err.contains("zero-removal"), "{err}");
-
-        // The fold's own admission is mirrored first, so a malformed event is
-        // diagnosed as the fold diagnoses it (`world_fold.rs::fold_country_dynamic_modifier_instances`).
-        for bad in [
-            // Owner not in the roster.
-            ZeroRemoval { owner_tag_db_id: 9, ..event.clone() },
-            // Observed hour is not the frame hour.
-            ZeroRemoval { observed_game_hour_raw: TEST_HOUR_RAW + 1, ..event.clone() },
-        ] {
-            let payload = raw_payload(0, &[instance(7, "alpha", None, vec![1])], &[bad]);
-            let frame = decode_payload(&payload, true).expect("decodes");
-            let err = fold_payload(&s, &frame, Some(TEST_HOUR), Some(&roster()), &symbols(), 0)
-                .expect_err("refused");
-            assert!(err.contains("admission"), "{err}");
-        }
-        // An event whose identity is still in the current set is refused too.
-        let clash = ZeroRemoval { modifier_id: "alpha".into(), ..event };
-        let payload = raw_payload(0, &[instance(7, "alpha", None, vec![1])], &[clash]);
-        let frame = decode_payload(&payload, true).expect("decodes");
-        let err = fold_payload(&s, &frame, Some(TEST_HOUR), Some(&roster()), &symbols(), 0)
-            .expect_err("refused");
-        assert!(err.contains("admission"), "{err}");
+        let state = fold_payload(&schema(), &frame, Some(TEST_HOUR), Some(&roster()), &symbols(), TEST_HOUR as u64).unwrap();
+        assert_eq!(state.zero_removals.len(), 1);
     }
 
     #[test]
@@ -2123,4 +2164,58 @@ mod tests {
         // The capture's own first hour.
         assert_eq!(hour_index_from_raw(60_832_272), Some(17_032_273));
     }
+    #[test]
+    fn d67_partial_payload_roundtrips_rows_and_named_gap() {
+        let mut payload = raw_payload(0x200, &[instance(7, "alpha", Some(3), vec![42])], &[]);
+        payload.extend_from_slice(PARTIALITY_MAGIC);
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&33u32.to_le_bytes());
+        payload.extend_from_slice(&(1u32 << 6).to_le_bytes());
+        payload.extend_from_slice(&(TEST_HOUR as u64 - 1).to_le_bytes());
+        payload.extend_from_slice(&(TEST_HOUR as u64).to_le_bytes());
+        let frame = decode_payload(&payload, true).unwrap();
+        let state = fold_payload(&schema(), &frame, Some(TEST_HOUR), Some(&roster()), &symbols(), TEST_HOUR as u64).unwrap();
+        assert_eq!(state.instances.len(), 1);
+        assert_eq!(state.partiality.len(), 1);
+        assert_eq!(frame.partiality[0].owner_tag_db_id, 33);
+        let mut encoded = Vec::new();
+        encode_baseline(&schema(), &state.as_slice(), &mut encoded).unwrap();
+        let (decoded, end) = decode_baseline(&schema(), &encoded, 0).unwrap();
+        assert_eq!(end, encoded.len());
+        assert_eq!(decoded, state.as_slice());
+    }
+
+    #[test]
+    fn d67_repeated_zero_events_survive_the_wire_state() {
+        let event = ZeroRemoval { owner_tag_db_id: 7, modifier_id: "beta".into(),
+            enabled: true, values_raw: vec![5, -3], observed_game_hour_raw: TEST_HOUR_RAW };
+        let payload = raw_payload(0, &[], &[event.clone(), event]);
+        let frame = decode_payload(&payload, true).unwrap();
+        let state = fold_payload(&schema(), &frame, Some(TEST_HOUR), Some(&roster()), &symbols(), TEST_HOUR as u64).unwrap();
+        assert_eq!(state.zero_removals.len(), 2);
+        assert_eq!(state.zero_values.len(), 4);
+        let mut bytes = Vec::new();
+        encode_baseline(&schema(), &state.as_slice(), &mut bytes).unwrap();
+        assert_eq!(decode_baseline(&schema(), &bytes, 0).unwrap().0, state.as_slice());
+    }
+
+    #[test]
+    fn d67_fold_omits_gapped_instances_except_named_budget_prefixes() {
+        for causes in [1 << 6, 1 << 9, 1 << 12, (1 << 9) | (1 << 5)] {
+            let mut frame = decode_payload(&raw_payload(0, &[
+                instance(7, "alpha", Some(3), vec![42]), instance(33, "beta", None, vec![5])], &[]), true).unwrap();
+            frame.header.status_flags = COMPACT_STATUS_PARTIAL_DATA;
+            frame.partiality.push(CountryPartiality { owner_tag_db_id: 7, causes, first_tick: TEST_HOUR as u64, last_tick: TEST_HOUR as u64 });
+            let state = fold_payload(&schema(), &frame, Some(TEST_HOUR), Some(&roster()), &symbols(), TEST_HOUR as u64).unwrap();
+            let prefix = causes & PREFIX_CAUSES != 0 && causes & !PREFIX_CAUSES == 0;
+            assert_eq!(state.instances.contains_key(&key_from_instance_row(&frame.instances[0], &symbols()).unwrap()), prefix);
+            assert!(state.instances.contains_key(&key_from_instance_row(&frame.instances[1], &symbols()).unwrap()));
+            assert_eq!(state.partiality.len(), 1);
+            assert_eq!(state.values.len(), if prefix { 2 } else { 1 });
+            assert_eq!(state.as_slice()[ZERO_REMOVALS_INDEX], state.zero_removals);
+            assert_eq!(state.as_slice()[ZERO_VALUES_INDEX], state.zero_values);
+            assert_eq!(state.rows(), state.as_slice().iter().map(|rows| rows.len()).sum::<usize>());
+        }
+    }
+
 }

@@ -339,7 +339,7 @@ pub use world::{
     DoctrineCompletedRow, DoctrineProgressRow, DoctrineView, DynamicCollectionGroup,
     DynamicCollectionMaterializedSlot, DynamicCollectionRect, DynamicCollectionSourceItem,
     DynamicCollectionTraceRow, DynamicCollectionTraceView, DynamicModifierContinuityExact,
-    DynamicModifierInstanceExact, DynamicModifierLifecycleExact, DynamicModifierLifecycleExactView,
+    DynamicModifierCountryGap, DynamicModifierContinuityGap, DynamicModifierContinuityCause, DynamicModifierZeroRemovalExact, DynamicModifierInstanceExact, DynamicModifierLifecycleExact, DynamicModifierLifecycleExactView,
     DynamicModifierTransitionExact, DynamicModifierTransitionKindExact, EndedCombatRow,
     EngineMaterialized, EquipmentAmount, EquipmentProductionLineRow, EquipmentStock,
     EquipmentVariantRow, ExactProvinceSupplyTooltipObservation, ExactProvinceSupplyTooltipView,

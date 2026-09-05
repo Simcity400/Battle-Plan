@@ -205,6 +205,7 @@ impl CollectorStateFixture {
             },
         };
         CollectorState {
+            d67_deferred: Mutex::new(D67DeferredRead::default()),
             base,
             daily_addr: base.saturating_add(C_GAME_STATE_DAILY_UPDATE_OFFSET),
             long_string_addr: base.saturating_add(GET_LONG_STRING_OFFSET),

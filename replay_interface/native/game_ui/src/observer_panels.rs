@@ -24,6 +24,50 @@ pub fn admit_peace_observer_panel(
     admit_peace_conference(&snapshot)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DynamicModifierObserverPanel {
+    pub country_tag: String,
+    pub instances: Leaf<Vec<replay_core::DynamicModifierInstanceExact>>,
+    pub partial_instances: Vec<replay_core::DynamicModifierInstanceExact>,
+    pub gaps: Vec<replay_core::DynamicModifierCountryGap>,
+    pub continuity_gaps: Vec<replay_core::DynamicModifierContinuityGap>,
+}
+
+impl DynamicModifierObserverPanel {
+    pub fn gap_labels(&self) -> Vec<String> {
+        self.gaps.iter().map(|gap| format!("{}: dynamic modifiers incomplete, ticks {}..{} ({})",
+            gap.owner_tag.as_deref().unwrap_or("unknown country"), gap.first_tick, gap.last_tick,
+            gap.cause_names().join(", "))).chain(self.continuity_gaps.iter().map(|gap| format!(
+                "{}: dynamic modifier continuity unavailable at tick {} ({:?})",
+                gap.owner_tag.as_deref().unwrap_or("unknown country"), gap.last_tick, gap.cause
+            ))).collect()
+    }
+}
+
+pub fn admit_dynamic_modifier_observer_panel(
+    frame: &WorldFrame,
+    viewer_country: NamedCountry<'_>,
+) -> Result<DynamicModifierObserverPanel> {
+    let view = frame.dynamic_modifier_lifecycle_exact();
+    let lifecycle = view.lifecycle.as_ref().ok_or_else(|| GameUiError::missing(
+        "Dynamic modifiers are unavailable for this hour"
+    ))?;
+    let country_tag = viewer_country.tag();
+    let gaps: Vec<_> = lifecycle.partiality.iter().filter(|gap|
+        gap.owner_tag_db_id == 0 || gap.owner_tag.as_deref() == Some(country_tag)
+    ).cloned().collect();
+    let continuity_gaps: Vec<_> = lifecycle.continuity_gaps.iter().filter(|gap|
+        gap.owner_tag.as_deref() == Some(country_tag)).cloned().collect();
+    let country_partial = gaps.iter().any(|gap| gap.owner_tag.as_deref() == Some(country_tag))
+        || !continuity_gaps.is_empty();
+    let instances = if country_partial { Leaf::Unobtained } else {
+        Leaf::Measured(view.instances_by_country.get(country_tag).ok_or_else(||
+            GameUiError::missing(format!("Dynamic modifiers unavailable for {country_tag}")))?.clone())
+    };
+    let partial_instances = view.partial_instances_by_country.get(country_tag).cloned().unwrap_or_default();
+    Ok(DynamicModifierObserverPanel { country_tag: country_tag.to_owned(), instances, partial_instances, gaps, continuity_gaps })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ObserverSemanticGap {
     D14PoliticsRuntimeText,
@@ -516,5 +560,55 @@ mod xui22_manager_snapshot_tests {
                 ObserverSemanticGap::D84ScriptedGuiManagerSnapshot,
             ])
         );
+    }
+}
+
+#[cfg(test)]
+mod dynamic_modifier_tests {
+    use super::*;
+    use serde_json::json;
+
+    struct Source(serde_json::Map<String, serde_json::Value>);
+    impl replay_core::ReplaySource for Source {
+        fn game_id(&self) -> &str { "dynamic-modifier-panel" }
+        fn hours(&self) -> &[i64] { &[900] }
+        fn warnings(&self) -> &[String] { &[] }
+        fn frame(&self, hour_index: i64) -> std::result::Result<replay_core::RawFrame, replay_core::SourceError> {
+            Ok(replay_core::RawFrame { hour_index, date: None, save_version: None, schema_version: None, rest: self.0.clone() })
+        }
+    }
+
+    #[test]
+    fn d67_observer_admission_shows_the_gap_where_rows_would_be() {
+        for prefix in [false, true] {
+            let mut rest = json!({
+                "tag_db_id_index": {"country_composition_version": 2},
+                "measured_countries": {"known": true, "tag_db_ids": [33, 7], "tags": ["AST", "GER"]},
+                "countries": {"AST": {"_r2_tag_db_id": 33}, "GER": {"_r2_tag_db_id": 7, "dynamic_modifier_instances": []}},
+                "_r2_dynamic_modifier_lifecycle_live": {
+                    "schema_version": 3, "authority": "exact_a729_dynamic_modifier_instance",
+                    "source_binary_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+                    "static_authority_receipt_sha256": "bdbac3cb1158c971b408586611d6aba618ecfe85b5265e3b9e8c2c0bf545e415",
+                    "elapsed_wall_ms": 1, "frame_hour": 900, "continuity": "continuous",
+                    "transitions": [], "zero_removals": [], "continuity_gaps": [],
+                    "partiality": [{"owner_tag_db_id": 33, "owner_tag": "AST", "causes": if prefix {1 << 9} else {1 << 6}, "first_tick": 899, "last_tick": 900}]
+                }
+            });
+            if prefix {
+                rest["countries"]["AST"]["dynamic_modifier_instances"] = json!({"partial": [{
+                    "source_ordinal": 0, "modifier": "kept_prefix", "enabled": true, "values_raw": [42], "value_scale": 100000, "remaining_days": 3
+                }]});
+            }
+            let timeline = replay_core::WorldTimeline::open(Box::new(Source(rest.as_object().unwrap().clone()))).unwrap();
+            let frame = timeline.state_at(900).unwrap();
+            let panel = admit_dynamic_modifier_observer_panel(&frame, frame.named_country("AST").unwrap()).unwrap();
+            assert_eq!(panel.instances, Leaf::Unobtained);
+            assert_eq!(panel.partial_instances.len(), usize::from(prefix));
+            assert_eq!(panel.gap_labels().len(), 1);
+            assert!(panel.gap_labels()[0].contains(if prefix {"exact_instance_budget_exceeded"} else {"exact_walk_torn"}));
+            let complete = admit_dynamic_modifier_observer_panel(&frame, frame.named_country("GER").unwrap()).unwrap();
+            assert_eq!(complete.instances, Leaf::Measured(vec![]));
+            assert!(complete.gap_labels().is_empty());
+        }
     }
 }

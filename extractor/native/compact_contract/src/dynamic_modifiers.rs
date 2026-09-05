@@ -67,10 +67,59 @@ pub struct DynamicModifierFrame {
     pub authority: DynamicModifierAuthority,
     pub instances: Vec<DynamicModifierInstance>,
     pub zero_removals: Vec<DynamicModifierZeroRemoval>,
+    pub partiality: Vec<CountryPartiality>,
+}
+
+pub const PARTIALITY_MAGIC: &[u8; 4] = b"DMP1";
+pub const PARTIALITY_ROW_LEN: usize = 24;
+pub const PARTIALITY_HEADER_LEN: usize = 8;
+pub const PARTIALITY_CAUSES: u32 = (1 << 18) - 1;
+pub const SOURCE_UNAVAILABLE_CAUSES: u32 = (1 << 14) | (1 << 15) | (1 << 17);
+pub const PREFIX_CAUSES: u32 = (1 << 9) | (1 << 12);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CountryPartiality {
+    pub owner_tag_db_id: u32,
+    pub causes: u32,
+    pub first_tick: u64,
+    pub last_tick: u64,
+}
+
+pub fn decode_partiality(bytes: &[u8]) -> Result<Vec<CountryPartiality>, CodecError> {
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    if bytes.len() < 8 || &bytes[..4] != PARTIALITY_MAGIC {
+        return Err(CodecError::InvalidPartiality);
+    }
+    let count = u32_at(bytes, 4) as usize;
+    if count == 0 || count > MAX_INSTANCES || bytes.len() != 8 + count * PARTIALITY_ROW_LEN {
+        return Err(CodecError::InvalidPartiality);
+    }
+    let mut rows = Vec::with_capacity(count);
+    let mut identities = BTreeSet::new();
+    for row in bytes[8..].chunks_exact(PARTIALITY_ROW_LEN) {
+        let gap = CountryPartiality {
+            owner_tag_db_id: u32_at(row, 0),
+            causes: u32_at(row, 4),
+            first_tick: u64_at(row, 8),
+            last_tick: u64_at(row, 16),
+        };
+        if gap.owner_tag_db_id > crate::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID
+            || gap.causes == 0 || gap.causes & !PARTIALITY_CAUSES != 0
+            || gap.first_tick > gap.last_tick
+            || !identities.insert((gap.owner_tag_db_id, gap.first_tick, gap.last_tick))
+        {
+            return Err(CodecError::InvalidPartiality);
+        }
+        rows.push(gap);
+    }
+    Ok(rows)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodecError {
+    InvalidPartiality,
     TooShort,
     BadMagic,
     UnsupportedVersion(u16),
@@ -198,8 +247,12 @@ pub fn decode_payload(payload: &[u8]) -> Result<DynamicModifierFrame, CodecError
     let expected_len = ids_end
         .checked_add(values_bytes)
         .ok_or(CodecError::CountOverflow)?;
-    if payload.len() != expected_len {
+    if payload.len() < expected_len {
         return Err(CodecError::LengthMismatch);
+    }
+    let partiality = decode_partiality(&payload[expected_len..])?;
+    if partiality.is_empty() != (status_flags & crate::COMPACT_STATUS_PARTIAL_DATA == 0) {
+        return Err(CodecError::InvalidPartiality);
     }
 
     let ids = &payload[rows_end..ids_end];
@@ -207,7 +260,6 @@ pub fn decode_payload(payload: &[u8]) -> Result<DynamicModifierFrame, CodecError
     let mut expected_id_offset = 0usize;
     let mut expected_value_offset = 0usize;
     let mut current_identities = BTreeSet::new();
-    let mut zero_identities = BTreeSet::new();
     let mut instances = Vec::with_capacity(instance_count);
     let mut zero_removals = Vec::with_capacity(zero_removal_count);
     for row in 0..total_row_count {
@@ -282,12 +334,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<DynamicModifierFrame, CodecError
                     .expect("checked value window"),
             ));
         }
-        let identities = if is_zero_removal {
-            &mut zero_identities
-        } else {
-            &mut current_identities
-        };
-        if !identities.insert((owner, modifier_id.clone())) {
+        if !is_zero_removal && !current_identities.insert((owner, modifier_id.clone())) {
             return Err(CodecError::DuplicateIdentity { owner, modifier_id });
         }
         if is_zero_removal {
@@ -322,10 +369,14 @@ pub fn decode_payload(payload: &[u8]) -> Result<DynamicModifierFrame, CodecError
         authority,
         instances,
         zero_removals,
+        partiality,
     })
 }
 
 pub fn encode_payload(frame: &DynamicModifierFrame) -> Result<Vec<u8>, CodecError> {
+    if frame.partiality.is_empty() != (frame.status_flags & crate::COMPACT_STATUS_PARTIAL_DATA == 0) {
+        return Err(CodecError::InvalidPartiality);
+    }
     if !frame.authority.is_exact_a729() {
         return Err(CodecError::AuthorityMismatch);
     }
@@ -370,7 +421,6 @@ pub fn encode_payload(frame: &DynamicModifierFrame) -> Result<Vec<u8>, CodecErro
         }))
         .collect::<Vec<_>>();
     let mut current_identities = BTreeSet::new();
-    let mut zero_identities = BTreeSet::new();
     let mut id_bytes = 0usize;
     let mut value_count = 0usize;
     for (row, &(owner, modifier_id, _enabled, values_raw, remaining_days, _hour, is_zero)) in
@@ -394,12 +444,7 @@ pub fn encode_payload(frame: &DynamicModifierFrame) -> Result<Vec<u8>, CodecErro
                 value: remaining_days.unwrap_or_default(),
             });
         }
-        let identities = if is_zero {
-            &mut zero_identities
-        } else {
-            &mut current_identities
-        };
-        if !identities.insert((owner, modifier_id)) {
+        if !is_zero && !current_identities.insert((owner, modifier_id)) {
             return Err(CodecError::DuplicateIdentity {
                 owner,
                 modifier_id: modifier_id.to_string(),
@@ -421,6 +466,9 @@ pub fn encode_payload(frame: &DynamicModifierFrame) -> Result<Vec<u8>, CodecErro
         .and_then(|len| len.checked_add(id_bytes))
         .and_then(|len| len.checked_add(value_count.checked_mul(8)?))
         .ok_or(CodecError::CountOverflow)?;
+    let payload_len = payload_len.checked_add(if frame.partiality.is_empty() { 0 } else {
+        8 + frame.partiality.len() * PARTIALITY_ROW_LEN
+    }).ok_or(CodecError::CountOverflow)?;
     if payload_len > crate::COMPACT_MAX_PAYLOAD_LEN as usize {
         return Err(CodecError::PayloadTooLarge(payload_len));
     }
@@ -469,6 +517,21 @@ pub fn encode_payload(frame: &DynamicModifierFrame) -> Result<Vec<u8>, CodecErro
             out.extend_from_slice(&value.to_le_bytes());
         }
     }
+    if !frame.partiality.is_empty() {
+        let start = out.len();
+        out.extend_from_slice(PARTIALITY_MAGIC);
+        out.extend_from_slice(&(frame.partiality.len() as u32).to_le_bytes());
+        for gap in &frame.partiality {
+            out.extend_from_slice(&gap.owner_tag_db_id.to_le_bytes());
+            out.extend_from_slice(&gap.causes.to_le_bytes());
+            out.extend_from_slice(&gap.first_tick.to_le_bytes());
+            out.extend_from_slice(&gap.last_tick.to_le_bytes());
+        }
+        decode_partiality(&out[start..])?;
+        if frame.status_flags & crate::COMPACT_STATUS_PARTIAL_DATA == 0 {
+            return Err(CodecError::InvalidPartiality);
+        }
+    }
     debug_assert_eq!(out.len(), payload_len);
     Ok(out)
 }
@@ -511,11 +574,17 @@ pub enum LifecycleEvidenceError {
 pub struct LifecycleTracker {
     prior: BTreeMap<(u32, String), DynamicModifierInstance>,
     continuous: bool,
+    partial_owners: BTreeSet<u32>,
 }
 
 impl LifecycleTracker {
     pub fn invalidate_continuity(&mut self) {
         self.continuous = false;
+    }
+
+    pub fn invalidate_countries(&mut self, owners: impl IntoIterator<Item = u32>) {
+        self.partial_owners.extend(owners);
+        self.prior.retain(|(owner, _), _| !self.partial_owners.contains(owner));
     }
 
     pub fn observe_zero_removals(
@@ -534,6 +603,9 @@ impl LifecycleTracker {
         let mut transitions = Vec::with_capacity(events.len());
         for event in events {
             let key = (event.owner_tag_db_id, event.modifier_id.clone());
+            if self.partial_owners.contains(&event.owner_tag_db_id) {
+                continue;
+            }
             let Some(previous) = self.prior.get(&key) else {
                 return Err(LifecycleEvidenceError::MissingPrior {
                     owner: event.owner_tag_db_id,
@@ -590,6 +662,16 @@ impl LifecycleTracker {
             }));
         } else {
             for (key, instance) in &current {
+                if self.partial_owners.contains(&instance.owner_tag_db_id) {
+                    transitions.push(LifecycleTransition {
+                        owner_tag_db_id: instance.owner_tag_db_id,
+                        modifier_id: instance.modifier_id.clone(),
+                        kind: LifecycleTransitionKind::BaselinePresent,
+                        previous_remaining_days: None,
+                        current_remaining_days: instance.remaining_days,
+                    });
+                    continue;
+                }
                 match self.prior.get(key) {
                     None => transitions.push(LifecycleTransition {
                         owner_tag_db_id: instance.owner_tag_db_id,
@@ -643,6 +725,7 @@ impl LifecycleTracker {
                 });
             }
         }
+        self.partial_owners.clear();
         self.prior = current;
         self.continuous = true;
         LifecycleObservation {
@@ -669,6 +752,7 @@ mod tests {
     #[test]
     fn codec_roundtrip_preserves_permanent_timed_and_measured_zero() {
         let frame = DynamicModifierFrame {
+            partiality: Vec::new(),
             elapsed_wall_ms: 77,
             status_flags: 0,
             authority: DynamicModifierAuthority::exact_a729(),
@@ -686,6 +770,7 @@ mod tests {
     #[test]
     fn codec_roundtrip_keeps_synchronous_zero_removal_separate_from_current_set() {
         let frame = DynamicModifierFrame {
+            partiality: Vec::new(),
             elapsed_wall_ms: 77,
             status_flags: 0,
             authority: DynamicModifierAuthority::exact_a729(),
@@ -764,6 +849,7 @@ mod tests {
     #[test]
     fn decoder_rejects_duplicate_identity_and_noncanonical_windows() {
         let duplicate = DynamicModifierFrame {
+            partiality: Vec::new(),
             elapsed_wall_ms: 1,
             status_flags: 0,
             authority: DynamicModifierAuthority::exact_a729(),
@@ -776,6 +862,7 @@ mod tests {
         ));
 
         let good = DynamicModifierFrame {
+            partiality: Vec::new(),
             elapsed_wall_ms: 1,
             status_flags: 0,
             authority: DynamicModifierAuthority::exact_a729(),
@@ -793,4 +880,57 @@ mod tests {
         forged.authority.static_authority_receipt_sha256[0] ^= 0xff;
         assert_eq!(encode_payload(&forged), Err(CodecError::AuthorityMismatch));
     }
+}
+
+#[cfg(test)]
+mod typed_partiality_tests {
+    use super::*;
+
+    #[test]
+    fn d67_partiality_roundtrip_and_country_continuity() {
+        let row = |owner, days| DynamicModifierInstance {
+            owner_tag_db_id: owner, modifier_id: "m".into(), enabled: true,
+            values_raw: vec![-1, 0, i64::MAX], remaining_days: Some(days),
+        };
+        let frame = DynamicModifierFrame {
+            elapsed_wall_ms: 1, status_flags: crate::COMPACT_STATUS_PARTIAL_DATA,
+            authority: DynamicModifierAuthority::exact_a729(),
+            instances: vec![row(1, 2), row(2, 3)], zero_removals: vec![],
+            partiality: vec![CountryPartiality { owner_tag_db_id: 2, causes: 1 << 6, first_tick: 10, last_tick: 11 }],
+        };
+        let bytes = encode_payload(&frame).unwrap();
+        assert_eq!(decode_payload(&bytes).unwrap(), frame);
+        for cut in 1..24 { assert!(decode_payload(&bytes[..bytes.len()-cut]).is_err()); }
+        let mut tracker = LifecycleTracker::default();
+        tracker.observe(&[row(1, 3), row(2, 4)]);
+        tracker.invalidate_countries([2]);
+        let observation = tracker.observe(&frame.instances);
+        assert!(!observation.baseline);
+        assert_eq!(observation.transitions[0].kind, LifecycleTransitionKind::TimedCounterChanged);
+        assert_eq!(observation.transitions[1].kind, LifecycleTransitionKind::BaselinePresent);
+        tracker.invalidate_countries([2]);
+        let next = tracker.observe(&[row(1, 1), row(2, 2)]);
+        assert_eq!(next.transitions[0].kind, LifecycleTransitionKind::TimedCounterChanged);
+        assert_eq!(next.transitions[1].kind, LifecycleTransitionKind::BaselinePresent);
+    }
+    #[test]
+    fn d67_zero_event_multiplicity_and_partial_status_are_lossless() {
+        let event = DynamicModifierZeroRemoval {
+            owner_tag_db_id: 33, modifier_id: "readded".into(), enabled: true,
+            values_raw: vec![1], observed_game_hour_raw: 60_832_992,
+        };
+        let mut frame = DynamicModifierFrame {
+            elapsed_wall_ms: 1, status_flags: 0, authority: DynamicModifierAuthority::exact_a729(),
+            instances: Vec::new(), zero_removals: vec![event.clone(), event], partiality: Vec::new(),
+        };
+        assert_eq!(decode_payload(&encode_payload(&frame).unwrap()).unwrap(), frame);
+        frame.status_flags = crate::COMPACT_STATUS_PARTIAL_DATA;
+        assert_eq!(encode_payload(&frame), Err(CodecError::InvalidPartiality));
+        frame.partiality.push(CountryPartiality { owner_tag_db_id: 33, causes: 1 << 11, first_tick: 1, last_tick: 2 });
+        let mut bytes = encode_payload(&frame).unwrap();
+        let start = bytes.len() - PARTIALITY_ROW_LEN;
+        bytes[start + 4..start + 8].copy_from_slice(&(1u32 << 18).to_le_bytes());
+        assert_eq!(decode_payload(&bytes), Err(CodecError::InvalidPartiality));
+    }
+
 }

@@ -89,6 +89,7 @@ fn d58_module_image() -> D58ModuleImage {
 
 fn d58_collector_state(image: &D58ModuleImage) -> CollectorState {
     CollectorState {
+        d67_deferred: Mutex::new(D67DeferredRead::default()),
         base: image.base,
         daily_addr: 0,
         long_string_addr: 0,
