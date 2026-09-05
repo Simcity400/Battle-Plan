@@ -2747,7 +2747,7 @@ fn color_write_mask(value: &str) -> Result<u8> {
 }
 
 #[cfg(windows)]
-unsafe fn create_depth_state(
+pub(crate) unsafe fn create_depth_state(
     device: *mut winapi::um::d3d11::ID3D11Device,
     rows: &[(String, String)],
 ) -> Result<crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11DepthStencilState>> {
@@ -2782,7 +2782,7 @@ unsafe fn create_depth_state(
             "DepthWriteMask" => {
                 desc.DepthWriteMask = match normalized_state_value(value).as_str() {
                     "ALL" => D3D11_DEPTH_WRITE_MASK_ALL,
-                    "ZERO" | "NONE" => D3D11_DEPTH_WRITE_MASK_ZERO,
+                    "ZERO" | "NONE" | "DEPTH_WRITE_ZERO" => D3D11_DEPTH_WRITE_MASK_ZERO,
                     other => {
                         return Err(format!("XMAP12 depth write mask {other} is unsupported").into())
                     }
@@ -2827,7 +2827,7 @@ fn comparison(value: &str) -> Result<u32> {
 }
 
 #[cfg(windows)]
-unsafe fn create_rasterizer_state(
+pub(crate) unsafe fn create_rasterizer_state(
     device: *mut winapi::um::d3d11::ID3D11Device,
     rows: &[(String, String)],
 ) -> Result<crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11RasterizerState>> {

@@ -1596,9 +1596,77 @@ mod native {
         }
     }
 
+    enum NativeLutInputs {
+        Blend1 {
+            base: *mut ID3D11ShaderResourceView,
+            blend: *mut ID3D11ShaderResourceView,
+        },
+        Blend2([*mut ID3D11ShaderResourceView; 4]),
+    }
+
+    struct NativePostFxResources(Vec<*mut ID3D11ShaderResourceView>);
+
+    impl NativePostFxResources {
+        unsafe fn bind(&self, context: *mut ID3D11DeviceContext) {
+            (*context).PSSetShaderResources(0, self.0.len() as u32, self.0.as_ptr());
+        }
+
+        fn required(views: &[*mut ID3D11ShaderResourceView]) -> Result<Self> {
+            if views.iter().any(|view| view.is_null()) {
+                return Err("XMAP10 draw received a null required resource".into());
+            }
+            Ok(Self(views.to_vec()))
+        }
+
+        fn lut(inputs: &NativeLutInputs) -> Result<Self> {
+            match inputs {
+                NativeLutInputs::Blend1 { base, blend } => {
+                    Self::required(&[*base, *blend])?;
+                    Ok(Self(vec![*base, ptr::null_mut(), *blend, ptr::null_mut()]))
+                }
+                NativeLutInputs::Blend2(views) => Self::required(views),
+            }
+        }
+    }
+
     struct NativeLutProgram {
-        program: NativeProgram,
+        program: NativePostFxProgram,
         effect_name: String,
+        depth: D3dPtr<ID3D11DepthStencilState>,
+        raster: D3dPtr<ID3D11RasterizerState>,
+        pipeline_sha256: String,
+    }
+
+    impl NativeLutProgram {
+        fn draw_identity(&self, factor1: f32, factor2: f32) -> Result<String> {
+            canonical_packet_sha256(&(
+                self.identity()?,
+                lut_blend_constants(factor1, factor2)
+                    .values
+                    .map(f32::to_bits),
+            ))
+        }
+
+        fn identity(&self) -> Result<String> {
+            canonical_packet_sha256(&(
+                self.program
+                    .binding_identity(&self.program, &self.program)?,
+                &self.pipeline_sha256,
+            ))
+        }
+
+        unsafe fn bind(
+            &self,
+            context: *mut ID3D11DeviceContext,
+            cb: *mut ID3D11Buffer,
+        ) -> Result<()> {
+            self.program.bind(context, &self.program, &self.program)?;
+            (*context).VSSetConstantBuffers(0, 1, &cb);
+            (*context).PSSetConstantBuffers(0, 1, &cb);
+            (*context).OMSetDepthStencilState(self.depth.as_raw(), 0);
+            (*context).RSSetState(self.raster.as_raw());
+            Ok(())
+        }
     }
 
     #[repr(C)]
@@ -1663,8 +1731,6 @@ mod native {
         luminance_gather_cb: D3dPtr<ID3D11Buffer>,
         bloom_cb: D3dPtr<ID3D11Buffer>,
         lut_cb: D3dPtr<ID3D11Buffer>,
-        point_clamp: D3dPtr<ID3D11SamplerState>,
-        rgb_only_blend: D3dPtr<ID3D11BlendState>,
         depth_disabled: D3dPtr<ID3D11DepthStencilState>,
         rasterizer: D3dPtr<ID3D11RasterizerState>,
         main_width: u32,
@@ -2022,14 +2088,8 @@ mod native {
             complete_postfx_sampler_source(&device, resolver, LUMINANCE_SHADER, &alpha_program.1, &mut scalar_downsample)?;
 
             frame.grade.lut_program.validate()?;
-            let lut_blend1 = NativeLutProgram {
-                program: compile_lut_program(&device, resolver, "LutBlend1", 2)?,
-                effect_name: "LutBlend1".into(),
-            };
-            let lut_blend2 = NativeLutProgram {
-                program: compile_lut_program(&device, resolver, "LutBlend2", 4)?,
-                effect_name: "LutBlend2".into(),
-            };
+            let lut_blend1 = compile_lut_program(&device, resolver, "LutBlend1")?;
+            let lut_blend2 = compile_lut_program(&device, resolver, "LutBlend2")?;
 
             let mut program_receipt = Xmap10NativeProgramReceiptRef {
                 schema: XMAP10_NATIVE_PROGRAM_RECEIPT_SCHEMA.into(),
@@ -2181,8 +2241,6 @@ mod native {
                 mem::size_of::<LutBlendCb>() as u32,
                 "XMAP10 LUT cb0",
             )?;
-            let point_clamp = create_sampler(&device, true)?;
-            let rgb_only_blend = create_blend(&device, true)?;
             let depth_disabled = create_depth_disabled(&device)?;
             let rasterizer = create_rasterizer(&device)?;
 
@@ -2218,8 +2276,6 @@ mod native {
                 luminance_gather_cb,
                 bloom_cb,
                 lut_cb,
-                point_clamp,
-                rgb_only_blend,
                 depth_disabled,
                 rasterizer,
                 main_width: main_desc.color_width,
@@ -2725,14 +2781,16 @@ mod native {
                         blend,
                         factor_f32_bits,
                     } => {
-                        program_identity_sha256 = native_program_identity(&self.lut_blend1.program);
+                        program_identity_sha256 = self
+                            .lut_blend1
+                            .draw_identity(0.0, f32::from_bits(*factor_f32_bits))?;
                         self.execute_lut_draw(
-                            &self.lut_blend1.program,
+                            &self.lut_blend1,
                             target,
-                            &[
-                                self.lut_input_srv(&frame.grade.lut_program, base)?,
-                                self.lut_input_srv(&frame.grade.lut_program, blend)?,
-                            ],
+                            NativeLutInputs::Blend1 {
+                                base: self.lut_input_srv(&frame.grade.lut_program, base)?,
+                                blend: self.lut_input_srv(&frame.grade.lut_program, blend)?,
+                            },
                             0.0,
                             f32::from_bits(*factor_f32_bits),
                         )?;
@@ -2745,16 +2803,19 @@ mod native {
                         day_night_factor_f32_bits,
                         cross_factor_f32_bits,
                     } => {
-                        program_identity_sha256 = native_program_identity(&self.lut_blend2.program);
+                        program_identity_sha256 = self.lut_blend2.draw_identity(
+                            f32::from_bits(*day_night_factor_f32_bits),
+                            f32::from_bits(*cross_factor_f32_bits),
+                        )?;
                         self.execute_lut_draw(
-                            &self.lut_blend2.program,
+                            &self.lut_blend2,
                             target,
-                            &[
+                            NativeLutInputs::Blend2([
                                 self.lut_input_srv(&frame.grade.lut_program, base_day)?,
                                 self.lut_input_srv(&frame.grade.lut_program, base_night)?,
                                 self.lut_input_srv(&frame.grade.lut_program, blend_day)?,
                                 self.lut_input_srv(&frame.grade.lut_program, blend_night)?,
-                            ],
+                            ]),
                             f32::from_bits(*day_night_factor_f32_bits),
                             f32::from_bits(*cross_factor_f32_bits),
                         )?;
@@ -2836,34 +2897,19 @@ mod native {
 
         unsafe fn execute_lut_draw(
             &self,
-            program: &NativeProgram,
+            program: &NativeLutProgram,
             target: &NativeTarget,
-            srvs: &[*mut ID3D11ShaderResourceView],
+            inputs: NativeLutInputs,
             factor1: f32,
             factor2: f32,
         ) -> Result<()> {
-            let constants = LutBlendCb {
-                values: [
-                    1.0 / target.width as f32,
-                    1.0 / target.height as f32,
-                    factor1,
-                    factor2,
-                ],
-            };
+            let resources = NativePostFxResources::lut(&inputs)?;
+            let constants = lut_blend_constants(factor1, factor2);
             update_constant_buffer(&self.context, &self.device, &self.lut_cb, &constants)?;
-            let buffers = [self.lut_cb.as_raw()];
-            (*self.context.as_raw()).VSSetConstantBuffers(0, 1, buffers.as_ptr());
-            (*self.context.as_raw()).PSSetConstantBuffers(0, 1, buffers.as_ptr());
-            let samplers = vec![self.point_clamp.as_raw(); srvs.len()];
-            self.draw_native_program(
-                program,
-                target.rtv.as_raw(),
+            program.bind(self.context.as_raw(), self.lut_cb.as_raw())?;
+            self.draw_bound_program(target.rtv.as_raw(),
                 target.width,
-                target.height,
-                srvs,
-                &samplers,
-                self.rgb_only_blend.as_raw(),
-            )
+                target.height, &resources)
         }
 
         fn lut_input_srv(
@@ -3250,33 +3296,21 @@ mod native {
             rtv: *mut ID3D11RenderTargetView, width: u32, height: u32,
             srvs: &[*mut ID3D11ShaderResourceView],
         ) -> Result<()> {
-            program.bind(self.context.as_raw(), sampler_source, self.program(Xmap10ProgramRole::BrightPass)?)?;
-            self.draw_bound_program(rtv, width, height, srvs)
-        }
-
-        unsafe fn draw_native_program(
-            &self,
-            program: &NativeProgram,
-            rtv: *mut ID3D11RenderTargetView,
-            width: u32,
-            height: u32,
-            srvs: &[*mut ID3D11ShaderResourceView],
-            samplers: &[*mut ID3D11SamplerState],
-            blend: *mut ID3D11BlendState,
-        ) -> Result<()> {
-            program.bind_stages(self.context.as_raw());
-            (*self.context.as_raw()).OMSetBlendState(blend, &[0.0; 4], u32::MAX);
-            (*self.context.as_raw()).PSSetSamplers(0, samplers.len() as u32, samplers.as_ptr());
-            self.draw_bound_program(rtv, width, height, srvs)
+            (*self.context.as_raw()).OMSetDepthStencilState(self.depth_disabled.as_raw(), 0);
+            (*self.context.as_raw()).RSSetState(self.rasterizer.as_raw());
+            program.bind(self.context.as_raw(), sampler_source, self.program(Xmap10ProgramRole::BrightPass)?,
+            )?;
+            self.draw_bound_program(rtv, width, height, &NativePostFxResources::required(srvs)?)
         }
 
         unsafe fn draw_bound_program(
             &self, rtv: *mut ID3D11RenderTargetView, width: u32, height: u32,
-            srvs: &[*mut ID3D11ShaderResourceView],
+            resources: &NativePostFxResources,
         ) -> Result<()> {
-            if rtv.is_null() || width == 0 || height == 0 || srvs.iter().any(|srv| srv.is_null()) {
+            if rtv.is_null() || width == 0 || height == 0 {
                 return Err("XMAP10 draw received a null target/resource or empty viewport".into());
             }
+            let srvs = &resources.0;
             let viewport = D3D11_VIEWPORT {
                 TopLeftX: 0.0,
                 TopLeftY: 0.0,
@@ -3288,7 +3322,7 @@ mod native {
             (*self.context.as_raw()).OMSetRenderTargets(1, &rtv, ptr::null_mut());
             (*self.context.as_raw()).RSSetViewports(1, &viewport);
             (*self.context.as_raw()).RSSetScissorRects(0, ptr::null());
-            (*self.context.as_raw()).PSSetShaderResources(0, srvs.len() as u32, srvs.as_ptr());
+            resources.bind(self.context.as_raw());
             (*self.context.as_raw()).Draw(4, 0);
             let nulls = vec![ptr::null_mut(); srvs.len()];
             (*self.context.as_raw()).PSSetShaderResources(0, nulls.len() as u32, nulls.as_ptr());
@@ -3878,6 +3912,256 @@ mod native {
             "terrainunlit",
         )?;
         Ok((program, input_layout))
+    }
+
+    #[cfg(test)]
+    mod lut_binding_tests {
+        use super::*;
+
+        fn admitted(source: &GameFileResolver) -> GameFileResolver {
+            let paths = crate::shader_compile::effect_translation_unit_files(source, LUT_SHADER)
+                .unwrap()
+                .into_iter()
+                .map(|row| row.0.to_ascii_lowercase())
+                .chain([crate::shader_compile::DX11_PLATFORM_HEADER.to_ascii_lowercase()])
+                .collect();
+            crate::test_support::admitted_vanilla_resolver(source, &paths, "lut-native-bindings").0
+        }
+
+        unsafe fn draw_both(resolver: &GameFileResolver) {
+            use winapi::um::d3dcommon::{D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0};
+            let mut device = ptr::null_mut();
+            let mut context = ptr::null_mut();
+            hr(
+                D3D11CreateDevice(
+                    ptr::null_mut(),
+                    D3D_DRIVER_TYPE_WARP,
+                    ptr::null_mut(),
+                    0,
+                    &D3D_FEATURE_LEVEL_11_0,
+                    1,
+                    D3D11_SDK_VERSION,
+                    &mut device,
+                    ptr::null_mut(),
+                    &mut context,
+                ),
+                "LUT WARP",
+            )
+            .unwrap();
+            let device = D3dPtr::from_raw(device, "LUT device").unwrap();
+            let context_owner = D3dPtr::from_raw(context, "LUT context").unwrap();
+            let target =
+                create_target(&device, &"b".repeat(64), 1024, 32, 28, "LUT output").unwrap();
+            let inputs = [
+                [1.0f32, 0.0, 0.0, 1.0],
+                [0.0, 1.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0, 1.0],
+                [1.0, 1.0, 1.0, 1.0],
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, color)| {
+                let input = create_target(
+                    &device,
+                    &"a".repeat(64),
+                    1024,
+                    32,
+                    28,
+                    &format!("LUT input{index}"),
+                )
+                .unwrap();
+                (*context).ClearRenderTargetView(input.rtv.as_raw(), &color);
+                input
+            })
+            .collect::<Vec<_>>();
+            let vertices = create_fullscreen_vertices(&device).unwrap();
+            let cb = create_constant_buffer(&device, 16, "LUT constants").unwrap();
+            (*context).IASetVertexBuffers(0, 1, &vertices.as_raw(), &8, &0);
+            (*context).IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+            (*context).RSSetViewports(
+                1,
+                &D3D11_VIEWPORT {
+                    TopLeftX: 0.0,
+                    TopLeftY: 0.0,
+                    Width: 1024.0,
+                    Height: 32.0,
+                    MinDepth: 0.0,
+                    MaxDepth: 1.0,
+                },
+            );
+            let mut desc: D3D11_TEXTURE2D_DESC = mem::zeroed();
+            (*target._texture.as_raw()).GetDesc(&mut desc);
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            let mut staging = ptr::null_mut();
+            hr(
+                (*device.as_raw()).CreateTexture2D(&desc, ptr::null(), &mut staging),
+                "LUT staging",
+            )
+            .unwrap();
+            let staging = D3dPtr::from_raw(staging, "LUT staging").unwrap();
+            let views = [
+                inputs[0].srv.as_raw(),
+                inputs[1].srv.as_raw(),
+                inputs[2].srv.as_raw(),
+                inputs[3].srv.as_raw(),
+            ];
+            assert!(NativePostFxResources::required(&[ptr::null_mut()]).is_err());
+            assert!(NativePostFxResources::lut(&NativeLutInputs::Blend1 {
+                base: ptr::null_mut(),
+                blend: views[2]
+            })
+            .is_err());
+            assert!(NativePostFxResources::lut(&NativeLutInputs::Blend2([
+                views[0],
+                ptr::null_mut(),
+                views[2],
+                views[3]
+            ]))
+            .is_err());
+            for (effect, inputs, factor1, factor2, expected) in [
+                (
+                    "LutBlend1",
+                    NativeLutInputs::Blend1 {
+                        base: views[0],
+                        blend: views[2],
+                    },
+                    0.0,
+                    0.25,
+                    [191u8, 0, 64, 64],
+                ),
+                (
+                    "LutBlend2",
+                    NativeLutInputs::Blend2(views),
+                    0.5,
+                    0.25,
+                    [128u8, 128, 64, 64],
+                ),
+            ] {
+                let program = compile_lut_program(&device, resolver, effect).unwrap();
+                assert_ne!(
+                    program.draw_identity(factor1, factor2).unwrap(),
+                    program.draw_identity(factor1, 0.75).unwrap()
+                );
+                let layout = create_fullscreen_input_layout(
+                    &device,
+                    &program.program.program.vertex_bytecode,
+                )
+                .unwrap();
+                (*context).IASetInputLayout(layout.as_raw());
+                let constants = lut_blend_constants(factor1, factor2);
+                assert_eq!(constants.values[0].to_bits(), 0x3a800000);
+                assert_eq!(constants.values[1].to_bits(), 0x3a800000);
+                update_constant_buffer(&context_owner, &device, &cb, &constants).unwrap();
+                let resources = NativePostFxResources::lut(&inputs).unwrap();
+                assert_eq!(resources.0.len(), 4);
+                (*context).PSSetShaderResources(0, 4, views.as_ptr());
+                let hostile_depth = create_depth_disabled(&device).unwrap();
+                let hostile_raster = create_rasterizer(&device).unwrap();
+                let hostile_blend = create_blend(&device, false).unwrap();
+                (*context).RSSetState(hostile_raster.as_raw());
+                (*context).OMSetDepthStencilState(hostile_depth.as_raw(), 0);
+                (*context).OMSetBlendState(hostile_blend.as_raw(), &[0.0; 4], u32::MAX);
+                program.bind(context, cb.as_raw()).unwrap();
+                resources.bind(context);
+                let mut depth = ptr::null_mut();
+                let mut raster = ptr::null_mut();
+                let mut stencil_ref = 0;
+                (*context).OMGetDepthStencilState(&mut depth, &mut stencil_ref);
+                (*context).RSGetState(&mut raster);
+                assert_eq!(depth, program.depth.as_raw());
+                assert_eq!(raster, program.raster.as_raw());
+                drop(D3dPtr::from_raw(depth, "LUT selected depth").unwrap());
+                drop(D3dPtr::from_raw(raster, "LUT selected raster").unwrap());
+                let mut bound = [ptr::null_mut(); 4];
+                (*context).PSGetShaderResources(0, 4, bound.as_mut_ptr());
+                assert_eq!(bound.as_slice(), resources.0.as_slice());
+                for view in bound {
+                    if !view.is_null() {
+                        drop(D3dPtr::from_raw(view, "LUT bound view").unwrap());
+                    }
+                }
+                (*context).ClearRenderTargetView(target.rtv.as_raw(), &[1.0, 0.0, 1.0, 0.25]);
+                (*context).OMSetRenderTargets(1, &target.rtv.as_raw(), ptr::null_mut());
+                (*context).Draw(4, 0);
+                (*context).OMSetRenderTargets(0, ptr::null(), ptr::null_mut());
+                (*context).PSSetShaderResources(0, 4, [ptr::null_mut(); 4].as_ptr());
+                (*context).CopyResource(staging.as_raw().cast(), target._texture.as_raw().cast());
+                let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
+                hr(
+                    (*context).Map(staging.as_raw().cast(), 0, D3D11_MAP_READ, 0, &mut mapped),
+                    "LUT readback",
+                )
+                .unwrap();
+                for row in 0..32 {
+                    let bytes = std::slice::from_raw_parts(
+                        (mapped.pData as *const u8).add(row * mapped.RowPitch as usize),
+                        4096,
+                    );
+                    assert!(
+                        bytes.chunks_exact(4).all(|pixel| pixel == expected),
+                        "{effect} row{row}: {:?}",
+                        &bytes[..4]
+                    );
+                }
+                (*context).Unmap(staging.as_raw().cast(), 0);
+            }
+            drop(context_owner);
+        }
+
+        #[test]
+        fn authored_lut_bindings_keep_holes_constants_and_selected_pipeline() {
+            let root = crate::test_support::temp_test_dir("lut_bindings");
+            std::fs::create_dir_all(root.join("gfx/FX")).unwrap();
+            std::fs::write(root.join("gfx/FX/lut_blender.shader"),r#"
+VertexStruct Input { int2 p : POSITION; }
+VertexShader = { MainCode VS [[ float4 main(Input i) : SV_POSITION { return float4(i.p,0,1); } ]] }
+ConstantBuffer(0,0) { float2 InvWindowSize; float factor1; float factor2; };
+PixelShader = {
+    Samplers = {
+        A = { Index=0 MagFilter="Point" MinFilter="Point" MipFilter="None" AddressU="Clamp" AddressV="Clamp" }
+        B = { Index=1 MagFilter="Point" MinFilter="Point" MipFilter="None" AddressU="Clamp" AddressV="Clamp" }
+        C = { Index=2 MagFilter="Point" MinFilter="Point" MipFilter="None" AddressU="Clamp" AddressV="Clamp" }
+        D = { Index=3 MagFilter="Point" MinFilter="Point" MipFilter="None" AddressU="Clamp" AddressV="Clamp" }
+    }
+    MainCode PS [[ float4 main() : SV_Target {
+        float3 base=A_Texture.SampleLevel(A_Sampler,0.5,0).rgb;
+        float3 blend=C_Texture.SampleLevel(C_Sampler,0.5,0).rgb;
+#ifdef DOUBLE_BLEND
+        base=lerp(base,B_Texture.SampleLevel(B_Sampler,0.5,0).rgb,factor1);
+        blend=lerp(blend,D_Texture.SampleLevel(D_Sampler,0.5,0).rgb,factor1);
+#endif
+        float3 color=lerp(base,blend,factor2);color.rg*=InvWindowSize*1024;return float4(color,1);
+    } ]]
+}
+BlendState Selected { BlendEnable=no WriteMask="RED|GREEN|BLUE" }
+DepthStencilState Selected { DepthEnable=no DepthWriteMask="DEPTH_WRITE_ZERO" }
+RasterizerState Selected { CullMode="NONE" }
+Effect LutBlend1 { VertexShader="VS" PixelShader="PS" BlendState="Selected" DepthStencilState="Selected" RasterizerState="Selected" }
+Effect LutBlend2 { VertexShader="VS" PixelShader="PS" BlendState="Selected" DepthStencilState="Selected" RasterizerState="Selected" Defines={"DOUBLE_BLEND"} }
+"#).unwrap();
+            std::fs::write(root.join("gfx/FX/defines_hlsl_dx11.fxh"),"struct STextureSampler2D { Texture2D tex; SamplerState state; }; STextureSampler2D CreateSampler2D(Texture2D t, SamplerState s) { STextureSampler2D r={t,s}; return r; }").unwrap();
+            let source = GameFileResolver::vanilla(&root).unwrap();
+            let resolver = admitted(&source);
+            unsafe {
+                draw_both(&resolver);
+            }
+            drop(resolver);
+            drop(source);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        #[ignore = "requires an authenticated the game content install"]
+        fn shipped_lut_programs_create_and_draw_exact_two_and_four_source_bindings() {
+            let source =
+                GameFileResolver::vanilla(replay_test_gates::require_vanilla_game_root()).unwrap();
+            let resolver = admitted(&source);
+            unsafe {
+                draw_both(&resolver);
+            }
+        }
     }
 
     #[cfg(test)]
@@ -4514,11 +4798,11 @@ Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" }
             None
         } else {
             let name = effect.blend_state.as_deref().unwrap_or("BlendState");
-            let rows = match effect_file.blend_states.get(name) {
-                Some(rows) => rows.as_slice(),
-                None if effect.blend_state.is_none() => &[],
-                None => return Err(format!("XMAP10 selected blend state {name} is absent").into()),
-            };
+            let rows = selected_effect_state(
+                effect.blend_state.as_deref(),
+                "BlendState",
+                &effect_file.blend_states,
+            )?;
             let state = crate::xmap12_d3d_handoff::create_blend_state(device.as_raw(), rows)?;
             let sha256 = canonical_packet_sha256(&(name, rows))?;
             Some(NativePostFxBlend { state, sha256 })
@@ -4562,8 +4846,7 @@ Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" }
         device: &D3dPtr<ID3D11Device>,
         resolver: &GameFileResolver,
         effect_name: &str,
-        resource_count: u32,
-    ) -> Result<NativeProgram> {
+    ) -> Result<NativeLutProgram> {
         let vertex_hlsl = build_stage_hlsl_with_defines(
             resolver,
             LUT_SHADER,
@@ -4584,15 +4867,92 @@ Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" }
             d3d_compile_stage(&pixel_hlsl, ShaderStage::Pixel, ENGINE_COMPILE_FLAGS)?;
         let vertex_reflection = parse_dxbc_reflection(&vertex_bytecode)?;
         let pixel_reflection = parse_dxbc_reflection(&pixel_bytecode)?;
-        require_postfx_providers(effect_name, &vertex_reflection, &pixel_reflection, resource_count, &[16])?;
-        create_program(
+        require_postfx_providers(effect_name, &vertex_reflection, &pixel_reflection, 4, &[16])?;
+        let file = effect_file_from_resolver(resolver, LUT_SHADER)?;
+        let effect = file
+            .effect(effect_name)
+            .ok_or("XMAP10 LUT effect is absent")?;
+        let blend_rows = selected_effect_state(
+            effect.blend_state.as_deref(),
+            "BlendState",
+            &file.blend_states,
+        )?;
+        let depth_rows = selected_effect_state(
+            effect.depth_stencil_state.as_deref(),
+            "DepthStencilState",
+            &file.depth_stencil_states,
+        )?;
+        let raster_rows = selected_effect_state(
+            effect.rasterizer_state.as_deref(),
+            "RasterizerState",
+            &file.rasterizer_states,
+        )?;
+        let blend = NativePostFxBlend {
+            state: crate::xmap12_d3d_handoff::create_blend_state(device.as_raw(), blend_rows)?,
+            sha256: canonical_packet_sha256(&blend_rows)?,
+        };
+        let depth = crate::xmap12_d3d_handoff::create_depth_state(device.as_raw(), depth_rows)?;
+        let raster =
+            crate::xmap12_d3d_handoff::create_rasterizer_state(device.as_raw(), raster_rows)?;
+        let pipeline_sha256 = canonical_packet_sha256(&(blend_rows, depth_rows, raster_rows))?;
+        let mut samplers = (0..4).map(|_| None).collect::<Vec<_>>();
+        for resource in pixel_reflection
+            .resources
+            .iter()
+            .filter(|resource| resource.resource_type == 3)
+        {
+            for slot in resource.bind_point..resource.bind_point + resource.bind_count {
+                let (state, sha256) = crate::xmap12_d3d_handoff::create_effect_sampler_on_device(
+                    device.as_raw(),
+                    resolver,
+                    LUT_SHADER,
+                    slot,
+                )?;
+                samplers[slot as usize] = Some(NativePostFxSampler { state, sha256 });
+            }
+        }
+        let program = create_program(
             device,
             vertex_bytecode,
             pixel_bytecode,
             vertex_reflection,
             pixel_reflection,
             effect_name,
-        )
+        )?;
+        Ok(NativeLutProgram {
+            program: NativePostFxProgram {
+                program,
+                samplers,
+                blend: Some(blend),
+            },
+            effect_name: effect_name.into(),
+            depth,
+            raster,
+            pipeline_sha256,
+        })
+    }
+
+    fn selected_effect_state<'a>(
+        name: Option<&str>,
+        fallback: &str,
+        states: &'a std::collections::BTreeMap<String, Vec<(String, String)>>,
+    ) -> Result<&'a [(String, String)]> {
+        match states.get(name.unwrap_or(fallback)) {
+            Some(rows) => Ok(rows),
+            None if name.is_none() => Ok(&[]),
+            None => Err(format!("XMAP10 selected state {} is absent", name.unwrap()).into()),
+        }
+    }
+
+    fn lut_blend_constants(factor1: f32, factor2: f32) -> LutBlendCb {
+        LutBlendCb {
+            values: [
+                f32::from_bits(0x3a800000),
+                f32::from_bits(0x3a800000),
+                factor1,
+                factor2,
+            ],
+        }
     }
 
     fn select_luminance_gather_cbuffer(
@@ -4863,9 +5223,9 @@ Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" }
         }
         for lut in luts {
             push_string(&mut bytes, &lut.effect_name);
-            push_string(&mut bytes, &Sha256::hex(&lut.program.vertex_bytecode));
-            push_string(&mut bytes, &Sha256::hex(&lut.program.pixel_bytecode));
-            push_string(&mut bytes, &lut.program.reflection_sha256);
+            push_string(&mut bytes, &lut.identity()
+                    .expect("compiled LUT state identity is complete"),
+            );
         }
         Sha256::hex(&bytes)
     }
@@ -5182,34 +5542,6 @@ Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" }
             0,
         );
         native_d3d11_check_void_upload_device(device, "UpdateSubresource(XMAP10 constant buffer)")
-    }
-
-    unsafe fn create_sampler(
-        device: &D3dPtr<ID3D11Device>,
-        point: bool,
-    ) -> Result<D3dPtr<ID3D11SamplerState>> {
-        let desc = D3D11_SAMPLER_DESC {
-            Filter: if point {
-                D3D11_FILTER_MIN_MAG_MIP_POINT
-            } else {
-                D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT
-            },
-            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
-            MipLODBias: 0.0,
-            MaxAnisotropy: 1,
-            ComparisonFunc: D3D11_COMPARISON_NEVER,
-            BorderColor: [0.0; 4],
-            MinLOD: 0.0,
-            MaxLOD: f32::MAX,
-        };
-        let mut sampler = ptr::null_mut();
-        hr(
-            (*device.as_raw()).CreateSamplerState(&desc, &mut sampler),
-            "CreateSamplerState(XMAP10)",
-        )?;
-        D3dPtr::from_raw(sampler, "XMAP10 sampler")
     }
 
     unsafe fn create_blend(

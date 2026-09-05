@@ -1020,6 +1020,9 @@ impl Xmap10LutBlendProgram {
             });
         }
 
+        for pass in &mut passes {
+            pass.kind = normalize_lut_branch(pass.kind.clone());
+        }
         let final_pass_ordinal = u8::try_from(passes.len() - 1)?;
         let mut program = Self {
             schema: XMAP10_LUT_BLEND_PROGRAM_SCHEMA.into(),
@@ -1084,6 +1087,144 @@ fn pair_pass_kind(
             blend: night,
             factor_f32_bits: day_night_factor_f32_bits,
         })
+    }
+}
+
+fn normalize_lut_branch(kind: Xmap10LutBlendPassKind) -> Xmap10LutBlendPassKind {
+    use Xmap10LutBlendPassKind::{Blend1, Blend2, Copy};
+    match kind {
+        Blend1 {
+            base,
+            blend,
+            factor_f32_bits,
+        } => {
+            let factor = f32::from_bits(factor_f32_bits);
+            if factor == 0.0 || base == blend {
+                Copy { source: base }
+            } else if factor == 1.0 {
+                Copy { source: blend }
+            } else {
+                Blend1 {
+                    base,
+                    blend,
+                    factor_f32_bits,
+                }
+            }
+        }
+        Blend2 {
+            base_day,
+            base_night,
+            blend_day,
+            blend_night,
+            day_night_factor_f32_bits,
+            cross_factor_f32_bits,
+        } => {
+            let day_night = f32::from_bits(day_night_factor_f32_bits);
+            if day_night == 0.0 || day_night == 1.0 {
+                let (base, blend) = if day_night == 0.0 {
+                    (base_day, blend_day)
+                } else {
+                    (base_night, blend_night)
+                };
+                normalize_lut_branch(Blend1 {
+                    base,
+                    blend,
+                    factor_f32_bits: cross_factor_f32_bits,
+                })
+            } else if base_day == base_night && blend_day == blend_night {
+                // The interior equal-pair path bypasses identity, not factor endpoints.
+                if base_day == blend_day {
+                    Copy { source: base_day }
+                } else {
+                    Blend1 {
+                        base: base_day,
+                        blend: blend_day,
+                        factor_f32_bits: cross_factor_f32_bits,
+                    }
+                }
+            } else {
+                Blend2 {
+                    base_day,
+                    base_night,
+                    blend_day,
+                    blend_night,
+                    day_night_factor_f32_bits,
+                    cross_factor_f32_bits,
+                }
+            }
+        }
+        copy @ Copy { .. } => copy,
+    }
+}
+
+#[cfg(test)]
+mod lut_branch_tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_and_interior_equal_pair_branches_match_native_calls() {
+        use Xmap10LutBlendPassKind::{Blend1, Blend2, Copy};
+        let source = Xmap10LutInput::Source;
+        for (factor, selected) in [(0.0f32, 0), (-0.0, 0), (1.0, 1)] {
+            assert_eq!(
+                normalize_lut_branch(Blend1 {
+                    base: source(0),
+                    blend: source(1),
+                    factor_f32_bits: factor.to_bits()
+                }),
+                Copy {
+                    source: source(selected)
+                }
+            );
+        }
+        assert_eq!(
+            normalize_lut_branch(Blend1 {
+                base: source(0),
+                blend: source(0),
+                factor_f32_bits: 0.5f32.to_bits()
+            }),
+            Copy { source: source(0) }
+        );
+        let double = |day: f32, cross: f32, equal_pairs: bool| Blend2 {
+            base_day: source(0),
+            base_night: source(if equal_pairs { 0 } else { 1 }),
+            blend_day: source(2),
+            blend_night: source(if equal_pairs { 2 } else { 3 }),
+            day_night_factor_f32_bits: day.to_bits(),
+            cross_factor_f32_bits: cross.to_bits(),
+        };
+        for (day, cross, selected) in [(0.0, 0.0, 0), (0.0, 1.0, 2), (1.0, 0.0, 1), (1.0, 1.0, 3)] {
+            assert_eq!(
+                normalize_lut_branch(double(day, cross, false)),
+                Copy {
+                    source: source(selected)
+                }
+            );
+        }
+        for (day, base, blend) in [(0.0, 0, 2), (1.0, 1, 3)] {
+            assert_eq!(
+                normalize_lut_branch(double(day, 0.25, false)),
+                Blend1 {
+                    base: source(base),
+                    blend: source(blend),
+                    factor_f32_bits: 0.25f32.to_bits()
+                }
+            );
+        }
+        for cross in [0.0f32, 0.25, 1.0] {
+            assert_eq!(
+                normalize_lut_branch(double(0.5, cross, true)),
+                Blend1 {
+                    base: source(0),
+                    blend: source(2),
+                    factor_f32_bits: cross.to_bits()
+                }
+            );
+            assert_eq!(
+                normalize_lut_branch(double(0.5, cross, false)),
+                double(0.5, cross, false)
+            );
+        }
     }
 }
 
