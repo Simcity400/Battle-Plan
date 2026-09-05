@@ -106,7 +106,7 @@ impl Xmap09LightAnimation {
             return Err(Xmap09LightEvaluationRefusal::InvalidAnimation);
         }
         let (sample_denominator, lookup_scale) =
-            XMAP09_CURVE_TABLE_SCALARS.expect("a729 table scalar data export is pinned");
+            XMAP09_CURVE_TABLE_SCALARS;
         let mut samples = [0.0; 64];
         for (index, sample) in samples.iter_mut().enumerate() {
             *sample = self
@@ -147,7 +147,7 @@ impl Xmap09LightAnimation {
     }
 }
 
-const XMAP09_CURVE_TABLE_SCALARS: Option<(f32, f32)> = Some((63.0, 64.0));
+const XMAP09_CURVE_TABLE_SCALARS: (f32, f32) = (63.0, 64.0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Xmap09LightEvaluationRefusal {
