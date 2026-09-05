@@ -73,7 +73,7 @@ pub struct ArrowSubmission {
     pub row: usize,
     pub definition_index: u32,
     pub definition_name: String,
-    pub registration_ordinal: u32,
+    pub registration_ordinal: Option<u32>,
     pub key: ArrowSortKey,
 }
 
@@ -96,8 +96,6 @@ fn resolve_arrow(family: ArrowFamily, row: usize,
     object_width: f32, secondary: f32) -> Result<ArrowSubmission, ArrowOrderRefusal> {
     let (name, definition_index, width, scale) = definition
         .ok_or(ArrowOrderRefusal::MissingDefinition { family, row })?;
-    let registration_ordinal = registration_ordinal
-        .ok_or(ArrowOrderRefusal::MissingRegistrationOrdinal { family, row })?;
     Ok(ArrowSubmission { family, row, definition_index, definition_name: name.to_owned(),
         registration_ordinal, key: ArrowSortKey::from_operands(width, scale, object_width, secondary) })
 }
@@ -193,16 +191,39 @@ impl ArrowSubmissionOrder {
         supply: Option<Vec<Result<ArrowSubmission, ArrowOrderRefusal>>>) -> Self {
         let mut rows = Vec::new();
         let mut refusals = Vec::new();
+        let mut supply_diagnostics = BTreeMap::new();
         for (candidates, missing) in [(orders, ArrowOrderRefusal::MissingOrderSemanticCarrier),
             (supply, ArrowOrderRefusal::MissingSupplySemanticCarrier)] {
             match candidates {
                 None => refusals.push(missing),
                 Some(candidates) => for row in candidates {
-                    match row { Ok(row) => rows.push(row), Err(reason) => refusals.push(reason) }
+                    match row {
+                        Ok(row) => rows.push(row),
+                        Err(ArrowOrderRefusal::MissingSupplySortInputs { row, inputs, missing })
+                            if missing == [SupplySortInput::EngineRegistrationOrdinal]
+                                && inputs.key.is_some_and(ArrowSortKey::finite)
+                                && inputs.definition_index.is_some() => {
+                            rows.push(ArrowSubmission {
+                                family: ArrowFamily::Supply, row,
+                                definition_index: inputs.definition_index.unwrap(),
+                                definition_name: inputs.definition_name.clone(),
+                                registration_ordinal: None, key: inputs.key.unwrap(),
+                            });
+                            supply_diagnostics.insert(row, (inputs, missing));
+                        },
+                        Err(reason) => refusals.push(reason),
+                    }
                 }
             }
         }
         let mut result = Self::compose(rows);
+        for refusal in &mut result.refusals {
+            if let ArrowOrderRefusal::MissingRegistrationOrdinal { family: ArrowFamily::Supply, row } = refusal {
+                if let Some((inputs, missing)) = supply_diagnostics.remove(row) {
+                    *refusal = ArrowOrderRefusal::MissingSupplySortInputs { row: *row, inputs, missing };
+                }
+            }
+        }
         result.refusals.extend(refusals);
         result
     }
@@ -229,15 +250,33 @@ impl ArrowSubmissionOrder {
                 continue;
             }
             let mut registrations = BTreeMap::<u32, usize>::new();
-            for row in &bucket { *registrations.entry(row.registration_ordinal).or_default() += 1; }
+            for ordinal in bucket.iter().filter_map(|row| row.registration_ordinal) {
+                *registrations.entry(ordinal).or_default() += 1;
+            }
             bucket.retain(|row| {
-                if registrations[&row.registration_ordinal] == 1 { return true; }
+                let Some(ordinal) = row.registration_ordinal else { return true };
+                if registrations[&ordinal] == 1 { return true; }
                 refusals.push(ArrowOrderRefusal::DuplicateRegistration { family: row.family, row: row.row,
-                    index, ordinal: row.registration_ordinal });
+                    index, ordinal });
                 false
             });
             bucket.sort_by_key(|row| row.registration_ordinal);
             stable_arrow_sort(&mut bucket);
+            // Registration affects only comparator-equivalent rows. Inspect the
+            // complete sorted run before removing any row with an unknown slot.
+            let mut ambiguous = BTreeSet::new();
+            for pair in bucket.windows(2) {
+                if !pair[0].key.precedes(pair[1].key) && !pair[1].key.precedes(pair[0].key) {
+                    for row in pair {
+                        if row.registration_ordinal.is_none() { ambiguous.insert((row.family, row.row)); }
+                    }
+                }
+            }
+            bucket.retain(|row| {
+                if !ambiguous.contains(&(row.family, row.row)) { return true; }
+                refusals.push(ArrowOrderRefusal::MissingRegistrationOrdinal { family: row.family, row: row.row });
+                false
+            });
             submissions.extend(bucket);
         }
         Self { submissions, refusals }
@@ -380,7 +419,7 @@ mod tests {
 
     fn row(family: ArrowFamily, ordinal: u32, bucket: u32, primary: f32, secondary: f32) -> ArrowSubmission {
         ArrowSubmission { family, row: ordinal as usize, definition_index: bucket,
-            definition_name: format!("definition-{bucket}"), registration_ordinal: ordinal,
+            definition_name: format!("definition-{bucket}"), registration_ordinal: Some(ordinal),
             key: ArrowSortKey { primary_bits: primary.to_bits(), secondary_bits: secondary.to_bits() } }
     }
 
@@ -600,6 +639,9 @@ mod tests {
         for mesh_ordinals in [[0, 1, 2], [99, 7, 0]] {
             let draws = [draw(mesh_ordinals[0], RailSupplyArrowDefinition::RailwayMapArrow),
                 draw(mesh_ordinals[1], RailSupplyArrowDefinition::RailwayMapArrowFlowing),
+                draw(mesh_ordinals[2], RailSupplyArrowDefinition::RailwayMapArrowFlowingReverse),
+                draw(mesh_ordinals[0], RailSupplyArrowDefinition::RailwayMapArrow),
+                draw(mesh_ordinals[1], RailSupplyArrowDefinition::RailwayMapArrowFlowing),
                 draw(mesh_ordinals[2], RailSupplyArrowDefinition::RailwayMapArrowFlowingReverse)];
             for width_scale in [None, Some(0.0), Some(-0.0), Some(2.0)] {
                 definition.width_scale = width_scale;
@@ -613,12 +655,24 @@ mod tests {
                 let result = ArrowSubmissionOrder::resolve_candidates(Some(vec![Ok(order.clone())]), Some(candidates));
                 assert_eq!(result.submissions, [order]);
                 assert_eq!(result.refusals.len(), draws.len());
+                assert_eq!(result.refusals.iter().map(|refusal| match refusal {
+                    ArrowOrderRefusal::MissingSupplySortInputs { row, .. } => *row,
+                    other => panic!("unexpected supply refusal: {other:?}"),
+                }).collect::<BTreeSet<_>>(), (0..draws.len()).collect());
                 assert_eq!(result.submissions.len() + result.refusals.len(), draws.len() + 1);
-                for (index, refusal) in result.refusals.iter().enumerate() {
+                let singleton = ArrowSubmissionOrder::resolve_candidates(Some(vec![]),
+                    Some(ArrowSubmissionOrder::supply_candidates(&draws[..3], &definitions)));
+                assert_eq!(singleton.submissions.iter().map(|row| (row.family, row.row,
+                    row.definition_index, row.registration_ordinal)).collect::<Vec<_>>(),
+                    [(ArrowFamily::Supply, 0, 4, None), (ArrowFamily::Supply, 1, 5, None)]);
+                assert_eq!(singleton.refusals.len(), 1);
+                assert!(matches!(&singleton.refusals[0],
+                    ArrowOrderRefusal::MissingSupplySortInputs { row: 2, .. }));
+                for refusal in &result.refusals {
                     let ArrowOrderRefusal::MissingSupplySortInputs { row, inputs, missing } = refusal else {
                         panic!("supply refusal lost its diagnostic inputs: {refusal:?}");
                     };
-                    assert_eq!(*row, index);
+                    let index = *row % 3;
                     assert_eq!(inputs.mesh_row_ordinal, mesh_ordinals[index]);
                     if index == 2 {
                         assert_eq!(missing, &[SupplySortInput::Definition, SupplySortInput::EngineRegistrationOrdinal]);
@@ -792,6 +846,53 @@ mod tests {
     }
 
     #[test]
+    fn unique_finite_keys_need_no_registration_and_ties_keep_the_native_slot_order() {
+        let mut rows = vec![
+            row(ArrowFamily::Supply, 0, 4, 4.0, 0.0),
+            row(ArrowFamily::Orders, 1, 4, 2.0, 1.0),
+            row(ArrowFamily::Supply, 2, 4, 2.0, -0.0),
+            row(ArrowFamily::Orders, 3, 3, 9.0, 0.0),
+        ];
+        for row in &mut rows { row.registration_ordinal = None; }
+        let expected = [(ArrowFamily::Orders, 3), (ArrowFamily::Supply, 0),
+            (ArrowFamily::Orders, 1), (ArrowFamily::Supply, 2)];
+        for a in 0..4 { for b in 0..4 { for c in 0..4 { for d in 0..4 {
+            let indices = [a, b, c, d];
+            if indices.into_iter().collect::<BTreeSet<_>>().len() != 4 { continue; }
+            let result = ArrowSubmissionOrder::compose(indices.map(|i| rows[i].clone()).to_vec());
+            assert!(result.refusals.is_empty());
+            assert_eq!(result.submissions.iter().map(|row| (row.family, row.row)).collect::<Vec<_>>(), expected);
+            assert!(result.submissions.iter().all(|row| row.registration_ordinal.is_none()));
+        } } } }
+        let mut equal = row(ArrowFamily::Orders, 9, 4, 2.0, 0.0);
+        equal.registration_ordinal = Some(7);
+        rows.push(equal);
+        let mut second_known = row(ArrowFamily::Supply, 10, 4, 2.0, -0.0);
+        second_known.registration_ordinal = Some(6);
+        rows.push(second_known);
+        for reverse in [false, true] {
+            let mut input = rows.clone();
+            if reverse { input.reverse(); }
+            let result = ArrowSubmissionOrder::compose(input);
+            assert_eq!(result.refusals, [ArrowOrderRefusal::MissingRegistrationOrdinal {
+                family: ArrowFamily::Supply, row: 2 }]);
+            assert_eq!(result.submissions.iter().map(|row| row.row).collect::<Vec<_>>(), [3, 0, 1, 10, 9]);
+            assert_eq!(result.submissions.len() + result.refusals.len(), rows.len());
+        }
+        rows[4].registration_ordinal = None;
+        rows[5].registration_ordinal = None;
+        let result = ArrowSubmissionOrder::compose(rows);
+        assert_eq!(result.submissions.len(), 3);
+        assert_eq!(result.refusals.len(), 3);
+        assert_eq!(result.refusals.iter().map(|refusal| match refusal {
+            ArrowOrderRefusal::MissingRegistrationOrdinal { family, row } => (*family, *row),
+            other => panic!("unexpected refusal: {other:?}"),
+        }).collect::<BTreeSet<_>>(), BTreeSet::from([
+            (ArrowFamily::Supply, 2), (ArrowFamily::Orders, 9), (ArrowFamily::Supply, 10),
+        ]));
+    }
+
+    #[test]
     fn assembly_float_predicate_does_not_order_nans_or_signed_zero() {
         let key = |a: f32, b: f32| ArrowSortKey { primary_bits: a.to_bits(), secondary_bits: b.to_bits() };
         for nan in [f32::NAN, f32::from_bits(0x7f800001), f32::from_bits(0xffc00000)] {
@@ -838,7 +939,7 @@ mod tests {
         conflicts[2].definition_name = "conflicting-name".into();
         conflicts[3].key.primary_bits = 2.0f32.to_bits();
         conflicts[3].key.secondary_bits = 3.0f32.to_bits();
-        conflicts[4].registration_ordinal = 99;
+        conflicts[4].registration_ordinal = Some(99);
         conflicts[5].key.primary_bits = f32::NAN.to_bits();
         let independent = vec![
             row(ArrowFamily::Orders, 1, 0, 4.0, 0.0),
@@ -887,11 +988,13 @@ mod tests {
             resolve_arrow(ArrowFamily::Orders, 1, None, Some(9), 0.0, 0.0),
             resolve_arrow(ArrowFamily::Orders, 2, definition, None, 0.0, 0.0),
         ]), None);
-        assert_eq!(result.submissions.len(), 1);
+        assert_eq!(result.submissions.len(), 2);
         assert_eq!(result.submissions[0].definition_index, 3);
         assert_eq!(result.submissions[0].key.primary_bits, 14.0f32.to_bits());
+        assert_eq!(result.submissions[1].row, 2);
+        assert_eq!(result.submissions[1].key.primary_bits, 2.0f32.to_bits());
+        assert_eq!(result.submissions[1].registration_ordinal, None);
         assert_eq!(result.refusals, [ArrowOrderRefusal::MissingDefinition { family: ArrowFamily::Orders, row: 1 },
-            ArrowOrderRefusal::MissingRegistrationOrdinal { family: ArrowFamily::Orders, row: 2 },
             ArrowOrderRefusal::MissingSupplySemanticCarrier]);
         let empty = ArrowSubmissionOrder::resolve_candidates(Some(vec![]), Some(vec![]));
         assert!(empty.submissions.is_empty() && empty.refusals.is_empty());
