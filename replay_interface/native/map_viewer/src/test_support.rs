@@ -77,7 +77,7 @@ impl replay_core::ReplaySource for RestSource {
             date: None,
             save_version: None,
             schema_version: None,
-            rest: self.0.clone(),
+            rest: self.0.clone().into(),
         })
     }
 }

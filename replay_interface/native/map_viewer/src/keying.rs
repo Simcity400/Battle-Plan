@@ -116,7 +116,7 @@ mod tests {
                     date: rest.get("date").and_then(|v| v.as_str()).map(String::from),
                     save_version: None,
                     schema_version: None,
-                    rest,
+                    rest: rest.into(),
                 },
             );
         }

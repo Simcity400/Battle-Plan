@@ -1,7 +1,6 @@
 
 use crate::{D18CountryRosterView, ViewStatus};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
@@ -350,7 +349,7 @@ fn card_valid(
 }
 
 pub fn admit_decision_evaluation(
-    raw: &Map<String, Value>,
+    raw: &impl crate::WorldRoot,
     expected_hour: i64,
     roster: &D18CountryRosterView,
     contended_keys: &impl crate::world::ContendedKeys,
@@ -544,6 +543,7 @@ pub fn admit_decision_evaluation(
 
 #[cfg(test)]
 mod tests {
+    use serde_json::{Map, Value};
     use super::*;
     use crate::{D18CountryRosterEntry, D18CountryRosterView};
     use serde_json::json;

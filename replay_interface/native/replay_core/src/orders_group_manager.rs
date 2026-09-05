@@ -112,7 +112,7 @@ impl WorldFrame {
     }
 }
 
-fn parse_orders_group_manager(raw: &Map<String, Value>) -> ArmyOrdersGroupManagerView {
+fn parse_orders_group_manager(raw: &impl crate::WorldRoot) -> ArmyOrdersGroupManagerView {
     let Some(oob) = raw.get("order_of_battle") else {
         return ArmyOrdersGroupManagerView::absent();
     };

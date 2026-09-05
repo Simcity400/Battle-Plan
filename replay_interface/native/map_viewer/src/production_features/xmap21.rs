@@ -222,7 +222,7 @@ mod tests {
                         date: None,
                         save_version: None,
                         schema_version: None,
-                        rest: serde_json::Map::new(),
+                        rest: serde_json::Map::new().into(),
                     })
                 }
             }

@@ -319,22 +319,35 @@ pub fn open_and_validate(path: &Path) -> OpenOutcome {
 }
 
 pub fn open_and_validate_segment(path: &Path, logical_stream_id: Option<u64>) -> OpenOutcome {
-    match open_timeline_segment(path, logical_stream_id) {
-        Ok(timeline) => {
-            let receipt = timeline.prefold_receipt();
-            OpenOutcome::Opened(OpenReport {
-                game_id: timeline.game_id().to_string(),
-                hour_count: timeline.hours().len(),
-                first_hour: timeline.first_hour(),
-                last_hour: timeline.last_hour(),
-                warnings: timeline.warnings().to_vec(),
-                prefold_decoder_id: receipt.map(|value| value.decoder_id().to_string()),
-                prefold_source_len: receipt.map(|value| value.source_len()),
-                prefold_source_sha256: receipt.map(|value| value.source_sha256().to_string()),
-            })
-        }
-        Err(outcome) => outcome,
-    }
+    open_and_validate_segment_timed(path, logical_stream_id).0
+}
+
+pub fn open_and_validate_segment_timed(
+    path: &Path,
+    logical_stream_id: Option<u64>,
+) -> (OpenOutcome, Option<(f64, DecodePassTiming)>) {
+    let open_started = std::time::Instant::now();
+    let timeline = match open_timeline_segment_unvalidated(path, logical_stream_id) {
+        Ok(timeline) => timeline,
+        Err(outcome) => return (outcome, None),
+    };
+    let open_ms = open_started.elapsed().as_secs_f64() * 1e3;
+    let timing = match validate_all_frame_payloads(&timeline, &mut |_, _| Ok(())) {
+        Ok(timing) => timing,
+        Err(outcome) => return (outcome, None),
+    };
+    let receipt = timeline.prefold_receipt();
+    let opened = OpenOutcome::Opened(OpenReport {
+        game_id: timeline.game_id().to_string(),
+        hour_count: timeline.hours().len(),
+        first_hour: timeline.first_hour(),
+        last_hour: timeline.last_hour(),
+        warnings: timeline.warnings().to_vec(),
+        prefold_decoder_id: receipt.map(|value| value.decoder_id().to_string()),
+        prefold_source_len: receipt.map(|value| value.source_len()),
+        prefold_source_sha256: receipt.map(|value| value.source_sha256().to_string()),
+    });
+    (opened, Some((open_ms, timing)))
 }
 
 pub fn open_timeline(path: &Path) -> Result<WorldTimeline, OpenOutcome> {
@@ -345,22 +358,61 @@ pub fn open_timeline_segment(
     path: &Path,
     logical_stream_id: Option<u64>,
 ) -> Result<WorldTimeline, OpenOutcome> {
+    let timeline = open_timeline_segment_unvalidated(path, logical_stream_id)?;
+    validate_all_frame_payloads(&timeline, &mut |_, _| Ok(()))?;
+    Ok(timeline)
+}
+
+pub fn open_timeline_segment_unvalidated(
+    path: &Path,
+    logical_stream_id: Option<u64>,
+) -> Result<WorldTimeline, OpenOutcome> {
     let source = match logical_stream_id {
         Some(id) => crate::recording_open::open_product_recording_segment(path, Some(id)),
         None => crate::recording_open::open_product_recording(path),
     }
     .map_err(classify_source_error)?;
-    let timeline = WorldTimeline::open(source).map_err(|err| OpenOutcome::Rejected {
+    // A validation pass reads each hour once; a frame cache would only hold
+    // finished hours resident.
+    let config = replay_core::TimelineConfig {
+        frame_cache_entries: 1,
+        ..replay_core::TimelineConfig::default()
+    };
+    WorldTimeline::open_with_config(source, config).map_err(|err| OpenOutcome::Rejected {
         kind: RejectionKind::Timeline,
         message: format!("recording opened but its timeline is unusable: {err}"),
-    })?;
-    validate_all_frame_payloads(&timeline)?;
-    Ok(timeline)
+    })
 }
 
-fn validate_all_frame_payloads(timeline: &WorldTimeline) -> Result<(), OpenOutcome> {
+/// Wall time of the decode pass, printed by the validation commands.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DecodePassTiming {
+    pub hours: usize,
+    pub total_ms: f64,
+    pub max_hour_ms: f64,
+    pub max_hour: i64,
+}
+
+impl DecodePassTiming {
+    pub fn per_hour_ms(&self) -> f64 {
+        if self.hours == 0 {
+            0.0
+        } else {
+            self.total_ms / self.hours as f64
+        }
+    }
+}
+
+/// Every hour decodes exactly once: `on_frame` sees each validated frame in
+/// hour order, so a caller that needs every frame does not decode them again.
+pub fn validate_all_frame_payloads(
+    timeline: &WorldTimeline,
+    on_frame: &mut dyn FnMut(i64, &replay_core::WorldFrame) -> Result<(), String>,
+) -> Result<DecodePassTiming, OpenOutcome> {
+    let mut timing = DecodePassTiming::default();
     for &hour in timeline.hours() {
-        timeline.frame(hour).map_err(|error| {
+        let started = std::time::Instant::now();
+        let frame = timeline.frame(hour).map_err(|error| {
             let kind = match &error {
                 replay_core::WorldError::Source(source) => rejection_kind(source),
                 _ => RejectionKind::ContainerOrSchema,
@@ -372,8 +424,19 @@ fn validate_all_frame_payloads(timeline: &WorldTimeline) -> Result<(), OpenOutco
                 ),
             }
         })?;
+        on_frame(hour, &frame).map_err(|message| OpenOutcome::Rejected {
+            kind: RejectionKind::ContainerOrSchema,
+            message,
+        })?;
+        let hour_ms = started.elapsed().as_secs_f64() * 1e3;
+        timing.hours += 1;
+        timing.total_ms += hour_ms;
+        if hour_ms > timing.max_hour_ms {
+            timing.max_hour_ms = hour_ms;
+            timing.max_hour = hour;
+        }
     }
-    Ok(())
+    Ok(timing)
 }
 
 fn rejection_kind(err: &SourceError) -> RejectionKind {
@@ -563,9 +626,9 @@ mod tests {
             timeline.frame(7).is_err(),
             "playback refuses fail-closed at the corrupt hour"
         );
-        let outcome = match validate_all_frame_payloads(&timeline) {
+        let outcome = match validate_all_frame_payloads(&timeline, &mut |_, _| Ok(())) {
             Err(outcome) => outcome,
-            Ok(()) => panic!("lazy SHA mismatch must reject validation"),
+            Ok(_) => panic!("lazy SHA mismatch must reject validation"),
         };
         match outcome {
             OpenOutcome::Rejected { kind, message } => {

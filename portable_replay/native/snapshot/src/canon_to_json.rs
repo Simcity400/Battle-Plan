@@ -357,14 +357,288 @@ pub fn projected_to_value(value: &ProjectedValue) -> Value {
         ProjectedValue::Number(number) => Value::Number(number.clone()),
         ProjectedValue::String(text) => Value::String(text.clone()),
         ProjectedValue::Array(items) => Value::Array(items.iter().map(projected_to_value).collect()),
-        ProjectedValue::Object(members) => {
-            let mut out = Map::new();
-            for (key, member) in members.iter() {
-                out.insert(key.clone(), projected_to_value(member));
-            }
-            Value::Object(out)
+        ProjectedValue::Object(members) => Value::Object(
+            members
+                .iter()
+                .map(|(key, member)| (key.clone(), projected_to_value(member)))
+                .collect(),
+        ),
+    }
+}
+
+/// `projected_to_value(&project(value)?)` with the root's members projected
+/// and materialised on `workers` threads. The root-level checks are the ones
+/// [`build_object_memo`] makes -- decodable, non-duplicate member names -- and
+/// each member is projected at depth one, which is where the root places it.
+pub fn materialize_parallel(value: &CanonValue, workers: usize) -> Result<Value, CanonToValueError> {
+    let CanonValue::Object(members) = value else {
+        return project(value).map(|projected| projected_to_value(&projected));
+    };
+    if workers <= 1 || members.len() < 2 {
+        return project(value).map(|projected| projected_to_value(&projected));
+    }
+    let slots: Vec<std::sync::Mutex<Option<Result<Value, CanonToValueError>>>> =
+        (0..members.len()).map(|_| std::sync::Mutex::new(None)).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..workers.min(members.len()) {
+            scope.spawn(|| loop {
+                let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some((_, member)) = members.get(at) else { break };
+                let converted = project_at(member, 1).map(|projected| projected_to_value(&projected));
+                *slots[at].lock().expect("slot lock") = Some(converted);
+            });
+        }
+    });
+    let mut out = Map::new();
+    for ((name, _), slot) in members.iter().zip(slots) {
+        let key = decode_json_string_body(name).ok_or_else(|| {
+            CanonToValueError::new("world JSON member name does not decode to text")
+        })?;
+        let converted = slot.into_inner().expect("slot lock").expect("every member ran")?;
+        if out.insert(key, converted).is_some() {
+            return Err(CanonToValueError::new(
+                "world JSON object has a duplicate member name",
+            ));
         }
     }
+    Ok(Value::Object(out))
+}
+
+/// The root's members as shared values. A member named in `reuse.changed`, or
+/// every member when `reuse` carries no change set, is projected at depth one
+/// and materialised on `workers` threads; every other member is the previous
+/// hour's `Arc`, which the walk proved untouched. Member by member the same
+/// values as [`materialize_parallel`], with the same root-level checks.
+pub fn materialize_root_members(
+    value: &CanonValue,
+    workers: usize,
+    reuse: crate::replay_cache::RootReuse<'_>,
+) -> Result<crate::replay_cache::MaterializedRoot, CanonToValueError> {
+    let CanonValue::Object(members) = value else {
+        return Err(CanonToValueError::new("a world body is a JSON object"));
+    };
+    let mut out: crate::replay_cache::MaterializedRoot = Vec::with_capacity(members.len());
+    let mut todo: Vec<usize> = Vec::new();
+    for (index, (name, _)) in members.iter().enumerate() {
+        let key = decode_json_string_body(name).ok_or_else(|| {
+            CanonToValueError::new("world JSON member name does not decode to text")
+        })?;
+        if out.iter().any(|(seen, _)| *seen == key) {
+            return Err(CanonToValueError::new(
+                "world JSON object has a duplicate member name",
+            ));
+        }
+        let kept = match (reuse.previous, reuse.changed) {
+            (Some(previous), Some(changed)) if !changed.contains(name.as_str()) => previous
+                .iter()
+                .find(|(seen, _)| *seen == key)
+                .map(|(_, member)| member.clone()),
+            _ => None,
+        };
+        match kept {
+            Some(member) => out.push((key, member)),
+            None => {
+                todo.push(index);
+                out.push((key, Arc::new(Value::Null)));
+            }
+        }
+    }
+    // The changed members are projected first (memoised per node, so only
+    // their changed subtrees are visited), then converted with every wide
+    // member split one level down so one large domain does not serialise the
+    // conversion on a single worker.
+    let projected: Vec<std::sync::Mutex<Option<Result<ProjectedValue, CanonToValueError>>>> =
+        (0..todo.len()).map(|_| std::sync::Mutex::new(None)).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..workers.clamp(1, todo.len().max(1)) {
+            scope.spawn(|| loop {
+                let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(&index) = todo.get(at) else { break };
+                *projected[at].lock().expect("slot lock") = Some(project_at(&members[index].1, 1));
+            });
+        }
+    });
+    let mut trees: Vec<ProjectedValue> = Vec::with_capacity(todo.len());
+    for slot in projected {
+        trees.push(slot.into_inner().expect("slot lock").expect("every member ran")?);
+    }
+    let converted = convert_trees_parallel(&trees, workers);
+    for (&index, value) in todo.iter().zip(converted) {
+        out[index].1 = Arc::new(value);
+    }
+    Ok(out)
+}
+
+/// [`projected_to_value`] of several trees on `workers` threads, each wide
+/// container split one level down into tasks of its own.
+fn convert_trees_parallel(trees: &[ProjectedValue], workers: usize) -> Vec<Value> {
+    const SPLIT_AT: usize = 32;
+    enum Task<'a> {
+        Whole(usize, &'a ProjectedValue),
+        Child(usize, usize, &'a ProjectedValue),
+    }
+    let mut tasks: Vec<Task<'_>> = Vec::new();
+    let mut child_slots: Vec<Vec<std::sync::Mutex<Option<Value>>>> = Vec::with_capacity(trees.len());
+    for (index, tree) in trees.iter().enumerate() {
+        match tree {
+            ProjectedValue::Object(children) if children.len() >= SPLIT_AT => {
+                child_slots.push((0..children.len()).map(|_| std::sync::Mutex::new(None)).collect());
+                for (child, (_, value)) in children.iter().enumerate() {
+                    tasks.push(Task::Child(index, child, value));
+                }
+            }
+            ProjectedValue::Array(children) if children.len() >= SPLIT_AT => {
+                child_slots.push((0..children.len()).map(|_| std::sync::Mutex::new(None)).collect());
+                for (child, value) in children.iter().enumerate() {
+                    tasks.push(Task::Child(index, child, value));
+                }
+            }
+            _ => {
+                child_slots.push(Vec::new());
+                tasks.push(Task::Whole(index, tree));
+            }
+        }
+    }
+    let whole_slots: Vec<std::sync::Mutex<Option<Value>>> =
+        (0..trees.len()).map(|_| std::sync::Mutex::new(None)).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..workers.clamp(1, tasks.len().max(1)) {
+            scope.spawn(|| loop {
+                let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(task) = tasks.get(at) else { break };
+                match task {
+                    Task::Whole(index, value) => {
+                        *whole_slots[*index].lock().expect("slot lock") =
+                            Some(projected_to_value(value));
+                    }
+                    Task::Child(index, child, value) => {
+                        *child_slots[*index][*child].lock().expect("slot lock") =
+                            Some(projected_to_value(value));
+                    }
+                }
+            });
+        }
+    });
+    let take = |slot: &std::sync::Mutex<Option<Value>>| {
+        slot.lock().expect("slot lock").take().expect("every task ran")
+    };
+    trees
+        .iter()
+        .enumerate()
+        .map(|(index, tree)| {
+            if child_slots[index].is_empty() {
+                return take(&whole_slots[index]);
+            }
+            match tree {
+                ProjectedValue::Object(children) => Value::Object(
+                    children
+                        .iter()
+                        .zip(&child_slots[index])
+                        .map(|((name, _), slot)| (name.clone(), take(slot)))
+                        .collect(),
+                ),
+                ProjectedValue::Array(_) => {
+                    Value::Array(child_slots[index].iter().map(take).collect())
+                }
+                _ => unreachable!("only containers are split"),
+            }
+        })
+        .collect()
+}
+
+/// [`projected_to_value`] with the root's members converted on `workers`
+/// threads. Same value: the tree is immutable and every member is converted by
+/// exactly one task, so the only difference from the serial route is which
+/// thread paid for which allocation.
+pub fn projected_to_value_parallel(value: &ProjectedValue, workers: usize) -> Value {
+    let ProjectedValue::Object(members) = value else {
+        return projected_to_value(value);
+    };
+    if workers <= 1 || members.len() < 2 {
+        return projected_to_value(value);
+    }
+    // A member wide enough is split one level down so the largest domains do
+    // not serialise the whole conversion on one worker.
+    const SPLIT_AT: usize = 32;
+    enum Task<'a> {
+        Whole(usize, &'a ProjectedValue),
+        Child(usize, usize, &'a ProjectedValue),
+    }
+    let mut tasks: Vec<Task<'_>> = Vec::new();
+    let mut child_slots: Vec<Vec<std::sync::Mutex<Option<Value>>>> = Vec::with_capacity(members.len());
+    for (index, (_, member)) in members.iter().enumerate() {
+        match member {
+            ProjectedValue::Object(children) if children.len() >= SPLIT_AT => {
+                child_slots.push((0..children.len()).map(|_| std::sync::Mutex::new(None)).collect());
+                for (child, (_, value)) in children.iter().enumerate() {
+                    tasks.push(Task::Child(index, child, value));
+                }
+            }
+            ProjectedValue::Array(children) if children.len() >= SPLIT_AT => {
+                child_slots.push((0..children.len()).map(|_| std::sync::Mutex::new(None)).collect());
+                for (child, value) in children.iter().enumerate() {
+                    tasks.push(Task::Child(index, child, value));
+                }
+            }
+            _ => {
+                child_slots.push(Vec::new());
+                tasks.push(Task::Whole(index, member));
+            }
+        }
+    }
+    let whole_slots: Vec<std::sync::Mutex<Option<Value>>> =
+        (0..members.len()).map(|_| std::sync::Mutex::new(None)).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..workers.min(tasks.len()) {
+            scope.spawn(|| loop {
+                let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(task) = tasks.get(at) else { break };
+                match task {
+                    Task::Whole(index, value) => {
+                        *whole_slots[*index].lock().expect("slot lock") =
+                            Some(projected_to_value(value));
+                    }
+                    Task::Child(index, child, value) => {
+                        *child_slots[*index][*child].lock().expect("slot lock") =
+                            Some(projected_to_value(value));
+                    }
+                }
+            });
+        }
+    });
+    let take = |slot: &std::sync::Mutex<Option<Value>>| {
+        slot.lock().expect("slot lock").take().expect("every task ran")
+    };
+    Value::Object(
+        members
+            .iter()
+            .enumerate()
+            .map(|(index, (key, member))| {
+                let converted = if child_slots[index].is_empty() {
+                    take(&whole_slots[index])
+                } else {
+                    match member {
+                        ProjectedValue::Object(children) => Value::Object(
+                            children
+                                .iter()
+                                .zip(&child_slots[index])
+                                .map(|((name, _), slot)| (name.clone(), take(slot)))
+                                .collect(),
+                        ),
+                        ProjectedValue::Array(_) => {
+                            Value::Array(child_slots[index].iter().map(take).collect())
+                        }
+                        _ => unreachable!("only containers are split"),
+                    }
+                };
+                (key.clone(), converted)
+            })
+            .collect(),
+    )
 }
 
 /// The filled projected storage reachable from `root`, each allocation charged

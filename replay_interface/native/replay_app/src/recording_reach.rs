@@ -9,6 +9,12 @@ use std::time::Instant;
 pub(crate) enum HourSelection {
     Sample,
     All,
+    Every(usize),
+    /// The first `n` hours in order: a play from the start.
+    First(usize),
+    /// `n` evenly spaced hours visited in bit-reversed order, so every hour
+    /// after the first lands far from the previous one: a scrub, not a play.
+    Scrub(usize),
 }
 
 #[derive(serde::Serialize)]
@@ -21,6 +27,8 @@ struct HourReport {
     recorder_domain_problems: Vec<RecorderDomainProblem>,
     wing_anchor_refusals: Vec<WingAnchorRefusalCensus>,
     frame_decode_ms: f64,
+    /// Wall time per decode stage of this hour, in the order they ran.
+    decode_stages_ms: Vec<(String, f64)>,
 }
 
 /// Whether the recorder delivered this hour's carrier at all, and under which
@@ -60,13 +68,34 @@ struct ReachReport {
     required_input_count: usize,
     hours: Vec<HourReport>,
     gap_input_hour_counts: BTreeMap<String, usize>,
+    decode_total_ms: f64,
+    decode_max_ms: f64,
 }
 
-const REACH_REPORT_SCHEMA: &str = "hoi4.replay.recording_reach.v2";
+const REACH_REPORT_SCHEMA: &str = "hoi4.replay.recording_reach.v3";
 
 fn select_hours(all_hours: &[i64], selection: HourSelection) -> Vec<i64> {
     match selection {
         HourSelection::All => all_hours.to_vec(),
+        HourSelection::Every(stride) => all_hours.iter().copied().step_by(stride).collect(),
+        HourSelection::First(count) => all_hours.iter().copied().take(count).collect(),
+        HourSelection::Scrub(count) => {
+            let count = count.clamp(1, all_hours.len().max(1));
+            let bits = usize::BITS - (count.max(2) - 1).leading_zeros();
+            let mut picks = Vec::with_capacity(count);
+            let mut seen = std::collections::BTreeSet::new();
+            for index in 0..(1usize << bits) {
+                let reversed = index.reverse_bits() >> (usize::BITS - bits);
+                if reversed >= count {
+                    continue;
+                }
+                let hour = all_hours[reversed * all_hours.len() / count];
+                if seen.insert(hour) {
+                    picks.push(hour);
+                }
+            }
+            picks
+        }
         HourSelection::Sample => {
             let mut picks = Vec::new();
             if let Some(first) = all_hours.first() {
@@ -168,8 +197,14 @@ pub(crate) fn run(
         None => crate::recording_open::open_product_recording(recording),
     }
     .map_err(|error| format!("open recording {}: {error}", recording.display()))?;
-    let timeline = replay_core::WorldTimeline::open(source)
-        .map_err(|error| format!("recording opened but its timeline is unusable: {error}"))?;
+    let timeline = replay_core::WorldTimeline::open_with_config(
+        source,
+        replay_core::TimelineConfig {
+            frame_cache_entries: 1,
+            ..replay_core::TimelineConfig::default()
+        },
+    )
+    .map_err(|error| format!("recording opened but its timeline is unusable: {error}"))?;
     let open_ms = open_started.elapsed().as_secs_f64() * 1000.0;
     let all_hours = timeline.hours().to_vec();
     let selected = select_hours(&all_hours, hours);
@@ -178,10 +213,19 @@ pub(crate) fn run(
     let mut hour_reports = Vec::with_capacity(selected.len());
     let mut gap_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut required_input_count = 0usize;
+    let mut decode_total_ms = 0.0f64;
+    let mut decode_max_ms = 0.0f64;
     for hour in selected {
+        let _ = replay_core::decode_stages::take();
         let frame_started = Instant::now();
         let frame = timeline.frame(hour)?;
         let frame_decode_ms = frame_started.elapsed().as_secs_f64() * 1000.0;
+        let decode_stages_ms = replay_core::decode_stages::take()
+            .into_iter()
+            .map(|(stage, ms)| (stage.to_string(), ms))
+            .collect::<Vec<_>>();
+        decode_total_ms += frame_decode_ms;
+        decode_max_ms = decode_max_ms.max(frame_decode_ms);
         let mut admitted_inputs = Vec::new();
         let mut gap_inputs = Vec::new();
         let mut map_authority_error = None;
@@ -223,6 +267,7 @@ pub(crate) fn run(
             recorder_domain_problems: recorder_domain_problems(&frame),
             wing_anchor_refusals: wing_anchor_refusals(&frame),
             frame_decode_ms,
+            decode_stages_ms,
         });
     }
 
@@ -238,6 +283,8 @@ pub(crate) fn run(
         required_input_count,
         hours: hour_reports,
         gap_input_hour_counts: gap_counts,
+        decode_total_ms,
+        decode_max_ms,
     };
     let mut bytes = serde_json::to_vec_pretty(&report)?;
     bytes.push(b'\n');
@@ -254,14 +301,25 @@ pub(crate) fn run(
     );
     for hour in &report.hours {
         println!(
-            "  hour {}: {} admitted, {} gap(s), {} coverage warning(s), decode {:.1} ms",
+            "  hour {}: {} admitted, {} gap(s), {} coverage warning(s), decode {:.1} ms [{}]",
             hour.hour_index,
             hour.admitted_inputs.len(),
             hour.gap_inputs.len(),
             hour.coverage_warnings.len(),
-            hour.frame_decode_ms
+            hour.frame_decode_ms,
+            hour.decode_stages_ms
+                .iter()
+                .map(|(stage, ms)| format!("{stage} {ms:.1}"))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
+    println!(
+        "  decode total {:.1} ms over {} hour(s), max {:.1} ms",
+        report.decode_total_ms,
+        report.hours.len(),
+        report.decode_max_ms
+    );
     Ok(())
 }
 
@@ -279,6 +337,15 @@ mod tests {
         assert_eq!(select_hours(&even, HourSelection::Sample), vec![100, 106, 111]);
         let odd: Vec<i64> = (100..111).collect();
         assert_eq!(select_hours(&odd, HourSelection::Sample), vec![100, 105, 110]);
+        assert_eq!(select_hours(&odd, HourSelection::Every(4)), vec![100, 104, 108]);
+        assert_eq!(select_hours(&odd, HourSelection::Every(1)), odd);
+        assert_eq!(select_hours(&odd, HourSelection::First(3)), vec![100, 101, 102]);
+        let sixteen: Vec<i64> = (0..16).collect();
+        assert_eq!(
+            select_hours(&sixteen, HourSelection::Scrub(8)),
+            vec![0, 8, 4, 12, 2, 10, 6, 14]
+        );
+        assert_eq!(select_hours(&[7], HourSelection::Scrub(4)), vec![7]);
     }
 
     #[test]

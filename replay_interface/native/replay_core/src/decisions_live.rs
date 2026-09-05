@@ -1,4 +1,5 @@
 
+use crate::WorldRoot;
 use crate::world::ViewStatus;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -158,7 +159,7 @@ fn parse_timed_live(value: &Value, path: &str) -> Result<Vec<DecisionTimedLiveRo
 }
 
 pub(crate) fn build_decisions_live(
-    rest: &Map<String, Value>,
+    rest: &impl WorldRoot,
     contended_keys: &impl crate::world::ContendedKeys,
     warnings: &mut Vec<String>,
 ) -> DecisionsLiveView {

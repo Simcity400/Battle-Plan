@@ -1577,7 +1577,7 @@ mod producer_tests {
                             || serde_json::json!({"country_composition_version": 2}),
                         );
                     }
-                    rest
+                    rest.into()
                 },
             })
         }

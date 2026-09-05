@@ -119,7 +119,7 @@ impl ReplaySource for SyntheticSource {
             date: Some(format!("1936.1.1.{}", hour_index % 24)),
             save_version: None,
             schema_version: Some(json!("1")),
-            rest,
+            rest: rest.into(),
         })
     }
 }

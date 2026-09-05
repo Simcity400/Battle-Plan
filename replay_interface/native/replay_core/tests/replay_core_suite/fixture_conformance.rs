@@ -578,7 +578,7 @@ fn read_recording(path: &Path) -> Result<RecordingReading, String> {
             date: raw.date,
             save_version: raw.save_version,
             schema_version: raw.schema_version,
-            rest: raw.rest,
+            rest: raw.rest.to_map(),
         });
     }
 

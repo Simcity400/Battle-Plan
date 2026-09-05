@@ -25,6 +25,9 @@ replay_core = { path = "../replay_core", features = ["test_support"] }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The viewer's allocator: the hour decode is allocation-bound (millions of
+# small nodes per hour), and the system heap serialises those.
+mimalloc = { version = "0.1", default-features = false }
 sha2 = "0.10"
 replay_core = { path = "../replay_core" }
 snapshot = { package = "portable_replay_format", path = "../../../portable_replay/native/snapshot" }

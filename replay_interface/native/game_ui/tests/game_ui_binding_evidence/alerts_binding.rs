@@ -155,7 +155,7 @@ impl replay_core::ReplaySource for MemorySource {
             date: None,
             save_version: None,
             schema_version: None,
-            rest,
+            rest: rest.into(),
         })
     }
 }

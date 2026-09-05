@@ -1465,7 +1465,7 @@ mod tests {
                             || serde_json::json!({"country_composition_version": 2}),
                         );
                     }
-                    rest
+                    rest.into()
                 },
             })
         }
@@ -2279,7 +2279,7 @@ mod tests {
         let mut tampered = payload.replay_authority_record();
         tampered["payload"]["snapshots"][0]["rows"][0]["available"] =
             serde_json::Value::Bool(true);
-        let mut rest = frame.raw_for_consumer_tests().clone();
+        let mut rest = frame.raw_for_consumer_tests().to_map();
         rest.insert(
             XUI23_PRODUCER_AUTHORITY_FIELD.into(),
             tampered,
@@ -2297,7 +2297,7 @@ mod tests {
     #[test]
     fn shipping_ingress_requires_exact_ordered_d18_country_census() {
         let (mut payload, frame) = authenticated_observer_payload();
-        let mut rest = frame.raw_for_consumer_tests().clone();
+        let mut rest = frame.raw_for_consumer_tests().to_map();
         rest.remove(XUI23_PRODUCER_AUTHORITY_FIELD);
         rest.insert(
             "countries".into(),

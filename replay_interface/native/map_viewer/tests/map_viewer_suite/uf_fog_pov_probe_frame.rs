@@ -37,7 +37,7 @@ impl ReplaySource for InMemorySource {
             date: None,
             save_version: None,
             schema_version: None,
-            rest: self.rest.clone(),
+            rest: self.rest.clone().into(),
         })
     }
 }

@@ -1,4 +1,5 @@
 
+use crate::WorldRoot;
 use crate::world::ViewStatus;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -656,7 +657,7 @@ fn parse_country(
 }
 
 pub(crate) fn build_frd_depth_annotations(
-    rest: &Map<String, Value>,
+    rest: &impl WorldRoot,
     contended_keys: &impl crate::world::ContendedKeys,
     warnings: &mut Vec<String>,
 ) -> FrdDepthAnnotationsView {

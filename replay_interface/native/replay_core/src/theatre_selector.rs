@@ -1360,7 +1360,7 @@ fn parse_content_identity(value: &Value) -> Result<ContentIdentity, String> {
     })
 }
 
-fn parse_theatre_selector(raw: &Map<String, Value>) -> TheatreSelectorView {
+fn parse_theatre_selector(raw: &impl crate::WorldRoot) -> TheatreSelectorView {
     let Some(domain) = raw.get(THEATRE_SELECTOR_FIELD) else {
         return TheatreSelectorView::absent();
     };

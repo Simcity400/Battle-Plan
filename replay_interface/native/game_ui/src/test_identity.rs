@@ -29,7 +29,7 @@ impl ReplaySource for OneFrame {
             date: None,
             save_version: None,
             schema_version: None,
-            rest: self.rest.clone(),
+            rest: self.rest.clone().into(),
         })
     }
 }

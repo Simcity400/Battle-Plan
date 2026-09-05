@@ -1,4 +1,5 @@
 
+use crate::RootMembers;
 use serde_json::{Map, Value};
 use snapshot::{ExpectedIdentity, Store};
 use std::collections::{BTreeMap, BTreeSet};
@@ -485,7 +486,62 @@ pub struct RawFrame {
     pub date: Option<String>,
     pub save_version: Option<String>,
     pub schema_version: Option<Value>,
-    pub rest: Map<String, Value>,
+    pub rest: crate::RootMembers,
+}
+
+/// A world body's identity members split from the rest, by the same rules as
+/// `snapshot::Snapshot::from_world_value`, over shared root members.
+struct SplitBody {
+    game_id: Option<String>,
+    date: Option<String>,
+    save_version: Option<String>,
+    hour_index: Option<i64>,
+    schema_version: Option<Value>,
+    rest: RootMembers,
+}
+
+impl SplitBody {
+    fn from_root_members(members: &snapshot::MaterializedRoot) -> Result<SplitBody, String> {
+        fn text(member: Option<&Arc<Value>>, key: &str) -> Result<Option<String>, String> {
+            match member.map(Arc::as_ref) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(text)) => Ok(Some(text.clone())),
+                Some(_) => Err(format!("world member {key} is not a string")),
+            }
+        }
+        let find = |key: &str| members.iter().find(|(name, _)| name == key).map(|(_, value)| value);
+        let game_id = text(find("game_id"), "game_id")?;
+        let date = text(find("date"), "date")?;
+        let save_version = text(find("save_version"), "save_version")?;
+        let hour_index = match find("hour_index").map(Arc::as_ref) {
+            None | Some(Value::Null) => None,
+            Some(Value::Number(number)) => Some(
+                number
+                    .as_i64()
+                    .ok_or_else(|| "world member hour_index is not an integer".to_string())?,
+            ),
+            Some(_) => return Err("world member hour_index is not an integer".to_string()),
+        };
+        let schema_version = match find("schema_version").map(Arc::as_ref) {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.clone()),
+        };
+        const IDENTITY: [&str; 5] = ["game_id", "date", "save_version", "hour_index", "schema_version"];
+        let rest = RootMembers::from_shared(
+            members
+                .iter()
+                .filter(|(name, _)| !IDENTITY.contains(&name.as_str()))
+                .map(|(name, value)| (name.clone(), value.clone())),
+        );
+        Ok(SplitBody {
+            game_id,
+            date,
+            save_version,
+            hour_index,
+            schema_version,
+            rest,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -725,6 +781,19 @@ pub trait ReplaySource: Send + Sync {
         Ok(None)
     }
     fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError>;
+
+    /// The same hour by the reference route: every root member materialised
+    /// afresh from the canonical world, sharing nothing with any other hour.
+    /// The proof's witness; a source with one route answers with `frame`.
+    fn reference_frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
+        self.frame(hour_index)
+    }
+
+    /// One root member of the hour's body, for readers that fold a single
+    /// domain across many hours and need nothing else materialised.
+    fn frame_member(&self, hour_index: i64, key: &str) -> Result<Option<Value>, SourceError> {
+        Ok(self.frame(hour_index)?.rest.remove(key))
+    }
 
     fn set_scrub_interrupt(&self, _interrupt: Option<Arc<dyn Fn() -> bool + Send + Sync>>) {}
 }
@@ -4839,10 +4908,29 @@ impl ReplaySource for IndexedReplaySource {
             })
     }
 
-    fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
+    fn frame_member(&self, hour_index: i64, key: &str) -> Result<Option<Value>, SourceError> {
+        let (member, receipt) = self
+            .cache
+            .reconstruct_member(hour_index, key)
+            .map_err(|error| {
+                SourceError::Open(format!(
+                    "reconstruct replay_decoder hour {hour_index}: {error}"
+                ))
+            })?;
+        if receipt.applied_deltas > receipt.configured_bound {
+            return Err(SourceError::Open(format!(
+                "replay_decoder hour {hour_index} exceeded its certified seek bound"
+            )));
+        }
+        crate::decode_stages::record("reader.member.walk", receipt.walk_ms);
+        crate::decode_stages::record("reader.member.project", receipt.finish_ms);
+        Ok(member)
+    }
+
+    fn reference_frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
         let (world, receipt) = self
             .cache
-            .reconstruct_value(hour_index)
+            .reconstruct_materialized(hour_index, crate::world::product_worker_count())
             .map_err(|error| {
                 SourceError::Open(format!(
                     "reconstruct replay_decoder hour {hour_index}: {error}"
@@ -4865,30 +4953,8 @@ impl ReplaySource for IndexedReplaySource {
                 "replay_decoder reconstructed body identity disagrees at hour {hour_index}"
             )));
         }
-        let mut rest = std::mem::take(&mut snapshot.rest);
-        if let Some(binding) = &self.recorder_binding {
-            validate_existing_recorder_metadata(&rest, binding)?;
-            let session = rest
-                .entry("session".to_string())
-                .or_insert_with(|| Value::Object(Map::new()))
-                .as_object_mut()
-                .ok_or_else(|| SourceError::Open("snapshot session is not an object".into()))?;
-            bind_or_match(
-                session,
-                "active_dlcs",
-                serde_json::json!(binding.active_dlcs),
-            )?;
-            bind_or_match(
-                session,
-                "localisation_language",
-                serde_json::json!(binding.localisation_language),
-            )?;
-            bind_or_match(
-                session,
-                "display_variant",
-                serde_json::json!(binding.display_variant),
-            )?;
-        }
+        let mut rest = RootMembers::from(std::mem::take(&mut snapshot.rest));
+        self.bind_recorder_session(&mut rest)?;
         Ok(RawFrame {
             hour_index,
             date: snapshot.date,
@@ -4896,6 +4962,75 @@ impl ReplaySource for IndexedReplaySource {
             schema_version: snapshot.schema_version,
             rest,
         })
+    }
+
+    fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
+        let (members, receipt) = self
+            .cache
+            .reconstruct_root_members(hour_index, crate::world::product_worker_count())
+            .map_err(|error| {
+                SourceError::Open(format!(
+                    "reconstruct replay_decoder hour {hour_index}: {error}"
+                ))
+            })?;
+        if receipt.applied_deltas > receipt.configured_bound {
+            return Err(SourceError::Open(format!(
+                "replay_decoder hour {hour_index} exceeded its certified seek bound"
+            )));
+        }
+        crate::decode_stages::record("reader.walk", receipt.walk_ms);
+        crate::decode_stages::record("reader.walk.read", receipt.walk_read_ms);
+        crate::decode_stages::record("reader.walk.decode", receipt.walk_decode_ms);
+        crate::decode_stages::record("reader.walk.apply", receipt.walk_apply_ms);
+        crate::decode_stages::record("reader.materialize", receipt.finish_ms);
+        let snapshot = SplitBody::from_root_members(&members).map_err(|error| {
+            SourceError::Open(format!(
+                "replay_decoder hour {hour_index} is not canonical snapshot JSON: {error}"
+            ))
+        })?;
+        if snapshot.hour_index != Some(hour_index)
+            || snapshot.game_id.as_deref() != Some(self.game_id())
+        {
+            return Err(SourceError::Open(format!(
+                "replay_decoder reconstructed body identity disagrees at hour {hour_index}"
+            )));
+        }
+        let mut rest = snapshot.rest;
+        self.bind_recorder_session(&mut rest)?;
+        Ok(RawFrame {
+            hour_index,
+            date: snapshot.date,
+            save_version: snapshot.save_version,
+            schema_version: snapshot.schema_version,
+            rest,
+        })
+    }
+}
+
+impl IndexedReplaySource {
+    fn bind_recorder_session(&self, rest: &mut RootMembers) -> Result<(), SourceError> {
+        let Some(binding) = &self.recorder_binding else {
+            return Ok(());
+        };
+        validate_existing_recorder_metadata(rest, binding)?;
+        let session = rest
+            .object_mut("session")
+            .ok_or_else(|| SourceError::Open("snapshot session is not an object".into()))?;
+        bind_or_match(
+            session,
+            "active_dlcs",
+            serde_json::json!(binding.active_dlcs),
+        )?;
+        bind_or_match(
+            session,
+            "localisation_language",
+            serde_json::json!(binding.localisation_language),
+        )?;
+        bind_or_match(
+            session,
+            "display_variant",
+            serde_json::json!(binding.display_variant),
+        )
     }
 }
 
@@ -4976,13 +5111,11 @@ impl ReplaySource for SpooledPrefoldedSource {
         if let Some(container) = self.store.container() {
             validate_snapshot_container_identity(container, &snapshot)?;
         }
-        let mut rest = snapshot.rest;
+        let mut rest = RootMembers::from(snapshot.rest);
         if let Some(binding) = &self.recorder_binding {
             validate_existing_recorder_metadata(&rest, binding)?;
             let session = rest
-                .entry("session".to_string())
-                .or_insert_with(|| Value::Object(Map::new()))
-                .as_object_mut()
+                .object_mut("session")
                 .ok_or_else(|| SourceError::Open("snapshot session is not an object".into()))?;
             bind_or_match(
                 session,
@@ -5087,13 +5220,11 @@ impl ReplaySource for PrefoldedSource {
             ))
         })?;
         let snapshot = entry.snapshot();
-        let mut rest = snapshot.rest.clone();
+        let mut rest = RootMembers::from(snapshot.rest.clone());
         if let Some(binding) = &self.recorder_binding {
             validate_existing_recorder_metadata(&rest, binding)?;
             let session = rest
-                .entry("session".to_string())
-                .or_insert_with(|| Value::Object(Map::new()))
-                .as_object_mut()
+                .object_mut("session")
                 .ok_or_else(|| SourceError::Open("snapshot session is not an object".into()))?;
             bind_or_match(
                 session,
@@ -5217,13 +5348,11 @@ impl ReplaySource for StoreSource {
                 )));
             }
         }
-        let mut rest = snap.rest;
+        let mut rest = RootMembers::from(snap.rest);
         if let Some(binding) = &self.recorder_binding {
             validate_existing_recorder_metadata(&rest, binding)?;
             let session = rest
-                .entry("session".to_string())
-                .or_insert_with(|| Value::Object(Map::new()))
-                .as_object_mut()
+                .object_mut("session")
                 .ok_or_else(|| SourceError::Open("snapshot session is not an object".into()))?;
             bind_or_match(
                 session,
@@ -5252,7 +5381,7 @@ impl ReplaySource for StoreSource {
 }
 
 fn validate_existing_recorder_metadata(
-    rest: &Map<String, Value>,
+    rest: &RootMembers,
     binding: &RecorderSessionBinding,
 ) -> Result<(), SourceError> {
     if let Some(session_value) = rest.get("session") {

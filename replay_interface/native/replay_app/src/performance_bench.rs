@@ -214,6 +214,7 @@ pub(crate) fn run(
         logical_stream_id: selection.logical_stream_id,
         timeline: replay_core::TimelineConfig {
             frame_cache_entries: options.frame_cache_entries,
+            ..replay_core::TimelineConfig::default()
         },
     };
     let (provider, opened_recording_segment_trust_sha256) = open_provider(&mode)?;

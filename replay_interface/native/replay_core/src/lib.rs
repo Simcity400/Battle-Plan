@@ -21,6 +21,7 @@ pub mod map_furniture;
 pub mod orders_group_manager;
 pub mod peace_conference_presentation;
 pub mod rollover_package_set;
+pub mod root_members;
 pub mod runtime_text;
 pub mod source;
 pub mod static_focus_defs;
@@ -29,9 +30,28 @@ pub mod tactic_weight;
 pub mod tech_sharing;
 pub mod theatre_selector;
 pub mod world;
+
+/// Per-thread record of what each stage of the last hour decodes cost, drained
+/// by the timing reports; recording is a push onto a thread-local vector.
+pub mod decode_stages {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static SPANS: RefCell<Vec<(&'static str, f64)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub fn record(stage: &'static str, ms: f64) {
+        SPANS.with(|spans| spans.borrow_mut().push((stage, ms)));
+    }
+
+    pub fn take() -> Vec<(&'static str, f64)> {
+        SPANS.with(|spans| spans.borrow_mut().drain(..).collect())
+    }
+}
 pub mod xmap17_player_labels;
 pub mod xui26_frontend;
 
+pub use root_members::{MemberLookup, RootMembers, WorldRoot};
 pub use character_presentation_g8::*;
 pub use combat_presentation::*;
 pub use country_identity::{
@@ -390,7 +410,7 @@ pub use world::{
     SunkShipTextUnavailable, TechnologyCanvasAuthority, TechnologyCanvasAxisState,
     TechnologyCanvasBoundary, TechnologyCanvasDrawable, TechnologyCanvasDrawableKind,
     TechnologyCanvasObservation, TechnologyCanvasSourceItem, TechnologyCanvasView,
-    TaskForceKey, TechnologyUiStateRow, TimelineConfig, TimelineLookup, TopbarAlerts, TopbarRatios,
+    BuildSchedule, TaskForceKey, TechnologyUiStateRow, TimelineConfig, TimelineLookup, TopbarAlerts, TopbarRatios,
     TopbarScalars, TradeContractRow, TradeResourceRow, TradeView, UnitLeaderAssignmentExact,
     UnitLeaderAssignmentKind, UnitLeaderExactRow, UnitLeaderSkillExact, ViewStatus, WarObjectRow,
     WarParticipantOverviewRow, WarParticipationBreakdown, WarRelationRow, WeatherProvinceSnowView,

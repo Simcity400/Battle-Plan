@@ -2152,7 +2152,7 @@ impl<W: Write> ReplayCacheEncoder<W> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ReplaySeekReceipt {
     pub checkpoint_hour: i64,
     pub target_hour: i64,
@@ -2166,6 +2166,118 @@ pub struct ReplaySeekReceipt {
     /// authority — it is what the walk cost, not what the recording says.
     pub walked_deltas: u32,
     pub configured_bound: u32,
+    pub resumed_from: ResumeSource,
+    /// Wall time of the record walk (checkpoint decode or resume, plus every
+    /// delta applied) and of the finishing conversion, for the timing reports.
+    pub walk_ms: f64,
+    pub finish_ms: f64,
+    /// The walk split: record read and digest, patch decode, patch apply.
+    pub walk_read_ms: f64,
+    pub walk_decode_ms: f64,
+    pub walk_apply_ms: f64,
+}
+
+/// Where a reconstruction's running value came from before its own deltas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeSource {
+    Checkpoint,
+    Cursor,
+    Rung,
+}
+
+/// How many resume points a reader keeps per open cache and how far apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RungPolicy {
+    /// Delta positions between two rungs of one window; 0 keeps no rungs.
+    pub stride: u32,
+    /// Rungs kept across all windows; the least recently used goes first.
+    pub max_rungs: usize,
+}
+
+impl Default for RungPolicy {
+    fn default() -> Self {
+        Self {
+            stride: DEFAULT_RUNG_STRIDE,
+            max_rungs: DEFAULT_MAX_RUNGS,
+        }
+    }
+}
+
+/// Off by default: a rung pins every node changed after it, and on capture
+/// e2e_05 that is about 20 MB of heap per hour walked past it (8 rungs at
+/// stride 8 took the reach report from 1.9 GB to 13 GB resident). A reader
+/// that can afford the memory opts in through `set_rung_policy`.
+pub const DEFAULT_RUNG_STRIDE: u32 = 0;
+pub const DEFAULT_MAX_RUNGS: usize = 0;
+
+/// Resume points kept from earlier walks. A rung is a whole cursor state at
+/// one position of one window; the value shares every unchanged node with the
+/// live cursor, so a rung costs the divergence between it and its neighbours.
+struct RungLadder {
+    policy: RungPolicy,
+    rungs: Vec<(u64, ScrubCursor)>,
+    use_serial: u64,
+}
+
+impl RungLadder {
+    fn new(policy: RungPolicy) -> Self {
+        Self {
+            policy,
+            rungs: Vec::new(),
+            use_serial: 0,
+        }
+    }
+
+    fn wants(&self, checkpoint_position: usize, position: usize) -> bool {
+        self.policy.stride != 0
+            && self.policy.max_rungs != 0
+            && (position - checkpoint_position) % self.policy.stride as usize == 0
+            && !self.rungs.iter().any(|(_, rung)| {
+                rung.checkpoint_position == checkpoint_position && rung.position == position
+            })
+    }
+
+    fn offer(&mut self, cursor: ScrubCursor) {
+        if self.policy.max_rungs == 0 {
+            return;
+        }
+        while self.rungs.len() >= self.policy.max_rungs {
+            let oldest = self
+                .rungs
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, (used, _))| *used)
+                .map(|(index, _)| index)
+                .expect("a full ladder has a rung");
+            self.rungs.swap_remove(oldest);
+        }
+        self.use_serial += 1;
+        self.rungs.push((self.use_serial, cursor));
+    }
+
+    /// The nearest rung at or before `target_position` in the same window.
+    fn nearest(
+        &mut self,
+        checkpoint_position: usize,
+        target_position: usize,
+    ) -> Option<ScrubCursor> {
+        let best = self
+            .rungs
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, rung))| {
+                rung.checkpoint_position == checkpoint_position && rung.position <= target_position
+            })
+            .max_by_key(|(_, (_, rung))| rung.position)
+            .map(|(index, _)| index)?;
+        self.use_serial += 1;
+        self.rungs[best].0 = self.use_serial;
+        Some(self.rungs[best].1.clone())
+    }
+
+    fn len(&self) -> usize {
+        self.rungs.len()
+    }
 }
 
 /// What a reconstruction that was allowed to give up came back with.
@@ -2569,6 +2681,7 @@ pub struct CertifiedReplayCache {
     /// `&self` — the reader is shared, and two threads reconstructing at once
     /// take turns rather than each keeping their own world.
     cursor: Mutex<Option<ScrubCursor>>,
+    rungs: Mutex<RungLadder>,
     /// A stop switch the READER'S OWNER installs once, consulted by every
     /// reconstruction. See [`Self::set_scrub_interrupt`].
     interrupt: Mutex<Option<Arc<dyn Fn() -> bool + Send + Sync>>>,
@@ -2590,6 +2703,7 @@ impl Clone for CertifiedReplayCache {
             cache: self.cache.clone(),
             confined: self.confined.clone(),
             cursor: Mutex::new(None),
+            rungs: Mutex::new(RungLadder::new(RungPolicy::default())),
             interrupt: Mutex::new(None),
         }
     }
@@ -2642,6 +2756,7 @@ impl Clone for CertifiedReplayCache {
 /// What a caller CAN rely on: holding a `CertifiedReplayCache` that has served
 /// an hour costs about one more world than holding one that has not, and
 /// [`CertifiedReplayCache::forget_scrub_cursor`] gives it back.
+#[derive(Clone)]
 struct ScrubCursor {
     /// Index position of the checkpoint this running value was decoded from.
     checkpoint_position: usize,
@@ -2660,6 +2775,22 @@ struct ScrubCursor {
     /// window, at or before the target -- is what makes the carried table the
     /// right one: what remains is a forward suffix of the same walk.
     names: NameDictionary,
+    /// The root members of `position` as the viewer's values, kept beside the
+    /// canonical world so the next forward step re-materialises only the
+    /// members its deltas touched. A rung never carries one.
+    members: Option<Arc<MaterializedRoot>>,
+}
+
+/// One hour's root members as `serde_json::Value`s, in the world's own member
+/// order, each behind an `Arc` so hours share every member no delta touched.
+pub type MaterializedRoot = Vec<(String, Arc<Value>)>;
+
+/// What a finishing conversion may reuse from the previous hour: the members it
+/// materialised, and the root member names (as spelled in the world) the walk
+/// since then touched; `None` when the walk did not start from them.
+pub struct RootReuse<'a> {
+    pub previous: Option<&'a MaterializedRoot>,
+    pub changed: Option<&'a std::collections::BTreeSet<String>>,
 }
 
 impl CertifiedReplayCache {
@@ -2681,6 +2812,7 @@ impl CertifiedReplayCache {
             cache: CacheBacking::Memory(cache),
             confined,
             cursor: Mutex::new(None),
+            rungs: Mutex::new(RungLadder::new(RungPolicy::default())),
             interrupt: Mutex::new(None),
         })
     }
@@ -2707,6 +2839,7 @@ impl CertifiedReplayCache {
             cache: CacheBacking::File(Arc::new(cache)),
             confined,
             cursor: Mutex::new(None),
+            rungs: Mutex::new(RungLadder::new(RungPolicy::default())),
             interrupt: Mutex::new(None),
         })
     }
@@ -2775,8 +2908,12 @@ impl CertifiedReplayCache {
             .cursor
             .lock()
             .map_err(|_| ReplayCacheError::new("replay scrub cursor lock poisoned"))?;
+        let mut rungs = self
+            .rungs
+            .lock()
+            .map_err(|_| ReplayCacheError::new("replay rung ladder lock poisoned"))?;
         self.cache.with_records(|records| {
-            reconstruct_json_cursored(&self.index, records, hour_index, &mut cursor, keep_going)
+            reconstruct_json_cursored(&self.index, records, hour_index, &mut cursor, &mut rungs, keep_going)
         })
     }
 
@@ -2821,8 +2958,12 @@ impl CertifiedReplayCache {
             .cursor
             .lock()
             .map_err(|_| ReplayCacheError::new("replay scrub cursor lock poisoned"))?;
+        let mut rungs = self
+            .rungs
+            .lock()
+            .map_err(|_| ReplayCacheError::new("replay rung ladder lock poisoned"))?;
         self.cache.with_records(|records| {
-            reconstruct_value_cursored(&self.index, records, hour_index, &mut cursor, keep_going)
+            reconstruct_value_cursored(&self.index, records, hour_index, &mut cursor, &mut rungs, keep_going)
         })
     }
 
@@ -2848,6 +2989,153 @@ impl CertifiedReplayCache {
         }
     }
 
+    /// The world for one hour materialised straight from the canonical tree,
+    /// root member by root member on `workers` threads: the same value as
+    /// [`Self::reconstruct_value`], with the per-member projections memoised on
+    /// their nodes exactly as the whole-root projection leaves them.
+    pub fn reconstruct_materialized(
+        &self,
+        hour_index: i64,
+        workers: usize,
+    ) -> Result<(Value, ReplaySeekReceipt), ReplayCacheError> {
+        refuse_confined_hour(&self.confined, hour_index)?;
+        let keep_going = self.keep_going();
+        let mut cursor = self
+            .cursor
+            .lock()
+            .map_err(|_| ReplayCacheError::new("replay scrub cursor lock poisoned"))?;
+        let mut rungs = self
+            .rungs
+            .lock()
+            .map_err(|_| ReplayCacheError::new("replay rung ladder lock poisoned"))?;
+        let outcome = self.cache.with_records(|records| {
+            reconstruct_cursored(
+                &self.index,
+                records,
+                hour_index,
+                &mut cursor,
+                &mut rungs,
+                keep_going.as_ref(),
+                &|value, target, _| {
+                    crate::canon_to_json::materialize_parallel(value, workers)
+                        .map(|world| (world, None))
+                        .map_err(|error| {
+                            ReplayCacheError::new(format!(
+                                "reconstructed hour {} is not a world a JSON reader accepts: {error}",
+                                target.hour_index
+                            ))
+                        })
+                },
+            )
+        })?;
+        match outcome {
+            CursoredOutcome::Produced { produced, receipt } => Ok((produced, receipt)),
+            CursoredOutcome::Abandoned { reached_hour, .. } => Err(ReplayCacheError::new(format!(
+                "the reconstruction of hour {hour_index} was abandoned at hour {reached_hour} \
+                 because the caller's stop switch asked it to stop"
+            ))),
+        }
+    }
+
+    /// One root member of the hour, materialised alone: the walk is the same,
+    /// the projection is of that member only.
+    pub fn reconstruct_member(
+        &self,
+        hour_index: i64,
+        key: &str,
+    ) -> Result<(Option<Value>, ReplaySeekReceipt), ReplayCacheError> {
+        refuse_confined_hour(&self.confined, hour_index)?;
+        let keep_going = self.keep_going();
+        let mut cursor = self
+            .cursor
+            .lock()
+            .map_err(|_| ReplayCacheError::new("replay scrub cursor lock poisoned"))?;
+        let mut rungs = self
+            .rungs
+            .lock()
+            .map_err(|_| ReplayCacheError::new("replay rung ladder lock poisoned"))?;
+        let outcome = self.cache.with_records(|records| {
+            reconstruct_cursored(
+                &self.index,
+                records,
+                hour_index,
+                &mut cursor,
+                &mut rungs,
+                keep_going.as_ref(),
+                &|value, target, _| match value.member(key) {
+                    None => Ok((None, None)),
+                    Some(member) => crate::canon_to_json::project_at(member, 1)
+                        .map(|projected| (Some(crate::canon_to_json::projected_to_value(&projected)), None))
+                        .map_err(|error| {
+                            ReplayCacheError::new(format!(
+                                "reconstructed hour {} is not a world a JSON reader accepts: {error}",
+                                target.hour_index
+                            ))
+                        }),
+                },
+            )
+        })?;
+        match outcome {
+            CursoredOutcome::Produced { produced, receipt } => Ok((produced, receipt)),
+            CursoredOutcome::Abandoned { reached_hour, .. } => Err(ReplayCacheError::new(format!(
+                "the reconstruction of hour {hour_index} was abandoned at hour {reached_hour} \
+                 because the caller's stop switch asked it to stop"
+            ))),
+        }
+    }
+
+    /// The hour's root members as shared values: a forward step from the
+    /// cursor re-materialises only the members its deltas touched and hands
+    /// every other member back by `Arc`; any other walk materialises them all,
+    /// on `workers` threads. Member by member the same values as
+    /// [`Self::reconstruct_materialized`].
+    pub fn reconstruct_root_members(
+        &self,
+        hour_index: i64,
+        workers: usize,
+    ) -> Result<(Arc<MaterializedRoot>, ReplaySeekReceipt), ReplayCacheError> {
+        refuse_confined_hour(&self.confined, hour_index)?;
+        let keep_going = self.keep_going();
+        let mut cursor = self
+            .cursor
+            .lock()
+            .map_err(|_| ReplayCacheError::new("replay scrub cursor lock poisoned"))?;
+        let mut rungs = self
+            .rungs
+            .lock()
+            .map_err(|_| ReplayCacheError::new("replay rung ladder lock poisoned"))?;
+        let outcome = self.cache.with_records(|records| {
+            reconstruct_cursored(
+                &self.index,
+                records,
+                hour_index,
+                &mut cursor,
+                &mut rungs,
+                keep_going.as_ref(),
+                &|value, target, reuse| {
+                    crate::canon_to_json::materialize_root_members(value, workers, reuse)
+                        .map(|members| {
+                            let members = Arc::new(members);
+                            (members.clone(), Some(members))
+                        })
+                        .map_err(|error| {
+                            ReplayCacheError::new(format!(
+                                "reconstructed hour {} is not a world a JSON reader accepts: {error}",
+                                target.hour_index
+                            ))
+                        })
+                },
+            )
+        })?;
+        match outcome {
+            CursoredOutcome::Produced { produced, receipt } => Ok((produced, receipt)),
+            CursoredOutcome::Abandoned { reached_hour, .. } => Err(ReplayCacheError::new(format!(
+                "the reconstruction of hour {hour_index} was abandoned at hour {reached_hour} \
+                 because the caller's stop switch asked it to stop"
+            ))),
+        }
+    }
+
     /// [`Self::reconstruct_projected`] with the caller holding a stop switch.
     /// See [`Self::reconstruct_json_interruptible`] for why a seek must be
     /// abandonable and what an abandoned one keeps.
@@ -2861,8 +3149,12 @@ impl CertifiedReplayCache {
             .cursor
             .lock()
             .map_err(|_| ReplayCacheError::new("replay scrub cursor lock poisoned"))?;
+        let mut rungs = self
+            .rungs
+            .lock()
+            .map_err(|_| ReplayCacheError::new("replay rung ladder lock poisoned"))?;
         self.cache.with_records(|records| {
-            reconstruct_projected_cursored(&self.index, records, hour_index, &mut cursor, keep_going)
+            reconstruct_projected_cursored(&self.index, records, hour_index, &mut cursor, &mut rungs, keep_going)
         })
     }
 
@@ -2916,6 +3208,21 @@ impl CertifiedReplayCache {
         if let Ok(mut cursor) = self.cursor.lock() {
             *cursor = None;
         }
+        if let Ok(mut rungs) = self.rungs.lock() {
+            let policy = rungs.policy;
+            *rungs = RungLadder::new(policy);
+        }
+    }
+
+    /// Replace the rung policy; the rungs already held are dropped.
+    pub fn set_rung_policy(&self, policy: RungPolicy) {
+        if let Ok(mut rungs) = self.rungs.lock() {
+            *rungs = RungLadder::new(policy);
+        }
+    }
+
+    pub fn rung_count(&self) -> usize {
+        self.rungs.lock().map(|rungs| rungs.len()).unwrap_or(0)
     }
 
     /// See [`ReplayCacheReader::verify_every_hour`]. Identical proof, over
@@ -3165,6 +3472,12 @@ fn reconstruct_json_from(
         applied_deltas: target.delta_steps,
         walked_deltas: target.delta_steps,
         configured_bound: index.checkpoint_interval_hours - 1,
+        resumed_from: ResumeSource::Checkpoint,
+        walk_ms: 0.0,
+        finish_ms: 0.0,
+        walk_read_ms: 0.0,
+        walk_decode_ms: 0.0,
+        walk_apply_ms: 0.0,
     };
     if receipt.applied_deltas > receipt.configured_bound {
         return Err(ReplayCacheError::new(
@@ -3201,9 +3514,10 @@ fn reconstruct_json_cursored(
     cache: &dyn CacheRecords,
     hour_index: i64,
     cursor: &mut Option<ScrubCursor>,
+    rungs: &mut RungLadder,
     keep_going: &dyn Fn() -> bool,
 ) -> Result<ScrubOutcome, ReplayCacheError> {
-    match reconstruct_cursored(index, cache, hour_index, cursor, keep_going, &|value, target| {
+    match reconstruct_cursored(index, cache, hour_index, cursor, rungs, keep_going, &|value, target, _| {
         let json = value.to_json_bytes();
         if Sha256::hex(&json) != target.world_json_sha256 {
             return Err(ReplayCacheError::new(format!(
@@ -3211,7 +3525,7 @@ fn reconstruct_json_cursored(
                 target.hour_index
             )));
         }
-        Ok(json)
+        Ok((json, None))
     })? {
         CursoredOutcome::Produced { produced, receipt } => Ok(ScrubOutcome::Reconstructed {
             json: produced,
@@ -3255,6 +3569,7 @@ fn reconstruct_value_cursored(
     cache: &dyn CacheRecords,
     hour_index: i64,
     cursor: &mut Option<ScrubCursor>,
+    rungs: &mut RungLadder,
     keep_going: &dyn Fn() -> bool,
 ) -> Result<FrameOutcome, ReplayCacheError> {
     // The MEMOISED projection: unchanged subtrees are pointer-identical
@@ -3263,9 +3578,9 @@ fn reconstruct_value_cursored(
     // into a private `serde_json::Value` is still paid in full here — it goes
     // away domain by domain as the boundary migrates onto
     // [`ProjectedValue`], and until then this route claims no latency.
-    match reconstruct_cursored(index, cache, hour_index, cursor, keep_going, &|value, target| {
+    match reconstruct_cursored(index, cache, hour_index, cursor, rungs, keep_going, &|value, target, _| {
         crate::canon_to_json::project(value)
-            .map(|projected| crate::canon_to_json::projected_to_value(&projected))
+            .map(|projected| (crate::canon_to_json::projected_to_value(&projected), None))
             .map_err(|error| {
                 ReplayCacheError::new(format!(
                     "reconstructed hour {} is not a world a JSON reader accepts: {error}",
@@ -3295,10 +3610,11 @@ fn reconstruct_projected_cursored(
     cache: &dyn CacheRecords,
     hour_index: i64,
     cursor: &mut Option<ScrubCursor>,
+    rungs: &mut RungLadder,
     keep_going: &dyn Fn() -> bool,
 ) -> Result<ProjectedOutcome, ReplayCacheError> {
-    match reconstruct_cursored(index, cache, hour_index, cursor, keep_going, &|value, target| {
-        crate::canon_to_json::project(value).map_err(|error| {
+    match reconstruct_cursored(index, cache, hour_index, cursor, rungs, keep_going, &|value, target, _| {
+        crate::canon_to_json::project(value).map(|world| (world, None)).map_err(|error| {
             ReplayCacheError::new(format!(
                 "reconstructed hour {} is not a world a JSON reader accepts: {error}",
                 target.hour_index
@@ -3337,9 +3653,15 @@ fn reconstruct_cursored<T>(
     cache: &dyn CacheRecords,
     hour_index: i64,
     cursor: &mut Option<ScrubCursor>,
+    rungs: &mut RungLadder,
     keep_going: &dyn Fn() -> bool,
-    finish: &dyn Fn(&CanonValue, &ReplayHourEntry) -> Result<T, ReplayCacheError>,
+    finish: &dyn Fn(
+        &CanonValue,
+        &ReplayHourEntry,
+        RootReuse<'_>,
+    ) -> Result<(T, Option<Arc<MaterializedRoot>>), ReplayCacheError>,
 ) -> Result<CursoredOutcome<T>, ReplayCacheError> {
+    let walk_started = std::time::Instant::now();
     let target_position = index
         .hours
         .binary_search_by_key(&hour_index, ReplayHourEntry::hour_index)
@@ -3360,13 +3682,25 @@ fn reconstruct_cursored<T>(
     let resumed = cursor.take().filter(|held| {
         held.checkpoint_position == checkpoint_position && held.position <= target_position
     });
-    let (mut value, mut shadow, mut budget, mut names, start_position) = match resumed {
+    // A rung is the same kind of state as the held cursor and resumable under
+    // the same condition; the nearer of the two wins.
+    let rung = rungs.nearest(checkpoint_position, target_position);
+    let (resumed, resumed_from) = match (resumed, rung) {
+        (Some(held), Some(rung)) if rung.position > held.position => {
+            (Some(rung), ResumeSource::Rung)
+        }
+        (Some(held), _) => (Some(held), ResumeSource::Cursor),
+        (None, Some(rung)) => (Some(rung), ResumeSource::Rung),
+        (None, None) => (None, ResumeSource::Checkpoint),
+    };
+    let (mut value, mut shadow, mut budget, mut names, start_position, previous_members) = match resumed {
         Some(held) => (
             held.value,
             held.shadow,
             held.budget,
             held.names,
             held.position,
+            held.members,
         ),
         None => {
             let (kind, checkpoint_hour, payload) =
@@ -3378,17 +3712,32 @@ fn reconstruct_cursored<T>(
             }
             let value = decode_value_exact(payload.as_ref())?;
             drop(payload);
+            if rungs.wants(checkpoint_position, checkpoint_position) {
+                rungs.offer(ScrubCursor {
+                    checkpoint_position,
+                    position: checkpoint_position,
+                    value: value.clone(),
+                    shadow: Shadow::default(),
+                    budget: ShadowBudget::default(),
+                    names: NameDictionary::default(),
+                    members: None,
+                });
+            }
             (
                 value,
                 Shadow::default(),
                 ShadowBudget::default(),
                 NameDictionary::default(),
                 checkpoint_position,
+                None,
             )
         }
     };
+    let mut changed_roots: Option<std::collections::BTreeSet<String>> =
+        previous_members.as_ref().map(|_| std::collections::BTreeSet::new());
     let mut walked = 0u32;
     let mut position = start_position;
+    let (mut walk_read_ms, mut walk_decode_ms, mut walk_apply_ms) = (0.0f64, 0.0f64, 0.0f64);
     for entry in &index.hours[start_position + 1..=target_position] {
         // The stop switch is read HERE, between records, because a record
         // boundary is the only place the running value is a state a cursor may
@@ -3402,32 +3751,77 @@ fn reconstruct_cursored<T>(
                 shadow,
                 budget,
                 names,
+                members: None,
             });
             return Ok(CursoredOutcome::Abandoned {
                 reached_hour: index.hours[position].hour_index,
                 walked_deltas: walked,
             });
         }
+        let stage = std::time::Instant::now();
         let (kind, record_hour, payload) = cache_record_authenticated(cache, entry)?;
         if kind != RECORD_DELTA || record_hour != entry.hour_index {
             return Err(ReplayCacheError::new(
                 "delta index points at an invalid cache record",
             ));
         }
+        walk_read_ms += stage.elapsed().as_secs_f64() * 1e3;
+        let stage = std::time::Instant::now();
         let patch = decode_patch_record(payload.as_ref(), &mut names)?;
         drop(payload);
+        walk_decode_ms += stage.elapsed().as_secs_f64() * 1e3;
+        if let Some(changed) = changed_roots.as_mut() {
+            match &patch {
+                Patch::Keep => {}
+                Patch::Object { removals, changes } => {
+                    changed.extend(removals.iter().cloned());
+                    changed.extend(changes.iter().map(|(name, _)| name.clone()));
+                }
+                _ => changed_roots = None,
+            }
+        }
+        let stage = std::time::Instant::now();
         apply_patch(&mut value, &patch, &mut shadow, &mut budget, 0)?;
+        drop(patch);
+        walk_apply_ms += stage.elapsed().as_secs_f64() * 1e3;
         walked += 1;
         position += 1;
+        if rungs.wants(checkpoint_position, position) {
+            rungs.offer(ScrubCursor {
+                checkpoint_position,
+                position,
+                value: value.clone(),
+                shadow: shadow.clone(),
+                budget,
+                names: names.clone(),
+                members: None,
+            });
+        }
     }
     validate_world_identity(&value, target.hour_index, &target.date)?;
-    let produced = finish(&value, target)?;
+    let walk_ms = walk_started.elapsed().as_secs_f64() * 1e3;
+    let finish_started = std::time::Instant::now();
+    let (produced, members) = finish(
+        &value,
+        target,
+        RootReuse {
+            previous: previous_members.as_deref(),
+            changed: changed_roots.as_ref(),
+        },
+    )?;
+    let finish_ms = finish_started.elapsed().as_secs_f64() * 1e3;
     let receipt = ReplaySeekReceipt {
         checkpoint_hour: checkpoint.hour_index,
         target_hour: target.hour_index,
         applied_deltas: target.delta_steps,
         walked_deltas: walked,
         configured_bound: index.checkpoint_interval_hours - 1,
+        resumed_from,
+        walk_ms,
+        finish_ms,
+        walk_read_ms,
+        walk_decode_ms,
+        walk_apply_ms,
     };
     if receipt.applied_deltas > receipt.configured_bound {
         return Err(ReplayCacheError::new(
@@ -3441,6 +3835,7 @@ fn reconstruct_cursored<T>(
         shadow,
         budget,
         names,
+        members,
     });
     Ok(CursoredOutcome::Produced { produced, receipt })
 }
@@ -3638,7 +4033,7 @@ enum ArrayEditOp {
 /// would decode some hour to different bytes, which is what
 /// `verify_every_hour` already checks against `replay_decoder`'s own hash for
 /// every hour of every sealed cache.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Shadow {
     remembered: Option<CanonValue>,
     /// What [`ShadowBudget`] was charged for `remembered`, so releasing it
@@ -3689,7 +4084,7 @@ struct Shadow {
 /// order -- charges and refunds alike are driven by [`apply_patch`], which both
 /// sides call -- so they hold the same balance at every hour and never disagree
 /// about whether a memory exists.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct ShadowBudget {
     spent: u64,
     cap: u64,
@@ -4793,7 +5188,7 @@ fn apply_patch(
 /// The re-learning costs one literal per distinct name per window: about 40 KB
 /// once per 744 game hours, against the 427,807 raw bytes an hour the names
 /// cost before.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct NameDictionary {
     /// The table, ONCE. `ids` and `names` share each name's bytes rather than
     /// holding two copies of them: a literal introduction is already paid for

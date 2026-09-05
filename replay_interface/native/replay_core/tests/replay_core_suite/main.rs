@@ -8,3 +8,4 @@ mod pr_timeline_walk;
 mod r5_ingest_properties;
 mod roundtrip_gates;
 mod world_timeline;
+mod view_hour_decode_proof;

@@ -4243,6 +4243,7 @@ fn frame_cache_budget_is_content_neutral() {
             open_recording(&root).unwrap(),
             TimelineConfig {
                 frame_cache_entries: cap,
+                ..TimelineConfig::default()
             },
         )
         .unwrap();

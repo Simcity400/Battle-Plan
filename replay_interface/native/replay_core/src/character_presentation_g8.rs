@@ -1,9 +1,10 @@
 
+use crate::WorldRoot;
 use crate::world::{
     AceRosterExactView, CharacterRosterExactView, CharacterTraitNodeState, D18CountryRosterView,
     ViewStatus,
 };
-use serde_json::{Map, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -150,7 +151,7 @@ pub struct CharacterPresentationG8ExactView {
 }
 
 pub(crate) fn build_character_presentation_g8_exact(
-    rest: &Map<String, Value>,
+    rest: &impl WorldRoot,
     expected_hour: i64,
     d18_country_roster: &D18CountryRosterView,
     rosters: &BTreeMap<String, CharacterRosterExactView>,
@@ -655,6 +656,7 @@ pub fn ace_ordered_digest(rows: &[CharacterG11AceObservation]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Map;
     use super::*;
     use crate::world::{
         AceExactRow, AceLifecycleState, CharacterRosterExactView, D18CountryRosterEntry,

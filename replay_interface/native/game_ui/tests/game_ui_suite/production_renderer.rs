@@ -889,7 +889,7 @@ fn frame_owned_xui23_carrier_reaches_the_actual_production_renderer() {
                             || serde_json::json!({"country_composition_version": 2}),
                         );
                     }
-                    rest
+                    rest.into()
                 },
             })
         }
@@ -1147,7 +1147,8 @@ fn installed_xui21_shipping_renderer_admits_complete_event_namespace_and_compose
                 })
                 .as_object()
                 .expect("frame object")
-                .clone(),
+                .clone()
+                .into(),
             })
         }
     }
@@ -1226,7 +1227,7 @@ fn xui12_shipping_consumer_requires_the_detached_passive_all_country_carrier() {
                             || serde_json::json!({"country_composition_version": 2}),
                         );
                     }
-                    rest
+                    rest.into()
                 },
             })
         }

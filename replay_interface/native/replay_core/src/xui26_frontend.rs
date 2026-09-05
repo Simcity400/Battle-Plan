@@ -1,7 +1,8 @@
 
+use crate::WorldRoot;
 use crate::world::ViewStatus;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use snapshot::sha256::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -379,7 +380,7 @@ struct Envelope {
 }
 
 pub(crate) fn build_xui26_frontend(
-    rest: &Map<String, Value>,
+    rest: &impl WorldRoot,
     frame_hour: i64,
     contended_keys: &impl crate::world::ContendedKeys,
     warnings: &mut Vec<String>,
@@ -510,6 +511,7 @@ pub(crate) fn build_xui26_frontend(
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Map;
     use super::*;
     use serde_json::json;
 

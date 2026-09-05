@@ -75,6 +75,9 @@ mod world_audio;
 #[cfg(windows)]
 mod xmap20_effects;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::error::Error;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -84,11 +87,11 @@ use map_viewer::{sensitive_file_overrides, GameFileResolver, GameFileResolverOpt
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const USAGE: &str = "usage: replay_app [--configure] [--config <profile.json>] [--non-interactive] [--list-blockers] [--validate-recording <path>] [--report-recording-reach <path> --report-out <report.json> [--report-hours sample|all]] [--report-content-authority <path> --report-out <report.json>] [--validate-playback <path>] [--verify-xmap22-dump <out.bmp>] [--benchmark-stress-output <receipt.json>] [--benchmark-output <receipt.json> --recording <path>] [--bundle <dir>] [--game <the game install dir>] \
+const USAGE: &str = "usage: replay_app [--configure] [--config <profile.json>] [--non-interactive] [--list-blockers] [--validate-recording <path>] [--report-recording-reach <path> --report-out <report.json> [--report-hours sample|all|every:<n>|first:<n>|scrub:<n>]] [--report-content-authority <path> --report-out <report.json>] [--validate-playback <path>] [--verify-xmap22-dump <out.bmp>] [--benchmark-stress-output <receipt.json>] [--benchmark-output <receipt.json> --recording <path>] [--bundle <dir>] [--game <the game install dir>] \
 [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path> [--logical-stream <id>] [--frame-cache <entries>]] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <canonical-hour-index> | --dump-nth-hour <ordinal>] \
 [--hour <0..1>] [--dump-zoom <screen-px-per-map-px>] [--dump-center <x,y>] [--dump-hdr <out.rgba16f>]] \
     [--postfx] [--postfx-restore-full] [--postfx-validate-capture] [--water-full]\n\
---report-recording-reach opens one recording through the product policy and writes, per reported hour, that frame's coverage warnings and the complete XMAP00 map-authority projection (every required input with its disposition and blocker); it renders nothing and needs no game install; --report-hours defaults to sample (first/middle/last); \
+--report-recording-reach opens one recording through the product policy and writes, per reported hour, that frame's coverage warnings and the complete XMAP00 map-authority projection (every required input with its disposition and blocker); it renders nothing and needs no game install; --report-hours defaults to sample (first/middle/last), every:<n> reports every n-th hour, scrub:<n> visits n evenly spaced hours in bit-reversed order, first:<n> plays the first n hours in order, and each reported hour carries its decode stage timings; \
 --report-content-authority opens one recording through the product policy, admits its recorded content against this machine's install exactly as playback would, and writes the BundleContentAuthority (ordered winner inputs and authority_sha256) to --report-out as JSON without rendering; it requires the same content roots playback uses (--game/--userdata/--config); \
 --dump-hour selects the exact canonical hour_index; --dump-nth-hour selects a zero-based ordinal in the recording snapshot index and resolves it to that canonical hour; \
 --frame-cache <entries> shrinks the recording's decoded-frame LRU budget for weak-PC profiles (default 16 hot frames; requires --recording); \
@@ -467,6 +470,7 @@ fn parse_cli(args: &[String]) -> Result<CliOptions> {
             timeline: match frame_cache {
                 Some(entries) => replay_core::TimelineConfig {
                     frame_cache_entries: entries,
+                    ..replay_core::TimelineConfig::default()
                 },
                 None => replay_core::TimelineConfig::default(),
             },
@@ -1304,15 +1308,30 @@ fn parse_report_recording_reach_args(
                 hours_selected = true;
                 let value = args
                     .get(index)
-                    .ok_or_else(|| format!("--report-hours requires sample|all\n{USAGE}"))?;
+                    .ok_or_else(|| format!("--report-hours requires sample|all|every:<n>\n{USAGE}"))?;
                 hours = match value.as_str() {
                     "sample" => recording_reach::HourSelection::Sample,
                     "all" => recording_reach::HourSelection::All,
                     other => {
-                        return Err(format!(
-                            "--report-hours {other:?} is not sample or all\n{USAGE}"
-                        )
-                        .into())
+                        let counted = |prefix: &str| {
+                            other
+                                .strip_prefix(prefix)
+                                .and_then(|n| n.parse::<usize>().ok())
+                                .filter(|n| *n > 0)
+                        };
+                        if let Some(stride) = counted("every:") {
+                            recording_reach::HourSelection::Every(stride)
+                        } else if let Some(count) = counted("scrub:") {
+                            recording_reach::HourSelection::Scrub(count)
+                        } else if let Some(count) = counted("first:") {
+                            recording_reach::HourSelection::First(count)
+                        } else {
+                            return Err(format!(
+                                "--report-hours {other:?} is not sample, all, every:<n>, first:<n> or scrub:<n>
+{USAGE}"
+                            )
+                            .into());
+                        }
                     }
                 };
             }
@@ -1489,7 +1508,8 @@ fn run_validate_playback(
             non_interactive,
         },
     )?;
-    let timeline = match validate::open_timeline_segment(&replay, logical_stream_id) {
+    let open_started = std::time::Instant::now();
+    let timeline = match validate::open_timeline_segment_unvalidated(&replay, logical_stream_id) {
         Ok(timeline) => timeline,
         Err(outcome) => {
             let summary = outcome.summary();
@@ -1497,6 +1517,7 @@ fn run_validate_playback(
             return Err(summary.into());
         }
     };
+    let open_ms = open_started.elapsed().as_secs_f64() * 1e3;
     content_compatibility::validate_timeline_content(&timeline, &paths)
         .map_err(|error| -> Box<dyn Error> { error.into() })?;
     let static_focus_definitions = replay_core::admit_static_focus_definitions(
@@ -1512,12 +1533,29 @@ fn run_validate_playback(
         &static_focus_definitions,
     )
     .map_err(|error| format!("admit packaged static research catalogs: {error}"))?;
-    for &hour in timeline.hours() {
-        let frame = timeline.frame(hour)?;
-        static_research.bind_frame(&frame).map_err(|error| {
-            format!("bind packaged static research catalogs at hour {hour}: {error}")
-        })?;
-    }
+    // One pass: every hour is validated and bound in the same decode.
+    let timing = validate::validate_all_frame_payloads(&timeline, &mut |hour, frame| {
+        static_research
+            .bind_frame(frame)
+            .map(|_| ())
+            .map_err(|error| {
+                format!("bind packaged static research catalogs at hour {hour}: {error}")
+            })
+    })
+    .map_err(|outcome| {
+        let summary = outcome.summary();
+        println!("{summary}");
+        summary
+    })?;
+    println!(
+        "validate-playback: opened in {open_ms:.1} ms; {} hour(s) decoded and bound in {:.1} ms \
+         ({:.1} ms/hour, slowest hour {} at {:.1} ms)",
+        timing.hours,
+        timing.total_ms,
+        timing.per_hour_ms(),
+        timing.max_hour,
+        timing.max_hour_ms
+    );
     Ok(())
 }
 
@@ -1527,8 +1565,19 @@ fn run_validate_recording(
     env: impl Fn(&str) -> Option<std::ffi::OsString>,
 ) -> Result<()> {
     reject_env_overrides(env)?;
-    let outcome = validate::open_and_validate_segment(path, logical_stream_id);
+    let (outcome, timing) = validate::open_and_validate_segment_timed(path, logical_stream_id);
     println!("{}", outcome.summary());
+    if let Some((open_ms, timing)) = timing {
+        println!(
+            "validate-recording: opened in {open_ms:.1} ms; {} hour(s) decoded in {:.1} ms \
+             ({:.1} ms/hour, slowest hour {} at {:.1} ms)",
+            timing.hours,
+            timing.total_ms,
+            timing.per_hour_ms(),
+            timing.max_hour,
+            timing.max_hour_ms
+        );
+    }
     match outcome {
         validate::OpenOutcome::Opened(report) => {
             for warning in &report.warnings {
@@ -1905,7 +1954,8 @@ mod tests {
                 path: PathBuf::from("some/session.battleplan"),
                 logical_stream_id: None,
                 timeline: replay_core::TimelineConfig {
-                    frame_cache_entries: 4
+                    frame_cache_entries: 4,
+                    ..replay_core::TimelineConfig::default()
                 },
             }
         );

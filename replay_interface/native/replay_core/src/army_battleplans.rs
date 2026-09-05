@@ -147,7 +147,7 @@ impl WorldFrame {
 }
 
 fn parse_army_battleplans(
-    raw: &Map<String, Value>,
+    raw: &impl crate::WorldRoot,
     manager: &crate::ArmyOrdersGroupManagerView,
 ) -> ArmyBattleplansView {
     let Some(oob) = raw.get("order_of_battle") else {

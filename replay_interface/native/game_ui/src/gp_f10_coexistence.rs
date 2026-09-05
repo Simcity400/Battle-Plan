@@ -56,7 +56,7 @@ impl ReplaySource for CoexistenceSource {
                     rest.entry("tag_db_id_index")
                         .or_insert_with(|| serde_json::json!({"country_composition_version": 2}));
                 }
-                rest
+                rest.into()
             },
         })
     }

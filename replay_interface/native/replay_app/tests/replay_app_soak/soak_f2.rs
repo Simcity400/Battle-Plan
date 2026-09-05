@@ -26,6 +26,7 @@ fn open_fixture_with_cap(cap: usize) -> WorldTimeline {
         source,
         TimelineConfig {
             frame_cache_entries: cap,
+            ..TimelineConfig::default()
         },
     )
     .expect("open timeline")
@@ -79,6 +80,7 @@ fn scrub_and_measure(hour_count: usize, seeks: usize, cap: usize) -> (usize, usi
         source,
         TimelineConfig {
             frame_cache_entries: cap,
+            ..TimelineConfig::default()
         },
     )
     .expect("open synthetic timeline");
