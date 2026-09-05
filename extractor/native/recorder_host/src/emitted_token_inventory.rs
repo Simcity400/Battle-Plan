@@ -513,6 +513,7 @@ mod tests {
                         game_hour_raw,
                     },
                     &payload,
+                    true,
                 )
                 .expect("wrap a valid d53 payload");
             append_record(
@@ -837,6 +838,7 @@ mod tests {
                         game_hour_raw: FIRST_HOUR + hour,
                     },
                     &payload,
+                    true,
                 )
                 .expect("wrap a valid d47 payload");
             append_record(

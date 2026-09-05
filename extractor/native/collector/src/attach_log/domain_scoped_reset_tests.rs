@@ -430,6 +430,7 @@ fn table() -> BTreeMap<&'static str, &'static str> {
     }
     for_each_domain_scoped_tracker!(collect_table);
     for_each_country_scoped_tracker!(collect_table);
+    for_each_journalled_baseline_tracker!(collect_table);
     table
 }
 
@@ -691,7 +692,9 @@ fn domain_scoped_tracker_allowlist_matches_the_borrow_sites() {
 
     assert_eq!(
         table.len(),
-        DOMAIN_SCOPED_TRACKER_RETENTION.len() + COUNTRY_SCOPED_TRACKER_RETENTION.len(),
+        DOMAIN_SCOPED_TRACKER_RETENTION.len()
+            + COUNTRY_SCOPED_TRACKER_RETENTION.len()
+            + JOURNALLED_TRACKER_RETENTION.len(),
         "the table macros and the flattened constants must describe the same list"
     );
 
@@ -980,6 +983,7 @@ fn every_perf_gate_tracker_field_is_classified() {
     let scoped: Vec<&str> = DOMAIN_SCOPED_TRACKER_RETENTION
         .iter()
         .chain(COUNTRY_SCOPED_TRACKER_RETENTION.iter())
+        .chain(JOURNALLED_TRACKER_RETENTION.iter())
         .map(|(field, _)| *field)
         .collect();
     let blanket: Vec<&str> = BLANKET_RESET_TRACKER_FIELDS
@@ -1142,6 +1146,7 @@ const TRACKER_PROBES: &[TrackerProbe] = &[
 fn probe_tag(field: &str) -> u16 {
     DOMAIN_SCOPED_TRACKER_RETENTION
         .iter()
+        .chain(JOURNALLED_TRACKER_RETENTION.iter())
         .find(|(name, _)| *name == field)
         .map(|(_, tag)| *tag)
         .unwrap_or_else(|| panic!("`{field}` is a domain-scoped tracker field"))
@@ -1543,9 +1548,16 @@ fn an_unrelated_rejection_keeps_the_advanced_tech_pin() {
         trackers.tech_country_delta.frame_entry.is_some(),
         "the entry is still journalled until the frame seals"
     );
-    let mut retired = Vec::new();
-    commit_delta_pin_transactions(&mut trackers, &mut retired);
-    assert!(trackers.tech_country_delta.frame_entry.is_none(), "the seal drops the entry");
+    commit_delta_pin_transactions(&mut trackers, &mut Vec::new());
+    assert!(
+        trackers.tech_country_delta.frame_entry.is_some(),
+        "the build's seal settles nothing; the sink has not spoken"
+    );
+    commit_country_staged_advances(&mut trackers, &BTreeSet::new());
+    assert!(
+        trackers.tech_country_delta.frame_entry.is_none(),
+        "the sink verdict drops the entry"
+    );
     reset_trackers_after_rejected_bracket(&mut trackers, &[COMPACT_DOMAIN_TECH].into_iter().collect());
     assert_eq!(
         tech_pin_bytes(&trackers),
@@ -1567,6 +1579,9 @@ fn a_refused_frame_returns_the_restored_tech_pin() {
     };
     let rows = [super::domain13_tech_delta_tests::tech_row(1, 2)];
     let _ = compact_tech_data_payload_delta(&rows, 1, 0, &mut refused.tech_country_delta, &dictionary);
+    // The build's seal ran before the sink refused the frame; the entry has to
+    // outlive it.
+    commit_delta_pin_transactions(&mut refused, &mut Vec::new());
     let mut published = CompactPerfGateTrackers::default();
     restore_country_trackers_after_refused_frame(&mut refused, &mut published);
     assert_eq!(

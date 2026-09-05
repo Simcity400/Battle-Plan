@@ -107,6 +107,11 @@ pub const BODY_KIND_DELTA: u8 = 2;
 pub const OP_COPY: u8 = 0;
 pub const OP_LITERAL: u8 = 1;
 
+/// Header flag: the record reconstructs exactly but leaves the retained basis
+/// where it was, so a failure-status payload never becomes the next delta's base.
+pub const FLAG_RETAINS_BASIS: u8 = 1;
+pub const FLAGS_OFFSET: usize = 44;
+
 /// Bytes one encoded op costs before its literal payload.
 ///
 /// `COPY`: tag + u32 source offset + u32 length. `LITERAL`: tag + u32 length,
@@ -516,6 +521,7 @@ pub struct PayloadSpanDeltaRecord {
     pub body: PayloadSpanDeltaBody,
     /// The whole basis, present only on a keyframe.
     pub keyframe_basis: Vec<u8>,
+    pub retains_basis: bool,
 }
 
 impl PayloadSpanDeltaRecord {
@@ -1067,9 +1073,10 @@ pub fn encode_payload(
     identity: PayloadSpanDeltaIdentity,
     payload: &[u8],
     body: &PayloadSpanDeltaBody,
+    retains_basis: bool,
 ) -> Result<Vec<u8>, String> {
     let basis_sha256 = Sha256::digest(basis_of(payload)).into();
-    encode_payload_with_basis_digest(identity, payload, basis_sha256, body)
+    encode_payload_with_basis_digest(identity, payload, basis_sha256, body, retains_basis)
 }
 
 /// [`encode_payload`] with the basis digest supplied.
@@ -1084,6 +1091,7 @@ fn encode_payload_with_basis_digest(
     payload: &[u8],
     basis_sha256: [u8; 32],
     body: &PayloadSpanDeltaBody,
+    retains_basis: bool,
 ) -> Result<Vec<u8>, String> {
     let domain_id = identity.domain_id;
     if !is_delta_enabled_domain(domain_id) {
@@ -1164,7 +1172,9 @@ fn encode_payload_with_basis_digest(
     out.extend_from_slice(&body_len_u32.to_le_bytes());
     out.extend_from_slice(&identity.source_sequence.to_le_bytes());
     out.extend_from_slice(&identity.game_hour_raw.to_le_bytes());
-    out.extend_from_slice(&[0u8; 4]);
+    debug_assert_eq!(out.len(), FLAGS_OFFSET);
+    out.push(if retains_basis { FLAG_RETAINS_BASIS } else { 0 });
+    out.extend_from_slice(&[0u8; 3]);
     out.extend_from_slice(&basis_sha256);
     out.extend_from_slice(&body.base_basis_sha256().unwrap_or([0; 32]));
     debug_assert_eq!(out.len(), HEADER_LEN);
@@ -1244,7 +1254,12 @@ pub fn decode_payload(payload: &[u8]) -> Result<PayloadSpanDeltaRecord, String> 
     let body_len = u32::from_le_bytes(take(payload, &mut at)?) as usize;
     let source_sequence = u64::from_le_bytes(take(payload, &mut at)?);
     let game_hour_raw = i32::from_le_bytes(take(payload, &mut at)?);
-    if take::<4>(payload, &mut at)? != [0u8; 4] {
+    debug_assert_eq!(at, FLAGS_OFFSET);
+    let flags = take::<1>(payload, &mut at)?[0];
+    if flags & !FLAG_RETAINS_BASIS != 0 {
+        return Err(format!("PSD1 flags {flags:#04x} carry bits this reader does not define"));
+    }
+    if take::<3>(payload, &mut at)? != [0u8; 3] {
         return Err("PSD1 reserved field is nonzero".into());
     }
     let basis_sha256: [u8; 32] = take(payload, &mut at)?;
@@ -1387,6 +1402,7 @@ pub fn decode_payload(payload: &[u8]) -> Result<PayloadSpanDeltaRecord, String> 
         basis_sha256,
         body,
         keyframe_basis,
+        retains_basis: flags & FLAG_RETAINS_BASIS != 0,
     })
 }
 
@@ -1606,6 +1622,7 @@ pub struct PayloadSpanDeltaProducer {
 pub struct PreparedSpanDelta {
     domain_id: u16,
     game_hour_raw: i32,
+    advances_basis: bool,
     keyframe_due: bool,
     observed_baseline_sha256: Option<[u8; 32]>,
     keyframe: bool,
@@ -1707,9 +1724,25 @@ impl PayloadSpanDeltaProducer {
         &mut self,
         identity: PayloadSpanDeltaIdentity,
         payload: &[u8],
+        advances_basis: bool,
     ) -> Result<Vec<u8>, String> {
-        let prepared = self.prepare(identity.domain_id, identity.game_hour_raw, payload)?;
+        let prepared = self.prepare(
+            identity.domain_id,
+            identity.game_hour_raw,
+            payload,
+            advances_basis,
+        )?;
         self.stage_prepared(prepared, identity.source_sequence)
+    }
+
+    /// A payload that does not advance the basis rides a keyframe only when no
+    /// basis is held at all; the cadence clock belongs to advancing records.
+    fn keyframe_due_for(&self, domain_id: u16, game_hour_raw: i32, advances_basis: bool) -> bool {
+        if advances_basis {
+            self.keyframe_due(domain_id, game_hour_raw)
+        } else {
+            self.current(domain_id).is_none()
+        }
     }
 
     /// The read-only half of [`Self::wrap`]: choose the body, build the
@@ -1725,13 +1758,18 @@ impl PayloadSpanDeltaProducer {
     /// placeholder that [`Self::stage_prepared`] stamps; the sequence sits in
     /// the envelope's own header outside every digest, which is the same
     /// argument [`stamp_source_sequence`] makes for a resequenced record.
+    ///
+    /// A no-change hour costs one comparison: `choose_wire_body` compares the
+    /// basis against the retained baseline and names it by digest, so nothing
+    /// is hashed or scanned for an hour whose bytes did not move.
     pub fn prepare(
         &self,
         domain_id: u16,
         game_hour_raw: i32,
         payload: &[u8],
+        advances_basis: bool,
     ) -> Result<PreparedSpanDelta, String> {
-        let keyframe_due = self.keyframe_due(domain_id, game_hour_raw);
+        let keyframe_due = self.keyframe_due_for(domain_id, game_hour_raw, advances_basis);
         let current = self.current(domain_id);
         let observed_baseline_sha256 = current.map(|baseline| baseline.basis_sha256);
         let body = if keyframe_due {
@@ -1739,51 +1777,41 @@ impl PayloadSpanDeltaProducer {
         } else {
             choose_wire_body(payload, current)
         };
-        // A NO-CHANGE HOUR COSTS ONE COMPARISON AND NOTHING ELSE.
-        //
-        // The body asserts the basis is bit-identical to the retained baseline,
-        // so that baseline IS the correct next baseline and its digest IS this
-        // hour's digest. Copying 2.88 MB into a new baseline and hashing it would
-        // reproduce, byte for byte, what the producer is already holding — and
-        // because `current` already falls back to `committed`, leaving the staged
-        // slot alone is not merely an optimisation, it is the correct state: this
-        // frame advanced nothing, so a rollback has nothing to undo and a commit
-        // has nothing to install.
-        //
-        // 163 of d53's 461 hours on `captures/oz_tip` take this path.
+        let basis_sha256 = match &body {
+            PayloadSpanDeltaBody::NoChange { base_basis_sha256 } => *base_basis_sha256,
+            _ => Sha256::digest(basis_of(payload)).into(),
+        };
         let next_baseline = match &body {
             PayloadSpanDeltaBody::NoChange { .. } => None,
-            _ => {
-                let basis = basis_of(payload).to_vec();
-                let basis_sha256: [u8; 32] = Sha256::digest(&basis).into();
-                Some(PayloadSpanDeltaBaseline {
-                    basis,
-                    basis_sha256,
-                })
-            }
-        };
-        let basis_sha256 = match (&body, &next_baseline) {
-            (PayloadSpanDeltaBody::NoChange { base_basis_sha256 }, _) => *base_basis_sha256,
-            (_, Some(baseline)) => baseline.basis_sha256,
-            (_, None) => unreachable!("only a no-change body skips the new baseline"),
+            _ if !advances_basis => None,
+            _ => Some(PayloadSpanDeltaBaseline {
+                basis: basis_of(payload).to_vec(),
+                basis_sha256,
+            }),
         };
         let identity = PayloadSpanDeltaIdentity {
             domain_id,
             source_sequence: 0,
             game_hour_raw,
         };
-        let wrapped = encode_payload_with_basis_digest(identity, payload, basis_sha256, &body)?;
+        let wrapped = encode_payload_with_basis_digest(
+            identity,
+            payload,
+            basis_sha256,
+            &body,
+            !advances_basis,
+        )?;
         Ok(PreparedSpanDelta {
             domain_id,
             game_hour_raw,
+            advances_basis,
             keyframe_due,
             observed_baseline_sha256,
-            keyframe: matches!(body, PayloadSpanDeltaBody::Keyframe),
+            keyframe: advances_basis && matches!(body, PayloadSpanDeltaBody::Keyframe),
             wrapped,
             next_baseline,
         })
     }
-
     /// The staging half of [`Self::wrap`]: stamp the record's sequence into a
     /// prepared envelope and stage the advance it describes.
     ///
@@ -1799,13 +1827,14 @@ impl PayloadSpanDeltaProducer {
         let PreparedSpanDelta {
             domain_id,
             game_hour_raw,
+            advances_basis,
             keyframe_due,
             observed_baseline_sha256,
             keyframe,
             mut wrapped,
             next_baseline,
         } = prepared;
-        if self.keyframe_due(domain_id, game_hour_raw) != keyframe_due
+        if self.keyframe_due_for(domain_id, game_hour_raw, advances_basis) != keyframe_due
             || self
                 .current(domain_id)
                 .map(|baseline| baseline.basis_sha256)
@@ -1933,13 +1962,15 @@ impl PayloadSpanDeltaConsumer {
             ));
         }
         let reconstructed = apply_to_baseline(&record, self.baselines.get(record.domain_id()))?;
-        self.baselines.set(
-            record.domain_id(),
-            PayloadSpanDeltaBaseline {
-                basis: reconstructed[VOLATILE_HEADER_LEN..].to_vec(),
-                basis_sha256: record.basis_sha256,
-            },
-        );
+        if !record.retains_basis {
+            self.baselines.set(
+                record.domain_id(),
+                PayloadSpanDeltaBaseline {
+                    basis: reconstructed[VOLATILE_HEADER_LEN..].to_vec(),
+                    basis_sha256: record.basis_sha256,
+                },
+            );
+        }
         Ok(reconstructed)
     }
 
@@ -2029,6 +2060,12 @@ pub fn repeat_basis(
         ));
     }
     let basis_len = expected_len - VOLATILE_HEADER_LEN;
+    if record.retains_basis {
+        return Err(format!(
+            "PSD1 envelope for domain {domain_id} retained its basis: a failure-status record \
+             asserts no unchanged state a repeat could name"
+        ));
+    }
     match &record.body {
         PayloadSpanDeltaBody::Keyframe => {
             let digest: [u8; 32] = Sha256::digest(record.keyframe_basis.as_slice()).into();
@@ -2138,7 +2175,7 @@ mod tests {
         // fails here rather than showing up as 8 wasted bytes a record on a real
         // spool.
         let payload = payload_of(basis_of_len(4096, 7), 1_234);
-        let encoded = encode_payload(ident(), &payload, &PayloadSpanDeltaBody::Keyframe).unwrap();
+        let encoded = encode_payload(ident(), &payload, &PayloadSpanDeltaBody::Keyframe, false).unwrap();
         assert_eq!(
             encoded.len(),
             HEADER_LEN + payload.len() - VOLATILE_HEADER_LEN
@@ -2158,7 +2195,7 @@ mod tests {
 
         let body = choose_wire_body(&second, Some(&baseline));
         assert!(matches!(body, PayloadSpanDeltaBody::NoChange { .. }));
-        let encoded = encode_payload(ident(), &second, &body).unwrap();
+        let encoded = encode_payload(ident(), &second, &body, false).unwrap();
 
         // kills: letting a no-change body carry basis bytes anyway, which is the
         // whole size win. 163 of d53's 461 hours on captures/oz_tip take this path.
@@ -2189,7 +2226,7 @@ mod tests {
         let PayloadSpanDeltaBody::Delta { op_count, .. } = body else {
             panic!("expected a delta, got {body:?}");
         };
-        let encoded = encode_payload(ident(), &payload, &body).unwrap();
+        let encoded = encode_payload(ident(), &payload, &body, false).unwrap();
         // kills: a spelling that pays for the shift. The whole 256 KiB moved by
         // 96 bytes; the delta must stay in the low hundreds.
         assert!(
@@ -2214,7 +2251,7 @@ mod tests {
         changed[4000] ^= 0xff;
         let payload = payload_of(changed, 5);
         let body = choose_wire_body(&payload, Some(&baseline));
-        let decoded = decode_payload(&encode_payload(ident(), &payload, &body).unwrap()).unwrap();
+        let decoded = decode_payload(&encode_payload(ident(), &payload, &body, false).unwrap()).unwrap();
 
         let stale = PayloadSpanDeltaBaseline::from_basis(basis_of_len(8192, 9));
         let error = apply_to_baseline(&decoded, Some(&stale)).unwrap_err();
@@ -2236,7 +2273,7 @@ mod tests {
         let mut producer = PayloadSpanDeltaProducer::new();
         let mut consumer = PayloadSpanDeltaConsumer::new();
         let payload = payload_of(basis_of_len(4096, 2), 11);
-        let wrapped = producer.wrap(identity(60_830_824, 7), &payload).unwrap();
+        let wrapped = producer.wrap(identity(60_830_824, 7), &payload, true).unwrap();
         producer.commit();
 
         for wrong in [
@@ -2274,7 +2311,7 @@ mod tests {
         changed[8191] ^= 0xff;
         let payload = payload_of(changed, 5);
         let body = choose_wire_body(&payload, Some(&baseline));
-        let mut encoded = encode_payload(ident(), &payload, &body).unwrap();
+        let mut encoded = encode_payload(ident(), &payload, &body, false).unwrap();
         let last = encoded.len() - 1;
         encoded[last] ^= 1;
         let decoded = decode_payload(&encoded).unwrap();
@@ -2287,7 +2324,7 @@ mod tests {
     #[test]
     fn a_malformed_record_errs_and_never_allocates_from_an_unchecked_length() {
         let payload = payload_of(basis_of_len(1024, 2), 5);
-        let good = encode_payload(ident(), &payload, &PayloadSpanDeltaBody::Keyframe).unwrap();
+        let good = encode_payload(ident(), &payload, &PayloadSpanDeltaBody::Keyframe, false).unwrap();
 
         // kills: allocating the op vector from `op_count` before the body is
         // known to hold that many ops. `op_count = u32::MAX` with an empty body
@@ -2326,7 +2363,7 @@ mod tests {
 
         // kills: admitting a nonzero reserved field.
         let mut hostile = good.clone();
-        hostile[44] = 1;
+        hostile[45] = 1;
         assert!(decode_payload(&hostile)
             .unwrap_err()
             .contains("reserved field"));
@@ -2394,7 +2431,7 @@ mod tests {
         let mut consumer = PayloadSpanDeltaConsumer::new();
         let payload = payload_of(basis_of_len(4096, 6), 42);
         let built_with = identity(60_830_824, 17);
-        let mut wrapped = producer.wrap(built_with, &payload).unwrap();
+        let mut wrapped = producer.wrap(built_with, &payload, true).unwrap();
         producer.commit();
 
         // Two records ahead of this one were dropped, so the stream ships it as 15.
@@ -2583,7 +2620,7 @@ mod tests {
         let payload = payload_of(basis, 7);
         let body = choose_wire_body(&payload, Some(&baseline));
         assert!(matches!(body, PayloadSpanDeltaBody::NoChange { .. }));
-        let mut encoded = encode_payload(ident(), &payload, &body).unwrap();
+        let mut encoded = encode_payload(ident(), &payload, &body, false).unwrap();
         assert_eq!(encoded.len(), HEADER_LEN);
 
         // Declare a different reconstructed length; the body still names the
@@ -2650,7 +2687,7 @@ mod tests {
             let payload = payload_of(basis.clone(), hour * 1_000);
             raw_bytes += payload.len();
             let id = identity(60_830_824 + hour as i32, hour);
-            let wrapped = producer.wrap(id, &payload).unwrap();
+            let wrapped = producer.wrap(id, &payload, true).unwrap();
             producer.commit();
             wire_bytes += wrapped.len();
             let reconstructed = consumer.apply(id, &wrapped).unwrap();
@@ -2679,21 +2716,21 @@ mod tests {
 
         let delivered = payload_of(basis.clone(), 1);
         let id0 = identity(60_830_824, 1);
-        let wrapped = producer.wrap(id0, &delivered).unwrap();
+        let wrapped = producer.wrap(id0, &delivered, true).unwrap();
         producer.commit();
         assert_eq!(consumer.apply(id0, &wrapped).unwrap(), delivered);
 
         // This frame's record is rejected: the consumer never sees it.
         basis[100] ^= 0xff;
         let dropped = payload_of(basis.clone(), 2);
-        let _ = producer.wrap(identity(60_830_825, 2), &dropped).unwrap();
+        let _ = producer.wrap(identity(60_830_825, 2), &dropped, true).unwrap();
         producer.roll_back(D53);
         producer.commit();
 
         basis[200] ^= 0xff;
         let next = payload_of(basis.clone(), 3);
         let id2 = identity(60_830_826, 3);
-        let wrapped = producer.wrap(id2, &next).unwrap();
+        let wrapped = producer.wrap(id2, &next, true).unwrap();
         producer.commit();
         assert_eq!(consumer.apply(id2, &wrapped).unwrap(), next);
     }
@@ -2720,7 +2757,7 @@ mod tests {
         let mut basis = basis_of_len(16_384, 2);
         let first = payload_of(basis.clone(), 1);
         let id0 = identity(60_830_824, 1);
-        let wrapped = producer.wrap(id0, &first).unwrap();
+        let wrapped = producer.wrap(id0, &first, true).unwrap();
         producer.commit();
         assert_eq!(consumer.apply(id0, &wrapped).unwrap(), first);
 
@@ -2730,8 +2767,8 @@ mod tests {
         let third = payload_of(basis.clone(), 3);
         let id1 = identity(60_830_825, 2);
         let id2 = identity(60_830_825, 3);
-        let wrapped_second = producer.wrap(id1, &second).unwrap();
-        let wrapped_third = producer.wrap(id2, &third).unwrap();
+        let wrapped_second = producer.wrap(id1, &second, true).unwrap();
+        let wrapped_third = producer.wrap(id2, &third, true).unwrap();
         producer.commit();
         assert_eq!(consumer.apply(id1, &wrapped_second).unwrap(), second);
         assert_eq!(consumer.apply(id2, &wrapped_third).unwrap(), third);
@@ -2751,7 +2788,7 @@ mod tests {
             basis[(hour as usize * 7) % 4000] ^= 0x31;
             let payload = payload_of(basis.clone(), hour);
             let id = identity(60_830_824 + hour as i32, hour);
-            let wrapped = producer.wrap(id, &payload).unwrap();
+            let wrapped = producer.wrap(id, &payload, true).unwrap();
             producer.commit();
             // The consumer never receives hour 1.
             if hour == 1 {
@@ -2804,7 +2841,7 @@ mod tests {
             basis[(index * 13) % 4000] ^= 0x5b;
             let payload = payload_of(basis.clone(), index as u64);
             let wrapped = producer
-                .wrap(identity(base_hour + offset, index as u64), &payload)
+                .wrap(identity(base_hour + offset, index as u64), &payload, true)
                 .unwrap();
             producer.commit();
             kinds.push((offset, wrapped_body_kind(&wrapped)));
@@ -2845,14 +2882,14 @@ mod tests {
             let mut basis = basis_of_len(4096, 4);
             let base_hour = 60_830_824i32;
             let first = payload_of(basis.clone(), 0);
-            let wrapped = producer.wrap(identity(base_hour, 0), &first).unwrap();
+            let wrapped = producer.wrap(identity(base_hour, 0), &first, true).unwrap();
             producer.commit();
             assert_eq!(wrapped_body_kind(&wrapped), BODY_KIND_KEYFRAME);
 
             basis[17] ^= 0x77;
             let later = payload_of(basis, 1);
             let wrapped = producer
-                .wrap(identity(base_hour + offset, 1), &later)
+                .wrap(identity(base_hour + offset, 1), &later, true)
                 .unwrap();
             producer.commit();
             assert_eq!(
@@ -2873,14 +2910,14 @@ mod tests {
         let mut basis = basis_of_len(4096, 5);
         let base_hour = 60_830_824i32;
         let first = payload_of(basis.clone(), 0);
-        let wrapped = producer.wrap(identity(base_hour + 100, 0), &first).unwrap();
+        let wrapped = producer.wrap(identity(base_hour + 100, 0), &first, true).unwrap();
         producer.commit();
         assert_eq!(wrapped_body_kind(&wrapped), BODY_KIND_KEYFRAME);
 
         basis[23] ^= 0x11;
         let rolled_back = payload_of(basis, 1);
         let wrapped = producer
-            .wrap(identity(base_hour + 40, 1), &rolled_back)
+            .wrap(identity(base_hour + 40, 1), &rolled_back, true)
             .unwrap();
         producer.commit();
         assert_eq!(
@@ -2914,14 +2951,14 @@ mod tests {
         let through_the_rollback = |third_hour: i32| -> u8 {
             let mut producer = PayloadSpanDeltaProducer::new();
             let first = payload_of(basis.clone(), 0);
-            let wrapped = producer.wrap(identity(base_hour, 0), &first).unwrap();
+            let wrapped = producer.wrap(identity(base_hour, 0), &first, true).unwrap();
             assert_eq!(wrapped_body_kind(&wrapped), BODY_KIND_KEYFRAME);
             producer.commit();
 
             let mut moved = basis.clone();
             moved[17] ^= 0x5a;
             let second = payload_of(moved, 1);
-            let wrapped = producer.wrap(identity(base_hour + 64, 1), &second).unwrap();
+            let wrapped = producer.wrap(identity(base_hour + 64, 1), &second, true).unwrap();
             assert_eq!(
                 wrapped_body_kind(&wrapped),
                 BODY_KIND_KEYFRAME,
@@ -2934,7 +2971,7 @@ mod tests {
             let mut later = basis.clone();
             later[29] ^= 0x33;
             let third = payload_of(later, 2);
-            let wrapped = producer.wrap(identity(third_hour, 2), &third).unwrap();
+            let wrapped = producer.wrap(identity(third_hour, 2), &third, true).unwrap();
             producer.commit();
             wrapped_body_kind(&wrapped)
         };
@@ -2958,7 +2995,7 @@ mod tests {
     fn a_payload_shorter_than_the_declared_volatile_header_refuses_to_wrap() {
         // kills: inventing a split for a grammar that has no elapsed_wall_ms.
         let mut producer = PayloadSpanDeltaProducer::new();
-        let error = producer.wrap(ident(), &[1, 2, 3]).unwrap_err();
+        let error = producer.wrap(ident(), &[1, 2, 3], true).unwrap_err();
         assert!(error.contains("shorter than"), "{error}");
     }
 
@@ -3103,9 +3140,9 @@ mod tests {
         let mut split = PayloadSpanDeltaProducer::new();
         for (index, (hour, payload)) in every_body_kind_hours().into_iter().enumerate() {
             let sequence = 100 + index as u64;
-            let expected = direct.wrap(identity(hour, sequence), &payload).unwrap();
+            let expected = direct.wrap(identity(hour, sequence), &payload, true).unwrap();
             let before = format!("{split:?}");
-            let prepared = split.prepare(D53, hour, &payload).unwrap();
+            let prepared = split.prepare(D53, hour, &payload, true).unwrap();
             assert_eq!(
                 format!("{split:?}"),
                 before,
@@ -3142,8 +3179,8 @@ mod tests {
         let mut displacing_hours = 0usize;
         for (index, (hour, payload)) in every_body_kind_hours().into_iter().enumerate() {
             let sequence = 200 + index as u64;
-            plain.wrap(identity(hour, sequence), &payload).unwrap();
-            let prepared = retiring.prepare(D53, hour, &payload).unwrap();
+            plain.wrap(identity(hour, sequence), &payload, true).unwrap();
+            let prepared = retiring.prepare(D53, hour, &payload, true).unwrap();
             let stages_a_baseline = prepared.next_baseline.is_some();
             let before = retiring.current(D53).cloned();
             retiring.stage_prepared(prepared, sequence).unwrap();
@@ -3180,10 +3217,10 @@ mod tests {
         // later wrap put it.
         let hours = every_body_kind_hours();
         let mut producer = PayloadSpanDeltaProducer::new();
-        producer.wrap(identity(hours[0].0, 1), &hours[0].1).unwrap();
+        producer.wrap(identity(hours[0].0, 1), &hours[0].1, true).unwrap();
         producer.commit();
-        let stale = producer.prepare(D53, hours[1].0, &hours[1].1).unwrap();
-        producer.wrap(identity(hours[1].0, 2), &hours[1].1).unwrap();
+        let stale = producer.prepare(D53, hours[1].0, &hours[1].1, true).unwrap();
+        producer.wrap(identity(hours[1].0, 2), &hours[1].1, true).unwrap();
         let after_second_wrap = format!("{producer:?}");
         let refused = producer.stage_prepared(stale, 3);
         assert!(refused.is_err(), "a preparation against a moved baseline is stale");
@@ -3193,9 +3230,124 @@ mod tests {
         // domain had never keyframed, staged after a rollback cleared it -- the
         // baseline is gone too, so both checks fire; either alone must.
         let mut fresh = PayloadSpanDeltaProducer::new();
-        fresh.wrap(identity(hours[0].0, 1), &hours[0].1).unwrap();
-        let prepared = fresh.prepare(D53, hours[1].0, &hours[1].1).unwrap();
+        fresh.wrap(identity(hours[0].0, 1), &hours[0].1, true).unwrap();
+        let prepared = fresh.prepare(D53, hours[1].0, &hours[1].1, true).unwrap();
         fresh.roll_back(D53);
         assert!(fresh.stage_prepared(prepared, 2).is_err());
+    }
+    #[test]
+    fn a_record_that_retains_its_basis_leaves_both_sides_on_the_basis_it_patched() {
+        // kills: advancing either baseline on a failure-status payload. The
+        // next full record would then delta against 56 bytes and ride whole.
+        let mut producer = PayloadSpanDeltaProducer::new();
+        let mut consumer = PayloadSpanDeltaConsumer::new();
+        let full = basis_of_len(32_768, 5);
+        let first = payload_of(full.clone(), 1);
+        let id0 = identity(60_830_824, 1);
+        let wrapped = producer.wrap(id0, &first, true).unwrap();
+        producer.commit();
+        assert_eq!(consumer.apply(id0, &wrapped).unwrap(), first);
+
+        let refusal = payload_of(vec![0xEE; 56], 2);
+        let id1 = identity(60_830_825, 2);
+        let wrapped = producer.wrap(id1, &refusal, false).unwrap();
+        producer.commit();
+        let record = decode_payload(&wrapped).unwrap();
+        assert!(record.retains_basis);
+        assert_eq!(wrapped[FLAGS_OFFSET], FLAG_RETAINS_BASIS);
+        assert!(wrapped.len() < 512, "wire {}", wrapped.len());
+        assert_eq!(consumer.apply(id1, &wrapped).unwrap(), refusal);
+        assert_eq!(consumer.retained_baseline(D53).unwrap().basis, full);
+        assert_eq!(producer.current(D53).unwrap().basis, full);
+        assert!(repeat_basis(&consumer, D53, &wrapped).is_err());
+
+        let mut edited = full.clone();
+        edited[100] ^= 0x5a;
+        let third = payload_of(edited.clone(), 3);
+        let id2 = identity(60_830_826, 3);
+        let wrapped = producer.wrap(id2, &third, true).unwrap();
+        producer.commit();
+        assert!(wrapped.len() < 1024, "wire {}", wrapped.len());
+        assert_eq!(consumer.apply(id2, &wrapped).unwrap(), third);
+        assert_eq!(consumer.retained_baseline(D53).unwrap().basis, edited);
+    }
+
+    #[test]
+    fn a_retained_record_with_no_basis_held_is_a_keyframe_that_seeds_nothing() {
+        let mut producer = PayloadSpanDeltaProducer::new();
+        let mut consumer = PayloadSpanDeltaConsumer::new();
+        let refusal = payload_of(vec![0xEE; 56], 1);
+        let id0 = identity(60_830_824, 1);
+        let wrapped = producer.wrap(id0, &refusal, false).unwrap();
+        producer.commit();
+        let record = decode_payload(&wrapped).unwrap();
+        assert!(record.retains_basis && record.body == PayloadSpanDeltaBody::Keyframe);
+        assert_eq!(consumer.apply(id0, &wrapped).unwrap(), refusal);
+        assert!(consumer.retained_baseline(D53).is_none());
+        assert!(producer.current(D53).is_none());
+
+        let full = payload_of(basis_of_len(4096, 9), 2);
+        let id1 = identity(60_830_825, 2);
+        let wrapped = producer.wrap(id1, &full, true).unwrap();
+        producer.commit();
+        assert_eq!(decode_payload(&wrapped).unwrap().body, PayloadSpanDeltaBody::Keyframe);
+        assert_eq!(consumer.apply(id1, &wrapped).unwrap(), full);
+        assert_eq!(consumer.retained_baseline(D53).unwrap().basis, full[VOLATILE_HEADER_LEN..]);
+    }
+
+    #[test]
+    fn a_retained_record_neither_resets_nor_dodges_the_keyframe_cadence() {
+        let mut producer = PayloadSpanDeltaProducer::new();
+        let base_hour = 60_830_824;
+        let full = payload_of(basis_of_len(4096, 3), 1);
+        producer.wrap(identity(base_hour, 1), &full, true).unwrap();
+        producer.commit();
+        let cadence = KEYFRAME_CADENCE_HOURS as i32;
+        let refusal = payload_of(vec![0xEE; 56], 2);
+        let wrapped = producer
+            .wrap(identity(base_hour + cadence, 2), &refusal, false)
+            .unwrap();
+        producer.commit();
+        let record = decode_payload(&wrapped).unwrap();
+        assert!(record.retains_basis);
+        assert_eq!(producer.current(D53).unwrap().basis, full[VOLATILE_HEADER_LEN..]);
+        let wrapped = producer
+            .wrap(identity(base_hour + cadence + 1, 3), &full, true)
+            .unwrap();
+        assert_eq!(decode_payload(&wrapped).unwrap().body, PayloadSpanDeltaBody::Keyframe);
+    }
+
+    #[test]
+    fn a_rolled_back_retained_record_leaves_nothing_behind() {
+        let mut producer = PayloadSpanDeltaProducer::new();
+        let mut consumer = PayloadSpanDeltaConsumer::new();
+        let full = payload_of(basis_of_len(8192, 2), 1);
+        let id0 = identity(60_830_824, 1);
+        let wrapped = producer.wrap(id0, &full, true).unwrap();
+        producer.commit();
+        consumer.apply(id0, &wrapped).unwrap();
+        let refusal = payload_of(vec![0xEE; 56], 2);
+        producer.wrap(identity(60_830_825, 2), &refusal, false).unwrap();
+        producer.roll_back(D53);
+        producer.commit();
+        let mut edited = full.clone();
+        edited[VOLATILE_HEADER_LEN + 7] ^= 0x11;
+        let id2 = identity(60_830_826, 3);
+        let wrapped = producer.wrap(id2, &edited, true).unwrap();
+        producer.commit();
+        assert!(wrapped.len() < 512);
+        assert_eq!(consumer.apply(id2, &wrapped).unwrap(), edited);
+    }
+
+    #[test]
+    fn undefined_header_flag_bits_are_refused_by_name() {
+        let payload = payload_of(basis_of_len(64, 1), 1);
+        let mut encoded =
+            encode_payload(ident(), &payload, &PayloadSpanDeltaBody::Keyframe, false).unwrap();
+        encoded[FLAGS_OFFSET] = 0x02;
+        assert!(decode_payload(&encoded).unwrap_err().contains("flags"));
+        encoded[FLAGS_OFFSET] = 0;
+        encoded[FLAGS_OFFSET + 1] = 1;
+        assert!(decode_payload(&encoded).unwrap_err().contains("reserved"));
     }
 }

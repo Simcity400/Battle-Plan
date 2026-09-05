@@ -50,6 +50,17 @@ fn inline_record(
     domain_id: u16,
     payload: &[u8],
 ) -> Vec<u8> {
+    inline_record_with_status(trackers, sequence, hour, domain_id, 0, payload)
+}
+
+fn inline_record_with_status(
+    trackers: &mut CompactPerfGateTrackers,
+    sequence: u64,
+    hour: i32,
+    domain_id: u16,
+    status_flags: u32,
+    payload: &[u8],
+) -> Vec<u8> {
     let mut out = Vec::new();
     append_compact_span_delta_data_record(
         &mut out,
@@ -57,6 +68,7 @@ fn inline_record(
         sequence,
         hour,
         domain_id,
+        status_flags,
         payload,
     );
     out
@@ -70,6 +82,18 @@ fn prepared_record(
     domain_id: u16,
     payload: &[u8],
 ) -> Vec<u8> {
+    prepared_record_with_status(trackers, prepared, sequence, hour, domain_id, 0, payload)
+}
+
+fn prepared_record_with_status(
+    trackers: &mut CompactPerfGateTrackers,
+    prepared: Option<PreparedSpanDelta>,
+    sequence: u64,
+    hour: i32,
+    domain_id: u16,
+    status_flags: u32,
+    payload: &[u8],
+) -> Vec<u8> {
     let mut out = Vec::new();
     append_prepared_span_delta_data_record(
         &mut out,
@@ -78,6 +102,7 @@ fn prepared_record(
         hour,
         domain_id,
         prepared,
+        status_flags,
         payload,
     );
     out
@@ -99,7 +124,7 @@ fn a_worker_prepared_span_delta_record_seals_the_inline_bytes() {
         let sequence = 40 + index as u64;
         let expected = inline_record(&mut inline, sequence, hour, D47, &bytes);
         let before = format!("{:?}", split.payload_span_delta);
-        let prepared = prepare_span_delta_data_record(&split.payload_span_delta, hour, D47, &bytes);
+        let prepared = prepare_span_delta_data_record(&split.payload_span_delta, hour, D47, 0, &bytes);
         assert!(prepared.is_some(), "hour {index}: d47 is delta-enabled");
         assert_eq!(
             format!("{:?}", split.payload_span_delta),
@@ -147,8 +172,13 @@ fn a_stale_or_absent_preparation_falls_back_to_the_inline_wrap() {
     commit_delta_pin_transactions(&mut split, &mut Vec::new());
     // Frame 2: a preparation built against the sealed baseline, then a wrap for
     // the same domain that moves the staged baseline before it is staged.
-    let stale =
-        prepare_span_delta_data_record(&split.payload_span_delta, hours[1].0, D43, &hours[1].1);
+    let stale = prepare_span_delta_data_record(
+        &split.payload_span_delta,
+        hours[1].0,
+        D43,
+        0,
+        &hours[1].1,
+    );
     assert!(stale.is_some());
     let moved_inline = inline_record(&mut inline, 2, hours[1].0, D43, &hours[1].1);
     let moved_split = inline_record(&mut split, 2, hours[1].0, D43, &hours[1].1);
@@ -176,6 +206,7 @@ fn a_refused_domain_is_unwrapped_on_both_arms() {
         &trackers.payload_span_delta,
         FIRST_HOUR,
         D47,
+        0,
         &too_short
     )
     .is_none());
@@ -707,4 +738,56 @@ fn the_three_build_tail_marks_are_adjacent_from_the_frame_time_stamp_to_frame_en
         !builder[seal..].contains("append_compact_record("),
         "nothing is appended after the seal mark"
     );
+}
+
+/// A failure-status hour retains the basis on the worker-prepared arm exactly
+/// as on the inline arm (capture 07's d53 shape: a 72-byte source-unavailable
+/// record between full payloads), and the full hour after it is a delta
+/// against the full basis on both.
+#[test]
+fn a_failure_status_hour_retains_the_basis_on_both_arms() {
+    const D53: u16 = COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE;
+    let base = body_of_len(20_000, 3);
+    let mut changed = base.clone();
+    changed[7_000..7_200].fill(0x5A);
+    let hours = [
+        (FIRST_HOUR, 0u32, payload(10, &base)),
+        (
+            FIRST_HOUR + 1,
+            COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            payload(20, &[0u8; 64]),
+        ),
+        (FIRST_HOUR + 2, 0u32, payload(30, &changed)),
+    ];
+    let mut inline = CompactPerfGateTrackers::default();
+    let mut split = CompactPerfGateTrackers::default();
+    for (index, (hour, status, bytes)) in hours.iter().enumerate() {
+        let sequence = 60 + index as u64;
+        let expected =
+            inline_record_with_status(&mut inline, sequence, *hour, D53, *status, bytes);
+        let prepared =
+            prepare_span_delta_data_record(&split.payload_span_delta, *hour, D53, *status, bytes);
+        assert!(prepared.is_some(), "hour {index}: d53 is delta-enabled");
+        let actual = prepared_record_with_status(
+            &mut split, prepared, sequence, *hour, D53, *status, bytes,
+        );
+        assert_eq!(actual, expected, "hour {index}: the record must be byte-identical");
+        let flags = actual[COMPACT_RECORD_HEADER_LEN as usize + psd::FLAGS_OFFSET];
+        let retains = if *status == 0 { 0 } else { psd::FLAG_RETAINS_BASIS };
+        assert_eq!(flags, retains, "hour {index}: the flags byte follows the status");
+        if index == 2 {
+            assert!(
+                actual.len() < COMPACT_RECORD_HEADER_LEN as usize + 1024,
+                "hour 2 re-sent {} bytes: the failure record became the basis",
+                actual.len()
+            );
+        }
+        commit_delta_pin_transactions(&mut inline, &mut Vec::new());
+        commit_delta_pin_transactions(&mut split, &mut Vec::new());
+        assert_eq!(
+            format!("{:?}", split.payload_span_delta),
+            format!("{:?}", inline.payload_span_delta),
+            "hour {index}: the sealed producers must agree"
+        );
+    }
 }

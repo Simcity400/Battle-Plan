@@ -145,6 +145,7 @@ fn build_streams(hours: u64) -> BuiltStreams {
                         game_hour_raw,
                     },
                     &payload,
+                    true,
                 )
                 .expect("wrap");
             wrapped_payload_bytes += envelope.len();

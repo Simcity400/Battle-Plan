@@ -40,6 +40,17 @@ fn emit(
     domain_id: u16,
     payload: &[u8],
 ) -> Vec<u8> {
+    emit_with_status(trackers, sequence, game_hour_raw, domain_id, 0, payload)
+}
+
+fn emit_with_status(
+    trackers: &mut CompactPerfGateTrackers,
+    sequence: u64,
+    game_hour_raw: i32,
+    domain_id: u16,
+    status_flags: u32,
+    payload: &[u8],
+) -> Vec<u8> {
     let mut out = Vec::new();
     append_compact_span_delta_data_record(
         &mut out,
@@ -47,6 +58,7 @@ fn emit(
         sequence,
         game_hour_raw,
         domain_id,
+        status_flags,
         payload,
     );
     out
@@ -171,6 +183,7 @@ fn a_frames_records_survive_the_drop_passes_renumbering_them() {
         9,
         FIRST_HOUR,
         D53,
+        0,
         &payload(1_000, &body),
     );
     settle(&mut trackers, &[]);
@@ -191,6 +204,7 @@ fn a_frames_records_survive_the_drop_passes_renumbering_them() {
         14,
         FIRST_HOUR + 1,
         D53,
+        0,
         &second,
     );
     settle(&mut trackers, &[]);
@@ -460,4 +474,51 @@ fn d47s_emission_site_wraps_through_the_real_appender_and_the_consumer_reconstru
         "an unchanged hour through the real appender must be a header and nothing else"
     );
     assert_eq!(apply(&mut consumer, &published), unchanged);
+}
+
+#[test]
+fn a_failure_status_record_retains_the_basis_on_both_sides_of_the_collectors_wiring() {
+    // kills: passing `true` for `advances_basis` in
+    // `append_compact_span_delta_data_record`. Capture 07's d53 stream
+    // alternated full payloads with 72-byte source-unavailable records; a
+    // producer that made the 72-byte payload its basis sent every following
+    // full payload as 6.7 MB of literals.
+    let mut trackers = CompactPerfGateTrackers::default();
+    let mut consumer = psd::PayloadSpanDeltaConsumer::new();
+    let mut body = body_of_len(65_536, 5);
+
+    let full = payload(1_000, &body);
+    let record = emit(&mut trackers, 1, FIRST_HOUR, D53, &full);
+    settle(&mut trackers, &[]);
+    assert_eq!(apply(&mut consumer, &parse_one(&record)), full);
+
+    let failure = payload(2_000, &[0u8; 64]);
+    let record = emit_with_status(
+        &mut trackers,
+        2,
+        FIRST_HOUR + 1,
+        D53,
+        COMPACT_STATUS_SOURCE_UNAVAILABLE,
+        &failure,
+    );
+    settle(&mut trackers, &[]);
+    let published = parse_one(&record);
+    assert_eq!(
+        published.payload[psd::FLAGS_OFFSET],
+        psd::FLAG_RETAINS_BASIS,
+        "a failure record declares that it leaves the basis where it found it"
+    );
+    assert_eq!(apply(&mut consumer, &published), failure);
+
+    body[30_000] ^= 0xff;
+    let third = payload(3_000, &body);
+    let record = emit(&mut trackers, 3, FIRST_HOUR + 2, D53, &third);
+    settle(&mut trackers, &[]);
+    let published = parse_one(&record);
+    assert!(
+        published.wire_len < 1024,
+        "the hour after a failure record re-sent {} bytes: the 72-byte record became the basis",
+        published.wire_len
+    );
+    assert_eq!(apply(&mut consumer, &published), third);
 }

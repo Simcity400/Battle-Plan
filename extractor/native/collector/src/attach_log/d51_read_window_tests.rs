@@ -985,10 +985,8 @@ fn the_one_pass_delta_emits_what_the_two_pass_shape_emitted() {
 
     let (expected_emitted, expected_baseline) = reference_delta_selection(&next_rows, &baseline);
 
-    let mut tracker = CompactScriptedStateTracker {
-        topology: None,
-        last_emitted: baseline,
-    };
+    let mut tracker = CompactScriptedStateTracker::default();
+    tracker.last_emitted.advance(baseline);
     let read = compact_scripted_state_apply_emit_mode(
         CompactScriptedStateRead {
             frame: frame_from_rows(next_rows.clone(), domain51::PayloadShape::RowsOnly),
@@ -1008,7 +1006,7 @@ fn the_one_pass_delta_emits_what_the_two_pass_shape_emitted() {
 
     assert_eq!(read.frame.rows, expected_emitted);
     assert_eq!(read.frame.row_count, expected_emitted.len() as u32);
-    assert_eq!(tracker.last_emitted, expected_baseline);
+    assert_eq!(*tracker.last_emitted, expected_baseline);
     assert!(read.status_flags & COMPACT_STATUS_DELTA_DATA != 0);
     assert!(read.frame.status_flags & COMPACT_STATUS_DELTA_DATA != 0);
     assert_eq!(read.frame.payload, domain51_payload_from_frame(&read.frame));
@@ -1045,7 +1043,7 @@ fn the_first_delta_frame_still_publishes_the_whole_table_and_seeds_the_baseline(
 
     assert_eq!(read.frame.rows, whole_table);
     assert_eq!(read.status_flags & COMPACT_STATUS_DELTA_DATA, 0);
-    assert_eq!(tracker.last_emitted, expected_baseline);
+    assert_eq!(*tracker.last_emitted, expected_baseline);
     // kills: deferring the payload on the priming frame. This is the exit that
     // publishes the WHOLE TABLE and does not re-encode, so it is the one path
     // where `PayloadShape::RowsOnly` would reach a publish with nothing in it.

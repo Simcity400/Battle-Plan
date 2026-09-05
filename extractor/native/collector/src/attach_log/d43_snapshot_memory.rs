@@ -215,7 +215,13 @@ pub(super) struct Domain43SnapshotPlan {
     /// Bytes claimed on each side of every traced range by
     /// [`Self::fit_to_os_regions`].
     widen_slack: u64,
+    /// 64-byte line -> region index, direct-mapped, owned here so no frame
+    /// allocates it inside the bracket; every entry is verified against the
+    /// region bounds before it answers.
+    line_cache: std::cell::RefCell<Vec<(u64, u32)>>,
 }
+
+const D43_VIEW_LINE_CACHE_WAYS: usize = 1024;
 
 impl Domain43SnapshotPlan {
     pub fn from_trace(
@@ -320,6 +326,7 @@ impl Domain43SnapshotPlan {
             os_region_count: 0,
             os_spans: Vec::new(),
             widen_slack: 0,
+            line_cache: std::cell::RefCell::new(vec![(u64::MAX, 0); D43_VIEW_LINE_CACHE_WAYS]),
         })
     }
 
@@ -478,6 +485,7 @@ impl Domain43SnapshotPlan {
         self.ends = ends;
         self.offsets = offsets;
         self.probe = probe;
+        self.line_cache.borrow_mut().fill((u64::MAX, 0));
         self.os_spans = os_spans;
         self.widen_slack = slack;
         Ok(self)
@@ -583,6 +591,7 @@ impl Domain43SnapshotPlan {
             misses: Cell::new(0),
             misses_in_span: Cell::new(0),
             last_hit: Cell::new(0),
+            line_cache: &self.line_cache,
             served: Cell::new(0),
         }
     }
@@ -602,6 +611,7 @@ pub(super) struct Domain43SnapshotMemory<'a> {
     misses: Cell<u64>,
     misses_in_span: Cell<u64>,
     last_hit: Cell<usize>,
+    line_cache: &'a std::cell::RefCell<Vec<(u64, u32)>>,
     served: Cell<u64>,
 }
 
@@ -649,17 +659,27 @@ impl Domain43SnapshotMemory<'_> {
     fn locate(&self, address: u64, len: usize) -> Option<(usize, usize)> {
         let end = address.checked_add(len as u64)?;
         let plan = self.plan;
+        let covers = |index: usize| {
+            index < plan.starts.len() && plan.starts[index] <= address && address < plan.ends[index]
+        };
         let last = self.last_hit.get();
-        let first = if last < plan.starts.len()
-            && plan.starts[last] <= address
-            && address < plan.ends[last]
-        {
+        let first = if covers(last) {
             last
         } else {
-            let index = plan.starts.partition_point(|start| *start <= address).checked_sub(1)?;
-            if address >= plan.ends[index] {
-                return None;
-            }
+            let line = address >> 6;
+            let slot = (line as usize) & (D43_VIEW_LINE_CACHE_WAYS - 1);
+            let cached = self.line_cache.borrow()[slot];
+            let index = if cached.0 == line && covers(cached.1 as usize) {
+                cached.1 as usize
+            } else {
+                let index =
+                    plan.starts.partition_point(|start| *start <= address).checked_sub(1)?;
+                if address >= plan.ends[index] {
+                    return None;
+                }
+                self.line_cache.borrow_mut()[slot] = (line, index as u32);
+                index
+            };
             self.last_hit.set(index);
             index
         };
@@ -1239,5 +1259,89 @@ mod tests {
         assert!(view.read_into(0x1000, &mut buf));
         assert!(!view.read_into(0x1008, &mut buf));
         assert_eq!(view.first_miss(), Some((0x1008, 8)));
+    }
+
+    fn word_at(address: u64) -> u64 {
+        let mut bytes = [0u8; 8];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b = (address + i as u64) as u8;
+        }
+        u64::from_le_bytes(bytes)
+    }
+
+    /// Production-shape timing witness: 33k regions of 244 bytes over a sparse
+    /// space and 350k reads in object-local runs that keep jumping back to a
+    /// dozen hot objects, the oil walk's shape. Release only:
+    /// `cargo test -p collector --release --lib -- --ignored --nocapture
+    /// d43_production_shape_view_reads_time`.
+    #[test]
+    #[ignore]
+    fn d43_production_shape_view_reads_time() {
+        const REGIONS: u64 = 33_000;
+        let mut trace = Domain43AccessTrace::with_capacity(REGIONS as usize);
+        let mut starts = Vec::with_capacity(REGIONS as usize);
+        for k in 0..REGIONS {
+            let start = 0x1_0000_0000 + k * 2_000 + (k * 7_919) % 1_400;
+            starts.push(start);
+            trace.push(Domain43ReadTrace {
+                address: start,
+                len: 244,
+                succeeded: true,
+            });
+        }
+        let mut plan =
+            Domain43SnapshotPlan::from_trace(trace, limits(64, 262_144, 16 << 20)).unwrap();
+        plan.capture_with(|address, out| {
+            for (i, b) in out.iter_mut().enumerate() {
+                *b = (address + i as u64) as u8;
+            }
+            Some(1)
+        });
+        let hot: Vec<u64> = (0..15usize)
+            .map(|i| starts[(i * 2_749) % starts.len()])
+            .collect();
+        let mut sequence: Vec<u64> = Vec::new();
+        for arm in 0..2usize {
+            for root in 0..440usize {
+                let base = starts[(root * 61 + arm) % starts.len()];
+                for off in 0..30u64 {
+                    sequence.push(base + off * 8);
+                }
+                for slot in 0..24u64 {
+                    for (i, h) in hot.iter().enumerate() {
+                        sequence.push(h + ((i as u64 + slot) % 3) * 8);
+                    }
+                }
+                for unit in 0..3usize {
+                    let base = starts[(root * 7 + unit * 13 + 1) % starts.len()];
+                    for off in 0..4u64 {
+                        sequence.push(base + off * 16);
+                    }
+                }
+            }
+        }
+        let expected: u64 = sequence.iter().map(|a| word_at(*a)).fold(0, u64::wrapping_add);
+
+        let view = plan.view();
+        let mut buf = [0u8; 8];
+        let mut best = u128::MAX;
+        let mut checksum = 0u64;
+        for _ in 0..5 {
+            checksum = 0;
+            let started = std::time::Instant::now();
+            for address in &sequence {
+                assert!(view.read_into(*address, &mut buf));
+                checksum = checksum.wrapping_add(u64::from_le_bytes(buf));
+            }
+            best = best.min(started.elapsed().as_nanos());
+        }
+        assert_eq!(checksum, expected);
+        assert_eq!(view.misses(), 0);
+        eprintln!(
+            "d43 view: {} reads, best of 5 {} us, {:.1} ns/read",
+            sequence.len(),
+            best / 1_000,
+            best as f64 / sequence.len() as f64
+        );
     }
 }

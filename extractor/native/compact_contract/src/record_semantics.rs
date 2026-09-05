@@ -1236,7 +1236,7 @@ mod tests {
                 source_sequence: sequence,
                 game_hour_raw: HOUR,
             };
-            let envelope = producer.wrap(identity, &payload).unwrap();
+            let envelope = producer.wrap(identity, &payload, true).unwrap();
 
             // The gate stores RAW ON-WIRE bytes and vouches their tail.
             assert_eq!(
@@ -1317,11 +1317,11 @@ mod tests {
         };
         let mut producer = psd::PayloadSpanDeltaProducer::new();
         let mut consumer = psd::PayloadSpanDeltaConsumer::new();
-        let keyframe = producer.wrap(identity(7), &payload).unwrap();
+        let keyframe = producer.wrap(identity(7), &payload, true).unwrap();
         consumer.apply(identity(7), &keyframe).unwrap();
 
         // The honest unchanged hour composes and yields the original payload.
-        let no_change = producer.wrap(identity(8), &payload).unwrap();
+        let no_change = producer.wrap(identity(8), &payload, true).unwrap();
         assert_eq!(
             psd::repeat_basis(&consumer, domain_id, &no_change).unwrap(),
             payload
@@ -1365,9 +1365,9 @@ mod tests {
         };
         let mut producer = psd::PayloadSpanDeltaProducer::new();
         let mut consumer = psd::PayloadSpanDeltaConsumer::new();
-        let keyframe = producer.wrap(identity(7), &payload_a).unwrap();
+        let keyframe = producer.wrap(identity(7), &payload_a, true).unwrap();
         consumer.apply(identity(7), &keyframe).unwrap();
-        let delta = producer.wrap(identity(8), &payload_b).unwrap();
+        let delta = producer.wrap(identity(8), &payload_b, true).unwrap();
         consumer.apply(identity(8), &delta).unwrap();
 
         // THE HONEST DELTA RESOLUTION: hour N+1 repeats hour N's wire bytes,

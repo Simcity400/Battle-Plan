@@ -1094,6 +1094,7 @@ fn an_enveloped_d81_session_inspects_and_builds_like_the_raw_one() {
                     game_hour_raw: tick,
                 },
                 &payload,
+                true,
             )
             .unwrap();
         for (out, data_payload, flags) in [
@@ -1321,7 +1322,7 @@ fn a_repeated_enveloped_d81_hour_publishes_the_same_state_as_its_full_record() {
             game_hour_raw: tick,
         }
     };
-    let envelope_a = producer.wrap(identity(sequence + 1, tick_a), &payload_a).unwrap();
+    let envelope_a = producer.wrap(identity(sequence + 1, tick_a), &payload_a, true).unwrap();
     push_h4cr_record(
         &mut wrapped,
         sequence,
@@ -1500,6 +1501,7 @@ fn an_unreconstructable_d81_hour_degrades_to_a_named_gap_and_still_publishes() {
                     game_hour_raw: tick,
                 },
                 &payload,
+                true,
             )
             .unwrap();
         if hour == 1 {
@@ -1594,6 +1596,7 @@ fn a_branch_whose_every_d81_hour_was_lost_still_publishes_as_named_gaps() {
                     game_hour_raw: tick,
                 },
                 &payload,
+                true,
             )
             .unwrap();
         let last = envelope.len() - 1;
@@ -1676,6 +1679,7 @@ fn a_damaged_volatile_prefix_is_a_named_exclusion_and_not_an_abort() {
                 game_hour_raw: tick,
             },
             &payload,
+                true,
         )
         .unwrap();
     envelope[0] ^= 0xff; // inside the volatile prefix, outside every digest
