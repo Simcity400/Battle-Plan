@@ -1,132 +1,4 @@
-//! d26 `division_equipment_live` — per-division equipment inventories.
-//!
-//! Derived from `world_fold.rs:28051`-`:28366`
-//! (`fold_division_equipment`), its payload constants at `:810`-`:816`, the
-// Fold authority: `world_fold.rs::fold_division_equipment`.
-//! accumulator's own JSON projection (`:24160`-`:24176`), and the collector read
-//! that produces the row flags and the entry rows
-//! (`extractor/native/collector/src/attach_log.rs:45789`-`:46005`,
-//! `:58210`-`:58401`, `:69877`-`:69930`).
-//! The fold and collector read are the field-level basis; where another account
-//! and the fold could be read differently, the fold wins.
-//!
-//! **Payload grammar** (`world_fold.rs::fold_division_equipment`): a 40-byte header —
-//! `elapsed_wall_ms` u64 at `+0`, `row_count` u32 at `+8`, `changed_rows` u32 at
-//! `+12`, `status_flags` u32 at `+16`, `scale_raw` u32 at `+20`, `root_rows` u32
-//! at `+24`, `observed_division_rows` u32 at `+28`, `equipment_entry_count` u32
-//! at `+32`, `observed_equipment_rows` u32 at `+36` — followed by `row_count`
-//! fixed 24-byte **root rows** and then `equipment_entry_count` fixed 16-byte
-//! **entry rows**. The fold requires the length to be exactly
-//! `40 + row_count * 24 + equipment_entry_count * 16` (`world_fold.rs::fold_division_equipment`), so no
-//! legacy short row exists and the length selects nothing.
-//!
-//! Root row (`world_fold.rs::fold_division_equipment`):
-//!
-//! | offset | width | field | scale | gate |
-//! |---|---|---|---|---|
-//! | `+0`  | u32 | `owner_tag_db_id` | raw | none (key; zero rejected, `world_fold.rs::fold_division_equipment`) |
-//! | `+4`  | u32 | `div_id`          | raw | none (key; zero rejected, `world_fold.rs::fold_division_equipment`) |
-//! | `+8`  | u32 | `flags`           | —   | — |
-//! | `+12` | u32 | `template_id`     | raw | `TEMPLATE_PRESENT` (`1<<0`) |
-//! | `+16` | u32 | `entry_first`     | —   | transport, not state |
-//! | `+20` | u32 | `entry_count`     | —   | transport, not state |
-//!
-//! Entry row (`world_fold.rs::fold_division_equipment`):
-//!
-//! | offset | width | field | scale | gate |
-//! |---|---|---|---|---|
-//! | `+0` | u32 | `variant_id` | raw     | none (key; `0` and `> i32::MAX` rejected, `world_fold.rs::fold_division_equipment`) |
-//! | `+4` | u32 | `reserved`   | —       | must be zero (`world_fold.rs::fold_division_equipment`) |
-//! | `+8` | i64 | `amount_raw` | /100000 | none (`0 < x <= 1e15` enforced, `world_fold.rs::fold_division_equipment`) |
-//!
-//! **Two collections, because `(entry_first, entry_count)` is transport.** A
-//! root addresses its equipment as a half-open range into one shared entry array
-//! (`world_fold.rs::fold_division_equipment`); the ranges are re-packed by the collector on every
-//! frame from the emission order (`attach_log.rs:69904`-`:69920`) and carry no
-//! state a reader could ask about. What is state is the *set* of
-//! `(owner_tag_db_id, div_id, variant_id) -> amount` facts, which is what the
-//! fold's accumulator holds (`world_fold.rs:1547`) and what its duplicate check
-//! is keyed by (`world_fold.rs::fold_division_equipment`). So the ranges are flattened away here: collection
-//! [`DIVISIONS`] carries one row per division root and collection [`EQUIPMENT`]
-//! one row per equipment line, keyed by the root key plus the variant.
-//!
-//! **`amount` is divided here, `template_id` is not.** `scale_raw` is asserted
-//! equal to `FIXED_SCALE` by the fold (`:17414`) and the accumulator stores the
-//! raw i64 with its scale beside it (`:17608`-`:17613`) — but the consumer-facing
-//! projection divides: `DivisionEquipmentEntryState::to_json` emits
-//! `"amount": amount_raw / scale_raw` (`:24170`), and the replay layer reads that
-//! divided `amount` as an `f64` and nothing else for this domain
-//! (`replay_interface/native/replay_core/src/world.rs:472`-`:477`, `:5676` —
-//! `EquipmentAmount::amount`; the `amount_raw` sibling is read only by the
-//! market-stockpile domain, `:21121`). The division therefore belongs at this
-//! boundary. `template_id` has no scale anywhere and is carried raw.
-//!
-//! **Four states.** The schema declares exactly one empty state, on exactly one
-//! field:
-//!
-//! * `template_id` is `unknown` when `TEMPLATE_PRESENT` is clear, and nothing
-//!   else. The collector's `template_id` is an `Option<u32>` and the flag is
-//!   exactly `Option::is_some()` (`attach_log.rs:69908`). That option is `None`
-//!   only when the template pointer is not a map-control heap pointer, its
-//!   vtable is not `DIVISION_TEMPLATE_VTABLE_RVA`, its type word is not
-//!   `DIVISION_TEMPLATE_TYPE`, or its id fails the range filter
-//!   (`:16697`-`:16717`) — four read/validation failures, which is record-state contract's
-//!   "applicable, not captured", not a relation pointing at nothing and not a
-//!   concept that fails to apply. Every division in the D20 root bridge has a
-//!   template, so `absent` is wrong; and the recipe's tie-break points the same
-//!   way for the one reading that could be `null` (a genuinely null template
-//!   pointer, which is indistinguishable from an unreadable one at this
-//!   boundary). See the deliverable's open questions.
-//! * `amount` reaches no empty state at all. The entry row has no gate, the
-//!   collector drops any line whose `amount_raw` is `0`
-//!   (`attach_log.rs:58388`), and the fold rejects `amount_raw <= 0` outright
-//!   (`world_fold.rs::fold_division_equipment`). A division that holds none of a variant has **no
-//!   row**, so "zero of this equipment" is an absent *key*, not a zero value —
-//!   which is why `amount` declares no capability and its mapper can emit only
-//!   a value.
-//! * A **deleted** root (`DELETED`, `1<<1`) is a removal, not a row: the fold
-//!   erases the key from the accumulator (`:17593`-`:17596`) and requires the
-//!   rest of the row to be empty (`:17501`-`:17509`). It maps to a wire
-//!   tombstone in both collections, so it never reaches a record and never makes
-//!   `template_id` `absent`. [`record_from_division_row`] refuses a deleted row
-//!   rather than inventing one.
-//!
-//! Corroborated against the capture the measurement bin reads
-//! (`runs/batch1/deepwar_t1`, 903 d26 hours; census in
-//! `runs/batch1/d26_division_equipment/measurement.txt`). Of 63,166 serialized
-//! root rows, 87 are `DELETED` and necessarily have the `TEMPLATE_PRESENT` gate
-//! clear — the fold requires a delete row to carry nothing else
-//! (`world_fold.rs:17501`), and those rows become tombstones rather than
-//! records. Across the other 63,079 rows the gate is **never** clear, and
-//! `template_id` is never `0` under a set gate: exactly what a read-failure path
-//! looks like when the reads all succeed, the same shape d63 found for its
-//! gates. That is a fact about one capture and not a reason to drop the state —
-//! the state exists because the collector's read can fail
-//! (`attach_log.rs:16697`-`:16717`), and a schema that could not say so would
-//! have to lie the first time it does. Across 470,372 entry rows there are 825
-//! distinct variants, `amount_raw` runs 5,100 to 160,000,000 (0.051 to 1,600
-//! units) and 1,321 of them are not a whole unit, so the fixed-point scale is
-//! load-bearing rather than decorative.
-//!
-//! **The `sparse_partial` status mode does not change any of that.** d26 is one
-//! of four domains with an expected-partial tolerance
-//! (`compact_contract/src/lib.rs:137`-`:142`): a frame carrying rows under
-//! `COMPACT_STATUS_PARTIAL_DATA` and no other failure bit is applied to the
-//! retained accumulator and then marks the **domain-hour** unknown
-//! (`world_fold.rs::fold_division_equipment`), because the omitted
-//! division identities are not serialized. That unknown is a statement about
-//! *which keys the frame failed to mention*, not about any field of any row it
-//! did mention — the rows in a sparse frame are ordinary measured rows. A keyed
-//! set has no way to say "keys I did not look at may exist"; gap
-//! normalisation, which has no implementation in this crate (`lib.rs`). So no
-//! field becomes `unknown_capable` because of it, and the gap is reported
-//! instead. See [`FrameMode`] for where the mode does bite: it relaxes three of
-//! the fold's header invariants.
-//!
-//! **No derived field (derived-field contract).** Nothing here changes deterministically with the
-//! clock; `frame_tick` is taken and ignored so every domain's boundary has one
-//! shape.
-
+use compact_contract::division_equipment as allocation;
 use crate::body::{key, Key};
 use crate::record::Record;
 use crate::schema::{Collection, Field, Kind, Quant, Schema, Shape};
@@ -148,12 +20,14 @@ pub mod field {
     pub const TEMPLATE_ID: u32 = 3;
     pub const VARIANT_ID: u32 = 4;
     pub const AMOUNT: u32 = 5;
+    pub const SOURCE_ORDINAL: u32 = 6;
+    pub const AMOUNT_RAW: u32 = 7;
 }
 
 // --- Payload grammar, from `world_fold.rs:810`-`:816` and `:17362`-`:17423`. --
 
 /// `DIVISION_EQUIPMENT_HEADER_LEN`, `world_fold.rs::DIVISION_EQUIPMENT_HEADER_LEN`.
-pub const HEADER_LEN: usize = 40;
+pub const HEADER_LEN: usize = allocation::HEADER_LEN;
 /// `DIVISION_EQUIPMENT_ROOT_ROW_LEN`, `world_fold.rs::DIVISION_EQUIPMENT_ROOT_ROW_LEN`.
 pub const ROOT_ROW_LEN: usize = 24;
 /// `DIVISION_EQUIPMENT_ENTRY_ROW_LEN`, `world_fold.rs::DIVISION_EQUIPMENT_ENTRY_ROW_LEN`.
@@ -252,6 +126,8 @@ pub fn schema() -> Schema {
                     // questions for the `Fixed(5)` alternative and what would
                     // settle it.
                     Field::new(f::AMOUNT, Kind::Continuous).quant(Quant::Exact),
+                    Field::new(f::SOURCE_ORDINAL, Kind::Unsigned),
+                    Field::new(f::AMOUNT_RAW, Kind::Signed),
                 ],
             },
         ],
@@ -327,12 +203,7 @@ pub struct DivisionRow {
     pub deleted: bool,
 }
 
-/// One parsed entry row.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct EquipmentRow {
-    pub variant_id: u32,
-    pub amount_raw: i64,
-}
+pub use allocation::Allocation as EquipmentRow;
 
 /// Read the 40-byte payload header and nothing else
 /// (`world_fold.rs::fold_division_equipment`).
@@ -343,6 +214,7 @@ pub struct EquipmentRow {
 /// second, hand-rolled copy of the header layout in every caller. It applies no
 /// invariant beyond the length needed to read the words themselves.
 pub fn peek_header(payload: &[u8]) -> core::result::Result<PayloadHeader, String> {
+    allocation::validate_header(payload)?;
     if payload.len() < HEADER_LEN {
         return Err(format!(
             "division_equipment payload {} shorter than the {HEADER_LEN}-byte header",
@@ -472,8 +344,18 @@ pub fn split_payload(
     for (index, row) in roots.chunks_exact(ROOT_ROW_LEN).enumerate() {
         let parsed =
             parse_division_row(row).map_err(|e| format!("division_equipment row {index}: {e}"))?;
-        entry_index_range(&parsed, header.equipment_entry_count as usize)
+        let range = entry_index_range(&parsed, header.equipment_entry_count as usize)
             .map_err(|e| format!("division_equipment row {index}: {e}"))?;
+        if !parsed.deleted && range.start != declared_entries {
+            return Err("division_equipment allocation ranges are not a contiguous census".into());
+        }
+        for (ordinal, entry_index) in range.enumerate() {
+            let start = entry_index * ENTRY_ROW_LEN;
+            let entry = parse_equipment_row(&entries[start..start + ENTRY_ROW_LEN])?;
+            if entry.source_ordinal as usize != ordinal {
+                return Err("division_equipment allocation ordinal disagrees with root".into());
+            }
+        }
         declared_entries = declared_entries.saturating_add(parsed.entry_count);
     }
     if declared_entries != header.equipment_entry_count as usize {
@@ -545,28 +427,7 @@ pub fn parse_division_row(row: &[u8]) -> core::result::Result<DivisionRow, Strin
 /// Parse one 16-byte entry row, applying the fold's per-row checks
 /// (`world_fold.rs::fold_division_equipment`).
 pub fn parse_equipment_row(row: &[u8]) -> core::result::Result<EquipmentRow, String> {
-    if row.len() != ENTRY_ROW_LEN {
-        return Err(format!(
-            "division_equipment entry row length {} != {ENTRY_ROW_LEN}",
-            row.len()
-        ));
-    }
-    let variant_id = u32_at(row, 0);
-    let reserved = u32_at(row, 4);
-    let amount_raw = i64_at(row, 8);
-    if variant_id == 0 || variant_id > MAX_VARIANT_ID {
-        return Err(format!("invalid variant_id {variant_id}"));
-    }
-    if amount_raw <= 0 || amount_raw > MAX_AMOUNT_RAW {
-        return Err(format!("invalid amount_raw {amount_raw}"));
-    }
-    if reserved != 0 {
-        return Err("entry reserved field is nonzero".into());
-    }
-    Ok(EquipmentRow {
-        variant_id,
-        amount_raw,
-    })
+    allocation::parse_allocation(row)
 }
 
 /// The half-open index range of one root's entry rows within the frame's shared
@@ -713,6 +574,8 @@ pub fn record_from_equipment_row(
     for f in collection.value_fields() {
         let value = match f.field_id {
             field::AMOUNT => Value::Continuous(parsed.amount_raw as f64 / FIXED_SCALE),
+            field::SOURCE_ORDINAL => Value::Unsigned(u64::from(parsed.source_ordinal)),
+            field::AMOUNT_RAW => Value::Signed(parsed.amount_raw),
             other => {
                 return Err(format!(
                     "division_equipment equipment has no mapping for field id {other}"
@@ -727,19 +590,6 @@ pub fn record_from_equipment_row(
 /// Callers reach these only after a length check, so the slices are in bounds.
 fn u32_at(b: &[u8], off: usize) -> u32 {
     u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
-}
-
-fn i64_at(b: &[u8], off: usize) -> i64 {
-    i64::from_le_bytes([
-        b[off],
-        b[off + 1],
-        b[off + 2],
-        b[off + 3],
-        b[off + 4],
-        b[off + 5],
-        b[off + 6],
-        b[off + 7],
-    ])
 }
 
 #[cfg(test)]
@@ -831,14 +681,22 @@ mod tests {
             entry_count
         };
         p.extend_from_slice(&observed_equipment.to_le_bytes());
+        p.extend_from_slice(&allocation::FORMAT_MARKER);
         for (offset, word) in overrides {
             p[*offset..*offset + 4].copy_from_slice(&word.to_le_bytes());
         }
         for row in roots {
             p.extend_from_slice(row);
         }
-        for row in entries {
-            p.extend_from_slice(row);
+        for (index, row) in entries.iter().enumerate() {
+            let mut row = row.clone();
+            let first = roots.iter().find_map(|root| {
+                let first = u32_at(root, 16) as usize;
+                let count = u32_at(root, 20) as usize;
+                (index >= first && index < first.saturating_add(count)).then_some(first)
+            }).unwrap_or(0);
+            row[4..8].copy_from_slice(&((index - first) as u32).to_le_bytes());
+            p.extend_from_slice(&row);
         }
         p
     }
@@ -889,7 +747,7 @@ mod tests {
             "an equipment variant needs a content catalog to mean anything"
         );
         assert!(keys.iter().all(|f| f.kind.legal_as_key()));
-        assert_eq!(e.fields.len(), 4, "3 key components + amount");
+        assert_eq!(e.fields.len(), 6, "3 keys plus amount, source ordinal and exact raw amount");
     }
 
     #[test]
@@ -998,23 +856,6 @@ mod tests {
 
     #[test]
     fn the_mappers_emit_the_exact_value_for_each_declared_state() {
-        // Every state the schema declares, through the public mappers, from raw
-        // row bytes. The schema declares `unknown_capable` on `template_id` and
-        // nothing else, so those are the only cases that exist:
-        //
-        //   * a real value (`template_id` under a set gate, `amount` always),
-        //   * a real ZERO — `template_id == 0` with the gate SET. The fold does
-        //     not reject it (`world_fold.rs::fold_division_equipment` only rejects a
-        //     non-zero word with the gate CLEAR), so it is a value the grammar
-        //     admits and record-state contract keeps zero out of the three empty states,
-        //   * `unknown` — the gate clear.
-        //
-        // There is no absent case and no null case because no field declares
-        // `.optional()` or `.nullable()`; `Record::encode` would reject either.
-        // There is no zero case for `amount`: the collector never emits a
-        // zero-amount line (`attach_log.rs:58388`) and the fold rejects
-        // `amount_raw <= 0` (`world_fold.rs::fold_division_equipment`), so "none of this variant"
-        // is an absent KEY, tested in `an_absent_variant_is_an_absent_key`.
         let d = divisions();
         let template = index_of(&d, field::TEMPLATE_ID);
 
@@ -1039,9 +880,11 @@ mod tests {
 
         let e = equipment();
         let amount = index_of(&e, field::AMOUNT);
+        let zero = record_from_equipment_row(&e, &entry_row(1, 0), 0).unwrap();
+        assert_eq!(zero.values[amount], Value::Continuous(0.0));
+        assert_eq!(zero.values[index_of(&e, field::AMOUNT_RAW)], Value::Signed(0));
         let r = record_from_equipment_row(&e, &entry_row(1, 250_000), 0).expect("maps");
         assert_eq!(r.values[amount], Value::Continuous(2.5));
-        // The smallest amount the grammar admits is one raw unit, not zero.
         let r = record_from_equipment_row(&e, &entry_row(1, 1), 0).expect("maps");
         assert_eq!(r.values[amount], Value::Continuous(1.0 / FIXED_SCALE));
     }
@@ -1057,12 +900,10 @@ mod tests {
     }
 
     #[test]
-    fn an_absent_variant_is_an_absent_key() {
-        // The fidelity claim behind `amount` declaring no empty state: a zero
-        // amount cannot be encoded because it cannot be produced. Both the
-        // collector's filter and the fold's range check refuse it.
+    fn allocation_zero_is_a_value_and_negative_amounts_are_invalid() {
         let c = equipment();
-        for amount_raw in [0i64, -1, MAX_AMOUNT_RAW + 1, i64::MIN, i64::MAX] {
+        assert!(record_from_equipment_row(&c, &entry_row(1, 0), 0).is_ok());
+        for amount_raw in [-1i64, MAX_AMOUNT_RAW + 1, i64::MIN, i64::MAX] {
             assert!(
                 record_from_equipment_row(&c, &entry_row(1, amount_raw), 0).is_err(),
                 "amount_raw {amount_raw} is outside the grammar"
@@ -1170,7 +1011,7 @@ mod tests {
         // A non-zero reserved word (`:17556`).
         let mut reserved = entry_row(1, 1);
         reserved[4..8].copy_from_slice(&1u32.to_le_bytes());
-        assert!(record_from_equipment_row(&c, &reserved, 0).is_err());
+        assert_eq!(parse_equipment_row(&reserved).unwrap().source_ordinal, 1);
     }
 
     #[test]
@@ -1339,28 +1180,21 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_entry_ranges_are_legal_and_shared_rows_are_still_checked() {
-        // The fold constrains each range's bounds and the SUM of the counts
-        // (`world_fold.rs::fold_division_equipment`) — never that every entry row is
-        // referenced exactly once. Two roots may therefore name the same rows,
-        // which leaves other rows referenced by nobody. Those rows are still
-        // part of the frame and the fold still decodes and range-checks every
-        // one of them (`world_fold.rs::fold_division_equipment`), so `split_payload` must accept the
-        // shape and a caller must not treat "unreferenced" as "unchecked".
-        let roots = vec![
-            root_row(3, 9, ROOT_FLAG_TEMPLATE_PRESENT, 1, 0, 1),
-            root_row(3, 10, ROOT_FLAG_TEMPLATE_PRESENT, 2, 0, 1),
-        ];
-        let entries = vec![entry_row(11, 100_000), entry_row(12, 200_000)];
-        let p = payload(FrameMode::FULL, &roots, &entries, &[]);
-        let (header, root_bytes, _) = split_payload(&p, FrameMode::FULL).expect("well-formed");
-        assert_eq!(header.equipment_entry_count, 2);
-        let parsed: Vec<DivisionRow> = root_bytes
-            .chunks_exact(ROOT_ROW_LEN)
-            .map(|r| parse_division_row(r).expect("well-formed"))
-            .collect();
-        assert_eq!(entry_index_range(&parsed[0], 2).expect("in range"), 0..1);
-        assert_eq!(entry_index_range(&parsed[1], 2).expect("in range"), 0..1);
+    fn overlapping_entry_ranges_are_refused_and_disjoint_censuses_preserve_order() {
+        let entries = vec![entry_row(11, 0), entry_row(12, 200_000)];
+        for mode in [FrameMode::FULL, FrameMode::DELTA, FrameMode { delta: true, sparse_partial: true }] {
+            let overlap = vec![root_row(3, 9, ROOT_FLAG_TEMPLATE_PRESENT, 1, 0, 1), root_row(3, 10, ROOT_FLAG_TEMPLATE_PRESENT, 2, 0, 1)];
+            assert!(split_payload(&payload(mode, &overlap, &entries, &[]), mode).is_err());
+            let disjoint = vec![root_row(3, 9, ROOT_FLAG_TEMPLATE_PRESENT, 1, 0, 1), root_row(3, 10, ROOT_FLAG_TEMPLATE_PRESENT, 2, 1, 1)];
+            let bytes = payload(mode, &disjoint, &entries, &[]);
+            let (header, roots, allocated) = split_payload(&bytes, mode).unwrap();
+            assert_eq!(header.equipment_entry_count, 2);
+            let parsed = roots.chunks_exact(ROOT_ROW_LEN).map(|row| parse_division_row(row).unwrap()).collect::<Vec<_>>();
+            assert_eq!(entry_index_range(&parsed[0], 2).unwrap(), 0..1);
+            assert_eq!(entry_index_range(&parsed[1], 2).unwrap(), 1..2);
+            let parsed = allocated.chunks_exact(ENTRY_ROW_LEN).map(|row| parse_equipment_row(row).unwrap()).collect::<Vec<_>>();
+            assert_eq!(parsed.iter().map(|row| (row.variant_id, row.source_ordinal, row.amount_raw)).collect::<Vec<_>>(), vec![(11, 0, 0), (12, 0, 200_000)]);
+        }
     }
 
     #[test]

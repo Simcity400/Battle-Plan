@@ -19,6 +19,7 @@ pub const DOMAIN: u32 = 20;
 pub const DIVISIONS: u32 = 1;
 pub const MOVEMENT_ROUTE: u32 = 2;
 pub const ACCLIMATIZATION: u32 = 3;
+pub const TEMPLATE_EXCLUSIONS: u32 = 4;
 
 /// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
@@ -58,6 +59,7 @@ pub mod field {
     pub const MODEL_CATEGORY: u32 = 34;
     pub const ACCLIMATIZATION_MAXIMUM: u32 = 35;
     pub const ACCLIMATIZATION_COUNT: u32 = 36;
+    pub const TEMPLATE_EXCLUSION_COUNT: u32 = 37;
 }
 
 /// Declared precision for every continuous field except `move_progress`.
@@ -86,6 +88,13 @@ pub mod acclimatization_field {
     pub const WEIGHT_RAW: u32 = 5;
 }
 
+pub mod exclusion_field {
+    pub const DIV_ID: u32 = 1;
+    pub const DIV_TYPE: u32 = 2;
+    pub const INDEX: u32 = 3;
+    pub const VARIANT_ID: u32 = 4;
+}
+
 pub fn schema() -> Schema {
     use field as f;
     let mut fields = vec![
@@ -105,6 +114,7 @@ pub fn schema() -> Schema {
         Field::new(f::MODEL_CATEGORY, Kind::Unsigned).optional().nullable(),
         Field::new(f::ACCLIMATIZATION_MAXIMUM, Kind::Signed).optional().nullable(),
         Field::new(f::ACCLIMATIZATION_COUNT, Kind::Unsigned).optional().nullable(),
+        Field::new(f::TEMPLATE_EXCLUSION_COUNT, Kind::Unsigned).optional().nullable(),
     ];
 
     // Bar-drawn continuous values: quantized.
@@ -219,6 +229,15 @@ pub fn schema() -> Schema {
                 Field::new(acclimatization_field::CATEGORY, Kind::ContentId),
                 Field::new(acclimatization_field::WEIGHT_RAW, Kind::Signed),
             ],
+        }, Collection {
+            collection_id: TEMPLATE_EXCLUSIONS,
+            shape: Shape::KeyedSet,
+            fields: vec![
+                Field::new(exclusion_field::DIV_ID, Kind::Unsigned).key(0),
+                Field::new(exclusion_field::DIV_TYPE, Kind::Unsigned).key(1),
+                Field::new(exclusion_field::INDEX, Kind::Unsigned).key(2),
+                Field::new(exclusion_field::VARIANT_ID, Kind::Unsigned).nullable(),
+            ],
         }],
         event_part: None,
     }
@@ -291,8 +310,8 @@ mod tests {
         let s = schema();
         assert_eq!(
             s.collections[0].fields.len(),
-            36,
-            "2 key + 34 sampleable non-key fields"
+            37,
+            "2 key + 35 sampleable non-key fields"
         );
     }
 
@@ -307,6 +326,7 @@ mod tests {
                 Kind::Enum => Value::Enum(1),
                 Kind::ContentId => Value::ContentId(42),
                 Kind::Monotone => Value::Unsigned(7),
+                Kind::Signed => Value::Signed(-7),
                 Kind::Continuous => Value::Continuous(0.5),
                 _ => Value::Unsigned(3),
             })
@@ -339,6 +359,7 @@ mod tests {
                     Kind::Enum => Value::Enum(0),
                     Kind::ContentId => Value::ContentId(1),
                     Kind::Monotone => Value::Unsigned(0),
+                    Kind::Signed => Value::Signed(0),
                     Kind::Continuous => Value::Continuous(1.0),
                     _ => Value::Unsigned(0),
                 },
@@ -362,14 +383,8 @@ mod tests {
 
     #[test]
     fn only_the_extension_fields_are_unknown_capable() {
-        // Only the three A15 extension fields are unknown-capable, so the unknown
-        // bitmap is one byte rather than zero — and stays one byte however many
-        // fields the schema grows, because it is sized by that count alone.
         let s = schema();
         let c = &s.collections[0];
-        // The A15 extension fields are unknown-capable because a legacy row does
-        // not carry them; everything else is not, so most rows spend zero bytes
-        // on that bitmap. This is the mechanism that makes four states free.
         let unknown_capable: Vec<u32> = c
             .value_fields()
             .filter(|f| f.unknown_capable)
@@ -377,7 +392,7 @@ mod tests {
             .collect();
         assert_eq!(
             unknown_capable,
-            vec![field::MAX_ORGANISATION, field::DIG_IN, field::DIG_IN_CAP]
+            vec![field::MAX_ORGANISATION, field::DIG_IN, field::DIG_IN_CAP, field::MOVEMENT_ROUTE_COUNT]
         );
     }
 
@@ -392,6 +407,7 @@ mod tests {
                 Kind::Enum => Value::Enum(2),
                 Kind::ContentId => Value::ContentId(1000),
                 Kind::Monotone => Value::Unsigned(500),
+                Kind::Signed => Value::Signed(-500),
                 Kind::Continuous => Value::Continuous(0.75),
                 _ => Value::Unsigned(1000),
             })

@@ -97,11 +97,51 @@ fn stable_template<M: DecodeMemory + ?Sized>(
 #[derive(PartialEq, Eq)]
 struct PreferenceRead {
     string_custody: [usize; 3],
+    exclusions: Option<ExclusionRead>,
     preference: compact_contract::division_routes::TemplateModelPreference,
+}
+
+#[derive(PartialEq, Eq)]
+struct ExclusionRead {
+    header: [u64; 3],
+    pointers: Vec<u64>,
+    ids: Vec<Option<u32>>,
+}
+
+fn exclusions_once<M: DecodeMemory + ?Sized>(mem: &M, module: usize, template: usize) -> Option<ExclusionRead> {
+    let at = template.checked_add(0x140)?;
+    let data = mem.u64(at)?;
+    let capacity = mem.u32(at.checked_add(8)?)?;
+    let count = mem.u32(at.checked_add(12)?)?;
+    if count > capacity || count as usize > compact_contract::division_routes::MAX_TEMPLATE_EXCLUSIONS {
+        return None;
+    }
+    let mut pointers = Vec::with_capacity(count as usize);
+    let mut ids = Vec::with_capacity(count as usize);
+    if count != 0 {
+        if !is_map_control_heap_pointer(data as usize) { return None; }
+        let bytes = mem.bytes(data as usize, (count as usize).checked_mul(8)?)?;
+        for entry in bytes.chunks_exact(8) {
+            let pointer = u64::from_le_bytes(entry.try_into().ok()?);
+            pointers.push(pointer);
+            if pointer == 0 { ids.push(None); continue; }
+            let pointer = pointer as usize;
+            if !is_map_control_heap_pointer(pointer)
+                || mem.u64(pointer)? != module.checked_add(DIVISION_EQUIPMENT_VARIANT_VTABLE_RVA)? as u64
+                || mem.u32(pointer.checked_add(DIVISION_EQUIPMENT_VARIANT_OFF_TYPE)?)? != DIVISION_EQUIPMENT_VARIANT_TYPE {
+                return None;
+            }
+            let id = mem.u32(pointer.checked_add(DIVISION_EQUIPMENT_VARIANT_OFF_ID)?)?;
+            if id == 0 || id > MAX_DIVISION_EQUIPMENT_VARIANT_ID { return None; }
+            ids.push(Some(id));
+        }
+    }
+    Some(ExclusionRead { header: [data, capacity as u64, count as u64], pointers, ids })
 }
 
 fn preference_once<M: DecodeMemory + ?Sized>(
     mem: &M,
+    module: usize,
     selected: &TemplateRead,
 ) -> Option<PreferenceRead> {
     let template_id = selected.template?;
@@ -119,10 +159,12 @@ fn preference_once<M: DecodeMemory + ?Sized>(
     };
     Some(PreferenceRead {
         string_custody: [entity.size, entity.cap, entity.chars_addr],
+        exclusions: exclusions_once(mem, module, pointer),
         preference: compact_contract::division_routes::TemplateModelPreference {
             template_id,
             entity: String::from_utf8(entity.bytes).ok()?,
             category,
+            excluded_variants: None,
         },
     })
 }
@@ -140,7 +182,7 @@ fn stable_template_inputs<M: DecodeMemory + ?Sized>(
     let Some(first) = template_once(mem, module, body, id) else {
         return (None, None);
     };
-    let preference = preference_once(mem, &first);
+    let preference = preference_once(mem, module, &first);
     between();
     let Some(second) = template_once(mem, module, body, id) else {
         return (None, None);
@@ -148,11 +190,16 @@ fn stable_template_inputs<M: DecodeMemory + ?Sized>(
     if first != second {
         return (None, None);
     }
-    let after = preference_once(mem, &second);
-    let preference = if preference == after {
-        preference.map(|value| value.preference)
-    } else {
-        None
+    let after = preference_once(mem, module, &second);
+    let preference = match (preference, after) {
+        (Some(mut before), Some(after)) if before.string_custody == after.string_custody
+            && before.preference == after.preference => {
+                if before.exclusions == after.exclusions {
+                    before.preference.excluded_variants = before.exclusions.map(|value| value.ids);
+                }
+                Some(before.preference)
+            }
+        _ => None,
     };
     (Some(first.template), preference)
 }
@@ -574,6 +621,48 @@ mod tests {
             stable_template_inputs(&mem, module, body, 7, || mem.put64(body + 0x3b8, 0)),
             (None, None)
         );
+    }
+
+    #[test]
+    fn template_exclusions_preserve_unknown_empty_null_order_and_torn_variant_identity() {
+        let (mem, module, body) = fixture();
+        let template = body + 0x30000;
+        let list = body + 0x40000;
+        let variant = body + 0x50000;
+        mem.put64(body + 0x3b8, template as u64);
+        mem.put64(template, (module + DIVISION_TEMPLATE_VTABLE_RVA) as u64);
+        mem.put32(template + DIVISION_TEMPLATE_OFF_TYPE, DIVISION_TEMPLATE_TYPE);
+        mem.put32(template + DIVISION_TEMPLATE_OFF_ID, 73);
+        mem.put(template + 0x210, &[0]);
+        mem.put64(template + 0x220, 0);
+        mem.put64(template + 0x228, 15);
+        mem.put(template + 0x208, &[1]);
+        mem.put64(template + 0x200, u64::MAX);
+        let read = || stable_template_inputs(&mem, module, body, 7, || {}).1.unwrap();
+        assert_eq!(read().excluded_variants, None);
+        mem.put64(template + 0x140, 0);
+        mem.put32(template + 0x148, 0);
+        mem.put32(template + 0x14c, 0);
+        assert_eq!(read().excluded_variants, Some(vec![]));
+        mem.put64(template + 0x140, list as u64);
+        mem.put32(template + 0x148, 3);
+        mem.put32(template + 0x14c, 3);
+        mem.put64(list, variant as u64);
+        mem.put64(list + 8, 0);
+        mem.put64(list + 16, variant as u64);
+        mem.put64(variant, (module + DIVISION_EQUIPMENT_VARIANT_VTABLE_RVA) as u64);
+        mem.put32(variant + DIVISION_EQUIPMENT_VARIANT_OFF_TYPE, DIVISION_EQUIPMENT_VARIANT_TYPE);
+        mem.put32(variant + DIVISION_EQUIPMENT_VARIANT_OFF_ID, 11);
+        assert_eq!(read().excluded_variants, Some(vec![Some(11), None, Some(11)]));
+        let torn = stable_template_inputs(&mem, module, body, 7, || mem.put32(variant + DIVISION_EQUIPMENT_VARIANT_OFF_ID, 12)).1.unwrap();
+        assert_eq!(torn.excluded_variants, None);
+        assert_eq!(torn.category, Some(u64::MAX));
+        assert!(torn.entity.is_empty());
+        mem.put32(template + 0x14c, 4);
+        assert_eq!(read().excluded_variants, None);
+        mem.put32(template + 0x14c, 3);
+        mem.put64(variant, 0);
+        assert_eq!(read().excluded_variants, None);
     }
 
     #[test]

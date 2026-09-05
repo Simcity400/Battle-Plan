@@ -1,4 +1,5 @@
 pub mod division_routes;
+pub mod division_equipment;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;

@@ -1,6 +1,7 @@
-pub const FORMAT_MARKER: u32 = u32::from_le_bytes(*b"D2R4");
+pub const FORMAT_MARKER: u32 = u32::from_le_bytes(*b"D2R5");
 pub const ROW_LEN: usize = 184;
 pub const MAX_ROUTE_PROVINCES: usize = 65_536;
+pub const MAX_TEMPLATE_EXCLUSIONS: usize = 65_536;
 pub const MAX_MODEL_ENTITY_BYTES: usize = 4096;
 pub const MAX_ACCLIMATIZATION_CATEGORIES: usize = 65_536;
 pub const ACCLIMATIZATION_SCALE: i64 = 100_000;
@@ -22,6 +23,7 @@ pub struct TemplateModelPreference {
     pub template_id: u32,
     pub entity: String,
     pub category: Option<u64>,
+    pub excluded_variants: Option<Vec<Option<u32>>>,
 }
 
 pub fn append_inputs<'a>(
@@ -31,6 +33,7 @@ pub fn append_inputs<'a>(
     acclimatization: impl ExactSizeIterator<Item = Option<&'a Acclimatization>>,
 ) {
     let rows = routes.len();
+    let preferences = preferences.collect::<Vec<_>>();
     assert_eq!(rows, preferences.len());
     assert_eq!(rows, acclimatization.len());
     assert_eq!(payload.len(), 32 + rows * ROW_LEN);
@@ -51,7 +54,7 @@ pub fn append_inputs<'a>(
             .expect("bounded division route pool");
     }
     let mut cursor = 0u32;
-    for (index, preference) in preferences.enumerate() {
+    for (index, preference) in preferences.iter().copied().enumerate() {
         let Some(preference) = preference else {
             continue;
         };
@@ -90,6 +93,21 @@ pub fn append_inputs<'a>(
                 .expect("bounded acclimatization pool");
         }
     }
+    let table = payload.len();
+    payload.resize(table + rows * 8, 0);
+    let mut consumed = 0_u32;
+    for (index, preference) in preferences.into_iter().enumerate() {
+        let Some(excluded) = preference.and_then(|value| value.excluded_variants.as_ref()) else { continue };
+        assert!(excluded.len() <= MAX_TEMPLATE_EXCLUSIONS);
+        let at = table + index * 8;
+        payload[at..at + 4].copy_from_slice(&consumed.to_le_bytes());
+        payload[at + 4..at + 8].copy_from_slice(&(excluded.len() as u32 + 1).to_le_bytes());
+        for id in excluded {
+            assert!(id.is_none_or(|id| id > 0 && id <= i32::MAX as u32));
+            payload.extend_from_slice(&id.unwrap_or(0).to_le_bytes());
+        }
+        consumed += excluded.len() as u32;
+    }
 }
 
 pub fn write_current_template(payload: &mut [u8], index: usize, value: Option<Option<u32>>) {
@@ -126,6 +144,7 @@ pub struct DivisionRoutes<'a> {
     pool: usize,
     entity_pool: usize,
     acclimatization_pool: usize,
+    exclusions_table: usize,
 }
 
 impl<'a> DivisionRoutes<'a> {
@@ -252,8 +271,34 @@ impl<'a> DivisionRoutes<'a> {
             }
             acclimatization_consumed = cursor - acclimatization_pool;
         }
-        if acclimatization_pool + acclimatization_consumed != payload.len() {
+        let exclusions_table = acclimatization_pool + acclimatization_consumed;
+        let exclusions_pool = exclusions_table.checked_add(rows.checked_mul(8).ok_or("template exclusions table overflow")?).ok_or("template exclusions table overflow")?;
+        if exclusions_pool > payload.len() {
+            return Err("template exclusions table truncated".into());
+        }
+        let mut exclusions_consumed = 0_usize;
+        for index in 0..rows {
+            let at = exclusions_table + index * 8;
+            let start = word(payload, at) as usize;
+            let count = word(payload, at + 4) as usize;
+            if count == 0 {
+                if start != 0 { return Err("unavailable template exclusions have offset".into()); }
+                continue;
+            }
+            if word(payload, 32 + index * ROW_LEN + 144) == 0
+                || count - 1 > MAX_TEMPLATE_EXCLUSIONS || start != exclusions_consumed {
+                return Err("template exclusions have invalid identity or pool custody".into());
+            }
+            exclusions_consumed = exclusions_consumed.checked_add(count - 1).ok_or("template exclusions count overflow")?;
+        }
+        if exclusions_consumed != (payload.len() - exclusions_pool) / 4
+            || (payload.len() - exclusions_pool) % 4 != 0 {
             return Err("division input pool contains unowned bytes".into());
+        }
+        for entry in payload[exclusions_pool..].chunks_exact(4) {
+            if u32::from_le_bytes(entry.try_into().unwrap()) > i32::MAX as u32 {
+                return Err("template exclusion variant identity is invalid".into());
+            }
         }
         for province in payload[pool..entity_pool].chunks_exact(4) {
             let id = u32::from_le_bytes(province.try_into().unwrap());
@@ -267,6 +312,7 @@ impl<'a> DivisionRoutes<'a> {
             pool,
             entity_pool,
             acclimatization_pool,
+            exclusions_table,
         })
     }
 
@@ -306,10 +352,21 @@ impl<'a> DivisionRoutes<'a> {
         let entity = std::str::from_utf8(&self.payload[start..start + len])
             .unwrap()
             .to_owned();
+        let at = self.exclusions_table + index * 8;
+        let start = word(self.payload, at) as usize;
+        let count = word(self.payload, at + 4) as usize;
+        let excluded_variants = (count != 0).then(|| {
+            let pool = self.exclusions_table + self.rows * 8;
+            (0..count - 1).map(|index| {
+                let id = word(self.payload, pool + (start + index) * 4);
+                (id != 0).then_some(id)
+            }).collect()
+        });
         Some(TemplateModelPreference {
             template_id,
             entity,
             category,
+            excluded_variants,
         })
     }
 
@@ -423,7 +480,7 @@ mod tests {
         legacy[8..12].copy_from_slice(&1u32.to_le_bytes());
         legacy[32..36].copy_from_slice(&7u32.to_le_bytes());
         legacy[36..40].copy_from_slice(&4713u32.to_le_bytes());
-        legacy.extend_from_slice(&[0; 64]);
+        legacy.extend_from_slice(&[0; ROW_LEN - 120 + 8]);
         assert_eq!(
             DivisionRoutes::parse(&legacy).err().unwrap(),
             "unsupported division route format marker"
@@ -455,6 +512,32 @@ mod tests {
     }
 
     #[test]
+    fn template_exclusions_roundtrip_null_slots_empty_unknown_and_require_current_custody() {
+        let preferences = [
+            TemplateModelPreference { template_id: 73, entity: String::new(), category: Some(u64::MAX), excluded_variants: None },
+            TemplateModelPreference { template_id: 73, entity: String::new(), category: Some(0), excluded_variants: Some(vec![]) },
+            TemplateModelPreference { template_id: 73, entity: "model".into(), category: None, excluded_variants: Some(vec![Some(11), None, Some(11)]) },
+        ];
+        let mut payload = vec![0; 32 + 3 * ROW_LEN];
+        payload[8..12].copy_from_slice(&3_u32.to_le_bytes());
+        for index in 0..3 { write_current_template(&mut payload, index, Some(Some(73))); }
+        append_inputs(&mut payload, [None; 3].into_iter(), preferences.iter().map(Some), [None; 3].into_iter());
+        let parsed = DivisionRoutes::parse(&payload).unwrap();
+        for (index, expected) in preferences.iter().enumerate() {
+            assert_eq!(parsed.template_preference(index).as_ref(), Some(expected));
+        }
+        let table = parsed.exclusions_table;
+        let mut malformed = payload.clone();
+        malformed[table + 16..table + 20].copy_from_slice(&1_u32.to_le_bytes());
+        assert!(DivisionRoutes::parse(&malformed).is_err());
+        let mut legacy = payload.clone();
+        legacy[28..32].copy_from_slice(b"D2R4");
+        assert!(DivisionRoutes::parse(&legacy).is_err());
+        payload[32 + 2 * ROW_LEN + 132..32 + 2 * ROW_LEN + 136].copy_from_slice(&74_u32.to_le_bytes());
+        assert!(DivisionRoutes::parse(&payload).is_err());
+    }
+
+    #[test]
     fn template_preferences_share_pool_without_aliasing_routes_or_current_identity() {
         let preferences = [
             None,
@@ -462,11 +545,13 @@ mod tests {
                 template_id: 73,
                 entity: String::new(),
                 category: None,
+                excluded_variants: None,
             }),
             Some(TemplateModelPreference {
                 template_id: 74,
                 entity: "armour_entity".into(),
                 category: Some(0),
+                excluded_variants: None,
             }),
         ];
         let routes = [None, Some(vec![]), Some(vec![19, 17, 19])];
