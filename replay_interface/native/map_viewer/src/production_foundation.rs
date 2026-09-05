@@ -3964,3 +3964,6 @@ pub fn ")
         assert_eq!(error.gap_ids, vec!["fixture.XMAP04"]);
     }
 }
+
+#[cfg(test)]
+mod recovered_light_census;

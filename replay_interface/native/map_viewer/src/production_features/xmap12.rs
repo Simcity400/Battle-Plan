@@ -182,6 +182,9 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
                 &environment_map_content,
             ],
         )?;
+        let placed_entities = crate::xmap09_light_lifecycle::placed_light_entities(
+            &cities, &buildings, &fixed.frame, &building_visual,
+        );
         let prepared = prepare_xmap12_render_frame(
             cities,
             buildings,
@@ -189,6 +192,7 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
             fow_noise_content,
             fow_height_content,
             environment_map_content,
+            placed_entities,
         )?;
         if prepared.replay_frame_identity_sha256 != replay_frame_identity_sha256 {
             return Err("XMAP12 prepared payload belongs to a different replay frame".into());

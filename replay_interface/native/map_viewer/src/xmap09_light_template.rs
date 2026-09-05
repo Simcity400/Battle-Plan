@@ -105,8 +105,7 @@ impl Xmap09LightAnimation {
         {
             return Err(Xmap09LightEvaluationRefusal::InvalidAnimation);
         }
-        let (sample_denominator, lookup_scale) =
-            XMAP09_CURVE_TABLE_SCALARS;
+        let (sample_denominator, lookup_scale) = XMAP09_CURVE_TABLE_SCALARS;
         let mut samples = [0.0; 64];
         for (index, sample) in samples.iter_mut().enumerate() {
             *sample = self
@@ -224,6 +223,7 @@ impl Xmap09LightTrack {
 pub struct Xmap09LightTemplate {
     pub name: String,
     pub source: String,
+    pub duration: f32,
     pub color: [Xmap09LightTrack; 3],
     pub intensity: Xmap09LightTrack,
     pub radius: Xmap09LightTrack,
@@ -242,6 +242,17 @@ pub struct Xmap09LightFrameValues {
 }
 
 impl Xmap09LightTemplate {
+    pub fn admits_instance(
+        &self,
+        clock: &Xmap09LightInstanceClock,
+        mask: u32,
+        enabled: bool,
+    ) -> bool {
+        mask & crate::XMAP09_TILED_POINT_LIGHT_QUERY_MASK != 0
+            && (self.duration < 0.0 || clock.age_seconds() <= self.duration)
+            && enabled
+    }
+
     pub fn intensity_at_frame(
         &self,
         clock: &Xmap09LightInstanceClock,
@@ -338,6 +349,7 @@ pub fn parse_light_templates(text: &str, source: &str) -> Result<Vec<Xmap09Light
             });
         }
         out.push(Xmap09LightTemplate {
+            duration: parse_light_duration(&body)?,
             name,
             source: source.to_string(),
             color,
@@ -349,6 +361,51 @@ pub fn parse_light_templates(text: &str, source: &str) -> Result<Vec<Xmap09Light
         });
     }
     Ok(out)
+}
+
+fn parse_light_duration(body: &str) -> Result<f32> {
+    let mut depth = 0;
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut top = String::with_capacity(body.len());
+    for ch in body.chars() {
+        if quoted {
+            if !escaped && ch == '"' {
+                quoted = false;
+            }
+            escaped = !escaped && ch == '\\';
+            top.push(' ');
+            continue;
+        }
+        match ch {
+            '"' => {
+                quoted = true;
+                top.push(' ');
+            }
+            '{' => {
+                depth += 1;
+                top.push(' ');
+            }
+            '}' => {
+                depth -= 1;
+                top.push(' ');
+            }
+            _ => top.push(if depth == 0 { ch } else { ' ' }),
+        }
+    }
+    let Some(at) = crate::find_assignment(&top, "duration", 0) else {
+        return Ok(crate::xmap09_lighting_law::XMAP09_LIGHT_DEFAULT_DURATION);
+    };
+    let value = top[at..]
+        .split_whitespace()
+        .next()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+        .ok_or("XMAP09_LIGHT_DURATION_INVALID")?;
+    if crate::find_assignment(&top, "duration", at).is_some() {
+        return Err("XMAP09_LIGHT_DURATION_DUPLICATE".into());
+    }
+    Ok(value)
 }
 
 fn parse_light_track(text: &str, key: &str) -> Result<Xmap09LightTrack> {
@@ -472,8 +529,7 @@ pub struct Xmap09ResolvedLightEvent {
 /// Why one authored `light` event of a placed entity is not accounted for.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Xmap09LightEventRefusal {
-    /// The event names no attach node, so it has no world position.
-    NoNode,
+    PairedParticleRuntimeUnavailable { particle: String },
     /// The event carries no `time`, so nothing times it against the playhead.
     NoTime,
     Evaluation {
@@ -497,13 +553,17 @@ pub fn resolve_light_event(
     // An event with no `light` is another domain's (particle, sound); it is not
     // a refusal of this one.
     let light = event.light.clone().ok_or(None)?;
+    if let Some(particle) = event.particle.as_ref().filter(|name| !name.is_empty()) {
+        return Err(Some(Xmap09LightEventRefusal::PairedParticleRuntimeUnavailable {
+            particle: particle.clone(),
+        }));
+    }
     let Some(template) = templates.iter().find(|template| template.name == light) else {
         return Err(Some(Xmap09LightEventRefusal::UndeclaredTemplate { light }));
     };
-    let Some(node) = event.node.clone() else {
-        return Err(Some(Xmap09LightEventRefusal::NoNode));
-    };
-    if !locators.iter().any(|locator| locator.name == node)
+    let node = event.node.clone().unwrap_or_default();
+    if !node.is_empty()
+        && !locators.iter().any(|locator| locator.name == node)
         && !skeleton.iter().any(|joint| joint.name == node)
     {
         return Err(Some(Xmap09LightEventRefusal::UnknownNode { node }));
@@ -580,6 +640,11 @@ pub fn xmap09_attach_node_object_transform(
     locators: &[PdxLocator],
     posed_bones: &dyn Fn(&str) -> Option<[f32; 16]>,
 ) -> Option<[f32; 16]> {
+    if node.is_empty() {
+        return Some([
+            1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
+        ]);
+    }
     if let Some(locator) = locators.iter().find(|locator| locator.name == node) {
         let local = locator.transform_4x4.unwrap_or_else(|| {
             compose_translation_rotation(locator.position, locator.rotation_quat)
@@ -628,7 +693,7 @@ fn compose_translation_rotation(translation: [f32; 3], quat: [f32; 4]) -> [f32; 
     ]
 }
 
-fn multiply_4x4(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
+pub(crate) fn multiply_4x4(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
     let mut out = [0.0f32; 16];
     for row in 0..4 {
         for column in 0..4 {
@@ -654,6 +719,66 @@ fn transform_point(m: [f32; 16], point: [f32; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn template_duration_defaults_independently_of_animation_duration() {
+        let templates = parse_light_templates(CITYLIGHT, "test.asset").unwrap();
+        assert_eq!(templates[0].duration.to_bits(), (-1.0f32).to_bits());
+        assert_eq!(templates[1].duration.to_bits(), (-1.0f32).to_bits());
+        assert_eq!(templates[1].animations[0].duration, 1.6);
+        let mut clock = Xmap09LightInstanceClock::default();
+        clock.advance(1000.0, true).unwrap();
+        assert!(templates[1].admits_instance(&clock, 6, true));
+        assert!(!templates[1].admits_instance(&clock, 1, true));
+        assert!(!templates[1].admits_instance(&clock, 6, false));
+    }
+
+    #[test]
+    fn template_duration_uses_inclusive_age_and_every_negative_value_is_unlimited() {
+        for duration in [0.0f32, 0.5, 2.0] {
+            let source = CITYLIGHT.replacen(
+                "name = \"citylight\"",
+                &format!("name = \"citylight\"\nduration = {duration}"),
+                1,
+            );
+            let template = parse_light_templates(&source, "test.asset")
+                .unwrap()
+                .remove(0);
+            assert_eq!(template.duration, duration);
+            let mut clock = Xmap09LightInstanceClock::default();
+            clock.advance(f64::from(duration), true).unwrap();
+            assert!(template.admits_instance(&clock, 2, true));
+            assert!(template.admits_instance(&clock, 4, true));
+            clock.advance(0.001, true).unwrap();
+            assert!(!template.admits_instance(&clock, 6, true));
+        }
+        let mut template = parse_light_templates(CITYLIGHT, "test.asset")
+            .unwrap()
+            .remove(0);
+        template.duration = -0.5;
+        let mut clock = Xmap09LightInstanceClock::default();
+        clock.advance(1_000_000.0, true).unwrap();
+        assert!(template.admits_instance(&clock, 6, true));
+    }
+
+    #[test]
+    fn template_duration_rejects_invalid_or_duplicate_top_level_values() {
+        for value in ["NaN", "inf", "1e99", "oops", "0.5\nduration = 1"] {
+            let source = CITYLIGHT.replacen(
+                "name = \"citylight\"",
+                &format!("name = \"citylight\"\nduration = {value}"),
+                1,
+            );
+            assert!(
+                parse_light_templates(&source, "test.asset").is_err(),
+                "{value}"
+            );
+        }
+        assert_eq!(
+            parse_light_duration("name = \"duration = 7\"\nanimation = { duration = 2 }").unwrap(),
+            -1.0
+        );
+    }
 
     #[test]
     fn curve_table_samples_remap_cubic_overshoot_without_clamping() {
@@ -820,6 +945,10 @@ light = {
             transform_4x4: None,
         }];
         let event = BuildingEntityEvent {
+            particle: None,
+            keep_particle: false,
+            entity: None,
+            life: None,
             time: Some(1.1),
             node: Some("lamp".into()),
             light: Some("alarm_flash".into()),
@@ -1032,6 +1161,10 @@ light = {
         }];
         let event =
             |light: Option<&str>, node: Option<&str>, time: Option<f32>| BuildingEntityEvent {
+                particle: None,
+                keep_particle: false,
+                entity: None,
+                life: None,
                 time,
                 node: node.map(str::to_owned),
                 light: light.map(str::to_owned),
@@ -1111,7 +1244,18 @@ light = {
                 &[],
                 &Xmap09LightInstanceClock::default()
             ),
-            Err(Some(Xmap09LightEventRefusal::NoNode))
+            Ok(Xmap09ResolvedLightEvent {
+                light: "alarm_flash".into(),
+                node: String::new(),
+                event_time: 0.0,
+                values: Xmap09LightFrameValues {
+                    color: [1.0, 0.0, 0.0],
+                    intensity: 0.0,
+                    radius: 2.0,
+                    falloff: 5.0,
+                    position: [0.0; 3]
+                }
+            })
         );
     }
 }

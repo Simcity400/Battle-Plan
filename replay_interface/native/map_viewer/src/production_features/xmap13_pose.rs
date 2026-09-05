@@ -847,6 +847,19 @@ fn animated_channels(
     Some((translation, rotation, scale))
 }
 
+pub(crate) fn xmap13_node_transforms(
+    skeleton: &[PdxJoint], anim: Option<&PdxAnimData>, phase: f32,
+) -> Result<std::collections::BTreeMap<String, [f32; 16]>> {
+    let palette = xmap13_skin_palette(skeleton, anim, phase, 0.0)?;
+    skeleton.iter().map(|joint| {
+        let start = joint.index as usize * 64;
+        let skin = std::array::from_fn(|lane| f32::from_le_bytes(palette[start + lane * 4..start + lane * 4 + 4].try_into().unwrap()));
+        let bind = affine_inverse(affine_from_3x4(joint.transform_3x4)).ok_or("light node inverse bind is singular")?;
+        let object = multiply(skin, bind);
+        Ok((joint.name.clone(), std::array::from_fn(|i| object[(i % 4) * 4 + i / 4])))
+    }).collect()
+}
+
 /// A 4x4 from the authored 4x3 affine, which carries no projective row.
 fn affine_from_3x4(rows: [f32; 12]) -> [f32; 16] {
     [
@@ -1977,6 +1990,9 @@ mod tests {
     #[test]
     fn one_units_pick_is_the_same_every_time_and_the_population_splits_by_the_weights() {
         let variant = |name: &str, animation: &str, chance: f32| BuildingEntityState {
+                time_offset: None,
+                next_state: None,
+                length: None, looping: None,
             name: name.into(),
             animation: Some(animation.into()),
             events: Vec::new(),
@@ -1984,6 +2000,7 @@ mod tests {
             chance: Some(chance),
         };
         let pose = BuildingEntityPose {
+            scale: None,
             entity_name: "infantry_rifle_entity".into(),
             pdxmesh: Some("generic_western_european_rifle_infantry_mesh".into()),
             default_state: Some("idle".into()),
@@ -2095,6 +2112,9 @@ mod tests {
     #[test]
     fn a_variant_that_cannot_be_played_does_not_take_a_playable_ones_turn() {
         let variant = |animation: &str, chance: f32| BuildingEntityState {
+                time_offset: None,
+                next_state: None,
+                length: None, looping: None,
             name: "attack".into(),
             animation: Some(animation.into()),
             events: Vec::new(),
@@ -2102,6 +2122,7 @@ mod tests {
             chance: Some(chance),
         };
         let pose = BuildingEntityPose {
+            scale: None,
             entity_name: "e".into(),
             pdxmesh: Some("m".into()),
             default_state: None,
@@ -2134,11 +2155,13 @@ mod tests {
         // The same when the unplayable variant is unplayable in the OTHER two
         // ways: an id the mesh does not declare, and a clip no table declares.
         let broken = BuildingEntityPose {
+            scale: None,
             states: vec![variant("carried", 1.0), variant("undeclared_id", 3.0)],
             ..pose.clone()
         };
         let broken = authored_state_variants(&broken, "attack", &mesh_clips, &tables);
         let orphan = BuildingEntityPose {
+            scale: None,
             states: vec![variant("carried", 1.0), variant("absent", 3.0)],
             ..pose.clone()
         };
@@ -2172,6 +2195,9 @@ mod tests {
         // unplayable one is out. A filter that took the first playable variant,
         // or that kept the unplayable one's share, misses this.
         let weighted = |animation: &str, chance: f32| BuildingEntityState {
+                time_offset: None,
+                next_state: None,
+                length: None, looping: None,
             name: "attack".into(),
             animation: Some(animation.into()),
             events: Vec::new(),
@@ -2179,6 +2205,7 @@ mod tests {
             chance: Some(chance),
         };
         let three = BuildingEntityPose {
+            scale: None,
             entity_name: "e".into(),
             pdxmesh: Some("m".into()),
             default_state: None,
@@ -2256,6 +2283,9 @@ mod tests {
     #[test]
     fn the_draw_is_over_the_state_the_unit_actually_plays() {
         let idle = |animation: &str, chance: f32| BuildingEntityState {
+                time_offset: None,
+                next_state: None,
+                length: None, looping: None,
             name: "idle".into(),
             animation: Some(animation.into()),
             events: Vec::new(),
@@ -2263,6 +2293,7 @@ mod tests {
             chance: Some(chance),
         };
         let pose = BuildingEntityPose {
+            scale: None,
             entity_name: "e".into(),
             pdxmesh: Some("m".into()),
             default_state: Some("idle".into()),
@@ -2285,7 +2316,11 @@ mod tests {
         // The name the variants belong to IS the default's, for a unique
         // default as much as for a weighted one: the draw is seeded with it.
         let unique = BuildingEntityPose {
+            scale: None,
             states: vec![BuildingEntityState {
+                time_offset: None,
+                next_state: None,
+                length: None, looping: None,
                 name: "idle".into(),
                 animation: Some("a".into()),
                 events: Vec::new(),
@@ -2336,10 +2371,14 @@ mod tests {
     #[test]
     fn a_clip_no_read_table_declares_names_the_trees_that_were_read() {
         let pose = BuildingEntityPose {
+            scale: None,
             entity_name: "e".into(),
             pdxmesh: Some("m".into()),
             default_state: None,
             states: vec![BuildingEntityState {
+                time_offset: None,
+                next_state: None,
+                length: None, looping: None,
                 name: "attack".into(),
                 animation: Some("swing".into()),
                 events: Vec::new(),
@@ -2383,6 +2422,9 @@ mod tests {
     #[test]
     fn a_state_with_no_usable_clip_is_at_rest_with_its_own_cause() {
         let state = |name: &str, animation: &str, chance: Option<f32>| BuildingEntityState {
+                time_offset: None,
+                next_state: None,
+                length: None, looping: None,
             name: name.into(),
             animation: Some(animation.into()),
             events: Vec::new(),
@@ -2390,6 +2432,7 @@ mod tests {
             chance,
         };
         let pose = BuildingEntityPose {
+            scale: None,
             entity_name: "e".into(),
             pdxmesh: Some("m".into()),
             default_state: None,
@@ -2428,11 +2471,15 @@ mod tests {
     #[test]
     fn the_clip_is_selected_through_the_registry_and_the_speed_is_the_authored_one() {
         let pose = BuildingEntityPose {
+            scale: None,
             entity_name: "flat_wagon_entity".into(),
             pdxmesh: Some("flat_wagon_mesh".into()),
             default_state: Some("idle".into()),
             states: vec![
                 BuildingEntityState {
+                time_offset: None,
+                next_state: None,
+                length: None, looping: None,
                     name: "idle".into(),
                     animation: Some("idle".into()),
                     events: Vec::new(),
@@ -2440,6 +2487,9 @@ mod tests {
                     chance: None,
                 },
                 BuildingEntityState {
+                time_offset: None,
+                next_state: None,
+                length: None, looping: None,
                     name: "moving".into(),
                     animation: Some("move".into()),
                     events: Vec::new(),
@@ -2447,6 +2497,9 @@ mod tests {
                     chance: None,
                 },
                 BuildingEntityState {
+                time_offset: None,
+                next_state: None,
+                length: None, looping: None,
                     name: "attack".into(),
                     animation: Some("attack".into()),
                     events: Vec::new(),
@@ -2454,6 +2507,9 @@ mod tests {
                     chance: None,
                 },
                 BuildingEntityState {
+                time_offset: None,
+                next_state: None,
+                length: None, looping: None,
                     name: "orphan".into(),
                     animation: Some("orphan".into()),
                     events: Vec::new(),
@@ -2527,6 +2583,7 @@ mod tests {
         // No such state and no default: unanimated, at the rate nothing
         // authored.
         let nothing = BuildingEntityPose {
+            scale: None,
             default_state: None,
             ..pose.clone()
         };

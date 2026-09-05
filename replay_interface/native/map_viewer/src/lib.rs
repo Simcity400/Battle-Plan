@@ -116,6 +116,8 @@ mod xmap07_d3d_handoff;
 mod xmap08_d3d_handoff;
 mod xmap09_d3d_handoff;
 mod xmap07_snow_mud_law;
+pub mod xmap09_light_census;
+pub mod xmap09_light_lifecycle;
 mod xmap09_light_template;
 mod xmap09_lighting_law;
 mod xmap10_d3d_handoff;
@@ -321,8 +323,8 @@ pub use xmap09_light_template::{
 pub use xmap09_lighting_law::{
     evaluate_effective_define_numbers, EffectiveDefines,
     engine_hour_of_day, engine_hour_of_day_fraction, virtual_rig,
-    xmap09_point_light_census_is_incomplete, xmap09_shadow_fade_factor,
-    xmap09_tiled_point_light_grid, xmap09_undeliverable_point_light_creators,
+    xmap09_shadow_fade_factor,
+    xmap09_tiled_point_light_grid,
     Xmap09LightingDefines, Xmap09PointLightCreator, Xmap09PointLightCreatorReach,
     Xmap09VirtualRig, XMAP09_CITY_POINT_LIGHT_GATE_READ_RVA, XMAP09_CITY_POINT_LIGHT_GATE_RVA,
     XMAP09_CITY_POINT_LIGHT_TEMPLATE_NAME, XMAP09_ENGINE_HOUR_EPOCH,
@@ -330,7 +332,7 @@ pub use xmap09_lighting_law::{
     XMAP09_POINT_LIGHT_INSTANCE_CONSTRUCTOR_RVA, XMAP09_REPLAY_DAY_NIGHT_FACTOR,
     XMAP09_TILED_POINT_LIGHT_ANCHOR_FORWARD_SCALE, XMAP09_TILED_POINT_LIGHT_CELL_SIZE,
     XMAP09_TILED_POINT_LIGHT_INVERSE_CELL_SIZE, XMAP09_TILED_POINT_LIGHT_QUERY_MASK,
-    XMAP09_TILED_POINT_LIGHT_WRITER_RVA, XMAP09_ANIMATION_EVENT_PLAYHEAD_BLOCKERS,
+    XMAP09_TILED_POINT_LIGHT_WRITER_RVA,
 };
 pub use luminance_law::{
     adapt_luminance_temporal, f16_bits_to_f32 as luminance_f16_bits_to_f32,

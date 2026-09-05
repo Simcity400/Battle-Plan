@@ -40,6 +40,7 @@ pub fn xmap13_native_bridge_frame(
         "XMAP12 native L03 rows",
     )?;
     let mut bridge = PreparedXmap12RenderFrame {
+        placed_entities: Err(crate::xmap09_light_census::Xmap09LightCensusRefusal::MissingDomain { domain: "XMAP12.placed_entities".into() }),
         schema: crate::XMAP12_RENDER_FRAME_SCHEMA.into(),
         content_manifest_sha256: content_manifest_sha256.into(),
         effective_vfs_manifest_sha256: effective_vfs_manifest_sha256.into(),

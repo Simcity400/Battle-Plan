@@ -301,3 +301,46 @@ extractor/native/runs/locmiss_engine_miss_behaviour/POINTER.md text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1401ad1d0.decompile.c text eol=lf
 
 portable_replay/native/engine_evidence/artifacts/func_14070f170.decompile.c text eol=lf
+extractor/native/runs/re_light3_lifetime_census/** text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14126bbd0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260905T012244Z-xmap09-light-registrar-span-a-d23298fa.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260905T012342Z-xmap09-light-token-id-globals-b1923c76.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260905T012501Z-xmap09-light-registrar-span-b-42d541b4.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260905T012552Z-xmap09-light-token-pairs-588bb23f.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260905T012656Z-xmap09-light-registrar-span-c-df1bca4d.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260905T012749Z-xmap09-light-token-pairs-b-63919811.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260905T012823Z-xmap09-light-registrar-span-d-bf91ef42.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260905T012901Z-xmap09-light-token-pairs-c-70e87e7d.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260905T020444Z-re-light3-duration-and-tile-scalars-431843d1.datdump.txt text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_14226ef30.decompile.c -text -eol
+
+portable_replay/native/engine_evidence/artifacts/func_142276040.decompile.c -text -eol
+
+portable_replay/native/engine_evidence/artifacts/func_1422787f0.decompile.c -text -eol
+
+portable_replay/native/engine_evidence/artifacts/func_14226ba00.decompile.c -text -eol
+
+portable_replay/native/engine_evidence/artifacts/func_142281510.decompile.c -text -eol
+
+portable_replay/native/engine_evidence/artifacts/func_14226b330.decompile.c -text -eol
+
+portable_replay/native/engine_evidence/artifacts/func_142281400.decompile.c -text -eol
+
+portable_replay/native/engine_evidence/artifacts/func_14233bb30.decompile.c -text -eol
+
+portable_replay/native/engine_evidence/artifacts/func_14227b4a0.decompile.c -text -eol
+
+portable_replay/native/engine_evidence/artifacts/20260905T053333Z-entity-event-life-token-bd800328.datdump.txt -text -eol
+
+portable_replay/native/engine_evidence/artifacts/20260905T054313Z-entity-life-registration-continuation-ffa09b86.datdump.txt -text -eol
+
+portable_replay/native/engine_evidence/artifacts/func_14227b5e0.decompile.c -text -eol
+
+portable_replay/native/engine_evidence/artifacts/func_1422755a0.decompile.c -text -eol
+
+portable_replay/native/engine_evidence/artifacts/func_14226eb10.decompile.c -text -eol
+
+portable_replay/native/engine_evidence/artifacts/func_14233cc10.decompile.c -text -eol
+
+portable_replay/native/engine_evidence/artifacts/20260905T061005Z-entity-state-time-offset-token-9955917c.datdump.txt -text -eol

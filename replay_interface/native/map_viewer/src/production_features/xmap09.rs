@@ -1,3 +1,7 @@
+use crate::xmap09_light_census::{
+    admit_light_census, Xmap09LightCensusCounts,
+    Xmap09LightCensusRefusal, Xmap09LightCensusRows,
+};
 
 use crate::{
     build_shadow_frame, plan_s1_shadow_screen_chain, project_l03_light_depth,
@@ -16,8 +20,8 @@ use snapshot::sha256::Sha256;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-pub const XMAP09_INPUT_SCHEMA: &str = "hoi4.xmap09.semantic-lighting-input.a729.v2";
-pub const XMAP09_PREPARED_SCHEMA: &str = "hoi4.xmap09.prepared-lighting-shadow.a729.v1";
+pub const XMAP09_INPUT_SCHEMA: &str = "hoi4.xmap09.semantic-lighting-input.a729.v3";
+pub const XMAP09_PREPARED_SCHEMA: &str = "hoi4.xmap09.prepared-lighting-shadow.a729.v2";
 pub const XMAP09_A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 pub const XMAP09_SCENE_LIGHT_WRITER_RVA: u32 = 0x0126_7270;
@@ -96,6 +100,7 @@ pub struct Xmap09LightingInput {
     /// Map objects XMAP12 placed earlier in this same frame. `None` is XMAP12
     /// not vouching this hour; `Some(0)` is a measured-empty placement.
     pub placed_map_object_count: Option<u32>,
+    pub point_light_census: std::result::Result<Xmap09LightCensusCounts, Xmap09LightCensusRefusal>,
     pub point_light_census_sha256: String,
     pub source_observation_sha256: String,
     pub payload_sha256: String,
@@ -104,6 +109,9 @@ pub struct Xmap09LightingInput {
 impl Xmap09LightingInput {
     pub fn computed_point_light_census_sha256(&self) -> String {
         let mut bytes = Vec::new();
+        bytes.extend_from_slice(
+            &serde_json::to_vec(&self.point_light_census).expect("census serializes"),
+        );
         for light in &self.point_lights {
             bytes.extend_from_slice(light.stable_light_id.as_bytes());
             bytes.extend_from_slice(&light.global_order.to_le_bytes());
@@ -233,6 +241,17 @@ impl Xmap09LightingInput {
         {
             return Err("XMAP09 point-light inverse cell sizes must be positive".into());
         }
+        match &self.point_light_census {
+            Ok(counts)
+                if counts.is_consistent() && counts.uploaded_lights == self.point_lights.len() => {}
+            Err(_)
+                if self.point_lights.is_empty()
+                    && self
+                        .point_light_cell_indices
+                        .iter()
+                        .all(|cell| *cell == [u8::MAX; 4]) => {}
+            _ => return Err("XMAP09 light census counts or refusal disagree with the grid".into()),
+        }
         if self.point_lights.len() > LIGHT_CAPACITY {
             return Err(
                 format!("XMAP09 point-light census exceeds {LIGHT_CAPACITY} texture rows").into(),
@@ -264,29 +283,24 @@ impl Xmap09LightingInput {
                 &light.color_falloff_f32_bits,
                 &format!("point light {index} color/falloff"),
             )?;
-            let radius = f32::from_bits(light.position_radius_f32_bits[3]);
-            let falloff = f32::from_bits(light.color_falloff_f32_bits[3]);
-            if radius <= 0.0 || falloff <= 0.0 {
-                return Err(
-                    format!("XMAP09 point light {index} radius/falloff must be positive").into(),
-                );
-            }
         }
         for (cell_index, cell) in self.point_light_cell_indices.iter().enumerate() {
             let mut saw_sentinel = false;
-            let mut seen = BTreeSet::new();
-            for slot in cell {
+            let mut previous = None;
+            for channel in crate::xmap09_lighting_law::XMAP09_LIGHT_CELL_CHANNEL_ORDER {
+                let slot = &cell[channel];
                 if *slot == u8::MAX {
                     saw_sentinel = true;
                 } else if saw_sentinel
                     || usize::from(*slot) >= self.point_lights.len()
-                    || !seen.insert(*slot)
+                    || previous.is_some_and(|last| last >= *slot)
                 {
                     return Err(format!(
                         "XMAP09 point-light cell {cell_index} has invalid ordered indices"
                     )
                     .into());
                 }
+                previous = Some(*slot);
             }
         }
         if self.point_light_census_sha256 != self.computed_point_light_census_sha256() {
@@ -611,6 +625,7 @@ pub struct PreparedXmap09LightingFrame {
     pub prepare_stage: crate::AssignedStage,
     pub shadow_execute_stage: crate::AssignedStage,
     pub scene_constants: Xmap09SceneConstantPatch,
+    pub point_light_census: std::result::Result<Xmap09LightCensusCounts, Xmap09LightCensusRefusal>,
     pub light_index_map: Xmap09TextureResource,
     pub light_data_map: Xmap09TextureResource,
     pub shadow: Xmap09ShadowResourcePlan,
@@ -659,6 +674,21 @@ impl PreparedXmap09LightingFrame {
             DXGI_FORMAT_R32G32B32A32_FLOAT,
             (LIGHT_DATA_TEXELS * 16) as u32,
         )?;
+        match &self.point_light_census {
+            Ok(counts)
+                if counts.is_consistent()
+                    && self.light_index_map.bytes.iter().all(|slot| {
+                        *slot == u8::MAX || usize::from(*slot) < counts.uploaded_lights
+                    }) => {}
+            Err(_)
+                if self
+                    .light_index_map
+                    .bytes
+                    .iter()
+                    .all(|slot| *slot == u8::MAX)
+                    && self.light_data_map.bytes.iter().all(|byte| *byte == 0) => {}
+            _ => return Err("XMAP09 prepared light census disagrees with its textures".into()),
+        }
         let target = &self.shadow.selected_light_frame.light_depth_target;
         if target.width != L03_LIGHT_DEPTH_WIDTH
             || target.height != L03_LIGHT_DEPTH_HEIGHT
@@ -962,6 +992,8 @@ fn xmap09_scene_cb0_field_contract(symbol: &str) -> Option<(u32, u32)> {
 }
 
 pub(crate) struct Xmap09LightingAdapter {
+    resolver: crate::GameFileResolver,
+    lifecycle: std::sync::Mutex<crate::xmap09_light_lifecycle::ViewerLightLifecycle>,
     defines: crate::Xmap09LightingDefines,
     ordered_used_content: Vec<UsedContentKey>,
     defines_source_sha256: String,
@@ -969,7 +1001,11 @@ pub(crate) struct Xmap09LightingAdapter {
 
 impl Xmap09LightingAdapter {
     pub(crate) fn new(resolver: &crate::GameFileResolver) -> Result<Self> {
-        let (sources, ordered_used_content) = crate::xmap09_lighting_law::admitted_effective_define_sources(resolver, "XMAP09 lighting defines")?;
+        let (sources, ordered_used_content) =
+            crate::xmap09_lighting_law::admitted_effective_define_sources(
+                resolver,
+                "XMAP09 lighting defines",
+            )?;
         let mut digest_bytes = Vec::new();
         for content in &ordered_used_content {
             digest_bytes.extend_from_slice(content.normalized_game_relative_path.as_bytes());
@@ -979,6 +1015,8 @@ impl Xmap09LightingAdapter {
         }
         let defines = crate::Xmap09LightingDefines::from_effective_sources(&sources)?;
         Ok(Self {
+            resolver: resolver.clone(),
+            lifecycle: Default::default(),
             defines,
             ordered_used_content,
             defines_source_sha256: Sha256::hex(&digest_bytes),
@@ -992,6 +1030,7 @@ impl Xmap09LightingAdapter {
         effective_vfs_manifest_sha256: &str,
         camera: &crate::ViewerMapCameraState,
         placed_map_object_count: Option<u32>,
+        light_rows: std::result::Result<Xmap09LightCensusRows<'_>, Xmap09LightCensusRefusal>,
     ) -> Result<Xmap09LightingInput> {
         let game_hour_raw = hour_index
             .checked_add(GAME_HOUR_RAW_EPOCH)
@@ -1016,8 +1055,21 @@ impl Xmap09LightingAdapter {
             self.defines.draw_shadows_fade_length,
         )? > 0.0;
         let ambient = self.defines.ambient_rig();
-        // The empty census below is lawful only while this holds.
-        crate::xmap09_point_light_census_is_incomplete()?;
+        let grid = crate::xmap09_tiled_point_light_grid(
+            camera.current_eye(),
+            camera.current_look_at_direction()?,
+            map_width,
+            map_height,
+        )?;
+        let (point_light_census, point_lights, point_light_cell_indices) =
+            match admit_light_census(light_rows, grid) {
+                Ok(census) => (Ok(census.counts), census.lights, census.cells),
+                Err(refusal) => (
+                    Err(refusal),
+                    Vec::new(),
+                    vec![[u8::MAX; 4]; LIGHT_INDEX_WIDTH * LIGHT_INDEX_HEIGHT],
+                ),
+            };
         let input = Xmap09LightingInput {
             schema: XMAP09_INPUT_SCHEMA.into(),
             executable_sha256: XMAP09_A729_EXECUTABLE_SHA256.into(),
@@ -1045,16 +1097,10 @@ impl Xmap09LightingAdapter {
             draw_shadows_cutoff_f32_bits: self.defines.draw_shadows_cutoff.to_bits(),
             draw_shadows_fade_length_f32_bits: self.defines.draw_shadows_fade_length.to_bits(),
             shadow_pass_active,
-            point_light_grid_start_inv_cell_size_f32_bits: bits4(
-                crate::xmap09_tiled_point_light_grid(
-                    camera.current_eye(),
-                    camera.current_look_at_direction()?,
-                    map_width,
-                    map_height,
-                )?,
-            ),
-            point_lights: Vec::new(),
-            point_light_cell_indices: vec![[u8::MAX; 4]; LIGHT_INDEX_WIDTH * LIGHT_INDEX_HEIGHT],
+            point_light_grid_start_inv_cell_size_f32_bits: bits4(grid),
+            point_light_census,
+            point_lights,
+            point_light_cell_indices,
             placed_map_object_count,
             point_light_census_sha256: String::new(),
             source_observation_sha256: Sha256::hex(
@@ -1090,17 +1136,27 @@ impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
             .as_ref()
             .ok_or("XMAP09 lighting/shadows require the XMAP03 viewer camera")?;
         camera.validate()?;
-        let input = self.derive_lighting_input(
-            context.world_frame.hour_index(),
-            context.product_modset_sha256,
-            context.effective_vfs_manifest_sha256,
-            camera,
-            context
-                .prepared_map_objects
-                .map(|frame| u32::try_from(frame.ordered_draws.len()))
-                .transpose()
-                .map_err(|_| "XMAP09 placed map-object population does not fit its counter")?,
-        )?;
+        let population = context.prepared_map_objects
+            .ok_or_else(|| Xmap09LightCensusRefusal::MissingDomain { domain: "XMAP12.placed_entities".into() })
+            .and_then(|frame| frame.placed_entities.as_ref().map_err(Clone::clone));
+        if population.is_err() {
+            self.lifecycle.lock().map_err(|_| "XMAP09 viewer lifecycle lock is poisoned")?.reset_population();
+        }
+        let placed_count = population.as_ref().ok().map(|rows| u32::try_from(rows.len()))
+            .transpose().map_err(|_| "XMAP09 placed population counter overflow")?;
+        let derived = population.and_then(|rows| self.lifecycle.lock()
+            .map_err(|_| Xmap09LightCensusRefusal::MissingDomain { domain: "viewer.light_lifecycle".into() })?
+            .derive_light_instance_rows(&self.resolver, rows, context.viewer));
+        let input = match derived {
+            Ok(rows) => rows.with_rows(|rows| self.derive_lighting_input(
+                context.world_frame.hour_index(), context.product_modset_sha256,
+                context.effective_vfs_manifest_sha256, camera, placed_count, Ok(rows),
+            ))?,
+            Err(refusal) => self.derive_lighting_input(
+                context.world_frame.hour_index(), context.product_modset_sha256,
+                context.effective_vfs_manifest_sha256, camera, placed_count, Err(refusal),
+            )?,
+        };
         let prepare_stage = context
             .require_assigned_stage(XMAP09_PREPARE_STAGE_NAME, XMAP09_PREPARE_OPERATION_NAME)?;
         let shadow_execute_stage = context
@@ -1196,11 +1252,7 @@ fn xmap09_sun_direction(
         map_focus: [look[0], look[2]],
         camera_x: camera.current_eye()[0],
         map_width: camera.map_width as f32,
-        primary_sun: [
-            rig.virtual_sun[0],
-            rig.virtual_sun[1],
-            rig.virtual_sun[2],
-        ],
+        primary_sun: [rig.virtual_sun[0], rig.virtual_sun[1], rig.virtual_sun[2]],
         primary_moon: [
             rig.virtual_moon[0],
             rig.virtual_moon[1],
@@ -1309,8 +1361,9 @@ fn prepare_lighting(
     let light_index_bytes = input
         .point_light_cell_indices
         .iter()
-        .flatten()
-        .copied()
+        .flat_map(|cell| {
+            crate::xmap09_lighting_law::XMAP09_LIGHT_CELL_CHANNEL_ORDER.map(|channel| cell[channel])
+        })
         .collect::<Vec<_>>();
     let mut light_data_bytes = Vec::with_capacity(LIGHT_DATA_TEXELS * 16);
     for light in &input.point_lights {
@@ -1411,6 +1464,7 @@ fn prepare_lighting(
         prepare_stage,
         shadow_execute_stage,
         scene_constants,
+        point_light_census: input.point_light_census.clone(),
         light_index_map,
         light_data_map,
         shadow,
@@ -1507,6 +1561,7 @@ fn texture_descriptor_digest(
 fn prepared_digest(prepared: &PreparedXmap09LightingFrame) -> Result<String> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(prepared.schema.as_bytes());
+    bytes.extend_from_slice(&serde_json::to_vec(&prepared.point_light_census)?);
     bytes.extend_from_slice(prepared.input_payload_sha256.as_bytes());
     bytes.extend_from_slice(prepared.replay_frame_identity_sha256.as_bytes());
     bytes.extend_from_slice(prepared.camera_frame_sha256.as_bytes());
@@ -1585,7 +1640,7 @@ mod tests {
 
     fn input() -> Xmap09LightingInput {
         let mut cells = vec![[u8::MAX; 4]; LIGHT_INDEX_WIDTH * LIGHT_INDEX_HEIGHT];
-        cells[0] = [0, u8::MAX, u8::MAX, u8::MAX];
+        cells[0] = [u8::MAX, u8::MAX, 0, u8::MAX];
         Xmap09LightingInput {
             schema: XMAP09_INPUT_SCHEMA.into(),
             executable_sha256: XMAP09_A729_EXECUTABLE_SHA256.into(),
@@ -1611,6 +1666,18 @@ mod tests {
             point_light_grid_start_inv_cell_size_f32_bits: [0.0f32, 0.0, 0.01, 0.01]
                 .map(f32::to_bits),
             placed_map_object_count: Some(1),
+            point_light_census: Ok(Xmap09LightCensusCounts {
+                creator_sites: 4,
+                placed_entities: 1,
+                authored_light_events: 1,
+                fired_instances: 1,
+                admitted_instances: 1,
+                uploaded_lights: 1,
+                fired_by_creator: crate::XMAP09_POINT_LIGHT_CREATORS
+                    .iter()
+                    .map(|creator| (creator.rva, usize::from(creator.rva == 0x0226_ef30)))
+                    .collect(),
+            }),
             point_lights: vec![light()],
             point_light_cell_indices: cells,
             point_light_census_sha256: String::new(),
@@ -1659,6 +1726,8 @@ mod tests {
             sources.push(((*path).to_string(), (*body).to_string()));
         }
         Xmap09LightingAdapter {
+            resolver: crate::GameFileResolver::vanilla(".").unwrap(),
+            lifecycle: Default::default(),
             defines: crate::Xmap09LightingDefines::from_effective_sources(&sources).unwrap(),
             ordered_used_content: sources
                 .iter()
@@ -1699,7 +1768,16 @@ mod tests {
         let camera = camera();
         let hour_index = 17_000_000i64;
         let input = adapter
-            .derive_lighting_input(hour_index, &"1".repeat(64), &"2".repeat(64), &camera, Some(3))
+            .derive_lighting_input(
+                hour_index,
+                &"1".repeat(64),
+                &"2".repeat(64),
+                &camera,
+                Some(3),
+                Err(Xmap09LightCensusRefusal::MissingDomain {
+                    domain: "XMAP12.placed_entities".into(),
+                }),
+            )
             .expect("file-derived lighting input");
         input.validate_for_hour(hour_index).expect("seals for hour");
         assert_eq!(input.schema, XMAP09_INPUT_SCHEMA);
@@ -1722,8 +1800,14 @@ mod tests {
         )
         .unwrap();
         let lanes = |bits: [u32; 4]| bits.map(f32::from_bits);
-        assert_eq!(lanes(input.virtual_sun_position_f32_bits), expected.virtual_sun);
-        assert_eq!(lanes(input.virtual_moon_position_f32_bits), expected.virtual_moon);
+        assert_eq!(
+            lanes(input.virtual_sun_position_f32_bits),
+            expected.virtual_sun
+        );
+        assert_eq!(
+            lanes(input.virtual_moon_position_f32_bits),
+            expected.virtual_moon
+        );
         assert_eq!(input.virtual_moon_position_f32_bits[2], 1448.0f32.to_bits());
         assert_eq!(
             f32::from_bits(input.day_night_hour_sun_dir_f32_bits[0]),
@@ -1783,10 +1867,28 @@ mod tests {
         assert_eq!(modded.defines.sun_latitude, 1200.0);
         let camera = camera();
         let base = vanilla
-            .derive_lighting_input(17_000_000, &"1".repeat(64), &"2".repeat(64), &camera, Some(3))
+            .derive_lighting_input(
+                17_000_000,
+                &"1".repeat(64),
+                &"2".repeat(64),
+                &camera,
+                Some(3),
+                Err(Xmap09LightCensusRefusal::MissingDomain {
+                    domain: "XMAP12.placed_entities".into(),
+                }),
+            )
             .unwrap();
         let other = modded
-            .derive_lighting_input(17_000_000, &"1".repeat(64), &"2".repeat(64), &camera, Some(3))
+            .derive_lighting_input(
+                17_000_000,
+                &"1".repeat(64),
+                &"2".repeat(64),
+                &camera,
+                Some(3),
+                Err(Xmap09LightCensusRefusal::MissingDomain {
+                    domain: "XMAP12.placed_entities".into(),
+                }),
+            )
             .unwrap();
         assert_ne!(
             base.virtual_sun_position_f32_bits[2],
@@ -1832,32 +1934,222 @@ mod tests {
     }
 
     #[test]
+    fn admitted_census_materializes_into_the_production_lighting_textures() {
+        let adapter = file_derived_adapter();
+        let camera = camera();
+        let grid = crate::xmap09_tiled_point_light_grid(
+            camera.current_eye(),
+            camera.current_look_at_direction().unwrap(),
+            camera.map_width as f32,
+            camera.map_height as f32,
+        )
+        .unwrap();
+        crate::xmap09_light_census::tests::with_rows(
+            &[[grid[0] + 4.0, 2.0, grid[1] + 4.0]],
+            |rows| {
+                let input = adapter
+                    .derive_lighting_input(
+                        17_000_000,
+                        &"1".repeat(64),
+                        &"2".repeat(64),
+                        &camera,
+                        Some(1),
+                        Ok(rows),
+                    )
+                    .unwrap();
+                input.validate_for_hour(17_000_000).unwrap();
+                assert_eq!(
+                    input.point_light_census.as_ref().unwrap().uploaded_lights,
+                    1
+                );
+                assert_eq!(input.point_light_cell_indices[0], [255, 255, 0, 255]);
+                let frame = prepared(&input, &camera);
+                frame.validate().unwrap();
+                assert_eq!(frame.point_light_census, input.point_light_census);
+                assert_eq!(&frame.light_index_map.bytes[..4], &[0, 255, 255, 255]);
+                let expected = input.point_lights[0]
+                    .position_radius_f32_bits
+                    .into_iter()
+                    .chain(input.point_lights[0].color_falloff_f32_bits)
+                    .flat_map(u32::to_le_bytes)
+                    .collect::<Vec<_>>();
+                assert_eq!(&frame.light_data_map.bytes[..32], expected);
+                assert!(frame.light_data_map.bytes[32..]
+                    .iter()
+                    .all(|byte| *byte == 0));
+            },
+        );
+    }
+
+    #[test]
+    fn census_refusal_survives_preparation_and_cannot_carry_light_rows() {
+        let mut input = input();
+        input.point_light_census = Err(Xmap09LightCensusRefusal::MissingDomain {
+            domain: "XMAP12.placed_entities".into(),
+        });
+        input.point_light_census_sha256 = input.computed_point_light_census_sha256();
+        input.payload_sha256 = input.computed_payload_sha256().unwrap();
+        assert!(input.validate_for_hour(17_000_000).is_err());
+        input.point_lights.clear();
+        input.point_light_cell_indices.fill([255; 4]);
+        let input = input.seal().unwrap();
+        let frame = prepared(&input, &camera());
+        frame.validate().unwrap();
+        assert_eq!(frame.point_light_census, input.point_light_census);
+        assert!(frame.light_index_map.bytes.iter().all(|byte| *byte == 255));
+        assert!(frame.light_data_map.bytes.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn admitted_census_rgba_upload_contributes_every_occupied_channel_to_terrain_lighting() {
+        use crate::{TerrainLightingProperties, Vec3};
+
+        let adapter = file_derived_adapter();
+        let camera = camera();
+        let grid = crate::xmap09_tiled_point_light_grid(
+            camera.current_eye(),
+            camera.current_look_at_direction().unwrap(),
+            camera.map_width as f32,
+            camera.map_height as f32,
+        )
+        .unwrap();
+        for count in 1..=4 {
+            crate::xmap09_light_census::tests::with_rows(
+                &vec![[grid[0] + 4.0, 2.0, grid[1] + 4.0]; count],
+                |rows| {
+                    let input = adapter
+                        .derive_lighting_input(
+                            17_000_000,
+                            &"1".repeat(64),
+                            &"2".repeat(64),
+                            &camera,
+                            Some(count as u32),
+                            Ok(rows),
+                        )
+                        .unwrap();
+                    let frame = prepared(&input, &camera);
+                    frame.validate().unwrap();
+                    let scene = crate::test_support::test_scene_cb0_with_camera_and_fade(10.0, 1.0);
+                    let mut resources = crate::test_support::test_post_diffuse_resources(scene);
+                    resources.light_index_map.pixels = frame.light_index_map.bytes.to_vec();
+                    resources.light_data_map.pixels = frame
+                        .light_data_map
+                        .bytes
+                        .chunks_exact(16)
+                        .map(|texel| {
+                            std::array::from_fn(|channel| {
+                                f32::from_le_bytes(
+                                    texel[channel * 4..channel * 4 + 4].try_into().unwrap(),
+                                )
+                            })
+                        })
+                        .collect();
+                    resources.point_light_cb2.grid_start_inv_cell_size = frame
+                        .scene_constants
+                        .point_light_grid_start_inv_cell_size_f32_bits
+                        .map(f32::from_bits);
+                    let zero = Vec3 {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    };
+                    let up = Vec3 {
+                        x: 0.0,
+                        y: 1.0,
+                        z: 0.0,
+                    };
+                    let properties = TerrainLightingProperties {
+                        world_space_pos: Vec3 {
+                            x: grid[0] + 4.0,
+                            y: 1.5,
+                            z: grid[1] + 4.0,
+                        },
+                        to_camera_dir: up,
+                        normal: up,
+                        diffuse: Vec3 {
+                            x: 1.0,
+                            y: 1.0,
+                            z: 1.0,
+                        },
+                        specular_color: zero,
+                        glossiness: 0.0,
+                        non_linear_glossiness: 1.0,
+                    };
+                    let mut diffuse = zero;
+                    let mut specular = zero;
+                    crate::cpu_terrain::calculate_point_lights(
+                        &resources,
+                        properties,
+                        &mut diffuse,
+                        &mut specular,
+                    );
+                    for (actual, expected) in [diffuse.x, diffuse.y, diffuse.z]
+                        .into_iter()
+                        .zip([count as f32 / 3.0, count as f32 / 6.0, count as f32 / 12.0])
+                    {
+                        assert!(
+                            (actual - expected).abs() < 0.000001,
+                            "{count} lights: {actual} != {expected}"
+                        );
+                    }
+                    assert_eq!(specular, zero);
+                    resources.light_index_map.pixels.fill(255);
+                    let mut unlit = zero;
+                    crate::cpu_terrain::calculate_point_lights(
+                        &resources,
+                        properties,
+                        &mut unlit,
+                        &mut specular,
+                    );
+                    assert_eq!(unlit, zero);
+                },
+            );
+        }
+    }
+
+    #[test]
     fn point_light_cells_fail_closed_on_holes_or_reordering() {
         let mut input = input();
         input.point_light_cell_indices[0] = [u8::MAX, 0, u8::MAX, u8::MAX];
         input.point_light_census_sha256 = input.computed_point_light_census_sha256();
         input.payload_sha256 = input.computed_payload_sha256().unwrap();
         assert!(input.validate_for_hour(17_000_000).is_err());
+        let mut second = input.point_lights[0].clone();
+        second.stable_light_id = "second".into();
+        second.global_order = 1;
+        input.point_lights.push(second);
+        let counts = input.point_light_census.as_mut().unwrap();
+        counts.uploaded_lights = 2;
+        counts.admitted_instances = 2;
+        counts.fired_instances = 2;
+        counts.fired_by_creator.insert(0x0226_ef30, 2);
+        input.point_light_cell_indices[0] = [255, 1, 0, 255];
+        let mut input = input.seal().unwrap();
+        input.point_light_cell_indices[0] = [255, 0, 1, 255];
+        assert!(input.seal().is_err());
+    }
+
+    #[test]
+    fn census_input_preserves_zero_values_and_refuses_forged_counts() {
+        let mut input = input();
+        input.point_lights[0].position_radius_f32_bits[3] = 0;
+        input.point_lights[0].color_falloff_f32_bits[3] = 0;
+        let mut input = input.seal().unwrap();
+        input
+            .point_light_census
+            .as_mut()
+            .unwrap()
+            .fired_by_creator
+            .insert(0x0163_f450, 1);
+        assert!(input.seal().is_err());
     }
 
     #[test]
     fn point_light_materialization_has_exact_engine_texture_layout() {
         let input = input();
-        let index_bytes = input
-            .point_light_cell_indices
-            .iter()
-            .flatten()
-            .copied()
-            .collect::<Vec<_>>();
-        assert_eq!(index_bytes.len(), 64 * 64 * 4);
-        let resource = texture_resource(
-            "fixture/LightIndexMap".into(),
-            64,
-            64,
-            DXGI_FORMAT_R8G8B8A8_UNORM,
-            256,
-            index_bytes,
-        );
+        let resource = prepared(&input, &camera()).light_index_map;
+        assert_eq!(&resource.bytes[..4], &[0, 255, 255, 255]);
+        assert_eq!(resource.bytes.len(), 64 * 64 * 4);
         validate_texture(
             &resource,
             "LightIndexMap",
