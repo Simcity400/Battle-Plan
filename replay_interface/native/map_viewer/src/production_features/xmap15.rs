@@ -1730,6 +1730,7 @@ fn admitted_effect_translation_unit(
 enum FieldValue {
     Atom(String),
     List(Vec<String>),
+    Blocks(Vec<BTreeMap<String, FieldValue>>),
 }
 
 fn parse_arrow_blocks(source: &str) -> Result<BTreeMap<String, BTreeMap<String, FieldValue>>> {
@@ -1753,7 +1754,7 @@ fn parse_arrow_entries(source: &str) -> Result<Vec<(String, BTreeMap<String, Fie
             continue;
         }
         cursor += 3;
-        let fields = parse_block(&tokens, &mut cursor)?;
+        let fields = parse_block(&tokens, &mut cursor, true)?;
         let name = match fields.get("name") {
             Some(FieldValue::Atom(value)) if !value.is_empty() => value.clone(),
             _ => return Err("arrowType omits a scalar name".into()),
@@ -1811,7 +1812,18 @@ fn tokenize(source: &str) -> Result<Vec<String>> {
     Ok(tokens)
 }
 
-fn parse_block(tokens: &[String], cursor: &mut usize) -> Result<BTreeMap<String, FieldValue>> {
+fn scalar_assignment_overwrites(key: &str) -> bool {
+    matches!(key,
+        "name" | "technique" | "fade_out" | "fade_in" | "draw_shadows"
+        | "global_scale_min_size" | "global_scale_max_points" | "draw_last"
+        | "body_uv_scale_2" | "texture_variant_count" | "head_length" | "texture_loop"
+        | "body_uv_scale" | "text_size" | "text_offset" | "width_scale" | "width_scale_max"
+    )
+}
+
+fn parse_block(
+    tokens: &[String], cursor: &mut usize, arrow_definition: bool,
+) -> Result<BTreeMap<String, FieldValue>> {
     let mut fields = BTreeMap::new();
     while *cursor < tokens.len() {
         if tokens[*cursor] == "}" {
@@ -1826,6 +1838,14 @@ fn parse_block(tokens: &[String], cursor: &mut usize) -> Result<BTreeMap<String,
         *cursor += 2;
         if tokens.get(*cursor).is_some_and(|token| token == "{") {
             *cursor += 1;
+            if key == "button" {
+                let block = parse_block(tokens, cursor, false)?;
+                match fields.entry(key).or_insert_with(|| FieldValue::Blocks(Vec::new())) {
+                    FieldValue::Blocks(blocks) => blocks.push(block),
+                    _ => return Err("arrow button must be a block".into()),
+                }
+                continue;
+            }
             let mut depth = 1usize;
             let mut values = Vec::new();
             while *cursor < tokens.len() && depth != 0 {
@@ -1848,16 +1868,20 @@ fn parse_block(tokens: &[String], cursor: &mut usize) -> Result<BTreeMap<String,
                 return Err(format!("arrow definition repeats field {key}").into());
             }
         } else {
+            if key == "button" {
+                return Err("arrow button must be a block".into());
+            }
             let value = tokens
                 .get(*cursor)
                 .ok_or("arrow definition field is truncated")?
                 .clone();
             *cursor += 1;
-            if fields
-                .insert(key.clone(), FieldValue::Atom(value))
-                .is_some()
-            {
-                return Err(format!("arrow definition repeats field {key}").into());
+            if let Some(previous) = fields.insert(key.clone(), FieldValue::Atom(value)) {
+                if !arrow_definition || !scalar_assignment_overwrites(&key)
+                    || !matches!(previous, FieldValue::Atom(_))
+                {
+                    return Err(format!("arrow definition repeats field {key}").into());
+                }
             }
         }
     }
@@ -2051,6 +2075,58 @@ mod tests {
     }
 
     #[test]
+    fn definition_parser_admits_shipped_ordered_buttons() {
+        let shipped = include_bytes!("../../tests/fixtures/maparrows_a729.txt");
+        assert_eq!(shipped.len(), 41_644);
+        assert_eq!(Sha256::hex(shipped),
+            "ccdee05cd75e1e471ff5382e24ae590d7c1cc5738ca4db01e29314ea7a6289ff");
+        let root = crate::test_support::temp_test_dir("xmap15_shipped_buttons");
+        let path = root.join(XMAP15_MAPARROWS_PATH);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, shipped).unwrap();
+        let resolver = crate::test_support::fixture_game_resolver(&root);
+        let (resolver, admission) = crate::test_support::admitted_vanilla_resolver(
+            &resolver, &BTreeSet::from([XMAP15_MAPARROWS_PATH.to_string()]), "shipped_arrow_buttons",
+        );
+        let key = admitted(&resolver, &admission, XMAP15_MAPARROWS_PATH).unwrap();
+        let bytes = resolver.read_admitted_used_content(&key).unwrap();
+        assert_eq!(bytes, shipped);
+        let source = std::str::from_utf8(&bytes).unwrap();
+        let blocks = parse_arrow_blocks(source).unwrap();
+        assert_eq!(blocks.len(), 41);
+        let fields = &blocks["virtual_line"];
+        let FieldValue::Blocks(buttons) = &fields["button"] else { panic!("ordered buttons") };
+        assert_eq!(buttons.len(), 2);
+        assert_eq!(required_atom(&buttons[0], "name", "button").unwrap(), "expand_ahead");
+        assert_eq!(required_atom(&buttons[1], "name", "button").unwrap(), "expand_behind");
+        for button in buttons {
+            assert_eq!(required_atom(button, "type", "button").unwrap(), "btn_drag");
+        }
+        assert_eq!(required_f32_pair(&buttons[0], "position", "button").unwrap(), [1.0, 0.0]);
+        assert_eq!(required_f32_pair(&buttons[1], "position", "button").unwrap(), [0.0, 0.0]);
+        assert_eq!(required_f32_pair(fields, "body_width", "virtual_line").unwrap(), [0.5, 0.5]);
+        let indices = arrow_definition_indices(source).unwrap();
+        assert_eq!(indices["virtual_line"], 1);
+        assert_eq!(indices["supply_to_consumers"], 40);
+        let engine = portable_engine_evidence::map_scene_residuals::DECOMPILES
+            .iter().find(|row| row.0 == "141255760").unwrap().1;
+        assert!(engine.contains("(longlong)(*(int *)(param_1 + 0xec) + -1) * 0x58"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn definition_parser_rejects_malformed_button_collections() {
+        for source in [
+            "arrowType = { name = line button = scalar }",
+            "arrowType = { name = line button = { name = ahead } button = scalar }",
+            "arrowType = { name = line button = { name = ahead } button = { name = behind }",
+            "arrowType = { name = line button = { name = ahead name = behind } }",
+        ] {
+            assert!(parse_arrow_blocks(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
     fn authored_shadow_flags_preserve_defaults_false_and_invalid() {
         for (value, expected) in [("yes", true), ("no", false)] {
             let source = format!("arrowType = {{ name = arrow draw_shadows = {value} }}");
@@ -2070,18 +2146,54 @@ mod tests {
     }
 
     #[test]
-    fn definition_parser_rejects_ambiguous_duplicate_fields() {
-        let source = r#"
-            arrowType = {
-                name = "offence_line"
-                technique = "MapArrowNoHead"
-                technique = "MapArrow"
-            }
-        "#;
-        assert!(parse_arrow_blocks(source)
-            .unwrap_err()
-            .to_string()
-            .contains("repeats field technique"));
+    fn definition_parser_applies_verified_scalar_assignments_in_authored_order() {
+        let callbacks = [
+            ("name", "0x1b", "param_1 + 8", "before", "after"),
+            ("technique", "0x2e55", "param_1 + 0x58", "MapArrow", "MapArrowNoHead"),
+            ("fade_out", "0x2ab", "param_1 + 0xbc", "0.4", "0.7"),
+            ("fade_in", "0x2ac", "param_1 + 0xb8", "0.3", "0.6"),
+            ("draw_shadows", "0x2821", "param_1 + 0x101", "yes", "no"),
+            ("global_scale_min_size", "0x3037", "param_1 + 0xd0", "2", "3"),
+            ("global_scale_max_points", "0x3038", "param_1 + 0xd4", "6", "9"),
+            ("draw_last", "0x3642", "param_1 + 0x100", "no", "yes"),
+            ("body_uv_scale_2", "0x3a4c", "param_1 + 0xb4", "1.2", "2.3"),
+            ("texture_variant_count", "0x3a4d", "param_1 + 0xfc", "4", "7"),
+            ("head_length", "0x2e54", "param_1 + 0xa8", "3.1", "4.2"),
+            ("texture_loop", "0x2e56", "param_1 + 0xac", "2.4", "3.5"),
+            ("body_uv_scale", "0x2e59", "param_1 + 0xb0", "5.2", "6.3"),
+            ("text_size", "0x2ef2", "param_1 + 0xc0", "12", "16"),
+            ("text_offset", "0x2ef3", "param_1 + 0xc4", "0.8", "0.9"),
+            ("width_scale", "0x2efb", "param_1 + 200", "1.4", "1.7"),
+            ("width_scale_max", "0x2efc", "param_1 + 0xcc", "2.1", "2.8"),
+        ];
+        let engine = portable_engine_evidence::map_scene_residuals::DECOMPILES
+            .iter().find(|row| row.0 == "141255760").unwrap().1;
+        for (field, token, destination, first, last) in callbacks {
+            assert!(engine.contains(token), "{field}");
+            assert!(engine.contains(destination), "{field}");
+            let source = format!("arrowType = {{ name = line {field} = {first} button = {{ name = ahead }} {field} = {last} button = {{ name = behind }} }}");
+            let entries = parse_arrow_entries(&source).unwrap();
+            let (name, fields) = &entries[0];
+            assert_eq!(name, if field == "name" { last } else { "line" });
+            assert_eq!(required_atom(fields, field, name).unwrap(), last, "{field}");
+            let FieldValue::Blocks(buttons) = &fields["button"] else { panic!("buttons") };
+            assert_eq!(buttons.len(), 2);
+            assert_eq!(required_atom(&buttons[0], "name", "button").unwrap(), "ahead");
+            assert_eq!(required_atom(&buttons[1], "name", "button").unwrap(), "behind");
+        }
+    }
+
+    #[test]
+    fn definition_parser_rejects_duplicates_without_assignment_law() {
+        for fields in [
+            "unknown = first unknown = second",
+            "unknown = { first } unknown = { second }",
+            "technique = { first } technique = second",
+            "technique = first technique = { second }",
+            "texture_masks = { a.dds } texture_masks = { b.dds }",
+        ] {
+            assert!(parse_arrow_blocks(&format!("arrowType = {{ name = line {fields} }}")).is_err(), "{fields}");
+        }
     }
 
     #[test]

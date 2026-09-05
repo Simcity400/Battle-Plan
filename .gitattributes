@@ -466,3 +466,5 @@ portable_replay/native/engine_evidence/artifacts/func_14101ed60.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_141030720.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141030b50.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_14123fd20.decompile.c text eol=lf
+
+replay_interface/native/map_viewer/tests/fixtures/maparrows_a729.txt text eol=lf whitespace=-trailing-space,-space-before-tab
