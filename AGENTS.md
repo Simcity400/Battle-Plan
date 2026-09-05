@@ -34,7 +34,7 @@ Never run the full workspace suite.
 
 ### Review
 
-- After implementation and validation, spawn exactly one native reviewer subagent.
+- After implementation and validation, spawn exactly one reviewer subagent of your own kind and model.
 - Give it the requirements, diff, and raw validation evidence. Keep it read-only, fix every finding, and re-review with the same subagent until it approves. If the commit changes afterward, get one final confirmation.
 
 ## Orchestrator
