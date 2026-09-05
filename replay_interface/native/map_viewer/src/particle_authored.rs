@@ -97,11 +97,7 @@ impl VariedScalar {
         life: f32,
     ) -> f32 {
         // The update callback is a no-op unless the base has a non-initial track.
-        if !self
-            .base_animations
-            .iter()
-            .any(|animation| animation.time != 0)
-        {
+        if !self.has_particle_update() {
             return current;
         }
         let mut result = sampled;
@@ -127,6 +123,12 @@ impl VariedScalar {
             result = animation.apply(result, time);
         }
         result
+    }
+
+    pub(crate) fn has_particle_update(&self) -> bool {
+        self.base_animations
+            .iter()
+            .any(|animation| animation.time != 0)
     }
 
     pub(crate) fn initial(&self, time: f32) -> (f32, f32, bool) {
@@ -205,7 +207,7 @@ pub(crate) struct AuthoredParticleForce {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ParticleSort {
+pub enum ParticleSort {
     None,
     Depth,
     Distance,
@@ -213,7 +215,7 @@ pub(crate) enum ParticleSort {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ParticleTexture {
+pub struct ParticleTexture {
     pub file: String,
     pub shader: String,
     pub columns: i32,
@@ -252,6 +254,7 @@ pub struct AdmittedParticleDefinition {
     pub(crate) lease: ContentAdmissionLease,
     pub(crate) name: String,
     pub(crate) registration: String,
+    definition_path: String,
     pub(crate) scale: f32,
     pub(crate) subsystems: Arc<[AuthoredSubsystem]>,
     pub(crate) turbulence_count: usize,
@@ -263,6 +266,9 @@ impl AdmittedParticleDefinition {
     }
     pub fn registration(&self) -> &str {
         &self.registration
+    }
+    pub fn definition_path(&self) -> &str {
+        &self.definition_path
     }
     pub fn authored_capacity(&self) -> usize {
         self.subsystems.iter().map(|s| s.storage_capacity).sum()
@@ -437,6 +443,7 @@ impl ParticleDefinitions {
                 lease: self.lease.clone(),
                 name: name.into(),
                 registration: registration.into(),
+                definition_path: definitions[0].path.clone(),
                 scale,
                 subsystems: Arc::clone(subsystems),
                 turbulence_count: *turbulence_count,
@@ -725,6 +732,7 @@ fn compile_definition(
         lease,
         name: name.into(),
         registration: registration.into(),
+        definition_path: source.path.clone(),
         scale,
         subsystems: subsystems.into(),
         turbulence_count,

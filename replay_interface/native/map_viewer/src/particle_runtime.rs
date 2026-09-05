@@ -1,7 +1,8 @@
 use crate::mod_resolver::ContentAdmissionLease;
 use crate::particle_authored::{
     AdmittedParticleDefinition, AuthoredSubsystem, ParticleEmitterShape, ParticleForceKind,
-    ParticleInputRefusal, ParticleRefusalReason, ParticleResult, VariedScalar,
+    ParticleInputRefusal, ParticleRefusalReason, ParticleResult, ParticleSort, ParticleTexture,
+    VariedScalar,
 };
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -79,6 +80,150 @@ pub struct ParticleLightBinding {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParticleGpuRecord(pub [u8; 48]);
+
+#[derive(Clone, Copy, Debug)]
+pub struct ParticleGpuView<'a> {
+    instance: &'a Instance,
+    pub presentation_id: Option<u64>,
+}
+
+impl<'a> ParticleGpuView<'a> {
+    pub fn handle(self) -> ParticleHandle {
+        self.instance.handle
+    }
+    pub fn definition(self) -> &'a AdmittedParticleDefinition {
+        &self.instance.definition
+    }
+    pub fn content_lease(self) -> &'a ContentAdmissionLease {
+        &self.instance.definition.lease
+    }
+    pub fn world_matrix_f32_bits(self) -> [u32; 16] {
+        self.instance.world
+    }
+    pub fn root_subsystems(self) -> impl ExactSizeIterator<Item = ParticleGpuSubsystem<'a>> {
+        self.instance
+            .subsystems
+            .iter()
+            .zip(self.instance.definition.subsystems.iter())
+            .map(move |(state, authored)| ParticleGpuSubsystem {
+                instance: self.instance,
+                state,
+                authored,
+            })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ParticleGpuSubsystem<'a> {
+    instance: &'a Instance,
+    state: &'a Subsystem,
+    authored: &'a AuthoredSubsystem,
+}
+
+impl<'a> ParticleGpuSubsystem<'a> {
+    pub fn name(self) -> &'a str {
+        &self.authored.name
+    }
+    pub fn texture(self) -> Option<&'a ParticleTexture> {
+        self.authored.texture.as_ref()
+    }
+    pub fn sort(self) -> ParticleSort {
+        self.authored.sort
+    }
+    pub fn invert(self) -> bool {
+        self.authored.invert
+    }
+    pub fn local_space(self) -> bool {
+        self.authored.local_space
+    }
+    pub fn billboard(self) -> bool {
+        self.authored.billboard
+    }
+    pub fn trail(self) -> bool {
+        self.authored.trail
+    }
+    pub fn local_time_bits(self) -> u32 {
+        self.state.local_time.to_bits()
+    }
+    pub fn live_count(self) -> usize {
+        self.state.live
+    }
+    pub fn authored_capacity(self) -> usize {
+        self.authored.capacity
+    }
+
+    // These are runtime storage indices; the render sort determines submission order.
+    pub fn children(self) -> impl Iterator<Item = (usize, usize, ParticleGpuSubsystem<'a>)> {
+        self.state.particles[..self.state.retained]
+            .iter()
+            .enumerate()
+            .flat_map(move |(parent_index, particle)| {
+                let count = self.authored.children.len();
+                let first = particle.child_slot * count;
+                self.state.children[first..first + count]
+                    .iter()
+                    .zip(self.authored.children.iter())
+                    .enumerate()
+                    .map(move |(child_index, (state, authored))| {
+                        (
+                            parent_index,
+                            child_index,
+                            ParticleGpuSubsystem {
+                                instance: self.instance,
+                                state,
+                                authored,
+                            },
+                        )
+                    })
+            })
+    }
+
+    pub fn records(self) -> impl ExactSizeIterator<Item = ParticleResult<ParticleGpuRecord>> + 'a {
+        self.state.particles[..self.state.live]
+            .iter()
+            .map(move |particle| {
+                let fail = |input| {
+                    ParticleInputRefusal::new(
+                        self.instance.definition.name(),
+                        Some(self.name()),
+                        input,
+                        ParticleRefusalReason::ArithmeticOverflow,
+                    )
+                    .event(self.instance.handle.event_instance_id)
+                };
+                let visual = &particle.visual;
+                let mut bytes = [0; 48];
+                for (index, value) in visual
+                    .position
+                    .iter()
+                    .chain(visual.columns[..4].iter())
+                    .enumerate()
+                {
+                    if !value.is_finite() {
+                        return Err(fail("gpu_position_size_rotation"));
+                    }
+                    bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_bits().to_le_bytes());
+                }
+                if visual.born {
+                    let dimensions = self
+                        .texture()
+                        .map_or([1, 1], |texture| [texture.columns, texture.rows]);
+                    for axis in 0..2 {
+                        if dimensions[axis] == 0 {
+                            return Err(fail("texture_atlas_dimension"));
+                        }
+                        bytes[0x1c + axis] =
+                            ((visual.atlas_draws[axis] as i32) % dimensions[axis]) as u8;
+                    }
+                }
+                bytes[0x20..0x24].copy_from_slice(&visual.gpu_color);
+                Ok(ParticleGpuRecord(bytes))
+            })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParticleAction {
     Continue,
     StopEmission,
@@ -120,6 +265,8 @@ struct ParticleVisualState {
     birth_columns: [f32; 12],
     columns: [f32; 12],
     atlas_draws: [u32; 2],
+    gpu_color: [u8; 4],
+    born: bool,
     emitter_angles: [f32; 2],
     velocity_angles_and_speed: [f32; 3],
     shape_coordinates: [f32; 3],
@@ -134,6 +281,8 @@ impl ParticleVisualState {
             *color = if 0.0 <= *color { color.min(255.0) } else { 0.0 };
         }
         self.columns = self.birth_columns;
+        self.gpu_color = std::array::from_fn(|channel| self.columns[8 + channel] as u8);
+        self.born = true;
     }
 
     fn copy_gpu_from(&mut self, source: Self) {
@@ -141,6 +290,8 @@ impl ParticleVisualState {
         self.columns[..4].copy_from_slice(&source.columns[..4]);
         self.columns[8..].copy_from_slice(&source.columns[8..]);
         self.atlas_draws = source.atlas_draws;
+        self.gpu_color = source.gpu_color;
+        self.born = source.born;
     }
 
     fn initialize_motion(
@@ -220,6 +371,7 @@ impl ParticleVisualState {
         age: f32,
         life: f32,
         delta: f32,
+        opacity: f32,
     ) {
         for (index, property) in authored.spawn_draw_columns.iter().enumerate() {
             self.columns[index] = property.update_particle(
@@ -232,6 +384,20 @@ impl ParticleVisualState {
         }
         for axis in 0..3 {
             self.columns[1 + axis] = delta * self.columns[4 + axis] + self.columns[1 + axis];
+        }
+        for channel in 0..4 {
+            if authored.spawn_draw_columns[8 + channel].has_particle_update() {
+                self.gpu_color[channel] = self.columns[8 + channel] as u8;
+            }
+        }
+        if opacity < 1.0 {
+            let alpha = self.gpu_color[3] as f32 * opacity;
+            let rounded = if 0.0 <= alpha {
+                alpha + 0.5
+            } else {
+                alpha - 0.5
+            };
+            self.gpu_color[3] = rounded as u8;
         }
     }
 }
@@ -506,6 +672,7 @@ impl Subsystem {
         parent_alive: bool,
         parent_world: [f32; 16],
         instance_scale: f32,
+        opacity: f32,
     ) -> ParticleResult<()> {
         let world = if authored.local_space {
             [
@@ -682,6 +849,7 @@ impl Subsystem {
                 particle.age,
                 particle.life,
                 delta,
+                opacity,
             );
         }
         if self.retained != 0 {
@@ -703,6 +871,7 @@ impl Subsystem {
                     index < self.live,
                     child_world,
                     instance_scale,
+                    opacity,
                 )?;
             }
         }
@@ -721,6 +890,7 @@ struct Instance {
     random: ViewerParticleSeed,
     world: [u32; 16],
     speed: f32,
+    opacity: f32,
     attached: bool,
     subsystems: Vec<Subsystem>,
     failure: Option<ParticleInputRefusal>,
@@ -839,11 +1009,35 @@ impl ParticleRuntime {
             random: viewer_seed,
             world: parent_world_matrix_f32_bits,
             speed: inherited_speed,
+            opacity: 1.0,
             attached: true,
             subsystems,
             failure: None,
         });
         Ok(handle)
+    }
+
+    pub fn gpu_view(&self, handle: ParticleHandle) -> ParticleResult<ParticleGpuView<'_>> {
+        let instance = self.instance(handle)?;
+        if let Some(refusal) = &instance.failure {
+            return Err(refusal.clone());
+        }
+        Ok(ParticleGpuView {
+            instance,
+            presentation_id: self.presentation,
+        })
+    }
+
+    pub fn set_opacity(&mut self, handle: ParticleHandle, opacity: f32) -> ParticleResult<()> {
+        self.instance(handle)?;
+        if !opacity.is_finite() {
+            return Err(
+                runtime_refusal("opacity", ParticleRefusalReason::InvalidNumber)
+                    .event(handle.event_instance_id),
+            );
+        }
+        self.instances[handle.slot].as_mut().unwrap().opacity = opacity;
+        Ok(())
     }
 
     pub fn light_binding(&self, handle: ParticleHandle) -> ParticleResult<ParticleLightBinding> {
@@ -994,6 +1188,7 @@ impl ParticleRuntime {
                         true,
                         instance.world.map(f32::from_bits),
                         instance.definition.scale,
+                        instance.opacity,
                     ) {
                         failure = Some(error);
                         break;
@@ -1088,6 +1283,119 @@ mod tests {
             )
             .unwrap();
         (fixture, runtime, handle)
+    }
+
+    fn gpu_records(runtime: &ParticleRuntime, handle: ParticleHandle) -> Vec<ParticleGpuRecord> {
+        runtime
+            .gpu_view(handle)
+            .unwrap()
+            .root_subsystems()
+            .next()
+            .unwrap()
+            .records()
+            .collect::<ParticleResult<Vec<_>>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn gpu_records_keep_native_layout_atlas_color_and_frame_identity() {
+        let (_fixture, mut runtime, handle) = setup("subsystem={name=s max_amount=1 duration=0 emission=4 life=4 size=2 particle_roll=3 rotation_speed=4 color={r=300 g=-2 b=10 a=129} texture={file=unused.dds x=7 y=-9}}");
+        runtime.set_opacity(handle, 0.5).unwrap();
+        runtime.advance(1, 0.25, &[]).unwrap();
+        let view = runtime.gpu_view(handle).unwrap();
+        assert_eq!(view.handle(), handle);
+        assert_eq!(view.presentation_id, Some(1));
+        assert_eq!(view.content_lease(), &runtime.lease);
+        assert_eq!(view.definition().registration(), "paired");
+        assert_eq!(view.world_matrix_f32_bits(), matrix());
+        let subsystem = view.root_subsystems().next().unwrap();
+        assert_eq!(subsystem.authored_capacity(), 1);
+        assert_eq!(subsystem.live_count(), 1);
+        let record = subsystem.records().next().unwrap().unwrap().0;
+        let fields: Vec<u32> = record[..28]
+            .chunks_exact(4)
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        assert_eq!(
+            fields,
+            [7.0_f32, 0.0, 11.0, 2.0, 0.0, 0.0, 4.0].map(f32::to_bits)
+        );
+        let draws = runtime.instance(handle).unwrap().subsystems[0].particles[0]
+            .visual
+            .atlas_draws;
+        assert_eq!(
+            &record[28..32],
+            &[(draws[0] % 7) as u8, (draws[1] % 9) as u8, 0, 0]
+        );
+        assert_eq!(&record[32..36], &[10, 0, 255, 65]);
+        assert_eq!(&record[36..], &[0; 12]);
+        runtime.advance(2, 0.25, &[]).unwrap();
+        assert_eq!(gpu_records(&runtime, handle)[0].0[35], 33);
+        runtime.set_opacity(handle, 2.0).unwrap();
+        runtime.advance(3, 0.25, &[]).unwrap();
+        assert_eq!(gpu_records(&runtime, handle)[0].0[35], 33);
+        assert_eq!(runtime.gpu_view(handle).unwrap().presentation_id, Some(3));
+    }
+
+    #[test]
+    fn gpu_color_animation_resets_alpha_before_each_opacity_application() {
+        let (_fixture, mut runtime, handle) = setup("animation={name=alpha time=life_abs minValue=1 maxValue=1 curve={0 0 1 1}} subsystem={name=s max_amount=1 duration=0 emission=4 life=4 color={a=128,alpha}}");
+        runtime.set_opacity(handle, 0.5).unwrap();
+        for frame in 1..=3 {
+            runtime.advance(frame, 0.25, &[]).unwrap();
+            assert_eq!(gpu_records(&runtime, handle)[0].0[35], 65);
+        }
+    }
+
+    #[test]
+    fn gpu_export_refuses_invalid_atlas_without_refusing_unused_light_resource() {
+        let (_fixture, mut runtime, handle) =
+            setup("subsystem={name=s max_amount=1 duration=0 emission=4 life=4 texture={x=0}}");
+        runtime.advance(1, 0.25, &[]).unwrap();
+        assert!(!runtime.light_binding(handle).unwrap().finished);
+        let error = runtime
+            .gpu_view(handle)
+            .unwrap()
+            .root_subsystems()
+            .next()
+            .unwrap()
+            .records()
+            .next()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.input, "texture_atlas_dimension");
+        assert_eq!(error.event_instance_id, Some(17));
+        assert_eq!(error.reason, ParticleRefusalReason::ArithmeticOverflow);
+        assert_eq!(
+            runtime.set_opacity(handle, f32::NAN).unwrap_err().reason,
+            ParticleRefusalReason::InvalidNumber
+        );
+        assert_eq!(runtime.instance(handle).unwrap().opacity, 1.0);
+    }
+
+    #[test]
+    fn gpu_export_checks_stored_motion_failure_and_draw_only_nonfinite_values() {
+        let (_fixture, mut runtime, handle) = setup("force={name=f amount=1} subsystem={name=s max_amount=1 duration=0 emission=4 life=4 force=f}");
+        let error = runtime.advance(1, 0.25, &[]).unwrap_err();
+        assert_eq!(runtime.gpu_view(handle).unwrap_err(), error);
+        let (_fixture, mut runtime, handle) =
+            setup("subsystem={name=s max_amount=1 duration=0 emission=4 life=4}");
+        runtime.advance(1, 0.25, &[]).unwrap();
+        runtime.instances[handle.slot].as_mut().unwrap().subsystems[0].particles[0]
+            .visual
+            .columns[0] = f32::INFINITY;
+        let error = runtime
+            .gpu_view(handle)
+            .unwrap()
+            .root_subsystems()
+            .next()
+            .unwrap()
+            .records()
+            .next()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.input, "gpu_position_size_rotation");
+        assert_eq!(error.reason, ParticleRefusalReason::ArithmeticOverflow);
     }
 
     #[test]
@@ -1379,6 +1687,22 @@ mod tests {
             );
             assert_eq!(system.children[0].retained, 1);
             assert_eq!(instance.random, random);
+            let records = gpu_records(&runtime, handle);
+            assert_eq!(records.len(), amount);
+            for record in &records[1..] {
+                assert_eq!(record.0, [0; 48]);
+            }
+            let children: Vec<_> = runtime
+                .gpu_view(handle)
+                .unwrap()
+                .root_subsystems()
+                .next()
+                .unwrap()
+                .children()
+                .map(|(parent, child, view)| (parent, child, view.live_count()))
+                .collect();
+            assert_eq!(children.len(), amount + 1);
+            assert_eq!(children[0], (0, 0, 1));
             for slot in &system.particles[1..amount] {
                 assert_eq!([slot.age.to_bits(), slot.life.to_bits()], [0; 2]);
                 assert_eq!(slot.visual.birth_columns.map(f32::to_bits), [0; 12]);
