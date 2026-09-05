@@ -54,6 +54,7 @@ mod map_label_law;
 mod map_mode_admin;
 mod map_mode_registry;
 mod map_mode_terrain_resource;
+mod map_scene_draw_order;
 mod map_static_data;
 mod map_text;
 mod mapmode_air;
@@ -183,7 +184,15 @@ pub use border_classification::{
 pub use border_law::{
     border_diffuse_source, border_fade_windows_from_graphics_defines,
     border_fade_windows_from_resolver, border_transparency, defines as border_fade_defines,
-    BorderFadeWindow, BorderFadeWindows, BORDER_PASS_DRAW_ORDER_EVIDENCE,
+    BorderFadeWindow, BorderFadeWindows,
+};
+pub use map_scene_draw_order::{
+    map_scene_submissions_for, viewer_scene_stage_order, MapSceneBinding, MapSceneGate,
+    MapSceneSubmission, MapSceneUncomposed, ViewerSceneStage, MAP_SCENE_DRAW_ORDER,
+    MAP_SCENE_RESIDUALS, RESIDUAL_ARROWS_LIGHT_DEPTH, RESIDUAL_ARROW_LATE_PASSES,
+    RESIDUAL_ARROW_LIST_INTERLEAVE, RESIDUAL_ENTITY_PASSES_AFTER_POST, RESIDUAL_GFX_SUPPLY_DRAW,
+    RESIDUAL_LINE_LIST_DRAWS, RESIDUAL_MAP_BODY_TRAILING_QUAD, RESIDUAL_PARTITION_MAJOR_ORDER,
+    RESIDUAL_POST_QUAD,
 };
 pub use border_pass::{
     BorderFilesPassRenderReport, BorderFilesPassStats, BORDER_PASS_EFFECT_NAME,
