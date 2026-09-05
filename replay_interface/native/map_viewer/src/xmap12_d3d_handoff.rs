@@ -2886,6 +2886,21 @@ unsafe fn create_rasterizer_state(
 }
 
 #[cfg(windows)]
+pub(crate) unsafe fn create_effect_sampler_on_device(
+    device: *mut winapi::um::d3d11::ID3D11Device,
+    resolver: &crate::GameFileResolver,
+    shader_path: &str,
+    shader_register: u32,
+) -> Result<(crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11SamplerState>, String)> {
+    let mut census = BTreeMap::new();
+    merge_effect_samplers(resolver, shader_path, &[shader_register].into_iter().collect(), &mut census)?;
+    let descriptor = census.remove(&shader_register)
+        .ok_or_else(|| format!("effective shader sampler unavailable: {shader_path} s{shader_register}"))?;
+    let owned = create_native_sampler(device, descriptor)?;
+    Ok((owned.sampler, owned.descriptor_sha256))
+}
+
+#[cfg(windows)]
 unsafe fn create_native_sampler(
     device: *mut winapi::um::d3d11::ID3D11Device,
     descriptor: NativeSamplerDescriptor,

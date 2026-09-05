@@ -1527,6 +1527,28 @@ mod native {
         reflection_sha256: String,
     }
 
+    struct NativeShadowBlurProgram {
+        program: NativeProgram,
+        blend: D3dPtr<ID3D11BlendState>,
+        sampler: Option<D3dPtr<ID3D11SamplerState>>,
+    }
+
+    impl NativeShadowBlurProgram {
+        unsafe fn bind(&self, context: *mut ID3D11DeviceContext, cb: *mut ID3D11Buffer) {
+            (*context).VSSetShader(self.program.vertex.as_raw(), ptr::null(), 0);
+            (*context).PSSetShader(self.program.pixel.as_raw(), ptr::null(), 0);
+            (*context).GSSetShader(ptr::null_mut(), ptr::null(), 0);
+            (*context).HSSetShader(ptr::null_mut(), ptr::null(), 0);
+            (*context).DSSetShader(ptr::null_mut(), ptr::null(), 0);
+            (*context).SOSetTargets(0, ptr::null(), ptr::null());
+            (*context).VSSetConstantBuffers(0, 1, &cb);
+            (*context).PSSetConstantBuffers(0, 1, &cb);
+            (*context).OMSetBlendState(self.blend.as_raw(), &[0.0; 4], u32::MAX);
+            let sampler = self.sampler.as_ref().map_or(ptr::null_mut(), D3dPtr::as_raw);
+            (*context).PSSetSamplers(0, 1, &sampler);
+        }
+    }
+
     struct NativeLutProgram {
         program: NativeProgram,
         effect_name: String,
@@ -1745,16 +1767,14 @@ mod native {
         device: D3dPtr<ID3D11Device>,
         terrain_unlit: NativeProgram,
         terrain_input_layout: D3dPtr<ID3D11InputLayout>,
-        blur_horizontal: NativeProgram,
-        blur_vertical: NativeProgram,
+        blur_horizontal: NativeShadowBlurProgram,
+        blur_vertical: NativeShadowBlurProgram,
         blur_input_layout: D3dPtr<ID3D11InputLayout>,
         blur_vertices: D3dPtr<ID3D11Buffer>,
         blur_cb0: D3dPtr<ID3D11Buffer>,
         terrain_cb1: D3dPtr<ID3D11Buffer>,
         terrain_samplers: BTreeMap<u32, D3dPtr<ID3D11SamplerState>>,
-        blur_sampler: D3dPtr<ID3D11SamplerState>,
         targets: NativeXmap10ScreenTargets,
-        opaque_blend: D3dPtr<ID3D11BlendState>,
         depth_disabled: D3dPtr<ID3D11DepthStencilState>,
         terrain_rasterizer: D3dPtr<ID3D11RasterizerState>,
         fullscreen_rasterizer: D3dPtr<ID3D11RasterizerState>,
@@ -3289,7 +3309,7 @@ mod native {
             let blur_horizontal = compile_shadow_blur(&device, resolver, "ShadowBlurHorizontal")?;
             let blur_vertical = compile_shadow_blur(&device, resolver, "ShadowBlurVertical")?;
             let blur_input_layout =
-                create_shadow_blur_input_layout(&device, &blur_horizontal.vertex_bytecode)?;
+                create_shadow_blur_input_layout(&device, &blur_horizontal.program.vertex_bytecode)?;
             let blur_vertices = create_shadow_blur_vertices(&device)?;
             let blur_cb0 = create_constant_buffer(&device, 32, "XMAP10 shadow blur cb0")?;
             let terrain_cb1 = create_constant_buffer(
@@ -3343,9 +3363,7 @@ mod native {
             let terrain_blend = crate::xmap12_d3d_handoff::create_blend_state(device.as_raw(), blend_rows)?;
             let terrain_depth = create_terrain_unlit_depth(&device)?;
             let targets = NativeXmap10ScreenTargets::create(&device, &plan, allocation_generation)?;
-            let blur_sampler = create_shadow_blur_sampler(device.as_raw())?;
             let terrain_rasterizer = create_terrain_rasterizer(device.as_raw())?;
-            let opaque_blend = create_blend(&device, false)?;
             let depth_disabled = create_depth_disabled(&device)?;
             let fullscreen_rasterizer = create_rasterizer(&device)?;
             Ok(Self {
@@ -3359,9 +3377,7 @@ mod native {
                 blur_cb0,
                 terrain_cb1,
                 terrain_samplers,
-                blur_sampler,
                 targets,
-                opaque_blend,
                 depth_disabled,
                 terrain_rasterizer,
                 fullscreen_rasterizer,
@@ -3571,10 +3587,10 @@ mod native {
                 ordered_scene_cb0_composition_sha256s: if producer_active { scene_cb0s.iter().map(|s| s.composition_receipt_sha256().to_owned()).collect() } else { Vec::new() },
                 terrain_unlit_vertex_bytecode_sha256: Sha256::hex(&self.terrain_unlit.vertex_bytecode),
                 terrain_unlit_pixel_bytecode_sha256: Sha256::hex(&self.terrain_unlit.pixel_bytecode),
-                blur_horizontal_vertex_bytecode_sha256: Sha256::hex(&self.blur_horizontal.vertex_bytecode),
-                blur_horizontal_pixel_bytecode_sha256: Sha256::hex(&self.blur_horizontal.pixel_bytecode),
-                blur_vertical_vertex_bytecode_sha256: Sha256::hex(&self.blur_vertical.vertex_bytecode),
-                blur_vertical_pixel_bytecode_sha256: Sha256::hex(&self.blur_vertical.pixel_bytecode),
+                blur_horizontal_vertex_bytecode_sha256: Sha256::hex(&self.blur_horizontal.program.vertex_bytecode),
+                blur_horizontal_pixel_bytecode_sha256: Sha256::hex(&self.blur_horizontal.program.pixel_bytecode),
+                blur_vertical_vertex_bytecode_sha256: Sha256::hex(&self.blur_vertical.program.vertex_bytecode),
+                blur_vertical_pixel_bytecode_sha256: Sha256::hex(&self.blur_vertical.program.pixel_bytecode),
                 draw_count, binding, deterministic_sha256: String::new(),
             };
             receipt.deterministic_sha256 = canonical_packet_sha256(&receipt)?;
@@ -3588,7 +3604,7 @@ mod native {
         unsafe fn draw_shadow_blur(
             &self,
             context: *mut ID3D11DeviceContext,
-            program: &NativeProgram,
+            program: &NativeShadowBlurProgram,
             source: &NativeTarget,
             target: &NativeTarget,
             cb0_f32_bits: [u32; 8],
@@ -3618,7 +3634,6 @@ mod native {
             (*context).OMSetRenderTargets(1, &rtv, ptr::null_mut());
             (*context).RSSetViewports(1, &viewport);
             (*context).RSSetState(self.fullscreen_rasterizer.as_raw());
-            (*context).OMSetBlendState(self.opaque_blend.as_raw(), &[0.0; 4], u32::MAX);
             (*context).OMSetDepthStencilState(self.depth_disabled.as_raw(), 0);
             (*context).IASetInputLayout(self.blur_input_layout.as_raw());
             (*context).IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -3632,14 +3647,9 @@ mod native {
                 strides.as_ptr() as *mut _,
                 offsets.as_ptr() as *mut _,
             );
-            (*context).VSSetShader(program.vertex.as_raw(), ptr::null_mut(), 0);
-            (*context).PSSetShader(program.pixel.as_raw(), ptr::null_mut(), 0);
-            let cb = self.blur_cb0.as_raw();
-            (*context).PSSetConstantBuffers(0, 1, &cb);
+            program.bind(context, self.blur_cb0.as_raw());
             let srv = source.srv.as_raw();
             (*context).PSSetShaderResources(0, 1, &srv);
-            let sampler = self.blur_sampler.as_raw();
-            (*context).PSSetSamplers(0, 1, &sampler);
             (*context).Draw(4, 0);
             let null_srv = ptr::null_mut();
             (*context).PSSetShaderResources(0, 1, &null_srv);
@@ -3817,11 +3827,150 @@ mod native {
         Ok((program, input_layout))
     }
 
+    #[cfg(test)]
+    mod shadow_blur_binding_tests {
+        use super::*;
+
+        #[test]
+        fn authored_blur_binds_both_constant_stages_selected_blend_and_sampler() {
+            use std::fs;
+            use winapi::um::d3dcommon::{D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0};
+            let root = crate::test_support::temp_test_dir("shadow_blur_bindings");
+            let fx = root.join("gfx/FX");
+            fs::create_dir_all(&fx).unwrap();
+            fs::write(fx.join("shadowblur.shader"), r#"
+VertexStruct Input { float4 p : POSITION; float2 uv : TEXCOORD; }
+VertexStruct Output { float4 p : SV_POSITION; float2 uv : TEXCOORD; }
+ConstantBuffer(0, 0) { float4 color; float4 scale; };
+VertexShader = { MainCode VS [[ Output main(Input i) { Output o; o.p = float4(i.p.xy * scale.x, i.p.zw); o.uv = i.uv; return o; } ]] }
+PixelShader = {
+    Samplers = { Image = { Index = 0 MagFilter = "Point" MinFilter = "Point" MipFilter = "Point" AddressU = "Clamp" AddressV = "Clamp" } }
+    MainCode PS [[ float4 main(Output i) : SV_Target { return Image_Texture.Sample(Image_Sampler, i.uv) * color; } ]]
+}
+BlendState BlendState { BlendEnable = no WriteMask = "ALL" }
+BlendState Red { BlendEnable = no WriteMask = "RED" }
+BlendState Green { BlendEnable = no WriteMask = "GREEN" }
+Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" BlendState = "Red" }
+Effect ShadowBlurVertical { VertexShader = "VS" PixelShader = "PS" BlendState = "Green" }
+"#).unwrap();
+            fs::write(fx.join("defines_hlsl_dx11.fxh"), r#"
+struct STextureSampler2D { Texture2D tex; SamplerState state; };
+STextureSampler2D CreateSampler2D(Texture2D t, SamplerState s) { STextureSampler2D result = {t, s}; return result; }
+"#).unwrap();
+            let source = GameFileResolver::vanilla(&root).unwrap();
+            let paths = ["gfx/fx/shadowblur.shader".into(), crate::shader_compile::DX11_PLATFORM_HEADER.to_ascii_lowercase()].into_iter().collect();
+            let (resolver, _) = crate::test_support::admitted_vanilla_resolver(&source, &paths, "shadow-blur-binding");
+            unsafe {
+                let mut device = ptr::null_mut(); let mut context = ptr::null_mut();
+                hr(D3D11CreateDevice(ptr::null_mut(), D3D_DRIVER_TYPE_WARP, ptr::null_mut(), 0,
+                    &D3D_FEATURE_LEVEL_11_0, 1, D3D11_SDK_VERSION, &mut device, ptr::null_mut(), &mut context), "blur WARP").unwrap();
+                let device = D3dPtr::from_raw(device, "blur device").unwrap();
+                let context_owner = D3dPtr::from_raw(context, "blur context").unwrap();
+                let input = create_target(&device, &"a".repeat(64), 8, 8, 28, "blur input").unwrap();
+                let target = create_target(&device, &"b".repeat(64), 8, 8, 28, "blur target").unwrap();
+                (*context).ClearRenderTargetView(input.rtv.as_raw(), &[0.25, 0.5, 0.75, 1.0]);
+                let cb = create_constant_buffer(&device, 32, "blur test constants").unwrap();
+                let values = [1.0f32; 8];
+                (*context).UpdateSubresource(cb.as_raw().cast(), 0, ptr::null(), values.as_ptr().cast(), 0, 0);
+                let vertices = create_shadow_blur_vertices(&device).unwrap();
+                let raster = create_rasterizer(&device).unwrap();
+                let depth = create_depth_disabled(&device).unwrap();
+                let mut desc: D3D11_TEXTURE2D_DESC = mem::zeroed();
+                (*target._texture.as_raw()).GetDesc(&mut desc);
+                desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                let mut staging = ptr::null_mut();
+                hr((*device.as_raw()).CreateTexture2D(&desc, ptr::null(), &mut staging), "blur staging").unwrap();
+                let staging = D3dPtr::from_raw(staging, "blur staging").unwrap();
+                for (effect, expected) in [("ShadowBlurHorizontal", [64u8, 0, 255, 64]), ("ShadowBlurVertical", [255u8, 128, 255, 64])] {
+                    let program = compile_shadow_blur(&device, &resolver, effect).unwrap();
+                    let mut sampler: D3D11_SAMPLER_DESC = mem::zeroed();
+                    (*program.sampler.as_ref().unwrap().as_raw()).GetDesc(&mut sampler);
+                    assert_eq!(sampler.Filter, D3D11_FILTER_MIN_MAG_MIP_POINT);
+                    assert_eq!(sampler.AddressU, D3D11_TEXTURE_ADDRESS_CLAMP);
+                    let layout = create_shadow_blur_input_layout(&device, &program.program.vertex_bytecode).unwrap();
+                    (*context).ClearRenderTargetView(target.rtv.as_raw(), &[1.0, 0.0, 1.0, 0.25]);
+                    (*context).OMSetRenderTargets(1, &target.rtv.as_raw(), ptr::null_mut());
+                    (*context).RSSetViewports(1, &D3D11_VIEWPORT { TopLeftX: 0.0, TopLeftY: 0.0, Width: 8.0, Height: 8.0, MinDepth: 0.0, MaxDepth: 1.0 });
+                    (*context).RSSetState(raster.as_raw());
+                    (*context).OMSetDepthStencilState(depth.as_raw(), 0);
+                    (*context).IASetInputLayout(layout.as_raw());
+                    (*context).IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+                    (*context).IASetVertexBuffers(0, 1, &vertices.as_raw(), &24, &0);
+                    (*context).VSSetConstantBuffers(0, 1, &ptr::null_mut());
+                    (*context).PSSetConstantBuffers(0, 1, &ptr::null_mut());
+                    program.bind(context, cb.as_raw());
+                    (*context).PSSetShaderResources(0, 1, &input.srv.as_raw());
+                    (*context).Draw(4, 0);
+                    (*context).PSSetShaderResources(0, 1, &ptr::null_mut());
+                    (*context).OMSetRenderTargets(0, ptr::null(), ptr::null_mut());
+                    (*context).CopyResource(staging.as_raw().cast(), target._texture.as_raw().cast());
+                    let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
+                    hr((*context).Map(staging.as_raw().cast(), 0, D3D11_MAP_READ, 0, &mut mapped), "blur readback").unwrap();
+                    for row in 0..8 {
+                        let bytes = std::slice::from_raw_parts((mapped.pData as *const u8).add(row * mapped.RowPitch as usize), 32);
+                        assert!(bytes.chunks_exact(4).all(|pixel| pixel == expected), "{effect} binding mismatch");
+                    }
+                    (*context).Unmap(staging.as_raw().cast(), 0);
+                }
+                drop(context_owner);
+            }
+            drop(resolver); drop(source); fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn authored_constant_blur_creates_without_sampler_declaration() {
+            use std::fs;
+            use winapi::um::d3dcommon::{D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0};
+            let root = crate::test_support::temp_test_dir("shadow_blur_without_sampler");
+            let fx = root.join("gfx/FX");
+            fs::create_dir_all(&fx).unwrap();
+            fs::write(fx.join("shadowblur.shader"), r#"
+VertexStruct Input { float4 p : POSITION; }
+VertexShader = { MainCode VS [[ float4 main(Input i) : SV_POSITION { return i.p; } ]] }
+PixelShader = { MainCode PS [[ float4 main() : SV_Target { return float4(0.25, 0.5, 0.75, 1); } ]] }
+Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" }
+"#).unwrap();
+            fs::write(fx.join("defines_hlsl_dx11.fxh"), "").unwrap();
+            let source = GameFileResolver::vanilla(&root).unwrap();
+            let paths = ["gfx/fx/shadowblur.shader".into(), crate::shader_compile::DX11_PLATFORM_HEADER.to_ascii_lowercase()].into_iter().collect();
+            let (resolver, _) = crate::test_support::admitted_vanilla_resolver(&source, &paths, "constant-blur-binding");
+            unsafe {
+                let mut device = ptr::null_mut(); let mut context = ptr::null_mut();
+                hr(D3D11CreateDevice(ptr::null_mut(), D3D_DRIVER_TYPE_WARP, ptr::null_mut(), 0,
+                    &D3D_FEATURE_LEVEL_11_0, 1, D3D11_SDK_VERSION, &mut device, ptr::null_mut(), &mut context), "constant blur WARP").unwrap();
+                let device = D3dPtr::from_raw(device, "constant blur device").unwrap();
+                let context_owner = D3dPtr::from_raw(context, "constant blur context").unwrap();
+                let program = compile_shadow_blur(&device, &resolver, "ShadowBlurHorizontal").unwrap();
+                assert!(program.sampler.is_none());
+                program.bind(context, ptr::null_mut());
+                let mut sampler = ptr::null_mut();
+                (*context).PSGetSamplers(0, 1, &mut sampler);
+                assert!(sampler.is_null());
+                drop(context_owner);
+            }
+            drop(resolver); drop(source); fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn shadow_blur_reflection_refuses_unbound_inputs_and_accepts_eliminated_inputs() {
+            let vertex = "float4 main(float4 p : POSITION) : SV_POSITION { return p; }";
+            let pixel = "cbuffer C : register(b0) { float4 color; }; float4 main() : SV_Target { return color; }";
+            let reflect = |source: &str, stage| parse_dxbc_reflection(&d3d_compile_stage(source, stage, ENGINE_COMPILE_FLAGS).unwrap()).unwrap();
+            let vs = reflect(vertex, ShaderStage::Vertex);
+            let ps = reflect(pixel, ShaderStage::Pixel);
+            require_shadow_blur_providers(&vs, &ps).unwrap();
+            for bad in [pixel.replace("b0", "b1"), pixel.replace("float4 color;", "float4 padding[2]; float4 color;"),
+                "Texture2D tex : register(t1); float4 main() : SV_Target { return tex.Load(int3(0, 0, 0)); }".into()] {
+                assert!(require_shadow_blur_providers(&vs, &reflect(&bad, ShaderStage::Pixel)).unwrap_err().to_string().contains("shadow-blur-reflected-provider-unavailable"));
+            }
+        }
+    }
+
     unsafe fn compile_shadow_blur(
         device: &D3dPtr<ID3D11Device>,
         resolver: &GameFileResolver,
         effect_name: &str,
-    ) -> Result<NativeProgram> {
+    ) -> Result<NativeShadowBlurProgram> {
         let vertex_hlsl = build_stage_hlsl_with_defines(
             resolver,
             "gfx/FX/shadowblur.shader",
@@ -3842,17 +3991,48 @@ mod native {
             d3d_compile_stage(&pixel_hlsl, ShaderStage::Pixel, ENGINE_COMPILE_FLAGS)?;
         let vertex_reflection = parse_dxbc_reflection(&vertex_bytecode)?;
         let pixel_reflection = parse_dxbc_reflection(&pixel_bytecode)?;
-        require_cbuffer(&pixel_reflection, 0, 32)?;
-        require_texture(&pixel_reflection, 0)?;
-        require_sampler(&pixel_reflection, 0)?;
-        create_program(
+        require_shadow_blur_providers(&vertex_reflection, &pixel_reflection)?;
+        let files = crate::shader_compile::effect_translation_unit_files(resolver, "gfx/FX/shadowblur.shader")?;
+        let root = &files.last().ok_or("shadow blur translation unit is empty")?.1;
+        if root.effect_count(effect_name) != 1 { return Err("shadow blur effect selection is ambiguous".into()); }
+        let effect = root.effect(effect_name).ok_or("shadow blur effect is absent")?;
+        let blend_name = effect.blend_state.as_deref().unwrap_or("BlendState");
+        let blend_rows = files.iter().rev().find_map(|(_, file)| file.blend_states.get(blend_name))
+            .map(Vec::as_slice).unwrap_or(&[]);
+        let blend = crate::xmap12_d3d_handoff::create_blend_state(device.as_raw(), blend_rows)?;
+        let sampler = if pixel_reflection.resources.iter().any(|resource| resource.resource_type == 3) {
+            Some(crate::xmap12_d3d_handoff::create_effect_sampler_on_device(
+                device.as_raw(), resolver, "gfx/FX/shadowblur.shader", 0,
+            )?.0)
+        } else { None };
+        let program = create_program(
             device,
             vertex_bytecode,
             pixel_bytecode,
             vertex_reflection,
             pixel_reflection,
             effect_name,
-        )
+        )?;
+        Ok(NativeShadowBlurProgram { program, blend, sampler })
+    }
+
+    fn require_shadow_blur_providers(vertex: &DxbcReflection, pixel: &DxbcReflection) -> Result<()> {
+        for (stage, reflection) in [(ShaderStage::Vertex, vertex), (ShaderStage::Pixel, pixel)] {
+            for resource in &reflection.resources {
+                let supplied = resource.bind_count == 1 && resource.bind_point == 0
+                    && match resource.resource_type {
+                        0 => reflection.cbuffers.iter().any(|cb| cb.name == resource.name && cb.size <= 32),
+                        2 => stage == ShaderStage::Pixel && resource.dimension == 4,
+                        3 => stage == ShaderStage::Pixel,
+                        _ => false,
+                    };
+                if !supplied {
+                    return Err(format!("shadow-blur-reflected-provider-unavailable: {stage:?} {} type {} register {} count {} dimension {}",
+                        resource.name, resource.resource_type, resource.bind_point, resource.bind_count, resource.dimension).into());
+                }
+            }
+        }
+        Ok(())
     }
 
     unsafe fn create_terrain_unlit_input_layout(
@@ -3963,29 +4143,6 @@ mod native {
             "CreateBuffer(XMAP10 shadow blur vertices)",
         )?;
         D3dPtr::from_raw(buffer, "XMAP10 shadow blur vertices")
-    }
-
-    unsafe fn create_shadow_blur_sampler(
-        device: *mut ID3D11Device,
-    ) -> Result<D3dPtr<ID3D11SamplerState>> {
-        let desc = D3D11_SAMPLER_DESC {
-            Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
-            MipLODBias: 0.0,
-            MaxAnisotropy: 1,
-            ComparisonFunc: D3D11_COMPARISON_NEVER,
-            BorderColor: [0.0; 4],
-            MinLOD: 0.0,
-            MaxLOD: f32::MAX,
-        };
-        let mut sampler = ptr::null_mut();
-        hr(
-            (*device).CreateSamplerState(&desc, &mut sampler),
-            "CreateSamplerState(XMAP10 shadow blur)",
-        )?;
-        D3dPtr::from_raw(sampler, "XMAP10 shadow blur sampler")
     }
 
     unsafe fn create_terrain_rasterizer(
