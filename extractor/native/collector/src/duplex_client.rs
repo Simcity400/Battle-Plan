@@ -48,7 +48,7 @@ use compact_contract::early_render_startup_failure::{
 };
 use compact_contract::early_render_vfs::{
     canonical_early_render_vfs_index_bytes, decode_early_render_vfs_index_chunk,
-    decode_early_render_vfs_index_commit, EarlyRenderVfsCodecError, EarlyRenderVfsWinnerRowV1,
+    decode_early_render_vfs_index_commit, EarlyRenderVfsCodecError, EarlyRenderVfsWinnerRowV2,
 };
 use compact_contract::early_render_vfs_payload::{
     decode_early_render_vfs_payload_chunk, decode_early_render_vfs_payload_commit,
@@ -173,12 +173,12 @@ pub struct AdmittedEarlyRenderVfsIndex {
     pub process_start_nonce: u64,
     pub effective_vfs_manifest_sha256: [u8; 32],
     pub ordered_rows_sha256: [u8; 32],
-    pub ordered_rows: Vec<EarlyRenderVfsWinnerRowV1>,
+    pub ordered_rows: Vec<EarlyRenderVfsWinnerRowV2>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdmittedEarlyRenderVfsPayload {
-    pub winner: EarlyRenderVfsWinnerRowV1,
+    pub winner: EarlyRenderVfsWinnerRowV2,
     pub payload_offset: u64,
     pub payload_range_sha256: [u8; 32],
     pub bytes: Vec<u8>,
@@ -967,7 +967,7 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
             }
             if rows
                 .last()
-                .is_some_and(|prior: &EarlyRenderVfsWinnerRowV1| {
+                .is_some_and(|prior: &EarlyRenderVfsWinnerRowV2| {
                     prior.normalized_game_relative_path
                         >= chunk.rows[0].normalized_game_relative_path
                 })
@@ -1020,7 +1020,7 @@ impl<T: DeadlineControlIo, C: MonotonicClock> CollectorControlClient<T, C> {
         _permit: &EarlyRenderDuplexProductPermit,
         binding: &EarlyRenderControlBinding,
         index: &AdmittedEarlyRenderVfsIndex,
-        winner: &EarlyRenderVfsWinnerRowV1,
+        winner: &EarlyRenderVfsWinnerRowV2,
         payload_offset: u64,
         payload_count: u64,
         expected_payload_range_sha256: [u8; 32],

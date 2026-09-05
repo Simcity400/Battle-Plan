@@ -324,6 +324,7 @@ mod tests {
             kind: RequiredContentKind::Geometry,
             content: UsedContentKey {
                 effective_vfs_manifest_sha256: "11".repeat(32),
+                stored_game_relative_path: path.into(),
                 normalized_game_relative_path: path.into(),
                 winning_layer_ordinal: match layer_kind {
                     ContentLayerKind::Base => 0,

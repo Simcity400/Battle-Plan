@@ -18,7 +18,7 @@ use unicode_normalization::UnicodeNormalization;
 pub const MAX_CONTAINER_VERSION: u64 = 2;
 const STITCHED_CONTAINER_VERSION: u64 = 2;
 const FEATURE_TIMELINE_SEGMENTS_V1: &str = "timeline_segments_v1";
-const FEATURE_PORTABLE_CONTENT_MANIFEST_V2: &str = "portable_content_manifest_v2";
+const FEATURE_PORTABLE_CONTENT_MANIFEST_V3: &str = "portable_content_manifest_v3";
 const STITCH_INDEX_SCHEMA: &str = "stitched-main-v1";
 const STITCH_ENTRY_ORDER: &str = "lexicographic-path-manifest-last-v1";
 pub(crate) const MAX_ENTRIES: usize = 2_000_000;
@@ -1256,7 +1256,7 @@ impl Container {
         let unicode_paths = cv >= STITCHED_CONTAINER_VERSION
             || declared_features
                 .iter()
-                .any(|feature| feature == FEATURE_PORTABLE_CONTENT_MANIFEST_V2);
+                .any(|feature| feature == FEATURE_PORTABLE_CONTENT_MANIFEST_V3);
         archive.validate_portable_paths(unicode_paths)?;
 
         if cv >= STITCHED_CONTAINER_VERSION
@@ -1281,7 +1281,7 @@ impl Container {
 
         let content_feature = declared_features
             .iter()
-            .any(|feature| feature == FEATURE_PORTABLE_CONTENT_MANIFEST_V2);
+            .any(|feature| feature == FEATURE_PORTABLE_CONTENT_MANIFEST_V3);
         let content_manifest = match manifest.get("content_manifest") {
             None | Some(Value::Null) => None,
             Some(value) => {
@@ -1306,7 +1306,7 @@ impl Container {
         };
         if content_feature != content_manifest.is_some() {
             return Err(ContainerError::Reject(
-                "portable_content_manifest_v2 feature/content_manifest coupling mismatch".into(),
+                "portable_content_manifest_v3 feature/content_manifest coupling mismatch".into(),
             ));
         }
 
@@ -1935,7 +1935,7 @@ fn validate_strict_manifest(manifest: &Value) -> Result<(), ContainerError> {
 
 const KNOWN_FEATURES: &[&str] = &[
     FEATURE_TIMELINE_SEGMENTS_V1,
-    FEATURE_PORTABLE_CONTENT_MANIFEST_V2,
+    FEATURE_PORTABLE_CONTENT_MANIFEST_V3,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

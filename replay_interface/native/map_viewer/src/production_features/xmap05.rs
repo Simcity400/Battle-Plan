@@ -3479,6 +3479,7 @@ mod tests {
         let manifest = "a".repeat(64);
         let content = UsedContentKey {
             effective_vfs_manifest_sha256: manifest,
+            stored_game_relative_path: GRAPHICS_DEFINES.into(),
             normalized_game_relative_path: GRAPHICS_DEFINES.into(),
             winning_layer_ordinal: 0,
             layer_kind: portable_content_manifest::ContentLayerKind::Base,

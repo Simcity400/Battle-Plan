@@ -2029,6 +2029,7 @@ mod tests {
     fn content(path: &str, payload: u8) -> UsedContentKey {
         UsedContentKey {
             effective_vfs_manifest_sha256: sha(1),
+            stored_game_relative_path: path.to_ascii_lowercase(),
             normalized_game_relative_path: path.to_ascii_lowercase(),
             winning_layer_ordinal: 0,
             layer_kind: ContentLayerKind::Base,

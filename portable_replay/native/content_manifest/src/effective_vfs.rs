@@ -196,8 +196,8 @@ impl EffectiveVfs {
         let normalized_path = normalize_game_relative_path(&logical_path)?;
         let parent = logical_parent(&normalized_path);
         for layer in self.layers.iter().rev() {
-            if let Some(bytes) = read_layer_file(layer, &logical_path)? {
-                return Ok(Some(self.resolved(layer, logical_path, bytes)?));
+            if let Some((stored_path, bytes)) = read_layer_file(layer, &logical_path)? {
+                return Ok(Some(self.resolved(layer, stored_path, bytes)?));
             }
             if layer.replace_paths.contains(&parent) {
                 return Ok(None);
@@ -320,12 +320,13 @@ impl EffectiveVfs {
             .layers
             .get(entry.layer)
             .ok_or("effective VFS entry names a layer this VFS does not mount")?;
-        read_layer_file(layer, &entry.logical_path)?.ok_or_else(|| {
-            format!(
-                "effective VFS winner disappeared for {}",
-                entry.logical_path
-            )
-        })
+        let (stored_path, bytes) = read_layer_file(layer, &entry.logical_path)?.ok_or_else(|| {
+            format!("effective VFS winner disappeared for {}", entry.logical_path)
+        })?;
+        if stored_path != entry.logical_path {
+            return Err(format!("effective VFS stored path changed for {}", entry.logical_path));
+        }
+        Ok(bytes)
     }
 
     /// Streams one winning entry through SHA-256 without holding the whole
@@ -363,6 +364,7 @@ impl EffectiveVfs {
             .ok_or("effective VFS entry names a layer this VFS does not mount")?;
         let content = UsedContentKey {
             effective_vfs_manifest_sha256: self.authority_manifest_sha256.clone(),
+            stored_game_relative_path: entry.logical_path.clone(),
             normalized_game_relative_path: normalize_game_relative_path(&entry.logical_path)?,
             winning_layer_ordinal: layer.ordinal,
             layer_kind: layer.layer_kind,
@@ -411,6 +413,7 @@ impl EffectiveVfs {
         let normalized_path = normalize_game_relative_path(&logical_path)?;
         let content = UsedContentKey {
             effective_vfs_manifest_sha256: self.authority_manifest_sha256.clone(),
+            stored_game_relative_path: logical_path.clone(),
             normalized_game_relative_path: normalized_path,
             winning_layer_ordinal: layer.ordinal,
             layer_kind: layer.layer_kind,
@@ -456,6 +459,9 @@ fn hash_layer_file(
                     if !canonical.starts_with(&layer.local_source) {
                         return Err("effective VFS file escaped its layer root".into());
                     }
+                    if stored_directory_path(&layer.local_source, &canonical)? != logical_path {
+                        return Err(format!("effective VFS stored path changed for {logical_path}"));
+                    }
                     let mut file = fs::File::open(canonical)
                         .map_err(|error| format!("open effective VFS file failed: {error}"))?;
                     loop {
@@ -478,10 +484,13 @@ fn hash_layer_file(
                 .zip_index
                 .as_ref()
                 .ok_or("effective VFS archive layer is missing its mount-time index")?;
-            let Some((_, entry_index)) = index.entries.get(&logical_path.to_ascii_lowercase())
+            let Some((stored_path, entry_index)) = index.entries.get(&logical_path.to_ascii_lowercase())
             else {
                 return Ok(None);
             };
+            if stored_path != logical_path {
+                return Err(format!("effective VFS stored path changed for {logical_path}"));
+            }
             let mut archive = index
                 .archive
                 .lock()
@@ -505,7 +514,7 @@ fn hash_layer_file(
     Ok(Some((total, format!("{:x}", hasher.finalize()))))
 }
 
-fn read_layer_file(layer: &MountedLayer, logical_path: &str) -> Result<Option<Vec<u8>>, String> {
+fn read_layer_file(layer: &MountedLayer, logical_path: &str) -> Result<Option<(String, Vec<u8>)>, String> {
     match layer.storage_kind {
         LayerStorageKind::Directory => {
             match resolve_literal_layer_path(&layer.local_source, logical_path)? {
@@ -516,8 +525,9 @@ fn read_layer_file(layer: &MountedLayer, logical_path: &str) -> Result<Option<Ve
                     if !canonical.starts_with(&layer.local_source) {
                         return Err("effective VFS file escaped its layer root".into());
                     }
+                    let stored_path = stored_directory_path(&layer.local_source, &canonical)?;
                     fs::read(canonical)
-                        .map(Some)
+                        .map(|bytes| Some((stored_path, bytes)))
                         .map_err(|error| format!("read effective VFS file failed: {error}"))
                 }
                 Some(_) | None => Ok(None),
@@ -528,7 +538,7 @@ fn read_layer_file(layer: &MountedLayer, logical_path: &str) -> Result<Option<Ve
                 .zip_index
                 .as_ref()
                 .ok_or("effective VFS archive layer is missing its mount-time index")?;
-            let Some((_, entry_index)) = index.entries.get(&logical_path.to_ascii_lowercase())
+            let Some((stored_path, entry_index)) = index.entries.get(&logical_path.to_ascii_lowercase())
             else {
                 return Ok(None);
             };
@@ -543,9 +553,18 @@ fn read_layer_file(layer: &MountedLayer, logical_path: &str) -> Result<Option<Ve
             entry
                 .read_to_end(&mut bytes)
                 .map_err(|error| format!("read effective VFS archive payload failed: {error}"))?;
-            Ok(Some(bytes))
+            Ok(Some((stored_path.clone(), bytes)))
         }
     }
+}
+
+fn stored_directory_path(root: &Path, canonical: &Path) -> Result<String, String> {
+    let stored = canonical.strip_prefix(root)
+        .map_err(|_| "effective VFS file escaped its layer root")?
+        .to_str().ok_or("effective VFS stored path is not UTF-8")?
+        .replace('\\', "/");
+    crate::validate_stored_game_relative_path(&stored, &normalize_game_relative_path(&stored)?)?;
+    Ok(stored)
 }
 
 pub fn resolve_literal_layer_path(
@@ -1089,6 +1108,25 @@ mod tests {
                 replace_paths: vec!["gfx/replace".into()],
             },
         ]
+    }
+
+    #[test]
+    fn stored_spelling_comes_from_the_mod_winner_and_survives_alias_lookup() {
+        let root = temp("stored_case");
+        write(&root.join("game"), "gfx/models/shared/Texture.dds", b"vanilla");
+        write(&root.join("mod"), "gfx/models/shared/Texture.dds", b"mod");
+        let vfs = EffectiveVfs::new("f".repeat(64), mounts(&root)).unwrap();
+        let resolved = vfs.resolve_required("gfx/models/shared/Texture.dds", "texture").unwrap();
+        assert_eq!(resolved.bytes, b"mod");
+        assert_eq!(resolved.content.stored_game_relative_path, "gfx/models/shared/Texture.dds");
+        assert_eq!(resolved.content.normalized_game_relative_path, "gfx/models/shared/texture.dds");
+        #[cfg(windows)]
+        assert_eq!(vfs.resolve_required("GFX/MODELS/SHARED/TEXTURE.DDS", "alias").unwrap().content, resolved.content);
+        let entry = vfs.effective_entries().unwrap().into_iter().find(|entry| entry.logical_path.ends_with("Texture.dds")).unwrap();
+        let bytes = vfs.read_entry(&entry).unwrap();
+        assert_eq!(vfs.content_key(&entry, sha256_bytes(&bytes), bytes.len() as u64).unwrap(), resolved.content);
+        drop(vfs);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

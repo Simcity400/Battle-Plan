@@ -1535,6 +1535,7 @@ mod tests {
         };
         UsedContentKey {
             effective_vfs_manifest_sha256: "1".repeat(64),
+            stored_game_relative_path: product_source_file(family).to_string(),
             normalized_game_relative_path: product_source_file(family).to_string(),
             winning_layer_ordinal,
             layer_kind,

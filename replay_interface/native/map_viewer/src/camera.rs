@@ -1636,6 +1636,7 @@ mod tests {
         ViewerMapCameraState::new(
             vec![UsedContentKey {
                 effective_vfs_manifest_sha256: "a".repeat(64),
+                stored_game_relative_path: BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE.into(),
                 normalized_game_relative_path: BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE.into(),
                 winning_layer_ordinal: 0,
                 layer_kind: portable_content_manifest::ContentLayerKind::Base,

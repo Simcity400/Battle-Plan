@@ -457,6 +457,7 @@ mod tests {
     fn content_key() -> UsedContentKey {
         UsedContentKey {
             effective_vfs_manifest_sha256: "1".repeat(64),
+            stored_game_relative_path: "gfx/fx/particle.shader".into(),
             normalized_game_relative_path: "gfx/fx/particle.shader".into(),
             winning_layer_ordinal: 0,
             layer_kind: portable_content_manifest::ContentLayerKind::Base,
@@ -604,6 +605,7 @@ mod tests {
     fn program_path_law_refuses_anything_but_the_particle_shader() {
         let mut lawful = content_key();
         assert!(lawful_program_source_path(&lawful).is_ok());
+        lawful.stored_game_relative_path = "gfx/fx/world.shader".into();
         lawful.normalized_game_relative_path = "gfx/fx/world.shader".into();
         assert!(lawful_program_source_path(&lawful).is_err());
     }

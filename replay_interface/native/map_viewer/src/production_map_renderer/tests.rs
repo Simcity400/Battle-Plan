@@ -44,6 +44,7 @@ fn temp_root(label: &str) -> PathBuf {
 fn unsupported_static_producer_transitively_omits_dependent_pass_chain() {
     let source = UsedContentKey {
         effective_vfs_manifest_sha256: "2".repeat(64),
+        stored_game_relative_path: "gfx/fx/cascade.shader".into(),
         normalized_game_relative_path: "gfx/fx/cascade.shader".into(),
         winning_layer_ordinal: 0,
         layer_kind: ContentLayerKind::Base,
@@ -202,6 +203,7 @@ fn resolved_used_content(
         .unwrap();
     UsedContentKey {
         effective_vfs_manifest_sha256: effective_vfs_manifest_sha256.into(),
+        stored_game_relative_path: actual.source_relative_path.clone(),
         normalized_game_relative_path: actual.logical_path.to_ascii_lowercase(),
         winning_layer_ordinal: actual.source.ordinal as u32,
         layer_kind: layer_kind(&actual.source.kind),
@@ -2087,6 +2089,7 @@ fn retained_capture_interpreter_relocates_through_vfs_and_executes_in_d77_order(
 fn xmap20_presentation_law_derives_presented_state_from_fixture_entities() {
     let hand_content = |path: &str, sha: String| UsedContentKey {
         effective_vfs_manifest_sha256: "22".repeat(32),
+        stored_game_relative_path: path.into(),
         normalized_game_relative_path: path.into(),
         winning_layer_ordinal: 1,
         layer_kind: ContentLayerKind::Base,

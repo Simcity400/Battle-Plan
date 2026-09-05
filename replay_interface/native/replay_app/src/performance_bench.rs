@@ -916,6 +916,7 @@ fn build_stress_content(
         localisation_language: "l_english".into(),
         settings: BTreeMap::new(),
         resolved_content: vec![ResolvedPlaybackContent {
+            stored_game_relative_path: used.stored_game_relative_path.clone(),
             normalized_game_relative_path: used.normalized_game_relative_path.clone(),
             winning_layer_ordinal: used.winning_layer_ordinal,
             layer_kind: used.layer_kind,
@@ -944,6 +945,7 @@ fn stress_used_content(
     let source_sha256 = sha256_hex(shader_bytes);
     let used = replay_core::UsedContentKey {
         effective_vfs_manifest_sha256: contract.synthetic_effective_vfs_manifest_sha256.clone(),
+        stored_game_relative_path: relative_shader_path.into(),
         normalized_game_relative_path: replay_core::normalize_game_relative_path(
             relative_shader_path,
         )?,

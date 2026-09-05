@@ -1065,6 +1065,7 @@ mod tests {
 
     fn content() -> RawVfsContentIdentity {
         RawVfsContentIdentity {
+            stored_game_relative_path: "gfx/fx/mod.shader".into(),
             logical_path: "gfx/fx/mod.shader".into(),
             winning_layer_ordinal: 9,
             layer_kind: "mod".into(),
@@ -1455,6 +1456,7 @@ mod tests {
 
     fn foreign_content(sequence: u64) -> RawVfsContentIdentity {
         RawVfsContentIdentity {
+            stored_game_relative_path: format!("gfx/fx/unselected_{sequence}.shader"),
             logical_path: format!("gfx/fx/unselected_{sequence}.shader"),
             winning_layer_ordinal: 77,
             layer_kind: "mod".into(),

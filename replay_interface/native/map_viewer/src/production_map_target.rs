@@ -804,6 +804,7 @@ mod tests {
             winning_layer_ordinal: 0,
             layer_kind: replay_core::ContentLayerKind::Base,
             layer_id: "base".into(),
+            stored_game_relative_path: "gfx/persistent.bin".into(),
             normalized_game_relative_path: "gfx/persistent.bin".into(),
             source_sha256: "2".repeat(64),
             payload_sha256: "2".repeat(64),

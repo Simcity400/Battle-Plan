@@ -45,6 +45,7 @@ fn source_places(region_id: u32) -> Vec<(u32, u32)> {
 fn content_key() -> UsedContentKey {
     UsedContentKey {
         effective_vfs_manifest_sha256: "1".repeat(64),
+        stored_game_relative_path: "map/weatherpositions.txt".into(),
         normalized_game_relative_path: "map/weatherpositions.txt".into(),
         winning_layer_ordinal: 0,
         layer_kind: ContentLayerKind::Base,

@@ -52,7 +52,7 @@ pub struct RawEffectiveVfsWinnerIndexBinding {
 
 impl RawEffectiveVfsWinnerIndexBinding {
     pub fn canonical_rows_bytes(rows: &[RawEffectiveVfsWinnerRow]) -> Result<Vec<u8>, String> {
-        let mut out = b"hoi4-effective-vfs-winners-v1\0".to_vec();
+        let mut out = b"hoi4-effective-vfs-winners-v2\0".to_vec();
         put_u64(
             &mut out,
             u64::try_from(rows.len()).map_err(|_| "winner row count overflow")?,
@@ -66,6 +66,7 @@ impl RawEffectiveVfsWinnerIndexBinding {
                 );
             }
             prior_path = Some(&row.content.logical_path);
+            put_string(&mut out, &row.content.stored_game_relative_path)?;
             put_string(&mut out, &row.content.logical_path)?;
             put_u32(&mut out, row.content.winning_layer_ordinal);
             put_string(&mut out, &row.content.layer_kind)?;
@@ -182,6 +183,7 @@ impl RawEffectiveVfsOpenObservation {
         data_ptr: Option<usize>,
     ) -> Result<Self, String> {
         let raw = RawVfsContentIdentity {
+            stored_game_relative_path: content.stored_game_relative_path.clone(),
             logical_path: content.normalized_game_relative_path.clone(),
             winning_layer_ordinal: content.winning_layer_ordinal,
             layer_kind: match content.layer_kind {
@@ -1035,6 +1037,9 @@ fn stage_bit(stage: RawShaderStage) -> u8 {
 fn valid_raw_content(content: &RawVfsContentIdentity) -> bool {
     normalize_game_relative_path(&content.logical_path)
         .is_ok_and(|path| path == content.logical_path)
+        && portable_content_manifest::validate_stored_game_relative_path(
+            &content.stored_game_relative_path, &content.logical_path,
+        ).is_ok()
         && !content.layer_id.trim().is_empty()
         && matches!(
             content.layer_kind.as_str(),
@@ -1275,6 +1280,7 @@ mod tests {
             shader_program_ptr: 0x900,
             registration_root_rva: 1,
             source: RawVfsContentIdentity {
+                stored_game_relative_path: "opaque/modded/path".into(),
                 logical_path: "opaque/modded/path".into(),
                 winning_layer_ordinal: 0,
                 layer_kind: "base".into(),
@@ -1562,6 +1568,7 @@ mod tests {
     fn winner_index_binding_rejects_omission_order_and_hash_drift() {
         let (root, winner) = effective_mod_winner();
         let content = RawVfsContentIdentity {
+            stored_game_relative_path: winner.content.stored_game_relative_path.clone(),
             logical_path: winner.content.normalized_game_relative_path.clone(),
             winning_layer_ordinal: winner.content.winning_layer_ordinal,
             layer_kind: "mod".into(),

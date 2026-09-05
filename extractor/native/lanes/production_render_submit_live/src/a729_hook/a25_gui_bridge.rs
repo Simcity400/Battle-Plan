@@ -924,6 +924,7 @@ fn used_content_key(
     };
     let definition = UsedContentKey {
         effective_vfs_manifest_sha256: binding.authority_manifest_sha256.clone(),
+        stored_game_relative_path: raw.stored_game_relative_path.clone(),
         normalized_game_relative_path: raw.logical_path.clone(),
         winning_layer_ordinal: raw.winning_layer_ordinal,
         layer_kind,
@@ -3420,6 +3421,7 @@ mod font_asset_tests {
         let digest = digest_nibble.to_string().repeat(64);
         crate::RawEffectiveVfsWinnerRow {
             content: crate::RawVfsContentIdentity {
+                stored_game_relative_path: path.into(),
                 logical_path: path.into(),
                 winning_layer_ordinal: 0,
                 layer_kind: "base".into(),

@@ -708,6 +708,7 @@ fn key_from_resolved(
     let normalized_game_relative_path = normalize_game_relative_path(&resolution_path)?;
     Ok(UsedContentKey {
         effective_vfs_manifest_sha256: authority.into(),
+        stored_game_relative_path: resolved.source_relative_path.clone(),
         normalized_game_relative_path,
         winning_layer_ordinal: u32::try_from(resolved.source.ordinal)
             .map_err(|_| "HUD VFS ordinal exceeds u32")?,

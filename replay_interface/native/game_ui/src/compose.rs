@@ -7658,6 +7658,7 @@ mod tests {
     fn cache_content(path: &str, payload: char) -> UsedContentKey {
         UsedContentKey {
             effective_vfs_manifest_sha256: "a".repeat(64),
+            stored_game_relative_path: path.into(),
             normalized_game_relative_path: path.into(),
             winning_layer_ordinal: 0,
             layer_kind: ContentLayerKind::Base,

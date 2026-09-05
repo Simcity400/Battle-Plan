@@ -259,6 +259,7 @@ pub fn build_effective_vfs_winner_binding_from_bytes(
                 .unwrap_or_else(|| source.sha256.clone());
             let winner = RawEffectiveVfsWinnerRow {
                 content: RawVfsContentIdentity {
+                    stored_game_relative_path: source.relpath.clone(),
                     logical_path: logical_path.clone(),
                     winning_layer_ordinal: layer.ordinal,
                     layer_kind: layer_kind.into(),
@@ -420,6 +421,7 @@ fn validate_inventory(inventory: &SourceInventoryV3) -> Result<(), String> {
             .get(row.namespace_ordinal as usize)
             .ok_or("source inventory row names an absent namespace")?;
         let logical = normalize_game_relative_path(&row.relpath)?;
+        portable_content_manifest::validate_stored_game_relative_path(&row.relpath, &logical)?;
         if row.layer_kind != namespace.kind
             || row.layer_id != namespace.id
             || row.storage_kind != namespace.storage_kind

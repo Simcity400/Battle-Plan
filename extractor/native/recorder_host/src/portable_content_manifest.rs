@@ -1709,6 +1709,7 @@ fn build_from_finalized_static_bundle_inner(
                 .get(&row.content.logical_path)
                 .is_none_or(|expected| {
                     expected.normalized_game_relative_path != row.content.logical_path
+                        || expected.stored_game_relative_path != row.content.stored_game_relative_path
                         || expected.winning_layer_ordinal != row.content.winning_layer_ordinal
                         || match expected.layer_kind {
                             ContentLayerKind::Base => "base",
@@ -1789,6 +1790,9 @@ fn build_from_finalized_static_bundle_inner(
             kind: required_kind_for_path(&relpath),
             content: UsedContentKey {
                 effective_vfs_manifest_sha256: effective_vfs_manifest_sha256.clone(),
+                stored_game_relative_path: inventory_winners.get(&relpath)
+                    .ok_or_else(|| format!("catalog source has no inventory winner: {relpath}"))?
+                    .stored_game_relative_path.clone(),
                 normalized_game_relative_path: relpath,
                 winning_layer_ordinal: layer_ordinal,
                 layer_kind: layer.layer_kind,
@@ -1943,7 +1947,7 @@ fn source_inventory_winners(
         .and_then(serde_json::Value::as_array)
         .filter(|rows| !rows.is_empty())
         .ok_or("live source inventory has no file rows")?;
-    let mut rows = BTreeMap::<(u32, String), (String, String, u64)>::new();
+    let mut rows = BTreeMap::<(u32, String), (String, String, String, u64)>::new();
     let mut path_keys = BTreeSet::new();
     for (index, value) in values.iter().enumerate() {
         let row = value
@@ -1970,10 +1974,9 @@ fn source_inventory_winners(
                 "source inventory row {index} names a missing playback layer"
             ));
         }
-        let path = normalize_game_relative_path(&required_json_string(
-            row.get("relpath"),
-            "source inventory relpath",
-        )?)?;
+        let stored_path = required_json_string(row.get("relpath"), "source inventory relpath")?;
+        let path = normalize_game_relative_path(&stored_path)?;
+        portable_content_manifest::validate_stored_game_relative_path(&stored_path, &path)?;
         let payload_sha256 =
             required_json_sha(row.get("sha256"), "source inventory payload digest")?;
         let payload_bytes = row
@@ -1984,7 +1987,7 @@ fn source_inventory_winners(
         if rows
             .insert(
                 (ordinal, path_key.clone()),
-                (path.clone(), payload_sha256, payload_bytes),
+                (path.clone(), stored_path, payload_sha256, payload_bytes),
             )
             .is_some()
         {
@@ -2001,11 +2004,12 @@ fn source_inventory_winners(
             .map(|(parent, _)| parent)
             .unwrap_or_default();
         for layer in ordered_layers.iter().rev() {
-            if let Some((path, payload_sha256, payload_bytes)) =
+            if let Some((path, stored_path, payload_sha256, payload_bytes)) =
                 rows.get(&(layer.ordinal, path_key.clone()))
             {
                 let content = UsedContentKey {
                     effective_vfs_manifest_sha256: authority.to_string(),
+                    stored_game_relative_path: stored_path.clone(),
                     normalized_game_relative_path: path.clone(),
                     winning_layer_ordinal: layer.ordinal,
                     layer_kind: layer.layer_kind,
@@ -3143,9 +3147,33 @@ mod tests {
         })
     }
 
+    #[test]
+    fn stored_spelling_inventory_keeps_the_exact_mod_winner() {
+        let layer = |ordinal, kind, id: &str| RecordedContentLayer {
+            ordinal, layer_kind: kind, layer_id: id.into(), display_name: id.into(),
+            descriptor_sha256: None, source_container_sha256: None,
+            storage_kind: LayerStorageKind::Directory, replace_paths: Vec::new(),
+            required_for_playback: true,
+        };
+        let layers = vec![layer(0, ContentLayerKind::Base, "base"), layer(1, ContentLayerKind::Mod, "mod")];
+        let inventory = serde_json::json!({"rows": [
+            {"namespace_ordinal":0,"relpath":"gfx/models/texture.dds","sha256":sha('a'),"bytes":4},
+            {"namespace_ordinal":1,"relpath":"gfx/models/Texture.dds","sha256":sha('b'),"bytes":8}
+        ]});
+        let winners = source_inventory_winners(&inventory, &layers, &[Some(0), Some(1)], &sha('f')).unwrap();
+        let winner = &winners["gfx/models/texture.dds"];
+        assert_eq!(winner.stored_game_relative_path, "gfx/models/Texture.dds");
+        assert_eq!(winner.winning_layer_ordinal, 1);
+        assert_eq!(winner.payload_sha256, sha('b'));
+        let mut invalid = inventory;
+        invalid["rows"][1]["relpath"] = "gfx//models/Texture.dds".into();
+        assert!(source_inventory_winners(&invalid, &layers, &[Some(0), Some(1)], &sha('f')).is_err());
+    }
+
     fn namespace_content(path: &str, marker: char) -> UsedContentKey {
         UsedContentKey {
             effective_vfs_manifest_sha256: sha('a'),
+            stored_game_relative_path: path.into(),
             normalized_game_relative_path: path.into(),
             winning_layer_ordinal: 0,
             layer_kind: ContentLayerKind::Base,
@@ -3487,6 +3515,7 @@ mod tests {
                 kind: RequiredContentKind::Mesh,
                 content: UsedContentKey {
                     effective_vfs_manifest_sha256: vfs.clone(),
+                    stored_game_relative_path: "gfx/models/tank.mesh".into(),
                     normalized_game_relative_path: "gfx/models/tank.mesh".into(),
                     winning_layer_ordinal: 1,
                     layer_kind: ContentLayerKind::Dlc,
@@ -3502,6 +3531,7 @@ mod tests {
                 kind: RequiredContentKind::Definition,
                 content: UsedContentKey {
                     effective_vfs_manifest_sha256: vfs.clone(),
+                    stored_game_relative_path: "common/defines/00_defines.lua".into(),
                     normalized_game_relative_path: "common/defines/00_defines.lua".into(),
                     winning_layer_ordinal: 3,
                     layer_kind: ContentLayerKind::Mod,
@@ -3709,6 +3739,7 @@ mod tests {
         let (mut trace, launch) = base_trace();
         let content = UsedContentKey {
             effective_vfs_manifest_sha256: sha('a'),
+            stored_game_relative_path: "interface/modded_topbar.gui".into(),
             normalized_game_relative_path: "interface/modded_topbar.gui".into(),
             winning_layer_ordinal: 3,
             layer_kind: ContentLayerKind::Mod,
@@ -4418,7 +4449,7 @@ mod tests {
         assert_eq!(opened.content_manifest(), Some(&manifest));
         assert_eq!(
             opened.manifest()["required_features"],
-            serde_json::json!(["portable_content_manifest_v2"])
+            serde_json::json!(["portable_content_manifest_v3"])
         );
     }
 

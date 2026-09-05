@@ -1240,6 +1240,7 @@ mod tests {
     fn resolved_file(path: &str, bytes: &[u8]) -> ResolvedHudFile {
         let content = UsedContentKey {
             effective_vfs_manifest_sha256: authority(),
+            stored_game_relative_path: path.to_string(),
             normalized_game_relative_path: path.to_string(),
             winning_layer_ordinal: 0,
             layer_kind: ContentLayerKind::Base,

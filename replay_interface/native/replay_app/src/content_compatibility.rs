@@ -509,6 +509,7 @@ fn issue_label(code: ContentIssueCode) -> &'static str {
         ContentIssueCode::SettingMismatch => "material setting mismatch",
         ContentIssueCode::MissingContent => "missing required content",
         ContentIssueCode::WinningLayerMismatch => "wrong VFS override winner",
+        ContentIssueCode::StoredPathMismatch => "stored content path spelling mismatch",
         ContentIssueCode::SourceHashMismatch => "source container/file hash mismatch",
         ContentIssueCode::PayloadHashMismatch => "resolved payload hash mismatch",
         ContentIssueCode::PayloadLengthMismatch => "resolved payload length mismatch",
@@ -1021,6 +1022,7 @@ graphics={
                 kind: replay_core::RequiredContentKind::Definition,
                 content: replay_core::UsedContentKey {
                     effective_vfs_manifest_sha256: vfs_sha,
+                    stored_game_relative_path: "common/replay/non_ui.txt".into(),
                     normalized_game_relative_path: "common/replay/non_ui.txt".into(),
                     winning_layer_ordinal: 0,
                     layer_kind: ContentLayerKind::Base,
@@ -1090,6 +1092,7 @@ graphics={
                     kind: RequiredContentKind::ShaderSource,
                     content: UsedContentKey {
                         effective_vfs_manifest_sha256: "c".repeat(64),
+                        stored_game_relative_path: normalized.clone(),
                         normalized_game_relative_path: normalized,
                         winning_layer_ordinal: 0,
                         layer_kind: ContentLayerKind::Base,
@@ -1129,6 +1132,7 @@ graphics={
                 .required_content
                 .iter()
                 .map(|row| portable_content_manifest::ResolvedPlaybackContent {
+                    stored_game_relative_path: row.content.stored_game_relative_path.clone(),
                     normalized_game_relative_path: row
                         .content
                         .normalized_game_relative_path

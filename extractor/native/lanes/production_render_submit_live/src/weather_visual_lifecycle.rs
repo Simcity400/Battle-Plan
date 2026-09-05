@@ -345,6 +345,7 @@ mod tests {
     fn content_key() -> UsedContentKey {
         UsedContentKey {
             effective_vfs_manifest_sha256: "a".repeat(64),
+            stored_game_relative_path: "map/weatherpositions.txt".into(),
             normalized_game_relative_path: "map/weatherpositions.txt".into(),
             winning_layer_ordinal: 0,
             layer_kind: portable_content_manifest::ContentLayerKind::Base,

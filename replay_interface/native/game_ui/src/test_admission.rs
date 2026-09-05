@@ -34,6 +34,7 @@ pub(crate) fn admit_vanilla(
             consumers: vec![format!("{label}/{}", row.sha256)],
             content: UsedContentKey {
                 effective_vfs_manifest_sha256: vfs.clone(),
+                stored_game_relative_path: row.source_relative_path.clone(),
                 normalized_game_relative_path: row.logical_path.clone(),
                 winning_layer_ordinal: 0,
                 layer_kind: ContentLayerKind::Base,

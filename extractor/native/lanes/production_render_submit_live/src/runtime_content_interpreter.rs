@@ -509,6 +509,7 @@ mod tests {
         let digest = sha(payload);
         RawEffectiveVfsWinnerRow {
             content: RawVfsContentIdentity {
+                stored_game_relative_path: path.into(),
                 logical_path: path.into(),
                 winning_layer_ordinal: 3,
                 layer_kind: "mod".into(),

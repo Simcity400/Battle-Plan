@@ -717,6 +717,7 @@ mod tests {
     fn key(path: &str) -> UsedContentKey {
         UsedContentKey {
             effective_vfs_manifest_sha256: h('a'),
+            stored_game_relative_path: path.into(),
             normalized_game_relative_path: path.into(),
             winning_layer_ordinal: 3,
             layer_kind: ContentLayerKind::Mod,

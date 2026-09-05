@@ -6656,6 +6656,7 @@ mod tests {
     fn content(path: &str) -> UsedContentKey {
         UsedContentKey {
             effective_vfs_manifest_sha256: "2".repeat(64),
+            stored_game_relative_path: path.into(),
             normalized_game_relative_path: path.into(),
             winning_layer_ordinal: 0,
             layer_kind: ContentLayerKind::Base,

@@ -2524,10 +2524,10 @@ fn required_static_manifest_hashes(manifest: &Value) -> Result<BTreeMap<String, 
             "production manifest portable_content_manifest is missing or not an object".to_string()
         })?;
     if portable_content.get("schema").and_then(Value::as_str)
-        != Some("hoi4.portable-content-manifest.v2")
+        != Some("hoi4.portable-content-manifest.v3")
     {
         return Err(
-            "production manifest portable_content_manifest is not v2 product-modset-bound".into(),
+            "production manifest portable_content_manifest is not v3 product-modset-bound".into(),
         );
     }
     let portable_product_modset_sha256 = canonical_sha256(

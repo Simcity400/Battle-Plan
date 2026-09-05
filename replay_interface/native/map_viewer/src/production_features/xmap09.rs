@@ -1692,6 +1692,7 @@ mod tests {
         crate::ViewerMapCameraState::new(
             vec![UsedContentKey {
                 effective_vfs_manifest_sha256: "b".repeat(64),
+                stored_game_relative_path: "common/defines/00_graphics.lua".into(),
                 normalized_game_relative_path: "common/defines/00_graphics.lua".into(),
                 winning_layer_ordinal: 0,
                 layer_kind: ContentLayerKind::Base,
@@ -1733,6 +1734,7 @@ mod tests {
                 .iter()
                 .map(|(path, _)| UsedContentKey {
                     effective_vfs_manifest_sha256: "b".repeat(64),
+                    stored_game_relative_path: path.clone(),
                     normalized_game_relative_path: path.clone(),
                     winning_layer_ordinal: 0,
                     layer_kind: ContentLayerKind::Base,

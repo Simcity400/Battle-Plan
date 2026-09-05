@@ -2862,6 +2862,7 @@ pub(crate) fn admitted_vanilla_resolver(
                 kind: admitted_content_kind(path),
                 content: UsedContentKey {
                     effective_vfs_manifest_sha256: effective_vfs_manifest_sha256.clone(),
+                    stored_game_relative_path: actual.source_relative_path.clone(),
                     normalized_game_relative_path: actual.logical_path.to_ascii_lowercase(),
                     winning_layer_ordinal: actual.source.ordinal as u32,
                     layer_kind: admitted_layer_kind(&actual.source.kind),

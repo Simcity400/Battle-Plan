@@ -68,6 +68,7 @@ fn required(
         kind,
         content: UsedContentKey {
             effective_vfs_manifest_sha256: "f".repeat(64),
+            stored_game_relative_path: path.into(),
             normalized_game_relative_path: path.into(),
             winning_layer_ordinal: layer_ordinal,
             layer_kind,
@@ -206,6 +207,7 @@ fn content(manifest: &ContentManifest, path: &str) -> UsedContentKey {
 
 fn observed(key: &UsedContentKey) -> RawVfsContentIdentity {
     RawVfsContentIdentity {
+        stored_game_relative_path: key.stored_game_relative_path.clone(),
         logical_path: key.normalized_game_relative_path.clone(),
         winning_layer_ordinal: key.winning_layer_ordinal,
         layer_kind: match key.layer_kind {

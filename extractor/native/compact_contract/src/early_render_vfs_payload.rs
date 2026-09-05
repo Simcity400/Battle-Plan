@@ -1,7 +1,7 @@
 use crate::control_transport::CONTROL_MAX_PAYLOAD_LEN;
 use crate::early_render_vfs::{
     decode_early_render_vfs_winner_row, encode_early_render_vfs_winner_row,
-    EarlyRenderVfsWinnerRowV1,
+    EarlyRenderVfsWinnerRowV2,
 };
 
 pub const EARLY_RENDER_MAX_VFS_PAYLOAD_RANGE_LEN: u64 = 1 << 28;
@@ -25,7 +25,7 @@ pub struct EarlyRenderVfsPayloadRequestV1 {
     pub payload_offset: u64,
     pub payload_count: u64,
     pub expected_payload_range_sha256: [u8; 32],
-    pub winner: EarlyRenderVfsWinnerRowV1,
+    pub winner: EarlyRenderVfsWinnerRowV2,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -479,8 +479,9 @@ mod tests {
     use super::*;
     use crate::early_render_vfs::EarlyRenderVfsLayerKind;
 
-    fn winner() -> EarlyRenderVfsWinnerRowV1 {
-        EarlyRenderVfsWinnerRowV1 {
+    fn winner() -> EarlyRenderVfsWinnerRowV2 {
+        EarlyRenderVfsWinnerRowV2 {
+            stored_game_relative_path: "gfx/test.asset".into(),
             normalized_game_relative_path: "gfx/test.asset".into(),
             winning_layer_ordinal: 0,
             layer_kind: EarlyRenderVfsLayerKind::Base,

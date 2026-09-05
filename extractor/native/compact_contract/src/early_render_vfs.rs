@@ -1,10 +1,10 @@
 use crate::control_transport::CONTROL_MAX_PAYLOAD_LEN;
 
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 const ROW_MAGIC: &[u8; 4] = b"EVRW";
 const CHUNK_MAGIC: &[u8; 4] = b"EVCH";
 const COMMIT_MAGIC: &[u8; 4] = b"EVCM";
-const ROW_FIXED_LEN: usize = 139;
+const ROW_FIXED_LEN: usize = 141;
 const CHUNK_FIXED_LEN: usize = 120;
 const COMMIT_LEN: usize = 108;
 
@@ -50,7 +50,8 @@ impl EarlyRenderVfsLayerKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EarlyRenderVfsWinnerRowV1 {
+pub struct EarlyRenderVfsWinnerRowV2 {
+    pub stored_game_relative_path: String,
     pub normalized_game_relative_path: String,
     pub winning_layer_ordinal: u32,
     pub layer_kind: EarlyRenderVfsLayerKind,
@@ -65,7 +66,7 @@ pub struct EarlyRenderVfsWinnerRowV1 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EarlyRenderVfsIndexChunkV1 {
+pub struct EarlyRenderVfsIndexChunkV2 {
     pub process_id: u32,
     pub process_start_nonce: u64,
     pub session_id: [u8; 16],
@@ -75,11 +76,11 @@ pub struct EarlyRenderVfsIndexChunkV1 {
     pub chunk_count: u32,
     pub first_row_index: u32,
     pub total_row_count: u32,
-    pub rows: Vec<EarlyRenderVfsWinnerRowV1>,
+    pub rows: Vec<EarlyRenderVfsWinnerRowV2>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EarlyRenderVfsIndexCommitV1 {
+pub struct EarlyRenderVfsIndexCommitV2 {
     pub process_id: u32,
     pub process_start_nonce: u64,
     pub session_id: [u8; 16],
@@ -226,7 +227,7 @@ fn take_string(bytes: &[u8], at: &mut usize) -> Result<String, EarlyRenderVfsCod
 }
 
 pub fn encode_early_render_vfs_winner_row(
-    row: &EarlyRenderVfsWinnerRowV1,
+    row: &EarlyRenderVfsWinnerRowV2,
 ) -> Result<Vec<u8>, EarlyRenderVfsCodecError> {
     let source_shape_valid = match row.source_container_sha256 {
         Some(hash) => hash == row.source_sha256 && nonzero(&hash),
@@ -248,6 +249,14 @@ pub fn encode_early_render_vfs_winner_row(
     {
         return Err(EarlyRenderVfsCodecError::InvalidField);
     }
+    let stored = &row.stored_game_relative_path;
+    if stored.is_empty() || stored.len() > 4096 || stored.trim() != stored
+        || stored.contains(['\\', ':']) || stored.chars().any(char::is_control)
+        || stored.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || stored.to_ascii_lowercase() != row.normalized_game_relative_path
+    {
+        return Err(EarlyRenderVfsCodecError::InvalidField);
+    }
     let path_len = row.normalized_game_relative_path.len();
     let layer_len = row.layer_id.len();
     if path_len == 0
@@ -257,7 +266,7 @@ pub fn encode_early_render_vfs_winner_row(
     {
         return Err(EarlyRenderVfsCodecError::InvalidField);
     }
-    let mut out = Vec::with_capacity(ROW_FIXED_LEN + path_len + layer_len);
+    let mut out = Vec::with_capacity(ROW_FIXED_LEN + stored.len() + path_len + layer_len);
     put_header(&mut out, ROW_MAGIC);
     out.push(row.layer_kind.code());
     out.push(0);
@@ -275,6 +284,7 @@ pub fn encode_early_render_vfs_winner_row(
     out.extend_from_slice(&row.source_byte_offset.to_le_bytes());
     out.extend_from_slice(&row.source_byte_count.to_le_bytes());
     out.extend_from_slice(&row.source_range_sha256);
+    put_string(&mut out, &row.stored_game_relative_path)?;
     put_string(&mut out, &row.normalized_game_relative_path)?;
     put_string(&mut out, &row.layer_id)?;
     Ok(out)
@@ -282,7 +292,7 @@ pub fn encode_early_render_vfs_winner_row(
 
 pub fn decode_early_render_vfs_winner_row(
     bytes: &[u8],
-) -> Result<EarlyRenderVfsWinnerRowV1, EarlyRenderVfsCodecError> {
+) -> Result<EarlyRenderVfsWinnerRowV2, EarlyRenderVfsCodecError> {
     validate_header(bytes, ROW_MAGIC, ROW_FIXED_LEN)?;
     let mut at = 8;
     let layer_kind =
@@ -310,7 +320,8 @@ pub fn decode_early_render_vfs_winner_row(
     let source_byte_offset = take_u64(bytes, &mut at)?;
     let source_byte_count = take_u64(bytes, &mut at)?;
     let source_range_sha256 = take_array(bytes, &mut at)?;
-    let row = EarlyRenderVfsWinnerRowV1 {
+    let row = EarlyRenderVfsWinnerRowV2 {
+        stored_game_relative_path: String::new(),
         normalized_game_relative_path: String::new(),
         winning_layer_ordinal,
         layer_kind,
@@ -323,7 +334,8 @@ pub fn decode_early_render_vfs_winner_row(
         source_byte_count,
         source_range_sha256,
     };
-    let row = EarlyRenderVfsWinnerRowV1 {
+    let row = EarlyRenderVfsWinnerRowV2 {
+        stored_game_relative_path: take_string(bytes, &mut at)?,
         normalized_game_relative_path: take_string(bytes, &mut at)?,
         layer_id: take_string(bytes, &mut at)?,
         ..row
@@ -338,12 +350,12 @@ pub fn decode_early_render_vfs_winner_row(
 }
 
 pub fn canonical_early_render_vfs_index_bytes(
-    rows: &[EarlyRenderVfsWinnerRowV1],
+    rows: &[EarlyRenderVfsWinnerRowV2],
 ) -> Result<Vec<u8>, EarlyRenderVfsCodecError> {
     if rows.is_empty() || rows.len() > u32::MAX as usize {
         return Err(EarlyRenderVfsCodecError::InvalidField);
     }
-    let mut out = b"hoi4-effective-vfs-winners-v1\0".to_vec();
+    let mut out = b"hoi4-effective-vfs-winners-v2\0".to_vec();
     out.extend_from_slice(&(rows.len() as u64).to_le_bytes());
     let mut prior: Option<&str> = None;
     for row in rows {
@@ -352,6 +364,7 @@ pub fn canonical_early_render_vfs_index_bytes(
         }
         prior = Some(&row.normalized_game_relative_path);
         encode_early_render_vfs_winner_row(row)?;
+        put_canonical_string(&mut out, &row.stored_game_relative_path)?;
         put_canonical_string(&mut out, &row.normalized_game_relative_path)?;
         out.extend_from_slice(&row.winning_layer_ordinal.to_le_bytes());
         put_canonical_string(&mut out, row.layer_kind.as_str())?;
@@ -374,7 +387,7 @@ pub fn canonical_early_render_vfs_index_bytes(
 }
 
 pub fn encode_early_render_vfs_index_chunk(
-    value: &EarlyRenderVfsIndexChunkV1,
+    value: &EarlyRenderVfsIndexChunkV2,
 ) -> Result<Vec<u8>, EarlyRenderVfsCodecError> {
     let row_count =
         u32::try_from(value.rows.len()).map_err(|_| EarlyRenderVfsCodecError::InvalidField)?;
@@ -420,7 +433,7 @@ pub fn encode_early_render_vfs_index_chunk(
 
 pub fn decode_early_render_vfs_index_chunk(
     bytes: &[u8],
-) -> Result<EarlyRenderVfsIndexChunkV1, EarlyRenderVfsCodecError> {
+) -> Result<EarlyRenderVfsIndexChunkV2, EarlyRenderVfsCodecError> {
     validate_header(bytes, CHUNK_MAGIC, CHUNK_FIXED_LEN)?;
     let mut at = 8;
     let process_id = take_u32(bytes, &mut at)?;
@@ -447,7 +460,7 @@ pub fn decode_early_render_vfs_index_chunk(
     if at != bytes.len() {
         return Err(EarlyRenderVfsCodecError::Length);
     }
-    let value = EarlyRenderVfsIndexChunkV1 {
+    let value = EarlyRenderVfsIndexChunkV2 {
         process_id,
         process_start_nonce,
         session_id,
@@ -466,7 +479,7 @@ pub fn decode_early_render_vfs_index_chunk(
 }
 
 pub fn encode_early_render_vfs_index_commit(
-    value: &EarlyRenderVfsIndexCommitV1,
+    value: &EarlyRenderVfsIndexCommitV2,
 ) -> Result<Vec<u8>, EarlyRenderVfsCodecError> {
     if value.process_id == 0
         || value.process_start_nonce == 0
@@ -493,13 +506,13 @@ pub fn encode_early_render_vfs_index_commit(
 
 pub fn decode_early_render_vfs_index_commit(
     bytes: &[u8],
-) -> Result<EarlyRenderVfsIndexCommitV1, EarlyRenderVfsCodecError> {
+) -> Result<EarlyRenderVfsIndexCommitV2, EarlyRenderVfsCodecError> {
     validate_header(bytes, COMMIT_MAGIC, COMMIT_LEN)?;
     if bytes.len() != COMMIT_LEN {
         return Err(EarlyRenderVfsCodecError::Length);
     }
     let mut at = 8;
-    let value = EarlyRenderVfsIndexCommitV1 {
+    let value = EarlyRenderVfsIndexCommitV2 {
         process_id: take_u32(bytes, &mut at)?,
         process_start_nonce: take_u64(bytes, &mut at)?,
         session_id: take_array(bytes, &mut at)?,
@@ -518,8 +531,9 @@ pub fn decode_early_render_vfs_index_commit(
 mod tests {
     use super::*;
 
-    fn row(path: &str, byte: u8) -> EarlyRenderVfsWinnerRowV1 {
-        EarlyRenderVfsWinnerRowV1 {
+    fn row(path: &str, byte: u8) -> EarlyRenderVfsWinnerRowV2 {
+        EarlyRenderVfsWinnerRowV2 {
+            stored_game_relative_path: path.into(),
             normalized_game_relative_path: path.into(),
             winning_layer_ordinal: 3,
             layer_kind: EarlyRenderVfsLayerKind::Mod,
@@ -535,11 +549,29 @@ mod tests {
     }
 
     #[test]
+    fn stored_spelling_roundtrips_and_changes_the_winner_digest() {
+        let mut mixed = row("gfx/models/texture.dds", 1);
+        mixed.stored_game_relative_path = "gfx/models/Texture.dds".into();
+        let encoded = encode_early_render_vfs_winner_row(&mixed).unwrap();
+        assert_eq!(decode_early_render_vfs_winner_row(&encoded).unwrap(), mixed);
+        let mut lower = mixed.clone();
+        lower.stored_game_relative_path = lower.normalized_game_relative_path.clone();
+        assert_ne!(canonical_early_render_vfs_index_bytes(&[mixed.clone()]).unwrap(), canonical_early_render_vfs_index_bytes(&[lower]).unwrap());
+        let mut old_version = encoded;
+        old_version[4..6].copy_from_slice(&1u16.to_le_bytes());
+        assert!(decode_early_render_vfs_winner_row(&old_version).is_err());
+        for invalid in ["", "../texture.dds", "gfx\\models/Texture.dds", "C:/Texture.dds", "gfx//Texture.dds"] {
+            mixed.stored_game_relative_path = invalid.into();
+            assert!(encode_early_render_vfs_winner_row(&mixed).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
     fn exact_chunk_commit_and_canonical_index_roundtrip() {
         let rows = vec![row("gfx/a.asset", 1), row("gfx/b.asset", 3)];
         let canonical = canonical_early_render_vfs_index_bytes(&rows).unwrap();
-        assert!(canonical.starts_with(b"hoi4-effective-vfs-winners-v1\0"));
-        let chunk = EarlyRenderVfsIndexChunkV1 {
+        assert!(canonical.starts_with(b"hoi4-effective-vfs-winners-v2\0"));
+        let chunk = EarlyRenderVfsIndexChunkV2 {
             process_id: 7,
             process_start_nonce: 8,
             session_id: [9; 16],
@@ -556,7 +588,7 @@ mod tests {
             decode_early_render_vfs_index_chunk(&encoded).unwrap(),
             chunk
         );
-        let commit = EarlyRenderVfsIndexCommitV1 {
+        let commit = EarlyRenderVfsIndexCommitV2 {
             process_id: 7,
             process_start_nonce: 8,
             session_id: [9; 16],

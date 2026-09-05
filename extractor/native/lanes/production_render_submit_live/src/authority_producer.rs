@@ -1107,6 +1107,7 @@ fn raw_to_used_content(
     };
     let used = UsedContentKey {
         effective_vfs_manifest_sha256: winner_index.authority_manifest_sha256.clone(),
+        stored_game_relative_path: content.stored_game_relative_path.clone(),
         normalized_game_relative_path: content.logical_path.clone(),
         winning_layer_ordinal: content.winning_layer_ordinal,
         layer_kind,
@@ -1502,6 +1503,7 @@ mod tests {
         source_sha256: String,
     ) -> RawVfsContentIdentity {
         RawVfsContentIdentity {
+            stored_game_relative_path: path.into(),
             logical_path: path.into(),
             winning_layer_ordinal: ordinal,
             layer_kind: layer_kind.into(),

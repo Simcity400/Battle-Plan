@@ -1495,6 +1495,7 @@ mod tests {
     fn defines_content() -> UsedContentKey {
         UsedContentKey {
             effective_vfs_manifest_sha256: "1".repeat(64),
+            stored_game_relative_path: GRAPHICS_DEFINES_SOURCE.into(),
             normalized_game_relative_path: GRAPHICS_DEFINES_SOURCE.into(),
             winning_layer_ordinal: 0,
             layer_kind: ContentLayerKind::Base,
@@ -1633,6 +1634,7 @@ mod tests {
     fn used(path: &str, payload_sha256: &str, payload_bytes: u64) -> UsedContentKey {
         UsedContentKey {
             effective_vfs_manifest_sha256: "a".repeat(64),
+            stored_game_relative_path: path.into(),
             normalized_game_relative_path: path.into(),
             winning_layer_ordinal: 1,
             layer_kind: ContentLayerKind::Mod,

@@ -1958,6 +1958,7 @@ mod tests {
             kind: RequiredContentKind::Definition,
             content: UsedContentKey {
                 effective_vfs_manifest_sha256: vfs_sha,
+                stored_game_relative_path: "map/definition.csv".into(),
                 normalized_game_relative_path: "map/definition.csv".into(),
                 winning_layer_ordinal: 0,
                 layer_kind: ContentLayerKind::Base,

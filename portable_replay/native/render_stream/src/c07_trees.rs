@@ -2539,6 +2539,7 @@ mod tests {
         crate::ShaderProgram {
             source: crate::UsedContentKey {
                 effective_vfs_manifest_sha256: "2".repeat(64),
+                stored_game_relative_path: "gfx/fx/tree.shader".into(),
                 normalized_game_relative_path: "gfx/fx/tree.shader".into(),
                 winning_layer_ordinal: 0,
                 layer_kind: portable_content_manifest::ContentLayerKind::Base,
@@ -2897,6 +2898,7 @@ mod tests {
             weather_effect_token: None,
             weather_position_source_content: crate::UsedContentKey {
                 effective_vfs_manifest_sha256: "2".repeat(64),
+                stored_game_relative_path: "gfx/weather/weather.system".into(),
                 normalized_game_relative_path: "gfx/weather/weather.system".into(),
                 winning_layer_ordinal: 0,
                 layer_kind: portable_content_manifest::ContentLayerKind::Base,

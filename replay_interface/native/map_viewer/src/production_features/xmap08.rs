@@ -1933,6 +1933,7 @@ BlendState BlendState { BlendEnable = yes SourceBlend = src_alpha DestBlend = in
     fn visible_static_binding_rejects_substituted_texture_hash() {
         let admitted = UsedContentKey {
             effective_vfs_manifest_sha256: "a".repeat(64),
+            stored_game_relative_path: "map/terrain/riversurface_diffuse_0.dds".into(),
             normalized_game_relative_path: "map/terrain/riversurface_diffuse_0.dds".into(),
             winning_layer_ordinal: 0,
             layer_kind: portable_content_manifest::ContentLayerKind::Base,

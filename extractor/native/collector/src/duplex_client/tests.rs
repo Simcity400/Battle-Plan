@@ -38,8 +38,8 @@ use compact_contract::early_render_startup_failure::{
 };
 use compact_contract::early_render_vfs::{
     canonical_early_render_vfs_index_bytes, encode_early_render_vfs_index_chunk,
-    encode_early_render_vfs_index_commit, EarlyRenderVfsIndexChunkV1, EarlyRenderVfsIndexCommitV1,
-    EarlyRenderVfsLayerKind, EarlyRenderVfsWinnerRowV1,
+    encode_early_render_vfs_index_commit, EarlyRenderVfsIndexChunkV2, EarlyRenderVfsIndexCommitV2,
+    EarlyRenderVfsLayerKind, EarlyRenderVfsWinnerRowV2,
 };
 use compact_contract::early_render_vfs_payload::{
     decode_early_render_vfs_payload_request, encode_early_render_vfs_payload_chunk,
@@ -202,9 +202,10 @@ fn far_deadline(clock: &FakeClock) -> MonotonicDeadline {
     MonotonicDeadline::from_now(clock, Duration::from_secs(30))
 }
 
-fn vfs_row(path: &str) -> EarlyRenderVfsWinnerRowV1 {
+fn vfs_row(path: &str) -> EarlyRenderVfsWinnerRowV2 {
     let payload_sha256: [u8; 32] = Sha256::digest(b"data").into();
-    EarlyRenderVfsWinnerRowV1 {
+    EarlyRenderVfsWinnerRowV2 {
+        stored_game_relative_path: path.into(),
         normalized_game_relative_path: path.into(),
         winning_layer_ordinal: 1,
         layer_kind: EarlyRenderVfsLayerKind::Mod,
@@ -445,7 +446,7 @@ fn early_vfs_index_rejects_foreign_bind_digest_before_ready() {
         chunk_count: 1,
         total_bytes: manifest_chunk.total_bytes,
     };
-    let chunk = EarlyRenderVfsIndexChunkV1 {
+    let chunk = EarlyRenderVfsIndexChunkV2 {
         process_id: bind.process_id,
         process_start_nonce: bind.process_start_nonce,
         session_id: *session_id.as_bytes(),
@@ -563,7 +564,7 @@ fn early_transaction_admits_commit_after_the_authenticated_bind_sequence() {
         chunk_count: 1,
         total_bytes: manifest_chunk.total_bytes,
     };
-    let chunk = EarlyRenderVfsIndexChunkV1 {
+    let chunk = EarlyRenderVfsIndexChunkV2 {
         process_id: bind.process_id,
         process_start_nonce: bind.process_start_nonce,
         session_id: *session_id.as_bytes(),
@@ -575,7 +576,7 @@ fn early_transaction_admits_commit_after_the_authenticated_bind_sequence() {
         total_row_count: 1,
         rows: rows.clone(),
     };
-    let index_commit = EarlyRenderVfsIndexCommitV1 {
+    let index_commit = EarlyRenderVfsIndexCommitV2 {
         process_id: bind.process_id,
         process_start_nonce: bind.process_start_nonce,
         session_id: *session_id.as_bytes(),

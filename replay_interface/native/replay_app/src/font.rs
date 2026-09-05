@@ -1443,6 +1443,7 @@ mod tests {
         let hash = snapshot::sha256::Sha256::hex(&bytes);
         let required = UsedContentKey {
             effective_vfs_manifest_sha256: "11".repeat(32),
+            stored_game_relative_path: "gfx/fonts/probe.tga".into(),
             normalized_game_relative_path: "gfx/fonts/probe.tga".into(),
             winning_layer_ordinal: 0, layer_kind: ContentLayerKind::Base, layer_id: "base".into(),
             source_sha256: hash.clone(), payload_sha256: hash, payload_bytes: bytes.len() as u64,
@@ -1526,6 +1527,7 @@ mod tests {
             localisation_language: "l_english".into(),
             settings: BTreeMap::new(),
             resolved_content: vec![ResolvedPlaybackContent {
+                stored_game_relative_path: required.stored_game_relative_path.clone(),
                 normalized_game_relative_path: required.normalized_game_relative_path.clone(),
                 winning_layer_ordinal: required.winning_layer_ordinal,
                 layer_kind: required.layer_kind,

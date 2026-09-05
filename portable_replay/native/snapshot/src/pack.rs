@@ -109,7 +109,7 @@ fn validate_distinct_paths<'a>(paths: impl IntoIterator<Item = &'a str>) -> Resu
     Ok(())
 }
 
-const PORTABLE_CONTENT_FEATURE: &str = "portable_content_manifest_v2";
+const PORTABLE_CONTENT_FEATURE: &str = "portable_content_manifest_v3";
 
 fn portable_content_manifest_value(identity: &PackIdentity) -> Result<Value, PackError> {
     let Some(manifest) = &identity.content_manifest else {
@@ -2075,6 +2075,7 @@ mod tests {
                 kind: RequiredContentKind::ShaderSource,
                 content: UsedContentKey {
                     effective_vfs_manifest_sha256: hash('f'),
+                    stored_game_relative_path: "gfx/fx/particle.shader".into(),
                     normalized_game_relative_path: "gfx/fx/particle.shader".into(),
                     winning_layer_ordinal: 0,
                     layer_kind: ContentLayerKind::Base,

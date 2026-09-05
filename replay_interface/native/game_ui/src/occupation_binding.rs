@@ -2946,6 +2946,7 @@ fn manifest_for(
             consumers: vec!["game_ui.production_content_interpreter.test".into()],
             content: UsedContentKey {
                 effective_vfs_manifest_sha256: effective_vfs_manifest_sha256.clone(),
+                stored_game_relative_path: row.source_relative_path.clone(),
                 normalized_game_relative_path: row.logical_path.to_ascii_lowercase(),
                 winning_layer_ordinal: row.source.ordinal as u32,
                 layer_kind: layer_kind(&row.source.kind),

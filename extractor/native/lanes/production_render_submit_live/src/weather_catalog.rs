@@ -466,6 +466,7 @@ fn used_content_from_winner(
     };
     let content = UsedContentKey {
         effective_vfs_manifest_sha256: winner_index.authority_manifest_sha256.clone(),
+        stored_game_relative_path: raw.stored_game_relative_path.clone(),
         normalized_game_relative_path: logical_path,
         winning_layer_ordinal: raw.winning_layer_ordinal,
         layer_kind,
@@ -1689,6 +1690,7 @@ mod file_ordinal_tests {
     fn content(path: &str) -> UsedContentKey {
         UsedContentKey {
             effective_vfs_manifest_sha256: authority(),
+            stored_game_relative_path: path.into(),
             normalized_game_relative_path: path.into(),
             winning_layer_ordinal: 0,
             layer_kind: portable_content_manifest::ContentLayerKind::Base,

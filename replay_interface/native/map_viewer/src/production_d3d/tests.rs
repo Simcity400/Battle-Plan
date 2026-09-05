@@ -493,6 +493,7 @@ fn fixture_static_draw() -> replay_core::StaticMapDraw {
         shader_program: ShaderProgram {
             source: replay_core::UsedContentKey {
                 effective_vfs_manifest_sha256: "22".repeat(32),
+                stored_game_relative_path: "gfx/fx/fixture.hlsl".into(),
                 normalized_game_relative_path: "gfx/fx/fixture.hlsl".into(),
                 winning_layer_ordinal: 0,
                 layer_kind: ContentLayerKind::Base,
@@ -716,6 +717,7 @@ fn m03_used_content_is_an_exact_deterministic_draw_cover() {
 
     let mut extra = exact.clone();
     let mut unused = extra.used_content[0].clone();
+    unused.stored_game_relative_path = "gfx/fx/unused_fixture.hlsl".into();
     unused.normalized_game_relative_path = "gfx/fx/unused_fixture.hlsl".into();
     unused.source_sha256 = "88".repeat(32);
     unused.payload_sha256 = "88".repeat(32);
@@ -736,10 +738,12 @@ fn m03_used_content_is_an_exact_deterministic_draw_cover() {
 fn rail_authority_content_is_added_once_and_required_by_receipt_validation() {
     let draw = fixture_static_draw();
     let mut maparrows = draw.shader_program.source.clone();
+    maparrows.stored_game_relative_path = "gfx/maparrows/maparrows.txt".into();
     maparrows.normalized_game_relative_path = "gfx/maparrows/maparrows.txt".into();
     maparrows.source_sha256 = "aa".repeat(32);
     maparrows.payload_sha256 = "aa".repeat(32);
     let mut graphics = draw.shader_program.source;
+    graphics.stored_game_relative_path = "common/defines/00_graphics.lua".into();
     graphics.normalized_game_relative_path = "common/defines/00_graphics.lua".into();
     graphics.source_sha256 = "bb".repeat(32);
     graphics.payload_sha256 = "bb".repeat(32);

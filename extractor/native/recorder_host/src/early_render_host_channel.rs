@@ -40,8 +40,8 @@ use compact_contract::early_render_startup_failure::{
 };
 use compact_contract::early_render_vfs::{
     canonical_early_render_vfs_index_bytes, encode_early_render_vfs_index_chunk,
-    encode_early_render_vfs_index_commit, EarlyRenderVfsCodecError, EarlyRenderVfsIndexChunkV1,
-    EarlyRenderVfsIndexCommitV1, EarlyRenderVfsWinnerRowV1,
+    encode_early_render_vfs_index_commit, EarlyRenderVfsCodecError, EarlyRenderVfsIndexChunkV2,
+    EarlyRenderVfsIndexCommitV2, EarlyRenderVfsWinnerRowV2,
 };
 use compact_contract::early_render_vfs_payload::{
     decode_early_render_vfs_payload_request, encode_early_render_vfs_payload_chunk,
@@ -89,7 +89,7 @@ pub fn early_render_content_manifest_metadata_envelope(
 
 #[derive(Clone, Debug)]
 pub struct PreparedEarlyRenderVfsIndex {
-    rows: Vec<EarlyRenderVfsWinnerRowV1>,
+    rows: Vec<EarlyRenderVfsWinnerRowV2>,
     chunk_ranges: Vec<Range<usize>>,
     index_sha256: [u8; 32],
 }
@@ -118,7 +118,8 @@ impl PreparedEarlyRenderVfsIndex {
                         ));
                     }
                 };
-                Ok(EarlyRenderVfsWinnerRowV1 {
+                Ok(EarlyRenderVfsWinnerRowV2 {
+                    stored_game_relative_path: row.content.stored_game_relative_path.clone(),
                     normalized_game_relative_path: row.content.logical_path.clone(),
                     winning_layer_ordinal: row.content.winning_layer_ordinal,
                     layer_kind,
@@ -146,7 +147,7 @@ impl PreparedEarlyRenderVfsIndex {
         Self::from_ordered_rows(rows)
     }
 
-    pub fn from_ordered_rows(rows: Vec<EarlyRenderVfsWinnerRowV1>) -> Result<Self, String> {
+    pub fn from_ordered_rows(rows: Vec<EarlyRenderVfsWinnerRowV2>) -> Result<Self, String> {
         let total_row_count = u32::try_from(rows.len())
             .map_err(|_| "early effective-VFS winner count exceeds u32".to_string())?;
         let canonical = canonical_early_render_vfs_index_bytes(&rows)
@@ -158,7 +159,7 @@ impl PreparedEarlyRenderVfsIndex {
             let mut end = first;
             while end < rows.len() {
                 let candidate_end = end + 1;
-                let probe = EarlyRenderVfsIndexChunkV1 {
+                let probe = EarlyRenderVfsIndexChunkV2 {
                     process_id: 1,
                     process_start_nonce: 1,
                     session_id: [1; 16],
@@ -459,7 +460,7 @@ impl PreparedEarlyRenderHostChannel {
             )
             .map_err(|error| format!("send early H4CT content manifest COMMIT: {error}"))?;
         for (chunk_index, range) in self.effective_vfs_index.chunk_ranges.iter().enumerate() {
-            let payload = encode_early_render_vfs_index_chunk(&EarlyRenderVfsIndexChunkV1 {
+            let payload = encode_early_render_vfs_index_chunk(&EarlyRenderVfsIndexChunkV2 {
                 process_id: self.expectation.pid,
                 process_start_nonce: self.expectation.creation_filetime,
                 session_id: self.session_id,
@@ -481,7 +482,7 @@ impl PreparedEarlyRenderHostChannel {
                 )
                 .map_err(|error| format!("send early H4CT VFS chunk {chunk_index}: {error}"))?;
         }
-        let commit = encode_early_render_vfs_index_commit(&EarlyRenderVfsIndexCommitV1 {
+        let commit = encode_early_render_vfs_index_commit(&EarlyRenderVfsIndexCommitV2 {
             process_id: self.expectation.pid,
             process_start_nonce: self.expectation.creation_filetime,
             session_id: self.session_id,
@@ -668,6 +669,7 @@ impl PreparedEarlyRenderHostChannel {
         };
         if resolved.content.effective_vfs_manifest_sha256
             != self.manifest.effective_vfs_manifest_sha256
+            || resolved.content.stored_game_relative_path != request.winner.stored_game_relative_path
             || resolved.content.normalized_game_relative_path
                 != request.winner.normalized_game_relative_path
             || resolved.content.winning_layer_ordinal != request.winner.winning_layer_ordinal
@@ -1562,6 +1564,7 @@ mod tests {
         let rows = vec![
             RawEffectiveVfsWinnerRow {
                 content: RawVfsContentIdentity {
+                    stored_game_relative_path: "gfx/a.asset".into(),
                     logical_path: "gfx/a.asset".into(),
                     winning_layer_ordinal: 0,
                     layer_kind: "base".into(),
@@ -1577,6 +1580,7 @@ mod tests {
             },
             RawEffectiveVfsWinnerRow {
                 content: RawVfsContentIdentity {
+                    stored_game_relative_path: "gfx/b.asset".into(),
                     logical_path: "gfx/b.asset".into(),
                     winning_layer_ordinal: 1,
                     layer_kind: "mod".into(),
@@ -1675,6 +1679,7 @@ mod tests {
         let raw_rows = vec![
             RawEffectiveVfsWinnerRow {
                 content: RawVfsContentIdentity {
+                    stored_game_relative_path: "gfx/archive.asset".into(),
                     logical_path: "gfx/archive.asset".into(),
                     winning_layer_ordinal: 1,
                     layer_kind: "mod".into(),
@@ -1690,6 +1695,7 @@ mod tests {
             },
             RawEffectiveVfsWinnerRow {
                 content: RawVfsContentIdentity {
+                    stored_game_relative_path: "gfx/loose.asset".into(),
                     logical_path: "gfx/loose.asset".into(),
                     winning_layer_ordinal: 0,
                     layer_kind: "base".into(),

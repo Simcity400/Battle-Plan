@@ -6873,6 +6873,7 @@ mod tests {
                 consumers: vec!["xui20/test/direct-texture".into()],
                 content: UsedContentKey {
                     effective_vfs_manifest_sha256: vfs.clone(),
+                    stored_game_relative_path: (*path).into(),
                     normalized_game_relative_path: (*path).into(),
                     winning_layer_ordinal: 0,
                     layer_kind: ContentLayerKind::Base,
@@ -6918,6 +6919,7 @@ mod tests {
             resolved_content: required_content
                 .into_iter()
                 .map(|row| ResolvedPlaybackContent {
+                    stored_game_relative_path: row.content.stored_game_relative_path,
                     normalized_game_relative_path: row.content.normalized_game_relative_path,
                     winning_layer_ordinal: row.content.winning_layer_ordinal,
                     layer_kind: row.content.layer_kind,

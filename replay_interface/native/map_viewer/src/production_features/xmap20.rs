@@ -627,6 +627,7 @@ mod tests {
     fn content() -> UsedContentKey {
         UsedContentKey {
             effective_vfs_manifest_sha256: "a".repeat(64),
+            stored_game_relative_path: "gfx/entities/units.asset".into(),
             normalized_game_relative_path: "gfx/entities/units.asset".into(),
             winning_layer_ordinal: 0,
             layer_kind: ContentLayerKind::Base,

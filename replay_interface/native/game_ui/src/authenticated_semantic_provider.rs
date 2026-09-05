@@ -1793,6 +1793,7 @@ mod tests {
     fn test_content() -> UsedContentKey {
         UsedContentKey {
             effective_vfs_manifest_sha256: "1".repeat(64),
+            stored_game_relative_path: "interface/test.gui".to_string(),
             normalized_game_relative_path: "interface/test.gui".to_string(),
             winning_layer_ordinal: 0,
             layer_kind: ContentLayerKind::Base,

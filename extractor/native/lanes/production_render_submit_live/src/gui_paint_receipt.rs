@@ -2613,6 +2613,7 @@ mod instrumentation_tests {
                 runtime_root: "mapicons_container".into(),
                 selected_gui_definition: UsedContentKey {
                     effective_vfs_manifest_sha256: hash('c'),
+                    stored_game_relative_path: "interface/mapicons.gui".into(),
                     normalized_game_relative_path: "interface/mapicons.gui".into(),
                     winning_layer_ordinal: 0,
                     layer_kind: ContentLayerKind::Base,

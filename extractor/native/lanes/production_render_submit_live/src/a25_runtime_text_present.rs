@@ -1112,6 +1112,7 @@ fn used_content_from_raw(
     };
     let content = UsedContentKey {
         effective_vfs_manifest_sha256: winners.authority_manifest_sha256.clone(),
+        stored_game_relative_path: raw.stored_game_relative_path.clone(),
         normalized_game_relative_path: raw.logical_path.clone(),
         winning_layer_ordinal: raw.winning_layer_ordinal,
         layer_kind,

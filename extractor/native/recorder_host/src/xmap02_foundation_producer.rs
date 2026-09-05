@@ -110,6 +110,7 @@ mod tests {
                 kind: RequiredContentKind::Other,
                 content: portable_content_manifest::UsedContentKey {
                     effective_vfs_manifest_sha256: vfs.clone(),
+                    stored_game_relative_path: normalize(path),
                     normalized_game_relative_path: normalize(path),
                     winning_layer_ordinal: 0,
                     layer_kind: ContentLayerKind::Base,

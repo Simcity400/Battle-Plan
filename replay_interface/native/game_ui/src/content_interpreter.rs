@@ -460,6 +460,7 @@ mod tests {
         let document = parse_bytes(b"root = { value = yes");
         let key = UsedContentKey {
             effective_vfs_manifest_sha256: "0".repeat(64),
+            stored_game_relative_path: "common/test.txt".into(),
             normalized_game_relative_path: "common/test.txt".into(),
             winning_layer_ordinal: 0,
             layer_kind: replay_core::ContentLayerKind::Base,

@@ -2957,6 +2957,7 @@ fn manifest_key_for_raw(
     }
     let key = portable_content_manifest::UsedContentKey {
         effective_vfs_manifest_sha256: manifest.effective_vfs_manifest_sha256.clone(),
+        stored_game_relative_path: raw.stored_game_relative_path.clone(),
         normalized_game_relative_path: raw.logical_path.clone(),
         winning_layer_ordinal: raw.winning_layer_ordinal,
         layer_kind,
@@ -2973,6 +2974,7 @@ fn raw_vfs_identity(
     content: &portable_content_manifest::UsedContentKey,
 ) -> production_render_submit_live_lane::RawVfsContentIdentity {
     production_render_submit_live_lane::RawVfsContentIdentity {
+        stored_game_relative_path: content.stored_game_relative_path.clone(),
         logical_path: content.normalized_game_relative_path.clone(),
         winning_layer_ordinal: content.winning_layer_ordinal,
         layer_kind: layer_kind_token(content.layer_kind).into(),
@@ -3194,6 +3196,7 @@ mod fold_carrier_guard_tests {
         let bytecode = b"guard-test".to_vec();
         let content = portable_content_manifest::UsedContentKey {
             effective_vfs_manifest_sha256: "1".repeat(64),
+            stored_game_relative_path: "gfx/fx/pdxmap.shader".into(),
             normalized_game_relative_path: "gfx/fx/pdxmap.shader".into(),
             winning_layer_ordinal: 0,
             layer_kind: portable_content_manifest::ContentLayerKind::Base,
@@ -5843,7 +5846,7 @@ pub fn install_a38_scripted_gui_fixture_observer(
 #[cfg(test)]
 mod a38_production_admission_tests {
     use super::*;
-    use compact_contract::early_render_vfs::{EarlyRenderVfsLayerKind, EarlyRenderVfsWinnerRowV1};
+    use compact_contract::early_render_vfs::{EarlyRenderVfsLayerKind, EarlyRenderVfsWinnerRowV2};
     use scripted_state_flags_variables_live_lane::{
         EngineResult, ScriptedGuiDefinitionIdentity, ScriptedGuiRuntimeFrame,
         ScriptedGuiRuntimeRow, EXACT20_A38_STATIC_AUTHORITY_RECEIPT_SHA256,
@@ -5871,7 +5874,8 @@ mod a38_production_admission_tests {
             process_start_nonce: 91,
             effective_vfs_manifest_sha256: [7; 32],
             ordered_rows_sha256: [8; 32],
-            ordered_rows: vec![EarlyRenderVfsWinnerRowV1 {
+            ordered_rows: vec![EarlyRenderVfsWinnerRowV2 {
+                stored_game_relative_path: LOGICAL_PATH.into(),
                 normalized_game_relative_path: LOGICAL_PATH.into(),
                 winning_layer_ordinal: 0,
                 layer_kind: EarlyRenderVfsLayerKind::Base,
@@ -6230,7 +6234,7 @@ struct A38ProductionDefinition {
 #[cfg(windows)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct A38AdmittedSource {
-    winner: compact_contract::early_render_vfs::EarlyRenderVfsWinnerRowV1,
+    winner: compact_contract::early_render_vfs::EarlyRenderVfsWinnerRowV2,
     bytes: Vec<u8>,
 }
 

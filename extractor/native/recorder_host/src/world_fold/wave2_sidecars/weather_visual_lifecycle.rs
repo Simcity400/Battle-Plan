@@ -210,6 +210,7 @@ mod tests {
                 "airborne_runtime_code": 4,
                 "weather_position_source_content": {
                     "effective_vfs_manifest_sha256": "2".repeat(64),
+                    "stored_game_relative_path": "terrain/weather/baseline.txt",
                     "normalized_game_relative_path": "terrain/weather/baseline.txt",
                     "winning_layer_ordinal": 0,
                     "layer_kind": "base",

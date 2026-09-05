@@ -28,10 +28,10 @@ const ZIP64_EOCD_MIN_LEN: u64 = 56;
 const VERIFY_CHUNK: usize = 4 * 1024 * 1024;
 const STITCHED_CONTAINER_VERSION: u64 = 2;
 const FEATURE_TIMELINE_SEGMENTS_V1: &str = "timeline_segments_v1";
-const FEATURE_PORTABLE_CONTENT_MANIFEST_V2: &str = "portable_content_manifest_v2";
+const FEATURE_PORTABLE_CONTENT_MANIFEST_V3: &str = "portable_content_manifest_v3";
 const KNOWN_FEATURES: &[&str] = &[
     FEATURE_TIMELINE_SEGMENTS_V1,
-    FEATURE_PORTABLE_CONTENT_MANIFEST_V2,
+    FEATURE_PORTABLE_CONTENT_MANIFEST_V3,
 ];
 
 #[derive(Debug, Clone, Default)]
@@ -536,7 +536,7 @@ fn manifest_uses_unicode_paths(manifest: &Value) -> Result<bool, String> {
     }
 
     Ok(container_version >= STITCHED_CONTAINER_VERSION
-        || declared_features.contains(&FEATURE_PORTABLE_CONTENT_MANIFEST_V2))
+        || declared_features.contains(&FEATURE_PORTABLE_CONTENT_MANIFEST_V3))
 }
 
 fn validate_archive_paths(entries: &[CdEntry], unicode_paths: bool) -> Result<(), String> {
@@ -1597,7 +1597,7 @@ mod tests {
 
         let portable_v1 = serde_json::json!({
             "container_version": 1,
-            "required_features": ["portable_content_manifest_v2"]
+            "required_features": ["portable_content_manifest_v3"]
         });
         assert!(manifest_uses_unicode_paths(&portable_v1).unwrap());
 

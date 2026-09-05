@@ -1575,6 +1575,7 @@ mod exact_target_consumer_tests {
         let bytes = (0..64).map(|value| value as u8).collect::<Vec<_>>();
         let content = UsedContentKey {
             effective_vfs_manifest_sha256: "11".repeat(32),
+            stored_game_relative_path: "gfx/exact/native-initial.bin".into(),
             normalized_game_relative_path: "gfx/exact/native-initial.bin".into(),
             winning_layer_ordinal: 0,
             layer_kind: ContentLayerKind::Base,

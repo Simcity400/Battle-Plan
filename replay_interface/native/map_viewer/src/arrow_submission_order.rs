@@ -428,6 +428,7 @@ mod tests {
         use portable_render_stream::*;
         let content = |path: &str| UsedContentKey {
             effective_vfs_manifest_sha256: "a".repeat(64),
+            stored_game_relative_path: path.to_ascii_lowercase(),
             normalized_game_relative_path: path.to_ascii_lowercase(),
             winning_layer_ordinal: 0,
             layer_kind: portable_content_manifest::ContentLayerKind::Base,

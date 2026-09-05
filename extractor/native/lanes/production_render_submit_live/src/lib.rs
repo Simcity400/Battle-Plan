@@ -3359,6 +3359,7 @@ mod tests {
     fn content(path: &str, payload_sha256: String) -> UsedContentKey {
         UsedContentKey {
             effective_vfs_manifest_sha256: "1".repeat(64),
+            stored_game_relative_path: path.into(),
             normalized_game_relative_path: path.into(),
             winning_layer_ordinal: 0,
             layer_kind: ContentLayerKind::Base,
@@ -3744,6 +3745,7 @@ mod tests {
 
     fn observed_vfs(path: &str, byte: u8) -> RawVfsContentIdentity {
         RawVfsContentIdentity {
+            stored_game_relative_path: path.into(),
             logical_path: path.into(),
             winning_layer_ordinal: 0,
             layer_kind: "base".into(),
@@ -4642,6 +4644,7 @@ mod tests {
         .unwrap();
         let target = target_receipt.target.clone();
         let content = RawVfsContentIdentity {
+            stored_game_relative_path: "gfx/fx/modded.shader".into(),
             logical_path: "gfx/fx/modded.shader".into(),
             winning_layer_ordinal: 2,
             layer_kind: "mod".into(),

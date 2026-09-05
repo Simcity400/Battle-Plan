@@ -2523,7 +2523,8 @@ fn fixture_required_content(
         kind,
         content: UsedContentKey {
             effective_vfs_manifest_sha256: vfs_sha.into(),
-            normalized_game_relative_path: normalize_game_relative_path(path)?,
+            stored_game_relative_path: path.to_string(),
+        normalized_game_relative_path: normalize_game_relative_path(path)?,
             winning_layer_ordinal: ordinal,
             layer_kind,
             layer_id: layer_id.into(),
@@ -2650,6 +2651,7 @@ mod tests {
                 .required_content
                 .iter()
                 .map(|required| ResolvedPlaybackContent {
+                    stored_game_relative_path: required.content.stored_game_relative_path.clone(),
                     normalized_game_relative_path: required
                         .content
                         .normalized_game_relative_path

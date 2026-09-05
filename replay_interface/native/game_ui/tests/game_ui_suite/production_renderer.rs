@@ -182,6 +182,7 @@ fn production_renderer_from_paths(
                 consumers,
                 content: UsedContentKey {
                     effective_vfs_manifest_sha256: effective_vfs_manifest_sha256.clone(),
+                    stored_game_relative_path: row.source_relative_path.clone(),
                     normalized_game_relative_path: logical_path,
                     winning_layer_ordinal: row.source.ordinal as u32,
                     layer_kind: layer_kind(&row.source.kind),
@@ -306,6 +307,7 @@ fn minimal_hud_route_admission(
                 consumers: vec![consumer],
                 content: UsedContentKey {
                     effective_vfs_manifest_sha256: vfs.clone(),
+                    stored_game_relative_path: row.source_relative_path.clone(),
                     normalized_game_relative_path: row.logical_path,
                     winning_layer_ordinal: 0,
                     layer_kind: ContentLayerKind::Base,

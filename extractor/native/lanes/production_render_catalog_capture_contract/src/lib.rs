@@ -54,6 +54,7 @@ pub enum RawDrawIdentity {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawVfsContentIdentity {
+    pub stored_game_relative_path: String,
     pub logical_path: String,
     pub winning_layer_ordinal: u32,
     pub layer_kind: String,
