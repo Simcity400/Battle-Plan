@@ -82,6 +82,7 @@ pub struct ParticleLightBinding {
 pub enum ParticleAction {
     Continue,
     StopEmission,
+    StopUnboundedEmission,
     StopAndDetach,
     Detach,
     Destroy,
@@ -583,6 +584,13 @@ impl ParticleRuntime {
                 instance.speed = speed;
             }
             match update.action {
+                ParticleAction::StopUnboundedEmission => {
+                    if instance.subsystems.iter().any(|s| s.end < 0.0) {
+                        for subsystem in &mut instance.subsystems {
+                            subsystem.end = subsystem.local_time;
+                        }
+                    }
+                }
                 ParticleAction::StopEmission | ParticleAction::StopAndDetach => {
                     for subsystem in &mut instance.subsystems {
                         subsystem.end = subsystem.local_time;
@@ -710,6 +718,29 @@ mod tests {
             )
             .unwrap();
         (fixture, runtime, handle)
+    }
+
+    #[test]
+    fn conditional_state_stop_preserves_finite_ends_and_stops_every_root_if_one_is_unbounded() {
+        for (end, expected) in [(2.0, [1.0, 2.0]), (-1.0, [0.25, 0.25])] {
+            let (_fixture, mut runtime, handle) = setup(&format!(
+                "subsystem={{name=a max_amount=0 duration=1 emission=0}} subsystem={{name=b max_amount=0 duration={end} emission=0}}"));
+            runtime.advance(1, 0.25, &[]).unwrap();
+            runtime
+                .advance(
+                    2,
+                    0.25,
+                    &[ParticleInstanceUpdate {
+                        handle,
+                        parent_world_matrix_f32_bits: None,
+                        inherited_speed: None,
+                        action: ParticleAction::StopUnboundedEmission,
+                    }],
+                )
+                .unwrap();
+            let subsystems = &runtime.instance(handle).unwrap().subsystems;
+            assert_eq!([subsystems[0].end, subsystems[1].end], expected);
+        }
     }
 
     #[test]

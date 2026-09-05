@@ -1,3 +1,5 @@
+use crate::particle_authored::ParticleInputRefusal;
+use crate::particle_runtime::ParticleLightBinding;
 use crate::production_features::xmap09::Xmap09PointLight;
 use crate::xmap09_light_template::{Xmap09LightInstanceClock, Xmap09LightTemplate};
 use crate::xmap09_lighting_law::{
@@ -10,16 +12,35 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Xmap09LightCensusRefusal {
-    MissingDomain { domain: String },
-    InvalidJoin { instance: String },
-    InvalidValue { instance: String },
-    PairedParticleRuntimeUnavailable { entity: String, event_index: usize, particle: String },
+    ParticleInput {
+        instance: String,
+        refusal: ParticleInputRefusal,
+    },
+    MissingDomain {
+        domain: String,
+    },
+    InvalidJoin {
+        instance: String,
+    },
+    InvalidValue {
+        instance: String,
+    },
+    PairedParticleRuntimeUnavailable {
+        entity: String,
+        event_index: usize,
+        particle: String,
+    },
 }
 
 impl std::fmt::Display for Xmap09LightCensusRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::PairedParticleRuntimeUnavailable { entity, event_index, particle } => {
+            Self::ParticleInput { instance, refusal } => write!(f, "{instance}: {refusal}"),
+            Self::PairedParticleRuntimeUnavailable {
+                entity,
+                event_index,
+                particle,
+            } => {
                 write!(f, "XMAP09_PAIRED_PARTICLE_RUNTIME_UNAVAILABLE: {entity} event {event_index} particle {particle}")
             }
             Self::MissingDomain { domain } => {
@@ -91,6 +112,7 @@ pub struct Xmap09FiredLightInstance<'a> {
     pub creator_rva: u32,
     pub clock: Option<&'a Xmap09LightInstanceClock>,
     pub attach_transform: Option<[f32; 16]>,
+    pub paired_particle: Option<ParticleLightBinding>,
     pub enabled: Option<bool>,
 }
 
@@ -196,7 +218,8 @@ pub fn admit_light_census(
             .events
             .get(instance.event_index)
             .ok_or_else(|| invalid(instance.id))?;
-        if let Some(particle) = event.particle.as_ref().filter(|name| !name.is_empty()) {
+        let paired = event.particle.as_ref().filter(|name| !name.is_empty());
+        if let Some(particle) = paired.filter(|_| instance.paired_particle.is_none()) {
             return Err(Xmap09LightCensusRefusal::PairedParticleRuntimeUnavailable {
                 entity: entity.id.into(),
                 event_index: instance.event_index,
@@ -230,17 +253,32 @@ pub fn admit_light_census(
         let clock = instance
             .clock
             .ok_or_else(|| missing("lighting.instance_renderer_clock"))?;
-        let attach = match instance.attach_transform {
-            Some(attach) => attach,
-            None => rows
-                .resolve_attach
-                .ok_or_else(|| missing("lighting.instance_attach_transform"))?(
-                instance
-            )?,
+        let attach = if paired.is_some() {
+            let bits = instance
+                .paired_particle
+                .as_ref()
+                .unwrap()
+                .world_matrix_f32_bits;
+            std::array::from_fn(|i| f32::from_bits(bits[(i % 4) * 4 + i / 4]))
+        } else {
+            match instance.attach_transform {
+                Some(attach) => attach,
+                None => rows
+                    .resolve_attach
+                    .ok_or_else(|| missing("lighting.instance_attach_transform"))?(
+                    instance
+                )?,
+            }
         };
-        let placement = entity
-            .placement
-            .ok_or_else(|| missing("lighting.placed_entity_transform"))?;
+        let placement = if paired.is_some() {
+            [
+                1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
+            ]
+        } else {
+            entity
+                .placement
+                .ok_or_else(|| missing("lighting.placed_entity_transform"))?
+        };
         if placement.iter().any(|value| !value.is_finite()) {
             return Err(Xmap09LightCensusRefusal::InvalidValue {
                 instance: instance.id.into(),
@@ -407,6 +445,7 @@ pub(crate) mod tests {
                 creator_rva: creators[i % creators.len()].rva,
                 clock: Some(&clock),
                 attach_transform: Some(IDENTITY),
+                paired_particle: None,
                 enabled: Some(true),
             })
             .collect::<Vec<_>>();
@@ -419,18 +458,60 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn paired_light_uses_runtime_world_bits_without_reapplying_entity_placement() {
+        with_rows(&[[400., 0., 400.]], |rows| {
+            let mut events = rows.entities[0].events.to_vec();
+            events[0].particle = Some("paired".into());
+            let mut entities = rows.entities.to_vec();
+            entities[0].events = &events;
+            let mut instances = rows.fired_instances.to_vec();
+            let mut world = IDENTITY.map(f32::to_bits);
+            world[12] = 16f32.to_bits();
+            world[13] = 2f32.to_bits();
+            world[14] = 24f32.to_bits();
+            instances[0].attach_transform = None;
+            instances[0].paired_particle = Some(ParticleLightBinding {
+                event_instance_id: 3,
+                presentation_id: Some(2),
+                world_matrix_f32_bits: world,
+                finished: false,
+            });
+            let census = admit_light_census(
+                Ok(Xmap09LightCensusRows {
+                    entities: &entities,
+                    fired_instances: &instances,
+                    ..rows
+                }),
+                GRID,
+            )
+            .unwrap();
+            assert_eq!(census.lights.len(), 1);
+            assert_eq!(
+                census.lights[0]
+                    .position_radius_f32_bits
+                    .map(f32::from_bits),
+                [16., 2., 24., 1.]
+            );
+        });
+    }
+
+    #[test]
     fn paired_particle_light_refuses_only_after_its_event_fires() {
         with_rows(&[[0.0; 3]], |rows| {
             let mut events = rows.entities[0].events.to_vec();
             events[0].particle = Some("muzzle_smoke".into());
             let mut entities = rows.entities.to_vec();
             entities[0].events = &events;
-            let unfired = admit_light_census(Ok(Xmap09LightCensusRows {
-                entities: &entities,
-                templates: rows.templates,
-                fired_instances: &[],
-                resolve_attach: None,
-            }), GRID).unwrap();
+            let unfired = admit_light_census(
+                Ok(Xmap09LightCensusRows {
+                    entities: &entities,
+                    templates: rows.templates,
+                    fired_instances: &[],
+                    resolve_attach: None,
+                }),
+                GRID,
+            )
+            .unwrap();
             assert_eq!(unfired.counts.fired_instances, 0);
             assert!(matches!(admit_light_census(Ok(Xmap09LightCensusRows {
                 entities: &entities,

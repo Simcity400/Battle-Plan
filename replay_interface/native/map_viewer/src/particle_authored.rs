@@ -3,7 +3,7 @@ use portable_content_manifest::paradox_text::{self, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ParticleInputRefusal {
     pub event_instance_id: Option<u64>,
     pub definition: String,
@@ -12,7 +12,7 @@ pub struct ParticleInputRefusal {
     pub reason: ParticleRefusalReason,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ParticleRefusalReason {
     ContentAdmissionRequired,
     AuthenticatedContentUnavailable(String),
@@ -213,7 +213,12 @@ impl ParticleDefinitions {
                         ParticleRefusalReason::MalformedContent,
                     )
                 })?;
-                let mut root = paradox_text::parse_str_strict(&text).map_err(|_| {
+                let mut root = if extension == "asset" {
+                    paradox_text::parse_asset_str(&text).map(|(root, _)| root)
+                } else {
+                    paradox_text::parse_str_strict(&text)
+                }
+                .map_err(|_| {
                     ParticleInputRefusal::new(
                         "",
                         None,
@@ -1032,6 +1037,13 @@ pub(crate) mod test_support {
     }
     impl Fixture {
         pub fn new(registrations: &str, particles: &str) -> Self {
+            Self::with_extra_files(registrations, particles, &[])
+        }
+        pub fn with_extra_files(
+            registrations: &str,
+            particles: &str,
+            files: &[(&str, &[u8])],
+        ) -> Self {
             let root = std::env::temp_dir().join(format!(
                 "particle-authored-{}-{}",
                 std::process::id(),
@@ -1040,6 +1052,11 @@ pub(crate) mod test_support {
             std::fs::create_dir_all(root.join("gfx")).unwrap();
             std::fs::write(root.join("gfx/particles.gfx"), registrations).unwrap();
             std::fs::write(root.join("gfx/particles.asset"), particles).unwrap();
+            for (path, bytes) in files {
+                let target = root.join(path);
+                std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+                std::fs::write(target, bytes).unwrap();
+            }
             let resolver = GameFileResolver::vanilla(&root)
                 .unwrap()
                 .bind_all_test_content(&"a".repeat(64))
@@ -1296,5 +1313,74 @@ mod tests {
         let second = definitions.resolve("alias").unwrap();
         assert!(Arc::ptr_eq(&first.subsystems, &second.subsystems));
         assert_ne!(first.authored_scale_bits(), second.authored_scale_bits());
+    }
+
+    #[test]
+    fn authenticated_train_outer_eof_does_not_block_particle_resolution() {
+        let train = include_bytes!("../tests/fixtures/ger_train_coal_equipment_1.asset");
+        assert_eq!(train.len(), 348);
+        let fixture = Fixture::with_extra_files(
+            REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=4}}",
+            &[(
+                "gfx/models/units/trains/ger_train_coal_equipment_1.asset",
+                train,
+            )],
+        );
+        let mut definitions = fixture.definitions();
+        assert_eq!(
+            definitions.resolve("paired").unwrap().authored_capacity(),
+            4
+        );
+        assert_eq!(
+            definitions
+                .resolve("GER_train_coal_equipment_1_entity")
+                .unwrap_err()
+                .reason,
+            ParticleRefusalReason::MissingRegistration
+        );
+    }
+
+    #[test]
+    fn persistent_particle_eof_keeps_the_last_scalar_and_file_variable() {
+        let fixture = Fixture::new(
+            REGISTRATION,
+            "@capacity=4 particle={name=effect subsystem={name=s max_amount=@capacity life=2 # }",
+        );
+        let definition = fixture.definitions().resolve("paired").unwrap();
+        assert_eq!(definition.authored_capacity(), 4);
+        assert_eq!(definition.subsystems[0].life, VariedScalar::plain(2.0, 0.0));
+    }
+
+    #[test]
+    fn asset_root_close_terminates_before_conflicting_particle_declarations() {
+        let fixture = Fixture::new(
+            REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=4}} } particle={name=effect}",
+        );
+        assert_eq!(
+            fixture
+                .definitions()
+                .resolve("paired")
+                .unwrap()
+                .authored_capacity(),
+            4
+        );
+    }
+
+    #[test]
+    fn asset_admission_still_names_actual_parse_and_decode_damage() {
+        for bytes in [
+            &b"entity={name="[..],
+            &b"entity={name=\"unterminated"[..],
+            &b"\xef\xbb\xbfentity={name=\xff}"[..],
+        ] {
+            let path = "gfx/models/broken.asset";
+            let fixture =
+                Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[(path, bytes)]);
+            let error = ParticleDefinitions::load(&fixture.resolver).err().unwrap();
+            assert_eq!(error.input, path);
+            assert_eq!(error.reason, ParticleRefusalReason::MalformedContent);
+        }
     }
 }
