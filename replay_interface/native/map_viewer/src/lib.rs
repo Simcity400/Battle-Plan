@@ -912,6 +912,7 @@ pub use production_features::xmap10::{
 };
 pub use production_features::xmap20::{
     prepare_xmap20_effects, PreparedXmap20Frame, Xmap20EffectsAdapter,
+    Xmap20AuthoredEntityRuntime, Xmap20AuthoredParticleBinding,
     Xmap20ProductionTriggerProvider, Xmap20TriggerProvider, Xmap20TriggerReceipt,
     XMAP20_ASSIGNED_OPERATION_NAME, XMAP20_ASSIGNED_STAGE_NAME, XMAP20_CARRIER_ABSENT_GAP_ID,
     XMAP20_EFFECT_DRAW_CONTRACT, XMAP20_EFFECT_LIFECYCLE_INPUT, XMAP20_EFFECT_LIFECYCLE_WIRE_KEY,

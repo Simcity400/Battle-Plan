@@ -201,6 +201,7 @@ impl Assets {
 
 #[derive(Clone)]
 struct EntityAnimation {
+    include_particle_only_events: bool,
     next_state: Option<String>,
     authored_speed: f64,
     scale: f32,
@@ -223,6 +224,7 @@ struct PairedParticle {
 }
 
 struct FiredInstance {
+    authored_event_index: usize,
     ordinal: u64,
     stop_unbounded: bool,
     particle: Option<PairedParticle>,
@@ -246,6 +248,7 @@ struct ChildEntity {
 
 #[derive(Default)]
 pub(crate) struct ViewerLightLifecycle {
+    include_particle_only_events: bool,
     assets: Option<Arc<Assets>>,
     particle_definitions: Option<ParticleDefinitions>,
     content_lease: Option<crate::mod_resolver::ContentAdmissionLease>,
@@ -254,6 +257,7 @@ pub(crate) struct ViewerLightLifecycle {
     children: BTreeMap<String, ChildEntity>,
     instances: Vec<FiredInstance>,
     next_instance: u64,
+    next_particle_only_instance: u64,
     last_presentation_time: Option<f32>,
 }
 
@@ -262,6 +266,7 @@ pub(crate) struct DerivedLightRows {
     entity_indices: BTreeMap<String, usize>,
     instances: Vec<(String, String, usize, Xmap09LightInstanceClock)>,
     particle_bindings: BTreeMap<String, ParticleLightBinding>,
+    pub(crate) authored_particles: Vec<crate::production_features::xmap20::Xmap20AuthoredParticleBinding>,
     poses: BTreeMap<String, EntityAnimation>,
     children: BTreeMap<String, ChildEntity>,
     assets: Arc<Assets>,
@@ -347,6 +352,7 @@ impl EntityAnimation {
         assets: &Assets,
         resolver: &GameFileResolver,
         require_pose: bool,
+        include_particle_only_events: bool,
     ) -> Result<Self> {
         let pose = assets
             .poses
@@ -385,7 +391,7 @@ impl EntityAnimation {
         };
         let events = state.map(|s| s.events.clone()).unwrap_or_default();
         if events.iter().any(|e| {
-            (e.light.is_some() || e.entity.is_some())
+            (e.light.is_some() || e.entity.is_some() || (include_particle_only_events && e.particle.is_some()))
                 && (e.time.is_none_or(|t| !t.is_finite() || t < 0.0)
                     || e.life.is_some_and(|t| !t.is_finite()))
         }) {
@@ -393,7 +399,7 @@ impl EntityAnimation {
         }
         let has_lights = events
             .iter()
-            .any(|e| e.light.is_some() || e.entity.is_some());
+            .any(|e| e.light.is_some() || e.entity.is_some() || (include_particle_only_events && e.particle.is_some()));
         let entity_scale = pose.scale.unwrap_or(1.0);
         let mesh_scale = match pose.pdxmesh.as_ref() {
             Some(name) => {
@@ -415,6 +421,7 @@ impl EntityAnimation {
             start += draw as f32 * f32::from_bits(0x30000000) * range;
         }
         let mut out = Self {
+            include_particle_only_events,
             next_state: state.and_then(|s| s.next_state.clone()),
             authored_speed: state.and_then(|s| s.animation_speed).unwrap_or(1.0) as f64,
             scale: entity_scale * mesh_scale,
@@ -500,6 +507,7 @@ impl EntityAnimation {
             .filter_map(|(index, event)| {
                 let time = event.time? as f64;
                 if event.light.is_none() && event.entity.is_none()
+                    && !(self.include_particle_only_events && event.particle.is_some())
                     || self.speed <= 0.0
                     || previous == self.playhead
                     || (event.trigger_once
@@ -547,6 +555,10 @@ impl EntityAnimation {
 }
 
 impl ViewerLightLifecycle {
+    pub(crate) fn for_authored_particles() -> Self {
+        Self { include_particle_only_events: true, ..Default::default() }
+    }
+
     fn leave_state(&mut self, id: &str) {
         self.instances
             .retain(|i| i.entity_id != id || i.event.keep_particle);
@@ -609,17 +621,32 @@ impl ViewerLightLifecycle {
             let state = &self.entities[id];
             let event = state.events[event_index].clone();
             let speed = state.speed;
-            if event.light.is_some() {
+            if event.light.is_some() || (self.include_particle_only_events && event.particle.is_some()) {
+                let (ordinal, instance_id) = if event.light.is_some() {
+                    let ordinal = self.next_instance;
+                    if ordinal >= 1u64 << 63 {
+                        return Err("viewer light/entity instance identity exhausted".into());
+                    }
+                    self.next_instance += 1;
+                    (ordinal, format!("{id}:light:{event_index}:{ordinal}"))
+                } else {
+                    let local = self.next_particle_only_instance;
+                    if local >= 1u64 << 63 {
+                        return Err("viewer particle-only instance identity exhausted".into());
+                    }
+                    self.next_particle_only_instance += 1;
+                    (local | (1u64 << 63), format!("{id}:particle:{event_index}:{local}"))
+                };
                 self.instances.push(FiredInstance {
-                    ordinal: self.next_instance,
+                    authored_event_index: event_index,
+                    ordinal,
                     stop_unbounded: false,
                     particle: None,
-                    id: format!("{id}:light:{event_index}:{}", self.next_instance),
+                    id: instance_id,
                     entity_id: id.into(),
                     event: event.clone(),
                     clock: Xmap09LightInstanceClock::default(),
                 });
-                self.next_instance += 1;
             }
             if let Some(token) = event.entity.clone() {
                 if ancestry.contains(&token) {
@@ -640,7 +667,7 @@ impl ViewerLightLifecycle {
                     animate: true,
                     world_matrix_f32_bits: IDENTITY.map(f32::to_bits),
                 };
-                let mut child = EntityAnimation::load(&row, assets, resolver, false)?;
+                let mut child = EntityAnimation::load(&row, assets, resolver, false, self.include_particle_only_events)?;
                 child.speed = speed;
                 self.entities.insert(child_id.clone(), child);
                 self.children.insert(
@@ -697,7 +724,7 @@ impl ViewerLightLifecycle {
                         .children
                         .values()
                         .any(|c| c.parent == id && c.life >= 0.0);
-                let mut next = EntityAnimation::load(&row, assets, resolver, require_pose)?;
+                let mut next = EntityAnimation::load(&row, assets, resolver, require_pose, self.include_particle_only_events)?;
                 next.speed = speed;
                 next.requested_state = requested_state;
                 self.leave_state(id);
@@ -712,6 +739,7 @@ impl ViewerLightLifecycle {
         self.children.clear();
         self.instances.clear();
         self.next_instance = 0;
+        self.next_particle_only_instance = 0;
         self.last_presentation_time = None;
     }
 
@@ -790,7 +818,7 @@ impl ViewerLightLifecycle {
                             .values()
                             .any(|c| c.parent == row.id && c.life >= 0.0));
                 let state =
-                    EntityAnimation::load(row, &assets, resolver, require_pose).map_err(|e| {
+                    EntityAnimation::load(row, &assets, resolver, require_pose, self.include_particle_only_events).map_err(|e| {
                         missing(format!("assets.light_events.{}: {e}", row.entity_token))
                     })?;
                 if same_entity {
@@ -878,6 +906,7 @@ impl ViewerLightLifecycle {
         let instances = self
             .instances
             .iter()
+            .filter(|i| i.event.light.is_some())
             .map(|i| {
                 let events = &mut entities[entity_indices[&i.entity_id]].1;
                 let index = events
@@ -899,6 +928,7 @@ impl ViewerLightLifecycle {
             children: self.children.clone(),
             assets,
             particle_bindings: BTreeMap::new(),
+            authored_particles: Vec::new(),
         };
         for instance in &mut self.instances {
             let Some(name) = instance.event.particle.as_deref().filter(|s| !s.is_empty()) else {
@@ -982,6 +1012,15 @@ impl ViewerLightLifecycle {
                     .map_err(refusal)?
                     .world_matrix_f32_bits;
             }
+            rows.authored_particles.push(crate::production_features::xmap20::Xmap20AuthoredParticleBinding {
+                instance_id: instance.id.clone(),
+                entity_id: instance.entity_id.clone(),
+                authored_event_index: instance.authored_event_index,
+                particle_token: name.to_owned(),
+                paired_light: instance.event.light.clone(),
+                light_phase: particle.binding,
+                particle_phase: particle.runtime.light_binding(particle.handle).map_err(refusal)?,
+            });
             rows.particle_bindings
                 .insert(instance.id.clone(), particle.binding);
         }
@@ -1085,6 +1124,81 @@ light = {
         );
         let (_, placed, viewer) = fixture(1);
         (content, ViewerLightLifecycle::default(), placed, viewer)
+    }
+
+    #[test]
+    fn xmap20_authored_consumer_matches_the_paired_light_phase_and_seek_reset() {
+        let (content, mut lights, placed, mut viewer) =
+            paired_fixture("subsystem={name=s max_amount=4 duration=0 emission=2 life=0.5}");
+        let mut effects = crate::Xmap20AuthoredEntityRuntime::default();
+        let mut first = None;
+        for frame in 1..=4 {
+            viewer.animation_time_f32_bits = (frame as f32 * 0.5).to_bits();
+            let light_rows = lights.derive_light_instance_rows(&content.resolver, &placed, &viewer).unwrap();
+            let effect_rows = effects.prepare(&content.resolver, &placed, &viewer).unwrap();
+            assert_eq!(effect_rows.len(), light_rows.particle_bindings.len());
+            for effect in &effect_rows {
+                assert_eq!(effect.light_phase, light_rows.particle_bindings[&effect.instance_id]);
+                assert_eq!(effect.authored_event_index, 0);
+                assert_eq!(effect.particle_token, "paired");
+                assert_eq!(effect.paired_light.as_deref(), Some("flash"));
+                assert_eq!(effect.particle_phase.presentation_id, Some(viewer.animation_time_f32_bits as u64));
+            }
+            assert_eq!(effect_rows, effects.prepare(&content.resolver, &placed, &viewer).unwrap());
+            if frame == 1 { first = Some(effect_rows); }
+        }
+        viewer.animation_time_f32_bits = 0.5f32.to_bits();
+        assert_eq!(effects.prepare(&content.resolver, &placed, &viewer).unwrap(), first.unwrap());
+    }
+
+    #[test]
+    fn particle_only_events_do_not_change_the_paired_consumers_seed_identity() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=4 duration=-1 emission=2 life=0.5}}",
+            &[("gfx/entity.asset", br#"entity={
+                name=entity default_state=idle state={name=idle
+                    event={time=0 particle=paired}
+                    event={time=0.25 particle=paired light=flash}
+                }
+            }"#)]);
+        let (_, placed, mut viewer) = fixture(1);
+        let mut lights = ViewerLightLifecycle::default();
+        let mut effects = crate::Xmap20AuthoredEntityRuntime::default();
+        for frame in 1..=3 {
+            viewer.animation_time_f32_bits = (frame as f32 * 0.5).to_bits();
+            let rows = effects.prepare(&content.resolver, &placed, &viewer).unwrap();
+            assert_eq!(rows.len(), 2);
+            assert_ne!(rows[0].light_phase.event_instance_id, rows[1].light_phase.event_instance_id);
+            let paired = rows.iter().find(|row| row.paired_light.is_some()).unwrap();
+            let light_rows = lights.derive_light_instance_rows(&content.resolver, &placed, &viewer).unwrap();
+            assert_eq!(light_rows.particle_bindings.len(), 1);
+            assert_eq!(paired.light_phase, light_rows.particle_bindings[&paired.instance_id]);
+        }
+    }
+
+    #[test]
+    fn xmap20_particle_only_event_is_real_runtime_state_without_a_light_or_packet() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}",
+            &[("gfx/entity.asset", br#"entity={
+                name=entity scale=2 default_state=idle
+                state={name=idle event={time=0.25 particle=paired}}
+            }"#)]);
+        let (_, placed, mut viewer) = fixture(1);
+        let mut effects = crate::Xmap20AuthoredEntityRuntime::default();
+        let first = effects.prepare(&content.resolver, &placed, &viewer).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].entity_id, "placed-000");
+        assert_eq!(first[0].authored_event_index, 0);
+        assert_eq!(first[0].particle_token, "paired");
+        assert_eq!(first[0].paired_light, None);
+        assert!(first[0].light_phase.finished);
+        assert!(first[0].particle_phase.finished);
+        assert_eq!(first[0].light_phase.world_matrix_f32_bits[12], 16f32.to_bits());
+        assert_eq!(first[0].light_phase.world_matrix_f32_bits[14], 16f32.to_bits());
+        viewer.animation_time_f32_bits = 1f32.to_bits();
+        assert!(effects.prepare(&content.resolver, &placed, &viewer).unwrap().is_empty());
     }
 
     #[test]
@@ -1431,18 +1545,18 @@ entity = {
             .collect();
         let resolver = GameFileResolver::vanilla(".").unwrap();
         let assets = lifecycle.assets.as_ref().unwrap();
-        let first = EntityAnimation::load(&placed[0], assets, &resolver, false).unwrap();
+        let first = EntityAnimation::load(&placed[0], assets, &resolver, false, false).unwrap();
         assert!(first.playhead >= 0.2f32 as f64 && first.playhead <= 0.5);
         assert_eq!(first.elapsed, 0.0);
         assert_eq!(
-            EntityAnimation::load(&placed[0], assets, &resolver, false)
+            EntityAnimation::load(&placed[0], assets, &resolver, false, false)
                 .unwrap()
                 .playhead,
             first.playhead
         );
         placed[0].id.push_str("different");
         assert_ne!(
-            EntityAnimation::load(&placed[0], assets, &resolver, false)
+            EntityAnimation::load(&placed[0], assets, &resolver, false, false)
                 .unwrap()
                 .playhead,
             first.playhead
@@ -1568,6 +1682,7 @@ entity = {
 
     fn animation(looping: bool, once: bool) -> EntityAnimation {
         EntityAnimation {
+            include_particle_only_events: false,
             next_state: None,
             authored_speed: 1.0,
             scale: 2.0,

@@ -20,8 +20,8 @@ use snapshot::sha256::Sha256;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-pub const XMAP09_INPUT_SCHEMA: &str = "hoi4.xmap09.semantic-lighting-input.a729.v3";
-pub const XMAP09_PREPARED_SCHEMA: &str = "hoi4.xmap09.prepared-lighting-shadow.a729.v2";
+pub const XMAP09_INPUT_SCHEMA: &str = "hoi4.xmap09.semantic-lighting-input.a729.v4";
+pub const XMAP09_PREPARED_SCHEMA: &str = "hoi4.xmap09.prepared-lighting-shadow.a729.v3";
 pub const XMAP09_A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 pub const XMAP09_SCENE_LIGHT_WRITER_RVA: u32 = 0x0126_7270;
@@ -1719,6 +1719,9 @@ mod tests {
                 fired_instances: 1,
                 admitted_instances: 1,
                 uploaded_lights: 1,
+                paired_fired_instances: 0,
+                paired_admitted_instances: 0,
+                paired_uploaded_lights: 0,
                 fired_by_creator: crate::XMAP09_POINT_LIGHT_CREATORS
                     .iter()
                     .map(|creator| (creator.rva, usize::from(creator.rva == 0x0226_ef30)))

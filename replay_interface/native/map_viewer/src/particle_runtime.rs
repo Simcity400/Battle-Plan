@@ -70,7 +70,7 @@ pub struct ParticleHandle {
     event_instance_id: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ParticleLightBinding {
     pub event_instance_id: u64,
     pub presentation_id: Option<u64>,

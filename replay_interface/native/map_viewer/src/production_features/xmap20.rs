@@ -236,6 +236,39 @@ pub const XMAP20_EFFECT_LIFECYCLE_WIRE_KEY: &str =
 /// What the draw path must present before a frame that deferred XMAP20 may seal.
 pub const XMAP20_EFFECT_DRAW_CONTRACT: &str = "XMAP20.effect_frame_receipt";
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Xmap20AuthoredParticleBinding {
+    pub instance_id: String,
+    pub entity_id: String,
+    pub authored_event_index: usize,
+    pub particle_token: String,
+    pub paired_light: Option<String>,
+    pub light_phase: crate::particle_runtime::ParticleLightBinding,
+    pub particle_phase: crate::particle_runtime::ParticleLightBinding,
+}
+
+pub struct Xmap20AuthoredEntityRuntime {
+    lifecycle: crate::xmap09_light_lifecycle::ViewerLightLifecycle,
+}
+
+impl Default for Xmap20AuthoredEntityRuntime {
+    fn default() -> Self {
+        Self { lifecycle: crate::xmap09_light_lifecycle::ViewerLightLifecycle::for_authored_particles() }
+    }
+}
+
+impl Xmap20AuthoredEntityRuntime {
+    pub fn prepare(
+        &mut self,
+        resolver: &GameFileResolver,
+        placed: &[crate::xmap09_light_lifecycle::Xmap09PlacedEntity],
+        viewer: &crate::ViewerOwnedMapState,
+    ) -> std::result::Result<Vec<Xmap20AuthoredParticleBinding>, crate::xmap09_light_census::Xmap09LightCensusRefusal> {
+        Ok(self.lifecycle.derive_light_instance_rows(resolver, placed, viewer)?.authored_particles)
+    }
+}
+
 /// XMAP20 answers at DRAW time, and only for a recording that carries the
 /// effect-lifecycle carrier.
 ///

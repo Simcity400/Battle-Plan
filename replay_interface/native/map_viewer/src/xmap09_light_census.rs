@@ -66,6 +66,9 @@ pub struct Xmap09LightCensusCounts {
     pub fired_instances: usize,
     pub admitted_instances: usize,
     pub uploaded_lights: usize,
+    pub paired_fired_instances: usize,
+    pub paired_admitted_instances: usize,
+    pub paired_uploaded_lights: usize,
     pub fired_by_creator: BTreeMap<u32, usize>,
 }
 
@@ -90,6 +93,11 @@ impl Xmap09LightCensusCounts {
                 == Some(self.fired_instances)
             && self.admitted_instances <= self.fired_instances
             && self.uploaded_lights <= self.admitted_instances
+            && self.paired_fired_instances <= self.fired_instances
+            && self.paired_admitted_instances <= self.paired_fired_instances
+            && self.paired_admitted_instances <= self.admitted_instances
+            && self.paired_uploaded_lights <= self.paired_admitted_instances
+            && self.paired_uploaded_lights <= self.uploaded_lights
             && self.uploaded_lights <= XMAP09_LIGHTS_PER_FRAME
             && (self.fired_instances == 0
                 || (self.placed_entities > 0 && self.authored_light_events > 0))
@@ -189,6 +197,9 @@ pub fn admit_light_census(
         fired_instances: rows.fired_instances.len(),
         admitted_instances: 0,
         uploaded_lights: 0,
+        paired_fired_instances: 0,
+        paired_admitted_instances: 0,
+        paired_uploaded_lights: 0,
         fired_by_creator: XMAP09_POINT_LIGHT_CREATORS
             .iter()
             .map(|c| (c.rva, 0))
@@ -232,6 +243,7 @@ pub fn admit_light_census(
             .and_then(|light| templates.get(light))
             .ok_or_else(|| invalid(instance.id))?;
         *counts.fired_by_creator.get_mut(&creator.rva).unwrap() += 1;
+        counts.paired_fired_instances += usize::from(paired.is_some());
         if entity.scene_mask & 6 == 0 || instance.enabled == Some(false) {
             continue;
         }
@@ -247,6 +259,7 @@ pub fn admit_light_census(
             .enabled
             .ok_or_else(|| missing("lighting.instance_enabled"))?;
         counts.admitted_instances += 1;
+        counts.paired_admitted_instances += usize::from(paired.is_some());
         if lights.len() == XMAP09_LIGHTS_PER_FRAME {
             continue;
         }
@@ -306,6 +319,7 @@ pub fn admit_light_census(
             values.radius,
             lights.len() as u8,
         )? {
+            counts.paired_uploaded_lights += usize::from(paired.is_some());
             let bits = |v: [f32; 4]| v.map(f32::to_bits);
             lights.push(Xmap09PointLight {
                 stable_light_id: instance.id.into(),
@@ -458,6 +472,51 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn paired_counters_follow_disabled_filter_and_global_upload_cap() {
+        let positions = (0..66)
+            .map(|i| {
+                [
+                    4.0 + (i % 16) as f32 * 24.0,
+                    2.0,
+                    4.0 + (i / 16) as f32 * 24.0,
+                ]
+            })
+            .collect::<Vec<_>>();
+        with_rows(&positions, |rows| {
+            let mut events = rows.entities[0].events.to_vec();
+            events[0].particle = Some("paired".into());
+            let mut entities = rows.entities.to_vec();
+            let mut instances = rows.fired_instances.to_vec();
+            for (index, (entity, instance)) in entities.iter_mut().zip(&mut instances).enumerate() {
+                entity.events = &events;
+                let matrix = entity.placement.unwrap();
+                instance.paired_particle = Some(ParticleLightBinding {
+                    event_instance_id: index as u64,
+                    presentation_id: None,
+                    finished: false,
+                    world_matrix_f32_bits: std::array::from_fn(|i| {
+                        matrix[(i % 4) * 4 + i / 4].to_bits()
+                    }),
+                });
+            }
+            instances[0].enabled = Some(false);
+            let census = admit_light_census(
+                Ok(Xmap09LightCensusRows {
+                    entities: &entities,
+                    fired_instances: &instances,
+                    ..rows
+                }),
+                GRID,
+            )
+            .unwrap();
+            assert_eq!(census.counts.paired_fired_instances, 66);
+            assert_eq!(census.counts.paired_admitted_instances, 65);
+            assert_eq!(census.counts.paired_uploaded_lights, 64);
+            assert!(census.counts.is_consistent());
+        });
+    }
+
+    #[test]
     fn paired_light_uses_runtime_world_bits_without_reapplying_entity_placement() {
         with_rows(&[[400., 0., 400.]], |rows| {
             let mut events = rows.entities[0].events.to_vec();
@@ -486,6 +545,10 @@ pub(crate) mod tests {
             )
             .unwrap();
             assert_eq!(census.lights.len(), 1);
+            assert_eq!(census.counts.paired_fired_instances, 1);
+            assert_eq!(census.counts.paired_admitted_instances, 1);
+            assert_eq!(census.counts.paired_uploaded_lights, 1);
+            assert!(census.counts.is_consistent());
             assert_eq!(
                 census.lights[0]
                     .position_radius_f32_bits
