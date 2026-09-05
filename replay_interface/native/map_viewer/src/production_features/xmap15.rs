@@ -270,6 +270,23 @@ pub(crate) fn xmap15_used_content_sha256(content: &[UsedContentKey]) -> Result<S
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedXmap15ParadropProfile {
+    pub parameters: portable_render_stream::Xmap15ParadropProfile,
+    pub ordered_used_content: Vec<UsedContentKey>,
+}
+
+fn paradrop_profile_from_effective(
+    evaluated: &crate::xmap09_lighting_law::EffectiveDefines,
+) -> Result<portable_render_stream::Xmap15ParadropProfile> {
+    let profile = portable_render_stream::Xmap15ParadropProfile {
+        height_to_length_f32_bits: evaluated.scalar("NGraphics", "ARROW_PARADROP_HEIGHT_TO_LEN")?.to_bits(),
+        max_height_f32_bits: evaluated.scalar("NGraphics", "ARROW_PARADROP_HEIGHT_MAX")?.to_bits(),
+    };
+    profile.validate()?;
+    Ok(profile)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreparedXmap15Frame {
     pub portable: Xmap15PreparedFrame,
     pub assigned_stage: AssignedStage,
@@ -277,6 +294,7 @@ pub struct PreparedXmap15Frame {
     pub plan_definitions: Vec<PreparedXmap15PlanDefinition>,
     pub movement_definitions: Vec<PreparedXmap15MovementDefinition>,
     pub heightmap: Option<UsedContentKey>,
+    pub paradrop_profile: Option<PreparedXmap15ParadropProfile>,
     pub map_dimensions_content: Option<UsedContentKey>,
     pub map_width: u32,
     pub map_height: u32,
@@ -344,6 +362,22 @@ impl PreparedXmap15Frame {
         {
             return Err("XMAP15 effective definitions are invalid or duplicated".into());
         }
+        let needs_paradrop = self.portable.ordered_rows.iter().any(|row| matches!(row,
+            Xmap15PreparedRow::Plan { semantic, .. }
+                if semantic.selector.order_type == 4 && semantic.route.explicit_height_f32_bits.is_none()));
+        if self.paradrop_profile.is_some() != needs_paradrop {
+            return Err("XMAP15 paradrop profile closure does not match native callback presence".into());
+        }
+        if let Some(profile) = &self.paradrop_profile {
+            profile.parameters.validate()?;
+            if profile.ordered_used_content.is_empty()
+                || profile.ordered_used_content.iter().any(|key| {
+                    let path = key.normalized_game_relative_path.to_ascii_lowercase();
+                    !path.starts_with("common/defines/") || !path.ends_with(".lua")
+                }) {
+                return Err("XMAP15 paradrop profile lacks its authenticated defines closure".into());
+            }
+        }
         let exact_content = self
             .plan_definitions
             .iter()
@@ -353,6 +387,7 @@ impl PreparedXmap15Frame {
                     .iter()
                     .flat_map(|definition| definition.ordered_used_content.iter().cloned()),
             )
+            .chain(self.paradrop_profile.iter().flat_map(|profile| profile.ordered_used_content.iter().cloned()))
             .chain(self.heightmap.iter().cloned())
             .chain(self.map_dimensions_content.iter().cloned())
             .collect::<BTreeSet<_>>();
@@ -416,12 +451,15 @@ impl PreparedXmap15Frame {
                 }
                 let headed = definition.head_length_f32_bits
                     .is_some_and(|bits| f32::from_bits(bits) > 0.0);
+                let native_paradrop = semantic.selector.order_type == 4
+                    && semantic.route.explicit_height_f32_bits.is_none()
+                    && self.paradrop_profile.is_some();
                 if semantic.route.explicit_height_f32_bits.is_none()
-                    && !semantic.uses_native_terrain_height() {
+                    && !semantic.uses_native_terrain_height() && !native_paradrop {
                     return Err(format!("XMAP15 native height callback inputs are unavailable for {name}").into());
                 }
                 if headed && semantic.exact_head_vertices_f32_bits.is_none()
-                    && !semantic.uses_native_terrain_height() {
+                    && !semantic.uses_native_terrain_height() && !native_paradrop {
                     return Err(format!("XMAP15 native height callback lacks exact head inputs for {name}").into());
                 }
                 if !headed && semantic.exact_head_vertices_f32_bits.is_some() {
@@ -1247,6 +1285,16 @@ pub fn prepare_xmap15_frame(
         .collect::<BTreeSet<_>>();
     let (plan_definitions, mut used_content) =
         prepare_plan_definitions(resolver, admission, &mut plan_names)?;
+    let paradrop_profile = if semantic.plans.iter().any(|row|
+        row.selector.order_type == 4 && row.route.explicit_height_f32_bits.is_none()) {
+        let (sources, ordered_used_content) = crate::xmap09_lighting_law::admitted_effective_define_sources(
+            resolver, "XMAP15 paradrop height defines",
+        )?;
+        let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
+        let parameters = paradrop_profile_from_effective(&evaluated)?;
+        used_content.extend(ordered_used_content.iter().cloned());
+        Some(PreparedXmap15ParadropProfile { parameters, ordered_used_content })
+    } else { None };
     let heightmap = if semantic.plans.is_empty() {
         None
     } else {
@@ -1354,6 +1402,7 @@ pub fn prepare_xmap15_frame(
         plan_definitions,
         movement_definitions,
         heightmap,
+        paradrop_profile,
         map_dimensions_content,
         map_width,
         map_height,
@@ -2244,6 +2293,7 @@ mod tests {
             plan_definitions: Vec::new(),
             movement_definitions: Vec::new(),
             heightmap: None,
+            paradrop_profile: None,
             map_dimensions_content: None,
             map_width: 0,
             map_height: 0,
@@ -2256,6 +2306,27 @@ mod tests {
         assert!(update.authenticated_empty);
         assert_eq!(update.deleted, vec!["plan:old"]);
         assert!(state.retained_rows.is_empty());
+    }
+
+    #[test]
+    fn paradrop_profile_uses_effective_lua_overrides_and_refuses_missing_operands() {
+        let sources = [
+            ("common/defines/00_graphics.lua".into(),
+                "NDefines = { NGraphics = { ARROW_PARADROP_HEIGHT_TO_LEN = 0.5, ARROW_PARADROP_HEIGHT_MAX = 20 } }".into()),
+            ("common/defines/01_mod.lua".into(),
+                "NDefines.NGraphics.ARROW_PARADROP_HEIGHT_TO_LEN = NDefines.NGraphics.ARROW_PARADROP_HEIGHT_TO_LEN * 3; NDefines.NGraphics.ARROW_PARADROP_HEIGHT_MAX = -0.0".into()),
+        ];
+        let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources).unwrap();
+        let profile = paradrop_profile_from_effective(&evaluated).unwrap();
+        assert_eq!(profile.height_to_length_f32_bits, 1.5f32.to_bits());
+        assert_eq!(profile.max_height_f32_bits, (-0.0f32).to_bits());
+        for mutation in ["nil", "'wrong'", "0/0", "1/0"] {
+            let mut broken = sources.to_vec();
+            broken.push(("common/defines/02_bad.lua".into(),
+                format!("NDefines.NGraphics.ARROW_PARADROP_HEIGHT_MAX = {mutation}")));
+            let evaluated = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&broken).unwrap();
+            assert!(paradrop_profile_from_effective(&evaluated).is_err(), "{mutation}");
+        }
     }
 
     fn sampler_from_contract(contract: Xmap15SamplerContract) -> crate::EffectSampler {

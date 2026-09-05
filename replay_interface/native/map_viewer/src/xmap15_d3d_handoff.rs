@@ -1142,11 +1142,14 @@ mod native {
                     let map = heightmap
                         .as_ref()
                         .ok_or("XMAP15 plan frame omitted admitted heightmap")?;
-                    let mesh = semantic.build_map_arrow_mesh(profile, frame.map_width, |x, z| {
-                        Ok(crate::rail_files::sample_exact_supply_arrow_height(
-                            map, x, z,
-                        ))
-                    })?;
+                    let terrain = |x, z| Ok(crate::rail_files::sample_exact_supply_arrow_height(map, x, z));
+                    let mesh = if semantic.selector.order_type == 4 && semantic.route.explicit_height_f32_bits.is_none() {
+                        let paradrop = frame.paradrop_profile.as_ref()
+                            .ok_or("XMAP15 paradrop frame omitted admitted height defines")?;
+                        semantic.build_paradrop_map_arrow_mesh(profile, frame.map_width, paradrop.parameters, terrain)?
+                    } else {
+                        semantic.build_map_arrow_mesh(profile, frame.map_width, terrain)?
+                    };
                     let bytes = plan_mesh_bytes(&mesh);
                     out.push(NativeRow {
                         geometry_sha256: Sha256::hex(&bytes),

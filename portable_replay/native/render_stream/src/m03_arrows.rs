@@ -865,6 +865,29 @@ impl Xmap15PlanSemanticRow {
         &self,
         profile: Xmap15PlanGeometryProfile,
         map_width_world: u32,
+        terrain_height: impl FnMut(f32, f32) -> Result<f32, String>,
+    ) -> Result<Xmap15PlanMapArrowMesh, String> {
+        self.build_native_map_arrow_mesh(profile, map_width_world, None, terrain_height)
+    }
+
+    pub fn build_paradrop_map_arrow_mesh(
+        &self,
+        profile: Xmap15PlanGeometryProfile,
+        map_width_world: u32,
+        paradrop: crate::Xmap15ParadropProfile,
+        terrain_height: impl FnMut(f32, f32) -> Result<f32, String>,
+    ) -> Result<Xmap15PlanMapArrowMesh, String> {
+        if self.selector.order_type != 4 || self.route.explicit_height_f32_bits.is_some() {
+            return Err("XMAP15 paradrop callback conflicts with the row's height source".into());
+        }
+        self.build_native_map_arrow_mesh(profile, map_width_world, Some(paradrop), terrain_height)
+    }
+
+    fn build_native_map_arrow_mesh(
+        &self,
+        profile: Xmap15PlanGeometryProfile,
+        map_width_world: u32,
+        paradrop: Option<crate::Xmap15ParadropProfile>,
         mut terrain_height: impl FnMut(f32, f32) -> Result<f32, String>,
     ) -> Result<Xmap15PlanMapArrowMesh, String> {
         self.route.validate()?;
@@ -872,7 +895,10 @@ impl Xmap15PlanSemanticRow {
         if map_width_world == 0 || map_width_world > i32::MAX as u32 {
             return Err("XMAP15 authenticated map width is outside the native signed range".into());
         }
-        if self.route.explicit_height_f32_bits.is_none() && !self.uses_native_terrain_height() {
+        let curve = paradrop.map(|parameters| crate::xmap15_paradrop::ParadropCurve::new(
+            &self.route.builder_input_points_fixed5, map_width_world, parameters,
+        )).transpose()?;
+        if self.route.explicit_height_f32_bits.is_none() && !self.uses_native_terrain_height() && curve.is_none() {
             return Err("XMAP15 native height callback inputs are unavailable".into());
         }
         let smoothed = smooth_xmap15_points(&self.route.builder_input_points_fixed5)?;
@@ -909,6 +935,7 @@ impl Xmap15PlanSemanticRow {
         let end = f32::from_bits(profile.body_end_width_f32_bits);
         let head_length = f32::from_bits(profile.head_length_f32_bits) * global_scale;
         let headed = f32::from_bits(profile.head_length_f32_bits) > 0.0;
+        let callback_denominator = smoothed.len() + if headed { 2 } else { 0 };
         let uv_scale = f32::from_bits(profile.body_uv_scale_f32_bits);
         let mut vertices = Vec::with_capacity(smoothed.len() * 2 + 4);
         let mut head_geometry = None;
@@ -960,11 +987,11 @@ impl Xmap15PlanSemanticRow {
             head_geometry = Some((center, lateral, if trimmed {
                 normalize_xmap15_direction([next[0] - center[0], next[1] - center[1]])
             } else { outgoing }, unclassed_width));
-            let explicit_height = self
-                .route
-                .explicit_height_f32_bits
-                .as_ref()
-                .map(|heights| f32::from_bits(heights[index]));
+            let explicit_height = match &curve {
+                Some(curve) => Some(curve.height(index, callback_denominator, &mut terrain_height)?),
+                None => self.route.explicit_height_f32_bits.as_ref()
+                    .map(|heights| f32::from_bits(heights[index])),
+            };
             for (v, sign) in [(0.0f32, 1.0f32), (1.0f32, -1.0f32)] {
                 let x = center[0] + lateral[0] * width * sign;
                 let z = center[1] + lateral[1] * width * sign;
@@ -999,10 +1026,11 @@ impl Xmap15PlanSemanticRow {
             u32::try_from(vertices.len()).map_err(|_| "XMAP15 body vertices exceed u32")?;
         vertices.reverse();
         let head_first_vertex = if headed {
-            let head = if self.uses_native_terrain_height() {
+            let head = if self.uses_native_terrain_height() || curve.is_some() {
                 let (center, lateral, direction, width) = head_geometry
                     .ok_or("XMAP15 terrain head has no body endpoint")?;
                 let mut head = Vec::with_capacity(4);
+                let mut callback_height = None;
                 for (tip, sign, uv) in [
                     (false, 1.0, [0.0, 0.0, 1.0, 0.0]),
                     (false, -1.0, [0.0, 1.0, 1.0, 0.0]),
@@ -1019,7 +1047,16 @@ impl Xmap15PlanSemanticRow {
                         position = [direction[0] * head_length + position[0],
                             direction[1] * head_length + position[1]];
                     }
-                    let y = xmap15_terrain_height(position, map_width_world, &mut terrain_height)?;
+                    if let Some(curve) = &curve {
+                        if sign > 0.0 {
+                            let index = callback_denominator - if tip { 0 } else { 1 };
+                            callback_height = Some(curve.height(index, callback_denominator, &mut terrain_height)?);
+                        }
+                    }
+                    let y = match callback_height {
+                        Some(value) => value,
+                        None => xmap15_terrain_height(position, map_width_world, &mut terrain_height)?,
+                    };
                     head.push(Xmap15MapArrowVertex {
                         position: [position[0], y, position[1]], padding: 0.0,
                         uv_is_head_variant: uv,
@@ -1432,6 +1469,47 @@ mod tests {
             head_length_f32_bits: 0.0f32.to_bits(),
         };
         (row, profile)
+    }
+
+    #[test]
+    fn paradrop_callback_builds_body_and_head_with_native_index_schedule() {
+        let (mut row, mut profile) = terrain_arrow_fixture();
+        row.selector.order_type = 4;
+        row.resolved_definition_name = "paradrop".into();
+        row.route.builder_input_points_fixed5 = vec![[0, 0], [1_000_000, 0], [2_000_000, 0], [3_000_000, 0]];
+        row.route.point_width_classes = vec![0; 4];
+        let parameters = crate::Xmap15ParadropProfile {
+            height_to_length_f32_bits: 1.0f32.to_bits(), max_height_f32_bits: 6.0f32.to_bits(),
+        };
+        let mut queries = Vec::new();
+        let mesh = row.build_paradrop_map_arrow_mesh(profile, 100, parameters, |x, z| {
+            queries.push([x, z]); Ok(x)
+        }).unwrap();
+        assert_eq!(mesh.body_vertex_count, 8);
+        assert_eq!(mesh.head_first_vertex, None);
+        assert_eq!(queries, [[0.0, 0.0], [30.0, 0.0]].repeat(4));
+        assert_eq!(mesh.vertices[2].position[1], 21.0);
+        assert_eq!(mesh.vertices[3].position[1], 21.0);
+        assert_eq!(mesh.vertices[6].position[1], 0.0);
+        assert!(row.build_map_arrow_mesh(profile, 100, |_, _| Ok(0.0)).is_err());
+
+        profile.head_length_f32_bits = 18.0f32.to_bits();
+        queries.clear();
+        let mesh = row.build_paradrop_map_arrow_mesh(profile, 100, parameters, |x, z| {
+            queries.push([x, z]); Ok(x)
+        }).unwrap();
+        // Three visited body indices, then N+1/N+2 head callbacks; the cut pair is repeated.
+        assert_eq!(queries, [[0.0, 0.0], [30.0, 0.0]].repeat(5));
+        assert_eq!(mesh.vertices.len(), 12);
+        assert_eq!(mesh.head_first_vertex, Some(0));
+        assert_eq!(mesh.vertices[0].position[0], 30.0);
+        assert_eq!(mesh.vertices[0].position[1], 30.0);
+        assert_eq!(mesh.vertices[0].position[1], mesh.vertices[1].position[1]);
+        assert_eq!(mesh.vertices[2].position[1], mesh.vertices[4].position[1]);
+        assert_eq!(mesh.vertices[4..6], mesh.vertices[6..8]);
+        assert_eq!(mesh.vertices[0].uv_is_head_variant, [1.0, 1.0, 1.0, 0.0]);
+        row.route.explicit_height_f32_bits = Some(vec![0; 4]);
+        assert!(row.build_paradrop_map_arrow_mesh(profile, 100, parameters, |_, _| Ok(0.0)).is_err());
     }
 
     #[test]

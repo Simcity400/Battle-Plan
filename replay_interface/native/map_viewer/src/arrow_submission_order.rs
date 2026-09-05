@@ -529,6 +529,7 @@ mod tests {
             assigned_stage: AssignedStage::seal("f".repeat(64), XMAP15_ASSIGNED_STAGE_NAME,
                 XMAP15_ASSIGNED_OPERATION_NAME, 4).unwrap(),
             foundation_target_sha256: "e".repeat(64), plan_definitions, movement_definitions: Vec::new(),
+            paradrop_profile: None,
             heightmap, map_dimensions_content, map_width: if populated { 2 } else { 0 },
             map_height: if populated { 2 } else { 0 },
         };
@@ -570,6 +571,53 @@ mod tests {
         semantic.route.explicit_height_f32_bits = Some(vec![0; semantic.route.builder_input_points_fixed5.len()]);
         frame.portable = frame.portable.seal().unwrap();
         assert!(frame.validate().unwrap_err().to_string().contains("callback lacks exact head inputs"));
+    }
+
+    #[test]
+    fn prepared_paradrop_profile_admits_mesh_and_lifecycle_submission() {
+        let mut frame = prepared_orders(1, true, None);
+        let definition = &mut frame.plan_definitions[0];
+        definition.name = "paradrop".into();
+        definition.head_length_f32_bits = Some(0.25f32.to_bits());
+        definition.deterministic_sha256.clear();
+        definition.deterministic_sha256 = snapshot::sha256::Sha256::hex(
+            &serde_json::to_vec(&serde_json::to_value(&definition).unwrap()).unwrap());
+        let digest = definition.deterministic_sha256.clone();
+        for row in &mut frame.portable.ordered_rows {
+            let Xmap15PreparedRow::Plan { semantic, definition_sha256 } = row else { unreachable!() };
+            semantic.selector.order_type = 4;
+            semantic.resolved_definition_name = "paradrop".into();
+            *definition_sha256 = digest.clone();
+        }
+        frame.portable = frame.portable.seal().unwrap();
+        assert!(frame.validate().unwrap_err().to_string().contains("paradrop profile closure"));
+        let mut content = frame.heightmap.as_ref().unwrap().clone();
+        content.normalized_game_relative_path = "common/defines/00_graphics.lua".into();
+        content.stored_game_relative_path = content.normalized_game_relative_path.clone();
+        let parameters = portable_render_stream::Xmap15ParadropProfile {
+            height_to_length_f32_bits: 0.5f32.to_bits(), max_height_f32_bits: 10.0f32.to_bits(),
+        };
+        frame.paradrop_profile = Some(crate::production_features::xmap15::PreparedXmap15ParadropProfile {
+            parameters, ordered_used_content: vec![content.clone()],
+        });
+        frame.portable.ordered_used_content.push(content);
+        frame.portable.ordered_used_content.sort();
+        frame.portable = frame.portable.seal().unwrap();
+        frame.validate().unwrap();
+        let profile = frame.plan_definitions[0].geometry_profile().unwrap();
+        let Xmap15PreparedRow::Plan { semantic, .. } = &frame.portable.ordered_rows[0] else { unreachable!() };
+        let mesh = semantic.build_paradrop_map_arrow_mesh(profile, frame.map_width, parameters, |_, _| Ok(0.0)).unwrap();
+        assert_eq!(mesh.vertices.len(), 8);
+        assert_eq!(mesh.head_first_vertex, Some(0));
+        assert!(mesh.vertices.iter().any(|vertex| vertex.position[1] > 0.0));
+        let mut lifecycle = crate::Xmap15LifecycleState::default();
+        let witness = lifecycle.apply(&frame).unwrap();
+        let order = ArrowSubmissionOrder::from_frames(ArrowFrameInput::Present(&frame),
+            ArrowFrameInput::ViewInactive, &mut ArrowViewerSortState::default(), Some(&witness), &"a".repeat(64));
+        assert_eq!(order.submissions.len(), 2);
+        assert!(order.refusals.is_empty());
+        frame.paradrop_profile.as_mut().unwrap().ordered_used_content.clear();
+        assert!(frame.validate().unwrap_err().to_string().contains("authenticated defines closure"));
     }
 
     #[test]

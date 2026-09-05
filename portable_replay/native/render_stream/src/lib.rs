@@ -214,6 +214,9 @@ pub use s1_shadow::{
     S1_TARGET_BIND_FLAGS, S1_TARGET_MIP_LEVELS,
 };
 
+mod xmap15_paradrop;
+pub use xmap15_paradrop::Xmap15ParadropProfile;
+
 mod m03_arrows;
 pub use m03_arrows::{
     xmap15_semantic_producer_registration_sha256, M03ArrowDraw, M03ArrowDrawMember,
