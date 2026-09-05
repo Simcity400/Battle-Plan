@@ -896,17 +896,29 @@ impl Xmap15PlanSemanticRow {
             + f32::from_bits(self.object_width_multiplier_f32_bits)
                 * f32::from_bits(profile.runtime_width_scale_f32_bits);
         let end = f32::from_bits(profile.body_end_width_f32_bits);
+        let head_length = f32::from_bits(profile.head_length_f32_bits) * global_scale;
+        let headed = f32::from_bits(profile.head_length_f32_bits) > 0.0;
+        let uv_scale = f32::from_bits(profile.body_uv_scale_f32_bits);
         let mut vertices = Vec::with_capacity(smoothed.len() * 2 + 4);
-        for (index, center) in smoothed.iter().copied().enumerate() {
+        for (index, mut center) in smoothed.iter().copied().enumerate() {
             let next_index = index.saturating_add(1).min(smoothed.len() - 1);
-            let previous_index = index.saturating_sub(1);
+            let mut next = smoothed[next_index];
+            let mut previous = smoothed[index.saturating_sub(1)];
+            let trimmed = headed && index > 0 && total_length - head_length <= accumulated[index];
+            if trimmed {
+                let delta = [center[0] - previous[0], center[1] - previous[1]];
+                let segment_length = (delta[1] * delta[1] + delta[0] * delta[0]).sqrt();
+                let remaining = (total_length - head_length) - (accumulated[index] - segment_length);
+                let direction = normalize_xmap15_direction(delta);
+                center = [direction[0] * remaining + previous[0], direction[1] * remaining + previous[1]];
+                previous = center;
+                next = smoothed[smoothed.len() - 1];
+            }
             let mut outgoing = normalize_xmap15_direction([
-                smoothed[next_index][0] - center[0],
-                smoothed[next_index][1] - center[1],
+                next[0] - center[0], next[1] - center[1],
             ]);
             let mut incoming = normalize_xmap15_direction([
-                center[0] - smoothed[previous_index][0],
-                center[1] - smoothed[previous_index][1],
+                center[0] - previous[0], center[1] - previous[1],
             ]);
             if outgoing == [0.0, 0.0] {
                 outgoing = incoming;
@@ -922,6 +934,7 @@ impl Xmap15PlanSemanticRow {
                 return Err("XMAP15 map-arrow tangent has no exact lateral".into());
             }
             let t = accumulated[index] / total_length;
+            let u = if uv_scale != 0.0 { accumulated[index] / uv_scale } else { t };
             let class_scale = match self.route.point_width_classes[index] {
                 0 => f32::from_bits(profile.width_class_zero_f32_bits),
                 1 => f32::from_bits(profile.width_class_one_f32_bits),
@@ -950,22 +963,30 @@ impl Xmap15PlanSemanticRow {
                     position: [x, y, z],
                     padding: 0.0,
                     uv_is_head_variant: [
-                        t,
+                        u,
                         v,
                         0.0,
                         self.route.point_width_classes[index] as i8 as f32,
                     ],
                 });
             }
+            if trimmed {
+                // The engine repeats the cut pair without visiting later points or height callbacks.
+                let pair = [vertices[vertices.len() - 2], vertices[vertices.len() - 1]];
+                for _ in index + 1..smoothed.len() {
+                    vertices.extend(pair);
+                }
+                break;
+            }
         }
         let body_vertex_count =
             u32::try_from(vertices.len()).map_err(|_| "XMAP15 body vertices exceed u32")?;
-        let head_first_vertex = if f32::from_bits(profile.head_length_f32_bits) > 0.0 {
+        vertices.reverse();
+        let head_first_vertex = if headed {
             let exact = self
                 .exact_head_vertices_f32_bits
                 .as_ref()
                 .ok_or("XMAP15 headed definition lacks exact engine-authored final vertex order")?;
-            let first = body_vertex_count;
             vertices.extend(exact.iter().map(|vertex| {
                 Xmap15MapArrowVertex {
                     position: vertex[..3]
@@ -983,7 +1004,8 @@ impl Xmap15PlanSemanticRow {
                         .expect("four UV fields"),
                 }
             }));
-            Some(first)
+            vertices.rotate_right(4);
+            Some(0)
         } else {
             if self.exact_head_vertices_f32_bits.is_some() {
                 return Err("XMAP15 no-head definition carries unexpected head vertices".into());
@@ -1335,11 +1357,11 @@ mod tests {
         let mesh = row.build_map_arrow_mesh(profile, |_x, _z| Ok(0.0)).unwrap();
         assert_eq!(mesh.body_vertex_count, 4);
         assert_eq!(mesh.head_first_vertex, None);
-        assert_eq!(mesh.vertices[0].position, [0.0, 0.01, 1.0]);
-        assert_eq!(mesh.vertices[1].position, [0.0, 0.01, -1.0]);
-        assert_eq!(mesh.vertices[2].position, [1.0, 0.01, 1.0]);
-        assert_eq!(mesh.vertices[3].position, [1.0, 0.01, -1.0]);
-        assert_eq!(mesh.vertices[3].uv_is_head_variant, [1.0, 1.0, 0.0, 0.0]);
+        assert_eq!(mesh.vertices[0].position, [1.0, 0.01, -1.0]);
+        assert_eq!(mesh.vertices[1].position, [1.0, 0.01, 1.0]);
+        assert_eq!(mesh.vertices[2].position, [0.0, 0.01, -1.0]);
+        assert_eq!(mesh.vertices[3].position, [0.0, 0.01, 1.0]);
+        assert_eq!(mesh.vertices[0].uv_is_head_variant, [1.0, 1.0, 0.0, 0.0]);
 
         let mut mixed = row;
         mixed.route.builder_input_points_fixed5 =
@@ -1360,17 +1382,56 @@ mod tests {
         for (pair, (signed_class, width)) in mixed_mesh
             .vertices
             .chunks_exact(2)
-            .zip([(0.0, 2.0), (1.0, 3.0), (-128.0, 1.0), (-1.0, 1.0)])
+            .zip([(-1.0, 1.0), (-128.0, 1.0), (1.0, 3.0), (0.0, 2.0)])
         {
             assert_eq!(pair[0].uv_is_head_variant[3], signed_class);
             assert_eq!(pair[1].uv_is_head_variant[3], signed_class);
-            assert_eq!(pair[0].position[2], width);
-            assert_eq!(pair[1].position[2], -width);
+            assert_eq!(pair[0].position[2], -width);
+            assert_eq!(pair[1].position[2], width);
         }
         mixed.texture_variant = 13;
         let other_texture = mixed
             .build_map_arrow_mesh(mixed_profile, |_x, _z| Ok(0.0))
             .unwrap();
         assert_eq!(other_texture.vertices, mixed_mesh.vertices);
+
+        let normalized = mixed.build_map_arrow_mesh(Xmap15PlanGeometryProfile {
+            body_uv_scale_f32_bits: 0.0f32.to_bits(), ..mixed_profile
+        }, |_x, _z| Ok(0.0)).unwrap();
+        let negative_zero = mixed.build_map_arrow_mesh(Xmap15PlanGeometryProfile {
+            body_uv_scale_f32_bits: (-0.0f32).to_bits(), ..mixed_profile
+        }, |_x, _z| Ok(0.0)).unwrap();
+        assert_eq!(normalized.vertices, negative_zero.vertices);
+        assert_eq!(normalized.vertices[0].uv_is_head_variant[0], 1.0);
+        assert_eq!(mixed_mesh.vertices[0].uv_is_head_variant[0], 3.0);
+
+        mixed.route.builder_input_points_fixed5 = vec![[0, 0], [1_000_000, 0], [2_000_000, 0], [3_000_000, 0]];
+        mixed.route.explicit_height_f32_bits = Some([2.0f32, 3.0, 4.0, 99.0].map(f32::to_bits).to_vec());
+        let exact_head = [
+            [30.0f32, 8.0, -3.0, 0.0, 1.0, 1.0, 1.0, 0.0],
+            [30.0, 8.0, 3.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+            [12.0, 4.0, -3.0, 0.0, 0.0, 1.0, 1.0, 0.0],
+            [12.0, 4.0, 3.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        ].map(|vertex| vertex.map(f32::to_bits));
+        mixed.exact_head_vertices_f32_bits = Some(exact_head);
+        let headed = mixed.build_map_arrow_mesh(Xmap15PlanGeometryProfile {
+            body_end_width_f32_bits: 4.0f32.to_bits(),
+            body_uv_scale_f32_bits: 5.0f32.to_bits(),
+            head_length_f32_bits: 18.0f32.to_bits(),
+            ..profile
+        }, |_x, _z| panic!("explicit heights must not read terrain")).unwrap();
+        assert_eq!(headed.head_first_vertex, Some(0));
+        assert_eq!(headed.body_vertex_count, 8);
+        assert_eq!(headed.vertices.len(), 12);
+        for (vertex, exact) in headed.vertices[..4].iter().zip(exact_head) {
+            assert_eq!(vertex.position.map(f32::to_bits), exact[..3]);
+            assert_eq!(vertex.uv_is_head_variant.map(f32::to_bits), exact[4..]);
+        }
+        assert_eq!(headed.vertices[4..6], headed.vertices[6..8]);
+        assert_eq!(headed.vertices[4].position, [12.0, 4.0, -3.0]);
+        assert_eq!(headed.vertices[5].position, [12.0, 4.0, 3.0]);
+        assert_eq!(headed.vertices[4].uv_is_head_variant, [4.0, 1.0, 0.0, -128.0]);
+        assert_eq!(headed.vertices[8].position, [10.0, 3.0, -2.0]);
+        assert_eq!(headed.vertices[10].position, [0.0, 2.0, -1.0]);
     }
 }
