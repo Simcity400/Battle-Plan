@@ -111,10 +111,12 @@ fn stream() -> Vec<u8> {
     country.extend_from_slice(&1u32.to_le_bytes());
     country.extend_from_slice(&1u32.to_le_bytes());
     country.extend_from_slice(&0u32.to_le_bytes());
+    country.extend_from_slice(b"CIDN\x01\x00\x08\x00");
     country.extend_from_slice(&47u32.to_le_bytes());
     country.extend_from_slice(&3u16.to_le_bytes());
     country.extend_from_slice(b"GER");
     country.push(1);
+    country.extend_from_slice(&[0, 1]);
 
     let mut bytes = Vec::new();
     push_record(&mut bytes, 1, 18, 3, &country);

@@ -1894,6 +1894,7 @@ fn decode_complete_d18_country_rows(payload: &[u8]) -> Result<D18CountryCarrier,
         return Err("successful D18 payload is not a complete nonempty roster".into());
     }
     let mut cursor = 20usize;
+    compact_contract::country_name_inputs::decode_domain_version(18, payload, &mut cursor)?;
     let mut rows = BTreeMap::<u32, String>::new();
     let mut source_by_symbol = BTreeMap::<String, u32>::new();
     for index in 0..row_count {
@@ -1908,17 +1909,10 @@ fn decode_complete_d18_country_rows(payload: &[u8]) -> Result<D18CountryCarrier,
         {
             return Err(format!("row {index} has invalid country identity"));
         }
-        let marker = *payload
-            .get(cursor)
-            .ok_or_else(|| "cosmetic marker is truncated".to_string())?;
-        cursor += 1;
-        match marker {
-            0 | 1 => {}
-            2 => {
-                let _ = d18_string(payload, &mut cursor, "cosmetic country tag")?;
-            }
-            _ => return Err(format!("row {index} has invalid cosmetic marker {marker}")),
-        }
+        compact_contract::country_name_inputs::decode_token(payload, &mut cursor)
+            .map_err(|error| format!("row {index}: {error}"))?;
+        compact_contract::country_name_inputs::decode_effective(payload, &mut cursor, source_id, &tag)
+            .map_err(|error| format!("row {index}: {error}"))?;
         if !complete {
             continue;
         }

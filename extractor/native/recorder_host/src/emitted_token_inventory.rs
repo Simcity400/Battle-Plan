@@ -438,14 +438,11 @@ mod tests {
     /// accepts and nothing more.
     fn d53_payload(elapsed_wall_ms: u64) -> Vec<u8> {
         use diplomacy_intel_operatives_live::compact as d53;
-        let mut payload = vec![0u8; d53::HEADER_LEN];
-        payload[0..8].copy_from_slice(&elapsed_wall_ms.to_le_bytes());
-        // An empty record carries no intel table, and the decoder holds the
-        // badge and the roster trailer to each other.
-        payload[16..20].copy_from_slice(&d53::STATUS_INTEL_MAP_UNPROVEN.to_le_bytes());
-        payload[20..24].copy_from_slice(&d53::SCHEMA_VERSION.to_le_bytes());
-        payload[24..28].copy_from_slice(&d53::FIXED_SCALE_RAW.to_le_bytes());
-        payload
+        d53::encode_payload(&d53::DiplomacyIntelSnapshot {
+            elapsed_wall_ms,
+            status_flags:d53::STATUS_INTEL_MAP_UNPROVEN,
+            ..d53::DiplomacyIntelSnapshot::default()
+        })
     }
 
     fn append_record(
@@ -598,9 +595,9 @@ mod tests {
         // exercised a body that NEEDS the consumer's baseline. Only the first
         // record stands alone; the rest are header-only `NoChange` bodies, which
         // is what an unchanged empty payload should cost on the wire.
-        // 112-byte envelope + the 64-byte BASIS: the 8-byte volatile header is
+        // The basis includes the mandatory CNIS trailer. The volatile header is
         // carried in the envelope itself, not a second time in the body.
-        assert_eq!(envelopes[0].len(), psd::HEADER_LEN as usize + (72 - 8));
+        assert_eq!(envelopes[0].len(), psd::HEADER_LEN as usize + d53_payload(0).len() - psd::VOLATILE_HEADER_LEN);
         for envelope in &envelopes[1..] {
             assert_eq!(envelope.len(), psd::HEADER_LEN as usize);
         }

@@ -118,10 +118,12 @@ fn d18_country_payload_for(status: u32, source_id: u32, tag: &str) -> Vec<u8> {
     payload.extend_from_slice(&1u32.to_le_bytes());
     payload.extend_from_slice(&1u32.to_le_bytes());
     payload.extend_from_slice(&status.to_le_bytes());
+    compact_contract::country_name_inputs::encode_domain_version(18, &mut payload);
     payload.extend_from_slice(&source_id.to_le_bytes());
     payload.extend_from_slice(&(tag.len() as u16).to_le_bytes());
     payload.extend_from_slice(tag.as_bytes());
     payload.push(1);
+    compact_contract::country_name_inputs::encode_effective(&Err(compact_contract::country_name_inputs::NameInputRefusal::Unreadable), &mut payload);
     payload.extend_from_slice(compact_contract::country_identity_membership::CIM1_MAGIC);
     payload.extend_from_slice(
         &compact_contract::country_identity_membership::CIM1_VERSION.to_le_bytes(),
@@ -299,10 +301,12 @@ fn d18_country_payload_families(
     payload.extend_from_slice(&1u32.to_le_bytes());
     payload.extend_from_slice(&1u32.to_le_bytes());
     payload.extend_from_slice(&outer.to_le_bytes());
+    compact_contract::country_name_inputs::encode_domain_version(18, &mut payload);
     payload.extend_from_slice(&source_id.to_le_bytes());
     payload.extend_from_slice(&(tag.len() as u16).to_le_bytes());
     payload.extend_from_slice(tag.as_bytes());
     payload.push(1);
+    compact_contract::country_name_inputs::encode_effective(&Err(compact_contract::country_name_inputs::NameInputRefusal::Unreadable), &mut payload);
     payload.extend_from_slice(cim::CIM1_MAGIC);
     payload.extend_from_slice(&cim::CIM1_VERSION.to_le_bytes());
     payload.extend_from_slice(&(cim::CIM1_HEADER_LEN as u16).to_le_bytes());
@@ -2851,4 +2855,56 @@ fn a_real_late_attach_capture_inspects_and_builds_its_d81_product() {
 
 fn hex_encode_sha256(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[test]
+fn d18_binding_parses_required_name_inputs_and_refuses_unknown_selection() {
+    let payload = d18_country_payload(0);
+    assert!(d18_binding_result(0, payload.clone()).is_ok());
+    let mut unknown = payload.clone();
+    let selection = 20 + compact_contract::country_name_inputs::DOMAIN_VERSION_HEADER_LEN + 4 + 2 + 3 + 1;
+    unknown[selection] = 3;
+    assert!(d18_binding_result(0, unknown).is_err());
+    let mut missing = payload;
+    missing.drain(selection..selection + 2);
+    assert!(d18_binding_result(0, missing).is_err());
+}
+
+#[test]
+fn d18_unversioned_payloads_are_refused_by_domain_version() {
+    let mut payload=d18_country_payload(0);
+    payload.drain(20..28);
+    let error=d18_binding_result(0,payload).unwrap_err();
+    assert!(error.contains("country_identity unsupported payload version"), "{error}");
+}
+
+#[test]
+fn d18_wire_binding_refuses_base_id_or_tag_mismatch_with_containing_country() {
+    for (source, selected_id, tag, admitted) in [
+        (1u8, 47i32, "GER", true),
+        (1, 2, "GER", false),
+        (1, 47, "ENG", false),
+        (1, 2, "ENG", false),
+        (1, 47, "ger", false),
+        (1, 47, "", false),
+        (2, 2, "ENG", true),
+        (2, 2, "", true),
+    ] {
+        let mut payload = d18_country_payload_for(0, 47, "GER");
+        let selection = 20 + compact_contract::country_name_inputs::DOMAIN_VERSION_HEADER_LEN + 4 + 2 + 3 + 1;
+        assert_eq!(&payload[selection..selection + 2], &[0, 1]);
+        let mut wire = vec![source];
+        wire.extend_from_slice(&selected_id.to_le_bytes());
+        wire.push(2);
+        wire.extend_from_slice(&(tag.len() as u16).to_le_bytes());
+        wire.extend_from_slice(tag.as_bytes());
+        payload.splice(selection..selection + 2, wire);
+        let result = d18_binding_result(0, payload);
+        if admitted {
+            assert!(result.is_ok(), "{source}/{selected_id}/{tag:?}: {result:?}");
+        } else {
+            let error = result.expect_err("mismatched base selection must be refused");
+            assert!(error.contains("country name base selection identity mismatch"), "{error}");
+        }
+    }
 }

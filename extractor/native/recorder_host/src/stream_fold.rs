@@ -3305,11 +3305,12 @@ mod tests {
         p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
         p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
         p.extend_from_slice(&0u32.to_le_bytes());
+        compact_contract::country_name_inputs::encode_domain_version(18, &mut p);
         for (id, tag) in rows {
             p.extend_from_slice(&id.to_le_bytes());
             p.extend_from_slice(&(tag.len() as u16).to_le_bytes());
             p.extend_from_slice(tag.as_bytes());
-            p.push(1);
+            p.push(1); p.extend_from_slice(&[0, 1]);
         }
         p
     }

@@ -298,3 +298,6 @@ portable_replay/native/engine_evidence/artifacts/locmiss_chooser_prefixes.job.js
 extractor/native/runs/locmiss_engine_miss_behaviour/*.json text eol=lf
 extractor/native/runs/locmiss_engine_miss_behaviour/*.py text eol=lf
 extractor/native/runs/locmiss_engine_miss_behaviour/POINTER.md text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1401ad1d0.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_14070f170.decompile.c text eol=lf

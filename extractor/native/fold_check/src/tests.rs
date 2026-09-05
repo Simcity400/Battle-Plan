@@ -93,11 +93,12 @@ fn country_identity_payload(rows: &[(u32, &str)]) -> Vec<u8> {
     p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
     p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
     p.extend_from_slice(&0u32.to_le_bytes());
+    compact_contract::country_name_inputs::encode_domain_version(18, &mut p);
     for (tag_db_id, tag) in rows {
         p.extend_from_slice(&tag_db_id.to_le_bytes());
         p.extend_from_slice(&(tag.len() as u16).to_le_bytes());
         p.extend_from_slice(tag.as_bytes());
-        p.push(1);
+        p.push(1); p.extend_from_slice(&[0, 1]);
     }
     p
 }
@@ -139,7 +140,7 @@ fn synthetic_stream() -> (Vec<u8>, usize) {
     let mut seq = 1u64;
 
     let a_payload = country_identity_payload(&[(47, "GER")]);
-    let mutation_offset = s.len() + COMPACT_RECORD_HEADER_LEN + 20;
+    let mutation_offset = s.len() + COMPACT_RECORD_HEADER_LEN + 20 + compact_contract::country_name_inputs::DOMAIN_VERSION_HEADER_LEN;
     push_record(
         &mut s,
         seq,
