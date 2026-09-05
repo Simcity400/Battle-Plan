@@ -64,6 +64,7 @@ pub struct ArmyBattleplanOrderExact {
     /// `None` where the producer could not read the whole predicate set for
     /// this order; never a default, because every default is a real arrow.
     pub style: Option<ArmyBattleplanStyle>,
+    pub linked_orders: portable_render_stream::D54OrderedOrderLinks,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -305,7 +306,7 @@ fn withheld_hour_diagnostic(domain: &Map<String, Value>) -> Option<String> {
 }
 
 fn parse_order(row: &Map<String, Value>, _index: usize) -> Option<ArmyBattleplanOrderExact> {
-    const FIELDS: [&str; 18] = portable_render_stream::XMAP15_D54_ORDER_ROW_FIELDS;
+    const FIELDS: [&str; 19] = portable_render_stream::XMAP15_D54_ORDER_ROW_FIELDS;
     let typed = row.len() == FIELDS.len() + 2
         && FIELDS.iter().all(|field| row.contains_key(*field))
         && row.contains_key("owner_kind")
@@ -412,6 +413,7 @@ fn parse_order(row: &Map<String, Value>, _index: usize) -> Option<ArmyBattleplan
         assigned_division_ids,
         active,
         style,
+        linked_orders: portable_render_stream::parse_d54_order_links(row.get("linked_orders")?)?,
     })
 }
 
@@ -523,7 +525,8 @@ mod tests {
             "active": false,
             "active_status": "exact",
             "style_flags": 0,
-            "style_status": "exact"
+            "style_status": "exact",
+            "linked_orders": {"version": 2, "status": 2, "predecessors": [], "successors": []}
         })
     }
 
@@ -532,6 +535,22 @@ mod tests {
         order["owner_id"] = json!(owner_id);
         order["army_id"] = json!(owner_id);
         order
+    }
+
+    #[test]
+    fn linked_order_truth_states_are_per_row_and_version_is_mandatory() {
+        for status in 0..=2 {
+            let mut row = line_order();
+            row["linked_orders"]["status"] = json!(status);
+            let view = parse_army_battleplans(&raw(row), &manager());
+            assert_eq!(view.status, ViewStatus::Present);
+            assert_eq!(view.orders[0].linked_orders.status, status);
+        }
+        let mut row = line_order();
+        row.as_object_mut().unwrap().remove("linked_orders");
+        assert_eq!(parse_army_battleplans(&raw(row), &manager()).status, ViewStatus::DomainUnavailable);
+        let mut row = line_order(); row["linked_orders"]["version"] = json!(1);
+        assert_eq!(parse_army_battleplans(&raw(row), &manager()).status, ViewStatus::DomainUnavailable);
     }
 
     #[test]

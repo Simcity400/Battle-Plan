@@ -440,7 +440,7 @@ fn gate(
 /// refuses any other field count. That refusal is part of the census: an order
 /// with an extra key is not in the view this producer's census must equal, so
 /// admitting it here would put a plan in one census and not the other.
-const D54_BASE_FIELDS: [&str; 18] = portable_render_stream::XMAP15_D54_ORDER_ROW_FIELDS;
+const D54_BASE_FIELDS: [&str; 19] = portable_render_stream::XMAP15_D54_ORDER_ROW_FIELDS;
 
 /// The status words the row SHAPE pins, and the value each is pinned to.
 ///
@@ -510,6 +510,9 @@ fn d54_order(order: &Map<String, Value>) -> D54Order {
         && order.contains_key("owner_kind")
         && order.contains_key("owner_id");
     if !typed {
+        return D54Order::Refused;
+    }
+    if order.get("linked_orders").and_then(portable_render_stream::parse_d54_order_links).is_none() {
         return D54Order::Refused;
     }
     for (key, expected) in D54_PINNED_STATUS {
@@ -827,6 +830,7 @@ mod tests {
             "active_status": "exact",
             "style_flags": 0,
             "style_status": "exact",
+            "linked_orders": {"version": 2, "status": 2, "predecessors": [], "successors": []},
         });
         let order_of_battle = json!({
             "extra": {
@@ -933,6 +937,21 @@ mod tests {
             ));
         }
         for (label, mutate) in [
+            (
+                "an unsupported link grammar version",
+                Box::new(|order: &mut Value| order["linked_orders"]["version"] = json!(1))
+                    as Box<dyn Fn(&mut Value)>,
+            ),
+            (
+                "an unknown link status",
+                Box::new(|order: &mut Value| order["linked_orders"]["status"] = json!(3)),
+            ),
+            (
+                "non-exact links carrying an identity",
+                Box::new(|order: &mut Value| order["linked_orders"]["successors"] = json!([{
+                    "owner_kind": 0, "owner_id": 17, "generation": 1, "engine_order_instance_id": 3
+                }])),
+            ),
             (
                 "an extra field the canonical set does not carry",
                 Box::new(|order: &mut Value| order["extra_key"] = json!(1))

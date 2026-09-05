@@ -21,7 +21,7 @@ blake3 = "1"
 # predicates needed to preserve its fold order. No other production codec is
 # admitted without updating this allow-list under adversarial review. It is enforced by
 # tests/wire_format_suite/compact_contract_dependency_policy.rs.
-# production-compact-authority-allow=d81:rail_replay,compact_status_unknown_flags_v1,compact_status_is_failure
+# production-compact-authority-allow=d54:battleplan_links,d81:rail_replay,compact_status_unknown_flags_v1,compact_status_is_failure
 # `compact_contract`'s only normal dependencies are `sha2` and the
 # dependency-free `id_set_codec` grammar leaf, so the production exception
 # cannot pull recorder or capture-lane policy into this reference

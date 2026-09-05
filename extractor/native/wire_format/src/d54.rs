@@ -308,6 +308,7 @@ use crate::body::{key, Key, KeyedState};
 use crate::record::Record;
 use crate::schema::{Collection, Field, Kind, Schema, Shape};
 use crate::value::Value;
+use compact_contract::battleplan_links as links;
 
 pub const DOMAIN: u32 = 54;
 
@@ -325,6 +326,7 @@ pub const ORDERS_GROUP_MANAGER: u32 = 5;
 pub const ORDERS_GROUP_ARMIES: u32 = 6;
 /// One row per registered `CArmyGroup` id. Key-only.
 pub const ORDERS_GROUP_ARMY_GROUPS: u32 = 7;
+pub const ORDER_LINKS: u32 = 8;
 
 /// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 /// They are unique across the whole domain, not merely within a collection, so a
@@ -387,6 +389,17 @@ pub mod field {
 
     // --- ORDERS_GROUP_ARMY_GROUPS ---
     pub const ARMY_GROUP_ID: u32 = 70;
+    pub const LINK_STATUS: u32 = 71;
+    pub const LINK_OWNER_KIND: u32 = 80;
+    pub const LINK_OWNER_ID: u32 = 81;
+    pub const LINK_INSTANCE: u32 = 82;
+    pub const LINK_GENERATION: u32 = 83;
+    pub const LINK_DIRECTION: u32 = 84;
+    pub const LINK_ORDINAL: u32 = 85;
+    pub const LINK_TARGET_OWNER_KIND: u32 = 86;
+    pub const LINK_TARGET_OWNER_ID: u32 = 87;
+    pub const LINK_TARGET_INSTANCE: u32 = 88;
+    pub const LINK_TARGET_GENERATION: u32 = 89;
 }
 
 // --- Transcribed shipping constants -----------------------------------------
@@ -570,6 +583,7 @@ pub fn schema() -> Schema {
             // dropping them would lose data on input the fold accepts (d56's rule).
             Field::new(f::NON_TYPE5_GEOMETRY_BLOCKED, Kind::Boolean),
             Field::new(f::EXECUTION_BLOCKED, Kind::Boolean),
+            Field::new(f::LINK_STATUS, Kind::Enum).enum_card(3),
         ],
     };
 
@@ -682,6 +696,18 @@ pub fn schema() -> Schema {
             orders_group_manager,
             orders_group_armies,
             orders_group_army_groups,
+            Collection { collection_id: ORDER_LINKS, shape: Shape::KeyedSet, fields: vec![
+                Field::new(f::LINK_OWNER_KIND, Kind::Unsigned).key(0),
+                Field::new(f::LINK_OWNER_ID, Kind::Unsigned).key(1),
+                Field::new(f::LINK_INSTANCE, Kind::Unsigned).key(2),
+                Field::new(f::LINK_GENERATION, Kind::Unsigned).key(3),
+                Field::new(f::LINK_DIRECTION, Kind::Unsigned).key(4),
+                Field::new(f::LINK_ORDINAL, Kind::Unsigned).key(5),
+                Field::new(f::LINK_TARGET_OWNER_KIND, Kind::Enum).enum_card(2),
+                Field::new(f::LINK_TARGET_OWNER_ID, Kind::Unsigned),
+                Field::new(f::LINK_TARGET_INSTANCE, Kind::Unsigned),
+                Field::new(f::LINK_TARGET_GENERATION, Kind::Unsigned),
+            ] },
         ],
         event_part: None,
     }
@@ -1128,6 +1154,7 @@ pub struct Split<'a> {
     /// `None` on a legacy frame — and a legacy frame must NOT inherit a prior
     /// record's manager (`world_fold.rs::fold_army_battleplans_depth`).
     pub extension: Option<OrdersGroupExtension>,
+    pub linked_orders: Vec<links::OrderedOrderLinks>,
 }
 
 impl Split<'_> {
@@ -1203,10 +1230,12 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<Split<'_>, String> 
 
     // `lane lib.rs:828`-`:852`: the extension is decoded BEFORE the header
     // cross-checks, and its army count must equal the header's own census width.
-    let extension = if payload.len() == legacy_len {
+    let (linked_orders, link_bytes) = links::decode_order_links(&payload[legacy_len..], row_count)?;
+    let extension_start = legacy_len + link_bytes;
+    let extension = if payload.len() == extension_start {
         None
     } else {
-        let decoded = decode_extension(&payload[legacy_len..])
+        let decoded = decode_extension(&payload[extension_start..])
             .map_err(|reason| format!("battleplans orders-group extension: {reason}"))?;
         if decoded.armies.len() != header.observed_army_rows as usize {
             return Err("battleplans complete-manager army count differs from header".into());
@@ -1240,6 +1269,7 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<Split<'_>, String> 
         path_table: &payload[target_end..path_end],
         assigned_table: &payload[path_end..legacy_len],
         extension,
+        linked_orders,
     };
 
     // Per-row rules, then the cross-row child accounting (`:1093`-`:1105`): the
@@ -1252,6 +1282,9 @@ pub fn split_payload(payload: &[u8]) -> core::result::Result<Split<'_>, String> 
     for index in 0..row_count {
         let row = parse_order_row(split.order_row(index))
             .map_err(|reason| format!("battleplans row {index}: {reason}"))?;
+        if row.deleted() && split.linked_orders[index] != links::OrderedOrderLinks::default() {
+            return Err("D54 deleted row carries link state".into());
+        }
         if row.has_targets() {
             let end = (row.child_first as usize)
                 .checked_add(row.child_count as usize)
@@ -1388,11 +1421,13 @@ fn check_collection(collection: &Collection, expected: u32) -> core::result::Res
 pub fn record_from_order_row(
     collection: &Collection,
     row: &[u8],
+    linked_orders: &links::OrderedOrderLinks,
     frame_tick: u64,
 ) -> core::result::Result<Record, String> {
     let _ = frame_tick;
     check_collection(collection, ORDERS)?;
     let parsed = parse_order_row(row)?;
+    linked_orders.validate()?;
     if parsed.deleted() {
         return Err("d54 deleted order row is a tombstone, not a record".into());
     }
@@ -1419,6 +1454,7 @@ pub fn record_from_order_row(
         Value::Bool(parsed.active),
         Value::Bool(parsed.flags & FLAG_NON_TYPE5_GEOMETRY_BLOCKED != 0),
         Value::Bool(parsed.flags & FLAG_EXECUTION_BLOCKED != 0),
+        Value::Enum(linked_orders.status as u32),
     ]))
 }
 
@@ -1590,6 +1626,7 @@ pub struct State {
     pub orders_group_armies: KeyedState,
     /// Collection [`ORDERS_GROUP_ARMY_GROUPS`], keyed by `army_group_id`.
     pub orders_group_army_groups: KeyedState,
+    pub order_links: KeyedState,
     /// `delta_baselines_seen.contains(&54)` (`world_fold.rs::fold_army_battleplans_depth`).
     baseline_seen: bool,
 }
@@ -1616,6 +1653,7 @@ impl State {
             self.orders_group_manager.clone(),
             self.orders_group_armies.clone(),
             self.orders_group_army_groups.clone(),
+            self.order_links.clone(),
         ]
     }
 
@@ -1628,6 +1666,7 @@ impl State {
             &mut self.target_states,
             &mut self.path_geometry,
             &mut self.assigned_divisions,
+            &mut self.order_links,
         ] {
             let doomed: Vec<Key> = table
                 .range(key_from_child(parent, 0)..)
@@ -1711,7 +1750,7 @@ impl State {
                 pending.push((row_key, None));
                 continue;
             }
-            let record = record_from_order_row(orders, bytes, 0)?;
+            let record = record_from_order_row(orders, bytes, &split.linked_orders[index], 0)?;
             // The generated dense ordinal is counted in exactly one place, and it
             // is the position within THIS order's own run — never the shared
             // table index, which the collector re-packs from emission order every
@@ -1779,13 +1818,14 @@ impl State {
             self.target_states.clear();
             self.path_geometry.clear();
             self.assigned_divisions.clear();
+            self.order_links.clear();
             self.baseline_seen = true;
         }
 
         // `:21839`-`:21846`: upsert or remove, in wire order, last writer wins —
         // the fold enforces no key uniqueness inside a frame, so this port must
         // not either.
-        for (row_key, payload_rows) in pending {
+        for (index, (row_key, payload_rows)) in pending.into_iter().enumerate() {
             self.drop_children_of(&row_key);
             match payload_rows {
                 None => {
@@ -1793,6 +1833,19 @@ impl State {
                 }
                 Some((record, targets, paths, assigned)) => {
                     self.orders.insert(row_key.clone(), record);
+                    for (direction, identities) in [&split.linked_orders[index].predecessors,
+                        &split.linked_orders[index].successors].into_iter().enumerate() {
+                        for (ordinal, identity) in identities.iter().enumerate() {
+                            let mut key = row_key.clone();
+                            key.0.push(direction as i128);
+                            key.0.push(ordinal as i128);
+                            self.order_links.insert(key, Record::new(vec![
+                                Value::Enum(identity.owner_kind), Value::Unsigned(identity.owner_id as u64),
+                                Value::Unsigned(identity.engine_order_instance_id as u64),
+                                Value::Unsigned(identity.generation),
+                            ]));
+                        }
+                    }
                     for (ordinal, child) in targets {
                         self.target_states
                             .insert(key_from_child(&row_key, ordinal), child);
@@ -2065,6 +2118,10 @@ mod tests {
             for id in &self.assigned {
                 out.extend_from_slice(&child(*id));
             }
+            out.extend_from_slice(&links::encode_order_links(&self.rows.iter().map(|row| {
+                if row.flags & FLAG_DELETED != 0 { links::OrderedOrderLinks::default() }
+                else { links::OrderedOrderLinks::unavailable() }
+            }).collect::<Vec<_>>()));
             if let Some(extension) = &self.extension {
                 out.extend_from_slice(extension);
             }
@@ -2103,6 +2160,55 @@ mod tests {
     // ---- 1. Schema validity --------------------------------------------------
 
     #[test]
+    fn version_two_links_survive_fold_codec_and_tombstone() {
+        let mut frame = full_frame();
+        let raw = frame.encode();
+        let split = split_payload(&raw).unwrap();
+        let base = HEADER_LEN + split.order_rows.len() + split.target_table.len()
+            + split.path_table.len() + split.assigned_table.len();
+        let (_, old_link_len) = links::decode_order_links(&raw[base..], frame.rows.len()).unwrap();
+        let a = links::OrderLinkIdentity { owner_kind: 0, owner_id: 7,
+            generation: 99, engine_order_instance_id: 4 };
+        let b = links::OrderLinkIdentity { owner_kind: 1, generation: 100, ..a };
+        let mut link_rows = split.linked_orders.clone();
+        link_rows[0] = links::OrderedOrderLinks { status: links::OrderLinkStatus::Exact,
+            predecessors: vec![b, a], successors: vec![a] };
+        let mut payload = raw[..base].to_vec();
+        payload.extend(links::encode_order_links(&link_rows));
+        payload.extend_from_slice(&raw[base + old_link_len..]);
+        assert_eq!(split_payload(&payload).unwrap().linked_orders, link_rows);
+        assert!(split_payload(&raw[..base]).is_err());
+        let schema = schema();
+        let mut state = State::new();
+        fold_ok(&mut state, &schema, &payload);
+        assert_eq!(state.order_links.len(), 3);
+        let parent = key_from_order_row(split.order_row(0)).unwrap();
+        let mut key = parent.clone(); key.0.extend([0, 0]);
+        assert_eq!(state.order_links[&key].values,
+            vec![Value::Enum(1), Value::Unsigned(7), Value::Unsigned(4), Value::Unsigned(100)]);
+        let states = state.collections();
+        let mut bytes = Vec::new();
+        encode_baseline(&schema, &states, &mut bytes).unwrap();
+        assert_eq!(decode_baseline(&schema, &bytes, 0).unwrap().0, states);
+        frame.status_flags |= STATUS_DELTA_DATA;
+        let mut tombstone = frame.rows[0].clone();
+        tombstone.flags = FLAG_DELETED;
+        tombstone.child_first = 0; tombstone.child_count = 0;
+        tombstone.assigned_first = 0; tombstone.assigned_count = 0;
+        frame.rows = vec![tombstone]; frame.targets.clear(); frame.paths.clear(); frame.assigned.clear();
+        // The production tombstone helper zeroes all gated scalar fields.
+        let mut payload = frame.encode();
+        let start = HEADER_LEN;
+        let identity = payload[start..start + ROW_LEN].to_vec();
+        payload[start + 16..start + ROW_LEN].fill(0);
+        payload[start + 64..start + 68].copy_from_slice(&identity[64..68]);
+        payload[start + 84..start + 88].copy_from_slice(&identity[84..88]);
+        fold_ok(&mut state, &schema, &payload);
+        assert!(!state.orders.contains_key(&parent));
+        assert!(state.order_links.is_empty());
+    }
+
+    #[test]
     fn the_schema_validates() {
         schema()
             .validate(TICKS_PER_HOUR_LOG2)
@@ -2113,7 +2219,7 @@ mod tests {
     fn the_schema_hash_is_stable() {
         // canonical schema bytes; a changed hash means a changed grammar.
         assert_eq!(schema().schema_hash(), schema().schema_hash());
-        assert_eq!(schema().collections.len(), 7);
+        assert_eq!(schema().collections.len(), 8);
     }
 
     // ---- 5. Shape and key ----------------------------------------------------
@@ -2324,7 +2430,7 @@ mod tests {
         assert_eq!(parsed.active_status, STATUS_EXACT);
 
         let s = schema();
-        let record = record_from_order_row(collection_of(&s, ORDERS).unwrap(), &bytes, 0)
+        let record = record_from_order_row(collection_of(&s, ORDERS).unwrap(), &bytes, &links::OrderedOrderLinks::unavailable(), 0)
             .expect("row maps");
         assert_eq!(
             record.values,
@@ -2340,6 +2446,7 @@ mod tests {
                 Value::Bool(true),
                 Value::Bool(true),
                 Value::Bool(true),
+                Value::Enum(2),
             ]
         );
 
@@ -2463,7 +2570,7 @@ mod tests {
         let mut row = RawOrder::live();
         row.target_status = STATUS_UNSUPPORTED;
         assert_eq!(
-            record_from_order_row(orders, &row.encode(), 0).unwrap().values[2],
+            record_from_order_row(orders, &row.encode(), &links::OrderedOrderLinks::unavailable(), 0).unwrap().values[2],
             Value::Absent
         );
 
@@ -2473,7 +2580,7 @@ mod tests {
             let mut row = RawOrder::live();
             row.target_status = status;
             assert_eq!(
-                record_from_order_row(orders, &row.encode(), 0).unwrap().values[2],
+                record_from_order_row(orders, &row.encode(), &links::OrderedOrderLinks::unavailable(), 0).unwrap().values[2],
                 Value::Unknown,
                 "target_status {status}"
             );
@@ -2487,14 +2594,14 @@ mod tests {
         row.flags |= FLAG_TARGET_STATE_COUNT;
         row.target_declared = 0;
         assert_eq!(
-            record_from_order_row(orders, &row.encode(), 0).unwrap().values[2],
+            record_from_order_row(orders, &row.encode(), &links::OrderedOrderLinks::unavailable(), 0).unwrap().values[2],
             Value::Unsigned(0)
         );
 
         // A REAL VALUE.
         row.target_declared = 5;
         assert_eq!(
-            record_from_order_row(orders, &row.encode(), 0).unwrap().values[2],
+            record_from_order_row(orders, &row.encode(), &links::OrderedOrderLinks::unavailable(), 0).unwrap().values[2],
             Value::Unsigned(5)
         );
     }
@@ -2514,7 +2621,7 @@ mod tests {
         let orders = collection_of(&s, ORDERS).unwrap();
         let row = RawOrder::tombstone(ORDER_OWNER_KIND_ARMY, 5, 6, 7).encode();
         assert!(
-            record_from_order_row(orders, &row, 0).is_err(),
+            record_from_order_row(orders, &row, &links::OrderedOrderLinks::unavailable(), 0).is_err(),
             "mapping a tombstone would publish its forced zeros as measurement"
         );
         assert_eq!(
@@ -2665,7 +2772,7 @@ mod tests {
         let mut row = RawOrder::live();
         row.flags |= FLAG_NON_TYPE5_GEOMETRY_BLOCKED;
         row.geometry_status = STATUS_EXACT;
-        let record = record_from_order_row(orders, &row.encode(), 0).expect("folds");
+        let record = record_from_order_row(orders, &row.encode(), &links::OrderedOrderLinks::unavailable(), 0).expect("folds");
         assert_eq!(record.values[9], Value::Bool(true));
         assert_eq!(record.values[5], Value::Enum(STATUS_EXACT));
     }
@@ -3034,10 +3141,10 @@ mod tests {
         let orders = collection_of(&s, ORDERS).unwrap();
         for f in orders.value_fields() {
             if f.kind == Kind::Enum {
-                let expected = if f.field_id == field::STYLE_FLAGS {
-                    STYLE_FLAG_CARD
-                } else {
-                    STATUS_CARD
+                let expected = match f.field_id {
+                    field::STYLE_FLAGS => STYLE_FLAG_CARD,
+                    field::LINK_STATUS => 3,
+                    _ => STATUS_CARD,
                 };
                 assert_eq!(f.enum_card, Some(expected), "field {}", f.field_id);
             }

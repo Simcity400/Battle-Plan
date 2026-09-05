@@ -2,10 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const MANIFEST_ALLOW_LIST: &str =
-    "# production-compact-authority-allow=d81:rail_replay,compact_status_unknown_flags_v1,compact_status_is_failure";
+    "# production-compact-authority-allow=d54:battleplan_links,d81:rail_replay,compact_status_unknown_flags_v1,compact_status_is_failure";
 
-const ADMITTED_PRODUCTION_LINES: [(&str, usize); 3] = [
+const ADMITTED_PRODUCTION_LINES: [(&str, usize); 4] = [
     ("use compact_contract::rail_replay as compact;", 1),
+    ("use compact_contract::battleplan_links as links;", 1),
     (
         "let unknown = compact_contract::compact_status_unknown_flags_v1(decoded.status_flags);",
         1,
@@ -45,7 +46,8 @@ fn production_compact_contract_dependency_is_exactly_allow_listed() {
                 continue;
             }
 
-            if relative != Path::new("src").join("d81.rs") {
+            if relative != Path::new("src").join("d81.rs")
+                && relative != Path::new("src").join("d54.rs") {
                 violations.push(format!(
                     "{}:{}: compact_contract is not admitted in this library module",
                     relative.display(),
