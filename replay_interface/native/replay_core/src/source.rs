@@ -1453,7 +1453,7 @@ fn open_packaged_replay_cache(
                     }
                 }
                 let file = open_private_prefold_spool_file(&spooled)?;
-                let cache = snapshot::CertifiedReplayCache::open_file(
+                let mut cache = snapshot::CertifiedReplayCache::open_file(
                     &index_bytes,
                     file,
                     source_len,
@@ -1462,6 +1462,7 @@ fn open_packaged_replay_cache(
                 .map_err(|error| {
                     SourceError::Open(admission_refusal(&error, &copy_outcome))
                 })?;
+                cache.set_workers(crate::world::product_worker_count());
                 cache_spool = Some(owner);
                 (cache, copy_outcome)
             }
@@ -1472,7 +1473,7 @@ fn open_packaged_replay_cache(
                     &mut cache_bytes,
                     snapshot::zip::STREAMING_MAX_CONTAINER_ENTRY_BYTES,
                 );
-                let cache = snapshot::CertifiedReplayCache::open(
+                let mut cache = snapshot::CertifiedReplayCache::open(
                     &index_bytes,
                     cache_bytes,
                     source_len,
@@ -1481,6 +1482,7 @@ fn open_packaged_replay_cache(
                 .map_err(|error| {
                     SourceError::Open(admission_refusal(&error, &copy_outcome))
                 })?;
+                cache.set_workers(crate::world::product_worker_count());
                 (cache, copy_outcome)
             }
         };
@@ -4930,7 +4932,7 @@ impl ReplaySource for IndexedReplaySource {
     fn reference_frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
         let (world, receipt) = self
             .cache
-            .reconstruct_materialized(hour_index, crate::world::product_worker_count())
+            .reconstruct_value(hour_index)
             .map_err(|error| {
                 SourceError::Open(format!(
                     "reconstruct replay_decoder hour {hour_index}: {error}"

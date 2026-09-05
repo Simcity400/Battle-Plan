@@ -26,12 +26,6 @@ ll-revive-pricing = []
 # only: with the feature off every call compiles away and the hot path is
 # untouched, and no production path enables it.
 my-cow-census = []
-# Lane MY projection census. Counts, during a real reconstruction, how many
-# container projections were reused from a filled node cell against how many
-# had to be built -- the memo hit rate the batch-B design requires measured
-# rather than asserted. Measurement only: with the feature off the note sites
-# compile away and no production path enables it.
-my-projection-census = []
 
 [dependencies]
 compact_stream = { package = "portable_compact_stream", path = "../compact_stream" }

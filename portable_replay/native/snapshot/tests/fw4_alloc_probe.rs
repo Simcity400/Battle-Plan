@@ -108,6 +108,18 @@ fn hostile_cache(tag: u8, count: u32) -> (Vec<u8>, Vec<u8>, u64, String) {
 }
 
 fn cache_around_payload(payload: &[u8]) -> (Vec<u8>, Vec<u8>, u64, String) {
+    let sealed = portable_replay_format::seal_cache_payload(payload).unwrap();
+    let mut payload = Vec::new();
+    put_varint(&mut payload, 1);
+    put_varint(&mut payload, 5);
+    payload.extend_from_slice(b"world");
+    payload.extend_from_slice(&[0, 1]);
+    put_varint(&mut payload, sealed.len() as u64);
+    payload.extend_from_slice(&sealed);
+    cache_around_checkpoint(&payload)
+}
+
+fn cache_around_checkpoint(payload: &[u8]) -> (Vec<u8>, Vec<u8>, u64, String) {
     let source_sha = hex32(0xcd);
     let source_len = 100u64;
 
@@ -119,10 +131,9 @@ fn cache_around_payload(payload: &[u8]) -> (Vec<u8>, Vec<u8>, u64, String) {
     cache.push(1);
     cache.extend_from_slice(&[0, 0, 0]);
     cache.extend_from_slice(&0i64.to_le_bytes());
-    let payload = portable_replay_format::seal_cache_payload(payload).unwrap();
     cache.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     cache.push(0);
-    cache.extend_from_slice(&payload);
+    cache.extend_from_slice(payload);
     let record_len = cache.len() as u64 - record_offset;
     cache.extend_from_slice(&digest_of(&source_sha));
     let cache_len = cache.len() as u64;
@@ -191,7 +202,10 @@ fn hostile_counts_never_drive_a_disproportionate_allocation_request() {
     let input_bytes = index_bytes.len() + cache.len();
     PEAK_REQUEST.store(0, Ordering::Relaxed);
     let outcome = CertifiedReplayCache::open(&index_bytes, cache, source_len, &source_sha)
-        .and_then(|certified| certified.reconstruct_json(0).map(|_| ()));
+        .and_then(|mut certified| {
+            certified.set_workers(1);
+            certified.reconstruct_json(0).map(|_| ())
+        });
     let peak = PEAK_REQUEST.load(Ordering::Relaxed);
     println!(
         "R2-1 array: input {input_bytes} bytes -> peak single request {peak} bytes; outcome {outcome:?}"
@@ -233,7 +247,10 @@ fn an_allocator_refusal_becomes_a_typed_error_not_an_abort() {
 
     set_refuse_above(CEILING);
     let outcome = CertifiedReplayCache::open(&index_bytes, cache, source_len, &source_sha)
-        .and_then(|certified| certified.reconstruct_json(0).map(|_| ()));
+        .and_then(|mut certified| {
+            certified.set_workers(1);
+            certified.reconstruct_json(0).map(|_| ())
+        });
     set_refuse_above(0);
 
     let error = outcome.expect_err("an allocator refusal must surface as a typed refusal");
@@ -241,4 +258,57 @@ fn an_allocator_refusal_becomes_a_typed_error_not_an_abort() {
         error.message().contains("cannot allocate"),
         "refusal must name the allocation failure, got {error}"
     );
+}
+
+
+fn split_checkpoint_join_refuses(kind: u8) {
+    use portable_replay_format::canon_value::CanonValue;
+    const PARTS: usize = 16;
+    const PER_PART: usize = 2500;
+    const CEILING: usize = 1024 * 1024;
+    let element_size = if kind == 1 {
+        std::mem::size_of::<(String, CanonValue)>()
+    } else {
+        std::mem::size_of::<CanonValue>()
+    };
+    assert!(PER_PART * element_size < CEILING);
+    assert!(PARTS * PER_PART * element_size > CEILING);
+    let mut payload = vec![1, 5];
+    payload.extend_from_slice(b"world");
+    payload.push(kind);
+    put_varint(&mut payload, PARTS as u64);
+    for part in 0..PARTS {
+        let mut raw = Vec::new();
+        put_varint(&mut raw, PER_PART as u64);
+        for item in 0..PER_PART {
+            if kind == 1 {
+                let key = format!("k{:05}", part * PER_PART + item);
+                put_varint(&mut raw, key.len() as u64);
+                raw.extend_from_slice(key.as_bytes());
+            }
+            raw.push(0);
+        }
+        assert!(raw.len() < CEILING);
+        let sealed = portable_replay_format::seal_cache_payload(&raw).unwrap();
+        put_varint(&mut payload, sealed.len() as u64);
+        payload.extend_from_slice(&sealed);
+    }
+    let (index_bytes, cache, source_len, source_sha) = cache_around_checkpoint(&payload);
+    let mut certified = CertifiedReplayCache::open(&index_bytes, cache, source_len, &source_sha).unwrap();
+    certified.set_workers(1);
+    set_refuse_above(CEILING);
+    let result = certified.reconstruct_json(0);
+    set_refuse_above(0);
+    let error = result.expect_err("joining admissible parts must refuse allocation fallibly");
+    assert!(error.message().contains("cannot allocate"), "{error}");
+}
+
+#[test]
+fn split_array_checkpoint_join_refuses_allocation_without_aborting() {
+    split_checkpoint_join_refuses(2);
+}
+
+#[test]
+fn split_object_checkpoint_join_refuses_allocation_without_aborting() {
+    split_checkpoint_join_refuses(1);
 }

@@ -77,7 +77,14 @@ fn hostile_cache(tag: u8, count: u32) -> (Vec<u8>, Vec<u8>, u64, String) {
     cache.push(RECORD_CHECKPOINT);
     cache.extend_from_slice(&[0, 0, 0]);
     cache.extend_from_slice(&0i64.to_le_bytes());
-    let payload = portable_replay_format::seal_cache_payload(&payload).unwrap();
+    let sealed = portable_replay_format::seal_cache_payload(&payload).unwrap();
+    let mut payload = Vec::new();
+    put_varint(&mut payload, 1);
+    put_varint(&mut payload, 5);
+    payload.extend_from_slice(b"world");
+    payload.extend_from_slice(&[0, 1]);
+    put_varint(&mut payload, sealed.len() as u64);
+    payload.extend_from_slice(&sealed);
     cache.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     cache.push(0);
     cache.extend_from_slice(&payload);

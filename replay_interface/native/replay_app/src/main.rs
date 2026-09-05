@@ -90,11 +90,11 @@ use map_viewer::{sensitive_file_overrides, GameFileResolver, GameFileResolverOpt
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const USAGE: &str = "usage: replay_app [--configure] [--config <profile.json>] [--non-interactive] [--list-blockers] [--validate-recording <path>] [--report-recording-reach <path> --report-out <report.json> [--report-hours sample|all|every:<n>|first:<n>|scrub:<n>]] [--report-content-authority <path> --report-out <report.json>] [--validate-playback <path>] [--verify-xmap22-dump <out.bmp>] [--benchmark-stress-output <receipt.json>] [--benchmark-output <receipt.json> --recording <path>] [--bundle <dir>] [--game <the game install dir>] \
+const USAGE: &str = "usage: replay_app [--configure] [--config <profile.json>] [--non-interactive] [--list-blockers] [--validate-recording <path>] [--report-recording-reach <path> --report-out <report.json> [--report-hours sample|all|every:<n>|first:<n>|scrub:<n>] [--report-frame-cache <n>]] [--report-content-authority <path> --report-out <report.json>] [--validate-playback <path>] [--verify-xmap22-dump <out.bmp>] [--benchmark-stress-output <receipt.json>] [--benchmark-output <receipt.json> --recording <path>] [--bundle <dir>] [--game <the game install dir>] \
 [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path> [--logical-stream <id>] [--frame-cache <entries>]] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <canonical-hour-index> | --dump-nth-hour <ordinal>] \
 [--hour <0..1>] [--dump-zoom <screen-px-per-map-px>] [--dump-center <x,y>] [--dump-hdr <out.rgba16f>]] \
     [--postfx] [--postfx-restore-full] [--postfx-validate-capture] [--water-full]\n\
---report-recording-reach opens one recording through the product policy and writes, per reported hour, that frame's coverage warnings and the complete XMAP00 map-authority projection (every required input with its disposition and blocker); it renders nothing and needs no game install; --report-hours defaults to sample (first/middle/last), every:<n> reports every n-th hour, scrub:<n> visits n evenly spaced hours in bit-reversed order, first:<n> plays the first n hours in order, and each reported hour carries its decode stage timings; \
+--report-recording-reach opens one recording through the product policy and writes, per reported hour, that frame's coverage warnings and the complete XMAP00 map-authority projection (every required input with its disposition and blocker); it renders nothing and needs no game install; --report-hours defaults to sample (first/middle/last), every:<n> reports every n-th hour, scrub:<n> visits n evenly spaced hours in bit-reversed order, first:<n> plays the first n hours in order, --report-frame-cache <n> holds n decoded frames (default 1), and each reported hour carries its decode stage timings; \
 --report-content-authority opens one recording through the product policy, admits its recorded content against this machine's install exactly as playback would, and writes the BundleContentAuthority (ordered winner inputs and authority_sha256) to --report-out as JSON without rendering; it requires the same content roots playback uses (--game/--userdata/--config); \
 --dump-hour selects the exact canonical hour_index; --dump-nth-hour selects a zero-based ordinal in the recording snapshot index and resolves it to that canonical hour; \
 --frame-cache <entries> shrinks the recording's decoded-frame LRU budget for weak-PC profiles (default 16 hot frames; requires --recording); \
@@ -758,9 +758,10 @@ fn run(args: &[String]) -> Result<()> {
         return run_validate_recording(&path, logical_stream_id, |name| std::env::var_os(name));
     }
     if args.iter().any(|arg| arg == "--report-recording-reach") {
-        let (path, out, logical_stream_id, hours) = parse_report_recording_reach_args(args)?;
+        let (path, out, logical_stream_id, hours, frame_cache_entries) =
+            parse_report_recording_reach_args(args)?;
         reject_env_overrides(|name| std::env::var_os(name))?;
-        return recording_reach::run(&path, &out, logical_stream_id, hours);
+        return recording_reach::run(&path, &out, logical_stream_id, hours, frame_cache_entries);
     }
     if args.iter().any(|arg| arg == "--report-content-authority") {
         let request = parse_report_content_authority_args(args)?;
@@ -1273,12 +1274,14 @@ fn parse_report_recording_reach_args(
     PathBuf,
     Option<u64>,
     recording_reach::HourSelection,
+    usize,
 )> {
     let mut path = None;
     let mut out = None;
     let mut logical_stream_id = None;
     let mut hours = recording_reach::HourSelection::Sample;
     let mut hours_selected = false;
+    let mut frame_cache_entries = 1usize;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -1350,10 +1353,19 @@ fn parse_report_recording_reach_args(
                     format!("--logical-stream: invalid id {value:?}: {error}\n{USAGE}")
                 })?);
             }
+            "--report-frame-cache" => {
+                index += 1;
+                let value = args.get(index).ok_or_else(|| {
+                    format!("--report-frame-cache requires an entry count\n{USAGE}")
+                })?;
+                frame_cache_entries = value.parse::<usize>().ok().filter(|n| *n > 0).ok_or_else(|| {
+                    format!("--report-frame-cache: invalid count {value:?}\n{USAGE}")
+                })?;
+            }
             "--non-interactive" => {}
             other => {
                 return Err(format!(
-                    "{other:?} is not valid with --report-recording-reach; use only --report-out, --report-hours, --logical-stream and --non-interactive\n{USAGE}"
+                    "{other:?} is not valid with --report-recording-reach; use only --report-out, --report-hours, --report-frame-cache, --logical-stream and --non-interactive\n{USAGE}"
                 )
                 .into())
             }
@@ -1365,7 +1377,7 @@ fn parse_report_recording_reach_args(
     let out = out.ok_or_else(|| {
         format!("--report-recording-reach requires --report-out <report.json>\n{USAGE}")
     })?;
-    Ok((path, out, logical_stream_id, hours))
+    Ok((path, out, logical_stream_id, hours, frame_cache_entries))
 }
 
 fn reject_production_recording_debug_cli(options: &CliOptions) -> Result<()> {

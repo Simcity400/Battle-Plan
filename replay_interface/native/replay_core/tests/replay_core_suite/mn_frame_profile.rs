@@ -42,7 +42,6 @@ fn price_the_readers_three_stages() {
     let start = hours.len().saturating_sub(samples + 1);
     let mut forward_ms: Vec<f64> = Vec::new();
     let mut same_hour_ms: Vec<f64> = Vec::new();
-    let mut projected_only_ms: Vec<f64> = Vec::new();
     let mut body_ms: Vec<f64> = Vec::new();
     let mut clone_ms: Vec<f64> = Vec::new();
     for position in (start + 1)..hours.len() {
@@ -60,17 +59,6 @@ fn price_the_readers_three_stages() {
             .reconstruct_value(hours[position])
             .expect("re-project the hour");
         same_hour_ms.push(t1.elapsed().as_secs_f64() * 1e3);
-        // The SHARED boundary the domains migrate onto: the same hour again,
-        // but stopping at the projected tree — no materialised private
-        // `serde_json::Value`. Same-hour minus this is what the batch-B
-        // memo saves; this alone is what remains once the boundary migrates.
-        let tp = Instant::now();
-        let (projected, _) = cache
-            .reconstruct_projected(hours[position])
-            .expect("re-project the hour, shared");
-        projected_only_ms.push(tp.elapsed().as_secs_f64() * 1e3);
-        std::hint::black_box(&projected);
-        drop(projected);
         let t2 = Instant::now();
         let copy = world.clone();
         clone_ms.push(t2.elapsed().as_secs_f64() * 1e3);
@@ -99,7 +87,6 @@ fn price_the_readers_three_stages() {
     );
     report("reader_forward_walk_plus_projection", forward_ms.clone());
     report("reader_projection_only_same_hour", same_hour_ms.clone());
-    report("reader_projected_tree_only_same_hour", projected_only_ms.clone());
     report("projected_world_deep_clone", clone_ms.clone());
     report("snapshot_from_world_value", body_ms.clone());
     let mut f = forward_ms.clone();
@@ -158,7 +145,7 @@ fn price_the_typed_frame_per_builder() {
             date: body.date.clone(),
             save_version: body.save_version.clone(),
             schema_version: body.schema_version.clone(),
-            rest: body.rest,
+            rest: body.rest.into(),
         };
         let _ = frame_profile::take();
         let t1 = Instant::now();
@@ -233,7 +220,7 @@ fn digest_the_typed_frame_every_hour() {
             date: body.date.clone(),
             save_version: body.save_version.clone(),
             schema_version: body.schema_version.clone(),
-            rest: body.rest,
+            rest: body.rest.into(),
         };
         let _ = frame_profile::take();
         let frame = WorldFrame::profile_from_raw(raw, None);

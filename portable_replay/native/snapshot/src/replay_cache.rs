@@ -73,50 +73,22 @@ pub const CHECKPOINT_CACHE_FILE: &str = "replay_decoder/checkpoints.h4cp";
 /// deletes source bytes because the cache holds them must read this.
 pub const PUBLISHED_COVERAGE_FILE: &str = "replay_decoder/published_coverage.json";
 pub const PUBLISHED_COVERAGE_SCHEMA: &str = "battle-plan-published-coverage-v1";
-/// How many game hours a checkpoint covers before another whole world is
-/// written.
-///
-/// A checkpoint is the ONLY record that carries a world in full; every other
-/// hour is a delta against the hour before it. So this number is a size lever
-/// with no information in it at all — the same recording, written at a
-/// different cadence, holds exactly the same hours.
-///
-/// Measured on capture t53, 219 hours, production encoder and reader, zstd 3,
-/// every hour reconstructed byte-identically at both settings
-/// (`extractor/native/runs/lz_size_batch2/CKPT744_t53_219h.json` against
-/// `REFUND_t53_219h.json`, and this lane's `MB_CKPT744_*.json`):
-///
-/// * at 168 the checkpoints are 9,693 of t53's 77,637 sealed bytes per game
-///   hour — a fifth of the owner's entire 47,532 B/hour budget spent restating
-///   worlds the deltas already describe;
-/// * at 744 they are 2,189. Over a 105,192-hour campaign that is 141
-///   checkpoints (0.23 GB) instead of 626 (1.02 GB).
-///
-/// The obvious cost is SEEK: opening the replay at an arbitrary date applies
-/// up to 743 deltas instead of up to 167. The owner approved the change on
-/// 2026-08-18 with one condition — the replay must still scrub like video —
-/// which is a replay-side requirement (a seek index and a decoded-state cache
-/// at open, lane MC) and explicitly not a reason to spend the bytes here.
-///
-/// THE LESS OBVIOUS COST IS THE DELTA STREAM ITSELF, and it can go either way.
-/// A checkpoint releases the whole [`Shadow`] with it, so a longer interval
-/// means the revive memories of more fold-outs are held at once against the
-/// same [`MAX_SHADOW_BYTES`] cap. Where that cap binds, a revive is declined
-/// and a whole subtree is re-emitted — so a longer interval buys checkpoint
-/// bytes and can spend delta bytes. It does not bite on any capture measured
-/// here. The decisive one is t55, whose 1,416 hours are nearly two COMPLETE
-/// 744-hour windows rather than one prefix of one, so the longer window gets
-/// its full effect on the memories -- and it is the best of the four:
-/// t53 (219 h) -16.9%, t54 (357 h) -18.8%, t51 (602 h) -24.5%, t55 -22.8%
-/// (`runs/mb_size_batch3/SIZE_LEVERS_MB.txt`, both levers together). Anyone
-/// changing this constant again measures the DELTA payload, not just the
-/// checkpoint payload, and on a recording longer than one window.
-///
-/// 744 is also [`MAX_CHECKPOINT_INTERVAL_HOURS`]. That is not a coincidence to
-/// be tidied away: both are "one game month", and the ceiling exists so a
-/// recording cannot be given an interval whose seek cost is unbounded.
+/// The most game hours one checkpoint window may span: the hard seek bound
+/// every index row is validated against. Windows usually close sooner, when
+/// their sealed delta bytes reach their checkpoint's (`encode_prepared`), so a
+/// seek never walks more bytes than it decodes.
 pub const DEFAULT_CHECKPOINT_INTERVAL_HOURS: u32 = 744;
 pub const MAX_CHECKPOINT_INTERVAL_HOURS: u32 = 24 * 31;
+/// A window whose deltas weigh less than this stays open whatever its
+/// checkpoint weighs: below it a seek's walk is cheaper than a record.
+pub const MIN_WINDOW_DELTA_BYTES: u64 = 64 * 1024;
+
+fn default_workers() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, 8)
+}
 
 /// Phase timers for the cache encode and the seal-time parity verify, enabled
 /// by the same `FOLD_PROFILE` environment variable as `world_fold::foldprof`.
@@ -271,7 +243,8 @@ const CACHE_MAGIC: &[u8; 4] = b"H4CP";
 /// [`PATCH_NUMBER_DELTA`]. Every recording of an earlier version stops opening,
 /// which is what pre-production means: the header carries this number and a
 /// reader refuses a cache that does not state it.
-const FORMAT_VERSION: u16 = 9;
+// Version 10 frames checkpoint root members as bounded, independently sealed parts.
+const FORMAT_VERSION: u16 = 10;
 const RECORD_CHECKPOINT: u8 = 1;
 const RECORD_DELTA: u8 = 2;
 const CACHE_HEADER_LEN: u64 = 4 + 2 + 2;
@@ -1849,6 +1822,11 @@ pub struct ReplayCacheEncoder<W: Write> {
     /// increasing across the merged sequence rather than only within each kind.
     last_hour_index: Option<i64>,
     checkpoint_position: usize,
+    /// Sealed bytes of the open window's checkpoint record, and of the deltas
+    /// written since it: the window closes once the deltas outweigh the
+    /// checkpoint, so a seek never walks more bytes than it decodes.
+    window_checkpoint_bytes: u64,
+    window_delta_bytes: u64,
     /// What `previous`'s tree owns, carried from the parse that built it.
     previous_heap_bytes: u64,
     /// Running total of the heap owned by `entries`' `String` fields.
@@ -1900,6 +1878,8 @@ impl<W: Write> ReplayCacheEncoder<W> {
             next_h4cr_offset: 0,
             last_hour_index: None,
             checkpoint_position: 0,
+            window_checkpoint_bytes: 0,
+            window_delta_bytes: 0,
             previous_heap_bytes: 0,
             entries_string_bytes: 0,
         };
@@ -2066,7 +2046,10 @@ impl<W: Write> ReplayCacheEncoder<W> {
         let hour = meta;
         validate_world_identity(&value, hour.hour_index, &hour.date)?;
         let position = self.entries.len();
-        let is_checkpoint = position % self.checkpoint_interval_hours as usize == 0;
+        let is_checkpoint = position == 0
+            || position - self.checkpoint_position >= self.checkpoint_interval_hours as usize
+            || (self.window_delta_bytes >= self.window_checkpoint_bytes
+                && self.window_delta_bytes >= MIN_WINDOW_DELTA_BYTES);
         let mut raw_record_len = 0u64;
         let (record_kind, payload, delta_steps) = if is_checkpoint {
             self.checkpoint_position = position;
@@ -2081,12 +2064,12 @@ impl<W: Write> ReplayCacheEncoder<W> {
             self.names = NameDictionary::default();
             self.reader_names = NameDictionary::default();
             let payload = cacheprof::timed(&cacheprof::CHECKPOINT_ENCODE_NS, || {
-                let raw = encode_value(&value)?;
-                raw_record_len = raw.len() as u64;
-                seal_cache_payload(&raw)
+                let (payload, raw_len) = encode_checkpoint(&value)?;
+                raw_record_len = raw_len;
+                Ok::<_, ReplayCacheError>(payload)
             })?;
             let decoded = cacheprof::timed(&cacheprof::VERIFY_DECODE_NS, || {
-                decode_value_exact(&open_cache_payload(&payload)?)
+                decode_checkpoint(&payload, 1)
             })?;
             if decoded != value {
                 return Err(ReplayCacheError::new(format!(
@@ -2192,6 +2175,12 @@ impl<W: Write> ReplayCacheEncoder<W> {
         })?;
         cacheprof::add(&cacheprof::CACHE_BYTES, payload_len);
         self.write_failed = false;
+        if record_kind == RECORD_CHECKPOINT {
+            self.window_checkpoint_bytes = payload_len;
+            self.window_delta_bytes = 0;
+        } else {
+            self.window_delta_bytes = self.window_delta_bytes.saturating_add(payload_len);
+        }
         let record_len = self.offset - record_offset;
         self.entries.push(ReplayHourEntry {
             hour_index: hour.hour_index,
@@ -2373,102 +2362,6 @@ pub struct ReplaySeekReceipt {
 pub enum ResumeSource {
     Checkpoint,
     Cursor,
-    Rung,
-}
-
-/// How many resume points a reader keeps per open cache and how far apart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RungPolicy {
-    /// Delta positions between two rungs of one window; 0 keeps no rungs.
-    pub stride: u32,
-    /// Rungs kept across all windows; the least recently used goes first.
-    pub max_rungs: usize,
-}
-
-impl Default for RungPolicy {
-    fn default() -> Self {
-        Self {
-            stride: DEFAULT_RUNG_STRIDE,
-            max_rungs: DEFAULT_MAX_RUNGS,
-        }
-    }
-}
-
-/// Off by default: a rung pins every node changed after it, and on capture
-/// e2e_05 that is about 20 MB of heap per hour walked past it (8 rungs at
-/// stride 8 took the reach report from 1.9 GB to 13 GB resident). A reader
-/// that can afford the memory opts in through `set_rung_policy`.
-pub const DEFAULT_RUNG_STRIDE: u32 = 0;
-pub const DEFAULT_MAX_RUNGS: usize = 0;
-
-/// Resume points kept from earlier walks. A rung is a whole cursor state at
-/// one position of one window; the value shares every unchanged node with the
-/// live cursor, so a rung costs the divergence between it and its neighbours.
-struct RungLadder {
-    policy: RungPolicy,
-    rungs: Vec<(u64, ScrubCursor)>,
-    use_serial: u64,
-}
-
-impl RungLadder {
-    fn new(policy: RungPolicy) -> Self {
-        Self {
-            policy,
-            rungs: Vec::new(),
-            use_serial: 0,
-        }
-    }
-
-    fn wants(&self, checkpoint_position: usize, position: usize) -> bool {
-        self.policy.stride != 0
-            && self.policy.max_rungs != 0
-            && (position - checkpoint_position) % self.policy.stride as usize == 0
-            && !self.rungs.iter().any(|(_, rung)| {
-                rung.checkpoint_position == checkpoint_position && rung.position == position
-            })
-    }
-
-    fn offer(&mut self, cursor: ScrubCursor) {
-        if self.policy.max_rungs == 0 {
-            return;
-        }
-        while self.rungs.len() >= self.policy.max_rungs {
-            let oldest = self
-                .rungs
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, (used, _))| *used)
-                .map(|(index, _)| index)
-                .expect("a full ladder has a rung");
-            self.rungs.swap_remove(oldest);
-        }
-        self.use_serial += 1;
-        self.rungs.push((self.use_serial, cursor));
-    }
-
-    /// The nearest rung at or before `target_position` in the same window.
-    fn nearest(
-        &mut self,
-        checkpoint_position: usize,
-        target_position: usize,
-    ) -> Option<ScrubCursor> {
-        let best = self
-            .rungs
-            .iter()
-            .enumerate()
-            .filter(|(_, (_, rung))| {
-                rung.checkpoint_position == checkpoint_position && rung.position <= target_position
-            })
-            .max_by_key(|(_, (_, rung))| rung.position)
-            .map(|(index, _)| index)?;
-        self.use_serial += 1;
-        self.rungs[best].0 = self.use_serial;
-        Some(self.rungs[best].1.clone())
-    }
-
-    fn len(&self) -> usize {
-        self.rungs.len()
-    }
 }
 
 /// What a reconstruction that was allowed to give up came back with.
@@ -2503,23 +2396,6 @@ pub enum ScrubOutcome {
 pub enum FrameOutcome {
     Reconstructed {
         world: Value,
-        receipt: ReplaySeekReceipt,
-    },
-    Abandoned {
-        reached_hour: i64,
-        walked_deltas: u32,
-    },
-}
-
-/// [`FrameOutcome`] for the SHARED projected world: the hour as a
-/// [`ProjectedValue`], whose unchanged subtrees are pointer-shared with every
-/// other hour's projection instead of privately owned. This is the boundary
-/// the domain consumers migrate onto; until they do, [`FrameOutcome`] is this
-/// followed by a whole-world materialisation.
-#[derive(Debug)]
-pub enum ProjectedOutcome {
-    Reconstructed {
-        world: crate::canon_to_json::ProjectedValue,
         receipt: ReplaySeekReceipt,
     },
     Abandoned {
@@ -2879,7 +2755,8 @@ pub struct CertifiedReplayCache {
     /// `&self` — the reader is shared, and two threads reconstructing at once
     /// take turns rather than each keeping their own world.
     cursor: Mutex<Option<ScrubCursor>>,
-    rungs: Mutex<RungLadder>,
+    /// Threads a checkpoint decode and a whole-world materialisation spread over.
+    workers: usize,
     /// A stop switch the READER'S OWNER installs once, consulted by every
     /// reconstruction. See [`Self::set_scrub_interrupt`].
     interrupt: Mutex<Option<Arc<dyn Fn() -> bool + Send + Sync>>>,
@@ -2901,7 +2778,7 @@ impl Clone for CertifiedReplayCache {
             cache: self.cache.clone(),
             confined: self.confined.clone(),
             cursor: Mutex::new(None),
-            rungs: Mutex::new(RungLadder::new(RungPolicy::default())),
+            workers: self.workers,
             interrupt: Mutex::new(None),
         }
     }
@@ -2975,7 +2852,7 @@ struct ScrubCursor {
     names: NameDictionary,
     /// The root members of `position` as the viewer's values, kept beside the
     /// canonical world so the next forward step re-materialises only the
-    /// members its deltas touched. A rung never carries one.
+    /// members its deltas touched.
     members: Option<Arc<MaterializedRoot>>,
 }
 
@@ -3010,7 +2887,7 @@ impl CertifiedReplayCache {
             cache: CacheBacking::Memory(cache),
             confined,
             cursor: Mutex::new(None),
-            rungs: Mutex::new(RungLadder::new(RungPolicy::default())),
+            workers: default_workers(),
             interrupt: Mutex::new(None),
         })
     }
@@ -3037,7 +2914,7 @@ impl CertifiedReplayCache {
             cache: CacheBacking::File(Arc::new(cache)),
             confined,
             cursor: Mutex::new(None),
-            rungs: Mutex::new(RungLadder::new(RungPolicy::default())),
+            workers: default_workers(),
             interrupt: Mutex::new(None),
         })
     }
@@ -3106,12 +2983,8 @@ impl CertifiedReplayCache {
             .cursor
             .lock()
             .map_err(|_| ReplayCacheError::new("replay scrub cursor lock poisoned"))?;
-        let mut rungs = self
-            .rungs
-            .lock()
-            .map_err(|_| ReplayCacheError::new("replay rung ladder lock poisoned"))?;
         self.cache.with_records(|records| {
-            reconstruct_json_cursored(&self.index, records, hour_index, &mut cursor, &mut rungs, keep_going)
+            reconstruct_json_cursored(&self.index, records, hour_index, &mut cursor, self.workers, keep_going)
         })
     }
 
@@ -3156,83 +3029,9 @@ impl CertifiedReplayCache {
             .cursor
             .lock()
             .map_err(|_| ReplayCacheError::new("replay scrub cursor lock poisoned"))?;
-        let mut rungs = self
-            .rungs
-            .lock()
-            .map_err(|_| ReplayCacheError::new("replay rung ladder lock poisoned"))?;
         self.cache.with_records(|records| {
-            reconstruct_value_cursored(&self.index, records, hour_index, &mut cursor, &mut rungs, keep_going)
+            reconstruct_value_cursored(&self.index, records, hour_index, &mut cursor, self.workers, keep_going)
         })
-    }
-
-    /// The world for one hour as the SHARED projected tree
-    /// ([`crate::canon_to_json::ProjectedValue`]): unchanged subtrees are the
-    /// same allocations as every other hour's projection, so holding several
-    /// hours costs their divergence, not their size. This is the boundary the
-    /// domain consumers migrate onto; [`Self::reconstruct_value`] is this
-    /// followed by a whole-world materialisation into a private
-    /// `serde_json::Value`, which is the cost migration removes.
-    pub fn reconstruct_projected(
-        &self,
-        hour_index: i64,
-    ) -> Result<(crate::canon_to_json::ProjectedValue, ReplaySeekReceipt), ReplayCacheError> {
-        match self.reconstruct_projected_interruptible(hour_index, self.keep_going().as_ref())? {
-            ProjectedOutcome::Reconstructed { world, receipt } => Ok((world, receipt)),
-            ProjectedOutcome::Abandoned { reached_hour, .. } => {
-                Err(ReplayCacheError::new(format!(
-                    "the reconstruction of hour {hour_index} was abandoned at hour {reached_hour} \
-                     because the caller's stop switch asked it to stop"
-                )))
-            }
-        }
-    }
-
-    /// The world for one hour materialised straight from the canonical tree,
-    /// root member by root member on `workers` threads: the same value as
-    /// [`Self::reconstruct_value`], with the per-member projections memoised on
-    /// their nodes exactly as the whole-root projection leaves them.
-    pub fn reconstruct_materialized(
-        &self,
-        hour_index: i64,
-        workers: usize,
-    ) -> Result<(Value, ReplaySeekReceipt), ReplayCacheError> {
-        refuse_confined_hour(&self.confined, hour_index)?;
-        let keep_going = self.keep_going();
-        let mut cursor = self
-            .cursor
-            .lock()
-            .map_err(|_| ReplayCacheError::new("replay scrub cursor lock poisoned"))?;
-        let mut rungs = self
-            .rungs
-            .lock()
-            .map_err(|_| ReplayCacheError::new("replay rung ladder lock poisoned"))?;
-        let outcome = self.cache.with_records(|records| {
-            reconstruct_cursored(
-                &self.index,
-                records,
-                hour_index,
-                &mut cursor,
-                &mut rungs,
-                keep_going.as_ref(),
-                &|value, target, _| {
-                    crate::canon_to_json::materialize_parallel(value, workers)
-                        .map(|world| (world, None))
-                        .map_err(|error| {
-                            ReplayCacheError::new(format!(
-                                "reconstructed hour {} is not a world a JSON reader accepts: {error}",
-                                target.hour_index
-                            ))
-                        })
-                },
-            )
-        })?;
-        match outcome {
-            CursoredOutcome::Produced { produced, receipt } => Ok((produced, receipt)),
-            CursoredOutcome::Abandoned { reached_hour, .. } => Err(ReplayCacheError::new(format!(
-                "the reconstruction of hour {hour_index} was abandoned at hour {reached_hour} \
-                 because the caller's stop switch asked it to stop"
-            ))),
-        }
     }
 
     /// One root member of the hour, materialised alone: the walk is the same,
@@ -3248,22 +3047,18 @@ impl CertifiedReplayCache {
             .cursor
             .lock()
             .map_err(|_| ReplayCacheError::new("replay scrub cursor lock poisoned"))?;
-        let mut rungs = self
-            .rungs
-            .lock()
-            .map_err(|_| ReplayCacheError::new("replay rung ladder lock poisoned"))?;
         let outcome = self.cache.with_records(|records| {
             reconstruct_cursored(
                 &self.index,
                 records,
                 hour_index,
                 &mut cursor,
-                &mut rungs,
+                self.workers,
                 keep_going.as_ref(),
                 &|value, target, _| match value.member(key) {
                     None => Ok((None, None)),
-                    Some(member) => crate::canon_to_json::project_at(member, 1)
-                        .map(|projected| (Some(crate::canon_to_json::projected_to_value(&projected)), None))
+                    Some(member) => crate::canon_to_json::to_value_at(member, 1)
+                        .map(|member| (Some(member), None))
                         .map_err(|error| {
                             ReplayCacheError::new(format!(
                                 "reconstructed hour {} is not a world a JSON reader accepts: {error}",
@@ -3286,7 +3081,7 @@ impl CertifiedReplayCache {
     /// cursor re-materialises only the members its deltas touched and hands
     /// every other member back by `Arc`; any other walk materialises them all,
     /// on `workers` threads. Member by member the same values as
-    /// [`Self::reconstruct_materialized`].
+    /// [`Self::reconstruct_value`].
     pub fn reconstruct_root_members(
         &self,
         hour_index: i64,
@@ -3298,17 +3093,13 @@ impl CertifiedReplayCache {
             .cursor
             .lock()
             .map_err(|_| ReplayCacheError::new("replay scrub cursor lock poisoned"))?;
-        let mut rungs = self
-            .rungs
-            .lock()
-            .map_err(|_| ReplayCacheError::new("replay rung ladder lock poisoned"))?;
         let outcome = self.cache.with_records(|records| {
             reconstruct_cursored(
                 &self.index,
                 records,
                 hour_index,
                 &mut cursor,
-                &mut rungs,
+                workers,
                 keep_going.as_ref(),
                 &|value, target, reuse| {
                     crate::canon_to_json::materialize_root_members(value, workers, reuse)
@@ -3332,28 +3123,6 @@ impl CertifiedReplayCache {
                  because the caller's stop switch asked it to stop"
             ))),
         }
-    }
-
-    /// [`Self::reconstruct_projected`] with the caller holding a stop switch.
-    /// See [`Self::reconstruct_json_interruptible`] for why a seek must be
-    /// abandonable and what an abandoned one keeps.
-    pub fn reconstruct_projected_interruptible(
-        &self,
-        hour_index: i64,
-        keep_going: &dyn Fn() -> bool,
-    ) -> Result<ProjectedOutcome, ReplayCacheError> {
-        refuse_confined_hour(&self.confined, hour_index)?;
-        let mut cursor = self
-            .cursor
-            .lock()
-            .map_err(|_| ReplayCacheError::new("replay scrub cursor lock poisoned"))?;
-        let mut rungs = self
-            .rungs
-            .lock()
-            .map_err(|_| ReplayCacheError::new("replay rung ladder lock poisoned"))?;
-        self.cache.with_records(|records| {
-            reconstruct_projected_cursored(&self.index, records, hour_index, &mut cursor, &mut rungs, keep_going)
-        })
     }
 
     /// The installed stop switch as a predicate, or one that never says stop.
@@ -3406,21 +3175,15 @@ impl CertifiedReplayCache {
         if let Ok(mut cursor) = self.cursor.lock() {
             *cursor = None;
         }
-        if let Ok(mut rungs) = self.rungs.lock() {
-            let policy = rungs.policy;
-            *rungs = RungLadder::new(policy);
-        }
     }
 
-    /// Replace the rung policy; the rungs already held are dropped.
-    pub fn set_rung_policy(&self, policy: RungPolicy) {
-        if let Ok(mut rungs) = self.rungs.lock() {
-            *rungs = RungLadder::new(policy);
-        }
+    /// Threads for checkpoint decodes and whole-world materialisations.
+    pub fn set_workers(&mut self, workers: usize) {
+        self.workers = workers.max(1);
     }
 
-    pub fn rung_count(&self) -> usize {
-        self.rungs.lock().map(|rungs| rungs.len()).unwrap_or(0)
+    pub fn workers(&self) -> usize {
+        self.workers
     }
 
     /// See [`ReplayCacheReader::verify_every_hour`]. Identical proof, over
@@ -3580,7 +3343,7 @@ fn walk_every_hour(
         match (kind, entry.delta_steps) {
             (RECORD_CHECKPOINT, 0) => {
                 value = Some(cacheprof::timed(&cacheprof::VERIFY_DECODE_NS, || {
-                    decode_value_exact(&open_cache_payload(payload.as_ref())?)
+                    decode_checkpoint(payload.as_ref(), 1)
                 })?);
                 shadow = Shadow::default();
                 budget = ShadowBudget::default();
@@ -3643,7 +3406,7 @@ fn reconstruct_json_from(
             "checkpoint index points at a non-checkpoint cache record",
         ));
     }
-    let mut value = decode_value_exact(&open_cache_payload(payload.as_ref())?)?;
+    let mut value = decode_checkpoint(payload.as_ref(), 1)?;
     drop(payload);
     // Rebuilt from the checkpoint forward, which is the whole reason a revive
     // may only ever name a value recorded since one.
@@ -3720,10 +3483,10 @@ fn reconstruct_json_cursored(
     cache: &dyn CacheRecords,
     hour_index: i64,
     cursor: &mut Option<ScrubCursor>,
-    rungs: &mut RungLadder,
+    workers: usize,
     keep_going: &dyn Fn() -> bool,
 ) -> Result<ScrubOutcome, ReplayCacheError> {
-    match reconstruct_cursored(index, cache, hour_index, cursor, rungs, keep_going, &|value, target, _| {
+    match reconstruct_cursored(index, cache, hour_index, cursor, workers, keep_going, &|value, target, _| {
         if value.tree_digest_hex().0 != target.world_digest {
             return Err(ReplayCacheError::new(format!(
                 "reconstructed hour {} does not byte-match replay_decoder parity hash",
@@ -3774,18 +3537,12 @@ fn reconstruct_value_cursored(
     cache: &dyn CacheRecords,
     hour_index: i64,
     cursor: &mut Option<ScrubCursor>,
-    rungs: &mut RungLadder,
+    workers: usize,
     keep_going: &dyn Fn() -> bool,
 ) -> Result<FrameOutcome, ReplayCacheError> {
-    // The MEMOISED projection: unchanged subtrees are pointer-identical
-    // across hours after batch A's path copying, so `project` reuses their
-    // cached projections and only visits what changed. The materialisation
-    // into a private `serde_json::Value` is still paid in full here — it goes
-    // away domain by domain as the boundary migrates onto
-    // [`ProjectedValue`], and until then this route claims no latency.
-    match reconstruct_cursored(index, cache, hour_index, cursor, rungs, keep_going, &|value, target, _| {
-        crate::canon_to_json::project(value)
-            .map(|projected| (crate::canon_to_json::projected_to_value(&projected), None))
+    match reconstruct_cursored(index, cache, hour_index, cursor, workers, keep_going, &|value, target, _| {
+        crate::canon_to_json::materialize_parallel(value, workers)
+            .map(|world| (world, None))
             .map_err(|error| {
                 ReplayCacheError::new(format!(
                     "reconstructed hour {} is not a world a JSON reader accepts: {error}",
@@ -3801,39 +3558,6 @@ fn reconstruct_value_cursored(
             reached_hour,
             walked_deltas,
         } => Ok(FrameOutcome::Abandoned {
-            reached_hour,
-            walked_deltas,
-        }),
-    }
-}
-
-/// The same walk, finishing with the SHARED projected world — no
-/// materialisation, no private copy. See [`reconstruct_value_cursored`] for
-/// why no per-hour digest is taken on the cursored value route.
-fn reconstruct_projected_cursored(
-    index: &ReplayHourIndex,
-    cache: &dyn CacheRecords,
-    hour_index: i64,
-    cursor: &mut Option<ScrubCursor>,
-    rungs: &mut RungLadder,
-    keep_going: &dyn Fn() -> bool,
-) -> Result<ProjectedOutcome, ReplayCacheError> {
-    match reconstruct_cursored(index, cache, hour_index, cursor, rungs, keep_going, &|value, target, _| {
-        crate::canon_to_json::project(value).map(|world| (world, None)).map_err(|error| {
-            ReplayCacheError::new(format!(
-                "reconstructed hour {} is not a world a JSON reader accepts: {error}",
-                target.hour_index
-            ))
-        })
-    })? {
-        CursoredOutcome::Produced { produced, receipt } => Ok(ProjectedOutcome::Reconstructed {
-            world: produced,
-            receipt,
-        }),
-        CursoredOutcome::Abandoned {
-            reached_hour,
-            walked_deltas,
-        } => Ok(ProjectedOutcome::Abandoned {
             reached_hour,
             walked_deltas,
         }),
@@ -3858,7 +3582,7 @@ fn reconstruct_cursored<T>(
     cache: &dyn CacheRecords,
     hour_index: i64,
     cursor: &mut Option<ScrubCursor>,
-    rungs: &mut RungLadder,
+    workers: usize,
     keep_going: &dyn Fn() -> bool,
     finish: &dyn Fn(
         &CanonValue,
@@ -3887,16 +3611,10 @@ fn reconstruct_cursored<T>(
     let resumed = cursor.take().filter(|held| {
         held.checkpoint_position == checkpoint_position && held.position <= target_position
     });
-    // A rung is the same kind of state as the held cursor and resumable under
-    // the same condition; the nearer of the two wins.
-    let rung = rungs.nearest(checkpoint_position, target_position);
-    let (resumed, resumed_from) = match (resumed, rung) {
-        (Some(held), Some(rung)) if rung.position > held.position => {
-            (Some(rung), ResumeSource::Rung)
-        }
-        (Some(held), _) => (Some(held), ResumeSource::Cursor),
-        (None, Some(rung)) => (Some(rung), ResumeSource::Rung),
-        (None, None) => (None, ResumeSource::Checkpoint),
+    let resumed_from = if resumed.is_some() {
+        ResumeSource::Cursor
+    } else {
+        ResumeSource::Checkpoint
     };
     let (mut value, mut shadow, mut budget, mut names, start_position, previous_members) = match resumed {
         Some(held) => (
@@ -3915,19 +3633,8 @@ fn reconstruct_cursored<T>(
                     "checkpoint index points at a non-checkpoint cache record",
                 ));
             }
-            let value = decode_value_exact(&open_cache_payload(payload.as_ref())?)?;
+            let value = decode_checkpoint(payload.as_ref(), workers)?;
             drop(payload);
-            if rungs.wants(checkpoint_position, checkpoint_position) {
-                rungs.offer(ScrubCursor {
-                    checkpoint_position,
-                    position: checkpoint_position,
-                    value: value.clone(),
-                    shadow: Shadow::default(),
-                    budget: ShadowBudget::default(),
-                    names: NameDictionary::default(),
-                    members: None,
-                });
-            }
             (
                 value,
                 Shadow::default(),
@@ -3991,17 +3698,6 @@ fn reconstruct_cursored<T>(
         walk_apply_ms += stage.elapsed().as_secs_f64() * 1e3;
         walked += 1;
         position += 1;
-        if rungs.wants(checkpoint_position, position) {
-            rungs.offer(ScrubCursor {
-                checkpoint_position,
-                position,
-                value: value.clone(),
-                shadow: shadow.clone(),
-                budget,
-                names: names.clone(),
-                members: None,
-            });
-        }
     }
     validate_world_identity(&value, target.hour_index, &target.date)?;
     let walk_ms = walk_started.elapsed().as_secs_f64() * 1e3;
@@ -6293,6 +5989,7 @@ fn decode_patch(
 /// starts, so nothing before it may be needed to read it -- so it spells every
 /// member name in full and seeds nothing. The window's dictionary begins empty
 /// at each checkpoint and is built by the deltas that follow it.
+#[cfg(test)]
 fn encode_value(value: &CanonValue) -> Result<Vec<u8>, ReplayCacheError> {
     let mut out = Vec::new();
     encode_value_into(value, &mut out, 0, None)?;
@@ -6361,11 +6058,315 @@ fn encode_value_into(
 }
 
 /// A CHECKPOINT record, which carries no dictionary and needs none.
+#[cfg(test)]
 fn decode_value_exact(bytes: &[u8]) -> Result<CanonValue, ReplayCacheError> {
+    decode_value_exact_at(bytes, 0)
+}
+
+fn decode_value_exact_at(bytes: &[u8], depth: usize) -> Result<CanonValue, ReplayCacheError> {
     let mut reader = ByteReader::new(bytes);
-    let value = decode_value(&mut reader, 0, None)?;
+    let value = decode_value(&mut reader, depth, None)?;
     reader.finish()?;
     Ok(value)
+}
+
+/// A CHECKPOINT payload: the world's root members, each sealed in parts so a
+/// reader decodes them side by side. Per member its name, a part kind, and
+/// the sealed parts behind lengths: a whole value, or the children of a wide
+/// object or array in contiguous runs.
+const CHECKPOINT_PART_WHOLE: u8 = 0;
+const CHECKPOINT_PART_OBJECT: u8 = 1;
+const CHECKPOINT_PART_ARRAY: u8 = 2;
+/// A member with at least this many children is written in parts.
+const CHECKPOINT_SPLIT_CHILDREN: usize = 32;
+const CHECKPOINT_PARTS: usize = 16;
+
+// The byte count sums unsealed part payloads, excluding their outer framing.
+fn encode_checkpoint(value: &CanonValue) -> Result<(Vec<u8>, u64), ReplayCacheError> {
+    let CanonValue::Object(members) = value else {
+        return Err(ReplayCacheError::new("a checkpoint world is a JSON object"));
+    };
+    let mut out = Vec::new();
+    let mut raw_record_len = 0u64;
+    let mut sealed_part_bytes = 0u64;
+    put_varint(&mut out, members.len() as u64);
+    for (key, member) in members.iter() {
+        put_text(&mut out, key)?;
+        let mut parts: Vec<Vec<u8>> = Vec::new();
+        let kind = match member {
+            CanonValue::Object(children) if children.len() >= CHECKPOINT_SPLIT_CHILDREN => {
+                for run in split_runs(children.len()) {
+                    let mut part = Vec::new();
+                    put_varint(&mut part, run.len() as u64);
+                    for (child_key, child) in &children[run] {
+                        put_text(&mut part, child_key)?;
+                        encode_value_into(child, &mut part, 2, None)?;
+                    }
+                    parts.push(part);
+                }
+                CHECKPOINT_PART_OBJECT
+            }
+            CanonValue::Array(children) if children.len() >= CHECKPOINT_SPLIT_CHILDREN => {
+                for run in split_runs(children.len()) {
+                    let mut part = Vec::new();
+                    put_varint(&mut part, run.len() as u64);
+                    for child in &children[run] {
+                        encode_value_into(child, &mut part, 2, None)?;
+                    }
+                    parts.push(part);
+                }
+                CHECKPOINT_PART_ARRAY
+            }
+            _ => {
+                let mut part = Vec::new();
+                encode_value_into(member, &mut part, 1, None)?;
+                parts.push(part);
+                CHECKPOINT_PART_WHOLE
+            }
+        };
+        out.push(kind);
+        put_varint(&mut out, parts.len() as u64);
+        for part in parts {
+            raw_record_len = checked_checkpoint_size(raw_record_len, part.len() as u64)?;
+            let sealed = seal_cache_payload(&part)?;
+            sealed_part_bytes += sealed.len() as u64;
+            put_varint(&mut out, sealed.len() as u64);
+            out.extend_from_slice(&sealed);
+        }
+    }
+    checked_checkpoint_size(raw_record_len, out.len() as u64 - sealed_part_bytes)?;
+    Ok((out, raw_record_len))
+}
+
+fn checked_checkpoint_size(total: u64, additional: u64) -> Result<u64, ReplayCacheError> {
+    total.checked_add(additional).filter(|&size| size <= MAX_CACHE_RECORD_BYTES)
+        .ok_or_else(|| ReplayCacheError::new(format!(
+            "checkpoint decoded payload exceeds the {MAX_CACHE_RECORD_BYTES}-byte per-record reader bound"
+        )))
+}
+
+fn checkpoint_part_raw_len(sealed: &[u8]) -> Result<u64, ReplayCacheError> {
+    let (method, body) = sealed.split_first()
+        .ok_or_else(|| ReplayCacheError::new("cache record payload is empty"))?;
+    match *method {
+        PAYLOAD_METHOD_RAW => Ok(body.len() as u64),
+        PAYLOAD_METHOD_ZSTD => {
+            if !body.starts_with(&compact_stream::ZSTD_FRAME_MAGIC) {
+                return Err(ReplayCacheError::new("cache record payload requires a standard zstd frame"));
+            }
+            zstd::zstd_safe::get_frame_content_size(body)
+                .map_err(|_| ReplayCacheError::new("cache record zstd frame has no content size"))?
+                .ok_or_else(|| ReplayCacheError::new("cache record zstd frame has no content size"))
+        }
+        _ => Err(ReplayCacheError::new("checkpoint part payload method is unknown")),
+    }
+}
+
+/// `len` children cut into up to [`CHECKPOINT_PARTS`] contiguous runs.
+fn split_runs(len: usize) -> Vec<std::ops::Range<usize>> {
+    let run = len.div_ceil(CHECKPOINT_PARTS).max(1);
+    (0..len).step_by(run).map(|start| start..(start + run).min(len)).collect()
+}
+
+enum CheckpointPart {
+    Whole(CanonValue),
+    Object(Vec<(String, CanonValue)>),
+    Array(Vec<CanonValue>),
+}
+
+fn decode_checkpoint_part(kind: u8, sealed: &[u8]) -> Result<CheckpointPart, ReplayCacheError> {
+    let raw = open_cache_payload(sealed)?;
+    let mut reader = ByteReader::new(&raw);
+    let part = match kind {
+        CHECKPOINT_PART_WHOLE => CheckpointPart::Whole(decode_value(&mut reader, 1, None)?),
+        CHECKPOINT_PART_OBJECT => {
+            let count = reader.count(MIN_KEYED_VALUE_BYTES)?;
+            if count == 0 {
+                return Err(ReplayCacheError::new("checkpoint object part is empty"));
+            }
+            let mut members: Vec<(String, CanonValue)> = Vec::new();
+            reserve_exact(&mut members, count)?;
+            for _ in 0..count {
+                let key = reader.text()?;
+                if !is_valid_object_key(&key) {
+                    return Err(ReplayCacheError::new(
+                        "binary JSON object member name does not decode",
+                    ));
+                }
+                if members
+                    .last()
+                    .is_some_and(|(previous, _)| key_cmp(previous, &key) != Ordering::Less)
+                {
+                    return Err(ReplayCacheError::new(
+                        "binary JSON object keys are not strictly ordered",
+                    ));
+                }
+                let value = decode_value(&mut reader, 2, None)?;
+                members.push((key, value));
+            }
+            CheckpointPart::Object(members)
+        }
+        CHECKPOINT_PART_ARRAY => {
+            let count = reader.count(MIN_VALUE_BYTES)?;
+            if count == 0 {
+                return Err(ReplayCacheError::new("checkpoint array part is empty"));
+            }
+            let mut items: Vec<CanonValue> = Vec::new();
+            reserve_exact(&mut items, count)?;
+            for _ in 0..count {
+                items.push(decode_value(&mut reader, 2, None)?);
+            }
+            CheckpointPart::Array(items)
+        }
+        other => {
+            return Err(ReplayCacheError::new(format!(
+                "checkpoint member part kind {other} is unknown"
+            )))
+        }
+    };
+    reader.finish()?;
+    Ok(part)
+}
+
+struct CheckpointEncoding<'a> {
+    keys: Vec<String>,
+    kinds: Vec<u8>,
+    parts: Vec<Vec<&'a [u8]>>,
+}
+
+fn preflight_checkpoint(bytes: &[u8]) -> Result<CheckpointEncoding<'_>, ReplayCacheError> {
+    checked_checkpoint_size(0, bytes.len() as u64)?;
+    let mut raw_part_bytes = 0u64;
+    let mut sealed_part_bytes = 0u64;
+    let mut reader = ByteReader::new(bytes);
+    let count = reader.count(MIN_KEYED_VALUE_BYTES + 3)?;
+    let mut keys: Vec<String> = Vec::new();
+    reserve_exact(&mut keys, count)?;
+    let mut kinds: Vec<u8> = Vec::new();
+    reserve_exact(&mut kinds, count)?;
+    let mut parts: Vec<Vec<&[u8]>> = Vec::new();
+    reserve_exact(&mut parts, count)?;
+    for _ in 0..count {
+        let key = reader.text()?;
+        if !is_valid_object_key(&key) {
+            return Err(ReplayCacheError::new(
+                "binary JSON object member name does not decode",
+            ));
+        }
+        if keys
+            .last()
+            .is_some_and(|previous| key_cmp(previous, &key) != Ordering::Less)
+        {
+            return Err(ReplayCacheError::new(
+                "binary JSON object keys are not strictly ordered",
+            ));
+        }
+        let kind = reader.u8()?;
+        if !matches!(kind, CHECKPOINT_PART_WHOLE | CHECKPOINT_PART_OBJECT | CHECKPOINT_PART_ARRAY) {
+            return Err(ReplayCacheError::new(format!("checkpoint member part kind {kind} is unknown")));
+        }
+        let part_count = reader.count(2)?;
+        if !(1..=CHECKPOINT_PARTS).contains(&part_count)
+            || (kind == CHECKPOINT_PART_WHOLE && part_count != 1) {
+            return Err(ReplayCacheError::new("checkpoint member part count is invalid"));
+        }
+        let mut member_parts: Vec<&[u8]> = Vec::new();
+        reserve_exact(&mut member_parts, part_count)?;
+        for _ in 0..part_count {
+            let len = usize::try_from(reader.varint()?).map_err(|_| {
+                ReplayCacheError::new("checkpoint member part length does not fit usize")
+            })?;
+            let sealed = reader.take(len)?;
+            raw_part_bytes = checked_checkpoint_size(raw_part_bytes, checkpoint_part_raw_len(sealed)?)?;
+            sealed_part_bytes += len as u64;
+            member_parts.push(sealed);
+        }
+        keys.push(key);
+        kinds.push(kind);
+        parts.push(member_parts);
+    }
+    reader.finish()?;
+    checked_checkpoint_size(raw_part_bytes, bytes.len() as u64 - sealed_part_bytes)?;
+    Ok(CheckpointEncoding { keys, kinds, parts })
+}
+
+fn decode_checkpoint(bytes: &[u8], workers: usize) -> Result<CanonValue, ReplayCacheError> {
+    let CheckpointEncoding { keys, kinds, parts } = preflight_checkpoint(bytes)?;
+    let count = keys.len();
+    if count == 0 {
+        return Ok(CanonValue::object(Vec::new()));
+    }
+    let decoded_parts: Vec<Vec<Result<CheckpointPart, ReplayCacheError>>> = if workers <= 1 {
+        parts.iter().zip(&kinds).map(|(member_parts, &kind)| {
+            member_parts.iter().map(|part| decode_checkpoint_part(kind, part)).collect()
+        }).collect()
+    } else {
+        let tasks: Vec<(usize, usize)> = parts
+            .iter()
+            .enumerate()
+            .flat_map(|(member, member_parts)| (0..member_parts.len()).map(move |part| (member, part)))
+            .collect();
+        let slots: Vec<Vec<Mutex<Option<Result<CheckpointPart, ReplayCacheError>>>>> = parts
+            .iter()
+            .map(|member_parts| member_parts.iter().map(|_| Mutex::new(None)).collect())
+            .collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..workers.min(tasks.len()) {
+                scope.spawn(|| loop {
+                    let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(&(member, part)) = tasks.get(at) else { break };
+                    let decoded = decode_checkpoint_part(kinds[member], parts[member][part]);
+                    *slots[member][part].lock().expect("slot lock") = Some(decoded);
+                });
+            }
+        });
+        slots.into_iter().map(|member_slots| member_slots.into_iter()
+            .map(|slot| slot.into_inner().expect("slot lock").expect("every part ran"))
+            .collect()).collect()
+    };
+    let mut members: Vec<(String, CanonValue)> = Vec::new();
+    reserve_exact(&mut members, count)?;
+    for ((key, kind), member_parts) in keys.into_iter().zip(kinds).zip(decoded_parts) {
+        let mut decoded = member_parts.into_iter();
+        let value = match kind {
+            CHECKPOINT_PART_WHOLE => match decoded.next().expect("one part")? {
+                CheckpointPart::Whole(value) => value,
+                _ => unreachable!("a whole part decodes as a whole"),
+            },
+            CHECKPOINT_PART_OBJECT => {
+                let mut children: Vec<(String, CanonValue)> = Vec::new();
+                for part in decoded {
+                    let CheckpointPart::Object(run) = part? else {
+                        unreachable!("an object part decodes as members");
+                    };
+                    if let (Some((previous, _)), Some((first, _))) = (children.last(), run.first()) {
+                        if key_cmp(previous, first) != Ordering::Less {
+                            return Err(ReplayCacheError::new(
+                                "binary JSON object keys are not strictly ordered",
+                            ));
+                        }
+                    }
+                    reserve_exact(&mut children, run.len())?;
+                    children.extend(run);
+                }
+                CanonValue::object(children)
+            }
+            _ => {
+                let mut children: Vec<CanonValue> = Vec::new();
+                for part in decoded {
+                    let CheckpointPart::Array(run) = part? else {
+                        unreachable!("an array part decodes as items");
+                    };
+                    reserve_exact(&mut children, run.len())?;
+                    children.extend(run);
+                }
+                CanonValue::array(children)
+            }
+        };
+        members.push((key, value));
+    }
+    Ok(CanonValue::object(members))
 }
 
 fn decode_value(
@@ -6806,6 +6807,131 @@ mod tests {
     use super::*;
     use crate::canon_value::NON_IDENTITY_TOKENS;
     use serde_json::Value;
+
+    fn checkpoint_test_parts(members: &[(u8, Vec<Vec<u8>>)]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        put_varint(&mut bytes, members.len() as u64);
+        for (index, (kind, parts)) in members.iter().enumerate() {
+            put_text(&mut bytes, &format!("m{index:03}")).unwrap();
+            bytes.push(*kind);
+            put_varint(&mut bytes, parts.len() as u64);
+            for part in parts {
+                put_varint(&mut bytes, part.len() as u64);
+                bytes.extend_from_slice(part);
+            }
+        }
+        bytes
+    }
+
+    fn checkpoint_declared_part(decoded_len: u64) -> Vec<u8> {
+        let mut part = vec![PAYLOAD_METHOD_ZSTD];
+        part.extend(compact_stream::ZSTD_FRAME_MAGIC);
+        // Eight-byte content size and a small window; no compressed data exists.
+        part.extend([0xc0, 0]);
+        part.extend(decoded_len.to_le_bytes());
+        part.extend([1, 0, 0]);
+        part
+    }
+
+    #[test]
+    fn checkpoint_preflight_bounds_all_parts_and_all_members_before_decode() {
+        let part = checkpoint_declared_part(MAX_CACHE_RECORD_BYTES / 2 + 1);
+        for members in [
+            vec![(CHECKPOINT_PART_ARRAY, vec![part.clone(), part.clone()])],
+            vec![(CHECKPOINT_PART_WHOLE, vec![part.clone()]),
+                 (CHECKPOINT_PART_WHOLE, vec![part.clone()])],
+        ] {
+            let bytes = checkpoint_test_parts(&members);
+            assert!(bytes.len() < 128);
+            for workers in [0, 1, 3] {
+                let error = decode_checkpoint(&bytes, workers).unwrap_err().to_string();
+                assert!(error.contains("checkpoint decoded payload exceeds"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_preflight_counts_framing_and_accepts_the_exact_boundary() {
+        let part = checkpoint_declared_part(0);
+        let bytes = checkpoint_test_parts(&[(CHECKPOINT_PART_WHOLE, vec![part.clone()])]);
+        let framing = (bytes.len() - part.len()) as u64;
+        let at_limit = checkpoint_declared_part(MAX_CACHE_RECORD_BYTES - framing);
+        let bytes = checkpoint_test_parts(&[(CHECKPOINT_PART_WHOLE, vec![at_limit])]);
+        assert!(preflight_checkpoint(&bytes).is_ok());
+        let over_limit = checkpoint_declared_part(MAX_CACHE_RECORD_BYTES - framing + 1);
+        let bytes = checkpoint_test_parts(&[(CHECKPOINT_PART_WHOLE, vec![over_limit])]);
+        let error = preflight_checkpoint(&bytes).err().expect("framing costs bytes").to_string();
+        assert!(error.contains("checkpoint decoded payload exceeds"), "{error}");
+        assert_eq!(checked_checkpoint_size(MAX_CACHE_RECORD_BYTES - 1, 1).unwrap(), MAX_CACHE_RECORD_BYTES);
+        assert!(checked_checkpoint_size(MAX_CACHE_RECORD_BYTES, 1).is_err());
+        assert!(checked_checkpoint_size(u64::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn checkpoint_preflight_measures_raw_and_zstd_without_opening_them() {
+        assert_eq!(checkpoint_part_raw_len(&[PAYLOAD_METHOD_RAW, 1, 2, 3]).unwrap(), 3);
+        let raw = vec![TAG_NULL; 4096];
+        let compressed = seal_cache_payload(&raw).unwrap();
+        assert_eq!(compressed[0], PAYLOAD_METHOD_ZSTD);
+        assert_eq!(checkpoint_part_raw_len(&compressed).unwrap(), raw.len() as u64);
+        assert!(checkpoint_part_raw_len(&[]).is_err());
+        assert!(checkpoint_part_raw_len(&[99]).is_err());
+        assert!(checkpoint_part_raw_len(&[PAYLOAD_METHOD_ZSTD, 0]).is_err());
+        let absent_size = [vec![PAYLOAD_METHOD_ZSTD], compact_stream::ZSTD_FRAME_MAGIC.to_vec(),
+            vec![0, 0, 1, 0, 0]].concat();
+        assert!(checkpoint_part_raw_len(&absent_size).is_err());
+    }
+
+    #[test]
+    fn checkpoint_preflight_refuses_unknown_kinds_and_unproducible_part_counts() {
+        let raw_null = vec![PAYLOAD_METHOD_RAW, TAG_NULL];
+        for (kind, count, message) in [
+            (99, 1, "kind 99 is unknown"),
+            (CHECKPOINT_PART_ARRAY, 0, "part count is invalid"),
+            (CHECKPOINT_PART_ARRAY, CHECKPOINT_PARTS + 1, "part count is invalid"),
+            (CHECKPOINT_PART_WHOLE, 2, "part count is invalid"),
+        ] {
+            let bytes = checkpoint_test_parts(&[(kind, vec![raw_null.clone(); count])]);
+            let error = preflight_checkpoint(&bytes).err().expect("invalid framing").to_string();
+            assert!(error.contains(message), "{error}");
+        }
+        let array_run = vec![PAYLOAD_METHOD_RAW, 1, TAG_NULL];
+        let bytes = checkpoint_test_parts(&[(CHECKPOINT_PART_ARRAY, vec![array_run; CHECKPOINT_PARTS])]);
+        for workers in [0, 1, 3] {
+            let decoded = decode_checkpoint(&bytes, workers).unwrap();
+            assert_eq!(decoded.member("m000").unwrap(),
+                &CanonValue::array(vec![CanonValue::Null; CHECKPOINT_PARTS]));
+            assert_eq!(decode_checkpoint(&[0], workers).unwrap(), CanonValue::object(Vec::new()));
+        }
+    }
+
+    #[test]
+    fn version_nine_index_and_cache_are_refused_before_checkpoint_payload_decode() {
+        let (mut cache, mut index, source_sha) = build(16, &[(0, "{}")]);
+        let mut index_bytes = index.to_bytes().unwrap();
+        assert_eq!(&index_bytes[4..6], &10u16.to_le_bytes());
+        assert_eq!(&cache[4..6], &10u16.to_le_bytes());
+        index_bytes[4..6].copy_from_slice(&9u16.to_le_bytes());
+        index_bytes.truncate(6);
+        let error = ReplayHourIndex::from_bytes(&index_bytes).unwrap_err().to_string();
+        assert!(error.contains("unsupported version"), "{error}");
+
+        let entry = &mut index.hours[0];
+        let start = entry.cache_record_offset as usize;
+        let end = start + entry.cache_record_len as usize;
+        cache[start + RECORD_HEADER_LEN as usize..end].fill(0xff);
+        entry.cache_record_sha256 = Sha256::hex(&cache[start..end]);
+        cache[4..6].copy_from_slice(&9u16.to_le_bytes());
+        index.cache_sha256 = Sha256::hex(&cache);
+        let index_bytes = index.to_bytes().unwrap();
+        let error = ReplayCacheReader::open(&index_bytes, &cache, 100, &source_sha)
+            .err().expect("old header rejected before poisoned payload").to_string();
+        assert!(error.contains("checkpoint cache header identity is invalid"), "{error}");
+        let file = TempCacheFile::write("old-version", &cache);
+        let error = CertifiedReplayCache::open_file(&index_bytes, file.open(), 100, &source_sha)
+            .err().expect("file-backed old header rejected").to_string();
+        assert!(error.contains("checkpoint cache header identity is invalid"), "{error}");
+    }
 
     #[test]
     fn cache_payload_preserves_level3_writer_frames_and_one_empty_frame() {
@@ -8411,60 +8537,6 @@ mod tests {
         );
     }
 
-    /// THE PROJECTED ROUTE'S OWN COPY of the equality above: the shared
-    /// projected world `reconstruct_projected` serves must materialise to
-    /// exactly the world the digest-checked byte route serves, for every hour,
-    /// in every request order a scrub produces — forward, backward, scattered
-    /// and repeated, because each exercises the cursor's resume condition
-    /// differently and the memo cells' invalidation rides on the patch arms
-    /// that walk runs.
-    ///
-    /// kills: `contents_mut` not clearing the cell (a resumed cursor would
-    /// serve a stale projection for a patched hour); `project` reusing a cell
-    /// across the `forget_scrub_cursor`-forced rebuilds in a way that survives
-    /// mutation; the projected closure walking different records than the
-    /// byte route.
-    #[test]
-    fn the_cursored_projected_route_equals_the_cold_text_route() {
-        let (cache, index, source_sha) = scrub_fixture(240, true);
-        let index_bytes = index.to_bytes().unwrap();
-        let source_len = 240 * 100;
-        let bytes_route =
-            CertifiedReplayCache::open(&index_bytes, cache.clone(), source_len, &source_sha)
-                .unwrap();
-        let projected_route =
-            CertifiedReplayCache::open(&index_bytes, cache, source_len, &source_sha).unwrap();
-
-        let hours: Vec<i64> = index.hours().iter().map(|h| h.hour_index).collect();
-        let descending: Vec<i64> = hours.iter().rev().copied().collect();
-        let scattered: Vec<i64> = (0..hours.len())
-            .map(|step| hours[(step * 97) % hours.len()])
-            .collect();
-        let repeated: Vec<i64> = hours.iter().take(4).flat_map(|h| [*h, *h, *h]).collect();
-        let mut resumed = 0usize;
-        for order in [&hours, &descending, &scattered, &repeated] {
-            for hour in order.iter() {
-                bytes_route.forget_scrub_cursor();
-                let (json, _) = bytes_route.reconstruct_json(*hour).unwrap();
-                let want = crate::parse_json_strict(&json).unwrap();
-                let (projected, receipt) = projected_route.reconstruct_projected(*hour).unwrap();
-                if receipt.walked_deltas < receipt.applied_deltas {
-                    resumed += 1;
-                }
-                assert_eq!(
-                    crate::canon_to_json::projected_to_value(&projected),
-                    want,
-                    "hour {hour} differs between the projected and byte routes"
-                );
-            }
-        }
-        assert!(
-            resumed > hours.len(),
-            "only {resumed} lookups resumed a cursor; the equality above would hold with the \
-             cursor deleted, so this test must see it working"
-        );
-    }
-
     /// A cache file rewritten UNDER THE OPEN HANDLE, in place and at the same
     /// length, must be refused — by name, at the record that changed — and it
     /// must be refused whether or not this reader had already read that record.
@@ -8927,6 +8999,115 @@ mod tests {
             assert!(receipt.applied_deltas <= 2);
             assert_eq!(receipt.configured_bound, 2);
         }
+    }
+
+    /// A checkpoint writes its wide members in parts and reads them back as
+    /// the one world it encoded: whole members, an object cut into runs and an
+    /// array cut into runs all reconstruct to the sealed bytes, and a part
+    /// whose keys run out of order is refused rather than joined.
+    #[test]
+    fn a_wide_member_checkpoint_is_written_in_parts_and_reads_back_whole() {
+        let wide_object: Vec<String> = (0..100)
+            .map(|index| format!(r#""k{index:03}":{{"s":"t{index}","v":{index}}}"#))
+            .collect();
+        let wide_array: Vec<String> = (0..70).map(|index| format!("[{index},{}]", index * 3)).collect();
+        // Wide members at the ROOT of the document, beside the identity members.
+        let document = |hour: i64, object: &str| {
+            format!(
+                r#"{{"array":[{}],"date":"1936.1.1.{}","game_id":"g","hour_index":{hour},"narrow":{{"a":1}},"object":{{{object}}},"schema_version":"1"}}"#,
+                wide_array.join(","),
+                hour + 1
+            )
+        };
+        let object = wide_object.join(",");
+        let changed = object.replacen(r#""v":50"#, r#""v":51"#, 1);
+        let documents = [document(0, &object), document(1, &changed)];
+        let source_sha = "ab".repeat(32);
+        let mut encoder = ReplayCacheEncoder::new(Vec::new(), &source_sha, 744).unwrap();
+        for (hour, json) in documents.iter().enumerate() {
+            let mut prepared = world(hour as i64, "{}");
+            prepared.world_json = json.clone().into_bytes();
+            encoder.push(prepared).unwrap();
+        }
+        let (cache, index) = encoder
+            .finish("g", "1", CacheIdentityMode::IdentityV1, 200)
+            .unwrap();
+        let checkpoint = &index.hours()[0];
+        let record = &cache[checkpoint.cache_record_offset() as usize
+            ..(checkpoint.cache_record_offset() + checkpoint.cache_record_len()) as usize];
+        assert_eq!(record[0], RECORD_CHECKPOINT);
+        let payload = &record[RECORD_HEADER_LEN as usize..];
+        let mut reader = ByteReader::new(payload);
+        let mut kinds = Vec::new();
+        for _ in 0..reader.count(1).unwrap() {
+            let key = reader.text().unwrap();
+            let kind = reader.u8().unwrap();
+            let parts = reader.count(1).unwrap();
+            for _ in 0..parts {
+                let len = reader.varint().unwrap() as usize;
+                reader.take(len).unwrap();
+            }
+            kinds.push((key, kind, parts));
+        }
+        reader.finish().unwrap();
+        assert_eq!(
+            kinds.iter().map(|(key, kind, parts)| (key.as_str(), *kind, *parts)).collect::<Vec<_>>(),
+            [
+                ("array", CHECKPOINT_PART_ARRAY, 14),
+                ("date", CHECKPOINT_PART_WHOLE, 1),
+                ("game_id", CHECKPOINT_PART_WHOLE, 1),
+                ("hour_index", CHECKPOINT_PART_WHOLE, 1),
+                ("narrow", CHECKPOINT_PART_WHOLE, 1),
+                ("object", CHECKPOINT_PART_OBJECT, 15),
+                ("schema_version", CHECKPOINT_PART_WHOLE, 1),
+            ]
+        );
+
+        let index_bytes = index.to_bytes().unwrap();
+        let reader = ReplayCacheReader::open(&index_bytes, &cache, 200, &source_sha).unwrap();
+        for (hour, json) in documents.iter().enumerate() {
+            let (reconstructed, _) = reader.reconstruct_json(hour as i64).unwrap();
+            assert_eq!(reconstructed, json.as_bytes());
+        }
+        for workers in [0usize, 1, 3, 8] {
+            let decoded = decode_checkpoint(payload, workers).unwrap();
+            assert_eq!(decoded.to_json_bytes(), documents[0].as_bytes());
+        }
+
+        // Two object runs swapped: each run is ordered on its own, the join is not.
+        let world = CanonValue::parse(documents[0].as_bytes()).unwrap();
+        let (encoded, raw_record_len) = encode_checkpoint(&world).unwrap();
+        let mut decoded_part_bytes = 0u64;
+        let mut swapped = Vec::new();
+        let mut reader = ByteReader::new(&encoded);
+        let count = reader.count(1).unwrap();
+        put_varint(&mut swapped, count as u64);
+        for _ in 0..count {
+            let key = reader.text().unwrap();
+            let kind = reader.u8().unwrap();
+            let parts = reader.count(1).unwrap();
+            let mut runs: Vec<&[u8]> = Vec::new();
+            for _ in 0..parts {
+                let len = reader.varint().unwrap() as usize;
+                let run = reader.take(len).unwrap();
+                decoded_part_bytes += open_cache_payload(run).unwrap().len() as u64;
+                runs.push(run);
+            }
+            if kind == CHECKPOINT_PART_OBJECT {
+                runs.swap(0, 1);
+            }
+            put_text(&mut swapped, &key).unwrap();
+            swapped.push(kind);
+            put_varint(&mut swapped, runs.len() as u64);
+            for run in runs {
+                put_varint(&mut swapped, run.len() as u64);
+                swapped.extend_from_slice(run);
+            }
+        }
+        reader.finish().unwrap();
+        assert_eq!(raw_record_len, decoded_part_bytes);
+        let error = decode_checkpoint(&swapped, 2).unwrap_err().to_string();
+        assert!(error.contains("not strictly ordered"), "{error}");
     }
 
     /// The defect this format version exists to close.
@@ -10969,6 +11150,10 @@ mod tests {
             CertifiedReplayCache::open(&index_bytes, cache, 600 * 100, &source_sha).unwrap();
         let hours: Vec<i64> = index.hours().iter().map(|h| h.hour_index).collect();
         assert_eq!(index.checkpoint_interval_hours(), 744);
+        // Every hour rewrites every member, so the deltas outweigh the
+        // checkpoint and the byte rule closes windows long before 744 hours.
+        let checkpoints = index.hours().iter().filter(|hour| hour.delta_steps() == 0).count();
+        assert!(checkpoints > 1, "{checkpoints} checkpoint(s)");
 
         fn median(mut samples: Vec<std::time::Duration>) -> std::time::Duration {
             samples.sort();
@@ -10982,26 +11167,37 @@ mod tests {
         for position in 501..540 {
             let start = std::time::Instant::now();
             let (_, receipt) = reader.reconstruct_json(hours[position]).unwrap();
-            steps.push(start.elapsed());
-            assert_eq!(receipt.walked_deltas, 1);
+            let elapsed = start.elapsed();
+            // A step onto a checkpoint hour decodes it instead of resuming.
+            assert_eq!(receipt.walked_deltas, receipt.applied_deltas.min(1));
+            if receipt.walked_deltas == 1 {
+                steps.push(elapsed);
+            }
         }
+        assert!(steps.len() >= 8, "{} step(s) priced", steps.len());
         let step = median(steps);
 
         // The rebuild: the same hours, with the cursor forgotten each time, so
-        // each pays its whole distance from the checkpoint.
+        // each pays its whole distance from the checkpoint; only the hours at
+        // least eight deltas into their window are priced.
         let mut rebuilds = Vec::new();
         for position in 501..540 {
             reader.forget_scrub_cursor();
             let start = std::time::Instant::now();
             let (_, receipt) = reader.reconstruct_json(hours[position]).unwrap();
-            rebuilds.push(start.elapsed());
-            assert_eq!(receipt.walked_deltas, position as u32);
+            let elapsed = start.elapsed();
+            assert_eq!(receipt.walked_deltas, receipt.applied_deltas);
+            assert_eq!(receipt.applied_deltas, index.hours()[position].delta_steps());
+            if receipt.applied_deltas >= 8 {
+                rebuilds.push(elapsed);
+            }
         }
+        assert!(rebuilds.len() >= 8, "{} rebuild(s) priced", rebuilds.len());
         let rebuild = median(rebuilds);
 
         assert!(
-            rebuild > step * 8,
-            "a rebuild from a 744-hour checkpoint ({rebuild:?}) should cost far more than a \
+            rebuild > step * 4,
+            "a rebuild from a checkpoint ({rebuild:?}) should cost far more than a \
              cursored step ({step:?}); if these are close the cursor is not being resumed"
         );
     }
@@ -11257,423 +11453,9 @@ mod tests {
         }
     }
 
-    /// Whether a container's projection cell is filled, for the invalidation
-    /// differential below.
-    /// The run-end projected-storage total: everything the cursor's world
-    /// holds PLUS everything its shadow remembers, through ONE identity set so
-    /// a node reachable from more than one root is charged once.
-    ///
-    /// It is one function rather than three lines at the measurement, so the
-    /// instrument and the test that pins it cannot drift apart — reverting
-    /// this to the cursor's world alone (the lower bound Codex's round-1
-    /// finding 2 named) fails `projected_storage_counts_the_cells_the_shadow_holds`.
-    fn projected_storage_bytes(world: &CanonValue, shadow: &Shadow) -> u64 {
-        let mut roots = vec![world];
-        shadow.remembered_roots(&mut roots);
-        crate::canon_to_json::projected_cache_bytes_over(roots)
-    }
-
-    fn cell_filled(value: &CanonValue) -> bool {
-        match value {
-            CanonValue::Array(node) => node.projection_cell().get().is_some(),
-            CanonValue::Object(node) => node.projection_cell().get().is_some(),
-            _ => panic!("only containers carry projection cells"),
-        }
-    }
-
-    /// BATCH B's INVALIDATION DIFFERENTIAL, at the patch arms: a patch clears
-    /// the cells of exactly the containers on its changed paths — on the
-    /// RUNNING hour — while the retained hour keeps every filled cell, and the
-    /// next projection reuses the untouched subtree's projection BY POINTER
-    /// from the retained hour's fill.
-    ///
-    /// That last claim is the one the whole batch exists for: without it the
-    /// test passes with a memo that is cleared everywhere (correct but never
-    /// faster) or never consulted.
-    ///
-    /// kills: `contents_mut` forgetting to clear the cell (the running hour
-    /// would answer with the pre-patch projection and the parity assert here
-    /// fails); `ArrayNode::clone`/`ObjectNode::clone` copying a filled cell
-    /// into the make_mut copy (the running root would claim a stale fill);
-    /// the projection not reusing filled cells (the pointer assert fails).
-    #[test]
-    fn a_patch_clears_exactly_the_cells_on_its_changed_paths() {
-        let before = CanonValue::parse(
-            br#"{"scalar":7,"touched":{"a":[1,2,3]},"untouched":{"b":[4,5,6]}}"#,
-        )
-        .expect("the before document parses");
-        let after_expected = CanonValue::parse(
-            br#"{"scalar":7,"touched":{"a":[1,2,9]},"untouched":{"b":[4,5,6]}}"#,
-        )
-        .expect("the after document parses");
-        let patch = diff_value(&before, &after_expected, None, 0).expect("the two hours diff");
-
-        // Hour h is drawn: its whole projection is filled.
-        let retained = before.clone();
-        let retained_projection =
-            crate::canon_to_json::project(&retained).expect("hour h projects");
-
-        let mut running = before;
-        apply_patch(
-            &mut running,
-            &patch,
-            &mut Shadow::default(),
-            &mut ShadowBudget::default(),
-            0,
-        )
-        .expect("the patch applies");
-
-        // The retained hour keeps every filled cell...
-        assert!(cell_filled(&retained), "the retained root keeps its cell");
-        assert!(
-            cell_filled(retained.member("touched").expect("touched")),
-            "the retained hour's touched subtree keeps its cell"
-        );
-        // ...the running hour's changed path is cleared root-to-leaf...
-        assert!(
-            !cell_filled(&running),
-            "the running root was mutated and must not keep a stale cell"
-        );
-        assert!(
-            !cell_filled(running.member("touched").expect("touched")),
-            "the changed subtree's cell must be cleared"
-        );
-        // ...and the untouched subtree is the SAME node, cell intact.
-        assert!(
-            running
-                .member("untouched")
-                .expect("untouched")
-                .shares_storage_with(retained.member("untouched").expect("untouched")),
-            "the untouched subtree is shared, which is what makes its cell reusable"
-        );
-        assert!(
-            cell_filled(running.member("untouched").expect("untouched")),
-            "the untouched subtree keeps its filled cell"
-        );
-
-        // Hour h+1 projects correctly AND reuses hour h's untouched
-        // projection by pointer.
-        let running_projection =
-            crate::canon_to_json::project(&running).expect("hour h+1 projects");
-        assert_eq!(
-            crate::canon_to_json::projected_to_value(&running_projection),
-            crate::canon_to_json::to_value(&running).expect("hour h+1 converts"),
-            "the memoised projection must equal the depth-first conversion"
-        );
-        let untouched_of = |projection: &crate::canon_to_json::ProjectedValue| {
-            let crate::canon_to_json::ProjectedValue::Object(members) = projection else {
-                panic!("the root projects as an object");
-            };
-            members
-                .iter()
-                .find(|(key, _)| key == "untouched")
-                .map(|(_, member)| member.clone())
-                .expect("untouched member")
-        };
-        let (
-            crate::canon_to_json::ProjectedValue::Object(left),
-            crate::canon_to_json::ProjectedValue::Object(right),
-        ) = (
-            untouched_of(&retained_projection),
-            untouched_of(&running_projection),
-        )
-        else {
-            panic!("untouched projects as an object");
-        };
-        assert!(
-            Arc::ptr_eq(&left, &right),
-            "hour h+1's projection must reuse hour h's untouched subtree by pointer"
-        );
-
-        // And the retained hour still projects as itself, from its own cells.
-        assert_eq!(
-            crate::canon_to_json::projected_to_value(
-                &crate::canon_to_json::project(&retained).expect("hour h re-projects")
-            ),
-            crate::canon_to_json::to_value(&retained).expect("hour h converts"),
-            "the retained hour's projection must survive the patch untouched"
-        );
-    }
-
-    /// SHADOW MOVEMENT IS NOT MUTATION (design point 3): `ReviveSame` moves a
-    /// remembered subtree back with its filled cell intact, and a
-    /// `Revive(inner)` clears exactly the cells its inner patch mutates while
-    /// untouched descendants keep theirs.
-    #[test]
-    fn revive_preserves_cells_the_way_the_design_says() {
-        // ReviveSame: the member goes null, comes back identical, and its
-        // container subtree keeps the projection cell it was filled with.
-        let mut world = CanonValue::parse(br#"{"m":{"k":[1,2]}}"#).unwrap();
-        crate::canon_to_json::project(&world).expect("projects");
-        let mut shadow = Shadow::default();
-        let mut budget = ShadowBudget::default();
-        let null_patch = Patch::Object {
-            removals: vec![],
-            changes: vec![("m".to_string(), Patch::Replace(CanonValue::Null))],
-        };
-        apply_patch(&mut world, &null_patch, &mut shadow, &mut budget, 0)
-            .expect("the null applies");
-        let revive = Patch::Object {
-            removals: vec![],
-            changes: vec![("m".to_string(), Patch::ReviveSame)],
-        };
-        apply_patch(&mut world, &revive, &mut shadow, &mut budget, 0)
-            .expect("the revive applies");
-        assert_eq!(
-            world,
-            CanonValue::parse(br#"{"m":{"k":[1,2]}}"#).unwrap(),
-            "ReviveSame restores the remembered subtree"
-        );
-        assert!(
-            cell_filled(world.member("m").expect("m")),
-            "ReviveSame must move the subtree back WITH its valid cell"
-        );
-
-        // Revive(inner): the revived subtree's mutated container is cleared,
-        // its untouched sibling subtree keeps its cell.
-        let mut world = CanonValue::parse(br#"{"m":{"a":["one","two"],"b":[3,4]}}"#).unwrap();
-        crate::canon_to_json::project(&world).expect("projects");
-        let mut shadow = Shadow::default();
-        let mut budget = ShadowBudget::default();
-        let null_patch = Patch::Object {
-            removals: vec![],
-            changes: vec![("m".to_string(), Patch::Replace(CanonValue::Null))],
-        };
-        apply_patch(&mut world, &null_patch, &mut shadow, &mut budget, 0)
-            .expect("the null applies");
-        let revive = Patch::Object {
-            removals: vec![],
-            changes: vec![(
-                "m".to_string(),
-                Patch::Revive(Box::new(Patch::Object {
-                    removals: vec![],
-                    changes: vec![(
-                        "a".to_string(),
-                        Patch::Array(vec![(
-                            0,
-                            Patch::Replace(CanonValue::String("nine".to_string())),
-                        )]),
-                    )],
-                })),
-            )],
-        };
-        apply_patch(&mut world, &revive, &mut shadow, &mut budget, 0)
-            .expect("the revive applies");
-        assert_eq!(
-            world,
-            CanonValue::parse(br#"{"m":{"a":["nine","two"],"b":[3,4]}}"#).unwrap(),
-            "Revive(inner) restores the base and applies the inner patch"
-        );
-        let m = world.member("m").expect("m");
-        assert!(
-            !cell_filled(m),
-            "the revived container was mutated by the inner patch: cell cleared"
-        );
-        assert!(
-            !cell_filled(m.member("a").expect("a")),
-            "the inner patch's target keeps no stale cell"
-        );
-        assert!(
-            cell_filled(m.member("b").expect("b")),
-            "the untouched sibling keeps the cell it was remembered with"
-        );
-        assert_eq!(
-            crate::canon_to_json::projected_to_value(
-                &crate::canon_to_json::project(&world).expect("projects")
-            ),
-            crate::canon_to_json::to_value(&world).expect("converts"),
-            "the revived world projects as itself"
-        );
-    }
-
-    /// THE STORAGE ACCOUNTING MUST SEE WHAT SHADOW HOLDS (Codex batch-B
-    /// review, round 1, finding 2). A member that folds out leaves its filled
-    /// projection with the shadow, not with the cursor's world, so a counter
-    /// that walks the cursor's root alone reports a LOWER BOUND — and omits
-    /// exactly the retention a fold-heavy recording makes largest.
-    ///
-    /// The two roots are disjoint here (the subtree was MOVED into the
-    /// shadow), so the identity-aware total over both is exactly their sum;
-    /// that equality is what says the shared identity set neither
-    /// double-charges nor drops a root.
-    ///
-    /// kills: reverting the run-end counter to
-    /// `projected_cache_bytes(&cursor.value)`, and any `remembered_roots` that
-    /// fails to reach a remembered subtree.
-    #[test]
-    fn projected_storage_counts_the_cells_the_shadow_holds() {
-        // Canonical objects are strictly increasing by member name, so "kept"
-        // sits before "m".
-        let mut world = CanonValue::parse(br#"{"kept":[3,4],"m":{"k":[1,2]}}"#).unwrap();
-        crate::canon_to_json::project(&world).expect("projects");
-        let mut shadow = Shadow::default();
-        let mut budget = ShadowBudget::default();
-        let null_patch = Patch::Object {
-            removals: vec![],
-            changes: vec![("m".to_string(), Patch::Replace(CanonValue::Null))],
-        };
-        apply_patch(&mut world, &null_patch, &mut shadow, &mut budget, 0)
-            .expect("the null applies");
-
-        let mut roots = vec![&world];
-        shadow.remembered_roots(&mut roots);
-        assert_eq!(
-            roots.len(),
-            2,
-            "the shadow remembers exactly the folded-out member"
-        );
-        assert!(
-            cell_filled(roots[1]),
-            "the remembered subtree keeps the cell it was filled with"
-        );
-        assert!(
-            matches!(world.member("m").expect("m"), CanonValue::Null),
-            "the cursor's world can no longer reach that subtree"
-        );
-
-        let cursor_only = crate::canon_to_json::projected_cache_bytes(&world);
-        let shadow_only = crate::canon_to_json::projected_cache_bytes(roots[1]);
-        drop(roots);
-        // EXACTLY what the run-end measurement reports, through the same
-        // function it calls.
-        let together = projected_storage_bytes(&world, &shadow);
-        assert!(
-            shadow_only > 0,
-            "the remembered subtree really is holding filled cells"
-        );
-        assert!(
-            together > cursor_only,
-            "shadow-held projection must be charged: cursor-only {cursor_only}, \
-             together {together}"
-        );
-        assert_eq!(
-            together,
-            cursor_only + shadow_only,
-            "one identity set over disjoint roots charges each allocation once"
-        );
-    }
-
-    /// THE MEASUREMENT'S WIRING, PINNED STRUCTURALLY (Codex batch-B review,
-    /// round 3). The test above pins `projected_storage_bytes` itself, but the
-    /// run-end measurement still CHOOSES to call it: reverting that one line to
-    /// the cursor's world alone restores the lower bound while the helper and
-    /// its test pass untouched. `price_the_incremental_projection` is
-    /// `#[ignore]`d and needs a real recording, so no ordinary test can execute
-    /// it — its wiring is read from the source instead.
-    ///
-    /// EVERY needle is assembled at run time, and the one that locates the
-    /// function is anchored to a DEFINITION (`\n    fn NAME()`), never a bare
-    /// name. The first cut of this test searched for the plain signature text
-    /// and matched ITS OWN string literal, which sits earlier in the file, so
-    /// it inspected itself and passed under the very revert it was written to
-    /// kill (Codex round 4). Hence: assembled needles, an anchored definition,
-    /// a uniqueness check on the anchor, and comment lines stripped before the
-    /// body is inspected, so a mention in prose can neither satisfy nor
-    /// violate either assertion.
-    ///
-    /// kills: taking the run-end total over `cursor.value` alone (verified by
-    /// applying exactly that revert: this test fails, and only this test);
-    /// also renaming or deleting the measurement, which fails the anchor.
-    #[test]
-    fn the_run_end_storage_total_is_wired_to_the_shadow_aware_helper() {
-        let source = include_str!("replay_cache.rs");
-        let measurement = format!("{}{}", "price_the_incremental_", "projection");
-        let anchor = format!("\n    fn {measurement}()");
-        assert_eq!(
-            source.matches(anchor.as_str()).count(),
-            1,
-            "the measurement must be locatable by exactly one definition"
-        );
-        let after = source
-            .split_once(anchor.as_str())
-            .expect("the measurement is defined in this file")
-            .1;
-        // Just that function: stop at the next item in the test module.
-        let body = match after.find("\n    #[test]") {
-            Some(end) => &after[..end],
-            None => after,
-        };
-        assert!(
-            !body.is_empty() && body.len() < after.len(),
-            "the body slice must be a bounded piece of the file, not all of it"
-        );
-        // CODE ONLY. A comment naming either spelling must not decide this —
-        // neither a line comment nor a nested block comment. Stripping errs
-        // towards removing too much (a `//` inside a string literal truncates
-        // the line), which can only ever cause a conservative FAILURE, never a
-        // false pass.
-        let code = strip_rust_comments(body);
-        let wanted = format!(
-            "{}(&cursor.value, &cursor.shadow)",
-            "projected_storage_bytes"
-        );
-        assert!(
-            code.contains(&wanted),
-            "the run-end total must go through the shadow-aware helper"
-        );
-        // The single-root counter must not be NAMED here at all, not merely not
-        // called in one spelling: binding it to a local and calling that is the
-        // same regression wearing a different hat.
-        let banned = format!("{}{}", "projected_cache", "_bytes");
-        assert!(
-            !code.contains(&banned),
-            "the run-end total must not reach the single-root counter"
-        );
-        // RESIDUAL, stated rather than papered over: this is a text gate. It
-        // kills the plausible regression — the one-line revert to the
-        // cursor's world, in any spelling, including one hidden behind a
-        // comment or a local binding. It cannot stop a deliberate rewrite that
-        // reaches the single-root counter under a different NAME (a
-        // re-export, a trait method). Only executing the measurement can, and
-        // that needs a multi-GB recording.
-    }
-
-    /// Blank out Rust comments so a structural gate reads CODE. Handles nested
-    /// `/* /* */ */` and line comments. Deliberately naive about string
-    /// literals: a `//` inside one truncates the rest of that line, which can
-    /// only remove text a gate is looking FOR (a conservative failure), never
-    /// hide text a gate is looking AGAINST. Distinguishing literals properly
-    /// needs a lexer, and the residual it leaves is stated where it is used.
-    fn strip_rust_comments(text: &str) -> String {
-        let chars: Vec<char> = text.chars().collect();
-        let mut out = String::with_capacity(text.len());
-        let mut depth = 0usize;
-        let mut index = 0usize;
-        while index < chars.len() {
-            let pair = (chars[index], chars.get(index + 1).copied());
-            match pair {
-                ('/', Some('*')) => {
-                    depth += 1;
-                    index += 2;
-                }
-                ('*', Some('/')) if depth > 0 => {
-                    depth -= 1;
-                    index += 2;
-                }
-                ('/', Some('/')) if depth == 0 => {
-                    while index < chars.len() && chars[index] != '\n' {
-                        index += 1;
-                    }
-                }
-                (character, _) => {
-                    if depth == 0 {
-                        out.push(character);
-                    }
-                    index += 1;
-                }
-            }
-        }
-        out
-    }
-
     /// THE CELLS ARE INVISIBLE TO THE ENCODER: patch choice, encoded bytes,
     /// the whole-cache SHA, `content_bytes` and shadow admission are identical
-    /// whether or not the worlds' projections were filled first.
-    ///
-    /// kills: any content-derived computation (diff, grammar cost, encoding,
-    /// `content_bytes`) reading the cell; equality on the node types seeing it
-    /// (patch selection compares subtrees for equality when choosing
-    /// spellings).
+    /// whether or not the worlds' digest cells were filled first.
     #[test]
     fn a_filled_cell_never_changes_what_the_encoder_writes() {
         let bodies: Vec<(i64, String)> = (0..24)
@@ -11687,7 +11469,7 @@ mod tests {
         // COLD: encode the recording with no projection anywhere.
         let (cold_cache, cold_index, _) = build_revive(8, &borrowed);
 
-        // WARM: identical hours, but every world is PROJECTED before it is
+        // WARM: identical hours, but every world is DIGESTED before it is
         // handed to the encoder, so every cell the encoder could wrongly read
         // is filled — including the delta base's, since each pushed hour
         // becomes the base the next one is diffed against.
@@ -11710,7 +11492,7 @@ mod tests {
                 };
                 let prepared =
                     CanonicalWorldHour::parse(world_json, meta.hour_index).expect("hour parses");
-                crate::canon_to_json::project(prepared.value()).expect("hour projects");
+                prepared.value().tree_digest();
                 encoder.push_prepared(meta, prepared).expect("hour pushes");
             }
             let source_len = (borrowed.last().unwrap().0 as u64 + 1) * 100;
@@ -11913,6 +11695,75 @@ mod tests {
     }
 
 
+    fn walk_profile_record(
+        kind: u8,
+        payload: &[u8],
+        value: &mut CanonValue,
+        shadow: &mut Shadow,
+        budget: &mut ShadowBudget,
+        names: &mut NameDictionary,
+    ) -> Result<(f64, f64), ReplayCacheError> {
+        let started = std::time::Instant::now();
+        match kind {
+            RECORD_CHECKPOINT => {
+                let checkpoint = decode_checkpoint(payload, 1)?;
+                let decoded = started.elapsed().as_secs_f64() * 1e3;
+                let started = std::time::Instant::now();
+                *value = checkpoint;
+                *shadow = Shadow::default();
+                *budget = ShadowBudget::default();
+                *names = NameDictionary::default();
+                Ok((decoded, started.elapsed().as_secs_f64() * 1e3))
+            }
+            RECORD_DELTA => {
+                let patch = decode_patch_record(&open_cache_payload(payload)?, names)?;
+                let decoded = started.elapsed().as_secs_f64() * 1e3;
+                let started = std::time::Instant::now();
+                apply_patch(value, &patch, shadow, budget, 0)?;
+                Ok((decoded, started.elapsed().as_secs_f64() * 1e3))
+            }
+            _ => Err(ReplayCacheError::new("walk profile record kind is unknown")),
+        }
+    }
+
+    #[test]
+    fn walk_profile_crosses_generated_checkpoint_windows_without_losing_state() {
+        let bodies: Vec<String> = (0..9).map(|hour| format!(
+            r#"{{"gap":{{"cause":"partial","witness":{hour}}},"nullable":{},"rows":[{hour},0]}}"#,
+            if hour % 2 == 0 { r#"{"owned":1}"# } else { "null" },
+        )).collect();
+        let hours: Vec<(i64, &str)> = bodies.iter().enumerate()
+            .map(|(hour, body)| (hour as i64, body.as_str())).collect();
+        let (cache, index, _) = build_revive(3, &hours);
+        let mut value = CanonValue::Null;
+        let mut shadow = Shadow::default();
+        let mut budget = ShadowBudget::default();
+        let mut names = NameDictionary::default();
+        let mut checkpoints = 0;
+        let mut deltas = 0;
+        let records = SliceCache(&cache);
+        for entry in &index.hours {
+            let (kind, _, payload) = cache_record_authenticated(&records, entry).unwrap();
+            if kind == RECORD_CHECKPOINT {
+                checkpoints += 1;
+                shadow.remembered = Some(CanonValue::Bool(true));
+                budget.spent = 1;
+                names.write(&mut Vec::new(), "stale_before_checkpoint").unwrap();
+            } else {
+                deltas += 1;
+            }
+            walk_profile_record(kind, payload.as_ref(), &mut value, &mut shadow, &mut budget, &mut names)
+                .unwrap();
+            assert_eq!(value.to_json_bytes(), world_json(entry.hour_index, hours[entry.hour_index as usize].1));
+            if kind == RECORD_CHECKPOINT {
+                assert!(shadow.remembered.is_none() && shadow.members.is_empty() && shadow.elements.is_empty());
+                assert_eq!(budget.spent, 0);
+                assert_eq!(names.mark(), 0);
+            }
+        }
+        assert_eq!((checkpoints, deltas), (3, 6));
+    }
+
     /// LANE MY: WHERE the delta walk's 55-74 ms per record actually goes, on a
     /// real recording.
     ///
@@ -11975,6 +11826,8 @@ mod tests {
         let mut apply_ms: Vec<f64> = Vec::new();
         let mut whole_ms: Vec<f64> = Vec::new();
         let mut record_bytes: Vec<u64> = Vec::new();
+        let mut checkpoint_records = 0usize;
+        let mut delta_records = 0usize;
         let mut array_copies: Vec<u64> = Vec::new();
         let mut array_slots: Vec<u64> = Vec::new();
         let mut object_copies: Vec<u64> = Vec::new();
@@ -11997,7 +11850,7 @@ mod tests {
             let checkpoint = &index.hours[checkpoint_position];
             let (_, _, payload) =
                 cache_record_authenticated(records, checkpoint).expect("checkpoint record");
-            let mut value = decode_value_exact(payload.as_ref()).expect("decode checkpoint");
+            let mut value = decode_checkpoint(payload.as_ref(), 1).expect("decode checkpoint");
             drop(payload);
             let mut shadow = Shadow::default();
             let mut budget = ShadowBudget::default();
@@ -12021,21 +11874,15 @@ mod tests {
                 let record_started = std::time::Instant::now();
 
                 let started = std::time::Instant::now();
-                let (_, _, payload) =
-                    cache_record_authenticated(records, entry).expect("delta record");
+                let (kind, _, payload) =
+                    cache_record_authenticated(records, entry).expect("walk record");
                 let fetched = started.elapsed().as_secs_f64() * 1e3;
 
-                let started = std::time::Instant::now();
-                let patch = decode_patch_record(payload.as_ref(), &mut names).expect("decode patch");
-                let decoded = started.elapsed().as_secs_f64() * 1e3;
                 let bytes = payload.as_ref().len() as u64;
+                let (decoded, applied) = walk_profile_record(
+                    kind, payload.as_ref(), &mut value, &mut shadow, &mut budget, &mut names,
+                ).expect("decode and apply walk record");
                 drop(payload);
-
-                let started = std::time::Instant::now();
-                apply_patch(&mut value, &patch, &mut shadow, &mut budget, 0).expect("apply patch");
-                let applied = started.elapsed().as_secs_f64() * 1e3;
-
-                drop(patch);
                 // Released INSIDE the timer: dropping the hour a consumer was
                 // holding is part of moving forward, and leaving it outside
                 // would attribute its cost to nobody (Codex round-10,
@@ -12045,6 +11892,8 @@ mod tests {
                 let (arrays, array_slot_count, objects, object_slot_count) = cow_census::take();
 
                 if timed {
+                    checkpoint_records += usize::from(kind == RECORD_CHECKPOINT);
+                    delta_records += usize::from(kind == RECORD_DELTA);
                     fetch_ms.push(fetched);
                     decode_ms.push(decoded);
                     apply_ms.push(applied);
@@ -12074,8 +11923,8 @@ mod tests {
             dir.replace(std::path::MAIN_SEPARATOR, "/")
         );
         report("fetch_and_authenticate", fetch_ms);
-        report("decode_patch_record", decode_ms);
-        report("apply_patch", apply_ms);
+        report("decode_record", decode_ms);
+        report("apply_or_replace", apply_ms);
         // The three above are MARGINAL and their medians do not sum to this
         // one, which is the whole cost of moving one hour forward.
         report("whole_record", whole_ms);
@@ -12098,324 +11947,9 @@ mod tests {
         );
         let mean_bytes =
             record_bytes.iter().sum::<u64>() as f64 / record_bytes.len().max(1) as f64;
-        println!("{{\"mean_delta_record_payload_bytes\":{mean_bytes:.0}}}");
+        println!("{{\"mean_record_payload_bytes\":{mean_bytes:.0},\"checkpoint_records\":{checkpoint_records},\"delta_records\":{delta_records}}}");
     }
 
-
-    /// LANE MY, BATCH B PROOF ON A REAL RECORDING: at every hour of the
-    /// fixture, the shared projected world materialises to exactly the world
-    /// the digest-checked byte route serves. The byte route hashes each hour
-    /// against the sealed `world_digest`, so this is equality against the
-    /// recording's own authority, not against a second copy of the same walk —
-    /// it is the "projected == to_value(canon) at every cursor position"
-    /// requirement of the batch-B differential, on the real artifact.
-    ///
-    /// Needs `MY_FIXTURE`; `#[ignore]`d because it needs a recording, but it
-    /// ASSERTS — it is a proof, not a measurement.
-    #[test]
-    #[ignore = "proof: needs MY_FIXTURE pointing at a real index/cache pair"]
-    fn prove_the_projected_route_on_a_real_recording() {
-        let dir = std::env::var("MY_FIXTURE")
-            .expect("MY_FIXTURE names a directory holding hour_index.h4ix and checkpoints.h4cp");
-        let index_bytes = std::fs::read(format!("{dir}/hour_index.h4ix")).expect("read index");
-        let index = crate::ReplayHourIndex::from_bytes(&index_bytes).expect("parse index");
-        let source_len = index.source_len();
-        let source_sha = index.source_sha256().to_string();
-        let open = |tag: &str| {
-            let file = std::fs::File::open(format!("{dir}/checkpoints.h4cp"))
-                .unwrap_or_else(|error| panic!("open cache for the {tag} route: {error}"));
-            CertifiedReplayCache::open_file(&index_bytes, file, source_len, &source_sha)
-                .unwrap_or_else(|error| panic!("admit cache for the {tag} route: {error}"))
-        };
-        let bytes_route = open("byte");
-        let projected_route = open("projected");
-        let hours: Vec<i64> = index.hours().iter().map(|h| h.hour_index()).collect();
-        for hour in &hours {
-            let (json, _) = bytes_route.reconstruct_json(*hour).expect("byte route");
-            let want = crate::parse_json_strict(&json).expect("sealed world parses");
-            let (projected, _) = projected_route
-                .reconstruct_projected(*hour)
-                .expect("projected route");
-            assert_eq!(
-                crate::canon_to_json::projected_to_value(&projected),
-                want,
-                "hour {hour}: the projected world differs from the sealed world"
-            );
-        }
-        println!(
-            "{{\"proof\":\"projected_equals_sealed_world\",\"artifact\":\"{}\",\"hours\":{}}}",
-            dir.replace(std::path::MAIN_SEPARATOR, "/"),
-            hours.len()
-        );
-    }
-
-    /// Current and peak working-set bytes of this process, straight from
-    /// kernel32 so the measurement needs no new dependency. BOTH are reported
-    /// because peak alone cannot show decay: it never falls, so a run whose
-    /// live set is flat and a run whose live set grows without bound have the
-    /// same peak once the first has touched its high-water mark. Test-only.
-    #[cfg(windows)]
-    fn working_set_bytes() -> (u64, u64) {
-        #[repr(C)]
-        struct ProcessMemoryCounters {
-            cb: u32,
-            page_fault_count: u32,
-            peak_working_set_size: usize,
-            working_set_size: usize,
-            quota_peak_paged_pool_usage: usize,
-            quota_paged_pool_usage: usize,
-            quota_peak_non_paged_pool_usage: usize,
-            quota_non_paged_pool_usage: usize,
-            pagefile_usage: usize,
-            peak_pagefile_usage: usize,
-        }
-        extern "system" {
-            fn GetCurrentProcess() -> isize;
-            fn K32GetProcessMemoryInfo(
-                process: isize,
-                counters: *mut ProcessMemoryCounters,
-                cb: u32,
-            ) -> i32;
-        }
-        let mut counters = ProcessMemoryCounters {
-            cb: std::mem::size_of::<ProcessMemoryCounters>() as u32,
-            page_fault_count: 0,
-            peak_working_set_size: 0,
-            working_set_size: 0,
-            quota_peak_paged_pool_usage: 0,
-            quota_paged_pool_usage: 0,
-            quota_peak_non_paged_pool_usage: 0,
-            quota_non_paged_pool_usage: 0,
-            pagefile_usage: 0,
-            peak_pagefile_usage: 0,
-        };
-        let ok = unsafe {
-            K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb)
-        };
-        assert_ne!(ok, 0, "K32GetProcessMemoryInfo failed");
-        (
-            counters.working_set_size as u64,
-            counters.peak_working_set_size as u64,
-        )
-    }
-
-    #[cfg(not(windows))]
-    fn working_set_bytes() -> (u64, u64) {
-        (0, 0)
-    }
-
-    /// LANE MY, BATCH B MEASUREMENT: what one forward step of the timeline
-    /// costs, on the PUBLIC cursored route, over EVERY hour of a real
-    /// recording.
-    ///
-    /// WHY THE PUBLIC ROUTE. A hand-rolled walk prices the parts the author
-    /// chose to time. `reconstruct_*` is what a viewer actually calls, so it
-    /// includes record fetch, authentication, decode, patch application,
-    /// projection and — on the `value` route — the whole-world materialisation,
-    /// and it re-seeds from the checkpoint exactly where the shipping reader
-    /// re-seeds. Nothing can be quietly left outside the timer.
-    ///
-    /// WHY THE WHOLE RECORDING, IN BUCKETS. One window is not an answer when
-    /// state accumulates: filled memo cells, retained projections and the
-    /// canonical tree all grow as the scrub advances, so a tail sample and a
-    /// head sample can differ for reasons the p50 hides. Every hour is timed
-    /// and the run is reported as `MY_BUCKETS` contiguous buckets with their
-    /// own p50/p95/max, so TIME DECAY IS VISIBLE — a flat bucket series is the
-    /// claim, and a rising one refutes it.
-    ///
-    /// MEMORY DECAY IS NOT COVERED BY THE BUCKETS, and this instrument does not
-    /// pretend otherwise: RSS is read once before the walk and once after, not
-    /// per bucket, because a memory syscall between hours would land inside the
-    /// very interval being timed. So a run that accumulates during an early
-    /// window and releases before the end is indistinguishable here from one
-    /// that never accumulated (Codex batch-B review, round 1, finding 4). What
-    /// the pair of readings does support is the end state: live RSS says what
-    /// is still held, peak says the high-water mark, and the identity-aware
-    /// projected-storage total says how much of it is filled cells. A per-hour
-    /// memory series needs its own instrument and an untimed walk.
-    ///
-    /// Checkpoint hours are reported SEPARATELY from delta hours: a checkpoint
-    /// re-seed decodes a whole world and projects it with every cell empty, so
-    /// mixing the two would let a 168:1 minority set the tail of the
-    /// distribution and would flatter or slander whichever route is measured.
-    ///
-    /// `MY_ROUTE` selects `projected` (batch B's shared tree, the default),
-    /// `value` (that tree materialised into a private `serde_json::Value` —
-    /// today's draw path, and the difference between the two is exactly what
-    /// migrating the `raw()`/`domain()` boundary banks), or `json` (the sealed
-    /// bytes, for scale). ONE route per process, because peak RSS is a
-    /// process-wide number that a second route in the same process would
-    /// poison.
-    ///
-    /// The previous hour's result is held while the next is produced, which is
-    /// the viewer's situation — hour h is on screen while h+1 is prepared —
-    /// and is what makes the projected tree's structural sharing load-bearing
-    /// rather than trivially unique.
-    ///
-    /// `#[ignore]`d measurement, asserts no budget; needs `MY_FIXTURE`.
-    #[test]
-    #[ignore = "measurement: needs MY_FIXTURE pointing at a real index/cache pair"]
-    fn price_the_incremental_projection() {
-        // The produced hour is kept alive but never inspected — its retention
-        // is the point, not its contents — so the three routes' results are
-        // erased to one type rather than modelled by an enum whose fields
-        // nothing reads.
-        type Held = Box<dyn std::any::Any>;
-
-        let dir = std::env::var("MY_FIXTURE")
-            .expect("MY_FIXTURE names a directory holding hour_index.h4ix and checkpoints.h4cp");
-        let route = std::env::var("MY_ROUTE").unwrap_or_else(|_| "projected".to_string());
-        assert!(
-            matches!(route.as_str(), "projected" | "value" | "json"),
-            "MY_ROUTE must be projected, value or json; got {route:?}"
-        );
-        let buckets: usize = std::env::var("MY_BUCKETS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(10);
-        assert!(buckets > 0, "MY_BUCKETS must be at least 1");
-
-        let index_bytes = std::fs::read(format!("{dir}/hour_index.h4ix")).expect("read index");
-        let index = crate::ReplayHourIndex::from_bytes(&index_bytes).expect("parse index");
-        let source_len = index.source_len();
-        let source_sha = index.source_sha256().to_string();
-        let file = std::fs::File::open(format!("{dir}/checkpoints.h4cp")).expect("open cache");
-        let cache = CertifiedReplayCache::open_file(&index_bytes, file, source_len, &source_sha)
-            .expect("admit cache");
-
-        // A checkpoint hour is its own checkpoint; every other hour walks
-        // deltas from one. The index already says which, so the split costs
-        // nothing and needs no heuristic.
-        let plan: Vec<(i64, bool)> = index
-            .hours()
-            .iter()
-            .enumerate()
-            .map(|(position, entry)| {
-                (
-                    entry.hour_index(),
-                    entry.checkpoint_position as usize == position,
-                )
-            })
-            .collect();
-        assert!(!plan.is_empty(), "the fixture indexes no hours");
-
-        let (live_before, peak_before) = working_set_bytes();
-        let started_run = std::time::Instant::now();
-        // (hour, milliseconds, is_checkpoint, memo hits, memo misses)
-        let mut samples: Vec<(i64, f64, bool, u64, u64)> = Vec::with_capacity(plan.len());
-        let mut held: Option<Held> = None;
-        for (hour, is_checkpoint) in &plan {
-            #[cfg(feature = "my-projection-census")]
-            let _ = crate::canon_to_json::projection_census::take();
-            let started = std::time::Instant::now();
-            let produced: Held = match route.as_str() {
-                "projected" => Box::new(
-                    cache
-                        .reconstruct_projected(*hour)
-                        .unwrap_or_else(|error| panic!("hour {hour}: {error}"))
-                        .0,
-                ),
-                "value" => Box::new(
-                    cache
-                        .reconstruct_value(*hour)
-                        .unwrap_or_else(|error| panic!("hour {hour}: {error}"))
-                        .0,
-                ),
-                _ => Box::new(
-                    cache
-                        .reconstruct_json(*hour)
-                        .unwrap_or_else(|error| panic!("hour {hour}: {error}"))
-                        .0,
-                ),
-            };
-            let elapsed = started.elapsed().as_secs_f64() * 1e3;
-            #[cfg(feature = "my-projection-census")]
-            let (hits, misses) = crate::canon_to_json::projection_census::take();
-            #[cfg(not(feature = "my-projection-census"))]
-            let (hits, misses) = (0u64, 0u64);
-            // Hour h stays reachable until h+1 has been produced, then is
-            // released — the viewer holding one drawn frame.
-            held = Some(produced);
-            std::hint::black_box(&held);
-            samples.push((*hour, elapsed, *is_checkpoint, hits, misses));
-        }
-        let wall_s = started_run.elapsed().as_secs_f64();
-        drop(held);
-        let (live_after, peak_after) = working_set_bytes();
-
-        let summarise = |label: &str, rows: &[&(i64, f64, bool, u64, u64)]| {
-            if rows.is_empty() {
-                println!("{{\"group\":\"{label}\",\"n\":0}}");
-                return;
-            }
-            let mut times: Vec<f64> = rows.iter().map(|row| row.1).collect();
-            times.sort_by(|a, b| a.partial_cmp(b).expect("no NaN timings"));
-            let pick = |q: f64| times[((times.len() as f64 - 1.0) * q).round() as usize];
-            let sum: f64 = times.iter().sum();
-            let worst = rows
-                .iter()
-                .max_by(|a, b| a.1.partial_cmp(&b.1).expect("no NaN timings"))
-                .expect("non-empty");
-            let over_frame = times.iter().filter(|ms| **ms > 16.0).count();
-            let hits: u64 = rows.iter().map(|row| row.3).sum();
-            let misses: u64 = rows.iter().map(|row| row.4).sum();
-            println!(
-                "{{\"group\":\"{label}\",\"n\":{},\"p50_ms\":{:.3},\"p95_ms\":{:.3},\"max_ms\":{:.3},\
-                 \"mean_ms\":{:.3},\"worst_hour\":{},\"over_16ms\":{over_frame},\
-                 \"memo_hits\":{hits},\"memo_misses\":{misses}}}",
-                times.len(),
-                pick(0.50),
-                pick(0.95),
-                times[times.len() - 1],
-                sum / times.len() as f64,
-                worst.0,
-            );
-        };
-
-        println!(
-            "{{\"measurement\":\"timeline_forward_scrub\",\"artifact\":\"{}\",\"route\":\"{route}\",\
-             \"hours\":{},\"wall_s\":{wall_s:.1},\"census_compiled\":{}}}",
-            dir.replace(std::path::MAIN_SEPARATOR, "/"),
-            plan.len(),
-            cfg!(feature = "my-projection-census"),
-        );
-        let deltas: Vec<&(i64, f64, bool, u64, u64)> =
-            samples.iter().filter(|row| !row.2).collect();
-        let checkpoints: Vec<&(i64, f64, bool, u64, u64)> =
-            samples.iter().filter(|row| row.2).collect();
-        summarise("delta_hours_whole_run", &deltas);
-        summarise("checkpoint_hours_whole_run", &checkpoints);
-
-        // DECAY: the delta hours IN ORDER, cut into contiguous buckets. The
-        // buckets carry timings only — sampling RSS between hours would land
-        // a syscall inside the very interval being timed — so memory is
-        // reported for the run as a whole, below.
-        let width = deltas.len().div_ceil(buckets.max(1)).max(1);
-        for (ordinal, chunk) in deltas.chunks(width).enumerate() {
-            summarise(&format!("delta_bucket_{ordinal}"), chunk);
-        }
-
-        // The second of the design's two accountings, once the walk is over:
-        // every filled projection reachable from the cursor, each allocation
-        // charged ONCE however many cells share it. The cursor's world is NOT
-        // the only holder — `Shadow` remembers whole subtrees so a revived
-        // member can be restored without re-emitting it, and those keep their
-        // cells too — so the shadow's remembered roots are counted in the SAME
-        // identity set rather than left out or double-counted. The `json` route
-        // fills no cells and correctly reports zero.
-        let projected_storage_bytes = cache
-            .cursor
-            .lock()
-            .expect("the scrub cursor lock is not poisoned")
-            .as_ref()
-            .map(|cursor| projected_storage_bytes(&cursor.value, &cursor.shadow))
-            .unwrap_or(0);
-        println!(
-            "{{\"projected_storage_bytes_at_run_end\":{projected_storage_bytes},\
-             \"live_rss_before\":{live_before},\"live_rss_after\":{live_after},\
-             \"peak_rss_before\":{peak_before},\"peak_rss_after\":{peak_after}}}"
-        );
-    }
 
     /// LANE MY: an ARRAY slot and an OBJECT slot do not cost the same to copy.
     /// Which, and by how much, is what decides the 20.5 ms lever.

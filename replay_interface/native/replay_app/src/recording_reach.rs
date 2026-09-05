@@ -65,6 +65,7 @@ struct ReachReport {
     last_hour: i64,
     open_ms: f64,
     open_warnings: Vec<String>,
+    frame_cache_entries: usize,
     required_input_count: usize,
     hours: Vec<HourReport>,
     gap_input_hour_counts: BTreeMap<String, usize>,
@@ -72,7 +73,7 @@ struct ReachReport {
     decode_max_ms: f64,
 }
 
-const REACH_REPORT_SCHEMA: &str = "hoi4.replay.recording_reach.v3";
+const REACH_REPORT_SCHEMA: &str = "hoi4.replay.recording_reach.v4";
 
 fn select_hours(all_hours: &[i64], selection: HourSelection) -> Vec<i64> {
     match selection {
@@ -190,6 +191,7 @@ pub(crate) fn run(
     out: &Path,
     logical_stream_id: Option<u64>,
     hours: HourSelection,
+    frame_cache_entries: usize,
 ) -> crate::Result<()> {
     let open_started = Instant::now();
     let source = match logical_stream_id {
@@ -200,7 +202,7 @@ pub(crate) fn run(
     let timeline = replay_core::WorldTimeline::open_with_config(
         source,
         replay_core::TimelineConfig {
-            frame_cache_entries: 1,
+            frame_cache_entries,
             ..replay_core::TimelineConfig::default()
         },
     )
@@ -280,6 +282,7 @@ pub(crate) fn run(
         last_hour: timeline.last_hour(),
         open_ms,
         open_warnings: timeline.warnings().to_vec(),
+        frame_cache_entries,
         required_input_count,
         hours: hour_reports,
         gap_input_hour_counts: gap_counts,

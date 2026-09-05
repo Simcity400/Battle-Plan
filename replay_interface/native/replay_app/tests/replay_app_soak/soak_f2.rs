@@ -35,7 +35,7 @@ fn open_fixture_with_cap(cap: usize) -> WorldTimeline {
 
 fn gate_b_shrunken_cache_seek_equals_play_to() {
     let reference = open_fixture_with_cap(TimelineConfig::default().frame_cache_entries);
-    assert_eq!(reference.frame_cache_entries(), 16, "default budget is 16");
+    assert_eq!(reference.frame_cache_entries(), 2, "default budget is 2");
     let hours: Vec<i64> = reference.hours().to_vec();
     assert!(hours.len() >= 2, "fixture must have a scrubbable span");
 

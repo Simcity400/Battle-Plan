@@ -1,7 +1,6 @@
 use std::cmp::Ordering;
 use std::sync::{Arc, OnceLock};
 
-use crate::canon_to_json::ProjectionMemo;
 use crate::sha256::{to_hex, Sha256};
 
 pub(crate) const MAX_RECURSION_DEPTH: usize = 256;
@@ -26,26 +25,18 @@ pub enum CanonValue {
     Object(Arc<ObjectNode>),
 }
 
-/// One shared container allocation: the canonical contents plus the node's own
-/// projection, memoised ON the node rather than in any side table. A table
-/// keyed by address is unsound — `Arc::make_mut` on a uniquely held container
-/// mutates in place at the same address, so the table would answer with
-/// yesterday's projection for today's contents — and a `Weak`-keyed table costs
-/// an allocation, a lookup and eviction machinery per touched container. Here
-/// identity IS the node, lifetime IS the node's, and invalidation is one rule
-/// at one place: [`ArrayNode::contents_mut`].
+/// One shared container allocation: the canonical contents plus memos ON the
+/// node. A side table keyed by address is unsound: `Arc::make_mut` on a
+/// uniquely held container mutates in place at the same address. Here identity
+/// IS the node and invalidation is one rule at one place:
+/// [`ArrayNode::contents_mut`].
 ///
-/// THE CELL IS INVISIBLE TO VALUE SEMANTICS. Equality compares canonical
-/// contents only, `Clone` starts the copy's cell empty, and `Debug` omits the
-/// cell — get any of those wrong and reader-side cache state changes patch
-/// spelling and the cache SHA. The cell is boxed so the canonical allocation
-/// grows by one pointer-sized inline slot whether or not projection ever
-/// happens: canonical accounting stays independent of fill state, and the
-/// filled projection is charged by the separate identity-aware
-/// [`crate::canon_to_json::projected_cache_bytes`] instead.
+/// THE CELLS ARE INVISIBLE TO VALUE SEMANTICS. Equality compares canonical
+/// contents only, `Clone` starts the copy's cells empty, and `Debug` omits
+/// them — get any of those wrong and reader-side cache state changes patch
+/// spelling and the cache SHA.
 pub struct ArrayNode {
     items: Vec<CanonValue>,
-    memo: OnceLock<Box<ProjectionMemo>>,
     /// The canonical text of this node, remembered by the writer for nodes at
     /// [`CanonValue::TEXT_MEMO_DEPTH`]; cleared with the projection memo by the
     /// one door to mutable contents, invisible to value semantics like it.
@@ -58,26 +49,20 @@ impl ArrayNode {
     fn new(items: Vec<CanonValue>) -> Self {
         Self {
             items,
-            memo: OnceLock::new(),
             text: OnceLock::new(),
             digest: OnceLock::new(),
         }
     }
 
-    /// THE ONE DOOR to mutable contents. The memo is cleared BEFORE the
+    /// THE ONE DOOR to mutable contents. The memos are cleared BEFORE the
     /// contents are handed out, so no code path can change what this node says
-    /// while it still says what it used to project to. All three patch arms
+    /// while a memo still describes what it used to hold. All three patch arms
     /// and every test-side mutation come through here; the fields are private,
     /// so bypassing the door does not compile.
     pub fn contents_mut(&mut self) -> &mut Vec<CanonValue> {
-        self.memo.take();
         self.text.take();
         self.digest.take();
         &mut self.items
-    }
-
-    pub(crate) fn projection_cell(&self) -> &OnceLock<Box<ProjectionMemo>> {
-        &self.memo
     }
 
     fn text_cell(&self) -> &OnceLock<Box<[u8]>> {
@@ -123,7 +108,6 @@ impl std::fmt::Debug for ArrayNode {
 /// See [`ArrayNode`]; the same node, for objects.
 pub struct ObjectNode {
     members: Vec<(String, CanonValue)>,
-    memo: OnceLock<Box<ProjectionMemo>>,
     /// See [`ArrayNode`]: the same text memo, for objects.
     text: OnceLock<Box<[u8]>>,
     digest: OnceLock<Box<DigestMemo>>,
@@ -133,22 +117,16 @@ impl ObjectNode {
     fn new(members: Vec<(String, CanonValue)>) -> Self {
         Self {
             members,
-            memo: OnceLock::new(),
             text: OnceLock::new(),
             digest: OnceLock::new(),
         }
     }
 
-    /// See [`ArrayNode::contents_mut`]: the one door, memo cleared first.
+    /// See [`ArrayNode::contents_mut`]: the one door, memos cleared first.
     pub fn contents_mut(&mut self) -> &mut Vec<(String, CanonValue)> {
-        self.memo.take();
         self.text.take();
         self.digest.take();
         &mut self.members
-    }
-
-    pub(crate) fn projection_cell(&self) -> &OnceLock<Box<ProjectionMemo>> {
-        &self.memo
     }
 
     fn text_cell(&self) -> &OnceLock<Box<[u8]>> {
@@ -1411,22 +1389,17 @@ mod tests {
         assert_eq!(odd.member("hour_index").unwrap().as_i64(), None);
     }
 
-    /// THE CELL IS INVISIBLE TO VALUE SEMANTICS (batch-B design point 2), and
-    /// MINOR (b) is pinned here: equality, the JSON spelling, both accountings
-    /// and `Debug` must be identical whether or not a node's projection cell
-    /// is filled. Get this wrong and reader-side cache state changes patch
-    /// spelling and the cache SHA.
-    ///
-    /// kills: deriving `PartialEq`/`Debug` on `ArrayNode`/`ObjectNode` (the
-    /// cell would enter both); charging the FILLED cell in `heap_bytes`.
+    /// THE CELLS ARE INVISIBLE TO VALUE SEMANTICS: equality, the JSON
+    /// spelling, both accountings and `Debug` must be identical whether or not
+    /// a node's digest cell is filled.
     #[test]
-    fn a_filled_projection_cell_is_invisible_to_value_semantics() {
+    fn a_filled_digest_cell_is_invisible_to_value_semantics() {
         let document = br#"{"a":[1,2,{"deep":"x"}],"bb":"xyz"}"#;
         let cold = CanonValue::parse(document).unwrap();
         let warmed = CanonValue::parse(document).unwrap();
         let heap_before = warmed.heap_bytes();
         let debug_before = format!("{warmed:?}");
-        crate::canon_to_json::project(&warmed).expect("projects");
+        warmed.tree_digest();
 
         assert_eq!(warmed, cold, "equality must compare canonical contents only");
         assert_eq!(cold, warmed, "…in both directions");
@@ -1448,7 +1421,7 @@ mod tests {
         assert_eq!(
             format!("{warmed:?}"),
             debug_before,
-            "Debug must omit the cell rather than print a cached projection"
+            "Debug must omit the cell rather than print a cached digest"
         );
         assert_eq!(
             format!("{warmed:?}"),
@@ -1457,24 +1430,24 @@ mod tests {
         );
     }
 
-    /// The mutation-invalidation halves of the cell contract, at the node
-    /// level: the ONE DOOR clears a filled cell, an outer clone preserves it
-    /// (same node), and the copy `Arc::make_mut` takes when the node is shared
+    /// The ONE DOOR clears a filled cell, an outer clone preserves it (same
+    /// node), and the copy `Arc::make_mut` takes when the node is shared
     /// starts EMPTY while the retained original keeps its cell.
     #[test]
     fn the_door_clears_the_cell_and_a_copied_node_starts_empty() {
         fn cell_filled(value: &CanonValue) -> bool {
             match value {
-                CanonValue::Array(node) => node.projection_cell().get().is_some(),
-                CanonValue::Object(node) => node.projection_cell().get().is_some(),
+                CanonValue::Array(node) => node.digest_cell().get().is_some(),
+                CanonValue::Object(node) => node.digest_cell().get().is_some(),
                 _ => panic!("only containers carry cells"),
             }
         }
+        let big = format!("[{}]", (0..200).map(|i| i.to_string()).collect::<Vec<_>>().join(","));
 
         // UNIQUE: the door clears the cell in place.
-        let mut unique = CanonValue::parse(br#"[1,2]"#).unwrap();
-        crate::canon_to_json::project(&unique).expect("projects");
-        assert!(cell_filled(&unique), "projection fills the cell");
+        let mut unique = CanonValue::parse(big.as_bytes()).unwrap();
+        let before = unique.tree_digest();
+        assert!(cell_filled(&unique), "the digest fills the cell");
         if let CanonValue::Array(node) = &mut unique {
             Arc::make_mut(node).contents_mut().push(CanonValue::Null);
         }
@@ -1482,18 +1455,16 @@ mod tests {
             !cell_filled(&unique),
             "the door must clear the cell before the contents can change"
         );
-        assert_eq!(
-            crate::canon_to_json::to_value(&unique).unwrap(),
-            crate::canon_to_json::projected_to_value(
-                &crate::canon_to_json::project(&unique).unwrap()
-            ),
-            "re-projection after the door sees the new contents"
+        assert_ne!(
+            unique.tree_digest().digest,
+            before.digest,
+            "re-digesting after the door sees the new contents"
         );
 
         // SHARED: the retained handle keeps its filled cell; the copy taken
-        // for mutation starts empty and only fills when projected again.
-        let retained = CanonValue::parse(br#"[1,2]"#).unwrap();
-        crate::canon_to_json::project(&retained).expect("projects");
+        // for mutation starts empty and only fills when digested again.
+        let retained = CanonValue::parse(big.as_bytes()).unwrap();
+        retained.tree_digest();
         let mut mutated = retained.clone();
         assert!(
             retained.shares_storage_with(&mutated),
@@ -1504,7 +1475,7 @@ mod tests {
         }
         assert!(
             cell_filled(&retained),
-            "the retained hour keeps its valid projection"
+            "the retained hour keeps its valid digest"
         );
         assert!(
             !cell_filled(&mutated),
