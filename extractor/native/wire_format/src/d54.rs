@@ -253,54 +253,10 @@
 //! (`world_fold.rs::army_battleplans_depth_extra_json`). Both id lists are **strict-sorted and disjoint**, enforced
 //! by the decoder, so both are ordinary keyed sets with no ordering problem.
 //!
-//! A **legacy frame carries no extension at all**, and the fold's rule is that it
-//! must not inherit one: `army_orders_group_manager = None`, `known = false`
-//! (`world_fold.rs::fold_army_battleplans_depth`). Three per-hour states therefore exist, and the
-//! [`ORDERS_GROUP_MANAGER`] singleton (d52's `SINGLETON_KEY_COMPONENT`
-//! convention, `d52.rs:401`-`:412`) is what keeps them apart in a keyed set:
-//!
-//! | frame | manager singleton | [`ORDERS_GROUP_ARMIES`] | [`ORDERS_GROUP_ARMY_GROUPS`] |
-//! |---|---|---|---|
-//! | legacy (no `OGS1`) | **row absent** | empty — unmeasured | empty — unmeasured |
-//! | `OGS1` v1 | present, `owner_identities_complete = false` | measured | empty, `army_group_count` says how many were NOT carried |
-//! | `OGS1` v2 | present, `owner_identities_complete = true` | measured | measured |
-//!
-//! Without the singleton, "no manager this hour" and "a measured empty census"
-//! would be the same bytes — the `(domain, part)` gap scope gap contract does not have
-//! (d17's war graph). With it, the distinction is in band
-//! and costs two bytes an hour.
-//!
-//! # Coverage caveats — what `runs/batch3/deepwar_a` never exercised
-//!
-//! Measured over the capture's 514 d54 records: 266 hours fold, 241 are withheld
-//! by the expected-partial tolerance and 7 are excluded by
-//! `COMPACT_STATUS_SOURCE_UNAVAILABLE`. **610 of the capture's 616 live order rows
-//! sit in records the fold withholds**, so the order table and all three child
-//! collections are very nearly untouched by the measurement: 6 live rows across
-//! the 266 measured hours, a peak accumulator of 2 rows, and rows at all in only
-//! 4 of them. Concretely, on this capture:
-//!
-//! * the **path-geometry** collection is exercised by one folded row; the ordinal
-//!   decision above therefore rests on payload-level evidence and on the grammar,
-//!   not on folded state;
-//! * the **target-state** and **assigned-division** collections have **zero**
-//!   coverage at either level — no record in the capture sets
-//!   `FLAG_TARGET_STATES` or `FLAG_ASSIGNED_DIVISIONS`, because every observed
-//!   order is `ORDER_TYPE_MOVE` (84) or `ORDER_TYPE_LINE` (532) and neither
-//!   carries type-5 targets;
-//! * `target_declared_count`'s **absent** state is exercised on every one of the
-//!   1,674 rows and its value and unknown states on none;
-//! * both witness Booleans are clear on every row;
-//! * the legacy (no-`OGS1`) frame occurs exactly 7 times and those are exactly the
-//!   7 `SOURCE_UNAVAILABLE` records, so the fold **never folds a legacy frame
-//!   here**: the manager's clear-on-legacy rule is implemented and tested under
-//!   the mirror-the-fold rule and measured by nothing;
-//! * `OGS1` v1 never occurs — all 507 extensions are v2 — so
-//!   `owner_identities_complete = false` has no coverage.
-//!
-//! What would exercise them: a capture in which d27 and d28 stop reporting
-//! tolerated partials (the survey's own conclusion — "d54 clears only when d27/d28
-//! stop reporting partials"), and one containing area-defence orders.
+//! An absent extension clears the manager authority and colour census. An admitted
+//! v3 extension carries every typed owner and exactly one status plus four raw
+//! colour words per owner. A present empty manager distinguishes measured empty
+//! from absent. Earlier extension versions are refused.
 
 use std::collections::BTreeSet;
 
@@ -309,6 +265,7 @@ use crate::record::Record;
 use crate::schema::{Collection, Field, Kind, Schema, Shape};
 use crate::value::Value;
 use compact_contract::battleplan_links as links;
+use compact_contract::owner_colour::{self, OwnerColourRow};
 
 pub const DOMAIN: u32 = 54;
 
@@ -327,6 +284,7 @@ pub const ORDERS_GROUP_ARMIES: u32 = 6;
 /// One row per registered `CArmyGroup` id. Key-only.
 pub const ORDERS_GROUP_ARMY_GROUPS: u32 = 7;
 pub const ORDER_LINKS: u32 = 8;
+pub const OWNER_COLOURS: u32 = 9;
 
 /// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 /// They are unique across the whole domain, not merely within a collection, so a
@@ -400,6 +358,13 @@ pub mod field {
     pub const LINK_TARGET_OWNER_ID: u32 = 87;
     pub const LINK_TARGET_INSTANCE: u32 = 88;
     pub const LINK_TARGET_GENERATION: u32 = 89;
+    pub const COLOUR_OWNER_KIND: u32 = 90;
+    pub const COLOUR_OWNER_ID: u32 = 91;
+    pub const COLOUR_STATUS: u32 = 92;
+    pub const COLOUR_R_BITS: u32 = 93;
+    pub const COLOUR_G_BITS: u32 = 94;
+    pub const COLOUR_B_BITS: u32 = 95;
+    pub const COLOUR_A_BITS: u32 = 96;
 }
 
 // --- Transcribed shipping constants -----------------------------------------
@@ -487,8 +452,7 @@ pub const MAX_DIVISION_ID: u32 = i32::MAX as u32;
 
 /// `orders_group_live.rs:39`-`:47`.
 pub const EXTENSION_MAGIC: [u8; 4] = *b"OGS1";
-pub const EXTENSION_VERSION_V1: u16 = 1;
-pub const EXTENSION_VERSION_V2: u16 = 2;
+pub const EXTENSION_VERSION: u16 = owner_colour::OGS_VERSION;
 pub const EXTENSION_HEADER_LEN: usize = 24;
 pub const EXTENSION_ROW_LEN: usize = 16;
 pub const EXTENSION_FLAG_COMPLETE_MANAGER: u32 = 1;
@@ -648,12 +612,7 @@ pub fn schema() -> Schema {
             // The constant singleton key. `Unsigned`: nothing content-defined
             // names it and no manifest resolves it.
             Field::new(f::MANAGER_SINGLETON, Kind::Unsigned).key(0),
-            // Known even on an `OGS1` v1 extension, which carries the count but
-            // none of the ids (`orders_group_live.rs:464`-`:478`).
             Field::new(f::ARMY_GROUP_COUNT, Kind::Unsigned),
-            // v2 carries every typed owner identity; v1 does not
-            // (`orders_group_live.rs:481`). Without this the reader cannot tell an
-            // unmeasured army-group census from a measured empty one.
             Field::new(f::OWNER_IDENTITIES_COMPLETE, Kind::Boolean),
         ],
     };
@@ -707,6 +666,15 @@ pub fn schema() -> Schema {
                 Field::new(f::LINK_TARGET_OWNER_ID, Kind::Unsigned),
                 Field::new(f::LINK_TARGET_INSTANCE, Kind::Unsigned),
                 Field::new(f::LINK_TARGET_GENERATION, Kind::Unsigned),
+            ] },
+            Collection { collection_id: OWNER_COLOURS, shape: Shape::KeyedSet, fields: vec![
+                Field::new(f::COLOUR_OWNER_KIND, Kind::Unsigned).key(0),
+                Field::new(f::COLOUR_OWNER_ID, Kind::Unsigned).key(1),
+                Field::new(f::COLOUR_STATUS, Kind::Enum).enum_card(5),
+                Field::new(f::COLOUR_R_BITS, Kind::Unsigned),
+                Field::new(f::COLOUR_G_BITS, Kind::Unsigned),
+                Field::new(f::COLOUR_B_BITS, Kind::Unsigned),
+                Field::new(f::COLOUR_A_BITS, Kind::Unsigned),
             ] },
         ],
         event_part: None,
@@ -1040,7 +1008,7 @@ pub struct ArmyOrdersGroupRow {
 /// The decoded `OGS1` extension (`orders_group_live.rs:398`-`:487`).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrdersGroupExtension {
-    /// v2 carries every typed owner identity; v1 carries only the count.
+    pub owner_colours: Vec<OwnerColourRow>,
     pub owner_identities_complete: bool,
     pub army_group_count: u32,
     pub army_group_ids: Vec<u32>,
@@ -1058,7 +1026,7 @@ pub fn decode_extension(bytes: &[u8]) -> core::result::Result<OrdersGroupExtensi
         return Err("orders-group extension has bad magic".into());
     }
     let version = u16_at(bytes, 4);
-    if !matches!(version, EXTENSION_VERSION_V1 | EXTENSION_VERSION_V2) {
+    if version != EXTENSION_VERSION {
         return Err("orders-group extension has unsupported version".into());
     }
     if u16_at(bytes, 6) as usize != EXTENSION_HEADER_LEN {
@@ -1077,20 +1045,23 @@ pub fn decode_extension(bytes: &[u8]) -> core::result::Result<OrdersGroupExtensi
         .checked_mul(EXTENSION_ROW_LEN)
         .and_then(|rows| EXTENSION_HEADER_LEN.checked_add(rows))
         .ok_or("orders-group extension length overflow")?;
-    let expected = if version == EXTENSION_VERSION_V2 {
+    let owner_colours_start = {
         (army_group_count as usize)
             .checked_mul(4)
             .and_then(|bytes| army_rows_end.checked_add(bytes))
             .ok_or("orders-group extension length overflow")?
-    } else {
-        army_rows_end
     };
+    let expected = (registered_entry_count as usize).checked_mul(owner_colour::ROW_BYTES)
+        .and_then(|bytes| owner_colours_start.checked_add(bytes)).ok_or("orders-group colour length overflow")?;
     if bytes.len() != expected {
         return Err("orders-group extension length mismatch".into());
     }
     // Derived, hard-enforced, therefore not a field.
     if registered_entry_count != (row_count as u32).saturating_add(army_group_count) {
         return Err("orders-group extension registered count mismatch".into());
+    }
+    if registered_entry_count as usize > owner_colour::MAX_OWNERS {
+        return Err("orders-group owner census exceeds bound".into());
     }
     let mut armies = Vec::with_capacity(row_count);
     let mut previous_id = 0u32;
@@ -1116,23 +1087,24 @@ pub fn decode_extension(bytes: &[u8]) -> core::result::Result<OrdersGroupExtensi
     }
     let army_ids: BTreeSet<u32> = armies.iter().map(|row| row.army_id).collect();
     let mut army_group_ids = Vec::with_capacity(army_group_count as usize);
-    if version == EXTENSION_VERSION_V2 {
-        let mut previous_group_id = 0u32;
-        for index in 0..army_group_count as usize {
-            let army_group_id = u32_at(bytes, army_rows_end + index * 4);
-            if army_group_id == 0
-                || army_group_id > MAX_ARMY_ID
-                || army_group_id <= previous_group_id
-                || army_ids.contains(&army_group_id)
-            {
-                return Err("orders-group extension army-group ids are not strict disjoint ids".into());
-            }
-            previous_group_id = army_group_id;
-            army_group_ids.push(army_group_id);
+    let mut previous_group_id = 0u32;
+    for index in 0..army_group_count as usize {
+        let army_group_id = u32_at(bytes, army_rows_end + index * 4);
+        if army_group_id == 0
+            || army_group_id > MAX_ARMY_ID
+            || army_group_id <= previous_group_id
+            || army_ids.contains(&army_group_id)
+        {
+            return Err("orders-group extension army-group ids are not strict disjoint ids".into());
         }
+        previous_group_id = army_group_id;
+        army_group_ids.push(army_group_id);
     }
+    let owner_colours = owner_colour::decode(&bytes[owner_colours_start..],
+        armies.iter().map(|row| (0, row.army_id)).chain(army_group_ids.iter().map(|id| (1, *id))))?;
     Ok(OrdersGroupExtension {
-        owner_identities_complete: version == EXTENSION_VERSION_V2,
+        owner_colours,
+        owner_identities_complete: true,
         army_group_count,
         army_group_ids,
         registered_entry_count,
@@ -1627,6 +1599,7 @@ pub struct State {
     /// Collection [`ORDERS_GROUP_ARMY_GROUPS`], keyed by `army_group_id`.
     pub orders_group_army_groups: KeyedState,
     pub order_links: KeyedState,
+    pub owner_colours: KeyedState,
     /// `delta_baselines_seen.contains(&54)` (`world_fold.rs::fold_army_battleplans_depth`).
     baseline_seen: bool,
 }
@@ -1654,6 +1627,7 @@ impl State {
             self.orders_group_armies.clone(),
             self.orders_group_army_groups.clone(),
             self.order_links.clone(),
+            self.owner_colours.clone(),
         ]
     }
 
@@ -1731,6 +1705,7 @@ impl State {
         let manager = collection_of(schema, ORDERS_GROUP_MANAGER)?;
         let armies = collection_of(schema, ORDERS_GROUP_ARMIES)?;
         let army_groups = collection_of(schema, ORDERS_GROUP_ARMY_GROUPS)?;
+        check_collection(collection_of(schema, OWNER_COLOURS)?, OWNER_COLOURS)?;
 
         // Build every row before mutating anything, so the all-or-nothing error
         // contract holds even against a mapper refusal.
@@ -1785,7 +1760,13 @@ impl State {
         let mut manager_state = KeyedState::new();
         let mut army_state = KeyedState::new();
         let mut group_state = KeyedState::new();
+        let mut colour_state = KeyedState::new();
         if let Some(extension) = &split.extension {
+            for row in &extension.owner_colours {
+                colour_state.insert(key(&[row.owner_kind as u64, row.owner_id as u64]),
+                    Record::new(std::iter::once(Value::Enum(row.status as u32))
+                        .chain(row.rgba_f32_bits.map(|bits| Value::Unsigned(bits as u64))).collect()));
+            }
             manager_state.insert(
                 manager_singleton_key(),
                 record_from_orders_group_manager(manager, extension, 0)?,
@@ -1810,6 +1791,7 @@ impl State {
         self.orders_group_manager = manager_state;
         self.orders_group_armies = army_state;
         self.orders_group_army_groups = group_state;
+        self.owner_colours = colour_state;
 
         // `:21833`-`:21837`: a non-delta frame is a full replacement and is what
         // establishes the delta baseline.
@@ -1872,6 +1854,7 @@ fn extension_bytes_len(extension: &OrdersGroupExtension) -> usize {
     EXTENSION_HEADER_LEN
         + extension.armies.len() * EXTENSION_ROW_LEN
         + extension.army_group_ids.len() * 4
+        + extension.owner_colours.len() * owner_colour::ROW_BYTES
 }
 
 fn collection_of(schema: &Schema, id: u32) -> core::result::Result<&Collection, String> {
@@ -2038,9 +2021,12 @@ mod tests {
                 out.extend_from_slice(&word.to_le_bytes());
             }
         }
-        if version == EXTENSION_VERSION_V2 {
+        if version == EXTENSION_VERSION {
             for id in groups {
                 out.extend_from_slice(&id.to_le_bytes());
+            }
+            for (kind, id) in armies.iter().map(|row| (0u32, row.0)).chain(groups.iter().map(|id| (1, *id))) {
+                for value in [kind, id, 2, 0, 0, 0, 0] { out.extend_from_slice(&value.to_le_bytes()); }
             }
         }
         out
@@ -2143,7 +2129,7 @@ mod tests {
         // path-carrying rows do exactly this.
         frame.paths = vec![9_632, 11_609, 9_632];
         frame.extension = Some(ogs_extension(
-            EXTENSION_VERSION_V2,
+            EXTENSION_VERSION,
             &[(7, 4, 1, 2), (9, 0, 0, 0)],
             &[11, 12],
         ));
@@ -2219,7 +2205,7 @@ mod tests {
     fn the_schema_hash_is_stable() {
         // canonical schema bytes; a changed hash means a changed grammar.
         assert_eq!(schema().schema_hash(), schema().schema_hash());
-        assert_eq!(schema().collections.len(), 8);
+        assert_eq!(schema().collections.len(), 9);
     }
 
     // ---- 5. Shape and key ----------------------------------------------------
@@ -2516,7 +2502,7 @@ mod tests {
         );
 
         let extension = decode_extension(&ogs_extension(
-            EXTENSION_VERSION_V2,
+            EXTENSION_VERSION,
             &[(7, 4, 1, 2)],
             &[11, 12],
         ))
@@ -2668,7 +2654,7 @@ mod tests {
         frame.status_flags = STATUS_DELTA_DATA;
         frame.rows = vec![row];
         frame.paths = vec![9_632, 3_667, 9_632];
-        frame.extension = Some(ogs_extension(EXTENSION_VERSION_V2, &[(7, 4, 1, 2)], &[11]));
+        frame.extension = Some(ogs_extension(EXTENSION_VERSION, &[(7, 4, 1, 2)], &[11]));
         frame.observed_army_rows = Some(1);
         fold_ok(&mut state, &schema, &frame.encode());
         let after = state.collections();
@@ -2713,11 +2699,6 @@ mod tests {
 
     #[test]
     fn the_schema_has_no_continuous_field_to_quantize() {
-        // Step 8.4's conditional test: d54 carries no continuous field at all.
-        // Every word in the payload is a raw id, count, index, flag or status
-        // code; the fold divides nothing and there is no scale word in the
-        // header. So there is no quantization saving to measure and no
-        // drawn-rather-than-interpolated judgement to make.
         for collection in &schema().collections {
             for f in &collection.fields {
                 assert_ne!(f.kind, Kind::Continuous, "field {}", f.field_id);
@@ -2753,10 +2734,10 @@ mod tests {
         }
 
         // And the two in the census header.
-        let mut extension = ogs_extension(EXTENSION_VERSION_V2, &[(7, 0, 0, 0)], &[11]);
+        let mut extension = ogs_extension(EXTENSION_VERSION, &[(7, 0, 0, 0)], &[11]);
         extension[12..16].copy_from_slice(&99u32.to_le_bytes()); // registered_entry_count
         assert!(decode_extension(&extension).is_err());
-        let mut extension = ogs_extension(EXTENSION_VERSION_V2, &[(7, 0, 0, 0)], &[11]);
+        let mut extension = ogs_extension(EXTENSION_VERSION, &[(7, 0, 0, 0)], &[11]);
         extension[20..24].copy_from_slice(&0u32.to_le_bytes()); // flags
         assert!(decode_extension(&extension).is_err());
     }
@@ -2911,7 +2892,7 @@ mod tests {
         fold_ok(&mut state, &schema, &full_frame().encode());
         let before = state.collections();
         let mut frame = full_frame();
-        frame.extension = Some(ogs_extension(EXTENSION_VERSION_V2, &[(3, 0, 0, 0)], &[]));
+        frame.extension = Some(ogs_extension(EXTENSION_VERSION, &[(3, 0, 0, 0)], &[]));
         frame.observed_army_rows = Some(1);
         assert_eq!(
             state
@@ -3057,27 +3038,11 @@ mod tests {
     }
 
     #[test]
-    fn a_v1_census_says_its_army_group_ids_were_not_carried() {
-        let schema = schema();
-        let mut state = State::new();
-        let mut frame = full_frame();
-        frame.extension = Some(ogs_extension(
-            EXTENSION_VERSION_V1,
-            &[(7, 0, 0, 0), (9, 0, 0, 0)],
-            &[11, 12],
-        ));
-        frame.observed_army_rows = Some(2);
-        fold_ok(&mut state, &schema, &frame.encode());
-        let record = &state.orders_group_manager[&manager_singleton_key()];
-        assert_eq!(
-            record.values,
-            vec![Value::Unsigned(2), Value::Bool(false)],
-            "two army groups exist and neither id was carried"
-        );
-        assert!(
-            state.orders_group_army_groups.is_empty(),
-            "and the census collection is empty because they were not measured"
-        );
+    fn old_owner_census_versions_are_refused_without_fallback() {
+        for version in [1, 2] {
+            let payload = ogs_extension(version, &[(7, 0, 0, 0)], &[11]);
+            assert!(decode_extension(&payload).unwrap_err().contains("unsupported version"));
+        }
     }
 
     #[test]
@@ -3214,4 +3179,56 @@ mod tests {
         row.style_flags = STYLE_FLAG_MASK + 1;
         parse_order_row(&row.encode()).expect_err("a bit outside the mask is refused");
     }
+    #[test]
+    fn owner_colour_only_changes_survive_codec_and_do_not_change_other_collections() {
+        let schema = schema();
+        let mut frame = full_frame();
+        let mut state = State::new();
+        fold_ok(&mut state, &schema, &frame.encode());
+        let before = state.collections();
+        let extension = frame.extension.as_mut().unwrap();
+        let base = EXTENSION_HEADER_LEN + u32_at(extension, 8) as usize * EXTENSION_ROW_LEN
+            + u32_at(extension, 16) as usize * 4;
+        let words = [1u32, 0x80000000, 1, 0x3f000000, 0x3f800000];
+        for (i, word) in words.into_iter().enumerate() {
+            extension[base + 8 + i * 4..base + 12 + i * 4].copy_from_slice(&word.to_le_bytes());
+        }
+        fold_ok(&mut state, &schema, &frame.encode());
+        let after = state.collections();
+        let deltas: Vec<_> = schema.collections.iter().enumerate().map(|(i, collection)| {
+            let delta = diff(collection, &before[i], &after[i]);
+            assert_eq!(!delta.is_empty(), collection.collection_id == OWNER_COLOURS);
+            if delta.is_empty() { None } else { Some(delta) }
+        }).collect();
+        let mut encoded = vec![];
+        encode_delta(&schema, &before, &deltas, &mut encoded).unwrap();
+        let (decoded, consumed) = decode_delta(&schema, &before, &encoded, 0).unwrap();
+        assert_eq!(consumed, encoded.len());
+        let mut replayed = before;
+        for (i, delta) in decoded.iter().enumerate() { if let Some(delta) = delta { apply(&mut replayed[i], delta); } }
+        assert_eq!(replayed, after);
+        frame.extension = None;
+        fold_ok(&mut state, &schema, &frame.encode());
+        assert!(state.owner_colours.is_empty(), "no inherited owner colour after census loss");
+    }
+
+    #[test]
+    fn owner_colour_collection_ids_are_fresh_and_grammar_is_mandatory() {
+        let schema = schema();
+        let collection = collection_of(&schema, OWNER_COLOURS).unwrap();
+        assert_eq!(collection.collection_id, 9);
+        assert_eq!(collection.fields.iter().map(|f| f.field_id).collect::<Vec<_>>(), (90..=96).collect::<Vec<_>>());
+        assert!(schema.collections.iter().filter(|c| c.collection_id != OWNER_COLOURS)
+            .flat_map(|c| &c.fields).all(|f| f.field_id < 90));
+        let good = ogs_extension(EXTENSION_VERSION, &[(7, 0, 0, 0)], &[11]);
+        for bytes in [&good[..good.len() - 28], &good[..good.len() - 1]] {
+            assert!(decode_extension(bytes).is_err());
+        }
+        for offset in [44usize, 48, 52] {
+            let mut invalid = good.clone();
+            invalid[offset..offset + 4].copy_from_slice(&99u32.to_le_bytes());
+            assert!(decode_extension(&invalid).is_err());
+        }
+    }
+
 }

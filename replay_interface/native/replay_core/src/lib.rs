@@ -284,7 +284,7 @@ pub use naval_combat_results::{
     NAVAL_COMBAT_RESULTS_A729_EXECUTABLE_SHA256, NAVAL_COMBAT_RESULTS_SCHEMA,
 };
 pub use orders_group_manager::{
-    ArmyCohesionMode, ArmyExecutionMode, ArmyOrdersGroupManagerView, ArmyOrdersGroupScalarExact,
+    ArmyCohesionMode, ArmyExecutionMode, ArmyOrdersGroupManagerView, ArmyOrdersGroupScalarExact, ArmyOwnerColourRefusal,
     ORDERS_GROUP_MANAGER_AUTHORITY,
 };
 pub use peace_conference_presentation::{

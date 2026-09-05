@@ -106,7 +106,38 @@ impl ArmyOrdersGroupManagerView {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArmyOwnerColourRefusal {
+    Absent,
+    Unavailable,
+    InvalidCensus,
+    OwnerOutsideCensus,
+}
+
 impl WorldFrame {
+    pub fn army_owner_colour_census(&self) -> Result<portable_render_stream::D54OwnerColourCensus, ArmyOwnerColourRefusal> {
+        let manager = self.army_orders_group_manager();
+        if manager.status == ViewStatus::DomainAbsent { return Err(ArmyOwnerColourRefusal::Absent); }
+        if manager.status != ViewStatus::Present || !manager.complete || !manager.owner_identities_complete {
+            return Err(ArmyOwnerColourRefusal::Unavailable);
+        }
+        let value = self.raw().get("order_of_battle")
+            .and_then(|oob| oob.get("extra"))
+            .and_then(|extra| extra.get("army_battleplans_depth_live"))
+            .and_then(|domain| domain.get("owner_colours"));
+        let value = value.ok_or(ArmyOwnerColourRefusal::Absent)?;
+        if value.is_null() { return Err(ArmyOwnerColourRefusal::Unavailable); }
+        if value.get("rows").and_then(Value::as_array).is_none_or(|rows| rows.len() > 262_144) {
+            return Err(ArmyOwnerColourRefusal::InvalidCensus);
+        }
+        let census: portable_render_stream::D54OwnerColourCensus = serde_json::from_value(value.clone())
+            .map_err(|_| ArmyOwnerColourRefusal::InvalidCensus)?;
+        census.validate(manager.armies.iter().map(|army| (0, army.army_id))
+            .chain(manager.army_group_ids.iter().map(|id| (1, *id))))
+            .map_err(|_| ArmyOwnerColourRefusal::InvalidCensus)?;
+        Ok(census)
+    }
+
     pub fn army_orders_group_manager(&self) -> ArmyOrdersGroupManagerView {
         parse_orders_group_manager(self.raw())
     }

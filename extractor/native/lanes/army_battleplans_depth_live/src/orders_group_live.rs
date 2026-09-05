@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use compact_contract::owner_colour::{self, OwnerColourRow, OwnerColourStatus};
 
 use crate::{BattleplansDepthMemory, ARMY_VTABLE_RVA};
 
@@ -27,8 +28,7 @@ const MAX_TABLE_CAPACITY: u32 = 262_144;
 const MAX_ARMY_ID: u32 = i32::MAX as u32;
 
 pub const EXTENSION_MAGIC: [u8; 4] = *b"OGS1";
-pub const EXTENSION_VERSION_V1: u16 = 1;
-pub const EXTENSION_VERSION: u16 = 2;
+pub const EXTENSION_VERSION: u16 = owner_colour::OGS_VERSION;
 pub const EXTENSION_HEADER_LEN: usize = 24;
 pub const EXTENSION_ROW_LEN: usize = 16;
 pub const EXTENSION_FLAG_COMPLETE_MANAGER: u32 = 1;
@@ -49,6 +49,7 @@ pub struct ArmyOrdersGroupRow {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CompleteArmyOrdersGroups {
+    pub owner_colours: Vec<OwnerColourRow>,
     pub armies: Vec<ArmyOrdersGroupRow>,
     pub army_group_count: u32,
     pub army_group_ids: Vec<u32>,
@@ -64,7 +65,6 @@ pub struct ArmyOrdersGroupRoot {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CompleteArmyOrdersGroupRoots {
-    pub carrier: CompleteArmyOrdersGroups,
     pub roots: Vec<ArmyOrdersGroupRoot>,
 }
 
@@ -80,6 +80,7 @@ pub enum OrdersGroupReadError {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DecodedOrdersGroupExtension {
+    pub owner_colours: Vec<OwnerColourRow>,
     pub complete_manager: bool,
     pub owner_identities_complete: bool,
     pub army_group_count: u32,
@@ -100,12 +101,32 @@ struct TableHeader {
 pub fn read_complete_army_orders_groups<M: BattleplansDepthMemory>(
     mem: &M,
 ) -> Result<CompleteArmyOrdersGroups, OrdersGroupReadError> {
-    read_complete_army_orders_group_roots(mem).map(|read| read.carrier)
+    let read = read_owner_census(mem, true)?;
+    Ok(CompleteArmyOrdersGroups {
+        owner_colours: read.owner_colours, armies: read.armies,
+        army_group_count: read.army_group_count, army_group_ids: read.army_group_ids,
+        registered_entry_count: read.registered_entry_count,
+    })
 }
 
 pub fn read_complete_army_orders_group_roots<M: BattleplansDepthMemory>(
     mem: &M,
 ) -> Result<CompleteArmyOrdersGroupRoots, OrdersGroupReadError> {
+    read_owner_census(mem, false).map(|read| CompleteArmyOrdersGroupRoots { roots: read.roots })
+}
+
+struct OwnerCensusRead {
+    owner_colours: Vec<OwnerColourRow>,
+    armies: Vec<ArmyOrdersGroupRow>,
+    army_group_count: u32,
+    army_group_ids: Vec<u32>,
+    registered_entry_count: u32,
+    roots: Vec<ArmyOrdersGroupRoot>,
+}
+
+fn read_owner_census<M: BattleplansDepthMemory>(
+    mem: &M, capture_colour: bool,
+) -> Result<OwnerCensusRead, OrdersGroupReadError> {
     let table_ptr_address = mem
         .module_base()
         .checked_add(ORDERS_GROUP_TABLE_PTR_RVA)
@@ -152,6 +173,7 @@ pub fn read_complete_army_orders_group_roots<M: BattleplansDepthMemory>(
         .ok_or(OrdersGroupReadError::AddressOverflow)?;
     let mut armies = Vec::new();
     let mut roots = Vec::new();
+    let mut owner_colours = Vec::new();
     let mut army_group_ids = Vec::new();
     let mut registered_ids = BTreeSet::new();
     let mut army_group_count = 0u32;
@@ -214,6 +236,10 @@ pub fn read_complete_army_orders_group_roots<M: BattleplansDepthMemory>(
             });
         }
         let vtable = slice_u64(&identity_a, 0);
+        if capture_colour && (vtable == army_group_vtable || vtable == orders_group_vtable) {
+            owner_colours.push(read_owner_colour(mem, object, &identity_a,
+                u32::from(vtable == army_group_vtable), id));
+        }
         if vtable == army_group_vtable {
             let identity_b =
                 mem.read_bytes(object, 16)
@@ -318,15 +344,28 @@ pub fn read_complete_army_orders_group_roots<M: BattleplansDepthMemory>(
     armies.sort_by_key(|row| row.army_id);
     army_group_ids.sort_unstable();
     roots.sort_by_key(|row| (row.owner_kind, row.owner_id));
-    Ok(CompleteArmyOrdersGroupRoots {
-        carrier: CompleteArmyOrdersGroups {
-            armies,
-            army_group_count,
-            army_group_ids,
-            registered_entry_count: occupied_count,
-        },
-        roots,
+    owner_colours.sort_by_key(|row| (row.owner_kind, row.owner_id));
+    Ok(OwnerCensusRead {
+        owner_colours, armies, army_group_count, army_group_ids,
+        registered_entry_count: occupied_count, roots,
     })
+}
+
+fn read_owner_colour<M: BattleplansDepthMemory>(mem: &M, object: u64, identity: &[u8], owner_kind: u32, owner_id: u32) -> OwnerColourRow {
+    let mut row = OwnerColourRow { owner_kind, owner_id, status: OwnerColourStatus::Unreadable, rgba_f32_bits: [0; 4] };
+    let Some(address) = object.checked_add(0x110) else { return row; };
+    let (Some(first), Some(second), Some(after)) =
+        (mem.read_bytes(address, 16), mem.read_bytes(address, 16), mem.read_bytes(object, 16)) else { return row; };
+    if first.len() != 16 || second.len() != 16 || after.len() != 16 { return row; }
+    if first != second || after != identity {
+        row.status = OwnerColourStatus::Unstable;
+        return row;
+    }
+    row.rgba_f32_bits = std::array::from_fn(|axis| slice_u32(&first, axis * 4));
+    row.status = if row.rgba_f32_bits.iter().all(|bits| f32::from_bits(*bits).is_finite()) {
+        OwnerColourStatus::Exact
+    } else { OwnerColourStatus::NonFinite };
+    row
 }
 
 pub fn append_orders_group_extension(
@@ -350,6 +389,7 @@ pub fn append_orders_group_extension(
     for army_group_id in &carrier.army_group_ids {
         payload.extend_from_slice(&army_group_id.to_le_bytes());
     }
+    owner_colour::encode(&carrier.owner_colours, payload);
     Ok(())
 }
 
@@ -363,7 +403,7 @@ pub fn decode_orders_group_extension(
         return Err("orders-group extension has bad magic");
     }
     let version = slice_u16(payload, 4);
-    if !matches!(version, EXTENSION_VERSION_V1 | EXTENSION_VERSION) {
+    if version != EXTENSION_VERSION {
         return Err("orders-group extension has unsupported version");
     }
     if slice_u16(payload, 6) as usize != EXTENSION_HEADER_LEN {
@@ -380,19 +420,22 @@ pub fn decode_orders_group_extension(
         .checked_mul(EXTENSION_ROW_LEN)
         .and_then(|rows| EXTENSION_HEADER_LEN.checked_add(rows))
         .ok_or("orders-group extension length overflow")?;
-    let expected = if version == EXTENSION_VERSION {
+    let owner_colours_start = {
         (army_group_count as usize)
             .checked_mul(4)
             .and_then(|bytes| army_rows_end.checked_add(bytes))
             .ok_or("orders-group extension length overflow")?
-    } else {
-        army_rows_end
     };
+    let expected = (registered_entry_count as usize).checked_mul(owner_colour::ROW_BYTES)
+        .and_then(|bytes| owner_colours_start.checked_add(bytes)).ok_or("orders-group colour length overflow")?;
     if payload.len() != expected {
         return Err("orders-group extension length mismatch");
     }
     if registered_entry_count != (row_count as u32).saturating_add(army_group_count) {
         return Err("orders-group extension registered count mismatch");
+    }
+    if registered_entry_count as usize > owner_colour::MAX_OWNERS {
+        return Err("orders-group owner census exceeds bound");
     }
     let mut armies = Vec::with_capacity(row_count);
     let mut previous_id = 0u32;
@@ -421,24 +464,25 @@ pub fn decode_orders_group_extension(
         .map(|row| row.army_id)
         .collect::<BTreeSet<_>>();
     let mut army_group_ids = Vec::with_capacity(army_group_count as usize);
-    if version == EXTENSION_VERSION {
-        let mut previous_group_id = 0u32;
-        for index in 0..army_group_count as usize {
-            let army_group_id = slice_u32(payload, army_rows_end + index * 4);
-            if army_group_id == 0
-                || army_group_id > MAX_ARMY_ID
-                || army_group_id <= previous_group_id
-                || army_ids.contains(&army_group_id)
-            {
-                return Err("orders-group extension army-group ids are not strict disjoint ids");
-            }
-            previous_group_id = army_group_id;
-            army_group_ids.push(army_group_id);
+    let mut previous_group_id = 0u32;
+    for index in 0..army_group_count as usize {
+        let army_group_id = slice_u32(payload, army_rows_end + index * 4);
+        if army_group_id == 0
+            || army_group_id > MAX_ARMY_ID
+            || army_group_id <= previous_group_id
+            || army_ids.contains(&army_group_id)
+        {
+            return Err("orders-group extension army-group ids are not strict disjoint ids");
         }
+        previous_group_id = army_group_id;
+        army_group_ids.push(army_group_id);
     }
+    let owner_colours = owner_colour::decode(&payload[owner_colours_start..],
+        armies.iter().map(|row| (0, row.army_id)).chain(army_group_ids.iter().map(|id| (1, *id))))?;
     Ok(DecodedOrdersGroupExtension {
+        owner_colours,
         complete_manager: true,
-        owner_identities_complete: version == EXTENSION_VERSION,
+        owner_identities_complete: true,
         army_group_count,
         army_group_ids,
         registered_entry_count,
@@ -447,6 +491,9 @@ pub fn decode_orders_group_extension(
 }
 
 fn validate_carrier(carrier: &CompleteArmyOrdersGroups) -> Result<(), OrdersGroupReadError> {
+    owner_colour::validate(&carrier.owner_colours, carrier.armies.iter().map(|row| (0, row.army_id))
+        .chain(carrier.army_group_ids.iter().map(|id| (1, *id))))
+        .map_err(OrdersGroupReadError::InvalidTable)?;
     let army_count = u32::try_from(carrier.armies.len())
         .map_err(|_| OrdersGroupReadError::InvalidTable("army row count overflow"))?;
     if army_count.saturating_add(carrier.army_group_count) != carrier.registered_entry_count {
@@ -717,7 +764,7 @@ mod tests {
     #[test]
     fn complete_census_exposes_typed_process_roots_for_both_type_53_vtables() {
         let read = read_complete_army_orders_group_roots(&exact_fixture()).unwrap();
-        assert_eq!(read.carrier.registered_entry_count, 2);
+        assert_eq!(read.roots.len(), 2);
         assert_eq!(
             read.roots,
             vec![
@@ -784,6 +831,7 @@ mod tests {
         assert_eq!(
             decode_orders_group_extension(&payload).unwrap(),
             DecodedOrdersGroupExtension {
+                owner_colours: carrier.owner_colours,
                 complete_manager: true,
                 owner_identities_complete: true,
                 army_group_count: 1,
@@ -799,17 +847,64 @@ mod tests {
     }
 
     #[test]
-    fn legacy_v1_extension_remains_readable_without_group_owner_id_authority() {
+    fn old_owner_census_versions_are_refused_without_fallback() {
         let carrier = read_complete_army_orders_groups(&exact_fixture()).unwrap();
         let mut payload = Vec::new();
         append_orders_group_extension(&mut payload, &carrier).unwrap();
-        payload[4..6].copy_from_slice(&EXTENSION_VERSION_V1.to_le_bytes());
-        payload.truncate(EXTENSION_HEADER_LEN + carrier.armies.len() * EXTENSION_ROW_LEN);
-
-        let decoded = decode_orders_group_extension(&payload).unwrap();
-        assert!(decoded.complete_manager);
-        assert!(!decoded.owner_identities_complete);
-        assert_eq!(decoded.army_group_count, 1);
-        assert!(decoded.army_group_ids.is_empty());
+        for version in [1u16, 2] {
+            payload[4..6].copy_from_slice(&version.to_le_bytes());
+            assert!(decode_orders_group_extension(&payload).unwrap_err().contains("unsupported version"));
+        }
     }
+    #[test]
+    fn colours_are_sampled_once_per_typed_owner_without_orders_and_keep_read_failures_local() {
+        let mut mem = exact_fixture();
+        let before = read_complete_army_orders_groups(&mem).unwrap();
+        assert!(before.owner_colours.iter().all(|row| row.status == OwnerColourStatus::Unreadable));
+        let words = [0x80000000u32, 1, 0x3f000000, 0x3f800000];
+        mem.put(ARMY + 0x110, &words.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>());
+        let after = read_complete_army_orders_groups(&mem).unwrap();
+        assert_eq!(before.armies, after.armies);
+        assert_eq!(before.army_group_ids, after.army_group_ids);
+        assert_eq!(after.owner_colours.len(), 2);
+        assert_eq!(after.owner_colours[0], OwnerColourRow { owner_kind: 0, owner_id: 17,
+            status: OwnerColourStatus::Exact, rgba_f32_bits: words });
+        assert_eq!(after.owner_colours[1].status, OwnerColourStatus::Unreadable);
+        let invalid = [0x7fc01234u32, 0, 0, 0x3f800000];
+        mem.put(ARMY_GROUP + 0x110, &invalid.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>());
+        let carrier = read_complete_army_orders_groups(&mem).unwrap();
+        assert_eq!(carrier.owner_colours[1].status, OwnerColourStatus::NonFinite);
+        assert_eq!(carrier.owner_colours[1].rgba_f32_bits, invalid);
+        let mut bytes = vec![];
+        append_orders_group_extension(&mut bytes, &carrier).unwrap();
+        assert_eq!(decode_orders_group_extension(&bytes).unwrap().owner_colours, carrier.owner_colours);
+    }
+
+    #[test]
+    fn disagreeing_colour_reads_refuse_only_that_owner() {
+        struct Changing { memory: TestMemory, reads: std::cell::Cell<u32> }
+        impl BattleplansDepthMemory for Changing {
+            fn module_base(&self) -> u64 { MODULE }
+            fn read_u64(&self, a: u64) -> Option<u64> { self.memory.read_u64(a) }
+            fn read_u32(&self, a: u64) -> Option<u32> { self.memory.read_u32(a) }
+            fn read_i32(&self, a: u64) -> Option<i32> { self.memory.read_i32(a) }
+            fn is_heap_pointer(&self, a: u64) -> bool { self.memory.is_heap_pointer(a) }
+            fn read_bytes(&self, a: u64, n: usize) -> Option<Vec<u8>> {
+                if a == ARMY + 0x110 && n == 16 {
+                    let read = self.reads.get(); self.reads.set(read + 1);
+                    let mut words = vec![0; 16]; words[0] = read as u8; Some(words)
+                } else { self.memory.read_bytes(a, n) }
+            }
+        }
+        let memory = Changing { memory: exact_fixture(), reads: std::cell::Cell::new(0) };
+        assert_eq!(read_complete_army_orders_group_roots(&memory).unwrap().roots.len(), 2);
+        assert_eq!(memory.reads.get(), 0, "D27 root discovery does not sample D54 colour");
+        let carrier = read_complete_army_orders_groups(&memory).unwrap();
+        assert_eq!(memory.reads.get(), 2);
+        assert_eq!(carrier.registered_entry_count, 2);
+        assert_eq!(carrier.owner_colours[0].status, OwnerColourStatus::Unstable);
+        assert_eq!(carrier.owner_colours[0].rgba_f32_bits, [0; 4]);
+        assert_eq!(carrier.owner_colours[1].status, OwnerColourStatus::Unreadable);
+    }
+
 }
