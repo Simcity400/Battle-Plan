@@ -182,6 +182,44 @@ impl ParticleEmitterShape {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ParticleForceKind {
+    Planar,
+    Point,
+    Vortex,
+    Friction,
+    Turbulence,
+    Spin,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AuthoredParticleForce {
+    pub name: String,
+    pub kind: ParticleForceKind,
+    pub position: [f32; 3],
+    pub direction: [f32; 3],
+    pub yaw: f32,
+    pub division: i32,
+    pub local_force: bool,
+    pub amount: VariedScalar,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ParticleSort {
+    None,
+    Depth,
+    Distance,
+    Age,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ParticleTexture {
+    pub file: String,
+    pub shader: String,
+    pub columns: i32,
+    pub rows: i32,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct AuthoredSubsystem {
     pub name: String,
@@ -197,11 +235,16 @@ pub(crate) struct AuthoredSubsystem {
     pub local_space: bool,
     pub trail: bool,
     pub billboard: bool,
+    pub sort: ParticleSort,
+    pub invert: bool,
+    pub texture: Option<ParticleTexture>,
     pub shape: ParticleEmitterShape,
     pub origin: [VariedScalar; 3],
     pub spawn_draw_columns: [VariedScalar; 12],
     pub children: Vec<AuthoredSubsystem>,
     pub storage_capacity: usize,
+    pub forces: Vec<Arc<AuthoredParticleForce>>,
+    pub force_division: i32,
 }
 
 #[derive(Debug)]
@@ -627,7 +670,7 @@ fn compile_definition(
         source: &source.value,
         cache: std::cell::RefCell::new(BTreeMap::new()),
     };
-    let mut forces = std::collections::BTreeSet::new();
+    let mut forces = BTreeMap::new();
     let mut turbulence_count = 0;
     for field in source
         .value
@@ -636,7 +679,7 @@ fn compile_definition(
         .filter(|f| f.key_matches("force"))
     {
         let force = required_scalar(&field.value, "name", name, None)?;
-        if !forces.insert(force.to_owned()) {
+        if forces.contains_key(force) {
             return Err(ParticleInputRefusal::new(
                 name,
                 None,
@@ -644,21 +687,11 @@ fn compile_definition(
                 ParticleRefusalReason::ConflictingDefinition,
             ));
         }
-        let kind = field.value.first_scalar_ci("type").unwrap_or("planar");
-        if !matches!(
-            kind,
-            "planar" | "point" | "vortex" | "friction" | "turbulence" | "spin"
-        ) {
-            return Err(ParticleInputRefusal::new(
-                name,
-                None,
-                force,
-                ParticleRefusalReason::UnsupportedAuthoredInput,
-            ));
-        }
-        if kind == "turbulence" {
+        let compiled = compile_force(&field.value, name, &animations)?;
+        if compiled.kind == ParticleForceKind::Turbulence {
             turbulence_count += 1;
         }
+        forces.insert(force.to_owned(), Arc::new(compiled));
     }
     let mut subsystems = Vec::new();
     let mut capacity = 0_usize;
@@ -698,11 +731,178 @@ fn compile_definition(
     })
 }
 
+fn compile_texture(
+    body: &Value,
+    definition: &str,
+    subsystem: &str,
+) -> ParticleResult<ParticleTexture> {
+    let fail =
+        |key: &str, reason| ParticleInputRefusal::new(definition, Some(subsystem), key, reason);
+    if !matches!(body, Value::Object(_)) {
+        return Err(fail("texture", ParticleRefusalReason::MalformedContent));
+    }
+    let mut texture = ParticleTexture {
+        file: String::new(),
+        shader: String::new(),
+        columns: 1,
+        rows: 1,
+    };
+    for field in body.fields() {
+        let key = field
+            .key
+            .as_deref()
+            .ok_or_else(|| fail("texture", ParticleRefusalReason::MalformedContent))?;
+        let value = field
+            .value
+            .as_scalar()
+            .ok_or_else(|| fail(key, ParticleRefusalReason::MalformedContent))?;
+        match key.to_ascii_lowercase().as_str() {
+            "file" | "shader" => {
+                let (output, limit) = if field.key_matches("file") {
+                    (&mut texture.file, 255)
+                } else {
+                    (&mut texture.shader, 63)
+                };
+                let bytes = value.as_bytes();
+                let end = bytes
+                    .iter()
+                    .position(|byte| *byte == 0)
+                    .unwrap_or(bytes.len())
+                    .min(limit);
+                *output = std::str::from_utf8(&bytes[..end])
+                    .map_err(|_| fail(key, ParticleRefusalReason::UnsupportedAuthoredInput))?
+                    .into();
+            }
+            "x" => {
+                texture.columns = value
+                    .parse()
+                    .map_err(|_| fail(key, ParticleRefusalReason::InvalidNumber))?
+            }
+            "y" => {
+                texture.rows = value
+                    .parse()
+                    .map_err(|_| fail(key, ParticleRefusalReason::InvalidNumber))?
+            }
+            _ => return Err(fail(key, ParticleRefusalReason::UnsupportedAuthoredInput)),
+        }
+    }
+    Ok(texture)
+}
+
+fn compile_force(
+    body: &Value,
+    definition: &str,
+    animations: &AnimationCatalog,
+) -> ParticleResult<AuthoredParticleForce> {
+    let name = required_scalar(body, "name", definition, None)?;
+    let fail = |key: &str, reason| ParticleInputRefusal::new(definition, Some(name), key, reason);
+    let mut seen = std::collections::BTreeSet::new();
+    for field in body.fields() {
+        let key = field
+            .key
+            .as_deref()
+            .ok_or_else(|| fail("force", ParticleRefusalReason::MalformedContent))?;
+        if !seen.insert(key.to_ascii_lowercase()) {
+            return Err(fail(key, ParticleRefusalReason::MalformedContent));
+        }
+        if matches!(
+            key.to_ascii_lowercase().as_str(),
+            "name" | "type" | "yaw" | "division" | "local_force"
+        ) && field.value.as_scalar().is_none()
+        {
+            return Err(fail(key, ParticleRefusalReason::MalformedContent));
+        }
+        if !matches!(
+            key.to_ascii_lowercase().as_str(),
+            "name"
+                | "type"
+                | "position"
+                | "direction"
+                | "yaw"
+                | "division"
+                | "local_force"
+                | "amount"
+        ) {
+            return Err(fail(key, ParticleRefusalReason::UnsupportedAuthoredInput));
+        }
+    }
+    let kind = match body
+        .first_scalar_ci("type")
+        .unwrap_or("planar")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "planar" => ParticleForceKind::Planar,
+        "point" => ParticleForceKind::Point,
+        "vortex" => ParticleForceKind::Vortex,
+        "friction" => ParticleForceKind::Friction,
+        "turbulence" => ParticleForceKind::Turbulence,
+        "spin" => ParticleForceKind::Spin,
+        _ => {
+            return Err(fail(
+                "type",
+                ParticleRefusalReason::UnsupportedAuthoredInput,
+            ))
+        }
+    };
+    let vector = |key: &str, default: [f32; 3]| -> ParticleResult<[f32; 3]> {
+        let Some(value) = body.first_value_ci(key) else {
+            return Ok(default);
+        };
+        if !matches!(value, Value::Object(_)) {
+            return Err(fail(key, ParticleRefusalReason::MalformedContent));
+        }
+        let mut vector = [0.0; 3];
+        let tokens = scalar_tokens(value)
+            .ok_or_else(|| fail(key, ParticleRefusalReason::MalformedContent))?;
+        if tokens.len() > 3 {
+            return Err(fail(key, ParticleRefusalReason::MalformedContent));
+        }
+        for (output, token) in vector.iter_mut().zip(tokens) {
+            *output = token
+                .parse::<f32>()
+                .ok()
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| fail(key, ParticleRefusalReason::InvalidNumber))?;
+        }
+        Ok(vector)
+    };
+    if let Some(value) = body.first_value_ci("amount") {
+        if scalar_tokens(value).is_none_or(|tokens| tokens.len() != 1) {
+            return Err(fail("amount", ParticleRefusalReason::MalformedContent));
+        }
+    }
+    Ok(AuthoredParticleForce {
+        name: name.into(),
+        kind,
+        position: vector("position", [0.0; 3])?,
+        direction: vector("direction", [0.0, 1.0, 0.0])?,
+        yaw: body.first_scalar_ci("yaw").map_or(Ok(0.0), |value| {
+            value
+                .parse::<f32>()
+                .ok()
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| fail("yaw", ParticleRefusalReason::InvalidNumber))
+        })?,
+        division: body.first_scalar_ci("division").map_or(Ok(16), |value| {
+            value
+                .parse::<i32>()
+                .map_err(|_| fail("division", ParticleRefusalReason::InvalidNumber))
+        })?,
+        local_force: match body.first_scalar_ci("local_force") {
+            None | Some("yes") => true,
+            Some("no") => false,
+            _ => return Err(fail("local_force", ParticleRefusalReason::MalformedContent)),
+        },
+        amount: varied(body, "amount", definition, name, animations)?,
+    })
+}
+
 fn compile_subsystem(
     body: &Value,
     name: &str,
     animations: &AnimationCatalog,
-    forces: &std::collections::BTreeSet<String>,
+    forces: &BTreeMap<String, Arc<AuthoredParticleForce>>,
 ) -> ParticleResult<AuthoredSubsystem> {
     let subsystem = required_scalar(body, "name", name, None)?;
     let fail =
@@ -758,22 +958,26 @@ fn compile_subsystem(
             | "box_emitter_z" => {}
             "emitter_type"
                 if matches!(field.value.as_scalar(), Some("point" | "sphere" | "box")) => {}
-            "local_space" | "trail" | "billboard"
+            "slave_particles" if field.value.as_scalar().is_some() => {}
+            "sort" if field.value.as_scalar().is_some() => {}
+            "local_space" | "trail" | "billboard" | "invert"
                 if matches!(field.value.as_scalar(), Some("yes" | "no")) => {}
             _ => return Err(fail(key, ParticleRefusalReason::UnsupportedAuthoredInput)),
         }
     }
+    let mut selected_forces = Vec::new();
     if let Some(value) = body.first_value_ci("force") {
         for token in scalar_tokens(value)
             .ok_or_else(|| fail("force", ParticleRefusalReason::MalformedContent))?
         {
             for force in token.split(',') {
-                if !forces.contains(force) {
+                let Some(force) = forces.get(force) else {
                     return Err(fail(
                         &format!("force:{force}"),
                         ParticleRefusalReason::MissingAuthoredInput,
                     ));
-                }
+                };
+                selected_forces.push(Arc::clone(force));
             }
         }
     }
@@ -883,11 +1087,40 @@ fn compile_subsystem(
             .map_or(body.first_scalar_ci("trail") != Some("yes"), |value| {
                 value == "yes"
             }),
+        sort: match body
+            .first_scalar_ci("sort")
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            None => ParticleSort::None,
+            Some("depth") => ParticleSort::Depth,
+            Some("distance") => ParticleSort::Distance,
+            Some("age") => ParticleSort::Age,
+            _ => {
+                return Err(fail(
+                    "sort",
+                    ParticleRefusalReason::UnsupportedAuthoredInput,
+                ))
+            }
+        },
+        invert: body.first_scalar_ci("invert") == Some("yes"),
+        texture: body
+            .first_value_ci("texture")
+            .map(|value| compile_texture(value, name, subsystem))
+            .transpose()?,
         shape,
         origin: [origin[0].clone(), origin[1].clone(), origin[2].clone()],
         spawn_draw_columns,
         children,
         storage_capacity,
+        forces: selected_forces,
+        force_division: body
+            .first_scalar_ci("slave_particles")
+            .map_or(Ok(0), |value| {
+                value
+                    .parse::<i32>()
+                    .map_err(|_| fail("slave_particles", ParticleRefusalReason::InvalidNumber))
+            })?,
     })
 }
 
@@ -1179,6 +1412,81 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::*;
     use super::*;
+
+    #[test]
+    fn texture_descriptor_retains_native_dimensions_and_fixed_string_widths() {
+        let file = "a".repeat(270);
+        let shader = "b".repeat(80);
+        let fixture = Fixture::new(REGISTRATION, &format!("particle={{name=effect subsystem={{name=s max_amount=1 texture={{file={file} shader={shader} x=4 y=8}} sort=age invert=yes}}}}"));
+        let definition = fixture.definitions().resolve("paired").unwrap();
+        let system = &definition.subsystems[0];
+        let texture = system.texture.as_ref().unwrap();
+        assert_eq!(texture.file, "a".repeat(255));
+        assert_eq!(texture.shader, "b".repeat(63));
+        assert_eq!((texture.columns, texture.rows), (4, 8));
+        assert_eq!(system.sort, ParticleSort::Age);
+        assert!(system.invert);
+        let fixture = Fixture::new(
+            REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=1 texture={file=unrequested.dds}}}",
+        );
+        let definition = fixture.definitions().resolve("paired").unwrap();
+        let texture = definition.subsystems[0].texture.as_ref().unwrap();
+        assert_eq!((texture.columns, texture.rows), (1, 1));
+        assert!(texture.shader.is_empty());
+        assert_eq!(definition.subsystems[0].sort, ParticleSort::None);
+        assert!(!definition.subsystems[0].invert);
+    }
+
+    #[test]
+    fn force_defaults_vectors_and_order_keep_native_operands() {
+        let fixture = Fixture::new(REGISTRATION, "particle={name=effect force={name=default} force={name=wind type=planar position={1 2 3} direction={4 5 6} yaw=30 division=8 local_force=no amount=.150} subsystem={name=s max_amount=4 force={wind default wind} slave_particles=2}}");
+        let definition = fixture.definitions().resolve("paired").unwrap();
+        let system = &definition.subsystems[0];
+        assert_eq!(system.force_division, 2);
+        assert_eq!(
+            system
+                .forces
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>(),
+            ["wind", "default", "wind"]
+        );
+        assert!(Arc::ptr_eq(&system.forces[0], &system.forces[2]));
+        let wind = &system.forces[0];
+        assert_eq!(wind.position, [1.0, 2.0, 3.0]);
+        assert_eq!(wind.direction, [4.0, 5.0, 6.0]);
+        assert_eq!(
+            (wind.yaw, wind.division, wind.local_force),
+            (30.0, 8, false)
+        );
+        assert_eq!(wind.amount.initial(0.0), (0.15, 0.0, false));
+        let default = &system.forces[1];
+        assert_eq!(default.kind, ParticleForceKind::Planar);
+        assert_eq!(default.position, [0.0; 3]);
+        assert_eq!(default.direction, [0.0, 1.0, 0.0]);
+        assert_eq!(
+            (default.yaw, default.division, default.local_force),
+            (0.0, 16, true)
+        );
+        assert_eq!(default.amount.initial(0.0), (0.0, 0.0, false));
+    }
+
+    #[test]
+    fn malformed_force_fields_never_become_defaults_or_variation_ranges() {
+        for field in [
+            "amount={1 2}",
+            "local_force=maybe",
+            "type={planar}",
+            "yaw={1}",
+            "direction=2",
+        ] {
+            let fixture = Fixture::new(REGISTRATION, &format!("particle={{name=effect force={{name=bad {field}}} subsystem={{name=s max_amount=1 force=bad}}}}"));
+            let error = fixture.definitions().resolve("paired").unwrap_err();
+            assert_eq!(error.subsystem.as_deref(), Some("bad"));
+            assert_eq!(error.reason, ParticleRefusalReason::MalformedContent);
+        }
+    }
 
     #[test]
     fn authenticated_definitions_are_cached_and_unused_texture_is_not_required() {

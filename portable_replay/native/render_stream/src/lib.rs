@@ -214,6 +214,7 @@ pub use s1_shadow::{
     S1_TARGET_BIND_FLAGS, S1_TARGET_MIP_LEVELS,
 };
 
+pub mod exact_math;
 mod xmap15_paradrop;
 pub use xmap15_paradrop::Xmap15ParadropProfile;
 
