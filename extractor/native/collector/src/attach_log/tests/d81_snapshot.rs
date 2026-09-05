@@ -146,3 +146,68 @@ fn the_outside_bracket_decoder_is_scoped_to_snapshot_memory() {
     assert!(body.contains("d81_finish_rail_replay_state(observed, geometry)"));
     assert!(!body.contains("D81LiveMemory"));
 }
+
+#[test]
+fn snapshot08_route_reader_plans_relocated_and_grown_vectors() {
+    let memory = FixtureMemory(RefCell::new(BTreeMap::new()));
+    let companion = 0x2F0_3600_0000usize;
+    let old = 0x2F0_3601_0000u64;
+    let new = 0x2F0_3602_0000u64;
+    let header = companion + 0x2F0;
+    memory.write(header as u64, &old.to_le_bytes());
+    memory.write((header + 8) as u64, &2u32.to_le_bytes());
+    memory.write((header + 12) as u64, &1u32.to_le_bytes());
+    memory.write(old, &[1, 0, 0, 0, 0, 0, 0, 0]);
+    let tracing = Domain81TracingMemory::new(&memory);
+    let before = with_d81_memory_override(&tracing, || {
+        d81_read_route_map(companion, 0x2F0, 2, &mut Vec::new()).unwrap().1
+    });
+    assert_eq!(before.len(), 1);
+    let mut plan = Domain81SnapshotPlan::from_trace(tracing.into_trace()).unwrap();
+    memory.0.borrow_mut().retain(|address, _| *address < old);
+    memory.write(header as u64, &new.to_le_bytes());
+    memory.write((header + 12) as u64, &2u32.to_le_bytes());
+    memory.write(new, &[1, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0]);
+    let receipt = plan.capture_with(|address, out| memory.read_into(address, out));
+    assert_eq!(receipt.failure_region_ordinal, None);
+    memory.write(new, &[99; 16]);
+    let view = plan.view();
+    let rows = with_d81_memory_override(&view, || {
+        d81_read_route_map(companion, 0x2F0, 2, &mut Vec::new()).unwrap().1
+    });
+    assert_eq!(rows.iter().map(|row| (row.province_id, row.node_index)).collect::<Vec<_>>(),
+        vec![(1, 0), (3, 1)]);
+    assert_eq!(view.first_miss(), None);
+}
+
+#[test]
+fn snapshot08_relationship_extent_relocates_with_its_current_copied_pointer() {
+    use crate::attach_log::d81_snapshot_memory::Domain81IndirectRead;
+    let memory = FixtureMemory(RefCell::new(BTreeMap::new()));
+    let companion = 0x2F0_3700_0000u64;
+    let pointer_address = companion + 0xD0;
+    let old = 0x2F0_3701_0000u64;
+    let new = 0x2F0_3702_0000u64;
+    memory.write(pointer_address, &old.to_le_bytes());
+    memory.write(old, &[0; 440]);
+    let tracing = Domain81TracingMemory::new(&memory);
+    assert!(tracing.read_into(pointer_address, &mut [0; 8]));
+    tracing.plan_indirect(Domain81IndirectRead {
+        pointer_address, address: old, len: 440, count_address: None, stride: 1, capacity: 440,
+    });
+    assert!(tracing.read_into(old, &mut [0; 440]));
+    let mut plan = Domain81SnapshotPlan::from_trace(tracing.into_trace()).unwrap();
+    memory.0.borrow_mut().retain(|address, _| *address < old);
+    memory.write(pointer_address, &new.to_le_bytes());
+    let mut expected = [0; 440];
+    expected[1] = 1;
+    expected[439] = 1;
+    memory.write(new, &expected);
+    let receipt = plan.capture_with(|address, out| memory.read_into(address, out));
+    assert_eq!(receipt.failure_region_ordinal, None);
+    assert_eq!(receipt.copied_byte_count, 448);
+    memory.write(new, &[2; 440]);
+    let mut actual = [0; 440];
+    assert!(plan.view().read_into(new, &mut actual));
+    assert_eq!(actual, expected);
+}

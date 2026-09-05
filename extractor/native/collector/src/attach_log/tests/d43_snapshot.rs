@@ -2539,3 +2539,39 @@ fn d43_snapshot_demand_measurement() {
     std::fs::write(path, &json).expect("SNAPSHOT_DEMAND.json is written");
     println!("{json}");
 }
+
+#[test]
+fn snapshot08_idle_wing_activation_carries_both_oil_arms_without_slack() {
+    let _bound_trip_registry = compact_contract::bound_trips::lock_registry_for_tests();
+    let world = build_world_with(SMALL_SHAPE, Layout::Scattered);
+    let (owner, wing) = world.countries.iter().enumerate().find_map(|(owner, country)| {
+        country.wings.iter().copied().find(|wing| {
+            !world.contributing_wings.contains(wing)
+        }).map(|wing| (owner, wing))
+    }).expect("an independently staged idle wing");
+    let mut session = Session::with_limits(world, Domain43SnapshotLimits {
+        merge_gap: 0,
+        widen_target_bytes: 0,
+        max_widen_slack: 0,
+        ..Domain43SnapshotLimits::default()
+    });
+    assert_clean(&session.frame(), "idle live");
+    let armed = session.frame();
+    assert_clean(&armed, "idle arming");
+    assert_mode(&armed, D43_SNAPSHOT_MODE_ARMING, "idle arming");
+    let before = session.frame();
+    assert_clean(&before, "idle snapshot");
+    let heap = &mut session.world.fixture.heap;
+    heap.write_i32(wing + 0xA4, 1 << 3);
+    heap.write_i32(wing + 0x170, 7);
+    heap.write_i64(wing + 0x5B8, 10_000);
+    heap.write_i32(wing + 0x9C4, (owner + 1) as i32);
+    heap.write_u8(wing + 0xA8, 2);
+    let activated = session.frame();
+    assert_mode(&activated, D43_SNAPSHOT_MODE_SNAPSHOT, "activated");
+    assert_clean(&activated, "activated");
+    assert_eq!(unit(&activated, "d43_snapshot_region_miss"), 0);
+    assert_ne!(payload(&before), payload(&activated), "activation changes measured oil");
+    assert_eq!(payload(&activated), payload(&session.live_reference()));
+    assert!(session.snapshot_tracker().plan().is_some());
+}

@@ -162,6 +162,27 @@ impl<'a, M: Domain81Memory + ?Sized> Domain43TracingMemory<'a, M> {
 }
 
 impl<M: Domain81Memory + ?Sized> Domain81Memory for Domain43TracingMemory<'_, M> {
+    fn plan_reads(&self, base: u64, fields: &[(usize, usize)]) {
+        let mut bytes = [0u8; 8];
+        for &(offset, len) in fields {
+            let mut trace = self.trace.borrow_mut();
+            if trace.overflowed || trace.reads.len() == trace.capacity() {
+                trace.overflowed = true;
+                break;
+            }
+            let Some(address) = base.checked_add(offset as u64) else {
+                trace.overflowed = true;
+                break;
+            };
+            let Some(out) = bytes.get_mut(..len) else {
+                trace.overflowed = true;
+                break;
+            };
+            let succeeded = self.inner.read_into(address, out);
+            trace.note(address, len, succeeded);
+        }
+    }
+
     fn read_into(&self, address: u64, out: &mut [u8]) -> bool {
         let succeeded = self.inner.read_into(address, out);
         self.trace.borrow_mut().note(address, out.len(), succeeded);
@@ -815,6 +836,26 @@ mod tests {
             len,
             probe,
         }
+    }
+
+    #[test]
+    fn planned_branch_reads_obey_trace_capacity_and_use_the_copy_hour() {
+        let old = FixtureMemory::spanning(&[(0x1000, 8), (0x1170, 4)]);
+        let trace = Domain43TracingMemory::new(&old, Domain43AccessTrace::with_capacity(2));
+        trace.plan_reads(0x1000, &[(0, 8), (0x170, 4)]);
+        let mut plan = Domain43SnapshotPlan::from_trace(trace.into_trace(), limits(0, 2, 12)).unwrap();
+        let mut fresh = FixtureMemory::spanning(&[(0x1000, 8), (0x1170, 4)]);
+        for offset in 0..4 {
+            fresh.0.insert(0x1170 + offset, 0xA5);
+        }
+        plan.capture_with(|address, out| fresh.read_into(address, out).then_some(1));
+        let mut out = [0u8; 4];
+        assert!(plan.view().read_into(0x1170, &mut out));
+        assert_eq!(out, [0xA5; 4]);
+        let trace = Domain43TracingMemory::new(&old, Domain43AccessTrace::with_capacity(1));
+        trace.plan_reads(0x1000, &[(0, 8), (0x170, 4)]);
+        assert_eq!(Domain43SnapshotPlan::from_trace(trace.into_trace(), limits(0, 2, 12))
+            .unwrap_err().cause, D43_SNAPSHOT_TRACE_CAP_CAUSE);
     }
 
     #[test]

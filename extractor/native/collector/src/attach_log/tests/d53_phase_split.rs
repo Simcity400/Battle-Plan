@@ -95,7 +95,7 @@ fn d53_allocation_and_walk_are_before_or_after_the_bracket() {
     ));
     assert!(finish.contains("let snapshot = plan.view();"));
     assert!(finish.contains("read_compact_diplomacy_intel_operatives_live_observe("));
-    assert!(finish.contains("snapshot.first_miss().is_some()"));
+    assert!(finish.contains("let Some(first_miss) = snapshot.first_miss()"));
     assert!(finish.contains("DOMAIN53_SNAPSHOT_REGION_MISS_CAUSE"));
     assert!(
         finish.contains("tracker.snapshot_plan = Some(plan);"),
@@ -170,7 +170,7 @@ fn d53_copy_refusal_drops_the_plan_and_the_miss_keeps_none() {
         .find("if receipt.failure_region_ordinal.is_some() || receipt.gate_budget_exhausted {")
         .expect("the copy-refusal arm drops the plan on a refused data page and on an exhausted gate budget");
     let miss = finish
-        .find("if snapshot.first_miss().is_some() {")
+        .find("if let Some(first_miss) = snapshot.first_miss() {")
         .expect("the region-miss arm");
     let success = finish
         .rfind("tracker.snapshot_plan = Some(plan);")
@@ -1017,7 +1017,7 @@ fn d53_an_hour_the_ledger_cannot_pay_for_costs_the_frame_nothing() {
     // ledger's measured cost: capture e2e_05's d53 read_time p50 was 9 us
     // against a 165.5 ms p95.
     let miss = finish
-        .find("if snapshot.first_miss().is_some() {")
+        .find("if let Some(first_miss) = snapshot.first_miss() {")
         .expect("the region-miss arm");
     assert!(finish[miss..].contains("let read_started = domain53_observed_read_started(&observed);"));
     assert!(finish[miss..].contains("domain53_source_unavailable_read(\nread_started,"));
@@ -1056,4 +1056,22 @@ fn d53_plan_arena_is_page_aligned_and_resident_when_built() {
     assert_eq!(receipt.copied_region_count as usize, RANGES);
     assert_eq!(receipt.copied_byte_count as usize, bytes);
     assert_eq!(receipt.gate_queries, 1, "one reservation, one query");
+}
+
+#[test]
+fn snapshot08_d53_miss_locator_survives_the_perf_channel_without_invented_zeroes() {
+    let diag = Domain53Diag {
+        snapshot_first_miss: Some((0x2F0_1234_5678, 1368)),
+        ..Domain53Diag::default()
+    };
+    let units = domain53_diag_units(&diag);
+    for (name, expected) in [
+        ("domain53_bulk_snapshot_region_miss", 1),
+        ("domain53_bulk_snapshot_miss_address_sample", 0x2F0_1234_5678),
+        ("domain53_bulk_snapshot_miss_width_sample", 1368),
+    ] {
+        assert_eq!(units.iter().find(|unit| unit.name == name).map(|unit| unit.value), Some(expected));
+    }
+    let absent = domain53_diag_units(&Domain53Diag::default());
+    assert!(!absent.iter().any(|unit| unit.name.starts_with("domain53_bulk_snapshot_miss_")));
 }

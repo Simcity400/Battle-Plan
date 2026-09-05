@@ -17,6 +17,28 @@ pub const D81_WRITER_IN_FLIGHT_CAUSE: &str = "d81_writer_in_flight";
 
 pub trait Domain81Memory {
     fn read_into(&self, address: u64, out: &mut [u8]) -> bool;
+
+    fn plan_reads(&self, _base: u64, _fields: &[(usize, usize)]) {}
+
+    fn plan_indirect(&self, _read: Domain81IndirectRead) {}
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Domain81IndirectRead {
+    pub pointer_address: u64,
+    pub address: u64,
+    pub len: usize,
+    pub count_address: Option<u64>,
+    pub stride: usize,
+    pub capacity: usize,
+}
+
+#[derive(Debug)]
+struct Domain81IndirectRegion {
+    read: Domain81IndirectRead,
+    bytes: Box<[u8]>,
+    address: u64,
+    copied_len: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +53,7 @@ pub struct Domain81AccessTrace {
     pub reads: Vec<Domain81ReadTrace>,
     pub known_failed: BTreeSet<(u64, usize)>,
     pub trace_overflowed: bool,
+    pub indirect: Vec<Domain81IndirectRead>,
 }
 
 pub struct Domain81TracingMemory<'a, M: Domain81Memory + ?Sized> {
@@ -52,10 +75,21 @@ impl<'a, M: Domain81Memory + ?Sized> Domain81TracingMemory<'a, M> {
 }
 
 impl<M: Domain81Memory + ?Sized> Domain81Memory for Domain81TracingMemory<'_, M> {
+    fn plan_indirect(&self, read: Domain81IndirectRead) {
+        let mut trace = self.trace.borrow_mut();
+        if trace.reads.len().saturating_add(trace.indirect.len()) >= D81_SNAPSHOT_MAX_TRACE_READS
+            || trace.indirect.len() >= D81_SNAPSHOT_MAX_REGIONS
+        {
+            trace.trace_overflowed = true;
+            return;
+        }
+        trace.indirect.push(read);
+    }
+
     fn read_into(&self, address: u64, out: &mut [u8]) -> bool {
         let succeeded = self.inner.read_into(address, out);
         let mut trace = self.trace.borrow_mut();
-        if trace.reads.len() == D81_SNAPSHOT_MAX_TRACE_READS {
+        if trace.reads.len().saturating_add(trace.indirect.len()) >= D81_SNAPSHOT_MAX_TRACE_READS {
             trace.trace_overflowed = true;
             return succeeded;
         }
@@ -72,12 +106,6 @@ impl<M: Domain81Memory + ?Sized> Domain81Memory for Domain81TracingMemory<'_, M>
         }
         succeeded
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Domain81SnapshotRegionSpec {
-    pub address: u64,
-    pub len: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -100,6 +128,10 @@ pub struct Domain81SnapshotPlan {
     regions: Vec<Domain81SnapshotRegion>,
     known_failed: BTreeSet<(u64, usize)>,
     byte_count: usize,
+    indirect: Vec<Domain81IndirectRegion>,
+    indirect_order: Vec<usize>,
+    max_indirect_bytes: usize,
+    captured: bool,
 }
 
 impl Domain81SnapshotPlan {
@@ -121,10 +153,66 @@ impl Domain81SnapshotPlan {
         if trace.trace_overflowed {
             return Err(D81_SNAPSHOT_TRACE_CAP_CAUSE);
         }
+        let mut recipes = trace.indirect;
+        recipes.sort_unstable();
+        recipes.dedup();
+        let mut excluded = Vec::with_capacity(recipes.len());
+        let mut indirect = Vec::with_capacity(recipes.len());
+        let mut reserved = 0usize;
+        for read in recipes {
+            let end = read
+                .address
+                .checked_add(read.len as u64)
+                .ok_or(D81_SNAPSHOT_ADDRESS_OVERFLOW_CAUSE)?;
+            let bytes = read
+                .capacity
+                .checked_mul(read.stride)
+                .ok_or(D81_SNAPSHOT_BYTE_CAP_CAUSE)?;
+            if read.stride == 0 || read.len > bytes {
+                return Err(D81_SNAPSHOT_BYTE_CAP_CAUSE);
+            }
+            reserved = reserved
+                .checked_add(bytes)
+                .ok_or(D81_SNAPSHOT_BYTE_CAP_CAUSE)?;
+            if reserved > max_bytes || indirect.len() >= max_regions {
+                return Err(if reserved > max_bytes {
+                    D81_SNAPSHOT_BYTE_CAP_CAUSE
+                } else {
+                    D81_SNAPSHOT_REGION_CAP_CAUSE
+                });
+            }
+            excluded.push((read.address, end));
+            indirect.push(Domain81IndirectRegion {
+                read,
+                bytes: vec![0; bytes].into_boxed_slice(),
+                address: 0,
+                copied_len: 0,
+            });
+        }
+        excluded.sort_unstable();
+        let mut covered: Vec<(u64, u64)> = Vec::with_capacity(excluded.len());
+        for (start, end) in excluded {
+            if let Some(last) = covered.last_mut().filter(|last| start <= last.1) {
+                last.1 = last.1.max(end);
+            } else {
+                covered.push((start, end));
+            }
+        }
+        // Replaced targets must not remain in a merged static copy after the engine frees them.
+        let is_indirect = |address: u64, len: usize| {
+            covered
+                .partition_point(|(start, _)| *start <= address)
+                .checked_sub(1)
+                .is_some_and(|i| {
+                    address
+                        .checked_add(len as u64)
+                        .is_some_and(|end| end <= covered[i].1)
+                })
+        };
         let mut ranges = trace
             .reads
             .into_iter()
-            .filter(|read| read.succeeded && read.len != 0)
+            .filter(|read| read.succeeded && read.len != 0 && !is_indirect(read.address, read.len))
             .map(|read| {
                 let len =
                     u64::try_from(read.len).map_err(|_| D81_SNAPSHOT_ADDRESS_OVERFLOW_CAUSE)?;
@@ -140,17 +228,24 @@ impl Domain81SnapshotPlan {
         let mut merged: Vec<(u64, u64)> = Vec::with_capacity(ranges.len());
         for (start, end) in ranges {
             match merged.last_mut() {
-                Some(last) if start <= last.1.saturating_add(merge_gap) => {
+                Some(last)
+                    if start <= last.1
+                        || (start <= last.1.saturating_add(merge_gap)
+                            && !covered
+                                .partition_point(|(a, _)| *a < start)
+                                .checked_sub(1)
+                                .is_some_and(|i| covered[i].1 > last.1)) =>
+                {
                     last.1 = last.1.max(end);
                 }
                 _ => merged.push((start, end)),
             }
         }
-        if merged.len() > max_regions {
+        if merged.len().saturating_add(indirect.len()) > max_regions {
             return Err(D81_SNAPSHOT_REGION_CAP_CAUSE);
         }
 
-        let mut byte_count = 0usize;
+        let mut byte_count = reserved;
         let mut regions = Vec::with_capacity(merged.len());
         for (address, end) in merged {
             let len =
@@ -171,35 +266,59 @@ impl Domain81SnapshotPlan {
             regions,
             known_failed: trace.known_failed,
             byte_count,
+            max_indirect_bytes: indirect
+                .iter()
+                .map(|region| region.bytes.len())
+                .max()
+                .unwrap_or(0),
+            indirect_order: (0..indirect.len()).collect(),
+            captured: false,
+            indirect,
         })
     }
 
-    pub fn region_specs(&self) -> impl ExactSizeIterator<Item = Domain81SnapshotRegionSpec> + '_ {
-        self.regions
-            .iter()
-            .map(|region| Domain81SnapshotRegionSpec {
-                address: region.address,
-                len: region.bytes.len(),
-            })
-    }
-
     pub fn region_count(&self) -> usize {
-        self.regions.len()
+        self.regions.len() + self.indirect.len()
     }
 
     pub fn byte_count(&self) -> usize {
         self.byte_count
     }
 
+    fn read_static(&self, address: u64, out: &mut [u8]) -> bool {
+        let Some(end) = address.checked_add(out.len() as u64) else {
+            return false;
+        };
+        let index = self
+            .regions
+            .partition_point(|region| region.address <= address);
+        if let Some(region) = index.checked_sub(1).and_then(|i| self.regions.get(i)) {
+            if end <= region.address.saturating_add(region.bytes.len() as u64) {
+                let offset = (address - region.address) as usize;
+                out.copy_from_slice(&region.bytes[offset..offset + out.len()]);
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn capture_with(
         &mut self,
         mut copy: impl FnMut(u64, &mut [u8]) -> bool,
     ) -> Domain81SnapshotCaptureReceipt {
+        self.captured = false;
         let mut receipt = Domain81SnapshotCaptureReceipt {
-            region_count: self.regions.len().min(u32::MAX as usize) as u32,
-            byte_count: self.byte_count.min(u64::MAX as usize) as u64,
+            region_count: self.region_count().min(u32::MAX as usize) as u32,
+            byte_count: self
+                .regions
+                .iter()
+                .map(|region| region.bytes.len() as u64)
+                .sum(),
             ..Domain81SnapshotCaptureReceipt::default()
         };
+        for region in &mut self.indirect {
+            region.copied_len = 0;
+        }
         for (ordinal, region) in self.regions.iter_mut().enumerate() {
             if copy(region.address, &mut region.bytes) {
                 receipt.copied_region_count = receipt.copied_region_count.saturating_add(1);
@@ -210,6 +329,90 @@ impl Domain81SnapshotPlan {
                 receipt.failure_region_ordinal = Some(ordinal.min(u32::MAX as usize) as u32);
             }
         }
+        if receipt.failure_region_ordinal.is_some() {
+            return receipt;
+        }
+        for index in 0..self.indirect.len() {
+            self.indirect[index].copied_len = 0;
+            let read = self.indirect[index].read;
+            let mut pointer = [0u8; 8];
+            let mut count = [0u8; 4];
+            // Target identity and extent belong to this capture's copied header.
+            let pointer_ok = self.read_static(read.pointer_address, &mut pointer);
+            let count_ok = read
+                .count_address
+                .map_or(true, |address| self.read_static(address, &mut count));
+            let elements = if read.count_address.is_some() {
+                u32::from_le_bytes(count) as usize
+            } else {
+                read.capacity
+            };
+            let address = u64::from_le_bytes(pointer);
+            let len = elements.checked_mul(read.stride);
+            receipt.byte_count = receipt
+                .byte_count
+                .saturating_add(len.unwrap_or(u64::MAX as usize) as u64);
+            let region = &mut self.indirect[index];
+            region.address = address;
+            let succeeded = pointer_ok
+                && count_ok
+                && elements <= read.capacity
+                && len.is_some_and(|len| {
+                    address.checked_add(len as u64).is_some()
+                        && (len == 0 || copy(address, &mut region.bytes[..len]))
+                });
+            if succeeded {
+                region.copied_len = len.unwrap();
+                receipt.copied_region_count += 1;
+                receipt.copied_byte_count += region.copied_len as u64;
+            } else if receipt.failure_region_ordinal.is_none() {
+                receipt.failure_region_ordinal = Some((self.regions.len() + index) as u32);
+            }
+        }
+        self.indirect_order
+            .sort_unstable_by_key(|index| self.indirect[*index].address);
+        let mut covering: Option<usize> = None;
+        for &index in &self.indirect_order {
+            let region = &self.indirect[index];
+            if region.copied_len == 0 {
+                continue;
+            }
+            let end = region.address + region.copied_len as u64;
+            let first = self.regions.partition_point(|other| {
+                other.address.saturating_add(other.bytes.len() as u64) <= region.address
+            });
+            let mut agrees = true;
+            for other in &self.regions[first..] {
+                if other.address >= end {
+                    break;
+                }
+                let start = region.address.max(other.address);
+                let stop = end.min(other.address + other.bytes.len() as u64);
+                let a = (start - region.address) as usize;
+                let b = (start - other.address) as usize;
+                let len = (stop - start) as usize;
+                agrees &= region.bytes[a..a + len] == other.bytes[b..b + len];
+            }
+            if let Some(previous) = covering {
+                let other = &self.indirect[previous];
+                let stop = end.min(other.address + other.copied_len as u64);
+                if stop > region.address {
+                    let a = (region.address - other.address) as usize;
+                    let len = (stop - region.address) as usize;
+                    agrees &= region.bytes[..len] == other.bytes[a..a + len];
+                }
+            }
+            if covering.is_none_or(|previous| {
+                let other = &self.indirect[previous];
+                end > other.address + other.copied_len as u64
+            }) {
+                covering = Some(index);
+            }
+            if !agrees && receipt.failure_region_ordinal.is_none() {
+                receipt.failure_region_ordinal = Some((self.regions.len() + index) as u32);
+            }
+        }
+        self.captured = receipt.failure_region_ordinal.is_none();
         receipt
     }
 
@@ -241,35 +444,39 @@ impl Domain81SnapshotMemory<'_> {
 impl Domain81Memory for Domain81SnapshotMemory<'_> {
     fn read_into(&self, address: u64, out: &mut [u8]) -> bool {
         let len = out.len();
-        if len == 0 || self.plan.known_failed.contains(&(address, len)) {
+        if len == 0 {
             return false;
         }
         let Some(end) = address.checked_add(len as u64) else {
             self.note_miss(address, len);
             return false;
         };
-        let index = self
-            .plan
-            .regions
-            .partition_point(|region| region.address <= address);
-        let Some(region) = index
-            .checked_sub(1)
-            .and_then(|index| self.plan.regions.get(index))
-        else {
-            self.note_miss(address, len);
-            return false;
-        };
-        let Some(region_end) = region.address.checked_add(region.bytes.len() as u64) else {
-            self.note_miss(address, len);
-            return false;
-        };
-        if end > region_end {
+        if !self.plan.captured {
             self.note_miss(address, len);
             return false;
         }
-        let offset = (address - region.address) as usize;
-        out.copy_from_slice(&region.bytes[offset..offset + len]);
-        true
+        if self.plan.read_static(address, out) {
+            return true;
+        }
+        let tail = self
+            .plan
+            .indirect_order
+            .partition_point(|index| self.plan.indirect[*index].address <= address);
+        for &index in self.plan.indirect_order[..tail].iter().rev() {
+            let region = &self.plan.indirect[index];
+            if address - region.address >= self.plan.max_indirect_bytes as u64 {
+                break;
+            }
+            if end <= region.address.saturating_add(region.copied_len as u64) {
+                let offset = (address - region.address) as usize;
+                out.copy_from_slice(&region.bytes[offset..offset + len]);
+                return true;
+            }
+        }
+        if !self.plan.known_failed.contains(&(address, len)) {
+            self.note_miss(address, len);
+        }
+        false
     }
 }
 
@@ -290,6 +497,110 @@ mod tests {
             }
             true
         }
+    }
+
+    fn indirect_fixture(count: u32, capacity: usize) -> (FixtureMemory, Domain81AccessTrace) {
+        let mut memory = BTreeMap::new();
+        for (address, bytes) in [
+            (0x1000u64, 0x2000u64.to_le_bytes().to_vec()),
+            (0x1008, count.to_le_bytes().to_vec()),
+            (0x2000, vec![7; count as usize * 8]),
+        ] {
+            for (offset, value) in bytes.into_iter().enumerate() {
+                memory.insert(address + offset as u64, value);
+            }
+        }
+        let fixture = FixtureMemory(memory);
+        let tracing = Domain81TracingMemory::new(&fixture);
+        assert!(tracing.read_into(0x1000, &mut [0; 12]));
+        assert!(tracing.read_into(0x2000, &mut vec![0; count as usize * 8]));
+        tracing.plan_indirect(Domain81IndirectRead {
+            pointer_address: 0x1000,
+            address: 0x2000,
+            len: count as usize * 8,
+            count_address: Some(0x1008),
+            stride: 8,
+            capacity,
+        });
+        let trace = tracing.into_trace();
+        (fixture, trace)
+    }
+
+    #[test]
+    fn indirect_capture_follows_copied_pointer_and_count_with_bounded_growth() {
+        let (mut fixture, trace) = indirect_fixture(1, 3);
+        let mut plan = Domain81SnapshotPlan::from_trace_with_limits(trace, 64, 2, 36).unwrap();
+        assert_eq!(plan.byte_count(), 36);
+        assert!(!plan.view().read_into(0x1000, &mut [0; 8]));
+        fixture.0.retain(|address, _| *address < 0x2000);
+        for (address, bytes) in [
+            (0x1000u64, 0x3000u64.to_le_bytes().to_vec()),
+            (0x1008, 3u32.to_le_bytes().to_vec()),
+            (0x3000, vec![19; 24]),
+        ] {
+            for (offset, value) in bytes.into_iter().enumerate() {
+                fixture.0.insert(address + offset as u64, value);
+            }
+        }
+        let mut addresses = Vec::new();
+        let receipt = plan.capture_with(|address, out| {
+            addresses.push(address);
+            fixture.read_into(address, out)
+        });
+        assert_eq!(receipt.failure_region_ordinal, None);
+        assert_eq!(receipt.byte_count, 36);
+        assert_eq!(receipt.copied_byte_count, 36);
+        assert!(
+            !addresses.contains(&0x2000),
+            "the freed target is not copied"
+        );
+        fixture.0.insert(0x3000, 99);
+        let mut bytes = [0; 24];
+        assert!(plan.view().read_into(0x3000, &mut bytes));
+        assert_eq!(bytes, [19; 24]);
+        fixture.0.insert(0x1008, 4);
+        let receipt = plan.capture_with(|address, out| fixture.read_into(address, out));
+        assert_eq!(receipt.failure_region_ordinal, Some(1));
+        assert!(
+            !plan.view().read_into(0x3000, &mut bytes),
+            "a refused recopy cannot serve the previous image"
+        );
+        let (_, trace) = indirect_fixture(1, 3);
+        assert_eq!(
+            Domain81SnapshotPlan::from_trace_with_limits(trace, 64, 2, 35).unwrap_err(),
+            D81_SNAPSHOT_BYTE_CAP_CAUSE
+        );
+    }
+
+    #[test]
+    fn indirect_copy_refuses_disagreement_with_an_overlapping_static_image() {
+        let (mut fixture, mut trace) = indirect_fixture(1, 1);
+        trace.reads.push(Domain81ReadTrace {
+            address: 0x3000,
+            len: 8,
+            succeeded: true,
+        });
+        for (offset, byte) in 0x3000u64.to_le_bytes().into_iter().enumerate() {
+            fixture.0.insert(0x1000 + offset as u64, byte);
+        }
+        for offset in 0..8 {
+            fixture.0.insert(0x3000 + offset, 11);
+        }
+        let mut plan = Domain81SnapshotPlan::from_trace(trace).unwrap();
+        let mut copies = 0;
+        let receipt = plan.capture_with(|address, out| {
+            let succeeded = fixture.read_into(address, out);
+            if address == 0x3000 {
+                copies += 1;
+                if copies == 2 {
+                    out.fill(12);
+                }
+            }
+            succeeded
+        });
+        assert_eq!(copies, 2);
+        assert!(receipt.failure_region_ordinal.is_some());
+        assert!(!plan.view().read_into(0x3000, &mut [0; 8]));
     }
 
     #[test]
