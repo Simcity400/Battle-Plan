@@ -1374,41 +1374,38 @@ mod tests {
     /// round 5 corrected what that coverage test does and does not catch).
     #[test]
     fn cta2_a_drain_whose_combats_were_all_refused_is_still_exhaustive() {
-        // The two mutation kinds, in the order the chain validator accepts:
-        // two `IncrementExisting` rows on one ordinal would need the second to
-        // start where the first ended, and an unchained pair is refused by the
-        // encoder before this test reaches its assertions (Codex round 3,
-        // finding 2).
-        let rows: Vec<_> = [
-            (7u64, ConvoyD70MutationKind::IncrementExisting),
-            (8u64, ConvoyD70MutationKind::AppendFirstSeen),
-        ]
-        .into_iter()
-        .map(|(sequence, kind)| {
-            let mut row = row(sequence, kind);
-            row.carrier.combat = ConvoyTerminalCombat::Refused(
-                ConvoyCombatRefusalCause::MemberAbsentFromEpochSnapshot,
+        for cause in ConvoyCombatRefusalCause::ALL {
+            // The two mutation kinds, in the order the chain validator accepts:
+            // two `IncrementExisting` rows on one ordinal would need the second to
+            // start where the first ended, and an unchained pair is refused by the
+            // encoder before this test reaches its assertions (Codex round 3,
+            // finding 2).
+            let rows: Vec<_> = [
+                (7u64, ConvoyD70MutationKind::IncrementExisting),
+                (8u64, ConvoyD70MutationKind::AppendFirstSeen),
+            ]
+            .into_iter()
+            .map(|(sequence, kind)| {
+                let mut row = row(sequence, kind);
+                row.carrier.combat = ConvoyTerminalCombat::Refused(cause);
+                row
+            })
+            .collect();
+            let mut witness = witness(&rows);
+            witness.events_seen_this_drain = 2;
+            witness.events_emitted_this_drain = 2;
+            let encoded = encode_convoy_transport_attack_batch(&rows, witness).unwrap();
+            let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
+            assert_eq!(decoded.rows, rows);
+            assert_eq!(decoded.witness.drops_this_drain, 0);
+            assert!(
+                decoded.exact_events_complete,
+                "the events are on the wire with their combat gap named, so the drain lost nothing"
             );
-            row
-        })
-        .collect();
-        let mut witness = witness(&rows);
-        witness.events_seen_this_drain = 2;
-        witness.events_emitted_this_drain = 2;
-        let encoded = encode_convoy_transport_attack_batch(&rows, witness).unwrap();
-        let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
-        assert_eq!(decoded.rows, rows);
-        assert_eq!(decoded.witness.drops_this_drain, 0);
-        assert!(
-            decoded.exact_events_complete,
-            "the events are on the wire with their combat gap named, so the drain lost nothing"
-        );
-        for row in &decoded.rows {
-            assert_eq!(row.carrier.combat.epoch(), None);
-            assert_eq!(
-                row.carrier.combat.refusal_cause(),
-                Some(ConvoyCombatRefusalCause::MemberAbsentFromEpochSnapshot)
-            );
+            for row in &decoded.rows {
+                assert_eq!(row.carrier.combat.epoch(), None);
+                assert_eq!(row.carrier.combat.refusal_cause(), Some(cause));
+            }
         }
     }
 

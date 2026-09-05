@@ -339,10 +339,6 @@ fn d96_is_declared_beside_d92() {
 
 /// Law: d96's reason names the guard the walk actually refused on, and the
 /// country it refused inside when there was one.
-///
-/// `captures/e2e_03` published `d96_accumulator_unavailable=1` beside
-/// `d96_failure_tag_db_id=17` and a reason that was the literal string
-/// `producer_declared_no_predicate`.
 #[test]
 fn d96_reason_names_the_guard_and_the_country() {
     let read = CompactCountryPreferredTacticRead {
@@ -360,12 +356,12 @@ fn d96_reason_names_the_guard_and_the_country() {
         tactic_weight_refusal: Some(Domain96Refusal::Weight(
             PreferredTacticWeightError::Country {
                 tag_db_id: 17,
-                source: PreferredTacticWeightRowError::AccumulatorUnavailable,
+                source: PreferredTacticWeightRowError::Accumulator(ModifierAccumulatorError { failure: ModifierAccumulatorFailure::FirstReadUnavailable, field: "d96_accumulator_opening_data", entry_index: None }),
             },
         )),
     };
     let reason = domain96_failure_reason(&read);
-    assert!(reason.contains("d96_accumulator_unavailable"), "{reason}");
+    assert!(reason.contains("d96_accumulator_first_read_unavailable"), "{reason}");
     assert!(reason.contains("tag_db_id 17"), "{reason}");
     assert!(reason.contains("439 country row(s)"), "{reason}");
 }

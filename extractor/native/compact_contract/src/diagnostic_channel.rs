@@ -2019,6 +2019,7 @@ pub const EXPLICIT_PER_FRAME_UNITS: &[&str] = &[
     "convoy_transport_attack_row_combat_refused_member_absent_from_epoch_snapshot",
     "convoy_transport_attack_row_combat_refused_battle_slot_mismatch",
     "convoy_transport_attack_row_combat_refused_invalid_epoch",
+    "convoy_transport_attack_row_combat_refused_resolver_receipt_stale",
     "convoy_transport_attack_exact_complete_batches",
     "convoy_transport_attack_incomplete_batches",
     "convoy_transport_attack_hook_installed_batches",
