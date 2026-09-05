@@ -404,3 +404,6 @@ fn every_hour_materialises_identically_through_the_shared_and_the_whole_world_ro
         "hours whose shared root members differ from the whole-world materialisation: {mismatches:?}"
     );
 }
+
+#[path = "view2_sample_measurement.rs"]
+mod sampled;
