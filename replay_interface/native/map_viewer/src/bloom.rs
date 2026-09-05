@@ -219,31 +219,25 @@ pub fn resolve_bloom_params_for_volume(
     })?;
     let volume = parse_posteffect_volume(&volumes_src, volume_name)?;
 
-    let defines_path =
-        resolver.resolve_required("common/defines/00_graphics.lua", "graphics defines")?;
-    let defines_src = fs::read_to_string(&defines_path).map_err(|err| {
-        format!(
-            "bloom chain blocked: {} is not readable: {err}",
-            defines_path.display()
-        )
-    })?;
+    let (sources, _) = crate::xmap09_lighting_law::admitted_effective_define_sources(resolver, "bloom defines")?;
+    let defines = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
 
     let bloom_width = volume
         .get("BLOOM_WIDTH")
         .copied()
         .map(Ok)
-        .unwrap_or_else(|| parse_define_number(&defines_src, "BLOOM_WIDTH"))?;
+        .unwrap_or_else(|| defines.scalar("NGraphics", "BLOOM_WIDTH"))?;
     let bloom_scale = volume
         .get("BLOOM_SCALE")
         .copied()
         .map(Ok)
-        .unwrap_or_else(|| parse_define_number(&defines_src, "BLOOM_SCALE"))?;
+        .unwrap_or_else(|| defines.scalar("NGraphics", "BLOOM_SCALE"))?;
     let bright_threshold = volume
         .get("BRIGHT_THRESHOLD")
         .copied()
         .map(Ok)
-        .unwrap_or_else(|| parse_define_number(&defines_src, "BRIGHT_THRESHOLD"))?;
-    let emissive_bloom_strength = parse_define_number(&defines_src, "EMISSIVE_BLOOM_STRENGTH")?;
+        .unwrap_or_else(|| defines.scalar("NGraphics", "BRIGHT_THRESHOLD"))?;
+    let emissive_bloom_strength = defines.scalar("NGraphics", "EMISSIVE_BLOOM_STRENGTH")?;
 
     let params = BloomParams {
         bloom_width,
@@ -253,38 +247,6 @@ pub fn resolve_bloom_params_for_volume(
     };
     params.validate()?;
     Ok(params)
-}
-
-pub fn parse_define_number(source: &str, key: &str) -> Result<f32> {
-    let mut found = None;
-    for (line_index, line) in source.lines().enumerate() {
-        let code = line.split("--").next().unwrap_or(line).trim();
-        let Some(rest) = code.strip_prefix(key) else {
-            continue;
-        };
-        let rest = rest.trim_start();
-        if !rest.starts_with('=') {
-            continue;
-        }
-        let value = rest[1..]
-            .trim_start()
-            .trim_end_matches(',')
-            .split_whitespace()
-            .next()
-            .ok_or_else(|| format!("bloom chain blocked: {key} has no value"))?
-            .trim_end_matches(',')
-            .parse::<f32>()
-            .map_err(|err| {
-                format!(
-                    "bloom chain blocked: {key} on line {} is not a number: {err}",
-                    line_index + 1
-                )
-            })?;
-        if found.replace(value).is_some() {
-            return Err(format!("bloom chain blocked: {key} is defined more than once").into());
-        }
-    }
-    found.ok_or_else(|| format!("bloom chain blocked: source is missing {key}").into())
 }
 
 fn parse_posteffect_volume(
@@ -636,6 +598,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bloom_resolves_mod_expressions_and_keeps_volume_precedence() {
+        let root = crate::test_support::temp_test_dir("bloom-effective-defines");
+        let files = [
+            ("gfx/posteffect_volumes.txt", "posteffect_values = {\nname = standard\nBLOOM_WIDTH = 7\n}\n"),
+            ("common/defines/00_graphics.lua", "NDefines = { NGraphics = { BLOOM_WIDTH = 1, BLOOM_SCALE = 2, BRIGHT_THRESHOLD = 3, EMISSIVE_BLOOM_STRENGTH = 4 } }"),
+            ("common/defines/zz_mod.lua", "local g = NDefines.NGraphics; g.BLOOM_WIDTH = nil; g.BLOOM_SCALE = g.BLOOM_SCALE / 4; g.BRIGHT_THRESHOLD = 3 / 10; g.EMISSIVE_BLOOM_STRENGTH = math.floor(1.9)"),
+        ];
+        for (path, source) in files {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, source).unwrap();
+        }
+        let resolver = GameFileResolver::from_options(root, crate::GameFileResolverOptions {
+            mod_paths: Vec::new(), use_dlc_load: false, userdata: None,
+        }).unwrap();
+        let paths = files.iter().map(|(path, _)| path.to_string()).collect();
+        let (resolver, _) = crate::test_support::admitted_vanilla_resolver(&resolver, &paths, "bloom-effective-defines");
+        let params = resolve_bloom_params(&resolver).unwrap();
+        assert_eq!(params.bloom_width, 7.0);
+        assert_eq!(params.bloom_scale, 0.5);
+        assert_eq!(params.bright_threshold, 0.3);
+        assert_eq!(params.emissive_bloom_strength, 1.0);
+    }
+
+    #[test]
     fn gaussian_kernel_matches_captured_bloom_constant_buffer() {
         let kernel = BloomBlurKernel::from_gaussian(1.5, 0.9).expect("kernel");
         let cap_w0 = 0.2393653690814972_f32;
@@ -875,13 +862,6 @@ posteffect_values = {
         assert!((standard["BLOOM_WIDTH"] - 1.5).abs() < 1e-6);
         assert!((standard["BLOOM_SCALE"] - 0.9).abs() < 1e-6);
         assert!((standard["BRIGHT_THRESHOLD"] - 0.9).abs() < 1e-6);
-    }
-
-    #[test]
-    fn parse_define_number_reads_and_fails_closed() {
-        let src = "NDefines = {\n\tBLOOM_WIDTH = 1.5,\n\tEMISSIVE_BLOOM_STRENGTH = 1.0,\n}\n";
-        assert!((parse_define_number(src, "EMISSIVE_BLOOM_STRENGTH").unwrap() - 1.0).abs() < 1e-6);
-        assert!(parse_define_number(src, "MISSING_KEY").is_err());
     }
 
     #[test]

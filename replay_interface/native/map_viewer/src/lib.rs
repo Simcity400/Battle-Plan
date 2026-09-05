@@ -163,7 +163,7 @@ pub(crate) use underwater_pass::*;
 pub(crate) use util::*;
 
 pub use bloom::{
-    f32_to_half_float, half_float_to_f32, parse_define_number, resolve_bloom_params,
+    f32_to_half_float, half_float_to_f32, resolve_bloom_params,
     resolve_bloom_params_for_volume, run_bloom_chain, BloomBlurKernel, BloomChainOutput,
     BloomImageRgba, BloomParams, BLOOM_DEFAULT_VOLUME, BLOOM_LUMINANCE_VECTOR,
 };
@@ -173,7 +173,7 @@ pub use border_capture_evidence::{
     SYNTHESIZED_BORDER_LAYOUT_TEXCOORD_FORMAT, SYNTHESIZED_BORDER_VERTEX_STRIDE,
 };
 pub use border_classification::{
-    border_selection_palette_from_graphics_defines, classify_border_chain, partition_border_chains,
+    border_selection_palette_from_effective_sources, classify_border_chain, partition_border_chains,
     BorderClassification, BorderClassificationResidual, BorderSelectionPalette,
     BorderSelectorReason, BorderWorldFacts, ClassifiedBorderChain, TutorialBorderHighlight,
     ViewerBorderOverlays, XMAP06_CLASSIFICATION_RESIDUALS, XMAP06_CUSTOM_HIGHLIGHTS_DEFINE,

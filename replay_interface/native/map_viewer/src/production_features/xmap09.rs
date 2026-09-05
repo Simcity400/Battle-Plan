@@ -969,39 +969,13 @@ pub(crate) struct Xmap09LightingAdapter {
 
 impl Xmap09LightingAdapter {
     pub(crate) fn new(resolver: &crate::GameFileResolver) -> Result<Self> {
-        // The effective value of a lighting define is a property of the WHOLE
-        // common/defines corpus, because any later-loading file may override it.
-        // Enumerating only what happens to be admitted would let a mod's
-        // override be absent from the recording while XMAP09 silently derived
-        // vanilla lighting and still reported Present. require_complete_admitted_dir
-        // compares the admission's entries against its effective-VFS census for
-        // this directory and fails closed on any difference, so an incomplete
-        // corpus is named instead of quietly ignored.
-        let contents = resolver.require_complete_admitted_dir(
-            crate::XMAP09_GRAPHICS_DEFINES_DIR,
-            Some("lua"),
-            true,
-            "XMAP09 lighting defines",
-        )?;
-        if contents.is_empty() {
-            return Err(format!(
-                "XMAP09 lighting requires admitted {} lua content",
-                crate::XMAP09_GRAPHICS_DEFINES_DIR
-            )
-            .into());
-        }
-        let mut sources = Vec::with_capacity(contents.len());
-        let mut ordered_used_content = Vec::with_capacity(contents.len());
+        let (sources, ordered_used_content) = crate::xmap09_lighting_law::admitted_effective_define_sources(resolver, "XMAP09 lighting defines")?;
         let mut digest_bytes = Vec::new();
-        for content in contents {
-            let logical_path = content.normalized_game_relative_path.clone();
-            let bytes = resolver.read_admitted_used_content(&content)?;
-            digest_bytes.extend_from_slice(logical_path.as_bytes());
+        for content in &ordered_used_content {
+            digest_bytes.extend_from_slice(content.normalized_game_relative_path.as_bytes());
             digest_bytes.push(0);
             digest_bytes.extend_from_slice(content.payload_sha256.as_bytes());
             digest_bytes.push(0);
-            sources.push((logical_path, crate::latin1_bytes_to_string(&bytes)));
-            ordered_used_content.push(content);
         }
         let defines = crate::Xmap09LightingDefines::from_effective_sources(&sources)?;
         Ok(Self {
@@ -1802,7 +1776,7 @@ mod tests {
         let vanilla = file_derived_adapter();
         let modded = adapter_from_defines_corpus(&[(
             "common/defines/zz_mod_overrides.lua",
-            "SUN_LATITUDE = 1200
+            "NDefines.NGraphics.SUN_LATITUDE = 600 * 2
 ",
         )]);
         assert_eq!(vanilla.defines.sun_latitude, 848.0);

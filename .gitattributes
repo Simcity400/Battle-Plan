@@ -241,3 +241,15 @@ extractor/native/runs/cmb_combat_display_value/** text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141227360.decompile.c text eol=lf
 portable_replay/fixtures/fired_event_zero_day.json text eol=lf
 extractor/native/runs/evt0_zero_day_timeout/*.json text eol=lf
+
+extractor/native/runs/cmb2_defines_and_draw/** text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14205d560.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14205b690.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1421978c0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260716T030633Z-ui06-geometry-and-interpolation-constant-93c056c4.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14205d560.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14205b690.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1421978c0.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14205a4e0.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1421a5660.decompile.c text eol=lf
