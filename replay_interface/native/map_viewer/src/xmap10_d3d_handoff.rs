@@ -1527,6 +1527,17 @@ mod native {
         reflection_sha256: String,
     }
 
+    impl NativeProgram {
+        unsafe fn bind_stages(&self, context: *mut ID3D11DeviceContext) {
+            (*context).VSSetShader(self.vertex.as_raw(), ptr::null(), 0);
+            (*context).PSSetShader(self.pixel.as_raw(), ptr::null(), 0);
+            (*context).GSSetShader(ptr::null_mut(), ptr::null(), 0);
+            (*context).HSSetShader(ptr::null_mut(), ptr::null(), 0);
+            (*context).DSSetShader(ptr::null_mut(), ptr::null(), 0);
+            (*context).SOSetTargets(0, ptr::null(), ptr::null());
+        }
+    }
+
     struct NativeShadowBlurProgram {
         program: NativeProgram,
         blend: D3dPtr<ID3D11BlendState>,
@@ -1535,12 +1546,7 @@ mod native {
 
     impl NativeShadowBlurProgram {
         unsafe fn bind(&self, context: *mut ID3D11DeviceContext, cb: *mut ID3D11Buffer) {
-            (*context).VSSetShader(self.program.vertex.as_raw(), ptr::null(), 0);
-            (*context).PSSetShader(self.program.pixel.as_raw(), ptr::null(), 0);
-            (*context).GSSetShader(ptr::null_mut(), ptr::null(), 0);
-            (*context).HSSetShader(ptr::null_mut(), ptr::null(), 0);
-            (*context).DSSetShader(ptr::null_mut(), ptr::null(), 0);
-            (*context).SOSetTargets(0, ptr::null(), ptr::null());
+            self.program.bind_stages(context);
             (*context).VSSetConstantBuffers(0, 1, &cb);
             (*context).PSSetConstantBuffers(0, 1, &cb);
             (*context).OMSetBlendState(self.blend.as_raw(), &[0.0; 4], u32::MAX);
@@ -3232,8 +3238,7 @@ mod native {
             (*self.context.as_raw()).RSSetViewports(1, &viewport);
             (*self.context.as_raw()).RSSetScissorRects(0, ptr::null());
             (*self.context.as_raw()).OMSetBlendState(blend, &[0.0; 4], u32::MAX);
-            (*self.context.as_raw()).VSSetShader(program.vertex.as_raw(), ptr::null_mut(), 0);
-            (*self.context.as_raw()).PSSetShader(program.pixel.as_raw(), ptr::null_mut(), 0);
+            program.bind_stages(self.context.as_raw());
             (*self.context.as_raw()).PSSetShaderResources(0, srvs.len() as u32, srvs.as_ptr());
             (*self.context.as_raw()).PSSetSamplers(0, samplers.len() as u32, samplers.as_ptr());
             (*self.context.as_raw()).Draw(4, 0);
@@ -3828,6 +3833,115 @@ mod native {
     }
 
     #[cfg(test)]
+    mod postfx_binding_tests {
+        use super::*;
+
+        fn reflection(hlsl: &str, stage: ShaderStage) -> DxbcReflection {
+            parse_dxbc_reflection(&d3d_compile_stage(hlsl, stage, ENGINE_COMPILE_FLAGS).unwrap()).unwrap()
+        }
+
+        #[test]
+        fn compiled_postfx_reflection_covers_each_bound_role_and_lut() {
+            let vertex = reflection("float4 main(float2 p : POSITION) : SV_POSITION { return float4(p, 0, 1); }", ShaderStage::Vertex);
+            let constant = reflection("float4 main() : SV_Target { return 1; }", ShaderStage::Pixel);
+            for (role, count, cb2) in [
+                (Xmap10ProgramRole::BrightPass, 1, false),
+                (Xmap10ProgramRole::LuminanceDownsample, 1, true),
+                (Xmap10ProgramRole::LuminanceGather, 2, true),
+                (Xmap10ProgramRole::BloomHorizontal, 1, true),
+                (Xmap10ProgramRole::BloomVertical, 1, true),
+                (Xmap10ProgramRole::RestoreScene, 4, false),
+            ] {
+                validate_program_reflection(role, &vertex, &constant).unwrap();
+                for slot in 0..count {
+                    let pixel = reflection(&format!("Texture2D t : register(t{slot}); SamplerState s : register(s{slot}); float4 main() : SV_Target {{ return t.SampleLevel(s, 0.5, 0); }}"), ShaderStage::Pixel);
+                    validate_program_reflection(role, &vertex, &pixel).unwrap();
+                }
+                for (slot, size) in [(0, 416), (1, 80), (2, if cb2 {48} else {0})] {
+                    for stage in [ShaderStage::Vertex, ShaderStage::Pixel] {
+                        for (bytes, admitted) in [(size.max(16), size != 0), (size + 16, false)] {
+                            let body = if stage == ShaderStage::Vertex { "float4 main(float2 p : POSITION) : SV_POSITION { return float4(p, 0, 1) + c[0] + c[N-1]; }" } else { "float4 main() : SV_Target { return c[0] + c[N-1]; }" };
+                            let shader = reflection(&format!("#define N {}\ncbuffer values : register(b{slot}) {{ float4 c[N]; }}; {body}", bytes / 16), stage);
+                            let result = if stage == ShaderStage::Vertex { validate_program_reflection(role, &shader, &constant) } else { validate_program_reflection(role, &vertex, &shader) };
+                            assert_eq!(result.is_ok(), admitted, "{role:?} {stage:?} b{slot} {bytes}");
+                        }
+                    }
+                }
+                for hlsl in [
+                    format!("Texture2D t : register(t{count}); float4 main() : SV_Target {{ return t.Load(int3(0,0,0)); }}"),
+                    format!("Texture2D t : register(t0); SamplerState s : register(s{count}); float4 main() : SV_Target {{ return t.SampleLevel(s, 0.5, 0); }}"),
+                    "TextureCube t : register(t0); SamplerState s : register(s0); float4 main() : SV_Target { return t.SampleLevel(s, float3(1,0,0), 0); }".into(),
+                    format!("Texture2D t[{}] : register(t0); float4 main() : SV_Target {{ return t[{count}].Load(int3(0,0,0)); }}", count + 1),
+                ] {
+                    let error = validate_program_reflection(role, &vertex, &reflection(&hlsl, ShaderStage::Pixel)).unwrap_err().to_string();
+                    assert!(error.contains("postfx-reflected-provider-unavailable"), "{error}");
+                }
+                let vs_texture = reflection("Texture2D t : register(t0); float4 main(float2 p : POSITION) : SV_POSITION { return float4(p, 0, 1) + t.Load(int3(0,0,0)); }", ShaderStage::Vertex);
+                assert!(validate_program_reflection(role, &vs_texture, &constant).is_err());
+            }
+            for count in [2, 4] {
+                let pixel = reflection(&format!("Texture2D t[{count}] : register(t0); SamplerState s[{count}] : register(s0); float4 main() : SV_Target {{ return t[0].SampleLevel(s[0], 0.5, 0) + t[{}].SampleLevel(s[{}], 0.5, 0); }}", count-1, count-1), ShaderStage::Pixel);
+                require_postfx_providers("LUT", &vertex, &pixel, count, &[16]).unwrap();
+                assert!(require_postfx_providers("LUT", &vertex, &pixel, count-1, &[16]).is_err());
+                for (slot, size, admitted) in [(0,16,true), (0,32,false), (1,16,false)] {
+                    let pixel = reflection(&format!("cbuffer cb : register(b{slot}) {{ float4 c[{}]; }}; float4 main() : SV_Target {{ return c[0] + c[{}]; }}", size/16, size/16-1), ShaderStage::Pixel);
+                    assert_eq!(require_postfx_providers("LUT", &vertex, &pixel, count, &[16]).is_ok(), admitted);
+                }
+            }
+        }
+
+        #[test]
+        fn native_postfx_stage_binding_clears_hostile_stages_and_draws_consumed_texture() {
+            use winapi::um::d3dcommon::{D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0};
+            unsafe {
+                let mut device = ptr::null_mut(); let mut context = ptr::null_mut();
+                hr(D3D11CreateDevice(ptr::null_mut(), D3D_DRIVER_TYPE_WARP, ptr::null_mut(), 0, &D3D_FEATURE_LEVEL_11_0, 1, D3D11_SDK_VERSION, &mut device, ptr::null_mut(), &mut context), "postfx WARP").unwrap();
+                let device = D3dPtr::from_raw(device, "postfx device").unwrap();
+                let context_owner = D3dPtr::from_raw(context, "postfx context").unwrap();
+                let vertex = d3d_compile_stage("float4 main(uint id : SV_VertexID) : SV_POSITION { return float4(id == 2 ? 3 : -1, id == 1 ? 3 : -1, 0, 1); }", ShaderStage::Vertex, ENGINE_COMPILE_FLAGS).unwrap();
+                let pixel = d3d_compile_stage("Texture2D image : register(t0); float4 main() : SV_Target { return image.Load(int3(0,0,0)); }", ShaderStage::Pixel, ENGINE_COMPILE_FLAGS).unwrap();
+                let program = create_program(&device, vertex.clone(), pixel.clone(), parse_dxbc_reflection(&vertex).unwrap(), parse_dxbc_reflection(&pixel).unwrap(), "postfx stage test").unwrap();
+                let gs = crate::d3d11_device::native_d3d11_compile_shader("struct V { float4 p : SV_POSITION; }; [maxvertexcount(3)] void main(triangle V input[3], inout TriangleStream<V> stream) {}", "main", "gs_5_0").unwrap();
+                let mut geometry = ptr::null_mut();
+                hr((*device.as_raw()).CreateGeometryShader((*gs.as_raw()).GetBufferPointer(), (*gs.as_raw()).GetBufferSize(), ptr::null_mut(), &mut geometry), "postfx hostile GS").unwrap();
+                let geometry = D3dPtr::from_raw(geometry, "postfx hostile GS").unwrap();
+                let tess = "struct V { float4 p : SV_POSITION; }; struct C { float edges[3] : SV_TessFactor; float inside : SV_InsideTessFactor; }; C patch(InputPatch<V, 3> input) { C c; c.edges[0]=c.edges[1]=c.edges[2]=c.inside=1; return c; } [domain(\"tri\")] [partitioning(\"integer\")] [outputtopology(\"triangle_cw\")] [outputcontrolpoints(3)] [patchconstantfunc(\"patch\")] V hull(InputPatch<V,3> input, uint id : SV_OutputControlPointID) { return input[id]; } [domain(\"tri\")] V domain(C c, float3 uv : SV_DomainLocation, const OutputPatch<V,3> input) { return input[0]; }";
+                let hs = crate::d3d11_device::native_d3d11_compile_shader(tess, "hull", "hs_5_0").unwrap();
+                let ds = crate::d3d11_device::native_d3d11_compile_shader(tess, "domain", "ds_5_0").unwrap();
+                let mut hull = ptr::null_mut(); let mut domain = ptr::null_mut();
+                hr((*device.as_raw()).CreateHullShader((*hs.as_raw()).GetBufferPointer(), (*hs.as_raw()).GetBufferSize(), ptr::null_mut(), &mut hull), "postfx hostile HS").unwrap();
+                hr((*device.as_raw()).CreateDomainShader((*ds.as_raw()).GetBufferPointer(), (*ds.as_raw()).GetBufferSize(), ptr::null_mut(), &mut domain), "postfx hostile DS").unwrap();
+                let hull = D3dPtr::from_raw(hull, "postfx hostile HS").unwrap(); let domain = D3dPtr::from_raw(domain, "postfx hostile DS").unwrap();
+                let desc = D3D11_BUFFER_DESC { ByteWidth: 256, Usage: D3D11_USAGE_DEFAULT, BindFlags: D3D11_BIND_STREAM_OUTPUT, CPUAccessFlags: 0, MiscFlags: 0, StructureByteStride: 0 };
+                let mut output = ptr::null_mut(); hr((*device.as_raw()).CreateBuffer(&desc, ptr::null(), &mut output), "postfx stream output").unwrap();
+                let output = D3dPtr::from_raw(output, "postfx stream output").unwrap();
+                (*context).GSSetShader(geometry.as_raw(), ptr::null(), 0); (*context).HSSetShader(hull.as_raw(), ptr::null(), 0); (*context).DSSetShader(domain.as_raw(), ptr::null(), 0);
+                (*context).SOSetTargets(1, &output.as_raw(), &0);
+                program.bind_stages(context);
+                let mut bound_gs = ptr::null_mut(); let mut bound_hs = ptr::null_mut(); let mut bound_ds = ptr::null_mut(); let mut bound_so = ptr::null_mut();
+                (*context).GSGetShader(&mut bound_gs, ptr::null_mut(), ptr::null_mut()); (*context).HSGetShader(&mut bound_hs, ptr::null_mut(), ptr::null_mut()); (*context).DSGetShader(&mut bound_ds, ptr::null_mut(), ptr::null_mut()); (*context).SOGetTargets(1, &mut bound_so);
+                assert!(bound_gs.is_null() && bound_hs.is_null() && bound_ds.is_null() && bound_so.is_null());
+                let input = create_target(&device, &"a".repeat(64), 8, 8, 28, "postfx input").unwrap();
+                let target = create_target(&device, &"b".repeat(64), 8, 8, 28, "postfx output").unwrap();
+                (*context).ClearRenderTargetView(input.rtv.as_raw(), &[0.25,0.5,0.75,1.0]); (*context).ClearRenderTargetView(target.rtv.as_raw(), &[0.0;4]);
+                let raster = create_rasterizer(&device).unwrap(); let depth = create_depth_disabled(&device).unwrap(); let blend = create_blend(&device, false).unwrap();
+                (*context).RSSetState(raster.as_raw()); (*context).OMSetDepthStencilState(depth.as_raw(), 0); (*context).OMSetBlendState(blend.as_raw(), &[0.0;4], u32::MAX);
+                (*context).RSSetViewports(1, &D3D11_VIEWPORT { TopLeftX:0.0, TopLeftY:0.0, Width:8.0, Height:8.0, MinDepth:0.0, MaxDepth:1.0 });
+                (*context).OMSetRenderTargets(1, &target.rtv.as_raw(), ptr::null_mut()); (*context).PSSetShaderResources(0, 1, &input.srv.as_raw());
+                (*context).IASetPrimitiveTopology(winapi::um::d3dcommon::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST); (*context).Draw(3,0);
+                (*context).OMSetRenderTargets(0, ptr::null(), ptr::null_mut()); (*context).PSSetShaderResources(0, 1, &ptr::null_mut());
+                let mut desc: D3D11_TEXTURE2D_DESC = mem::zeroed(); (*target._texture.as_raw()).GetDesc(&mut desc);
+                desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                let mut staging = ptr::null_mut(); hr((*device.as_raw()).CreateTexture2D(&desc, ptr::null(), &mut staging), "postfx staging").unwrap(); let staging = D3dPtr::from_raw(staging, "postfx staging").unwrap();
+                (*context).CopyResource(staging.as_raw().cast(), target._texture.as_raw().cast());
+                let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed(); hr((*context).Map(staging.as_raw().cast(), 0, D3D11_MAP_READ, 0, &mut mapped), "postfx readback").unwrap();
+                for row in 0..8 { let bytes = std::slice::from_raw_parts((mapped.pData as *const u8).add(row * mapped.RowPitch as usize), 32); assert!(bytes.chunks_exact(4).all(|pixel| pixel == [64,128,191,255])); }
+                (*context).Unmap(staging.as_raw().cast(), 0); drop(context_owner);
+            }
+        }
+    }
+
+    #[cfg(test)]
     mod shadow_blur_binding_tests {
         use super::*;
 
@@ -4309,11 +4423,7 @@ Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" }
             d3d_compile_stage(&pixel_hlsl, ShaderStage::Pixel, ENGINE_COMPILE_FLAGS)?;
         let vertex_reflection = parse_dxbc_reflection(&vertex_bytecode)?;
         let pixel_reflection = parse_dxbc_reflection(&pixel_bytecode)?;
-        require_cbuffer(&vertex_reflection, 0, 16)?;
-        for slot in 0..resource_count {
-            require_texture(&pixel_reflection, slot)?;
-            require_sampler(&pixel_reflection, slot)?;
-        }
+        require_postfx_providers(effect_name, &vertex_reflection, &pixel_reflection, resource_count, &[16])?;
         create_program(
             device,
             vertex_bytecode,
@@ -4422,36 +4532,39 @@ Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" }
         {
             return Err(format!("XMAP10 {role:?} shader stage/signature mismatch").into());
         }
-        match role {
-            Xmap10ProgramRole::BrightPass => {
-                require_texture(pixel, 0)?;
-                require_sampler(pixel, 0)?;
-                require_cbuffer(pixel, 1, 80)?;
-            }
-            Xmap10ProgramRole::LuminanceDownsample => {
-                require_texture(pixel, 0)?;
-                require_sampler(pixel, 0)?;
-                require_cbuffer(vertex, 2, 48)?;
-            }
-            Xmap10ProgramRole::LuminanceGather => {
-                for slot in 0..2 {
-                    require_texture(pixel, slot)?;
-                    require_sampler(pixel, slot)?;
+        let resource_count = match role {
+            Xmap10ProgramRole::RestoreScene => 4,
+            Xmap10ProgramRole::LuminanceGather => 2,
+            _ => 1,
+        };
+        let cb2_size = match role {
+            Xmap10ProgramRole::LuminanceDownsample | Xmap10ProgramRole::LuminanceGather
+            | Xmap10ProgramRole::BloomHorizontal | Xmap10ProgramRole::BloomVertical => 48,
+            _ => 0,
+        };
+        require_postfx_providers(&format!("{role:?}"), vertex, pixel, resource_count, &[416, 80, cb2_size])
+    }
+
+    fn require_postfx_providers(
+        label: &str, vertex: &DxbcReflection, pixel: &DxbcReflection,
+        resource_count: u32, constant_buffer_sizes: &[u32],
+    ) -> Result<()> {
+        for (stage, reflection) in [(ShaderStage::Vertex, vertex), (ShaderStage::Pixel, pixel)] {
+            for resource in &reflection.resources {
+                let supplied = match resource.resource_type {
+                    0 => resource.bind_count == 1
+                        && constant_buffer_sizes.get(resource.bind_point as usize).is_some_and(|size| {
+                            *size != 0 && reflection.cbuffers.iter().any(|cb| cb.name == resource.name && cb.size <= *size)
+                        }),
+                    2 | 3 => stage == ShaderStage::Pixel && resource.bind_count != 0
+                        && resource.bind_point.checked_add(resource.bind_count).is_some_and(|end| end <= resource_count)
+                        && (resource.resource_type == 3 || resource.dimension == 4),
+                    _ => false,
+                };
+                if !supplied {
+                    return Err(format!("postfx-reflected-provider-unavailable: {label} {stage:?} {} type {} register {} count {} dimension {}",
+                        resource.name, resource.resource_type, resource.bind_point, resource.bind_count, resource.dimension).into());
                 }
-                require_cbuffer(vertex, 2, 48)?;
-                require_cbuffer(pixel, 2, 48)?;
-            }
-            Xmap10ProgramRole::BloomHorizontal | Xmap10ProgramRole::BloomVertical => {
-                require_texture(pixel, 0)?;
-                require_sampler(pixel, 0)?;
-                require_cbuffer(vertex, 2, 48)?;
-            }
-            Xmap10ProgramRole::RestoreScene => {
-                for slot in 0..4 {
-                    require_texture(pixel, slot)?;
-                    require_sampler(pixel, slot)?;
-                }
-                require_cbuffer(pixel, 1, 80)?;
             }
         }
         Ok(())
