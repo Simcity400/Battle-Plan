@@ -541,3 +541,5 @@ portable_replay/native/engine_evidence/artifacts/func_140c85fe0.instructions.txt
 portable_replay/native/engine_evidence/artifacts/func_140f75ea0.decompile.c text eol=lf
 
 portable_replay/native/engine_evidence/artifacts/func_140c85fe0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140a50740.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140a50740.instructions.txt text eol=lf

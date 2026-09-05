@@ -40,34 +40,22 @@ pub fn xmap15_viewer_selection(
     selected: Option<&ArmyBattleplanOrderKey>,
 ) -> Xmap15ViewerSelection {
     let selected_plan = selected.and_then(|selected| {
-        let order = world
-            .army_battleplans()
-            .orders
-            .into_iter()
-            .find(|order| &order.key == selected && (1..=4).contains(&order.order_type))?;
-        let value = semantic_value(world)?;
-        let bytes = serde_json::to_vec(value).ok()?;
-        let semantic = Xmap15SemanticFrame::decode_json(&bytes).ok()?;
-        if semantic.hour_index != world.hour_index() {
-            return None;
-        }
-        let key = Xmap15PlanKey {
+        let census = world.army_battleplans();
+        if census.status != ViewStatus::Present { return None; }
+        let mut matches = census.orders.iter().filter(|order|
+            &order.key == selected && (1..=4).contains(&order.order_type));
+        let order = matches.next()?;
+        if matches.next().is_some() { return None; }
+        Some(Xmap15PlanKey {
             owner_kind: match selected.owner.kind {
                 ArmyBattleplanOwnerKind::Army => portable_render_stream::Xmap15OwnerKind::Army,
-                ArmyBattleplanOwnerKind::ArmyGroup => {
-                    portable_render_stream::Xmap15OwnerKind::ArmyGroup
-                }
+                ArmyBattleplanOwnerKind::ArmyGroup => portable_render_stream::Xmap15OwnerKind::ArmyGroup,
             },
             owner_id: selected.owner.id,
             engine_order_instance_id: selected.engine_order_instance_id,
             generation: selected.generation,
             slot_index: order.slot_index,
-        };
-        semantic
-            .plans
-            .iter()
-            .any(|row| row.key == key)
-            .then_some(key)
+        })
     });
     Xmap15ViewerSelection { selected_plan }
 }
