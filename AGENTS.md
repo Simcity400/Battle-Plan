@@ -30,6 +30,11 @@ Roles. The **orchestrator** is the one agent the owner has explicitly named orch
 
 Never run the full workspace suite.
 
+### Review
+
+- After implementation and validation, spawn exactly one native reviewer subagent.
+- Give it the requirements, diff, and raw validation evidence. Keep it read-only, fix every finding, and re-review with the same subagent until it approves. If the commit changes afterward, get one final confirmation.
+
 ## Orchestrator
 
 Staffs lanes, reviews, lands, runs the gate, runs captures, asks the owner. Never implements lane work itself. Cap: 7 running agents; queue past it, never drop. After a restart or limit kill, resume each agent by its id. Never relaunch a lane that has an id. Never replace a slow lane.
