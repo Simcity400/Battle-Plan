@@ -8,6 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Localisation {
     pub language: String,
+    pub autonomy_names: replay_core::country_name::AutonomyNameTokens,
+    pub autonomy_names_unavailable: Option<String>,
     pub entries: BTreeMap<String, String>,
     pub source_by_key: BTreeMap<String, String>,
     pub ambiguous_sources_by_key: BTreeMap<String, Vec<String>>,
@@ -84,6 +86,19 @@ impl Localisation {
                 loc.entries.insert(key.clone(), value);
             }
             loc.source_files.push(file.rel_path);
+        }
+        let autonomy = (|| -> Result<_> {
+            let files = resolver.list_files_recursive("common/autonomous_states", Some("txt"))?;
+            let sources = files.iter().map(|file| {
+                let bytes = resolver.read_file(file)?;
+                String::from_utf8(bytes).map_err(|error| crate::GameUiError::parse(error.to_string()))
+            }).collect::<Result<Vec<_>>>()?;
+            replay_core::country_name::AutonomyNameTokens::from_sources(sources.iter().map(String::as_str))
+                .map_err(crate::GameUiError::parse)
+        })();
+        match autonomy {
+            Ok(tokens) => loc.autonomy_names = tokens,
+            Err(error) => loc.autonomy_names_unavailable = Some(error.to_string()),
         }
         loc.parse_failures.sort();
         loc.decode_lossy_files.sort();

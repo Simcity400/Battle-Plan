@@ -1,7 +1,7 @@
 
 use game_ui::assets::AssetResolver;
 use game_ui::binding::{
-    country_name_key_candidates, topbar_binding_from_frame, topbar_flag_key_candidates,
+    topbar_binding_from_frame, topbar_flag_key_candidates,
 };
 use game_ui::probe::parse_gfx_files;
 use game_ui::topbar::{compose_topbar, FactoryCounts};
@@ -291,7 +291,7 @@ fn unobtained_world_frame_leaf_is_selectively_omitted_by_topbar_composition() {
 }
 
 #[test]
-fn ideology_flip_rekeys_flag_and_name_at_flip_hour() {
+fn ideology_flip_rekeys_flag_at_flip_hour() {
     let tl = fixture("fx_cosmetic_ideology");
     let hours = tl.hours().to_vec();
     assert_eq!(hours.len(), 12);
@@ -316,26 +316,15 @@ fn ideology_flip_rekeys_flag_and_name_at_flip_hour() {
 
         let identity = frame.country_identity("GER").unwrap();
         let flags = topbar_flag_key_candidates("GER", identity);
-        let names = country_name_key_candidates("GER", Some(ideology), cosmetic);
 
         match t {
             0..=3 => {
                 assert_eq!(flags[0], "gfx/flags/medium/GER_fascism.tga", "flag @t{t}");
-                assert_eq!(names, vec!["GER_fascism".to_string(), "GER".to_string()]);
             }
             4..=7 => {
                 assert_eq!(
                     flags[0], "gfx/flags/medium/GER_civil_war_democratic_democratic.tga",
                     "flag @t{t}"
-                );
-                assert_eq!(
-                    names,
-                    vec![
-                        "GER_civil_war_democratic_democratic".to_string(),
-                        "GER_civil_war_democratic".to_string(),
-                        "GER_democratic".to_string(),
-                        "GER".to_string(),
-                    ]
                 );
             }
             _ => {
@@ -343,7 +332,6 @@ fn ideology_flip_rekeys_flag_and_name_at_flip_hour() {
                     flags[0], "gfx/flags/medium/GER_reichskommissariat_neutrality.tga",
                     "flag @t{t}"
                 );
-                assert_eq!(names[0], "GER_reichskommissariat_neutrality");
             }
         }
     }

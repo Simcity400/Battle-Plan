@@ -98,6 +98,7 @@ fn exact_state_log_alert_and_equipment_inputs_are_admitted_in_trace_order() {
         OccupationVisibleText {
             state_name: "Angola".into(),
             occupied_country_name: "Angola".into(),
+            occupied_country_name_issue: None,
             resistance_text: "22.3%".into(),
             resistance_speed_text: "+0.025".into(),
             compliance_text: "65.0%".into(),
@@ -325,6 +326,7 @@ fn production_owner_fixture_crosses_typed_history_alert_and_xui16_constructor() 
         OccupationVisibleText {
             state_name: "Angola".into(),
             occupied_country_name: "France".into(),
+            occupied_country_name_issue: None,
             resistance_text: "22.3%".into(),
             resistance_speed_text: "+0.025".into(),
             compliance_text: "65.0%".into(),

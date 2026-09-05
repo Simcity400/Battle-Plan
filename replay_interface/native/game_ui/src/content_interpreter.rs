@@ -157,6 +157,8 @@ impl<'a> ProductionContentInterpreter<'a> {
             provenance: bytes.provenance,
             value: Localisation {
                 language: self.localisation_language.clone(),
+                autonomy_names: Default::default(),
+                autonomy_names_unavailable: Some("single-file localisation interpretation does not admit autonomy definitions".into()),
                 source_by_key,
                 ambiguous_sources_by_key,
                 provenance_complete: true,

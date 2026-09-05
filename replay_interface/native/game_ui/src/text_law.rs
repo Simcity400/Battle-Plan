@@ -88,6 +88,7 @@ pub fn join_exact_runtime_text_view(
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TextIssueKind {
+    CountryNameInputsUnavailable,
     MissingLocalisationKey,
     MissingRuntimeVariable,
     FormattedVariableRequiresRuntimeValue,

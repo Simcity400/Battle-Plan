@@ -650,29 +650,6 @@ pub fn world_tension_consumers_from_frame(
     crate::world_tension::binding_from_frame(frame, pov_tag)
 }
 
-pub fn country_name_key_candidates(
-    tag: &str,
-    ideology: Option<&str>,
-    cosmetic_tag: Option<&str>,
-) -> Vec<String> {
-    let mut out = Vec::new();
-    let tag_upper = tag.to_ascii_uppercase();
-    if let Some(cosmetic) = cosmetic_tag.filter(|c| !c.is_empty()) {
-        if let Some(ideology) = ideology {
-            out.push(format!("{cosmetic}_{ideology}"));
-        }
-        out.push(cosmetic.to_string());
-    }
-    if let Some(ideology) = ideology {
-        out.push(format!("{tag_upper}_{ideology}"));
-    }
-    out.push(tag_upper.clone());
-    if out.last().map(String::as_str) != Some(tag_upper.as_str()) {
-        out.push(tag_upper);
-    }
-    out
-}
-
 pub fn topbar_flag_key_candidates(tag: &str, identity: &CountryIdentity) -> Vec<String> {
     flag_candidates_for_size(
         Some(tag),
@@ -683,24 +660,18 @@ pub fn topbar_flag_key_candidates(tag: &str, identity: &CountryIdentity) -> Vec<
     )
 }
 
-/// has-key probes a longer chain than this one (a cosmetic-or-tag base,
-/// tag+party, `_subject`) before it yields an empty key, so a miss here is
-/// unproven, never a blank name.
 pub fn resolve_country_name(
     loc: &crate::loc::Localisation,
-    tag: &str,
-    ideology: Option<&str>,
-    cosmetic_tag: Option<&str>,
-) -> std::result::Result<(String, String), Vec<String>> {
-    let candidates = country_name_key_candidates(tag, ideology, cosmetic_tag);
-    for key in &candidates {
-        if let Some(value) = loc.get(key) {
-            return Ok((key.clone(), value.to_string()));
-        }
-    }
-    Err(candidates)
+    inputs: &replay_core::country_name::CountryNameInputs,
+) -> std::result::Result<(String, String), crate::text_law::TextIssue> {
+    use crate::text_law::{TextIssue, TextIssueKind};
+    let key = replay_core::country_name::choose_country_name_key(inputs, "", &loc.entries)
+        .map_err(|error| TextIssue { kind: TextIssueKind::CountryNameInputsUnavailable, token: error.to_string() })?;
+    let (name, _) = loc.localise(&key).display().map_err(|error| TextIssue {
+        kind: TextIssueKind::AmbiguousLocalisationProvenance, token: error.to_string(),
+    })?;
+    Ok((key, name))
 }
-
 
 pub const OUTLINER_ARMY_ICON: &str = "GFX_theatre_army_shield";
 pub const OUTLINER_NAVY_ICON: &str = "GFX_theatre_task_force_shield";
@@ -1349,31 +1320,6 @@ mod tests {
             "an unread cosmetic field must refuse, not resolve down the base-TAG ladder"
         );
         assert_eq!(admitted_flag_cosmetic(None), Ok(None));
-    }
-
-    #[test]
-    fn name_key_precedence_cosmetic_ideology_tag() {
-        assert_eq!(
-            country_name_key_candidates(
-                "GER",
-                Some("democratic"),
-                Some("GER_civil_war_democratic")
-            ),
-            vec![
-                "GER_civil_war_democratic_democratic".to_string(),
-                "GER_civil_war_democratic".to_string(),
-                "GER_democratic".to_string(),
-                "GER".to_string(),
-            ]
-        );
-        assert_eq!(
-            country_name_key_candidates("GER", Some("fascism"), None),
-            vec!["GER_fascism".to_string(), "GER".to_string()]
-        );
-        assert_eq!(
-            country_name_key_candidates("ger", None, None),
-            vec!["GER".to_string()]
-        );
     }
 
     #[test]

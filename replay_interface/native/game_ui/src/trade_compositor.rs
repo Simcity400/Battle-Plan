@@ -35,6 +35,7 @@ pub struct ObserverTradeCatalogueRow {
     pub stable_country_id: String,
     pub display_ordinal: u32,
     pub country_name: String,
+    pub country_name_issue: Option<crate::text_law::TextIssue>,
     pub available_export_text: String,
     pub exported_text: String,
     pub convoys_text: String,
@@ -153,9 +154,6 @@ pub enum Xui15ProducerRejection {
     EmptyEffectiveLocalisation,
     /// A key defined twice with disagreeing text: which one a729 keeps is unread.
     AmbiguousEffectiveLocalisation,
-    /// No candidate of the viewer's NAME chain has text; a729's chooser probes
-    /// candidates this layer does not model, so no blank name is shown.
-    CountryNameChainUnproven(Vec<String>),
     MissingEffectiveFlag,
 }
 
@@ -384,16 +382,13 @@ impl AuthenticatedXui15Producer {
             let ideology = measured_or_absent(&identity.ruling_ideology)?;
             let cosmetic = crate::binding::admitted_cosmetic_override(&identity.cosmetic_tag)
                 .map_err(|_| Xui15ProducerRejection::IncompleteCountryCatalogue)?;
-            let (_, country_name) = crate::binding::resolve_country_name(
-                localisation,
-                &row.country_tag,
-                ideology,
-                cosmetic,
-            )
-            .map_err(Xui15ProducerRejection::CountryNameChainUnproven)?;
-            if country_name.trim().is_empty() {
-                return Err(Xui15ProducerRejection::EmptyEffectiveLocalisation);
-            }
+            let inputs = replay_core::country_name::CountryNameInputs::for_country(
+                frame, &row.country_tag, &localisation.autonomy_names,
+            );
+            let (country_name, country_name_issue) = match crate::binding::resolve_country_name(localisation, &inputs) {
+                Ok((_, name)) => (name, None),
+                Err(issue) => (String::new(), Some(issue)),
+            };
             let flag = resolve_xui15_small_flag(
                 resolver,
                 &row.country_tag,
@@ -427,6 +422,7 @@ impl AuthenticatedXui15Producer {
                     stable_country_id: row.country_tag.clone(),
                     display_ordinal: 0,
                     country_name,
+                    country_name_issue,
                     available_export_text: resource.available_export.to_string(),
                     exported_text: resource.exported.to_string(),
                     convoys_text: resource.convoys.to_string(),
@@ -1114,6 +1110,11 @@ pub fn compose_observer_trade_panel(
             )
         }),
     )?;
+    for row in panel.catalogue_rows {
+        if let Some(issue) = &row.country_name_issue {
+            output.report.unresolved_text_inputs.insert(format!("xui15:country-name:{}", row.stable_country_id), vec![issue.clone()]);
+        }
+    }
     let catalogue_options = panel
         .catalogue_rows
         .iter()
@@ -1398,7 +1399,7 @@ fn validate_panel(
             (
                 row.stable_country_id.as_str(),
                 row.display_ordinal,
-                !row.country_name.trim().is_empty()
+                (row.country_name_issue.is_none() || row.country_name.is_empty())
                     && !row.available_export_text.trim().is_empty()
                     && !row.exported_text.trim().is_empty()
                     && !row.convoys_text.trim().is_empty()

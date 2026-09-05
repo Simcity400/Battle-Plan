@@ -271,7 +271,7 @@ impl OccupationPixelCompositor {
             return Ok(None);
         }
         let exact = admit_exact_pixels(frame, surface, viewer)?;
-        let output = match viewer.panel {
+        let mut output = match viewer.panel {
             OccupationPanel::Closed => Ok(None),
             OccupationPanel::Territories => self
                 .compose_territories(
@@ -300,6 +300,13 @@ impl OccupationPixelCompositor {
                 )
                 .map(Some),
         }?;
+        if let Some(output) = &mut output {
+            for state in surface.states() {
+                if let Some(issue) = &state.text.occupied_country_name_issue {
+                    output.report.unresolved_text_inputs.insert(format!("xui16:country-name:{}", state.occupied_country_tag), vec![issue.clone()]);
+                }
+            }
+        }
         Ok(output)
     }
 
@@ -577,12 +584,21 @@ impl OccupationPixelCompositor {
                     "compliance_status_",
                     &mut options,
                 )?;
+                let group_names = surface.states().iter()
+                    .filter(|state| state.occupied_country_tag == group.occupied_country_tag)
+                    .map(|state| state.text.occupied_country_name.as_str()).collect::<BTreeSet<_>>();
+                let country_name = if group_names.len() == 1 {
+                    *group_names.first().unwrap()
+                } else {
+                    return Err(OccupationPixelRejection::SourceJoin(format!("country {} has no unique semantic name", group.occupied_country_tag)));
+                };
                 bind_country_presentation(
                     resolver,
                     registry,
                     &row,
                     &prefix,
                     group,
+                    country_name,
                     expanded,
                     &mut options,
                 )?;
@@ -1447,6 +1463,7 @@ fn bind_country_presentation(
     root: &GuiElement,
     prefix: &str,
     presentation: &OccupationUiCountryGroupPresentationExact,
+    country_name: &str,
     expanded: bool,
     options: &mut ComposeOptions,
 ) -> std::result::Result<(), OccupationPixelRejection> {
@@ -1475,8 +1492,8 @@ fn bind_country_presentation(
         "flag",
         &presentation.flag_texture,
     )?;
+    options.text_overrides.insert(format!("{prefix}country_name"), country_name.to_owned());
     for (role, value) in [
-        ("country_name", presentation.country_name.as_str()),
         (
             "occupied_state_count",
             presentation.occupied_state_count_text.as_str(),
