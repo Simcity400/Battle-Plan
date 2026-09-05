@@ -1723,6 +1723,10 @@ impl UnhashedWorldHour {
         let value = cacheprof::timed(&cacheprof::PARSE_NS, || {
             crate::canon_convert::from_value_shared(value, previous)
         });
+        Self::from_canonical_value(value)
+    }
+
+    pub fn from_canonical_value(value: CanonValue) -> Self {
         let value_heap_bytes = value.heap_bytes();
         Self {
             value,

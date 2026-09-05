@@ -1,1 +1,3 @@
 fold_speed_tests.rs text eol=lf
+snapshot_reuse.rs text eol=lf
+snapshot_reuse_tests.rs text eol=lf

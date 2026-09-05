@@ -458,6 +458,9 @@ impl WorldFold {
     /// A reducer wrote these members of country `tag_db_id`.
     #[inline]
     pub(super) fn v3_touch_country_members(&mut self, tag_db_id: u32, members: &[&str]) {
+        if members.contains(&"research") {
+            self.invalidate_research_root(tag_db_id);
+        }
         self.v3_mark(|seam| {
             for member in members {
                 seam.mark_country_member(tag_db_id, member);
@@ -472,6 +475,9 @@ impl WorldFold {
         tag_db_id: u32,
         values: &Map<String, Value>,
     ) {
+        if values.contains_key("research") {
+            self.invalidate_research_root(tag_db_id);
+        }
         self.v3_mark(|seam| {
             for member in values.keys() {
                 seam.mark_country_member(tag_db_id, member);
@@ -482,12 +488,16 @@ impl WorldFold {
     /// A reducer rewrote country `tag_db_id` wholesale (or created it).
     #[inline]
     pub(super) fn v3_touch_country_row(&mut self, tag_db_id: u32) {
+        self.invalidate_research_root(tag_db_id);
         self.v3_mark(|seam| seam.mark_country_row(tag_db_id));
     }
 
     /// A reducer removed country `tag_db_id`.
     #[inline]
     pub(super) fn v3_remove_country(&mut self, tag_db_id: u32) {
+        let key = tag_db_id.to_string();
+        self.canonical_research.remove(&key);
+        self.dirty_canonical_research.remove(&key);
         self.v3_mark(|seam| {
             seam.country_marks.remove(&tag_db_id);
             seam.country_removed.insert(tag_db_id);
