@@ -574,7 +574,7 @@ mod dynamic_modifier_tests {
         fn hours(&self) -> &[i64] { &[900] }
         fn warnings(&self) -> &[String] { &[] }
         fn frame(&self, hour_index: i64) -> std::result::Result<replay_core::RawFrame, replay_core::SourceError> {
-            Ok(replay_core::RawFrame { hour_index, date: None, save_version: None, schema_version: None, rest: self.0.clone() })
+            Ok(replay_core::RawFrame { hour_index, date: None, save_version: None, schema_version: None, rest: self.0.clone().into() })
         }
     }
 
