@@ -678,6 +678,7 @@ impl Domain53SnapshotPlan {
         Domain53SnapshotMemory {
             plan: self,
             first_miss: Cell::new(None),
+            last_hit: Cell::new(0),
         }
     }
 }
@@ -725,6 +726,9 @@ fn subtract_sorted(ranges: Vec<(u64, u64)>, cut: &[(u64, u64)]) -> Vec<(u64, u64
 pub struct Domain53SnapshotMemory<'a> {
     plan: &'a Domain53SnapshotPlan,
     first_miss: Cell<Option<(u64, usize)>>,
+    /// The range the last read was served from: the walk reads object by
+    /// object, so the next read is usually in it or in its successor.
+    last_hit: Cell<usize>,
 }
 
 impl Domain53SnapshotMemory<'_> {
@@ -747,14 +751,27 @@ impl Domain53SnapshotMemory<'_> {
         &Domain53SnapshotCopySpec,
         &Domain53SnapshotRegionState,
     )> {
-        let index = self
-            .plan
-            .specs
-            .partition_point(|spec| spec.src <= address)
-            .checked_sub(1)?;
-        let spec = self.plan.specs.get(index)?;
+        let specs = &self.plan.specs;
+        let holds = |index: usize| {
+            specs
+                .get(index)
+                .is_some_and(|spec| address >= spec.src && address < spec.src.saturating_add(spec.len))
+        };
+        let hint = self.last_hit.get();
+        let index = if holds(hint) {
+            hint
+        } else if holds(hint.wrapping_add(1)) {
+            hint.wrapping_add(1)
+        } else {
+            let index = specs.partition_point(|spec| spec.src <= address).checked_sub(1)?;
+            if !holds(index) {
+                return None;
+            }
+            index
+        };
+        self.last_hit.set(index);
         let state = self.plan.state.get(index)?;
-        (state.copied && address < spec.src.saturating_add(spec.len)).then_some((spec, state))
+        state.copied.then_some((&specs[index], state))
     }
 
     /// Serve `out` from copied ranges of ONE operating-system region only;
@@ -765,6 +782,14 @@ impl Domain53SnapshotMemory<'_> {
         let len = out.len();
         if address.checked_add(len as u64).is_none() {
             return false;
+        }
+        if let Some((spec, _)) = self.copied_range_at(address) {
+            let offset = (address - spec.src) as usize;
+            if len <= spec.len as usize - offset {
+                let from = (spec.dst_offset as usize) + offset;
+                out.copy_from_slice(&self.plan.arena.bytes()[from..from + len]);
+                return true;
+            }
         }
         let mut cursor = address;
         let mut copied = 0usize;
@@ -817,6 +842,36 @@ impl Domain53Memory for Domain53SnapshotMemory<'_> {
 
     fn read_into(&self, address: u64, buf: &mut [u8]) -> Result<(), ExtractError> {
         self.read_into_snapshot(address, buf)
+    }
+
+    fn read_u8(&self, address: u64) -> Result<u8, ExtractError> {
+        let mut bytes = [0u8; 1];
+        self.read_into_snapshot(address, &mut bytes)?;
+        Ok(bytes[0])
+    }
+
+    fn read_u32(&self, address: u64) -> Result<u32, ExtractError> {
+        let mut bytes = [0u8; 4];
+        self.read_into_snapshot(address, &mut bytes)?;
+        Ok(u32::from_le_bytes(bytes))
+    }
+
+    fn read_i32(&self, address: u64) -> Result<i32, ExtractError> {
+        let mut bytes = [0u8; 4];
+        self.read_into_snapshot(address, &mut bytes)?;
+        Ok(i32::from_le_bytes(bytes))
+    }
+
+    fn read_u64(&self, address: u64) -> Result<u64, ExtractError> {
+        let mut bytes = [0u8; 8];
+        self.read_into_snapshot(address, &mut bytes)?;
+        Ok(u64::from_le_bytes(bytes))
+    }
+
+    fn read_i64(&self, address: u64) -> Result<i64, ExtractError> {
+        let mut bytes = [0u8; 8];
+        self.read_into_snapshot(address, &mut bytes)?;
+        Ok(i64::from_le_bytes(bytes))
     }
 
     fn readable_ranges(&self, lo: u64, hi: u64) -> Vec<(u64, usize)> {
@@ -959,6 +1014,87 @@ mod tests {
         fn probe_not_committed(&self, address: u64) -> bool {
             self.uncommitted.contains(&address)
         }
+    }
+
+    /// The production plan shape (captures/e2e_06: ~320k ranges, ~21 MB) read
+    /// the way the finish half reads it: runs of scalar reads inside one range,
+    /// with a jump to an unrelated range every few objects.
+    /// asserted: run `--release -- --ignored --nocapture` to read it.
+    #[test]
+    #[ignore = "timing witness; run --release --ignored --nocapture"]
+    fn production_shape_snapshot_reads_time() {
+        const RANGES: u64 = 320_000;
+        const RANGE_LEN: u64 = 64;
+        const STRIDE: u64 = 256;
+        const BASE: u64 = 0x1_0000_0000;
+        let trace = Domain53AccessTrace {
+            reads: (0..RANGES)
+                .map(|index| Domain53ReadTrace {
+                    address: BASE + index * STRIDE,
+                    len: RANGE_LEN as usize,
+                    succeeded: true,
+                })
+                .collect(),
+            ..Domain53AccessTrace::default()
+        };
+        let mut plan = Domain53SnapshotPlan::from_trace(1, trace).expect("inside the caps");
+        let receipt = plan.capture_with(
+            |_address| {
+                Some(Domain53SnapshotOsRegion {
+                    start: BASE,
+                    stop: BASE + RANGES * STRIDE,
+                    readable: true,
+                })
+            },
+            |specs, arena| {
+                for spec in specs {
+                    let at = spec.dst_offset as usize;
+                    for offset in 0..spec.len as usize {
+                        arena[at + offset] = (spec.src as u8).wrapping_add(offset as u8);
+                    }
+                }
+                specs.len()
+            },
+            u32::MAX,
+        );
+        assert_eq!(receipt.failure_region_ordinal, None);
+        assert_eq!(receipt.copied_region_count, RANGES as u32);
+        let view = plan.view();
+        let mut best_ns = u64::MAX;
+        let mut reads = 0u64;
+        let mut checksum = 0u64;
+        for _ in 0..5 {
+            let started = std::time::Instant::now();
+            let mut range = 0u64;
+            let mut sum = 0u64;
+            let mut count = 0u64;
+            for object in 0..112_000u64 {
+                if object % 8 == 0 {
+                    range = (object * 2_654_435_761) % RANGES;
+                } else {
+                    range = (range + 1) % RANGES;
+                }
+                let at = BASE + range * STRIDE;
+                sum = sum.wrapping_add(view.read_u64(at).unwrap());
+                sum = sum.wrapping_add(u64::from(view.read_u32(at + 8).unwrap()));
+                sum = sum.wrapping_add(view.read_i32(at + 16).unwrap() as u64);
+                sum = sum.wrapping_add(u64::from(view.read_u8(at + 40).unwrap()));
+                let mut buf = [0u8; 16];
+                view.read_into(at + 48, &mut buf).unwrap();
+                sum = sum.wrapping_add(u64::from(buf[3]));
+                count += 5;
+            }
+            let ns = started.elapsed().as_nanos() as u64;
+            best_ns = best_ns.min(ns);
+            reads = count;
+            checksum = sum;
+        }
+        assert!(view.first_miss().is_none());
+        println!(
+            "d53 snapshot view: {reads} reads over {RANGES} ranges, best {} us, {} ns/read (checksum {checksum})",
+            best_ns / 1000,
+            best_ns / reads
+        );
     }
 
     fn plan_from_reads(reads: &[(u64, usize)]) -> Domain53SnapshotPlan {
