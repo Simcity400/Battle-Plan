@@ -16,7 +16,7 @@ fn division_sample(div_id: u32, raw_organisation: u32) -> DivisionMovementSample
         movement_route: None,
         current_template: None,
         route_head: None,
-        template_preference: None,
+        template_preference: None, acclimatization: None,
         div_id,
         deleted: false,
         moving: false,

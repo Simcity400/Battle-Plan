@@ -18,6 +18,7 @@ use crate::schema::{Collection, Field, Kind, Quant, Schema, Shape};
 pub const DOMAIN: u32 = 20;
 pub const DIVISIONS: u32 = 1;
 pub const MOVEMENT_ROUTE: u32 = 2;
+pub const ACCLIMATIZATION: u32 = 3;
 
 /// Field ids are stable and append-only; schema-identity contract forbids reuse for a different field.
 pub mod field {
@@ -55,6 +56,8 @@ pub mod field {
     pub const MODEL_TEMPLATE_ID: u32 = 32;
     pub const MODEL_ENTITY: u32 = 33;
     pub const MODEL_CATEGORY: u32 = 34;
+    pub const ACCLIMATIZATION_MAXIMUM: u32 = 35;
+    pub const ACCLIMATIZATION_COUNT: u32 = 36;
 }
 
 /// Declared precision for every continuous field except `move_progress`.
@@ -75,6 +78,14 @@ pub mod route_field {
     pub const PROVINCE: u32 = 4;
 }
 
+pub mod acclimatization_field {
+    pub const DIV_ID: u32 = 1;
+    pub const DIV_TYPE: u32 = 2;
+    pub const INDEX: u32 = 3;
+    pub const CATEGORY: u32 = 4;
+    pub const WEIGHT_RAW: u32 = 5;
+}
+
 pub fn schema() -> Schema {
     use field as f;
     let mut fields = vec![
@@ -92,6 +103,8 @@ pub fn schema() -> Schema {
         Field::new(f::MODEL_TEMPLATE_ID, Kind::Unsigned).optional().nullable(),
         Field::new(f::MODEL_ENTITY, Kind::ContentId).optional().nullable(),
         Field::new(f::MODEL_CATEGORY, Kind::Unsigned).optional().nullable(),
+        Field::new(f::ACCLIMATIZATION_MAXIMUM, Kind::Signed).optional().nullable(),
+        Field::new(f::ACCLIMATIZATION_COUNT, Kind::Unsigned).optional().nullable(),
     ];
 
     // Bar-drawn continuous values: quantized.
@@ -196,6 +209,16 @@ pub fn schema() -> Schema {
                 Field::new(route_field::INDEX, Kind::Unsigned).key(2),
                 Field::new(route_field::PROVINCE, Kind::ContentId),
             ],
+        }, Collection {
+            collection_id: ACCLIMATIZATION,
+            shape: Shape::KeyedSet,
+            fields: vec![
+                Field::new(acclimatization_field::DIV_ID, Kind::Unsigned).key(0),
+                Field::new(acclimatization_field::DIV_TYPE, Kind::Unsigned).key(1),
+                Field::new(acclimatization_field::INDEX, Kind::Unsigned).key(2),
+                Field::new(acclimatization_field::CATEGORY, Kind::ContentId),
+                Field::new(acclimatization_field::WEIGHT_RAW, Kind::Signed),
+            ],
         }],
         event_part: None,
     }
@@ -268,8 +291,8 @@ mod tests {
         let s = schema();
         assert_eq!(
             s.collections[0].fields.len(),
-            34,
-            "2 key + 32 sampleable non-key fields"
+            36,
+            "2 key + 34 sampleable non-key fields"
         );
     }
 

@@ -303,6 +303,120 @@ pub(super) fn current_route_inputs(
     stable_route_inputs(&LIVE_MEMORY, module, body, id, || {})
 }
 
+#[derive(PartialEq, Eq)]
+struct AcclimatizationRead {
+    identity: [u64; 4],
+    custody: Vec<u64>,
+    value: compact_contract::division_routes::Acclimatization,
+}
+
+fn acclimatization_once<M: DecodeMemory + ?Sized>(
+    mem: &M,
+    module: usize,
+    body: usize,
+    id: u32,
+) -> Option<AcclimatizationRead> {
+    use compact_contract::division_routes::{
+        Acclimatization, AcclimatizationCategory, MAX_ACCLIMATIZATION_CATEGORIES,
+        MAX_MODEL_ENTITY_BYTES,
+    };
+    let identity = division_identity(mem, module, body, id)?;
+    let at = body.checked_add(0x4a8)?;
+    if mem.u64(at)? != module.checked_add(0x27c7b30)? as u64 {
+        return None;
+    }
+    let registry = mem.u64(module.checked_add(0x3318080)?)? as usize;
+    if !is_map_control_heap_pointer(registry) {
+        return None;
+    }
+    let registered = mem.u64(registry)? as usize;
+    let registered_capacity = mem.u32(registry.checked_add(8)?)?;
+    let registered_count = mem.u32(registry.checked_add(12)?)?;
+    let data = mem.u64(at.checked_add(8)?)? as usize;
+    let capacity = mem.u32(at.checked_add(0x10)?)?;
+    let count = mem.u32(at.checked_add(0x14)?)?;
+    if count != registered_count
+        || count > capacity
+        || registered_count > registered_capacity
+        || count as usize > MAX_ACCLIMATIZATION_CATEGORIES
+    {
+        return None;
+    }
+    let maximum_raw = mem.u64(at.checked_add(0x38)?)? as i64;
+    let mut custody = vec![
+        registry as u64,
+        registered as u64,
+        registered_capacity as u64,
+        registered_count as u64,
+        data as u64,
+        capacity as u64,
+        count as u64,
+    ];
+    let mut categories = Vec::with_capacity(count as usize);
+    if count != 0 {
+        if !is_map_control_heap_pointer(registered) || !is_map_control_heap_pointer(data) {
+            return None;
+        }
+        let pointers = mem.bytes(registered, (count as usize).checked_mul(8)?)?;
+        let entries = mem.bytes(data, (count as usize).checked_mul(16)?)?;
+        let mut seen = BTreeSet::new();
+        for (registered, entry) in pointers.chunks_exact(8).zip(entries.chunks_exact(16)) {
+            let pointer = u64::from_le_bytes(entry[..8].try_into().ok()?) as usize;
+            if pointer as u64 != u64::from_le_bytes(registered.try_into().ok()?)
+                || !is_map_control_heap_pointer(pointer)
+            {
+                return None;
+            }
+            let name = read_msvc_string_snapshot_once_in(mem, pointer, MAX_MODEL_ENTITY_BYTES)?;
+            let token = mem.u32(pointer.checked_add(0x20)?)?;
+            let category = String::from_utf8(name.bytes).ok()?;
+            if category.is_empty() || !seen.insert(category.clone()) {
+                return None;
+            }
+            custody.extend([
+                pointer as u64,
+                name.size as u64,
+                name.cap as u64,
+                name.chars_addr as u64,
+                token as u64,
+            ]);
+            categories.push(AcclimatizationCategory {
+                category,
+                weight_raw: i64::from_le_bytes(entry[8..].try_into().ok()?),
+            });
+        }
+    }
+    Some(AcclimatizationRead {
+        identity,
+        custody,
+        value: Acclimatization {
+            maximum_raw,
+            categories,
+        },
+    })
+}
+
+fn stable_acclimatization<M: DecodeMemory + ?Sized>(
+    mem: &M,
+    module: usize,
+    body: usize,
+    id: u32,
+    between: impl FnOnce(),
+) -> Option<compact_contract::division_routes::Acclimatization> {
+    let first = acclimatization_once(mem, module, body, id)?;
+    between();
+    let second = acclimatization_once(mem, module, body, id)?;
+    (first == second).then_some(first.value)
+}
+
+pub(super) fn acclimatization(
+    module: usize,
+    body: usize,
+    id: u32,
+) -> Option<compact_contract::division_routes::Acclimatization> {
+    stable_acclimatization(&LIVE_MEMORY, module, body, id, || {})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,6 +574,73 @@ mod tests {
             stable_template_inputs(&mem, module, body, 7, || mem.put64(body + 0x3b8, 0)),
             (None, None)
         );
+    }
+
+    #[test]
+    fn acclimatization_census_preserves_registered_order_raw_values_empty_and_torn_refusal() {
+        let (mem, module, body) = fixture();
+        let at = body + 0x4a8;
+        let registry = body + 0x60000;
+        let registered = body + 0x70000;
+        let data = body + 0x80000;
+        let cold = body + 0x90000;
+        let hot = body + 0xa0000;
+        assert_eq!(stable_acclimatization(&mem, module, body, 7, || {}), None);
+        mem.put64(at, (module + 0x27c7b30) as u64);
+        mem.put64(module + 0x3318080, registry as u64);
+        mem.put64(registry, 0);
+        mem.put32(registry + 8, 0);
+        mem.put32(registry + 12, 0);
+        mem.put64(at + 8, 0);
+        mem.put32(at + 0x10, 0);
+        mem.put32(at + 0x14, 0);
+        mem.put64(at + 0x38, 10_000_000);
+        let empty = stable_acclimatization(&mem, module, body, 7, || {}).unwrap();
+        assert_eq!(empty.maximum_raw, 10_000_000);
+        assert!(empty.categories.is_empty());
+        mem.put64(registry, registered as u64);
+        mem.put32(registry + 8, 2);
+        mem.put32(registry + 12, 2);
+        mem.put64(at + 8, data as u64);
+        mem.put32(at + 0x10, 2);
+        mem.put32(at + 0x14, 2);
+        for (index, (pointer, name, weight)) in [(cold, "cold", -1i64), (hot, "hot", 123_456i64)]
+            .into_iter()
+            .enumerate()
+        {
+            mem.put64(registered + index * 8, pointer as u64);
+            mem.put64(data + index * 16, pointer as u64);
+            mem.put64(data + index * 16 + 8, weight as u64);
+            mem.put(pointer, format!("{name}\0").as_bytes());
+            mem.put64(pointer + 0x10, name.len() as u64);
+            mem.put64(pointer + 0x18, 15);
+            mem.put32(pointer + 0x20, index as u32 + 100);
+        }
+        let value = stable_acclimatization(&mem, module, body, 7, || {}).unwrap();
+        assert_eq!(
+            value
+                .categories
+                .iter()
+                .map(|v| (v.category.as_str(), v.weight_raw))
+                .collect::<Vec<_>>(),
+            vec![("cold", -1), ("hot", 123_456)]
+        );
+        assert_eq!(
+            stable_acclimatization(&mem, module, body, 7, || mem.put64(data + 8, 0)),
+            None
+        );
+        assert_eq!(
+            stable_acclimatization(&mem, module, body, 7, || mem.put(cold, b"warm\0")),
+            None
+        );
+        mem.put64(data, hot as u64);
+        assert_eq!(stable_acclimatization(&mem, module, body, 7, || {}), None);
+        mem.put64(data, cold as u64);
+        mem.put32(at + 0x14, 1);
+        assert_eq!(stable_acclimatization(&mem, module, body, 7, || {}), None);
+        mem.put32(at + 0x14, 2);
+        mem.put64(at, 0);
+        assert_eq!(stable_acclimatization(&mem, module, body, 7, || {}), None);
     }
 
     #[test]
