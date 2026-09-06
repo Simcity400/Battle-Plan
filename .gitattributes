@@ -1439,3 +1439,17 @@ portable_replay/native/engine_evidence/artifacts/20260716T044833Z-c01-all-remain
 portable_replay/native/engine_evidence/artifacts/20260716T044833Z-c01-all-remaining-matrix-constants-v1-520633fa.job.json text eol=lf
 portable_replay/native/engine_evidence/artifacts/particle_projection_cases.json text eol=lf
 extractor/native/runs/paired_particle_viewer_runtime/author_projection_cases.py text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_142057ec0.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_142057ed0.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1424a87e0.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1424a8d20.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1424afca0.decompile.c text eol=lf
+
+extractor/native/runs/view2_state_registry/registry_ids.tsv text eol=lf
+
+extractor/native/runs/view2_state_registry/sources.json text eol=lf
