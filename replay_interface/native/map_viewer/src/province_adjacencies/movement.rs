@@ -41,10 +41,7 @@ pub(super) fn populate(
     resolver: &GameFileResolver,
 ) {
     let mut sources = Vec::new();
-    let inputs = Inputs::load(resolver, &mut sources).and_then(|_| {
-        // Required file keys do not authenticate the engine's complete directory census.
-        Err::<Inputs, _>(Missing::TerrainNamespaceUnwitnessed)
-    });
+    let inputs = Inputs::load(resolver, &mut sources);
     table.movement_content = ProvinceMovementContent {
         sources, availability: inputs.as_ref().map(|_| ()).map_err(|reason| *reason),
     };
@@ -89,9 +86,10 @@ impl Inputs {
         }
         let path = format!("map/{}", terrain_path.ok_or(Missing::DefaultMap)?);
         let terrain = Terrain::decode(&read_source(resolver, &path, sources)?)?;
+        resolver.require_complete_admitted_dir("common/terrain", Some("txt"), false, "province movement terrain")
+            .map_err(|_| Missing::TerrainNamespaceUnwitnessed)?;
         let files = resolver.resolve_dir_files("common/terrain", Some("txt"))
             .map_err(|_| Missing::Content)?;
-        if files.is_empty() { return Err(Missing::TerrainNamespaceUnwitnessed); }
         let mut categories = Vec::new();
         let mut costs = Vec::new();
         for (path, _) in files {
