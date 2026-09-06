@@ -188,6 +188,8 @@ version = "0.1.0"
 name = "portable_content_manifest"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
+ "flate2",
  "serde",
  "serde_json",
  "sha2",

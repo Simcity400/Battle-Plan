@@ -489,21 +489,46 @@ impl EffectiveVfs {
     /// shadows every lower spelling of the same path, and a layer that
     /// replaces a directory drops every lower file under it.
     pub fn effective_entries(&self) -> Result<Vec<EffectiveVfsEntry>, String> {
-        self.collect_effective_entries(None)
+        self.collect_effective_entries(None, None)
     }
 
     pub(crate) fn effective_entries_bounded(
         &self,
         limits: NamespaceEnumerationLimits,
     ) -> Result<Vec<EffectiveVfsEntry>, String> {
-        self.collect_effective_entries(Some(limits))
+        self.collect_effective_entries(Some(limits), None)
+    }
+
+    pub(crate) fn scoped_entries_bounded(
+        &self,
+        scope: &crate::content_namespace::ContentNamespaceScope,
+        limits: NamespaceEnumerationLimits,
+    ) -> Result<Vec<EffectiveVfsEntry>, String> {
+        self.collect_effective_entries(Some(limits), Some(scope))
     }
 
     fn collect_effective_entries(
         &self,
         limits: Option<NamespaceEnumerationLimits>,
+        scope: Option<&crate::content_namespace::ContentNamespaceScope>,
     ) -> Result<Vec<EffectiveVfsEntry>, String> {
         let mut budget = EnumerationBudget::new(limits);
+        if scope.is_some() {
+            for index in self
+                .layers
+                .iter()
+                .filter_map(|layer| layer.zip_index.as_ref())
+            {
+                budget.entries = budget
+                    .entries
+                    .checked_add(index.metadata_entries)
+                    .ok_or("content_namespace_bound_exceeded: archive entries")?;
+                budget.charge_bytes(index.metadata_bytes as usize)?;
+            }
+            if limits.is_some_and(|limit| budget.entries > limit.entries) {
+                return Err("content_namespace_bound_exceeded: archive entries".into());
+            }
+        }
         let mut effective = BTreeMap::<String, EffectiveVfsEntry>::new();
         for (layer_index, layer) in self.layers.iter().enumerate() {
             if !layer.replace_paths.is_empty() {
@@ -513,7 +538,13 @@ impl EffectiveVfs {
                         .contains(&logical_parent(&entry.logical_path))
                 });
             }
-            for listed in list_layer_entries_with_budget(layer, "", None, &mut budget)? {
+            for listed in list_layer_entries_with_budget(
+                layer,
+                scope.map_or("", |s| s.directory.as_str()),
+                scope.and_then(|s| s.extension.as_deref()),
+                scope.is_none_or(|s| s.recursive),
+                &mut budget,
+            )? {
                 let facts = match layer.storage_kind {
                     LayerStorageKind::Directory => EffectiveVfsEntryFacts::File {
                         local_path: listed.local_path,
@@ -716,9 +747,33 @@ fn hash_layer_file(
                     }
                     let mut file = fs::File::open(canonical)
                         .map_err(|error| format!("open effective VFS file failed: {error}"))?;
+                    if file
+                        .metadata()
+                        .map_err(|e| format!("inspect namespace payload failed: {e}"))?
+                        .len()
+                        > limit
+                    {
+                        return Err(
+                            "content_namespace_bound_exceeded: payload bytes before read".into(),
+                        );
+                    }
                     loop {
+                        let remaining = limit - total;
+                        if remaining == 0 {
+                            if file
+                                .metadata()
+                                .map_err(|e| format!("inspect namespace payload failed: {e}"))?
+                                .len()
+                                != total
+                            {
+                                return Err("content_namespace_payload_length_changed".into());
+                            }
+                            break;
+                        }
                         let read = file
-                            .read(&mut buffer[..CHUNK])
+                            .read(
+                                &mut buffer[..CHUNK.min(remaining.min(usize::MAX as u64) as usize)],
+                            )
                             .map_err(|error| format!("read effective VFS file failed: {error}"))?;
                         if read == 0 {
                             break;
@@ -754,25 +809,104 @@ fn hash_layer_file(
                 .lock()
                 .map_err(|_| "effective VFS archive handle is poisoned".to_string())?;
             let mut entry = archive
-                .by_index(*entry_index)
+                .by_index_raw(*entry_index)
                 .map_err(|error| format!("read effective VFS archive entry failed: {error}"))?;
-            loop {
-                let read = entry.read(&mut buffer[..CHUNK]).map_err(|error| {
-                    format!("read effective VFS archive payload failed: {error}")
-                })?;
-                if read == 0 {
-                    break;
-                }
-                hasher.update(&buffer[..read]);
-                total = total
-                    .checked_add(read as u64)
-                    .filter(|bytes| *bytes <= limit)
-                    .ok_or("content_namespace_bound_exceeded: payload bytes")?;
-                progress(read);
-            }
+            total = hash_archive_payload(&mut entry, buffer, &mut hasher, progress, limit)?;
         }
     }
     Ok(Some((total, format!("{:x}", hasher.finalize()))))
+}
+
+fn hash_archive_payload(
+    entry: &mut zip::read::ZipFile<'_>,
+    output: &mut [u8],
+    hasher: &mut Sha256,
+    progress: &mut dyn FnMut(usize),
+    limit: u64,
+) -> Result<u64, String> {
+    let expected = entry.size();
+    let compressed = entry.compressed_size();
+    if expected > limit {
+        return Err("content_namespace_bound_exceeded: payload bytes before read".into());
+    }
+    let mut crc = crc32fast::Hasher::new();
+    let mut total = 0u64;
+    match entry.compression() {
+        zip::CompressionMethod::Stored => {
+            if compressed != expected {
+                return Err("content_namespace_archive_size_mismatch".into());
+            }
+            while total < expected {
+                let capacity = output
+                    .len()
+                    .min((expected - total).min(usize::MAX as u64) as usize);
+                let count = entry
+                    .read(&mut output[..capacity])
+                    .map_err(|e| format!("read effective VFS archive payload failed: {e}"))?;
+                if count == 0 {
+                    return Err("content_namespace_archive_truncated".into());
+                }
+                progress(count);
+                hasher.update(&output[..count]);
+                crc.update(&output[..count]);
+                total += count as u64;
+            }
+        }
+        zip::CompressionMethod::Deflated => {
+            let mut decoder = flate2::Decompress::new(false);
+            let mut input = vec![0u8; 1 << 20];
+            let (mut start, mut end, mut received) = (0usize, 0usize, 0u64);
+            loop {
+                if start == end && received < compressed {
+                    let capacity = input
+                        .len()
+                        .min((compressed - received).min(usize::MAX as u64) as usize);
+                    end = entry.read(&mut input[..capacity]).map_err(|e| {
+                        format!("read effective VFS compressed payload failed: {e}")
+                    })?;
+                    start = 0;
+                    if end == 0 {
+                        return Err("content_namespace_archive_truncated".into());
+                    }
+                    received += end as u64;
+                }
+                let before_in = decoder.total_in();
+                let before_out = decoder.total_out();
+                let capacity = output
+                    .len()
+                    .min((expected - total).min(usize::MAX as u64) as usize);
+                let status = decoder.decompress(
+                    &input[start..end],
+                    &mut output[..capacity],
+                    flate2::FlushDecompress::None,
+                );
+                let consumed = decoder.total_in() - before_in;
+                let produced = (decoder.total_out() - before_out) as usize;
+                // Decoder errors may follow output; that work still consumes the shared budget.
+                progress(produced);
+                hasher.update(&output[..produced]);
+                crc.update(&output[..produced]);
+                total += produced as u64;
+                start += consumed as usize;
+                let status = status
+                    .map_err(|e| format!("content_namespace_archive_deflate_invalid: {e}"))?;
+                if status == flate2::Status::StreamEnd {
+                    if decoder.total_in() != compressed || total != expected {
+                        return Err("content_namespace_archive_size_mismatch".into());
+                    }
+                    break;
+                }
+                if consumed == 0 && produced == 0 {
+                    return Err("content_namespace_archive_truncated_or_excess_output".into());
+                }
+            }
+        }
+        _ => return Err("effective VFS archive contains unsupported compression".into()),
+    }
+    if crc.finalize() != entry.crc32() {
+        return Err("content_namespace_archive_checksum_mismatch".into());
+    }
+    Ok(total)
 }
 
 fn read_layer_file(
@@ -1147,13 +1281,20 @@ fn list_layer_entries(
     prefix: &str,
     extension: Option<&str>,
 ) -> Result<Vec<ListedFile>, String> {
-    list_layer_entries_with_budget(layer, prefix, extension, &mut EnumerationBudget::new(None))
+    list_layer_entries_with_budget(
+        layer,
+        prefix,
+        extension,
+        true,
+        &mut EnumerationBudget::new(None),
+    )
 }
 
 fn list_layer_entries_with_budget(
     layer: &MountedLayer,
     prefix: &str,
     extension: Option<&str>,
+    recursive: bool,
     budget: &mut EnumerationBudget,
 ) -> Result<Vec<ListedFile>, String> {
     let mut paths = BTreeMap::<String, ListedFile>::new();
@@ -1162,31 +1303,60 @@ fn list_layer_entries_with_budget(
             let start = if prefix.is_empty() {
                 layer.local_source.clone()
             } else {
-                path_from_logical(&layer.local_source, prefix)
-            };
-            match fs::symlink_metadata(&start) {
-                Ok(_) => {}
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::NotFound && !prefix.is_empty() =>
+                for component in prefix.split('/') {
+                    budget.charge_entry(component.len())?;
+                }
+                let Some((path, facts)) = resolve_literal_layer_path(&layer.local_source, prefix)?
+                else {
+                    return Ok(Vec::new());
+                };
+                if !facts.is_dir {
+                    return Ok(Vec::new());
+                }
+                let canonical = fs::canonicalize(path)
+                    .map_err(|error| format!("canonicalize effective VFS scope failed: {error}"))?;
+                if !canonical.starts_with(&layer.local_source) {
+                    return Err("effective VFS scope escaped its layer root".into());
+                }
+                if budget.limits.is_some()
+                    && normalize_game_relative_path(&stored_directory_path(
+                        &layer.local_source,
+                        &canonical,
+                    )?)? != prefix
                 {
-                    return Ok(Vec::new())
+                    return Err(
+                        "content_namespace_scope_alias_differs_from_stored_directory".into(),
+                    );
                 }
-                Err(error) => {
-                    return Err(format!(
-                        "effective VFS enumeration root unavailable: {error}"
-                    ))
-                }
-            }
-            walk_directory(&layer.local_source, &start, extension, &mut paths, budget)?;
+                canonical
+            };
+            walk_directory(
+                &layer.local_source,
+                &start,
+                extension,
+                recursive,
+                &mut paths,
+                budget,
+            )?;
         }
         LayerStorageKind::ZipArchive => {
             let index = layer
                 .zip_index
                 .as_ref()
                 .ok_or("effective VFS archive layer is missing its mount-time index")?;
-            for (path, _) in index.entries.values() {
-                budget.charge_entry(path.len().saturating_mul(2))?;
-                if path_is_under(path, prefix) && extension_matches(path, extension) {
+            let directory_prefix = if prefix.is_empty() {
+                String::new()
+            } else {
+                format!("{prefix}/")
+            };
+            for (key, (path, _)) in index.entries.range(directory_prefix.clone()..) {
+                if !key.starts_with(&directory_prefix) {
+                    break;
+                }
+                if (recursive || logical_parent(path) == prefix)
+                    && extension_matches(path, extension)
+                {
+                    budget.charge_entry(path.len().saturating_mul(2))?;
                     paths.insert(
                         path.to_ascii_lowercase(),
                         ListedFile {
@@ -1271,6 +1441,7 @@ fn walk_directory(
     root: &Path,
     directory: &Path,
     extension: Option<&str>,
+    recursive: bool,
     out: &mut BTreeMap<String, ListedFile>,
     budget: &mut EnumerationBudget,
 ) -> Result<(), String> {
@@ -1300,7 +1471,9 @@ fn walk_directory(
     for entry in entries {
         let (is_dir, is_file, len, modified_unix_secs, modified_nanos) = listed_facts(&entry)?;
         if is_dir {
-            walk_directory(root, &entry.path(), extension, out, budget)?;
+            if recursive {
+                walk_directory(root, &entry.path(), extension, recursive, out, budget)?;
+            }
         } else if is_file {
             let local_path = entry.path();
             let relative = local_path
@@ -1363,15 +1536,6 @@ fn path_from_logical(root: &Path, logical_path: &str) -> PathBuf {
         .split('/')
         .filter(|part| !part.is_empty())
         .fold(root.to_path_buf(), |path, part| path.join(part))
-}
-
-fn path_is_under(path: &str, prefix: &str) -> bool {
-    prefix.is_empty()
-        || path.eq_ignore_ascii_case(prefix)
-        || path
-            .get(..prefix.len())
-            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
-            && path.as_bytes().get(prefix.len()) == Some(&b'/')
 }
 
 fn extension_matches(path: &str, extension: Option<&str>) -> bool {
@@ -1831,6 +1995,252 @@ mod namespace_enumeration_tests {
         fn drop(&mut self) {
             portable_test_fs_retry::remove_dir_all(&self.0).unwrap();
         }
+    }
+
+    #[test]
+    fn scoped_archive_payload_budget_preserves_exact_eof_checksum_and_failure_custody() {
+        use crate::content_namespace::{
+            ContentNamespaceBudget, ContentNamespaceLimits, ContentNamespaceScope,
+        };
+        let fixture = Fixture::new();
+        let path = fixture.0.join("mod.zip");
+        let scope = ContentNamespaceScope {
+            directory: "interface".into(),
+            extension: Some("gfx".into()),
+            recursive: true,
+        };
+        for method in [
+            zip::CompressionMethod::Stored,
+            zip::CompressionMethod::Deflated,
+        ] {
+            for payload in [b"".as_slice(), b"abc".as_slice(), &[b'x'; (1 << 20) + 1]] {
+                let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+                zip.start_file(
+                    "interface/a.gfx",
+                    zip::write::SimpleFileOptions::default().compression_method(method),
+                )
+                .unwrap();
+                zip.write_all(payload).unwrap();
+                zip.finish().unwrap();
+                let valid = fs::read(&path).unwrap();
+                for damage in [
+                    "valid",
+                    "crc",
+                    "short_size",
+                    "long_size",
+                    "truncated",
+                    "trailing",
+                ] {
+                    if payload.is_empty() && matches!(damage, "short_size" | "truncated") {
+                        continue;
+                    }
+                    let mut bytes = valid.clone();
+                    let central = bytes.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+                    match damage {
+                        "crc" => bytes[central + 16] ^= 1,
+                        "short_size" => bytes[central + 24..central + 28]
+                            .copy_from_slice(&((payload.len() - 1) as u32).to_le_bytes()),
+                        "long_size" => bytes[central + 24..central + 28]
+                            .copy_from_slice(&((payload.len() + 1) as u32).to_le_bytes()),
+                        "truncated" | "trailing" => {
+                            let size = u32::from_le_bytes(
+                                bytes[central + 20..central + 24].try_into().unwrap(),
+                            );
+                            let size = if damage == "truncated" {
+                                size - 1
+                            } else {
+                                size + 1
+                            };
+                            bytes[central + 20..central + 24].copy_from_slice(&size.to_le_bytes());
+                        }
+                        _ => {}
+                    }
+                    fs::write(&path, &bytes).unwrap();
+                    let vfs = EffectiveVfs::new(
+                        "a".repeat(64),
+                        [
+                            fixture.base(),
+                            EffectiveVfsLayerMount {
+                                ordinal: 1,
+                                layer_kind: ContentLayerKind::Mod,
+                                layer_id: "mod".into(),
+                                storage_kind: LayerStorageKind::ZipArchive,
+                                local_source: path.clone(),
+                                source_container_sha256: Some(sha256_bytes(&bytes)),
+                                replace_paths: Vec::new(),
+                            },
+                        ],
+                    )
+                    .unwrap();
+                    let mut budget = ContentNamespaceBudget::new(ContentNamespaceLimits {
+                        payload_bytes: payload.len() as u64,
+                        ..Default::default()
+                    })
+                    .unwrap();
+                    let mut actual = 0u64;
+                    let result = vfs.observe_namespace_with_budget(&scope, &mut budget, &mut |n| {
+                        actual += n as u64
+                    });
+                    assert_eq!(budget.payload_bytes(), actual, "{method:?}/{damage}");
+                    assert!(actual <= payload.len() as u64);
+                    if damage == "valid" {
+                        let observed = result.unwrap();
+                        assert_eq!(observed.winners()[0].payload_bytes, payload.len() as u64);
+                        assert_eq!(observed.winners()[0].payload_sha256, sha256_bytes(payload));
+                        assert_eq!(actual, payload.len() as u64);
+                        observed.seal(&vfs).unwrap();
+                    } else {
+                        assert!(result.is_err(), "{method:?}/{damage}/{}", payload.len());
+                        if damage == "crc" {
+                            assert!(result.err().unwrap().contains("checksum"));
+                            assert_eq!(actual, payload.len() as u64);
+                            let retry =
+                                vfs.observe_namespace_with_budget(&scope, &mut budget, &mut |n| {
+                                    actual += n as u64
+                                });
+                            assert!(retry.is_err());
+                            assert_eq!(budget.payload_bytes(), actual);
+                            assert_eq!(actual, payload.len() as u64);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scoped_layer_winners_preserve_stored_case_replace_paths_and_archive_identity() {
+        use crate::content_namespace::{
+            ContentNamespaceBudget, ContentNamespaceLimits, ContentNamespaceScope,
+        };
+        let fixture = Fixture::new();
+        let base = fixture.0.join("base");
+        fs::create_dir_all(base.join("interface/replace/nested")).unwrap();
+        for (path, data) in [
+            ("interface/A.gfx", "base"),
+            ("interface/replace/removed.gfx", "removed"),
+            ("interface/replace/nested/kept.gfx", "kept"),
+            ("interface/ignored.gui", "ignored"),
+        ] {
+            fs::write(base.join(path), data).unwrap();
+        }
+        let archive_path = fixture.0.join("mod.zip");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&archive_path).unwrap());
+        for (path, data) in [
+            ("Interface/A.gfx", "mod"),
+            ("Interface/replace/B.gfx", "b"),
+            ("unrelated/C.txt", "outside"),
+        ] {
+            zip.start_file(path, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(data.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        let archive_hash = sha256_bytes(&fs::read(&archive_path).unwrap());
+        let vfs = EffectiveVfs::new(
+            "a".repeat(64),
+            [
+                fixture.base(),
+                EffectiveVfsLayerMount {
+                    ordinal: 1,
+                    layer_kind: ContentLayerKind::Mod,
+                    layer_id: "mod".into(),
+                    storage_kind: LayerStorageKind::ZipArchive,
+                    local_source: archive_path,
+                    source_container_sha256: Some(archive_hash.clone()),
+                    replace_paths: vec!["interface/replace".into()],
+                },
+            ],
+        )
+        .unwrap();
+        let scope = ContentNamespaceScope {
+            directory: "interface".into(),
+            extension: Some("gfx".into()),
+            recursive: true,
+        };
+        let observed = vfs.observe_namespace(&scope).unwrap();
+        assert_eq!(
+            observed
+                .winners()
+                .iter()
+                .map(|r| r.stored_game_relative_path.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Interface/A.gfx",
+                "Interface/replace/B.gfx",
+                "interface/replace/nested/kept.gfx"
+            ]
+        );
+        for key in observed.winners() {
+            assert_eq!(
+                key,
+                &vfs.resolve(&key.stored_game_relative_path)
+                    .unwrap()
+                    .unwrap()
+                    .content
+            );
+        }
+        assert_eq!(observed.winners()[0].source_sha256, archive_hash);
+        let root = vfs
+            .observe_namespace(&ContentNamespaceScope::root())
+            .unwrap();
+        assert_eq!(
+            observed.winners(),
+            root.winners()
+                .iter()
+                .filter(|r| scope.matches(&r.normalized_game_relative_path))
+                .cloned()
+                .collect::<Vec<_>>()
+        );
+        observed.seal(&vfs).unwrap();
+        let mut budget = ContentNamespaceBudget::new(ContentNamespaceLimits {
+            metadata_entries: 3,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(vfs
+            .observe_namespace_with_budget(&scope, &mut budget, &mut |_| {})
+            .err()
+            .unwrap()
+            .contains("enumerated entries"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn scoped_loose_lookup_preserves_stored_parent_spelling_and_alias_identity() {
+        use crate::content_namespace::ContentNamespaceScope;
+        let fixture = Fixture::new();
+        let base = fixture.0.join("base");
+        fs::create_dir_all(base.join("Common/Abilities")).unwrap();
+        fs::write(base.join("Common/Abilities/A.txt"), "a").unwrap();
+        let vfs = EffectiveVfs::new("a".repeat(64), [fixture.base()]).unwrap();
+        let scope = ContentNamespaceScope {
+            directory: "common/abilities".into(),
+            extension: Some("txt".into()),
+            recursive: true,
+        };
+        let observed = vfs.observe_namespace(&scope).unwrap();
+        assert_eq!(
+            observed.winners()[0].stored_game_relative_path,
+            "Common/Abilities/A.txt"
+        );
+        assert_eq!(
+            observed.winners()[0],
+            vfs.resolve("COMMON/ABILITIES/A.TXT")
+                .unwrap()
+                .unwrap()
+                .content
+        );
+        observed.seal(&vfs).unwrap();
+        let alias = ContentNamespaceScope {
+            directory: "common/abilities.".into(),
+            ..scope
+        };
+        assert!(vfs
+            .observe_namespace(&alias)
+            .err()
+            .unwrap()
+            .contains("scope_alias_differs"));
     }
 
     #[test]

@@ -12,6 +12,55 @@ pub const MAX_NAMESPACE_REFERENCES: usize = 1_048_576;
 pub const MAX_NAMESPACE_ROSTER_BYTES: u64 = 512 << 20;
 pub const MAX_NAMESPACE_PAYLOAD_BYTES: u64 = 64 << 30;
 
+#[derive(Clone, Copy, Debug)]
+pub struct ContentNamespaceLimits {
+    pub winners: usize,
+    pub metadata_entries: usize,
+    pub roster_bytes: u64,
+    pub payload_bytes: u64,
+}
+
+impl Default for ContentNamespaceLimits {
+    fn default() -> Self {
+        Self {
+            winners: MAX_NAMESPACE_WINNERS,
+            metadata_entries: MAX_NAMESPACE_REFERENCES,
+            roster_bytes: MAX_NAMESPACE_ROSTER_BYTES,
+            payload_bytes: MAX_NAMESPACE_PAYLOAD_BYTES,
+        }
+    }
+}
+
+pub struct ContentNamespaceBudget {
+    limits: ContentNamespaceLimits,
+    winners: usize,
+    payload_bytes: u64,
+}
+
+impl ContentNamespaceBudget {
+    pub fn new(limits: ContentNamespaceLimits) -> Result<Self, String> {
+        if limits.winners > MAX_NAMESPACE_WINNERS
+            || limits.metadata_entries > MAX_NAMESPACE_REFERENCES
+            || limits.roster_bytes > MAX_NAMESPACE_ROSTER_BYTES
+            || limits.payload_bytes > MAX_NAMESPACE_PAYLOAD_BYTES
+        {
+            return Err("content_namespace_invalid_budget: exceeds production ceiling".into());
+        }
+        Ok(Self {
+            limits,
+            winners: 0,
+            payload_bytes: 0,
+        })
+    }
+
+    pub fn observed_winners(&self) -> usize {
+        self.winners
+    }
+    pub fn payload_bytes(&self) -> u64 {
+        self.payload_bytes
+    }
+}
+
 fn required_option<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     Option::<String>::deserialize(d)
 }
@@ -390,6 +439,7 @@ pub struct ObservedContentNamespace {
     rows: Vec<UsedContentKey>,
     excluded: Vec<ExcludedNamespaceWinner>,
     payload_bytes: u64,
+    limits: ContentNamespaceLimits,
 }
 
 pub struct SealedContentNamespace {
@@ -416,8 +466,26 @@ impl ObservedContentNamespace {
         after_vfs: &EffectiveVfs,
         progress: &mut dyn FnMut(usize),
     ) -> Result<SealedContentNamespace, String> {
-        // observe_namespace remounts archives and enumerates/rehashes on every call.
-        let after = after_vfs.observe_namespace_with_progress(&self.scope, progress)?;
+        let mut budget = ContentNamespaceBudget::new(self.limits)?;
+        self.seal_with_budget(after_vfs, &mut budget, progress)
+    }
+
+    pub fn seal_with_budget(
+        self,
+        after_vfs: &EffectiveVfs,
+        budget: &mut ContentNamespaceBudget,
+        progress: &mut dyn FnMut(usize),
+    ) -> Result<SealedContentNamespace, String> {
+        let limits = ContentNamespaceLimits {
+            winners: self.limits.winners.min(budget.limits.winners),
+            metadata_entries: self
+                .limits
+                .metadata_entries
+                .min(budget.limits.metadata_entries),
+            roster_bytes: self.limits.roster_bytes.min(budget.limits.roster_bytes),
+            payload_bytes: self.limits.payload_bytes.min(budget.limits.payload_bytes),
+        };
+        let after = after_vfs.observe_namespace_budgeted(&self.scope, budget, limits, progress)?;
         if self.authority != after.authority
             || self.rows != after.rows
             || self.excluded != after.excluded
@@ -479,17 +547,35 @@ impl EffectiveVfs {
         scope: &ContentNamespaceScope,
         progress: &mut dyn FnMut(usize),
     ) -> Result<ObservedContentNamespace, String> {
+        let mut budget = ContentNamespaceBudget::new(ContentNamespaceLimits::default())?;
+        self.observe_namespace_with_budget(scope, &mut budget, progress)
+    }
+
+    pub fn observe_namespace_with_budget(
+        &self,
+        scope: &ContentNamespaceScope,
+        budget: &mut ContentNamespaceBudget,
+        progress: &mut dyn FnMut(usize),
+    ) -> Result<ObservedContentNamespace, String> {
+        let limits = budget.limits;
+        self.observe_namespace_budgeted(scope, budget, limits, progress)
+    }
+
+    fn observe_namespace_budgeted(
+        &self,
+        scope: &ContentNamespaceScope,
+        budget: &mut ContentNamespaceBudget,
+        limits: ContentNamespaceLimits,
+        progress: &mut dyn FnMut(usize),
+    ) -> Result<ObservedContentNamespace, String> {
         scope.validate()?;
-        let limits = crate::effective_vfs::NamespaceEnumerationLimits {
-            winners: MAX_NAMESPACE_WINNERS + 3,
-            entries: MAX_NAMESPACE_REFERENCES,
-            bytes: MAX_NAMESPACE_ROSTER_BYTES,
+        let enumeration = crate::effective_vfs::NamespaceEnumerationLimits {
+            winners: limits.winners.min(budget.limits.winners - budget.winners) + 3,
+            entries: limits.metadata_entries,
+            bytes: limits.roster_bytes,
         };
-        let fresh = self.reopen_bounded(limits)?;
-        let entries = fresh.effective_entries_bounded(limits)?;
-        if entries.len() > MAX_NAMESPACE_WINNERS + 3 {
-            return Err("content_namespace_bound_exceeded: enumerated winners".into());
-        }
+        let fresh = self.reopen_bounded(enumeration)?;
+        let entries = fresh.scoped_entries_bounded(scope, enumeration)?;
         let mut rows = Vec::new();
         let mut excluded = Vec::new();
         let mut buffer = Vec::new();
@@ -503,12 +589,22 @@ impl EffectiveVfs {
                 excluded.push(fresh.excluded_namespace_winner(&entry)?);
                 continue;
             }
-            if rows.len() == MAX_NAMESPACE_WINNERS {
+            if rows.len() == limits.winners || budget.winners == budget.limits.winners {
                 return Err("content_namespace_bound_exceeded: winners".into());
             }
-            let limit =
-                crate::MAX_CONTENT_PAYLOAD_BYTES.min(MAX_NAMESPACE_PAYLOAD_BYTES - payload_bytes);
-            let (bytes, digest) = fresh.hash_entry_bounded(&entry, &mut buffer, progress, limit)?;
+            budget.winners += 1;
+            let limit = crate::MAX_CONTENT_PAYLOAD_BYTES
+                .min(limits.payload_bytes - payload_bytes)
+                .min(budget.limits.payload_bytes - budget.payload_bytes);
+            let (bytes, digest) = fresh.hash_entry_bounded(
+                &entry,
+                &mut buffer,
+                &mut |bytes| {
+                    budget.payload_bytes += bytes as u64;
+                    progress(bytes);
+                },
+                limit,
+            )?;
             if let EffectiveVfsEntryFacts::File { len, .. } = entry.facts {
                 if len != bytes {
                     return Err("content_namespace_file_length_changed".into());
@@ -516,7 +612,7 @@ impl EffectiveVfs {
             }
             payload_bytes = payload_bytes
                 .checked_add(bytes)
-                .filter(|b| *b <= MAX_NAMESPACE_PAYLOAD_BYTES)
+                .filter(|b| *b <= limits.payload_bytes)
                 .ok_or("content_namespace_bound_exceeded: payload bytes")?;
             rows.push(fresh.content_key(&entry, digest, bytes)?);
         }
@@ -535,7 +631,7 @@ impl EffectiveVfs {
             fresh.authority_manifest_sha256(),
             &excluded,
             &refs,
-            MAX_NAMESPACE_ROSTER_BYTES,
+            limits.roster_bytes,
         )?;
         Ok(ObservedContentNamespace {
             authority: fresh.authority_manifest_sha256().into(),
@@ -543,6 +639,7 @@ impl EffectiveVfs {
             rows,
             excluded,
             payload_bytes,
+            limits,
         })
     }
 }
@@ -712,6 +809,195 @@ mod tests {
             manifest.required_content.iter().map(|r| r.content.clone()),
             scope,
         )
+    }
+
+    fn small_budget(
+        winners: usize,
+        metadata_entries: usize,
+        payload_bytes: u64,
+    ) -> ContentNamespaceBudget {
+        ContentNamespaceBudget::new(ContentNamespaceLimits {
+            winners,
+            metadata_entries,
+            roster_bytes: 1 << 20,
+            payload_bytes,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn scoped_observation_never_walks_unrelated_branches_or_reads_other_extensions() {
+        let fixture = Fixture::new();
+        fixture.write("interface/A.gfx", b"one");
+        fixture.write("interface/nested/B.gfx", b"two");
+        fixture.write("interface/ignored.gui", &[0; 100]);
+        for index in 0..40 {
+            fixture.write(&format!("unrelated/deep/{index}.txt"), &[0; 100]);
+        }
+        let vfs = fixture.vfs();
+        let scope = scope("interface", Some("gfx"), true);
+        let mut budget = small_budget(4, 8, 12);
+        let mut read = 0;
+        let observed = vfs
+            .observe_namespace_with_budget(&scope, &mut budget, &mut |n| read += n)
+            .unwrap();
+        assert_eq!(
+            observed
+                .winners()
+                .iter()
+                .map(|r| r.stored_game_relative_path.as_str())
+                .collect::<Vec<_>>(),
+            ["interface/A.gfx", "interface/nested/B.gfx"]
+        );
+        fixture.write("unrelated/new.txt", b"outside");
+        fixture.write("interface/ignored.gui", b"changed excluded extension");
+        let sealed = observed
+            .seal_with_budget(&vfs, &mut budget, &mut |n| read += n)
+            .unwrap();
+        assert_eq!(sealed.winners().len(), 2);
+        assert_eq!(
+            (budget.observed_winners(), budget.payload_bytes(), read),
+            (4, 12, 12)
+        );
+        assert!(vfs
+            .observe_namespace_with_budget(
+                &ContentNamespaceScope::root(),
+                &mut small_budget(100, 8, 10_000),
+                &mut |_| {}
+            )
+            .err()
+            .unwrap()
+            .contains("enumerated entries"));
+    }
+
+    #[test]
+    fn scoped_nonrecursive_empty_and_changed_rosters_have_fresh_seal_custody() {
+        let fixture = Fixture::new();
+        fixture.write("common/abilities/A.txt", b"a");
+        for index in 0..20 {
+            fixture.write(&format!("common/abilities/nested/{index}.txt"), b"b");
+        }
+        let vfs = fixture.vfs();
+        let immediate = scope("common/abilities", Some("txt"), false);
+        let observed = vfs
+            .observe_namespace_with_budget(&immediate, &mut small_budget(2, 5, 2), &mut |_| {})
+            .unwrap();
+        assert_eq!(observed.winners().len(), 1);
+        assert!(vfs
+            .observe_namespace_with_budget(
+                &scope("common/abilities", Some("txt"), true),
+                &mut small_budget(30, 5, 100),
+                &mut |_| {}
+            )
+            .err()
+            .unwrap()
+            .contains("enumerated entries"));
+        observed.seal(&vfs).unwrap();
+        let missing = scope("common/missing", Some("txt"), true);
+        let empty = vfs
+            .observe_namespace_with_budget(&missing, &mut small_budget(0, 2, 0), &mut |_| {})
+            .unwrap();
+        assert!(empty.winners().is_empty());
+        empty.seal(&vfs).unwrap();
+        for change in 0..3 {
+            let before = vfs.observe_namespace(&immediate).unwrap();
+            match change {
+                0 => fixture.write("common/abilities/B.txt", b"b"),
+                1 => std::fs::remove_file(fixture.0.join("common/abilities/B.txt")).unwrap(),
+                _ => fixture.write("common/abilities/A.txt", b"changed"),
+            }
+            assert_eq!(
+                before.seal(&vfs).err().unwrap(),
+                "content_namespace_changed_during_census"
+            );
+        }
+        let empty = vfs.observe_namespace(&missing).unwrap();
+        fixture.write("common/missing/appeared.txt", b"x");
+        assert_eq!(
+            empty.seal(&vfs).err().unwrap(),
+            "content_namespace_changed_during_census"
+        );
+    }
+
+    #[test]
+    fn namespace_budget_is_shared_across_scopes_and_seals_and_refuses_before_payload_read() {
+        let fixture = Fixture::new();
+        fixture.write("interface/A.gfx", b"abc");
+        fixture.write("localisation/english/A.yml", b"de");
+        let vfs = fixture.vfs();
+        let gfx = scope("interface", Some("gfx"), true);
+        let yml = scope("localisation/english", Some("yml"), true);
+        let mut budget = small_budget(4, 8, 10);
+        for requested in [&gfx, &yml] {
+            vfs.observe_namespace_with_budget(requested, &mut budget, &mut |_| {})
+                .unwrap()
+                .seal_with_budget(&vfs, &mut budget, &mut |_| {})
+                .unwrap();
+        }
+        assert_eq!((budget.observed_winners(), budget.payload_bytes()), (4, 10));
+        let mut read = 0;
+        assert!(vfs
+            .observe_namespace_with_budget(&gfx, &mut small_budget(1, 8, 2), &mut |n| read += n)
+            .err()
+            .unwrap()
+            .contains("payload bytes before read"));
+        assert_eq!(read, 0);
+        let mut budget = small_budget(4, 8, 5);
+        let first = vfs
+            .observe_namespace_with_budget(&gfx, &mut budget, &mut |_| {})
+            .unwrap();
+        assert!(first
+            .seal_with_budget(&vfs, &mut budget, &mut |n| read += n)
+            .err()
+            .unwrap()
+            .contains("payload bytes before read"));
+        assert_eq!((read, budget.payload_bytes()), (0, 3));
+        let mut budget = small_budget(1, 8, 6);
+        let first = vfs
+            .observe_namespace_with_budget(&gfx, &mut budget, &mut |_| {})
+            .unwrap();
+        assert!(first
+            .seal_with_budget(&vfs, &mut budget, &mut |n| read += n)
+            .err()
+            .unwrap()
+            .contains("winners"));
+        assert_eq!(read, 0);
+        for invalid in [
+            ContentNamespaceLimits {
+                winners: MAX_NAMESPACE_WINNERS + 1,
+                ..Default::default()
+            },
+            ContentNamespaceLimits {
+                metadata_entries: MAX_NAMESPACE_REFERENCES + 1,
+                ..Default::default()
+            },
+            ContentNamespaceLimits {
+                roster_bytes: MAX_NAMESPACE_ROSTER_BYTES + 1,
+                ..Default::default()
+            },
+            ContentNamespaceLimits {
+                payload_bytes: MAX_NAMESPACE_PAYLOAD_BYTES + 1,
+                ..Default::default()
+            },
+        ] {
+            assert!(ContentNamespaceBudget::new(invalid)
+                .err()
+                .unwrap()
+                .contains("exceeds production ceiling"));
+        }
+        assert!(vfs
+            .observe_namespace_with_budget(
+                &gfx,
+                &mut ContentNamespaceBudget::new(ContentNamespaceLimits {
+                    roster_bytes: 1,
+                    ..Default::default()
+                })
+                .unwrap(),
+                &mut |_| {}
+            )
+            .err()
+            .unwrap()
+            .contains("enumeration bytes"));
     }
 
     #[test]
