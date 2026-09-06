@@ -576,6 +576,9 @@ pub const ENV_INPUTS: &[EnvInput] = &[
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub const TEST_ONLY_ENV_READS: &[&str] = &[
+    "PARTICLE_FUNCTIONAL_REPLAY",
+    "PARTICLE_FUNCTIONAL_OUT",
+    "PARTICLE_FUNCTIONAL_HOUR",
     "XMAP_NATIVE_EVIDENCE_REPLAY",
     "XMAP14_MEASUREMENT_REPLAY",
     "XMAP14_MEASUREMENT_OUT",

@@ -4,37 +4,39 @@ use std::path::PathBuf;
 
 #[test]
 #[ignore = "requires the recovered current recording, authenticated content, and a scheduled D3D functional slot"]
-fn current_recording_executes_nonzero_paired_lights() -> crate::Result<()> {
+fn current_recording_executes_nonzero_paired_lights() {
     let recording = PathBuf::from(
         std::env::var_os("PARTICLE_FUNCTIONAL_REPLAY")
-            .ok_or("PARTICLE_FUNCTIONAL_REPLAY is required")?,
+            .expect("PARTICLE_FUNCTIONAL_REPLAY is required"),
     );
     let output = PathBuf::from(
-        std::env::var_os("PARTICLE_FUNCTIONAL_OUT").ok_or("PARTICLE_FUNCTIONAL_OUT is required")?,
+        std::env::var_os("PARTICLE_FUNCTIONAL_OUT").expect("PARTICLE_FUNCTIONAL_OUT is required"),
     );
-    let selected_hour: i64 = std::env::var("PARTICLE_FUNCTIONAL_HOUR")?.parse()?;
+    let selected_hour: i64 = std::env::var("PARTICLE_FUNCTIONAL_HOUR")
+        .expect("PARTICLE_FUNCTIONAL_HOUR is required")
+        .parse().expect("PARTICLE_FUNCTIONAL_HOUR must be an i64");
     let mut log = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(output)?;
+        .open(output).expect("create fresh paired-light functional receipt");
     writeln!(
         log,
         "{}",
         json!({"schema": "hoi4.paired-light-functional.v1",
-        "recording": recording, "recording_bytes": std::fs::metadata(&recording)?.len(),
+        "recording": recording, "recording_bytes": std::fs::metadata(&recording).expect("read recording metadata").len(),
         "selected_hour": selected_hour, "max_presentations": 360,
         "renderer_delta_f32_bits": (1.0f32 / 60.0).to_bits()})
-    )?;
-    log.flush()?;
+    ).expect("write paired-light functional receipt");
+    log.flush().expect("flush paired-light functional receipt");
     let result = execute(&recording, selected_hour, &mut log);
     writeln!(
         log,
         "{}",
         json!({"stage": "finished", "passed": result.is_ok(),
         "error": result.as_ref().err().map(ToString::to_string)})
-    )?;
-    log.flush()?;
-    result
+    ).expect("write paired-light functional receipt");
+    log.flush().expect("flush paired-light functional receipt");
+    assert!(result.is_ok(), "paired-light functional execution failed: {:?}", result.err());
 }
 
 fn execute(
