@@ -1540,12 +1540,23 @@ impl EntityAttachments {
         requested: &str,
         random: &mut crate::particle_runtime::ViewerParticleSeed,
     ) -> crate::Result<(Option<usize>, f32)> {
+        self.enter_state_with_offset_range(pose, requested, None, random)
+    }
+
+    pub(crate) fn enter_state_with_offset_range(
+        &self,
+        pose: &crate::BuildingEntityPose,
+        requested: &str,
+        offset_range: Option<f32>,
+        random: &mut crate::particle_runtime::ViewerParticleSeed,
+    ) -> crate::Result<(Option<usize>, f32)> {
+        if offset_range.is_some_and(|range| !range.is_finite()) {
+            return Err("entity state requested offset range is nonfinite".into());
+        }
         let hashes = pose.states.iter().map(|state| entity_token_hash(&state.name))
             .collect::<crate::Result<Vec<_>>>()?;
         let requested_hash = entity_token_hash(requested)?;
-        let first = hashes.iter().position(|hash| *hash == requested_hash)
-            .or(pose.default_state.as_deref().map(entity_token_hash).transpose()?
-                .and_then(|default| hashes.iter().position(|hash| *hash == default)));
+        let first = hashes.iter().position(|hash| *hash == requested_hash);
         let index = if let Some(first) = first {
             // The native stable hash sort makes every equal-key declaration contiguous.
             let indices = hashes.iter().enumerate().filter_map(|(index, hash)|
@@ -1560,8 +1571,11 @@ impl EntityAttachments {
             };
             Some(index)
         } else { None };
-        let [mut start, range] = index.and_then(|index| pose.states[index].time_offset)
+        let Some(selected) = index else { return Ok((None, 0.0)); };
+        let [mut start, authored_range] = pose.states[selected].time_offset
             .unwrap_or([0.0, 0.0]);
+        // 1422755a0: bit 4 replaces the range only when the requested range is positive.
+        let range = offset_range.filter(|range| *range > 0.0).unwrap_or(authored_range);
         if !start.is_finite() || !range.is_finite() {
             return Err("entity state time offset is nonfinite".into());
         }

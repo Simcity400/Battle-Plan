@@ -107,20 +107,142 @@ pub fn placed_light_entities(
     Ok(rows)
 }
 
+#[derive(Debug)]
+pub(crate) struct ResolvedEntityBinding {
+    pub(crate) binding: BuildingEntityBinding,
+    pub(crate) declaration_source: portable_content_manifest::UsedContentKey,
+    pub(crate) pdxmesh_source: portable_content_manifest::UsedContentKey,
+    pub(crate) scale_source: Option<portable_content_manifest::UsedContentKey>,
+}
+
 pub(crate) struct EntityAssets {
     content_lease: Option<crate::mod_resolver::ContentAdmissionLease>,
     entity_sources: BTreeMap<String, portable_content_manifest::UsedContentKey>,
+    bindings: BTreeMap<String, std::sync::OnceLock<std::result::Result<Option<ResolvedEntityBinding>, String>>>,
+    binding_declarations: Vec<(portable_content_manifest::UsedContentKey, Vec<portable_content_manifest::paradox_text::Entry>)>,
     models: Mutex<BTreeMap<String, Arc<PdxModel>>>,
     animations: Mutex<BTreeMap<String, Arc<PdxAnimData>>>,
     poses: BTreeMap<String, BuildingEntityPose>,
     static_attachments: EntityAttachmentCatalog,
     meshes: BTreeMap<String, BuildingPdxmeshBinding>,
+    mesh_sources: BTreeMap<String, portable_content_manifest::UsedContentKey>,
     mesh_clips: BTreeMap<String, BTreeMap<String, String>>,
     clips: BTreeMap<String, String>,
     templates: Vec<Xmap09LightTemplate>,
 }
 
 impl EntityAssets {
+    pub(crate) fn resolved_binding(
+        &self,
+        resolver: &GameFileResolver,
+        admission: &replay_core::ValidatedContentAdmission,
+        name: &str,
+    ) -> Result<Option<&ResolvedEntityBinding>> {
+        self.check_admission(resolver, admission)?;
+        let Some(cached) = self.bindings.get(name) else { return Ok(None) };
+        let resolved = cached.get_or_init(|| self.resolve_binding(name).map_err(|error| error.to_string()))
+            .as_ref().map_err(|reason| format!("entity binding {name}: {reason}"))?;
+        let Some(resolved) = resolved.as_ref() else { return Ok(None) };
+        let source = &resolved.declaration_source;
+        if resolved.binding.source != source.normalized_game_relative_path
+            || self.entity_sources.get(name) != Some(source) {
+            return Err(format!("entity {name} binding differs from its admitted namespace winner").into());
+        }
+        for source in [Some(source), Some(&resolved.pdxmesh_source), resolved.scale_source.as_ref()]
+            .into_iter().flatten() {
+            if admission.require_used_content(&source.normalized_game_relative_path)? != source {
+                return Err(format!("entity {name} binding field belongs to another content admission").into());
+            }
+        }
+        Ok(Some(resolved))
+    }
+
+    pub(crate) fn resolved_pdxmesh(
+        &self, resolver: &GameFileResolver, admission: &replay_core::ValidatedContentAdmission, name: &str,
+    ) -> Result<Option<(&BuildingPdxmeshBinding, &portable_content_manifest::UsedContentKey)>> {
+        self.check_admission(resolver, admission)?;
+        let Some(binding) = self.meshes.get(name) else { return Ok(None) };
+        let source = self.mesh_sources.get(name).ok_or("pdxmesh declaration source is unavailable")?;
+        if binding.source != source.normalized_game_relative_path
+            || admission.require_used_content(&source.normalized_game_relative_path)? != source {
+            return Err(format!("pdxmesh {name} binding differs from its admitted namespace winner").into());
+        }
+        Ok(Some((binding, source)))
+    }
+
+    pub(crate) fn entity_declarations<'a>(
+        &'a self, resolver: &GameFileResolver, admission: &replay_core::ValidatedContentAdmission,
+    ) -> Result<impl Iterator<Item = (&'a portable_content_manifest::UsedContentKey,
+        &'a portable_content_manifest::paradox_text::Entry)> + 'a> {
+        self.check_admission(resolver, admission)?;
+        for (source, _) in &self.binding_declarations {
+            if admission.require_used_content(&source.normalized_game_relative_path)? != source {
+                return Err("entity declaration belongs to another content admission".into());
+            }
+        }
+        Ok(self.binding_declarations.iter().flat_map(|(source, entries)|
+            entries.iter().map(move |entry| (source, entry))))
+    }
+
+    fn resolve_binding(&self, name: &str) -> Result<Option<ResolvedEntityBinding>> {
+        let mut needed = BTreeSet::from([name.to_owned()]);
+        loop {
+            let before = needed.len();
+            for (_, entries) in &self.binding_declarations {
+                for entry in entries {
+                    let value = &entry.value;
+                    if value.first_scalar_ci("name").is_some_and(|name| needed.contains(name))
+                        && value.first_scalar_ci("pdxmesh").is_none() {
+                        if let Some(base) = value.first_scalar_ci("clone") { needed.insert(base.to_owned()); }
+                    }
+                }
+            }
+            if before == needed.len() { break; }
+        }
+        let mut text = String::new();
+        let mut source_lines = Vec::new();
+        // Preserve XMAP12's last-file winner while retaining all competing declarations.
+        for (source, entries) in self.binding_declarations.iter().rev() {
+            let entries = entries.iter().filter(|entry| entry.value.first_scalar_ci("name")
+                .is_some_and(|name| needed.contains(name)));
+            let (part, lines) = entity_parser_text(entries);
+            text.push_str(&part);
+            source_lines.extend(lines.into_iter().map(|line| (source, line)));
+        }
+        let locate = |line: usize| -> Result<(&portable_content_manifest::UsedContentKey, usize)> {
+            source_lines.get(line.checked_sub(1).ok_or("entity binding line is zero")?)
+                .copied().ok_or_else(|| "entity binding line has no admitted source".into())
+        };
+        let Some(mut binding) = parse_building_entity_bindings(&text, "authenticated entity namespace")?
+            .into_iter().find(|binding| binding.name == name) else { return Ok(None) };
+        let (source, block_line) = locate(binding.block_line)?;
+        let (pdxmesh_source, pdxmesh_line) = locate(binding.pdxmesh_line)?;
+        let scale = binding.scale_line.map(locate).transpose()?;
+        binding.source = source.normalized_game_relative_path.clone();
+        binding.block_line = block_line;
+        binding.name_line = locate(binding.name_line)?.1;
+        binding.pdxmesh_line = pdxmesh_line;
+        binding.scale_line = scale.as_ref().map(|(_, line)| *line);
+        Ok(Some(ResolvedEntityBinding {
+            binding, declaration_source: source.clone(), pdxmesh_source: pdxmesh_source.clone(),
+            scale_source: scale.map(|(source, _)| source.clone()),
+        }))
+    }
+
+    fn check_admission(
+        &self,
+        resolver: &GameFileResolver,
+        admission: &replay_core::ValidatedContentAdmission,
+    ) -> Result<()> {
+        let lease = resolver.content_admission_lease();
+        if self.content_lease.is_none() || self.content_lease != lease
+            || lease.as_ref().and_then(|lease| lease.manifest_digest_sha256())
+                != Some(admission.manifest_digest_sha256()) {
+            return Err("entity definition belongs to another content admission".into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn definition(
         &self,
         resolver: &GameFileResolver,
@@ -128,12 +250,8 @@ impl EntityAssets {
         name: &str,
         source: &portable_content_manifest::UsedContentKey,
     ) -> Result<(&BuildingEntityPose, crate::particle_authored::EntityAttachments)> {
-        let lease = resolver.content_admission_lease();
-        if self.content_lease.is_none() || self.content_lease != lease
-            || lease.as_ref().and_then(|lease| lease.manifest_digest_sha256())
-                != Some(admission.manifest_digest_sha256())
-            || admission.require_used_content(&source.normalized_game_relative_path)? != source
-        {
+        self.check_admission(resolver, admission)?;
+        if admission.require_used_content(&source.normalized_game_relative_path)? != source {
             return Err("entity definition belongs to another content admission".into());
         }
         if self.entity_sources.get(name) != Some(source) {
@@ -179,7 +297,10 @@ impl EntityAssets {
             .ok_or("entity assets require authenticated content admission")?;
         let mut entity_sources = BTreeMap::new();
         let mut text = String::new();
+        let mut binding_declarations = Vec::new();
         let mut clips = BTreeMap::new();
+        let mut meshes: BTreeMap<String, BuildingPdxmeshBinding> = BTreeMap::new();
+        let mut mesh_sources = BTreeMap::new();
         let mut static_attachments = EntityAttachmentCatalog::default();
         for extension in ["asset", "gfx"] {
             for key in resolver.require_complete_admitted_dir(
@@ -189,7 +310,7 @@ impl EntityAssets {
                 "XMAP09 asset events",
             )? {
                 let source = latin1_bytes_to_string(&resolver.read_admitted_used_content(&key)?);
-                let (document, source) = if extension == "asset" {
+                let (mut document, _) = if extension == "asset" {
                     portable_content_manifest::paradox_text::parse_asset_str(&source)
                         .map_err(|e| format!("{}: {e:?}", key.normalized_game_relative_path))?
                 } else {
@@ -197,12 +318,28 @@ impl EntityAssets {
                         .map_err(|e| format!("{}: {e:?}", key.normalized_game_relative_path))?,
                         std::borrow::Cow::Borrowed(source.as_str()))
                 };
+                portable_content_manifest::paradox_text::expand_file_scoped_variables(&mut document)
+                    .map_err(|error| format!("{}: {error}", key.normalized_game_relative_path))?;
+                let (source, source_lines) = entity_parser_text(document.fields().iter());
                 for entity in document.values_ci("entity") {
                     if let Some(name) = entity.fields().iter().rev()
                         .find(|entry| entry.key_matches("name")).and_then(|entry| entry.value.as_scalar()) {
                         static_attachments.insert(name, entity);
                         entity_sources.insert(name.to_owned(), key.clone());
                     }
+                }
+                for mut mesh in parse_building_pdxmesh_bindings(&source, &key.normalized_game_relative_path)? {
+                    let locate = |line: usize| source_lines.get(line.saturating_sub(1)).copied()
+                        .ok_or("pdxmesh binding line has no admitted source");
+                    mesh.block_line = locate(mesh.block_line)?;
+                    mesh.name_line = locate(mesh.name_line)?;
+                    mesh.file_line = locate(mesh.file_line)?;
+                    mesh.scale_line = mesh.scale_line.map(locate).transpose()?;
+                    if meshes.get(&mesh.name).is_some_and(|previous| !previous.semantically_eq(&mesh)) {
+                        return Err(format!("pdxmesh {} has conflicting admitted definitions", mesh.name).into());
+                    }
+                    mesh_sources.insert(mesh.name.clone(), key.clone());
+                    meshes.insert(mesh.name.clone(), mesh);
                 }
                 for (name, file) in
                     parse_building_animation_bindings(&source, &key.normalized_game_relative_path)?
@@ -216,28 +353,73 @@ impl EntityAssets {
                     );
                 }
                 text.push_str(&source);
-                text.push('\n');
+                binding_declarations.push((key, document.fields().iter()
+                    .filter(|entry| entry.key_matches("entity")).cloned().collect()));
             }
         }
+        let bindings = entity_sources.keys().map(|name| (name.clone(), std::sync::OnceLock::new())).collect();
         Ok(Self {
             content_lease: Some(content_lease),
             entity_sources,
+            bindings,
+            binding_declarations,
             models: Mutex::new(BTreeMap::new()),
             animations: Mutex::new(BTreeMap::new()),
             poses: parse_building_entity_poses(&text, "authenticated asset namespace")?
                 .into_iter()
                 .map(|p| (p.entity_name.clone(), p))
                 .collect(),
-            meshes: parse_building_pdxmesh_bindings(&text, "authenticated asset namespace")?
-                .into_iter()
-                .map(|m| (m.name.clone(), m))
-                .collect(),
+            meshes,
+            mesh_sources,
             mesh_clips: parse_pdxmesh_animation_bindings(&text, "authenticated asset namespace")?,
             clips,
             static_attachments,
             templates: parse_light_templates(&text, "authenticated asset namespace")?,
         })
     }
+}
+
+fn entity_parser_text<'a>(
+    entries: impl Iterator<Item = &'a portable_content_manifest::paradox_text::Entry>,
+) -> (String, Vec<usize>) {
+    use portable_content_manifest::paradox_text::{Entry, Scalar, Value};
+    fn quoted(text: &mut String, value: &str) {
+        text.push('"');
+        for ch in value.chars() {
+            match ch {
+                '\\' => text.push_str("\\\\"),
+                '"' => text.push_str("\\\""),
+                '\n' => text.push_str("\\n"),
+                '\r' => text.push_str("\\r"),
+                '\t' => text.push_str("\\t"),
+                ch => text.push(ch),
+            }
+        }
+        text.push('"');
+    }
+    fn emit(entry: &Entry, text: &mut String, lines: &mut Vec<usize>) {
+        lines.push(entry.line);
+        if let Some(key) = &entry.key {
+            if key.is_empty() || key.chars().any(|ch| ch.is_whitespace() || "{}=#\"".contains(ch)) {
+                quoted(text, key);
+            } else { text.push_str(key); }
+            text.push_str(" = ");
+        }
+        match &entry.value {
+            Value::Scalar(Scalar::Bare(value)) => text.push_str(value),
+            Value::Scalar(Scalar::Quoted(value)) => quoted(text, value),
+            Value::Object(entries) => {
+                text.push_str("{\n");
+                for entry in entries { emit(entry, text, lines); }
+                lines.push(entry.line);
+                text.push('}');
+            }
+        }
+        text.push('\n');
+    }
+    let (mut text, mut lines) = (String::new(), Vec::new());
+    for entry in entries { emit(entry, &mut text, &mut lines); }
+    (text, lines)
 }
 
 #[derive(Clone)]
@@ -250,6 +432,7 @@ struct EntityAnimation {
     scale: f32,
     token: String,
     requested_state: Option<String>,
+    requested_offset_range: Option<u32>,
     events: Arc<Vec<BuildingEntityEvent>>,
     speed: f64,
     visible: bool,
@@ -330,6 +513,7 @@ pub(crate) struct ViewerLightLifecycle {
     manager_registration: Option<EntityManagerRegistration>,
     last_presentation_time: Option<f32>,
     publication_refusal: Option<Xmap09LightCensusRefusal>,
+    publication_lease: Option<Arc<()>>,
     weather_binding: Option<(u32, String)>,
 }
 
@@ -342,7 +526,19 @@ pub(crate) struct PreparedLightEntityFrame {
     weather_identity: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct EntityAnimationReadout<'a> {
+    pub(crate) entity_token: &'a str,
+    pub(crate) state_ordinal: Option<usize>,
+    pub(crate) playhead_seconds: f64,
+    pub(crate) authored_speed: f64,
+    pub(crate) entity_speed: f64,
+}
+
 pub(crate) struct DerivedLightRows {
+    manager: std::sync::Weak<Mutex<ViewerEntityManager>>,
+    publication: (u32, u64),
+    publication_lease: std::sync::Weak<()>,
     entities: Vec<(String, Arc<Vec<BuildingEntityEvent>>, [f32; 16])>,
     entity_indices: BTreeMap<String, usize>,
     instances: Vec<(String, String, usize, Xmap09LightInstanceClock)>,
@@ -354,6 +550,27 @@ pub(crate) struct DerivedLightRows {
 }
 
 impl DerivedLightRows {
+    pub(crate) fn root_animation(
+        &self, resolver: &GameFileResolver, admission: &replay_core::ValidatedContentAdmission, id: &str,
+    ) -> Result<EntityAnimationReadout<'_>> {
+        self.assets.check_admission(resolver, admission)?;
+        let _lease = self.publication_lease.upgrade().ok_or("entity_manager.frame.unpublished")?;
+        let manager = self.manager.upgrade().ok_or("entity_manager.frame.retired")?;
+        if manager.lock().map_err(|_| "entity_manager.lock_poisoned")?
+            .publication_revision(self.publication.0) != Some(self.publication.1) {
+            return Err("entity_manager.frame.unpublished".into());
+        }
+        if self.children.contains_key(id) || !self.entity_indices.contains_key(id) {
+            return Err(format!("entity_manager.root_animation.{id}: root is unavailable").into());
+        }
+        let state = self.poses.get(id).ok_or("entity_manager.root_animation.unavailable")?;
+        Ok(EntityAnimationReadout {
+            entity_token: &state.token, state_ordinal: state.state_index,
+            playhead_seconds: state.playhead, authored_speed: state.authored_speed,
+            entity_speed: state.speed,
+        })
+    }
+
     fn world(&self, id: &str) -> Result<[f32; 16]> {
         if let Some(child) = self.children.get(id) {
             let parent = self.world(&child.parent)?;
@@ -436,17 +653,28 @@ impl EntityAnimation {
         include_particle_only_events: bool,
         random: &mut ViewerParticleSeed,
     ) -> Result<Self> {
+        Self::load_with_offset_range(row, assets, resolver, require_pose, include_particle_only_events, None, random)
+    }
+
+    fn load_with_offset_range(
+        row: &Xmap09PlacedEntity,
+        assets: &EntityAssets,
+        resolver: &GameFileResolver,
+        require_pose: bool,
+        include_particle_only_events: bool,
+        offset_range: Option<f32>,
+        random: &mut ViewerParticleSeed,
+    ) -> Result<Self> {
         let pose = assets
             .poses
             .get(&row.entity_token)
             .ok_or_else(|| format!("entity {} is unavailable", row.entity_token))?;
-        let requested = row
-            .state
-            .as_deref()
-            .or(pose.default_state.as_deref())
-            .unwrap_or("idle");
+        let requested = row.state.as_deref().or(pose.default_state.as_deref());
         let authored = assets.static_attachments.resolve(&row.entity_token)?;
-        let (index, start) = authored.enter_state(pose, requested, random)?;
+        let (index, start) = match requested {
+            Some(requested) => authored.enter_state_with_offset_range(pose, requested, offset_range, random)?,
+            None => (None, 0.0),
+        };
         let state = index.map(|index| &pose.states[index]);
         let events = state.map(|s| s.events.clone()).unwrap_or_default();
         if events.iter().any(|e| {
@@ -479,6 +707,7 @@ impl EntityAnimation {
             scale: entity_scale * mesh_scale,
             token: row.entity_token.clone(),
             requested_state: row.state.clone(),
+            requested_offset_range: offset_range.map(f32::to_bits),
             events: Arc::new(events),
             speed: 1.0,
             visible: true,
@@ -693,6 +922,18 @@ impl ViewerLightLifecycle {
         ancestry: &mut Vec<String>,
         random: &mut ViewerParticleSeed,
     ) -> Result<()> {
+        self.instantiate_entity_with_offset_range(row, assets, resolver, ancestry, None, random)
+    }
+
+    fn instantiate_entity_with_offset_range(
+        &mut self,
+        row: &Xmap09PlacedEntity,
+        assets: &EntityAssets,
+        resolver: &GameFileResolver,
+        ancestry: &mut Vec<String>,
+        offset_range: Option<f32>,
+        random: &mut ViewerParticleSeed,
+    ) -> Result<()> {
         if ancestry.contains(&row.entity_token) {
             return Err(format!(
                 "recursive static entity attachment: {ancestry:?} -> {}",
@@ -747,9 +988,30 @@ impl ViewerLightLifecycle {
             }
         }
         ancestry.pop();
-        let state = EntityAnimation::load(row, assets, resolver, require_pose, self.include_particle_only_events, random)?;
+        // 142273fb0 enters the default after recursive construction; 141276c20's
+        // requested-state setter follows that complete constructor on the same cursor.
+        let mut constructor = row.clone();
+        constructor.state = None;
+        let state = EntityAnimation::load(&constructor, assets, resolver, require_pose, self.include_particle_only_events, random)?;
         self.entities.insert(row.id.clone(), state);
-        self.propagate_static_state(&row.id, assets, resolver, random)
+        self.propagate_static_state(&row.id, assets, resolver, random)?;
+        if let Some(requested) = row.state.as_deref() {
+            let hash = entity_token_hash(requested)?;
+            let present = assets.poses[&row.entity_token].states.iter()
+                .map(|state| entity_token_hash(&state.name))
+                .collect::<Result<Vec<_>>>()?.contains(&hash);
+            if !present {
+                let retained = self.entities.get_mut(&row.id).unwrap();
+                retained.requested_state = row.state.clone();
+                retained.requested_offset_range = offset_range.map(f32::to_bits);
+                return Ok(());
+            }
+            let state = EntityAnimation::load_with_offset_range(row, assets, resolver, require_pose, self.include_particle_only_events, offset_range, random)?;
+            self.leave_state(&row.id);
+            self.entities.insert(row.id.clone(), state);
+            self.propagate_static_state_with_offset_range(&row.id, assets, resolver, offset_range, random)?;
+        }
+        Ok(())
     }
 
     fn propagate_static_state(
@@ -757,6 +1019,17 @@ impl ViewerLightLifecycle {
         id: &str,
         assets: &EntityAssets,
         resolver: &GameFileResolver,
+        random: &mut ViewerParticleSeed,
+    ) -> Result<()> {
+        self.propagate_static_state_with_offset_range(id, assets, resolver, None, random)
+    }
+
+    fn propagate_static_state_with_offset_range(
+        &mut self,
+        id: &str,
+        assets: &EntityAssets,
+        resolver: &GameFileResolver,
+        offset_range: Option<f32>,
         random: &mut ViewerParticleSeed,
     ) -> Result<()> {
         let mut children = self
@@ -828,20 +1101,22 @@ impl ViewerLightLifecycle {
                 animate: true,
                 world_matrix_f32_bits: IDENTITY.map(f32::to_bits),
             };
-            let mut next = EntityAnimation::load(
+            let mut next = EntityAnimation::load_with_offset_range(
                 &row,
                 assets,
                 resolver,
                 self.requires_retained_pose(&child_id),
                 self.include_particle_only_events,
+                offset_range,
                 random,
             )?;
             next.speed = child.speed;
             next.visible = child.visible;
             next.requested_state = child.requested_state.clone();
+            next.requested_offset_range = child.requested_offset_range;
             self.leave_state(&child_id);
             self.entities.insert(child_id.clone(), next);
-            self.propagate_static_state(&child_id, assets, resolver, random)?;
+            self.propagate_static_state_with_offset_range(&child_id, assets, resolver, offset_range, random)?;
         }
         Ok(())
     }
@@ -1065,6 +1340,7 @@ impl ViewerLightLifecycle {
             manager.remove_owner(self.manager_owner);
             let _ = manager.reset_frame_publication();
         }
+        self.publication_lease = None;
         self.root_changes.clear();
         self.entities.clear();
         self.root_registration.clear();
@@ -1112,9 +1388,21 @@ impl ViewerLightLifecycle {
         viewer: &ViewerOwnedMapState,
         weather: Option<&crate::PreparedXmap19WeatherFrame>,
     ) -> std::result::Result<PreparedLightEntityFrame, Xmap09LightCensusRefusal> {
+        self.prepare_entity_frame_with_state_offsets(resolver, placed, viewer, weather, &BTreeMap::new())
+    }
+
+    pub(crate) fn prepare_entity_frame_with_state_offsets(
+        &mut self,
+        resolver: &GameFileResolver,
+        placed: &[Xmap09PlacedEntity],
+        viewer: &ViewerOwnedMapState,
+        weather: Option<&crate::PreparedXmap19WeatherFrame>,
+        requested_offset_ranges: &BTreeMap<String, f32>,
+    ) -> std::result::Result<PreparedLightEntityFrame, Xmap09LightCensusRefusal> {
         if let Some(refusal) = &self.publication_refusal { return Err(refusal.clone()); }
         self.weather_binding = None;
-        self.prepare_entity_population(resolver, placed, viewer, weather).map_err(|refusal| {
+        self.publication_lease = None;
+        self.prepare_entity_population(resolver, placed, viewer, weather, requested_offset_ranges).map_err(|refusal| {
             self.last_presentation_time = None;
             self.publication_refusal = Some(refusal.clone());
             if let Ok(mut manager) = self.entity_manager.lock() {
@@ -1134,7 +1422,13 @@ impl ViewerLightLifecycle {
         placed: &[Xmap09PlacedEntity],
         viewer: &ViewerOwnedMapState,
         weather: Option<&crate::PreparedXmap19WeatherFrame>,
+        requested_offset_ranges: &BTreeMap<String, f32>,
     ) -> std::result::Result<PreparedLightEntityFrame, Xmap09LightCensusRefusal> {
+        for (id, range) in requested_offset_ranges {
+            if !range.is_finite() || !placed.iter().any(|row| row.id == *id && row.state.is_some()) {
+                return Err(missing(format!("entity_manager.state_offset.{id}")));
+            }
+        }
         let mut population = std::borrow::Cow::Borrowed(placed);
         let mut controls = Vec::new();
         if let Some(weather) = weather {
@@ -1226,10 +1520,12 @@ impl ViewerLightLifecycle {
         let (random, scenes) = manager.parts_mut();
         scenes.apply(self.manager_owner, &mut self.root_changes);
         for row in placed {
+            let offset_range = requested_offset_ranges.get(&row.id).copied();
             if self
                 .entities
                 .get(&row.id)
-                .is_none_or(|e| e.token != row.entity_token || e.requested_state != row.state)
+                .is_none_or(|e| e.token != row.entity_token || e.requested_state != row.state
+                    || e.requested_offset_range != offset_range.map(f32::to_bits))
             {
                 let same_entity = self
                     .entities
@@ -1237,21 +1533,32 @@ impl ViewerLightLifecycle {
                     .is_some_and(|e| e.token == row.entity_token);
                 let mut update = || -> Result<()> {
                     if same_entity {
+                        if let Some(requested) = row.state.as_deref() {
+                            let hash = entity_token_hash(requested)?;
+                            let present = assets.poses[&row.entity_token].states.iter()
+                                .map(|state| entity_token_hash(&state.name)).collect::<Result<Vec<_>>>()?.contains(&hash);
+                            if !present {
+                                let retained = self.entities.get_mut(&row.id).unwrap();
+                                retained.requested_state = row.state.clone();
+                                retained.requested_offset_range = offset_range.map(f32::to_bits);
+                                return Ok(());
+                            }
+                        }
                         let previous = &self.entities[&row.id];
-                        let mut state = EntityAnimation::load(row, &assets, resolver,
-                            self.requires_retained_pose(&row.id), self.include_particle_only_events, random)?;
+                        let mut state = EntityAnimation::load_with_offset_range(row, &assets, resolver,
+                            self.requires_retained_pose(&row.id), self.include_particle_only_events, offset_range, random)?;
                         state.speed = previous.speed;
                         state.visible = previous.visible;
                         self.leave_state(&row.id);
                         self.entities.insert(row.id.clone(), state);
-                        self.propagate_static_state(&row.id, &assets, resolver, random)?;
+                        self.propagate_static_state_with_offset_range(&row.id, &assets, resolver, offset_range, random)?;
                     } else {
                         self.remove_entity(&row.id);
                         self.root_registration.push(row.id.clone());
                         self.root_changes.push(crate::particle_runtime::EntityRootChange::Register {
                             id: row.id.clone(), scene_mask: 7, update_mask: 6,
                         });
-                        self.instantiate_entity(row, &assets, resolver, &mut Vec::new(), random)?;
+                        self.instantiate_entity_with_offset_range(row, &assets, resolver, &mut Vec::new(), offset_range, random)?;
                     }
                     Ok(())
                 };
@@ -1311,6 +1618,7 @@ impl ViewerLightLifecycle {
     }
 
     pub(crate) fn refuse_entity_publication(&mut self, reason: &str) {
+        self.publication_lease = None;
         if self.publication_refusal.is_none() { self.publication_refusal = Some(missing(reason)); }
         self.last_presentation_time = None;
         self.weather_binding = None;
@@ -1417,7 +1725,15 @@ impl ViewerLightLifecycle {
             })
             .collect();
         let poses = self.entities.clone();
+        let revision = self.entity_manager.lock().map_err(|_| missing("entity_manager.lock_poisoned"))?
+            .publication_revision(frame.presentation_time_f32_bits)
+            .ok_or_else(|| missing("entity_manager.frame.unpublished"))?;
+        let publication_lease = Arc::new(());
+        self.publication_lease = Some(publication_lease.clone());
         let mut rows = DerivedLightRows {
+            publication_lease: Arc::downgrade(&publication_lease),
+            manager: Arc::downgrade(&self.entity_manager),
+            publication: (frame.presentation_time_f32_bits, revision),
             entities,
             entity_indices,
             instances,
@@ -1594,6 +1910,281 @@ entity = { name = attached }
         assert_eq!(random.counter, 2);
     }
 
+    #[test]
+    fn shared_resolved_binding_preserves_clone_lines_winner_and_lease() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[
+            ("gfx/a_clone.asset", b"entity = {\n name = clone\n clone = base\n scale = 3\n}\nentity={name=meshless}\nentity={name=inherited clone=base}\n"),
+            ("gfx/b_same.asset", b"entity={name=same pdxmesh=mesh scale=2}\n"),
+            ("gfx/z_base.asset", b"\nentity = {\n name = base\n pdxmesh = mesh\n scale = 2\n}\nentity={name=same pdxmesh=mesh scale=2}\n"),
+        ]);
+        let assets = EntityAssets::load(&content.resolver).unwrap();
+        let resolved = assets.resolved_binding(&content.resolver, &content.admission, "clone").unwrap().unwrap();
+        let (binding, source) = (&resolved.binding, &resolved.declaration_source);
+        assert_eq!(binding, &BuildingEntityBinding {
+            name: "clone".into(), pdxmesh: "mesh".into(), scale: 3.0,
+            source: "gfx/a_clone.asset".into(), block_line: 1, name_line: 2,
+            pdxmesh_line: 4, scale_line: Some(4),
+        });
+        assert_eq!(source, content.admission.require_used_content("gfx/a_clone.asset").unwrap());
+        assert_eq!(&resolved.pdxmesh_source, content.admission.require_used_content("gfx/z_base.asset").unwrap());
+        assert_eq!(resolved.scale_source.as_ref(), Some(source));
+        let (pose, _) = assets.definition(&content.resolver, &content.admission, "clone", source).unwrap();
+        assert_eq!(pose.pdxmesh.as_deref(), Some(binding.pdxmesh.as_str()));
+        assert_eq!(pose.scale, Some(binding.scale));
+        let same = assets.resolved_binding(&content.resolver, &content.admission, "same").unwrap().unwrap();
+        let (same, winner) = (&same.binding, &same.declaration_source);
+        assert_eq!(winner, content.admission.require_used_content("gfx/z_base.asset").unwrap());
+        assert_eq!(same.source, winner.normalized_game_relative_path);
+        assert_eq!((same.block_line, same.name_line, same.pdxmesh_line, same.scale_line), (7, 7, 7, Some(7)));
+        let inherited = assets.resolved_binding(&content.resolver, &content.admission, "inherited").unwrap().unwrap();
+        assert_eq!(inherited.declaration_source.normalized_game_relative_path, "gfx/a_clone.asset");
+        assert_eq!(inherited.pdxmesh_source.normalized_game_relative_path, "gfx/z_base.asset");
+        assert_eq!(inherited.scale_source.as_ref().unwrap().normalized_game_relative_path, "gfx/z_base.asset");
+        assert_eq!((inherited.binding.block_line, inherited.binding.pdxmesh_line, inherited.binding.scale_line), (7, 4, Some(5)));
+        assert_eq!(inherited.binding.scale, 2.0);
+        for name in ["meshless", "absent"] {
+            assert!(assets.resolved_binding(&content.resolver, &content.admission, name).unwrap().is_none());
+        }
+        let other = Fixture::new(REGISTRATION, "particle={name=other}");
+        assert!(assets.resolved_binding(&other.resolver, &content.admission, "clone").unwrap_err().to_string().contains("another content admission"));
+        assert!(assets.resolved_binding(&content.resolver, &other.admission, "clone").unwrap_err().to_string().contains("another content admission"));
+    }
+
+    #[test]
+    fn resolved_bindings_expand_variables_per_file_and_isolate_unrelated_binding_failure() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[
+            ("gfx/a.asset", br#"@mesh = "mesh_a"
+@size = 2.5
+entity = {
+ name = a
+ pdxmesh = @mesh
+ scale = @size
+}
+entity = { name = bad pdxmesh = mesh_bad scale = invalid }
+"#),
+            ("gfx/z.asset", br#"@mesh = "mesh_z"
+@size = 3.5
+entity = {
+ name = z
+ pdxmesh = @mesh
+ scale = @size
+}
+"#),
+        ]);
+        let assets = EntityAssets::load(&content.resolver).unwrap();
+        for (name, mesh, scale, path) in [("a", "mesh_a", 2.5, "gfx/a.asset"), ("z", "mesh_z", 3.5, "gfx/z.asset")] {
+            let resolved = assets.resolved_binding(&content.resolver, &content.admission, name).unwrap().unwrap();
+            assert_eq!(resolved.binding.pdxmesh, mesh);
+            assert_eq!(resolved.binding.scale, scale);
+            assert_eq!((resolved.binding.block_line, resolved.binding.name_line, resolved.binding.pdxmesh_line, resolved.binding.scale_line), (3, 4, 5, Some(6)));
+            assert_eq!(resolved.declaration_source.normalized_game_relative_path, path);
+            assert_eq!(resolved.pdxmesh_source, resolved.declaration_source);
+            assert_eq!(resolved.scale_source.as_ref(), Some(&resolved.declaration_source));
+            let (pose, _) = assets.definition(&content.resolver, &content.admission, name, &resolved.declaration_source).unwrap();
+            assert_eq!(pose.pdxmesh.as_deref(), Some(mesh));
+            assert_eq!(pose.scale, Some(scale));
+        }
+        let failure = assets.resolved_binding(&content.resolver, &content.admission, "bad").unwrap_err().to_string();
+        assert!(failure.contains("entity binding bad"));
+        assert!(failure.contains("scale is not a float"));
+        assert!(assets.resolved_binding(&content.resolver, &content.admission, "a").unwrap().is_some());
+        assert!(assets.resolved_binding(&content.resolver, &content.admission, "z").unwrap().is_some());
+    }
+
+    #[test]
+    fn shared_mesh_and_animation_declarations_keep_the_admitted_source() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[
+            ("gfx/entity.asset", br#"
+entity={name=base pdxmesh=mesh animation={name=idle}}
+entity={name=clone clone=base state={name=walk animation=walking}}
+"#),
+            ("gfx/a.gfx", br#"objectTypes={pdxmesh={name=mesh file="gfx/models/one.mesh" scale=2}}"#),
+            ("gfx/z.gfx", br#"objectTypes = {
+ pdxmesh = {
+  name = mesh
+  file = "gfx/models/one.mesh"
+  scale = 2
+ }
+}
+"#),
+        ]);
+        let assets = EntityAssets::load(&content.resolver).unwrap();
+        let (mesh, source) = assets.resolved_pdxmesh(&content.resolver, &content.admission, "mesh").unwrap().unwrap();
+        assert_eq!(mesh.mesh, "gfx/models/one.mesh");
+        assert_eq!(mesh.scale, 2.0);
+        assert_eq!((mesh.block_line, mesh.name_line, mesh.file_line, mesh.scale_line), (2, 3, 4, Some(5)));
+        assert_eq!(mesh.source, "gfx/z.gfx");
+        assert_eq!(source, content.admission.require_used_content("gfx/z.gfx").unwrap());
+        assert!(assets.resolved_pdxmesh(&content.resolver, &content.admission, "absent").unwrap().is_none());
+        let declarations = assets.entity_declarations(&content.resolver, &content.admission).unwrap().collect::<Vec<_>>();
+        let (base_source, base) = declarations.iter().find(|(_, entry)| entry.value.first_scalar_ci("name") == Some("base")).unwrap();
+        assert_eq!(*base_source, content.admission.require_used_content("gfx/entity.asset").unwrap());
+        assert_eq!(base.line, 2);
+        assert_eq!(base.value.first_value_ci("animation").unwrap().first_scalar_ci("name"), Some("idle"));
+        let (_, clone) = declarations.iter().find(|(_, entry)| entry.value.first_scalar_ci("name") == Some("clone")).unwrap();
+        assert_eq!(clone.value.first_scalar_ci("clone"), Some("base"));
+        assert_eq!(clone.value.first_value_ci("state").unwrap().first_scalar_ci("animation"), Some("walking"));
+        let other = Fixture::new(REGISTRATION, "particle={name=other}");
+        assert!(assets.resolved_pdxmesh(&other.resolver, &content.admission, "mesh").is_err());
+        assert!(assets.entity_declarations(&other.resolver, &content.admission).is_err());
+    }
+
+    #[test]
+    fn constructor_default_then_requested_state_share_cursor_and_publish_retained_clock() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[
+            ("gfx/entity.asset", br#"
+entity={name=entity default_state=boot
+ state={name=boot chance=1 time_offset={10 1}}
+ state={name=boot chance=1 time_offset={20 1}}
+ state={name=idle chance=1 time_offset={30 1}}
+ state={name=idle chance=1 time_offset={40 1}}
+}
+"#),
+        ]);
+        let assets = Arc::new(EntityAssets::load(&content.resolver).unwrap());
+        let (_, mut placed, viewer) = fixture(1);
+        placed[0].state = Some("idle".into());
+        let mut expected = ViewerParticleSeed { seed: 1, counter: 0 };
+        let definition = &assets.poses["entity"];
+        let attachments = assets.static_attachments.resolve("entity").unwrap();
+        let (boot_index, _) = attachments.enter_state(definition, "boot", &mut expected).unwrap();
+        let (idle_index, start) = attachments.enter_state(definition, "idle", &mut expected).unwrap();
+        assert_eq!(expected.counter, 4);
+        assert_ne!(boot_index, idle_index);
+        let mut shortcut = ViewerParticleSeed { seed: 1, counter: 0 };
+        let (_, shortcut_start) = attachments.enter_state(definition, "idle", &mut shortcut).unwrap();
+        assert_ne!(start.to_bits(), shortcut_start.to_bits());
+        let manager = Arc::new(Mutex::new(ViewerEntityManager::new(ViewerParticleSeed { seed: 1, counter: 0 })));
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+        lifecycle.entity_manager = manager.clone();
+        lifecycle.assets = Some(assets);
+        lifecycle.content_lease = content.resolver.content_admission_lease();
+        let rows = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        let observed = rows.root_animation(&content.resolver, &content.admission, &placed[0].id).unwrap();
+        let other = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[
+            ("gfx/entity.asset", br#"
+entity={name=entity default_state=boot
+ state={name=boot chance=1 time_offset={10 1}}
+ state={name=boot chance=1 time_offset={20 1}}
+ state={name=idle chance=1 time_offset={30 1} animation=other_clip}
+ state={name=idle chance=1 time_offset={40 1} animation=other_clip}
+}
+"#),
+        ]);
+        let other_assets = EntityAssets::load(&other.resolver).unwrap();
+        let other_pose = &other_assets.poses["entity"];
+        assert_eq!(other_pose.states[idle_index.unwrap()].name, "idle");
+        assert_eq!(other_pose.states[idle_index.unwrap()].animation.as_deref(), Some("other_clip"));
+        for (resolver, admission) in [(&other.resolver, &other.admission),
+            (&content.resolver, &other.admission), (&other.resolver, &content.admission)] {
+            assert!(rows.root_animation(resolver, admission, &placed[0].id).unwrap_err()
+                .to_string().contains("another content admission"));
+        }
+        assert_eq!(observed.state_ordinal, idle_index);
+        assert_eq!(observed.playhead_seconds, start as f64 + 0.5);
+        assert_eq!((observed.authored_speed, observed.entity_speed), (1.0, 1.0));
+        assert_eq!(manager.lock().unwrap().random_state(), expected);
+        assert_eq!(rows.root_animation(&content.resolver, &content.admission, &placed[0].id).unwrap(), observed);
+        let replay = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        assert_eq!(replay.root_animation(&content.resolver, &content.admission, &placed[0].id).unwrap(), observed);
+        assert!(rows.root_animation(&content.resolver, &content.admission, &placed[0].id).is_err());
+        assert_eq!(manager.lock().unwrap().random_state(), expected);
+        let frame = crate::particle_runtime::EntityManagerFrame {
+            presentation_time_f32_bits: viewer.animation_time_f32_bits,
+            delta_seconds_f32_bits: viewer.frame_delta_seconds_f32_bits, cameras: None,
+        };
+        manager.lock().unwrap().refuse_frame(frame, crate::particle_runtime::EntityManagerFrameRefusal::Finalization("later owner".into()));
+        assert!(replay.root_animation(&content.resolver, &content.admission, &placed[0].id).unwrap_err().to_string().contains("unpublished"));
+        lifecycle.reset_population();
+        let recovered = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        assert!(recovered.root_animation(&content.resolver, &content.admission, &placed[0].id).is_ok());
+        assert!(rows.root_animation(&content.resolver, &content.admission, &placed[0].id).is_err());
+        assert_eq!(manager.lock().unwrap().random_state().counter, 8);
+    }
+
+    #[test]
+    fn requested_offset_override_reaches_child_setters_on_the_same_manager_cursor() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        for requested_range in [0.0, 5.0] {
+            let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[
+                ("gfx/entity.asset", br#"
+entity={name=entity default_state=boot attach={""=child}
+ state={name=boot time_offset={10 1}}
+ state={name=idle time_offset={20 2}}
+}
+entity={name=child default_state=idle state={name=idle time_offset={30 100}}}
+"#),
+            ]);
+            let assets = Arc::new(EntityAssets::load(&content.resolver).unwrap());
+            let (_, mut placed, viewer) = fixture(1);
+            placed[0].state = Some("idle".into());
+            let root = assets.static_attachments.resolve("entity").unwrap();
+            let child = assets.static_attachments.resolve("child").unwrap();
+            let mut expected = ViewerParticleSeed { seed: 1, counter: 0 };
+            expected.draw();
+            child.enter_state(&assets.poses["child"], "idle", &mut expected).unwrap();
+            root.enter_state(&assets.poses["entity"], "boot", &mut expected).unwrap();
+            let (root_index, root_start) = root.enter_state_with_offset_range(
+                &assets.poses["entity"], "idle", Some(requested_range), &mut expected).unwrap();
+            let (_, child_start) = child.enter_state_with_offset_range(
+                &assets.poses["child"], "idle", Some(requested_range), &mut expected).unwrap();
+            assert_eq!(expected.counter, 5);
+            let manager = Arc::new(Mutex::new(ViewerEntityManager::new(ViewerParticleSeed { seed: 1, counter: 0 })));
+            let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+            lifecycle.entity_manager = manager.clone();
+            lifecycle.assets = Some(assets);
+            lifecycle.content_lease = content.resolver.content_admission_lease();
+            let ranges = BTreeMap::from([(placed[0].id.clone(), requested_range)]);
+            let prepared = lifecycle.prepare_entity_frame_with_state_offsets(
+                &content.resolver, &placed, &viewer, None, &ranges).unwrap();
+            assert_eq!(manager.lock().unwrap().random_state(), expected);
+            let child_id = lifecycle.children.keys().next().unwrap().clone();
+            assert_eq!(lifecycle.entities[&child_id].playhead, child_start as f64);
+            let frame = prepared.frame;
+            let owner = lifecycle.manager_owner;
+            let mut update = |id: &str, _scene, random: &mut ViewerParticleSeed|
+                lifecycle.advance_prepared_root(&content.resolver, &prepared, id, random);
+            manager.lock().unwrap().advance_frame(frame, &mut [crate::particle_runtime::EntityManagerDispatch {
+                owner, prepared_for: frame, advance_root: &mut update,
+            }]).unwrap();
+            let rows = lifecycle.finish_entity_frame(&content.resolver, prepared).unwrap();
+            let readout = rows.root_animation(&content.resolver, &content.admission, &placed[0].id).unwrap();
+            assert_eq!(readout.state_ordinal, root_index);
+            assert_eq!(readout.playhead_seconds, root_start as f64 + 0.5);
+            assert!(rows.root_animation(&content.resolver, &content.admission, &child_id).unwrap_err().to_string().contains("root is unavailable"));
+            assert_eq!(manager.lock().unwrap().random_state(), expected);
+            let mut absent_random = expected;
+            let absent = root.enter_state_with_offset_range(
+                &rows.assets.poses["entity"], "absent", Some(5.0), &mut absent_random).unwrap();
+            assert_eq!(absent, (None, 0.0));
+            assert_eq!(absent_random, expected);
+        }
+    }
+
+    #[test]
+    fn constructor_without_authored_default_does_not_invent_idle_entry() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[
+            ("gfx/entity.asset", br#"entity={name=entity state={name=idle time_offset={1 2}}}"#),
+        ]);
+        let assets = EntityAssets::load(&content.resolver).unwrap();
+        let (_, mut placed, _) = fixture(1);
+        placed[0].state = None;
+        let mut random = ViewerParticleSeed { seed: 1, counter: 0 };
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+        lifecycle.instantiate_entity(&placed[0], &assets, &content.resolver, &mut Vec::new(), &mut random).unwrap();
+        assert_eq!(lifecycle.entities[&placed[0].id].state_index, None);
+        assert_eq!(random.counter, 0);
+        placed[0].state = Some("missing".into());
+        lifecycle.instantiate_entity(&placed[0], &assets, &content.resolver, &mut Vec::new(), &mut random).unwrap();
+        assert_eq!(lifecycle.entities[&placed[0].id].state_index, None);
+        assert_eq!(random.counter, 0);
+    }
+
     fn fixture_attachment_catalog() -> EntityAttachmentCatalog {
         let mut catalog = EntityAttachmentCatalog::default();
         let (document, _) = portable_content_manifest::paradox_text::parse_asset_str(
@@ -1616,11 +2207,14 @@ entity = { name = attached }
             assets: Some(Arc::new(EntityAssets {
                 content_lease: None,
                 entity_sources: BTreeMap::new(),
+                bindings: BTreeMap::new(),
+                binding_declarations: Vec::new(),
                 models: Mutex::new(BTreeMap::new()),
                 animations: Mutex::new(BTreeMap::new()),
                 poses: BTreeMap::new(),
                 static_attachments: fixture_attachment_catalog(),
                 meshes: BTreeMap::new(),
+                mesh_sources: BTreeMap::new(),
                 mesh_clips: BTreeMap::new(),
                 clips: BTreeMap::new(),
                 templates,
@@ -2315,8 +2909,8 @@ entity = {{ name = child default_state = idle
  state = {{ name = unrelated }}
  state = {{ name = idle chance = 1 event = {{ time = 0.1 particle = paired }} }}
 }}
-entity = {{ name = left state = {{ name = idle event = {{ time = 0 particle = paired }} }} }}
-entity = {{ name = right state = {{ name = idle event = {{ time = 0 particle = paired }} }} }}
+entity = {{ name = left default_state = idle state = {{ name = idle event = {{ time = 0 particle = paired }} }} }}
+entity = {{ name = right default_state = idle state = {{ name = idle event = {{ time = 0 particle = paired }} }} }}
 "#);
             let content = Fixture::with_extra_files(REGISTRATION,
                 "particle={name=effect subsystem={name=s max_amount=8 duration=-1 emission=4 life=20}}",
@@ -2373,15 +2967,15 @@ entity = { name = entity default_state = root
  state = { name = root chance = 1 event = { time = 0 entity = event_child } }
  state = { name = root chance = 1 event = { time = 0 entity = event_child } }
 }
-entity = { name = left
+entity = { name = left default_state = idle
  state = { name = idle chance = 1 event = { time = 0 particle = paired } }
  state = { name = idle chance = 1 event = { time = 0 particle = paired } }
 }
-entity = { name = right
+entity = { name = right default_state = idle
  state = { name = idle chance = 1 event = { time = 0 particle = paired } }
  state = { name = idle chance = 1 event = { time = 0 particle = paired } }
 }
-entity = { name = event_child
+entity = { name = event_child default_state = idle
  state = { name = idle chance = 3 event = { time = 0 particle = paired } }
  state = { name = idle chance = 2 event = { time = 0 particle = paired } }
 }
@@ -2430,12 +3024,12 @@ entity = { name = event_child
         let content = Fixture::with_extra_files(REGISTRATION,
             "particle={name=effect subsystem={name=s max_amount=8 duration=-1 emission=4 life=20}}",
             &[("gfx/entity.asset", br#"
-entity = { name = entity state = { name = idle
+entity = { name = entity default_state = idle state = { name = idle
  event = { time = 0.25 entity = event_child }
  event = { time = 0.75 entity = event_child }
  event = { time = 1.25 entity = event_child }
 } }
-entity = { name = event_child
+entity = { name = event_child default_state = idle
  state = { name = idle chance = 1 event = { time = 0 particle = paired } }
  state = { name = idle chance = 1 event = { time = 0 particle = paired } }
 }
@@ -2482,7 +3076,7 @@ entity = { name = entity
  state = { name = quiet }
  state = { name = active event = { time = 0 entity = event_child } }
 }
-entity = { name = event_child
+entity = { name = event_child default_state = idle
  state = { name = idle chance = 3 event = { time = 0 particle = paired } }
  state = { name = idle chance = 2 event = { time = 0 particle = paired } }
 }
@@ -2536,7 +3130,7 @@ entity = { name = event_child
     fn shared_manager_retains_history_across_roots_population_resets_and_consumers() {
         use crate::particle_authored::test_support::{Fixture, REGISTRATION};
         let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[("gfx/entity.asset", br#"
-entity = { name = entity
+entity = { name = entity default_state = idle
  state = { name = idle chance = 1 }
  state = { name = idle chance = 1 }
 }
@@ -2579,7 +3173,7 @@ entity = { name = entity
     fn missing_camera_refuses_registered_scene_updates_and_requires_explicit_recovery() {
         use crate::particle_authored::test_support::{Fixture, REGISTRATION};
         let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[("gfx/entity.asset", br#"
-entity = { name = entity state = { name = idle chance = 1 } state = { name = idle chance = 1 } }
+entity = { name = entity default_state = idle state = { name = idle chance = 1 } state = { name = idle chance = 1 } }
 "#)]);
         let (_, placed, mut viewer) = fixture(1);
         let camera = viewer.camera.take();
@@ -2601,11 +3195,11 @@ entity = { name = entity state = { name = idle chance = 1 } state = { name = idl
         let content = Fixture::with_extra_files(REGISTRATION,
             "particle={name=effect subsystem={name=s max_amount=8 duration=-1 emission=4 life=20}}",
             &[("gfx/entity.asset", br#"
-entity = { name = entity
+entity = { name = entity default_state = idle
  state = { name = idle chance = 1 event = { time = 0 entity = child } }
  state = { name = idle chance = 1 event = { time = 0 entity = child } }
 }
-entity = { name = child
+entity = { name = child default_state = idle
  state = { name = idle chance = 3 event = { time = 0 particle = paired } }
  state = { name = idle chance = 2 event = { time = 0 particle = paired } }
 }
@@ -2669,7 +3263,7 @@ entity = { name = child
     fn failed_root_update_keeps_shared_draw_history_and_refuses_same_phase_retry() {
         use crate::particle_authored::test_support::{Fixture, REGISTRATION};
         let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[("gfx/entity.asset", br#"
-entity = { name = entity
+entity = { name = entity default_state = idle
  state = { name = idle chance = 1 event = { time = 0 entity = missing_child } }
  state = { name = idle chance = 1 event = { time = 0 entity = missing_child } }
  state = { name = quiet }
@@ -2693,7 +3287,7 @@ entity = { name = entity
         for row in &mut placed { row.state = Some("quiet".into()); }
         lifecycle.reset_population();
         lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
-        assert_eq!(manager.lock().unwrap().random_state().counter, 2);
+        assert_eq!(manager.lock().unwrap().random_state().counter, 4);
         assert!(lifecycle.publication_refusal.is_none());
     }
 
@@ -2701,7 +3295,7 @@ entity = { name = entity
     fn state_selection_preserves_zero_default_signed_weights_and_identical_duplicates() {
         use crate::particle_authored::test_support::{Fixture, REGISTRATION};
         for (chance, expected) in [("", 1), ("chance = 42949.67295", 1), ("chance = 010", 0)] {
-            let source = format!("entity = {{ name = entity state = {{ name = idle {chance} }} state = {{ name = idle }} }}");
+            let source = format!("entity = {{ name = entity default_state = idle state = {{ name = idle {chance} }} state = {{ name = idle }} }}");
             let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}",
                 &[("gfx/entity.asset", source.as_bytes())]);
             let assets = EntityAssets::load(&content.resolver).unwrap();
@@ -3463,6 +4057,7 @@ entity = {
             scale: 2.0,
             token: "entity".into(),
             requested_state: None,
+            requested_offset_range: None,
             events: Arc::new(vec![BuildingEntityEvent {
                 particle: None,
                 keep_particle: false,
@@ -3520,11 +4115,14 @@ entity = {
             assets: Some(Arc::new(EntityAssets {
                 content_lease: None,
                 entity_sources: BTreeMap::new(),
+                bindings: BTreeMap::new(),
+                binding_declarations: Vec::new(),
                 models: Mutex::new(BTreeMap::new()),
                 animations: Mutex::new(BTreeMap::new()),
                 poses: BTreeMap::new(),
                 static_attachments: fixture_attachment_catalog(),
                 meshes: BTreeMap::new(),
+                mesh_sources: BTreeMap::new(),
                 mesh_clips: BTreeMap::new(),
                 clips: BTreeMap::new(),
                 templates,

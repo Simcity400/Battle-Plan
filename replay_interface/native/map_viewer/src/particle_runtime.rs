@@ -99,8 +99,13 @@ impl ViewerEntityManager {
     }
 
     pub(crate) fn frame_is_published(&self, time: u32) -> bool {
-        self.frame_outcome.as_ref().is_some_and(|(frame, revision, result)|
-            frame.presentation_time_f32_bits == time && *revision == self.scenes.revision && result.is_ok())
+        self.publication_revision(time).is_some()
+    }
+
+    pub(crate) fn publication_revision(&self, time: u32) -> Option<u64> {
+        self.frame_outcome.as_ref().and_then(|(frame, revision, result)|
+            (frame.presentation_time_f32_bits == time && *revision == self.scenes.revision && result.is_ok())
+                .then_some(*revision))
     }
 
     pub(crate) fn reset_frame_publication(&mut self) -> Result<(), EntityManagerFrameRefusal> {
@@ -908,7 +913,7 @@ pub struct ParticleInstanceUpdate {
     pub action: ParticleAction,
 }
 
-fn native_normalize(vector: [f32; 3], reset_zero: bool) -> [f32; 3] {
+pub(crate) fn native_normalize(vector: [f32; 3], reset_zero: bool) -> [f32; 3] {
     let length = (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt();
     if length == 0.0 {
         if reset_zero {

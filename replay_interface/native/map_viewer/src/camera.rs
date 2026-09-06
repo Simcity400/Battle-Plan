@@ -848,14 +848,14 @@ impl ViewerMapCameraState {
     pub(crate) fn entity_scene_inverse_matrices(&self) -> Result<([[f32; 4]; 4], [[f32; 4]; 4])> {
         self.validate()?;
         let projection = self.projection()?;
-        let view = projection.view_from_eye_look_at(self.current_eye(), self.current_look_at())?;
+        let inverse_view = native_entity_inverse_view(self.current_eye(), self.current_look_at(), [0.0, 1.0, 0.0])?;
         let projection = [
             [projection.x_scale, 0.0, 0.0, 0.0],
             [0.0, projection.y_scale, 0.0, 0.0],
             [0.0, 0.0, projection.depth_a, 1.0],
             [0.0, 0.0, projection.depth_b, 0.0],
         ];
-        Ok((invert_float4x4(projection)?, invert_float4x4(view)?))
+        Ok((invert_float4x4(projection)?, inverse_view))
     }
 
     pub fn inverse_view_projection_matrix(&self) -> Result<[[f32; 4]; 4]> {
@@ -1354,6 +1354,32 @@ fn perspective_divide(value: [f32; 4]) -> Result<[f32; 3]> {
     ])
 }
 
+fn native_entity_inverse_view(eye: [f32; 3], look: [f32; 3], up: [f32; 3]) -> Result<[[f32; 4]; 4]> {
+    use crate::particle_runtime::native_normalize;
+    // 1424e80a0 stores the three separately normalized rows, not a numerically inverted view.
+    let forward = native_normalize(std::array::from_fn(|axis| look[axis] - eye[axis]), true);
+    let right = native_normalize([
+        up[1] * forward[2] - up[2] * forward[1],
+        up[2] * forward[0] - up[0] * forward[2],
+        up[0] * forward[1] - up[1] * forward[0],
+    ], true);
+    let up = native_normalize([
+        right[2] * forward[1] - right[1] * forward[2],
+        right[0] * forward[2] - right[2] * forward[0],
+        right[1] * forward[0] - right[0] * forward[1],
+    ], true);
+    let matrix = [
+        [right[0], right[1], right[2], 0.0],
+        [up[0], up[1], up[2], 0.0],
+        [forward[0], forward[1], forward[2], 0.0],
+        [eye[0], eye[1], eye[2], 1.0],
+    ];
+    if !matrix.iter().flatten().all(|value| value.is_finite()) {
+        return Err("entity scene inverse-view arithmetic is nonfinite".into());
+    }
+    Ok(matrix)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1659,6 +1685,35 @@ mod tests {
             50.0,
         )
         .expect("viewer camera")
+    }
+
+    #[test]
+    fn entity_inverse_view_matches_native_instruction_bits_through_camera_boundary() {
+        let fixture: serde_json::Value = serde_json::from_str(portable_engine_evidence::particle_runtime::CAMERA_CASES).unwrap();
+        let mut different_from_generic_inverse = 0;
+        for (index, row) in fixture["rows"].as_array().unwrap().iter().enumerate() {
+            let vector = |name: &str| std::array::from_fn(|axis|
+                f32::from_bits(row[name][axis].as_u64().unwrap() as u32));
+            let (eye, look, up) = (vector("eye"), vector("look"), vector("up"));
+            let expected: [[u32; 4]; 4] = std::array::from_fn(|r| std::array::from_fn(|c|
+                row["inverse_view"][r * 4 + c].as_u64().unwrap() as u32));
+            assert_eq!(native_entity_inverse_view(eye, look, up).unwrap().map(|r| r.map(f32::to_bits)),
+                expected, "native case {index}");
+            if index < 3 {
+                let mut camera = viewer_camera_fixture();
+                camera.current_eye_f32_bits = eye.map(f32::to_bits);
+                camera.current_look_at_f32_bits = look.map(f32::to_bits);
+                camera.reseal().unwrap();
+                let (_, actual) = camera.entity_scene_inverse_matrices().unwrap();
+                assert_eq!(actual.map(|r| r.map(f32::to_bits)), expected);
+                let generic = invert_float4x4(camera.projection().unwrap()
+                    .view_from_eye_look_at(eye, look).unwrap()).unwrap();
+                different_from_generic_inverse += usize::from(generic.map(|r|r.map(f32::to_bits)) != expected);
+            }
+        }
+        assert!(different_from_generic_inverse > 0);
+        assert!(native_entity_inverse_view([f32::INFINITY, 1.0, 0.0], [0.0; 3], [0.0, 1.0, 0.0])
+            .unwrap_err().to_string().contains("nonfinite"));
     }
 
     #[test]

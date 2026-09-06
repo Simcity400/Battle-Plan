@@ -1370,6 +1370,33 @@ portable_replay/native/engine_evidence/artifacts/arrow_neutral_tint.datdump.txt 
 /portable_replay/native/engine_evidence/artifacts/func_140f34410.decompile.c text eol=lf
 /portable_replay/native/engine_evidence/artifacts/func_140f34620.decompile.c text eol=lf
 
+portable_replay/native/engine_evidence/artifacts/func_1424e80a0.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1424e80a0.instructions.txt text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1424e8280.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1424e8280.instructions.txt text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1425592c0.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1425592c0.instructions.txt text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1422c4440.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1422c4440.instructions.txt text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/particle_camera_cases.json text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1412796a0.instructions.txt text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1422814f0.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1422814f0.instructions.txt text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_14227b9a0.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_14227b9a0.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1424afc10.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1409eb8b0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1409dc590.decompile.c text eol=lf
