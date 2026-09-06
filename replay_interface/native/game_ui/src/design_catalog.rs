@@ -2,10 +2,47 @@
 use crate::readonly_design_peace::DesignerViewKind;
 use crate::stored_country_selection::StoredCountrySelection;
 use replay_core::NamedCountry;
-use replay_core::{
-    ObserverDesignerCandidate, ObserverDesignerCountryFilterRow, ObserverDesignerFamily,
-    WorldFrame,
-};
+use replay_core::{ObserverDesignerFamily, WorldFrame};
+use crate::designer_observer::authored_inputs::DesignerAuthoredInputs;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DesignerRowIcon {
+    Sprite(String),
+    Texture(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObserverDesignerCandidate {
+    pub record: replay_core::DesignRecord,
+    pub designer_window_tokens: Vec<String>,
+    pub icon: Result<DesignerRowIcon, String>,
+    pub missions: Result<u32, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObserverDesignerCountryFilterRow {
+    pub country_tag: String,
+    pub candidate_designer_window_tokens: Vec<Vec<String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DesignerUnresolvedSuffix {
+    pub source_country_registry_index: u64,
+    pub source_list: String,
+    pub source_list_ordinal: u64,
+    pub design_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct ObserverDesignerCatalog {
+    pub source_record_id: String,
+    pub anchor_design_id: String,
+    pub country_filter_rows: Vec<ObserverDesignerCountryFilterRow>,
+    pub ordered: Vec<ObserverDesignerCandidate>,
+    pub unresolved_suffix: Option<DesignerUnresolvedSuffix>,
+    pub field_refusals: BTreeMap<String, String>,
+}
 pub use replay_core::{
     DesignKind, DesignLifecycleState, DesignModule, DesignRecord, DesignStat, DesignUpgrade,
     DisplayOrderSnapshot, FieldCompleteness,
@@ -108,6 +145,8 @@ pub struct AdmittedObserverDesignerView {
     family: DesignerViewKind,
     anchor_design_id: String,
     ordered: Vec<ObserverDesignerCandidate>,
+    unresolved_suffix: Option<DesignerUnresolvedSuffix>,
+    field_refusals: BTreeMap<String, String>,
     country_filter_rows: Vec<ObserverDesignerCountryFilterRow>,
     excluded_country_filter_tags: Vec<String>,
     selected_index: Option<usize>,
@@ -134,6 +173,22 @@ impl AdmittedObserverDesignerView {
 
     pub fn ordered(&self) -> &[ObserverDesignerCandidate] {
         &self.ordered
+    }
+
+    pub fn unresolved_suffix(&self) -> Option<&DesignerUnresolvedSuffix> {
+        self.unresolved_suffix.as_ref()
+    }
+
+    pub fn membership_complete(&self) -> bool {
+        self.unresolved_suffix.is_none()
+    }
+
+    pub fn field_refusals(&self) -> &BTreeMap<String, String> {
+        &self.field_refusals
+    }
+
+    pub fn country_filters_complete(&self) -> bool {
+        !self.field_refusals.contains_key("country_filters")
     }
 
     pub fn country_filter_rows(&self) -> &[ObserverDesignerCountryFilterRow] {
@@ -168,6 +223,7 @@ pub enum ObserverDesignerViewRejection {
 }
 
 pub fn resolve_observer_designer_view_state(
+    authored: &DesignerAuthoredInputs,
     frame: &WorldFrame,
     owner_tag: NamedCountry<'_>,
     viewer: &ObserverDesignerViewState,
@@ -184,17 +240,14 @@ pub fn resolve_observer_designer_view_state(
     if !context_is_current {
         resolved.anchor_design_id.clear();
         resolved.selected_design_id = None;
-        let current = admit_observer_designer_view(frame, owner_tag, &resolved)?;
+        let current = admit_observer_designer_view(authored, frame, owner_tag, &resolved)?;
         resolved.anchor_design_id = current.anchor_design_id().to_string();
         resolved.selected_design_id = viewer.selected_design_id.as_ref().and_then(|selected| {
-            current
-                .ordered()
-                .iter()
-                .any(|candidate| candidate.record.design_id == *selected)
-                .then(|| selected.clone())
+            (current.ordered().iter().any(|candidate| candidate.record.design_id == *selected)
+                || !current.membership_complete()).then(|| selected.clone())
         });
     }
-    let admitted = admit_observer_designer_view(frame, owner_tag, &resolved)?;
+    let admitted = admit_observer_designer_view(authored, frame, owner_tag, &resolved)?;
     resolved.anchor_design_id = admitted.anchor_design_id().to_string();
     resolved.anchor_catalogue_hour = frame.hour_index();
     resolved.anchor_catalogue_owner_tag = StoredCountrySelection::of(owner_tag.tag());
@@ -203,6 +256,7 @@ pub fn resolve_observer_designer_view_state(
 }
 
 pub fn admit_observer_designer_view(
+    authored: &DesignerAuthoredInputs,
     frame: &WorldFrame,
     owner_tag: NamedCountry<'_>,
     viewer: &ObserverDesignerViewState,
@@ -240,16 +294,9 @@ pub fn admit_observer_designer_view(
             reason: "negative replay hour cannot address A27".into(),
         }
     })?;
-    let admitted = catalogue
-        .observer_designer_catalog_at_hour(
-            hour,
-            &viewer.anchor_design_id,
-            owner_tag.tag(),
-            family,
-            viewer.our_filter_enabled,
-            viewer.foreign_filter_enabled,
-            viewer.obsolete_filter_enabled,
-            &viewer.excluded_country_filter_tags,
+    let mut admitted = crate::designer_observer::controller::admit(
+            authored, frame, catalogue.native_designer_inputs_at_hour(hour),
+            owner_tag.tag(), family, viewer,
         )
         .map_err(
             |reason| ObserverDesignerViewRejection::CatalogueUnavailable {
@@ -259,15 +306,15 @@ pub fn admit_observer_designer_view(
         )?;
     let selected_index = match viewer.selected_design_id.as_deref() {
         None => None,
-        Some(selected) => Some(
-            admitted
-                .ordered
-                .iter()
-                .position(|candidate| candidate.record.design_id == selected)
-                .ok_or_else(|| {
-                    ObserverDesignerViewRejection::UnknownSelection(selected.to_string())
-                })?,
-        ),
+        Some(selected) => match admitted.ordered.iter().position(|row| row.record.design_id == selected) {
+            Some(index) => Some(index),
+            None if admitted.unresolved_suffix.is_some() => {
+                admitted.field_refusals.insert("selected_design".into(),
+                    format!("XUI13 selection {selected:?} is outside the proven row prefix"));
+                None
+            }
+            None => return Err(ObserverDesignerViewRejection::UnknownSelection(selected.into())),
+        },
     };
     Ok(AdmittedObserverDesignerView {
         source_record_id: admitted.source_record_id,
@@ -275,6 +322,8 @@ pub fn admit_observer_designer_view(
         family: viewer.family,
         anchor_design_id: admitted.anchor_design_id,
         ordered: admitted.ordered,
+        unresolved_suffix: admitted.unresolved_suffix,
+        field_refusals: admitted.field_refusals,
         country_filter_rows: admitted.country_filter_rows,
         excluded_country_filter_tags: viewer.excluded_country_filter_tags.clone(),
         selected_index,

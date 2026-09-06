@@ -46,7 +46,7 @@ impl AuthoredEquipmentCatalog {
             if entry.value.as_object().is_none() { return Err(malformed(token, "definition")) }
             let mut definition = AuthoredEquipmentDefinition {
                 token: token.into(), source: source.clone(), authored: raw.value.clone(),
-                expanded: entry.value.clone(), container_limit: None, generation: None, generated_type_mask: None,
+                expanded: entry.value.clone(), container_limit: None, generation: None, generated_type_mask: None, resolved_module_slots: None,
             };
             if !modules {
                 for field in VERIFIED_STATS {
@@ -60,6 +60,8 @@ impl AuthoredEquipmentCatalog {
                 if !self.definitions.contains_key(token) { self.definition_order.push(token.into()) }
                 // 1409e5170 resets an existing equipment before parsing its replacement.
                 self.definitions.insert(token.into(), vec![definition]);
+                let slots = self.module_slots(token, &mut Vec::new());
+                self.definitions.get_mut(token).unwrap()[0].resolved_module_slots = Some(slots);
             }
         }
         Ok(())
@@ -79,7 +81,7 @@ impl AuthoredEquipmentCatalog {
             } else {
                 recipes.push(AuthoredEquipmentDefinition {
                     token: token.into(), source: source.clone(), authored: raw.value.clone(),
-                    expanded: entry.value.clone(), container_limit: None, generation: None, generated_type_mask: None,
+                    expanded: entry.value.clone(), container_limit: None, generation: None, generated_type_mask: None, resolved_module_slots: None,
                 });
             }
         }
@@ -154,6 +156,7 @@ impl AuthoredEquipmentCatalog {
             }
             generated.generated_type_mask = Some(mask);
             if clear_slots {
+                generated.resolved_module_slots = Some(Ok(Vec::new()));
                 remove_field(&mut generated.expanded, "default_modules");
                 set_value(&mut generated.expanded, "module_slots", Value::Object(Vec::new()));
             }

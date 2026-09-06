@@ -1,6 +1,7 @@
 mod generation;
+mod designer;
 
-use crate::{ActiveDlcPresentation, GameFileResolver};
+use crate::{ActiveDlcPresentation, ContentAdmissionLease, GameFileResolver};
 use portable_content_manifest::paradox_text::{self, Value};
 use replay_core::UsedContentKey;
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,6 +43,7 @@ pub struct AuthoredEquipmentDefinition {
     pub generation: Option<EquipmentGeneration>,
     expanded: Value,
     generated_type_mask: Option<u64>,
+    resolved_module_slots: Option<EquipmentResult<Vec<String>>>,
     container_limit: Option<Value>,
 }
 
@@ -184,12 +186,18 @@ pub struct AuthoredEquipmentCatalog {
 
 impl AuthoredEquipmentCatalog {
     pub fn load(resolver: &GameFileResolver) -> EquipmentResult<Self> {
-        let sources = resolver.require_complete_admitted_dir(
+        let lease = resolver.content_admission_lease().ok_or_else(||
+            EquipmentDefinitionError::ContentAdmission("equipment definitions require a validated content admission".into()))?;
+        Self::from_admission_lease(&lease)
+    }
+
+    pub fn from_admission_lease(lease: &ContentAdmissionLease) -> EquipmentResult<Self> {
+        let sources = lease.require_complete_admitted_dir(
             "common/units/equipment", Some("txt"), true, "equipment definitions",
         ).map_err(|error| EquipmentDefinitionError::ContentAdmission(error.to_string()))?;
         let mut catalog = Self { definitions: BTreeMap::new(), sources: Vec::new(), modules: BTreeMap::new(), active_dlcs: None, generation_resolved: false, generation_dlcs: None, definition_order: Vec::new() };
         for source in sources {
-            let bytes = resolver.read_admitted_used_content(&source)
+            let bytes = lease.read_used_content(&source)
                 .map_err(|error| EquipmentDefinitionError::ContentAdmission(error.to_string()))?;
             catalog.insert_source(source, &bytes)?;
         }
@@ -355,6 +363,18 @@ impl AuthoredEquipmentCatalog {
         Ok((additional_type_mask, default_modules))
     }
 
+    pub fn designer_category_mask(&self, token: &str) -> EquipmentResult<u64> {
+        self.require_resolved_generation(token)?;
+        let own = self.definition(token)?.type_mask()?;
+        let archetype = if own == 0 {
+            self.resolve_archetype(token, &mut Vec::new())?
+                .map(|row| self.definition(&row.token)?.type_mask()).transpose()?
+        } else { None };
+        let (additional, _) = self.default_module_profile(token)?;
+        crate::equipment_model_law::equipment_model_category(own, archetype, additional)
+            .map_err(|_| EquipmentDefinitionError::MissingArchetypeCategory(token.into()))
+    }
+
     pub fn designer_classification(&self, token: &str) -> EquipmentResult<EquipmentDesignerClassification> {
         self.classify_designer_definition(token, &mut Vec::new())
     }
@@ -457,7 +477,7 @@ impl AuthoredEquipmentCatalog {
                 let definitions = if modules { &mut self.modules } else { &mut self.definitions };
                 definitions.entry(token.into()).or_default().push(AuthoredEquipmentDefinition {
                     token: token.into(), source: source.clone(), authored: definition.value.clone(),
-                    generation: None, generated_type_mask: None,
+                    generation: None, generated_type_mask: None, resolved_module_slots: None,
                     expanded: expanded_definition.value.clone(), container_limit: limit.clone(),
                 });
             }
@@ -517,7 +537,7 @@ mod tests {
         }
     }
 
-    fn catalog(text: &str) -> AuthoredEquipmentCatalog {
+    pub(super) fn catalog(text: &str) -> AuthoredEquipmentCatalog {
         let mut catalog = AuthoredEquipmentCatalog { definitions: BTreeMap::new(), sources: Vec::new(), modules: BTreeMap::new(), active_dlcs: None, generation_resolved: false, generation_dlcs: None, definition_order: Vec::new() };
         catalog.insert_source(source("common/units/equipment/a.txt"), text.as_bytes()).unwrap();
         catalog

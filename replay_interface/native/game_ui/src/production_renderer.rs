@@ -6328,20 +6328,22 @@ impl ProductionUiRenderer {
                     reason: "the viewer opened the designer without selecting a country".into(),
                 }),
                 Some(country_tag) => {
-                    match crate::design_catalog::resolve_observer_designer_view_state(
-                        frame,
-                        country_tag,
-                        requested,
-                    ) {
+                    match crate::designer_observer::authored_inputs::DesignerAuthoredInputs::load(&self.resolver)
+                        .map_err(|error| crate::design_catalog::ObserverDesignerViewRejection::CatalogueUnavailable {
+                            hour: frame.hour_index(), reason: error.to_string(),
+                        })
+                        .and_then(|authored| crate::design_catalog::resolve_observer_designer_view_state(
+                            &authored, frame, country_tag, requested,
+                        )) {
                         Ok((resolved, admitted)) => {
-                            measured_empty = admitted.ordered().is_empty();
+                            measured_empty = admitted.membership_complete() && admitted.ordered().is_empty();
                             resolved_viewer = Some(resolved);
                         }
                         Err(error) => surface_gaps.push(ObserverUiGap {
                             surface: "XUI13/designer",
                             field: "designer_candidate_authority",
                             required_domain:
-                                "extractor.a27.native_designer_catalog.a729.v5 complete all-country designer candidate carrier",
+                                "exact-hour A27 native inputs, D53 physical-slot intelligence and authenticated authored designer definitions",
                             reason: format!(
                                 "XUI13 strict designer authority is unavailable: {error:?}"
                             ),

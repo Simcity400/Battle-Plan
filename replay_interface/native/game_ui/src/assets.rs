@@ -427,6 +427,13 @@ impl AssetResolver {
         })
     }
 
+    pub(crate) fn authored_equipment(&self) -> Result<map_viewer::authored_equipment::AuthoredEquipmentCatalog> {
+        let lease = self.admission_lease.as_ref().ok_or_else(||
+            GameUiError::missing("XUI13 equipment definitions require authenticated content"))?;
+        map_viewer::authored_equipment::AuthoredEquipmentCatalog::from_admission_lease(lease)
+            .map_err(|error| GameUiError::missing(error.to_string()))
+    }
+
     pub fn roots(&self) -> &[PathBuf] {
         &self.roots
     }

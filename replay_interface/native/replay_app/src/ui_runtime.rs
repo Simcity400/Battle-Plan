@@ -1915,8 +1915,17 @@ fn apply_xui13_feature_local_composition(
                 designer_surface.family,
                 designer_surface.ordered_design_ids.len(),
                 designer_surface.visible_design_ids.len(),
-                measured_empty,
+                measured_empty && designer_surface.membership_complete,
             ));
+            for (field, reason) in designer_surface.field_refusals {
+                let gap = game_ui::production_renderer::ObserverUiGap {
+                    surface: "XUI13/designer", field: "row_or_subtree",
+                    required_domain: "exact-hour native inputs and authenticated authored designer laws",
+                    reason: format!("{field}: {reason}"),
+                };
+                feature_local_gaps.push(format!("XUI13:field={field}:domain={}:unavailable={}", gap.required_domain, gap.reason));
+                output_gaps.push(gap);
+            }
             Ok(true)
         }
         Err(error) => {
@@ -1924,7 +1933,7 @@ fn apply_xui13_feature_local_composition(
                 surface: "XUI13/designer",
                 field: "effective_content_or_compositor_capability",
                 required_domain:
-                    "complete A27-v3 authority plus effective authored controller/window/template roots",
+                    "exact-hour A27 native inputs, D53 intelligence and effective authored designer roots",
                 reason: format!("XUI13 feature-local composition rejected: {error:?}"),
             };
             feature_local_gaps.push(format!(
@@ -8357,6 +8366,33 @@ mod tests {
             .expect("controller rollback");
         assert!(manager_rollback < controller_rollback);
         assert!(reject.contains(".xui05_pending_controller_checkpoint"));
+    }
+
+    #[test]
+    fn xui13_success_retains_pixels_and_forwards_each_named_field_or_subtree_refusal() {
+        let mut framebuffer = game_ui::font::blank_image(2, 1);
+        let mut image = game_ui::font::blank_image(2, 1);
+        image.pixels.copy_from_slice(&[11,22,33,255,44,55,66,255]);
+        let surface = game_ui::designer_observer::ObserverDesignerSurface {
+            family: game_ui::readonly_design_peace::DesignerViewKind::Tank,
+            owner_tag: "GER".into(), authored_root: "tank_designer_view".into(), source_files: vec![],
+            ordered_design_ids: vec!["7:70".into()], visible_design_ids: vec!["7:70".into()], selected_design_id: None,
+            ordered_country_filter_tags: vec![], visible_country_filter_tags: vec![], selected_country_filter_tags: vec![],
+            output: game_ui::compose::ComposeOutput { image: image.clone(), report: Default::default(), debug_rects: vec![] },
+            field_refusals: std::collections::BTreeMap::from([
+                ("7:70/missions".into(), "missing exact mission operands".into()),
+                ("row_suffix".into(), "ITA eligibility unavailable".into())]),
+            membership_complete: false, country_filters_complete: false,
+        };
+        let mut count=3; let mut receipts=Vec::new(); let mut gaps=Vec::new(); let mut feature_gaps=Vec::new();
+        assert!(apply_xui13_feature_local_composition(Ok(surface), &mut framebuffer, "GER", true,
+            &mut count, &mut receipts, &mut gaps, &mut feature_gaps).unwrap());
+        assert_eq!(framebuffer,image); assert_eq!(count,4); assert_eq!(receipts.len(),1);
+        assert!(receipts[0].contains("measured_empty=false"));
+        assert_eq!(gaps.len(),2); assert_eq!(feature_gaps.len(),2);
+        assert!(gaps.iter().all(|gap|gap.surface=="XUI13/designer"));
+        assert!(gaps[0].reason.contains("7:70/missions"));
+        assert!(feature_gaps[1].contains("row_suffix"));
     }
 
     #[test]

@@ -4,7 +4,6 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const A27_LIVE_CATALOG_SCHEMA: &str = "extractor.a27.native_catalog.a729.v4";
-pub const A27_LIVE_CATALOG_DESIGNER_SCHEMA: &str = "extractor.a27.native_designer_catalog.a729.v5";
 pub const A27_LIVE_CATALOG_TIMELINE_SCHEMA: &str =
     "extractor.a27.live_heap_catalog_timeline.a729.v2";
 pub const PORTABLE_DESIGN_CATALOG_SCHEMA: &str = "hoi4.portable-design-catalog.v4";
@@ -12,11 +11,6 @@ pub const PORTABLE_ARTIFACT_PATH: &str = "static/design_catalog_live/a27_live_ca
 const DATE_EPOCH_RAW: u64 = 43_799_999;
 const EXACT_A729_PROGRAM: &str = "hoi4.exe 1.19.2.0.a729";
 const EXACT_A729_SHA256: &str = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
-const XUI13_CLASSIFIER_MANIFEST_SHA256: &str =
-    "733bfeb07165754e30cec9d8395f244b0515f92bc431baff5d236b51b4f70df9";
-const XUI13_CONTROLLER_MANIFEST_SHA256: &str =
-    "8f50fd0c83ea637c3a9464c7061a7f6c118fda9195e4cccd88ae12a3abc765c3";
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DesignKind {
     DivisionTemplate,
@@ -105,6 +99,7 @@ pub struct NativeDesignerVariantInputs {
     pub catalog_scan_ordinal: u64,
     pub equipment_definition_token: String,
     pub equipment_token_raw: u32,
+    pub source_occurrences: Vec<DesignSourceOccurrence>,
     pub item_icon_override: DesignItemIconObservation,
     pub serialized_variant_flag_2b9d: DesignByteObservation,
     pub record: DesignRecord,
@@ -249,41 +244,6 @@ pub enum ObserverDesignerFamily {
     Plane,
 }
 
-impl ObserverDesignerFamily {
-    fn token(self) -> &'static str {
-        match self {
-            Self::Ship => "ship",
-            Self::Tank => "tank",
-            Self::Plane => "plane",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ObserverDesignerCandidate {
-    pub record: DesignRecord,
-    pub designer_window_tokens: Vec<String>,
-    pub icon_token: Option<String>,
-    pub icon_authority: String,
-    pub mission_mask: u32,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ObserverDesignerCountryFilterRow {
-    pub country_tag: String,
-    pub candidate_designer_window_tokens: Vec<Vec<String>>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ObserverDesignerCatalog {
-    pub source_record_id: String,
-    pub anchor_design_id: String,
-    pub selected_country_tag: String,
-    pub family: ObserverDesignerFamily,
-    pub country_filter_rows: Vec<ObserverDesignerCountryFilterRow>,
-    pub ordered: Vec<ObserverDesignerCandidate>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DesignCatalogJoinError {
     CatalogUnavailable,
@@ -306,9 +266,7 @@ impl PortableDesignCatalog {
         {
             let artifact: PortableArtifact = serde_json::from_value(value)
                 .map_err(|error| format!("typed portable A27 catalog projection: {error}"))?;
-            if artifact.source_schema != A27_LIVE_CATALOG_SCHEMA
-                && artifact.source_schema != A27_LIVE_CATALOG_DESIGNER_SCHEMA
-            {
+            if artifact.source_schema != A27_LIVE_CATALOG_SCHEMA {
                 return Err("portable A27 catalog source schema mismatch".into());
             }
             if artifact.exact_native_catalog.is_null() {
@@ -346,14 +304,15 @@ impl PortableDesignCatalog {
             catalog.validate_portable()?;
             return Ok(catalog);
         }
+        reject_designer_outcomes(&value)?;
         let mut exact_native_catalog = value.clone();
         strip_relocation_fields(&mut exact_native_catalog);
         let raw: RawCatalog = serde_json::from_value(value)
             .map_err(|error| format!("typed A27 live catalog projection: {error}"))?;
-        if raw.schema != A27_LIVE_CATALOG_SCHEMA && raw.schema != A27_LIVE_CATALOG_DESIGNER_SCHEMA {
+        if raw.schema != A27_LIVE_CATALOG_SCHEMA {
             return Err(format!(
                 "A27 live catalog schema {:?} != {:?}",
-                raw.schema, A27_LIVE_CATALOG_DESIGNER_SCHEMA
+                raw.schema, A27_LIVE_CATALOG_SCHEMA
             ));
         }
         if !raw.full_replacement
@@ -892,267 +851,6 @@ impl PortableDesignCatalog {
         ))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn observer_designer_catalog_at_hour(
-        &self,
-        hour: u64,
-        anchor_design_id: &str,
-        selected_country_tag: &str,
-        family: ObserverDesignerFamily,
-        our_filter_enabled: bool,
-        foreign_filter_enabled: bool,
-        obsolete_filter_enabled: bool,
-        excluded_country_tags: &[String],
-    ) -> Result<ObserverDesignerCatalog, String> {
-        if self.schema != A27_LIVE_CATALOG_DESIGNER_SCHEMA {
-            return Err(format!(
-                "XUI13 requires {A27_LIVE_CATALOG_DESIGNER_SCHEMA}; recording carries {}",
-                self.schema
-            ));
-        }
-        if selected_country_tag.trim().is_empty() {
-            return Err("XUI13 selected-country identity is empty".into());
-        }
-        let exact = self.exact_native_at_hour(hour)?;
-        let raw: RawCatalog = serde_json::from_value(exact)
-            .map_err(|error| format!("typed XUI13 native frame: {error}"))?;
-        validate_raw_catalog(&raw)?;
-        if !raw
-            .countries
-            .iter()
-            .any(|country| country.tag == selected_country_tag)
-        {
-            return Err(format!(
-                "XUI13 selected country {selected_country_tag:?} is absent from A27"
-            ));
-        }
-        let mut excluded_country_set = BTreeSet::new();
-        for tag in excluded_country_tags {
-            if !raw.countries.iter().any(|country| country.tag == *tag)
-                || !excluded_country_set.insert(tag.as_str())
-            {
-                return Err(format!(
-                    "XUI13 excluded country filter {tag:?} is invalid/duplicate"
-                ));
-            }
-        }
-        let resolved_anchor_design_id = if anchor_design_id.trim().is_empty() {
-            raw.variants.iter().find_map(|row| {
-                row.definition
-                    .designer_classification
-                    .as_ref()
-                    .filter(|classification| {
-                        classification
-                            .family_membership
-                            .iter()
-                            .any(|candidate| candidate == family.token())
-                    })
-                    .map(|_| format!("{}:{}", row.id, row.runtime_type))
-            })
-        } else {
-            None
-        };
-        if anchor_design_id.trim().is_empty() && resolved_anchor_design_id.is_none() {
-            if !excluded_country_set.is_empty() {
-                return Err(
-                    "XUI13 measured-empty family cannot select absent country-filter rows".into(),
-                );
-            }
-            let source_record_id = self
-                .temporal_deltas
-                .iter()
-                .find(|delta| delta.capture_hour_index == hour)
-                .map(|delta| delta.source_record_id.clone())
-                .unwrap_or_else(|| self.source_record_id.clone());
-            return Ok(ObserverDesignerCatalog {
-                source_record_id,
-                anchor_design_id: String::new(),
-                selected_country_tag: selected_country_tag.to_string(),
-                family,
-                country_filter_rows: Vec::new(),
-                ordered: Vec::new(),
-            });
-        }
-        let anchor_design_id = resolved_anchor_design_id
-            .as_deref()
-            .unwrap_or(anchor_design_id);
-        let anchor = raw
-            .variants
-            .iter()
-            .find(|row| format!("{}:{}", row.id, row.runtime_type) == anchor_design_id)
-            .ok_or_else(|| format!("XUI13 anchor {anchor_design_id:?} is absent"))?;
-        let anchor_classification = anchor
-            .definition
-            .designer_classification
-            .as_ref()
-            .ok_or_else(|| "XUI13 anchor lacks designer classification".to_string())?;
-        if !anchor_classification
-            .family_membership
-            .iter()
-            .any(|candidate| candidate == family.token())
-        {
-            return Err(format!(
-                "XUI13 anchor {anchor_design_id:?} is not a {}-designer definition",
-                family.token()
-            ));
-        }
-        let context = raw
-            .designer_controller_contexts
-            .iter()
-            .find(|context| context.equipment_token_raw == anchor.definition.equipment_token_raw)
-            .ok_or_else(|| "XUI13 anchor has no designer controller context".to_string())?;
-        let eligible = context
-            .eligible_country_tags
-            .get(family.token())
-            .ok_or_else(|| "XUI13 controller context omits the selected family".to_string())?
-            .iter()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>();
-        let admitted_countries = raw
-            .countries
-            .iter()
-            .filter(|country| {
-                country.tag == selected_country_tag || eligible.contains(country.tag.as_str())
-            })
-            .map(|country| country.registry_index)
-            .collect::<BTreeSet<_>>();
-        let mut occurrence_order = BTreeMap::new();
-        for row in &raw.variants {
-            for occurrence in &row.source_occurrences {
-                if !admitted_countries.contains(&occurrence.source_country_registry_index) {
-                    continue;
-                }
-                let list_ordinal = match occurrence.source_list.as_str() {
-                    "A" => 0_u8,
-                    "B" => 1_u8,
-                    _ => return Err("XUI13 occurrence has an invalid source list".into()),
-                };
-                let key = (
-                    occurrence.source_country_registry_index,
-                    list_ordinal,
-                    occurrence.source_list_ordinal,
-                );
-                if occurrence_order.insert(key, row).is_some() {
-                    return Err("XUI13 occurrence order contains a duplicate native slot".into());
-                }
-            }
-        }
-        let mut filter_country_witnesses = BTreeMap::<String, Vec<Vec<String>>>::new();
-        let mut filter_seen_designs = BTreeSet::new();
-        if foreign_filter_enabled {
-            for row in occurrence_order.values() {
-                let design_id = format!("{}:{}", row.id, row.runtime_type);
-                if !filter_seen_designs.insert(design_id.clone()) {
-                    continue;
-                }
-                let classification = row
-                    .definition
-                    .designer_classification
-                    .as_ref()
-                    .ok_or_else(|| format!("XUI13 row {design_id} lacks classification"))?;
-                if classification.controller_candidate_base
-                    && classification
-                        .family_membership
-                        .iter()
-                        .any(|candidate| candidate == family.token())
-                    && row.selected_country_tag != selected_country_tag
-                {
-                    filter_country_witnesses
-                        .entry(row.selected_country_tag.clone())
-                        .or_default()
-                        .push(classification.designer_window_tokens.clone());
-                }
-            }
-        }
-        let mut filter_countries = raw
-            .countries
-            .iter()
-            .filter(|country| filter_country_witnesses.contains_key(country.tag.as_str()))
-            .collect::<Vec<_>>();
-        filter_countries.sort_by_key(|country| country.designer_pointer_order_ordinal);
-        let country_filter_rows = filter_countries
-            .into_iter()
-            .map(|country| ObserverDesignerCountryFilterRow {
-                country_tag: country.tag.clone(),
-                candidate_designer_window_tokens: filter_country_witnesses
-                    .remove(country.tag.as_str())
-                    .unwrap_or_default(),
-            })
-            .collect::<Vec<_>>();
-        if excluded_country_set.iter().any(|tag| {
-            !country_filter_rows
-                .iter()
-                .any(|candidate| candidate.country_tag == *tag)
-        }) {
-            return Err(
-                "XUI13 country filter selects a country absent from the controller strip".into(),
-            );
-        }
-        let records = self
-            .records_at_hour(hour)?
-            .into_iter()
-            .map(|record| (record.design_id.clone(), record))
-            .collect::<BTreeMap<_, _>>();
-        let mut seen = BTreeSet::new();
-        let mut ordered = Vec::new();
-        for row in occurrence_order.into_values() {
-            let design_id = format!("{}:{}", row.id, row.runtime_type);
-            if !seen.insert(design_id.clone()) {
-                continue;
-            }
-            let classification = row
-                .definition
-                .designer_classification
-                .as_ref()
-                .ok_or_else(|| format!("XUI13 row {design_id} lacks classification"))?;
-            if !classification.controller_candidate_base
-                || !classification
-                    .family_membership
-                    .iter()
-                    .any(|candidate| candidate == family.token())
-            {
-                continue;
-            }
-            let is_our = row.selected_country_tag == selected_country_tag;
-            if (!our_filter_enabled && is_our)
-                || (!foreign_filter_enabled && (row.origin_override_tag.is_some() || !is_our))
-                || (!obsolete_filter_enabled && row.obsolete)
-                || excluded_country_set.contains(row.selected_country_tag.as_str())
-            {
-                continue;
-            }
-            let visual = row
-                .definition
-                .designer_row_visual
-                .as_ref()
-                .ok_or_else(|| format!("XUI13 row {design_id} lacks row visual"))?;
-            ordered.push(ObserverDesignerCandidate {
-                record: records
-                    .get(&design_id)
-                    .ok_or_else(|| format!("XUI13 row {design_id} has no portable projection"))?
-                    .clone(),
-                designer_window_tokens: classification.designer_window_tokens.clone(),
-                icon_token: visual.icon_token.clone(),
-                icon_authority: visual.icon_authority.clone(),
-                mission_mask: visual.mission_mask,
-            });
-        }
-        let source_record_id = self
-            .temporal_deltas
-            .iter()
-            .find(|delta| delta.capture_hour_index == hour)
-            .map(|delta| delta.source_record_id.clone())
-            .unwrap_or_else(|| self.source_record_id.clone());
-        Ok(ObserverDesignerCatalog {
-            source_record_id,
-            anchor_design_id: anchor_design_id.to_string(),
-            selected_country_tag: selected_country_tag.to_string(),
-            family,
-            country_filter_rows,
-            ordered,
-        })
-    }
-
     pub fn native_row_delta_from(&self, previous: &Self) -> Result<Value, String> {
         let delta = build_temporal_delta(1, previous, self)?;
         Ok(serde_json::json!({
@@ -1181,6 +879,7 @@ impl PortableDesignCatalog {
                 design_id, catalog_scan_ordinal: row.catalog_scan_ordinal,
                 equipment_definition_token: row.definition.archetype_token,
                 equipment_token_raw: row.definition.equipment_token_raw,
+                source_occurrences: row.source_occurrences,
                 item_icon_override: row.definition.item_icon_override,
                 serialized_variant_flag_2b9d: row.definition.serialized_variant_flag_2b9d,
                 record, model,
@@ -1278,8 +977,7 @@ impl PortableDesignCatalog {
     }
 
     fn validate_portable(&self) -> Result<(), String> {
-        if (self.schema != A27_LIVE_CATALOG_SCHEMA
-            && self.schema != A27_LIVE_CATALOG_DESIGNER_SCHEMA)
+        if self.schema != A27_LIVE_CATALOG_SCHEMA
             || self.source_record_id != format!("a27-live-catalog:{}", self.source_sha256)
             || self.source_sha256.len() != 64
             || !self
@@ -1695,13 +1393,14 @@ fn contains_relocation_field(value: &Value) -> bool {
 }
 
 fn validate_exact_native_catalog(value: &Value, capture_hour_index: u64) -> Result<(), String> {
+    reject_designer_outcomes(value)?;
     if contains_relocation_field(value) {
         return Err(
             "portable A27 native authority contains process-local relocation fields".into(),
         );
     }
     let schema = value.get("schema").and_then(Value::as_str);
-    if (schema != Some(A27_LIVE_CATALOG_SCHEMA) && schema != Some(A27_LIVE_CATALOG_DESIGNER_SCHEMA))
+    if schema != Some(A27_LIVE_CATALOG_SCHEMA)
         || value.get("full_replacement").and_then(Value::as_bool) != Some(true)
     {
         return Err("portable A27 native authority has the wrong schema/replacement law".into());
@@ -2016,6 +1715,17 @@ fn validate_subunits(
     Ok(())
 }
 
+fn reject_designer_outcomes(value: &Value) -> Result<(), String> {
+    if value.get("designer_controller_contexts").is_some()
+        || value.get("variants").and_then(Value::as_array).is_some_and(|rows| rows.iter().any(|row|
+            row.get("definition").is_some_and(|definition|
+                definition.get("designer_classification").is_some() || definition.get("designer_row_visual").is_some())))
+    {
+        return Err("A27 contains precomputed viewer-owned designer outcomes".into());
+    }
+    Ok(())
+}
+
 fn validate_raw_catalog(raw: &RawCatalog) -> Result<(), String> {
     if let DesignU32Observation::Unavailable { reason } = &raw.runtime_dlc_mask {
         if reason.kind != "unreadable" || reason.field.is_empty() {
@@ -2031,86 +1741,14 @@ fn validate_raw_catalog(raw: &RawCatalog) -> Result<(), String> {
     }
     let mut country_tags = BTreeSet::new();
     let mut developed_slots = BTreeSet::new();
-    let mut designer_pointer_ordinals = BTreeSet::new();
     for (ordinal, country) in raw.countries.iter().enumerate() {
         if country.registry_index != ordinal as u64
             || country.tag.trim().is_empty()
             || !country_tags.insert(country.tag.as_str())
-            || (raw.schema == A27_LIVE_CATALOG_DESIGNER_SCHEMA
-                && (!designer_pointer_ordinals.insert(
-                    country.designer_pointer_order_ordinal.ok_or_else(|| {
-                        "A27 v3 country lacks designer pointer-order ordinal".to_string()
-                    })?,
-                )))
+
         {
             return Err("A27 live catalog has an invalid country registry".into());
         }
-    }
-    if raw.schema == A27_LIVE_CATALOG_DESIGNER_SCHEMA
-        && designer_pointer_ordinals != (0..raw.countries.len() as u64).collect::<BTreeSet<_>>()
-    {
-        return Err("A27 v3 country pointer-order ordinals are not a permutation".into());
-    }
-    if raw.schema == A27_LIVE_CATALOG_DESIGNER_SCHEMA {
-        let registry_order = raw
-            .countries
-            .iter()
-            .map(|country| country.tag.as_str())
-            .collect::<Vec<_>>();
-        let registry_tags = registry_order.iter().copied().collect::<BTreeSet<_>>();
-        let expected_families = ["plane", "ship", "tank"]
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        let mut context_tokens = BTreeSet::new();
-        for context in &raw.designer_controller_contexts {
-            if context.equipment_token_raw == 0
-                || !context_tokens.insert(context.equipment_token_raw)
-                || context.authority != "exact_a729_equipment_designer_country_table"
-                || context.controller_manifest_sha256 != XUI13_CONTROLLER_MANIFEST_SHA256
-                || context.country_registry_count != raw.country_count
-                || context.table_values_sha256.len() != 64
-                || !context
-                    .table_values_sha256
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit())
-                || context
-                    .threshold_raw
-                    .keys()
-                    .map(String::as_str)
-                    .collect::<BTreeSet<_>>()
-                    != expected_families
-                || context
-                    .eligible_country_tags
-                    .keys()
-                    .map(String::as_str)
-                    .collect::<BTreeSet<_>>()
-                    != expected_families
-            {
-                return Err("A27 designer controller context is incomplete".into());
-            }
-            for tags in context.eligible_country_tags.values() {
-                if tags.iter().any(|tag| !registry_tags.contains(tag.as_str()))
-                    || tags.windows(2).any(|pair| {
-                        registry_order
-                            .iter()
-                            .position(|tag| *tag == pair[0].as_str())
-                            .zip(
-                                registry_order
-                                    .iter()
-                                    .position(|tag| *tag == pair[1].as_str()),
-                            )
-                            .is_none_or(|(left, right)| left >= right)
-                    })
-                {
-                    return Err("A27 designer eligibility is not registry ordered".into());
-                }
-            }
-        }
-        if context_tokens.is_empty() {
-            return Err("A27 designer controller context census is empty".into());
-        }
-    } else if !raw.designer_controller_contexts.is_empty() {
-        return Err("legacy A27 schema contains unversioned designer contexts".into());
     }
     if raw.completeness.owner != raw.division_templates.iter().all(|row|row.owner_tag.is_some()) {
         return Err("A27 owner completeness disagrees with measured template membership".into());
@@ -2197,119 +1835,6 @@ fn validate_raw_catalog(raw: &RawCatalog) -> Result<(), String> {
         {
             return Err(format!(
                 "A27 variant {} has inconsistent native fields",
-                row.id
-            ));
-        }
-        if raw.schema == A27_LIVE_CATALOG_DESIGNER_SCHEMA {
-            let classification = row
-                .definition
-                .designer_classification
-                .as_ref()
-                .ok_or_else(|| format!("A27 variant {} lacks designer classification", row.id))?;
-            let visual = row
-                .definition
-                .designer_row_visual
-                .as_ref()
-                .ok_or_else(|| format!("A27 variant {} lacks designer row visual", row.id))?;
-            let families = classification
-                .family_membership
-                .iter()
-                .map(String::as_str)
-                .collect::<BTreeSet<_>>();
-            let valid_families = ["ship", "tank", "plane"]
-                .into_iter()
-                .collect::<BTreeSet<_>>();
-            if classification.authority != "exact_a729_equipment_definition_classifiers"
-                || classification.classifier_manifest_sha256 != XUI13_CLASSIFIER_MANIFEST_SHA256
-                || families.len() != classification.family_membership.len()
-                || !families.is_subset(&valid_families)
-                || classification.definition_chain_depth == 0
-                || classification.definition_chain_depth as usize
-                    != classification.normalized_category_masks_hex.len()
-                || classification.definition_chain_depth as usize
-                    != classification.designer_window_tokens.len()
-                || classification
-                    .designer_window_tokens
-                    .iter()
-                    .any(|token| token.trim().is_empty())
-                || classification
-                    .normalized_category_masks_hex
-                    .iter()
-                    .any(|mask| {
-                        mask.len() != 16 || !mask.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    })
-                || classification.controller_availability_mask_hex.len() != 16
-                || !classification
-                    .controller_availability_mask_hex
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit())
-                || visual.authority != "exact_a729_designer_equipment_variant_item"
-            {
-                return Err(format!(
-                    "A27 variant {} has invalid designer authority",
-                    row.id
-                ));
-            }
-            match visual.icon_entry_kind {
-                0 if visual
-                    .icon_token
-                    .as_deref()
-                    .is_some_and(|token| !token.is_empty()) =>
-                {
-                    if visual.icon_authority != "embedded_string"
-                        || !utf8_hex_matches(
-                            visual.icon_token.as_deref(),
-                            &visual.icon_token_utf8_hex,
-                        )
-                    {
-                        return Err(format!("A27 variant {} has invalid embedded icon", row.id));
-                    }
-                }
-                0 => {
-                    if visual.icon_authority != "item_database_fallback"
-                        || visual.icon_token.is_some()
-                        || !visual.icon_token_utf8_hex.is_empty()
-                    {
-                        return Err(format!("A27 variant {} has invalid fallback icon", row.id));
-                    }
-                }
-                1 => {
-                    if visual.icon_authority != "embedded_resource_pointer_unportable"
-                        || visual.icon_token.is_some()
-                        || !visual.icon_token_utf8_hex.is_empty()
-                    {
-                        return Err(format!("A27 variant {} has invalid resource icon", row.id));
-                    }
-                }
-                _ => {
-                    return Err(format!("A27 variant {} has invalid icon kind", row.id));
-                }
-            }
-            if classification.controller_candidate_base
-                && !families.is_empty()
-                && (visual.icon_entry_kind != 0
-                    || visual.icon_authority != "embedded_string"
-                    || visual
-                        .icon_token
-                        .as_deref()
-                        .is_none_or(|token| token.is_empty()))
-            {
-                return Err(format!(
-                    "A27 variant {} has a non-portable controller-visible icon",
-                    row.id
-                ));
-            }
-            let _ = (
-                classification.generic_equipment_predicate,
-                classification.dlc_feature_bits_raw,
-                classification.controller_candidate_base,
-                visual.mission_mask,
-            );
-        } else if row.definition.designer_classification.is_some()
-            || row.definition.designer_row_visual.is_some()
-        {
-            return Err(format!(
-                "legacy A27 variant {} contains unversioned designer fields",
                 row.id
             ));
         }
@@ -2416,21 +1941,6 @@ fn validate_raw_catalog(raw: &RawCatalog) -> Result<(), String> {
         }
         let _ = row.definition.equipment_token_raw;
     }
-    if raw.schema == A27_LIVE_CATALOG_DESIGNER_SCHEMA {
-        let variant_tokens = raw
-            .variants
-            .iter()
-            .map(|row| row.definition.equipment_token_raw)
-            .collect::<BTreeSet<_>>();
-        let context_tokens = raw
-            .designer_controller_contexts
-            .iter()
-            .map(|context| context.equipment_token_raw)
-            .collect::<BTreeSet<_>>();
-        if variant_tokens != context_tokens {
-            return Err("A27 designer contexts do not exactly cover variant definitions".into());
-        }
-    }
     Ok(())
 }
 
@@ -2457,21 +1967,8 @@ struct RawCatalog {
     completeness: RawCompleteness,
     country_count: u64,
     countries: Vec<RawCountry>,
-    #[serde(default)]
-    designer_controller_contexts: Vec<RawDesignerControllerContext>,
     division_templates: Vec<RawDivisionTemplate>,
     variants: Vec<RawVariant>,
-}
-
-#[derive(Clone, Deserialize)]
-struct RawDesignerControllerContext {
-    equipment_token_raw: u32,
-    authority: String,
-    controller_manifest_sha256: String,
-    country_registry_count: u64,
-    table_values_sha256: String,
-    threshold_raw: BTreeMap<String, i64>,
-    eligible_country_tags: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -2596,10 +2093,6 @@ struct RawVariantDefinition {
     cached_stats_complete: bool,
     display_name: Option<String>,
     display_name_utf8_hex: String,
-    #[serde(default)]
-    designer_classification: Option<RawDesignerClassification>,
-    #[serde(default)]
-    designer_row_visual: Option<RawDesignerRowVisual>,
     equipment_token_raw: u32,
     modules: Vec<RawModule>,
     modules_complete: bool,
@@ -2607,30 +2100,6 @@ struct RawVariantDefinition {
     upgrades_complete: bool,
     variant_name: Option<String>,
     variant_name_utf8_hex: String,
-}
-
-#[derive(Clone, Deserialize)]
-struct RawDesignerClassification {
-    authority: String,
-    classifier_manifest_sha256: String,
-    family_membership: Vec<String>,
-    generic_equipment_predicate: bool,
-    definition_chain_depth: u64,
-    designer_window_tokens: Vec<String>,
-    dlc_feature_bits_raw: u64,
-    controller_availability_mask_hex: String,
-    controller_candidate_base: bool,
-    normalized_category_masks_hex: Vec<String>,
-}
-
-#[derive(Clone, Deserialize)]
-struct RawDesignerRowVisual {
-    authority: String,
-    mission_mask: u32,
-    icon_entry_kind: u32,
-    icon_authority: String,
-    icon_token: Option<String>,
-    icon_token_utf8_hex: String,
 }
 
 #[derive(Deserialize)]
@@ -2888,98 +2357,22 @@ mod tests {
         }
     }
 
-    fn designer_fixture() -> Vec<u8> {
-        let mut value: Value = serde_json::from_slice(&fixture()).unwrap();
-        value["schema"] = A27_LIVE_CATALOG_DESIGNER_SCHEMA.into();
-        value["country_count"] = 3.into();
-        value["countries"] = serde_json::json!([
-            {"registry_index": 0, "tag": "GER", "designer_pointer_order_ordinal": 2},
-            {"registry_index": 1, "tag": "ITA", "designer_pointer_order_ordinal": 1},
-            {"registry_index": 2, "tag": "USA", "designer_pointer_order_ordinal": 0}
-        ]);
-        value["designer_controller_contexts"] = serde_json::json!([{
-            "equipment_token_raw": 71,
-            "authority": "exact_a729_equipment_designer_country_table",
-            "controller_manifest_sha256": XUI13_CONTROLLER_MANIFEST_SHA256,
-            "country_registry_count": 3,
-            "table_values_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-            "threshold_raw": {"plane": 0, "ship": 0, "tank": 0},
-            "eligible_country_tags": {
-                "plane": ["ITA", "USA"],
-                "ship": ["ITA", "USA"],
-                "tank": ["ITA", "USA"]
+    #[test]
+    fn native_catalog_refuses_replaced_schema_and_precomputed_ui_outcomes() {
+        let base: Value = serde_json::from_slice(&fixture()).unwrap();
+        let mut old = base.clone();
+        old["schema"] = "extractor.a27.native_designer_catalog.a729.v5".into();
+        assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&old).unwrap()).unwrap_err().contains("schema"));
+        for field in ["designer_classification", "designer_row_visual"] {
+            for value in [Value::Null, serde_json::json!({"measured":true})] {
+                let mut invalid = base.clone();
+                invalid["variants"][0]["definition"][field] = value;
+                assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&invalid).unwrap()).unwrap_err().contains("viewer-owned"));
             }
-        }]);
-        let base = value["variants"][0].clone();
-        let mut our = base.clone();
-        our["id"] = 7.into();
-        our["catalog_scan_ordinal"] = 0.into();
-        our["first_ui_discovery_ordinal"] = 0.into();
-        our["source_occurrences"] = serde_json::json!([{
-            "source_country_tag": "GER",
-            "source_country_registry_index": 0,
-            "source_list": "A",
-            "source_list_ordinal": 0
-        }]);
-        let mut foreign = base.clone();
-        foreign["id"] = 9.into();
-        foreign["catalog_scan_ordinal"] = 1.into();
-        foreign["creator_tag"] = "ITA".into();
-        foreign["owner_tag"] = "ITA".into();
-        foreign["selected_country_tag"] = "ITA".into();
-        foreign["first_ui_discovery_ordinal"] = 1.into();
-        foreign["source_occurrences"] = serde_json::json!([
-            {
-                "source_country_tag": "GER",
-                "source_country_registry_index": 0,
-                "source_list": "A",
-                "source_list_ordinal": 1
-            },
-            {
-                "source_country_tag": "ITA",
-                "source_country_registry_index": 1,
-                "source_list": "B",
-                "source_list_ordinal": 0
-            }
-        ]);
-        let mut obsolete = base;
-        obsolete["id"] = 10.into();
-        obsolete["catalog_scan_ordinal"] = 2.into();
-        obsolete["creator_tag"] = "USA".into();
-        obsolete["owner_tag"] = "USA".into();
-        obsolete["selected_country_tag"] = "USA".into();
-        obsolete["obsolete"] = true.into();
-        obsolete["first_ui_discovery_ordinal"] = 2.into();
-        obsolete["source_occurrences"] = serde_json::json!([{
-            "source_country_tag": "USA",
-            "source_country_registry_index": 2,
-            "source_list": "A",
-            "source_list_ordinal": 0
-        }]);
-        for row in [&mut our, &mut foreign, &mut obsolete] {
-            row["definition"]["designer_classification"] = serde_json::json!({
-                "authority": "exact_a729_equipment_definition_classifiers",
-                "classifier_manifest_sha256": XUI13_CLASSIFIER_MANIFEST_SHA256,
-                "family_membership": ["ship", "tank", "plane"],
-                "generic_equipment_predicate": false,
-                "definition_chain_depth": 1,
-                "designer_window_tokens": ["light_tank_chassis_1"],
-                "dlc_feature_bits_raw": 16,
-                "controller_availability_mask_hex": "00000080004001c0",
-                "controller_candidate_base": true,
-                "normalized_category_masks_hex": ["0000000000000004"]
-            });
-            row["definition"]["designer_row_visual"] = serde_json::json!({
-                "authority": "exact_a729_designer_equipment_variant_item",
-                "mission_mask": 5,
-                "icon_entry_kind": 0,
-                "icon_authority": "embedded_string",
-                "icon_token": "GFX_test_equipment",
-                "icon_token_utf8_hex": "4746585f746573745f65717569706d656e74"
-            });
         }
-        value["variants"] = Value::Array(vec![our, foreign, obsolete]);
-        serde_json::to_vec(&value).unwrap()
+        let mut invalid = base;
+        invalid["designer_controller_contexts"] = serde_json::json!([]);
+        assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&invalid).unwrap()).unwrap_err().contains("viewer-owned"));
     }
 
     #[test]
@@ -3017,202 +2410,6 @@ mod tests {
         assert!(
             PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&value).unwrap())
                 .is_err()
-        );
-    }
-
-    #[test]
-    fn xui13_reconstructs_native_country_list_order_dedup_and_filters() {
-        let catalog = PortableDesignCatalog::decode_a27_live_json(&designer_fixture()).unwrap();
-        let all = catalog
-            .observer_designer_catalog_at_hour(
-                900,
-                "7:70",
-                "GER",
-                ObserverDesignerFamily::Tank,
-                true,
-                true,
-                true,
-                &[],
-            )
-            .unwrap();
-        assert_eq!(
-            all.ordered
-                .iter()
-                .map(|row| row.record.design_id.as_str())
-                .collect::<Vec<_>>(),
-            ["7:70", "9:70", "10:70"]
-        );
-        assert_eq!(
-            all.country_filter_rows
-                .iter()
-                .map(|row| row.country_tag.as_str())
-                .collect::<Vec<_>>(),
-            ["USA", "ITA"]
-        );
-        assert_eq!(
-            all.ordered[0].icon_token.as_deref(),
-            Some("GFX_test_equipment")
-        );
-        assert_eq!(all.ordered[0].mission_mask, 5);
-
-        let ours = catalog
-            .observer_designer_catalog_at_hour(
-                900,
-                "7:70",
-                "GER",
-                ObserverDesignerFamily::Tank,
-                true,
-                false,
-                true,
-                &[],
-            )
-            .unwrap();
-        assert_eq!(
-            ours.ordered
-                .iter()
-                .map(|row| row.record.design_id.as_str())
-                .collect::<Vec<_>>(),
-            ["7:70"]
-        );
-        assert!(ours.country_filter_rows.is_empty());
-        let active_foreign = catalog
-            .observer_designer_catalog_at_hour(
-                900,
-                "7:70",
-                "GER",
-                ObserverDesignerFamily::Tank,
-                false,
-                true,
-                false,
-                &[],
-            )
-            .unwrap();
-        assert_eq!(
-            active_foreign
-                .ordered
-                .iter()
-                .map(|row| row.record.design_id.as_str())
-                .collect::<Vec<_>>(),
-            ["9:70"]
-        );
-        let without_usa = catalog
-            .observer_designer_catalog_at_hour(
-                900,
-                "7:70",
-                "GER",
-                ObserverDesignerFamily::Tank,
-                true,
-                true,
-                true,
-                &["USA".into()],
-            )
-            .unwrap();
-        assert_eq!(
-            without_usa
-                .ordered
-                .iter()
-                .map(|row| row.record.design_id.as_str())
-                .collect::<Vec<_>>(),
-            ["7:70", "9:70"]
-        );
-    }
-
-    #[test]
-    fn xui13_typed_route_refuses_legacy_v2_without_breaking_legacy_decode() {
-        let catalog = PortableDesignCatalog::decode_a27_live_json(&fixture()).unwrap();
-        assert_eq!(catalog.records_at_hour(900).unwrap().len(), 2);
-        let error = catalog
-            .observer_designer_catalog_at_hour(
-                900,
-                "7:70",
-                "GER",
-                ObserverDesignerFamily::Tank,
-                true,
-                true,
-                true,
-                &[],
-            )
-            .unwrap_err();
-        assert!(error.contains(A27_LIVE_CATALOG_DESIGNER_SCHEMA));
-    }
-
-    #[test]
-    fn xui13_distinguishes_complete_measured_empty_from_missing_anchor() {
-        let mut value: Value = serde_json::from_slice(&designer_fixture()).unwrap();
-        for row in value["variants"].as_array_mut().unwrap() {
-            row["definition"]["designer_classification"]["family_membership"] =
-                serde_json::json!(["tank"]);
-        }
-        let catalog =
-            PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&value).unwrap())
-                .unwrap();
-
-        let measured_empty = catalog
-            .observer_designer_catalog_at_hour(
-                900,
-                "",
-                "GER",
-                ObserverDesignerFamily::Ship,
-                true,
-                true,
-                true,
-                &[],
-            )
-            .unwrap();
-        assert!(measured_empty.ordered.is_empty());
-        assert!(measured_empty.country_filter_rows.is_empty());
-        assert!(measured_empty.anchor_design_id.is_empty());
-
-        let resolved_anchor = catalog
-            .observer_designer_catalog_at_hour(
-                900,
-                "",
-                "GER",
-                ObserverDesignerFamily::Tank,
-                true,
-                true,
-                true,
-                &[],
-            )
-            .unwrap();
-        assert_eq!(resolved_anchor.anchor_design_id, "7:70");
-        assert!(!resolved_anchor.ordered.is_empty());
-    }
-
-    #[test]
-    fn xui13_refuses_an_anchor_from_a_different_designer_family() {
-        let mut value: Value = serde_json::from_slice(&designer_fixture()).unwrap();
-        value["variants"][0]["definition"]["designer_classification"]["family_membership"] =
-            serde_json::json!(["ship"]);
-        let catalog =
-            PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&value).unwrap())
-                .unwrap();
-        let error = catalog
-            .observer_designer_catalog_at_hour(
-                900,
-                "7:70",
-                "GER",
-                ObserverDesignerFamily::Tank,
-                true,
-                true,
-                true,
-                &[],
-            )
-            .unwrap_err();
-        assert!(error.contains("not a tank-designer definition"));
-    }
-
-    #[test]
-    fn xui13_v3_refuses_nonportable_icons_before_controller_admission() {
-        let mut value: Value = serde_json::from_slice(&designer_fixture()).unwrap();
-        let visual = &mut value["variants"][0]["definition"]["designer_row_visual"];
-        visual["icon_token"] = Value::Null;
-        visual["icon_token_utf8_hex"] = "".into();
-        visual["icon_authority"] = "item_database_fallback".into();
-        assert!(
-            PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&value).unwrap())
-                .unwrap_err()
-                .contains("non-portable controller-visible icon")
         );
     }
 

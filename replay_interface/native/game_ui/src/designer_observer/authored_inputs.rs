@@ -2,6 +2,80 @@ use crate::{GameUiError, Result};
 use map_viewer::{EffectiveDefines, GameFileResolver};
 use replay_core::ObserverDesignerFamily;
 
+use map_viewer::authored_equipment::{AuthoredEquipmentCatalog, EquipmentDesignerClassification};
+use replay_core::design_catalog::{DesignByteObservation, DesignU32Observation, NativeDesignerVariantInputs};
+
+#[derive(Clone, Debug)]
+pub struct DesignerAuthoredInputs {
+    equipment: AuthoredEquipmentCatalog,
+    windows: std::collections::BTreeMap<String, super::EffectiveDesignerWindow>,
+    pub thresholds: DesignerIntelThresholds,
+}
+
+impl DesignerAuthoredInputs {
+    pub fn load(resolver: &crate::assets::AssetResolver) -> Result<Self> {
+        let files = resolver.list_files_recursive("interface", Some("gui"))?;
+        let catalog = crate::definition_admission::load_effective_definition_catalog(files.into_iter()
+            .map(|file| crate::definition_admission::ResolvedGuiDefinitionFile::read(resolver, &file))
+            .collect::<Result<Vec<_>>>()?)?;
+        Self::with_windows(resolver, super::index_effective_designer_windows(&catalog.effective_roots))
+    }
+
+    pub(super) fn with_windows(resolver: &crate::assets::AssetResolver,
+        windows: std::collections::BTreeMap<String, super::EffectiveDesignerWindow>,
+    ) -> Result<Self> {
+        Ok(Self { equipment: resolver.authored_equipment()?, windows,
+            thresholds: DesignerIntelThresholds::from_assets(resolver)? })
+    }
+
+    pub fn admits_window(&self, tokens: &[String], owner: &str) -> Result<bool> {
+        super::designer_window_witness(&self.windows, tokens, owner).map(|window| window.is_some())
+    }
+
+    pub fn for_frame(&self, frame: &replay_core::WorldFrame) -> Result<AuthoredEquipmentCatalog> {
+        let equipment = match map_viewer::ActiveDlcPresentation::from_session_metadata(frame.session_metadata()) {
+            Ok(active) => self.equipment.clone().with_active_dlcs(&active),
+            Err(_) => self.equipment.clone(),
+        };
+        equipment.resolve_generated().map_err(|error| GameUiError::missing(error.to_string()))
+    }
+}
+
+pub fn designer_family_matches(classification: EquipmentDesignerClassification, family: ObserverDesignerFamily) -> bool {
+    match family {
+        ObserverDesignerFamily::Ship => classification.ship,
+        ObserverDesignerFamily::Tank => classification.tank,
+        ObserverDesignerFamily::Plane => classification.plane,
+    }
+}
+
+fn runtime_equipment_mask(raw: u32) -> u64 {
+    let mut mask = 0;
+    if raw & (1 << 4) != 0 { mask |= 0x80004001c0 }
+    if raw & (1 << 7) != 0 { mask |= 4 }
+    if raw & (1 << 8) != 0 { mask |= 0x1d0026fc00 }
+    mask
+}
+
+pub fn designer_candidate_base(equipment: &AuthoredEquipmentCatalog,
+    runtime: &DesignU32Observation, variant: &NativeDesignerVariantInputs,
+) -> Result<bool> {
+    let token = &variant.equipment_definition_token;
+    let map_error = |error| GameUiError::missing(format!("XUI13 definition {token:?}: {error}"));
+    if equipment.designer_module_slots(token).map_err(map_error)?.is_empty() { return Ok(false) }
+    let category = equipment.designer_category_mask(token).map_err(map_error)?;
+    let mask = match runtime {
+        DesignU32Observation::Measured { raw_u32 } => runtime_equipment_mask(*raw_u32),
+        DesignU32Observation::Unavailable { reason } => return Err(GameUiError::missing(format!("XUI13 runtime_dlc_mask: {reason:?}"))),
+    };
+    if category & mask == 0 { return Ok(false) }
+    if equipment.definition(token).map_err(map_error)?.generation.is_some() { return Ok(true) }
+    match &variant.serialized_variant_flag_2b9d {
+        DesignByteObservation::Measured { raw_u8 } => Ok(*raw_u8 == 0),
+        DesignByteObservation::Unavailable { reason } => Err(GameUiError::missing(format!("XUI13 serialized_variant_flag_2b9d: {reason:?}"))),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DesignerIntelThresholds {
     pub ship_raw: i64,
@@ -14,6 +88,17 @@ impl DesignerIntelThresholds {
         let defines = EffectiveDefines::from_resolver(resolver)
             .map_err(|error| GameUiError::missing(format!("XUI13 admitted defines: {error}")))?;
         Self::from_defines(&defines)
+    }
+
+    pub fn from_assets(resolver: &crate::assets::AssetResolver) -> Result<Self> {
+        let (values, _) = resolver.effective_define_numbers("NIntel", &[
+            "NAVY_SHIP_TYPE_COUNT_INTEL_MAX", "ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX",
+            "AIR_WING_TYPE_COUNT_INTEL_MAX",
+        ])?;
+        let [ship, tank, plane] = values.as_slice() else {
+            return Err(GameUiError::missing("XUI13 intel threshold census is incomplete"));
+        };
+        Ok(Self { ship_raw: lua_fixed(*ship)?, tank_raw: lua_fixed(*tank)?, plane_raw: lua_fixed(*plane)? })
     }
 
     fn from_defines(defines: &EffectiveDefines) -> Result<Self> {

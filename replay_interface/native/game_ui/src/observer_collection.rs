@@ -30,6 +30,13 @@ pub struct ObserverSemanticRow {
 
 impl ObserverSemanticCollection {
     pub fn validate(&self, expected_hour: u64) -> Result<()> {
+        if !self.complete {
+            return Err(fail("panel-specific semantic membership is not explicitly complete"));
+        }
+        self.validate_rows(expected_hour)
+    }
+
+    fn validate_rows(&self, expected_hour: u64) -> Result<()> {
         nonempty(&self.collection_instance_token, "collection_instance_token")?;
         if self.frame_hour != expected_hour {
             return Err(fail("collection frame_hour differs from the replay frame"));
@@ -40,11 +47,6 @@ impl ObserverSemanticCollection {
             .is_some_and(|tag| tag.trim().is_empty())
         {
             return Err(fail("context_country is blank"));
-        }
-        if !self.complete {
-            return Err(fail(
-                "panel-specific semantic membership is not explicitly complete",
-            ));
         }
         let mut ids = BTreeSet::new();
         for (ordinal, row) in self.rows.iter().enumerate() {
@@ -392,6 +394,33 @@ pub fn plan_observer_collection(
     options: &ComposeOptions,
 ) -> Result<ObserverCollectionPlan> {
     semantic.validate(expected_hour)?;
+    plan_validated_collection(semantic, source, bindings, viewer, options)
+}
+
+pub(crate) fn plan_xui13_known_prefix(
+    expected_hour: u64,
+    semantic: &ObserverSemanticCollection,
+    source: AuthoredCollectionSource<'_>,
+    bindings: &[AuthoredRowBinding<'_>],
+    viewer: ViewerCollectionState,
+    options: &ComposeOptions,
+) -> Result<ObserverCollectionPlan> {
+    if semantic.complete || source.grid_authority != Some(StandardGridAuthority::Xui13AcquiredVariantsStandardAutoAppend)
+        || family(source.collection_element)? != ObserverCollectionFamily::Grid {
+        return Err(fail("known-prefix planning requires an incomplete XUI13 acquired-variants standard grid"));
+    }
+    semantic.validate_rows(expected_hour)?;
+    // Standard grid coordinates depend on ordinal and authored slots, never population length.
+    plan_validated_collection(semantic, source, bindings, viewer, options)
+}
+
+fn plan_validated_collection(
+    semantic: &ObserverSemanticCollection,
+    source: AuthoredCollectionSource<'_>,
+    bindings: &[AuthoredRowBinding<'_>],
+    viewer: ViewerCollectionState,
+    options: &ComposeOptions,
+) -> Result<ObserverCollectionPlan> {
     validate_source(source)?;
     positive_rect(viewer.visible_clip, "visible_clip")?;
     checked_rect(viewer.visible_clip, "visible_clip")?;
@@ -1651,6 +1680,45 @@ mod production_adapter_tests {
             .into_iter()
             .next()
             .expect("one GUI root")
+    }
+
+    #[test]
+    fn xui13_partial_prefix_has_identical_positions_and_does_not_weaken_complete_planner() {
+        let grid = root(r#"gridBoxType = { name = "acquired_variants_grid" size = { x = 120 y = 72 }
+            slotsize = { x = 40 y = 24 } format = UPPER_LEFT max_slots_horizontal = 3 add_horizontal = yes }"#);
+        let template = root(r#"containerWindowType = { name = "designer_equipment_entry" size = { x = 40 y = 24 } }"#);
+        let parent = Rect::new(10,20,120,72);
+        let source = AuthoredCollectionSource {
+            owning_window_id: "interface/designer.gui#tank_designer_view",
+            root_source_identity: "interface/designer.gui#tank_designer_view",
+            collection_element_id: "interface/designer.gui#tank_designer_view/designer_intel_container/gridbox_container/acquired_variants_grid",
+            collection_element: &grid, effective_row_template_identity: Some("interface/designer.gui#designer_equipment_entry"),
+            effective_row_template: Some(&template), parent_rect: parent,
+            grid_authority: Some(StandardGridAuthority::Xui13AcquiredVariantsStandardAutoAppend),
+        };
+        let options=ComposeOptions::new(160,120);
+        let viewer=ViewerCollectionState { scroll_offset_pixels:(0,0), window_stack_ordinal:0, root_paint_ordinal:0, visible_clip:parent };
+        let semantic=ObserverSemanticCollection {
+            collection_instance_token:"xui13/900/GER/tank/catalogue".into(),frame_hour:900,context_country:Some("GER".into()),complete:true,
+            rows:(0..7).map(|ordinal|ObserverSemanticRow { stable_item_id:format!("{ordinal}:70"),source_ordinal:ordinal,subtype_id:"tank".into() }).collect(),
+        };
+        let bindings:Vec<_>=semantic.rows.iter().map(|row|AuthoredRowBinding { stable_item_id:&row.stable_item_id,
+            subtype_id:"tank",element_source_identity:"interface/designer.gui#designer_equipment_entry",instance_token:&row.stable_item_id,template:&template }).collect();
+        let full=plan_observer_collection(900,&semantic,source,&bindings,viewer,&options).unwrap();
+        assert!(plan_xui13_known_prefix(900,&semantic,source,&bindings,viewer,&options).is_err());
+        for count in [0,1,3,4,6] {
+            let mut prefix=semantic.clone();prefix.complete=false;prefix.rows.truncate(count);
+            assert!(plan_observer_collection(900,&prefix,source,&bindings[..count],viewer,&options).is_err());
+            let partial=plan_xui13_known_prefix(900,&prefix,source,&bindings[..count],viewer,&options).unwrap();
+            assert_eq!(partial.rows,full.rows[..count]);
+            assert!(partial.content_extent_pixels.1<=full.content_extent_pixels.1);
+            let mut other=source;other.grid_authority=Some(StandardGridAuthority::Xui26FrontendExactCarrierOrder);
+            assert!(plan_xui13_known_prefix(900,&prefix,other,&bindings[..count],viewer,&options).is_err());
+            if let Some(first)=prefix.rows.first_mut() {
+                first.source_ordinal=1;
+                assert!(plan_xui13_known_prefix(900,&prefix,source,&bindings[..count],viewer,&options).is_err());
+            }
+        }
     }
 
     #[test]

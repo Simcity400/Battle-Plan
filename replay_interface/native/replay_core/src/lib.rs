@@ -246,8 +246,8 @@ pub use decisions_live::{
 pub use design_catalog::{
     CurrentDesignCatalog, DesignCatalogJoinError, DesignKind, DesignLifecycleState, DesignModule,
     DesignRecord, DesignStat, DesignUpgrade, DisplayOrderSnapshot, FieldCompleteness,
-    ObserverDesignerCandidate, ObserverDesignerCountryFilterRow, ObserverDesignerFamily,
-    PortableDesignCatalog, PortableDesignCatalogDelta, A27_LIVE_CATALOG_DESIGNER_SCHEMA,
+    ObserverDesignerFamily,
+    PortableDesignCatalog, PortableDesignCatalogDelta,
     A27_LIVE_CATALOG_SCHEMA, A27_LIVE_CATALOG_TIMELINE_SCHEMA,
     PORTABLE_ARTIFACT_PATH as A27_DESIGN_CATALOG_ARTIFACT_PATH, PORTABLE_DESIGN_CATALOG_SCHEMA,
 };

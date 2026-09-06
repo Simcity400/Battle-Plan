@@ -1,4 +1,5 @@
 pub mod authored_inputs;
+pub(crate) mod controller;
 
 use crate::assets::AssetResolver;
 use crate::compose::{
@@ -18,7 +19,7 @@ use crate::gui::GuiElement;
 use crate::gui_scene_util::{pair, prefix_element_names, set_position_upper_left};
 use crate::loc::Localisation;
 use crate::observer_collection::{
-    compose_observer_row_layers, plan_observer_collection, AuthoredCollectionSource,
+    compose_observer_row_layers, plan_observer_collection, plan_xui13_known_prefix, AuthoredCollectionSource,
     AuthoredRowBinding, ObserverRowComposeInput, ObserverSemanticCollection, ObserverSemanticRow,
     StandardGridAuthority, ViewerCollectionState,
 };
@@ -74,6 +75,7 @@ enum EffectiveDesignerWindow {
 pub struct ObserverDesignerChromeCatalog {
     by_family: BTreeMap<DesignerViewKind, DesignerFamilyChrome>,
     effective_windows: BTreeMap<String, EffectiveDesignerWindow>,
+    authored: std::result::Result<authored_inputs::DesignerAuthoredInputs, String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -89,6 +91,9 @@ pub struct ObserverDesignerSurface {
     pub visible_country_filter_tags: Vec<String>,
     pub selected_country_filter_tags: Vec<String>,
     pub output: ComposeOutput,
+    pub field_refusals: BTreeMap<String, String>,
+    pub membership_complete: bool,
+    pub country_filters_complete: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -131,8 +136,13 @@ impl ObserverDesignerChromeCatalog {
         }
         Ok(Self {
             by_family,
+            authored: authored_inputs::DesignerAuthoredInputs::with_windows(resolver, effective_windows.clone()).map_err(|error| error.to_string()),
             effective_windows,
         })
+    }
+
+    fn authored_inputs(&self) -> Result<&authored_inputs::DesignerAuthoredInputs> {
+        self.authored.as_ref().map_err(|reason| GameUiError::missing(reason.clone()))
     }
 
     pub fn effective_country_filter_tags(
@@ -141,10 +151,13 @@ impl ObserverDesignerChromeCatalog {
         owner_tag: NamedCountry<'_>,
         viewer: &ObserverDesignerViewState,
     ) -> Result<Vec<String>> {
-        let (_, admitted) = resolve_observer_designer_view_state(frame, owner_tag, viewer)
+        let (_, admitted) = resolve_observer_designer_view_state(self.authored_inputs()?, frame, owner_tag, viewer)
             .map_err(|error| {
                 GameUiError::missing(format!("XUI13 catalogue admission rejected: {error:?}"))
             })?;
+        if !admitted.country_filters_complete() {
+            return Err(GameUiError::missing(admitted.field_refusals()["country_filters"].clone()));
+        }
         Ok(self
             .effective_country_filter_rows(&admitted, owner_tag.tag())?
             .into_iter()
@@ -158,10 +171,14 @@ impl ObserverDesignerChromeCatalog {
         owner_tag: NamedCountry<'_>,
         viewer: &ObserverDesignerViewState,
     ) -> Result<ObserverDesignerEffectiveMembership> {
-        let (_, admitted) = resolve_observer_designer_view_state(frame, owner_tag, viewer)
+        let (_, admitted) = resolve_observer_designer_view_state(self.authored_inputs()?, frame, owner_tag, viewer)
             .map_err(|error| {
                 GameUiError::missing(format!("XUI13 catalogue admission rejected: {error:?}"))
             })?;
+        if !admitted.membership_complete() || !admitted.country_filters_complete() {
+            return Err(GameUiError::missing(format!("XUI13 exact action membership is unresolved: {:?}; {:?}",
+                admitted.unresolved_suffix(), admitted.field_refusals())));
+        }
         let mut ordered_design_ids = Vec::new();
         for candidate in admitted.ordered() {
             if designer_window_witness(
@@ -226,7 +243,7 @@ impl ObserverDesignerChromeCatalog {
                 viewer.family
             ))
         })?;
-        let (_, admitted) = resolve_observer_designer_view_state(frame, owner_tag, viewer)
+        let (_, admitted) = resolve_observer_designer_view_state(self.authored_inputs()?, frame, owner_tag, viewer)
             .map_err(|error| {
                 GameUiError::missing(format!("XUI13 catalogue admission rejected: {error:?}"))
             })?;
@@ -295,7 +312,7 @@ impl ObserverDesignerChromeCatalog {
             ),
             frame_hour: expected_hour,
             context_country: Some(owner_tag.to_string()),
-            complete: true,
+            complete: admitted.membership_complete(),
             rows: semantic_rows,
         };
         let instance_tokens = controller_rows
@@ -313,7 +330,7 @@ impl ObserverDesignerChromeCatalog {
                 row_template_with_missions(
                     &chrome.row_template,
                     &chrome.mission_template,
-                    candidate.mission_mask,
+                    candidate.missions.as_ref().ok().copied(),
                     viewport,
                     &options,
                 )
@@ -360,7 +377,8 @@ impl ObserverDesignerChromeCatalog {
             root_paint_ordinal: 0,
             visible_clip,
         };
-        let unscrolled_plan = plan_observer_collection(
+        let plan_rows = if admitted.membership_complete() { plan_observer_collection } else { plan_xui13_known_prefix };
+        let unscrolled_plan = plan_rows(
             expected_hour,
             &semantic,
             source(grid_parent_rect),
@@ -379,7 +397,8 @@ impl ObserverDesignerChromeCatalog {
             .checked_mul(wheel_factor)
             .and_then(|pixels| i32::try_from(pixels).ok())
             .ok_or_else(|| GameUiError::missing("XUI13 authored row scroll overflows"))?;
-        let scroll_y = requested_scroll_y.min(max_scroll);
+        let known_scroll = prefix_scroll_offset(requested_scroll_y, max_scroll, admitted.membership_complete());
+        let scroll_y = known_scroll.unwrap_or(0);
         let plan = if scroll_y == 0 {
             unscrolled_plan
         } else {
@@ -392,7 +411,7 @@ impl ObserverDesignerChromeCatalog {
                 grid_parent_rect.w(),
                 grid_parent_rect.h(),
             );
-            plan_observer_collection(
+            plan_rows(
                 expected_hour,
                 &semantic,
                 source(shifted_parent),
@@ -420,6 +439,14 @@ impl ObserverDesignerChromeCatalog {
         );
         drop(base_compositor);
 
+        let mut field_refusals = admitted.field_refusals().clone();
+        if let Some(suffix) = admitted.unresolved_suffix() {
+            field_refusals.insert("row_suffix".into(), format!("XUI13 unresolved suffix at country={} list={} ordinal={} design={}: {}",
+                suffix.source_country_registry_index, suffix.source_list, suffix.source_list_ordinal, suffix.design_id, suffix.reason));
+        }
+        if known_scroll.is_none() {
+            field_refusals.insert("row_scroll".into(), "XUI13 requested scroll clamp depends on the unresolved suffix extent".into());
+        }
         let mut row_options = Vec::with_capacity(controller_rows.len());
         let mut flag_cache: BTreeMap<String, crate::dds::RgbaImage> = BTreeMap::new();
         for candidate in &controller_rows {
@@ -439,23 +466,28 @@ impl ObserverDesignerChromeCatalog {
                 format!("§W{name}§!")
             };
             row_option.text_overrides.insert("name".to_string(), name);
-            let icon = candidate
-                .icon_token
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| {
-                    GameUiError::missing(format!(
-                        "XUI13 row {} has unresolved equipment icon authority {:?}",
-                        record.design_id, candidate.icon_authority
-                    ))
-                })?;
-            row_option
-                .sprite_name_overrides
-                .insert("equipment".to_string(), icon.to_string());
-            for bit in mission_bits(candidate.mission_mask)? {
-                row_option
-                    .frame_overrides
-                    .insert(format!("mission_{bit}_mission_icon"), bit as usize);
+            let icon = match &candidate.icon {
+                Ok(crate::design_catalog::DesignerRowIcon::Sprite(token)) => {
+                    row_option.sprite_name_overrides.insert("equipment".into(), token.clone());
+                    Ok(())
+                }
+                Ok(crate::design_catalog::DesignerRowIcon::Texture(path)) => resolver.decode_texture(path)
+                    .map(|texture| { row_option.sprite_overrides.insert("equipment".into(), texture.image); })
+                    .map_err(|error| error.to_string()),
+                Err(reason) => Err(reason.clone()),
+            };
+            if let Err(reason) = icon {
+                row_option.hidden_elements.insert("equipment".into());
+                field_refusals.insert(format!("{}/equipment_icon", record.design_id), reason);
+            }
+            match &candidate.missions {
+                Ok(mask) => for bit in mission_bits(*mask)? {
+                    row_option.frame_overrides.insert(format!("mission_{bit}_mission_icon"), bit as usize);
+                },
+                Err(reason) => {
+                    row_option.hidden_elements.insert("missions".into());
+                    field_refusals.insert(format!("{}/missions", record.design_id), reason.clone());
+                }
             }
             let row_owner = record
                 .owner
@@ -482,12 +514,16 @@ impl ObserverDesignerChromeCatalog {
                 options,
             })
             .collect::<Vec<_>>();
-        let mut row_compositor = Compositor::with_cache(resolver, registry, asset_cache);
-        let rows = compose_observer_row_layers(&mut row_compositor, &plan, &inputs)?;
-        blend(&mut output.image, &rows.output.image)?;
-        merge_report(&mut output.report, rows.output.report);
-        output.debug_rects.extend(rows.output.debug_rects);
+        let visible_design_ids = if known_scroll.is_some() {
+            let mut row_compositor = Compositor::with_cache(resolver, registry, asset_cache);
+            let rows = compose_observer_row_layers(&mut row_compositor, &plan, &inputs)?;
+            blend(&mut output.image, &rows.output.image)?;
+            merge_report(&mut output.report, rows.output.report);
+            output.debug_rects.extend(rows.output.debug_rects);
+            rows.painted_rows
+        } else { Vec::new() };
 
+        let (country_tags, visible_country_filter_tags) = if admitted.country_filters_complete() {
         let effective_country_rows = self.effective_country_filter_rows(&admitted, owner_tag.tag())?;
         let mut country_tags = Vec::with_capacity(effective_country_rows.len());
         for (tag, source_file) in effective_country_rows {
@@ -635,6 +671,9 @@ impl ObserverDesignerChromeCatalog {
         merge_report(&mut output.report, countries.output.report);
         output.debug_rects.extend(countries.output.debug_rects);
 
+            (country_tags, countries.painted_rows)
+        } else { (Vec::new(), Vec::new()) };
+
         let selected_design_id = admitted
             .selected()
             .map(|candidate| candidate.record.design_id.clone());
@@ -660,17 +699,26 @@ impl ObserverDesignerChromeCatalog {
                 .iter()
                 .map(|candidate| candidate.record.design_id.clone())
                 .collect(),
-            visible_design_ids: rows.painted_rows,
+            visible_design_ids,
             selected_design_id,
             ordered_country_filter_tags: country_tags.clone(),
-            visible_country_filter_tags: countries.painted_rows,
+            visible_country_filter_tags,
             selected_country_filter_tags: country_tags
                 .into_iter()
-                .filter(|tag| !excluded_country_filters.contains(tag.as_str()))
+                .filter(|tag| !admitted.excluded_country_filter_tags().contains(tag))
                 .collect(),
             output,
+            field_refusals,
+            membership_complete: admitted.membership_complete(),
+            country_filters_complete: admitted.country_filters_complete(),
         })
     }
+}
+
+fn prefix_scroll_offset(requested: i32, prefix_max: i32, complete: bool) -> Option<i32> {
+    if complete { Some(requested.min(prefix_max)) }
+    else if requested <= prefix_max { Some(requested) }
+    else { None }
 }
 
 fn index_effective_designer_windows(
@@ -870,7 +918,7 @@ fn mission_bits(mask: u32) -> Result<Vec<u32>> {
 fn row_template_with_missions(
     row_template: &GuiElement,
     mission_template: &GuiElement,
-    mission_mask: u32,
+    mission_mask: Option<u32>,
     viewport: Rect,
     options: &ComposeOptions,
 ) -> Result<GuiElement> {
@@ -881,7 +929,8 @@ fn row_template_with_missions(
     let mission_grid = direct_child_mut(missions, "mission_grid")?;
     let layout = gridbox_layout(mission_grid, missions_rect, options)?;
     mission_grid.children.clear();
-    for (ordinal, bit) in mission_bits(mission_mask)?.into_iter().enumerate() {
+    let bits = match mission_mask { Some(mask) => mission_bits(mask)?, None => Vec::new() };
+    for (ordinal, bit) in bits.into_iter().enumerate() {
         let logical_x = i32::try_from(ordinal)
             .map_err(|_| GameUiError::missing("XUI13 mission ordinal exceeds i32"))?;
         let origin = layout.explicit_coordinate_origin((logical_x, 0))?;
@@ -1111,7 +1160,7 @@ mod tests {
         canonical_json_sha256, ContentLayerKind, ContentManifest, LayerStorageKind,
         PortableDesignCatalog, RawFrame, RecordedContentLayer, ReplaySource, RequiredContent,
         RequiredContentKind, SourceError, SourceGameIdentity, SourceProfileIdentity,
-        UsedContentKey, WorldTimeline, A27_LIVE_CATALOG_DESIGNER_SCHEMA,
+        UsedContentKey, WorldTimeline, A27_LIVE_CATALOG_SCHEMA,
         A27_LIVE_CATALOG_TIMELINE_SCHEMA,
     };
     use serde_json::json;
@@ -1119,7 +1168,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    struct TestRoot(PathBuf);
+    pub(super) struct TestRoot(pub(super) PathBuf);
 
     impl Drop for TestRoot {
         fn drop(&mut self) {
@@ -1170,6 +1219,14 @@ mod tests {
                 },
             })
         }
+    }
+
+    pub(super) fn world_from_catalog(raw: serde_json::Value, rest: serde_json::Value) -> Arc<WorldFrame> {
+        let catalog = Arc::new(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).unwrap());
+        let timeline = WorldTimeline::open(Box::new(DesignerSource {
+            catalog, rest: rest.as_object().unwrap().clone(), hours: vec![900],
+        })).unwrap();
+        timeline.frame(900).unwrap()
     }
 
     fn controller_root(name: &str) -> String {
@@ -1244,7 +1301,7 @@ mod tests {
         .into_bytes()
     }
 
-    fn designer_catalog_value() -> serde_json::Value {
+    pub(super) fn designer_catalog_value() -> serde_json::Value {
         let definition = json!({
         "archetype_token": "light_tank_chassis_1",
         "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
@@ -1252,7 +1309,7 @@ mod tests {
         "cached_stats_complete": true,
         "explicit_entity": {"status":"measured","value":"","utf8_hex":""},
         "serialized_variant_flag_2b9d": {"status":"measured","raw_u8":0},
-        "item_icon_override": {"status":"measured","active":false,"kind":1,"token":{"status":"measured","value":"","utf8_hex":""}},
+        "item_icon_override": {"status":"measured","active":true,"kind":0,"token":{"status":"measured","value":"GFX_xui13_test","utf8_hex":"4746585f78756931335f74657374"}},
         "display_name": "Panzer",
         "display_name_utf8_hex": "50616e7a6572",
         "equipment_token_raw": 71,
@@ -1261,30 +1318,10 @@ mod tests {
         "upgrades": [],
         "upgrades_complete": true,
         "variant_name": null,
-        "variant_name_utf8_hex": "",
-        "designer_classification": {
-            "authority": "exact_a729_equipment_definition_classifiers",
-            "classifier_manifest_sha256": "733bfeb07165754e30cec9d8395f244b0515f92bc431baff5d236b51b4f70df9",
-            "family_membership": ["tank"],
-            "generic_equipment_predicate": false,
-            "definition_chain_depth": 1,
-            "designer_window_tokens": ["light_tank_chassis_1"],
-            "dlc_feature_bits_raw": 16,
-            "controller_availability_mask_hex": "00000080004001c0",
-            "controller_candidate_base": true,
-            "normalized_category_masks_hex": ["0000000000000004"]
-        },
-        "designer_row_visual": {
-            "authority": "exact_a729_designer_equipment_variant_item",
-            "mission_mask": 1,
-            "icon_entry_kind": 0,
-            "icon_authority": "embedded_string",
-            "icon_token": "GFX_xui13_test",
-            "icon_token_utf8_hex": "4746585f78756931335f74657374"
-        }
+        "variant_name_utf8_hex": ""
     });
         json!({
-            "schema": A27_LIVE_CATALOG_DESIGNER_SCHEMA,
+            "schema": A27_LIVE_CATALOG_SCHEMA,
             "authority": {
                 "program": "hoi4.exe 1.19.2.0.a729",
                 "program_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
@@ -1300,21 +1337,12 @@ mod tests {
                 "owner": true,
                 "ui_occurrences": true
             },
-            "runtime_dlc_mask": {"status":"measured","raw_u32":0},
+            "runtime_dlc_mask": {"status":"measured","raw_u32":128},
             "country_count": 1,
             "countries": [{
                 "registry_index": 0,
                 "tag": "GER",
                 "designer_pointer_order_ordinal": 0
-            }],
-            "designer_controller_contexts": [{
-                "equipment_token_raw": 71,
-                "authority": "exact_a729_equipment_designer_country_table",
-                "controller_manifest_sha256": "8f50fd0c83ea637c3a9464c7061a7f6c118fda9195e4cccd88ae12a3abc765c3",
-                "country_registry_count": 1,
-                "table_values_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-                "threshold_raw": {"plane": 0, "ship": 0, "tank": 0},
-                "eligible_country_tags": {"plane": [], "ship": [], "tank": ["GER"]}
             }],
             "division_templates": [],
             "variants": [{
@@ -1408,7 +1436,7 @@ mod tests {
         Arc::new(PortableDesignCatalog::decode_a27_live_json(&timeline).unwrap())
     }
 
-    fn production_fixture() -> (TestRoot, Arc<WorldFrame>) {
+    pub(super) fn production_fixture() -> (TestRoot, Arc<WorldFrame>) {
         let root = std::env::temp_dir().join(format!(
             "xui13_production_fixture_{}_{}",
             std::process::id(),
@@ -1417,6 +1445,12 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
+        fs::create_dir_all(root.join("common/units/equipment")).unwrap();
+        fs::create_dir_all(root.join("common/defines")).unwrap();
+        fs::write(root.join("common/units/equipment/designer.txt"),
+            b"equipments = { light_tank_chassis_1 = { is_archetype = yes type = armor module_slots = { main = {} } } }").unwrap();
+        fs::write(root.join("common/defines/designer.lua"),
+            b"NDefines = { NIntel = { NAVY_SHIP_TYPE_COUNT_INTEL_MAX = 0.5, ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX = 0.5, AIR_WING_TYPE_COUNT_INTEL_MAX = 0.5 } }").unwrap();
         fs::create_dir_all(root.join("interface")).unwrap();
         fs::create_dir_all(root.join("gfx/interface")).unwrap();
         fs::create_dir_all(root.join("gfx/flags/small")).unwrap();
@@ -1477,11 +1511,13 @@ mod tests {
         (TestRoot(root), frame)
     }
 
-    fn admitted_production_renderer(
+    pub(super) fn admitted_production_renderer(
         root: &PathBuf,
         excluded_asset: Option<&str>,
     ) -> ProductionUiRenderer {
         let paths = [
+            "common/units/equipment/designer.txt",
+            "common/defines/designer.lua",
             "interface/designer.gui",
             "interface/designer_window.gui",
             "interface/designer.gfx",
@@ -1599,6 +1635,9 @@ mod tests {
 
     #[test]
     fn hour_advance_reanchors_after_tombstone_and_clears_vanished_selection() {
+        let (root, _) = production_fixture();
+        let renderer = admitted_production_renderer(&root.0, None);
+        let authored = authored_inputs::DesignerAuthoredInputs::load(renderer.resolver()).unwrap();
         let rest = json!({
             "countries": {
                 "GER": {"politics": {"ruling_party": "fascism"}}
@@ -1628,7 +1667,7 @@ mod tests {
             country_scroll_wheel_steps: 0,
         };
         let (resolved_900, admitted_900) =
-            resolve_observer_designer_view_state(&timeline.frame(900).unwrap(), named(&timeline.frame(900).unwrap(), "GER"), &viewer)
+            resolve_observer_designer_view_state(&authored, &timeline.frame(900).unwrap(), named(&timeline.frame(900).unwrap(), "GER"), &viewer)
                 .unwrap();
         assert_eq!(resolved_900.anchor_design_id, "7:70");
         assert_eq!(admitted_900.ordered()[0].record.design_id, "7:70");
@@ -1636,7 +1675,7 @@ mod tests {
         viewer = resolved_900;
         viewer.selected_design_id = Some("7:70".into());
         let (resolved_901, admitted_901) =
-            resolve_observer_designer_view_state(&timeline.frame(901).unwrap(), named(&timeline.frame(901).unwrap(), "GER"), &viewer)
+            resolve_observer_designer_view_state(&authored, &timeline.frame(901).unwrap(), named(&timeline.frame(901).unwrap(), "GER"), &viewer)
                 .unwrap();
         assert_eq!(resolved_901.anchor_design_id, "8:70");
         assert_eq!(resolved_901.anchor_catalogue_hour, 901);
@@ -1664,7 +1703,7 @@ mod tests {
             country_scroll_wheel_steps: 0,
         };
         let (resolved, _) =
-            resolve_observer_designer_view_state(&frame, named(&frame, "GER"), &tank).unwrap();
+            resolve_observer_designer_view_state(&authored_inputs::DesignerAuthoredInputs::load(renderer.resolver()).unwrap(), &frame, named(&frame, "GER"), &tank).unwrap();
         assert_eq!(resolved.anchor_design_id, "7:70");
         assert_eq!(resolved.anchor_catalogue_hour, 900);
         let surface = renderer
@@ -1677,6 +1716,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(surface.ordered_design_ids, ["7:70"]);
+        assert_eq!(surface.field_refusals.keys().map(String::as_str).collect::<Vec<_>>(), ["7:70/missions"]);
         assert!(surface
             .source_files
             .contains(&"interface/designer.gui".to_string()));
@@ -1727,12 +1767,18 @@ mod tests {
         )
         .unwrap();
         let unsupported = admitted_production_renderer(&root.0, None);
-        let rejection = unsupported
+        let partial = unsupported
             .compose_xui13_designer_surface(&frame, named(&frame, "GER"), &resolved, 160, 120)
-            .unwrap_err();
-        let rejection = format!("{rejection:?}");
-        assert!(rejection.contains("designer_window.gui"), "{rejection}");
-        assert!(rejection.contains("modcustomtype"), "{rejection}");
+            .unwrap();
+        assert!(partial.ordered_design_ids.is_empty());
+        assert!(partial.visible_design_ids.is_empty());
+        assert!(!partial.membership_complete);
+        assert!(!partial.country_filters_complete);
+        assert!(partial.output.report.drawn_elements > 0);
+        let refusal = &partial.field_refusals["row_suffix"];
+        assert!(refusal.contains("designer_window.gui"), "{refusal}");
+        assert!(refusal.contains("modcustomtype"), "{refusal}");
+        assert!(refusal.contains("design=7:70"), "{refusal}");
     }
 
     #[test]
@@ -1768,7 +1814,7 @@ mod tests {
             scroll_wheel_steps: 0,
             country_scroll_wheel_steps: 0,
         };
-        let (resolved, _) = resolve_observer_designer_view_state(&frame, named(&frame, "GER"), &viewer).unwrap();
+        let (resolved, _) = resolve_observer_designer_view_state(&authored_inputs::DesignerAuthoredInputs::load(renderer.resolver()).unwrap(), &frame, named(&frame, "GER"), &viewer).unwrap();
         let rejection = renderer
             .compose_xui13_designer_surface(&frame, named(&frame, "GER"), &resolved, 160, 120)
             .unwrap_err();
@@ -1777,6 +1823,27 @@ mod tests {
             rejection.contains("cosmetic tag was never carried"),
             "the refusal must name the unread cosmetic field: {rejection}"
         );
+    }
+
+    #[test]
+    fn prefix_scroll_clamp_is_independent_only_up_to_the_proven_extent() {
+        for prefix_max in [0, 1, 24, 96] {
+            for requested in [0, prefix_max, prefix_max + 1, prefix_max + 100] {
+                let partial = prefix_scroll_offset(requested, prefix_max, false);
+                if requested <= prefix_max {
+                    assert_eq!(partial, Some(requested));
+                    for suffix_max in [prefix_max, prefix_max + 1, prefix_max + 1000] {
+                        assert_eq!(partial, prefix_scroll_offset(requested, suffix_max, true));
+                    }
+                } else {
+                    assert_eq!(partial, None);
+                    assert_ne!(prefix_scroll_offset(requested, prefix_max, true),
+                        prefix_scroll_offset(requested, prefix_max + 1000, true));
+                }
+            }
+        }
+        assert_eq!(prefix_scroll_offset(0, 0, false), Some(0));
+        assert_eq!(prefix_scroll_offset(1, 0, false), None);
     }
 
     #[test]
