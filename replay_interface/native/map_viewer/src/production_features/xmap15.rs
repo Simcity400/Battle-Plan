@@ -1,4 +1,7 @@
 mod runtime;
+mod selection;
+pub use selection::{Xmap15ArrowKeyboard, Xmap15ArrowUiCapture, Xmap15ArrowColourCallback,
+    Xmap15ArrowInteraction, Xmap15ViewerPresentation};
 
 use crate::{
     derive_xmap15_orders, FoundationFeatureContext, FoundationFeatureOutput, GameFileResolver,
@@ -35,6 +38,7 @@ const XMAP15_REGISTRATION_EVIDENCE: &str =
 pub struct Xmap15ViewerSelection {
     pub selected_owner: Option<(portable_render_stream::Xmap15OwnerKind, u32)>,
     pub selected_plan: Option<Xmap15PlanKey>,
+    pub presentation: Option<Xmap15ViewerPresentation>,
 }
 
 pub fn xmap15_viewer_selection(
@@ -67,6 +71,7 @@ pub fn xmap15_viewer_selection(
             ArmyBattleplanOwnerKind::ArmyGroup => portable_render_stream::Xmap15OwnerKind::ArmyGroup,
         }, owner.id)),
         selected_plan,
+        presentation: None,
     }
 }
 

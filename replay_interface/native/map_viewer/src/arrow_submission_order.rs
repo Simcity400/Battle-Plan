@@ -299,9 +299,22 @@ impl ArrowSubmissionOrder {
                     return Some(Err(ArrowOrderRefusal::MissingViewerArrowLifecycle {
                         family: ArrowFamily::Orders, row }));
                 }
-                let secondary = match viewer.secondary(&prepared_row_key(prepared), ArrowFamily::Orders, row) {
-                    Ok(value) => value,
-                    Err(reason) => return Some(Err(reason)),
+                let observed_secondary = frame.portable.viewer_runtime.as_ref().and_then(|runtime|
+                    runtime.draw_inputs.iter().find(|draw| draw.key == semantic.key))
+                    .and_then(|draw| draw.secondary_sort_key_f32_bits);
+                let secondary = if let Some(bits) = observed_secondary {
+                    let selected = frame.portable.selected_plan.as_ref() == Some(&semantic.key);
+                    let expected = if selected { 1.0f32.to_bits() } else { 0 };
+                    if bits != semantic.comparator_tie_17c_f32_bits || bits != expected {
+                        return Some(Err(ArrowOrderRefusal::ViewerInteractionSortKeyUnproven {
+                            family: ArrowFamily::Orders, row }));
+                    }
+                    f32::from_bits(bits)
+                } else {
+                    match viewer.secondary(&prepared_row_key(prepared), ArrowFamily::Orders, row) {
+                        Ok(value) => value,
+                        Err(reason) => return Some(Err(reason)),
+                    }
                 };
                 if frame.plan_draw_inputs(&semantic.key).is_none() {
                     return Some(Err(ArrowOrderRefusal::MissingNativePlanDrawInputs { row }));
@@ -538,6 +551,7 @@ pub(crate) mod tests {
                 Xmap15PreparedRow::Plan { semantic, .. } => Some(semantic.key.clone()), _ => None }).collect(),
             draw_inputs: ordered_rows.iter().filter_map(|row| match row {
                 Xmap15PreparedRow::Plan { semantic, .. } => Some(portable_render_stream::Xmap15ViewerPlanDrawInputs {
+                    secondary_sort_key_f32_bits: None,
                     key: semantic.key.clone(), base_rgba_f32_bits: semantic.inner_rgba_f32_bits,
                     inner_highlight: false, animation_speed_f32_bits: 0 }), _ => None }).collect(),
             refusals: Vec::new(),
@@ -683,6 +697,30 @@ pub(crate) mod tests {
             ArrowOrderRefusal::MissingRegistrationOrdinal { family: ArrowFamily::Orders, row } => *row,
             other => panic!("unexpected refusal: {other:?}"),
         }).collect::<BTreeSet<_>>(), [0, 1].into_iter().collect());
+    }
+
+    #[test]
+    fn viewer_secondary_operand_must_match_semantic_and_selected_branch() {
+        for (explicit, semantic_bits, admitted) in [(None, 1.0f32.to_bits(), false),
+            (Some(1.0f32.to_bits()), 0, false), (Some(0), 0, false),
+            (Some(1.0f32.to_bits()), 1.0f32.to_bits(), true)] {
+            let mut frame = prepared_orders(1, true, Some(0));
+            let Xmap15PreparedRow::Plan { semantic, .. } = &mut frame.portable.ordered_rows[0] else { panic!() };
+            semantic.comparator_tie_17c_f32_bits = semantic_bits;
+            let key = semantic.key.clone();
+            frame.portable.viewer_runtime.as_mut().unwrap().draw_inputs.iter_mut()
+                .find(|draw| draw.key == key).unwrap().secondary_sort_key_f32_bits = explicit;
+            frame.portable = frame.portable.seal().unwrap();
+            let witness = crate::Xmap15LifecycleState::default().apply(&frame).unwrap();
+            let result = ArrowSubmissionOrder::from_frames(ArrowFrameInput::Present(&frame), ArrowFrameInput::ViewInactive,
+                &mut ArrowViewerSortState::default(), Some(&witness), &"c".repeat(64));
+            assert_eq!(result.submissions.iter().any(|row| row.row == 0), admitted, "{result:?}");
+            assert_eq!(result.submissions.len() + result.refusals.len(), 2);
+            if admitted { assert_eq!(result.submissions.iter().find(|row| row.row == 0).unwrap().key.secondary_bits,
+                1.0f32.to_bits()); }
+            else { assert!(result.refusals.contains(&ArrowOrderRefusal::ViewerInteractionSortKeyUnproven {
+                family: ArrowFamily::Orders, row: 0 })); }
+        }
     }
 
     #[test]

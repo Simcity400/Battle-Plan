@@ -506,6 +506,7 @@ mod authored_admission_tests {
             derivation: Some(admission.derivation.into()),
         }];
         let selection = Xmap15ViewerSelection {
+            presentation: None,
             selected_owner: None,
             selected_plan: None,
         };

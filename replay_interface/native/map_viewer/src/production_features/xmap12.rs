@@ -479,6 +479,7 @@ mod tests {
         ];
         let viewer = crate::test_support::bare_viewer();
         let selection = crate::production_features::xmap15::Xmap15ViewerSelection {
+            presentation: None,
             selected_owner: None,
             selected_plan: None,
         };
@@ -572,6 +573,7 @@ mod tests {
             let frame = frame_with_rest(rest);
             let viewer = bare_viewer();
             let selection = crate::production_features::xmap15::Xmap15ViewerSelection {
+                presentation: None,
                 selected_owner: None,
                 selected_plan: None,
             };

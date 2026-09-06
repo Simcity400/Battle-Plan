@@ -651,6 +651,8 @@ pub use production_features::xmap14_place::{
 };
 pub use production_features::xmap14_strength::{young_combat_comparison_fixed, LandCombatStrengthDefines};
 pub use production_features::xmap15::{
+    Xmap15ArrowKeyboard, Xmap15ArrowUiCapture, Xmap15ArrowColourCallback,
+    Xmap15ArrowInteraction, Xmap15ViewerPresentation,
     prepare_xmap15_frame, xmap15_viewer_selection, PreparedXmap15Frame, PreparedXmap15Orders,
     PreparedXmap15MovementDefinition, PreparedXmap15PlanDefinition, Xmap15LifecycleState,
     Xmap15LifecycleUpdate, Xmap15UnitIdentityProvider, Xmap15ViewerSelection,

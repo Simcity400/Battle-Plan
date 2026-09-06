@@ -813,6 +813,7 @@ pub struct Xmap15ViewerPlanDrawInputs {
     pub base_rgba_f32_bits: [u32; 4],
     pub inner_highlight: bool,
     pub animation_speed_f32_bits: u32,
+    pub secondary_sort_key_f32_bits: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -820,6 +821,7 @@ pub enum Xmap15ViewerMissingInput {
     OwnerIdentity, OwnerColour, OwnerOverride, VirtualPresentation, SelectedPresentation,
     FrontBinding, CurrentFrontResolver, RootTraversal, RouteGeometry, AssignedUnitFilter,
     ActiveReadiness, CullingDirection, Definition, MovementRuntime,
+    ViewerInteraction, ViewerKeyboardCapture, ViewerModifiers, ViewerColourCallback,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
