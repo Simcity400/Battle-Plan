@@ -496,6 +496,10 @@ impl crate::NativeXmap09LightDepthCaster for NativeMapArrowLightCaster<'_> {
         if !valid_target {
             return Err("map-arrow light submission requires a DSV-only target".into());
         }
+        (*context).GSSetShader(ptr::null_mut(), ptr::null(), 0);
+        (*context).HSSetShader(ptr::null_mut(), ptr::null(), 0);
+        (*context).DSSetShader(ptr::null_mut(), ptr::null(), 0);
+        (*context).SOSetTargets(0, ptr::null(), ptr::null());
         (*context).VSSetShader(command.vertex, ptr::null_mut(), 0);
         (*context).PSSetShader(command.pixel, ptr::null_mut(), 0);
         (*context).IASetInputLayout(command.layout);
@@ -840,10 +844,28 @@ mod native_tests {
                     MaxDepth: 1.0,
                 },
             );
+            let gs = crate::d3d11_device::native_d3d11_compile_shader(
+                "struct V { float4 p : SV_POSITION; }; [maxvertexcount(3)] void main(triangle V input[3], inout TriangleStream<V> stream) { }",
+                "main", "gs_5_0",
+            ).unwrap();
+            let mut geometry = ptr::null_mut();
+            native_d3d11_hr((*raw_device).CreateGeometryShader(
+                (*gs.as_raw()).GetBufferPointer(), (*gs.as_raw()).GetBufferSize(),
+                ptr::null_mut(), &mut geometry), "light hostile GS").unwrap();
+            let geometry = D3dPtr::from_raw(geometry, "light hostile GS").unwrap();
+            let stream_output = buffer(raw_device, &[0; 256], D3D11_BIND_STREAM_OUTPUT);
+            (*raw_context).GSSetShader(geometry.as_raw(), ptr::null(), 0);
+            (*raw_context).SOSetTargets(1, &stream_output.as_raw(), &0);
             let submission = caster.submissions()[0].clone();
             caster
                 .draw_light_depth_submission(raw_context, &light, &submission)
                 .unwrap();
+            let mut observed_geometry = ptr::null_mut();
+            (*raw_context).GSGetShader(&mut observed_geometry, ptr::null_mut(), ptr::null_mut());
+            assert!(observed_geometry.is_null());
+            let mut observed_stream = ptr::null_mut();
+            (*raw_context).SOGetTargets(1, &mut observed_stream);
+            assert!(observed_stream.is_null());
             let mut observed = ptr::null_mut();
             (*raw_context).OMGetRenderTargets(0, ptr::null_mut(), &mut observed);
             assert_eq!(observed, dsv.as_raw());
