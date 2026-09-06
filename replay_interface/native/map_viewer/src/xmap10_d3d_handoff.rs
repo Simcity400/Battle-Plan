@@ -1884,7 +1884,7 @@ mod native {
         blur_vertices: D3dPtr<ID3D11Buffer>,
         blur_cb0: D3dPtr<ID3D11Buffer>,
         terrain_cb1: D3dPtr<ID3D11Buffer>,
-        terrain_samplers: BTreeMap<u32, D3dPtr<ID3D11SamplerState>>,
+        terrain_samplers: BTreeMap<u32, NativePostFxSampler>,
         targets: NativeXmap10ScreenTargets,
         depth_disabled: D3dPtr<ID3D11DepthStencilState>,
         terrain_rasterizer: D3dPtr<ID3D11RasterizerState>,
@@ -3405,21 +3405,7 @@ mod native {
                 "XMAP10 terrainunlit cb1",
             )?;
 
-            let mut terrain_samplers = BTreeMap::new();
-            for slot in parse_dxbc_reflection(&terrain_unlit.pixel_bytecode)?.resources.iter().filter(|r| r.resource_type == 3).map(|r| r.bind_point) {
-                let sampler = terrain
-                    .program
-                    .samplers
-                    .iter()
-                    .find(|sampler| sampler.shader_register == slot)
-                    .ok_or_else(|| {
-                        format!("XMAP10 terrainunlit requires admitted sampler s{slot}")
-                    })?;
-                terrain_samplers.insert(
-                    slot,
-                    crate::xmap04_d3d_handoff::create_underwater_sampler(device.as_raw(), sampler)?,
-                );
-            }
+            let terrain_samplers = create_terrain_unlit_samplers(&device, resolver, &terrain_unlit.pixel_bytecode)?;
             if texture_quality > 2 { return Err("XMAP10 fog texture quality is outside 0..=2".into()); }
             let mut static_resources = Vec::new();
             for (slot, semantic, path) in [
@@ -3444,6 +3430,9 @@ mod native {
             let terrain_rasterizer = create_terrain_rasterizer(device.as_raw())?;
             let depth_disabled = create_depth_disabled(&device)?;
             let fullscreen_rasterizer = create_rasterizer(&device)?;
+            let sampler_identities = terrain_samplers.iter().map(|(slot, sampler)| (*slot, &sampler.sha256)).collect::<Vec<_>>();
+            let content_closure_sha256 = Sha256::hex(&serde_json::to_vec(&(admission.manifest_digest_sha256(),
+                &terrain.program.deterministic_sha256, texture_quality, sampler_identities))?);
             Ok(Self {
                 device,
                 terrain_unlit,
@@ -3461,7 +3450,7 @@ mod native {
                 fullscreen_rasterizer,
                 plan,
                 plan_sha256,
-                content_closure_sha256: Sha256::hex(&serde_json::to_vec(&(admission.manifest_digest_sha256(), &terrain.program.deterministic_sha256, texture_quality))?),
+                content_closure_sha256,
                 admission_sha256: admission.manifest_digest_sha256().to_owned(), texture_quality,
                 static_resources, terrain_blend, terrain_depth,
                 terrain_program_sha256: terrain.program.deterministic_sha256.clone(),
@@ -3595,7 +3584,7 @@ mod native {
             (*context).VSSetShader(self.terrain_unlit.vertex.as_raw(), ptr::null_mut(), 0);
             (*context).PSSetShader(self.terrain_unlit.pixel.as_raw(), ptr::null_mut(), 0);
                     (*context).PSSetShaderResources(0, 16, terrain_views.as_ptr());
-                    for (slot, sampler) in &self.terrain_samplers { (*context).PSSetSamplers(*slot, 1, &sampler.as_raw()); }
+                    for (slot, sampler) in &self.terrain_samplers { (*context).PSSetSamplers(*slot, 1, &sampler.state.as_raw()); }
                     let slot0 = terrain_handoff.xmap10_shared_slot0();
                     let mut strides = [crate::TERRAIN_CHUNK_SLOT0_STRIDE, crate::TERRAIN_CHUNK_SLOT1_STRIDE];
                     let mut offsets = [0u32; 2];
@@ -3846,6 +3835,21 @@ mod native {
         selected_effect_state(effect.blend_state.as_deref(), "BlendState", &root.blend_states)
     }
 
+    unsafe fn create_terrain_unlit_samplers(
+        device: &D3dPtr<ID3D11Device>,
+        resolver: &GameFileResolver,
+        pixel_bytecode: &[u8],
+    ) -> Result<BTreeMap<u32, NativePostFxSampler>> {
+        let mut samplers = BTreeMap::new();
+        for slot in parse_dxbc_reflection(pixel_bytecode)?.resources.iter()
+            .filter(|resource| resource.resource_type == 3).map(|resource| resource.bind_point) {
+            let (state, sha256) = crate::xmap12_d3d_handoff::create_effect_sampler_on_device(
+                device.as_raw(), resolver, "gfx/FX/pdxmap.shader", slot)?;
+            samplers.insert(slot, NativePostFxSampler { state, sha256 });
+        }
+        Ok(samplers)
+    }
+
     unsafe fn compile_terrain_unlit(
         device: &D3dPtr<ID3D11Device>,
         resolver: &GameFileResolver,
@@ -3953,6 +3957,7 @@ Effect terrainunlit {{ VertexShader="VS" PixelShader="PS" }}
                         assert!(error.contains("unlit-reflected-texture-provider-unavailable: terrainunlit t5"), "{error}");
                     } else {
                         let (program, _layout) = compiled.unwrap();
+                        assert!(create_terrain_unlit_samplers(&device, &resolver, &program.pixel_bytecode).unwrap().is_empty());
                         assert!(parse_dxbc_reflection(&program.vertex_bytecode).unwrap().resources.is_empty());
                         let pixel = parse_dxbc_reflection(&program.pixel_bytecode).unwrap();
                         let actual = pixel.resources.iter().map(|r| (r.resource_type, r.bind_point)).collect::<Vec<_>>();
@@ -3967,9 +3972,54 @@ Effect terrainunlit {{ VertexShader="VS" PixelShader="PS" }}
         fn shipped_terrain_unlit_creates_with_its_consumed_providers() {
             let resolver = admitted(&GameFileResolver::vanilla(replay_test_gates::require_vanilla_game_root()).unwrap());
             unsafe {
-                let (program, _layout) = compile_terrain_unlit(&device(), &resolver, 5632, 2048).unwrap();
+                let device = device();
+                let (program, _layout) = compile_terrain_unlit(&device, &resolver, 5632, 2048).unwrap();
                 let pixel = parse_dxbc_reflection(&program.pixel_bytecode).unwrap();
                 assert!(pixel.resources.iter().any(|r| r.resource_type == 2 && r.bind_point == 12));
+                let samplers = create_terrain_unlit_samplers(&device, &resolver, &program.pixel_bytecode).unwrap();
+                let shadow = &samplers[&12];
+                let mut desc: D3D11_SAMPLER_DESC = mem::zeroed();
+                (*shadow.state.as_raw()).GetDesc(&mut desc);
+                assert_eq!(desc.Filter, winapi::um::d3d11::D3D11_FILTER_MIN_MAG_MIP_LINEAR);
+                assert_eq!(desc.ComparisonFunc, winapi::um::d3d11::D3D11_COMPARISON_NEVER);
+                assert!(is_sha256(&shadow.sha256));
+                let vs = d3d_compile_stage("float4 main(int2 p:POSITION):SV_POSITION { return float4(p,0,1); }",
+                    ShaderStage::Vertex, ENGINE_COMPILE_FLAGS).unwrap();
+                let platform = resolver.read_required_text(crate::shader_compile::DX11_PLATFORM_HEADER, "shadow platform").unwrap();
+                let shadow_source = resolver.read_required_text("gfx/FX/shadow.fxh", "shadow helper").unwrap();
+                let start = shadow_source.find("float CalculateShadow(").unwrap();
+                let end = shadow_source.find("float GetShadowScaled(").unwrap();
+                let hlsl = format!("{platform}\nTexture2D Shadow:register(t12); SamplerState S:register(s12);\n{}\nfloat4 main(float4 p:SV_POSITION):SV_Target {{ STextureSampler2D s; s._Texture=Shadow; s._Sampler=S; float v=CalculateShadow(float4(0.5,0.5,p.x<1.0?0.25:0.75,1),s);return float4(v,v,v,1); }}", &shadow_source[start..end]);
+                let ps = d3d_compile_stage(&hlsl, ShaderStage::Pixel, ENGINE_COMPILE_FLAGS).unwrap();
+                let shader = create_program(&device,vs.clone(),ps.clone(),parse_dxbc_reflection(&vs).unwrap(),parse_dxbc_reflection(&ps).unwrap(),"terrain shadow comparison").unwrap();
+                let layout = create_fullscreen_input_layout(&device,&vs).unwrap();
+                let vertices = create_fullscreen_vertices(&device).unwrap();
+                let input = create_target(&device,&"b".repeat(64),2,1,41,"comparison input").unwrap();
+                let target = create_target(&device,&"a".repeat(64),2,1,28,"comparison output").unwrap();
+                let raster = create_rasterizer(&device).unwrap();let depth = create_depth_disabled(&device).unwrap();
+                let mut context=ptr::null_mut();(*device.as_raw()).GetImmediateContext(&mut context);
+                let _context=D3dPtr::from_raw(context,"comparison context").unwrap();
+                (*context).ClearRenderTargetView(input.rtv.as_raw(),&[0.5;4]);
+                (*context).ClearRenderTargetView(target.rtv.as_raw(),&[1.0,0.0,1.0,1.0]);
+                bind_postfx_caller_states(context,depth.as_raw(),raster.as_raw());
+                (*context).IASetInputLayout(layout.as_raw());(*context).IASetVertexBuffers(0,1,&vertices.as_raw(),&8,&0);
+                (*context).IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+                (*context).RSSetViewports(1,&D3D11_VIEWPORT{TopLeftX:0.0,TopLeftY:0.0,Width:2.0,Height:1.0,MinDepth:0.0,MaxDepth:1.0});
+                (*context).OMSetRenderTargets(1,&target.rtv.as_raw(),ptr::null_mut());
+                shader.bind_stages(context);
+                (*context).PSSetShaderResources(12,1,&input.srv.as_raw());(*context).PSSetSamplers(12,1,&shadow.state.as_raw());
+                (*context).Draw(4,0);
+                let mut bound=ptr::null_mut();(*context).PSGetSamplers(12,1,&mut bound);
+                assert_eq!(bound,shadow.state.as_raw());(*bound).Release();
+                (*context).OMSetRenderTargets(0,ptr::null(),ptr::null_mut());(*context).PSSetShaderResources(12,1,&ptr::null_mut());
+                let mut desc:D3D11_TEXTURE2D_DESC=mem::zeroed();(*target._texture.as_raw()).GetDesc(&mut desc);
+                desc.Usage=D3D11_USAGE_STAGING;desc.BindFlags=0;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+                let mut staging=ptr::null_mut();hr((*device.as_raw()).CreateTexture2D(&desc,ptr::null(),&mut staging),"comparison staging").unwrap();
+                let staging=D3dPtr::from_raw(staging,"comparison staging").unwrap();
+                (*context).CopyResource(staging.as_raw().cast(),target._texture.as_raw().cast());
+                let mut mapped:D3D11_MAPPED_SUBRESOURCE=mem::zeroed();hr((*context).Map(staging.as_raw().cast(),0,D3D11_MAP_READ,0,&mut mapped),"comparison readback").unwrap();
+                assert_eq!(std::slice::from_raw_parts(mapped.pData.cast::<u8>(),8),[255,255,255,255,26,26,26,255]);
+                (*context).Unmap(staging.as_raw().cast(),0);
             }
         }
     }

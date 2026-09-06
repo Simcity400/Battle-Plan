@@ -807,3 +807,18 @@ portable_replay/native/engine_evidence/artifacts/func_141632130.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_140bafaf0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_140bf0ad0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141279110.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1423fd550.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424110f0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_142410ef0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_142345450.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_142348d70.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_142348890.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1423f7c40.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1423f7f20.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424ab970.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424b02c0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_142348d70.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/sampler_constructor_defaults.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/sampler_reader_callbacks.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/sampler_enum_integer_format.txt text eol=lf
