@@ -1810,6 +1810,7 @@ fn o04_duplicate_dangling_and_unadmitted_references_fail_closed() {
 
     let mut unadmitted = frame.clone();
     let mut foreign = content("o04.entity");
+    foreign.stored_game_relative_path = "gfx/entities/unadmitted.asset".into();
     foreign.normalized_game_relative_path = "gfx/entities/unadmitted.asset".into();
     foreign.stored_game_relative_path = foreign.normalized_game_relative_path.clone();
     for entity in &mut unadmitted.submits[0].entities {
