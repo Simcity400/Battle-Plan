@@ -8,6 +8,7 @@ pub enum EquipmentDefinitionError {
     ContentAdmission(String),
     MalformedContent { source: String, detail: String },
     MissingDefinition(String),
+    UnresolvedGeneration { token: String, sources: Vec<String> },
     AmbiguousDefinition { token: String, sources: Vec<String> },
     MalformedField { token: String, field: String },
     MissingField { token: String, field: String },
@@ -15,6 +16,8 @@ pub enum EquipmentDefinitionError {
     UnsupportedAuthored { token: String, field: String },
     RelationshipCycle(Vec<String>),
     NotArchetype(String),
+    UnknownCategory { token: String, category: String },
+    MissingArchetypeCategory(String),
     MissingActiveDlcProfile,
     DisabledByContentCondition(String),
 }
@@ -64,6 +67,44 @@ impl AuthoredEquipmentDefinition {
         }).transpose()
     }
 
+    pub fn type_mask(&self) -> EquipmentResult<u64> {
+        let mut mask = 0;
+        for entry in self.expanded.fields().iter().filter(|entry| entry.key_matches("type")) {
+            mask |= self.category_value(&entry.value, "type", false)?;
+        }
+        Ok(mask)
+    }
+
+    pub fn additional_type_mask(&self) -> EquipmentResult<u64> {
+        let mut mask = 0;
+        for entry in self.expanded.fields().iter().filter(|entry| entry.key_matches("add_equipment_type")) {
+            // 140f75bc0 clears the destination at each field, including empty lists.
+            mask = self.category_value(&entry.value, "add_equipment_type", true)?;
+        }
+        Ok(mask)
+    }
+
+    fn category_value(&self, value: &Value, field: &str, numeric: bool) -> EquipmentResult<u64> {
+        let read = |token: &str| {
+            if token == "support" {
+                return Err(EquipmentDefinitionError::UnknownCategory {
+                    token: self.token.clone(), category: token.into(),
+                });
+            }
+            equipment_category_mask(token).or_else(|| numeric.then(|| decimal_category_mask(token)))
+                .ok_or_else(|| EquipmentDefinitionError::UnknownCategory {
+                    token: self.token.clone(), category: token.into(),
+                })
+        };
+        if let Some(token) = value.as_scalar() { return read(token) }
+        let mut mask = 0;
+        for entry in value.fields() {
+            if entry.key.is_some() { return Err(self.malformed(field)) }
+            mask |= read(entry.value.as_scalar().ok_or_else(|| self.malformed(field))?)?;
+        }
+        Ok(mask)
+    }
+
     fn malformed(&self, field: &str) -> EquipmentDefinitionError {
         EquipmentDefinitionError::MalformedField { token: self.token.clone(), field: field.into() }
     }
@@ -86,6 +127,22 @@ pub struct EquipmentHierarchyProfile {
     pub effective_model_priority: i32,
     pub authored_visual_level: Option<i32>,
     pub effective_visual_level: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EquipmentModelProfile {
+    pub hierarchy: EquipmentHierarchyProfile,
+    pub own_type_mask: u64,
+    pub archetype_type_mask: Option<u64>,
+    pub additional_type_mask: u64,
+    pub normalized_type_mask: u64,
+    pub default_modules: Vec<EquipmentDefaultModule>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EquipmentDefaultModule {
+    Resolved { slot: String, definition: EquipmentDefinitionIdentity, additional_type_mask: u64 },
+    Missing { slot: String, token: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -124,7 +181,22 @@ impl AuthoredEquipmentCatalog {
     }
 
     pub fn definition(&self, token: &str) -> EquipmentResult<&AuthoredEquipmentDefinition> {
-        self.admitted_definition(&self.definitions, token)
+        let definition = self.admitted_definition(&self.definitions, token);
+        if matches!(definition, Err(EquipmentDefinitionError::MissingDefinition(_))
+            | Err(EquipmentDefinitionError::DisabledByContentCondition(_))) {
+            self.require_resolved_generation(token)?;
+        }
+        definition
+    }
+
+    fn require_resolved_generation(&self, token: &str) -> EquipmentResult<()> {
+        let sources: Vec<_> = self.sources.iter().filter(|source| {
+            source.authored.fields().iter().any(|entry| entry.key_matches("duplicate_archetypes")
+                && entry.value.as_object().is_none_or(|entries| !entries.is_empty()))
+        }).map(|source| source.source.normalized_game_relative_path.clone()).collect();
+        if sources.is_empty() { Ok(()) } else {
+            Err(EquipmentDefinitionError::UnresolvedGeneration { token: token.into(), sources })
+        }
     }
 
     pub fn module(&self, token: &str) -> EquipmentResult<&AuthoredEquipmentDefinition> {
@@ -134,20 +206,22 @@ impl AuthoredEquipmentCatalog {
     fn admitted_definition<'a>(&self, definitions: &'a BTreeMap<String, Vec<AuthoredEquipmentDefinition>>,
         token: &str) -> EquipmentResult<&'a AuthoredEquipmentDefinition>
     {
-        match definitions.get(token).map(Vec::as_slice) {
-            Some([definition]) => {
-                if let Some(limit) = &definition.container_limit {
-                    if !self.content_limit(token, limit)? {
-                        return Err(EquipmentDefinitionError::DisabledByContentCondition(token.into()));
-                    }
-                }
-                Ok(definition)
-            },
-            Some(definitions) => Err(EquipmentDefinitionError::AmbiguousDefinition {
+        let definitions = definitions.get(token)
+            .ok_or_else(|| EquipmentDefinitionError::MissingDefinition(token.into()))?;
+        let mut enabled = Vec::new();
+        for definition in definitions {
+            if let Some(limit) = &definition.container_limit {
+                if !self.content_limit(token, limit)? { continue }
+            }
+            enabled.push(definition);
+        }
+        match enabled.as_slice() {
+            [] => Err(EquipmentDefinitionError::DisabledByContentCondition(token.into())),
+            [definition] => Ok(*definition),
+            _ => Err(EquipmentDefinitionError::AmbiguousDefinition {
                 token: token.into(),
-                sources: definitions.iter().map(|value| value.source.normalized_game_relative_path.clone()).collect(),
+                sources: enabled.iter().map(|value| value.source.normalized_game_relative_path.clone()).collect(),
             }),
-            None => Err(EquipmentDefinitionError::MissingDefinition(token.into())),
         }
     }
 
@@ -168,6 +242,7 @@ impl AuthoredEquipmentCatalog {
     }
 
     pub fn hierarchy_profile(&self, token: &str) -> EquipmentResult<EquipmentHierarchyProfile> {
+        self.require_resolved_generation(token)?;
         let definition = self.definition(token)?;
         let mut chain = Vec::new();
         let mut next = token.to_owned();
@@ -197,6 +272,49 @@ impl AuthoredEquipmentCatalog {
             authored_visual_level: definition.signed_integer("visual_level")?,
             effective_visual_level: definition.signed_integer("visual_level")?.unwrap_or(0),
         })
+    }
+
+    pub fn model_profile(&self, token: &str) -> EquipmentResult<EquipmentModelProfile> {
+        let hierarchy = self.hierarchy_profile(token)?;
+        let own_type_mask = self.definition(token)?.type_mask()?;
+        let archetype_type_mask = hierarchy.archetype.as_ref()
+            .map(|archetype| self.definition(&archetype.token)?.type_mask()).transpose()?;
+        let mut slots = Vec::<(String, String)>::new();
+        let definition = self.definition(token)?;
+        for entry in definition.expanded.fields().iter().filter(|entry| entry.key_matches("default_modules")) {
+            for assignment in entry.value.as_object().ok_or_else(|| definition.malformed("default_modules"))? {
+                let slot = assignment.key.as_ref().ok_or_else(|| definition.malformed("default_modules"))?;
+                let module = assignment.value.as_scalar().ok_or_else(|| definition.malformed("default_modules"))?;
+                if let Some(existing) = slots.iter_mut().find(|(name, _)| name == slot) {
+                    existing.1 = module.into();
+                } else {
+                    slots.push((slot.clone(), module.into()));
+                }
+            }
+        }
+        let mut additional_type_mask = 0;
+        let mut default_modules = Vec::new();
+        for (slot, token) in slots {
+            match self.module(&token) {
+                Ok(module) => {
+                    let mask = module.additional_type_mask()?;
+                    additional_type_mask |= mask;
+                    default_modules.push(EquipmentDefaultModule::Resolved {
+                        slot, definition: module.identity(), additional_type_mask: mask,
+                    });
+                }
+                Err(EquipmentDefinitionError::MissingDefinition(_))
+                | Err(EquipmentDefinitionError::DisabledByContentCondition(_)) => {
+                    default_modules.push(EquipmentDefaultModule::Missing { slot, token });
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let normalized_type_mask = crate::equipment_model_law::equipment_model_category(
+            own_type_mask, archetype_type_mask, additional_type_mask,
+        ).map_err(|_| EquipmentDefinitionError::MissingArchetypeCategory(token.into()))?;
+        Ok(EquipmentModelProfile { hierarchy, own_type_mask, archetype_type_mask,
+            additional_type_mask, normalized_type_mask, default_modules })
     }
 
     fn resolve_archetype(&self, token: &str, visiting: &mut Vec<String>)
@@ -270,6 +388,42 @@ impl AuthoredEquipmentCatalog {
         self.sources.push(AuthoredEquipmentSource { source, authored: root });
         Ok(())
     }
+}
+
+fn equipment_category_mask(token: &str) -> Option<u64> {
+    Some(match token {
+        "convoy" => 0x1, "infantry" => 0x20, "artillery" => 0x10000000,
+        "armor" => 0x4, "amphibious" => 0x4000000, "anti_air" => 0x8000000,
+        "anti_tank" => 0x20000000, "rocket" => 0x40000000, "flame" => 0x2000000,
+        "mechanized" => 0x10, "motorized" => 0x8, "capital_ship" => 0x40,
+        "submarine" => 0x80, "carrier" => 0x400000, "fighter" => 0x400,
+        "cas" => 0x4000, "naval_bomber" => 0x8000, "interceptor" => 0x800,
+        "tactical_bomber" => 0x1000, "strategic_bomber" => 0x2000,
+        "air_transport" => 0x100000, "maritime_patrol_plane" => 0x200000,
+        "heavy_fighter" => 0x100000000, "land_cruiser" => 0x4000000000,
+        "emplacement_gun_ammo" => 0x200000000, "ballistic_missile" => 0x400000000,
+        "nuclear_missile" => 0x800000000, "sam_missile" => 0x1000000000,
+        "screen_ship" => 0x100, "support_ship" => 0x8000000000, "scout_plane" => 0x40000,
+        "floating_harbor" => 0x200, "railway_gun" => 0x80000, "suicide" => 0x20000,
+        "train" => 0x80000000, "missile_launcher" => 0x2000000000, "missile" => 0x10000,
+        _ => return None,
+    })
+}
+
+fn decimal_category_mask(token: &str) -> u64 {
+    // 1424b00c0 accepts the decimal prefix; 14253d1fc saturates unsigned overflow.
+    let bytes = token.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']).as_bytes();
+    let negative = bytes.first() == Some(&b'-');
+    let bytes = if matches!(bytes.first(), Some(b'+' | b'-')) { &bytes[1..] } else { bytes };
+    let mut value = 0u64;
+    let mut overflow = false;
+    for &byte in bytes.iter().take_while(|byte| byte.is_ascii_digit()) {
+        match value.checked_mul(10).and_then(|value| value.checked_add(u64::from(byte - b'0'))) {
+            Some(next) => value = next,
+            None => overflow = true,
+        }
+    }
+    if overflow { u64::MAX } else if negative { value.wrapping_neg() } else { value }
 }
 
 #[cfg(test)]
@@ -351,7 +505,7 @@ mod tests {
             duplicate_archetypes = { derived = { archetype = hull for_each = { x = { set = 2 } } } }"#);
         assert_eq!(catalog.definition("hull").unwrap_err(), EquipmentDefinitionError::MissingActiveDlcProfile);
         assert!(catalog.sources()[0].authored.first_value_ci("duplicate_archetypes").is_some());
-        assert!(matches!(catalog.definition("limit"), Err(EquipmentDefinitionError::MissingDefinition(_))));
+        assert!(matches!(catalog.definition("limit"), Err(EquipmentDefinitionError::UnresolvedGeneration { .. })));
     }
     #[test]
     fn hierarchy_preserves_raw_priority_and_sums_only_visual_tech_additions() {
@@ -416,6 +570,77 @@ mod tests {
         let mut catalog = catalog(r#"equipment_modules = { limit = { has_dlc = "Pack" has_idea = mutable } engine = {} }"#);
         catalog.active_dlcs = Some(BTreeSet::from(["Pack".into()]));
         assert!(matches!(catalog.module("engine"), Err(EquipmentDefinitionError::UnsupportedAuthored { .. })));
+    }
+
+    #[test]
+    fn complementary_dlc_containers_resolve_one_same_token_before_ambiguity() {
+        let mut catalog = catalog(r#"equipment_modules = { limit = { has_dlc = "Pack" } engine = { add_equipment_type = fighter } }
+            equipment_modules = { limit = { NOT = { has_dlc = "Pack" } } engine = { add_equipment_type = cas } }"#);
+        assert_eq!(catalog.module("engine").unwrap_err(), EquipmentDefinitionError::MissingActiveDlcProfile);
+        catalog.active_dlcs = Some(BTreeSet::new());
+        assert_eq!(catalog.module("engine").unwrap().additional_type_mask().unwrap(), 0x4000);
+        catalog.active_dlcs = Some(BTreeSet::from(["Pack".into()]));
+        assert_eq!(catalog.module("engine").unwrap().additional_type_mask().unwrap(), 0x400);
+        catalog.insert_source(source("common/units/equipment/other.txt"), b"equipment_modules = { engine = {} }").unwrap();
+        assert!(matches!(catalog.module("engine"), Err(EquipmentDefinitionError::AmbiguousDefinition { .. })));
+        let mut refused = self::catalog("equipment_modules = { engine = {} } equipment_modules = { limit = { has_idea = mutable } engine = {} }");
+        refused.active_dlcs = Some(BTreeSet::new());
+        assert!(matches!(refused.module("engine"), Err(EquipmentDefinitionError::UnsupportedAuthored { .. })));
+    }
+
+    #[test]
+    fn model_profile_retains_raw_masks_and_uses_shared_normalization() {
+        let catalog = catalog("equipments = { root = { is_archetype = yes type = { convoy screen_ship } } inherited = { archetype = root default_modules = { engine = naval engine = capital extra = absent } } own = { type = support_ship } zero = { is_archetype = yes type = {} } no_archetype = {} } equipment_modules = { naval = { add_equipment_type = submarine } capital = { add_equipment_type = capital_ship } }");
+        let inherited = catalog.model_profile("inherited").unwrap();
+        assert_eq!((inherited.own_type_mask, inherited.archetype_type_mask, inherited.additional_type_mask, inherited.normalized_type_mask), (0, Some(0x101), 0x40, 0x40));
+        assert!(matches!(&inherited.default_modules[0], EquipmentDefaultModule::Resolved { slot, definition, additional_type_mask: 0x40 } if slot == "engine" && definition.token == "capital"));
+        assert_eq!(inherited.default_modules[1], EquipmentDefaultModule::Missing { slot: "extra".into(), token: "absent".into() });
+        let own = catalog.model_profile("own").unwrap();
+        assert_eq!((own.own_type_mask, own.archetype_type_mask, own.normalized_type_mask), (0x8000000000, None, 0x8000000000));
+        assert_eq!(catalog.model_profile("zero").unwrap().normalized_type_mask, 0);
+        assert_eq!(catalog.model_profile("no_archetype").unwrap_err(), EquipmentDefinitionError::MissingArchetypeCategory("no_archetype".into()));
+    }
+
+    #[test]
+    fn category_fields_preserve_lists_repetition_empty_and_full_unsigned_width() {
+        let catalog = catalog("equipments = { e = { type = { armor fighter } type = naval_bomber } invalid = { type = 4 } malformed = { type = { armor = yes } } } equipment_modules = { high = { add_equipment_type = { 9223372036854775808 fighter } } replace = { add_equipment_type = armor add_equipment_type = {} } repeated = { add_equipment_type = armor add_equipment_type = fighter } }");
+        assert_eq!(catalog.definition("e").unwrap().type_mask().unwrap(), 0x8404);
+        assert!(matches!(catalog.definition("invalid").unwrap().type_mask(), Err(EquipmentDefinitionError::UnknownCategory { .. })));
+        assert!(matches!(catalog.definition("malformed").unwrap().type_mask(), Err(EquipmentDefinitionError::MalformedField { .. })));
+        assert_eq!(catalog.module("high").unwrap().additional_type_mask().unwrap(), (1u64 << 63) | 0x400);
+        assert_eq!(catalog.module("replace").unwrap().additional_type_mask().unwrap(), 0);
+        assert_eq!(catalog.module("repeated").unwrap().additional_type_mask().unwrap(), 0x400);
+        for (text, expected) in [("-1", u64::MAX), ("18446744073709551615", u64::MAX),
+            ("18446744073709551616", u64::MAX), ("-18446744073709551616", u64::MAX),
+            ("+32tail", 32), ("  8", 8), ("nonnumeric", 0), ("0x80", 0)] {
+            assert_eq!(decimal_category_mask(text), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn unexpanded_generations_are_not_proven_missing_candidates_or_complete_profiles() {
+        let catalog = catalog("equipments = { hull = { is_archetype = yes type = armor default_modules = { engine = missing } } } duplicate_archetypes = { generated = { archetype = hull type = fighter for_each = { hardness = { set = 0.5 } } } }");
+        let refusal = |token: &str| EquipmentDefinitionError::UnresolvedGeneration {
+            token: token.into(), sources: vec!["common/units/equipment/a.txt".into()],
+        };
+        assert_eq!(catalog.definition("generated").unwrap_err(), refusal("generated"));
+        assert_eq!(catalog.definition("not_observed").unwrap_err(), refusal("not_observed"));
+        assert_eq!(catalog.hierarchy_profile("hull").unwrap_err(), refusal("hull"));
+        assert_eq!(catalog.model_profile("hull").unwrap_err(), refusal("hull"));
+        assert_eq!(catalog.definition("hull").unwrap().type_mask().unwrap(), 4);
+        assert_eq!(catalog.module("missing").unwrap_err(), EquipmentDefinitionError::MissingDefinition("missing".into()));
+    }
+
+    #[test]
+    fn empty_generation_root_allows_absence_but_unparsed_root_does_not() {
+        let empty = catalog("equipments = { hull = { type = armor } } duplicate_archetypes = {}");
+        assert_eq!(empty.definition("missing").unwrap_err(), EquipmentDefinitionError::MissingDefinition("missing".into()));
+        assert_eq!(empty.model_profile("hull").unwrap().normalized_type_mask, 4);
+        let unparsed = catalog("duplicate_archetypes = malformed");
+        assert!(matches!(unparsed.definition("missing"), Err(EquipmentDefinitionError::UnresolvedGeneration { .. })));
+        let mut disabled = catalog(r#"equipments = { limit = { has_dlc = "Pack" } hull = {} } duplicate_archetypes = { hull = { archetype = source } }"#);
+        disabled.active_dlcs = Some(BTreeSet::new());
+        assert!(matches!(disabled.definition("hull"), Err(EquipmentDefinitionError::UnresolvedGeneration { .. })));
     }
 
 }

@@ -1,3 +1,4 @@
+pub mod authored_inputs;
 
 use crate::assets::AssetResolver;
 use crate::compose::{
