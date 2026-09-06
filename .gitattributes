@@ -885,6 +885,11 @@ portable_replay/native/engine_evidence/artifacts/particle_spin_cases.json text e
 /portable_replay/native/engine_evidence/artifacts/func_1422bf160.decompile.c text eol=lf
 /portable_replay/native/engine_evidence/artifacts/func_140b30d80.decompile.c text eol=lf
 /portable_replay/native/engine_evidence/artifacts/xmap13_spline_height_callback.datdump.txt text eol=lf
+/portable_replay/native/engine_evidence/artifacts/particle_noise_cases.json text eol=lf
+/portable_replay/native/engine_evidence/artifacts/func_1423ea390.decompile.c text eol=lf
+/portable_replay/native/engine_evidence/artifacts/func_1423ea390.instructions.txt text eol=lf
+/portable_replay/native/engine_evidence/artifacts/20260906T040106Z-particle-noise-component-offsets-a729-32c50804.datdump.txt text eol=lf
+/portable_replay/native/engine_evidence/artifacts/20260906T040106Z-particle-noise-component-offsets-a729-32c50804.job.json text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_140a4ede0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_140a4ede0.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_140a541e0.decompile.c text eol=lf
@@ -914,4 +919,12 @@ portable_replay/native/engine_evidence/artifacts/func_140bd4770.decompile.c text
 
 portable_replay/native/engine_evidence/artifacts/func_140f72890.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1401ae640.decompile.c text eol=lf
-/portable_replay/native/engine_evidence/artifacts/particle_noise_cases.json text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1423e9150.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1423e9150.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14227ecb0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14227ecb0.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1423e9500.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1423e9500.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1422c2ba0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1422c2ba0.instructions.txt text eol=lf

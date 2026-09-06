@@ -93,6 +93,75 @@ impl TurbulenceNoise {
         Ok(noise)
     }
 
+    fn lookup(&self, index: usize) -> usize {
+        // Native indices mask coordinates, not their sums; +0x100 aliases gradient bytes.
+        if index < 256 {
+            self.permutation[index] as usize
+        } else {
+            let byte = index - 256;
+            self.gradients[byte / 12][byte % 12 / 4].to_le_bytes()[byte % 4] as usize
+        }
+    }
+
+    fn component(&self, position: [f32; 3], component: usize) -> f32 {
+        let integer = position.map(|value| {
+            if value >= -2147483648.0 && value < 2147483648.0 {
+                value as i32
+            } else {
+                i32::MIN
+            }
+        });
+        let fraction = std::array::from_fn::<_, 3, _>(|axis| {
+            f32::from_bits((position[axis] - integer[axis] as f32).to_bits() & 0x7fff_ffff)
+        });
+        let [x, y, z] = fraction;
+        let corner = |dx: i32, dy: i32, dz: i32| {
+            let ix = (integer[0].wrapping_add(dx) as u32 & 255) as usize;
+            let iy = (integer[1].wrapping_add(dy) as u32 & 255) as usize;
+            let iz = (integer[2].wrapping_add(dz) as u32 & 255) as usize;
+            let index = self.lookup(self.lookup(self.lookup(ix) + iy) + iz);
+            let [gx, gy, gz] = self.gradients[index];
+            (y - dy as f32) * gy + (x - dx as f32) * gx + (z - dz as f32) * gz
+        };
+        let plane = |dz| {
+            let a = corner(0, 0, dz);
+            let b = corner(1, 0, dz);
+            let c = corner(0, 1, dz);
+            let d = corner(1, 1, dz);
+            match component {
+                0 => (d * x + c * (1.0 - x)) * y + (a * (1.0 - x) + b * x) * (1.0 - y),
+                1 => (b * x + a * (1.0 - x)) * (1.0 - y) + (d * x + c * (1.0 - x)) * y,
+                _ => (a * (1.0 - x) + b * x) * (1.0 - y) + (c * (1.0 - x) + d * x) * y,
+            }
+        };
+        plane(0) * (1.0 - z) + plane(1) * z
+    }
+
+    fn direction(&self, [x, y, z]: [f32; 3]) -> [f32; 3] {
+        native_normalize(
+            [
+                self.component([x, y, z], 0),
+                self.component(
+                    [
+                        y + f32::from_bits(0x41fb_53f8),
+                        z - f32::from_bits(0x423f_6979),
+                        x + f32::from_bits(0x414c_b021),
+                    ],
+                    1,
+                ),
+                self.component(
+                    [
+                        z - f32::from_bits(0x4369_251f),
+                        x - f32::from_bits(0x42e2_d0e5),
+                        y - f32::from_bits(0x4339_4f5c),
+                    ],
+                    2,
+                ),
+            ],
+            true,
+        )
+    }
+
     fn update(&mut self, subsystem: Option<&str>, time: f32) -> ParticleResult<()> {
         self.phase %= self.frequency;
         let first = (self.phase << 8) / self.frequency;
@@ -202,6 +271,9 @@ impl<'a> ParticleGpuView<'a> {
             )
             .event(self.handle().event_instance_id)
             .into());
+        }
+        if !self.instance.visible {
+            return Ok(0);
         }
         let mut ordinal = 0;
         for root in self.root_subsystems() {
@@ -954,6 +1026,7 @@ impl Subsystem {
         scale: f32,
         world: &[f32; 16],
         random: &mut ViewerParticleSeed,
+        noise: &[TurbulenceNoise],
     ) -> ParticleResult<()> {
         let scaled_delta = scale * delta;
         if authored.forces.is_empty() {
@@ -972,6 +1045,7 @@ impl Subsystem {
         };
         let forces = &mut self.force_scratch[..sample_count];
         forces.fill([0.0; 3]);
+        let mut noise_index = 0;
         for force in &authored.forces {
             let amount = random.sample(&force.amount, self.local_time);
             if amount == 0.0 {
@@ -1090,13 +1164,22 @@ impl Subsystem {
                         }
                     }
                 }
-                _ => {
-                    return Err(ParticleInputRefusal::new(
-                        "",
-                        Some(&authored.name),
-                        &format!("force:{}:{:?}", force.name, force.kind),
-                        ParticleRefusalReason::UnsupportedAuthoredInput,
-                    ))
+                ParticleForceKind::Turbulence => {
+                    let table = noise.get(noise_index).ok_or_else(|| {
+                        ParticleInputRefusal::new(
+                            "",
+                            Some(&authored.name),
+                            &format!("turbulence_table:{noise_index}:{}", force.name),
+                            ParticleRefusalReason::CapacityExceeded,
+                        )
+                    })?;
+                    noise_index += 1;
+                    for (accumulated, particle) in forces.iter_mut().zip(&self.particles) {
+                        let direction = table.direction(particle.visual.position);
+                        for axis in 0..3 {
+                            accumulated[axis] = direction[axis] * amount + accumulated[axis];
+                        }
+                    }
                 }
             }
         }
@@ -1328,7 +1411,7 @@ impl Subsystem {
             );
         }
         if self.retained != 0 {
-            self.advance_motion(authored, delta, scale, &world, random)?;
+            self.advance_motion(authored, delta, scale, &world, random, noise)?;
         }
         for index in 0..self.retained {
             let mut child_world = world;
@@ -1368,6 +1451,7 @@ struct Instance {
     world: [u32; 16],
     speed: f32,
     opacity: f32,
+    visible: bool,
     attached: bool,
     subsystems: Vec<Subsystem>,
     failure: Option<ParticleInputRefusal>,
@@ -1541,6 +1625,7 @@ impl ParticleRuntime {
             world: parent_world_matrix_f32_bits,
             speed: inherited_speed,
             opacity: 1.0,
+            visible: true,
             attached: true,
             subsystems,
             failure: None,
@@ -1591,7 +1676,7 @@ impl ParticleRuntime {
             );
         }
         let instance = self.instances[handle.slot].as_mut().unwrap();
-        if instance.attached {
+        if instance.attached && instance.visible {
             for (state, authored) in instance
                 .subsystems
                 .iter_mut()
@@ -1618,6 +1703,16 @@ impl ParticleRuntime {
             instance,
             presentation_id: self.presentation,
         })
+    }
+
+    pub fn set_visible(&mut self, handle: ParticleHandle, visible: bool) -> ParticleResult<()> {
+        self.instance(handle)?;
+        let instance = self.instances[handle.slot].as_mut().unwrap();
+        if instance.visible != visible {
+            instance.visible = visible;
+            instance.last_sort = None;
+        }
+        Ok(())
     }
 
     pub fn set_opacity(&mut self, handle: ParticleHandle, opacity: f32) -> ParticleResult<()> {
@@ -1755,7 +1850,7 @@ impl ParticleRuntime {
         self.presentation = Some(presentation_id);
         let mut first_failure = None;
         for instance in self.instances.iter_mut().flatten() {
-            if instance.failure.is_some() {
+            if instance.failure.is_some() || !instance.visible {
                 continue;
             }
             let delta = instance.speed * renderer_delta;
@@ -2522,20 +2617,42 @@ mod tests {
     }
 
     #[test]
-    fn public_advance_refuses_unsupported_motion_and_keeps_the_instance_failure() {
-        for (kind, extra) in [("turbulence", "")] {
-            let (_fixture, mut runtime, handle) = setup(&format!("force={{name=unclosed type={kind} amount=1 {extra}}} subsystem={{name=s max_amount=1 duration=0 emission=4 life=4 mass=1 force=unclosed}}"));
-            let error = runtime.advance(1, 0.25, &[]).unwrap_err();
-            assert_eq!(error.event_instance_id, Some(17));
-            assert_eq!(error.definition, "effect");
-            assert_eq!(error.subsystem.as_deref(), Some("s"));
-            assert_eq!(
-                error.reason,
-                ParticleRefusalReason::UnsupportedAuthoredInput
-            );
-            assert!(error.input.starts_with("force:unclosed:"));
-            assert_eq!(runtime.light_binding(handle).unwrap_err(), error);
-        }
+    fn public_turbulence_advance_draws_motion_and_retains_nonfinite_refusals() {
+        let (_fixture, mut runtime, handle) = setup("force={name=noise type=turbulence amount=1} subsystem={name=s max_amount=1 duration=0 emission=4 life=4 mass=1 force=noise}");
+        runtime.advance(1, 0.25, &[]).unwrap();
+        let state = runtime.instance(handle).unwrap();
+        assert_ne!(state.subsystems[0].particles[0].visual.velocity, [0.0; 3]);
+        assert_eq!(gpu_records(&runtime, handle).len(), 1);
+        runtime.instances[handle.slot].as_mut().unwrap().subsystems[0].particles[0]
+            .visual
+            .position = [f32::MAX; 3];
+        let error = runtime.advance(2, 0.25, &[]).unwrap_err();
+        assert_eq!(error.event_instance_id, Some(17));
+        assert_eq!(error.reason, ParticleRefusalReason::ArithmeticOverflow);
+        assert_eq!(runtime.gpu_view(handle).unwrap_err(), error);
+        assert_eq!(runtime.light_binding(handle).unwrap_err(), error);
+    }
+
+    #[test]
+    fn turbulence_uses_active_reference_ordinal_and_refuses_unallocated_tables() {
+        let (_fixture, mut runtime, handle) = setup("force={name=first type=turbulence amount=0 division=1} force={name=second type=turbulence amount=1 division=1} subsystem={name=s max_amount=1 duration=0 emission=4 life=4 mass=1 force={first second}}");
+        let state = runtime.instance(handle).unwrap();
+        let first = state.noise[0].direction([7.0, 0.0, 11.0]);
+        let second = state.noise[1].direction([7.0, 0.0, 11.0]);
+        assert_ne!(first.map(f32::to_bits), second.map(f32::to_bits));
+        runtime.advance(1, 0.25, &[]).unwrap();
+        let velocity = runtime.instance(handle).unwrap().subsystems[0].particles[0]
+            .visual
+            .velocity;
+        assert_eq!(
+            velocity.map(f32::to_bits),
+            first.map(|v| (v * 0.25).to_bits())
+        );
+        let (_fixture, mut runtime, handle) = setup("force={name=noise type=turbulence amount=1} subsystem={name=s max_amount=1 duration=0 emission=4 life=4 mass=1 force={noise noise}}");
+        let error = runtime.advance(1, 0.25, &[]).unwrap_err();
+        assert_eq!(error.input, "turbulence_table:1:noise");
+        assert_eq!(error.reason, ParticleRefusalReason::CapacityExceeded);
+        assert_eq!(runtime.light_binding(handle).unwrap_err(), error);
     }
 
     #[test]
@@ -2583,6 +2700,7 @@ mod tests {
                         counter: 0,
                         seed: 1,
                     },
+                    &instance.noise,
                 )
                 .unwrap();
             for index in 0..3 {
@@ -2696,6 +2814,7 @@ mod tests {
                 1.0,
                 &matrix().map(f32::from_bits),
                 &mut instance.random,
+                &instance.noise,
             )
             .unwrap();
         assert_eq!(
@@ -2771,6 +2890,7 @@ mod tests {
                     1.0,
                     &world,
                     &mut instance.random,
+                    &instance.noise,
                 )
                 .unwrap();
             assert_eq!(system.particles[0].visual.velocity, [0.0; 3]);
@@ -2783,6 +2903,7 @@ mod tests {
                     1.0,
                     &world,
                     &mut instance.random,
+                    &instance.noise,
                 )
                 .unwrap();
             assert_eq!(system.particles[0].visual.velocity, [1.0, 0.0, 0.0]);
@@ -3401,6 +3522,36 @@ mod tests {
                 noise_hash(&noise),
                 case["table_sha256"][0].as_str().unwrap()
             );
+            let check_force = |noise: &TurbulenceNoise, step: usize| {
+                let amount = f32::from_bits(case["amount_f32_bits"].as_u64().unwrap() as u32);
+                for (i, position) in fixture["positions_f32_bits"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .enumerate()
+                {
+                    let position = std::array::from_fn(|axis| {
+                        f32::from_bits(position[axis].as_u64().unwrap() as u32)
+                    });
+                    let direction = noise.direction(position);
+                    let result = std::array::from_fn::<_, 3, _>(|axis| {
+                        (direction[axis] * amount
+                            + f32::from_bits(
+                                fixture["initial_force_f32_bits"][axis].as_u64().unwrap() as u32,
+                            ))
+                        .to_bits()
+                    });
+                    let expected = std::array::from_fn::<_, 3, _>(|axis| {
+                        case["force_f32_bits"][step][i][axis].as_u64().unwrap() as u32
+                    });
+                    assert_eq!(
+                        result, expected,
+                        "division={} step={step} particle={i}",
+                        case["division"]
+                    );
+                }
+            };
+            check_force(&noise, 0);
             for (i, time) in fixture["update_times_f32_bits"]
                 .as_array()
                 .unwrap()
@@ -3416,10 +3567,113 @@ mod tests {
                     "division={} update={i}",
                     case["division"]
                 );
+                check_force(&noise, i + 1);
             }
             checked += 1;
         }
         assert_eq!(checked, 6);
+    }
+
+    #[test]
+    fn hidden_instances_retain_particles_and_skip_update_sort_and_draw_until_visible() {
+        let authored = "subsystem={name=s max_amount=4 emission=4 duration=-1 life=2 sort=age}";
+        let (_fixture, mut runtime, handle) = setup(authored);
+        let (_expected_fixture, mut expected, expected_handle) = setup(authored);
+        runtime.advance(1, 0.25, &[]).unwrap();
+        expected.advance(1, 0.25, &[]).unwrap();
+        let before = runtime.instance(handle).unwrap();
+        let seed = before.random;
+        let time = before.subsystems[0].local_time.to_bits();
+        let retained = before.subsystems[0].retained;
+        let camera = ParticleSortCamera {
+            position_f32_bits: [0, 0, 0],
+            forward_f32_bits: [0, 0, 1.0_f32.to_bits()],
+        };
+        runtime.sort_for_draw(handle, 1, camera).unwrap();
+        expected.sort_for_draw(expected_handle, 1, camera).unwrap();
+        let phase = runtime.instance(handle).unwrap().subsystems[0].sort_phase;
+        assert_eq!(phase, 2);
+        let records = runtime
+            .gpu_view(handle)
+            .unwrap()
+            .root_subsystems()
+            .next()
+            .unwrap()
+            .records()
+            .collect::<ParticleResult<Vec<_>>>()
+            .unwrap();
+        assert!(!records.is_empty());
+        runtime.set_visible(handle, false).unwrap();
+        runtime.advance(2, 100.0, &[]).unwrap();
+        runtime.sort_for_draw(handle, 2, camera).unwrap();
+        let state = runtime.instance(handle).unwrap();
+        assert_eq!(state.random, seed);
+        assert_eq!(state.subsystems[0].local_time.to_bits(), time);
+        assert_eq!(state.subsystems[0].retained, retained);
+        assert_eq!(state.subsystems[0].sort_phase, phase);
+        assert!(!runtime.light_binding(handle).unwrap().finished);
+        let hidden = runtime.gpu_view(handle).unwrap();
+        assert_eq!(
+            hidden
+                .root_subsystems()
+                .next()
+                .unwrap()
+                .records()
+                .collect::<ParticleResult<Vec<_>>>()
+                .unwrap(),
+            records
+        );
+        for trail in [false, true] {
+            assert_eq!(
+                hidden
+                    .visit_draw_subsystems(16, trail, |_, _| {
+                        panic!("hidden native object must not reach the GPU draw visitor")
+                    })
+                    .unwrap(),
+                0
+            );
+        }
+        runtime.set_visible(handle, true).unwrap();
+        assert_eq!(
+            runtime.gpu_view(handle).unwrap().sorted_presentation_id(),
+            None
+        );
+        runtime.advance(3, 0.25, &[]).unwrap();
+        expected.advance(3, 0.25, &[]).unwrap();
+        runtime.sort_for_draw(handle, 3, camera).unwrap();
+        expected.sort_for_draw(expected_handle, 3, camera).unwrap();
+        let records = |runtime: &ParticleRuntime, handle| {
+            runtime
+                .gpu_view(handle)
+                .unwrap()
+                .root_subsystems()
+                .next()
+                .unwrap()
+                .records()
+                .collect::<ParticleResult<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(
+            records(&runtime, handle),
+            records(&expected, expected_handle)
+        );
+        assert_eq!(
+            runtime.instance(handle).unwrap().random,
+            expected.instance(expected_handle).unwrap().random
+        );
+        let mut drawn = 0;
+        assert_eq!(
+            runtime
+                .gpu_view(handle)
+                .unwrap()
+                .visit_draw_subsystems(16, false, |_, system| {
+                    drawn += system.live_count();
+                    Ok(())
+                })
+                .unwrap(),
+            1
+        );
+        assert!(drawn > 0);
     }
 
     #[test]
