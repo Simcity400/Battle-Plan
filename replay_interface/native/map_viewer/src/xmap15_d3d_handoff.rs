@@ -939,42 +939,24 @@ mod native {
         Ok(())
     }
 
-    fn collect_plan_external_resources(
+    pub(super) fn collect_plan_external_resources(
         pixel_bytecode: &[u8],
         out: &mut BTreeSet<(String, u32)>,
     ) -> Result<()> {
-        let allowed = [
-            ("ShadowMap", 2u32),
-            ("TerrainIDMap", 3),
-            ("HeightMap", 4),
-            ("TerrainNormal", 5),
-            ("HeightNormal", 6),
-            ("LeanTexture1", 7),
-            ("LeanTexture2", 8),
-            ("LightDataMap", 9),
-            ("LightIndexMap", 10),
-        ];
         let reflection = crate::parse_dxbc_reflection(pixel_bytecode)?;
-        for resource in reflection
-            .resources
-            .iter()
-            .filter(|resource| resource.resource_type == 2 && resource.bind_point >= 2)
-        {
-            let symbol = resource
-                .name
-                .strip_suffix("_Texture")
-                .unwrap_or(&resource.name);
-            if !allowed
-                .iter()
-                .any(|expected| expected.0 == symbol && expected.1 == resource.bind_point)
-            {
-                return Err(format!(
-                    "XMAP15 maparrow reflected unsupported external resource {symbol}/t{}",
-                    resource.bind_point
-                )
-                .into());
+        if reflection.target >> 16 != 0xffff {
+            return Err("XMAP15 external resources require a pixel shader".into());
+        }
+        let mut bindings = BTreeSet::new();
+        for resource in reflection.resources.iter().filter(|resource| resource.resource_type != 0) {
+            let register = crate::xmap16_supply_arrow_handoff::map_arrow_pixel_texture_register(resource)?;
+            if !bindings.insert((resource.resource_type, register)) {
+                return Err("XMAP15 maparrow reflected resource register repeats".into());
             }
-            out.insert((symbol.to_string(), resource.bind_point));
+            if resource.resource_type == 2 && register >= 2 {
+                let (symbol, _, _) = crate::XMAP16_SUPPLY_ARROW_TEXTURE_RESOURCES[register as usize];
+                out.insert((symbol.to_string(), register));
+            }
         }
         Ok(())
     }
@@ -1728,6 +1710,40 @@ pub(crate) fn plan_cb3_for_test(frame: &PreparedXmap15Frame, row: &portable_rend
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn compiled_plan_external_resources_join_by_pixel_register_not_authored_name() {
+        let compile = |source: &str, stage| crate::d3d_compile_stage(source, stage,
+            crate::shader_compile::ENGINE_COMPILE_FLAGS).unwrap();
+        let pixel = "Texture2D ModHeight : register(t4); SamplerState ModFilter : register(s4);
+            float4 main(float4 uv:TEXCOORD0):SV_Target { return ModHeight.Sample(ModFilter,uv.xy); }";
+        let collect = |source: &str| {
+            let mut out = std::collections::BTreeSet::new();
+            native::collect_plan_external_resources(&compile(source, crate::ShaderStage::Pixel), &mut out)?;
+            Ok::<_, Box<dyn std::error::Error>>(out)
+        };
+        assert_eq!(collect(pixel).unwrap(), std::collections::BTreeSet::from([("HeightMap".into(), 4)]));
+        let renamed = pixel.replace("ModHeight", "AnyImage").replace("ModFilter", "AnyFilter");
+        assert_eq!(collect(pixel).unwrap(), collect(&renamed).unwrap());
+        let array = pixel.replace("Texture2D ModHeight", "Texture2D ModHeight[2]")
+            .replace("ModHeight.Sample(ModFilter,uv.xy)",
+                "ModHeight[0].Sample(ModFilter,uv.xy)+ModHeight[1].Sample(ModFilter,uv.xy)");
+        assert_eq!(collect(&array).unwrap(), std::collections::BTreeSet::from([
+            ("HeightMap".into(), 4), ("TerrainNormal".into(), 5),
+        ]));
+        for changed in [
+            pixel.replace("register(t4)", "register(t11)"),
+            pixel.replace("register(s4)", "register(s11)"),
+            pixel.replace("Texture2D ModHeight", "Texture2DArray ModHeight")
+                .replace("uv.xy", "float3(uv.xy,0)"),
+            array.replace("register(t4)", "register(t10)"),
+        ] {
+            assert!(collect(&changed).is_err(), "{changed}");
+        }
+        let vertex = compile("float4 main(float3 p:POSITION):SV_POSITION { return float4(p,1); }", crate::ShaderStage::Vertex);
+        assert!(native::collect_plan_external_resources(&vertex, &mut std::collections::BTreeSet::new()).is_err());
+    }
 
     #[cfg(windows)]
     #[test]

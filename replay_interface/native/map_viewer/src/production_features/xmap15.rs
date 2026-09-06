@@ -955,8 +955,7 @@ fn validate_xmap15_sampler_contract(
         let matches = actual
             .iter()
             .filter(|sampler| {
-                sampler.name == contract.name
-                    && sampler.index == contract.index
+                sampler.index == contract.index
                     && token_eq(sampler.mag_filter.as_deref(), Some(contract.mag))
                     && token_eq(sampler.min_filter.as_deref(), Some(contract.min))
                     && token_eq(sampler.mip_filter.as_deref(), Some(contract.mip))
@@ -2516,6 +2515,14 @@ mod tests {
         ]);
         let exact = exact_plan_effect_file();
         validate_xmap15_plan_effect_file_contracts(&exact, &effects).unwrap();
+
+        let mut renamed = exact.clone();
+        for sampler in &mut renamed.pixel_stage.samplers {
+            sampler.name = format!("ModSampler{}", sampler.index);
+        }
+        validate_xmap15_plan_effect_file_contracts(&renamed, &effects).unwrap();
+        renamed.pixel_stage.samplers[0].index = 11;
+        assert!(validate_xmap15_plan_effect_file_contracts(&renamed, &effects).is_err());
 
         let mut sampler_drift = exact.clone();
         sampler_drift.pixel_stage.samplers[0].address_u = Some("Clamp".into());
