@@ -195,9 +195,7 @@ fn production_text(module: &str) -> String {
         if i >= lines.len() {
             break;
         }
-        // The item ends where its own brackets close, or at a column-zero `}`,
-        // whichever comes first. The terminator is judged on the code, so
-        // `} // note` still ends the item.
+        // A column-zero brace inside a raw string does not close the item.
         let mut depth: i32 = 0;
         let mut item = ScanState::default();
         loop {
@@ -208,9 +206,6 @@ fn production_text(module: &str) -> String {
             depth += delta;
             let trimmed = code.trim_end();
             i += 1;
-            if trimmed == "}" {
-                break;
-            }
             if depth <= 0 && (trimmed.ends_with(';') || trimmed.ends_with('}')) {
                 break;
             }
@@ -1204,4 +1199,37 @@ fn no_shipping_module_calls_the_d85_selected_designer_consumer() {
 fn no_shipping_module_outside_the_binders_reaches_the_d72_tooltip_carrier() {
     assert_census("d72");
     assert_carrier_key_unregistered("_r2_resolved_tooltip_instances_live");
+}
+
+#[test]
+fn test_item_raw_braces_do_not_end_the_skip_or_hide_later_production() {
+    let source = r###"fn before() { carrier(); }
+#[cfg(test)]
+mod tests {
+    const INPUT: &str = r#"
+}
+#[cfg(test)]
+mod fake { }
+"#;
+    fn fixture() { carrier(); }
+}
+fn after() { carrier(); }
+"###;
+    for source in [source.to_owned(), source.replace('\n', "\r\n")] {
+        let production = production_text(&source);
+        assert!(production.contains("fn before()"));
+        assert!(production.contains("fn after()"));
+        assert!(!production.contains("fn fixture()"));
+        assert!(!production.contains("mod fake"));
+        assert_eq!(identifier_occurrences(&production, "carrier"), 2);
+    }
+    let world = read_source(&repo_root().join("replay_interface/native/replay_core/src/world.rs"));
+    assert!(world.contains("fn production_scan_preserves_code_after_scoped_test_items()"));
+    assert!(world.contains("fn a40_selected_designer_is_typed_hour_bound_and_membership_checked()"));
+    let production = production_text(&world);
+    assert!(!production.contains("fn production_scan_preserves_code_after_scoped_test_items()"));
+    assert!(!production.contains("fn a40_selected_designer_is_typed_hour_bound_and_membership_checked()"));
+    assert!(production.contains("fn build_selected_designer_identity_exact("));
+    assert_eq!(identifier_occurrences(&production, "_r2_selected_designer_identity_live"), 1);
+    assert_eq!(prefix_occurrences(&production, "topbar_alerts"), 20);
 }
