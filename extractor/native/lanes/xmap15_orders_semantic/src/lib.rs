@@ -822,7 +822,7 @@ mod tests {
             "active_status": "exact",
             "style_flags": 0,
             "style_status": "exact",
-            "linked_orders": {"version": 5, "front_binding": {"status": 0, "words": null}, "root_status": 0, "root_positions": [null, null, null], "status": 2, "predecessors": [], "successors": [], "virtual_predecessors": [], "virtual_successors": []},
+            "linked_orders": {"version": 6, "preparation": {"condition_cache": null, "accumulated_preparation": null}, "front_binding": {"status": 0, "words": null}, "root_status": 0, "root_positions": [null, null, null], "status": 2, "predecessors": [], "successors": [], "virtual_predecessors": [], "virtual_successors": []},
         });
         let order_of_battle = json!({
             "extra": {

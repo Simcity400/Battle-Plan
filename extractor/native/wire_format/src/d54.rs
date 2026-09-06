@@ -373,6 +373,10 @@ pub mod field {
     pub const FRONT_REFERENCE_TYPE: u32 = 102;
     pub const FRONT_REFERENCE_ID: u32 = 103;
     pub const FRONT_ORDER_ID: u32 = 104;
+    pub const CONDITION_CACHE_STATUS: u32 = 105;
+    pub const CONDITION_CACHE: u32 = 106;
+    pub const PREPARATION_TIME_STATUS: u32 = 107;
+    pub const PREPARATION_TIME: u32 = 108;
 }
 
 // --- Transcribed shipping constants -----------------------------------------
@@ -564,6 +568,10 @@ pub fn schema() -> Schema {
             Field::new(f::FRONT_REFERENCE_TYPE, Kind::Unsigned).unknown_capable(),
             Field::new(f::FRONT_REFERENCE_ID, Kind::Unsigned).unknown_capable(),
             Field::new(f::FRONT_ORDER_ID, Kind::Unsigned).unknown_capable(),
+            Field::new(f::CONDITION_CACHE_STATUS, Kind::Enum).enum_card(2),
+            Field::new(f::CONDITION_CACHE, Kind::Unsigned).unknown_capable(),
+            Field::new(f::PREPARATION_TIME_STATUS, Kind::Enum).enum_card(2),
+            Field::new(f::PREPARATION_TIME, Kind::Signed).unknown_capable(),
         ],
     };
 
@@ -1455,6 +1463,10 @@ pub fn record_from_order_row(
         linked_orders.front_binding.words().map(|words| Value::Unsigned(words[0] as u64)).unwrap_or(Value::Unknown),
         linked_orders.front_binding.words().map(|words| Value::Unsigned(words[1] as u64)).unwrap_or(Value::Unknown),
         linked_orders.front_binding.words().map(|words| Value::Unsigned(words[2] as u64)).unwrap_or(Value::Unknown),
+        Value::Enum(u32::from(linked_orders.preparation.condition_cache.value().is_some())),
+        linked_orders.preparation.condition_cache.value().map(|value| Value::Unsigned(u64::from(value))).unwrap_or(Value::Unknown),
+        Value::Enum(u32::from(linked_orders.preparation.accumulated_preparation.value().is_some())),
+        linked_orders.preparation.accumulated_preparation.value().map(Value::Signed).unwrap_or(Value::Unknown),
     ]))
 }
 
@@ -2175,7 +2187,7 @@ mod tests {
     // ---- 1. Schema validity --------------------------------------------------
 
     #[test]
-    fn version_five_links_roots_and_front_binding_survive_fold_codec_and_tombstone() {
+    fn version_six_links_roots_front_and_preparation_survive_fold_codec_and_tombstone() {
         let mut frame = full_frame();
         let raw = frame.encode();
         let split = split_payload(&raw).unwrap();
@@ -2186,9 +2198,13 @@ mod tests {
             generation: 99, engine_order_instance_id: 4 };
         let b = links::OrderLinkIdentity { owner_kind: 1, generation: 100, ..a };
         let mut link_rows = split.linked_orders.clone();
-        link_rows[0] = links::OrderedOrderLinks { front_binding: Default::default(), root_status: links::OrderLinkStatus::Exact, root_positions: [Some(0), None, Some(1)], status: links::OrderLinkStatus::Exact,
+        link_rows[0] = links::OrderedOrderLinks { preparation: Default::default(), front_binding: Default::default(), root_status: links::OrderLinkStatus::Exact, root_positions: [Some(0), None, Some(1)], status: links::OrderLinkStatus::Exact,
             predecessors: vec![b, a], successors: vec![a], virtual_predecessors: vec![a, b], virtual_successors: vec![b, a] };
         link_rows[0].front_binding = links::OrderFrontBinding::Exact([77, 123, 55]);
+        link_rows[0].preparation = links::OrderPreparationState {
+            condition_cache: links::OrderConditionCache::Exact(255),
+            accumulated_preparation: links::OrderPreparationTime::Exact(i64::MIN),
+        };
         let mut payload = raw[..base].to_vec();
         payload.extend(links::encode_order_links(&link_rows));
         payload.extend_from_slice(&raw[base + old_link_len..]);
@@ -2206,10 +2222,12 @@ mod tests {
             let mut virtual_key = parent.clone(); virtual_key.0.extend([direction, 0]);
             assert_eq!(state.order_links[&virtual_key].values[3], Value::Unsigned(if direction == 2 { 99 } else { 100 }));
         }
-        assert_eq!(&state.orders[&parent].values[16..],
+        assert_eq!(&state.orders[&parent].values[16..20],
             &[Value::Enum(2), Value::Unsigned(77), Value::Unsigned(123), Value::Unsigned(55)]);
         assert_eq!(&state.orders[&parent].values[12..16],
             &[Value::Enum(1), Value::Unsigned(0), Value::Absent, Value::Unsigned(1)]);
+        assert_eq!(&state.orders[&parent].values[20..],
+            &[Value::Enum(1), Value::Unsigned(255), Value::Enum(1), Value::Signed(i64::MIN)]);
         let states = state.collections();
         let mut bytes = Vec::new();
         encode_baseline(&schema, &states, &mut bytes).unwrap();
@@ -2475,6 +2493,7 @@ mod tests {
                 Value::Unknown, Value::Unknown, Value::Unknown,
                 Value::Enum(0),
                 Value::Unknown, Value::Unknown, Value::Unknown,
+                Value::Enum(0), Value::Unknown, Value::Enum(0), Value::Unknown,
             ]
         );
 
@@ -2587,7 +2606,9 @@ mod tests {
                 (ORDERS, field::ROOT_TERTIARY, true, true),
                 (ORDERS, field::FRONT_REFERENCE_TYPE, false, true),
                 (ORDERS, field::FRONT_REFERENCE_ID, false, true),
-                (ORDERS, field::FRONT_ORDER_ID, false, true)],
+                (ORDERS, field::FRONT_ORDER_ID, false, true),
+                (ORDERS, field::CONDITION_CACHE, false, true),
+                (ORDERS, field::PREPARATION_TIME, false, true)],
             "only fields with observed absent/unknown truth declare those capabilities"
         );
 
@@ -3150,6 +3171,7 @@ mod tests {
             if f.kind == Kind::Enum {
                 let expected = match f.field_id {
                     field::STYLE_FLAGS => STYLE_FLAG_CARD,
+                    field::CONDITION_CACHE_STATUS | field::PREPARATION_TIME_STATUS => 2,
                     field::LINK_STATUS | field::ROOT_STATUS | field::FRONT_STATUS => 3,
                     _ => STATUS_CARD,
                 };

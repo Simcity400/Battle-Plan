@@ -2312,7 +2312,7 @@ mod tests {
                 usize::from(id == 301 && country == "GER")
             }
         }
-        let linked_orders = serde_json::json!({"version": 5, "front_binding": {"status": 0, "words": null}, "root_status": 0, "root_positions": [null, null, null], "status": 1,
+        let linked_orders = serde_json::json!({"version": 6, "preparation": {"condition_cache": null, "accumulated_preparation": null}, "front_binding": {"status": 0, "words": null}, "root_status": 0, "root_positions": [null, null, null], "status": 1,
             "predecessors": [], "successors": [],
             "virtual_predecessors": [], "virtual_successors": []});
         let world = crate::test_support::frame_with_rest(serde_json::json!({

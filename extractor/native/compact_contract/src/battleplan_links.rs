@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
-pub const D54_LINK_VERSION: u32 = 5;
+pub const D54_LINK_VERSION: u32 = 6;
 pub const D54_LINK_MAGIC: [u8; 4] = *b"D54L";
 pub const MAX_LINKS_PER_DIRECTION: usize = 4096;
 const HEADER_BYTES: usize = 16;
-const ROW_BYTES: usize = 52;
+const ROW_BYTES: usize = 72;
 const IDENTITY_BYTES: usize = 20;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -42,12 +42,45 @@ impl OrderFrontBinding {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OrderConditionCache {
+    #[default]
+    Unavailable,
+    Exact(u8),
+}
+
+impl OrderConditionCache {
+    pub fn value(self) -> Option<u8> {
+        match self { Self::Unavailable => None, Self::Exact(value) => Some(value) }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OrderPreparationTime {
+    #[default]
+    Unavailable,
+    Exact(i64),
+}
+
+impl OrderPreparationTime {
+    pub fn value(self) -> Option<i64> {
+        match self { Self::Unavailable => None, Self::Exact(value) => Some(value) }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OrderPreparationState {
+    pub condition_cache: OrderConditionCache,
+    pub accumulated_preparation: OrderPreparationTime,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OrderedOrderLinks {
     pub status: OrderLinkStatus,
     pub root_status: OrderLinkStatus,
     pub root_positions: [Option<u32>; 3],
     pub front_binding: OrderFrontBinding,
+    pub preparation: OrderPreparationState,
     pub predecessors: Vec<OrderLinkIdentity>,
     pub successors: Vec<OrderLinkIdentity>,
     pub virtual_predecessors: Vec<OrderLinkIdentity>,
@@ -102,6 +135,12 @@ pub fn encode_order_links(rows: &[OrderedOrderLinks]) -> Vec<u8> {
             row.root_positions[2].unwrap_or(u32::MAX), row.front_binding.status(), front[0], front[1], front[2]] {
             out.extend_from_slice(&value.to_le_bytes());
         }
+        let cache = row.preparation.condition_cache.value();
+        let preparation = row.preparation.accumulated_preparation.value();
+        out.extend_from_slice(&u32::from(cache.is_some()).to_le_bytes());
+        out.extend_from_slice(&u32::from(cache.unwrap_or(0)).to_le_bytes());
+        out.extend_from_slice(&u32::from(preparation.is_some()).to_le_bytes());
+        out.extend_from_slice(&preparation.unwrap_or(0).to_le_bytes());
     }
     for row in rows {
         for identity in row.predecessors.iter().chain(&row.successors).chain(&row.virtual_predecessors).chain(&row.virtual_successors) {
@@ -118,7 +157,7 @@ pub fn decode_order_links(bytes: &[u8], expected_rows: usize) -> Result<(Vec<Ord
     let u32_at = |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
     if bytes.len() < HEADER_BYTES || bytes[..4] != D54_LINK_MAGIC
         || u32_at(4) != D54_LINK_VERSION || u32_at(8) as usize != expected_rows {
-        return Err("D54 requires its version-5 ordered semantic link/root/front block".into());
+        return Err("D54 requires its version-6 ordered semantic link/root/front/preparation block".into());
     }
     let count = u32_at(12) as usize;
     let rows_end = expected_rows.checked_mul(ROW_BYTES).and_then(|n| n.checked_add(HEADER_BYTES))
@@ -166,7 +205,19 @@ pub fn decode_order_links(bytes: &[u8], expected_rows: usize) -> Result<(Vec<Ord
             2 => OrderFrontBinding::Exact(words),
             _ => return Err("D54 front binding has invalid status/payload".into()),
         };
-        let row = OrderedOrderLinks { status, root_status, root_positions, front_binding,
+        let condition_cache = match (u32_at(at + 52), u32_at(at + 56)) {
+            (0, 0) => OrderConditionCache::Unavailable,
+            (1, value) if value <= u8::MAX as u32 => OrderConditionCache::Exact(value as u8),
+            _ => return Err("D54 condition cache has invalid status/payload".into()),
+        };
+        let elapsed = i64::from_le_bytes(bytes[at + 64..at + 72].try_into().unwrap());
+        let accumulated_preparation = match (u32_at(at + 60), elapsed) {
+            (0, 0) => OrderPreparationTime::Unavailable,
+            (1, value) => OrderPreparationTime::Exact(value),
+            _ => return Err("D54 preparation time has invalid status/payload".into()),
+        };
+        let preparation = OrderPreparationState { condition_cache, accumulated_preparation };
+        let row = OrderedOrderLinks { status, root_status, root_positions, front_binding, preparation,
             predecessors, successors, virtual_predecessors, virtual_successors };
         row.validate()?;
         rows.push(row);
@@ -180,12 +231,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn version_five_preserves_links_roots_and_front_binding_truth() {
+    fn preparation_preserves_every_cache_byte_signed_time_and_independent_unknowns() {
+        for cache in std::iter::once(None).chain((0..=u8::MAX).map(Some)) {
+            for time in [None, Some(i64::MIN), Some(-1), Some(0), Some(1), Some(i64::MAX)] {
+                let mut row = OrderedOrderLinks::unavailable();
+                row.preparation = OrderPreparationState {
+                    condition_cache: cache.map(OrderConditionCache::Exact).unwrap_or_default(),
+                    accumulated_preparation: time.map(OrderPreparationTime::Exact).unwrap_or_default(),
+                };
+                let bytes = encode_order_links(&[row.clone()]);
+                assert_eq!(decode_order_links(&bytes, 1).unwrap(), (vec![row], bytes.len()));
+            }
+        }
+        let baseline = encode_order_links(&[OrderedOrderLinks::default()]);
+        for (offset, value) in [(52, 2u32), (56, 1), (60, 2), (64, 1)] {
+            let mut bytes = baseline.clone();
+            bytes[HEADER_BYTES + offset..HEADER_BYTES + offset + 4].copy_from_slice(&value.to_le_bytes());
+            assert!(decode_order_links(&bytes, 1).is_err());
+        }
+        let mut bytes = baseline.clone();
+        bytes[HEADER_BYTES + 52..HEADER_BYTES + 56].copy_from_slice(&1u32.to_le_bytes());
+        bytes[HEADER_BYTES + 56..HEADER_BYTES + 60].copy_from_slice(&256u32.to_le_bytes());
+        assert!(decode_order_links(&bytes, 1).is_err());
+        bytes[HEADER_BYTES + 56..HEADER_BYTES + 60].fill(0);
+        assert_ne!(bytes, baseline);
+        assert_eq!(decode_order_links(&bytes, 1).unwrap().0[0].preparation.condition_cache, OrderConditionCache::Exact(0));
+    }
+
+    #[test]
+    fn version_six_preserves_links_roots_front_and_preparation_truth() {
         let a = OrderLinkIdentity { owner_kind: 0, owner_id: 7, generation: 12, engine_order_instance_id: 3 };
         let b = OrderLinkIdentity { owner_kind: 1, owner_id: 7, generation: 18, engine_order_instance_id: 3 };
         let rows = vec![OrderedOrderLinks::default(), OrderedOrderLinks::unavailable(),
-            OrderedOrderLinks { front_binding: Default::default(), root_status: OrderLinkStatus::Absent, root_positions: [None; 3], status: OrderLinkStatus::Exact, predecessors: vec![], successors: vec![], virtual_predecessors: vec![], virtual_successors: vec![] },
-            OrderedOrderLinks { front_binding: Default::default(), root_status: OrderLinkStatus::Absent, root_positions: [None; 3], status: OrderLinkStatus::Exact, predecessors: vec![b, a], successors: vec![a], virtual_predecessors: vec![a, b], virtual_successors: vec![b, a] }];
+            OrderedOrderLinks { preparation: Default::default(), front_binding: Default::default(), root_status: OrderLinkStatus::Absent, root_positions: [None; 3], status: OrderLinkStatus::Exact, predecessors: vec![], successors: vec![], virtual_predecessors: vec![], virtual_successors: vec![] },
+            OrderedOrderLinks { preparation: Default::default(), front_binding: Default::default(), root_status: OrderLinkStatus::Absent, root_positions: [None; 3], status: OrderLinkStatus::Exact, predecessors: vec![b, a], successors: vec![a], virtual_predecessors: vec![a, b], virtual_successors: vec![b, a] }];
         let mut rows = rows;
         rows[2].root_status = OrderLinkStatus::Exact;
         rows[3].root_status = OrderLinkStatus::Exact;
@@ -225,7 +304,7 @@ mod tests {
         assert_eq!(changed[3].successors, rows[3].successors);
         assert_eq!(decode_order_links(&bytes, rows.len()).unwrap(), (rows.clone(), bytes.len()));
         for len in 0..bytes.len() { assert!(decode_order_links(&bytes[..len], rows.len()).is_err()); }
-        let mut old = bytes.clone(); old[4..8].copy_from_slice(&4u32.to_le_bytes());
+        let mut old = bytes.clone(); old[4..8].copy_from_slice(&5u32.to_le_bytes());
         assert!(decode_order_links(&old, rows.len()).is_err());
         assert!(decode_order_links(&[], 0).is_err());
         assert!(decode_order_links(&bytes, rows.len() + 1).is_err());
@@ -239,9 +318,9 @@ mod tests {
             assert!(decode_order_links(&encode_order_links(&[nonexact]), 1).is_err());
         }
         for malformed in [
-            OrderedOrderLinks { front_binding: Default::default(), root_status: OrderLinkStatus::Absent, root_positions: [None; 3], status: OrderLinkStatus::Unavailable, predecessors: vec![a], successors: vec![], virtual_predecessors: vec![], virtual_successors: vec![] },
-            OrderedOrderLinks { front_binding: Default::default(), root_status: OrderLinkStatus::Absent, root_positions: [None; 3], status: OrderLinkStatus::Exact, predecessors: vec![a, a], successors: vec![], virtual_predecessors: vec![], virtual_successors: vec![] },
-            OrderedOrderLinks { front_binding: Default::default(), root_status: OrderLinkStatus::Absent, root_positions: [None; 3], status: OrderLinkStatus::Exact, predecessors: vec![OrderLinkIdentity { generation: 0, ..a }], successors: vec![], virtual_predecessors: vec![], virtual_successors: vec![] },
+            OrderedOrderLinks { preparation: Default::default(), front_binding: Default::default(), root_status: OrderLinkStatus::Absent, root_positions: [None; 3], status: OrderLinkStatus::Unavailable, predecessors: vec![a], successors: vec![], virtual_predecessors: vec![], virtual_successors: vec![] },
+            OrderedOrderLinks { preparation: Default::default(), front_binding: Default::default(), root_status: OrderLinkStatus::Absent, root_positions: [None; 3], status: OrderLinkStatus::Exact, predecessors: vec![a, a], successors: vec![], virtual_predecessors: vec![], virtual_successors: vec![] },
+            OrderedOrderLinks { preparation: Default::default(), front_binding: Default::default(), root_status: OrderLinkStatus::Absent, root_positions: [None; 3], status: OrderLinkStatus::Exact, predecessors: vec![OrderLinkIdentity { generation: 0, ..a }], successors: vec![], virtual_predecessors: vec![], virtual_successors: vec![] },
         ] { assert!(decode_order_links(&encode_order_links(&[malformed]), 1).is_err()); }
     }
 }

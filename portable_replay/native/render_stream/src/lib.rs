@@ -168,7 +168,7 @@ pub use xmap15_producer_contract::{
     xmap15_classify_movement_leaf, xmap15_classify_plan_leaf, xmap15_contract_gate_leaves,
     xmap15_minted_plan_leaves, Xmap15HourGate, Xmap15ProducerGate, XMAP15_BLOCKING_DOMAIN_ID,
     XMAP15_CARRIER_WIRE_PATH, XMAP15_D54_MAX_ARMY_ID, XMAP15_D54_MAX_MAP_ID,
-    D54OrderLinkIdentity, D54FrontBinding, D54OrderedOrderLinks, parse_d54_order_links, D54OwnerColourRow, D54OwnerColourCensus,
+    D54OrderLinkIdentity, D54FrontBinding, D54OrderPreparationState, D54OrderedOrderLinks, parse_d54_order_links, D54OwnerColourRow, D54OwnerColourCensus,
     XMAP15_D54_MAX_ORDER_INSTANCE_ID, XMAP15_D54_ORDER_ROW_FIELDS, XMAP15_D54_SLOT_INDEX_COUNT,
     XMAP15_D54_STYLE_FALLBACK, XMAP15_D54_STYLE_FLAG_MASK, XMAP15_D54_STYLE_MOVE_SPECIAL,
     XMAP15_D54_STYLE_OWNER_GROUPED, XMAP15_D54_STYLE_OWNER_OVERRIDE, XMAP15_D54_STYLE_VIRTUAL,

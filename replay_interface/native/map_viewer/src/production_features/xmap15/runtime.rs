@@ -145,9 +145,12 @@ impl RetainedPlans {
                         return Err(Missing::CullingDirection);
                     }
                     let speed = definition.texture_anim_speed_f32_bits.map(f32::from_bits).unwrap_or(0.0);
-                    let animation_speed = if speed.abs() > f32::from_bits(0x38d1b717) { speed.to_bits() } else { 0 };
+                    let mut animation_speed = if speed.abs() > f32::from_bits(0x38d1b717) { speed.to_bits() } else { 0 };
                     // Native skips readiness when the authored animation speed is within epsilon.
-                    if row.active && animation_speed != 0 { return Err(Missing::ActiveReadiness); }
+                    if row.active && animation_speed != 0 {
+                        if row.preparation.condition_cache == Some(0) { animation_speed = 0; }
+                        else { return Err(Missing::ActiveReadiness); }
+                    }
                     let semantic = Xmap15PlanSemanticRow {
                         key: identity.clone(), owner_country: country.clone(),
                         selector: portable_render_stream::Xmap15PlanDefinitionSelector {
@@ -235,7 +238,7 @@ mod tests {
         let row = &mut raw["order_of_battle"]["extra"]["army_battleplans_depth_live"]["orders"][0];
         row["order_type"] = serde_json::json!(4);
         row["assigned_division_ids"] = serde_json::json!([]);
-        row["linked_orders"] = serde_json::json!({"version": 5, "status": 1,
+        row["linked_orders"] = serde_json::json!({"version": 6, "preparation": {"condition_cache": null, "accumulated_preparation": null}, "status": 1,
             "root_status": 1, "root_positions": [0, null, null],
             "front_binding": {"status": 1, "words": [2147483647, 2147483647, 0]},
             "predecessors": [], "successors": [], "virtual_predecessors": [], "virtual_successors": []});
@@ -261,6 +264,7 @@ mod tests {
 
     #[test]
     fn authenticated_adapter_prepares_nonempty_d54_and_preserves_runtime_transitions() {
+        for authored_speed in [0.0f32, 1.0] {
         use crate::test_support::{write_modvfs_fixture as write, write_modvfs_provinces};
         let root = crate::test_support::temp_test_dir("arrow-authenticated-runtime");
         write_modvfs_provinces(&root, 16, 8);
@@ -278,6 +282,9 @@ mod tests {
             body_width = { 1 1 } body_uv_scale = 1 mask_inner = { 1 1 1 } mask_outer = { 1 1 1 }
             global_scale_min_size = 1 global_scale_max_points = 1 texture_variant_count = 2
         }"#);
+        let definition_text = std::fs::read_to_string(root.join(XMAP15_MAPARROWS_PATH)).unwrap();
+        write(&root, XMAP15_MAPARROWS_PATH, definition_text.replace("texture_variant_count = 2",
+            &format!("texture_variant_count = 2 texture_anim_speed = {authored_speed}")));
         let mut dds = vec![0u8; 132];
         dds[..4].copy_from_slice(b"DDS ");
         for (offset, value) in [(4,124u32),(8,0x100f),(12,1),(16,1),(20,4),(76,32),(80,0x41),
@@ -364,6 +371,7 @@ mod tests {
         row["path_provinces"] = serde_json::json!([1, 2]);
         row["generation"] = serde_json::json!(4);
         row["active"] = serde_json::json!(true);
+        row["linked_orders"]["preparation"]["condition_cache"] = serde_json::json!(0);
         let active_world = crate::test_support::frame_with_rest(active_raw);
         let active_output = prepare(&active_world, &unselected);
         assert!(matches!(active_output.disposition, FamilyDisposition::Present { .. }), "{:?}", active_output.disposition);
@@ -380,6 +388,20 @@ mod tests {
             let cb3 = crate::xmap15_d3d_handoff::plan_cb3_for_test(&active_frame, active_row, mesh.total_length_f32_bits, outer).unwrap();
             assert_eq!(&cb3[68..72], &0u32.to_le_bytes());
             assert_eq!(&cb3[72..76], &expected_active.to_le_bytes());
+        }
+        if authored_speed != 0.0 {
+            for cache in [None, Some(1u8), Some(128), Some(255)] {
+                let mut value = raw(original);
+                let row = &mut value["order_of_battle"]["extra"]["army_battleplans_depth_live"]["orders"][0];
+                row["path_provinces"] = serde_json::json!([1, 2]);
+                row["generation"] = serde_json::json!(4);
+                row["active"] = serde_json::json!(true);
+                row["linked_orders"]["preparation"]["condition_cache"] = serde_json::json!(cache);
+                let world = crate::test_support::frame_with_rest(value);
+                let output = prepare(&world, &unselected);
+                assert!(matches!(output.disposition, FamilyDisposition::Unavailable { .. }));
+                assert!(format!("{:?}", output.disposition).contains("ActiveReadiness"));
+            }
         }
         let changed_colour = [0.75f32, 0.25, 0.5, 0.5].map(f32::to_bits);
         let changed_world = make_world(changed_colour, 4);
@@ -446,6 +468,7 @@ mod tests {
         }
         drop(adapter); drop(resolver); drop(raw_resolver);
         portable_test_fs_retry::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
