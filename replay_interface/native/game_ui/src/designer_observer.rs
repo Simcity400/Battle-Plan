@@ -1312,6 +1312,12 @@ mod tests {
         "cached_stats_complete": true,
         "explicit_entity": {"status":"measured","value":"","utf8_hex":""},
         "serialized_variant_flag_2b9d": {"status":"measured","raw_u8":0},
+        "mission_stat_operands": [
+            {"group_key":4096,"stat_key":35,"fallback":{"status":"measured","raw_i64":0},
+             "override_lookup":{"status":"group_absent","group_count":0,"group_key_prefix":[]}},
+            {"group_key":8192,"stat_key":36,"fallback":{"status":"measured","raw_i64":0},
+             "override_lookup":{"status":"group_absent","group_count":0,"group_key_prefix":[]}}
+        ],
         "item_icon_override": {"status":"measured","active":true,"kind":0,"token":{"status":"measured","value":"GFX_xui13_test","utf8_hex":"4746585f78756931335f74657374"}},
         "display_name": "Panzer",
         "display_name_utf8_hex": "50616e7a6572",

@@ -70,6 +70,12 @@ fn catalog() -> Vec<u8> {
                     "cached_stats": [], "cached_stats_complete": true,
                     "explicit_entity": {"status":"measured","value":"","utf8_hex":""},
                     "serialized_variant_flag_2b9d": {"status":"measured","raw_u8":0},
+                    "mission_stat_operands": [
+                        {"group_key":4096,"stat_key":35,"fallback":{"status":"measured","raw_i64":0},
+                         "override_lookup":{"status":"group_absent","group_count":0,"group_key_prefix":[]}},
+                        {"group_key":8192,"stat_key":36,"fallback":{"status":"measured","raw_i64":0},
+                         "override_lookup":{"status":"group_absent","group_count":0,"group_key_prefix":[]}}
+                    ],
                     "item_icon_override": {"status":"measured","active":false,"kind":1,"token":{"status":"measured","value":"","utf8_hex":""}},
                     "display_name": "Seven", "display_name_utf8_hex": "536576656e",
                     "equipment_token_raw": 71, "modules": [], "modules_complete": true,
@@ -90,6 +96,12 @@ fn catalog() -> Vec<u8> {
                     "cached_stats": [], "cached_stats_complete": true,
                     "explicit_entity": {"status":"measured","value":"","utf8_hex":""},
                     "serialized_variant_flag_2b9d": {"status":"measured","raw_u8":0},
+                    "mission_stat_operands": [
+                        {"group_key":4096,"stat_key":35,"fallback":{"status":"measured","raw_i64":0},
+                         "override_lookup":{"status":"group_absent","group_count":0,"group_key_prefix":[]}},
+                        {"group_key":8192,"stat_key":36,"fallback":{"status":"measured","raw_i64":0},
+                         "override_lookup":{"status":"group_absent","group_count":0,"group_key_prefix":[]}}
+                    ],
                     "item_icon_override": {"status":"measured","active":false,"kind":1,"token":{"status":"measured","value":"","utf8_hex":""}},
                     "display_name": "Fifty Five", "display_name_utf8_hex": "46696674792046697665",
                     "equipment_token_raw": 71, "modules": [], "modules_complete": true,

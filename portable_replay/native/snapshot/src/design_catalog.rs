@@ -63,6 +63,56 @@ pub enum DesignU32Observation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DesignI64Observation {
+    Measured { raw_i64: i64 },
+    Unavailable { reason: DesignFieldRefusal },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DesignMissionOverrideObservation {
+    Measured {
+        raw_i64: i64,
+        group_count: u32,
+        group_key_prefix: Vec<u32>,
+        stat_count: u32,
+        stat_key_prefix: Vec<u32>,
+    },
+    GroupAbsent { group_count: u32, group_key_prefix: Vec<u32> },
+    StatAbsent {
+        group_count: u32,
+        group_key_prefix: Vec<u32>,
+        stat_count: u32,
+        stat_key_prefix: Vec<u32>,
+    },
+    Unavailable { reason: DesignFieldRefusal },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesignMissionStatOperand {
+    pub group_key: u32,
+    pub stat_key: u32,
+    pub fallback: DesignI64Observation,
+    pub override_lookup: DesignMissionOverrideObservation,
+}
+
+impl DesignMissionStatOperand {
+    pub fn effective_raw_i64(&self) -> Result<i64, DesignFieldRefusal> {
+        match &self.override_lookup {
+            DesignMissionOverrideObservation::Measured { raw_i64, .. } => Ok(*raw_i64),
+            DesignMissionOverrideObservation::Unavailable { reason } => Err(reason.clone()),
+            DesignMissionOverrideObservation::GroupAbsent { .. }
+            | DesignMissionOverrideObservation::StatAbsent { .. } => match &self.fallback {
+                DesignI64Observation::Measured { raw_i64 } => Ok(*raw_i64),
+                DesignI64Observation::Unavailable { reason } => Err(reason.clone()),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesignFieldRefusal {
     pub kind: String,
@@ -103,6 +153,7 @@ pub struct NativeDesignerVariantInputs {
     pub item_icon_override: DesignItemIconObservation,
     pub serialized_variant_flag_2b9d: DesignByteObservation,
     pub cached_stats: Vec<DesignFixedStat>,
+    pub mission_stat_operands: Vec<DesignMissionStatOperand>,
     pub record: DesignRecord,
     pub model: VariantModelInputs,
 }
@@ -884,6 +935,7 @@ impl PortableDesignCatalog {
                 item_icon_override: row.definition.item_icon_override,
                 serialized_variant_flag_2b9d: row.definition.serialized_variant_flag_2b9d,
                 cached_stats: row.definition.cached_stats,
+                mission_stat_operands: row.definition.mission_stat_operands,
                 record, model,
             })
         }).collect::<Result<Vec<_>, String>>()?;
@@ -1728,6 +1780,66 @@ fn reject_designer_outcomes(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_mission_stat_operands(rows: &[DesignMissionStatOperand]) -> Result<(), String> {
+    fn refusal(reason: &DesignFieldRefusal, lookup: bool) -> Result<(), String> {
+        if reason.field.trim().is_empty()
+            || !(reason.kind == "unreadable" || lookup && reason.kind == "invalid_vector") {
+            return Err("invalid operand refusal".into());
+        }
+        Ok(())
+    }
+    fn prefix(count: u32, keys: &[u32], target: u32, found: bool) -> Result<(), String> {
+        if count > i32::MAX as u32 || keys.len() > 4096 || keys.len() > count as usize {
+            return Err("operand prefix/count exceeds its bounded observation".into());
+        }
+        if found {
+            if keys.last() != Some(&target) || keys[..keys.len()-1].contains(&target) {
+                return Err("operand prefix must end at the first matching key".into());
+            }
+        } else if keys.len() != count as usize || keys.contains(&target) {
+            return Err("operand absence requires a complete prefix without the target".into());
+        }
+        Ok(())
+    }
+    if rows.len() != 2 || (rows[0].group_key, rows[0].stat_key) != (0x1000, 0x23)
+        || (rows[1].group_key, rows[1].stat_key) != (0x2000, 0x24) {
+        return Err("expected the two ordered mission/stat identities".into());
+    }
+    let mut observed_groups: Option<(u32, &[u32])> = None;
+    for row in rows {
+        if let DesignI64Observation::Unavailable { reason } = &row.fallback {
+            refusal(reason, false)?;
+        }
+        let (count, keys) = match &row.override_lookup {
+            DesignMissionOverrideObservation::Measured { group_count, group_key_prefix, stat_count, stat_key_prefix, .. } => {
+                prefix(*group_count, group_key_prefix, row.group_key, true)?;
+                prefix(*stat_count, stat_key_prefix, row.stat_key, true)?;
+                (*group_count, group_key_prefix.as_slice())
+            }
+            DesignMissionOverrideObservation::GroupAbsent { group_count, group_key_prefix } => {
+                prefix(*group_count, group_key_prefix, row.group_key, false)?;
+                (*group_count, group_key_prefix.as_slice())
+            }
+            DesignMissionOverrideObservation::StatAbsent { group_count, group_key_prefix, stat_count, stat_key_prefix } => {
+                prefix(*group_count, group_key_prefix, row.group_key, true)?;
+                prefix(*stat_count, stat_key_prefix, row.stat_key, false)?;
+                (*group_count, group_key_prefix.as_slice())
+            }
+            DesignMissionOverrideObservation::Unavailable { reason } => {
+                refusal(reason, true)?;
+                continue;
+            }
+        };
+        if let Some((previous_count, previous_keys)) = observed_groups {
+            if previous_count != count || previous_keys.iter().zip(keys).any(|(left, right)| left != right) {
+                return Err("mission operands disagree on the same ordered group table".into());
+            }
+        }
+        observed_groups = Some((count, keys));
+    }
+    Ok(())
+}
+
 fn validate_raw_catalog(raw: &RawCatalog) -> Result<(), String> {
     if let DesignU32Observation::Unavailable { reason } = &raw.runtime_dlc_mask {
         if reason.kind != "unreadable" || reason.field.is_empty() {
@@ -1840,6 +1952,8 @@ fn validate_raw_catalog(raw: &RawCatalog) -> Result<(), String> {
                 row.id
             ));
         }
+        validate_mission_stat_operands(&row.definition.mission_stat_operands)
+            .map_err(|reason| format!("A27 variant {} mission_stat_operands: {reason}", row.id))?;
         for (ordinal, module) in row.definition.modules.iter().enumerate() {
             if module.source_ordinal != ordinal as u32
                 || module.module_token.trim().is_empty()
@@ -2092,6 +2206,7 @@ struct RawVariantDefinition {
     archetype_token: String,
     archetype_token_utf8_hex: String,
     cached_stats: Vec<DesignFixedStat>,
+    mission_stat_operands: Vec<DesignMissionStatOperand>,
     cached_stats_complete: bool,
     display_name: Option<String>,
     display_name_utf8_hex: String,
@@ -2192,6 +2307,12 @@ mod tests {
                 "definition": {
                     "archetype_token": "light_tank_chassis_1",
                     "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
+                    "mission_stat_operands": [
+                        {"group_key":4096,"stat_key":35,"fallback":{"status":"measured","raw_i64":0},
+                         "override_lookup":{"status":"group_absent","group_count":0,"group_key_prefix":[]}},
+                        {"group_key":8192,"stat_key":36,"fallback":{"status":"measured","raw_i64":0},
+                         "override_lookup":{"status":"group_absent","group_count":0,"group_key_prefix":[]}}
+                    ],
                     "cached_stats": [{
                         "raw_i64": 250000,
                         "scale": 100000,
@@ -3106,6 +3227,164 @@ mod tests {
         }
         assert!(relocated.native_designer_inputs_at_hour(902).unwrap_err().contains("Torn"));
         assert!(relocated.native_designer_inputs_at_hour(904).is_err());
+        timeline["captures"][1]["same_hour_recheck_sha256"][0]="0".repeat(64).into();
+        assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&timeline).unwrap()).is_err());
+    }
+
+    fn mission_fixture(lookups: [Value; 2]) -> Value {
+        let mut raw: Value = serde_json::from_slice(&fixture()).unwrap();
+        for (index, lookup) in lookups.into_iter().enumerate() {
+            raw["variants"][0]["definition"]["mission_stat_operands"][index]["override_lookup"] = lookup;
+        }
+        raw
+    }
+
+    #[test]
+    fn mission_operands_keep_first_match_absence_unknown_and_signed_values_distinct() {
+        let mut raw = mission_fixture([
+            serde_json::json!({"status":"measured","raw_i64":i64::MAX,"group_count":4,
+                "group_key_prefix":[9,4096],"stat_count":3,"stat_key_prefix":[8,35]}),
+            serde_json::json!({"status":"stat_absent","group_count":4,
+                "group_key_prefix":[9,4096,8192],"stat_count":2,"stat_key_prefix":[8,9]})]);
+        raw["variants"][0]["definition"]["mission_stat_operands"][0]["fallback"] =
+            serde_json::json!({"status":"unavailable","reason":{"kind":"unreadable","field":"variant+218"}});
+        raw["variants"][0]["definition"]["mission_stat_operands"][1]["fallback"]["raw_i64"] = i64::MIN.into();
+        let decode = |raw: &Value| PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(raw).unwrap()).unwrap();
+        let catalog = decode(&raw);
+        let portable = PortableDesignCatalog::decode_a27_live_json(&catalog.encode_portable_json().unwrap()).unwrap();
+        let rows = portable.native_designer_inputs_at_hour(900).unwrap().variants.remove(0).mission_stat_operands;
+        assert_eq!(rows[0].effective_raw_i64(), Ok(i64::MAX));
+        assert_eq!(rows[1].effective_raw_i64(), Ok(i64::MIN));
+        assert!(matches!(rows[0].fallback, DesignI64Observation::Unavailable { .. }));
+        assert_eq!(serde_json::to_value(&rows).unwrap(), raw["variants"][0]["definition"]["mission_stat_operands"]);
+        for kind in ["unreadable", "invalid_vector"] {
+            raw["variants"][0]["definition"]["mission_stat_operands"][1]["override_lookup"] =
+                serde_json::json!({"status":"unavailable","reason":{"kind":kind,"field":"mission_group_count"}});
+            let row = decode(&raw).native_designer_inputs_at_hour(900).unwrap().variants.remove(0).mission_stat_operands.remove(1);
+            assert_eq!(row.effective_raw_i64().unwrap_err().kind, kind);
+        }
+        raw["variants"][0]["definition"]["mission_stat_operands"][1]["override_lookup"] =
+            serde_json::json!({"status":"group_absent","group_count":4,"group_key_prefix":[9,4096,4096,10]});
+        assert_eq!(decode(&raw).native_designer_inputs_at_hour(900).unwrap().variants[0].mission_stat_operands[1].effective_raw_i64(), Ok(i64::MIN));
+        // A later duplicate group is outside the first group's nested lookup authority.
+        raw["variants"][0]["definition"]["mission_stat_operands"][0]["override_lookup"] =
+            serde_json::json!({"status":"stat_absent","group_count":4,"group_key_prefix":[9,4096],"stat_count":0,"stat_key_prefix":[]});
+        assert_eq!(decode(&raw).native_designer_inputs_at_hour(900).unwrap().variants[0].mission_stat_operands[0].effective_raw_i64().unwrap_err().field,"variant+218");
+    }
+
+    #[test]
+    fn mission_operands_reject_incomplete_or_contradictory_prefix_custody() {
+        let valid = mission_fixture([
+            serde_json::json!({"status":"measured","raw_i64":0,"group_count":3,"group_key_prefix":[4096],"stat_count":2,"stat_key_prefix":[35]}),
+            serde_json::json!({"status":"measured","raw_i64":1,"group_count":3,"group_key_prefix":[4096,8192],"stat_count":1,"stat_key_prefix":[36]})]);
+        for (field, value) in [
+            ("group_count",serde_json::json!(-1)),("group_count",serde_json::json!(i32::MAX as u32+1)),
+            ("group_count",serde_json::json!(0)),("group_count",serde_json::json!(4)),
+            ("group_key_prefix",serde_json::json!([])),("group_key_prefix",serde_json::json!([4096,4096])),
+            ("group_key_prefix",serde_json::json!([10,4096])),("group_key_prefix",serde_json::json!([8192])),
+            ("stat_count",serde_json::json!(-1)),("stat_count",serde_json::json!(i32::MAX as u32+1)),
+            ("stat_key_prefix",serde_json::json!([35,35])),("stat_key_prefix",serde_json::json!([])),
+            ("stat_key_prefix",serde_json::json!([36])),("stat_key_prefix",serde_json::json!([1,2,35])),
+            ("raw_i64",serde_json::json!(u64::MAX)),("raw_i64",Value::Null),
+        ] {
+            let mut raw=valid.clone();raw["variants"][0]["definition"]["mission_stat_operands"][0]["override_lookup"][field]=value;
+            assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).is_err(),"accepted {field}: {raw}");
+        }
+        for lookup in [
+            serde_json::json!({"status":"group_absent","group_count":3,"group_key_prefix":[1,2]}),
+            serde_json::json!({"status":"group_absent","group_count":3,"group_key_prefix":[4096,2,3]}),
+            serde_json::json!({"status":"stat_absent","group_count":3,"group_key_prefix":[4096],"stat_count":2,"stat_key_prefix":[1]}),
+            serde_json::json!({"status":"stat_absent","group_count":3,"group_key_prefix":[4096],"stat_count":2,"stat_key_prefix":[1,35]}),
+            serde_json::json!({"status":"unavailable","reason":{"kind":"Torn","field":"keys"}}),
+            serde_json::json!({"status":"unavailable","reason":{"kind":"unreadable","field":""}}),
+            serde_json::json!({"status":"unavailable","reason":{"kind":"unreadable","field":"keys"},"raw_i64":0}),
+        ] {
+            let mut raw=valid.clone();raw["variants"][0]["definition"]["mission_stat_operands"][0]["override_lookup"]=lookup;
+            assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).is_err());
+        }
+        for field in ["group_key","stat_key","fallback","override_lookup"] {
+            let mut raw=valid.clone();raw["variants"][0]["definition"]["mission_stat_operands"][0].as_object_mut().unwrap().remove(field);
+            assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).is_err());
+        }
+        let mut raw=valid.clone();raw["variants"][0]["definition"].as_object_mut().unwrap().remove("mission_stat_operands");
+        assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).is_err());
+        for replacement in [Value::Null,serde_json::json!([]),serde_json::json!([valid["variants"][0]["definition"]["mission_stat_operands"][0]])] {
+            let mut raw=valid.clone();raw["variants"][0]["definition"]["mission_stat_operands"]=replacement;
+            assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).is_err());
+        }
+        let mut raw=valid.clone();raw["variants"][0]["definition"]["mission_stat_operands"].as_array_mut().unwrap().swap(0,1);
+        assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).is_err());
+        let mut raw=valid;raw["variants"][0]["definition"]["mission_stat_operands"][0]["fallback"]=
+            serde_json::json!({"status":"unavailable","reason":{"kind":"invalid_vector","field":"fallback"}});
+        assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).is_err());
+    }
+
+    #[test]
+    fn mission_operand_prefix_bound_is_inclusive_and_does_not_require_unread_suffix() {
+        let mut raw:Value=serde_json::from_slice(&fixture()).unwrap();
+        for index in 0..2 {
+            raw["variants"][0]["definition"]["mission_stat_operands"][index]["override_lookup"]=
+                serde_json::json!({"status":"group_absent","group_count":4096,"group_key_prefix":vec![7;4096]});
+        }
+        let decode=|raw:&Value|PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(raw).unwrap());
+        assert!(decode(&raw).is_ok());
+        raw["variants"][0]["definition"]["mission_stat_operands"][0]["override_lookup"]=
+            serde_json::json!({"status":"stat_absent","group_count":4096,"group_key_prefix":[4096],"stat_count":4096,"stat_key_prefix":vec![7;4096]});
+        raw["variants"][0]["definition"]["mission_stat_operands"][1]["override_lookup"]["group_key_prefix"][0]=4096.into();
+        assert!(decode(&raw).is_ok(),"later groups need not be read for the first matching lookup");
+        raw["variants"][0]["definition"]["mission_stat_operands"][0]["override_lookup"]["stat_count"]=4097.into();
+        assert!(decode(&raw).is_err());
+        raw["variants"][0]["definition"]["mission_stat_operands"][0]["override_lookup"]=
+            serde_json::json!({"status":"measured","group_count":i32::MAX,"group_key_prefix":[4096],
+                "stat_count":i32::MAX,"stat_key_prefix":[35],"raw_i64":-1});
+        raw["variants"][0]["definition"]["mission_stat_operands"][1]["override_lookup"]=
+            serde_json::json!({"status":"measured","group_count":i32::MAX,"group_key_prefix":[4096,8192],
+                "stat_count":i32::MAX,"stat_key_prefix":[36],"raw_i64":1});
+        assert!(decode(&raw).is_ok(),"large observed count does not require reading a suffix after first match");
+        raw["variants"][0]["definition"]["mission_stat_operands"][0]["override_lookup"]["stat_count"]=(i32::MAX as u32+1).into();
+        assert!(decode(&raw).is_err(),"signed negative native counts cannot become positive observations");
+        raw["variants"][0]["definition"]["mission_stat_operands"][0]["override_lookup"]["stat_count"]=5000.into();
+        let mut keys=vec![7;4096];keys.push(35);
+        raw["variants"][0]["definition"]["mission_stat_operands"][0]["override_lookup"]["stat_key_prefix"]=serde_json::json!(keys);
+        assert!(decode(&raw).is_err(),"the operational bound applies to keys actually read");
+    }
+
+    #[test]
+    fn mission_operand_row_deltas_rechecks_gap_and_recovery_retain_exact_authority() {
+        let mut captures=Vec::new();let mut previous=None;
+        for (hour,value) in [(900,Some(i64::MIN)),(901,Some(i64::MAX)),(902,None),(903,Some(0))] {
+            let Some(value)=value else {
+                captures.push(serde_json::json!({"sequence":captures.len(),"capture_hour_index":hour,
+                    "gap":DesignCatalogGap { first_hour_index:hour,last_hour_index:hour,cause:DesignCatalogGapCause::Torn,
+                        witness:serde_json::json!({"field":"mission group prefix"}) }}));
+                continue;
+            };
+            let mut raw:Value=serde_json::from_slice(&fixture()).unwrap();
+            raw["authority"]["capture_hour_index"]=hour.into();raw["authority"]["current_date_raw"]=(DATE_EPOCH_RAW+hour).into();
+            raw["variants"][0]["definition"]["mission_stat_operands"][0]["fallback"]["raw_i64"]=value.into();
+            let bytes=serde_json::to_vec(&canonical_json_value(&raw)).unwrap();
+            let current=PortableDesignCatalog::decode_a27_live_json(&bytes).unwrap();
+            let mut capture=serde_json::json!({"sequence":captures.len(),"capture_hour_index":hour,"same_hour_rechecks":1,
+                "same_hour_recheck_sha256":[Sha256::hex(&bytes)],"snapshot_sha256":Sha256::hex(&bytes)});
+            if hour==901 {
+                let delta=current.native_row_delta_from(previous.as_ref().unwrap()).unwrap();
+                assert_eq!(delta["variant_upserts"].as_array().unwrap().len(),1);capture["delta"]=delta;
+            } else {capture["snapshot"]=raw;}
+            captures.push(capture);previous=Some(current);
+        }
+        let mut timeline=serde_json::json!({"schema":A27_LIVE_CATALOG_TIMELINE_SCHEMA,
+            "authority":{"program":EXACT_A729_PROGRAM,"program_sha256":EXACT_A729_SHA256},
+            "complete_sequence":true,"transport":"first_full_then_native_row_deltas","capture_count":4,
+            "same_hour_recheck_count":3,"first_capture_hour_index":900,"last_capture_hour_index":903,"captures":captures});
+        let catalog=PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&timeline).unwrap()).unwrap();
+        let portable=PortableDesignCatalog::decode_a27_live_json(&catalog.encode_portable_json().unwrap()).unwrap();
+        for (hour,expected) in [(900,i64::MIN),(901,i64::MAX),(903,0)] {
+            let input=portable.native_designer_inputs_at_hour(hour).unwrap();
+            assert_eq!(input.variants[0].mission_stat_operands[0].effective_raw_i64(),Ok(expected));
+            assert_eq!(input.variants[0].record,portable.records_at_hour(hour).unwrap().into_iter().find(|row|row.design_id=="7:70").unwrap());
+        }
+        assert!(portable.native_designer_inputs_at_hour(902).unwrap_err().contains("Torn"));
+        assert!(portable.native_designer_inputs_at_hour(904).is_err());
         timeline["captures"][1]["same_hour_recheck_sha256"][0]="0".repeat(64).into();
         assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&timeline).unwrap()).is_err());
     }

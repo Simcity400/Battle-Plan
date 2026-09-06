@@ -319,6 +319,84 @@ fn serialized_variant_flag_2b9d<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u
     }
 }
 
+const MAX_MISSION_KEY_PREFIX: u32 = 4096;
+
+fn mission_count<M: Memory>(read: &mut ReadSet<'_, M>, address: u64, field: &str) -> Result<u32> {
+    let count = read.u32(address)? as i32;
+    if count < 0 {
+        return Err(failure(FailureKind::InvalidVector, format!("{field}: negative count {count}")));
+    }
+    Ok(count as u32)
+}
+
+fn mission_key_prefix<M: Memory>(
+    read: &mut ReadSet<'_, M>, data: u64, count: u32, stride: u64, target: u32,
+) -> Result<(Vec<u32>, Option<u64>)> {
+    if count > 0 && !object_pointer(data) {
+        return Err(failure(FailureKind::InvalidVector, "mission key data pointer"));
+    }
+    let mut keys = Vec::new();
+    for ordinal in 0..count {
+        if ordinal == MAX_MISSION_KEY_PREFIX {
+            return Err(failure(FailureKind::BoundExceeded, "mission key prefix"));
+        }
+        let address = data.checked_add(u64::from(ordinal) * stride)
+            .ok_or_else(|| failure(FailureKind::InvalidVector, "mission key address overflow"))?;
+        let key = read.u32(address)?;
+        keys.push(key);
+        if key == target { return Ok((keys, Some(address))); }
+    }
+    Ok((keys, None))
+}
+
+fn mission_override<M: Memory>(
+    read: &mut ReadSet<'_, M>, pointer: u64, group_key: u32, stat_key: u32,
+) -> Result<Value> {
+    let observation: Result<Value> = (|| {
+        let group_count = mission_count(read, pointer + 0x37c, "mission group count")?;
+        let group_data = if group_count == 0 { 0 } else { read.u64(pointer + 0x370)? };
+        let (group_key_prefix, group) = mission_key_prefix(read, group_data, group_count, 0x28, group_key)?;
+        let Some(group) = group else {
+            return Ok(json!({"status":"group_absent","group_count":group_count,"group_key_prefix":group_key_prefix}));
+        };
+        let stat_count = mission_count(read, group + 0x1c, "mission stat count")?;
+        let stat_data = if stat_count == 0 { 0 } else { read.u64(group + 0x10)? };
+        let (stat_key_prefix, stat) = mission_key_prefix(read, stat_data, stat_count, 0x10, stat_key)?;
+        match stat {
+            Some(stat) => Ok(json!({"status":"measured","raw_i64":read.u64(stat + 8)? as i64,
+                "group_count":group_count,"group_key_prefix":group_key_prefix,
+                "stat_count":stat_count,"stat_key_prefix":stat_key_prefix})),
+            None => Ok(json!({"status":"stat_absent","group_count":group_count,
+                "group_key_prefix":group_key_prefix,"stat_count":stat_count,"stat_key_prefix":stat_key_prefix})),
+        }
+    })();
+    match observation {
+        Ok(value) => Ok(value),
+        Err(mut error) if matches!(error.kind, FailureKind::Unreadable | FailureKind::InvalidVector) => {
+            error.field = format!("mission {group_key}/{stat_key}: {}", error.field);
+            Ok(json!({"status":"unavailable","reason":error}))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn mission_stat_operands<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Result<Value> {
+    let mut rows = Vec::new();
+    for (group_key, stat_key, offset) in [(0x1000, 0x23, 0x218), (0x2000, 0x24, 0x220)] {
+        let fallback = match read.u64(pointer + offset) {
+            Ok(raw) => json!({"status":"measured","raw_i64":raw as i64}),
+            Err(mut error) if error.kind == FailureKind::Unreadable => {
+                error.field = format!("mission fallback {stat_key}: {}", error.field);
+                json!({"status":"unavailable","reason":error})
+            }
+            Err(error) => return Err(error),
+        };
+        rows.push(json!({"group_key":group_key,"stat_key":stat_key,"fallback":fallback,
+            "override_lookup":mission_override(read, pointer, group_key, stat_key)?}));
+    }
+    Ok(Value::Array(rows))
+}
+
 fn variant_definition<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Result<Value> {
     let equipment_token = read.u32(pointer + 0x18)?;
     let definition = read.pointer(pointer + 0x3f0)?;
@@ -338,6 +416,7 @@ fn variant_definition<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Res
     let name = read.string(pointer + 0x48, 256)?;
     let item_icon_override = item_icon_override(read, pointer)?;
     let serialized_variant_flag_2b9d = serialized_variant_flag_2b9d(read, pointer)?;
+    let mission_stat_operands = mission_stat_operands(read, pointer)?;
     let explicit_entity = match read.string(pointer + 0x430, 4096) {
         Ok(value) => json!({"status":"measured", "value":value, "utf8_hex":hex(value.as_bytes())}),
         Err(error)
@@ -393,7 +472,7 @@ fn variant_definition<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Res
         stats.push(json!({"source_ordinal":ordinal,"stat_id":name,"raw_i64":read.u64(pointer+offset)? as i64,"scale":scale}));
     }
     Ok(
-        json!({"equipment_token_raw":equipment_token,"archetype_token":archetype,"archetype_token_utf8_hex":hex(archetype.as_bytes()),"display_name":nullable_string(&display),"display_name_utf8_hex":hex(display.as_bytes()),"variant_name":nullable_string(&name),"variant_name_utf8_hex":hex(name.as_bytes()),"explicit_entity":explicit_entity,"item_icon_override":item_icon_override,"serialized_variant_flag_2b9d":serialized_variant_flag_2b9d,"modules_complete":true,"modules":modules,"upgrades_complete":true,"upgrades":upgrades,"cached_stats_complete":true,"cached_stats":stats}),
+        json!({"equipment_token_raw":equipment_token,"archetype_token":archetype,"archetype_token_utf8_hex":hex(archetype.as_bytes()),"display_name":nullable_string(&display),"display_name_utf8_hex":hex(display.as_bytes()),"variant_name":nullable_string(&name),"variant_name_utf8_hex":hex(name.as_bytes()),"explicit_entity":explicit_entity,"item_icon_override":item_icon_override,"serialized_variant_flag_2b9d":serialized_variant_flag_2b9d,"mission_stat_operands":mission_stat_operands,"modules_complete":true,"modules":modules,"upgrades_complete":true,"upgrades":upgrades,"cached_stats_complete":true,"cached_stats":stats}),
     )
 }
 

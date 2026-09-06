@@ -1135,3 +1135,190 @@ fn cached_stat_upper_bytes_are_required_and_part_of_the_same_seal() {
         assert!(reads.get() >= 2);
     }
 }
+
+fn mission_inputs(value: &Value) -> Vec<snapshot::design_catalog::DesignMissionStatOperand> {
+    snapshot::design_catalog::PortableDesignCatalog::decode_a27_live_json(
+        &serde_json::to_vec(value).unwrap()).unwrap().native_designer_inputs_at_hour(100).unwrap()
+        .variants.into_iter().next().unwrap().mission_stat_operands
+}
+
+const MISSION_GROUPS: u64 = HEAP + 0x90000;
+const MISSION_STATS: u64 = HEAP + 0x100000;
+
+fn set_mission_groups(f: &mut Fixture, groups: &[(u32, Vec<(u32, i64)>)]) {
+    f.u64(VARIANT + 0x370, MISSION_GROUPS);
+    f.u32(VARIANT + 0x37c, groups.len() as u32);
+    for address in VARIANT + 0x378..VARIANT + 0x37c { f.bytes.remove(&address); }
+    for (ordinal, (key, stats)) in groups.iter().enumerate() {
+        let group = MISSION_GROUPS + ordinal as u64 * 0x28;
+        let data = MISSION_STATS + ordinal as u64 * 0x20000;
+        f.u32(group, *key);
+        f.u64(group + 0x10, data);
+        f.u32(group + 0x1c, stats.len() as u32);
+        for (ordinal, (key, value)) in stats.iter().enumerate() {
+            f.u32(data + ordinal as u64 * 0x10, *key);
+            f.put(data + ordinal as u64 * 0x10 + 8, &value.to_le_bytes());
+        }
+    }
+}
+
+#[test]
+fn mission_operands_keep_first_group_and_stat_without_reading_unselected_payloads() {
+    let mut f = fixture();
+    f.put(VARIANT + 0x218, &i64::MIN.to_le_bytes());
+    f.put(VARIANT + 0x220, &((1_i64 << 53) + 1).to_le_bytes());
+    set_mission_groups(&mut f, &[
+        (0x4000, vec![]),
+        (0x1000, vec![(0x24, 77), (0x23, -9), (0x23, 999)]),
+        (0x1000, vec![(0x23, 123)]),
+        (0x2000, vec![(0x24, i64::MAX), (0x24, 111)]),
+    ]);
+    for address in MISSION_GROUPS + 0x10..MISSION_GROUPS + 0x20 { f.bytes.remove(&address); }
+    for address in MISSION_STATS + 0x20000 + 8..MISSION_STATS + 0x20000 + 16 { f.bytes.remove(&address); }
+    let value = capture(&f, BASE, DATE).unwrap();
+    let rows = &value["variants"][0]["definition"]["mission_stat_operands"];
+    assert_eq!(rows[0], json!({"group_key":4096,"stat_key":35,
+        "fallback":{"status":"measured","raw_i64":i64::MIN},
+        "override_lookup":{"status":"measured","raw_i64":-9,"group_count":4,
+            "group_key_prefix":[16384,4096],"stat_count":3,"stat_key_prefix":[36,35]}}));
+    assert_eq!(rows[1], json!({"group_key":8192,"stat_key":36,
+        "fallback":{"status":"measured","raw_i64":(1_i64<<53)+1},
+        "override_lookup":{"status":"measured","raw_i64":i64::MAX,"group_count":4,
+            "group_key_prefix":[16384,4096,4096,8192],"stat_count":2,"stat_key_prefix":[36]}}));
+    let inputs = mission_inputs(&value);
+    assert_eq!(inputs[0].effective_raw_i64(), Ok(-9));
+    assert_eq!(inputs[1].effective_raw_i64(), Ok(i64::MAX));
+}
+
+#[test]
+fn mission_absence_is_a_complete_search_and_never_searches_a_later_duplicate_group() {
+    let mut f = fixture();
+    f.put(VARIANT + 0x218, &(-77_i64).to_le_bytes());
+    set_mission_groups(&mut f, &[(0x1000, vec![(0x24, 17)]), (0x1000, vec![(0x23, 999)])]);
+    let value = capture(&f, BASE, DATE).unwrap();
+    let rows = &value["variants"][0]["definition"]["mission_stat_operands"];
+    assert_eq!(rows[0]["override_lookup"], json!({"status":"stat_absent","group_count":2,
+        "group_key_prefix":[4096],"stat_count":1,"stat_key_prefix":[36]}));
+    assert_eq!(rows[1]["override_lookup"], json!({"status":"group_absent","group_count":2,
+        "group_key_prefix":[4096,4096]}));
+    assert_eq!(mission_inputs(&value)[0].effective_raw_i64(), Ok(-77));
+    set_mission_groups(&mut f, &[(0x1000, vec![]), (0x1000, vec![(0x23, 999)])]);
+    for address in MISSION_GROUPS + 0x10..MISSION_GROUPS + 0x18 { f.bytes.remove(&address); }
+    let zero_stats = capture(&f, BASE, DATE).unwrap();
+    assert_eq!(zero_stats["variants"][0]["definition"]["mission_stat_operands"][0]["override_lookup"],
+        json!({"status":"stat_absent","group_count":2,"group_key_prefix":[4096],"stat_count":0,"stat_key_prefix":[]}));
+    assert_eq!(mission_inputs(&zero_stats)[0].effective_raw_i64(), Ok(-77));
+    set_mission_groups(&mut f, &[]);
+    for address in VARIANT + 0x370..VARIANT + 0x378 { f.bytes.remove(&address); }
+    let empty = capture(&f, BASE, DATE).unwrap();
+    for row in empty["variants"][0]["definition"]["mission_stat_operands"].as_array().unwrap() {
+        assert_eq!(row["override_lookup"], json!({"status":"group_absent","group_count":0,"group_key_prefix":[]}));
+    }
+}
+
+#[test]
+fn mission_fallback_and_override_unreadability_remain_independent() {
+    let mut f = fixture();
+    set_mission_groups(&mut f, &[(0x1000, vec![(0x23, 0)]), (0x2000, vec![(0x24, -1)])]);
+    f.bytes.remove(&(VARIANT + 0x218 + 7));
+    let value = capture(&f, BASE, DATE).unwrap();
+    let rows = &value["variants"][0]["definition"]["mission_stat_operands"];
+    assert_eq!(rows[0]["fallback"]["status"], "unavailable");
+    assert_eq!(rows[0]["fallback"]["reason"]["kind"], "unreadable");
+    assert_eq!(rows[0]["override_lookup"]["status"], "measured");
+    assert_eq!(rows[0]["override_lookup"]["raw_i64"], 0);
+    assert_eq!(mission_inputs(&value)[0].effective_raw_i64(), Ok(0));
+    f.u64(VARIANT + 0x218, 55);
+    f.bytes.remove(&(MISSION_STATS + 15));
+    let value = capture(&f, BASE, DATE).unwrap();
+    let rows = &value["variants"][0]["definition"]["mission_stat_operands"];
+    assert_eq!(rows[0]["override_lookup"]["status"], "unavailable");
+    assert_eq!(rows[0]["override_lookup"]["reason"]["kind"], "unreadable");
+    assert!(rows[0]["override_lookup"].get("raw_i64").is_none());
+    assert_eq!(rows[1]["override_lookup"]["raw_i64"], -1);
+    assert_eq!(rows[0]["fallback"]["raw_i64"], 55);
+    assert_eq!(mission_inputs(&value)[0].effective_raw_i64().unwrap_err().kind, "unreadable");
+}
+
+#[test]
+fn mission_negative_counts_are_invalid_vectors_not_measured_absence() {
+    for count in [-1_i32, i32::MIN] {
+        let mut f = fixture();
+        f.u32(VARIANT + 0x37c, count as u32);
+        let value = capture(&f, BASE, DATE).unwrap();
+        for row in value["variants"][0]["definition"]["mission_stat_operands"].as_array().unwrap() {
+            assert_eq!(row["override_lookup"]["status"], "unavailable");
+            assert_eq!(row["override_lookup"]["reason"]["kind"], "invalid_vector");
+        }
+        set_mission_groups(&mut f, &[(0x1000, vec![]), (0x2000, vec![(0x24, 11)])]);
+        f.u32(MISSION_GROUPS + 0x1c, count as u32);
+        let value = capture(&f, BASE, DATE).unwrap();
+        let rows = &value["variants"][0]["definition"]["mission_stat_operands"];
+        assert_eq!(rows[0]["override_lookup"]["reason"]["kind"], "invalid_vector");
+        assert_eq!(rows[1]["override_lookup"]["raw_i64"], 11);
+    }
+}
+
+#[test]
+fn mission_key_prefix_bounds_refuse_without_truncating_or_inventing_absence() {
+    let mut f = fixture();
+    set_mission_groups(&mut f, &[(0x1000, vec![(0x23, 7)]), (0x2000, vec![(0x24, 8)])]);
+    f.u32(VARIANT + 0x37c, i32::MAX as u32);
+    f.u32(MISSION_GROUPS + 0x1c, i32::MAX as u32);
+    let value = capture(&f, BASE, DATE).unwrap();
+    let row = &value["variants"][0]["definition"]["mission_stat_operands"][0]["override_lookup"];
+    assert_eq!(row["group_count"], i32::MAX);
+    assert_eq!(row["stat_count"], i32::MAX);
+    assert_eq!(row["stat_key_prefix"], json!([35]));
+    for ordinal in 0..4096_u64 { f.u32(MISSION_GROUPS + ordinal * 0x28, 0x4000); }
+    assert_eq!(capture(&f, BASE, DATE).unwrap_err().kind, FailureKind::BoundExceeded);
+    set_mission_groups(&mut f, &[(0x1000, vec![])]);
+    f.u32(MISSION_GROUPS + 0x1c, 4097);
+    for ordinal in 0..4096_u64 { f.u32(MISSION_STATS + ordinal * 0x10, 0x24); }
+    assert_eq!(capture(&f, BASE, DATE).unwrap_err().kind, FailureKind::BoundExceeded);
+    let mut read = ReadSet::new(&f, BASE);
+    read.bytes = MAX_READ_BYTES;
+    assert_eq!(mission_stat_operands(&mut read, VARIANT).unwrap_err().kind, FailureKind::BoundExceeded);
+}
+
+#[test]
+fn mission_headers_prefixes_and_raw_high_bytes_share_the_catalog_seal() {
+    for (address, length) in [
+        (VARIANT + 0x218, 8), (VARIANT + 0x220, 8), (VARIANT + 0x370, 8),
+        (VARIANT + 0x37c, 4), (MISSION_GROUPS, 4), (MISSION_GROUPS + 0x10, 8),
+        (MISSION_GROUPS + 0x1c, 4), (MISSION_STATS, 4), (MISSION_STATS + 8, 8),
+    ] {
+        let mut f = fixture();
+        set_mission_groups(&mut f, &[(0x1000, vec![(0x23, 5)])]);
+        let reads = Cell::new(0);
+        let memory = |current_address, current_length| {
+            let mut bytes = f.read(current_address, current_length)?;
+            if current_address == address && current_length == length {
+                let n = reads.get(); reads.set(n + 1);
+                if n > 0 { bytes[length - 1] ^= 0x80; }
+            }
+            Ok(bytes)
+        };
+        assert_eq!(capture(&memory, BASE, DATE).unwrap_err().kind, FailureKind::Torn);
+        assert!(reads.get() >= 2);
+    }
+}
+
+#[test]
+fn mission_first_match_at_key_4096_is_measured_without_reading_key_4097() {
+    let mut f = fixture();
+    let mut groups = vec![(0x4000, Vec::new()); 4096];
+    groups[4094] = (0x1000, Vec::new());
+    groups[4095] = (0x2000, Vec::new());
+    set_mission_groups(&mut f, &groups);
+    let value = capture(&f, BASE, DATE).unwrap();
+    let rows = &value["variants"][0]["definition"]["mission_stat_operands"];
+    assert_eq!(rows[1]["override_lookup"]["status"], "stat_absent");
+    assert_eq!(rows[1]["override_lookup"]["group_key_prefix"].as_array().unwrap().len(), 4096);
+    let mut stats = vec![(0x24, 0); 4096];
+    stats[4095] = (0x23, i64::MIN);
+    set_mission_groups(&mut f, &[(0x1000, stats)]);
+    let value = capture(&f, BASE, DATE).unwrap();
+    assert_eq!(value["variants"][0]["definition"]["mission_stat_operands"][0]["override_lookup"]["stat_key_prefix"].as_array().unwrap().len(), 4096);
+    assert_eq!(mission_inputs(&value)[0].effective_raw_i64(), Ok(i64::MIN));
+}
