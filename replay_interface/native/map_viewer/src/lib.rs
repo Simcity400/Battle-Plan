@@ -1,6 +1,10 @@
 pub mod authored_equipment;
 pub mod particle_authored;
 pub mod particle_runtime;
+#[cfg(windows)]
+mod particle_d3d;
+#[cfg(windows)]
+pub use particle_d3d::{ParticleDrawCounts, ParticleNativeDraw, ParticleSceneBindings};
 use std::error::Error;
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;

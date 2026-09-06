@@ -284,12 +284,20 @@ struct SourceDefinition {
     path: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct ParticleDrawCapacity {
+    pub(crate) lease: ContentAdmissionLease,
+    pub packets: usize,
+    pub particles: usize,
+}
+
 pub struct ParticleDefinitions {
     lease: ContentAdmissionLease,
     registrations: BTreeMap<String, Vec<SourceDefinition>>,
     definitions: BTreeMap<String, Vec<SourceDefinition>>,
     admitted: BTreeMap<String, Arc<AdmittedParticleDefinition>>,
     compiled: BTreeMap<String, (Arc<[AuthoredSubsystem]>, usize)>,
+    draw_capacity: Option<ParticleDrawCapacity>,
 }
 
 impl ParticleDefinitions {
@@ -308,6 +316,7 @@ impl ParticleDefinitions {
             definitions: BTreeMap::new(),
             admitted: BTreeMap::new(),
             compiled: BTreeMap::new(),
+            draw_capacity: None,
         };
         for extension in ["gfx", "asset"] {
             let keys = resolver
@@ -471,9 +480,80 @@ impl ParticleDefinitions {
         Ok(definition)
     }
 
+    pub fn draw_capacity(&mut self) -> ParticleResult<ParticleDrawCapacity> {
+        if let Some(capacity) = &self.draw_capacity {
+            return Ok(capacity.clone());
+        }
+        let mut capacity = ParticleDrawCapacity {
+            lease: self.lease.clone(),
+            packets: 0,
+            particles: 0,
+        };
+        for (name, sources) in &self.definitions {
+            if sources.len() != 1 {
+                return Err(ParticleInputRefusal::new(
+                    name,
+                    None,
+                    "particle",
+                    ParticleRefusalReason::ConflictingDefinition,
+                ));
+            }
+            if !self.compiled.contains_key(name) {
+                let definition =
+                    compile_definition(&sources[0], "", name, 1.0, self.lease.clone())?;
+                self.compiled.insert(
+                    name.clone(),
+                    (definition.subsystems, definition.turbulence_count),
+                );
+            }
+            let systems = &self.compiled[name].0;
+            let mut packets = 0;
+            let mut particles = 0;
+            for system in systems.iter() {
+                count_draw_capacity(name, system, 1, &mut packets, &mut particles)?;
+            }
+            capacity.packets = capacity.packets.max(packets);
+            capacity.particles = capacity.particles.max(particles);
+        }
+        self.draw_capacity = Some(capacity.clone());
+        Ok(capacity)
+    }
+
     pub fn content_lease(&self) -> ContentAdmissionLease {
         self.lease.clone()
     }
+}
+
+fn count_draw_capacity(
+    definition: &str,
+    system: &AuthoredSubsystem,
+    parent_capacity: usize,
+    packets: &mut usize,
+    particles: &mut usize,
+) -> ParticleResult<()> {
+    let fail = || {
+        ParticleInputRefusal::new(
+            definition,
+            Some(&system.name),
+            "global_draw_capacity",
+            ParticleRefusalReason::CapacityExceeded,
+        )
+    };
+    let instances = parent_capacity
+        .checked_mul(system.capacity)
+        .ok_or_else(fail)?;
+    *packets = packets
+        .checked_add(parent_capacity)
+        .filter(|count| *count <= i32::MAX as usize)
+        .ok_or_else(fail)?;
+    *particles = particles
+        .checked_add(instances)
+        .filter(|count| *count <= i32::MAX as usize / 56)
+        .ok_or_else(fail)?;
+    for child in &system.children {
+        count_draw_capacity(definition, child, instances, packets, particles)?;
+    }
+    Ok(())
 }
 
 fn collect_definitions(
@@ -1620,6 +1700,21 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn particle_draw_capacity_is_catalog_maximum_with_recursive_multiplicity() {
+        let fixture = Fixture::new(REGISTRATION, "particle={name=effect subsystem={name=root max_amount=2 childsystem={name=child max_amount=3 childsystem={name=grandchild max_amount=4}}}} particle={name=other subsystem={name=a max_amount=40} subsystem={name=b max_amount=0}}");
+        let mut definitions = fixture.definitions();
+        let capacity = definitions.draw_capacity().unwrap();
+        assert_eq!(capacity.packets, 1 + 2 + 6);
+        assert_eq!(capacity.particles, 40);
+        assert_eq!(capacity.lease, definitions.content_lease());
+        assert_eq!(
+            definitions.resolve("paired").unwrap().authored_capacity(),
+            2 + 6 + 24
+        );
+        assert_eq!(definitions.draw_capacity().unwrap().packets, 9);
     }
 
     #[test]

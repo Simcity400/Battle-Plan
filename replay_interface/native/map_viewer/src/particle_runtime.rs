@@ -110,6 +110,24 @@ impl<'a> ParticleGpuView<'a> {
     pub fn sorted_presentation_id(self) -> Option<u64> {
         self.instance.last_sort.map(|(id, _)| id)
     }
+    pub fn draw_scale_f32_bits(self) -> ParticleResult<[u32; 2]> {
+        let scale = self.instance.effective_scale()?;
+        Ok([
+            scale.to_bits(),
+            if self
+                .instance
+                .definition
+                .subsystems
+                .iter()
+                .any(|system| system.local_space)
+            {
+                scale.to_bits()
+            } else {
+                1.0_f32.to_bits()
+            },
+        ])
+    }
+
     pub fn root_subsystems(self) -> impl ExactSizeIterator<Item = ParticleGpuSubsystem<'a>> {
         self.instance
             .subsystems
@@ -119,8 +137,37 @@ impl<'a> ParticleGpuView<'a> {
                 instance: self.instance,
                 state,
                 authored,
+                local_frame: ParticleLocalFrame::Root,
+                presentation_id: self.presentation_id,
             })
     }
+
+    pub fn visit_draw_subsystems(
+        self,
+        packet_capacity: usize,
+        trail: bool,
+        mut visit: impl FnMut(usize, ParticleGpuSubsystem<'a>) -> crate::Result<()>,
+    ) -> crate::Result<usize> {
+        if packet_capacity > i32::MAX as usize {
+            return Err(runtime_refusal(
+                "particle_draw_packet_capacity",
+                ParticleRefusalReason::InvalidNumber,
+            )
+            .event(self.handle().event_instance_id)
+            .into());
+        }
+        let mut ordinal = 0;
+        for root in self.root_subsystems() {
+            root.visit_draw_subsystems(packet_capacity, &mut ordinal, trail, &mut visit)?;
+        }
+        Ok(ordinal)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ParticleLocalFrame {
+    Root,
+    Child([f32; 3]),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -128,9 +175,210 @@ pub struct ParticleGpuSubsystem<'a> {
     instance: &'a Instance,
     state: &'a Subsystem,
     authored: &'a AuthoredSubsystem,
+    local_frame: ParticleLocalFrame,
+    presentation_id: Option<u64>,
 }
 
 impl<'a> ParticleGpuSubsystem<'a> {
+    pub(crate) fn content_lease(self) -> &'a ContentAdmissionLease {
+        &self.instance.definition.lease
+    }
+
+    pub(crate) fn validate_draw_presentation(
+        self,
+        presentation_id: u64,
+        camera: ParticleSortCamera,
+    ) -> ParticleResult<()> {
+        if self.presentation_id != Some(presentation_id)
+            || self.instance.last_sort != Some((presentation_id, camera))
+        {
+            return Err(ParticleInputRefusal::new(
+                self.instance.definition.name(),
+                Some(self.name()),
+                "particle_draw_presentation",
+                ParticleRefusalReason::PresentationOutOfOrder,
+            )
+            .event(self.instance.handle.event_instance_id));
+        }
+        Ok(())
+    }
+
+    pub fn draw_world_matrix_f32_bits(self) -> ParticleResult<[u32; 16]> {
+        let mut matrix = [
+            1.0_f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        if self.authored.local_space {
+            match self.local_frame {
+                ParticleLocalFrame::Root => {
+                    matrix = self.instance.world.map(f32::from_bits);
+                    for base in [0, 4, 8] {
+                        let length = (matrix[base] * matrix[base]
+                            + matrix[base + 1] * matrix[base + 1]
+                            + matrix[base + 2] * matrix[base + 2])
+                            .sqrt();
+                        if length != 0.0 {
+                            let inverse = 1.0 / length;
+                            for value in &mut matrix[base..base + 4] {
+                                *value *= inverse;
+                            }
+                        }
+                    }
+                }
+                ParticleLocalFrame::Child(position) => matrix[12..15].copy_from_slice(&position),
+            }
+        }
+        if matrix.iter().any(|value| !value.is_finite()) {
+            return Err(ParticleInputRefusal::new(
+                self.instance.definition.name(),
+                Some(self.name()),
+                "particle_draw_matrix",
+                ParticleRefusalReason::ArithmeticOverflow,
+            )
+            .event(self.instance.handle.event_instance_id));
+        }
+        Ok(matrix.map(f32::to_bits))
+    }
+
+    pub fn visit_trail_vertices(
+        self,
+        camera_position_f32_bits: [u32; 3],
+        scale_f32_bits: u32,
+        mut visit: impl FnMut([u8; 28]) -> ParticleResult<()>,
+    ) -> ParticleResult<()> {
+        let fail = |input, reason| {
+            ParticleInputRefusal::new(
+                self.instance.definition.name(),
+                Some(self.name()),
+                input,
+                reason,
+            )
+            .event(self.instance.handle.event_instance_id)
+        };
+        if !self.trail() {
+            return Err(fail(
+                "trail_vertices",
+                ParticleRefusalReason::UnsupportedAuthoredInput,
+            ));
+        }
+        let camera = camera_position_f32_bits.map(f32::from_bits);
+        let scale = f32::from_bits(scale_f32_bits);
+        if !scale.is_finite() || (self.billboard() && camera.iter().any(|v| !v.is_finite())) {
+            return Err(fail(
+                "trail_camera_scale",
+                ParticleRefusalReason::InvalidNumber,
+            ));
+        }
+        if self.live_count() < 2 {
+            return Ok(());
+        }
+        let normalize = |mut vector: [f32; 3]| {
+            let length =
+                (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt();
+            if length != 0.0 {
+                for value in &mut vector {
+                    *value /= length;
+                }
+            }
+            vector
+        };
+        let mut records = self.records();
+        let mut previous = records.next().unwrap()?;
+        let position = |record: &ParticleGpuRecord| {
+            std::array::from_fn::<_, 3, _>(|axis| {
+                f32::from_le_bytes(record.0[axis * 4..axis * 4 + 4].try_into().unwrap())
+            })
+        };
+        let mut previous_direction = [0.0; 3];
+        for (index, next) in records.enumerate() {
+            let next = next?;
+            let start = position(&previous);
+            let end = position(&next);
+            let delta: [f32; 3] = std::array::from_fn(|axis| end[axis] - start[axis]);
+            let mut direction = if self.billboard() {
+                let eye: [f32; 3] = std::array::from_fn(|axis| camera[axis] - start[axis]);
+                normalize([
+                    eye[1] * delta[2] - eye[2] * delta[1],
+                    eye[2] * delta[0] - eye[0] * delta[2],
+                    eye[0] * delta[1] - eye[1] * delta[0],
+                ])
+            } else {
+                normalize([
+                    delta[1] * 0.0 - delta[2],
+                    delta[2] * 0.0 - delta[0] * 0.0,
+                    delta[0] - delta[1] * 0.0,
+                ])
+            };
+            if !self.billboard() {
+                let current = direction;
+                if index != 0 {
+                    direction = normalize(std::array::from_fn(|axis| {
+                        (previous_direction[axis] + current[axis]) * 0.5
+                    }));
+                }
+                previous_direction = current;
+            }
+            let mut pair = |record: &ParticleGpuRecord, ordinal: usize| -> ParticleResult<()> {
+                let center = position(record);
+                let size = f32::from_le_bytes(record.0[12..16].try_into().unwrap());
+                for positive in [true, false] {
+                    let vertex: [f32; 3] = std::array::from_fn(|axis| {
+                        let offset = size * direction[axis];
+                        (if positive {
+                            offset + center[axis]
+                        } else {
+                            center[axis] - offset
+                        }) * scale
+                    });
+                    if vertex.iter().any(|value| !value.is_finite()) {
+                        return Err(fail(
+                            "trail_vertex_position",
+                            ParticleRefusalReason::ArithmeticOverflow,
+                        ));
+                    }
+                    let mut bytes = [0_u8; 28];
+                    for (axis, value) in vertex.iter().enumerate() {
+                        bytes[axis * 4..axis * 4 + 4].copy_from_slice(&value.to_le_bytes());
+                    }
+                    bytes[12..16].copy_from_slice(&(ordinal as f32).to_le_bytes());
+                    bytes[16..20]
+                        .copy_from_slice(&(if positive { 1.0_f32 } else { 0.0 }).to_le_bytes());
+                    bytes[20..24].copy_from_slice(&record.0[28..32]);
+                    bytes[24..28].copy_from_slice(&record.0[32..36]);
+                    visit(bytes)?;
+                }
+                Ok(())
+            };
+            pair(&previous, index)?;
+            if index + 2 == self.live_count() {
+                pair(&next, index + 1)?;
+            }
+            previous = next;
+        }
+        Ok(())
+    }
+
+    fn visit_draw_subsystems(
+        self,
+        packet_capacity: usize,
+        ordinal: &mut usize,
+        trail: bool,
+        visit: &mut impl FnMut(usize, ParticleGpuSubsystem<'a>) -> crate::Result<()>,
+    ) -> crate::Result<()> {
+        if *ordinal == packet_capacity {
+            return Ok(());
+        }
+        // Both partitions and zero-live entries consume the native shared packet bound.
+        let current = *ordinal;
+        *ordinal += 1;
+        if self.trail() == trail {
+            visit(current, self)?;
+        }
+        for (_, _, child) in self.children() {
+            child.visit_draw_subsystems(packet_capacity, ordinal, trail, visit)?;
+        }
+        Ok(())
+    }
+
     pub fn name(self) -> &'a str {
         &self.authored.name
     }
@@ -182,6 +430,8 @@ impl<'a> ParticleGpuSubsystem<'a> {
                                 instance: self.instance,
                                 state,
                                 authored,
+                                local_frame: ParticleLocalFrame::Child(particle.visual.position),
+                                presentation_id: self.presentation_id,
                             },
                         )
                     })
@@ -654,9 +904,16 @@ impl Subsystem {
                         }
                     }
                 }
-                ParticleForceKind::Point | ParticleForceKind::Vortex
-                    if force.yaw == 0.0 || force.kind == ParticleForceKind::Point =>
-                {
+                ParticleForceKind::Point | ParticleForceKind::Vortex => {
+                    let rotation = if force.kind == ParticleForceKind::Vortex && force.yaw != 0.0 {
+                        Some(native_angles(
+                            authored,
+                            "force_yaw",
+                            (force.yaw * f32::from_bits(0x4049_0fdb)) / f32::from_bits(0x4334_0000),
+                        )?)
+                    } else {
+                        None
+                    };
                     let origin = std::array::from_fn::<_, 3, _>(|axis| {
                         force.position[axis] * scale
                             + if force.local_force {
@@ -683,8 +940,19 @@ impl Subsystem {
                                 .sqrt();
                         if f32::from_bits(0x3c23_d70a) < length {
                             let factor = strength / length;
-                            for axis in 0..3 {
-                                accumulated[axis] = factor * radial[axis] + accumulated[axis];
+                            if let Some((sin, cos)) = rotation {
+                                let [x, y, z] = radial;
+                                let [dx, dy, dz] = force.direction;
+                                accumulated[0] =
+                                    ((dz * y - dy * z) * sin + x * cos) * factor + accumulated[0];
+                                accumulated[1] =
+                                    ((dx * z - dz * x) * sin + cos * y) * factor + accumulated[1];
+                                accumulated[2] =
+                                    ((dy * x - dx * y) * sin + cos * z) * factor + accumulated[2];
+                            } else {
+                                for axis in 0..3 {
+                                    accumulated[axis] = factor * radial[axis] + accumulated[axis];
+                                }
                             }
                         }
                     }
@@ -969,6 +1237,44 @@ struct Instance {
     subsystems: Vec<Subsystem>,
     failure: Option<ParticleInputRefusal>,
     last_sort: Option<(u64, ParticleSortCamera)>,
+}
+
+impl Instance {
+    fn effective_scale(&self) -> ParticleResult<f32> {
+        let mut scale = self.definition.scale;
+        if self
+            .definition
+            .subsystems
+            .iter()
+            .any(|system| system.local_space)
+        {
+            let world = self.world.map(f32::from_bits);
+            let lengths = [0, 4, 8].map(|base| {
+                world[base] * world[base]
+                    + world[base + 1] * world[base + 1]
+                    + world[base + 2] * world[base + 2]
+            });
+            let other = if lengths[1] <= lengths[2] {
+                lengths[2]
+            } else {
+                lengths[1]
+            };
+            let largest = if lengths[0] <= other {
+                other
+            } else {
+                lengths[0]
+            };
+            scale *= largest.sqrt();
+        }
+        if !scale.is_finite() {
+            return Err(runtime_refusal(
+                "particle_instance_scale",
+                ParticleRefusalReason::ArithmeticOverflow,
+            )
+            .event(self.handle.event_instance_id));
+        }
+        Ok(scale)
+    }
 }
 
 /// Call light_binding during entity-event preparation, then advance once in the
@@ -1311,7 +1617,14 @@ impl ParticleRuntime {
                     ParticleRefusalReason::ArithmeticOverflow,
                 ))
             };
+            let scale = instance.effective_scale();
+            if let Err(error) = &scale {
+                if failure.is_none() {
+                    failure = Some(error.clone());
+                }
+            }
             if failure.is_none() {
+                let scale = scale.unwrap();
                 for (state, authored) in instance
                     .subsystems
                     .iter_mut()
@@ -1323,7 +1636,7 @@ impl ParticleRuntime {
                         &mut instance.random,
                         true,
                         instance.world.map(f32::from_bits),
-                        instance.definition.scale,
+                        scale,
                         instance.opacity,
                     ) {
                         failure = Some(error);
@@ -1431,6 +1744,395 @@ mod tests {
             .records()
             .collect::<ParticleResult<Vec<_>>>()
             .unwrap()
+    }
+
+    #[test]
+    fn draw_root_matrix_normalizes_each_basis_and_preserves_zero_axis_and_translation() {
+        for local in [false, true] {
+            let (_fixture, mut runtime, handle) = setup(&format!(
+                "subsystem={{name=s max_amount=0 local_space={}}}",
+                if local { "yes" } else { "no" }
+            ));
+            let world = [
+                3.0_f32, 4.0, 0.0, 10.0, 0.0, -2.0, 0.0, 6.0, -0.0, 0.0, 0.0, -0.0, 7.0, -0.0,
+                11.0, 1.0,
+            ];
+            runtime.instances[handle.slot].as_mut().unwrap().world = world.map(f32::to_bits);
+            let actual = runtime
+                .gpu_view(handle)
+                .unwrap()
+                .root_subsystems()
+                .next()
+                .unwrap()
+                .draw_world_matrix_f32_bits()
+                .unwrap();
+            let expected = if local {
+                [
+                    3.0 * 0.2,
+                    4.0 * 0.2,
+                    0.0,
+                    2.0,
+                    0.0,
+                    -1.0,
+                    0.0,
+                    3.0,
+                    -0.0,
+                    0.0,
+                    0.0,
+                    -0.0,
+                    7.0,
+                    -0.0,
+                    11.0,
+                    1.0,
+                ]
+            } else {
+                [
+                    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                ]
+            };
+            assert_eq!(actual, expected.map(f32::to_bits));
+            assert_eq!(
+                runtime.light_binding(handle).unwrap().world_matrix_f32_bits,
+                world.map(f32::to_bits)
+            );
+        }
+    }
+
+    #[test]
+    fn draw_matrix_overflow_is_named_without_changing_the_paired_light_matrix() {
+        let (_fixture, mut runtime, handle) =
+            setup("subsystem={name=s max_amount=0 local_space=yes}");
+        let mut world = matrix().map(f32::from_bits);
+        world[..4].copy_from_slice(&[3.0e-20, 0.0, 0.0, 1.0e20]);
+        runtime.instances[handle.slot].as_mut().unwrap().world = world.map(f32::to_bits);
+        let error = runtime
+            .gpu_view(handle)
+            .unwrap()
+            .root_subsystems()
+            .next()
+            .unwrap()
+            .draw_world_matrix_f32_bits()
+            .unwrap_err();
+        assert_eq!(error.input, "particle_draw_matrix");
+        assert_eq!(error.reason, ParticleRefusalReason::ArithmeticOverflow);
+        assert_eq!(
+            runtime.light_binding(handle).unwrap().world_matrix_f32_bits,
+            world.map(f32::to_bits)
+        );
+    }
+
+    #[test]
+    fn draw_visits_retained_children_in_each_native_trail_partition() {
+        let (_fixture, mut runtime, handle) = setup(
+            "subsystem={name=root max_amount=2 emission=8 life=5 trail=yes childsystem={name=child max_amount=0 local_space=yes}} subsystem={name=last max_amount=0}");
+        runtime.advance(1, 0.25, &[]).unwrap();
+        let state = &mut runtime.instances[handle.slot].as_mut().unwrap().subsystems[0];
+        state.live = 0;
+        state.particles[0].visual.position = [1.0, -0.0, 3.0];
+        state.particles[1].visual.position = [4.0, 5.0, 6.0];
+        let view = runtime.gpu_view(handle).unwrap();
+        let mut normal = Vec::new();
+        view.visit_draw_subsystems(4, false, |_, system| {
+            normal.push((system.name(), system.draw_world_matrix_f32_bits()?));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            normal.iter().map(|row| row.0).collect::<Vec<_>>(),
+            ["child", "child", "last"]
+        );
+        for (row, position) in normal[..2]
+            .iter()
+            .zip([[1.0_f32, -0.0, 3.0], [4.0, 5.0, 6.0]])
+        {
+            let mut expected = [
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ];
+            expected[12..15].copy_from_slice(&position);
+            assert_eq!(row.1, expected.map(f32::to_bits));
+        }
+        let mut trail = Vec::new();
+        view.visit_draw_subsystems(4, true, |_, system| {
+            trail.push((system.name(), system.live_count()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(trail, [("root", 0)]);
+    }
+
+    #[test]
+    fn particle_draw_scale_uses_largest_attachment_basis_only_for_local_roots() {
+        for (body, expected) in [
+            ("subsystem={name=s max_amount=0}", [2.0, 1.0]),
+            (
+                "subsystem={name=s max_amount=0 local_space=yes}",
+                [20.0, 20.0],
+            ),
+            (
+                "subsystem={name=s max_amount=0 childsystem={name=c max_amount=1 local_space=yes}}",
+                [2.0, 1.0],
+            ),
+            (
+                "subsystem={name=s max_amount=0} subsystem={name=t max_amount=0 local_space=yes}",
+                [20.0, 20.0],
+            ),
+        ] {
+            let (_fixture, mut runtime, handle) = setup(body);
+            let mut world = matrix().map(f32::from_bits);
+            world[..3].copy_from_slice(&[3.0, 4.0, 0.0]);
+            world[4..7].copy_from_slice(&[0.0, 8.0, 6.0]);
+            world[8..11].copy_from_slice(&[0.0, 0.0, -2.0]);
+            runtime
+                .refresh_attachment(handle, world.map(f32::to_bits), 1.0)
+                .unwrap();
+            assert_eq!(
+                runtime
+                    .gpu_view(handle)
+                    .unwrap()
+                    .draw_scale_f32_bits()
+                    .unwrap(),
+                expected.map(f32::to_bits)
+            );
+            runtime.advance(1, 0.0, &[]).unwrap();
+            assert_eq!(
+                runtime.light_binding(handle).unwrap().world_matrix_f32_bits,
+                world.map(f32::to_bits)
+            );
+        }
+    }
+
+    #[test]
+    fn particle_scale_overflow_refuses_public_advance_and_remains_named() {
+        let (_fixture, mut runtime, handle) =
+            setup("subsystem={name=s max_amount=1 emission=2 life=1 local_space=yes}");
+        let mut world = matrix();
+        world[0] = f32::MAX.to_bits();
+        runtime.refresh_attachment(handle, world, 1.0).unwrap();
+        let failure = runtime.advance(1, 0.5, &[]).unwrap_err();
+        assert_eq!(failure.input, "particle_instance_scale");
+        assert_eq!(failure.reason, ParticleRefusalReason::ArithmeticOverflow);
+        assert_eq!(runtime.gpu_view(handle).unwrap_err(), failure);
+        runtime.advance(2, 0.5, &[]).unwrap();
+        assert_eq!(runtime.gpu_view(handle).unwrap_err(), failure);
+    }
+
+    #[test]
+    fn draw_capacity_counts_both_partitions_and_zero_live_retained_children() {
+        let (_fixture, mut runtime, handle) = setup(
+            "subsystem={name=root max_amount=2 emission=8 life=5 trail=yes childsystem={name=child max_amount=0}} subsystem={name=last max_amount=0}");
+        runtime.advance(1, 0.25, &[]).unwrap();
+        runtime.instances[handle.slot].as_mut().unwrap().subsystems[0].live = 0;
+        let view = runtime.gpu_view(handle).unwrap();
+        for capacity in 0..=5 {
+            let mut normal = Vec::new();
+            let count = view
+                .visit_draw_subsystems(capacity, false, |ordinal, system| {
+                    normal.push((ordinal, system.name(), system.live_count()));
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(count, capacity.min(4));
+            let expected = [(1, "child", 0), (2, "child", 0), (3, "last", 0)];
+            assert_eq!(
+                normal,
+                expected
+                    .into_iter()
+                    .filter(|row| row.0 < capacity)
+                    .collect::<Vec<_>>()
+            );
+            let mut trail = Vec::new();
+            assert_eq!(
+                view.visit_draw_subsystems(capacity, true, |ordinal, system| {
+                    trail.push((ordinal, system.name(), system.live_count()));
+                    Ok(())
+                })
+                .unwrap(),
+                count
+            );
+            assert_eq!(
+                trail,
+                if capacity == 0 {
+                    vec![]
+                } else {
+                    vec![(0, "root", 0)]
+                }
+            );
+        }
+        let error = view
+            .visit_draw_subsystems(i32::MAX as usize + 1, false, |_, _| {
+                panic!("invalid native capacity must not visit")
+            })
+            .unwrap_err();
+        let error = error.downcast::<ParticleInputRefusal>().unwrap();
+        assert_eq!(error.input, "particle_draw_packet_capacity");
+        assert_eq!(error.reason, ParticleRefusalReason::InvalidNumber);
+        assert_eq!(error.event_instance_id, Some(handle.event_instance_id));
+    }
+
+    #[test]
+    fn trail_vertices_keep_native_pair_layout_and_fixed_plane_join() {
+        for billboard in [false, true] {
+            let (_fixture, mut runtime, handle) = setup(&format!(
+                "subsystem={{name=s max_amount=3 duration=-1 emission=12 life=5 size=1 trail=yes billboard={}}}",
+                if billboard { "yes" } else { "no" }));
+            runtime.advance(1, 0.25, &[]).unwrap();
+            let system = &mut runtime.instances[handle.slot].as_mut().unwrap().subsystems[0];
+            assert_eq!(system.live, 3);
+            for (particle, position) in
+                system
+                    .particles
+                    .iter_mut()
+                    .zip([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0]])
+            {
+                particle.visual.position = position;
+                particle.visual.gpu_color = [1, 2, 3, 4];
+            }
+            let view = runtime
+                .gpu_view(handle)
+                .unwrap()
+                .root_subsystems()
+                .next()
+                .unwrap();
+            let mut vertices = Vec::new();
+            view.visit_trail_vertices([0, 0, 4.0_f32.to_bits()], 2.0_f32.to_bits(), |bytes| {
+                vertices.push(bytes);
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(vertices.len(), 6);
+            let positions: Vec<[f32; 3]> = vertices
+                .iter()
+                .map(|bytes| {
+                    std::array::from_fn(|axis| {
+                        f32::from_le_bytes(bytes[axis * 4..axis * 4 + 4].try_into().unwrap())
+                    })
+                })
+                .collect();
+            if billboard {
+                assert_eq!(
+                    positions,
+                    [
+                        [0.0, 2.0, 0.0],
+                        [0.0, -2.0, 0.0],
+                        [2.0, 2.0, 0.0],
+                        [2.0, -2.0, 0.0],
+                        [2.0, 2.0, 2.0],
+                        [2.0, -2.0, 2.0]
+                    ]
+                );
+            } else {
+                let diagonal = f32::from_bits(0x3f3504f3);
+                assert_eq!(
+                    positions,
+                    [
+                        [0.0, 0.0, 2.0],
+                        [0.0, 0.0, -2.0],
+                        [(1.0 - diagonal) * 2.0, 0.0, diagonal * 2.0],
+                        [(1.0 + diagonal) * 2.0, 0.0, -diagonal * 2.0],
+                        [(1.0 - diagonal) * 2.0, 0.0, (1.0 + diagonal) * 2.0],
+                        [(1.0 + diagonal) * 2.0, 0.0, (1.0 - diagonal) * 2.0]
+                    ]
+                );
+            }
+            for (index, bytes) in vertices.iter().enumerate() {
+                assert_eq!(&bytes[12..16], &((index / 2) as f32).to_le_bytes());
+                assert_eq!(
+                    &bytes[16..20],
+                    &(if index % 2 == 0 { 1.0_f32 } else { 0.0 }).to_le_bytes()
+                );
+                assert_eq!(&bytes[20..24], &[0; 4]);
+                assert_eq!(&bytes[24..28], &[1, 2, 3, 4]);
+            }
+        }
+    }
+
+    #[test]
+    fn trail_degenerate_segments_and_single_slots_follow_native_draw_count() {
+        let (_fixture, mut runtime, handle) =
+            setup("subsystem={name=s max_amount=2 duration=-1 emission=8 life=5 size=1 trail=yes}");
+        runtime.advance(1, 0.25, &[]).unwrap();
+        for count in [0, 1, 2] {
+            let system = &mut runtime.instances[handle.slot].as_mut().unwrap().subsystems[0];
+            system.live = count;
+            for particle in &mut system.particles {
+                particle.visual.position = [3.0, 4.0, 5.0];
+            }
+            let view = runtime
+                .gpu_view(handle)
+                .unwrap()
+                .root_subsystems()
+                .next()
+                .unwrap();
+            let mut vertices = Vec::new();
+            view.visit_trail_vertices([0; 3], 1.0_f32.to_bits(), |bytes| {
+                vertices.push(bytes);
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(vertices.len(), if count == 2 { 4 } else { 0 });
+            for bytes in vertices {
+                let actual: [f32; 3] = std::array::from_fn(|axis| {
+                    f32::from_le_bytes(bytes[axis * 4..axis * 4 + 4].try_into().unwrap())
+                });
+                assert_eq!(actual, [3.0, 4.0, 5.0]);
+            }
+        }
+        let system = &mut runtime.instances[handle.slot].as_mut().unwrap().subsystems[0];
+        system.particles[1].visual.position = [4.0, 4.0, 5.0];
+        let view = runtime
+            .gpu_view(handle)
+            .unwrap()
+            .root_subsystems()
+            .next()
+            .unwrap();
+        let error = view
+            .visit_trail_vertices([0; 3], f32::MAX.to_bits(), |_| Ok(()))
+            .unwrap_err();
+        assert_eq!(error.input, "trail_vertex_position");
+        assert_eq!(error.reason, ParticleRefusalReason::ArithmeticOverflow);
+    }
+
+    #[test]
+    fn draw_requires_sort_for_the_current_presentation() {
+        let (_fixture, mut runtime, handle) = setup("subsystem={name=s max_amount=0}");
+        runtime.advance(1, 0.25, &[]).unwrap();
+        let camera = ParticleSortCamera {
+            position_f32_bits: [0; 3],
+            forward_f32_bits: [0, 0, 1.0_f32.to_bits()],
+        };
+        let check = |runtime: &ParticleRuntime, id| {
+            runtime
+                .gpu_view(handle)
+                .unwrap()
+                .root_subsystems()
+                .next()
+                .unwrap()
+                .validate_draw_presentation(id, camera)
+        };
+        assert_eq!(
+            check(&runtime, 1).unwrap_err().input,
+            "particle_draw_presentation"
+        );
+        runtime.sort_for_draw(handle, 1, camera).unwrap();
+        check(&runtime, 1).unwrap();
+        let other_camera = ParticleSortCamera {
+            position_f32_bits: [1.0_f32.to_bits(), 0, 0],
+            ..camera
+        };
+        assert!(runtime
+            .gpu_view(handle)
+            .unwrap()
+            .root_subsystems()
+            .next()
+            .unwrap()
+            .validate_draw_presentation(1, other_camera)
+            .is_err());
+        assert!(check(&runtime, 2).is_err());
+        runtime.advance(2, 0.25, &[]).unwrap();
+        assert!(check(&runtime, 1).is_err());
+        assert!(check(&runtime, 2).is_err());
+        runtime.sort_for_draw(handle, 2, camera).unwrap();
+        check(&runtime, 2).unwrap();
     }
 
     #[test]
@@ -1670,7 +2372,7 @@ mod tests {
 
     #[test]
     fn public_advance_refuses_unsupported_motion_and_keeps_the_instance_failure() {
-        for (kind, extra) in [("turbulence", ""), ("spin", ""), ("vortex", "yaw=30")] {
+        for (kind, extra) in [("turbulence", ""), ("spin", "")] {
             let (_fixture, mut runtime, handle) = setup(&format!("force={{name=unclosed type={kind} amount=1 {extra}}} subsystem={{name=s max_amount=1 duration=0 emission=4 life=4 mass=1 force=unclosed}}"));
             let error = runtime.advance(1, 0.25, &[]).unwrap_err();
             assert_eq!(error.event_instance_id, Some(17));
@@ -1756,6 +2458,49 @@ mod tests {
             [9.0, 18.0, 27.0, 39.0]
         );
         assert_eq!(system.force_scratch.len(), 4);
+    }
+
+    #[test]
+    fn public_rotated_vortex_matches_native_writer_and_force_instruction_bits() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(portable_engine_evidence::particle_runtime::FORCE_CASES).unwrap();
+        let mut checked = 0;
+        for case in fixture["cases"].as_array().unwrap() {
+            if case["fma"].as_bool().unwrap()
+                != portable_render_stream::exact_math::viewer_uses_fma()
+            {
+                continue;
+            }
+            let yaw = f32::from_bits(case["yaw_f32_bits"].as_u64().unwrap() as u32);
+            let direction: [f32; 3] = std::array::from_fn(|i| {
+                f32::from_bits(case["direction_f32_bits"][i].as_u64().unwrap() as u32)
+            });
+            let expected: [u32; 3] =
+                std::array::from_fn(|i| case["force_f32_bits"][i].as_u64().unwrap() as u32);
+            let (_fixture, mut runtime, handle) = setup(&format!(
+                "force={{name=f type=vortex amount=1 position={{-2 0 0}} direction={{{} {} {}}} yaw={yaw}}} subsystem={{name=s max_amount=1 duration=0 emission=4 life=4 mass=1 force=f}}",
+                direction[0], direction[1], direction[2],
+            ));
+            runtime.advance(1, 0.25, &[]).unwrap();
+            let system = &runtime.instance(handle).unwrap().subsystems[0];
+            assert_eq!(
+                system.force_scratch[0].map(f32::to_bits),
+                expected,
+                "{case}"
+            );
+            assert!(system.particles[0]
+                .visual
+                .position
+                .iter()
+                .all(|v| v.is_finite()));
+            assert_eq!(gpu_records(&runtime, handle).len(), 1);
+            assert_eq!(
+                runtime.light_binding(handle).unwrap().world_matrix_f32_bits,
+                matrix()
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 27);
     }
 
     #[test]

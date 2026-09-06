@@ -1166,6 +1166,16 @@ impl Xmap09LightingAdapter {
 }
 
 impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
+    fn visit_particles_for_draw(
+        &self,
+        presentation_time: f32,
+        camera: crate::particle_runtime::ParticleSortCamera,
+        visit: &mut dyn FnMut(&str, &crate::particle_authored::ParticleDrawCapacity, crate::particle_runtime::ParticleGpuView<'_>) -> Result<()>,
+    ) -> Result<()> {
+        self.lifecycle.lock().map_err(|_| "PARTICLE_DRAW lifecycle lock poisoned")?
+            .visit_particles_for_draw(presentation_time, camera, visit)
+    }
+
     fn family(&self) -> MapVisualFamily {
         MapVisualFamily::LightingShadows
     }

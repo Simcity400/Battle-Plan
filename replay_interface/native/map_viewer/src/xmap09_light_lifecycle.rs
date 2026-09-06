@@ -555,6 +555,25 @@ impl EntityAnimation {
 }
 
 impl ViewerLightLifecycle {
+    pub(crate) fn visit_particles_for_draw(
+        &mut self,
+        presentation_time: f32,
+        camera: crate::particle_runtime::ParticleSortCamera,
+        visit: &mut dyn FnMut(&str, &crate::particle_authored::ParticleDrawCapacity, crate::particle_runtime::ParticleGpuView<'_>) -> Result<()>,
+    ) -> Result<()> {
+        if self.last_presentation_time.map(f32::to_bits) != Some(presentation_time.to_bits()) {
+            return Err("PARTICLE_DRAW retained lifecycle belongs to another presentation".into());
+        }
+        let presentation_id = presentation_time.to_bits() as u64;
+        let capacity = self.particle_definitions.as_mut().map(ParticleDefinitions::draw_capacity).transpose()?;
+        for instance in &mut self.instances {
+            let Some(particle) = &mut instance.particle else { continue; };
+            particle.runtime.sort_for_draw(particle.handle, presentation_id, camera)?;
+            visit(&instance.id, capacity.as_ref().ok_or("PARTICLE_DRAW catalog disappeared")?, particle.runtime.gpu_view(particle.handle)?)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn for_authored_particles() -> Self {
         Self { include_particle_only_events: true, ..Default::default() }
     }
@@ -1124,6 +1143,39 @@ light = {
         );
         let (_, placed, viewer) = fixture(1);
         (content, ViewerLightLifecycle::default(), placed, viewer)
+    }
+
+    #[test]
+    fn particle_draw_borrows_the_same_paired_runtime_and_rejects_stale_phase() {
+        let (content, mut lights, placed, viewer) =
+            paired_fixture("subsystem={name=s max_amount=4 duration=-1 emission=2 life=5}");
+        let rows = lights.derive_light_instance_rows(&content.resolver, &placed, &viewer).unwrap();
+        let camera = crate::particle_runtime::ParticleSortCamera {
+            position_f32_bits: [0; 3],
+            forward_f32_bits: [0, 0, 1.0_f32.to_bits()],
+        };
+        let time = f32::from_bits(viewer.animation_time_f32_bits);
+        let mut seen = Vec::new();
+        lights.visit_particles_for_draw(time, camera, &mut |id, capacity, view| {
+            assert_eq!(view.world_matrix_f32_bits(), rows.particle_bindings[id].world_matrix_f32_bits);
+            assert_eq!(view.sorted_presentation_id(), Some(time.to_bits() as u64));
+            assert_eq!(capacity.packets, 1);
+            assert_eq!(capacity.particles, 4);
+            seen.push(view.handle());
+            Ok(())
+        }).unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0], lights.instances[0].particle.as_ref().unwrap().handle);
+        let before = lights.instances[0].particle.as_ref().unwrap().binding;
+        lights.visit_particles_for_draw(time, camera, &mut |_, _, view| {
+            assert_eq!(view.handle(), seen[0]);
+            Ok(())
+        }).unwrap();
+        assert_eq!(lights.instances[0].particle.as_ref().unwrap().binding, before);
+        let error = lights.visit_particles_for_draw(time + 0.25, camera, &mut |_, _, _| {
+            panic!("stale draw must not expose particle state")
+        }).unwrap_err();
+        assert!(error.to_string().contains("another presentation"));
     }
 
     #[test]

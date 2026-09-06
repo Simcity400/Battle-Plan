@@ -327,6 +327,14 @@ impl FoundationFeatureOutput {
 pub trait ProductionMapFeatureAdapter {
     fn family(&self) -> MapVisualFamily;
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput>;
+    fn visit_particles_for_draw(
+        &self,
+        _presentation_time: f32,
+        _camera: crate::particle_runtime::ParticleSortCamera,
+        _visit: &mut dyn FnMut(&str, &crate::particle_authored::ParticleDrawCapacity, crate::particle_runtime::ParticleGpuView<'_>) -> Result<()>,
+    ) -> Result<()> {
+        Err("PARTICLE_DRAW retained authored runtime provider unavailable".into())
+    }
 }
 
 /// The one error an adapter may raise that is an ANSWER rather than a defect:
@@ -421,6 +429,17 @@ pub struct ProductionMapFeatureAdapters<'a> {
 }
 
 impl<'a> ProductionMapFeatureAdapters<'a> {
+    pub fn visit_particles_for_draw(
+        &self,
+        presentation_time: f32,
+        camera: crate::particle_runtime::ParticleSortCamera,
+        visit: &mut dyn FnMut(&str, &crate::particle_authored::ParticleDrawCapacity, crate::particle_runtime::ParticleGpuView<'_>) -> Result<()>,
+    ) -> Result<()> {
+        self.get(MapVisualFamily::LightingShadows)
+            .ok_or("PARTICLE_DRAW lighting runtime provider unavailable")?
+            .visit_particles_for_draw(presentation_time, camera, visit)
+    }
+
     pub fn register(&mut self, adapter: Box<dyn ProductionMapFeatureAdapter + 'a>) -> Result<()> {
         let family = adapter.family();
         if self.already_registered(family) {
