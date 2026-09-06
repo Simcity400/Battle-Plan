@@ -92,7 +92,7 @@ pub(crate) fn admit(authored: &DesignerAuthoredInputs, frame: &WorldFrame,
             Ok(Some(ObserverDesignerCandidate {
                 record: variant.record.clone(), designer_window_tokens: windows, flag_country_tag: selected_country.into(),
                 icon: item_icon(&variant.item_icon_override),
-                missions: Err("XUI13 authored mission mask and mutable mission-stat operands are not yet bound".into()),
+                missions: mission_mask(&equipment, &native.runtime_dlc_mask, variant),
             }))
         })();
         match candidate {
@@ -129,6 +129,44 @@ pub(crate) fn admit(authored: &DesignerAuthoredInputs, frame: &WorldFrame,
     })().unwrap_or_else(|reason| { field_refusals.insert("country_filters".into(), reason); Vec::new() });
     Ok(ObserverDesignerCatalog { source_record_id: native.source_record_id.clone(), anchor_design_id,
         country_filter_rows, ordered, unresolved_suffix, field_refusals })
+}
+
+
+fn mission_mask(equipment: &map_viewer::authored_equipment::AuthoredEquipmentCatalog,
+    runtime: &replay_core::design_catalog::DesignU32Observation,
+    variant: &replay_core::design_catalog::NativeDesignerVariantInputs,
+) -> Result<u32, String> {
+    if !equipment.designer_classification(&variant.equipment_definition_token).map_err(|error|error.to_string())?.plane {
+        // 140bc1190 initializes +410; 140bcff10 leaves non-aircraft storage unchanged.
+        return Ok(0);
+    }
+    if variant.record.module_completeness != replay_core::FieldCompleteness::Complete {
+        return Err("XUI13 mission modules were not completely observed".into());
+    }
+    let authored = equipment.designer_mission_masks(&variant.equipment_definition_token).map_err(|error|error.to_string())?;
+    let mut allowed = authored.allowed;
+    for module in &variant.record.modules {
+        allowed |= equipment.module_mission_mask(&module.module_token).map_err(|error|error.to_string())?;
+    }
+    let mut mask = allowed & !authored.forbidden;
+    if mask & 0x7200 == 0 { return Ok(mask); }
+    let raw = match runtime {
+        replay_core::design_catalog::DesignU32Observation::Measured {raw_u32} => *raw_u32,
+        replay_core::design_catalog::DesignU32Observation::Unavailable {reason} =>
+            return Err(format!("XUI13 mission runtime_dlc_mask: {reason:?}")),
+    };
+    for (bit, stat) in [(0x1000,0x23),(0x2000,0x24)] {
+        if mask & bit == 0 { continue; }
+        if raw & (1 << 4) == 0 { mask &= !bit; continue; }
+        let operand = variant.mission_stat_operands.iter().find(|row|row.group_key==bit && row.stat_key==stat)
+            .ok_or_else(||format!("XUI13 mission operand {bit:#x}/{stat:#x} is absent"))?;
+        if operand.effective_raw_i64().map_err(|reason|format!("XUI13 mission operand {bit:#x}/{stat:#x}: {reason:?}"))? <= 0 {
+            mask &= !bit;
+        }
+    }
+    if raw & (1 << 5) == 0 { mask &= !0x4000; }
+    if raw & (1 << 7) == 0 { mask &= !0x200; }
+    Ok(mask)
 }
 
 fn item_icon(icon: &DesignItemIconObservation) -> Result<DesignerRowIcon, String> {
@@ -202,6 +240,101 @@ mod tests {
 
     fn projected(authored: &DesignerAuthoredInputs, frame: &WorldFrame, viewer: &ObserverDesignerViewState) -> Result<ObserverDesignerCatalog,String> {
         admit(authored, frame, frame.design_catalog().unwrap().native_designer_inputs_at_hour(900), "GER", ObserverDesignerFamily::Tank, viewer)
+    }
+
+    #[test]
+    fn missions_use_recorded_signed_operands_and_independent_runtime_feature_bits() {
+        use replay_core::design_catalog::{DesignI64Observation, DesignMissionOverrideObservation, DesignFieldRefusal, DesignU32Observation};
+        let (root,_) = production_fixture();
+        std::fs::write(root.0.join("common/units/equipment/designer.txt"),
+            b"equipments = { light_tank_chassis_1 = { is_archetype = yes type = fighter module_slots = { main = {} } allow_mission_type = { air_superiority naval_mines_planting naval_mines_sweeping recon attack_logistics } } }").unwrap();
+        let renderer=admitted_production_renderer(&root.0,None);
+        let authored=DesignerAuthoredInputs::load(renderer.resolver()).unwrap();
+        let frame=world_from_catalog(designer_catalog_value(),json!({}));
+        let equipment=authored.for_frame(&frame).unwrap();
+        let mut native=frame.design_catalog().unwrap().native_designer_inputs_at_hour(900).unwrap();
+        let variant=&mut native.variants[0];
+        let full=DesignU32Observation::Measured { raw_u32:(1<<4)|(1<<5)|(1<<7) };
+        variant.mission_stat_operands[0].fallback=DesignI64Observation::Measured {raw_i64:i64::MIN};
+        variant.mission_stat_operands[1].fallback=DesignI64Observation::Measured {raw_i64:i64::MAX};
+        assert_eq!(mission_mask(&equipment,&full,variant).unwrap(),0x6201);
+        variant.mission_stat_operands[0].fallback=DesignI64Observation::Unavailable {reason:DesignFieldRefusal {kind:"unreadable".into(),field:"fallback".into()}};
+        variant.mission_stat_operands[0].override_lookup=DesignMissionOverrideObservation::Measured {
+            raw_i64:1,group_count:2,group_key_prefix:vec![4096],stat_count:1,stat_key_prefix:vec![35] };
+        assert_eq!(mission_mask(&equipment,&full,variant).unwrap(),0x7201);
+        variant.mission_stat_operands[0].override_lookup=DesignMissionOverrideObservation::Unavailable {reason:DesignFieldRefusal {kind:"unreadable".into(),field:"override".into()}};
+        assert!(mission_mask(&equipment,&full,variant).unwrap_err().contains("override"));
+        assert_eq!(mission_mask(&equipment,&DesignU32Observation::Measured {raw_u32:0},variant).unwrap(),1);
+        assert_eq!(mission_mask(&equipment,&DesignU32Observation::Measured {raw_u32:(1<<5)|(1<<7)},variant).unwrap(),0x4201);
+        variant.record.module_completeness=replay_core::FieldCompleteness::Unknown;
+        assert!(mission_mask(&equipment,&full,variant).unwrap_err().contains("modules"));
+    }
+
+    #[test]
+    fn unknown_mission_operand_hides_only_missions_and_keeps_known_row_pixels() {
+        let (root,_) = production_fixture();
+        std::fs::write(root.0.join("common/units/equipment/designer.txt"),
+            b"equipments = { light_tank_chassis_1 = { is_archetype = yes type = fighter module_slots = { main = {} } allow_mission_type = naval_mines_planting } }").unwrap();
+        let renderer=admitted_production_renderer(&root.0,None);
+        let mut raw=designer_catalog_value();raw["runtime_dlc_mask"]["raw_u32"]=json!((1<<8)|(1<<4));
+        let rest=json!({"countries":{"GER":{"cosmetic_tag":null,"politics":{"ruling_party":"fascism"}}}});
+        let known=world_from_catalog(raw.clone(),rest.clone());
+        raw["variants"][0]["definition"]["mission_stat_operands"][0]["override_lookup"]=json!({"status":"unavailable","reason":{"kind":"unreadable","field":"mission_group"}});
+        let unknown=world_from_catalog(raw,rest);
+        let mut state=viewer();state.family=crate::readonly_design_peace::DesignerViewKind::Plane;state.anchor_catalogue_family=state.family;
+        let complete=renderer.compose_xui13_designer_surface(&known,known.named_country("GER").unwrap(),&state,160,120).unwrap();
+        let partial=renderer.compose_xui13_designer_surface(&unknown,unknown.named_country("GER").unwrap(),&state,160,120).unwrap();
+        assert_eq!(partial.ordered_design_ids,["7:70"]);
+        assert_eq!(partial.visible_design_ids,["7:70"]);
+        assert!(partial.membership_complete);
+        assert!(partial.field_refusals["7:70/missions"].contains("mission_group"));
+        assert!(complete.field_refusals.is_empty());
+        assert_eq!(row_element_pixels(&partial,"equipment"),row_element_pixels(&complete,"equipment"));
+        assert_eq!(row_element_pixels(&partial,"creator_flag"),row_element_pixels(&complete,"creator_flag"));
+        assert!(partial.output.report.drawn_elements>0);
+    }
+
+    #[test]
+    fn mission_grid_paints_more_than_six_frames_with_authored_wrap_and_capacity() {
+        for (horizontal,limit,expected) in [(true,3,7usize),(false,3,7),(true,2,6)] {
+            let (root,_) = production_fixture();
+            std::fs::write(root.0.join("common/units/equipment/designer.txt"),
+                b"equipments = { light_tank_chassis_1 = { is_archetype = yes type = fighter module_slots = { main = {} } allow_mission_type = { air_superiority cas interception strategic_bomber naval_bomber drop_nuke paradrop training } } }").unwrap();
+            let path=root.0.join("interface/designer.gui");
+            let gui=std::fs::read_to_string(&path).unwrap()
+                .replace("width = 40 height = 24", "width = 40 height = 48")
+                .replace("width = 40 height = 10", "width = 40 height = 32")
+                .replace("max_slots_horizontal = 6 add_horizontal = yes",&format!("max_slots_horizontal = 3 max_slots_vertical = {limit} add_horizontal = {}",if horizontal {"yes"} else {"no"}))
+                .replace("name = \"mission_icon\" size = { width = 8 height = 8 } spriteType = \"GFX_xui13_test\"",
+                    "name = \"mission_icon\" size = { width = 8 height = 8 } spriteType = \"GFX_mission_frames\"");
+            std::fs::write(path,gui).unwrap();
+            let path=root.0.join("interface/designer.gfx");
+            let gfx=std::fs::read_to_string(&path).unwrap()+"\nspriteTypes = { spriteType = { name = GFX_mission_frames texturefile = gfx/interface/missions.tga noOfFrames = 18 } }";
+            std::fs::write(path,gfx).unwrap();
+            let mut tga=vec![0,0,2,0,0,0,0,0,0,0,0,0,18,0,1,0,32,0x20];
+            for bit in 0..18u8 {tga.extend_from_slice(&[40+bit,80+bit,120+bit,255]);}
+            std::fs::write(root.0.join("gfx/interface/missions.tga"),tga).unwrap();
+            let renderer=admitted_production_renderer_with_assets(&root.0,None,&["gfx/interface/missions.tga"]);
+            let mut raw=designer_catalog_value();raw["runtime_dlc_mask"]["raw_u32"]=json!(1<<8);
+            let frame=world_from_catalog(raw,json!({"countries":{"GER":{"cosmetic_tag":null,"politics":{"ruling_party":"fascism"}}}}));
+            let mut state=viewer();state.family=crate::readonly_design_peace::DesignerViewKind::Plane;
+            state.anchor_catalogue_family=state.family;
+            let surface=renderer.compose_xui13_designer_surface(&frame,frame.named_country("GER").unwrap(),&state,160,120).unwrap();
+            assert_eq!(surface.visible_design_ids,["7:70"]);
+            assert!(surface.field_refusals.is_empty(),"{:?}",surface.field_refusals);
+            let rects:Vec<_>=surface.output.debug_rects.iter().filter(|r|r.name.contains("7:70")&&r.name.ends_with("_mission_icon")).collect();
+            assert_eq!(rects.len(),expected);
+            let first=rects.iter().find(|r|r.name.ends_with("mission_0_mission_icon")).unwrap();
+            for bit in 0..expected {
+                let element=format!("mission_{bit}_mission_icon");
+                let rect=rects.iter().find(|r|r.name.ends_with(&element)).unwrap();
+                let (x,y)=if horizontal {(bit%3,bit/3)} else {(bit/3,bit%3)};
+                assert_eq!((rect.x-first.x,rect.y-first.y),(x as i32*8,y as i32*8));
+                let pixels=row_element_pixels(&surface,&element);
+                assert!(pixels.chunks_exact(4).all(|p|p==[120+bit as u8,80+bit as u8,40+bit as u8,255]),"frame {bit}");
+            }
+            assert!(!surface.output.debug_rects.iter().any(|r|r.name.contains("mission_11_")));
+        }
     }
 
     #[test]

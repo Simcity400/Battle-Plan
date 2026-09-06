@@ -1416,7 +1416,7 @@ fn plan_grid(
     Ok((rects, extent))
 }
 
-fn grid_coordinate(layout: &GridBoxLayout, index: usize) -> Result<(i32, i32)> {
+pub(crate) fn grid_coordinate(layout: &GridBoxLayout, index: usize) -> Result<(i32, i32)> {
     let horizontal = layout.add_horizontal.unwrap_or(true);
     let (x, y) = if horizontal {
         match layout.max_slots_x.filter(|columns| *columns > 0) {

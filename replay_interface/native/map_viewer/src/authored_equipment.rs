@@ -1,5 +1,7 @@
 mod generation;
 mod designer;
+mod missions;
+pub use missions::EquipmentMissionMasks;
 
 use crate::{ActiveDlcPresentation, ContentAdmissionLease, GameFileResolver};
 use portable_content_manifest::paradox_text::{self, Value};

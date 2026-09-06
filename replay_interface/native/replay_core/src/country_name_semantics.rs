@@ -24,13 +24,14 @@ pub struct CountryNameSemantics {
     pub current_leader_subideology: NamingInput<String>,
     pub effective_name_tag: NamingInput<EffectiveNameTag>,
     pub cosmetic_name_base: NamingInput<String>,
+    pub graphical_culture: NamingInput<String>,
     pub ruling_party_group: NamingInput<String>,
     pub subject: NamingInput<SubjectNameSemantics>,
 }
 
 impl CountryNameSemantics {
     pub(crate) fn unavailable(reason: NamingRefusal) -> Self {
-        Self { current_leader_subideology: NamingInput::Unavailable(reason), effective_name_tag: NamingInput::Unavailable(reason), cosmetic_name_base: NamingInput::Unavailable(reason), ruling_party_group: NamingInput::Unavailable(reason), subject: NamingInput::Unavailable(reason) }
+        Self { current_leader_subideology: NamingInput::Unavailable(reason), effective_name_tag: NamingInput::Unavailable(reason), cosmetic_name_base: NamingInput::Unavailable(reason), graphical_culture: NamingInput::Unavailable(reason), ruling_party_group: NamingInput::Unavailable(reason), subject: NamingInput::Unavailable(reason) }
     }
 }
 
@@ -95,11 +96,12 @@ pub(crate) fn build(country: Option<&Value>, id: u32, tag: &str, ruling: Option<
         current_leader_subideology: token(country.get("politics").and_then(|v| v.get("current_leader_subideology"))),
         effective_name_tag: effective(identity.and_then(|v| v.get("effective_name_tag")), id, tag),
         cosmetic_name_base: cosmetic,
+        graphical_culture: token(identity.and_then(|value| value.get("graphical_culture"))),
         ruling_party_group: ruling,
         subject: subject(country.get("name_subject"), id, autonomy),
     };
     if gaps[0] { result.current_leader_subideology = NamingInput::Unavailable(NamingRefusal::DomainGap); result.ruling_party_group = NamingInput::Unavailable(NamingRefusal::DomainGap); }
-    if gaps[1] { result.effective_name_tag = NamingInput::Unavailable(NamingRefusal::DomainGap); result.cosmetic_name_base = NamingInput::Unavailable(NamingRefusal::DomainGap); }
+    if gaps[1] { result.effective_name_tag = NamingInput::Unavailable(NamingRefusal::DomainGap); result.cosmetic_name_base = NamingInput::Unavailable(NamingRefusal::DomainGap); result.graphical_culture = NamingInput::Unavailable(NamingRefusal::DomainGap); }
     if gaps[2] { result.subject = NamingInput::Unavailable(NamingRefusal::DomainGap); }
     result
 }
@@ -158,4 +160,76 @@ mod tests {
         assert_eq!(effective(Some(&json!({"status":"measured","source":"override","selected_id":9,"value":""})), 47, "GER"), NamingInput::Measured(EffectiveNameTag { source:NameTagSource::Override, selected_id:9, tag:String::new() }));
         assert!(matches!(effective(Some(&json!({"status":"measured","source":"override","selected_id":0,"value":"GER"})), 47, "GER"), NamingInput::Unavailable(_)));
     }
+
+    fn world(raw: Value, hour: i64) -> crate::WorldFrame {
+        crate::WorldFrame::from_raw_scheduled(crate::source::RawFrame {
+            hour_index: hour, date: None, save_version: None, schema_version: None,
+            rest: raw.as_object().unwrap().clone().into(),
+        }, None, None, None, crate::BuildSchedule::Serial)
+    }
+
+    fn culture_frame() -> Value {
+        json!({"tag_db_id_index":{"country_composition_version":2},
+            "countries":{"GER":{"_r2_tag_db_id":47,
+                "politics":{"ruling_party":"fascism"},
+                "name_identity":{
+                    "cosmetic_name_base":{"status":"measured","value":"COS"},
+                    "effective_name_tag":{"status":"measured","source":"override","selected_id":99,"value":"ALT"},
+                    "graphical_culture":{"status":"measured","value":"Exact_Gfx"}
+                }}}})
+    }
+
+    #[test]
+    fn graphical_culture_projects_exact_token_states_without_naming_substitution() {
+        let frame = world(culture_frame(), 20);
+        assert!(frame.country_identity_for_tag("ALT").is_err());
+        assert_eq!(frame.country_name_semantics("GER").graphical_culture,
+            NamingInput::Measured("Exact_Gfx".into()));
+        for (observation, expected) in [
+            (json!({"status":"measured","value":""}), NamingInput::Measured(String::new())),
+            (json!({"status":"absent"}), NamingInput::Absent),
+            (json!({"status":"unavailable","reason":"changed"}), NamingInput::Unavailable(NamingRefusal::Changed)),
+            (json!({"status":"unavailable","reason":"unreadable"}), NamingInput::Unavailable(NamingRefusal::Unreadable)),
+            (Value::Null, NamingInput::Unavailable(NamingRefusal::Malformed)),
+            (json!({"status":"measured","value":3}), NamingInput::Unavailable(NamingRefusal::Malformed)),
+            (json!({"status":"measured","value":"gfx","extra":0}), NamingInput::Unavailable(NamingRefusal::Malformed)),
+        ] {
+            let mut raw = culture_frame();
+            raw["countries"]["GER"]["name_identity"]["graphical_culture"] = observation;
+            let semantics = world(raw, 20).country_name_semantics("GER");
+            assert_eq!(semantics.graphical_culture, expected);
+            assert_eq!(semantics.cosmetic_name_base, NamingInput::Measured("COS".into()));
+        }
+        let mut missing = culture_frame();
+        missing["countries"]["GER"]["name_identity"].as_object_mut().unwrap().remove("graphical_culture");
+        assert_eq!(world(missing, 20).country_name_semantics("GER").graphical_culture,
+            NamingInput::Unavailable(NamingRefusal::Missing));
+    }
+
+    #[test]
+    fn graphical_culture_honors_actual_world_identity_and_domain_ledger() {
+        let raw = culture_frame();
+        assert_eq!(world(raw.clone(), 20).country_name_semantics("ENG").graphical_culture,
+            NamingInput::Unavailable(NamingRefusal::Identity));
+        let mut contended = raw.clone();
+        contended["tag_db_id_index"]["withheld_countries"] = json!({"contended_keys":{"GER":{"tag_db_ids":[47,48]}}});
+        assert_eq!(world(contended, 20).country_name_semantics("GER").graphical_culture,
+            NamingInput::Unavailable(NamingRefusal::Identity));
+        for provenance in [
+            json!({"collector":{"captured":true,"domain_problems":[{"domain_id":18,"problem":"partial_data"}]}}),
+            json!({"collector":{"captured":true,"domain_problems":"malformed"}}),
+        ] {
+            let mut gap = raw.clone(); gap["provenance"] = provenance;
+            assert_eq!(world(gap, 20).country_name_semantics("GER").graphical_culture,
+                NamingInput::Unavailable(NamingRefusal::DomainGap));
+        }
+        let mut politics_gap = raw.clone();
+        politics_gap["provenance"] = json!({"collector":{"captured":true,"domain_problems":[{"domain_id":14,"problem":"partial_data"}]}});
+        let semantics = world(politics_gap, 20).country_name_semantics("GER");
+        assert_eq!(semantics.graphical_culture, NamingInput::Measured("Exact_Gfx".into()));
+        assert_eq!(semantics.ruling_party_group, NamingInput::Unavailable(NamingRefusal::DomainGap));
+        assert_eq!(world(raw, 21).country_name_semantics("GER").graphical_culture,
+            NamingInput::Measured("Exact_Gfx".into()));
+    }
+
 }

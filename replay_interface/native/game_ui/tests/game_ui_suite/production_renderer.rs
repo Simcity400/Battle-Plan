@@ -40,7 +40,7 @@ fn production_renderer(root: PathBuf) -> ProductionUiRenderer {
             paths.insert(logical);
         }
     }
-    production_renderer_from_paths(resolver, paths)
+    production_renderer_from_paths(resolver, paths, Vec::new())
 }
 
 fn xui21_production_renderer(root: PathBuf) -> ProductionUiRenderer {
@@ -81,11 +81,11 @@ fn xui21_production_renderer(root: PathBuf) -> ProductionUiRenderer {
         "gfx/fonts/hoi4_typewriter22.dds".into(),
         "events/LowCountries.txt".into(),
     ]);
-    production_renderer_from_paths(resolver, paths)
+    production_renderer_from_paths(resolver, paths, Vec::new())
 }
 
 fn xui23_production_renderer(root: PathBuf) -> ProductionUiRenderer {
-    let resolver = map_viewer::GameFileResolver::vanilla(root).unwrap();
+    let resolver = map_viewer::GameFileResolver::vanilla(root.clone()).unwrap();
     let mut paths = BTreeSet::from([
         "interface/topbar.gui".to_string(),
         "interface/minimap.gui".to_string(),
@@ -111,12 +111,42 @@ fn xui23_production_renderer(root: PathBuf) -> ProductionUiRenderer {
             paths.insert(logical);
         }
     }
-    production_renderer_from_paths(resolver, paths)
+    use portable_content_manifest::{ContentNamespaceScope, content_namespace::{ContentNamespaceBudget, ContentNamespaceLimits}, effective_vfs::{EffectiveVfs, EffectiveVfsLayerMount}};
+    let vfs = EffectiveVfs::new("e".repeat(64), [EffectiveVfsLayerMount {
+        ordinal: 0, layer_kind: ContentLayerKind::Base, layer_id: "base".into(),
+        storage_kind: LayerStorageKind::Directory, local_source: root,
+        source_container_sha256: None, replace_paths: Vec::new(),
+    }]).unwrap();
+    let mut budget = ContentNamespaceBudget::new(ContentNamespaceLimits {
+        winners: 1024, metadata_entries: 2048, roster_bytes: 1 << 20, payload_bytes: 64 << 20,
+    }).unwrap();
+    let mut namespaces = Vec::new();
+    let mut observations = Vec::new();
+    for (directory, extension) in [
+        ("interface", "gfx"), ("localisation/english", "yml"), ("common/abilities", "txt"),
+    ] {
+        let scope = ContentNamespaceScope {
+            directory: directory.into(), extension: Some(extension.into()), recursive: true,
+        };
+        let observed = vfs.observe_namespace_with_budget(&scope, &mut budget, &mut |_| {}).unwrap();
+        let sealed = observed.seal_with_budget(&vfs, &mut budget, &mut |_| {}).unwrap();
+        observations.push(serde_json::json!({
+            "scope": scope, "winners": sealed.winners().len(), "payload_bytes": sealed.payload_bytes(),
+        }));
+        paths.extend(sealed.winners().iter().map(|key| key.normalized_game_relative_path.clone()));
+        namespaces.push(sealed);
+    }
+    eprintln!("XUI23_NAMESPACE_OBSERVATION_V1 {}", serde_json::json!({
+        "scopes": observations, "observed_winners": budget.observed_winners(),
+        "hashed_payload_bytes": budget.payload_bytes(),
+    }));
+    production_renderer_from_paths(resolver, paths, namespaces)
 }
 
 fn production_renderer_from_paths(
     resolver: GameFileResolver,
     paths: BTreeSet<String>,
+    namespaces: Vec<portable_content_manifest::SealedContentNamespace>,
 ) -> ProductionUiRenderer {
     let resolved = resolver.resolve_used_content(paths).unwrap();
     let used_ordinals = resolved
@@ -225,6 +255,9 @@ fn production_renderer_from_paths(
         manifest_digest_sha256: None,
     };
     manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
+    for namespace in namespaces {
+        manifest.bind_observed_namespace(namespace).unwrap();
+    }
     let manifest = manifest.with_computed_digest().unwrap();
     let inventory = resolver
         .playback_inventory(

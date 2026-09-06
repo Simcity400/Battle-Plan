@@ -481,7 +481,7 @@ impl ObserverDesignerChromeCatalog {
                 field_refusals.insert(format!("{}/equipment_icon", record.design_id), reason);
             }
             match &candidate.missions {
-                Ok(mask) => for bit in mission_bits(*mask)? {
+                Ok(mask) => for bit in mission_bits(*mask) {
                     row_option.frame_overrides.insert(format!("mission_{bit}_mission_icon"), bit as usize);
                 },
                 Err(reason) => {
@@ -906,16 +906,8 @@ fn authored_scroll_wheel_factor(element: &GuiElement) -> Result<u32> {
     Ok(factor)
 }
 
-fn mission_bits(mask: u32) -> Result<Vec<u32>> {
-    let bits = (0_u32..32)
-        .filter(|bit| *bit != 11 && mask & (1_u32 << bit) != 0)
-        .collect::<Vec<_>>();
-    if bits.len() > 6 {
-        return Err(GameUiError::missing(format!(
-            "XUI13 mission mask {mask:#x} exceeds the authored six-slot grid"
-        )));
-    }
-    Ok(bits)
+fn mission_bits(mask: u32) -> Vec<u32> {
+    (0_u32..32).filter(|bit| *bit != 11 && mask & (1_u32 << bit) != 0).collect()
 }
 
 fn row_template_with_missions(
@@ -932,11 +924,14 @@ fn row_template_with_missions(
     let mission_grid = direct_child_mut(missions, "mission_grid")?;
     let layout = gridbox_layout(mission_grid, missions_rect, options)?;
     mission_grid.children.clear();
-    let bits = match mission_mask { Some(mask) => mission_bits(mask)?, None => Vec::new() };
-    for (ordinal, bit) in bits.into_iter().enumerate() {
-        let logical_x = i32::try_from(ordinal)
-            .map_err(|_| GameUiError::missing("XUI13 mission ordinal exceeds i32"))?;
-        let origin = layout.explicit_coordinate_origin((logical_x, 0))?;
+    let bits = match mission_mask { Some(mask) => mission_bits(mask), None => Vec::new() };
+    let capacity = match (layout.max_slots_x.filter(|count| *count > 0), layout.max_slots_y.filter(|count| *count > 0)) {
+        (Some(x), Some(y)) => x.saturating_mul(y),
+        _ => usize::MAX,
+    };
+    for (ordinal, bit) in bits.into_iter().take(capacity).enumerate() {
+        let coordinate = crate::observer_collection::grid_coordinate(&layout, ordinal)?;
+        let origin = layout.explicit_coordinate_origin(coordinate)?;
         let mut mission = mission_template.clone();
         set_position_upper_left(
             &mut mission,
@@ -1779,7 +1774,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(surface.ordered_design_ids, ["7:70"]);
-        assert_eq!(surface.field_refusals.keys().map(String::as_str).collect::<Vec<_>>(), ["7:70/missions"]);
+        assert!(surface.field_refusals.is_empty());
         assert!(surface
             .source_files
             .contains(&"interface/designer.gui".to_string()));
