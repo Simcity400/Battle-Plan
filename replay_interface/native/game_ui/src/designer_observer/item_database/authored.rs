@@ -26,12 +26,13 @@ impl AuthoredIconPool {
         for field in fields {
             let key = field.key.as_deref().ok_or("XUI13 graphic pool has an unnamed field")?;
             if key.starts_with('@') { continue; }
-            match key {
+            let keyword = key.to_ascii_lowercase();
+            match keyword.as_str() {
                 "weight" | "icons_weight" | "models_weight" => {
                     let text = field.value.as_scalar().ok_or_else(|| format!("XUI13 graphic pool {key} is not scalar"))?;
                     let raw = map_viewer::authored_fixed::parse_fixed5(text)
                         .ok_or_else(|| format!("XUI13 graphic pool {key} is not a fixed-point operand"))?;
-                    row.weights_raw[match key { "icons_weight" => 1, "models_weight" => 2, _ => 0 }] = raw;
+                    row.weights_raw[match keyword.as_str() { "icons_weight" => 1, "models_weight" => 2, _ => 0 }] = raw;
                 }
                 "icons" => {
                     for token in tokens(&field.value, key)? {
@@ -85,7 +86,10 @@ impl AuthoredIconPoolTypeMap {
                 let mut additions = Vec::new();
                 for pool in pools {
                     if pool.key.as_deref().is_some_and(|key| key.starts_with('@')) { continue; }
-                    if pool.key.as_deref() != Some("pool") {
+                    if pool.key_is_quoted {
+                        return Err(format!("XUI13 graphic type {token:?} has quoted pool keyword {:?}", pool.key));
+                    }
+                    if !pool.key.as_deref().is_some_and(|key| key.eq_ignore_ascii_case("pool")) {
                         return Err(format!("XUI13 graphic type {token:?} has unsupported pool field {:?}", pool.key));
                     }
                     let row = AuthoredIconPool::parse(&pool.value)?;
@@ -153,6 +157,27 @@ mod tests {
     }
 
     #[test]
+    fn ascii_keywords_preserve_value_case_and_repeated_field_order() {
+        let lower = parse("weight = 9 weight = 2 icons_weight = 7 icons_weight = 3 models_weight = -4 icons = { GFX_Mixed } icons = { Path/Exact.TGA } models = { ModelExact } limit = {} sub_units = { ArmorExact } ideologies = { IdeologyExact } cultures = { CultureExact }");
+        let mixed = parse("WeIgHt = 9 WEIGHT = 2 IcOnS_WeIgHt = 7 ICONS_WEIGHT = 3 MoDeLs_WeIgHt = -4 IcOnS = { GFX_Mixed } ICONS = { Path/Exact.TGA } MoDeLs = { ModelExact } LiMiT = {} SuB_UnItS = { ArmorExact } IdEoLoGiEs = { IdeologyExact } CuLtUrEs = { CultureExact }");
+        assert_eq!(mixed, lower);
+        assert_eq!(mixed.row.weights_raw, [200_000, 300_000, -400_000]);
+        assert_eq!(mixed.row.icons, [DesignerRowIcon::Sprite("GFX_Mixed".into()), DesignerRowIcon::Texture("Path/Exact.TGA".into())]);
+        assert!(mixed.has_models);
+        assert!(mixed.matches(&runtime(), || Ok("ArmorExact".into()), || Ok("IdeologyExact".into()), || Ok("CultureExact".into())).unwrap());
+        assert!(!mixed.matches(&runtime(), || Ok("armorexact".into()), || panic!("unreached ideology"), || panic!("unreached culture")).unwrap());
+        assert!(!mixed.matches(&runtime(), || Ok("ArmorExact".into()), || Ok("ideologyexact".into()), || panic!("unreached culture")).unwrap());
+        assert!(!mixed.matches(&runtime(), || Ok("ArmorExact".into()), || Ok("IdeologyExact".into()), || Ok("cultureexact".into())).unwrap());
+        let mut map = AuthoredIconPoolTypeMap::default();
+        map.append(&crate::paradox_text::parse_str("TankExact = { PoOl = { IcOnS = { GFX_Old } } POOL = { ICONS = { GFX_New } } }").root).unwrap();
+        let context = || Ok(String::new());
+        let rows = map.matching_rows("TankExact", &runtime(), context, context, context).unwrap();
+        assert_eq!(rows.iter().map(|row| row.icons[0].clone()).collect::<Vec<_>>(),
+            [DesignerRowIcon::Sprite("GFX_New".into()), DesignerRowIcon::Sprite("GFX_Old".into())]);
+        assert!(map.matching_rows("tankexact", &runtime(), context, context, context).unwrap().is_empty());
+    }
+
+    #[test]
     fn filters_and_default_limit_short_circuit_without_reading_unreached_context() {
         let no_context = || -> Result<String,String> { panic!("unreached context") };
         assert!(parse("icons = { GFX_a }").matches(&runtime(),no_context,no_context,no_context).unwrap());
@@ -197,6 +222,19 @@ mod tests {
         map.append(&crate::paradox_text::parse_str("tank = { pool = { models = { model } cultures = { unknown } } }").root).unwrap();
         assert_eq!(map.matching_rows("tank", &runtime(), unavailable, unavailable, unavailable), Err("culture unavailable".into()));
         assert!(map.matching_rows("absent", &runtime(), unavailable, unavailable, unavailable).unwrap().is_empty());
+    }
+
+    #[test]
+    fn quoted_pool_is_not_admitted_and_unrelated_type_keeps_its_bare_pool() {
+        let mut map = AuthoredIconPoolTypeMap::default();
+        map.append(&crate::paradox_text::parse_str(r#"tank = { pool = { icons = { GFX_Old } } "pool" = { icons = { GFX_NotAdmitted } } } ship = { PoOl = { icons = { GFX_Ship } } }"#).root).unwrap();
+        let context = || Ok(String::new());
+        assert!(map.matching_rows("tank", &runtime(), context, context, context).unwrap_err().contains("quoted pool keyword"));
+        let rows = map.matching_rows("ship", &runtime(), context, context, context).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].icons, [DesignerRowIcon::Sprite("GFX_Ship".into())]);
+        map.append(&crate::paradox_text::parse_str("tank = { pool = { icons = { GFX_Later } } }").root).unwrap();
+        assert!(map.matching_rows("tank", &runtime(), context, context, context).is_err());
     }
 
     #[test]

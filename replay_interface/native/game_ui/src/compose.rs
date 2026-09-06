@@ -7648,6 +7648,7 @@ mod tests {
 
     fn scalar_field(key: &str, value: &str) -> Entry {
         Entry {
+            key_is_quoted: false,
             key: Some(key.into()),
             value: Value::Scalar(Scalar::Bare(value.into())),
             line: 1,
@@ -8206,6 +8207,7 @@ mod tests {
             scalar_field("text", "CAPTION_KEY"),
             scalar_field("format", "center"),
             Entry {
+                key_is_quoted: false,
                 key: Some("borderSize".into()),
                 value: Value::Object(vec![scalar_field("x", "2"), scalar_field("y", "3")]),
                 line: 1,
@@ -8274,6 +8276,7 @@ mod tests {
                 scalar_field("name", "other"),
             ],
             vec![Entry {
+                key_is_quoted: false,
                 key: Some("name".into()),
                 value: Value::Object(Vec::new()),
                 line: 1,
@@ -8305,6 +8308,7 @@ mod tests {
         element.raw = Value::Object(vec![
             scalar_field("name", "carrier"),
             Entry {
+                key_is_quoted: false,
                 key: Some("position".into()),
                 value: Value::Object(vec![
                     scalar_field("x", "1"),

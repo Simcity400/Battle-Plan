@@ -1951,6 +1951,7 @@ mod tests {
 
         let parsed_only = authored_tree_identity_sha256(&root);
         root.raw = Value::Object(vec![crate::paradox_text::Entry {
+            key_is_quoted: false,
             key: Some("show_position".into()),
             value: Value::Object(Vec::new()),
             line: 8,

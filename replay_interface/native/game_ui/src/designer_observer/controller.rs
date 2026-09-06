@@ -307,6 +307,98 @@ mod tests {
     }
 
     #[test]
+    fn authenticated_ascii_icon_keywords_keep_pixels_and_last_weight_assignment() {
+        let (root, _) = production_fixture();
+        std::fs::create_dir_all(root.0.join("gfx/interface/equipmentdesigner/graphic_db")).unwrap();
+        std::fs::create_dir_all(root.0.join("common/country_tags")).unwrap();
+        std::fs::create_dir_all(root.0.join("map")).unwrap();
+        std::fs::write(root.0.join("common/country_tags/tags.txt"), br#"GER = "countries/Germany.txt""#).unwrap();
+        std::fs::write(root.0.join("map/default.map"), br#"continent = "continent.txt" definitions = "definition.csv" provinces = "provinces.bmp""#).unwrap();
+        std::fs::write(root.0.join("map/continent.txt"), b"continents = { europe }").unwrap();
+        let mut texture = std::fs::read(root.0.join("gfx/interface/xui13_test.tga")).unwrap();
+        for pixel in texture[18..].chunks_exact_mut(4) { pixel.copy_from_slice(&[0,255,0,255]); }
+        let green = "gfx/interface/Keyword_Green.tga";
+        std::fs::write(root.0.join(green), texture).unwrap();
+        let (mut raw, mut rest) = owner_prefix_inputs();
+        raw["variants"].as_array_mut().unwrap().truncate(1);
+        rest["countries"]["GER"]["politics"]["capital_override_raw"] = json!(-1);
+        rest["diplomacy_world"] = json!({"domain53_extra":{"faction_member_order_schema":1,"faction_roster_status":"measured_empty","faction_rows":[]}});
+        raw["variants"][0]["definition"]["item_icon_override"] = json!({"status":"measured","active":false,"kind":1,
+            "token":{"status":"measured","value":".","utf8_hex":"2e"}});
+        let frame = world_from_catalog(raw.clone(), rest.clone());
+        let lower = "default = { light_tank_chassis_1 = { pool = { icons = { gfx/interface/Keyword_Green.tga } weight = 99 icons_weight = 9 icons_weight = 2 models_weight = 100 } pool = { icons = { GFX_xui13_test } weight = 3 } } }";
+        let mixed = "DeFaUlT = { light_tank_chassis_1 = { PoOl = { IcOnS = { gfx/interface/Keyword_Green.tga } WeIgHt = 99 IcOnS_WeIgHt = 9 ICONS_WEIGHT = 2 MoDeLs_WeIgHt = 100 } POOL = { ICONS = { GFX_xui13_test } WEIGHT = 3 } } }";
+        let reversed = mixed.replace("IcOnS_WeIgHt = 9 ICONS_WEIGHT = 2", "IcOnS_WeIgHt = 2 ICONS_WEIGHT = 9");
+        let compose = |renderer: &crate::production_renderer::ProductionUiRenderer, frame: &WorldFrame| {
+            renderer.compose_xui13_designer_surface(frame, frame.named_country("GER").unwrap(), &viewer(), 160, 120).unwrap()
+        };
+        let mut surfaces = Vec::new();
+        for source in [lower, mixed, reversed.as_str()] {
+            std::fs::write(root.0.join("gfx/interface/equipmentdesigner/graphic_db/default.txt"), source).unwrap();
+            let renderer = admitted_production_renderer_with_assets(&root.0, None, &[green]);
+            let surface = compose(&renderer, &frame);
+            assert_eq!(surface.visible_design_ids, ["7:70"]);
+            assert!(surface.membership_complete);
+            assert!(!surface.field_refusals.contains_key("7:70/equipment_icon"), "{:?}", surface.field_refusals);
+            surfaces.push(surface);
+        }
+        assert_eq!(surfaces[0].output.image.pixels, surfaces[1].output.image.pixels);
+        assert_eq!(surfaces[0].field_refusals, surfaces[1].field_refusals);
+        assert_ne!(row_element_pixels(&surfaces[1], "equipment"), row_element_pixels(&surfaces[2], "equipment"));
+        assert_eq!(row_element_pixels(&surfaces[1], "creator_flag"), row_element_pixels(&surfaces[2], "creator_flag"));
+        let renderer = admitted_production_renderer_with_assets(&root.0, None, &[green]);
+        for (surface, kind, token) in [(&surfaces[0], 0, "GFX_xui13_test"), (&surfaces[2], 1, green)] {
+            raw["variants"][0]["definition"]["item_icon_override"] = json!({"status":"measured","active":true,"kind":kind,
+                "token":{"status":"measured","value":token,"utf8_hex":token.as_bytes().iter().map(|byte|format!("{byte:02x}")).collect::<String>()}});
+            let direct = compose(&renderer, &world_from_catalog(raw.clone(), rest.clone()));
+            assert_eq!(row_element_pixels(surface, "equipment"), row_element_pixels(&direct, "equipment"));
+        }
+    }
+
+    #[test]
+    fn authenticated_quoted_pool_refuses_only_icon_and_retains_known_row() {
+        let (root, _) = production_fixture();
+        std::fs::create_dir_all(root.0.join("gfx/interface/equipmentdesigner/graphic_db")).unwrap();
+        std::fs::create_dir_all(root.0.join("common/country_tags")).unwrap();
+        std::fs::create_dir_all(root.0.join("map")).unwrap();
+        std::fs::write(root.0.join("common/country_tags/tags.txt"), br#"GER = "countries/Germany.txt""#).unwrap();
+        std::fs::write(root.0.join("map/default.map"), br#"continent = "continent.txt" definitions = "definition.csv" provinces = "provinces.bmp""#).unwrap();
+        std::fs::write(root.0.join("map/continent.txt"), b"continents = { europe }").unwrap();
+        let green = "gfx/interface/Quoted_Green.tga";
+        let mut texture = std::fs::read(root.0.join("gfx/interface/xui13_test.tga")).unwrap();
+        for pixel in texture[18..].chunks_exact_mut(4) { pixel.copy_from_slice(&[0,255,0,255]); }
+        std::fs::write(root.0.join(green), texture).unwrap();
+        let (mut raw, mut rest) = owner_prefix_inputs();
+        raw["variants"].as_array_mut().unwrap().truncate(1);
+        rest["countries"]["GER"]["politics"]["capital_override_raw"] = json!(-1);
+        rest["diplomacy_world"] = json!({"domain53_extra":{"faction_member_order_schema":1,"faction_roster_status":"measured_empty","faction_rows":[]}});
+        raw["variants"][0]["definition"]["item_icon_override"] = json!({"status":"measured","active":false,"kind":1,
+            "token":{"status":"measured","value":".","utf8_hex":"2e"}});
+        let frame = world_from_catalog(raw.clone(), rest.clone());
+        let mut surfaces = Vec::new();
+        for pool_key in ["PoOl", "\"pool\""] {
+            let source = format!("default = {{ light_tank_chassis_1 = {{ {pool_key} = {{ icons = {{ {green} }} }} }} }}");
+            std::fs::write(root.0.join("gfx/interface/equipmentdesigner/graphic_db/default.txt"), source).unwrap();
+            let renderer = admitted_production_renderer_with_assets(&root.0, None, &[green]);
+            surfaces.push(renderer.compose_xui13_designer_surface(&frame, frame.named_country("GER").unwrap(), &viewer(), 160, 120).unwrap());
+        }
+        let (known, refused) = (&surfaces[0], &surfaces[1]);
+        assert!(!known.field_refusals.contains_key("7:70/equipment_icon"), "{:?}", known.field_refusals);
+        assert!(refused.field_refusals["7:70/equipment_icon"].contains("quoted pool keyword"));
+        assert!(refused.membership_complete);
+        assert_eq!(refused.ordered_design_ids, ["7:70"]);
+        assert_eq!(refused.visible_design_ids, known.visible_design_ids);
+        assert_eq!(row_element_pixels(refused, "creator_flag"), row_element_pixels(known, "creator_flag"));
+        assert!(!refused.output.debug_rects.iter().any(|rect| rect.name.contains("7:70") && rect.name.ends_with("::equipment")));
+        let renderer = admitted_production_renderer_with_assets(&root.0, None, &[green]);
+        raw["variants"][0]["definition"]["item_icon_override"] = json!({"status":"measured","active":true,"kind":1,
+            "token":{"status":"measured","value":green,"utf8_hex":green.as_bytes().iter().map(|byte|format!("{byte:02x}")).collect::<String>()}});
+        let direct = world_from_catalog(raw, rest);
+        let expected = renderer.compose_xui13_designer_surface(&direct, direct.named_country("GER").unwrap(), &viewer(), 160, 120).unwrap();
+        assert_eq!(row_element_pixels(known, "equipment"), row_element_pixels(&expected, "equipment"));
+    }
+
+    #[test]
     fn missions_use_recorded_signed_operands_and_independent_runtime_feature_bits() {
         use replay_core::design_catalog::{DesignI64Observation, DesignMissionOverrideObservation, DesignFieldRefusal, DesignU32Observation};
         let (root,_) = production_fixture();

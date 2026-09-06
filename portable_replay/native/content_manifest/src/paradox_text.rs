@@ -35,6 +35,7 @@ pub enum Scalar {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
     pub key: Option<String>,
+    pub key_is_quoted: bool,
     pub value: Value,
     pub line: usize,
     pub column: usize,
@@ -558,6 +559,7 @@ impl<'a> Parser<'a> {
                     let value = self.parse_object_body(&token, depth);
                     entries.push(Entry {
                         key: None,
+                        key_is_quoted: false,
                         value,
                         line: token.line,
                         column: token.column,
@@ -569,6 +571,7 @@ impl<'a> Parser<'a> {
                         let value = self.parse_value(depth);
                         entries.push(Entry {
                             key: Some(text),
+                            key_is_quoted: quoted,
                             value,
                             line: token.line,
                             column: token.column,
@@ -577,6 +580,7 @@ impl<'a> Parser<'a> {
                         self.push_token(next);
                         entries.push(Entry {
                             key: None,
+                            key_is_quoted: false,
                             value: Value::Scalar(if quoted { Scalar::Quoted(text) } else { Scalar::Bare(text) }),
                             line: token.line,
                             column: token.column,
@@ -885,6 +889,35 @@ mod tests {
         assert_eq!(rows[3].key.as_deref(), Some("quoted_key"));
         assert_eq!(rows[3].value, Value::Scalar(Scalar::Quoted("7".into())));
         assert!(rows[..3].iter().all(|row| row.key.is_none()));
+    }
+
+    #[test]
+    fn key_quote_metadata_survives_cloning_and_expansion_without_changing_generic_lookup() {
+        use super::{Scalar, Value};
+        let mut root = super::parse_str_strict(r#"@sprite = "GFX_Case" "@unused" = Unused "pool" = { icons = { @sprite } } pool = { icons = { "GFX_Case" } } list = { "pool" @sprite { "nested" = "Text" } }"#).unwrap();
+        let original = root.clone();
+        assert_eq!(root, original);
+        assert_eq!(root.fields().iter().map(|entry| entry.key_is_quoted).collect::<Vec<_>>(), [false, true, true, false, false]);
+        assert_eq!(root.fields()[0].key.as_deref(), Some("@sprite"));
+        assert_eq!(root.fields()[1].key.as_deref(), Some("@unused"));
+        assert!(root.fields()[2].key_matches("POOL"));
+        assert!(root.fields()[3].key_matches("POOL"));
+        assert_eq!(root.values_ci("pool").count(), 2);
+        assert_eq!(root.first_value_ci("pool"), Some(&root.fields()[2].value));
+        super::expand_file_scoped_variables(&mut root).unwrap();
+        for (before, after) in original.fields().iter().zip(root.fields()) {
+            assert_eq!((&before.key, before.key_is_quoted), (&after.key, after.key_is_quoted));
+        }
+        let quoted_icons = root.fields()[2].value.first_value_ci("icons").unwrap();
+        let bare_icons = root.fields()[3].value.first_value_ci("icons").unwrap();
+        assert_eq!(quoted_icons.fields()[0].value, bare_icons.fields()[0].value);
+        assert_eq!(quoted_icons.fields()[0].value.as_scalar(), Some("GFX_Case"));
+        let rows = root.first_value_ci("list").unwrap().fields();
+        assert!(rows.iter().all(|entry| entry.key.is_none() && !entry.key_is_quoted));
+        assert_eq!(rows[0].value.as_scalar(), Some("pool"));
+        assert_eq!(rows[1].value, Value::Scalar(Scalar::Quoted("GFX_Case".into())));
+        assert!(rows[2].value.fields()[0].key_is_quoted);
+        assert_eq!(rows[2].value.first_scalar_ci("NESTED"), Some("Text"));
     }
 
     #[test]

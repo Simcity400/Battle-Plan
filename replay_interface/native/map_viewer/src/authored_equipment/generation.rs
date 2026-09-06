@@ -173,7 +173,7 @@ impl AuthoredEquipmentCatalog {
                 if let Some(value) = recipe.scalar(field)? { set_scalar(&mut generated.expanded, field, value) }
             }
             for value in recipe.expanded.values_ci("forbid_mission_type") {
-                object_mut(&mut generated.expanded).push(Entry { key: Some("forbid_mission_type".into()), value: value.clone(), line: 0, column: 0 });
+                object_mut(&mut generated.expanded).push(Entry { key: Some("forbid_mission_type".into()), key_is_quoted: false, value: value.clone(), line: 0, column: 0 });
             }
             self.apply_for_each(recipe, &original, &mut generated, archetype == token)?;
             self.definition_order.push(token.clone());
@@ -291,7 +291,7 @@ fn object_mut(value: &mut Value) -> &mut Vec<Entry> {
 fn remove_field(value: &mut Value, field: &str) { object_mut(value).retain(|entry| !entry.key_matches(field)); }
 fn set_value(value: &mut Value, field: &str, replacement: Value) {
     remove_field(value, field);
-    object_mut(value).push(Entry { key: Some(field.into()), value: replacement, line: 0, column: 0 });
+    object_mut(value).push(Entry { key: Some(field.into()), key_is_quoted: false, value: replacement, line: 0, column: 0 });
 }
 fn set_scalar(value: &mut Value, field: &str, replacement: &str) {
     set_value(value, field, Value::Scalar(Scalar::Bare(replacement.into())));
