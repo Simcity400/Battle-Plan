@@ -257,7 +257,7 @@ pub struct AdmittedParticleDefinition {
     definition_path: String,
     pub(crate) scale: f32,
     pub(crate) subsystems: Arc<[AuthoredSubsystem]>,
-    pub(crate) turbulence_count: usize,
+    pub(crate) turbulence_divisions: Arc<[i32]>,
 }
 
 impl AdmittedParticleDefinition {
@@ -296,7 +296,7 @@ pub struct ParticleDefinitions {
     registrations: BTreeMap<String, Vec<SourceDefinition>>,
     definitions: BTreeMap<String, Vec<SourceDefinition>>,
     admitted: BTreeMap<String, Arc<AdmittedParticleDefinition>>,
-    compiled: BTreeMap<String, (Arc<[AuthoredSubsystem]>, usize)>,
+    compiled: BTreeMap<String, (Arc<[AuthoredSubsystem]>, Arc<[i32]>)>,
     draw_capacity: Option<ParticleDrawCapacity>,
 }
 
@@ -447,7 +447,7 @@ impl ParticleDefinitions {
                 ParticleRefusalReason::ConflictingDefinition,
             ));
         }
-        let definition = if let Some((subsystems, turbulence_count)) = self.compiled.get(name) {
+        let definition = if let Some((subsystems, turbulence_divisions)) = self.compiled.get(name) {
             AdmittedParticleDefinition {
                 lease: self.lease.clone(),
                 name: name.into(),
@@ -455,7 +455,7 @@ impl ParticleDefinitions {
                 definition_path: definitions[0].path.clone(),
                 scale,
                 subsystems: Arc::clone(subsystems),
-                turbulence_count: *turbulence_count,
+                turbulence_divisions: Arc::clone(turbulence_divisions),
             }
         } else {
             let definition = compile_definition(
@@ -469,7 +469,7 @@ impl ParticleDefinitions {
                 name.into(),
                 (
                     Arc::clone(&definition.subsystems),
-                    definition.turbulence_count,
+                    Arc::clone(&definition.turbulence_divisions),
                 ),
             );
             definition
@@ -503,7 +503,7 @@ impl ParticleDefinitions {
                     compile_definition(&sources[0], "", name, 1.0, self.lease.clone())?;
                 self.compiled.insert(
                     name.clone(),
-                    (definition.subsystems, definition.turbulence_count),
+                    (definition.subsystems, definition.turbulence_divisions),
                 );
             }
             let systems = &self.compiled[name].0;
@@ -758,7 +758,7 @@ fn compile_definition(
         cache: std::cell::RefCell::new(BTreeMap::new()),
     };
     let mut forces = BTreeMap::new();
-    let mut turbulence_count = 0;
+    let mut turbulence_divisions = Vec::new();
     for field in source
         .value
         .fields()
@@ -776,7 +776,7 @@ fn compile_definition(
         }
         let compiled = compile_force(&field.value, name, &animations)?;
         if compiled.kind == ParticleForceKind::Turbulence {
-            turbulence_count += 1;
+            turbulence_divisions.push(compiled.division);
         }
         forces.insert(force.to_owned(), Arc::new(compiled));
     }
@@ -815,7 +815,7 @@ fn compile_definition(
         definition_path: source.path.clone(),
         scale,
         subsystems: subsystems.into(),
-        turbulence_count,
+        turbulence_divisions: turbulence_divisions.into(),
     })
 }
 
@@ -1852,8 +1852,9 @@ mod tests {
                 .definitions()
                 .resolve("paired")
                 .unwrap()
-                .turbulence_count,
-            1
+                .turbulence_divisions
+                .as_ref(),
+            &[16]
         );
         let fixture = Fixture::new(
             REGISTRATION,

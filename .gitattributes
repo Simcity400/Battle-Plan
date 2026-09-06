@@ -914,3 +914,4 @@ portable_replay/native/engine_evidence/artifacts/func_140bd4770.decompile.c text
 
 portable_replay/native/engine_evidence/artifacts/func_140f72890.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1401ae640.decompile.c text eol=lf
+/portable_replay/native/engine_evidence/artifacts/particle_noise_cases.json text eol=lf

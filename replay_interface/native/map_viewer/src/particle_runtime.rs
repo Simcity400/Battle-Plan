@@ -29,27 +29,16 @@ impl ViewerParticleSeed {
         ((value >> 8) ^ value) & 0x7fff_ffff
     }
 
-    fn initialize_turbulence(&mut self) {
-        // Noise vectors use rejection sampling; skipping a nominal number of draws changes life.
-        for _ in 0..256 {
-            for _ in 0..2 {
-                loop {
-                    let mut vector = [0.0_f32; 3];
-                    for coordinate in &mut vector {
-                        let half = self.draw() as f32 * f32::from_bits(0x3000_0000) - 0.5;
-                        *coordinate = half + half;
-                    }
-                    let square =
-                        vector[1] * vector[1] + vector[0] * vector[0] + vector[2] * vector[2];
-                    if square <= 1.0 && square >= f32::from_bits(0x3a83_126f) {
-                        break;
-                    }
-                }
+    fn noise_vector(&mut self) -> [f32; 3] {
+        loop {
+            let vector = std::array::from_fn(|_| {
+                let half = self.draw() as f32 * f32::from_bits(0x3000_0000) - 0.5;
+                half + half
+            });
+            let square = vector[1] * vector[1] + vector[0] * vector[0] + vector[2] * vector[2];
+            if square <= 1.0 && square >= f32::from_bits(0x3a83_126f) {
+                return native_normalize(vector, true);
             }
-            self.draw();
-        }
-        for _ in 0..255 {
-            self.draw();
         }
     }
 
@@ -60,6 +49,64 @@ impl ViewerParticleSeed {
         }
         let unit = self.draw() as f32 * f32::from_bits(0x3000_0000);
         unit * (range + range) + (base - range)
+    }
+}
+
+#[derive(Debug)]
+struct TurbulenceNoise {
+    permutation: [u8; 256],
+    gradients: [[f32; 3]; 256],
+    original: [[f32; 3]; 256],
+    axes: [[f32; 3]; 256],
+    speeds: [f32; 256],
+    frequency: usize,
+    phase: usize,
+}
+
+impl TurbulenceNoise {
+    fn new(random: &mut ViewerParticleSeed, division: i32) -> ParticleResult<Self> {
+        let mut noise = Self {
+            permutation: [0; 256],
+            gradients: [[0.0; 3]; 256],
+            original: [[0.0; 3]; 256],
+            axes: [[0.0; 3]; 256],
+            speeds: [0.0; 256],
+            frequency: division.clamp(1, 256) as usize,
+            phase: 0,
+        };
+        while 256 % noise.frequency != 0 {
+            noise.frequency += 1;
+        }
+        for i in 0..256 {
+            noise.original[i] = random.noise_vector();
+            noise.axes[i] = random.noise_vector();
+            let pi = f32::from_bits(0x4049_0fdb);
+            noise.speeds[i] = random.draw() as f32 * f32::from_bits(0x3000_0000) * pi + pi;
+            noise.permutation[i] = i as u8;
+        }
+        for i in 1..256 {
+            noise.permutation.swap(i, random.draw() as usize % (i + 1));
+        }
+        for _ in 0..noise.frequency {
+            noise.update(None, 0.0)?;
+        }
+        Ok(noise)
+    }
+
+    fn update(&mut self, subsystem: Option<&str>, time: f32) -> ParticleResult<()> {
+        self.phase %= self.frequency;
+        let first = (self.phase << 8) / self.frequency;
+        for i in first..first + 256 / self.frequency {
+            let matrix = native_axis_matrix(subsystem, self.axes[i], time * self.speeds[i])?;
+            let [x, y, z] = self.original[i];
+            self.gradients[i] = [
+                y * matrix[3] + x * matrix[0] + z * matrix[6],
+                x * matrix[1] + y * matrix[4] + z * matrix[7],
+                x * matrix[2] + y * matrix[5] + z * matrix[8],
+            ];
+        }
+        self.phase += 1;
+        Ok(())
     }
 }
 
@@ -514,11 +561,11 @@ fn native_normalize(vector: [f32; 3], reset_zero: bool) -> [f32; 3] {
 }
 
 fn native_axis_matrix(
-    authored: &AuthoredSubsystem,
+    subsystem: Option<&str>,
     [x, y, z]: [f32; 3],
     angle: f32,
 ) -> ParticleResult<[f32; 9]> {
-    let (sin, cos) = native_angles(authored, "spin_angle", angle)?;
+    let (sin, cos) = native_angles(subsystem, "axis_angle", angle)?;
     let complement = 1.0 - cos;
     let zx = z * x * complement;
     let xy = x * y * complement;
@@ -536,11 +583,7 @@ fn native_axis_matrix(
     ])
 }
 
-fn native_angles(
-    authored: &AuthoredSubsystem,
-    input: &str,
-    radians: f32,
-) -> ParticleResult<(f32, f32)> {
+fn native_angles(subsystem: Option<&str>, input: &str, radians: f32) -> ParticleResult<(f32, f32)> {
     use portable_render_stream::exact_math::{native_cos, native_sin, viewer_uses_fma};
     let fma = viewer_uses_fma();
     native_sin(radians, fma)
@@ -548,7 +591,7 @@ fn native_angles(
         .map_err(|_| {
             ParticleInputRefusal::new(
                 "",
-                Some(&authored.name),
+                subsystem,
                 input,
                 ParticleRefusalReason::ArithmeticOverflow,
             )
@@ -604,8 +647,8 @@ impl ParticleVisualState {
             * f32::from_bits(0xc049_0fdb))
             / f32::from_bits(0x4334_0000);
         let pitch = self.emitter_angles[1] * negative_radians;
-        let (sy, cy) = native_angles(authored, "emitter_yaw", yaw)?;
-        let (sp, cp) = native_angles(authored, "emitter_pitch", pitch)?;
+        let (sy, cy) = native_angles(Some(&authored.name), "emitter_yaw", yaw)?;
+        let (sp, cp) = native_angles(Some(&authored.name), "emitter_pitch", pitch)?;
         let first = std::array::from_fn::<_, 3, _>(|axis| {
             world[4 + axis] * -sy + (cp * cy) * world[axis] + world[8 + axis] * (sp * cy)
         });
@@ -617,8 +660,9 @@ impl ParticleVisualState {
         });
         let velocity_pitch = self.velocity_angles_and_speed[0] * negative_radians;
         let velocity_yaw = self.velocity_angles_and_speed[1] * negative_radians;
-        let (sin_pitch, cos_pitch) = native_angles(authored, "velocity_pitch", velocity_pitch)?;
-        let (sin_yaw, cos_yaw) = native_angles(authored, "velocity_yaw", velocity_yaw)?;
+        let (sin_pitch, cos_pitch) =
+            native_angles(Some(&authored.name), "velocity_pitch", velocity_pitch)?;
+        let (sin_yaw, cos_yaw) = native_angles(Some(&authored.name), "velocity_yaw", velocity_yaw)?;
         let x = cos_yaw * cos_pitch;
         let y = -sin_pitch;
         let z = sin_yaw * cos_pitch;
@@ -633,8 +677,9 @@ impl ParticleVisualState {
                 let [radius, yaw, pitch] = self.shape_coordinates;
                 let pitch = pitch * negative_radians;
                 let yaw = yaw * negative_radians;
-                let (sin_pitch, cos_pitch) = native_angles(authored, "sphere_pitch", pitch)?;
-                let (sin_yaw, cos_yaw) = native_angles(authored, "sphere_yaw", yaw)?;
+                let (sin_pitch, cos_pitch) =
+                    native_angles(Some(&authored.name), "sphere_pitch", pitch)?;
+                let (sin_yaw, cos_yaw) = native_angles(Some(&authored.name), "sphere_yaw", yaw)?;
                 [
                     cos_yaw * cos_pitch * radius,
                     -sin_pitch * radius,
@@ -943,7 +988,7 @@ impl Subsystem {
                 ParticleForceKind::Point | ParticleForceKind::Vortex => {
                     let rotation = if force.kind == ParticleForceKind::Vortex && force.yaw != 0.0 {
                         Some(native_angles(
-                            authored,
+                            Some(&authored.name),
                             "force_yaw",
                             (force.yaw * f32::from_bits(0x4049_0fdb)) / f32::from_bits(0x4334_0000),
                         )?)
@@ -995,8 +1040,10 @@ impl Subsystem {
                 }
                 ParticleForceKind::Spin => {
                     let axis = native_normalize(force.direction, true);
-                    let forward = native_axis_matrix(authored, axis, -(amount * delta))?;
-                    let inverse = native_axis_matrix(authored, axis, -((-amount) * delta))?;
+                    let forward =
+                        native_axis_matrix(Some(&authored.name), axis, -(amount * delta))?;
+                    let inverse =
+                        native_axis_matrix(Some(&authored.name), axis, -((-amount) * delta))?;
                     let origin = std::array::from_fn::<_, 3, _>(|axis| {
                         force.position[axis] * scale
                             + if force.local_force {
@@ -1094,6 +1141,7 @@ impl Subsystem {
         parent_world: [f32; 16],
         instance_scale: f32,
         opacity: f32,
+        noise: &mut [TurbulenceNoise],
     ) -> ParticleResult<()> {
         let world = if authored.local_space {
             [
@@ -1263,6 +1311,12 @@ impl Subsystem {
             self.fractional_emission -= amount as f32;
         }
         self.previous_translation = translation;
+        if self.retained != 0 {
+            // 1423ddaa0 advances every instance noise table once per retained subsystem.
+            for table in noise.iter_mut() {
+                table.update(Some(&authored.name), self.local_time)?;
+            }
+        }
         for particle in &mut self.particles[..self.live] {
             particle.visual.advance(
                 authored,
@@ -1293,6 +1347,7 @@ impl Subsystem {
                     child_world,
                     instance_scale,
                     opacity,
+                    noise,
                 )?;
             }
         }
@@ -1309,6 +1364,7 @@ struct Instance {
     handle: ParticleHandle,
     definition: Arc<AdmittedParticleDefinition>,
     random: ViewerParticleSeed,
+    noise: Vec<TurbulenceNoise>,
     world: [u32; 16],
     speed: f32,
     opacity: f32,
@@ -1453,8 +1509,22 @@ impl ParticleRuntime {
             })?;
             subsystems.push(subsystem);
         }
-        for _ in 0..definition.turbulence_count {
-            viewer_seed.initialize_turbulence();
+        let mut noise = Vec::new();
+        noise
+            .try_reserve_exact(definition.turbulence_divisions.len())
+            .map_err(|_| {
+                fail(
+                    "turbulence_storage",
+                    ParticleRefusalReason::CapacityExceeded,
+                )
+            })?;
+        for &division in definition.turbulence_divisions.iter() {
+            noise.push(
+                TurbulenceNoise::new(&mut viewer_seed, division).map_err(|mut error| {
+                    error.definition = definition.name().into();
+                    error.event(event_instance_id)
+                })?,
+            );
         }
         let handle = ParticleHandle {
             runtime: self.identity,
@@ -1467,6 +1537,7 @@ impl ParticleRuntime {
             handle,
             definition,
             random: viewer_seed,
+            noise,
             world: parent_world_matrix_f32_bits,
             speed: inherited_speed,
             opacity: 1.0,
@@ -1717,6 +1788,7 @@ impl ParticleRuntime {
                         instance.world.map(f32::from_bits),
                         scale,
                         instance.opacity,
+                        &mut instance.noise,
                     ) {
                         failure = Some(error);
                         break;
@@ -3278,6 +3350,115 @@ mod tests {
         let state = runtime.instance(handle).unwrap();
         assert_eq!(state.random.counter, 3);
         assert_eq!(state.subsystems[0].particles[0].life, 1.0);
+    }
+
+    fn noise_hash(noise: &TurbulenceNoise) -> String {
+        let mut bytes = Vec::with_capacity(0x2908);
+        bytes.extend_from_slice(&noise.permutation);
+        for table in [&noise.gradients, &noise.original, &noise.axes] {
+            for vector in table {
+                for value in vector {
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+        for speed in noise.speeds {
+            bytes.extend_from_slice(&speed.to_le_bytes());
+        }
+        bytes.extend_from_slice(&(noise.frequency as u32).to_le_bytes());
+        bytes.extend_from_slice(&(noise.phase as u32).to_le_bytes());
+        assert_eq!(bytes.len(), 0x2908);
+        snapshot::sha256::Sha256::hex(&bytes)
+    }
+
+    #[test]
+    fn retained_noise_tables_match_native_initialization_and_chunk_update_instructions() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(portable_engine_evidence::particle_runtime::NOISE_CASES).unwrap();
+        let mut checked = 0;
+        for case in fixture["cases"].as_array().unwrap() {
+            if case["fma"].as_bool().unwrap()
+                != portable_render_stream::exact_math::viewer_uses_fma()
+            {
+                continue;
+            }
+            let mut random = ViewerParticleSeed {
+                seed: case["seed"].as_u64().unwrap() as u32,
+                counter: case["counter"].as_u64().unwrap() as u32,
+            };
+            let mut noise =
+                TurbulenceNoise::new(&mut random, case["division"].as_i64().unwrap() as i32)
+                    .unwrap();
+            assert_eq!(
+                noise.frequency,
+                case["frequency"].as_u64().unwrap() as usize
+            );
+            assert_eq!(
+                random.counter as u64,
+                case["counter_after"].as_u64().unwrap()
+            );
+            assert_eq!(
+                noise_hash(&noise),
+                case["table_sha256"][0].as_str().unwrap()
+            );
+            for (i, time) in fixture["update_times_f32_bits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+            {
+                noise
+                    .update(None, f32::from_bits(time.as_u64().unwrap() as u32))
+                    .unwrap();
+                assert_eq!(
+                    noise_hash(&noise),
+                    case["table_sha256"][i + 1].as_str().unwrap(),
+                    "division={} update={i}",
+                    case["division"]
+                );
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 6);
+    }
+
+    #[test]
+    fn all_noise_tables_advance_for_each_retained_subsystem_and_not_empty_subsystems() {
+        let (_fixture, mut runtime, handle) = setup("force={name=z type=turbulence division=3} force={name=a type=turbulence division=16} subsystem={name=first max_amount=1 emission=4 duration=-1 life=2} subsystem={name=empty max_amount=1 emission=0} subsystem={name=second max_amount=1 emission=4 duration=-1 life=2}");
+        let state = runtime.instance(handle).unwrap();
+        assert_eq!(
+            state.noise.iter().map(|n| n.frequency).collect::<Vec<_>>(),
+            [4, 16]
+        );
+        assert_eq!(
+            state.noise.iter().map(|n| n.phase).collect::<Vec<_>>(),
+            [4, 16]
+        );
+        runtime.advance(1, 0.25, &[]).unwrap();
+        let state = runtime.instance(handle).unwrap();
+        assert_eq!(
+            state
+                .subsystems
+                .iter()
+                .map(|s| s.retained)
+                .collect::<Vec<_>>(),
+            [1, 0, 1]
+        );
+        assert_eq!(
+            state.noise.iter().map(|n| n.phase).collect::<Vec<_>>(),
+            [2, 2]
+        );
+        runtime.advance(2, 0.25, &[]).unwrap();
+        assert_eq!(
+            runtime
+                .instance(handle)
+                .unwrap()
+                .noise
+                .iter()
+                .map(|n| n.phase)
+                .collect::<Vec<_>>(),
+            [4, 4]
+        );
     }
 
     #[test]
