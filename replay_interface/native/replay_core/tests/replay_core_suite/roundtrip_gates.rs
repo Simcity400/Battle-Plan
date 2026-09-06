@@ -461,8 +461,8 @@ fn rt_division_movement() {
             exp_u32(raw(&f, &["divisions", "0", "move_target_province"]))
         );
         assert_eq!(
-            d.move_progress,
-            exp_f64(raw(&f, &["divisions", "0", "move_progress"]))
+            d.movement_numerator_raw,
+            exp_i64(raw(&f, &["divisions", "0", "movement_numerator_raw"]))
         );
         assert_eq!(
             d.in_combat,

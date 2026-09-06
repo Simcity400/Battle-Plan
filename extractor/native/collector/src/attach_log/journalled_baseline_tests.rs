@@ -13,15 +13,15 @@ struct JournalProbe {
 
 fn division_sample(div_id: u32, raw_organisation: u32) -> DivisionMovementSample {
     DivisionMovementSample {
-        movement_route: None,
+        ordinary_route: None, alternate_route: None,
         current_template: None,
         route_head: None,
         template_preference: None, acclimatization: None,
         div_id,
         deleted: false,
         moving: false,
-        raw_movement_progress: None,
-        progress_bucket: None,
+        movement_scalars: compact_contract::division_routes::MovementScalars { numerator_raw: None, ..Default::default() },
+
         location: 10,
         move_target_province: None,
         movement_source_province: None,

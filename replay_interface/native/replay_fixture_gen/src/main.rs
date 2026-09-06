@@ -940,8 +940,8 @@ fn fx_division_movement(seed: u64) -> Scenario {
         |tick, snap| {
             let loc = if tick < 4 { 1000 } else if tick < 8 { 1001 } else { 2000 };
             snap["divisions"] = json!([
-                division(101, 1, "GER", loc, 10, tick < 8, if tick < 8 { Some(2000) } else { None }, tick as f64 / 11.0),
-                division(201, 1, "SOV", 2000, 20, false, None, 0.0)
+                division(101, 1, "GER", loc, 10, tick > 0 && tick < 8, if tick < 8 { Some(2000) } else { None }, if tick < 8 { tick as i64 * 10_000 } else { 0 }),
+                division(201, 1, "SOV", 2000, 20, false, None, 0)
             ]);
             if tick >= 6 && tick <= 9 {
                 snap["divisions"][0]["in_combat"] = json!(true);
@@ -2018,8 +2018,8 @@ fn base_snapshot(
             "3000": province("ENG", 30)
         },
         "divisions": [
-            division(101, 1, "GER", 1000, 10, false, null_i64(), 0.0),
-            division(201, 1, "SOV", 2000, 20, false, null_i64(), 0.0)
+            division(101, 1, "GER", 1000, 10, false, null_i64(), 0),
+            division(201, 1, "SOV", 2000, 20, false, null_i64(), 0)
         ],
         "combats": [],
         "diplomacy_world": {"wars": {}, "factions": {}, "subjects": []},
@@ -2287,7 +2287,7 @@ fn division(
     state_id: i64,
     moving: bool,
     move_target_province: Option<i64>,
-    move_progress: f64,
+    movement_numerator_raw: i64,
 ) -> Value {
     json!({
         "div_id": div_id,
@@ -2306,7 +2306,7 @@ fn division(
         "experience": 0.2,
         "moving": moving,
         "move_target_province": move_target_province,
-        "move_progress": move_progress,
+        "movement_numerator_raw": movement_numerator_raw,
         "in_combat": false,
         "encircled": false,
         "supply_status": 0.9,

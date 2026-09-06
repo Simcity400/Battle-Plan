@@ -17,7 +17,8 @@ use crate::schema::{Collection, Field, Kind, Quant, Schema, Shape};
 
 pub const DOMAIN: u32 = 20;
 pub const DIVISIONS: u32 = 1;
-pub const MOVEMENT_ROUTE: u32 = 2;
+pub const ORDINARY_ROUTE: u32 = 5;
+pub const ALTERNATE_ROUTE: u32 = 6;
 pub const ACCLIMATIZATION: u32 = 3;
 pub const TEMPLATE_EXCLUSIONS: u32 = 4;
 
@@ -33,7 +34,6 @@ pub mod field {
     pub const STRENGTH: u32 = 8;
     pub const MOVING: u32 = 9;
     pub const MOVE_TARGET_PROVINCE: u32 = 10;
-    pub const MOVE_PROGRESS: u32 = 11;
     pub const IN_COMBAT: u32 = 12;
     pub const EXPERIENCE: u32 = 13;
     pub const CURRENT_SUPPLY: u32 = 14;
@@ -49,7 +49,6 @@ pub mod field {
     pub const ARMY_ID: u32 = 24;
     pub const ORDER_INSTANCE_ID: u32 = 25;
     pub const ORDER_LINK: u32 = 26;
-    pub const MOVEMENT_ROUTE_COUNT: u32 = 27;
     pub const CURRENT_TEMPLATE_STATUS: u32 = 28;
     pub const CURRENT_TEMPLATE_ID: u32 = 29;
     pub const ROUTE_HEAD_STATUS: u32 = 30;
@@ -60,9 +59,19 @@ pub mod field {
     pub const ACCLIMATIZATION_MAXIMUM: u32 = 35;
     pub const ACCLIMATIZATION_COUNT: u32 = 36;
     pub const TEMPLATE_EXCLUSION_COUNT: u32 = 37;
+    pub const MOVEMENT_NUMERATOR_RAW: u32 = 38;
+    pub const ORDINARY_ROUTE_COUNT: u32 = 39;
+    pub const ALTERNATE_ROUTE_COUNT: u32 = 40;
+    pub const NAVAL_TRANSFER_MEMBERSHIP: u32 = 41;
+    pub const MOVEMENT_TARGET_PRESENT: u32 = 42;
+    pub const RETREAT_RAW: u32 = 43;
+    pub const FIRST_COMBAT_STATUS: u32 = 44;
+    pub const FIRST_COMBAT_CLASS: u32 = 45;
+    pub const FIRST_COMBAT_TYPE: u32 = 46;
+    pub const FIRST_COMBAT_ID: u32 = 47;
 }
 
-/// Declared precision for every continuous field except `move_progress`.
+/// Declared precision for every continuous field except the signed movement numerator.
 ///
 /// Passes the outcome test: the low-supply counter law selects frames at 0.20,
 /// 0.35 and 0.50, two decimal places clear of the boundary. Passes the appearance
@@ -133,18 +142,17 @@ pub fn schema() -> Schema {
             .quant(BAR_PRECISION),
     );
 
-    fields.push(Field::new(f::MOVING, Kind::Boolean));
+    fields.push(Field::new(f::MOVING, Kind::Boolean).optional().nullable().unknown_capable());
     fields.push(
         Field::new(f::MOVE_TARGET_PROVINCE, Kind::ContentId)
             .optional()
             .nullable(),
     );
-    // The one field the appearance test forbids quantizing: the viewer
-    // interpolates a unit's position between provinces from it.
     fields.push(
-        Field::new(f::MOVE_PROGRESS, Kind::Continuous)
+        Field::new(f::MOVEMENT_NUMERATOR_RAW, Kind::Signed)
             .optional()
             .nullable()
+            .unknown_capable()
             .quant(Quant::Exact),
     );
     fields.push(Field::new(f::IN_COMBAT, Kind::Boolean));
@@ -201,7 +209,14 @@ pub fn schema() -> Schema {
             .enum_card(ORDER_LINK_CARDINALITY),
     );
 
-    fields.push(Field::new(f::MOVEMENT_ROUTE_COUNT, Kind::Unsigned).optional().nullable().unknown_capable());
+    for id in [f::ORDINARY_ROUTE_COUNT, f::ALTERNATE_ROUTE_COUNT, f::RETREAT_RAW,
+        f::FIRST_COMBAT_CLASS, f::FIRST_COMBAT_TYPE, f::FIRST_COMBAT_ID] {
+        fields.push(Field::new(id, Kind::Unsigned).optional().nullable().unknown_capable());
+    }
+    for id in [f::NAVAL_TRANSFER_MEMBERSHIP, f::MOVEMENT_TARGET_PRESENT] {
+        fields.push(Field::new(id, Kind::Boolean).optional().nullable().unknown_capable());
+    }
+    fields.push(Field::new(f::FIRST_COMBAT_STATUS, Kind::Unsigned));
 
     Schema {
         domain: DOMAIN,
@@ -211,7 +226,16 @@ pub fn schema() -> Schema {
             shape: Shape::KeyedSet,
             fields,
         }, Collection {
-            collection_id: MOVEMENT_ROUTE,
+            collection_id: ORDINARY_ROUTE,
+            shape: Shape::KeyedSet,
+            fields: vec![
+                Field::new(route_field::DIV_ID, Kind::Unsigned).key(0),
+                Field::new(route_field::DIV_TYPE, Kind::Unsigned).key(1),
+                Field::new(route_field::INDEX, Kind::Unsigned).key(2),
+                Field::new(route_field::PROVINCE, Kind::ContentId),
+            ],
+        }, Collection {
+            collection_id: ALTERNATE_ROUTE,
             shape: Shape::KeyedSet,
             fields: vec![
                 Field::new(route_field::DIV_ID, Kind::Unsigned).key(0),
@@ -257,12 +281,17 @@ mod tests {
     #[test]
     fn route_schema_preserves_identity_order_and_unknown_count() {
         let schema = schema();
-        let count = schema.collections[0].fields.iter().find(|field| field.field_id == field::MOVEMENT_ROUTE_COUNT).unwrap();
-        assert!(count.nullable && count.unknown_capable);
-        let route = &schema.collections[1];
-        assert_eq!(route.collection_id, MOVEMENT_ROUTE);
-        assert_eq!(route.key_fields().iter().map(|field| field.field_id).collect::<Vec<_>>(), vec![route_field::DIV_ID, route_field::DIV_TYPE, route_field::INDEX]);
-        assert_eq!(route.fields.last().unwrap().kind, Kind::ContentId);
+        for (index, (collection, count)) in [(ORDINARY_ROUTE, field::ORDINARY_ROUTE_COUNT),
+            (ALTERNATE_ROUTE, field::ALTERNATE_ROUTE_COUNT)].into_iter().enumerate() {
+            let count = schema.collections[0].fields.iter().find(|field| field.field_id == count).unwrap();
+            assert!(count.nullable && count.unknown_capable);
+            let route = &schema.collections[index + 1];
+            assert_eq!(route.collection_id, collection);
+            assert_eq!(route.key_fields().iter().map(|field| field.field_id).collect::<Vec<_>>(), vec![route_field::DIV_ID, route_field::DIV_TYPE, route_field::INDEX]);
+            assert_eq!(route.fields.last().unwrap().kind, Kind::ContentId);
+        }
+        assert!(!schema.collections.iter().any(|collection| collection.collection_id == 2));
+        assert!(!schema.collections[0].fields.iter().any(|field| [11, 27].contains(&field.field_id)));
     }
 
     #[test]
@@ -285,15 +314,16 @@ mod tests {
     }
 
     #[test]
-    fn move_progress_is_exact_and_the_bars_are_not() {
+    fn signed_movement_numerator_is_exact_and_the_bars_are_not() {
         let s = schema();
         let c = &s.collections[0];
         let find = |id: u32| c.fields.iter().find(|f| f.field_id == id).unwrap();
         assert_eq!(
-            find(field::MOVE_PROGRESS).quant,
+            find(field::MOVEMENT_NUMERATOR_RAW).quant,
             Quant::Exact,
             "the viewer interpolates position from it, so the appearance test forbids rounding"
         );
+        assert_eq!(find(field::MOVEMENT_NUMERATOR_RAW).kind, Kind::Signed);
         for id in [field::ORGANISATION, field::STRENGTH] {
             assert_eq!(
                 find(id).quant,
@@ -310,8 +340,8 @@ mod tests {
         let s = schema();
         assert_eq!(
             s.collections[0].fields.len(),
-            37,
-            "2 key + 35 sampleable non-key fields"
+            45,
+            "2 key + 43 semantic fields"
         );
     }
 
@@ -392,7 +422,10 @@ mod tests {
             .collect();
         assert_eq!(
             unknown_capable,
-            vec![field::MAX_ORGANISATION, field::DIG_IN, field::DIG_IN_CAP, field::MOVEMENT_ROUTE_COUNT]
+            vec![field::MAX_ORGANISATION, field::MOVING, field::MOVEMENT_NUMERATOR_RAW,
+                field::DIG_IN, field::DIG_IN_CAP, field::ORDINARY_ROUTE_COUNT, field::ALTERNATE_ROUTE_COUNT,
+                field::RETREAT_RAW, field::FIRST_COMBAT_CLASS, field::FIRST_COMBAT_TYPE, field::FIRST_COMBAT_ID,
+                field::NAVAL_TRANSFER_MEMBERSHIP, field::MOVEMENT_TARGET_PRESENT]
         );
     }
 

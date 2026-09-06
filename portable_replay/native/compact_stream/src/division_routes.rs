@@ -1,5 +1,5 @@
-pub const FORMAT_MARKER: u32 = u32::from_le_bytes(*b"D2R5");
-pub const ROW_LEN: usize = 184;
+pub const FORMAT_MARKER: u32 = u32::from_le_bytes(*b"D2R6");
+pub const ROW_LEN: usize = 216;
 pub const MAX_ROUTE_PROVINCES: usize = 65_536;
 pub const MAX_TEMPLATE_EXCLUSIONS: usize = 65_536;
 pub const MAX_MODEL_ENTITY_BYTES: usize = 4096;
@@ -26,9 +26,52 @@ pub struct TemplateModelPreference {
     pub excluded_variants: Option<Vec<Option<u32>>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CombatClass { Land, BorderWar }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CombatIdentity {
+    pub class: CombatClass,
+    pub kind: u32,
+    pub id: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MovementScalars {
+    pub numerator_raw: Option<i64>,
+    pub naval_transfer_membership: Option<bool>,
+    pub movement_target_present: Option<bool>,
+    pub retreat_raw: Option<u8>,
+    pub first_combat: Option<Option<CombatIdentity>>,
+}
+
+pub fn write_movement_scalars(payload: &mut [u8], index: usize, value: MovementScalars) {
+    let base = 32 + index * ROW_LEN;
+    let flags = word(payload, base + 8) & !3;
+    payload[base + 8..base + 12].copy_from_slice(&(flags | (u32::from(value.numerator_raw.is_some()) << 1) | u32::from(value.numerator_raw.is_some_and(|raw| raw != 0))).to_le_bytes());
+    payload[base + 24..base + 32].copy_from_slice(&value.numerator_raw.unwrap_or(0).to_le_bytes());
+    for (at, value) in [(192, value.naval_transfer_membership), (196, value.movement_target_present)] {
+        let raw = value.map_or(0, |value| 1 + u32::from(value));
+        payload[base + at..base + at + 4].copy_from_slice(&raw.to_le_bytes());
+    }
+    payload[base + 200..base + 204].copy_from_slice(&value.retreat_raw.map_or(0, |value| u32::from(value) + 1).to_le_bytes());
+    let (status, kind, id) = match value.first_combat {
+        None => (0_u32, 0, 0),
+        Some(None) => (1, 0, 0),
+        Some(Some(identity)) => {
+            assert!(identity.id > 0 && identity.id <= i32::MAX as u32);
+            assert!(identity.class != CombatClass::Land || identity.kind == 62);
+            (if identity.class == CombatClass::Land { 2 } else { 3 }, identity.kind, identity.id)
+        }
+    };
+    for (at, value) in [(204, status), (208, kind), (212, id)] {
+        payload[base + at..base + at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+}
+
 pub fn append_inputs<'a>(
     payload: &mut Vec<u8>,
-    routes: impl ExactSizeIterator<Item = Option<&'a [u32]>>,
+    routes: impl ExactSizeIterator<Item = (Option<&'a [u32]>, Option<&'a [u32]>)>,
     preferences: impl ExactSizeIterator<Item = Option<&'a TemplateModelPreference>>,
     acclimatization: impl ExactSizeIterator<Item = Option<&'a Acclimatization>>,
 ) {
@@ -39,19 +82,16 @@ pub fn append_inputs<'a>(
     assert_eq!(payload.len(), 32 + rows * ROW_LEN);
     payload[28..32].copy_from_slice(&FORMAT_MARKER.to_le_bytes());
     let mut cursor = 0u32;
-    for (index, route) in routes.enumerate() {
-        let Some(route) = route else { continue };
-        assert!(route.len() <= MAX_ROUTE_PROVINCES);
-        let descriptor = 32 + index * ROW_LEN + 120;
-        payload[descriptor..descriptor + 4].copy_from_slice(&cursor.to_le_bytes());
-        payload[descriptor + 4..descriptor + 8]
-            .copy_from_slice(&(route.len() as u32 + 1).to_le_bytes());
-        for province in route {
-            payload.extend_from_slice(&province.to_le_bytes());
+    for (index, (ordinary, alternate)) in routes.enumerate() {
+        for (offset, route) in [(120, ordinary), (184, alternate)] {
+            let Some(route) = route else { continue };
+            assert!(route.len() <= MAX_ROUTE_PROVINCES);
+            let descriptor = 32 + index * ROW_LEN + offset;
+            payload[descriptor..descriptor + 4].copy_from_slice(&cursor.to_le_bytes());
+            payload[descriptor + 4..descriptor + 8].copy_from_slice(&(route.len() as u32 + 1).to_le_bytes());
+            for province in route { payload.extend_from_slice(&province.to_le_bytes()); }
+            cursor = cursor.checked_add(route.len() as u32).expect("bounded division route pool");
         }
-        cursor = cursor
-            .checked_add(route.len() as u32)
-            .expect("bounded division route pool");
     }
     let mut cursor = 0u32;
     for (index, preference) in preferences.iter().copied().enumerate() {
@@ -186,26 +226,49 @@ impl<'a> DivisionRoutes<'a> {
             if word(payload, base + 8) & (1 << 12) != 0 && head_status != 0 {
                 return Err("deleted division carries route head".into());
             }
-            let start = word(payload, base + 120) as usize;
-            let count = word(payload, base + 124) as usize;
-            if count == 0 {
-                if start != 0 {
-                    return Err("unavailable division route has pool offset".into());
+            let flags = word(payload, base + 8);
+            let numerator = i64::from_le_bytes(payload[base + 24..base + 32].try_into().unwrap());
+            if flags & (1 << 1) == 0 && numerator != 0 {
+                return Err("unavailable division movement numerator carries bytes".into());
+            }
+            if (flags & 1 != 0) != (flags & 2 != 0 && numerator != 0) {
+                return Err("division moving flag disagrees with exact numerator".into());
+            }
+            if word(payload, base + 192) > 2 || word(payload, base + 196) > 2
+                || word(payload, base + 200) > 256 {
+                return Err("division movement scalar status invalid".into());
+            }
+            let status = word(payload, base + 204);
+            let kind = word(payload, base + 208);
+            let id = word(payload, base + 212);
+            let count = word(payload, base + 48);
+            if !match status {
+                0 => kind == 0 && id == 0,
+                1 => kind == 0 && id == 0 && count == 0,
+                2 => kind == 62 && id > 0 && id <= i32::MAX as u32 && count > 0,
+                3 => id > 0 && id <= i32::MAX as u32 && count > 0,
+                _ => false,
+            } {
+                return Err("division first combat identity or count custody invalid".into());
+            }
+            if flags & (1 << 12) != 0 && (flags & (1 << 1) != 0
+                || payload[base + 192..base + ROW_LEN].iter().any(|value| *value != 0)) {
+                return Err("deleted division carries movement scalars".into());
+            }
+            for offset in [120, 184] {
+                let start = word(payload, base + offset) as usize;
+                let count = word(payload, base + offset + 4) as usize;
+                if count == 0 {
+                    if start != 0 { return Err("unavailable division route has pool offset".into()); }
+                    continue;
                 }
-                continue;
-            }
-            if word(payload, base + 8) & (1 << 12) != 0 {
-                return Err("deleted division carries a route".into());
-            }
-            let len = count - 1;
-            if len > MAX_ROUTE_PROVINCES || start != consumed {
-                return Err("division route exceeds bound or breaks ordered pool custody".into());
-            }
-            consumed = consumed
-                .checked_add(len)
-                .ok_or("division route pool overflow")?;
-            if consumed > (payload.len() - pool) / 4 {
-                return Err("division route extends beyond pool".into());
+                if flags & (1 << 12) != 0 { return Err("deleted division carries a route".into()); }
+                let len = count - 1;
+                if len > MAX_ROUTE_PROVINCES || start != consumed {
+                    return Err("division route exceeds bound or breaks ordered pool custody".into());
+                }
+                consumed = consumed.checked_add(len).ok_or("division route pool overflow")?;
+                if consumed > (payload.len() - pool) / 4 { return Err("division route extends beyond pool".into()); }
             }
         }
         let entity_pool = pool + consumed * 4;
@@ -396,14 +459,38 @@ impl<'a> DivisionRoutes<'a> {
         })
     }
 
-    pub fn route(&self, index: usize) -> Option<Vec<u32>> {
+    pub fn ordinary_route(&self, index: usize) -> Option<Vec<u32>> { self.route_at(index, 120) }
+    pub fn alternate_route(&self, index: usize) -> Option<Vec<u32>> { self.route_at(index, 184) }
+
+    pub fn movement_scalars(&self, index: usize) -> MovementScalars {
         assert!(index < self.rows);
         let base = 32 + index * ROW_LEN;
-        let count = word(self.payload, base + 124) as usize;
+        let boolean = |at| match word(self.payload, base + at) { 0 => None, 1 => Some(false), 2 => Some(true), _ => unreachable!("validated boolean") };
+        let first_combat = match word(self.payload, base + 204) {
+            0 => None,
+            1 => Some(None),
+            status => Some(Some(CombatIdentity {
+                class: if status == 2 { CombatClass::Land } else { CombatClass::BorderWar },
+                kind: word(self.payload, base + 208), id: word(self.payload, base + 212),
+            })),
+        };
+        MovementScalars {
+            numerator_raw: (word(self.payload, base + 8) & (1 << 1) != 0)
+                .then(|| i64::from_le_bytes(self.payload[base + 24..base + 32].try_into().unwrap())),
+            naval_transfer_membership: boolean(192), movement_target_present: boolean(196),
+            retreat_raw: (word(self.payload, base + 200) != 0).then(|| (word(self.payload, base + 200) - 1) as u8),
+            first_combat,
+        }
+    }
+
+    fn route_at(&self, index: usize, offset: usize) -> Option<Vec<u32>> {
+        assert!(index < self.rows);
+        let base = 32 + index * ROW_LEN;
+        let count = word(self.payload, base + offset + 4) as usize;
         if count == 0 {
             return None;
         }
-        let start = self.pool + word(self.payload, base + 120) as usize * 4;
+        let start = self.pool + word(self.payload, base + offset) as usize * 4;
         Some(
             self.payload[start..start + (count - 1) * 4]
                 .chunks_exact(4)
@@ -467,7 +554,7 @@ mod tests {
         bytes[8..12].copy_from_slice(&(routes.len() as u32).to_le_bytes());
         append_inputs(
             &mut bytes,
-            routes.iter().map(|route| route.as_deref()),
+            routes.iter().map(|route| (route.as_deref(), None)),
             std::iter::repeat_n(None, routes.len()),
             std::iter::repeat_n(None, routes.len()),
         );
@@ -486,7 +573,7 @@ mod tests {
             "unsupported division route format marker"
         );
         legacy[28..32].copy_from_slice(&FORMAT_MARKER.to_le_bytes());
-        assert_eq!(DivisionRoutes::parse(&legacy).unwrap().route(0), None);
+        assert_eq!(DivisionRoutes::parse(&legacy).unwrap().ordinary_route(0), None);
     }
 
     #[test]
@@ -521,7 +608,7 @@ mod tests {
         let mut payload = vec![0; 32 + 3 * ROW_LEN];
         payload[8..12].copy_from_slice(&3_u32.to_le_bytes());
         for index in 0..3 { write_current_template(&mut payload, index, Some(Some(73))); }
-        append_inputs(&mut payload, [None; 3].into_iter(), preferences.iter().map(Some), [None; 3].into_iter());
+        append_inputs(&mut payload, [(None, None); 3].into_iter(), preferences.iter().map(Some), [None; 3].into_iter());
         let parsed = DivisionRoutes::parse(&payload).unwrap();
         for (index, expected) in preferences.iter().enumerate() {
             assert_eq!(parsed.template_preference(index).as_ref(), Some(expected));
@@ -565,14 +652,14 @@ mod tests {
         }
         append_inputs(
             &mut bytes,
-            routes.iter().map(|r| r.as_deref()),
+            routes.iter().map(|r| (r.as_deref(), None)),
             preferences.iter().map(|p| p.as_ref()),
             std::iter::repeat_n(None, routes.len()),
         );
         let parsed = DivisionRoutes::parse(&bytes).unwrap();
         for index in 0..3 {
             assert_eq!(parsed.template_preference(index), preferences[index]);
-            assert_eq!(parsed.route(index), routes[index]);
+            assert_eq!(parsed.ordinary_route(index), routes[index]);
         }
         assert_eq!(parsed.route_head(0), None);
         assert_eq!(parsed.route_head(1), Some(None));
@@ -628,7 +715,7 @@ mod tests {
         bytes[8..12].copy_from_slice(&3u32.to_le_bytes());
         append_inputs(
             &mut bytes,
-            std::iter::repeat_n(None, 3),
+            std::iter::repeat_n((None, None), 3),
             std::iter::repeat_n(None, 3),
             values.iter().map(|v| v.as_ref()),
         );
@@ -664,7 +751,7 @@ mod tests {
         let bytes = payload(&routes);
         let parsed = DivisionRoutes::parse(&bytes).unwrap();
         for (index, route) in routes.iter().enumerate() {
-            assert_eq!(&parsed.route(index), route);
+            assert_eq!(&parsed.ordinary_route(index), route);
         }
     }
 
@@ -689,4 +776,63 @@ mod tests {
         absent_offset[152..156].copy_from_slice(&1u32.to_le_bytes());
         assert!(DivisionRoutes::parse(&absent_offset).is_err());
     }
+    #[test]
+    fn movement_inputs_round_trip_signed_width_both_routes_and_every_truth_state() {
+        let ordinary = [None, Some(vec![]), Some(vec![19, 17, 19])];
+        let alternate = [Some(vec![]), None, Some(vec![22, 21])];
+        let scalars = [MovementScalars::default(), MovementScalars {
+            numerator_raw: Some(0), naval_transfer_membership: Some(false), movement_target_present: Some(false),
+            retreat_raw: Some(0), first_combat: Some(None),
+        }, MovementScalars {
+            numerator_raw: Some(i64::MIN + 1), naval_transfer_membership: Some(true), movement_target_present: Some(true),
+            retreat_raw: Some(255), first_combat: Some(Some(CombatIdentity { class: CombatClass::Land, kind: 62, id: 91 })),
+        }];
+        let mut bytes = vec![0; 32 + 3 * ROW_LEN];
+        bytes[8..12].copy_from_slice(&3_u32.to_le_bytes());
+        bytes[32 + 2 * ROW_LEN + 48..32 + 2 * ROW_LEN + 52].copy_from_slice(&2_u32.to_le_bytes());
+        for (index, value) in scalars.iter().enumerate() { write_movement_scalars(&mut bytes, index, *value); }
+        append_inputs(&mut bytes, ordinary.iter().zip(&alternate).map(|(a,b)| (a.as_deref(), b.as_deref())),
+            [None; 3].into_iter(), [None; 3].into_iter());
+        let parsed = DivisionRoutes::parse(&bytes).unwrap();
+        for index in 0..3 {
+            assert_eq!(parsed.ordinary_route(index), ordinary[index]);
+            assert_eq!(parsed.alternate_route(index), alternate[index]);
+            assert_eq!(parsed.movement_scalars(index), scalars[index]);
+        }
+        for raw in [i64::MIN, i64::MAX, -1, 0, 0x1_0000_0000] {
+            write_movement_scalars(&mut bytes, 2, MovementScalars { numerator_raw: Some(raw), ..scalars[2] });
+            assert_eq!(DivisionRoutes::parse(&bytes).unwrap().movement_scalars(2).numerator_raw, Some(raw));
+        }
+    }
+
+    #[test]
+    fn movement_inputs_refuse_old_marker_and_invalid_scalar_or_reference_custody() {
+        let valid = payload(&[None]);
+        for marker in [u32::from_le_bytes(*b"D2R5"), 0] {
+            let mut bytes = valid.clone(); bytes[28..32].copy_from_slice(&marker.to_le_bytes());
+            assert!(DivisionRoutes::parse(&bytes).err().unwrap().contains("unsupported division route format"));
+        }
+        for (offset, raw) in [(192, 3_u32), (196, 3), (200, 257), (204, 4), (208, 62), (212, 91), (24, 1)] {
+            let mut bytes = valid.clone(); bytes[32 + offset..36 + offset].copy_from_slice(&raw.to_le_bytes());
+            assert!(DivisionRoutes::parse(&bytes).is_err(), "offset {offset}");
+        }
+        for numerator in [None, Some(0), Some(-1), Some(1), Some(i64::MIN), Some(i64::MAX)] {
+            let mut bytes = valid.clone();
+            write_movement_scalars(&mut bytes, 0, MovementScalars { numerator_raw: numerator, ..Default::default() });
+            assert_eq!(word(&bytes, 40) & 1 != 0, numerator.is_some_and(|raw| raw != 0));
+            assert!(DivisionRoutes::parse(&bytes).is_ok());
+            bytes[40] ^= 1;
+            assert!(DivisionRoutes::parse(&bytes).err().unwrap().contains("moving flag disagrees"));
+        }
+        let mut bytes = valid.clone();
+        write_movement_scalars(&mut bytes, 0, MovementScalars { first_combat: Some(Some(CombatIdentity {
+            class: CombatClass::Land, kind: 62, id: 91,
+        })), ..Default::default() });
+        assert!(DivisionRoutes::parse(&bytes).is_err());
+        bytes[32 + 48..32 + 52].copy_from_slice(&1_u32.to_le_bytes());
+        assert!(DivisionRoutes::parse(&bytes).is_ok());
+        bytes[32 + 8..32 + 12].copy_from_slice(&(1_u32 << 12).to_le_bytes());
+        assert!(DivisionRoutes::parse(&bytes).is_err());
+    }
+
 }

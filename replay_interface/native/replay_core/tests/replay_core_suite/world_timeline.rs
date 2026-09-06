@@ -128,7 +128,7 @@ fn snapshot_100() -> Value {
               "state_id": 10, "template_id": 100, "template_type": 7,
               "template_name": "1. Infanterie", "template_role": "infantry",
               "strength": 1.0, "organisation": 30.0, "moving": true,
-              "move_target_province": 1001, "move_progress": 0.4, "in_combat": false,
+              "move_target_province": 1001, "movement_numerator_raw": 40_000, "in_combat": false,
               "equipment": [ { "archetype": "infantry_equipment", "equip_id": 11,
                                "equip_type": 22, "amount": 900.0 } ] },
             { "div_id": 6, "owner": "GER", "location_province": 1001,

@@ -7,7 +7,6 @@ const ALTERNATE_ROUTE: usize = 0x210;
 #[derive(PartialEq, Eq)]
 struct RouteRead {
     identity: [u64; 4],
-    selected: usize,
     header: [u64; 3],
     provinces: Vec<u32>,
 }
@@ -270,15 +269,10 @@ fn route_once<M: DecodeMemory + ?Sized>(
     module: usize,
     body: usize,
     id: u32,
+    offset: usize,
 ) -> Option<RouteRead> {
     let identity = division_identity(mem, module, body, id)?;
-    let alternate_count = mem.u32(body.checked_add(ALTERNATE_ROUTE + 12)?)?;
-    let selected = if alternate_count != 0 {
-        ALTERNATE_ROUTE
-    } else {
-        ORDINARY_ROUTE
-    };
-    let at = body.checked_add(selected)?;
+    let at = body.checked_add(offset)?;
     let data = mem.u64(at)?;
     let capacity = mem.u32(at.checked_add(8)?)?;
     let count = mem.u32(at.checked_add(12)?)?;
@@ -301,53 +295,114 @@ fn route_once<M: DecodeMemory + ?Sized>(
     }
     Some(RouteRead {
         identity,
-        selected,
         header: [data, capacity as u64, count as u64],
         provinces,
     })
 }
 
-#[cfg(test)]
-fn stable_route<M: DecodeMemory + ?Sized>(
-    mem: &M,
-    module: usize,
-    body: usize,
-    id: u32,
-    between: impl FnOnce(),
-) -> Option<Vec<u32>> {
-    let first = route_once(mem, module, body, id)?;
-    between();
-    let second = route_once(mem, module, body, id)?;
-    (first == second).then_some(first.provinces)
+#[derive(Default, Debug, PartialEq, Eq)]
+pub(super) struct MotionInputs {
+    pub ordinary_route: Option<Vec<u32>>,
+    pub alternate_route: Option<Vec<u32>>,
+    pub route_head: Option<Option<u32>>,
+    pub scalars: compact_contract::division_routes::MovementScalars,
 }
 
-fn stable_route_inputs<M: DecodeMemory + ?Sized>(
-    mem: &M,
-    module: usize,
-    body: usize,
-    id: u32,
-    between: impl FnOnce(),
-) -> (Option<Vec<u32>>, Option<Option<u32>>) {
-    let route = route_once(mem, module, body, id);
-    let head = head_once(mem, module, body, id);
-    between();
-    let next_route = route_once(mem, module, body, id);
-    let next_head = head_once(mem, module, body, id);
-    if route != next_route || head != next_head {
-        return (None, None);
+#[derive(PartialEq, Eq)]
+struct CombatRead {
+    header: [u64; 3],
+    pointer: u64,
+    identity: Option<compact_contract::division_routes::CombatIdentity>,
+    vtables: [u64; 2],
+}
+
+fn first_combat_once<M: DecodeMemory + ?Sized>(mem: &M, module: usize, body: usize) -> Option<CombatRead> {
+    use compact_contract::division_routes::{CombatClass, CombatIdentity};
+    let data = mem.u64(body.checked_add(0x198)?)?;
+    let capacity = mem.u32(body.checked_add(0x1a0)?)?;
+    let count = mem.u32(body.checked_add(DIVISION_OFF_COMBAT_REF_COUNT)?)?;
+    if count > capacity || count > MAX_DIVISION_COMBAT_REF_COUNT { return None; }
+    let header = [data, capacity as u64, count as u64];
+    if count == 0 { return Some(CombatRead { header, pointer: 0, identity: None, vtables: [0; 2] }); }
+    if !is_map_control_heap_pointer(data as usize) { return None; }
+    let pointer = mem.u64(data as usize)?;
+    if !is_map_control_heap_pointer(pointer as usize) { return None; }
+    let primary = pointer as usize;
+    let combat = primary.checked_add(LAND_COMBAT_MANAGER_BODY_DELTA)?;
+    let vtables = [mem.u64(primary)?, mem.u64(combat)?];
+    let class = if vtables == [(module + LAND_COMBAT_PRIMARY_VTABLE_RVA) as u64, (module + LAND_COMBAT_BODY_VTABLE_RVA) as u64] {
+        CombatClass::Land
+    } else if vtables == [(module + LAND_BORDER_WAR_COMBAT_PRIMARY_VTABLE_RVA) as u64, (module + LAND_BORDER_WAR_COMBAT_BODY_VTABLE_RVA) as u64] {
+        CombatClass::BorderWar
+    } else { return None };
+    let kind = mem.u32(combat.checked_add(LAND_COMBAT_OFF_TYPE)?)?;
+    let id = mem.u32(combat.checked_add(LAND_COMBAT_OFF_ID)?)?;
+    if id == 0 || id > i32::MAX as u32 || (class == CombatClass::Land && kind != LAND_COMBAT_TYPE) { return None; }
+    Some(CombatRead { header, pointer, identity: Some(CombatIdentity { class, kind, id }), vtables })
+}
+
+#[derive(PartialEq, Eq)]
+struct MotionRead {
+    identity: [u64; 4],
+    ordinary: Option<RouteRead>,
+    alternate: Option<RouteRead>,
+    head: Option<HeadRead>,
+    numerator: Option<i64>,
+    transfer: Option<u64>,
+    target: Option<u64>,
+    retreat: Option<u8>,
+    combat: Option<CombatRead>,
+}
+
+fn motion_once<M: DecodeMemory + ?Sized>(mem: &M, module: usize, body: usize, id: u32,
+    location: u32, combat_count: u32) -> Option<MotionRead> {
+    let identity = division_identity(mem, module, body, id)?;
+    if identity[3] != location as u64 || mem.u32(body.checked_add(DIVISION_OFF_COMBAT_REF_COUNT)?)? != combat_count { return None; }
+    let value = MotionRead {
+        identity,
+        ordinary: route_once(mem, module, body, id, ORDINARY_ROUTE),
+        alternate: route_once(mem, module, body, id, ALTERNATE_ROUTE),
+        head: head_once(mem, module, body, id),
+        numerator: mem.scalar::<8>(body.checked_add(0x230)?).map(i64::from_le_bytes),
+        transfer: mem.u64(body.checked_add(0x2e8)?),
+        target: mem.u64(body.checked_add(0x1d8)?),
+        retreat: mem.scalar::<1>(body.checked_add(0x23c)?).map(|bytes| bytes[0]),
+        combat: first_combat_once(mem, module, body),
+    };
+    if division_identity(mem, module, body, id) != Some(identity)
+        || mem.u32(body.checked_add(DIVISION_OFF_COMBAT_REF_COUNT)?)? != combat_count
+        || value.combat.as_ref().is_some_and(|read| read.header[2] != combat_count as u64) {
+        return None;
     }
-    (
-        route.map(|value| value.provinces),
-        head.map(|value| value.province),
-    )
+    Some(value)
 }
 
-pub(super) fn current_route_inputs(
-    module: usize,
-    body: usize,
-    id: u32,
-) -> (Option<Vec<u32>>, Option<Option<u32>>) {
-    stable_route_inputs(&LIVE_MEMORY, module, body, id, || {})
+fn stable_motion_inputs<M: DecodeMemory + ?Sized>(mem: &M, module: usize, body: usize, id: u32,
+    location: u32, combat_count: u32, between: impl FnOnce()) -> MotionInputs {
+    let Some(first) = motion_once(mem, module, body, id, location, combat_count) else { return MotionInputs::default() };
+    between();
+    let Some(second) = motion_once(mem, module, body, id, location, combat_count) else { return MotionInputs::default() };
+    if first.identity != second.identity { return MotionInputs::default(); }
+    let stable = |before, after| if before == after { before } else { None };
+    MotionInputs {
+        ordinary_route: (first.ordinary == second.ordinary).then(|| first.ordinary.map(|value| value.provinces)).flatten(),
+        alternate_route: (first.alternate == second.alternate).then(|| first.alternate.map(|value| value.provinces)).flatten(),
+        route_head: (first.head == second.head).then(|| first.head.map(|value| value.province)).flatten(),
+        scalars: compact_contract::division_routes::MovementScalars {
+            numerator_raw: if first.numerator == second.numerator { first.numerator } else { None },
+            naval_transfer_membership: stable(first.transfer, second.transfer).map(|pointer| pointer != 0),
+            movement_target_present: stable(first.target, second.target).map(|pointer| pointer != 0),
+            retreat_raw: if first.retreat == second.retreat { first.retreat } else { None },
+            first_combat: (first.combat == second.combat).then(|| first.combat.map(|value| value.identity)).flatten(),
+        },
+    }
+}
+
+pub(super) fn current_motion_inputs(module: usize, body: usize, id: u32, location: u32, combat_count: u32) -> MotionInputs {
+    let Some(hour) = read_research_game_hour_raw(module) else { return MotionInputs::default() };
+    let value = stable_motion_inputs(&LIVE_MEMORY, module, body, id, location, combat_count, || {});
+    if read_research_game_hour_raw(module) != Some(hour) { return MotionInputs::default(); }
+    value
 }
 
 #[derive(PartialEq, Eq)]
@@ -523,6 +578,9 @@ mod tests {
         mem.put32(body + DIVISION_OFF_LOCATION, 12);
         mem.vector(body, ORDINARY_ROUTE, body + 0x10000, &[19, 17, 19]);
         mem.vector(body, ALTERNATE_ROUTE, 0, &[]);
+        mem.put64(body + 0x198, 0); mem.put32(body + 0x1a0, 0); mem.put32(body + 0x1a4, 0);
+        mem.put64(body + 0x230, 0); mem.put64(body + 0x2e8, 0); mem.put64(body + 0x1d8, 0);
+        mem.put(body + 0x23c, &[0]);
         (mem, module, body)
     }
     #[test]
@@ -537,14 +595,12 @@ mod tests {
         mem.put32(province + CPROVINCE_OFF_ID, 23);
         mem.put32(body + DIVISION_OFF_LOCATION, 12);
         assert_eq!(stable_head(&mem, module, body, 7, || {}), Some(Some(23)));
-        assert_eq!(
-            stable_route_inputs(&mem, module, body, 7, || {}),
-            (Some(vec![19, 17, 19]), Some(Some(23)))
-        );
-        assert_eq!(
-            stable_route_inputs(&mem, module, body, 7, || mem.put32(body + 0x10000, 18)),
-            (None, None)
-        );
+        let input = stable_motion_inputs(&mem, module, body, 7, 12, 0, || {});
+        assert_eq!(input.ordinary_route, Some(vec![19, 17, 19]));
+        assert_eq!(input.route_head, Some(Some(23)));
+        let changed = stable_motion_inputs(&mem, module, body, 7, 12, 0, || mem.put32(body + 0x10000, 18));
+        assert_eq!(changed.ordinary_route, None);
+        assert_eq!(changed.route_head, Some(Some(23)));
         mem.put32(body + 0x10000, 19);
         assert_eq!(
             stable_head(&mem, module, body, 7, || mem
@@ -778,44 +834,92 @@ mod tests {
     }
 
     #[test]
-    fn selected_route_preserves_engine_order_and_alternate_precedence() {
+    fn both_routes_preserve_native_order_and_independent_availability() {
         let (mem, module, body) = fixture();
-        assert_eq!(
-            stable_route(&mem, module, body, 7, || {}),
-            Some(vec![19, 17, 19])
-        );
+        let read = || stable_motion_inputs(&mem, module, body, 7, 12, 0, || {});
+        assert_eq!(read().ordinary_route, Some(vec![19, 17, 19]));
+        assert_eq!(read().alternate_route, Some(vec![]));
         mem.vector(body, ALTERNATE_ROUTE, body + 0x20000, &[22, 21]);
-        assert_eq!(
-            stable_route(&mem, module, body, 7, || {}),
-            Some(vec![22, 21])
-        );
+        assert_eq!(read().ordinary_route, Some(vec![19, 17, 19]));
+        assert_eq!(read().alternate_route, Some(vec![22, 21]));
         mem.0.borrow_mut().remove(&(body + ORDINARY_ROUTE));
-        assert_eq!(
-            stable_route(&mem, module, body, 7, || {}),
-            Some(vec![22, 21])
-        );
-    }
-    #[test]
-    fn selected_route_distinguishes_empty_unread_invalid_and_changed() {
-        let (mem, module, body) = fixture();
-        mem.vector(body, ORDINARY_ROUTE, 0, &[]);
-        assert_eq!(stable_route(&mem, module, body, 7, || {}), Some(vec![]));
+        assert_eq!(read().ordinary_route, None);
+        assert_eq!(read().alternate_route, Some(vec![22, 21]));
         mem.0.borrow_mut().remove(&(body + ALTERNATE_ROUTE + 12));
-        assert_eq!(stable_route(&mem, module, body, 7, || {}), None);
+        assert_eq!(read().alternate_route, None);
+    }
+
+    #[test]
+    fn grouped_motion_preserves_zero_signed_width_and_nullable_pointer_changes() {
         let (mem, module, body) = fixture();
-        assert_eq!(
-            stable_route(&mem, module, body, 7, || mem.put32(body + 0x10000, 20)),
-            None
-        );
-        assert_eq!(
-            stable_route(&mem, module, body, 7, || mem
-                .put32(body + DIVISION_OFF_ID_ID, 8)),
-            None
-        );
+        let read = || stable_motion_inputs(&mem, module, body, 7, 12, 0, || {});
+        assert_eq!(read().scalars.numerator_raw, Some(0));
+        assert_eq!(read().scalars.naval_transfer_membership, Some(false));
+        assert_eq!(read().scalars.movement_target_present, Some(false));
+        assert_eq!(read().scalars.retreat_raw, Some(0));
+        assert_eq!(read().scalars.first_combat, Some(None));
+        for raw in [i64::MIN, i64::MAX, -1, 0x1_0000_0000] {
+            mem.put64(body + 0x230, raw as u64);
+            assert_eq!(read().scalars.numerator_raw, Some(raw));
+        }
+        mem.put(body + 0x23c, &[255]);
+        assert_eq!(read().scalars.retreat_raw, Some(255));
+        for offset in [0x2e8, 0x1d8] {
+            mem.put64(body + offset, (body + 0x90000) as u64);
+        }
+        assert_eq!(read().scalars.naval_transfer_membership, Some(true));
+        assert_eq!(read().scalars.movement_target_present, Some(true));
+        let torn = stable_motion_inputs(&mem, module, body, 7, 12, 0, || {
+            mem.put64(body + 0x2e8, (body + 0xa0000) as u64);
+            mem.put64(body + 0x1d8, (body + 0xb0000) as u64);
+            mem.put64(body + 0x230, 123);
+        });
+        assert_eq!(torn.scalars.naval_transfer_membership, None);
+        assert_eq!(torn.scalars.movement_target_present, None);
+        assert_eq!(torn.scalars.numerator_raw, None);
+        assert_eq!(torn.scalars.retreat_raw, Some(255));
+        mem.0.borrow_mut().remove(&(body + 0x230 + 7));
+        assert_eq!(read().scalars.numerator_raw, None);
+        let changed = stable_motion_inputs(&mem, module, body, 7, 12, 0, || mem.put32(body + DIVISION_OFF_ID_ID, 8));
+        assert_eq!(changed, MotionInputs::default());
+    }
+
+    #[test]
+    fn first_combat_preserves_native_first_identity_and_refuses_reorder_or_reuse() {
+        use compact_contract::division_routes::{CombatClass, CombatIdentity};
         let (mem, module, body) = fixture();
-        mem.put32(body + ORDINARY_ROUTE + 12, MAX_ROUTE_PROVINCES as u32 + 1);
-        assert_eq!(stable_route(&mem, module, body, 7, || {}), None);
+        let data = body + 0x60000;
+        let first = body + 0x70000;
+        let second = body + 0x80000;
+        mem.put64(body + 0x198, data as u64); mem.put32(body + 0x1a0, 2); mem.put32(body + 0x1a4, 2);
+        mem.put64(data, first as u64); mem.put64(data + 8, second as u64);
+        for (pointer, id) in [(first, 91), (second, 92)] {
+            mem.put64(pointer, (module + LAND_COMBAT_PRIMARY_VTABLE_RVA) as u64);
+            mem.put64(pointer + 0x10, (module + LAND_COMBAT_BODY_VTABLE_RVA) as u64);
+            mem.put32(pointer + 0x18, LAND_COMBAT_TYPE); mem.put32(pointer + 0x1c, id);
+        }
+        let expected = Some(Some(CombatIdentity { class: CombatClass::Land, kind: 62, id: 91 }));
+        assert_eq!(stable_motion_inputs(&mem, module, body, 7, 12, 2, || {}).scalars.first_combat, expected);
+        let changed = stable_motion_inputs(&mem, module, body, 7, 12, 2, || {
+            mem.put64(data, second as u64); mem.put64(data + 8, first as u64);
+        });
+        assert_eq!(changed.scalars.first_combat, None);
+        assert_eq!(stable_motion_inputs(&mem, module, body, 7, 12, 2, || {}).scalars.first_combat.unwrap().unwrap().id, 92);
+        let changed = stable_motion_inputs(&mem, module, body, 7, 12, 2, || mem.put32(second + 0x1c, 93));
+        assert_eq!(changed.scalars.first_combat, None);
+        mem.put64(second, 0);
+        assert_eq!(stable_motion_inputs(&mem, module, body, 7, 12, 2, || {}).scalars.first_combat, None);
+    }
+
+    #[test]
+    fn both_route_pools_reject_invalid_or_changed_bytes_without_dropping_other_scalars() {
+        let (mem, module, body) = fixture();
+        let changed = stable_motion_inputs(&mem, module, body, 7, 12, 0, || mem.put32(body + 0x10000, 20));
+        assert_eq!(changed.ordinary_route, None);
+        assert_eq!(changed.scalars.numerator_raw, Some(0));
         mem.vector(body, ORDINARY_ROUTE, body + 0x10000, &[0]);
-        assert_eq!(stable_route(&mem, module, body, 7, || {}), None);
+        assert_eq!(stable_motion_inputs(&mem, module, body, 7, 12, 0, || {}).ordinary_route, None);
+        mem.put32(body + ALTERNATE_ROUTE + 12, MAX_ROUTE_PROVINCES as u32 + 1);
+        assert_eq!(stable_motion_inputs(&mem, module, body, 7, 12, 0, || {}).alternate_route, None);
     }
 }

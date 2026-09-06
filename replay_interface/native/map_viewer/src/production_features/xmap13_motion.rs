@@ -109,12 +109,12 @@ impl Xmap13MotionState {
                 let key = identity.canonical_id();
                 let previous = (!reset).then(|| self.helpers.get(&key)).flatten();
                 let state = match models.inputs(&identity) {
-                    Ok(input) => match input.movement_route {
-                        Leaf::Measured(route) if route.is_empty() => match previous {
+                    Ok(input) => match input.selected_route() {
+                        Ok(route) if route.is_empty() => match previous {
                             Some(SplineState::DerivationUnavailable | SplineState::SemanticUnavailable) => SplineState::DerivationUnavailable,
                             Some(SplineState::Empty) | None => SplineState::Empty,
                         },
-                        Leaf::Measured(_) => SplineState::DerivationUnavailable,
+                        Ok(_) => SplineState::DerivationUnavailable,
                         _ => SplineState::SemanticUnavailable,
                     },
                     Err(_) => SplineState::SemanticUnavailable,
