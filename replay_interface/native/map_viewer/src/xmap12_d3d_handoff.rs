@@ -2762,7 +2762,7 @@ pub(crate) unsafe fn create_depth_state(
     let mut desc = D3D11_DEPTH_STENCIL_DESC {
         DepthEnable: 1,
         DepthWriteMask: D3D11_DEPTH_WRITE_MASK_ALL,
-        DepthFunc: D3D11_COMPARISON_LESS,
+        DepthFunc: D3D11_COMPARISON_LESS_EQUAL,
         StencilEnable: 0,
         StencilReadMask: u8::MAX,
         StencilWriteMask: u8::MAX,

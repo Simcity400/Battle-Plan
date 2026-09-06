@@ -12,11 +12,13 @@ mod tests {
         device: *mut winapi::um::d3d11::ID3D11Device,
         context: *mut winapi::um::d3d11::ID3D11DeviceContext,
         expected: [u8; 4],
+        replace_pixel: bool,
     ) {
         use crate::d3d11_device::{native_d3d11_hr, D3dPtr};
         use std::ptr;
         use winapi::shared::{dxgiformat::*, dxgitype::DXGI_SAMPLE_DESC};
         use winapi::um::d3d11::*;
+        if replace_pixel {
         let ps = crate::d3d_compile_stage(
             "float4 main() : SV_Target { return float4(0.25, 0.5, 0.75, 1.0); }",
             crate::ShaderStage::Pixel,
@@ -30,6 +32,7 @@ mod tests {
         )
         .unwrap();
         sky.pixel = D3dPtr::from_raw(pixel, "sky test pixel").unwrap();
+        }
         let color_desc = D3D11_TEXTURE2D_DESC {
             Width: 32,
             Height: 16,
@@ -169,6 +172,46 @@ mod tests {
     }
 
     #[test]
+    fn sky_root_states_ignore_included_descriptors_during_actual_creation_and_draw() {
+        use crate::d3d11_device::{native_d3d11_hr, D3dPtr};
+        use std::{fs, ptr};
+        use winapi::um::{d3d11::*, d3dcommon::*};
+        let root = crate::test_support::temp_test_dir("sky_root_states");
+        unsafe {
+            let mut device = ptr::null_mut(); let mut context = ptr::null_mut();
+            native_d3d11_hr(D3D11CreateDevice(ptr::null_mut(), D3D_DRIVER_TYPE_WARP, ptr::null_mut(), 0,
+                &D3D_FEATURE_LEVEL_11_0, 1, D3D11_SDK_VERSION, &mut device, ptr::null_mut(), &mut context), "sky root WARP").unwrap();
+            let device = D3dPtr::from_raw(device, "sky root device").unwrap();
+            let _context = D3dPtr::from_raw(context, "sky root context").unwrap();
+            for (case, states, selection, expected) in [
+                ("default", "", "", [64,128,191,255]),
+                ("selected", "BlendState Local { BlendEnable=no WriteMask=\"RED\" }", "BlendState=\"Local\"", [64,0,255,64]),
+                ("missing", "", "BlendState=\"Local\"", [64,128,191,255]),
+            ] {
+                let case_root = root.join(case); let fx = case_root.join("gfx/FX"); fs::create_dir_all(&fx).unwrap();
+                fs::write(fx.join("shared.fxh"), r#"
+VertexStruct Input { int2 position : POSITION; }
+VertexShader = { MainCode VS [[ float4 main(Input i) : SV_POSITION { return float4(i.position,1,1); } ]] }
+PixelShader = { MainCode PS [[ float4 main() : SV_Target { return float4(0.25,0.5,0.75,1); } ]] }
+BlendState BlendState { BlendEnable=no WriteMask="GREEN" }
+BlendState Local { BlendEnable=no WriteMask="BLUE" }
+DepthStencilState IncludedDepth { DepthEnable=yes }
+RasterizerState IncludedRaster { CullMode="FRONT" }
+"#).unwrap();
+                fs::write(fx.join("sky.shader"), format!("Includes={{\"shared.fxh\"}}\n{states}\nEffect sky {{ VertexShader=\"VS\" PixelShader=\"PS\" {selection} }}")).unwrap();
+                fs::write(fx.join("defines_hlsl_dx11.fxh"), "").unwrap();
+                let source = GameFileResolver::vanilla(&case_root).unwrap();
+                let paths = ["gfx/fx/sky.shader".into(), "gfx/fx/shared.fxh".into(), crate::shader_compile::DX11_PLATFORM_HEADER.to_ascii_lowercase()].into_iter().collect();
+                let (resolver, _) = crate::test_support::admitted_vanilla_resolver(&source, &paths, case);
+                let result = NativeMapSky::create(device.as_raw(), &resolver, 5632, 2048, &"a".repeat(64));
+                let mut sky = result.unwrap();
+                draw_after_conflicting_rasterizer(&mut sky, device.as_raw(), context, expected, false);
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn sky_authored_red_write_mask_preserves_other_target_channels() {
         use crate::d3d11_device::{native_d3d11_hr, D3dPtr};
         use std::{fs, ptr};
@@ -229,7 +272,7 @@ STextureSamplerCube CreateSamplerCube(TextureCube t, SamplerState s) { STextureS
             (*sky.blend.as_raw()).GetDesc(&mut desc);
             assert_eq!(desc.RenderTarget[0].BlendEnable, 0);
             assert_eq!(desc.RenderTarget[0].RenderTargetWriteMask, D3D11_COLOR_WRITE_ENABLE_RED as u8);
-            draw_after_conflicting_rasterizer(&mut sky, device.as_raw(), context.as_raw(), [64, 0, 255, 64]);
+            draw_after_conflicting_rasterizer(&mut sky, device.as_raw(), context.as_raw(), [64, 0, 255, 64], true);
             let rows = [("BlendEnable", "yes"), ("SourceBlend", "SRC_ALPHA"),
                 ("DestBlend", "INV_SRC_ALPHA"), ("BlendOp", "REV_SUBTRACT")]
                 .map(|(k, v)| (k.to_owned(), v.to_owned()));
@@ -293,7 +336,7 @@ Effect sky { VertexShader = "VS" PixelShader = "PS" }
             native_d3d11_hr((*device.as_raw()).CreateSamplerState(&descriptor, &mut previous), "sky previous sampler").unwrap();
             let previous = D3dPtr::from_raw(previous, "sky previous sampler").unwrap();
             (*context).PSSetSamplers(0, 1, &previous.as_raw());
-            draw_after_conflicting_rasterizer(&mut sky, device.as_raw(), context, [64, 128, 191, 255]);
+            draw_after_conflicting_rasterizer(&mut sky, device.as_raw(), context, [64, 128, 191, 255], true);
             drop(context_owner);
         }
         drop(resolver); drop(source); fs::remove_dir_all(root).unwrap();
@@ -388,7 +431,7 @@ Effect sky { VertexShader = "VS" PixelShader = "PS" }
             (*sky.sampler.as_ref().unwrap().as_raw()).GetDesc(&mut sampler);
             assert_eq!(sampler.Filter, D3D11_FILTER_MIN_MAG_MIP_LINEAR);
             assert_eq!(sampler.AddressU, D3D11_TEXTURE_ADDRESS_CLAMP);
-            draw_after_conflicting_rasterizer(&mut sky, device.as_raw(), context, [64, 128, 191, 255]);
+            draw_after_conflicting_rasterizer(&mut sky, device.as_raw(), context, [64, 128, 191, 255], true);
         }
     }
 }
@@ -661,8 +704,7 @@ unsafe fn create_sky_blend(
     }
     let effect = root.effect("sky").ok_or("sky effect is absent")?;
     let name = effect.blend_state.as_deref().unwrap_or("BlendState");
-    let rows = files.iter().rev().find_map(|(_, file)| file.blend_states.get(name))
-        .map(Vec::as_slice).unwrap_or(&[]);
+    let rows = root.blend_states.get(name).map(Vec::as_slice).unwrap_or(&[]);
     let identity = Sha256::hex(&serde_json::to_vec(&(name, rows))?);
     Ok((crate::xmap12_d3d_handoff::create_blend_state(device, rows)?, identity))
 }

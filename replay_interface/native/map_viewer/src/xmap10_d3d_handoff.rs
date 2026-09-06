@@ -3437,16 +3437,7 @@ mod native {
                     content_payload_sha256: content.payload_sha256.clone(), descriptor_sha256 }));
             }
             let files = crate::shader_compile::effect_translation_unit_files(resolver, "gfx/FX/pdxmap.shader")?;
-            let root = &files.last().ok_or("terrainunlit translation unit is empty")?.1;
-            if root.effect_count("terrainunlit") != 1 { return Err("terrainunlit effect selection is ambiguous".into()); }
-            let effect = root.effect("terrainunlit").ok_or("terrainunlit effect is absent")?;
-            if effect.depth_stencil_state.is_some() || effect.rasterizer_state.is_some()
-                || files.iter().any(|(_, file)| !file.depth_stencil_states.is_empty() || !file.rasterizer_states.is_empty()) {
-                return Err("XMAP10 terrainunlit declares depth/raster state outside the verified default producer".into());
-            }
-            let blend_name = effect.blend_state.as_deref().unwrap_or("BlendState");
-            let blend_rows = files.iter().rev().find_map(|(_, file)| file.blend_states.get(blend_name))
-                .map(Vec::as_slice).unwrap_or(&[]);
+            let blend_rows = terrain_unlit_blend_rows(&files)?;
             let terrain_blend = crate::xmap12_d3d_handoff::create_blend_state(device.as_raw(), blend_rows)?;
             let terrain_depth = create_terrain_unlit_depth(&device)?;
             let targets = NativeXmap10ScreenTargets::create(&device, &plan, allocation_generation)?;
@@ -3846,6 +3837,13 @@ mod native {
         let mut raw = ptr::null_mut();
         hr((*device.as_raw()).CreateDepthStencilState(&desc, &mut raw), "CreateDepthStencilState(terrainunlit)")?;
         D3dPtr::from_raw(raw, "terrainunlit depth")
+    }
+
+    fn terrain_unlit_blend_rows(files: &[(String, crate::EffectFile)]) -> Result<&[(String, String)]> {
+        let root = &files.last().ok_or("terrainunlit translation unit is empty")?.1;
+        if root.effect_count("terrainunlit") != 1 { return Err("terrainunlit effect selection is ambiguous".into()); }
+        let effect = root.effect("terrainunlit").ok_or("terrainunlit effect is absent")?;
+        selected_effect_state(effect.blend_state.as_deref(), "BlendState", &root.blend_states)
     }
 
     unsafe fn compile_terrain_unlit(
@@ -4370,6 +4368,80 @@ Effect Alpha { VertexShader = "VS" PixelShader = "Alpha" BlendState = "Green" }
     }
 
     #[cfg(test)]
+    mod root_effect_state_tests {
+        use super::*;
+
+        #[test]
+        fn included_states_do_not_change_actual_blur_draw_or_terrain_admission() {
+            use std::fs;
+            use winapi::um::d3dcommon::{D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0};
+            let root = crate::test_support::temp_test_dir("screen_root_states");
+            unsafe {
+                let mut device = ptr::null_mut(); let mut context = ptr::null_mut();
+                hr(D3D11CreateDevice(ptr::null_mut(), D3D_DRIVER_TYPE_WARP, ptr::null_mut(), 0,
+                    &D3D_FEATURE_LEVEL_11_0, 1, D3D11_SDK_VERSION, &mut device, ptr::null_mut(), &mut context), "root state WARP").unwrap();
+                let device = D3dPtr::from_raw(device, "root state device").unwrap(); let _context = D3dPtr::from_raw(context, "root state context").unwrap();
+                let target = create_target(&device, &"a".repeat(64), 8, 8, 28, "root state target").unwrap();
+                let vertices = create_shadow_blur_vertices(&device).unwrap(); let raster = create_rasterizer(&device).unwrap(); let depth = create_depth_disabled(&device).unwrap();
+                let mut desc: D3D11_TEXTURE2D_DESC = mem::zeroed(); (*target._texture.as_raw()).GetDesc(&mut desc); desc.Usage=D3D11_USAGE_STAGING; desc.BindFlags=0; desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+                let mut staging = ptr::null_mut(); hr((*device.as_raw()).CreateTexture2D(&desc, ptr::null(), &mut staging), "root state staging").unwrap(); let staging=D3dPtr::from_raw(staging, "root state staging").unwrap();
+                for (case, states, selection, expected) in [
+                    ("default", "", "", [64u8,128,191,255]),
+                    ("unused", "", "", [64,128,191,255]),
+                    ("selected", "BlendState Local { BlendEnable=no WriteMask=\"RED\" }", "BlendState=\"Local\"", [64,0,255,64]),
+                    ("missing", "", "BlendState=\"Local\"", [64,128,191,255]),
+                ] {
+                    let case_root=root.join(case); let fx=case_root.join("gfx/FX"); fs::create_dir_all(&fx).unwrap();
+                    fs::write(fx.join("shared.fxh"), r#"
+VertexStruct Input { float4 position : POSITION; }
+VertexShader = { MainCode VS [[ float4 main(Input i) : SV_POSITION { return i.position; } ]] }
+PixelShader = { MainCode PS [[ float4 main() : SV_Target { return float4(0.25,0.5,0.75,1); } ]] }
+BlendState BlendState { BlendEnable=no WriteMask="GREEN" }
+BlendState Local { BlendEnable=no WriteMask="BLUE" }
+DepthStencilState IncludedDepth { DepthEnable=yes }
+RasterizerState IncludedRaster { CullMode="FRONT" }
+"#).unwrap();
+                    let depth_selection = if case == "unused" { "" } else { "DepthStencilState=\"UnusedDepth\" RasterizerState=\"UnusedRaster\"" };
+                    fs::write(fx.join("shadowblur.shader"), format!("Includes={{\"shared.fxh\"}}\n{states}\nEffect ShadowBlurHorizontal {{ VertexShader=\"VS\" PixelShader=\"PS\" {selection} }}\nDepthStencilState UnusedDepth {{ DepthEnable=no }}\nRasterizerState UnusedRaster {{ CullMode=\"FRONT\" }}\nEffect terrainunlit {{ VertexShader=\"VS\" PixelShader=\"PS\" {selection} {depth_selection} }}\nEffect LutBlend1 {{ VertexShader=\"VS\" PixelShader=\"PS\" BlendState=\"MissingBlend\" DepthStencilState=\"MissingDepth\" RasterizerState=\"MissingRaster\" }}")).unwrap();
+                    fs::copy(fx.join("shadowblur.shader"), fx.join("lut_blender.shader")).unwrap();
+                    fs::write(fx.join("defines_hlsl_dx11.fxh"), "").unwrap();
+                    let source=GameFileResolver::vanilla(&case_root).unwrap(); let paths=["gfx/fx/shadowblur.shader".into(), "gfx/fx/lut_blender.shader".into(), "gfx/fx/shared.fxh".into(), crate::shader_compile::DX11_PLATFORM_HEADER.to_ascii_lowercase()].into_iter().collect();
+                    let (resolver,_)=crate::test_support::admitted_vanilla_resolver(&source,&paths,case);
+                    let files=crate::shader_compile::effect_translation_unit_files(&resolver,"gfx/FX/shadowblur.shader").unwrap();
+                    let rows=terrain_unlit_blend_rows(&files);
+                    let program=compile_shadow_blur(&device,&resolver,"ShadowBlurHorizontal");
+                    let terrain_blend=crate::xmap12_d3d_handoff::create_blend_state(device.as_raw(),rows.unwrap()).unwrap();
+                    let main = compile_program(&device, &resolver, "gfx/FX/shadowblur.shader", "ShadowBlurHorizontal", Xmap10ProgramRole::BrightPass, &[]).unwrap();
+                    let lut = compile_lut_program(&device, &resolver, "LutBlend1").unwrap();
+                    let mut default_blend: D3D11_BLEND_DESC = mem::zeroed(); let mut default_depth: D3D11_DEPTH_STENCIL_DESC = mem::zeroed(); let mut default_raster: D3D11_RASTERIZER_DESC = mem::zeroed();
+                    (*lut.program.blend.as_ref().unwrap().state.as_raw()).GetDesc(&mut default_blend);
+                    (*lut.depth.as_raw()).GetDesc(&mut default_depth); (*lut.raster.as_raw()).GetDesc(&mut default_raster);
+                    assert_eq!((default_blend.RenderTarget[0].BlendEnable, default_blend.RenderTarget[0].RenderTargetWriteMask), (0, 15));
+                    assert_eq!((default_depth.DepthEnable, default_depth.DepthWriteMask, default_depth.DepthFunc), (1, D3D11_DEPTH_WRITE_MASK_ALL, D3D11_COMPARISON_LESS_EQUAL));
+                    assert_eq!((default_raster.FillMode, default_raster.CullMode), (D3D11_FILL_SOLID, D3D11_CULL_BACK));
+                    (*main.blend.as_ref().unwrap().state.as_raw()).GetDesc(&mut default_blend);
+                    assert_eq!(default_blend.RenderTarget[0].RenderTargetWriteMask, if case=="selected"{1}else{15});
+                    let program=program.unwrap(); let mut terrain_desc:D3D11_BLEND_DESC=mem::zeroed(); let mut blur_desc:D3D11_BLEND_DESC=mem::zeroed();
+                    (*terrain_blend.as_raw()).GetDesc(&mut terrain_desc); (*program.blend.as_raw()).GetDesc(&mut blur_desc);
+                    assert_eq!(terrain_desc.RenderTarget[0].RenderTargetWriteMask,if case=="selected"{1}else{15});
+                    assert_eq!(terrain_desc.RenderTarget[0].RenderTargetWriteMask,blur_desc.RenderTarget[0].RenderTargetWriteMask);
+                    let layout=create_shadow_blur_input_layout(&device,&program.program.vertex_bytecode).unwrap();
+                    (*context).ClearRenderTargetView(target.rtv.as_raw(),&[1.0,0.0,1.0,0.25]); (*context).OMSetRenderTargets(1,&target.rtv.as_raw(),ptr::null_mut());
+                    (*context).RSSetViewports(1,&D3D11_VIEWPORT{TopLeftX:0.0,TopLeftY:0.0,Width:8.0,Height:8.0,MinDepth:0.0,MaxDepth:1.0});
+                    (*context).RSSetState(raster.as_raw()); (*context).OMSetDepthStencilState(depth.as_raw(),0); (*context).IASetInputLayout(layout.as_raw());
+                    (*context).IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP); (*context).IASetVertexBuffers(0,1,&vertices.as_raw(),&24,&0);
+                    program.bind(context,ptr::null_mut()); (*context).Draw(4,0); (*context).OMSetRenderTargets(0,ptr::null(),ptr::null_mut());
+                    (*context).CopyResource(staging.as_raw().cast(),target._texture.as_raw().cast()); let mut mapped:D3D11_MAPPED_SUBRESOURCE=mem::zeroed();
+                    hr((*context).Map(staging.as_raw().cast(),0,D3D11_MAP_READ,0,&mut mapped),"root state readback").unwrap();
+                    for row in 0..8 { let bytes=std::slice::from_raw_parts((mapped.pData as *const u8).add(row*mapped.RowPitch as usize),32); assert!(bytes.chunks_exact(4).all(|pixel|pixel==expected),"{case}"); }
+                    (*context).Unmap(staging.as_raw().cast(),0);
+                }
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(test)]
     mod shadow_blur_binding_tests {
         use super::*;
 
@@ -4538,9 +4610,7 @@ Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" }
         let root = &files.last().ok_or("shadow blur translation unit is empty")?.1;
         if root.effect_count(effect_name) != 1 { return Err("shadow blur effect selection is ambiguous".into()); }
         let effect = root.effect(effect_name).ok_or("shadow blur effect is absent")?;
-        let blend_name = effect.blend_state.as_deref().unwrap_or("BlendState");
-        let blend_rows = files.iter().rev().find_map(|(_, file)| file.blend_states.get(blend_name))
-            .map(Vec::as_slice).unwrap_or(&[]);
+        let blend_rows = selected_effect_state(effect.blend_state.as_deref(), "BlendState", &root.blend_states)?;
         let blend = crate::xmap12_d3d_handoff::create_blend_state(device.as_raw(), blend_rows)?;
         let sampler = if pixel_reflection.resources.iter().any(|resource| resource.resource_type == 3) {
             Some(crate::xmap12_d3d_handoff::create_effect_sampler_on_device(
@@ -4937,11 +5007,7 @@ Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" }
         fallback: &str,
         states: &'a std::collections::BTreeMap<String, Vec<(String, String)>>,
     ) -> Result<&'a [(String, String)]> {
-        match states.get(name.unwrap_or(fallback)) {
-            Some(rows) => Ok(rows),
-            None if name.is_none() => Ok(&[]),
-            None => Err(format!("XMAP10 selected state {} is absent", name.unwrap()).into()),
-        }
+        Ok(states.get(name.unwrap_or(fallback)).map(Vec::as_slice).unwrap_or(&[]))
     }
 
     fn lut_blend_constants(factor1: f32, factor2: f32) -> LutBlendCb {
