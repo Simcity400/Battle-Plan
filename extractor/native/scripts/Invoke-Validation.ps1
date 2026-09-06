@@ -449,6 +449,47 @@ function Invoke-ShippingTests {
             }
         }
 
+        $recorderWorkerPath = $null
+        $recorderWorkerSha256 = $null
+        $needsRecorderWorker = @($plans | Where-Object {
+            $_.Program -eq 'cargo' -and $_.Arguments -contains 'replay_app_suite'
+        }).Count -gt 0
+        if ($needsRecorderWorker) {
+            # A bin test harness does not execute the recorder's production dispatch.
+            $workerBuild = Invoke-Captured -Program 'cargo' -Arguments @(
+                'build', '--locked', '--offline', '--jobs', '2',
+                '--manifest-path', (Join-Path $script:RepoRoot 'extractor/native/Cargo.toml'),
+                '-p', 'recorder_host', '--bin', 'collector_record', '--message-format=json'
+            )
+            if ($workerBuild.Stderr) { Write-Host $workerBuild.Stderr }
+            $workerArtifacts = @()
+            $workerBuildFinished = $false
+            foreach ($line in ($workerBuild.Stdout -split "`r?`n")) {
+                if ([string]::IsNullOrWhiteSpace($line)) { continue }
+                $message = $line | ConvertFrom-Json
+                if ($message.reason -eq 'build-finished') {
+                    $workerBuildFinished = $message.success -eq $true
+                }
+                if ($message.reason -eq 'compiler-artifact' -and
+                    $message.target.name -eq 'collector_record' -and
+                    @($message.target.kind) -contains 'bin' -and
+                    -not $message.profile.test -and $message.executable) {
+                    $workerArtifacts += [string]$message.executable
+                }
+            }
+            if (-not $workerBuildFinished -or $workerArtifacts.Count -ne 1) {
+                throw 'Recorder worker build did not identify exactly one production executable'
+            }
+            $recorderWorkerPath = [IO.Path]::GetFullPath($workerArtifacts[0])
+            if (-not (Test-Path -LiteralPath $recorderWorkerPath -PathType Leaf)) {
+                throw "Recorder worker artifact is missing: $recorderWorkerPath"
+            }
+            $recorderWorkerSha256 = (Get-FileHash -LiteralPath $recorderWorkerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            Write-Host ('PREFOLD_WORKER_PAIRING_V1 ' + (@{
+                path = $recorderWorkerPath; sha256 = $recorderWorkerSha256
+            } | ConvertTo-Json -Compress))
+        }
+
         # ---- Phase B: overlap the test phases. ------------------------------
         # nextest compiles through a short-lived cargo child process and does
         # NOT hold the target-dir lock while tests execute (measured probe:
@@ -464,8 +505,12 @@ function Invoke-ShippingTests {
         $lanes = @()
         foreach ($item in $plans) {
             $laneScript = {
-                param($Prog, $ArgArr, $Cwd)
+                param($Prog, $ArgArr, $Cwd, $WorkerPath, $WorkerSha256)
                 Set-Location $Cwd
+                if ($WorkerPath) {
+                    $env:BATTLE_PLAN_TEST_RECORDER_WORKER = $WorkerPath
+                    $env:BATTLE_PLAN_TEST_RECORDER_WORKER_SHA256 = $WorkerSha256
+                }
                 $output = & $Prog @ArgArr 2>&1
                 $exitCode = if ($null -eq $LASTEXITCODE) { 1 } else { $LASTEXITCODE }
                 [pscustomobject]@{ ExitCode = $exitCode; Output = @($output) }
@@ -473,7 +518,8 @@ function Invoke-ShippingTests {
             $lanes += @{
                 Name = [string]$item.Name
                 Job = Start-Job -ScriptBlock $laneScript -ArgumentList @(
-                    [string]$item.Program, (, @($item.Arguments)), $script:RepoRoot)
+                    [string]$item.Program, (, @($item.Arguments)), $script:RepoRoot,
+                    $recorderWorkerPath, $recorderWorkerSha256)
             }
         }
         $failures = @()

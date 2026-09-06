@@ -1,13 +1,17 @@
-#![cfg(any())]
+#![cfg(windows)]
 
 use std::fs::File;
 use std::io::Read as _;
 use std::os::windows::fs::OpenOptionsExt as _;
+use std::os::windows::process::CommandExt as _;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use snapshot::{pack, PackEntry, PackIdentity};
+
+const WORKER_EXE_NAME: &str = "Battle Plan Recorder.exe";
 
 const INTERNAL_VERB: &str = "--internal-prefold-worker-v1";
 const RECEIPT_SCHEMA: &str = "hoi4_prefold_worker_receipt_v2";
@@ -29,7 +33,7 @@ impl Drop for ChildGuard {
 }
 
 fn bounded_output(command: &mut Command, label: &str) -> Output {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.creation_flags(0x0800_0000).stdout(Stdio::piped()).stderr(Stdio::piped());
     let child = command
         .spawn()
         .unwrap_or_else(|error| panic!("spawn {label}: {error}"));
@@ -74,7 +78,7 @@ struct TempDir(PathBuf);
 impl TempDir {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "replay_app_self_prefold_{}_{}",
+            "replay_app_recorder_prefold_{}_{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -111,7 +115,8 @@ fn stream() -> Vec<u8> {
     country.extend_from_slice(&1u32.to_le_bytes());
     country.extend_from_slice(&1u32.to_le_bytes());
     country.extend_from_slice(&0u32.to_le_bytes());
-    country.extend_from_slice(b"CIDN\x02\x00\x08\x00");
+    country.extend_from_slice(b"CIDN\x03\x00\x08\x00");
+    country.extend_from_slice(&[0, 1, 0, 0, 0, 0, 0, 0]);
     country.extend_from_slice(&47u32.to_le_bytes());
     country.extend_from_slice(&3u16.to_le_bytes());
     country.extend_from_slice(b"GER");
@@ -125,7 +130,39 @@ fn stream() -> Vec<u8> {
 }
 
 fn executable_sha256(path: &Path) -> String {
-    snapshot::sha256::Sha256::hex(&portable_test_fs_retry::read(path).expect("read replay_app image"))
+    let mut file = File::open(path).expect("open executable for hashing");
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).expect("hash executable");
+        if count == 0 { break; }
+        hash.update(&buffer[..count]);
+    }
+    format!("{:x}", hash.finalize())
+}
+
+fn stage_binaries(root: &Path, include_worker: bool) -> (PathBuf, PathBuf) {
+    let app = root.join("replay_app.exe");
+    let built_app = Path::new(env!("CARGO_BIN_EXE_replay_app"));
+    std::fs::copy(built_app, &app).expect("stage built replay_app");
+    assert_eq!(executable_sha256(&app), executable_sha256(built_app));
+    let worker = root.join(WORKER_EXE_NAME);
+    if include_worker {
+        let built_worker = PathBuf::from(std::env::var_os("BATTLE_PLAN_TEST_RECORDER_WORKER").or_else(|| std::env::var_os("HOI4_TEST_RECORDER_WORKER"))
+            .expect("set BATTLE_PLAN_TEST_RECORDER_WORKER to the paired built recorder binary"));
+        let expected = std::env::var("BATTLE_PLAN_TEST_RECORDER_WORKER_SHA256").or_else(|_| std::env::var("HOI4_TEST_RECORDER_WORKER_SHA256"))
+            .expect("set BATTLE_PLAN_TEST_RECORDER_WORKER_SHA256 from the paired build receipt");
+        assert_eq!(expected.len(), 64);
+        assert_eq!(executable_sha256(&built_worker), expected, "paired recorder source image changed");
+        std::fs::copy(&built_worker, &worker).expect("stage exact recorder sibling");
+        assert_eq!(executable_sha256(&worker), expected);
+    }
+    println!("PREFOLD_DEPLOYMENT_V1 {}", serde_json::json!({
+        "app_sha256": executable_sha256(&app),
+        "worker_sha256": include_worker.then(|| executable_sha256(&worker)),
+        "worker_file_name": WORKER_EXE_NAME,
+    }));
+    (app, worker)
 }
 
 fn open_substitutable_read_handle(path: &Path) -> File {
@@ -173,13 +210,14 @@ fn write_compact_container(path: &Path, game_id: &str, compact_stream: &[u8]) {
 #[test]
 fn shipped_cli_opens_compact_recording_through_the_production_parent_worker() {
     let root = TempDir::new();
+    let (app, _) = stage_binaries(&root.0, true);
     let recording = root.0.join("parent-boundary.battleplan");
     write_compact_container(&recording, "production-parent-worker", &stream());
 
     let _scanner_guard = portable_test_fs_retry::open(&recording)
         .expect("hold the recording open across the scanner's window");
     let output = bounded_output(
-        Command::new(env!("CARGO_BIN_EXE_replay_app"))
+        Command::new(&app)
             .arg("--validate-recording")
             .arg(&recording),
         "shipped replay_app product validation path",
@@ -200,7 +238,7 @@ fn shipped_cli_opens_compact_recording_through_the_production_parent_worker() {
 }
 
 #[test]
-fn shipped_replay_app_worker_folds_the_inherited_source_handle_not_its_path() {
+fn shipped_recorder_worker_folds_the_inherited_source_handle_not_its_path() {
     let root = TempDir::new();
     let source_path = root.0.join("source.h4cr");
     let retained_path = root.0.join("retained-source.h4cr");
@@ -214,13 +252,13 @@ fn shipped_replay_app_worker_folds_the_inherited_source_handle_not_its_path() {
     std::fs::rename(&source_path, &retained_path).expect("move retained source pathname");
     std::fs::write(&source_path, vec![0xa5; bytes.len()]).expect("substitute source path");
 
-    let executable = PathBuf::from(env!("CARGO_BIN_EXE_replay_app"));
+    let (_, executable) = stage_binaries(&root.0, true);
     let executable_sha256 = executable_sha256(&executable);
     let output = bounded_output(
         Command::new(&executable)
             .arg(INTERNAL_VERB)
             .arg("--game-id")
-            .arg("production-self-worker")
+            .arg("production-recorder-worker")
             .arg("--source")
             .arg(&source_path)
             .arg("--snapshot-dir")
@@ -234,12 +272,12 @@ fn shipped_replay_app_worker_folds_the_inherited_source_handle_not_its_path() {
             .arg("--worker-executable-sha256")
             .arg(&executable_sha256)
             .stdin(Stdio::from(retained)),
-        "shipped replay_app internal worker",
+        "shipped recorder internal worker",
     );
 
     assert!(
         output.status.success(),
-        "self worker failed: {}",
+        "recorder worker failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(output.stderr.is_empty(), "successful worker wrote stderr");
@@ -248,7 +286,7 @@ fn shipped_replay_app_worker_folds_the_inherited_source_handle_not_its_path() {
     assert_eq!(receipt["schema"], RECEIPT_SCHEMA);
     assert_eq!(receipt["decoder_id"], DECODER_ID);
     assert_eq!(receipt["worker_executable_sha256"], executable_sha256);
-    assert_eq!(receipt["game_id"], "production-self-worker");
+    assert_eq!(receipt["game_id"], "production-recorder-worker");
     assert_eq!(receipt["identity_mode"], "legacy");
     let entries = receipt["entries"].as_array().expect("receipt entries");
     assert_eq!(entries.len(), 1, "one frame-end must produce one snapshot");
@@ -259,50 +297,65 @@ fn shipped_replay_app_worker_folds_the_inherited_source_handle_not_its_path() {
     let snapshot_sha256 = snapshot::sha256::Sha256::hex(&snapshot_bytes);
     assert_eq!(entry["byte_len"].as_u64(), Some(snapshot_bytes.len() as u64));
     assert_eq!(entry["sha256"].as_str(), Some(snapshot_sha256.as_str()));
+    let frame: serde_json::Value = serde_json::from_slice(&snapshot_bytes).expect("worker snapshot JSON");
+    assert_eq!(frame["hour_index"], HOUR);
+    assert_eq!(frame["measured_countries"]["known"], true);
+    assert_eq!(frame["measured_countries"]["tag_db_ids"], serde_json::json!([47]));
+    assert_eq!(frame["measured_countries"]["tags"], serde_json::json!(["GER"]));
+    assert_eq!(frame["tag_db_id_index"]["country_link_indices"],
+        serde_json::json!({"status":"unavailable","reason":"unreadable"}));
 }
 
 #[test]
-fn shipped_replay_app_worker_rejects_the_wrong_self_image_hash_before_folding() {
+fn shipped_recorder_worker_refuses_image_and_source_identity_mismatches() {
+    for wrong_image in [true, false] {
+        let root = TempDir::new();
+        let (_, executable) = stage_binaries(&root.0, true);
+        let source_path = root.0.join("source.h4cr");
+        let snapshot_dir = root.0.join("snapshots");
+        std::fs::create_dir(&snapshot_dir).expect("create snapshot spool");
+        let bytes = stream();
+        std::fs::write(&source_path, &bytes).expect("write compact source");
+        let source = portable_test_fs_retry::open(&source_path).expect("open compact source");
+        let source_hash = if wrong_image { snapshot::sha256::Sha256::hex(&bytes) } else { "00".repeat(32) };
+        let image_hash = if wrong_image { "00".repeat(32) } else { executable_sha256(&executable) };
+        let output = bounded_output(
+            Command::new(&executable)
+                .arg(INTERNAL_VERB).arg("--game-id").arg("identity-refusal")
+                .arg("--source").arg(&source_path)
+                .arg("--snapshot-dir").arg(&snapshot_dir)
+                .arg("--source-len").arg(bytes.len().to_string())
+                .arg("--source-sha256").arg(source_hash)
+                .arg("--identity-mode").arg("legacy")
+                .arg("--worker-executable-sha256").arg(image_hash)
+                .stdin(Stdio::from(source)),
+            "recorder worker identity refusal",
+        );
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty(), "no successful spool receipt may escape refusal");
+        let expected = if wrong_image { "internal prefold worker executable identity mismatch" }
+            else { "folded H4CR source identity mismatch" };
+        assert!(String::from_utf8_lossy(&output.stderr).contains(expected), "{}", String::from_utf8_lossy(&output.stderr));
+        if wrong_image {
+            assert_eq!(std::fs::read_dir(&snapshot_dir).unwrap().count(), 0,
+                "image rejection must precede folding");
+        }
+    }
+}
+
+#[test]
+fn shipped_cli_refuses_a_missing_recorder_sibling_without_falling_back_to_itself() {
     let root = TempDir::new();
-    let source_path = root.0.join("source.h4cr");
-    let snapshot_dir = root.0.join("snapshots");
-    std::fs::create_dir(&snapshot_dir).expect("create snapshot spool");
-    let bytes = stream();
-    std::fs::write(&source_path, &bytes).expect("write compact source");
-    let source = portable_test_fs_retry::open(&source_path).expect("open compact source");
-
-    let output = bounded_output(
-        Command::new(env!("CARGO_BIN_EXE_replay_app"))
-            .arg(INTERNAL_VERB)
-            .arg("--game-id")
-            .arg("wrong-image")
-            .arg("--source")
-            .arg(&source_path)
-            .arg("--snapshot-dir")
-            .arg(&snapshot_dir)
-            .arg("--source-len")
-            .arg(bytes.len().to_string())
-            .arg("--source-sha256")
-            .arg(snapshot::sha256::Sha256::hex(&bytes))
-            .arg("--identity-mode")
-            .arg("legacy")
-            .arg("--worker-executable-sha256")
-            .arg("00".repeat(32))
-            .stdin(Stdio::from(source)),
-        "worker with wrong self hash",
-    );
-
-    assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("internal prefold worker executable identity mismatch")
-    );
-    assert_eq!(
-        std::fs::read_dir(&snapshot_dir)
-            .expect("read snapshot directory")
-            .count(),
-        0,
-        "identity rejection must occur before snapshot publication"
-    );
+    let (app, worker) = stage_binaries(&root.0, false);
+    assert!(!worker.exists());
+    let recording = root.0.join("missing-worker.battleplan");
+    write_compact_container(&recording, "missing-recorder", &stream());
+    let before = executable_sha256(&recording);
+    let output = bounded_output(Command::new(app).arg("--validate-recording").arg(&recording),
+        "product open without recorder sibling");
+    assert!(!output.status.success());
+    let diagnostic = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(diagnostic.contains("recorder worker executable"), "{diagnostic}");
+    assert!(diagnostic.contains(WORKER_EXE_NAME), "{diagnostic}");
+    assert_eq!(executable_sha256(&recording), before);
 }

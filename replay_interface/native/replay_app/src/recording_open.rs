@@ -456,30 +456,7 @@ struct AuthenticatedSelfExecutable {
     _ancestors: Vec<File>,
 }
 
-pub(crate) struct AuthenticatedCurrentExecutable(AuthenticatedSelfExecutable);
-
-impl AuthenticatedCurrentExecutable {
-    pub(crate) fn open() -> Result<Self, PrefoldDecodeError> {
-        AuthenticatedSelfExecutable::open().map(Self)
-    }
-
-    pub(crate) fn sha256(&self) -> &str {
-        self.0.sha256()
-    }
-
-    pub(crate) fn verify_unchanged(&self) -> Result<(), PrefoldDecodeError> {
-        self.0.verify_unchanged()
-    }
-}
-
 impl AuthenticatedSelfExecutable {
-    fn open() -> Result<Self, PrefoldDecodeError> {
-        let path = std::env::current_exe().map_err(|error| {
-            PrefoldDecodeError::new(format!("resolve replay_app executable path: {error}"))
-        })?;
-        Self::open_path(path, "replay_app executable")
-    }
-
     fn open_prefold_worker() -> Result<Self, PrefoldDecodeError> {
         let replay_path = std::env::current_exe().map_err(|error| {
             PrefoldDecodeError::new(format!("resolve replay_app executable path: {error}"))
