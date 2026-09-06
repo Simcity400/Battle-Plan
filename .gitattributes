@@ -813,6 +813,12 @@ portable_replay/native/engine_evidence/artifacts/func_14088f680.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_14087a700.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1408758a0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/data/xui13_equipment/* text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_140bdfd90.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_14123ff10.instructions.txt text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_140be4970.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141630ee0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1416317d0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141632130.decompile.c text eol=lf

@@ -127,10 +127,19 @@ impl RetainedPlans {
                         || context.xmap15_selection.selected_plan.is_some() || !context.viewer.selected_object_ids.is_empty();
                     if object.selection_unproven { return Err(Missing::SelectedPresentation); }
                     if row.active { return Err(Missing::ActiveReadiness); }
-                    if !row.member_division_ids.is_empty() { return Err(Missing::AssignedUnitFilter); }
+                    let assigned = !row.member_division_ids.is_empty();
+                    let texture_variant = if assigned {
+                        // With no owner override, native count excludes at most its single deployed leader unit.
+                        let distinct = row.member_division_ids.iter().copied().collect::<BTreeSet<_>>();
+                        if distinct.len() < 2 || distinct.len() != row.member_division_ids.len()
+                            || distinct.iter().any(|id| units.division_identity_match_count(*id, country) != 1) {
+                            return Err(Missing::AssignedUnitFilter);
+                        }
+                        0
+                    } else { 1 };
                     let definition = definitions.iter().find(|definition| definition.name == "paradrop")
                         .ok_or(Missing::Definition)?;
-                    if definition.effective_texture_variant_count().map_err(|_| Missing::Definition)? < 2 {
+                    if definition.effective_texture_variant_count().map_err(|_| Missing::Definition)? <= u32::from(texture_variant) {
                         return Err(Missing::Definition);
                     }
                     if definition.culling_direction.is_some_and(|direction| direction != 0) {
@@ -143,13 +152,13 @@ impl RetainedPlans {
                             fallback_298: false, virtual_299: false, blitz_118: false,
                             army_group_style_39_and_378: false,
                         }, resolved_definition_name: "paradrop".into(),
-                        ordered_assigned_division_ids: Vec::new(), assigned: false, active: false,
+                        ordered_assigned_division_ids: row.member_division_ids.clone(), assigned, active: false,
                         route: object.route.clone(), manager_insertion_ordinal: None,
                         definition_group_ordinal: None, final_engine_draw_ordinal: None,
                         object_width_multiplier_f32_bits: 0, comparator_tie_17c_f32_bits: 0,
                         fade_in_f32_bits: definition.fade_in_f32_bits, fade_out_f32_bits: definition.fade_out_f32_bits,
                         culling_offset_f32_bits: 0, inner_rgba_f32_bits: colour.rgba_f32_bits,
-                        outer_rgba_f32_bits: object.outer_colour, texture_variant: 1,
+                        outer_rgba_f32_bits: object.outer_colour, texture_variant,
                         see_through: definition.technique.ends_with("Seethrough"), visible: true,
                         exact_head_vertices_f32_bits: None,
                         lifecycle_tombstone_sha256: None,
@@ -212,7 +221,9 @@ mod tests {
         fn formation_identity_match_count(&self, group: bool, id: u32, country: &str) -> usize {
             usize::from(!group && id == 17 && country == "GER")
         }
-        fn division_identity_match_count(&self, _: u32, _: &str) -> usize { 0 }
+        fn division_identity_match_count(&self, id: u32, country: &str) -> usize {
+            usize::from(country == "GER" && matches!(id, 301 | 205))
+        }
     }
 
     fn raw(colour: [u32; 4]) -> serde_json::Value {
@@ -380,6 +391,36 @@ mod tests {
         let replaced = lifecycle.apply(&fresh).unwrap();
         assert_eq!(replaced.created.len(), 1); assert_eq!(replaced.deleted.len(), 1);
         assert_eq!(adapter.runtime.lock().unwrap().objects.len(), 1);
+        let fresh_submission = ArrowSubmissionOrder::from_frames(ArrowFrameInput::Present(&fresh),
+            ArrowFrameInput::ViewInactive, &mut sort, Some(&replaced), &"a".repeat(64));
+        assert_eq!(fresh_submission.submissions.len(), 1, "{:?}", fresh_submission.refusals);
+        for (members, expected_variant) in [
+            (vec![301, 205], Some(0)), (vec![205, 301], Some(0)),
+            (vec![301], None), (vec![301, 999], None), (vec![301, 301], None),
+        ] {
+            let mut assigned_raw = raw(changed_colour);
+            let row = &mut assigned_raw["order_of_battle"]["extra"]["army_battleplans_depth_live"]["orders"][0];
+            row["path_provinces"] = serde_json::json!([1, 2]);
+            row["generation"] = serde_json::json!(6);
+            row["assigned_division_ids"] = serde_json::json!(members);
+            let assigned_world = crate::test_support::frame_with_rest(assigned_raw);
+            let assigned_output = prepare(&assigned_world, &unselected);
+            if let Some(variant) = expected_variant {
+                assert!(matches!(assigned_output.disposition, FamilyDisposition::Present { .. }));
+                let prepared = assigned_output.prepared_orders.unwrap().native.unwrap();
+                let Xmap15PreparedRow::Plan { semantic, .. } = &prepared.portable.ordered_rows[0] else { panic!() };
+                assert_eq!(semantic.texture_variant, variant);
+                assert!(semantic.assigned && !semantic.active);
+                assert_eq!(semantic.ordered_assigned_division_ids, members);
+                let witness = lifecycle.apply(&prepared).unwrap();
+                let submitted = ArrowSubmissionOrder::from_frames(ArrowFrameInput::Present(&prepared),
+                    ArrowFrameInput::ViewInactive, &mut sort, Some(&witness), &"a".repeat(64));
+                assert_eq!(submitted.submissions.len(), 1, "{:?}", submitted.refusals);
+            } else {
+                assert!(matches!(assigned_output.disposition, FamilyDisposition::Unavailable { .. }));
+                assert!(assigned_output.prepared_orders.unwrap().native.is_none());
+            }
+        }
         drop(adapter); drop(resolver); drop(raw_resolver);
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
