@@ -1433,3 +1433,9 @@ portable_replay/native/engine_evidence/artifacts/func_141634350.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_1410db8f0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141634350.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1424a7a90.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260906T221520Z-particle-native-tanf-projection-160b-9686ff28.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260906T221520Z-particle-native-tanf-projection-160b-9686ff28.job.json text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260716T044833Z-c01-all-remaining-matrix-constants-v1-520633fa.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260716T044833Z-c01-all-remaining-matrix-constants-v1-520633fa.job.json text eol=lf
+portable_replay/native/engine_evidence/artifacts/particle_projection_cases.json text eol=lf
+extractor/native/runs/paired_particle_viewer_runtime/author_projection_cases.py text eol=lf

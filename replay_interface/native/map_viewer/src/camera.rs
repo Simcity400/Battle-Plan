@@ -847,15 +847,12 @@ impl ViewerMapCameraState {
 
     pub(crate) fn entity_scene_inverse_matrices(&self) -> Result<([[f32; 4]; 4], [[f32; 4]; 4])> {
         self.validate()?;
-        let projection = self.projection()?;
         let inverse_view = native_entity_inverse_view(self.current_eye(), self.current_look_at(), [0.0, 1.0, 0.0])?;
-        let projection = [
-            [projection.x_scale, 0.0, 0.0, 0.0],
-            [0.0, projection.y_scale, 0.0, 0.0],
-            [0.0, 0.0, projection.depth_a, 1.0],
-            [0.0, 0.0, projection.depth_b, 0.0],
-        ];
-        Ok((invert_float4x4(projection)?, inverse_view))
+        let inverse_projection = native_entity_inverse_projection(
+            self.viewport_width as f32 / self.viewport_height as f32,
+            portable_render_stream::exact_math::viewer_uses_fma(),
+        )?;
+        Ok((inverse_projection, inverse_view))
     }
 
     pub fn inverse_view_projection_matrix(&self) -> Result<[[f32; 4]; 4]> {
@@ -1354,6 +1351,28 @@ fn perspective_divide(value: [f32; 4]) -> Result<[f32; 3]> {
     ])
 }
 
+fn native_entity_inverse_projection(aspect: f32, fma: bool) -> Result<[[f32; 4]; 4]> {
+    if !aspect.is_finite() || aspect <= 0.0 {
+        return Err("entity manager camera inverse projection has invalid aspect".into());
+    }
+    let tangent = portable_render_stream::exact_math::native_tan_unreduced(
+        ENGINE_MAP_CAMERA_FOV_Y_RAD * 0.5, fma,
+    ).map_err(|error| format!("entity manager camera inverse projection tangent: {error:?}"))?;
+    let near = ENGINE_MAP_CAMERA_NEAR;
+    let far = ENGINE_MAP_CAMERA_FAR;
+    let depth = (near * far) / (far - near);
+    let matrix = [
+        [tangent * aspect, 0.0, 0.0, 0.0],
+        [0.0, tangent, 0.0, 0.0],
+        [0.0, 0.0, 0.0, -1.0 / depth],
+        [0.0, 0.0, 1.0, 1.0 / near],
+    ];
+    if matrix.iter().flatten().any(|value| !value.is_finite()) {
+        return Err("entity manager camera inverse projection has nonfinite operands".into());
+    }
+    Ok(matrix)
+}
+
 fn native_entity_inverse_view(eye: [f32; 3], look: [f32; 3], up: [f32; 3]) -> Result<[[f32; 4]; 4]> {
     use crate::particle_runtime::native_normalize;
     // 1424e80a0 stores the three separately normalized rows, not a numerically inverted view.
@@ -1685,6 +1704,31 @@ mod tests {
             50.0,
         )
         .expect("viewer camera")
+    }
+
+    #[test]
+    fn entity_inverse_projection_matches_native_bits_through_camera_boundary() {
+        let cases: serde_json::Value = serde_json::from_str(portable_engine_evidence::particle_runtime::PROJECTION_CASES).unwrap();
+        for row in cases["projection"].as_array().unwrap() {
+            let mut camera = viewer_camera_fixture();
+            camera.viewport_width = row["viewport"][0].as_u64().unwrap() as u32;
+            camera.viewport_height = row["viewport"][1].as_u64().unwrap() as u32;
+            camera.reseal().unwrap();
+            let aspect = camera.viewport_width as f32 / camera.viewport_height as f32;
+            assert_eq!(aspect.to_bits(), row["aspect"].as_u64().unwrap() as u32);
+            for (name, fma) in [("sse", false), ("fma", true)] {
+                let expected: [[u32; 4]; 4] = std::array::from_fn(|r| std::array::from_fn(|c|
+                    row[name][r * 4 + c].as_u64().unwrap() as u32));
+                assert_eq!(native_entity_inverse_projection(aspect, fma).unwrap().map(|r| r.map(f32::to_bits)), expected);
+                if fma == portable_render_stream::exact_math::viewer_uses_fma() {
+                    let (actual, _) = camera.entity_scene_inverse_matrices().unwrap();
+                    assert_eq!(actual.map(|r| r.map(f32::to_bits)), expected);
+                }
+            }
+        }
+        for aspect in [0.0, -1.0, f32::INFINITY, f32::NAN] {
+            assert!(native_entity_inverse_projection(aspect, false).unwrap_err().to_string().contains("invalid aspect"));
+        }
     }
 
     #[test]
