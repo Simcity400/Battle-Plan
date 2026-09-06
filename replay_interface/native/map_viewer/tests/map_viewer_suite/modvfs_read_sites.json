@@ -4921,8 +4921,8 @@
   ],
   "replay_interface/native/replay_app/src/particle_functional.rs": [
     "let mut log = std::fs::OpenOptions::new()",
-    ".open(output)?;",
-    "\"recording\": recording, \"recording_bytes\": std::fs::metadata(&recording)?.len(),",
+    ".open(output).expect(\"create fresh paired-light functional receipt\");",
+    "\"recording\": recording, \"recording_bytes\": std::fs::metadata(&recording).expect(\"read recording metadata\").len(),",
     "log: &mut std::fs::File,"
   ],
   "replay_interface/native/replay_app/src/performance_bench.rs": [
