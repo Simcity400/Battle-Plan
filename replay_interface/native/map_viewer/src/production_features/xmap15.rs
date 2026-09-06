@@ -1,3 +1,4 @@
+mod runtime;
 
 use crate::{
     derive_xmap15_orders, FoundationFeatureContext, FoundationFeatureOutput, GameFileResolver,
@@ -95,6 +96,7 @@ pub(crate) struct Xmap15OrdersAdapter {
     /// they are what a recorded route province id stands for, and re-decoding
     /// `provinces.bmp` per frame would put a bitmap walk on the hot path.
     anchors: std::sync::Arc<std::sync::OnceLock<std::result::Result<ProvinceAnchors, String>>>,
+    runtime: std::sync::Arc<std::sync::Mutex<runtime::RetainedPlans>>,
 }
 
 impl Xmap15OrdersAdapter {
@@ -103,6 +105,7 @@ impl Xmap15OrdersAdapter {
             resolver: resolver.clone(),
             admission: admission.clone(),
             anchors: std::sync::Arc::new(std::sync::OnceLock::new()),
+            runtime: Default::default(),
         }
     }
 
@@ -123,6 +126,7 @@ impl ProductionMapFeatureAdapter for Xmap15OrdersAdapter {
     }
 
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput> {
+        self.runtime.lock().map_err(|_| "XMAP15 runtime lock poisoned")?.observe_selection(context);
         let assigned_stage = context
             .require_assigned_stage(XMAP15_ASSIGNED_STAGE_NAME, XMAP15_ASSIGNED_OPERATION_NAME)?
             .clone();
@@ -169,21 +173,6 @@ impl ProductionMapFeatureAdapter for Xmap15OrdersAdapter {
             )));
         }
 
-        if semantic_value(context.world_frame).is_none() {
-            // WHY the key is absent is the recorder's answer. A recording made
-            // by a recorder that has the XMAP15 producer carries the gate
-            // beside where the key would be, and that gate is the hour's own
-            // account: how much of the plan census the producer minted, against
-            // how many visual d54 orders, and which of its recorded inputs the
-            // hour did not carry.
-            return Ok(unavailable(&format!(
-                "this recording carries no key {}: the unconditional current-hour XMAP15 \
-                 semantic sidecar is absent; {}; {}",
-                replay_core::XMAP15_ORDERS_FRONTS_MOVEMENT_SEMANTIC_PATH.join("."),
-                xmap15_unavailable_account(context.world_frame),
-                xmap15_order_derivation_account(context.world_frame, &order_derivation)
-            )));
-        }
         let Some(units) = context.xmap15_units else {
             return Ok(unavailable(
                 "the exact current-hour XMAP13 division identity provider is absent",
@@ -204,15 +193,35 @@ impl ProductionMapFeatureAdapter for Xmap15OrdersAdapter {
             )
             .as_bytes(),
         );
-        let prepared = prepare_xmap15_frame(
-            &self.resolver,
-            &self.admission,
-            context.world_frame,
-            units,
-            context.xmap15_selection,
-            assigned_stage,
-            foundation_target_sha256,
-        )?;
+        let prepared = if semantic_value(context.world_frame).is_some() {
+            prepare_xmap15_frame(&self.resolver, &self.admission, context.world_frame,
+                units, context.xmap15_selection, assigned_stage, foundation_target_sha256)?
+        } else {
+            let mut retained = self.runtime.lock().map_err(|_| "XMAP15 runtime lock poisoned")?;
+            let mut next = retained.clone();
+            let Some(input) = next.prepare_inputs(context, &order_derivation, &self.resolver, &self.admission)? else {
+                return Ok(unavailable("the current D54 census is unavailable; retained viewer objects were preserved"));
+            };
+            let prepared = prepare_xmap15_rows(&self.resolver, &self.admission, context.world_frame,
+                units, context.xmap15_selection, assigned_stage, foundation_target_sha256, input)?;
+            *retained = next;
+            prepared
+        };
+        if prepared.portable.ordered_rows.is_empty() {
+            if let Some(runtime) = &prepared.portable.viewer_runtime {
+                if !runtime.refusals.is_empty() {
+                    return Ok(unavailable(&format!("viewer arrow inputs: {:?}", runtime.refusals)));
+                }
+            }
+        }
+        let element_diagnostics = prepared.portable.viewer_runtime.as_ref().map(|runtime| runtime.refusals.iter()
+            .map(|refusal| portable_render_stream::ElementDiagnostic {
+                family: MapVisualFamily::OrdersFrontsArrows, owner_packet: "XMAP15".into(),
+                element_id: refusal.key.as_ref().map(prepared_plan_key).unwrap_or_else(|| "movement-runtime".into()),
+                source_ordinal: None, outcome: portable_render_stream::ElementOutcome::ExcludedUndecodedLaw,
+                part: String::new(), cause_id: "arrow-runtime-input-unavailable".into(), element_count: 1,
+                detail: format!("{:?}", refusal.input),
+            }).collect()).unwrap_or_default();
         let disposition = if prepared.portable.ordered_rows.is_empty() {
             FamilyDisposition::AuthenticatedEmpty {
                 producer_registration_sha256: registration,
@@ -253,7 +262,7 @@ impl ProductionMapFeatureAdapter for Xmap15OrdersAdapter {
             }),
             prepared_rail_supply: None,
             prepared_map_modes: None,
-            element_diagnostics: Vec::new(),
+            element_diagnostics,
             consumed_gap_ids: vec![XMAP15_AUTHORITY_GAP_ID.into()],
         })
     }
@@ -499,6 +508,16 @@ impl Xmap15LifecycleState {
                 return Err("XMAP15 lifecycle input repeats a stable row".into());
             }
         }
+        if let Some(runtime) = &frame.portable.viewer_runtime {
+            for key in &runtime.retained_plans {
+                let stable = prepared_plan_key(key);
+                if !incoming.contains_key(&stable) {
+                    let digest = self.retained_rows.get(&stable).cloned()
+                        .unwrap_or_else(|| Sha256::hex(stable.as_bytes()));
+                    incoming.insert(stable, digest);
+                }
+            }
+        }
         let created = incoming
             .keys()
             .filter(|key| !self.retained_rows.contains_key(*key))
@@ -541,14 +560,7 @@ impl Xmap15LifecycleState {
 
 pub(crate) fn prepared_row_key(row: &Xmap15PreparedRow) -> String {
     match row {
-        Xmap15PreparedRow::Plan { semantic, .. } => format!(
-            "plan:{:?}:{}:{}:{}:{}",
-            semantic.key.owner_kind,
-            semantic.key.owner_id,
-            semantic.key.engine_order_instance_id,
-            semantic.key.generation,
-            semantic.key.slot_index
-        ),
+        Xmap15PreparedRow::Plan { semantic, .. } => prepared_plan_key(&semantic.key),
         Xmap15PreparedRow::Movement { semantic, .. } => format!(
             "movement:{}:{}:{}",
             semantic.key.owner_country, semantic.key.division_id, semantic.key.movement_generation
@@ -560,6 +572,11 @@ fn lifecycle_update_sha256(update: &Xmap15LifecycleUpdate) -> Result<String> {
     let mut unsigned = update.clone();
     unsigned.deterministic_sha256.clear();
     Ok(Sha256::hex(&serde_json::to_vec(&unsigned)?))
+}
+
+pub(crate) fn prepared_plan_key(key: &Xmap15PlanKey) -> String {
+    format!("plan:{:?}:{}:{}:{}:{}", key.owner_kind, key.owner_id,
+        key.engine_order_instance_id, key.generation, key.slot_index)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1270,6 +1287,30 @@ pub fn prepare_xmap15_frame(
     let semantic = semantic_frame(world)?;
     cross_check_d54_and_units(world, &semantic, units)?;
 
+    let input = Xmap15FrameInputs {
+        semantic_input_sha256: Sha256::hex(&semantic.encode_json()?),
+        observation_sequence: semantic.observation_sequence,
+        enumerator_witness_sha256: semantic.enumerator_witness_sha256,
+        plans: semantic.plans, movements: semantic.movements, viewer_runtime: None,
+    };
+    prepare_xmap15_rows(resolver, admission, world, units, selection, assigned_stage,
+        foundation_target_sha256, input)
+}
+
+struct Xmap15FrameInputs {
+    plans: Vec<portable_render_stream::Xmap15PlanSemanticRow>,
+    movements: Vec<portable_render_stream::Xmap15MovementSemanticRow>,
+    observation_sequence: u64,
+    semantic_input_sha256: String,
+    enumerator_witness_sha256: String,
+    viewer_runtime: Option<portable_render_stream::Xmap15ViewerRuntimeFrame>,
+}
+
+fn prepare_xmap15_rows(
+    resolver: &GameFileResolver, admission: &ValidatedContentAdmission, world: &WorldFrame,
+    units: &dyn Xmap15UnitIdentityProvider, selection: &Xmap15ViewerSelection,
+    assigned_stage: AssignedStage, foundation_target_sha256: String, semantic: Xmap15FrameInputs,
+) -> Result<PreparedXmap15Frame> {
     let mut plan_names = semantic
         .plans
         .iter()
@@ -1374,18 +1415,16 @@ pub fn prepare_xmap15_frame(
         ),
     });
 
-    let semantic_bytes = semantic
-        .encode_json()
-        .map_err(|error| format!("XMAP15 semantic codec: {error}"))?;
     let portable = Xmap15PreparedFrame {
         schema: XMAP15_STATE_FIRST_SCHEMA.into(),
         hour_index: world.hour_index(),
         observation_sequence: semantic.observation_sequence,
-        semantic_input_sha256: Sha256::hex(&semantic_bytes),
+        semantic_input_sha256: semantic.semantic_input_sha256,
         enumerator_witness_sha256: semantic.enumerator_witness_sha256.clone(),
         xmap13_census_sha256: units.census_sha256().into(),
         xmap13_admission_sha256: units.admission_sha256().into(),
         selected_plan: selection.selected_plan.clone(),
+        viewer_runtime: semantic.viewer_runtime,
         ordered_rows,
         ordered_used_content: used_content,
         deterministic_sha256: String::new(),
@@ -2313,7 +2352,7 @@ mod tests {
             fade_in_f32_bits: 0, fade_out_f32_bits: 0, culling_offset_f32_bits: 0,
             inner_rgba_f32_bits: [1.0f32.to_bits(); 4], outer_rgba_f32_bits: [1.0f32.to_bits(); 4],
             texture_variant: 0, see_through: false, visible: true, final_engine_draw_ordinal: Some(0),
-            exact_head_vertices_f32_bits: None, lifecycle_tombstone_sha256: "a".repeat(64),
+            exact_head_vertices_f32_bits: None, lifecycle_tombstone_sha256: Some("a".repeat(64)),
         };
         let mut semantic = Xmap15SemanticFrame {
             schema: portable_render_stream::XMAP15_SEMANTIC_INPUT_SCHEMA.into(),
@@ -2346,6 +2385,7 @@ mod tests {
             xmap13_census_sha256: "c".repeat(64),
             xmap13_admission_sha256: "d".repeat(64),
             selected_plan: None,
+            viewer_runtime: None,
             ordered_rows: Vec::new(),
             ordered_used_content: Vec::new(),
             deterministic_sha256: String::new(),

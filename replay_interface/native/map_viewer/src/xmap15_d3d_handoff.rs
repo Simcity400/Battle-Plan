@@ -356,6 +356,7 @@ mod native {
             let mut refusals = Vec::new();
             for (row_index, (row, native)) in frame.portable.ordered_rows.iter().zip(&self.rows).enumerate() {
                 let (Xmap15PreparedRow::Plan { semantic, .. }, RowGeometry::Plan { buffer, vertex_count, total_length_f32_bits, wrap_offset_world }) = (row, &native.geometry) else { continue; };
+                let Some(draw) = frame.plan_draw_inputs(&semantic.key) else { continue };
                 let definition = frame.plan_definition(&semantic.resolved_definition_name)?;
                 if !semantic.visible || !definition.draw_last || !definition.draw_shadows { continue; }
                 let light_program = self.light_programs.get(&definition.technique).ok_or("XMAP15 light program vanished")?
@@ -379,7 +380,7 @@ mod native {
                 let (depth, stencil) = plan_depth_state(self, &definition.technique);
                 for outer in [false, true] {
                     let mut cb3 = plan_cb3(definition, semantic, *total_length_f32_bits, *wrap_offset_world,
-                        scene.application_elapsed_seconds, frame.portable.selected_plan.as_ref() == Some(&semantic.key), outer)?;
+                        scene.application_elapsed_seconds, draw, outer)?;
                     cb3[96..104].fill(0);
                     let submission = crate::MapArrowLightDraw { owner_packet: "XMAP15".into(), prepared_frame_sha256: self.prepared_frame_sha256.clone(),
                         row_ordinal: u32::try_from(row_index)?, outer, geometry_sha256: native.geometry_sha256.clone(),
@@ -500,8 +501,8 @@ mod native {
                         let mut cb3 = self.cb3.as_raw();
                         (*context).VSSetConstantBuffers(3, 1, &mut cb3);
                         (*context).PSSetConstantBuffers(3, 1, &mut cb3);
-                        let selected = inputs.prepared_frame.portable.selected_plan.as_ref()
-                            == Some(&semantic.key);
+                        let draw = inputs.prepared_frame.plan_draw_inputs(&semantic.key)
+                            .ok_or("XMAP15 plan lacks proven retained draw inputs")?;
                         let mut constant_hashes = Vec::new();
                         let mut draws = 0u32;
                         let mut submitted_vertices = 0u32;
@@ -513,7 +514,7 @@ mod native {
                                     *total_length_f32_bits,
                                     *wrap_offset_world,
                                     inputs.application_elapsed_seconds,
-                                    selected,
+                                    draw,
                                     outer,
                                 )?;
                                 inputs.pass.apply_cb3_lighting(&mut bytes)?;
@@ -822,6 +823,7 @@ mod native {
         {
             return Err("XMAP15 maparrow vertex reflection is not float3+float4".into());
         }
+        crate::xmap16_supply_arrow_handoff::validate_map_arrow_vertex_resources(vertex_bytecode)?;
         let expected_cbuffers = crate::XMAP16_SUPPLY_ARROW_CONSTANT_BUFFERS
             .iter()
             .map(|(name, slot, _)| ((*name).to_string(), *slot))
@@ -1395,13 +1397,13 @@ mod native {
         Ok(())
     }
 
-    fn plan_cb3(
+    pub(super) fn plan_cb3(
         definition: &PreparedXmap15PlanDefinition,
         semantic: &portable_render_stream::Xmap15PlanSemanticRow,
         total_length_bits: u32,
         wrap: i32,
         elapsed: f32,
-        selected: bool,
+        draw: &portable_render_stream::Xmap15ViewerPlanDrawInputs,
         outer: bool,
     ) -> Result<[u8; 128]> {
         let mut bytes = [0u8; 128];
@@ -1411,14 +1413,14 @@ mod native {
             definition.mask_inner_f32_bits
         };
         write_vec4_bits(&mut bytes, 0, [mask[0], mask[1], mask[2], 1.0f32.to_bits()]);
-        write_vec4_bits(&mut bytes, 16, semantic.inner_rgba_f32_bits);
-        write_vec4_bits(&mut bytes, 32, semantic.outer_rgba_f32_bits);
+        write_vec4_bits(&mut bytes, 16, if outer { semantic.outer_rgba_f32_bits } else { semantic.inner_rgba_f32_bits });
+        write_vec4_bits(&mut bytes, 32, if outer { semantic.outer_rgba_f32_bits } else { draw.base_rgba_f32_bits });
         write_vec4(
             &mut bytes,
             48,
             [
                 elapsed,
-                if selected { 1.0 } else { 0.0 },
+                if !outer && draw.inner_highlight { 1.0 } else { 0.0 },
                 f32::from_bits(semantic.fade_in_f32_bits),
                 f32::from_bits(semantic.fade_out_f32_bits),
             ],
@@ -1428,11 +1430,8 @@ mod native {
             64,
             [
                 wrap as f32,
-                definition
-                    .texture_anim_speed_f32_bits
-                    .map(f32::from_bits)
-                    .unwrap_or(0.0),
-                0.0,
+                f32::from_bits(draw.animation_speed_f32_bits),
+                if !outer && semantic.active { 1.0 } else { 0.0 },
                 0.0,
             ],
         );
@@ -1469,7 +1468,7 @@ mod native {
             112,
             definition
                 .texture_loop_f32_bits
-                .map(f32::from_bits)
+                .map(f32::from_bits).filter(|value| *value != 0.0)
                 .unwrap_or(total),
         );
         if bytes[..116]
@@ -1703,6 +1702,10 @@ mod native {
 }
 
 impl PreparedXmap15Frame {
+    pub(crate) fn plan_draw_inputs(&self, key: &Xmap15PlanKey) -> Option<&portable_render_stream::Xmap15ViewerPlanDrawInputs> {
+        self.portable.viewer_runtime.as_ref()?.draw_inputs.iter().find(|draw| &draw.key == key)
+    }
+
     pub(crate) fn plan_definition(
         &self,
         name: &str,
@@ -1714,9 +1717,48 @@ impl PreparedXmap15Frame {
     }
 }
 
+#[cfg(all(test, windows))]
+pub(crate) fn plan_cb3_for_test(frame: &PreparedXmap15Frame, row: &portable_render_stream::Xmap15PlanSemanticRow,
+    length: u32, outer: bool) -> Result<[u8; 128]> {
+    native::plan_cb3(frame.plan_definition(&row.resolved_definition_name)?, row, length,
+        row.route.wrap_offset_world, 42.0, frame.plan_draw_inputs(&row.key).ok_or("missing draw inputs")?, outer)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn compiled_vertex_resources_must_all_be_supplied_by_the_plan_handoff() {
+        let standard = crate::test_support::minimal_standard_functions_source();
+        let cb0 = standard.split_once('{').unwrap().1.split_once("};").unwrap().0;
+        let cb3 = crate::XMAP16_SUPPLY_ARROW_CB3_LAYOUT.iter().map(|(name, _, size)|
+            format!("{} {name};", if *size == 16 { "float4" } else { "float" })).collect::<String>();
+        let source = |declarations: &str, operand: &str| format!(
+            "cbuffer dx11_cb0 : register(b0) {{{cb0}}}; cbuffer dx11_cb3 : register(b3) {{{cb3}}};
+            {declarations}
+            float4 main(float3 p:POSITION, float4 uv:TEXCOORD0):SV_POSITION {{
+                return float4(p,1)+ViewProjectionMatrix[0]+ArrowColor+uv+{operand}; }}");
+        let compile = |source: &str| crate::d3d_compile_stage(source, crate::ShaderStage::Vertex,
+            crate::shader_compile::ENGINE_COMPILE_FLAGS).unwrap();
+        let valid = source("", "0");
+        assert!(crate::xmap16_supply_arrow_handoff::validate_map_arrow_vertex_resources(&compile(&valid)).is_ok());
+        for (declarations, operand) in [
+            ("cbuffer dx11_cb2 : register(b2) { float4 extra; };", "extra"),
+            ("Texture2D tex : register(t0); SamplerState samp : register(s0);", "tex.SampleLevel(samp,uv.xy,0)"),
+            ("StructuredBuffer<float4> data : register(t7);", "data[(uint)uv.x]"),
+        ] {
+            assert!(crate::xmap16_supply_arrow_handoff::validate_map_arrow_vertex_resources(&compile(&source(declarations, operand))).is_err(), "{declarations}");
+        }
+        for changed in [valid.replace("float3      vCamPos", "float4      vCamPos"),
+            valid.replace("float UvToAbsoluteLength;", "float4 UvToAbsoluteLength;"),
+            valid.replace("float4 ArrowColor;", "float4 WrongColour;").replace("+ArrowColor", "+WrongColour")] {
+            assert_ne!(valid, changed);
+            assert!(crate::xmap16_supply_arrow_handoff::validate_map_arrow_vertex_resources(&compile(&changed)).is_err());
+        }
+    }
 
     #[test]
     fn execution_receipt_distinguishes_refused_selection_from_measured_empty() {

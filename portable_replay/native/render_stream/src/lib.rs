@@ -220,6 +220,7 @@ pub use xmap15_paradrop::Xmap15ParadropProfile;
 
 mod m03_arrows;
 pub use m03_arrows::{
+    Xmap15ViewerRuntimeFrame, Xmap15ViewerPlanDrawInputs, Xmap15ViewerMissingInput, Xmap15ViewerPlanRefusal,
     xmap15_semantic_producer_registration_sha256, M03ArrowDraw, M03ArrowDrawMember,
     M03ArrowDrawMemberRef, M03ArrowDrawRef, M03ArrowFrame, M03ArrowRow, M03PlanSubtype,
     M03StableKey, M03Visibility, Xmap15MapArrowVertex, Xmap15MovementDefinition, Xmap15MovementKey,

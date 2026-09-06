@@ -547,7 +547,7 @@ pub struct Xmap15PlanSemanticRow {
     pub visible: bool,
     pub final_engine_draw_ordinal: Option<u32>,
     pub exact_head_vertices_f32_bits: Option<[[u32; 8]; 4]>,
-    pub lifecycle_tombstone_sha256: String,
+    pub lifecycle_tombstone_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -680,7 +680,8 @@ impl Xmap15SemanticFrame {
                     return Err("XMAP15 exact head vertex contains non-finite bits".into());
                 }
             }
-            check_sha256(&row.lifecycle_tombstone_sha256, None)?;
+            check_sha256(row.lifecycle_tombstone_sha256.as_deref()
+                .ok_or("XMAP15 native plan lacks its lifecycle witness")?, None)?;
             row.route.validate()?;
         }
         let mut movement_keys = BTreeSet::new();
@@ -791,9 +792,41 @@ pub struct Xmap15PreparedFrame {
     pub xmap13_census_sha256: String,
     pub xmap13_admission_sha256: String,
     pub selected_plan: Option<Xmap15PlanKey>,
+    pub viewer_runtime: Option<Xmap15ViewerRuntimeFrame>,
     pub ordered_rows: Vec<Xmap15PreparedRow>,
     pub ordered_used_content: Vec<UsedContentKey>,
     pub deterministic_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Xmap15ViewerRuntimeFrame {
+    pub retained_plans: Vec<Xmap15PlanKey>,
+    pub draw_inputs: Vec<Xmap15ViewerPlanDrawInputs>,
+    pub refusals: Vec<Xmap15ViewerPlanRefusal>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Xmap15ViewerPlanDrawInputs {
+    pub key: Xmap15PlanKey,
+    pub base_rgba_f32_bits: [u32; 4],
+    pub inner_highlight: bool,
+    pub animation_speed_f32_bits: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Xmap15ViewerMissingInput {
+    OwnerIdentity, OwnerColour, OwnerOverride, VirtualPresentation, SelectedPresentation,
+    FrontBinding, CurrentFrontResolver, RootTraversal, RouteGeometry, AssignedUnitFilter,
+    ActiveReadiness, CullingDirection, Definition, MovementRuntime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Xmap15ViewerPlanRefusal {
+    pub key: Option<Xmap15PlanKey>,
+    pub input: Xmap15ViewerMissingInput,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1284,6 +1317,25 @@ impl Xmap15PreparedFrame {
         }) {
             return Err("XMAP15 prepared rows are not in strict final engine draw order".into());
         }
+        if let Some(runtime) = &self.viewer_runtime {
+            let retained = runtime.retained_plans.iter().cloned().collect::<BTreeSet<_>>();
+            if retained.len() != runtime.retained_plans.len() || !plan_keys.is_subset(&retained) {
+                return Err("XMAP15 viewer object census is duplicate or omits a drawn plan".into());
+            }
+            let mut inputs = BTreeSet::new();
+            for draw in &runtime.draw_inputs {
+                if !inputs.insert(draw.key.clone())
+                    || draw.base_rgba_f32_bits.iter().chain(std::iter::once(&draw.animation_speed_f32_bits))
+                        .any(|bits| !f32::from_bits(*bits).is_finite()) {
+                    return Err("XMAP15 viewer draw inputs are duplicate or non-finite".into());
+                }
+            }
+            if inputs != plan_keys {
+                return Err("XMAP15 viewer draw inputs do not match drawable plans".into());
+            }
+            plan_keys.extend(retained);
+            plan_keys.extend(runtime.refusals.iter().filter_map(|row| row.key.clone()));
+        }
         if self
             .selected_plan
             .as_ref()
@@ -1461,7 +1513,7 @@ mod tests {
             visible: true,
             final_engine_draw_ordinal: Some(0),
             exact_head_vertices_f32_bits: None,
-            lifecycle_tombstone_sha256: "a".repeat(64),
+            lifecycle_tombstone_sha256: Some("a".repeat(64)),
         };
         let one = 1.0f32.to_bits();
         let profile = Xmap15PlanGeometryProfile {
@@ -1489,7 +1541,7 @@ mod tests {
             plans: vec![row.clone()], movements: vec![], enumerator_witness_sha256: "a".repeat(64),
         };
         native.validate().unwrap();
-        for field in ["manager_insertion_ordinal", "definition_group_ordinal", "final_engine_draw_ordinal"] {
+        for field in ["manager_insertion_ordinal", "definition_group_ordinal", "final_engine_draw_ordinal", "lifecycle_tombstone_sha256"] {
             for missing in [false, true] {
                 let mut value = serde_json::to_value(&native).unwrap();
                 if missing { value["plans"][0].as_object_mut().unwrap().remove(field); }
@@ -1498,6 +1550,7 @@ mod tests {
             }
         }
         let mut first = row;
+        first.lifecycle_tombstone_sha256 = None;
         first.manager_insertion_ordinal = None;
         first.definition_group_ordinal = None;
         first.final_engine_draw_ordinal = None;
@@ -1507,7 +1560,7 @@ mod tests {
             schema: XMAP15_STATE_FIRST_SCHEMA.into(), hour_index: 17, observation_sequence: 1,
             semantic_input_sha256: "a".repeat(64), enumerator_witness_sha256: "b".repeat(64),
             xmap13_census_sha256: "c".repeat(64), xmap13_admission_sha256: "d".repeat(64),
-            selected_plan: None, ordered_rows: vec![first.clone(), second].into_iter().map(|semantic|
+            selected_plan: None, viewer_runtime: None, ordered_rows: vec![first.clone(), second].into_iter().map(|semantic|
                 Xmap15PreparedRow::Plan { semantic, definition_sha256: "e".repeat(64) }).collect(),
             ordered_used_content: vec![], deterministic_sha256: String::new(),
         }.seal().unwrap();

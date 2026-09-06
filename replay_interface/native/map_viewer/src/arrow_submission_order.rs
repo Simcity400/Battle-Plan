@@ -58,6 +58,8 @@ pub enum ArrowOrderRefusal {
     MissingViewerArrowLifecycle { family: ArrowFamily, row: usize },
     ViewerInteractionSortKeyUnproven { family: ArrowFamily, row: usize },
     MissingSupplySortInputs { row: usize, inputs: SupplyArrowSortInputs, missing: Vec<SupplySortInput> },
+    MissingNativePlanDrawInputs { row: usize },
+    MissingDerivedPlanInput(portable_render_stream::Xmap15ViewerPlanRefusal),
     MissingOrderSemanticCarrier,
     MissingSupplySemanticCarrier,
 }
@@ -169,12 +171,16 @@ impl ArrowViewerSortState {
         witness: Option<&Xmap15LifecycleUpdate>) -> bool {
         let Some(witness) = witness else { return false };
         if frame.validate().is_err() { return false; }
+        let mut keys = frame.portable.ordered_rows.iter().map(prepared_row_key).collect::<BTreeSet<_>>();
+        if let Some(runtime) = &frame.portable.viewer_runtime {
+            keys.extend(runtime.retained_plans.iter().map(crate::production_features::xmap15::prepared_plan_key));
+        }
         let selected = frame.portable.ordered_rows.iter().find(|row| matches!(row,
             Xmap15PreparedRow::Plan { semantic, .. }
                 if Some(&semantic.key) == frame.portable.selected_plan.as_ref())).map(prepared_row_key);
         self.observe(replay_frame, &frame.portable.deterministic_sha256,
             frame.portable.hour_index, frame.portable.observation_sequence,
-            frame.portable.ordered_rows.iter().map(prepared_row_key).collect(), selected, witness)
+            keys, selected, witness)
     }
 
     fn secondary(&self, key: &str, family: ArrowFamily, row: usize) -> Result<f32, ArrowOrderRefusal> {
@@ -287,7 +293,7 @@ impl ArrowSubmissionOrder {
         lifecycle: Option<&Xmap15LifecycleUpdate>, replay_frame: &str) -> Self {
         let order_rows = orders.candidates(|frame| {
             let joined = viewer.observe_frame(replay_frame, frame, lifecycle);
-            frame.portable.ordered_rows.iter().enumerate().filter_map(|(row, prepared)| {
+            let mut candidates = frame.portable.ordered_rows.iter().enumerate().filter_map(|(row, prepared)| {
                 let Xmap15PreparedRow::Plan { semantic, .. } = prepared else { return None };
                 if !joined {
                     return Some(Err(ArrowOrderRefusal::MissingViewerArrowLifecycle {
@@ -297,11 +303,19 @@ impl ArrowSubmissionOrder {
                     Ok(value) => value,
                     Err(reason) => return Some(Err(reason)),
                 };
+                if frame.plan_draw_inputs(&semantic.key).is_none() {
+                    return Some(Err(ArrowOrderRefusal::MissingNativePlanDrawInputs { row }));
+                }
                 let definition = frame.plan_definitions.iter().find(|d| d.name == semantic.resolved_definition_name);
                 Some(resolve_arrow(ArrowFamily::Orders, row, definition.map(|d| (d.name.as_str(), d.definition_index,
                     d.body_width_f32_bits.map(f32::from_bits), f32::from_bits(d.width_scale_f32_bits))),
                     semantic.manager_insertion_ordinal, f32::from_bits(semantic.object_width_multiplier_f32_bits), secondary))
-            }).collect()
+            }).collect::<Vec<_>>();
+            if let Some(runtime) = &frame.portable.viewer_runtime {
+                candidates.extend(runtime.refusals.iter().cloned()
+                    .map(|refusal| Err(ArrowOrderRefusal::MissingDerivedPlanInput(refusal))));
+            }
+            candidates
         });
         let supply_rows = supply.candidates(|frame| Self::supply_candidates(
             &frame.supply_mesh.ordered_draws, &frame.supply_definitions));
@@ -414,7 +428,7 @@ pub(crate) fn validate_arrow_row_selection(rows: &[usize], length: usize) -> cra
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn row(family: ArrowFamily, ordinal: u32, bucket: u32, primary: f32, secondary: f32) -> ArrowSubmission {
@@ -423,7 +437,7 @@ mod tests {
             key: ArrowSortKey { primary_bits: primary.to_bits(), secondary_bits: secondary.to_bits() } }
     }
 
-    fn prepared_orders(sequence: u64, populated: bool, selected: Option<usize>) -> PreparedXmap15Frame {
+    pub(crate) fn prepared_orders(sequence: u64, populated: bool, selected: Option<usize>) -> PreparedXmap15Frame {
         use crate::production_features::xmap15::*;
         use portable_render_stream::*;
         let content = |path: &str| UsedContentKey {
@@ -500,7 +514,7 @@ mod tests {
             visible: true,
             final_engine_draw_ordinal: Some(0),
             exact_head_vertices_f32_bits: None,
-            lifecycle_tombstone_sha256: "a".repeat(64),
+            lifecycle_tombstone_sha256: Some("a".repeat(64)),
         };
         let ordered_rows = if populated { (0..2).map(|index| {
             let mut semantic = semantic.clone();
@@ -519,12 +533,21 @@ mod tests {
         let ordered_used_content = plan_definitions.iter().flat_map(|d| d.ordered_used_content.iter().cloned())
             .chain(heightmap.iter().cloned()).chain(map_dimensions_content.iter().cloned())
             .collect::<BTreeSet<_>>().into_iter().collect();
+        let viewer_runtime = Some(portable_render_stream::Xmap15ViewerRuntimeFrame {
+            retained_plans: ordered_rows.iter().filter_map(|row| match row {
+                Xmap15PreparedRow::Plan { semantic, .. } => Some(semantic.key.clone()), _ => None }).collect(),
+            draw_inputs: ordered_rows.iter().filter_map(|row| match row {
+                Xmap15PreparedRow::Plan { semantic, .. } => Some(portable_render_stream::Xmap15ViewerPlanDrawInputs {
+                    key: semantic.key.clone(), base_rgba_f32_bits: semantic.inner_rgba_f32_bits,
+                    inner_highlight: false, animation_speed_f32_bits: 0 }), _ => None }).collect(),
+            refusals: Vec::new(),
+        });
         let frame = PreparedXmap15Frame {
             portable: Xmap15PreparedFrame {
                 schema: XMAP15_STATE_FIRST_SCHEMA.into(), hour_index: 7, observation_sequence: sequence,
                 semantic_input_sha256: "a".repeat(64), enumerator_witness_sha256: "b".repeat(64),
                 xmap13_census_sha256: "c".repeat(64), xmap13_admission_sha256: "d".repeat(64),
-                selected_plan, ordered_rows, ordered_used_content, deterministic_sha256: String::new(),
+                selected_plan, viewer_runtime, ordered_rows, ordered_used_content, deterministic_sha256: String::new(),
             }.seal().unwrap(),
             assigned_stage: AssignedStage::seal("f".repeat(64), XMAP15_ASSIGNED_STAGE_NAME,
                 XMAP15_ASSIGNED_OPERATION_NAME, 4).unwrap(),

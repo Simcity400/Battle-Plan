@@ -775,6 +775,18 @@ portable_replay/native/engine_evidence/artifacts/func_1412796a0.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_140c79cc0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/xmap13_land_state_pointers.datdump.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/xmap13_land_state_names.datdump.txt text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_141242600.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_141242600.instructions.txt text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_142236f70.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_142236f70.instructions.txt text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_14123eb20.instructions.txt text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/arrow_animation_epsilon.datdump.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1419913d0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141387b70.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141387ba0.decompile.c text eol=lf

@@ -220,6 +220,11 @@ pub struct FoundationFeatureContext<'a> {
 
 #[cfg(test)]
 impl<'a> FoundationFeatureContext<'a> {
+    pub(crate) fn with_test_schedule(mut self, schedule: &'a portable_render_stream::AssignedStageSchedule) -> Self {
+        self.assigned_stage_schedule = Some(schedule);
+        self
+    }
+
     /// Test-only constructor for driving a feature adapter's owned-input
     /// accounting through its real `prepare()` entry: the private schedule
     /// field stays `None` and every hash is blank, which is exactly the shape
