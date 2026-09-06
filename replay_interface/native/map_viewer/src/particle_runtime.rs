@@ -18,7 +18,7 @@ pub struct ViewerParticleSeed {
 }
 
 impl ViewerParticleSeed {
-    fn draw(&mut self) -> u32 {
+    pub(crate) fn draw(&mut self) -> u32 {
         let mut value = self
             .seed
             .wrapping_add(self.counter.wrapping_mul(0xb5297a4d));

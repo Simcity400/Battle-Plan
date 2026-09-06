@@ -426,7 +426,7 @@ fn lawful_program_source_path(source: &portable_content_manifest::UsedContentKey
 
 /// FNV-1a-32, the engine's own registration-hash law (census-authority JSON,
 /// descriptor/type registration: type+0x80 == FNV-1a-32 of the token).
-fn fnv1a32(bytes: &[u8]) -> u32 {
+pub(crate) fn fnv1a32(bytes: &[u8]) -> u32 {
     let mut hash: u32 = 0x811c_9dc5;
     for byte in bytes {
         hash ^= u32::from(*byte);

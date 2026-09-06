@@ -1445,6 +1445,531 @@ fn scalar_tokens(value: &Value) -> Option<Vec<&str>> {
     }
 }
 
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct EntityAttachmentVariant {
+    pub name: String,
+    pub weight: i32,
+    pub children: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct EntityAttachmentGroup {
+    pub name: String,
+    pub variants: Vec<EntityAttachmentVariant>,
+}
+
+impl EntityAttachmentGroup {
+    pub(crate) fn select(&self, draw: impl FnOnce() -> u32) -> crate::Result<Option<usize>> {
+        let total = self
+            .variants
+            .iter()
+            .filter(|v| v.weight > 0)
+            .fold(0u32, |sum, v| sum.wrapping_add(v.weight as u32));
+        if total == 0 {
+            return Ok(None);
+        }
+        let draw = draw();
+        // 1424db730 sign-extends the total before its unsigned i64-to-double conversion.
+        let total_double = (i64::from(total as i32) as u64) as f64;
+        let mut target = f64::from(draw) * f64::from_bits(0x3e00_0000_0000_0000) * total_double;
+        if target >= f64::from_bits(0x43e0_0000_0000_0000) {
+            target -= f64::from_bits(0x43e0_0000_0000_0000);
+        }
+        let target = target as i64 as i32;
+        let mut cumulative = 0i32;
+        for (index, variant) in self.variants.iter().enumerate() {
+            if variant.weight > 0 {
+                cumulative = cumulative.wrapping_add(variant.weight);
+                if target < cumulative {
+                    return Ok(Some(index));
+                }
+            }
+        }
+        Err("entity attachment weighted selection reached the native no-index error".into())
+    }
+
+    fn replaces(&self, previous: &Self) -> bool {
+        if self.name.is_empty() && previous.name.is_empty() {
+            self.variants
+                .first()
+                .zip(previous.variants.first())
+                .is_some_and(|(a, b)| !a.name.is_empty() && a.name == b.name)
+        } else {
+            self.name == previous.name
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct EntityAttachments {
+    pub groups: Vec<EntityAttachmentGroup>,
+    pub state_propagation: Vec<(String, Vec<(u32, u32)>)>,
+    pub parent_state_override: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct EntityAttachmentSource {
+    base: Option<String>,
+    own: EntityAttachments,
+}
+
+#[derive(Default)]
+pub(crate) struct EntityAttachmentCatalog {
+    sources: BTreeMap<String, std::result::Result<EntityAttachmentSource, String>>,
+}
+
+fn attachment_name(value: &str) -> String {
+    value.chars().take_while(|c| *c != '\0').take(255).collect()
+}
+
+pub(crate) fn entity_token_hash(value: &str) -> crate::Result<u32> {
+    let bytes = value
+        .chars()
+        .take_while(|c| *c != '\0')
+        .map(|c| u8::try_from(u32::from(c)))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|_| "entity token is outside the authenticated byte encoding")?;
+    Ok(crate::production_features::xmap20_derive::fnv1a32(&bytes))
+}
+
+impl EntityAttachmentCatalog {
+    pub(crate) fn insert(&mut self, name: &str, entity: &Value) {
+        self.sources
+            .insert(name.into(), Self::read(entity).map_err(|e| e.to_string()));
+    }
+
+    fn read(entity: &Value) -> crate::Result<EntityAttachmentSource> {
+        let mut own = EntityAttachments::default();
+        let mut base = None;
+        for field in entity.fields() {
+            if field.key_matches("clone") {
+                let name = attachment_name(
+                    field
+                        .value
+                        .as_scalar()
+                        .ok_or("attachment clone is not scalar")?,
+                );
+                base = (!name.is_empty()).then_some(name);
+            } else if field.key_matches("get_state_from_parent") {
+                own.parent_state_override = Some(
+                    field
+                        .value
+                        .as_scalar()
+                        .ok_or("attachment parent-state override is not scalar")?
+                        .into(),
+                );
+            } else if field.key_matches("attach") {
+                own.groups.push(EntityAttachmentGroup {
+                    name: String::new(),
+                    variants: vec![Self::variant(&field.value)?],
+                });
+            } else if field.key_matches("group") {
+                if !matches!(&field.value, Value::Object(_)) {
+                    return Err("attachment group is not an object".into());
+                }
+                let mut group = EntityAttachmentGroup {
+                    name: String::new(),
+                    variants: Vec::new(),
+                };
+                for entry in field.value.fields() {
+                    if entry.key_matches("name") {
+                        group.name = attachment_name(
+                            entry
+                                .value
+                                .as_scalar()
+                                .ok_or("attachment group name is not scalar")?,
+                        );
+                    } else if entry.key_matches("attach") {
+                        group.variants.push(Self::variant(&entry.value)?);
+                    } else {
+                        return Err("attachment group field has no admitted reader branch".into());
+                    }
+                }
+                own.groups.push(group);
+            } else if field.key_matches("state") {
+                let mut name = None;
+                let mut mappings = Vec::new();
+                for entry in field.value.fields() {
+                    if entry.key_matches("name") {
+                        name = Some(attachment_name(
+                            entry
+                                .value
+                                .as_scalar()
+                                .ok_or("attachment state name is not scalar")?,
+                        ));
+                    } else if !entry.key_matches("propagate_state") {
+                        continue;
+                    } else if let Some(target) = entry.value.as_scalar() {
+                        mappings.push((0, entity_token_hash(target)?));
+                    } else {
+                        for mapping in entry.value.fields() {
+                            let key = mapping
+                                .key
+                                .as_deref()
+                                .ok_or("propagate_state has no source name")?;
+                            let target = mapping
+                                .value
+                                .as_scalar()
+                                .ok_or("propagate_state target is not scalar")?;
+                            mappings.push((entity_token_hash(key)?, entity_token_hash(target)?));
+                        }
+                    }
+                }
+                own.state_propagation
+                    .push((name.ok_or("attachment state has no name")?, mappings));
+            }
+        }
+        Ok(EntityAttachmentSource { base, own })
+    }
+
+    fn variant(body: &Value) -> crate::Result<EntityAttachmentVariant> {
+        let mut out = EntityAttachmentVariant {
+            name: String::new(),
+            weight: 100_000,
+            children: Vec::new(),
+        };
+        if !matches!(body, Value::Object(_)) {
+            return Err("attachment variant is not an object".into());
+        }
+        for entry in body.fields() {
+            let key = entry
+                .key
+                .as_deref()
+                .ok_or("attachment variant has no field name")?;
+            let value = entry
+                .value
+                .as_scalar()
+                .ok_or("attachment variant field is not scalar")?;
+            if entry.key_matches("name") {
+                out.name = attachment_name(value);
+            } else if entry.key_matches("chance") {
+                let raw = crate::authored_fixed::parse_fixed5(value)
+                    .ok_or("attachment chance is not a native fixed token")?;
+                out.weight = if raw > 0 { (raw as i32).max(0) } else { 0 };
+            } else {
+                out.children.push((
+                    key.split('\0').next().unwrap().into(),
+                    value.split('\0').next().unwrap().into(),
+                ));
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn resolve(&self, name: &str) -> crate::Result<EntityAttachments> {
+        self.resolve_inner(name, &mut Vec::new())
+    }
+
+    fn resolve_inner(
+        &self,
+        name: &str,
+        ancestry: &mut Vec<String>,
+    ) -> crate::Result<EntityAttachments> {
+        let source = self
+            .sources
+            .get(name)
+            .ok_or_else(|| format!("entity {name} attachment source is unavailable"))?;
+        if ancestry.iter().any(|value| value == name) {
+            return Err(
+                format!("recursive entity attachment clone: {ancestry:?} -> {name}").into(),
+            );
+        }
+        let source = source
+            .as_ref()
+            .map_err(|e| format!("entity {name} attachments: {e}"))?;
+        let Some(base) = &source.base else {
+            return Ok(source.own.clone());
+        };
+        if !self.sources.contains_key(base) {
+            return Err(
+                format!("entity {name} attachment clone base {base} is unavailable").into(),
+            );
+        }
+        ancestry.push(name.into());
+        let mut resolved = self.resolve_inner(base, ancestry)?;
+        ancestry.pop();
+        for group in &source.own.groups {
+            if let Some(index) = resolved
+                .groups
+                .iter()
+                .position(|previous| group.replaces(previous))
+            {
+                resolved.groups[index] = group.clone();
+            } else {
+                resolved.groups.push(group.clone());
+            }
+        }
+        resolved.state_propagation.retain(|(name, _)| {
+            !source
+                .own
+                .state_propagation
+                .iter()
+                .any(|(own, _)| own == name)
+        });
+        resolved
+            .state_propagation
+            .extend(source.own.state_propagation.iter().cloned());
+        if source.own.parent_state_override.is_some() {
+            resolved.parent_state_override = source.own.parent_state_override.clone();
+        }
+        Ok(resolved)
+    }
+}
+
+#[cfg(test)]
+mod entity_attachment_tests {
+    use super::*;
+
+    fn catalog(text: &str) -> EntityAttachmentCatalog {
+        let (document, _) = portable_content_manifest::paradox_text::parse_asset_str(text).unwrap();
+        let mut catalog = EntityAttachmentCatalog::default();
+        for entity in document.values_ci("entity") {
+            catalog.insert(entity.first_scalar_ci("name").unwrap(), entity);
+        }
+        catalog
+    }
+
+    #[test]
+    fn clone_replaces_named_group_or_first_named_variant_and_keeps_native_ordinal() {
+        let catalog = catalog(
+            r#"
+entity = { name = base
+ group = { name = gear attach = { name = old root = old_entity } }
+ attach = { name = smoke smoke_node = smoke_entity }
+ attach = { root = unnamed_entity }
+ state = { name = idle propagate_state = all_idle }
+ state = { name = attack propagate_state = { smoke = firing } }
+}
+entity = { name = derived clone = base
+ attach = { name = smoke chance = 0.5 other_node = replacement }
+ group = { name = gear attach = { name = new root = new_entity } }
+ attach = { root = additional_unnamed }
+ state = { name = idle propagate_state = { smoke = quiet } }
+}
+entity = { name = chained clone = derived }
+"#,
+        );
+        let base = catalog.resolve("base").unwrap();
+        let derived = catalog.resolve("derived").unwrap();
+        assert_eq!(base.groups.len(), 3);
+        assert_eq!(derived.groups.len(), 4);
+        assert_eq!(derived.groups[0].name, "gear");
+        assert_eq!(derived.groups[0].variants[0].name, "new");
+        assert_eq!(
+            derived.groups[1].variants[0].children,
+            [("other_node".into(), "replacement".into())]
+        );
+        assert_eq!(derived.groups[1].variants[0].weight, 50_000);
+        assert_eq!(derived.groups[2], base.groups[2]);
+        assert_eq!(
+            derived.groups[3].variants[0].children[0].1,
+            "additional_unnamed"
+        );
+        assert_eq!(
+            derived
+                .state_propagation
+                .iter()
+                .map(|s| s.0.as_str())
+                .collect::<Vec<_>>(),
+            ["attack", "idle"]
+        );
+        assert_eq!(
+            derived.state_propagation[1].1,
+            [(
+                entity_token_hash("smoke").unwrap(),
+                entity_token_hash("quiet").unwrap()
+            )]
+        );
+        assert_eq!(catalog.resolve("chained").unwrap(), derived);
+        assert_eq!(
+            base.state_propagation[0].1,
+            [(0, entity_token_hash("all_idle").unwrap())]
+        );
+    }
+
+    #[test]
+    fn repeated_entity_and_state_fields_overwrite_in_native_reader_order() {
+        let catalog = catalog(
+            r#"
+entity = { name = base attach = { root = inherited } get_state_from_parent = no }
+entity = { name = derived clone = missing clone = base
+ get_state_from_parent = no get_state_from_parent = yes
+ state = { name = old propagate_state = first name = final propagate_state = second }
+}
+entity = { name = direct clone = base clone = "" attach = { root = own } }
+"#,
+        );
+        let derived = catalog.resolve("derived").unwrap();
+        assert_eq!(derived.groups[0].variants[0].children[0].1, "inherited");
+        assert_eq!(derived.parent_state_override.as_deref(), Some("yes"));
+        assert_eq!(
+            derived.state_propagation,
+            [(
+                "final".into(),
+                vec![
+                    (0, entity_token_hash("first").unwrap()),
+                    (0, entity_token_hash("second").unwrap()),
+                ]
+            )]
+        );
+        let direct = catalog.resolve("direct").unwrap();
+        assert_eq!(direct.groups.len(), 1);
+        assert_eq!(direct.groups[0].variants[0].children[0].1, "own");
+        assert_eq!(direct.parent_state_override, None);
+    }
+
+    #[test]
+    fn integer_attachment_weights_preserve_reader_cast_clamp_and_fraction_law() {
+        let catalog = catalog(
+            r#"entity = { name = root group = {
+ attach = { chance = 1.234567 root = a }
+ attach = { chance = -0.2 root = b }
+ attach = { chance = 21474.83648 root = c }
+ attach = { chance = 42949.67297 root = d }
+ attach = { root = e }
+ attach = { chance = 010 root = octal }
+ attach = { chance = 0x10 root = hex }
+ attach = { chance = 9223372036854775808 root = saturated }
+} }"#,
+        );
+        let program = catalog.resolve("root").unwrap();
+        assert_eq!(
+            program.groups[0]
+                .variants
+                .iter()
+                .map(|v| v.weight)
+                .collect::<Vec<_>>(),
+            [123_456, 0, 0, 1, 100_000, 800_000, 1_600_000, 0]
+        );
+    }
+
+    #[test]
+    fn group_selection_draws_once_even_for_one_variant_but_not_zero_total() {
+        let mut seed = crate::particle_runtime::ViewerParticleSeed {
+            seed: 7,
+            counter: 9,
+        };
+        let empty = EntityAttachmentGroup {
+            name: String::new(),
+            variants: Vec::new(),
+        };
+        assert_eq!(empty.select(|| seed.draw()).unwrap(), None);
+        assert_eq!(seed.counter, 9);
+        let group = EntityAttachmentGroup {
+            name: String::new(),
+            variants: vec![EntityAttachmentVariant {
+                name: "only".into(),
+                weight: 100_000,
+                children: Vec::new(),
+            }],
+        };
+        assert_eq!(group.select(|| seed.draw()).unwrap(), Some(0));
+        assert_eq!(seed.counter, 10);
+        let wrapped_zero = EntityAttachmentGroup {
+            variants: vec![
+                EntityAttachmentVariant {
+                    weight: 1 << 30,
+                    ..group.variants[0].clone()
+                };
+                4
+            ],
+            ..group.clone()
+        };
+        assert_eq!(wrapped_zero.select(|| seed.draw()).unwrap(), None);
+        assert_eq!(seed.counter, 10);
+        let leading_dead = EntityAttachmentGroup {
+            variants: vec![
+                EntityAttachmentVariant {
+                    weight: 0,
+                    ..group.variants[0].clone()
+                },
+                group.variants[0].clone(),
+            ],
+            ..group
+        };
+        assert_eq!(leading_dead.select(|| seed.draw()).unwrap(), Some(1));
+        assert_eq!(seed.counter, 11);
+    }
+
+    #[test]
+    fn weighted_index_matches_pinned_instruction_cases_including_sign_extended_totals() {
+        let law: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../extractor/native/runs/paired_particle_viewer_runtime/STATIC_ATTACHMENT_LAW.json"
+        )).unwrap();
+        let cases = law["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 48);
+        for case in cases {
+            let group = EntityAttachmentGroup {
+                name: String::new(),
+                variants: case["weights"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|weight| EntityAttachmentVariant {
+                        name: String::new(),
+                        weight: weight.as_u64().unwrap() as i32,
+                        children: Vec::new(),
+                    })
+                    .collect(),
+            };
+            let mut calls = 0;
+            let result = group.select(|| {
+                calls += 1;
+                case["draw"].as_u64().unwrap() as u32
+            });
+            assert_eq!(
+                calls != 0,
+                case["consumes_draw"].as_bool().unwrap(),
+                "{case}"
+            );
+            if case["total_u32"] != 0 && case["index"].is_null() {
+                assert!(
+                    result.unwrap_err().to_string().contains("native no-index"),
+                    "{case}"
+                );
+            } else {
+                assert_eq!(
+                    result.unwrap(),
+                    case["index"].as_u64().map(|x| x as usize),
+                    "{case}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bad_unused_attachment_does_not_refuse_other_entities_or_hide_clone_cycles() {
+        let catalog = catalog(
+            r#"
+entity = { name = valid attach = { root = child } }
+entity = { name = bad group = nope }
+entity = { name = cycle_a clone = cycle_b }
+entity = { name = cycle_b clone = cycle_a }
+"#,
+        );
+        assert_eq!(
+            catalog.resolve("valid").unwrap().groups[0].variants[0].children[0].1,
+            "child"
+        );
+        assert!(catalog
+            .resolve("missing")
+            .unwrap_err()
+            .to_string()
+            .contains("source is unavailable"));
+        assert!(catalog
+            .resolve("bad")
+            .unwrap_err()
+            .to_string()
+            .contains("not an object"));
+        assert!(catalog
+            .resolve("cycle_a")
+            .unwrap_err()
+            .to_string()
+            .contains("recursive"));
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
