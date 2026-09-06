@@ -222,7 +222,7 @@ pub(crate) fn compile_light_pixel(hlsl: &str, original: &[u8]) -> Result<MapArro
 pub(crate) struct MapArrowLightProgram {
     pub pixel: crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11PixelShader>,
     pub pixel_bytecode_sha256: String,
-    pub external_resources: Vec<(String, u32)>,
+    pub external_resources: Vec<u32>,
     pub retained_t2_required: bool,
 }
 
@@ -242,26 +242,37 @@ impl MapArrowLightProgram {
             defines,
         )?;
         let bytecode = compile_light_pixel(&hlsl, original)?;
+        Self::from_pixel(device, bytecode)
+    }
+
+    unsafe fn from_pixel(
+        device: *mut winapi::um::d3d11::ID3D11Device,
+        bytecode: MapArrowLightPixel,
+    ) -> Result<Self> {
         let retained_t2_required = matches!(&bytecode, MapArrowLightPixel::RetainedT2Required(_));
         let bytecode = bytecode.bytecode();
         let reflection = crate::parse_dxbc_reflection(bytecode)?;
+        if reflection.target >> 16 != 0xffff {
+            return Err("map-arrow light resources require a pixel shader".into());
+        }
         let mut external_resources = Vec::new();
-        for resource in reflection
-            .resources
-            .iter()
-            .filter(|r| r.resource_type == 2 && r.bind_point >= 2)
-        {
-            if resource.bind_point > 10 || resource.bind_count != 1 {
-                return Err("map-arrow light shader has unsupported external resources".into());
+        let mut bindings = std::collections::BTreeSet::new();
+        for resource in &reflection.resources {
+            if !bindings.insert((resource.resource_type, resource.bind_point)) {
+                return Err("map-arrow light reflected resource register repeats".into());
             }
-            external_resources.push((
-                resource
-                    .name
-                    .strip_suffix("_Texture")
-                    .unwrap_or(&resource.name)
-                    .into(),
-                resource.bind_point,
-            ));
+            if resource.resource_type == 0 {
+                let expected = match resource.bind_point { 0 => 416, 2 => 16, 3 => 128,
+                    slot => return Err(format!("map-arrow light constant buffer b{slot} is not supplied").into()),
+                };
+                if resource.bind_count != 1 || reflection.cbuffers.iter()
+                    .find(|cb| cb.name == resource.name).is_none_or(|cb| cb.size != expected) {
+                    return Err(format!("map-arrow light constant buffer b{} layout size is not supplied", resource.bind_point).into());
+                }
+                continue;
+            }
+            let slot = crate::xmap16_supply_arrow_handoff::map_arrow_pixel_texture_register(resource)?;
+            if resource.resource_type == 2 && slot >= 2 { external_resources.push(slot); }
         }
         let mut raw = std::ptr::null_mut();
         crate::d3d11_device::native_d3d11_hr(
@@ -298,7 +309,7 @@ impl MapArrowLightProgram {
             }
             srvs[2] = view.as_raw();
         }
-        for (symbol, slot) in &self.external_resources {
+        for slot in &self.external_resources {
             if *slot == 2 {
                 if !self.retained_t2_required || srvs[2].is_null() {
                     return Err("map-arrow retained t2 lacks its typed history borrow".into());
@@ -307,11 +318,11 @@ impl MapArrowLightProgram {
             }
             let matching = views
                 .iter()
-                .filter(|v| v.identity.symbol == *symbol && v.identity.shader_register == *slot)
+                .filter(|v| v.identity.shader_register == *slot)
                 .collect::<Vec<_>>();
             if matching.len() != 1 {
                 return Err(format!(
-                    "map-arrow-light-depth-resource-unavailable: {symbol}/t{slot}"
+                    "map-arrow-light-depth-resource-unavailable: t{slot}"
                 )
                 .into());
             }
@@ -637,6 +648,68 @@ mod native_tests {
         .unwrap();
         D3dPtr::from_raw(raw, "test buffer").unwrap()
     }
+    #[test]
+    fn light_pixel_resources_bind_by_register_with_typed_provider_custody() {
+        unsafe {
+            let mut device=ptr::null_mut();let mut context=ptr::null_mut();
+            native_d3d11_hr(D3D11CreateDevice(ptr::null_mut(),winapi::um::d3dcommon::D3D_DRIVER_TYPE_WARP,
+                ptr::null_mut(),0,ptr::null(),0,D3D11_SDK_VERSION,&mut device,ptr::null_mut(),&mut context),"light positional WARP").unwrap();
+            let device=D3dPtr::from_raw(device,"light positional device").unwrap();let context=D3dPtr::from_raw(context,"light positional context").unwrap();
+            let mut desc:D3D11_TEXTURE2D_DESC=mem::zeroed();desc.Width=1;desc.Height=1;desc.MipLevels=1;
+            desc.ArraySize=1;desc.Format=DXGI_FORMAT_R8G8B8A8_UNORM;desc.SampleDesc.Count=1;desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+            let mut texture=ptr::null_mut();native_d3d11_hr((*device.as_raw()).CreateTexture2D(&desc,ptr::null(),&mut texture),"light positional texture").unwrap();
+            let texture=D3dPtr::from_raw(texture,"light positional texture").unwrap();let mut srv=ptr::null_mut();
+            native_d3d11_hr((*device.as_raw()).CreateShaderResourceView(texture.as_raw().cast(),ptr::null(),&mut srv),"light positional SRV").unwrap();
+            let srv=D3dPtr::from_raw(srv,"light positional SRV").unwrap();
+            let provider=crate::NativeXmap16ExternalResourceView::from_provider(crate::Xmap16SupplyArrowResourceIdentity {
+                symbol:"HeightMap".into(),shader_register:4,owner_packet:"XMAP04".into(),payload_sha256:"a".repeat(64),descriptor_sha256:"b".repeat(64),
+            },srv.as_raw()).unwrap();
+            let scene=NativeMapArrowLightScene {
+                buffer:buffer(device.as_raw(),&[0;416],D3D11_BIND_CONSTANT_BUFFER),payload_sha256:"a".repeat(64),selected_light_sha256:"b".repeat(64),
+                camera_frame_sha256:"c".repeat(64),replay_frame_identity_sha256:"d".repeat(64),application_elapsed_seconds:0.0,device_identity:device.as_raw() as usize,
+            };
+            let source="Texture2D HeightMap_Texture:register(t4); SamplerState HeightMap_Sampler:register(s4); float main(float4 uv:TEXCOORD0):SV_Depth { return HeightMap_Texture.Sample(HeightMap_Sampler,uv.xy).r; }";
+            let compile=|source:&str,stage|crate::d3d_compile_stage(source,stage,crate::shader_compile::ENGINE_COMPILE_FLAGS).unwrap();
+            for hlsl in [source.to_string(),source.replace("HeightMap_Texture","AuthoredImage").replace("HeightMap_Sampler","AuthoredFilter")] {
+                let original=compile(&hlsl,crate::ShaderStage::Pixel);
+                let pixel=compile_light_pixel(&hlsl,&original).unwrap();
+                let program=MapArrowLightProgram::from_pixel(device.as_raw(),pixel).unwrap();
+                assert_eq!(program.external_resources,[4]);
+                let views=program.external_views(&[provider.clone()],None,&scene).unwrap();
+                assert_eq!(views[4],srv.as_raw());assert_eq!(views.iter().filter(|v|!v.is_null()).count(),1);
+                (*context.as_raw()).PSSetShader(program.pixel.as_raw(),ptr::null(),0);
+                (*context.as_raw()).PSSetShaderResources(0,11,views.as_ptr());
+                let mut actual=ptr::null_mut();(*context.as_raw()).PSGetShaderResources(4,1,&mut actual);
+                assert_eq!(actual,srv.as_raw());drop(D3dPtr::from_raw(actual,"light positional bound SRV").unwrap());
+                assert!(program.external_views(&[],None,&scene).is_err());
+                assert!(program.external_views(&[provider.clone(),provider.clone()],None,&scene).is_err());
+                let mut wrong_slot=provider.clone();wrong_slot.identity.shader_register=3;wrong_slot.identity.symbol="TerrainIDMap".into();
+                assert!(program.external_views(&[wrong_slot],None,&scene).is_err());
+                let mut wrong_owner=provider.clone();wrong_owner.identity.owner_packet="XMAP09".into();
+                assert!(program.external_views(&[wrong_owner],None,&scene).is_err());
+                let mut wrong_symbol=provider.clone();wrong_symbol.identity.symbol="AuthoredImage".into();
+                assert!(program.external_views(&[wrong_symbol],None,&scene).is_err());
+                let mut wrong_payload=provider.clone();wrong_payload.identity.payload_sha256="invalid".into();
+                assert!(program.external_views(&[wrong_payload],None,&scene).is_err());
+            }
+            for changed in [source.replace("register(t4)","register(t11)"),source.replace("register(s4)","register(s11)"),
+                source.replace("Texture2D HeightMap_Texture","Texture2DArray HeightMap_Texture").replace("uv.xy","float3(uv.xy,0)"),
+                "cbuffer Missing:register(b1) {float4 v;}; float main():SV_Depth {return v.x;}".into(),
+                "cbuffer WrongSize:register(b2) {float4 v;float4 w;}; float main():SV_Depth {return v.x+w.x;}".into(),
+            ] {
+                let pixel=MapArrowLightPixel::T2Independent(compile(&changed,crate::ShaderStage::Pixel));
+                assert!(MapArrowLightProgram::from_pixel(device.as_raw(),pixel).is_err(),"{changed}");
+            }
+            let vertex=compile("float4 main(float3 p:POSITION):SV_POSITION {return float4(p,1);}",crate::ShaderStage::Vertex);
+            assert!(MapArrowLightProgram::from_pixel(device.as_raw(),MapArrowLightPixel::T2Independent(vertex)).is_err());
+            let retained=source.replace("register(t4)","register(t2)");let original=compile(&retained,crate::ShaderStage::Pixel);
+            let program=MapArrowLightProgram::from_pixel(device.as_raw(),compile_light_pixel(&retained,&original).unwrap()).unwrap();
+            assert!(program.retained_t2_required);
+            let mut ordinary_shadow=provider;ordinary_shadow.identity.symbol="ShadowMap".into();ordinary_shadow.identity.shader_register=2;ordinary_shadow.identity.owner_packet="XMAP10".into();
+            assert!(program.external_views(&[ordinary_shadow],None,&scene).is_err());
+        }
+    }
+
     #[test]
     fn light_arrow_native_dsv_draw_preserves_authored_clip_and_target() {
         unsafe {
