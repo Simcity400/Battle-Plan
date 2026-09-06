@@ -475,11 +475,23 @@ impl AssetResolver {
 
     pub fn resolve_optional_file(&self, rel: &str) -> Result<Option<ResolvedFile>> {
         let normalized = normalize_rel_path(rel);
+        if let Some(files) = &self.restricted_files {
+            if let Some(file) = files.get(&normalized.to_ascii_lowercase()) {
+                return Ok(Some(file.clone()));
+            }
+            let lease = self.admission_lease.as_ref().ok_or_else(||
+                GameUiError::missing(format!("optional asset absence is unwitnessed: {normalized}")))?;
+            return match lease.optional_content(&normalized)
+                .map_err(|error| GameUiError::missing(error.to_string()))? {
+                portable_content_manifest::OptionalContentAdmission::WitnessedAbsent => Ok(None),
+                portable_content_manifest::OptionalContentAdmission::Unwitnessed => Err(
+                    GameUiError::missing(format!("optional asset absence is unwitnessed: {normalized}"))),
+                portable_content_manifest::OptionalContentAdmission::Present(_) => Err(
+                    GameUiError::missing(format!("UI consumer capability omits admitted asset: {normalized}"))),
+            };
+        }
         if normalized.is_empty() {
             return Ok(None);
-        }
-        if let Some(files) = &self.restricted_files {
-            return Ok(files.get(&normalized.to_ascii_lowercase()).cloned());
         }
         let parent = normalized
             .rsplit_once('/')

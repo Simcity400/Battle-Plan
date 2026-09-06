@@ -1605,7 +1605,11 @@ mod tests {
             required_settings: BTreeMap::new(),
             recorder_local_settings: BTreeMap::new(),
             required_content,
-            witnessed_absent_content: Vec::new(),
+            witnessed_absent_content: ["interface/core.gfx", "gfx/flags/small/GER_fascism.tga", "gfx/flags/small/ITA_fascism.tga"]
+                .into_iter().map(|path| {
+                    assert!(!root.join(path).exists(), "fixture absence must be observed: {path}");
+                    path.to_ascii_lowercase()
+                }).collect::<std::collections::BTreeSet<_>>().into_iter().collect(),
             manifest_digest_sha256: None,
         };
         manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
@@ -1634,6 +1638,27 @@ mod tests {
         let assets =
             AssetResolver::from_used_content_rows(&resolver, &admission, selected_rows).unwrap();
         ProductionUiRenderer::new(assets, &admission).unwrap()
+    }
+
+    #[test]
+    fn optional_assets_require_absence_witness_and_retain_consumer_capability() {
+        let (root, _) = production_fixture();
+        let renderer = admitted_production_renderer(&root.0, None);
+        let assets = renderer.resolver();
+        assert!(assets.resolve_optional_file("gfx/flags/small/GER.tga").unwrap().is_some());
+        assert!(assets.resolve_optional_file("interface/core.gfx").unwrap().is_none());
+        assert!(assets.resolve_texture_file("gfx/interface/xui13_test.png")
+            .unwrap_err().message.contains("unwitnessed"),
+            "an admitted same-stem TGA cannot authorize skipping an unknown PNG");
+        let unknown = "gfx/interface/unrecorded_icon.tga";
+        assert!(assets.resolve_optional_file(unknown).unwrap_err().message.contains("unwitnessed"));
+        fs::write(root.0.join(unknown), test_tga()).unwrap();
+        assert!(assets.resolve_optional_file(unknown).unwrap_err().message.contains("unwitnessed"),
+            "an unrelated local file cannot change recording authority");
+        let omitted = admitted_production_renderer(&root.0, Some("gfx/flags/small/GER.tga"));
+        assert!(omitted.resolver().resolve_optional_file("gfx/flags/small/GER.tga")
+            .unwrap_err().message.contains("consumer capability"));
+        assert!(assets.resolve_optional_file("").is_err());
     }
 
     #[test]

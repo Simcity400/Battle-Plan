@@ -8463,7 +8463,7 @@ mod tests {
         let source = include_str!("production_renderer.rs").replace("\r\n", "\n");
         let marker = ["#[cfg(", "test)]"].concat();
         let cut = source
-            .rfind(&marker)
+            .find(&marker)
             .expect("this module has a test module to cut off");
         source[..cut].to_string()
     }

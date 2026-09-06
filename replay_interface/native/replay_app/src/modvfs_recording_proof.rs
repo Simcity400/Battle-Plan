@@ -66,7 +66,8 @@ fn modvfs_whole_recording_admission_reads_all_winners_and_closes_hud() {
         }).expect("capture must leave an installed authored file outside its used-content manifest");
     drop(discovery);
     assert!(resolver.read_required_bytes(&unrecorded, "unrecorded proof").is_err());
-    assert!(renderer.resolver().resolve_optional_file(&unrecorded).unwrap().is_none());
+    assert!(renderer.resolver().resolve_optional_file(&unrecorded).is_err(),
+        "unrecorded installed content is not witnessed absent");
     bounded();
     let dependency = &index.closures[0].bindings[0].content.normalized_game_relative_path;
     let snapshot = resolver.resolve_required(dependency, "HUD dependency proof").unwrap();
