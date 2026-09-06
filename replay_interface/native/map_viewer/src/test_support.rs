@@ -15,7 +15,9 @@ use winapi::um::d3d11::{D3D11_DSV_DIMENSION_TEXTURE2D, D3D11_RTV_DIMENSION_TEXTU
 use winapi::um::d3dcommon::D3D11_SRV_DIMENSION_TEXTURE2D;
 
 pub(crate) fn with_define_fixture<T>(source: &str, read: impl FnOnce(&GameFileResolver) -> T) -> T {
-    let root = temp_test_dir("effective_define_fixture");
+    static NEXT_DEFINE_FIXTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let ordinal = NEXT_DEFINE_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = temp_test_dir(&format!("effective_define_fixture_{ordinal}"));
     fs::create_dir_all(root.join("common/defines")).unwrap();
     fs::write(root.join("common/defines/fixture.lua"), source).unwrap();
     let resolver = GameFileResolver::vanilla(&root).unwrap();
@@ -60,6 +62,7 @@ pub(crate) fn frame_with_rest(rest: serde_json::Value) -> std::sync::Arc<replay_
 pub(crate) fn bare_viewer() -> ViewerOwnedMapState {
     ViewerOwnedMapState {
         sky_enabled: true,
+        unit_models_enabled: true,
         viewport_width: 16,
         viewport_height: 16,
         camera: None,

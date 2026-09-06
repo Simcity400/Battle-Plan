@@ -1505,7 +1505,74 @@ impl EntityAttachmentGroup {
 pub(crate) struct EntityAttachments {
     pub groups: Vec<EntityAttachmentGroup>,
     pub state_propagation: Vec<(String, Vec<(u32, u32)>)>,
+    pub state_weights: Vec<(String, i32)>,
     pub parent_state_override: Option<String>,
+}
+
+// 1424db8f0/1424db310 sum signed-positive weights in 64 bits; zero total uses
+// the already-consumed draw for a uniform index, unlike attachment groups.
+pub(crate) fn native_state_index(weights: &[(String, i32)], draw: u32) -> crate::Result<usize> {
+    let count = i32::try_from(weights.len()).map_err(|_| "entity state count exceeds native i32")?;
+    if count == 0 || draw > 0x7fff_ffff {
+        return Err("entity state random inputs are invalid".into());
+    }
+    let unit = f64::from(draw) * f64::from_bits(0x3e00_0000_0000_0000);
+    let total = weights.iter().filter(|(_, weight)| *weight > 0)
+        .fold(0u64, |sum, (_, weight)| sum + *weight as u64);
+    if total == 0 {
+        return Ok((unit * f64::from(count)) as usize);
+    }
+    let target = (unit * total as f64) as u64;
+    let mut cumulative = 0u64;
+    for (index, (_, weight)) in weights.iter().enumerate() {
+        if *weight > 0 {
+            cumulative += *weight as u64;
+            if target < cumulative { return Ok(index); }
+        }
+    }
+    Err("entity state weighted selection reached the native no-index error".into())
+}
+
+impl EntityAttachments {
+    pub(crate) fn enter_state(
+        &self,
+        pose: &crate::BuildingEntityPose,
+        requested: &str,
+        random: &mut crate::particle_runtime::ViewerParticleSeed,
+    ) -> crate::Result<(Option<usize>, f32)> {
+        let hashes = pose.states.iter().map(|state| entity_token_hash(&state.name))
+            .collect::<crate::Result<Vec<_>>>()?;
+        let requested_hash = entity_token_hash(requested)?;
+        let first = hashes.iter().position(|hash| *hash == requested_hash)
+            .or(pose.default_state.as_deref().map(entity_token_hash).transpose()?
+                .and_then(|default| hashes.iter().position(|hash| *hash == default)));
+        let index = if let Some(first) = first {
+            // The native stable hash sort makes every equal-key declaration contiguous.
+            let indices = hashes.iter().enumerate().filter_map(|(index, hash)|
+                (*hash == hashes[first]).then_some(index)).collect::<Vec<_>>();
+            let index = if indices.len() == 1 { first } else {
+                let weights = indices.iter().map(|index| {
+                    self.state_weights.get(*index)
+                        .filter(|(name, _)| *name == pose.states[*index].name)
+                        .cloned().ok_or_else(|| "entity state weights and shared pose ordinals disagree".into())
+                }).collect::<crate::Result<Vec<_>>>()?;
+                indices[native_state_index(&weights, random.draw())?]
+            };
+            Some(index)
+        } else { None };
+        let [mut start, range] = index.and_then(|index| pose.states[index].time_offset)
+            .unwrap_or([0.0, 0.0]);
+        if !start.is_finite() || !range.is_finite() {
+            return Err("entity state time offset is nonfinite".into());
+        }
+        if range > 0.0 {
+            start += random.draw() as f32 * f32::from_bits(0x30000000) * range;
+        }
+        if !start.is_finite() {
+            return Err("entity state time offset arithmetic overflow".into());
+        }
+        Ok((index, start))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1590,6 +1657,7 @@ impl EntityAttachmentCatalog {
             } else if field.key_matches("state") {
                 let mut name = None;
                 let mut mappings = Vec::new();
+                let mut weight = 0;
                 for entry in field.value.fields() {
                     if entry.key_matches("name") {
                         name = Some(attachment_name(
@@ -1598,6 +1666,11 @@ impl EntityAttachmentCatalog {
                                 .as_scalar()
                                 .ok_or("attachment state name is not scalar")?,
                         ));
+                    } else if entry.key_matches("chance") {
+                        let raw = crate::authored_fixed::parse_fixed5(entry.value.as_scalar()
+                            .ok_or("entity state chance is not scalar")?)
+                            .ok_or("entity state chance is not a native fixed token")?;
+                        weight = if raw > 0 { raw as i32 } else { 0 };
                     } else if !entry.key_matches("propagate_state") {
                         continue;
                     } else if let Some(target) = entry.value.as_scalar() {
@@ -1616,8 +1689,9 @@ impl EntityAttachmentCatalog {
                         }
                     }
                 }
-                own.state_propagation
-                    .push((name.ok_or("attachment state has no name")?, mappings));
+                let name = name.ok_or("attachment state has no name")?;
+                own.state_weights.push((name.clone(), weight));
+                own.state_propagation.push((name, mappings));
             }
         }
         Ok(EntityAttachmentSource { base, own })
@@ -1700,6 +1774,10 @@ impl EntityAttachmentCatalog {
                 resolved.groups.push(group.clone());
             }
         }
+        resolved.state_weights.retain(|(name, _)| {
+            !source.own.state_weights.iter().any(|(own, _)| own == name)
+        });
+        resolved.state_weights.extend(source.own.state_weights.iter().cloned());
         resolved.state_propagation.retain(|(name, _)| {
             !source
                 .own
@@ -1979,6 +2057,7 @@ pub(crate) mod test_support {
     pub struct Fixture {
         root: PathBuf,
         pub resolver: GameFileResolver,
+        pub admission: replay_core::ValidatedContentAdmission,
     }
     impl Fixture {
         pub fn new(registrations: &str, particles: &str) -> Self {
@@ -2002,11 +2081,10 @@ pub(crate) mod test_support {
                 std::fs::create_dir_all(target.parent().unwrap()).unwrap();
                 std::fs::write(target, bytes).unwrap();
             }
-            let resolver = GameFileResolver::vanilla(&root)
-                .unwrap()
-                .bind_all_test_content(&"a".repeat(64))
-                .unwrap();
-            Self { root, resolver }
+            let raw = GameFileResolver::vanilla(&root).unwrap();
+            let (resolver, admission) = crate::test_support::admitted_vanilla_resolver(
+                &raw, &std::collections::BTreeSet::new(), "particle-authored-fixture");
+            Self { root, resolver, admission }
         }
         pub fn definitions(&self) -> ParticleDefinitions {
             ParticleDefinitions::load(&self.resolver).unwrap()

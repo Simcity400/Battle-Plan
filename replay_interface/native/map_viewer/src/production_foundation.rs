@@ -70,6 +70,7 @@ pub(crate) fn bmp_dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
 #[serde(deny_unknown_fields)]
 pub struct ViewerOwnedMapState {
     pub sky_enabled: bool,
+    pub unit_models_enabled: bool,
     pub viewport_width: u32,
     pub viewport_height: u32,
     pub camera: Option<crate::ViewerMapCameraState>,
@@ -335,9 +336,63 @@ impl FoundationFeatureOutput {
     }
 }
 
+pub trait PreparedEntityManagerOwner {
+    fn manager(&self) -> std::sync::Arc<std::sync::Mutex<crate::particle_runtime::ViewerEntityManager>>;
+    fn owner(&self) -> crate::particle_runtime::EntityManagerOwner;
+    fn frame(&self) -> crate::particle_runtime::EntityManagerFrame;
+    fn advance_root(&mut self, root: &str, scene: u32,
+        random: &mut crate::particle_runtime::ViewerParticleSeed) -> Result<()>;
+    fn finish(&mut self) -> Result<()>;
+    fn refuse(&mut self, reason: &str);
+}
+
+pub(crate) fn dispatch_prepared_entity_owners(owners: &mut [Box<dyn PreparedEntityManagerOwner + '_>]) -> Result<()> {
+    use crate::particle_runtime::EntityManagerDispatch;
+    let Some(first) = owners.first() else { return Ok(()); };
+    let manager = first.manager();
+    let frame = first.frame();
+    let outcome: Result<()> = (|| {
+        if owners.iter().any(|owner| !std::sync::Arc::ptr_eq(&manager, &owner.manager())
+            || owner.frame() != frame) {
+            return Err("entity_manager.prepared_owners.disagree".into());
+        }
+        let identities: Vec<_> = owners.iter().map(|owner| owner.owner()).collect();
+        {
+            let mut callbacks: Vec<_> = owners.iter_mut().map(|owner|
+                move |root: &str, scene: u32, random: &mut crate::particle_runtime::ViewerParticleSeed|
+                    owner.advance_root(root, scene, random)).collect();
+            let mut dispatch: Vec<_> = identities.iter().zip(callbacks.iter_mut()).map(|(owner, callback)|
+                EntityManagerDispatch { owner: *owner, prepared_for: frame, advance_root: callback }).collect();
+            manager.lock().map_err(|_| "entity_manager.lock_poisoned")?
+                .advance_frame(frame, &mut dispatch)?;
+        }
+        for owner in owners.iter_mut() { owner.finish()?; }
+        Ok(())
+    })();
+    if let Err(error) = &outcome { refuse_prepared_entity_owners(owners, &error.to_string()); }
+    outcome
+}
+
+fn refuse_prepared_entity_owners(owners: &mut [Box<dyn PreparedEntityManagerOwner + '_>], reason: &str) {
+    // Finalization can fail after another owner materialized; revoke every publication.
+    for owner in owners.iter_mut() {
+        if let Ok(mut manager) = owner.manager().lock() {
+            manager.refuse_frame(owner.frame(), crate::particle_runtime::EntityManagerFrameRefusal::Finalization(reason.into()));
+        }
+        owner.refuse(reason);
+    }
+}
+
 pub trait ProductionMapFeatureAdapter {
     fn family(&self) -> MapVisualFamily;
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput>;
+    fn prepare_entity_manager_population(&self, _context: &FoundationFeatureContext<'_>) -> Result<()> {
+        Ok(())
+    }
+    // Taking an already prepared owner must not construct roots or consume the manager cursor.
+    fn take_prepared_entity_manager_owner(&self) -> Result<Option<Box<dyn PreparedEntityManagerOwner + '_>>> {
+        Ok(None)
+    }
     fn weather_particles_bound(&self, _time: f32, _identity: &str) -> Result<bool> {
         Ok(false)
     }
@@ -1374,6 +1429,27 @@ fn prepare_foundation_frame_inner(
                 Some(FamilyPreparation::Prepared(output)) => output.prepared_weather.as_ref(),
                 _ => None,
             };
+        }
+        if family == MapVisualFamily::LightingShadows {
+            let shared_entities = (|| {
+                if let Some(lighting) = adapters.get(family) {
+                    lighting.prepare_entity_manager_population(&context)?;
+                }
+                let mut owners = Vec::new();
+                for adapter in adapters.slots.values() {
+                    match adapter.take_prepared_entity_manager_owner() {
+                        Ok(Some(owner)) => owners.push(owner),
+                        Ok(None) => {},
+                        Err(error) => {
+                            refuse_prepared_entity_owners(&mut owners, &error.to_string());
+                            return Err(error);
+                        }
+                    }
+                }
+                dispatch_prepared_entity_owners(&mut owners)
+            })().map_err(|error| FamilyContentRefusal::new(
+                "XMAP09.entity_manager_frame_unavailable", error.to_string()));
+            prepared_or_refusal!(shared_entities);
         }
         if family == MapVisualFamily::ParticlesEffects {
             if let (Some(weather), Some(lighting)) =
@@ -2494,6 +2570,82 @@ fn validate_sha256(value: &str, label: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    struct FrameOwner {
+        manager: std::sync::Arc<std::sync::Mutex<crate::particle_runtime::ViewerEntityManager>>,
+        id: crate::particle_runtime::EntityManagerOwner,
+        frame: crate::particle_runtime::EntityManagerFrame,
+        root: &'static str,
+        order: std::rc::Rc<std::cell::RefCell<Vec<(&'static str, u32)>>>,
+        published: std::rc::Rc<std::cell::Cell<bool>>,
+        fail_finish: bool,
+    }
+    impl PreparedEntityManagerOwner for FrameOwner {
+        fn manager(&self) -> std::sync::Arc<std::sync::Mutex<crate::particle_runtime::ViewerEntityManager>> { self.manager.clone() }
+        fn owner(&self) -> crate::particle_runtime::EntityManagerOwner { self.id }
+        fn frame(&self) -> crate::particle_runtime::EntityManagerFrame { self.frame }
+        fn advance_root(&mut self, root: &str, _: u32, random: &mut crate::particle_runtime::ViewerParticleSeed) -> Result<()> {
+            assert_eq!(root, self.root);
+            self.order.borrow_mut().push((self.root, random.draw()));
+            Ok(())
+        }
+        fn finish(&mut self) -> Result<()> {
+            if self.fail_finish { return Err("fixture materialization failure".into()); }
+            self.published.set(true);
+            Ok(())
+        }
+        fn refuse(&mut self, _: &str) { self.published.set(false); }
+    }
+
+    fn frame_owners() -> [Box<FrameOwner>; 2] {
+        use crate::particle_runtime::*;
+        let manager = std::sync::Arc::new(std::sync::Mutex::new(ViewerEntityManager::default()));
+        let order = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        ["first", "second"].map(|root| {
+            let id = EntityManagerOwner::default();
+            manager.lock().unwrap().parts_mut().1.apply(id, &mut vec![EntityRootChange::Register {
+                id: root.into(), scene_mask: 7, update_mask: 6,
+            }]);
+            Box::new(FrameOwner { manager: manager.clone(), id, root, order: order.clone(),
+                frame: EntityManagerFrame { presentation_time_f32_bits: 1.0f32.to_bits(),
+                    delta_seconds_f32_bits: 0.5f32.to_bits(), cameras: Some([true; 3]) },
+                published: Default::default(), fail_finish: false })
+        })
+    }
+
+    #[test]
+    fn common_owner_finalization_failure_revokes_earlier_materialization_and_retains_draws() {
+        let [first, mut second] = frame_owners();
+        let manager = first.manager.clone();
+        let order = first.order.clone();
+        let first_publication = first.published.clone();
+        let second_publication = second.published.clone();
+        second.fail_finish = true;
+        let mut owners: Vec<Box<dyn PreparedEntityManagerOwner>> = vec![first, second];
+        assert!(dispatch_prepared_entity_owners(&mut owners).unwrap_err().to_string().contains("materialization"));
+        assert_eq!(order.borrow().iter().map(|(root, _)| *root).collect::<Vec<_>>(),
+            ["second", "first", "second", "first", "second", "first"]);
+        assert_eq!(manager.lock().unwrap().random_state().counter, 6);
+        assert!(!first_publication.get() && !second_publication.get());
+        assert!(!manager.lock().unwrap().frame_is_published(1.0f32.to_bits()));
+        assert!(dispatch_prepared_entity_owners(&mut owners).is_err());
+        assert_eq!(manager.lock().unwrap().random_state().counter, 6);
+        assert_eq!(order.borrow().len(), 6);
+    }
+
+    #[test]
+    fn common_owner_dispatch_rejects_independent_manager_before_any_draw() {
+        let [first, mut second] = frame_owners();
+        let manager = first.manager.clone();
+        second.manager = std::sync::Arc::new(std::sync::Mutex::new(crate::particle_runtime::ViewerEntityManager::default()));
+        let other = second.manager.clone();
+        let mut owners: Vec<Box<dyn PreparedEntityManagerOwner>> = vec![first, second];
+        assert!(dispatch_prepared_entity_owners(&mut owners).unwrap_err().to_string().contains("disagree"));
+        for manager in [manager, other] {
+            assert_eq!(manager.lock().unwrap().random_state().counter, 0);
+            assert!(!manager.lock().unwrap().frame_is_published(1.0f32.to_bits()));
+        }
+    }
+
     /// kills: a broken PROCESS_MEMORY_COUNTERS binding - a wrong `cb` or
     /// layout fails the call and every footprint row would read zero.
     #[cfg(windows)]
@@ -3128,7 +3280,7 @@ mod tests {
         );
         assert_eq!(
             body.matches("prepared_or_refusal!(").count(),
-            5,
+            6,
             "an adapter preparation bypasses the content-refusal accounting"
         );
         let arm = body

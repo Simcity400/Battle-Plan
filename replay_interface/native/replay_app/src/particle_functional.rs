@@ -109,6 +109,7 @@ fn execute(
     )?;
     let mut viewer = map_viewer::ViewerOwnedMapState {
         sky_enabled: true,
+        unit_models_enabled: true,
         viewport_width: 1920,
         viewport_height: 1080,
         input_revision: camera.input_revision,

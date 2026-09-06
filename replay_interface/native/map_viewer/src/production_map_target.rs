@@ -551,6 +551,7 @@ mod tests {
     fn viewer_main_scene_inputs_follow_xmap10_plan_without_recorder_outputs() {
         let viewer = ViewerOwnedMapState {
             sky_enabled: true,
+            unit_models_enabled: true,
             viewport_width: 1920,
             viewport_height: 1080,
             camera: None,

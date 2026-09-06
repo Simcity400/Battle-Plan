@@ -17,6 +17,295 @@ pub struct ViewerParticleSeed {
     pub seed: u32,
 }
 
+// One cursor belongs to the entity manager, not to a root, state, or frame.
+// Native 14226c380 initializes both words through 1424dbe60 once at construction.
+#[derive(Debug)]
+pub struct ViewerEntityManager {
+    random: ViewerParticleSeed,
+    scenes: EntityManagerScenes,
+    frame_outcome: Option<(EntityManagerFrame, u64, Result<(), EntityManagerFrameRefusal>)>,
+}
+
+impl ViewerEntityManager {
+    pub fn new(initial: ViewerParticleSeed) -> Self {
+        Self { random: initial, scenes: EntityManagerScenes::default(), frame_outcome: None }
+    }
+
+    pub fn random_state(&self) -> ViewerParticleSeed {
+        self.random
+    }
+
+    pub(crate) fn random_mut(&mut self) -> &mut ViewerParticleSeed {
+        &mut self.random
+    }
+
+    pub(crate) fn parts_mut(&mut self) -> (&mut ViewerParticleSeed, &mut EntityManagerScenes) {
+        (&mut self.random, &mut self.scenes)
+    }
+
+    pub(crate) fn advance_frame(
+        &mut self,
+        frame: EntityManagerFrame,
+        owners: &mut [EntityManagerDispatch<'_>],
+    ) -> Result<(), EntityManagerFrameRefusal> {
+        if let Some((previous, revision, result)) = &self.frame_outcome {
+            if result.is_err() { return result.clone(); }
+            if *previous == frame && *revision == self.scenes.revision { return Ok(()); }
+            if previous.presentation_time_f32_bits == frame.presentation_time_f32_bits {
+                let refusal = EntityManagerFrameRefusal::ChangedPresentation;
+                self.frame_outcome = Some((frame, self.scenes.revision, Err(refusal.clone())));
+                return Err(refusal);
+            }
+        }
+        let result = (|| {
+            let time = f32::from_bits(frame.presentation_time_f32_bits);
+            let delta = f32::from_bits(frame.delta_seconds_f32_bits);
+            if !time.is_finite() || time < 0.0 || !delta.is_finite() || delta < 0.0 {
+                return Err(EntityManagerFrameRefusal::InvalidClock);
+            }
+            if self.scenes.requires_camera(u32::MAX) && frame.cameras.is_none() {
+                return Err(EntityManagerFrameRefusal::MissingCamera);
+            }
+            for (index, owner) in owners.iter().enumerate() {
+                if owners[..index].iter().any(|previous| previous.owner == owner.owner) {
+                    return Err(EntityManagerFrameRefusal::DuplicateOwner(owner.owner));
+                }
+            }
+            let cameras = frame.cameras.unwrap_or([false; 3]);
+            // Readiness is checked before the first update draw, across every visited scene.
+            self.scenes.visit(cameras, u32::MAX, |owner, root, _| {
+                let callback = owners.iter().find(|candidate| candidate.owner == owner)
+                    .ok_or_else(|| EntityManagerFrameRefusal::UnpreparedOwner { owner, root: root.into() })?;
+                if callback.prepared_for != frame {
+                    return Err(EntityManagerFrameRefusal::UnpreparedOwner { owner, root: root.into() });
+                }
+                Ok(())
+            })?;
+            self.scenes.visit(cameras, u32::MAX, |owner, root, scene| {
+                let callback = owners.iter_mut().find(|candidate| candidate.owner == owner).unwrap();
+                (callback.advance_root)(root, scene, &mut self.random)
+                    .map_err(|error| EntityManagerFrameRefusal::RootUpdate {
+                        owner, root: root.into(), scene, reason: error.to_string(),
+                    })
+            })
+        })();
+        self.frame_outcome = Some((frame, self.scenes.revision, result.clone()));
+        result
+    }
+
+    pub(crate) fn refuse_frame(&mut self, frame: EntityManagerFrame, refusal: EntityManagerFrameRefusal) {
+        self.frame_outcome = Some((frame, self.scenes.revision,
+            Err(refusal)));
+    }
+
+    pub(crate) fn frame_is_published(&self, time: u32) -> bool {
+        self.frame_outcome.as_ref().is_some_and(|(frame, revision, result)|
+            frame.presentation_time_f32_bits == time && *revision == self.scenes.revision && result.is_ok())
+    }
+
+    pub(crate) fn reset_frame_publication(&mut self) -> Result<(), EntityManagerFrameRefusal> {
+        if self.scenes.cells.iter().any(|cell| !cell.is_empty()) {
+            return Err(EntityManagerFrameRefusal::RegisteredRootsOnReset);
+        }
+        self.frame_outcome = None;
+        Ok(())
+    }
+
+    pub(crate) fn remove_owner(&mut self, owner: EntityManagerOwner) {
+        for cell in &mut self.scenes.cells {
+            let mut index = 0;
+            while index < cell.len() {
+                if cell[index].owner == owner { cell.swap_remove(index); self.scenes.revision = self.scenes.revision.wrapping_add(1); }
+                else { index += 1; }
+            }
+        }
+    }
+
+}
+
+#[cfg(test)]
+pub(crate) fn scene_camera_fixture(width: u32) -> crate::ViewerMapCameraState {
+    crate::ViewerMapCameraState::new(
+        vec![portable_content_manifest::UsedContentKey {
+            effective_vfs_manifest_sha256: "a".repeat(64),
+            stored_game_relative_path: crate::BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE.into(),
+            normalized_game_relative_path: crate::BATTLE_PLAN_GRAPHICS_DEFINES_SOURCE.into(),
+            winning_layer_ordinal: 0,
+            layer_kind: portable_content_manifest::ContentLayerKind::Base,
+            layer_id: "base".into(), source_sha256: "b".repeat(64),
+            payload_sha256: "c".repeat(64), payload_bytes: 1,
+        }],
+        crate::camera::Hoi4MapCameraDefines::new(50.0, 100.0, 200.0, 200.0, 50.0, 0.02, 6.0).unwrap(),
+        width, 2048, 1, 1, 50.0,
+    ).unwrap()
+}
+
+pub(crate) fn entity_scene_cameras(camera: &crate::ViewerMapCameraState) -> crate::Result<[bool; 3]> {
+    let (projection, view) = camera.entity_scene_inverse_matrices()?;
+    let position = camera.current_eye();
+    let mut xs = [0.0; 4];
+    for (index, ndc) in [[-1.0, 1.0, 0.0], [1.0, 1.0, 0.0],
+        [-1.0, -1.0, 0.0], [1.0, -1.0, 0.0]].into_iter().enumerate() {
+        let transform = |matrix: [[f32; 4]; 4], point: [f32; 3], column: usize| {
+            ((point[1] * matrix[1][column] + point[0] * matrix[0][column])
+                + point[2] * matrix[2][column]) + matrix[3][column]
+        };
+        let reciprocal = 1.0 / transform(projection, ndc, 3);
+        let projected = std::array::from_fn(|axis| transform(projection, ndc, axis) * reciprocal);
+        let direction = native_normalize(std::array::from_fn(|axis|
+            transform(view, projected, axis) - position[axis]), true);
+        xs[index] = entity_scene_corner(position, direction)?;
+    }
+    entity_scene_flags(camera.map_width as f32, xs)
+}
+
+fn entity_scene_corner(position: [f32; 3], direction: [f32; 3]) -> crate::Result<f32> {
+    if position.into_iter().chain(direction).any(|v| !v.is_finite()) {
+        return Err("entity_manager.camera_ray.nonfinite".into());
+    }
+    let mut distance = position[1] * 5.0;
+    let candidate = if direction[1] < f32::from_bits(0xba83_126f) {
+        (position[1] - 9.5) / direction[1].abs()
+    } else { distance };
+    if candidate < 0.0 { distance = 0.0; }
+    else if candidate <= distance { distance = candidate; }
+    let x = direction[0] * distance + position[0];
+    if !x.is_finite() { return Err("entity_manager.camera_corner.nonfinite".into()); }
+    Ok(x)
+}
+
+fn entity_scene_flags(width: f32, [left_top, right_top, left_bottom, right_bottom]: [f32; 4])
+    -> crate::Result<[bool; 3]>
+{
+    if !width.is_finite() || width <= 0.0
+        || [left_top, right_top, left_bottom, right_bottom].into_iter().any(|x| !x.is_finite()) {
+        return Err("entity_manager.camera_bounds.invalid".into());
+    }
+    let mut right = false;
+    let mut left = false;
+    if left_top < 0.0 || left_bottom < 0.0 { left = true; }
+    else if width < left_top || width < left_bottom { right = true; }
+    if width < right_top || width < right_bottom { right = true; }
+    else if right_top < 0.0 || right_bottom < 0.0 { left = true; }
+    Ok([true, right, left])
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntityManagerFrame {
+    pub presentation_time_f32_bits: u32,
+    pub delta_seconds_f32_bits: u32,
+    pub cameras: Option<[bool; 3]>,
+}
+
+pub(crate) struct EntityManagerDispatch<'a> {
+    pub owner: EntityManagerOwner,
+    pub prepared_for: EntityManagerFrame,
+    pub advance_root: &'a mut dyn FnMut(&str, u32, &mut ViewerParticleSeed) -> crate::Result<()>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EntityManagerFrameRefusal {
+    InvalidClock,
+    MissingCamera,
+    ChangedPresentation,
+    RegisteredRootsOnReset,
+    Finalization(String),
+    Preparation(String),
+    DuplicateOwner(EntityManagerOwner),
+    UnpreparedOwner { owner: EntityManagerOwner, root: String },
+    RootUpdate { owner: EntityManagerOwner, root: String, scene: u32, reason: String },
+}
+
+impl std::fmt::Display for EntityManagerFrameRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "entity_manager.frame.{self:?}")
+    }
+}
+impl std::error::Error for EntityManagerFrameRefusal {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntityManagerOwner(u64);
+
+impl Default for EntityManagerOwner {
+    fn default() -> Self {
+        Self(NEXT_RUNTIME.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum EntityRootChange {
+    Register { id: String, scene_mask: u32, update_mask: u32 },
+    Remove(String),
+}
+
+#[derive(Debug)]
+struct EntitySceneRoot {
+    owner: EntityManagerOwner,
+    id: String,
+    update_mask: u32,
+}
+
+#[derive(Debug)]
+pub(crate) struct EntityManagerScenes {
+    cells: [Vec<EntitySceneRoot>; 33],
+    revision: u64,
+}
+
+impl Default for EntityManagerScenes {
+    fn default() -> Self { Self { cells: std::array::from_fn(|_| Vec::new()), revision: 0 } }
+}
+
+impl EntityManagerScenes {
+    pub(crate) fn requires_camera(&self, update_mask: u32) -> bool {
+        self.cells[1..=3].iter().flatten()
+            .any(|root| root.update_mask == 0 || root.update_mask & update_mask != 0)
+    }
+
+    pub(crate) fn apply(&mut self, owner: EntityManagerOwner, changes: &mut Vec<EntityRootChange>) {
+        for change in changes.drain(..) {
+            match change {
+                EntityRootChange::Remove(id) => {
+                    for cell in &mut self.cells {
+                        if let Some(index) = cell.iter().position(|root| root.owner == owner && root.id == id) {
+                            cell.swap_remove(index);
+                            self.revision = self.revision.wrapping_add(1);
+                        }
+                    }
+                }
+                EntityRootChange::Register { id, scene_mask, update_mask } => {
+                    for (index, cell) in self.cells.iter_mut().enumerate() {
+                        let member = if index == 0 { scene_mask == 0 } else { scene_mask & (1 << (index - 1)) != 0 };
+                        if member && !cell.iter().any(|root| root.owner == owner && root.id == id) {
+                            cell.push(EntitySceneRoot { owner, id: id.clone(), update_mask });
+                            self.revision = self.revision.wrapping_add(1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn visit<E>(&self, cameras: [bool; 3], update_mask: u32,
+        mut visitor: impl FnMut(EntityManagerOwner, &str, u32) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
+        for scene in (1..=3).filter(|index| cameras[index - 1]).chain(std::iter::once(0)) {
+            for root in self.cells[scene].iter().rev() {
+                if root.update_mask == 0 || root.update_mask & update_mask != 0 {
+                    visitor(root.owner, &root.id, scene as u32)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Default for ViewerEntityManager {
+    fn default() -> Self {
+        // Reproducible viewer initialization, not the engine's clock-derived seed.
+        Self::new(ViewerParticleSeed { counter: 0, seed: 1 })
+    }
+}
+
 impl ViewerParticleSeed {
     pub(crate) fn draw(&mut self) -> u32 {
         let mut value = self
@@ -1954,6 +2243,111 @@ mod tests {
         test_support::{Fixture, REGISTRATION},
         ParticleDefinitions,
     };
+
+    #[test]
+    fn one_frame_dispatches_both_prepared_owners_and_retains_partial_failure() {
+        let mut manager = ViewerEntityManager::default();
+        let a = EntityManagerOwner::default();
+        let b = EntityManagerOwner::default();
+        for (owner, id) in [(a,"a"),(b,"b")] {
+            manager.scenes.apply(owner, &mut vec![EntityRootChange::Register {
+                id: id.into(), scene_mask: 7, update_mask: 6,
+            }]);
+        }
+        let frame = EntityManagerFrame { presentation_time_f32_bits: 0.5f32.to_bits(),
+            delta_seconds_f32_bits: 0.5f32.to_bits(), cameras: Some([true,true,true]) };
+        let order = std::cell::RefCell::new(Vec::new());
+        let mut first = |root: &str, scene, random: &mut ViewerParticleSeed| {
+            order.borrow_mut().push((root.to_owned(),scene,random.draw())); Ok(())
+        };
+        let mut second = |root: &str, scene, random: &mut ViewerParticleSeed| {
+            order.borrow_mut().push((root.to_owned(),scene,random.draw())); Ok(())
+        };
+        let mut callbacks = [EntityManagerDispatch { owner: a, prepared_for: frame, advance_root: &mut first },
+            EntityManagerDispatch { owner: b, prepared_for: frame, advance_root: &mut second }];
+        manager.advance_frame(frame, &mut callbacks).unwrap();
+        assert_eq!(order.borrow().iter().map(|(id,scene,_)|(id.as_str(),*scene)).collect::<Vec<_>>(),
+            [("b",1),("a",1),("b",2),("a",2),("b",3),("a",3)]);
+        let mut expected = ViewerParticleSeed { seed: 1, counter: 0 };
+        assert_eq!(order.borrow().iter().map(|row|row.2).collect::<Vec<_>>(),
+            (0..6).map(|_|expected.draw()).collect::<Vec<_>>());
+        manager.advance_frame(frame, &mut callbacks).unwrap();
+        assert_eq!(order.borrow().len(), 6);
+        assert_eq!(manager.random_state().counter, 6);
+        let next = EntityManagerFrame { presentation_time_f32_bits: 1.0f32.to_bits(), ..frame };
+        let mut failing = |_: &str, _: u32, random: &mut ViewerParticleSeed| {
+            random.draw(); Err("actual_owner_binding_failure".into())
+        };
+        let failure = manager.advance_frame(next, &mut [
+            EntityManagerDispatch { owner: a, prepared_for: next, advance_root: &mut failing },
+            EntityManagerDispatch { owner: b, prepared_for: next, advance_root: &mut second },
+        ]).unwrap_err();
+        assert!(matches!(&failure, EntityManagerFrameRefusal::RootUpdate { root, scene: 1, .. } if root == "a"));
+        assert_eq!(manager.random_state().counter, 8);
+        assert_eq!(manager.advance_frame(frame, &mut []), Err(failure));
+        assert_eq!(manager.random_state().counter, 8);
+        assert_eq!(manager.reset_frame_publication(), Err(EntityManagerFrameRefusal::RegisteredRootsOnReset));
+        manager.remove_owner(a); manager.remove_owner(b);
+        manager.reset_frame_publication().unwrap();
+        assert_eq!(manager.random_state().counter, 8);
+        manager.advance_frame(next, &mut []).unwrap();
+    }
+
+    #[test]
+    fn manager_cells_preserve_cross_owner_scene_order_masks_and_failed_draw_history() {
+        let mut manager = ViewerEntityManager::default();
+        let a = EntityManagerOwner::default();
+        let b = EntityManagerOwner::default();
+        let register = |id: &str, scene_mask, update_mask| EntityRootChange::Register {
+            id: id.into(), scene_mask, update_mask,
+        };
+        let (random, scenes) = manager.parts_mut();
+        scenes.apply(a, &mut vec![register("a", 7, 6), register("tail", 7, 6)]);
+        scenes.apply(b, &mut vec![register("b", 7, 6), register("zero", 0, 0), register("masked", 7, 8)]);
+        scenes.apply(a, &mut vec![EntityRootChange::Remove("a".into()), register("new", 7, 6)]);
+        let mut visited = Vec::new();
+        scenes.visit([true, true, true], 6, |owner, id, scene| {
+            visited.push((owner, id.to_owned(), scene, random.draw()));
+            Ok::<_, ()>(())
+        }).unwrap();
+        assert_eq!(visited.iter().map(|(_, id, scene, _)| (id.as_str(), *scene)).collect::<Vec<_>>(),
+            [("new", 1), ("b", 1), ("tail", 1), ("new", 2), ("b", 2), ("tail", 2),
+             ("new", 3), ("b", 3), ("tail", 3), ("zero", 0)]);
+        assert_eq!(visited.iter().map(|row| row.0).collect::<Vec<_>>(), [a,b,a,a,b,a,a,b,a,b]);
+        let mut witness = ViewerParticleSeed { seed: 1, counter: 0 };
+        assert_eq!(visited.iter().map(|row| row.3).collect::<Vec<_>>(), (0..10).map(|_| witness.draw()).collect::<Vec<_>>());
+        let failure = scenes.visit([true, false, false], 6, |_, id, _| {
+            random.draw();
+            if id == "b" { Err("bound_root_failure") } else { Ok(()) }
+        });
+        assert_eq!(failure, Err("bound_root_failure"));
+        assert_eq!(random.counter, 12);
+        manager.remove_owner(a);
+        let (random, scenes) = manager.parts_mut();
+        let mut remaining = Vec::new();
+        scenes.visit([true, false, false], 6, |_, id, scene| {
+            remaining.push((id.to_owned(), scene)); Ok::<_, ()>(())
+        }).unwrap();
+        assert_eq!(remaining, [("b".into(), 1), ("zero".into(), 0)]);
+        assert_eq!(random.counter, 12);
+    }
+
+    #[test]
+    fn camera_scene_flags_keep_strict_edges_branch_order_and_ground_ray_cap() {
+        assert_eq!(entity_scene_flags(100.0, [0.0,100.0,0.0,100.0]).unwrap(), [true,false,false]);
+        assert_eq!(entity_scene_flags(100.0, [-1.0,99.0,0.0,100.0]).unwrap(), [true,false,true]);
+        assert_eq!(entity_scene_flags(100.0, [0.0,101.0,0.0,100.0]).unwrap(), [true,true,false]);
+        assert_eq!(entity_scene_flags(100.0, [-1.0,101.0,101.0,-1.0]).unwrap(), [true,true,true]);
+        // The first if's negative left corner suppresses its far-right else-if.
+        assert_eq!(entity_scene_flags(100.0, [-1.0,50.0,101.0,50.0]).unwrap(), [true,false,true]);
+        assert_eq!(entity_scene_corner([10.0,20.0,0.0], [1.0,-0.5,0.0]).unwrap().to_bits(), 31.0f32.to_bits());
+        assert_eq!(entity_scene_corner([10.0,20.0,0.0], [1.0,0.0,0.0]).unwrap().to_bits(), 110.0f32.to_bits());
+        assert_eq!(entity_scene_corner([10.0,5.0,0.0], [1.0,-0.5,0.0]).unwrap().to_bits(), 10.0f32.to_bits());
+        assert!(entity_scene_corner([0.0,f32::INFINITY,0.0], [0.0;3]).is_err());
+        assert!(entity_scene_flags(100.0, [f32::NAN;4]).is_err());
+        assert_eq!(entity_scene_cameras(&scene_camera_fixture(100_000)).unwrap(), [true,false,false]);
+        assert_eq!(entity_scene_cameras(&scene_camera_fixture(1)).unwrap(), [true,true,true]);
+    }
 
     fn matrix() -> [u32; 16] {
         [

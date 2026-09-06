@@ -244,6 +244,7 @@ pub(crate) fn run(
     )?;
     let mut viewer = map_viewer::ViewerOwnedMapState {
         sky_enabled: true,
+        unit_models_enabled: true,
         viewport_width: REQUIRED_WIDTH,
         viewport_height: REQUIRED_HEIGHT,
         input_revision: camera.input_revision,
@@ -1387,6 +1388,7 @@ mod tests {
     fn recording_benchmark_warmups_and_samples_advance_route_equivalent_viewer_clock() {
         let mut viewer = map_viewer::ViewerOwnedMapState {
             sky_enabled: true,
+            unit_models_enabled: true,
             viewport_width: REQUIRED_WIDTH,
             viewport_height: REQUIRED_HEIGHT,
             input_revision: 0,

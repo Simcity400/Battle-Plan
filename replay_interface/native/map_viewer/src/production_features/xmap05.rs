@@ -3621,6 +3621,7 @@ mod tests {
     fn test_viewer(observer_country_id: Option<&str>) -> ViewerOwnedMapState {
         ViewerOwnedMapState {
             sky_enabled: true,
+            unit_models_enabled: true,
             viewport_width: 1920,
             viewport_height: 1080,
             camera: None,
@@ -3677,6 +3678,7 @@ mod tests {
         let presentation = Xmap10ViewerPresentationState::new().unwrap();
         let viewer = ViewerOwnedMapState {
             sky_enabled: true,
+            unit_models_enabled: true,
             viewport_width: 1920,
             viewport_height: 1080,
             camera: None,

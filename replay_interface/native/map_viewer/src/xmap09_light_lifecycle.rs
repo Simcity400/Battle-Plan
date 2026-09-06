@@ -1,7 +1,7 @@
-use crate::particle_authored::ParticleDefinitions;
+use crate::particle_authored::{entity_token_hash, EntityAttachmentCatalog, ParticleDefinitions};
 use crate::particle_runtime::{
     ParticleAction, ParticleHandle, ParticleInstanceUpdate, ParticleLightBinding, ParticleRuntime,
-    ViewerParticleSeed,
+    ViewerEntityManager, ViewerParticleSeed,
 };
 use crate::production_features::xmap13_pose::{
     xmap13_clip_length_seconds, xmap13_model_skeleton, xmap13_node_transforms,
@@ -111,7 +111,7 @@ struct Assets {
     models: Mutex<BTreeMap<String, Arc<PdxModel>>>,
     animations: Mutex<BTreeMap<String, Arc<PdxAnimData>>>,
     poses: BTreeMap<String, BuildingEntityPose>,
-    static_attachments: BTreeSet<String>,
+    static_attachments: EntityAttachmentCatalog,
     meshes: BTreeMap<String, BuildingPdxmeshBinding>,
     mesh_clips: BTreeMap<String, BTreeMap<String, String>>,
     clips: BTreeMap<String, String>,
@@ -152,7 +152,7 @@ impl Assets {
     fn load(resolver: &GameFileResolver) -> Result<Self> {
         let mut text = String::new();
         let mut clips = BTreeMap::new();
-        let mut static_attachments = BTreeSet::new();
+        let mut static_attachments = EntityAttachmentCatalog::default();
         for extension in ["asset", "gfx"] {
             for key in resolver.require_complete_admitted_dir(
                 "",
@@ -170,10 +170,9 @@ impl Assets {
                         std::borrow::Cow::Borrowed(source.as_str()))
                 };
                 for entity in document.values_ci("entity") {
-                    if entity.first_value_ci("attach").is_some() {
-                        if let Some(name) = entity.first_scalar_ci("name") {
-                            static_attachments.insert(name.to_owned());
-                        }
+                    if let Some(name) = entity.fields().iter().rev()
+                        .find(|entry| entry.key_matches("name")).and_then(|entry| entry.value.as_scalar()) {
+                        static_attachments.insert(name, entity);
                     }
                 }
                 for (name, file) in
@@ -212,6 +211,8 @@ impl Assets {
 
 #[derive(Clone)]
 struct EntityAnimation {
+    active_state: Option<String>,
+    state_index: Option<usize>,
     include_particle_only_events: bool,
     next_state: Option<String>,
     authored_speed: f64,
@@ -250,12 +251,32 @@ const IDENTITY: [f32; 16] = [
     1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
 ];
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChildKind {
+    Static { variant_hash: u32 },
+    Event,
+}
+
 #[derive(Clone)]
 struct ChildEntity {
+    kind: ChildKind,
     parent: String,
     event: BuildingEntityEvent,
     life: f32,
     ordinal: u64,
+}
+
+struct EntityManagerRegistration {
+    manager: std::sync::Weak<Mutex<ViewerEntityManager>>,
+    owner: crate::particle_runtime::EntityManagerOwner,
+}
+
+impl Drop for EntityManagerRegistration {
+    fn drop(&mut self) {
+        if let Some(manager) = self.manager.upgrade() {
+            if let Ok(mut manager) = manager.lock() { manager.remove_owner(self.owner); };
+        }
+    }
 }
 
 #[derive(Default)]
@@ -266,13 +287,28 @@ pub(crate) struct ViewerLightLifecycle {
     content_lease: Option<crate::mod_resolver::ContentAdmissionLease>,
     asset_refusal: Option<Xmap09LightCensusRefusal>,
     entities: BTreeMap<String, EntityAnimation>,
+    root_registration: Vec<String>,
     children: BTreeMap<String, ChildEntity>,
     instances: Vec<FiredInstance>,
     next_instance: u64,
     next_particle_only_instance: u64,
+    next_static_instance: u64,
+    entity_manager: Arc<Mutex<ViewerEntityManager>>,
+    manager_owner: crate::particle_runtime::EntityManagerOwner,
+    root_changes: Vec<crate::particle_runtime::EntityRootChange>,
+    manager_registration: Option<EntityManagerRegistration>,
     last_presentation_time: Option<f32>,
     publication_refusal: Option<Xmap09LightCensusRefusal>,
     weather_binding: Option<(u32, String)>,
+}
+
+pub(crate) struct PreparedLightEntityFrame {
+    placed: Vec<Xmap09PlacedEntity>,
+    root_indices: BTreeMap<String, usize>,
+    assets: Arc<Assets>,
+    pub(crate) frame: crate::particle_runtime::EntityManagerFrame,
+    advance: bool,
+    weather_identity: Option<String>,
 }
 
 pub(crate) struct DerivedLightRows {
@@ -367,10 +403,8 @@ impl EntityAnimation {
         resolver: &GameFileResolver,
         require_pose: bool,
         include_particle_only_events: bool,
+        random: &mut ViewerParticleSeed,
     ) -> Result<Self> {
-        if assets.static_attachments.contains(&row.entity_token) {
-            return Err(format!("entity {} static attachment selection/phase is unbound", row.entity_token).into());
-        }
         let pose = assets
             .poses
             .get(&row.entity_token)
@@ -380,32 +414,9 @@ impl EntityAnimation {
             .as_deref()
             .or(pose.default_state.as_deref())
             .unwrap_or("idle");
-        let state = match pose.state_choice(requested) {
-            EntityStateChoice::One(state) => Some(state),
-            EntityStateChoice::Undeclared => None,
-            EntityStateChoice::Weighted(variants) => {
-                use crate::production_features::xmap13_pose::{
-                    xmap13_pose_seed, xmap13_variant_unit, xmap13_weighted_pick,
-                };
-                let weights = variants
-                    .iter()
-                    .map(|s| s.chance.unwrap())
-                    .collect::<Vec<_>>();
-                let index = xmap13_weighted_pick(
-                    xmap13_variant_unit(xmap13_pose_seed(&row.id), requested),
-                    &weights,
-                )
-                .ok_or("light state variant weights are invalid")?;
-                Some(variants[index])
-            }
-            _ => {
-                return Err(format!(
-                    "entity {} state {requested} selection is unavailable",
-                    row.entity_token
-                )
-                .into())
-            }
-        };
+        let authored = assets.static_attachments.resolve(&row.entity_token)?;
+        let (index, start) = authored.enter_state(pose, requested, random)?;
+        let state = index.map(|index| &pose.states[index]);
         let events = state.map(|s| s.events.clone()).unwrap_or_default();
         if events.iter().any(|e| {
             (e.light.is_some() || e.entity.is_some() || (include_particle_only_events && e.particle.is_some()))
@@ -428,16 +439,9 @@ impl EntityAnimation {
             }
             None => 1.0,
         };
-        let [mut start, range] = state.and_then(|s| s.time_offset).unwrap_or([0.0, 0.0]);
-        if range > 0.0 {
-            use crate::production_features::xmap13_pose::{xmap13_pose_seed, xmap13_variant_unit};
-            let draw = (xmap13_variant_unit(
-                xmap13_pose_seed(&row.id),
-                &format!("{requested}:time_offset"),
-            ) * 2147483648.0) as u32;
-            start += draw as f32 * f32::from_bits(0x30000000) * range;
-        }
         let mut out = Self {
+            active_state: state.map(|state| state.name.clone()),
+            state_index: state.and_then(|state| pose.states.iter().position(|candidate| std::ptr::eq(candidate, state))),
             include_particle_only_events,
             next_state: state.and_then(|s| s.next_state.clone()),
             authored_speed: state.and_then(|s| s.animation_speed).unwrap_or(1.0) as f64,
@@ -590,6 +594,10 @@ impl ViewerLightLifecycle {
         if self.last_presentation_time.map(f32::to_bits) != Some(presentation_time.to_bits()) {
             return Err("PARTICLE_DRAW retained lifecycle belongs to another presentation".into());
         }
+        if !self.entity_manager.lock().map_err(|_| "entity_manager.lock_poisoned")?
+            .frame_is_published(presentation_time.to_bits()) {
+            return Err("entity_manager.frame.unpublished".into());
+        }
         let presentation_id = presentation_time.to_bits() as u64;
         let capacity = self.particle_definitions.as_mut().map(ParticleDefinitions::draw_capacity).transpose()?;
         for instance in &mut self.instances {
@@ -601,17 +609,11 @@ impl ViewerLightLifecycle {
     }
 
     pub(crate) fn for_authored_particles() -> Self {
-        Self { include_particle_only_events: true, ..Default::default() }
+        Self::with_entity_manager(Arc::new(Mutex::new(ViewerEntityManager::default())))
     }
 
-    fn entity_update_reached<'a>(&'a self, mut id: &'a str) -> bool {
-        while let Some(child) = self.children.get(id) {
-            id = &child.parent;
-            if !self.entities[id].visible {
-                return false;
-            }
-        }
-        true
+    pub(crate) fn with_entity_manager(entity_manager: Arc<Mutex<ViewerEntityManager>>) -> Self {
+        Self { include_particle_only_events: true, entity_manager, ..Default::default() }
     }
 
     fn leave_state(&mut self, id: &str) {
@@ -625,7 +627,7 @@ impl ViewerLightLifecycle {
         let removed = self
             .children
             .iter()
-            .filter(|(_, child)| child.parent == id && child.life < 0.0)
+            .filter(|(_, child)| child.parent == id && child.kind == ChildKind::Event && child.life < 0.0)
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for child in removed {
@@ -644,8 +646,208 @@ impl ViewerLightLifecycle {
             self.remove_entity(&child);
         }
         self.children.remove(id);
+        if let Some(index) = self.root_registration.iter().position(|root| root == id) {
+            self.root_registration.swap_remove(index);
+            self.root_changes.push(crate::particle_runtime::EntityRootChange::Remove(id.to_owned()));
+        }
         self.entities.remove(id);
         self.instances.retain(|i| i.entity_id != id);
+    }
+
+    fn instantiate_entity(
+        &mut self,
+        row: &Xmap09PlacedEntity,
+        assets: &Assets,
+        resolver: &GameFileResolver,
+        ancestry: &mut Vec<String>,
+        random: &mut ViewerParticleSeed,
+    ) -> Result<()> {
+        if ancestry.contains(&row.entity_token) {
+            return Err(format!(
+                "recursive static entity attachment: {ancestry:?} -> {}",
+                row.entity_token
+            )
+            .into());
+        }
+        let attachments = assets.static_attachments.resolve(&row.entity_token)?;
+        let mut require_pose = false;
+        ancestry.push(row.entity_token.clone());
+        for (group_index, group) in attachments.groups.iter().enumerate() {
+            let Some(variant_index) = group.select(|| random.draw())? else { continue; };
+            let variant = &group.variants[variant_index];
+            let variant_hash = if variant.name.is_empty() { 0 } else { entity_token_hash(&variant.name)? };
+            for (child_index, (node, token)) in variant.children.iter().enumerate() {
+                require_pose |= !node.is_empty();
+                let ordinal = self.next_static_instance;
+                self.next_static_instance = ordinal
+                    .checked_add(1)
+                    .ok_or("static attachment identity exhausted")?;
+                let child_id = format!(
+                    "{}:attach:{group_index}:{variant_index}:{child_index}:{ordinal}",
+                    row.id
+                );
+                let child = Xmap09PlacedEntity {
+                    id: child_id.clone(),
+                    entity_token: token.clone(),
+                    state: None,
+                    animate: true,
+                    world_matrix_f32_bits: IDENTITY.map(f32::to_bits),
+                };
+                self.instantiate_entity(&child, assets, resolver, ancestry, random)?;
+                self.children.insert(
+                    child_id,
+                    ChildEntity {
+                        kind: ChildKind::Static { variant_hash },
+                        parent: row.id.clone(),
+                        event: BuildingEntityEvent {
+                            particle: None,
+                            keep_particle: false,
+                            entity: None,
+                            life: None,
+                            time: None,
+                            node: Some(node.clone()),
+                            light: None,
+                            trigger_once: false,
+                        },
+                        life: -1.0,
+                        ordinal,
+                    },
+                );
+            }
+        }
+        ancestry.pop();
+        let state = EntityAnimation::load(row, assets, resolver, require_pose, self.include_particle_only_events, random)?;
+        self.entities.insert(row.id.clone(), state);
+        self.propagate_static_state(&row.id, assets, resolver, random)
+    }
+
+    fn propagate_static_state(
+        &mut self,
+        id: &str,
+        assets: &Assets,
+        resolver: &GameFileResolver,
+        random: &mut ViewerParticleSeed,
+    ) -> Result<()> {
+        let mut children = self
+            .children
+            .iter()
+            .filter_map(|(child_id, child)| {
+                if child.parent != id {
+                    return None;
+                }
+                match child.kind {
+                    ChildKind::Static { variant_hash } => {
+                        Some((child.ordinal, child_id.clone(), variant_hash))
+                    }
+                    ChildKind::Event => None,
+                }
+            })
+            .collect::<Vec<_>>();
+        if children.is_empty() {
+            return Ok(());
+        }
+        children.sort_by_key(|child| child.0);
+        let parent = &self.entities[id];
+        let Some(state_index) = parent.state_index else {
+            return Ok(());
+        };
+        let attachments = assets.static_attachments.resolve(&parent.token)?;
+        let (name, mappings) = attachments
+            .state_propagation
+            .get(state_index)
+            .filter(|(name, _)| Some(name) == parent.active_state.as_ref())
+            .ok_or("static attachment state and shared entity pose ordinals disagree")?;
+        let fallback = entity_token_hash(name)?;
+        for (_, child_id, variant_hash) in children {
+            let child = &self.entities[&child_id];
+            if assets
+                .static_attachments
+                .resolve(&child.token)?
+                .parent_state_override
+                .is_some()
+            {
+                return Err(format!(
+                    "entity {} get_state_from_parent registrar token is not admitted",
+                    child.token
+                )
+                .into());
+            }
+            let target = mappings
+                .iter()
+                .find(|(key, _)| *key == variant_hash)
+                .or_else(|| mappings.iter().find(|(key, _)| *key == 0))
+                .map(|(_, target)| *target)
+                .unwrap_or(fallback);
+            let child = &self.entities[&child_id];
+            let pose = &assets.poses[&child.token];
+            let mut requested = None;
+            for state in &pose.states {
+                if entity_token_hash(&state.name)? == target {
+                    requested = Some(state.name.clone());
+                    break;
+                }
+            }
+            let Some(requested) = requested else {
+                continue;
+            };
+            let row = Xmap09PlacedEntity {
+                id: child_id.clone(),
+                entity_token: child.token.clone(),
+                state: Some(requested),
+                animate: true,
+                world_matrix_f32_bits: IDENTITY.map(f32::to_bits),
+            };
+            let mut next = EntityAnimation::load(
+                &row,
+                assets,
+                resolver,
+                self.requires_retained_pose(&child_id),
+                self.include_particle_only_events,
+                random,
+            )?;
+            next.speed = child.speed;
+            next.visible = child.visible;
+            next.requested_state = child.requested_state.clone();
+            self.leave_state(&child_id);
+            self.entities.insert(child_id.clone(), next);
+            self.propagate_static_state(&child_id, assets, resolver, random)?;
+        }
+        Ok(())
+    }
+
+    fn requires_retained_pose(&self, id: &str) -> bool {
+        self.instances
+            .iter()
+            .any(|instance| instance.entity_id == id && instance.event.keep_particle)
+            || self.children.values().any(|child| {
+                child.parent == id
+                    && (matches!(child.kind, ChildKind::Static { .. }) || child.life >= 0.0)
+                    && child
+                        .event
+                        .node
+                        .as_deref()
+                        .is_some_and(|node| !node.is_empty())
+            })
+    }
+
+    fn static_descendants(&self, id: &str) -> BTreeSet<String> {
+        let mut ids = BTreeSet::from([id.to_owned()]);
+        let mut pending = vec![id.to_owned()];
+        while let Some(parent) = pending.pop() {
+            for (child_id, child) in &self.children {
+                if child.parent == parent && matches!(child.kind, ChildKind::Static { .. }) {
+                    ids.insert(child_id.clone());
+                    pending.push(child_id.clone());
+                }
+            }
+        }
+        ids
+    }
+
+    fn set_static_speed(&mut self, id: &str, speed: f64) {
+        for child in self.static_descendants(id) {
+            self.entities.get_mut(&child).unwrap().speed = speed;
+        }
     }
 
     fn advance_entity(
@@ -655,11 +857,12 @@ impl ViewerLightLifecycle {
         resolver: &GameFileResolver,
         assets: &Assets,
         ancestry: &mut Vec<String>,
+        random: &mut ViewerParticleSeed,
     ) -> Result<()> {
         let existing = self
             .children
             .iter()
-            .filter(|(_, c)| c.parent == id)
+            .filter(|(_, c)| c.parent == id && c.kind == ChildKind::Event)
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for child in existing {
@@ -669,6 +872,39 @@ impl ViewerLightLifecycle {
                 if *life < 0.0 {
                     self.remove_entity(&child);
                 }
+            }
+        }
+        let mut index = 0;
+        while index < self.instances.len() {
+            let instance = &self.instances[index];
+            if instance.entity_id != id {
+                index += 1;
+                continue;
+            }
+            let finished = instance
+                .particle
+                .as_ref()
+                .map(|particle| {
+                    particle
+                        .runtime
+                        .light_binding(particle.handle)
+                        .map(|binding| binding.finished)
+                        .map_err(|refusal| Xmap09LightCensusRefusal::ParticleInput {
+                            instance: instance.id.clone(),
+                            refusal,
+                        })
+                })
+                .transpose()?
+                .unwrap_or(false);
+            if finished {
+                self.instances.swap_remove(index);
+            } else {
+                index += 1;
+            }
+        }
+        if self.entities[id].visible {
+            for instance in self.instances.iter_mut().filter(|instance| instance.entity_id == id) {
+                instance.clock.advance(delta, true)?;
             }
         }
         let fired = self.entities.get_mut(id).unwrap().advance(delta);
@@ -725,31 +961,32 @@ impl ViewerLightLifecycle {
                     animate: true,
                     world_matrix_f32_bits: IDENTITY.map(f32::to_bits),
                 };
-                let mut child = EntityAnimation::load(&row, assets, resolver, false, self.include_particle_only_events)?;
-                child.speed = speed;
-                self.entities.insert(child_id.clone(), child);
+                let ordinal = self.next_instance;
+                self.next_instance = ordinal.checked_add(1).ok_or("entity event identity exhausted")?;
+                self.instantiate_entity(&row, assets, resolver, &mut Vec::new(), random)?;
+                self.set_static_speed(&child_id, speed);
                 self.children.insert(
                     child_id,
                     ChildEntity {
+                        kind: ChildKind::Event,
                         parent: id.into(),
                         event: event.clone(),
                         life,
-                        ordinal: self.next_instance,
+                        ordinal,
                     },
                 );
-                self.next_instance += 1;
             }
         }
         let mut children = self
             .children
             .iter()
             .filter(|(_, c)| c.parent == id)
-            .map(|(id, c)| (c.ordinal, id.clone()))
+            .map(|(id, c)| (c.kind == ChildKind::Event, c.ordinal, id.clone()))
             .collect::<Vec<_>>();
-        children.sort_by(|a, b| b.0.cmp(&a.0));
-        for (_, child) in children {
+        children.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+        for (_, _, child) in children {
             ancestry.push(self.entities[&child].token.clone());
-            self.advance_entity(&child, delta, resolver, assets, ancestry)?;
+            self.advance_entity(&child, delta, resolver, assets, ancestry, random)?;
             ancestry.pop();
         }
         let state = &self.entities[id];
@@ -774,19 +1011,14 @@ impl ViewerLightLifecycle {
                     world_matrix_f32_bits: IDENTITY.map(f32::to_bits),
                 };
                 self.next_instance += 1;
-                let require_pose = self
-                    .instances
-                    .iter()
-                    .any(|i| i.entity_id == id && i.event.keep_particle)
-                    || self
-                        .children
-                        .values()
-                        .any(|c| c.parent == id && c.life >= 0.0);
-                let mut next = EntityAnimation::load(&row, assets, resolver, require_pose, self.include_particle_only_events)?;
+                let require_pose = self.requires_retained_pose(id);
+                let mut next = EntityAnimation::load(&row, assets, resolver, require_pose, self.include_particle_only_events, random)?;
                 next.speed = speed;
+                next.visible = state.visible;
                 next.requested_state = requested_state;
                 self.leave_state(id);
                 self.entities.insert(id.into(), next);
+                self.propagate_static_state(id, assets, resolver, random)?;
             }
         }
         Ok(())
@@ -794,14 +1026,22 @@ impl ViewerLightLifecycle {
 
     pub(crate) fn weather_particles_bound(&self, time: f32, identity: &str) -> bool {
         self.weather_binding.as_ref().is_some_and(|(bits, hash)| *bits == time.to_bits() && hash == identity)
+            && self.entity_manager.lock().is_ok_and(|manager| manager.frame_is_published(time.to_bits()))
     }
 
     pub(crate) fn reset_population(&mut self) {
+        if let Ok(mut manager) = self.entity_manager.lock() {
+            manager.remove_owner(self.manager_owner);
+            let _ = manager.reset_frame_publication();
+        }
+        self.root_changes.clear();
         self.entities.clear();
+        self.root_registration.clear();
         self.children.clear();
         self.instances.clear();
         self.next_instance = 0;
         self.next_particle_only_instance = 0;
+        self.next_static_instance = 0;
         self.last_presentation_time = None;
         self.publication_refusal = None;
         self.weather_binding = None;
@@ -814,34 +1054,56 @@ impl ViewerLightLifecycle {
         viewer: &ViewerOwnedMapState,
         weather: Option<&crate::PreparedXmap19WeatherFrame>,
     ) -> std::result::Result<DerivedLightRows, Xmap09LightCensusRefusal> {
-        if let Some(refusal) = &self.publication_refusal {
-            return Err(refusal.clone());
+        let prepared = self.prepare_entity_frame(resolver, placed, viewer, weather)?;
+        let manager = Arc::clone(&self.entity_manager);
+        let owner = self.manager_owner;
+        let frame = prepared.frame;
+        let mut update = |id: &str, _scene, random: &mut ViewerParticleSeed|
+            self.advance_prepared_root(resolver, &prepared, id, random);
+        let result = manager.lock().map_err(|_| missing("entity_manager.lock_poisoned"))?
+            .advance_frame(frame, &mut [crate::particle_runtime::EntityManagerDispatch {
+                owner, prepared_for: frame, advance_root: &mut update,
+            }]);
+        if let Err(error) = result {
+            let refusal = self.publication_refusal.clone().unwrap_or_else(|| missing(error.to_string()));
+            self.publication_refusal = Some(refusal.clone());
+            self.last_presentation_time = None;
+            self.weather_binding = None;
+            return Err(refusal);
         }
-        self.weather_binding = None;
-        match self.update_light_instance_rows(resolver, placed, viewer, weather) {
-            Ok(rows) => {
-                let now = f32::from_bits(viewer.animation_time_f32_bits);
-                self.last_presentation_time = Some(now);
-                self.weather_binding = weather.map(|frame| (now.to_bits(), frame.deterministic_sha256.clone()));
-                Ok(rows)
-            }
-            Err(refusal) => {
-                // Event clocks and native particle columns may already have advanced.
-                self.last_presentation_time = None;
-                self.weather_binding = None;
-                self.publication_refusal = Some(refusal.clone());
-                Err(refusal)
-            }
-        }
+        self.finish_entity_frame(resolver, prepared)
     }
 
-    fn update_light_instance_rows(
+    pub(crate) fn prepare_entity_frame(
         &mut self,
         resolver: &GameFileResolver,
         placed: &[Xmap09PlacedEntity],
         viewer: &ViewerOwnedMapState,
         weather: Option<&crate::PreparedXmap19WeatherFrame>,
-    ) -> std::result::Result<DerivedLightRows, Xmap09LightCensusRefusal> {
+    ) -> std::result::Result<PreparedLightEntityFrame, Xmap09LightCensusRefusal> {
+        if let Some(refusal) = &self.publication_refusal { return Err(refusal.clone()); }
+        self.weather_binding = None;
+        self.prepare_entity_population(resolver, placed, viewer, weather).map_err(|refusal| {
+            self.last_presentation_time = None;
+            self.publication_refusal = Some(refusal.clone());
+            if let Ok(mut manager) = self.entity_manager.lock() {
+                manager.refuse_frame(crate::particle_runtime::EntityManagerFrame {
+                    presentation_time_f32_bits: viewer.animation_time_f32_bits,
+                    delta_seconds_f32_bits: viewer.frame_delta_seconds_f32_bits,
+                    cameras: None,
+                }, crate::particle_runtime::EntityManagerFrameRefusal::Preparation(refusal.to_string()));
+            }
+            refusal
+        })
+    }
+
+    fn prepare_entity_population(
+        &mut self,
+        resolver: &GameFileResolver,
+        placed: &[Xmap09PlacedEntity],
+        viewer: &ViewerOwnedMapState,
+        weather: Option<&crate::PreparedXmap19WeatherFrame>,
+    ) -> std::result::Result<PreparedLightEntityFrame, Xmap09LightCensusRefusal> {
         let mut population = std::borrow::Cow::Borrowed(placed);
         let mut controls = Vec::new();
         if let Some(weather) = weather {
@@ -925,6 +1187,13 @@ impl ViewerLightLifecycle {
         for id in removed {
             self.remove_entity(&id);
         }
+        let manager = Arc::clone(&self.entity_manager);
+        let mut manager = manager.lock().map_err(|_| missing("entity_manager.poisoned"))?;
+        self.manager_registration.get_or_insert_with(|| EntityManagerRegistration {
+            manager: Arc::downgrade(&self.entity_manager), owner: self.manager_owner,
+        });
+        let (random, scenes) = manager.parts_mut();
+        scenes.apply(self.manager_owner, &mut self.root_changes);
         for row in placed {
             if self
                 .entities
@@ -935,37 +1204,47 @@ impl ViewerLightLifecycle {
                     .entities
                     .get(&row.id)
                     .is_some_and(|e| e.token == row.entity_token);
-                let require_pose = same_entity
-                    && (self
-                        .instances
-                        .iter()
-                        .any(|i| i.entity_id == row.id && i.event.keep_particle)
-                        || self
-                            .children
-                            .values()
-                            .any(|c| c.parent == row.id && c.life >= 0.0));
-                let state =
-                    EntityAnimation::load(row, &assets, resolver, require_pose, self.include_particle_only_events).map_err(|e| {
-                        missing(format!("assets.light_events.{}: {e}", row.entity_token))
-                    })?;
-                if same_entity {
-                    self.leave_state(&row.id);
-                } else {
-                    self.remove_entity(&row.id);
-                }
-                self.entities.insert(row.id.clone(), state);
+                let mut update = || -> Result<()> {
+                    if same_entity {
+                        let previous = &self.entities[&row.id];
+                        let mut state = EntityAnimation::load(row, &assets, resolver,
+                            self.requires_retained_pose(&row.id), self.include_particle_only_events, random)?;
+                        state.speed = previous.speed;
+                        state.visible = previous.visible;
+                        self.leave_state(&row.id);
+                        self.entities.insert(row.id.clone(), state);
+                        self.propagate_static_state(&row.id, &assets, resolver, random)?;
+                    } else {
+                        self.remove_entity(&row.id);
+                        self.root_registration.push(row.id.clone());
+                        self.root_changes.push(crate::particle_runtime::EntityRootChange::Register {
+                            id: row.id.clone(), scene_mask: 7, update_mask: 6,
+                        });
+                        self.instantiate_entity(row, &assets, resolver, &mut Vec::new(), random)?;
+                    }
+                    Ok(())
+                };
+                let result = update();
+                scenes.apply(self.manager_owner, &mut self.root_changes);
+                result.map_err(|error| match error.downcast::<Xmap09LightCensusRefusal>() {
+                    Ok(refusal) => *refusal,
+                    Err(error) => missing(format!("assets.light_events.{}: {error}", row.entity_token)),
+                })?;
             }
         }
         if let Some(weather) = weather {
             for (id, alpha) in &controls {
                 if let Some(alpha) = alpha {
                     self.entities.get_mut(*id).unwrap().visible = *alpha > 0.0;
-                    for instance in self.instances.iter_mut().filter(|instance| instance.entity_id == *id) {
+                    let opacity_ids = self.static_descendants(id);
+                    for instance in self.instances.iter_mut().filter(|instance| opacity_ids.contains(&instance.entity_id)) {
                         if let Some(particle) = &mut instance.particle {
                             let refusal = |refusal| Xmap09LightCensusRefusal::ParticleInput {
                                 instance: instance.id.clone(), refusal,
                             };
-                            particle.runtime.set_visible(particle.handle, *alpha > 0.0).map_err(refusal)?;
+                            if instance.entity_id == *id {
+                                particle.runtime.set_visible(particle.handle, *alpha > 0.0).map_err(refusal)?;
+                            }
                             if *alpha > 0.0 {
                                 particle.runtime.set_opacity(particle.handle, *alpha).map_err(refusal)?;
                             }
@@ -974,62 +1253,94 @@ impl ViewerLightLifecycle {
                 }
             }
             for (id, _) in &controls {
-                self.entities.get_mut(*id).unwrap().speed =
-                    f64::from(f32::from_bits(weather.playback_rate_f32_bits));
+                self.set_static_speed(id, f64::from(f32::from_bits(weather.playback_rate_f32_bits)));
             }
         }
-        if advance {
-            let mut index = 0;
-            while index < self.instances.len() {
-                let instance = &self.instances[index];
-                if !self.entity_update_reached(&instance.entity_id) {
-                    index += 1;
-                    continue;
-                }
-                let finished = instance
-                    .particle
-                    .as_ref()
-                    .map(|particle| {
-                        particle
-                            .runtime
-                            .light_binding(particle.handle)
-                            .map(|binding| binding.finished)
-                            .map_err(|refusal| Xmap09LightCensusRefusal::ParticleInput {
-                                instance: instance.id.clone(),
-                                refusal,
-                            })
-                    })
-                    .transpose()?
-                    .unwrap_or(false);
-                if finished {
-                    self.instances.swap_remove(index);
-                } else {
-                    index += 1;
-                }
+        let cameras = match &viewer.camera {
+            Some(camera) => crate::particle_runtime::entity_scene_cameras(camera)
+                .map_err(|error| missing(format!("entity_manager.camera: {error}")))?,
+            None if scenes.requires_camera(u32::MAX) => return Err(missing("entity_manager.camera.absent")),
+            None => [false; 3],
+        };
+        drop(manager);
+        let placed = population.into_owned();
+        let root_indices = placed.iter().enumerate().map(|(index, row)| (row.id.clone(), index)).collect();
+        Ok(PreparedLightEntityFrame {
+            placed, root_indices, assets, advance,
+            frame: crate::particle_runtime::EntityManagerFrame {
+                presentation_time_f32_bits: now.to_bits(), delta_seconds_f32_bits: delta.to_bits(),
+                cameras: viewer.camera.as_ref().map(|_| cameras),
+            },
+            weather_identity: weather.map(|weather| weather.deterministic_sha256.clone()),
+        })
+    }
+
+    pub(crate) fn entity_manager(&self) -> Arc<Mutex<ViewerEntityManager>> {
+        Arc::clone(&self.entity_manager)
+    }
+
+    pub(crate) fn refuse_entity_publication(&mut self, reason: &str) {
+        if self.publication_refusal.is_none() { self.publication_refusal = Some(missing(reason)); }
+        self.last_presentation_time = None;
+        self.weather_binding = None;
+    }
+
+    pub(crate) fn manager_owner(&self) -> crate::particle_runtime::EntityManagerOwner {
+        self.manager_owner
+    }
+
+    pub(crate) fn advance_prepared_root(
+        &mut self, resolver: &GameFileResolver, prepared: &PreparedLightEntityFrame,
+        id: &str, random: &mut ViewerParticleSeed,
+    ) -> Result<()> {
+        let index = prepared.root_indices.get(id).ok_or_else(|| missing(format!("entity_manager.root.{id}")))?;
+        let row = &prepared.placed[*index];
+        if !row.animate { return Ok(()); }
+        self.advance_entity(id, f32::from_bits(prepared.frame.delta_seconds_f32_bits) as f64,
+            resolver, &prepared.assets, &mut vec![row.entity_token.clone()], random)
+            .map_err(|error| {
+                let refusal = match error.downcast::<Xmap09LightCensusRefusal>() {
+                    Ok(refusal) => *refusal,
+                    Err(error) => missing(format!("assets.light_events.{}: {error}", row.entity_token)),
+                };
+                self.publication_refusal = Some(refusal.clone());
+                Box::new(refusal) as Box<dyn std::error::Error>
+            })
+    }
+
+    pub(crate) fn finish_entity_frame(
+        &mut self, resolver: &GameFileResolver, prepared: PreparedLightEntityFrame,
+    ) -> std::result::Result<DerivedLightRows, Xmap09LightCensusRefusal> {
+        let frame = prepared.frame;
+        if !self.entity_manager.lock().map_err(|_| missing("entity_manager.lock_poisoned"))?
+            .frame_is_published(frame.presentation_time_f32_bits) {
+            return Err(missing("entity_manager.frame.unpublished"));
+        }
+        let weather = prepared.weather_identity.clone();
+        match self.materialize_entity_frame(resolver, prepared) {
+            Ok(rows) => {
+                self.last_presentation_time = Some(f32::from_bits(frame.presentation_time_f32_bits));
+                self.weather_binding = weather.map(|identity| (frame.presentation_time_f32_bits, identity));
+                Ok(rows)
             }
-            let updated = self.entities.iter()
-                .filter(|(id, state)| state.visible && self.entity_update_reached(id))
-                .map(|(id, _)| id.clone()).collect::<BTreeSet<_>>();
-            for instance in self.instances.iter_mut().filter(|instance| updated.contains(&instance.entity_id)) {
-                instance
-                    .clock
-                    .advance(delta as f64, true)
-                    .map_err(|e| missing(e.to_string()))?;
-            }
-            for row in placed {
-                if !row.animate {
-                    continue;
+            Err(refusal) => {
+                self.publication_refusal = Some(refusal.clone());
+                self.last_presentation_time = None;
+                self.weather_binding = None;
+                if let Ok(mut manager) = self.entity_manager.lock() {
+                    manager.refuse_frame(frame, crate::particle_runtime::EntityManagerFrameRefusal::Finalization(refusal.to_string()));
                 }
-                self.advance_entity(
-                    &row.id,
-                    delta as f64,
-                    resolver,
-                    &assets,
-                    &mut vec![row.entity_token.clone()],
-                )
-                .map_err(|e| missing(format!("assets.light_events.{}: {e}", row.entity_token)))?;
+                Err(refusal)
             }
         }
+    }
+
+    fn materialize_entity_frame(
+        &mut self, resolver: &GameFileResolver, prepared: PreparedLightEntityFrame,
+    ) -> std::result::Result<DerivedLightRows, Xmap09LightCensusRefusal> {
+        let PreparedLightEntityFrame { placed, assets, frame, advance, .. } = prepared;
+        let now = f32::from_bits(frame.presentation_time_f32_bits);
+        let delta = f32::from_bits(frame.delta_seconds_f32_bits);
         let mut entities = placed
             .iter()
             .map(|row| {
@@ -1201,6 +1512,16 @@ impl ViewerLightLifecycle {
 mod tests {
     use super::*;
 
+    fn fixture_attachment_catalog() -> EntityAttachmentCatalog {
+        let mut catalog = EntityAttachmentCatalog::default();
+        let (document, _) = portable_content_manifest::paradox_text::parse_asset_str(
+            "entity={name=entity} entity={name=child}").unwrap();
+        for entity in document.values_ci("entity") {
+            catalog.insert(entity.first_scalar_ci("name").unwrap(), entity);
+        }
+        catalog
+    }
+
     fn fixture(
         count: usize,
     ) -> (
@@ -1214,7 +1535,7 @@ mod tests {
                 models: Mutex::new(BTreeMap::new()),
                 animations: Mutex::new(BTreeMap::new()),
                 poses: BTreeMap::new(),
-                static_attachments: BTreeSet::new(),
+                static_attachments: fixture_attachment_catalog(),
                 meshes: BTreeMap::new(),
                 mesh_clips: BTreeMap::new(),
                 clips: BTreeMap::new(),
@@ -1228,6 +1549,8 @@ mod tests {
                 let mut state = animation(false, false);
                 Arc::make_mut(&mut state.events)[0].node = None;
                 lifecycle.entities.insert(id.clone(), state);
+                lifecycle.root_registration.push(id.clone());
+                lifecycle.root_changes.push(crate::particle_runtime::EntityRootChange::Register { id: id.clone(), scene_mask: 7, update_mask: 6 });
                 let mut world = IDENTITY;
                 world[12] = 16.0 + (i % 8) as f32 * 48.0;
                 world[14] = 16.0 + (i / 8) as f32 * 48.0;
@@ -1241,9 +1564,10 @@ mod tests {
             })
             .collect();
         let viewer = ViewerOwnedMapState {
+            unit_models_enabled: true,
             sky_enabled: true,            viewport_width: 1,
             viewport_height: 1,
-            camera: None,
+            camera: Some(crate::particle_runtime::scene_camera_fixture(100_000)),
             observer_country_id: None,
             map_mode_id: "political".into(),
             map_mode_selection_epoch: 0,
@@ -1655,9 +1979,10 @@ entity = {
         let particle = lifecycle.instances[0].particle.as_ref().unwrap();
         assert_eq!(faded, particle.runtime.gpu_view(particle.handle).unwrap().root_subsystems().next().unwrap()
             .records().collect::<std::result::Result<Vec<_>, _>>().unwrap());
+        viewer.animation_time_f32_bits = 2.5f32.to_bits();
         lifecycle.derive_light_instance_rows(&content.resolver, &[], &viewer, None).unwrap();
         assert!(lifecycle.instances.is_empty());
-        assert!(!lifecycle.weather_particles_bound(2.0, &middle.deterministic_sha256));
+        assert!(!lifecycle.weather_particles_bound(2.5, &middle.deterministic_sha256));
     }
 
     #[test]
@@ -1689,17 +2014,750 @@ entity = {
     }
 
     #[test]
-    fn an_unbound_static_attachment_is_named_only_when_its_entity_is_instantiated() {
+    fn unavailable_static_child_is_named_only_when_its_parent_is_instantiated() {
         use crate::particle_authored::test_support::{Fixture, REGISTRATION};
         let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}",
-            &[("gfx/entity.asset", b"entity={\n name=unbound\n attach={node=child}\n}\nentity={\n name=empty\n}\n")]);
+            &[("gfx/entity.asset", b"entity={\n name=unbound\n attach={\"\"=child}\n}\nentity={\n name=empty\n}\n")]);
         let (_, mut placed, viewer) = fixture(1);
         let mut lifecycle = ViewerLightLifecycle::default();
         placed[0].entity_token = "empty".into();
         lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
         placed[0].entity_token = "unbound".into();
         let error = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).err().unwrap();
-        assert!(format!("{error:?}").contains("unbound static attachment selection/phase"));
+        assert!(format!("{error:?}").contains("child attachment source is unavailable"));
+    }
+
+    #[test]
+    fn static_children_feed_real_particle_draw_in_reverse_order_before_event_children() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=8 duration=-1 emission=4 life=20}}",
+            &[("gfx/entity.asset", br#"
+entity = {
+ name = entity
+ scale = 2
+ default_state = idle
+ attach = { name = lamps "" = first "" = second }
+ state = { name = idle event = { time = 0 entity = event_child } }
+ state = { name = stopped propagate_state = { lamps = quiet } }
+}
+entity = { name = first scale = 3 default_state = idle
+ state = { name = idle event = { time = 0 light = flash particle = paired } }
+ state = { name = quiet }
+}
+entity = { name = second scale = 4 default_state = idle
+ state = { name = idle event = { time = 0 particle = paired } }
+ state = { name = quiet }
+}
+entity = { name = event_child default_state = idle
+ state = { name = idle event = { time = 0 particle = paired } }
+}
+light = {
+ name = flash
+ color = { r = 1 g = 1 b = 1 }
+ intensity = 1
+ radius = 8
+ falloff = 1
+ position = { x = 1 y = 0 z = 0 }
+}
+"#)]);
+        let (_, mut placed, mut viewer) = fixture(1);
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+        let rows = lifecycle
+            .derive_light_instance_rows(&content.resolver, &placed, &viewer, None)
+            .unwrap();
+        assert_eq!(lifecycle.children.len(), 3);
+        assert_eq!(
+            lifecycle
+                .instances
+                .iter()
+                .map(|instance| lifecycle.entities[&instance.entity_id].token.as_str())
+                .collect::<Vec<_>>(),
+            ["second", "first", "event_child"]
+        );
+        let static_ids = lifecycle
+            .children
+            .iter()
+            .filter(|(_, child)| matches!(child.kind, ChildKind::Static { .. }))
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(static_ids.len(), 2);
+        assert_eq!(rows.authored_particles.len(), 3);
+        let census = rows
+            .with_rows(|rows| admit_light_census(Ok(rows), [0., 0., 0.125, 0.125]))
+            .unwrap();
+        assert_eq!(census.counts.admitted_instances, 1);
+        assert_eq!(
+            census.lights[0]
+                .position_radius_f32_bits
+                .map(f32::from_bits),
+            [16.0 + 2.0 * 3.0, 0.0, 16.0, 8.0]
+        );
+        let camera = crate::particle_runtime::ParticleSortCamera {
+            position_f32_bits: [0; 3],
+            forward_f32_bits: [0, 0, 1.0f32.to_bits()],
+        };
+        let mut records = 0;
+        let mut draws = Vec::new();
+        lifecycle
+            .visit_particles_for_draw(0.5, camera, &mut |id, capacity, view| {
+                assert_eq!(capacity.particles, 8);
+                let binding = rows
+                    .authored_particles
+                    .iter()
+                    .find(|binding| binding.instance_id == id)
+                    .unwrap();
+                assert_eq!(
+                    view.world_matrix_f32_bits(),
+                    binding.particle_phase.world_matrix_f32_bits
+                );
+                for subsystem in view.root_subsystems() {
+                    for record in subsystem.records() {
+                        record?;
+                        records += 1;
+                    }
+                }
+                draws.push(id.to_owned());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(draws.len(), 3);
+        assert!(records > 0);
+        for child_id in &static_ids {
+            let world = rows.world(child_id).unwrap();
+            let scale = if lifecycle.entities[child_id].token == "first" {
+                6.0
+            } else {
+                8.0
+            };
+            assert_eq!([world[0], world[5], world[10]], [scale; 3]);
+            assert_eq!([world[3], world[7], world[11]], [16.0, 0.0, 16.0]);
+        }
+        lifecycle.set_static_speed(&placed[0].id, 0.25);
+        for child_id in &static_ids {
+            assert_eq!(lifecycle.entities[child_id].speed, 0.25);
+        }
+        let event_id = lifecycle
+            .children
+            .iter()
+            .find(|(_, child)| child.kind == ChildKind::Event)
+            .unwrap()
+            .0;
+        assert_eq!(lifecycle.entities[event_id].speed, 1.0);
+        placed[0].state = Some("stopped".into());
+        viewer.animation_time_f32_bits = 1.0f32.to_bits();
+        let rows = lifecycle
+            .derive_light_instance_rows(&content.resolver, &placed, &viewer, None)
+            .unwrap();
+        assert_eq!(lifecycle.next_static_instance, 2);
+        assert_eq!(
+            lifecycle.children.keys().cloned().collect::<Vec<_>>(),
+            static_ids
+        );
+        for child_id in &static_ids {
+            assert_eq!(
+                lifecycle.entities[child_id].active_state.as_deref(),
+                Some("quiet")
+            );
+        }
+        assert!(rows.authored_particles.is_empty());
+        assert!(lifecycle.instances.is_empty());
+    }
+
+    #[test]
+    fn nested_groups_consume_depth_first_random_draws_before_later_parent_groups() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=8 duration=-1 emission=4 life=20}}",
+            &[("gfx/entity.asset", br#"
+entity = { name = entity default_state = idle
+ group = { name = first attach = { "" = nested } }
+ group = { name = second attach = { chance = 1 "" = left } attach = { chance = 1 "" = right } }
+ state = { name = idle }
+}
+entity = { name = nested default_state = idle
+ group = { attach = { chance = 1 "" = deep } attach = { chance = 1 "" = shallow } }
+ state = { name = idle }
+}
+entity = { name = deep default_state = idle attach = { "" = deep_leaf } state = { name = idle } }
+entity = { name = deep_leaf default_state = idle state = { name = idle event = { time = 0 particle = paired } } }
+entity = { name = shallow default_state = idle state = { name = idle event = { time = 0 particle = paired } } }
+entity = { name = left default_state = idle state = { name = idle event = { time = 0 particle = paired } } }
+entity = { name = right default_state = idle state = { name = idle event = { time = 0 particle = paired } } }
+"#)]);
+        let (_, placed, viewer) = fixture(1);
+        let assets = Arc::new(Assets::load(&content.resolver).unwrap());
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+        lifecycle.assets = Some(assets.clone());
+        lifecycle.content_lease = content.resolver.content_admission_lease();
+        let mut random = ViewerParticleSeed { seed: 1, counter: 0 };
+        let mut witness = random;
+        assert_eq!([witness.draw(), witness.draw(), witness.draw(), witness.draw()],
+            [1425195803, 388003433, 1418269600, 1125234208]);
+        lifecycle.root_registration.push(placed[0].id.clone());
+                lifecycle.root_changes.push(crate::particle_runtime::EntityRootChange::Register { id: placed[0].id.clone(), scene_mask: 7, update_mask: 6 });
+        lifecycle.instantiate_entity(&placed[0], &assets, &content.resolver, &mut Vec::new(), &mut random).unwrap();
+        assert_eq!(random.counter, 4);
+        assert_eq!(lifecycle.next_static_instance, 4);
+        assert_eq!(lifecycle.entities.values().map(|state| state.token.as_str()).collect::<BTreeSet<_>>(),
+            BTreeSet::from(["entity", "nested", "deep", "deep_leaf", "right"]));
+        let rows = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        let camera = crate::particle_runtime::ParticleSortCamera { position_f32_bits: [0; 3], forward_f32_bits: [0, 0, 1.0f32.to_bits()] };
+        let mut drawn = Vec::new();
+        lifecycle.visit_particles_for_draw(0.5, camera, &mut |id, _, view| {
+            let binding = rows.authored_particles.iter().find(|binding| binding.instance_id == id).unwrap();
+            drawn.push(rows.poses[&binding.entity_id].token.clone());
+            let records = view.root_subsystems().next().unwrap().records()
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            assert!(!records.is_empty());
+            Ok(())
+        }).unwrap();
+        assert_eq!(drawn, ["right", "deep_leaf"]);
+    }
+
+    #[test]
+    fn child_default_state_and_offset_consume_shared_draws_before_parent_next_group() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        for (offset, count, expected) in [("0", 3, "right"), ("{ 0 1 }", 4, "left")] {
+            let source = format!(r#"
+entity = {{ name = entity default_state = root
+ group = {{ attach = {{ "" = child }} }}
+ group = {{ attach = {{ chance = 55 "" = left }} attach = {{ chance = 45 "" = right }} }}
+ state = {{ name = root }}
+ state = {{ name = change propagate_state = idle }}
+}}
+entity = {{ name = child default_state = idle
+ state = {{ name = idle chance = 1 time_offset = {offset} event = {{ time = 0 particle = paired }} }}
+ state = {{ name = unrelated }}
+ state = {{ name = idle chance = 1 event = {{ time = 0.1 particle = paired }} }}
+}}
+entity = {{ name = left state = {{ name = idle event = {{ time = 0 particle = paired }} }} }}
+entity = {{ name = right state = {{ name = idle event = {{ time = 0 particle = paired }} }} }}
+"#);
+            let content = Fixture::with_extra_files(REGISTRATION,
+                "particle={name=effect subsystem={name=s max_amount=8 duration=-1 emission=4 life=20}}",
+                &[("gfx/entity.asset", source.as_bytes())]);
+            let (_, mut placed, viewer) = fixture(1);
+            placed[0].state = None;
+            let assets = Arc::new(Assets::load(&content.resolver).unwrap());
+            let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+            lifecycle.assets = Some(assets.clone());
+            lifecycle.content_lease = content.resolver.content_admission_lease();
+            let mut random = ViewerParticleSeed { seed: 1, counter: 0 };
+            lifecycle.root_registration.push(placed[0].id.clone());
+                lifecycle.root_changes.push(crate::particle_runtime::EntityRootChange::Register { id: placed[0].id.clone(), scene_mask: 7, update_mask: 6 });
+            lifecycle.instantiate_entity(&placed[0], &assets, &content.resolver, &mut Vec::new(), &mut random).unwrap();
+            assert_eq!(random.counter, count);
+            let child_id = lifecycle.entities.iter().find(|(_, state)| state.token == "child").unwrap().0.clone();
+            assert_eq!(lifecycle.entities[&child_id].state_index, Some(0));
+            assert_eq!(lifecycle.entities[&child_id].playhead,
+                if count == 4 { (1418269600u32 as f32 * f32::from_bits(0x30000000)) as f64 } else { 0.0 });
+            assert!(lifecycle.entities.values().any(|state| state.token == expected));
+            assert!(!lifecycle.entities.values().any(|state| state.token == if expected == "left" { "right" } else { "left" }));
+            lifecycle.entity_manager = Arc::new(Mutex::new(ViewerEntityManager::new(random)));
+            let rows = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+            let camera = crate::particle_runtime::ParticleSortCamera {
+                position_f32_bits: [0; 3], forward_f32_bits: [0, 0, 1.0f32.to_bits()],
+            };
+            let mut drawn = Vec::new();
+            lifecycle.visit_particles_for_draw(0.5, camera, &mut |id, _, view| {
+                let binding = rows.authored_particles.iter().find(|binding| binding.instance_id == id).unwrap();
+                drawn.push(rows.poses[&binding.entity_id].token.clone());
+                let records = view.root_subsystems().next().unwrap().records()
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                assert!(!records.is_empty());
+                Ok(())
+            }).unwrap();
+            assert_eq!(drawn.first().map(String::as_str), Some(expected));
+            assert_eq!(lifecycle.entity_manager.lock().unwrap().random_state().counter, count);
+            let mut witness = ViewerParticleSeed { seed: 1, counter: count };
+            let selected = usize::from(witness.draw() >= 0x4000_0000);
+            if selected == 0 && count == 4 { witness.draw(); }
+            placed[0].state = Some("change".into());
+            lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+            assert_eq!(lifecycle.entities[&child_id].state_index, Some(selected * 2));
+            assert_eq!(lifecycle.entity_manager.lock().unwrap().random_state().counter, witness.counter);
+        }
+    }
+
+    #[test]
+    fn two_roots_share_static_state_and_event_draws_without_identity_reseeding() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let source = r#"
+entity = { name = entity default_state = root
+ group = { attach = { chance = 55 "" = left } attach = { chance = 45 "" = right } }
+ state = { name = root chance = 1 event = { time = 0 entity = event_child } }
+ state = { name = root chance = 1 event = { time = 0 entity = event_child } }
+}
+entity = { name = left
+ state = { name = idle chance = 1 event = { time = 0 particle = paired } }
+ state = { name = idle chance = 1 event = { time = 0 particle = paired } }
+}
+entity = { name = right
+ state = { name = idle chance = 1 event = { time = 0 particle = paired } }
+ state = { name = idle chance = 1 event = { time = 0 particle = paired } }
+}
+entity = { name = event_child
+ state = { name = idle chance = 3 event = { time = 0 particle = paired } }
+ state = { name = idle chance = 2 event = { time = 0 particle = paired } }
+}
+"#;
+        let content = Fixture::with_extra_files(REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=8 duration=-1 emission=4 life=20}}",
+            &[("gfx/entity.asset", source.as_bytes())]);
+        let (_, placed, viewer) = fixture(2);
+        let manager = Arc::new(Mutex::new(ViewerEntityManager::new(ViewerParticleSeed { seed: 1, counter: 0 })));
+        let mut lifecycle = ViewerLightLifecycle::with_entity_manager(Arc::clone(&manager));
+        let rows = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        assert_eq!(manager.lock().unwrap().random_state(), ViewerParticleSeed { seed: 1, counter: 8 });
+        assert_eq!(lifecycle.entities[&placed[0].id].state_index, Some(1));
+        assert_eq!(lifecycle.entities[&placed[1].id].state_index, Some(0));
+        let mut children = lifecycle.children.iter().map(|(id, child)| (
+            child.parent.clone(), child.kind == ChildKind::Event,
+            lifecycle.entities[id].token.clone(), lifecycle.entities[id].state_index,
+        )).collect::<Vec<_>>();
+        children.sort();
+        assert_eq!(children, vec![
+            (placed[0].id.clone(), false, "right".into(), Some(0)),
+            (placed[0].id.clone(), true, "event_child".into(), Some(0)),
+            (placed[1].id.clone(), false, "left".into(), Some(1)),
+            (placed[1].id.clone(), true, "event_child".into(), Some(1)),
+        ]);
+        let camera = crate::particle_runtime::ParticleSortCamera {
+            position_f32_bits: [0; 3], forward_f32_bits: [0, 0, 1.0f32.to_bits()],
+        };
+        let mut drawn = Vec::new();
+        lifecycle.visit_particles_for_draw(0.5, camera, &mut |id, _, view| {
+            let binding = rows.authored_particles.iter().find(|binding| binding.instance_id == id).unwrap();
+            drawn.push(rows.poses[&binding.entity_id].token.clone());
+            assert!(!view.root_subsystems().next().unwrap().records()
+                .collect::<std::result::Result<Vec<_>, _>>()?.is_empty());
+            Ok(())
+        }).unwrap();
+        assert_eq!(drawn, ["left", "event_child", "right", "event_child"]);
+        let same = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        assert_eq!(same.authored_particles, rows.authored_particles);
+        assert_eq!(manager.lock().unwrap().random_state().counter, 8);
+    }
+
+    #[test]
+    fn wrap_scene_visits_repeat_actual_root_events_on_one_manager_stream() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=8 duration=-1 emission=4 life=20}}",
+            &[("gfx/entity.asset", br#"
+entity = { name = entity state = { name = idle
+ event = { time = 0.25 entity = event_child }
+ event = { time = 0.75 entity = event_child }
+ event = { time = 1.25 entity = event_child }
+} }
+entity = { name = event_child
+ state = { name = idle chance = 1 event = { time = 0 particle = paired } }
+ state = { name = idle chance = 1 event = { time = 0 particle = paired } }
+}
+"#)]);
+        let (_, placed, mut viewer) = fixture(2);
+        viewer.camera = Some(crate::particle_runtime::scene_camera_fixture(1));
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+        let rows = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        assert_eq!(lifecycle.entity_manager.lock().unwrap().random_state().counter, 6);
+        for row in &placed { assert_eq!(lifecycle.entities[&row.id].playhead, 1.5); }
+        let mut children = lifecycle.children.iter().map(|(id, child)|
+            (child.ordinal, child.parent.clone(), lifecycle.entities[id].state_index.unwrap())).collect::<Vec<_>>();
+        children.sort();
+        assert_eq!(children.iter().map(|(_, parent, state)| (parent.as_str(), *state)).collect::<Vec<_>>(),
+            [(placed[1].id.as_str(),1),(placed[0].id.as_str(),0),
+             (placed[1].id.as_str(),1),(placed[0].id.as_str(),1),
+             (placed[1].id.as_str(),1),(placed[0].id.as_str(),0)]);
+        let mut drawn = Vec::new();
+        lifecycle.visit_particles_for_draw(0.5, crate::particle_runtime::ParticleSortCamera {
+            position_f32_bits: [0;3], forward_f32_bits: [0,0,1.0f32.to_bits()],
+        }, &mut |id, _, view| {
+            let binding = rows.authored_particles.iter().find(|binding| binding.instance_id == id).unwrap();
+            drawn.push(rows.children[&binding.entity_id].parent.clone());
+            assert!(!view.root_subsystems().next().unwrap().records().collect::<std::result::Result<Vec<_>, _>>()?.is_empty());
+            Ok(())
+        }).unwrap();
+        assert_eq!(drawn, [placed[1].id.clone(),placed[0].id.clone(),placed[1].id.clone(),
+            placed[0].id.clone(),placed[1].id.clone(),placed[0].id.clone()]);
+        let repeated = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        assert_eq!(rows.authored_particles, repeated.authored_particles);
+        assert_eq!(lifecycle.entity_manager.lock().unwrap().random_state().counter, 6);
+        lifecycle.reset_population();
+        lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        assert_eq!(lifecycle.entity_manager.lock().unwrap().random_state().counter, 12);
+    }
+
+    #[test]
+    fn root_registration_survives_row_reordering_and_swap_removal_before_event_draws() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=8 duration=-1 emission=4 life=20}}",
+            &[("gfx/entity.asset", br#"
+entity = { name = entity
+ state = { name = quiet }
+ state = { name = active event = { time = 0 entity = event_child } }
+}
+entity = { name = event_child
+ state = { name = idle chance = 3 event = { time = 0 particle = paired } }
+ state = { name = idle chance = 2 event = { time = 0 particle = paired } }
+}
+"#)]);
+        let (_, mut placed, mut viewer) = fixture(3);
+        for row in &mut placed { row.state = Some("quiet".into()); }
+        let original = placed.clone();
+        let manager = Arc::new(Mutex::new(ViewerEntityManager::default()));
+        let mut lifecycle = ViewerLightLifecycle::with_entity_manager(Arc::clone(&manager));
+        lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        assert_eq!(manager.lock().unwrap().random_state().counter, 0);
+        placed.reverse();
+        lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        assert_eq!(lifecycle.root_registration, original.iter().map(|row| row.id.clone()).collect::<Vec<_>>());
+        let mut added = original[1].clone();
+        added.id = "new-root".into();
+        placed = vec![original[2].clone(), added.clone(), original[0].clone()];
+        for row in &mut placed { row.state = Some("active".into()); }
+        viewer.animation_time_f32_bits = 1.0f32.to_bits();
+        let rows = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        assert_eq!(lifecycle.root_registration, [original[0].id.clone(), original[2].id.clone(), added.id.clone()]);
+        let state = |parent: &str| {
+            let (id, _) = lifecycle.children.iter().find(|(_, child)| child.parent == parent).unwrap();
+            lifecycle.entities[id].state_index
+        };
+        assert_eq!((state(&added.id), state(&original[2].id), state(&original[0].id)),
+            (Some(1), Some(0), Some(1)));
+        assert_eq!(manager.lock().unwrap().random_state().counter, 3);
+        let camera = crate::particle_runtime::ParticleSortCamera {
+            position_f32_bits: [0; 3], forward_f32_bits: [0, 0, 1.0f32.to_bits()],
+        };
+        let mut drawn = Vec::new();
+        lifecycle.visit_particles_for_draw(1.0, camera, &mut |id, _, view| {
+            let binding = rows.authored_particles.iter().find(|binding| binding.instance_id == id).unwrap();
+            drawn.push(rows.children[&binding.entity_id].parent.clone());
+            assert!(!view.root_subsystems().next().unwrap().records()
+                .collect::<std::result::Result<Vec<_>, _>>()?.is_empty());
+            Ok(())
+        }).unwrap();
+        assert_eq!(drawn, [added.id, original[2].id.clone(), original[0].id.clone()]);
+        placed.reverse();
+        let repeated = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        assert_eq!(repeated.authored_particles, rows.authored_particles);
+        assert_eq!(manager.lock().unwrap().random_state().counter, 3);
+        lifecycle.reset_population();
+        assert!(lifecycle.root_registration.is_empty());
+        assert_eq!(manager.lock().unwrap().random_state().counter, 3);
+    }
+
+    #[test]
+    fn shared_manager_retains_history_across_roots_population_resets_and_consumers() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[("gfx/entity.asset", br#"
+entity = { name = entity
+ state = { name = idle chance = 1 }
+ state = { name = idle chance = 1 }
+}
+"#)]);
+        let (_, mut placed, mut viewer) = fixture(2);
+        viewer.frame_delta_seconds_f32_bits = 0;
+        let initial = ViewerParticleSeed { seed: 1, counter: 0 };
+        let manager = Arc::new(Mutex::new(ViewerEntityManager::new(initial)));
+        let mut first = ViewerLightLifecycle::with_entity_manager(Arc::clone(&manager));
+        let mut second = ViewerLightLifecycle::with_entity_manager(Arc::clone(&manager));
+        first.derive_light_instance_rows(&content.resolver, &placed[..1], &viewer, None).unwrap();
+        assert_eq!(first.entities[&placed[0].id].state_index, Some(1));
+        first.reset_population();
+        second.derive_light_instance_rows(&content.resolver, &placed[1..], &viewer, None).unwrap();
+        assert_eq!(second.entities[&placed[1].id].state_index, Some(0));
+        assert_eq!(manager.lock().unwrap().random_state().counter, 2);
+        second.derive_light_instance_rows(&content.resolver, &placed[1..], &viewer, None).unwrap();
+        assert_eq!(manager.lock().unwrap().random_state().counter, 2);
+        second.reset_population();
+        first.derive_light_instance_rows(&content.resolver, &[], &viewer, None).unwrap();
+        first.reset_population();
+        assert_eq!(manager.lock().unwrap().random_state().counter, 2);
+        first.derive_light_instance_rows(&content.resolver, &placed[..1], &viewer, None).unwrap();
+        assert_eq!(manager.lock().unwrap().random_state().counter, 3);
+        first.reset_population();
+        assert_eq!(manager.lock().unwrap().random_state().counter, 3);
+        first.derive_light_instance_rows(&content.resolver, &placed[..1], &viewer, None).unwrap();
+        assert_eq!(manager.lock().unwrap().random_state().counter, 4);
+        placed[0].id = "identity-is-not-a-seed".into();
+        let restarted = Arc::new(Mutex::new(ViewerEntityManager::new(initial)));
+        let mut replay = ViewerLightLifecycle::with_entity_manager(Arc::clone(&restarted));
+        replay.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        assert_eq!(replay.entities[&placed[0].id].state_index, Some(1));
+        assert_eq!(replay.entities[&placed[1].id].state_index, Some(0));
+        assert_eq!(restarted.lock().unwrap().random_state().counter, 2);
+        assert_eq!(manager.lock().unwrap().random_state().counter, 4);
+    }
+
+    #[test]
+    fn missing_camera_refuses_registered_scene_updates_and_requires_explicit_recovery() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[("gfx/entity.asset", br#"
+entity = { name = entity state = { name = idle chance = 1 } state = { name = idle chance = 1 } }
+"#)]);
+        let (_, placed, mut viewer) = fixture(1);
+        let camera = viewer.camera.take();
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+        let refusal = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).err().unwrap();
+        assert_eq!(refusal, Xmap09LightCensusRefusal::MissingDomain { domain: "entity_manager.camera.absent".into() });
+        assert_eq!(lifecycle.entity_manager.lock().unwrap().random_state().counter, 1);
+        viewer.camera = camera;
+        assert_eq!(lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).err().unwrap(), refusal);
+        lifecycle.reset_population();
+        lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        assert_eq!(lifecycle.entity_manager.lock().unwrap().random_state().counter, 2);
+        assert_eq!(lifecycle.entities[&placed[0].id].playhead, 0.5);
+    }
+
+    #[test]
+    fn separately_owned_roots_share_one_actual_event_and_particle_submission_pass() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=8 duration=-1 emission=4 life=20}}",
+            &[("gfx/entity.asset", br#"
+entity = { name = entity
+ state = { name = idle chance = 1 event = { time = 0 entity = child } }
+ state = { name = idle chance = 1 event = { time = 0 entity = child } }
+}
+entity = { name = child
+ state = { name = idle chance = 3 event = { time = 0 particle = paired } }
+ state = { name = idle chance = 2 event = { time = 0 particle = paired } }
+}
+"#)]);
+        let (_, placed, viewer) = fixture(2);
+        let manager = Arc::new(Mutex::new(ViewerEntityManager::default()));
+        let mut first = ViewerLightLifecycle::with_entity_manager(Arc::clone(&manager));
+        let mut second = ViewerLightLifecycle::with_entity_manager(Arc::clone(&manager));
+        let fp = first.prepare_entity_frame(&content.resolver, &placed[..1], &viewer, None).unwrap();
+        let sp = second.prepare_entity_frame(&content.resolver, &placed[1..], &viewer, None).unwrap();
+        assert_eq!((first.entities[&placed[0].id].state_index, second.entities[&placed[1].id].state_index), (Some(1),Some(0)));
+        assert_eq!(manager.lock().unwrap().random_state().counter, 2);
+        struct PreparedOwner<'a> {
+            lifecycle: &'a mut ViewerLightLifecycle,
+            resolver: &'a GameFileResolver,
+            prepared: Option<PreparedLightEntityFrame>,
+            frame: crate::particle_runtime::EntityManagerFrame,
+            rows: &'a mut Option<DerivedLightRows>,
+        }
+        impl crate::production_foundation::PreparedEntityManagerOwner for PreparedOwner<'_> {
+            fn manager(&self) -> Arc<Mutex<ViewerEntityManager>> { self.lifecycle.entity_manager() }
+            fn owner(&self) -> crate::particle_runtime::EntityManagerOwner { self.lifecycle.manager_owner() }
+            fn frame(&self) -> crate::particle_runtime::EntityManagerFrame { self.frame }
+            fn advance_root(&mut self, root: &str, _: u32, random: &mut ViewerParticleSeed) -> Result<()> {
+                self.lifecycle.advance_prepared_root(self.resolver, self.prepared.as_ref().unwrap(), root, random)
+            }
+            fn finish(&mut self) -> Result<()> {
+                *self.rows = Some(self.lifecycle.finish_entity_frame(self.resolver, self.prepared.take().unwrap())?);
+                Ok(())
+            }
+            fn refuse(&mut self, reason: &str) { self.lifecycle.refuse_entity_publication(reason); }
+        }
+        let (mut frows, mut srows) = (None, None);
+        {
+            let frame = fp.frame;
+            let mut owners: Vec<Box<dyn crate::production_foundation::PreparedEntityManagerOwner + '_>> = vec![
+                Box::new(PreparedOwner { lifecycle: &mut first, resolver: &content.resolver, prepared: Some(fp), frame, rows: &mut frows }),
+                Box::new(PreparedOwner { lifecycle: &mut second, resolver: &content.resolver, prepared: Some(sp), frame, rows: &mut srows }),
+            ];
+            crate::production_foundation::dispatch_prepared_entity_owners(&mut owners).unwrap();
+        }
+        assert_eq!(manager.lock().unwrap().random_state().counter, 4);
+        let first_child = first.children.keys().next().unwrap();
+        let second_child = second.children.keys().next().unwrap();
+        assert_eq!((first.entities[first_child].state_index, second.entities[second_child].state_index), (Some(0),Some(1)));
+        for (owner, rows) in [(&mut first, frows.unwrap()), (&mut second, srows.unwrap())] {
+            assert_eq!(rows.authored_particles.len(), 1);
+            let mut records = 0;
+            owner.visit_particles_for_draw(0.5, crate::particle_runtime::ParticleSortCamera {
+                position_f32_bits: [0;3], forward_f32_bits: [0,0,1.0f32.to_bits()],
+            }, &mut |_, _, view| {
+                records += view.root_subsystems().next().unwrap().records().collect::<std::result::Result<Vec<_>, _>>()?.len();
+                Ok(())
+            }).unwrap();
+            assert!(records > 0);
+        }
+        assert_eq!(manager.lock().unwrap().random_state().counter, 4);
+    }
+
+    #[test]
+    fn failed_root_update_keeps_shared_draw_history_and_refuses_same_phase_retry() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[("gfx/entity.asset", br#"
+entity = { name = entity
+ state = { name = idle chance = 1 event = { time = 0 entity = missing_child } }
+ state = { name = idle chance = 1 event = { time = 0 entity = missing_child } }
+ state = { name = quiet }
+}
+"#)]);
+        let (_, mut placed, viewer) = fixture(2);
+        let manager = Arc::new(Mutex::new(ViewerEntityManager::default()));
+        let mut lifecycle = ViewerLightLifecycle::with_entity_manager(Arc::clone(&manager));
+        let first = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).err().unwrap();
+        assert!(format!("{first:?}").contains("missing_child"));
+        assert_eq!(manager.lock().unwrap().random_state().counter, 2);
+        let retry = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).err().unwrap();
+        assert_eq!(retry, first);
+        let camera = crate::particle_runtime::ParticleSortCamera {
+            position_f32_bits: [0; 3], forward_f32_bits: [0, 0, 1.0f32.to_bits()],
+        };
+        assert!(lifecycle.visit_particles_for_draw(0.5, camera, &mut |_, _, _| {
+            panic!("failed publication reached draw")
+        }).unwrap_err().to_string().contains("reset_population required"));
+        assert_eq!(manager.lock().unwrap().random_state().counter, 2);
+        for row in &mut placed { row.state = Some("quiet".into()); }
+        lifecycle.reset_population();
+        lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        assert_eq!(manager.lock().unwrap().random_state().counter, 2);
+        assert!(lifecycle.publication_refusal.is_none());
+    }
+
+    #[test]
+    fn state_selection_preserves_zero_default_signed_weights_and_identical_duplicates() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        for (chance, expected) in [("", 1), ("chance = 42949.67295", 1), ("chance = 010", 0)] {
+            let source = format!("entity = {{ name = entity state = {{ name = idle {chance} }} state = {{ name = idle }} }}");
+            let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}",
+                &[("gfx/entity.asset", source.as_bytes())]);
+            let assets = Assets::load(&content.resolver).unwrap();
+            let (_, placed, _) = fixture(1);
+            let mut random = ViewerParticleSeed { seed: 1, counter: 0 };
+            let state = EntityAnimation::load(&placed[0], &assets, &content.resolver, false, false, &mut random).unwrap();
+            assert_eq!(random.counter, 1);
+            assert_eq!(state.state_index, Some(expected));
+        }
+        let weights = vec![("idle".into(), i32::MAX); 4];
+        assert_eq!(crate::particle_authored::native_state_index(&weights, 0x7fff_ffff).unwrap(), 3);
+        assert_eq!(crate::particle_authored::native_state_index(&weights, 0x4000_0000).unwrap(), 2);
+    }
+
+    #[test]
+    fn weather_opacity_reaches_static_particles_but_not_event_children() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=8 duration=-1 emission=4 life=20 color={a=255} texture={file=gfx/weather.dds shader=Weather}}}",
+            &[("gfx/entity.asset", br#"
+entity = { name = weather default_state = idle attach = { "" = static_child }
+ state = { name = idle event = { time = 0.25 particle = paired } event = { time = 0.25 entity = event_child } }
+}
+entity = { name = static_child default_state = idle state = { name = idle event = { time = 0.25 particle = paired } } }
+entity = { name = event_child default_state = idle state = { name = idle event = { time = 0.25 particle = paired } } }
+"#), ("gfx/weather.shader", b"Effect Weather = { VertexShader = VS PixelShader = PS }"),
+                ("gfx/weather.dds", b"lifecycle fixture: texture is not decoded by this consumer")]);
+        let weather = weather_frame(&content.resolver, 1300.0);
+        let (_, _, mut viewer) = fixture(0);
+        viewer.animation_time_f32_bits = 2.0f32.to_bits();
+        viewer.frame_delta_seconds_f32_bits = 2.0f32.to_bits();
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+        lifecycle
+            .derive_light_instance_rows(&content.resolver, &[], &viewer, Some(&weather))
+            .unwrap();
+        assert_eq!(lifecycle.instances.len(), 6);
+        viewer.animation_time_f32_bits = 2.5f32.to_bits();
+        viewer.frame_delta_seconds_f32_bits = 0.5f32.to_bits();
+        lifecycle
+            .derive_light_instance_rows(&content.resolver, &[], &viewer, Some(&weather))
+            .unwrap();
+        let mut static_count = 0;
+        let mut event_count = 0;
+        for instance in &lifecycle.instances {
+            let expected = match lifecycle
+                .children
+                .get(&instance.entity_id)
+                .map(|child| child.kind)
+            {
+                Some(ChildKind::Event) => {
+                    event_count += 1;
+                    255
+                }
+                Some(ChildKind::Static { .. }) => {
+                    static_count += 1;
+                    128
+                }
+                None => 128,
+            };
+            let particle = instance.particle.as_ref().unwrap();
+            let record = particle
+                .runtime
+                .gpu_view(particle.handle)
+                .unwrap()
+                .root_subsystems()
+                .next()
+                .unwrap()
+                .records()
+                .next()
+                .unwrap()
+                .unwrap();
+            assert_eq!(record.0[35], expected, "{}", instance.id);
+        }
+        assert_eq!((static_count, event_count), (2, 2));
+    }
+
+    #[test]
+    fn zero_weight_static_variant_does_not_require_its_missing_node_or_entity() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(
+            REGISTRATION,
+            "particle={name=effect}",
+            &[(
+                "gfx/entity.asset",
+                br#"
+entity = { name = entity group = {
+ attach = { chance = 0 unavailable_node = unavailable_entity }
+ attach = { chance = 1 "" = child }
+} }
+entity = { name = child }
+"#,
+            )],
+        );
+        let (_, placed, viewer) = fixture(1);
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+        lifecycle
+            .derive_light_instance_rows(&content.resolver, &placed, &viewer, None)
+            .unwrap();
+        assert_eq!(lifecycle.children.len(), 1);
+        let child = lifecycle.children.keys().next().unwrap();
+        assert_eq!(lifecycle.entities[child].token, "child");
+        assert!(lifecycle.entities[&placed[0].id].model.is_none());
+    }
+
+    #[test]
+    fn static_attachment_cycle_poison_survives_retry_and_draw_until_reset() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(
+            REGISTRATION,
+            "particle={name=effect}",
+            &[(
+                "gfx/entity.asset",
+                br#"entity={name=entity attach={""=child}} entity={name=child attach={""=entity}}"#,
+            )],
+        );
+        let (_, placed, viewer) = fixture(1);
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+        let first = lifecycle
+            .derive_light_instance_rows(&content.resolver, &placed, &viewer, None)
+            .err()
+            .unwrap();
+        assert!(format!("{first:?}").contains("recursive static entity attachment"));
+        assert_eq!(lifecycle.next_static_instance, 2);
+        assert_eq!(
+            lifecycle
+                .derive_light_instance_rows(&content.resolver, &placed, &viewer, None)
+                .err(),
+            Some(first)
+        );
+        let camera = crate::particle_runtime::ParticleSortCamera {
+            position_f32_bits: [0; 3],
+            forward_f32_bits: [0, 0, 1.0f32.to_bits()],
+        };
+        assert!(lifecycle
+            .visit_particles_for_draw(0.5, camera, &mut |_, _, _| panic!("poisoned draw"))
+            .is_err());
+        lifecycle.reset_population();
+        assert!(lifecycle.entities.is_empty());
+        assert!(lifecycle.publication_refusal.is_none());
+        assert_eq!(lifecycle.next_static_instance, 0);
     }
 
     #[test]
@@ -2050,7 +3108,7 @@ entity = {
     #[test]
     fn viewer_census_resolves_attach_nodes_only_until_the_upload_cap() {
         let (mut lifecycle, placed, viewer) = fixture(65);
-        Arc::make_mut(&mut lifecycle.entities.get_mut("placed-064").unwrap().events)[0].node =
+        Arc::make_mut(&mut lifecycle.entities.get_mut("placed-000").unwrap().events)[0].node =
             Some("missing".into());
         let resolver = GameFileResolver::vanilla(".").unwrap();
         let rows = lifecycle
@@ -2062,7 +3120,16 @@ entity = {
         assert_eq!(census.counts.fired_instances, 65);
         assert_eq!(census.counts.admitted_instances, 65);
         assert_eq!(census.counts.uploaded_lights, 64);
-        assert!(rows.poses["placed-064"].attach(0).is_err());
+        assert!(rows.poses["placed-000"].attach(0).is_err());
+        assert_eq!(rows.instances[0].1, "placed-064");
+        assert_eq!(rows.instances[64].1, "placed-000");
+        let (mut first_missing, placed, viewer) = fixture(65);
+        Arc::make_mut(&mut first_missing.entities.get_mut("placed-064").unwrap().events)[0].node =
+            Some("missing".into());
+        let rows = first_missing.derive_light_instance_rows(&resolver, &placed, &viewer, None).unwrap();
+        assert!(matches!(rows.with_rows(|rows| admit_light_census(Ok(rows), [0., 0., 0.125, 0.125])),
+            Err(Xmap09LightCensusRefusal::MissingDomain { domain })
+                if domain.contains("placed-064") && domain.contains("light attach node missing")));
     }
 
     #[test]
@@ -2167,18 +3234,18 @@ entity = {
             .collect();
         let resolver = GameFileResolver::vanilla(".").unwrap();
         let assets = lifecycle.assets.as_ref().unwrap();
-        let first = EntityAnimation::load(&placed[0], assets, &resolver, false, false).unwrap();
+        let first = EntityAnimation::load(&placed[0], assets, &resolver, false, false, &mut ViewerParticleSeed { seed: 1, counter: 0 }).unwrap();
         assert!(first.playhead >= 0.2f32 as f64 && first.playhead <= 0.5);
         assert_eq!(first.elapsed, 0.0);
         assert_eq!(
-            EntityAnimation::load(&placed[0], assets, &resolver, false, false)
+            EntityAnimation::load(&placed[0], assets, &resolver, false, false, &mut ViewerParticleSeed { seed: 1, counter: 0 })
                 .unwrap()
                 .playhead,
             first.playhead
         );
         placed[0].id.push_str("different");
-        assert_ne!(
-            EntityAnimation::load(&placed[0], assets, &resolver, false, false)
+        assert_eq!(
+            EntityAnimation::load(&placed[0], assets, &resolver, false, false, &mut ViewerParticleSeed { seed: 1, counter: 0 })
                 .unwrap()
                 .playhead,
             first.playhead
@@ -2304,6 +3371,8 @@ entity = {
 
     fn animation(looping: bool, once: bool) -> EntityAnimation {
         EntityAnimation {
+            active_state: Some("idle".into()),
+            state_index: Some(0),
             include_particle_only_events: false,
             next_state: None,
             authored_speed: 1.0,
@@ -2368,13 +3437,15 @@ entity = {
                 models: Mutex::new(BTreeMap::new()),
                 animations: Mutex::new(BTreeMap::new()),
                 poses: BTreeMap::new(),
-                static_attachments: BTreeSet::new(),
+                static_attachments: fixture_attachment_catalog(),
                 meshes: BTreeMap::new(),
                 mesh_clips: BTreeMap::new(),
                 clips: BTreeMap::new(),
                 templates,
             })),
             entities: BTreeMap::from([("placed".into(), animation(true, false))]),
+            root_registration: vec!["placed".into()],
+            root_changes: vec![crate::particle_runtime::EntityRootChange::Register { id: "placed".into(), scene_mask: 7, update_mask: 6 }],
             ..Default::default()
         };
         let mut world = [0.0f32; 16];
@@ -2391,9 +3462,10 @@ entity = {
             world_matrix_f32_bits: world.map(f32::to_bits),
         }];
         let mut viewer = ViewerOwnedMapState {
+            unit_models_enabled: true,
             sky_enabled: true,            viewport_width: 1,
             viewport_height: 1,
-            camera: None,
+            camera: Some(crate::particle_runtime::scene_camera_fixture(100_000)),
             observer_country_id: None,
             map_mode_id: "political".into(),
             map_mode_selection_epoch: 0,

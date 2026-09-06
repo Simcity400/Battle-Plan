@@ -408,6 +408,21 @@ impl ProductionMapCameraProjection {
         position: [f32; 3],
         look_at: [f32; 3],
     ) -> Result<ProductionMapCamera> {
+        let view = self.view_from_eye_look_at(position, look_at)?;
+        ProductionMapCamera::new(std::array::from_fn(|row| [
+            view[row][0] * self.x_scale,
+            view[row][1] * self.y_scale,
+            if row == 3 { view[row][2] * self.depth_a + self.depth_b }
+            else { view[row][2] * self.depth_a },
+            view[row][2],
+        ]), position)
+    }
+
+    fn view_from_eye_look_at(
+        &self,
+        position: [f32; 3],
+        look_at: [f32; 3],
+    ) -> Result<[[f32; 4]; 4]> {
         self.validate()?;
         if position
             .into_iter()
@@ -432,35 +447,12 @@ impl ProductionMapCameraProjection {
         let dot_right = vec3_dot(right, position);
         let dot_up = vec3_dot(up, position);
         let dot_forward = vec3_dot(forward, position);
-        ProductionMapCamera::new(
-            [
-                [
-                    right[0] * self.x_scale,
-                    up[0] * self.y_scale,
-                    forward[0] * self.depth_a,
-                    forward[0],
-                ],
-                [
-                    right[1] * self.x_scale,
-                    up[1] * self.y_scale,
-                    forward[1] * self.depth_a,
-                    forward[1],
-                ],
-                [
-                    right[2] * self.x_scale,
-                    up[2] * self.y_scale,
-                    forward[2] * self.depth_a,
-                    forward[2],
-                ],
-                [
-                    -dot_right * self.x_scale,
-                    -dot_up * self.y_scale,
-                    -dot_forward * self.depth_a + self.depth_b,
-                    -dot_forward,
-                ],
-            ],
-            position,
-        )
+        Ok([
+            [right[0], up[0], forward[0], 0.0],
+            [right[1], up[1], forward[1], 0.0],
+            [right[2], up[2], forward[2], 0.0],
+            [-dot_right, -dot_up, -dot_forward, 1.0],
+        ])
     }
 
     fn validate(&self) -> Result<()> {
@@ -851,6 +843,19 @@ impl ViewerMapCameraState {
     pub fn production_camera(&self) -> Result<ProductionMapCamera> {
         self.projection()?
             .camera_from_eye_look_at(self.current_eye(), self.current_look_at())
+    }
+
+    pub(crate) fn entity_scene_inverse_matrices(&self) -> Result<([[f32; 4]; 4], [[f32; 4]; 4])> {
+        self.validate()?;
+        let projection = self.projection()?;
+        let view = projection.view_from_eye_look_at(self.current_eye(), self.current_look_at())?;
+        let projection = [
+            [projection.x_scale, 0.0, 0.0, 0.0],
+            [0.0, projection.y_scale, 0.0, 0.0],
+            [0.0, 0.0, projection.depth_a, 1.0],
+            [0.0, 0.0, projection.depth_b, 0.0],
+        ];
+        Ok((invert_float4x4(projection)?, invert_float4x4(view)?))
     }
 
     pub fn inverse_view_projection_matrix(&self) -> Result<[[f32; 4]; 4]> {
@@ -1654,6 +1659,29 @@ mod tests {
             50.0,
         )
         .expect("viewer camera")
+    }
+
+    #[test]
+    fn separate_scene_matrices_preserve_rendered_projection_component_bits() {
+        let camera = viewer_camera_fixture();
+        let projection = camera.projection().unwrap();
+        for (eye, look) in [([2958.0,800.0,1400.0],[2800.0,0.0,1300.0]),
+            ([10.0,100.0,20.0],[10.0,0.0,30.0]), ([-100.0,77.0,13.0],[25.0,1.0,-47.0])] {
+            let forward = vec3_normalize(std::array::from_fn(|axis| look[axis]-eye[axis])).unwrap();
+            let right = vec3_normalize([forward[2],0.0,-forward[0]]).unwrap();
+            let up = [forward[1]*right[2]-forward[2]*right[1], forward[2]*right[0]-forward[0]*right[2], forward[0]*right[1]-forward[1]*right[0]];
+            let mut expected = [[0.0;4];4];
+            for axis in 0..3 {
+                expected[axis] = [right[axis]*projection.x_scale, up[axis]*projection.y_scale,
+                    forward[axis]*projection.depth_a, forward[axis]];
+            }
+            expected[3] = [-vec3_dot(right,eye)*projection.x_scale, -vec3_dot(up,eye)*projection.y_scale,
+                -vec3_dot(forward,eye)*projection.depth_a+projection.depth_b, -vec3_dot(forward,eye)];
+            assert_eq!(projection.camera_from_eye_look_at(eye,look).unwrap().view_projection_matrix.map(|row|row.map(f32::to_bits)),
+                expected.map(|row|row.map(f32::to_bits)));
+        }
+        let (inverse_projection, inverse_view) = camera.entity_scene_inverse_matrices().unwrap();
+        assert!(inverse_projection.into_iter().flatten().chain(inverse_view.into_iter().flatten()).all(f32::is_finite));
     }
 
     #[test]

@@ -1179,22 +1179,7 @@ Effect fixture { VertexShader="VS" PixelShader="PS" }
             "particle={name=effect subsystem={name=s max_amount=1 duration=0 emission=2 life=2 size=0.5 color={r=255 g=255 b=255 a=255} texture={file=gfx/fixture.dds shader=fixture x=1 y=1}}}",
             &[("gfx/fixture.dds",&dds),("gfx/FX/particle.shader",SHADER.as_bytes()),("gfx/FX/defines_hlsl_dx11.fxh",HEADER),
             ("gfx/entity.asset",b"entity={name=entity default_state=idle state={name=idle event={time=0 particle=paired light=flash}}} light={name=flash color={r=1 g=1 b=1} intensity=1 radius=8 falloff=1}")]);
-        let paths = [
-            "gfx/particles.gfx",
-            "gfx/particles.asset",
-            "gfx/entity.asset",
-            "gfx/fixture.dds",
-            "gfx/FX/particle.shader",
-            "gfx/FX/defines_hlsl_dx11.fxh",
-        ]
-        .map(str::to_owned)
-        .into_iter()
-        .collect();
-        let (resolver, admission) = crate::test_support::admitted_vanilla_resolver(
-            &content.resolver,
-            &paths,
-            "particle-global-draw",
-        );
+        let (resolver, admission) = (&content.resolver, &content.admission);
         let identity = [
             1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
         ]
@@ -1207,10 +1192,11 @@ Effect fixture { VertexShader="VS" PixelShader="PS" }
             world_matrix_f32_bits: identity,
         }];
         let viewer = crate::ViewerOwnedMapState {
+            unit_models_enabled: true,
             sky_enabled: true,
             viewport_width: 8,
             viewport_height: 8,
-            camera: None,
+            camera: Some(crate::particle_runtime::scene_camera_fixture(100_000)),
             observer_country_id: None,
             map_mode_id: "political".into(),
             map_mode_selection_epoch: 0,

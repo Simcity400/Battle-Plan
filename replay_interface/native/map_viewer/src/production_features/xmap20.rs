@@ -480,6 +480,7 @@ mod authored_admission_tests {
         assert!(frame.xmap20_effects().is_none());
         let viewer = crate::ViewerOwnedMapState {
             sky_enabled: true,
+            unit_models_enabled: true,
             viewport_width: 16,
             viewport_height: 16,
             camera: None,

@@ -928,6 +928,7 @@ fn dump_production_recording_frame(
     )?;
     let viewer = map_viewer::ViewerOwnedMapState {
         sky_enabled: true,
+        unit_models_enabled: true,
         viewport_width: DUMP_WIDTH,
         viewport_height: DUMP_HEIGHT,
         input_revision: camera.input_revision,

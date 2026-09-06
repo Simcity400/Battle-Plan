@@ -231,6 +231,7 @@ mod tests {
                 timeline: WorldTimeline::open(Box::new(EmptySource)).expect("timeline"),
                 viewer: ViewerOwnedMapState {
                     sky_enabled: true,
+                    unit_models_enabled: true,
                     viewport_width: 16,
                     viewport_height: 16,
                     camera: None,
