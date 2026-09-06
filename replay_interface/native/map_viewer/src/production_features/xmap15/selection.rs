@@ -20,7 +20,13 @@ pub struct Xmap15ArrowKeyboard {
 impl Xmap15ArrowKeyboard {
     fn modifiers(self) -> Result<(bool, bool), Missing> {
         match self.ui {
-            Xmap15ArrowUiCapture::Unavailable => return Err(Missing::ViewerKeyboardCapture),
+            Xmap15ArrowUiCapture::Unavailable => {
+                // Suppression can only turn a pressed key off.
+                if self.alt == Some([false; 2]) && self.control == Some([false; 2]) {
+                    return Ok((false, false));
+                }
+                return Err(Missing::ViewerKeyboardCapture);
+            },
             Xmap15ArrowUiCapture::Context { keyboard, text_input } if keyboard || text_input =>
                 return Ok((false, false)),
             _ => {}
@@ -83,6 +89,9 @@ mod tests {
             let keyboard = Xmap15ArrowKeyboard { alt: Some([mask & 1 != 0, mask & 2 != 0]),
                 control: Some([mask & 4 != 0, mask & 8 != 0]), ui: Xmap15ArrowUiCapture::NoContext };
             assert_eq!(keyboard.modifiers(), Ok((mask & 3 != 0, mask & 12 != 0)));
+            let unknown_capture = Xmap15ArrowKeyboard { ui: Xmap15ArrowUiCapture::Unavailable, ..keyboard };
+            assert_eq!(unknown_capture.modifiers(), if mask == 0 { Ok((false, false)) }
+                else { Err(Missing::ViewerKeyboardCapture) });
             for (capture, text) in [(false, false), (true, false), (false, true), (true, true)] {
                 let observed = Xmap15ArrowKeyboard { ui: Xmap15ArrowUiCapture::Context {
                     keyboard: capture, text_input: text }, ..keyboard };

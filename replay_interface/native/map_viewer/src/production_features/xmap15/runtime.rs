@@ -9,6 +9,24 @@ struct RetainedPlan {
     base_colour: [u32; 4],
     outer_colour: [u32; 4],
     selection_unproven: bool,
+    neutral_tint_proven: bool,
+}
+
+impl RetainedPlan {
+    fn observe_selection(&mut self, key: &Xmap15PlanKey, context: &FoundationFeatureContext<'_>) {
+        let selection = context.xmap15_selection;
+        let selected = selection.selected_owner.is_some() || selection.selected_plan.is_some()
+            || !context.viewer.selected_object_ids.is_empty();
+        let ordinary = selection.presentation.is_some_and(|value| value.selected_paradrop().is_ok());
+        let delta = context.viewer.frame_delta_seconds();
+        let selected_here = selection.selected_plan.as_ref() == Some(key)
+            && selection.selected_owner == Some((key.owner_kind, key.owner_id))
+            && context.viewer.selected_object_ids.is_empty();
+        // Only construction establishes +208 == 1; the selected green branch does not write it.
+        self.neutral_tint_proven &= ordinary && delta.is_finite() && delta >= 0.0
+            && (!selected || selected_here);
+        self.selection_unproven |= selected || (selection.presentation.is_some() && !ordinary);
+    }
 }
 
 #[derive(Clone, Default)]
@@ -29,10 +47,7 @@ fn key(row: &crate::Xmap15DerivedOrder) -> Xmap15PlanKey {
 
 impl RetainedPlans {
     pub(super) fn observe_selection(&mut self, context: &FoundationFeatureContext<'_>) {
-        if context.xmap15_selection.selected_owner.is_some() || context.xmap15_selection.selected_plan.is_some()
-            || !context.viewer.selected_object_ids.is_empty() {
-            for object in self.objects.values_mut() { object.selection_unproven = true; }
-        }
+        for (key, object) in &mut self.objects { object.observe_selection(key, context); }
     }
 
     pub(super) fn prepare_inputs(&mut self, context: &FoundationFeatureContext<'_>,
@@ -120,11 +135,10 @@ impl RetainedPlans {
                     let object = self.objects.entry(identity.clone()).or_insert_with(|| RetainedPlan {
                         route: route.clone(), base_colour: colour.rgba_f32_bits,
                         outer_colour: [1.0f32.to_bits(), 1.0f32.to_bits(), 1.0f32.to_bits(), colour.rgba_f32_bits[3]],
-                        selection_unproven: false,
+                        selection_unproven: false, neutral_tint_proven: true,
                     });
                     object.route = route;
-                    object.selection_unproven |= context.xmap15_selection.selected_owner.is_some()
-                        || context.xmap15_selection.selected_plan.is_some() || !context.viewer.selected_object_ids.is_empty();
+                    object.observe_selection(&identity, context);
                     let selected = context.xmap15_selection.selected_plan.as_ref() == Some(&identity);
                     let secondary = if selected {
                         if context.xmap15_selection.selected_owner != Some((identity.owner_kind, identity.owner_id)) {
@@ -135,6 +149,13 @@ impl RetainedPlans {
                         object.base_colour = [0, 1.0f32.to_bits(), 0, 1.0f32.to_bits()];
                         1.0f32.to_bits()
                     } else {
+                        if object.neutral_tint_proven && context.xmap15_selection.selected_owner.is_none()
+                            && context.xmap15_selection.selected_plan.is_none()
+                            && context.viewer.selected_object_ids.is_empty() {
+                            // MAXSS(1 - delta * 20, 1) remains exactly 1 and bypasses HSV interpolation.
+                            object.base_colour = colour.rgba_f32_bits;
+                            object.selection_unproven = false;
+                        }
                         if object.selection_unproven { return Err(Missing::SelectedPresentation); }
                         0
                     };
@@ -490,7 +511,7 @@ mod tests {
         for (presentation, reason) in [
             (None, "ViewerInteraction"),
             (Some(Xmap15ViewerPresentation { keyboard: Xmap15ArrowKeyboard {
-                ui: Xmap15ArrowUiCapture::Unavailable, ..exact.keyboard }, ..exact }), "ViewerKeyboardCapture"),
+                alt: Some([true, false]), ui: Xmap15ArrowUiCapture::Unavailable, ..exact.keyboard }, ..exact }), "ViewerKeyboardCapture"),
             (Some(Xmap15ViewerPresentation { keyboard: Xmap15ArrowKeyboard {
                 alt: None, ..exact.keyboard }, ..exact }), "ViewerModifiers"),
             (Some(Xmap15ViewerPresentation { colour_callback: Xmap15ArrowColourCallback::Unavailable,
@@ -504,6 +525,7 @@ mod tests {
             assert!(format!("{:?}", output.disposition).contains(reason), "{:?}", output.disposition);
         }
         for keyboard in [exact.keyboard, Xmap15ArrowKeyboard {
+            ui: Xmap15ArrowUiCapture::Unavailable, ..exact.keyboard }, Xmap15ArrowKeyboard {
             alt: Some([true, true]), control: Some([true, true]),
             ui: Xmap15ArrowUiCapture::Context { keyboard: true, text_input: false } },
             Xmap15ArrowKeyboard { alt: Some([true, true]), control: Some([true, true]),
@@ -547,6 +569,9 @@ mod tests {
         let deselected = prepare(&selected_world, &unselected);
         assert!(matches!(deselected.disposition, FamilyDisposition::Unavailable { .. }));
         assert!(format!("{:?}", deselected.disposition).contains("SelectedPresentation"));
+        let ordinary_clear = Xmap15ViewerSelection { presentation: Some(exact), ..unselected.clone() };
+        let still_unknown = prepare(&selected_world, &ordinary_clear);
+        assert!(format!("{:?}", still_unknown.disposition).contains("SelectedPresentation"));
         let gap = prepare(&gap_world, &selected);
         assert!(matches!(gap.disposition, FamilyDisposition::Unavailable { .. }));
         let recovered = prepare(&selected_world, &selected);
@@ -559,6 +584,48 @@ mod tests {
         let Xmap15PreparedRow::Plan { semantic, .. } = &prepared.portable.ordered_rows[0] else { panic!() };
         assert_eq!(semantic.comparator_tie_17c_f32_bits, 0);
         assert_eq!(prepared.plan_draw_inputs(&semantic.key).unwrap().base_rgba_f32_bits, original);
+        let neutral_world = make_world(original, 9);
+        let current = neutral_world.army_battleplans().orders[0].key.clone();
+        let mut selected = xmap15_viewer_selection(&neutral_world, Some(current.owner), Some(&current));
+        selected.presentation = Some(exact);
+        let green = prepare(&neutral_world, &selected).prepared_orders.unwrap().native.unwrap();
+        let mut lifecycle = Xmap15LifecycleState::default();
+        let created = lifecycle.apply(&green).unwrap();
+        assert_eq!(created.created.len(), 1);
+        let mut sort = ArrowViewerSortState::default();
+        let green_submission = ArrowSubmissionOrder::from_frames(ArrowFrameInput::Present(&green),
+            ArrowFrameInput::ViewInactive, &mut sort, Some(&created), &"c".repeat(64));
+        assert_eq!(green_submission.submissions.len(), 1, "{:?}", green_submission.refusals);
+        let current_colour_world = make_world(changed_colour, 9);
+        let cleared = prepare(&current_colour_world, &ordinary_clear).prepared_orders.unwrap().native.unwrap();
+        let Xmap15PreparedRow::Plan { semantic, .. } = &cleared.portable.ordered_rows[0] else { panic!() };
+        assert_eq!(semantic.outer_rgba_f32_bits[3], original[3]);
+        assert_eq!(semantic.comparator_tie_17c_f32_bits, 0);
+        let draw = cleared.plan_draw_inputs(&semantic.key).unwrap();
+        assert_eq!(draw.base_rgba_f32_bits, changed_colour);
+        assert_eq!(draw.secondary_sort_key_f32_bits, Some(0));
+        let mesh = semantic.build_paradrop_map_arrow_mesh(cleared.plan_definition("paradrop").unwrap().geometry_profile().unwrap(),
+            cleared.map_width, cleared.paradrop_profile.as_ref().unwrap().parameters,
+            |x, z| Ok(crate::rail_files::sample_exact_supply_arrow_height(&height, x, z))).unwrap();
+        assert!(mesh.body_vertex_count > 0);
+        let witness = lifecycle.apply(&cleared).unwrap();
+        assert!(witness.created.is_empty());
+        let submitted = ArrowSubmissionOrder::from_frames(ArrowFrameInput::Present(&cleared),
+            ArrowFrameInput::ViewInactive, &mut sort, Some(&witness), &"c".repeat(64));
+        assert_eq!(submitted.submissions.len(), 1, "{:?}", submitted.refusals);
+        assert_eq!(submitted.submissions[0].key.secondary_bits, 0);
+        #[cfg(windows)] {
+            let cb3 = crate::xmap15_d3d_handoff::plan_cb3_for_test(&cleared, semantic, mesh.total_length_f32_bits, false).unwrap();
+            for (i, bits) in changed_colour.into_iter().enumerate() {
+                assert_eq!(&cb3[32+i*4..36+i*4], &bits.to_le_bytes());
+            }
+        }
+        let unknown_callback = Xmap15ViewerSelection { presentation: Some(Xmap15ViewerPresentation {
+            colour_callback: Xmap15ArrowColourCallback::Unavailable, ..exact }), ..ordinary_clear.clone() };
+        let gap = prepare(&gap_world, &unknown_callback);
+        assert!(matches!(gap.disposition, FamilyDisposition::Unavailable { .. }));
+        let lost = prepare(&current_colour_world, &ordinary_clear);
+        assert!(format!("{:?}", lost.disposition).contains("SelectedPresentation"));
         drop(adapter); drop(resolver); drop(raw_resolver);
         portable_test_fs_retry::remove_dir_all(root).unwrap();
         }

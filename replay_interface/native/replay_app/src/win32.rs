@@ -10,9 +10,10 @@ use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::libloaderapi::GetModuleHandleW;
 use winapi::um::winuser::{
     AdjustWindowRect, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetClientRect, GetKeyState, LoadCursorW, PeekMessageW, PostQuitMessage, RegisterClassW,
+    GetClientRect, GetFocus, GetKeyboardState, GetKeyState, LoadCursorW, PeekMessageW, PostQuitMessage, RegisterClassW,
     ReleaseCapture, ScreenToClient, SetCapture, SetWindowTextW, TranslateMessage, CS_HREDRAW,
-    CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW, MSG, PM_REMOVE, VK_SHIFT, WM_CAPTURECHANGED, WM_DESTROY,
+    CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW, MSG, PM_REMOVE, VK_SHIFT,
+    VK_LMENU, VK_RMENU, VK_LCONTROL, VK_RCONTROL, WM_CAPTURECHANGED, WM_DESTROY,
     WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
     WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
     WS_VISIBLE,
@@ -264,6 +265,12 @@ impl Window {
         (events, alive)
     }
 
+    pub fn arrow_keyboard(&self) -> map_viewer::Xmap15ArrowKeyboard {
+        let mut keys = [0u8; 256];
+        let observed = unsafe { GetFocus() == self.hwnd && GetKeyboardState(keys.as_mut_ptr()) != 0 };
+        arrow_keyboard_snapshot(observed.then_some(&keys))
+    }
+
     pub fn set_title(&mut self, title: &str) {
         if title == self.last_title {
             return;
@@ -278,6 +285,35 @@ impl Window {
     pub fn request_close(&self) {
         unsafe {
             DestroyWindow(self.hwnd);
+        }
+    }
+}
+
+fn arrow_keyboard_snapshot(keys: Option<&[u8; 256]>) -> map_viewer::Xmap15ArrowKeyboard {
+    let pressed = |key: i32| keys.map(|keys| keys[key as usize] & 0x80 != 0);
+    map_viewer::Xmap15ArrowKeyboard {
+        alt: pressed(VK_LMENU).zip(pressed(VK_RMENU)).map(|(left, right)| [left, right]),
+        control: pressed(VK_LCONTROL).zip(pressed(VK_RCONTROL)).map(|(left, right)| [left, right]),
+        ui: map_viewer::Xmap15ArrowUiCapture::Unavailable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arrow_keyboard_snapshot_preserves_failure_and_both_sides_without_inventing_ui_capture() {
+        assert_eq!(arrow_keyboard_snapshot(None), map_viewer::Xmap15ArrowKeyboard::default());
+        for mask in 0u8..16 {
+            let mut bytes = [1u8; 256];
+            for (i, vk) in [VK_LMENU, VK_RMENU, VK_LCONTROL, VK_RCONTROL].into_iter().enumerate() {
+                bytes[vk as usize] |= if mask & (1 << i) != 0 { 0x80 } else { 0 };
+            }
+            let snapshot = arrow_keyboard_snapshot(Some(&bytes));
+            assert_eq!(snapshot.alt, Some([mask & 1 != 0, mask & 2 != 0]));
+            assert_eq!(snapshot.control, Some([mask & 4 != 0, mask & 8 != 0]));
+            assert_eq!(snapshot.ui, map_viewer::Xmap15ArrowUiCapture::Unavailable);
         }
     }
 }
