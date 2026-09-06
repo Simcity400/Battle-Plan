@@ -95,6 +95,7 @@ mod production_map_interpreter;
 mod production_map_renderer;
 mod production_map_target;
 mod province_positions;
+pub mod province_adjacencies;
 mod rail_files;
 mod reflection_cube_law;
 mod restore_evidence;
