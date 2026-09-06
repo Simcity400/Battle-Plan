@@ -213,6 +213,7 @@ pub struct FoundationFeatureContext<'a> {
     pub prepared_map_objects: Option<&'a crate::PreparedXmap12RenderFrame>,
     pub xmap15_units:
         Option<&'a dyn crate::production_features::xmap15::Xmap15UnitIdentityProvider>,
+    pub xmap13_motion: Option<&'a crate::Xmap13MotionSample>,
     pub snow_mud_phase: Option<&'a crate::xmap07_snow_mud_phase::Xmap07SnowMudPhaseSample>,
     pub xmap15_selection: &'a crate::production_features::xmap15::Xmap15ViewerSelection,
 }
@@ -246,6 +247,7 @@ impl<'a> FoundationFeatureContext<'a> {
             prepared_map_objects: None,
             xmap15_units: None,
             xmap15_selection,
+            xmap13_motion: None,
             snow_mud_phase: None,
         }
     }
@@ -421,6 +423,7 @@ fn classify_family_preparation<T>(
 
 #[derive(Default)]
 pub struct ProductionMapFeatureAdapters<'a> {
+    xmap13_motion: Option<crate::Xmap13MotionSample>,
     slots: BTreeMap<MapVisualFamily, Box<dyn ProductionMapFeatureAdapter + 'a>>,
     xmap11: Option<crate::production_features::xmap11::Xmap11TreesAdapter>,
     xmap12: Option<crate::production_features::xmap12::Xmap12CitiesBuildingsMapObjectsAdapter>,
@@ -438,6 +441,10 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
         self.get(MapVisualFamily::LightingShadows)
             .ok_or("PARTICLE_DRAW lighting runtime provider unavailable")?
             .visit_particles_for_draw(presentation_time, camera, visit)
+    }
+
+    pub fn set_xmap13_motion(&mut self, sample: Option<crate::Xmap13MotionSample>) {
+        self.xmap13_motion = sample;
     }
 
     pub fn register(&mut self, adapter: Box<dyn ProductionMapFeatureAdapter + 'a>) -> Result<()> {
@@ -925,6 +932,7 @@ pub struct PreparedFoundationFrame {
     pub rivers_straits: Option<crate::PreparedRiversStraitsFrame>,
     pub water: crate::PreparedWaterFrame,
     pub units: Option<crate::PreparedXmap13Frame>,
+    pub xmap13_motion: Option<crate::Xmap13MotionSample>,
     pub combat: Option<crate::PreparedXmap14Frame>,
     pub orders: Option<crate::production_features::xmap15::PreparedXmap15Frame>,
     pub order_inputs: Option<crate::Xmap15PlanProvider>,
@@ -1288,6 +1296,7 @@ fn prepare_foundation_frame_inner(
                     as &dyn crate::production_features::xmap15::Xmap15UnitIdentityProvider
             }),
             xmap15_selection,
+            xmap13_motion: adapters.xmap13_motion.as_ref(),
             snow_mud_phase,
         };
         // A family that cannot vouch is recorded and the loop goes on; only a
@@ -2092,6 +2101,7 @@ fn prepare_foundation_frame_inner(
         rivers_straits: prepared_rivers_straits,
         water,
         units: prepared_units,
+        xmap13_motion: adapters.xmap13_motion.clone(),
         combat: prepared_combat,
         orders: prepared_orders,
         order_inputs,

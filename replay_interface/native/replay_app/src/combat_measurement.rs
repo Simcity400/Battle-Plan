@@ -77,7 +77,7 @@ fn whole_capture_prepared_land_measurement() {
     let (terrain, _) =
         crate::install_paths::playback_render_settings(&paths, &manifest.required_settings)
             .unwrap();
-    let session = ProductMapFoundationSession::start(
+    let mut session = ProductMapFoundationSession::start(
         &resolver,
         &admission,
         manifest,
@@ -110,6 +110,11 @@ fn whole_capture_prepared_land_measurement() {
             "carrier": raw,
         });
         let phase = phase_state.sample(&world, phase_clock.elapsed().as_secs_f64(), crate::transport::DEFAULT_SPEED_STEP, &phase_durations).unwrap();
+        session.update_unit_motion(&world, map_viewer::Xmap13MotionClock {
+            seconds: phase_clock.elapsed().as_secs_f64(),
+            speed_step: crate::transport::DEFAULT_SPEED_STEP,
+            discontinuity: true,
+        }).unwrap();
         match session.adapters.prepare_with_xmap12_inputs(
             &world,
             &viewer,

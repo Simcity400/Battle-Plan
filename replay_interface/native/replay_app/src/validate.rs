@@ -13,6 +13,7 @@ mod particle_functional;
 
 #[cfg(windows)]
 pub(crate) struct ProductMapFoundationSession {
+    unit_motion: map_viewer::Xmap13MotionState,
     content_receipt: map_viewer::FoundationContentExecutionReceipt,
     adapters: map_viewer::ProductionMapFeatureAdapters<'static>,
     playback: map_viewer::FoundationPlaybackState,
@@ -98,6 +99,7 @@ impl ProductMapFoundationSession {
         )
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
         Ok(Self {
+            unit_motion: Default::default(),
             content_receipt,
             adapters: map_viewer::product_feature_adapters_with_assigned_stage_schedule(
                 resolver,
@@ -112,6 +114,13 @@ impl ProductMapFoundationSession {
             last_family_costs: Vec::new(),
             last_xmap12_payload: None,
         })
+    }
+
+    pub(crate) fn update_unit_motion(&mut self, world: &replay_core::WorldFrame, clock: map_viewer::Xmap13MotionClock) -> crate::Result<()> {
+        self.adapters.set_xmap13_motion(None);
+        let sample = self.unit_motion.sample(world, &self.content_receipt.content_manifest_sha256, clock)?;
+        self.adapters.set_xmap13_motion(Some(sample));
+        Ok(())
     }
 
     pub(crate) fn last_candidate_envelope(

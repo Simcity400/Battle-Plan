@@ -771,6 +771,10 @@ portable_replay/native/engine_evidence/artifacts/func_141020ff0.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_141020ff0.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141028e60.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141028e60.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1412796a0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140c79cc0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/xmap13_land_state_pointers.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/xmap13_land_state_names.datdump.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1419913d0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141387b70.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141387ba0.decompile.c text eol=lf
@@ -797,3 +801,9 @@ portable_replay/native/engine_evidence/artifacts/func_14088f680.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_14087a700.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1408758a0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/data/xui13_equipment/* text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_141630ee0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1416317d0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_141632130.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140bafaf0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140bf0ad0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_141279110.decompile.c text eol=lf
