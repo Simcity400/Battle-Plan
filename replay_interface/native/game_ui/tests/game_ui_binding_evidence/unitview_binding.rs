@@ -120,7 +120,7 @@ fn land_division_panel_binds_fixture_ground_truth() {
             Some(expected_loc),
             "loc @h{hour} (tick {tick})"
         );
-        assert_eq!(ger.moving, Some(tick < 8), "moving @h{hour} (tick {tick})");
+        assert_eq!(ger.moving, Some(tick > 0 && tick < 8), "moving @h{hour} (tick {tick})");
 
         let sov = land_unit_view_from_frame(&frame, "201:1")
             .unwrap_or_else(|| panic!("div 201:1 present @h{hour}"));
