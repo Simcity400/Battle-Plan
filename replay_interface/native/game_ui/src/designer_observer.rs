@@ -1,5 +1,6 @@
 pub mod authored_inputs;
 pub(crate) mod controller;
+pub mod item_database;
 
 use crate::assets::AssetResolver;
 use crate::compose::{
