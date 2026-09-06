@@ -207,10 +207,10 @@ fn modvfs_directory_scan_excludes_unrecorded_local_winners() {
     write(&root, "interface/second.gui", b"second");
     let (resolver, _) = GameFileResolver::vanilla(&root).unwrap()
         .bind_exact_test_content("interface/first.gui", &"c3".repeat(32)).unwrap();
-    let rows = resolver.resolve_dir_files("interface", Some("gui")).unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].0, "interface/first.gui");
-    assert_eq!(resolver.read_required_bytes(&rows[0].0, "recorded GUI").unwrap(), b"first");
+    assert!(resolver.resolve_dir_files("interface", Some("gui")).unwrap_err()
+        .to_string().contains("content_namespace_unwitnessed"));
+    assert_eq!(resolver.read_required_bytes("interface/first.gui", "recorded GUI").unwrap(), b"first");
+    assert!(resolver.read_required_bytes("interface/second.gui", "unrecorded GUI").is_err());
     drop(resolver);
     fs::remove_dir_all(root).unwrap();
 }

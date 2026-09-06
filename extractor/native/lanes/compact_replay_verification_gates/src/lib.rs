@@ -2524,7 +2524,7 @@ fn required_static_manifest_hashes(manifest: &Value) -> Result<BTreeMap<String, 
             "production manifest portable_content_manifest is missing or not an object".to_string()
         })?;
     if portable_content.get("schema").and_then(Value::as_str)
-        != Some("hoi4.portable-content-manifest.v4")
+        != Some("hoi4.portable-content-manifest.v5")
     {
         return Err(
             "production manifest portable_content_manifest is not v3 product-modset-bound".into(),
@@ -12154,6 +12154,7 @@ mod tests {
             required_settings: BTreeMap::new(),
             recorder_local_settings: BTreeMap::new(),
             required_content: Vec::new(),
+            witnessed_content_namespaces: Vec::new(),
             witnessed_absent_content: Vec::new(),
             manifest_digest_sha256: None,
         };

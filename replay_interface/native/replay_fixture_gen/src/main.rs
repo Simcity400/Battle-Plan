@@ -2500,6 +2500,7 @@ fn fixture_content_manifest(seed: u64, modset_id: &str) -> Result<ContentManifes
             )?,
         ],
         witnessed_absent_content: Vec::new(),
+        witnessed_content_namespaces: Vec::new(),
         manifest_digest_sha256: None,
     };
     manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256()?;

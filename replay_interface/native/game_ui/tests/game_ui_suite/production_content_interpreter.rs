@@ -3,7 +3,6 @@ use map_viewer::{GameFileResolver, PlaybackEnvironment, RecordedContentSource};
 use replay_core::{
     ContentLayerKind, ContentManifest, DlcSelection, LayerStorageKind, RecordedContentLayer,
     RequiredContent, RequiredContentKind, SourceGameIdentity, SourceProfileIdentity,
-    UsedContentKey,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -43,11 +42,17 @@ fn manifest_for(
     dlc_selection: Vec<DlcSelection>,
 ) -> (ContentManifest, PlaybackEnvironment) {
     let resolved = resolver.resolve_used_content(paths).unwrap();
-    let used_ordinals = resolved
-        .iter()
-        .map(|row| row.source.ordinal)
-        .collect::<BTreeSet<_>>();
     let effective_vfs_manifest_sha256 = "ab".repeat(32);
+    let sealed = resolver.observe_test_content_namespace(&effective_vfs_manifest_sha256).unwrap();
+    for row in &resolved {
+        assert!(sealed.winners().iter().any(|key|
+            key.normalized_game_relative_path == row.logical_path.to_ascii_lowercase()
+                && key.winning_layer_ordinal == row.source.ordinal as u32
+                && key.payload_sha256 == row.sha256
+                && key.payload_bytes == row.byte_len));
+    }
+    let used_ordinals = sealed.winners().iter()
+        .map(|key| key.winning_layer_ordinal).collect::<BTreeSet<_>>();
     let ordered_layers = resolver
         .active_sources()
         .into_iter()
@@ -64,30 +69,16 @@ fn manifest_for(
                 LayerStorageKind::Directory
             },
             replace_paths: source.replace_path,
-            required_for_playback: used_ordinals.contains(&source.ordinal),
+            required_for_playback: used_ordinals.contains(&(source.ordinal as u32)),
         })
         .collect::<Vec<_>>();
-    let required_content = resolved
-        .into_iter()
-        .map(|row| RequiredContent {
-            content_key: row.logical_path.to_ascii_lowercase(),
+    let required_content = sealed.winners().iter().cloned()
+        .map(|content| RequiredContent {
+            content_key: content.normalized_game_relative_path.clone(),
             kind: RequiredContentKind::Other,
             observation_count: 1,
             consumers: vec!["game_ui.production_content_interpreter.test".into()],
-            content: UsedContentKey {
-                effective_vfs_manifest_sha256: effective_vfs_manifest_sha256.clone(),
-                stored_game_relative_path: row.source_relative_path.clone(),
-                normalized_game_relative_path: row.logical_path.to_ascii_lowercase(),
-                winning_layer_ordinal: row.source.ordinal as u32,
-                layer_kind: layer_kind(&row.source.kind),
-                layer_id: row.source.source_id,
-                source_sha256: row
-                    .source
-                    .archive_sha256
-                    .unwrap_or_else(|| row.sha256.clone()),
-                payload_sha256: row.sha256,
-                payload_bytes: row.byte_len,
-            },
+            content,
         })
         .collect();
     let source_game = SourceGameIdentity {
@@ -113,11 +104,13 @@ fn manifest_for(
         required_settings: BTreeMap::new(),
         recorder_local_settings: BTreeMap::new(),
         required_content,
+        witnessed_content_namespaces: Vec::new(),
         witnessed_absent_content: Vec::new(),
         manifest_digest_sha256: None,
     };
     source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
     manifest.source_profile = source_profile.clone();
+    manifest.bind_observed_namespace(sealed).unwrap();
     let manifest = manifest.with_computed_digest().unwrap();
     let environment = PlaybackEnvironment {
         source_game,
@@ -489,9 +482,16 @@ fn modvfs_ui_directory_scan_ignores_unrecorded_gui_added_before_open() {
     let mods = root.join("mod");
     write(&game, "interface/panel.gui", "guiTypes = {} ");
     write(&mods, "interface/panel.gui", "guiTypes = { containerWindowType = { name = mod_panel } }");
+    write(&game, "interface/unrequested.gfx", "spriteTypes = {}");
     let raw = GameFileResolver::with_mod_paths(&game, vec![mods.clone()]).unwrap();
     let (manifest, environment) = manifest_for(&raw, ["interface/panel.gui".into()], "l_english", vec![]);
     let admission = manifest.admit_playback(&raw.playback_inventory(&manifest, environment.clone()).unwrap()).unwrap();
+    let namespace = admission.require_complete_namespace(
+        portable_content_manifest::ContentNamespaceScope::root()).unwrap();
+    assert_eq!(namespace.iter().map(|key| key.normalized_game_relative_path.as_str())
+        .collect::<Vec<_>>(), ["interface/panel.gui", "interface/unrequested.gfx"]);
+    assert_eq!(namespace[0].layer_kind, ContentLayerKind::Mod);
+    assert_eq!(namespace[1].layer_kind, ContentLayerKind::Base);
     let before = raw.with_content_admission(&admission).unwrap();
     let before_assets = game_ui::assets::AssetResolver::from_content_admission(&before, &admission).unwrap();
     let expected = before_assets.list_files_recursive("interface", Some("gui")).unwrap();
@@ -504,6 +504,8 @@ fn modvfs_ui_directory_scan_ignores_unrecorded_gui_added_before_open() {
     let raw = GameFileResolver::with_mod_paths(&game, vec![mods]).unwrap();
     let reopened = manifest.admit_playback(&raw.playback_inventory(&manifest, environment).unwrap()).unwrap();
     assert_eq!(reopened, admission);
+    assert_eq!(reopened.require_complete_namespace(
+        portable_content_manifest::ContentNamespaceScope::root()).unwrap(), namespace);
     let resolver = raw.with_content_admission(&reopened).unwrap();
     let assets = game_ui::assets::AssetResolver::from_content_admission(&resolver, &reopened).unwrap();
     let actual = assets.list_files_recursive("interface", Some("gui")).unwrap();

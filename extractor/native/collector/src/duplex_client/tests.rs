@@ -226,6 +226,7 @@ fn lower_sha256(value: &[u8; 32]) -> String {
 
 fn manifest_envelope_bytes(effective_vfs_manifest_sha256: [u8; 32]) -> Vec<u8> {
     let mut manifest = ContentManifest {
+        witnessed_content_namespaces: Vec::new(),
         witnessed_absent_content: Vec::new(),
         schema: portable_content_manifest::SCHEMA.into(),
         product_modset_sha256: "09".repeat(32),

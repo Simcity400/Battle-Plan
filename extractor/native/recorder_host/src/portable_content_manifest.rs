@@ -2431,6 +2431,7 @@ fn hash_entries(
 }
 
 pub struct AttachCorpusCensus {
+    pub sealed_namespace: portable_content_manifest::SealedContentNamespace,
     pub required_content: Vec<RequiredContent>,
     pub witnessed_absent_content: Vec<String>,
     pub stats: AttachCorpusCensusStats,
@@ -2479,7 +2480,10 @@ pub fn census_effective_vfs_corpus(
 
     let started = std::time::Instant::now();
     let optional_before = observe_optional_authored_content(vfs)?;
-    let entries = vfs.effective_entries()?;
+    let mut progress = |bytes: usize| crate::finalize_progress::tick(bytes as u64);
+    let observed_namespace = vfs.observe_namespace_with_progress(
+        &portable_content_manifest::ContentNamespaceScope::root(), &mut progress)?;
+    let entries = vfs.namespace_entries()?;
     crate::finalize_progress::tick(entries.len() as u64);
     let listing_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
 
@@ -2667,10 +2671,15 @@ pub fn census_effective_vfs_corpus(
         }
     }
 
+    let sealed_namespace = observed_namespace.seal_with_progress(vfs, &mut progress)?;
+    if rows.values().map(|row| &row.content).ne(sealed_namespace.winners().iter()) {
+        return Err("attach-time census rows differ from the independently sealed namespace".into());
+    }
     let optional_after = observe_optional_authored_content(vfs)?;
     let witnessed_absent_content =
         reconcile_optional_authored_content(&optional_before, &optional_after, &rows)?;
     Ok(AttachCorpusCensus {
+        sealed_namespace,
         required_content: rows.into_values().collect(),
         witnessed_absent_content,
         stats: AttachCorpusCensusStats {
@@ -2709,6 +2718,7 @@ pub fn build_from_attach_time_corpus(
     ordered_layers: Vec<RecordedContentLayer>,
     required_content: Vec<RequiredContent>,
     witnessed_absent_content: Vec<String>,
+    sealed_namespace: portable_content_manifest::SealedContentNamespace,
     launch: &PortableLaunchBinding,
     effective_vfs_manifest_sha256: &str,
     product_modset_sha256: &str,
@@ -2796,8 +2806,10 @@ pub fn build_from_attach_time_corpus(
         recorder_local_settings: launch.recorder_local_settings.clone(),
         required_content,
         witnessed_absent_content,
+        witnessed_content_namespaces: Vec::new(),
         manifest_digest_sha256: None,
     };
+    manifest.bind_observed_namespace(sealed_namespace)?;
     manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256()?;
     manifest.with_computed_digest()
 }
@@ -2938,6 +2950,7 @@ pub fn build(
         required_settings: trace.required_settings,
         recorder_local_settings: trace.recorder_local_settings,
         required_content,
+        witnessed_content_namespaces: Vec::new(),
         witnessed_absent_content: Vec::new(),
         manifest_digest_sha256: None,
     };
@@ -3483,11 +3496,16 @@ mod tests {
             let expected = if present { Vec::new() } else { vec!["map/adjacencies.csv".to_string()] };
             assert_eq!(census.witnessed_absent_content, expected);
             let manifest = build_from_attach_time_corpus(vec![trace.ordered_layers[0].clone()],
-                census.required_content, census.witnessed_absent_content, &launch, &sha('a'),
+                census.required_content, census.witnessed_absent_content, census.sealed_namespace, &launch, &sha('a'),
                 &sha('9'), trace.source_game.clone(), "profile", "playset").unwrap();
             let encoded = manifest.encode_json().unwrap();
             let reopened = ContentManifest::decode_json(&encoded).unwrap();
             assert_eq!(reopened.witnessed_absent_content, expected);
+            assert_eq!(reopened.witnessed_content_namespaces, manifest.witnessed_content_namespaces);
+            assert_eq!(reopened.witnessed_content_namespaces.len(), 1);
+            assert_eq!(reopened.witnessed_content_namespaces[0].winner_count as usize, reopened.required_content.len());
+            let mut dropped = reopened.clone(); dropped.required_content.pop();
+            assert!(dropped.with_computed_digest().is_err());
             assert_eq!(reopened.required_content.iter().any(|r| r.content.normalized_game_relative_path == "map/adjacencies.csv"), present);
             let mut conflicting = reopened.clone();
             conflicting.witnessed_absent_content = if present { vec!["map/adjacencies.csv".into()] } else { Vec::new() };

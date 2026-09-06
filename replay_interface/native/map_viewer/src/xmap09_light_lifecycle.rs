@@ -1469,7 +1469,7 @@ entity = {
             "source_profile": { "profile_id": "weather-binding", "playset_id": "vanilla", "selection_sha256": "0".repeat(64) },
             "effective_vfs_manifest_sha256": "2".repeat(64), "ordered_layers": [], "dlc_selection": [],
             "localisation_language": "l_english", "required_settings": {}, "recorder_local_settings": {},
-            "required_content": [], "witnessed_absent_content": [], "manifest_digest_sha256": null
+            "required_content": [], "witnessed_absent_content": [], "witnessed_content_namespaces": [], "manifest_digest_sha256": null
         })).unwrap();
         manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
         let manifest = manifest.with_computed_digest().unwrap();

@@ -322,6 +322,7 @@ fn admitted_renderer_with_bindings(
         required_settings: BTreeMap::new(),
         recorder_local_settings: BTreeMap::new(),
         required_content,
+        witnessed_content_namespaces: Vec::new(),
         witnessed_absent_content: Vec::new(),
         manifest_digest_sha256: None,
     };

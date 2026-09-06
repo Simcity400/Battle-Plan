@@ -1790,6 +1790,7 @@ fn portable_content_manifest_fixture() -> replay_core::ContentManifest {
         ]),
         required_content: Vec::new(),
         witnessed_absent_content: Vec::new(),
+        witnessed_content_namespaces: Vec::new(),
         manifest_digest_sha256: None,
     };
     manifest.source_profile.selection_sha256 =

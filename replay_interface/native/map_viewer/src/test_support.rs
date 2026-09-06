@@ -2855,39 +2855,26 @@ pub(crate) fn admitted_vanilla_resolver_with_absences(
 ) -> (GameFileResolver, replay_core::ValidatedContentAdmission) {
     use replay_core::{
         ContentManifest, LayerStorageKind, RecordedContentLayer, RequiredContent,
-        SourceGameIdentity, SourceProfileIdentity, UsedContentKey,
+        SourceGameIdentity, SourceProfileIdentity,
     };
 
     let effective_vfs_manifest_sha256 = "ab".repeat(32);
-    let required_content = paths
-        .iter()
-        .enumerate()
-        .map(|(index, path)| {
-            let actual = resolver
-                .resolve_required_with_provenance(path, label)
-                .unwrap_or_else(|error| panic!("{label} resolves {path}: {error}"));
-            RequiredContent {
-                content_key: format!("{label}-{index}"),
-                kind: admitted_content_kind(path),
-                content: UsedContentKey {
-                    effective_vfs_manifest_sha256: effective_vfs_manifest_sha256.clone(),
-                    stored_game_relative_path: actual.source_relative_path.clone(),
-                    normalized_game_relative_path: actual.logical_path.to_ascii_lowercase(),
-                    winning_layer_ordinal: actual.source.ordinal as u32,
-                    layer_kind: admitted_layer_kind(&actual.source.kind),
-                    layer_id: actual.source.source_id,
-                    source_sha256: actual
-                        .source
-                        .archive_sha256
-                        .unwrap_or_else(|| actual.sha256.clone()),
-                    payload_sha256: actual.sha256,
-                    payload_bytes: actual.byte_len,
-                },
-                observation_count: 1,
-                consumers: vec![label.to_string()],
-            }
-        })
-        .collect::<Vec<_>>();
+    let sealed = resolver.observe_test_content_namespace(&effective_vfs_manifest_sha256)
+        .unwrap_or_else(|error| panic!("{label} namespace observation: {error}"));
+    for path in paths {
+        let path = portable_content_manifest::normalize_game_relative_path(path).unwrap();
+        assert!(sealed.winners().iter().any(|key| key.normalized_game_relative_path == path),
+            "{label} required fixture path is absent: {path}");
+    }
+    for path in &witnessed_absent_content {
+        assert!(!sealed.winners().iter().any(|key| &key.normalized_game_relative_path == path));
+        assert!(!sealed.excluded_winners().iter().any(|key| &key.normalized_game_relative_path == path));
+    }
+    let required_content = sealed.winners().iter().enumerate().map(|(index, key)| RequiredContent {
+        content_key: format!("{label}-{index}"),
+        kind: admitted_content_kind(&key.normalized_game_relative_path),
+        content: key.clone(), observation_count: 1, consumers: vec![label.to_string()],
+    }).collect::<Vec<_>>();
     let used_ordinals = required_content
         .iter()
         .map(|row| row.content.winning_layer_ordinal as usize)
@@ -2934,9 +2921,11 @@ pub(crate) fn admitted_vanilla_resolver_with_absences(
         required_settings: BTreeMap::new(),
         recorder_local_settings: BTreeMap::new(),
         required_content,
+        witnessed_content_namespaces: Vec::new(),
         witnessed_absent_content,
         manifest_digest_sha256: None,
     };
+    manifest.bind_observed_namespace(sealed).unwrap();
     manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
     manifest = manifest.with_computed_digest().unwrap();
     let inventory = resolver

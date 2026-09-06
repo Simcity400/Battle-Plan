@@ -1605,6 +1605,7 @@ mod tests {
             required_settings: BTreeMap::new(),
             recorder_local_settings: BTreeMap::new(),
             required_content,
+            witnessed_content_namespaces: Vec::new(),
             witnessed_absent_content: ["interface/core.gfx", "gfx/flags/small/GER_fascism.tga", "gfx/flags/small/ITA_fascism.tga"]
                 .into_iter().map(|path| {
                     assert!(!root.join(path).exists(), "fixture absence must be observed: {path}");
@@ -1612,6 +1613,25 @@ mod tests {
                 }).collect::<std::collections::BTreeSet<_>>().into_iter().collect(),
             manifest_digest_sha256: None,
         };
+        let sealed = crate::test_admission::seal_vanilla_namespace(root, &manifest.effective_vfs_manifest_sha256);
+        let mut required: BTreeMap<_, _> = manifest.required_content.into_iter()
+            .map(|row| (row.content.normalized_game_relative_path.clone(), row)).collect();
+        manifest.required_content = sealed.winners().iter().map(|content| {
+            if let Some(row) = required.remove(&content.normalized_game_relative_path) {
+                assert_eq!(&row.content, content, "fixture content changed before namespace seal");
+                row
+            } else {
+                RequiredContent {
+                    content_key: content.normalized_game_relative_path.clone(),
+                    kind: RequiredContentKind::Other,
+                    observation_count: 1,
+                    consumers: vec![format!("xui13/fixture/{}", content.payload_sha256)],
+                    content: content.clone(),
+                }
+            }
+        }).collect();
+        assert!(required.is_empty(), "required fixture content disappeared before namespace seal");
+        manifest.bind_observed_namespace(sealed).unwrap();
         manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
         manifest = manifest.with_computed_digest().unwrap();
         let inventory = resolver

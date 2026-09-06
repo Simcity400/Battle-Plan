@@ -1018,6 +1018,7 @@ pub(crate) mod tests {
             required_settings: BTreeMap::new(),
             recorder_local_settings: BTreeMap::new(),
             required_content: Vec::new(),
+            witnessed_content_namespaces: Vec::new(),
             witnessed_absent_content: Vec::new(),
             manifest_digest_sha256: None,
         }

@@ -982,6 +982,7 @@ mod tests {
                 ("settings_authority".into(), "pre_launch_bracketed".into()),
             ]),
             required_content: Vec::new(),
+            witnessed_content_namespaces: Vec::new(),
             witnessed_absent_content: Vec::new(),
             manifest_digest_sha256: None,
         };

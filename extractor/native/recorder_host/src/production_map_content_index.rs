@@ -497,6 +497,7 @@ mod tests {
         )
         .unwrap();
         let manifest = ContentManifest {
+            witnessed_content_namespaces: Vec::new(),
             witnessed_absent_content: Vec::new(),
             schema: portable_content_manifest::SCHEMA.into(),
             product_modset_sha256: "9".repeat(64),

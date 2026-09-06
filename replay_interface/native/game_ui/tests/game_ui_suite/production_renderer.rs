@@ -220,6 +220,7 @@ fn production_renderer_from_paths(
         required_settings: BTreeMap::new(),
         recorder_local_settings: BTreeMap::new(),
         required_content,
+        witnessed_content_namespaces: Vec::new(),
         witnessed_absent_content: Vec::new(),
         manifest_digest_sha256: None,
     };
@@ -283,40 +284,27 @@ fn minimal_hud_route_admission(
         .unwrap();
     }
     let resolver = GameFileResolver::vanilla(&root).unwrap();
-    let resolved = resolver
-        .resolve_used_content(gui_rows.into_iter().map(|(path, _, _)| path.to_string()))
-        .unwrap();
     let vfs = "e".repeat(64);
-    let required_content = resolved
-        .into_iter()
-        .map(|row| {
+    let sealed = resolver.observe_test_content_namespace(&vfs).unwrap();
+    let required_content = sealed.winners().iter().cloned()
+        .map(|content| {
             let (surface, expected_root) = gui_rows
                 .iter()
                 .find_map(|(path, surface, root_name)| {
-                    (*path == row.logical_path).then_some((*surface, *root_name))
+                    (*path == content.normalized_game_relative_path).then_some((*surface, *root_name))
                 })
                 .unwrap();
             let consumer = if expected_root.is_empty() {
                 "fixture/non_hud/mapmodes".to_string()
             } else {
-                format!("hud_role/v1/{surface}/gui/{expected_root}/{}", row.sha256)
+                format!("hud_role/v1/{surface}/gui/{expected_root}/{}", content.payload_sha256)
             };
             RequiredContent {
-                content_key: row.logical_path.clone(),
+                content_key: content.normalized_game_relative_path.clone(),
                 kind: RequiredContentKind::GuiDefinition,
                 observation_count: 1,
                 consumers: vec![consumer],
-                content: UsedContentKey {
-                    effective_vfs_manifest_sha256: vfs.clone(),
-                    stored_game_relative_path: row.source_relative_path.clone(),
-                    normalized_game_relative_path: row.logical_path,
-                    winning_layer_ordinal: 0,
-                    layer_kind: ContentLayerKind::Base,
-                    layer_id: "base".into(),
-                    source_sha256: row.sha256.clone(),
-                    payload_sha256: row.sha256,
-                    payload_bytes: row.byte_len,
-                },
+                content,
             }
         })
         .collect::<Vec<_>>();
@@ -352,10 +340,12 @@ fn minimal_hud_route_admission(
         required_settings: BTreeMap::new(),
         recorder_local_settings: BTreeMap::new(),
         required_content,
+        witnessed_content_namespaces: Vec::new(),
         witnessed_absent_content: Vec::new(),
         manifest_digest_sha256: None,
     };
     manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
+    manifest.bind_observed_namespace(sealed).unwrap();
     manifest = manifest.with_computed_digest().unwrap();
     let inventory = resolver
         .playback_inventory(

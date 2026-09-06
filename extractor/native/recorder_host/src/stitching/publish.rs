@@ -1920,6 +1920,7 @@ mod tests {
         let definition_sha = Sha256::hex(&definition);
         let vfs_sha = "f".repeat(64);
         let mut manifest = ContentManifest {
+            witnessed_content_namespaces: Vec::new(),
             witnessed_absent_content: Vec::new(),
             schema: portable_content_manifest::SCHEMA.to_string(),
             product_modset_sha256: "9".repeat(64),
@@ -2006,6 +2007,36 @@ mod tests {
         manifest.required_content.push(conflicting);
         assert!(pack_with(&plan.game_id, &entries, &pack_identity(&plan, Some(manifest)),
             false, &stitched_pack_options()).is_err());
+    }
+
+    #[test]
+    fn stitched_pack_preserves_observed_namespace_and_refuses_roster_loss() {
+        use portable_content_manifest::effective_vfs::{EffectiveVfs, EffectiveVfsLayerMount};
+        use portable_content_manifest::{ContentLayerKind, ContentNamespaceScope, LayerStorageKind};
+        let root = std::env::temp_dir().join(format!("stitched_namespace_{}_{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(root.join("map")).unwrap();
+        let (mut manifest, definition) = stitched_wire_test_manifest();
+        std::fs::write(root.join("map/definition.csv"), &definition).unwrap();
+        let vfs = EffectiveVfs::new(&manifest.effective_vfs_manifest_sha256, [EffectiveVfsLayerMount {
+            ordinal: 0, layer_kind: ContentLayerKind::Base, layer_id: "base".into(),
+            storage_kind: LayerStorageKind::Directory, local_source: root.clone(),
+            source_container_sha256: None, replace_paths: Vec::new(),
+        }]).unwrap();
+        let sealed = vfs.observe_namespace(&ContentNamespaceScope::root()).unwrap().seal(&vfs).unwrap();
+        manifest.bind_observed_namespace(sealed).unwrap();
+        manifest = manifest.with_computed_digest().unwrap();
+        let plan = rollback_plan(); let source = MemorySource::for_plan(&plan);
+        let entries = build_stitched_entries(&plan, &source).unwrap();
+        let bytes = pack_with(&plan.game_id, &entries, &pack_identity(&plan, Some(manifest.clone())),
+            false, &stitched_pack_options()).unwrap();
+        let container = Container::from_bytes(bytes, &ExpectedIdentity::default()).unwrap();
+        container.verify_all().unwrap();
+        assert_eq!(container.content_manifest().unwrap(), &manifest);
+        let mut dropped = manifest; dropped.required_content.clear();
+        assert!(pack_with(&plan.game_id, &entries, &pack_identity(&plan, Some(dropped)),
+            false, &stitched_pack_options()).is_err());
+        drop(vfs); portable_test_fs_retry::remove_dir_all(&root).unwrap();
     }
 
     fn push_stitched_wire_record(
