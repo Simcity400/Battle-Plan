@@ -198,11 +198,14 @@ pub(crate) fn compile_light_pixel(hlsl: &str, original: &[u8]) -> Result<MapArro
         return Ok(MapArrowLightPixel::RetainedT2Required(original.to_vec()));
     }
     let depth_hlsl = format!("#define main map_arrow_colour_main\n{hlsl}\n#undef main\nvoid main(VS_OUTPUT_MAPARROW Input) {{ map_arrow_colour_main(Input); }}\n");
-    let bytecode = crate::d3d_compile_stage(
+    let bytecode = match crate::d3d_compile_stage(
         &depth_hlsl,
         crate::ShaderStage::Pixel,
         crate::shader_compile::ENGINE_COMPILE_FLAGS,
-    )?;
+    ) {
+        Ok(bytecode) => bytecode,
+        Err(_) => return Ok(MapArrowLightPixel::RetainedT2Required(original.to_vec())),
+    };
     let reflection = crate::parse_dxbc_reflection(&bytecode)?;
     if !reflection.outputs.is_empty()
         || reflection
@@ -571,6 +574,19 @@ mod shader_tests {
             .iter()
             .any(|r| r.resource_type == 2 && r.bind_point == 2));
     }
+    #[test]
+    fn light_pixel_retains_authored_program_when_input_type_prevents_optimization() {
+        let hlsl = "struct AuthoredInput { float4 position:SV_POSITION; float2 uv:TEXCOORD0; }; Texture2D AuthoredShadow:register(t2); SamplerState S:register(s2); float4 main(AuthoredInput Input):SV_Target { return AuthoredShadow.Sample(S,Input.uv); }";
+        let original = crate::d3d_compile_stage(hlsl, crate::ShaderStage::Pixel,
+            crate::shader_compile::ENGINE_COMPILE_FLAGS).unwrap();
+        assert!(compile_light_pixel(hlsl, b"invalid original DXBC").is_err());
+        let classified = compile_light_pixel(hlsl, &original).unwrap();
+        assert!(matches!(&classified, MapArrowLightPixel::RetainedT2Required(_)));
+        assert_eq!(classified.bytecode(), original);
+        assert!(crate::parse_dxbc_reflection(classified.bytecode()).unwrap().resources.iter()
+            .any(|resource| resource.resource_type == 2 && resource.bind_point == 2));
+    }
+
     #[test]
     fn light_pixel_requires_retained_t2_for_authored_discard_and_depth() {
         let (hlsl, original) = compiled("float4 main(VS_OUTPUT_MAPARROW Input):SV_Target { clip(Shadow.Sample(S,Input.uv).a-0.5); return float4(1,1,1,1); }");
