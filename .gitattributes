@@ -36,7 +36,7 @@ replay_interface/re_evidence/air_disclosure/canonical_air_disclosure_envelope.sh
 # `replay_core/src/peace_conference_presentation.rs`. Without this line the
 # checkout representation decided the hash: the blobs are LF, `core.autocrlf`
 # handed the compiler CRLF on Windows, and the pinned constants were the CRLF
-# digests — so the same commit failed that test on any host that checks out LF.
+# digests â€” so the same commit failed that test on any host that checks out LF.
 # Pinned to LF, which is what the XUI27 machine authority already records for
 # these paths.
 replay_interface/re_evidence/rendering_laws/XUI08/*.json text eol=lf
@@ -675,6 +675,9 @@ portable_replay/native/engine_evidence/artifacts/func_1423e9160.instructions.txt
 portable_replay/native/engine_evidence/artifacts/func_1423e5cd0.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1423dcc80.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1419163a0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_141276c20.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_142277df0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_142273fb0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1423dfd30.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1423dfd30.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1423dab30.decompile.c text eol=lf

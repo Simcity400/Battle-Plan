@@ -117,10 +117,15 @@ impl<'a> Xmap13CombatIdentityProvider<'a> {
         }
     }
 
+    pub(super) fn division_source_index(&self, identity: &Xmap13UnitIdentity) -> Option<usize> {
+        let Xmap13UnitIdentity::Division { stable_id, .. } = identity else { return None };
+        if self.division_identities(*stable_id).iter().any(Option::is_none) { return None }
+        self.by_identity.get(identity).copied()
+    }
+
     pub fn lookup(&self, identity: &Xmap13UnitIdentity) -> Option<Xmap13CombatUnit<'_>> {
-        if let Xmap13UnitIdentity::Division { stable_id, .. } = identity {
-            if self.division_identities(*stable_id).iter().any(Option::is_none) { return None }
-            let row = &self.divisions[*self.by_identity.get(identity)?];
+        if matches!(identity, Xmap13UnitIdentity::Division { .. }) {
+            let row = &self.divisions[self.division_source_index(identity)?];
             return Some(Xmap13CombatUnit {
                 owner_country: row.owner_country.measured().map(String::as_str),
                 anchor_province_id: row.anchor_province_id.measured().copied().filter(|id| *id != 0),
