@@ -489,21 +489,21 @@ impl ObserverDesignerChromeCatalog {
                     field_refusals.insert(format!("{}/missions", record.design_id), reason.clone());
                 }
             }
-            let row_owner = record
-                .owner
-                .as_deref()
-                .ok_or_else(|| GameUiError::missing("XUI13 row owner is absent"))?;
+            let row_owner = candidate.flag_country_tag.as_str();
             let flag = match flag_cache.get(row_owner) {
-                Some(flag) => flag.clone(),
-                None => {
-                    let flag = resolve_small_flag(resolver, frame, row_owner)?;
-                    flag_cache.insert(row_owner.to_string(), flag.clone());
-                    flag
-                }
+                Some(flag) => Ok(flag.clone()),
+                None => resolve_small_flag(resolver, frame, row_owner),
             };
-            row_option
-                .sprite_overrides
-                .insert("creator_flag".to_string(), flag);
+            match flag {
+                Ok(flag) => {
+                    flag_cache.insert(row_owner.to_string(), flag.clone());
+                    row_option.sprite_overrides.insert("creator_flag".into(), flag);
+                }
+                Err(reason) => {
+                    row_option.hidden_elements.insert("creator_flag".into());
+                    field_refusals.insert(format!("{}/flag", record.design_id), reason.to_string());
+                }
+            }
             row_options.push(row_option);
         }
         let inputs = controller_rows
@@ -643,16 +643,19 @@ impl ObserverDesignerChromeCatalog {
         for tag in &country_tags {
             let mut country_option = options.clone();
             let flag = match flag_cache.get(tag) {
-                Some(flag) => flag.clone(),
-                None => {
-                    let flag = resolve_small_flag(resolver, frame, tag)?;
-                    flag_cache.insert(tag.clone(), flag.clone());
-                    flag
-                }
+                Some(flag) => Ok(flag.clone()),
+                None => resolve_small_flag(resolver, frame, tag),
             };
-            country_option
-                .sprite_overrides
-                .insert("creator_flag".to_string(), flag);
+            match flag {
+                Ok(flag) => {
+                    flag_cache.insert(tag.clone(), flag.clone());
+                    country_option.sprite_overrides.insert("creator_flag".into(), flag);
+                }
+                Err(reason) => {
+                    country_option.hidden_elements.insert("creator_flag".into());
+                    field_refusals.insert(format!("country_filters/{tag}/flag"), reason.to_string());
+                }
+            }
             let _selected = !excluded_country_filters.contains(tag.as_str());
             country_options.push(country_option);
         }
@@ -1515,6 +1518,14 @@ mod tests {
         root: &PathBuf,
         excluded_asset: Option<&str>,
     ) -> ProductionUiRenderer {
+        admitted_production_renderer_with_assets(root, excluded_asset, &[])
+    }
+
+    pub(super) fn admitted_production_renderer_with_assets(
+        root: &PathBuf,
+        excluded_asset: Option<&str>,
+        additional_assets: &[&str],
+    ) -> ProductionUiRenderer {
         let paths = [
             "common/units/equipment/designer.txt",
             "common/defines/designer.lua",
@@ -1533,7 +1544,7 @@ mod tests {
         ];
         let resolver = GameFileResolver::vanilla(root).unwrap();
         let resolved = resolver
-            .resolve_used_content(paths.into_iter().map(str::to_string))
+            .resolve_used_content(paths.into_iter().chain(additional_assets.iter().copied()).map(str::to_string))
             .unwrap();
         let vfs = "e".repeat(64);
         let required_content = resolved
@@ -1783,7 +1794,7 @@ mod tests {
     }
 
     #[test]
-    fn xui13_refuses_a_country_whose_cosmetic_field_was_never_carried() {
+    fn xui13_hides_only_the_flag_whose_cosmetic_field_was_never_carried() {
         let (root, _) = production_fixture();
         let rest = json!({
             "countries": {
@@ -1816,14 +1827,15 @@ mod tests {
             country_scroll_wheel_steps: 0,
         };
         let (resolved, _) = resolve_observer_designer_view_state(&authored_inputs::DesignerAuthoredInputs::load(renderer.resolver()).unwrap(), &frame, named(&frame, "GER"), &viewer).unwrap();
-        let rejection = renderer
+        let surface = renderer
             .compose_xui13_designer_surface(&frame, named(&frame, "GER"), &resolved, 160, 120)
-            .unwrap_err();
-        let rejection = format!("{rejection:?}");
-        assert!(
-            rejection.contains("cosmetic tag was never carried"),
-            "the refusal must name the unread cosmetic field: {rejection}"
-        );
+            .unwrap();
+        assert_eq!(surface.ordered_design_ids, ["7:70"]);
+        assert_eq!(surface.visible_design_ids, ["7:70"]);
+        assert!(surface.membership_complete);
+        assert!(surface.output.report.drawn_elements > 0);
+        assert!(surface.field_refusals["7:70/flag"].contains("cosmetic tag was never carried"));
+        assert!(!surface.field_refusals.contains_key("7:70/equipment_icon"));
     }
 
     #[test]

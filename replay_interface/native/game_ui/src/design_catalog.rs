@@ -15,6 +15,7 @@ pub enum DesignerRowIcon {
 pub struct ObserverDesignerCandidate {
     pub record: replay_core::DesignRecord,
     pub designer_window_tokens: Vec<String>,
+    pub flag_country_tag: String,
     pub icon: Result<DesignerRowIcon, String>,
     pub missions: Result<u32, String>,
 }

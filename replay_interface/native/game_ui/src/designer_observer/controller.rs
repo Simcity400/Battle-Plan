@@ -90,7 +90,7 @@ pub(crate) fn admit(authored: &DesignerAuthoredInputs, frame: &WorldFrame,
                 || (!viewer.obsolete_filter_enabled && variant.record.lifecycle_state == Some(replay_core::DesignLifecycleState::Obsolete))
                 || excluded.contains(selected_country) { return Ok(None) }
             Ok(Some(ObserverDesignerCandidate {
-                record: variant.record.clone(), designer_window_tokens: windows,
+                record: variant.record.clone(), designer_window_tokens: windows, flag_country_tag: selected_country.into(),
                 icon: item_icon(&variant.item_icon_override),
                 missions: Err("XUI13 authored mission mask and mutable mission-stat operands are not yet bound".into()),
             }))
@@ -149,7 +149,7 @@ fn item_icon(icon: &DesignItemIconObservation) -> Result<DesignerRowIcon, String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::tests::{admitted_production_renderer, designer_catalog_value, production_fixture, world_from_catalog};
+    use super::super::tests::{admitted_production_renderer, admitted_production_renderer_with_assets, designer_catalog_value, production_fixture, world_from_catalog};
     use serde_json::{json, Value};
 
     fn viewer() -> ObserverDesignerViewState {
@@ -339,6 +339,138 @@ mod tests {
         let surface=renderer.compose_xui13_designer_surface(&frame,frame.named_country("GER").unwrap(),&viewer(),160,120).unwrap();
         assert!(surface.visible_design_ids.is_empty()); assert!(!surface.membership_complete);
         assert!(surface.field_refusals.contains_key("row_suffix"));
+    }
+
+    fn row_element_pixels(surface: &super::super::ObserverDesignerSurface, element: &str) -> Vec<u8> {
+        let rect = surface.output.debug_rects.iter().find(|rect|
+            rect.name.contains("7:70") && rect.name.ends_with(&format!("::{element}")))
+            .unwrap_or_else(|| panic!("missing row element {element}: {:?}", surface.output.debug_rects));
+        let image = &surface.output.image;
+        assert!(rect.x >= 0 && rect.y >= 0 && rect.w > 0 && rect.h > 0);
+        assert!(rect.x as usize + rect.w as usize <= image.width);
+        assert!(rect.y as usize + rect.h as usize <= image.height);
+        (rect.y as usize..(rect.y + rect.h) as usize).flat_map(|y| {
+            let start = (y * image.width + rect.x as usize) * 4;
+            image.pixels[start..start + rect.w as usize * 4].iter().copied()
+        }).collect()
+    }
+
+    #[test]
+    fn row_flag_uses_origin_override_while_record_owner_remains_creator() {
+        let (root,_) = production_fixture();
+        let mut italian = std::fs::read(root.0.join("gfx/flags/small/GER.tga")).unwrap();
+        italian[18..].copy_from_slice(&[0,255,0,255,0,255,0,255]);
+        std::fs::write(root.0.join("gfx/flags/small/ITA.tga"), italian).unwrap();
+        let renderer = admitted_production_renderer_with_assets(&root.0,None,&["gfx/flags/small/ITA.tga"]);
+        let authored=DesignerAuthoredInputs::load(renderer.resolver()).unwrap();
+        let (mut raw,mut rest)=owner_prefix_inputs();
+        rest["countries"]["ITA"]["cosmetic_tag"] = Value::Null;
+        rest["countries"]["ITA"]["politics"] = json!({"ruling_party":"fascism"});
+        raw["variants"].as_array_mut().unwrap().truncate(1);
+        raw["variants"][0]["creator_tag"]=json!("ITA");
+        raw["variants"][0]["owner_tag"]=json!("ITA");
+        raw["variants"][0]["origin_override_tag"]=json!("GER");
+        raw["variants"][0]["selected_country_tag"]=json!("GER");
+        let frame=world_from_catalog(raw.clone(),rest.clone());
+        let result=projected(&authored,&frame,&viewer()).unwrap();
+        assert_eq!(result.ordered[0].record.owner.as_deref(),Some("ITA"));
+        assert_eq!(result.ordered[0].flag_country_tag,"GER");
+        let surface=renderer.compose_xui13_designer_surface(&frame,frame.named_country("GER").unwrap(),&viewer(),160,120).unwrap();
+        assert_eq!(surface.visible_design_ids,["7:70"]);
+        assert!(!surface.field_refusals.contains_key("7:70/flag"));
+        let actual = row_element_pixels(&surface, "creator_flag");
+        raw["variants"][0]["origin_override_tag"]=Value::Null;
+        raw["variants"][0]["creator_tag"]=json!("GER");
+        raw["variants"][0]["owner_tag"]=json!("GER");
+        let german=world_from_catalog(raw.clone(),rest.clone());
+        let german=renderer.compose_xui13_designer_surface(&german,german.named_country("GER").unwrap(),&viewer(),160,120).unwrap();
+        raw["variants"][0]["creator_tag"]=json!("ITA");
+        raw["variants"][0]["owner_tag"]=json!("ITA");
+        raw["variants"][0]["selected_country_tag"]=json!("ITA");
+        let italian=world_from_catalog(raw,rest);
+        let italian=renderer.compose_xui13_designer_surface(&italian,italian.named_country("GER").unwrap(),&viewer(),160,120).unwrap();
+        assert!(!italian.field_refusals.contains_key("7:70/flag"));
+        assert_eq!(actual, row_element_pixels(&german, "creator_flag"));
+        assert_ne!(actual, row_element_pixels(&italian, "creator_flag"));
+    }
+
+    #[test]
+    fn missing_row_flag_preserves_membership_chrome_and_other_row_pixels() {
+        let (root,_) = production_fixture();
+        let renderer=admitted_production_renderer(&root.0,None);
+        let missing=admitted_production_renderer(&root.0,Some("gfx/flags/small/GER.tga"));
+        let (mut raw,rest)=owner_prefix_inputs();
+        raw["variants"].as_array_mut().unwrap().truncate(1);
+        let frame=world_from_catalog(raw,rest);
+        let complete=renderer.compose_xui13_designer_surface(&frame,frame.named_country("GER").unwrap(),&viewer(),160,120).unwrap();
+        let partial=missing.compose_xui13_designer_surface(&frame,frame.named_country("GER").unwrap(),&viewer(),160,120).unwrap();
+        assert_eq!(partial.ordered_design_ids,["7:70"]);
+        assert_eq!(partial.visible_design_ids,["7:70"]);
+        assert!(partial.membership_complete);
+        assert!(partial.country_filters_complete);
+        assert!(partial.field_refusals["7:70/flag"].contains("GER"));
+        assert!(!partial.field_refusals.contains_key("7:70/equipment_icon"));
+        assert!(partial.output.report.drawn_elements>0);
+        assert_eq!(row_element_pixels(&partial,"equipment"),row_element_pixels(&complete,"equipment"));
+        let flag = complete.output.debug_rects.iter().find(|rect|
+            rect.name.contains("7:70") && rect.name.ends_with("::creator_flag")).unwrap();
+        assert_ne!(partial.output.image,complete.output.image);
+        for y in 0..complete.output.image.height {
+            for x in 0..complete.output.image.width {
+                if x >= flag.x as usize && x < (flag.x+flag.w) as usize &&
+                    y >= flag.y as usize && y < (flag.y+flag.h) as usize { continue; }
+                let offset=(y*complete.output.image.width+x)*4;
+                assert_eq!(&partial.output.image.pixels[offset..offset+4],
+                    &complete.output.image.pixels[offset..offset+4],"unrelated pixel {x},{y}");
+            }
+        }
+    }
+
+    #[test]
+    fn selected_and_unselected_row_names_have_only_authored_glyphs() {
+        let (root,_) = production_fixture();
+        let renderer=admitted_production_renderer(&root.0,None);
+        let (mut raw,rest)=owner_prefix_inputs();
+        raw["variants"].as_array_mut().unwrap().truncate(1);
+        let frame=world_from_catalog(raw,rest);
+        for selected in [false,true] {
+            let mut state=viewer();
+            state.selected_design_id=selected.then(|| "7:70".into());
+            let surface=renderer.compose_xui13_designer_surface(&frame,frame.named_country("GER").unwrap(),&state,160,120).unwrap();
+            assert_eq!(surface.selected_design_id,state.selected_design_id);
+            assert_eq!(surface.visible_design_ids,["7:70"]);
+            assert!(surface.output.report.missing_glyphs.is_empty(),
+                "selected={selected}: unexpected characters in authored name: {:?}",surface.output.report.missing_glyphs);
+            let pixels=row_element_pixels(&surface,"name");
+            assert!(pixels.chunks_exact(4).any(|pixel|pixel[3]!=0),"name must actually render");
+        }
+    }
+
+    #[test]
+    fn missing_foreign_flag_preserves_country_strip_and_known_owner_row() {
+        let (root,_) = production_fixture();
+        std::fs::copy(root.0.join("gfx/flags/small/GER.tga"),root.0.join("gfx/flags/small/ITA.tga")).unwrap();
+        let renderer=admitted_production_renderer_with_assets(&root.0,None,&["gfx/flags/small/ITA.tga"]);
+        let missing=admitted_production_renderer_with_assets(&root.0,Some("gfx/flags/small/ITA.tga"),&["gfx/flags/small/ITA.tga"]);
+        let (mut raw,mut rest)=owner_prefix_inputs();
+        raw["variants"].as_array_mut().unwrap().truncate(2);
+        rest["countries"]["ITA"]["cosmetic_tag"]=Value::Null;
+        rest["countries"]["ITA"]["politics"]=json!({"ruling_party":"fascism"});
+        let frame=world_from_catalog(raw,rest);
+        let complete=renderer.compose_xui13_designer_surface(&frame,frame.named_country("GER").unwrap(),&viewer(),160,120).unwrap();
+        let partial=missing.compose_xui13_designer_surface(&frame,frame.named_country("GER").unwrap(),&viewer(),160,120).unwrap();
+        assert_eq!(partial.ordered_design_ids,["7:70","8:70"]);
+        assert_eq!(partial.visible_design_ids,complete.visible_design_ids);
+        assert!(partial.membership_complete && partial.country_filters_complete);
+        assert_eq!(partial.ordered_country_filter_tags,["ITA"]);
+        assert_eq!(partial.visible_country_filter_tags,["ITA"]);
+        assert_eq!(partial.ordered_country_filter_tags,complete.ordered_country_filter_tags);
+        assert!(partial.field_refusals["8:70/flag"].contains("ITA"));
+        assert!(partial.field_refusals["country_filters/ITA/flag"].contains("ITA"));
+        assert!(!partial.field_refusals.contains_key("7:70/flag"));
+        assert_eq!(row_element_pixels(&partial,"creator_flag"),row_element_pixels(&complete,"creator_flag"));
+        assert_eq!(row_element_pixels(&partial,"equipment"),row_element_pixels(&complete,"equipment"));
+        assert!(partial.output.report.drawn_elements>0);
     }
 
     #[test]
