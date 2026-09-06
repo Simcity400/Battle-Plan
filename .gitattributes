@@ -1148,3 +1148,6 @@ portable_replay/native/engine_evidence/artifacts/func_14233cc10.decompile.c text
 
 portable_replay/native/engine_evidence/artifacts/func_14233cc10.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_140b37430.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1406ea260.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140704170.decompile.c text eol=lf

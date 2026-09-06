@@ -1,5 +1,7 @@
 pub const DOMAIN_VERSION_HEADER_LEN: usize = 8;
-pub const POLITICS_VERSION: u16 = 1;
+pub const POLITICS_VERSION: u16 = 2;
+pub const POLITICS_COUNTRY_ROW_BYTES: usize = 36;
+pub const POLITICS_FLAG_CAPITAL_OVERRIDE: u32 = 1 << 11;
 pub const IDENTITY_VERSION: u16 = 2;
 
 fn domain_version(domain: u16) -> u16 {
@@ -195,7 +197,9 @@ mod tests {
         assert!(decode_domain_version(18, &bytes, &mut 0).is_err());
         bytes.clear();
         encode_domain_version(14, &mut bytes);
-        assert_eq!(&bytes, b"CPNI\x01\0\x08\0");
+        assert_eq!(&bytes, b"CPNI\x02\0\x08\0");
+        bytes[4] = 1;
+        assert!(decode_domain_version(14, &bytes, &mut 0).is_err());
     }
 
     #[test]
