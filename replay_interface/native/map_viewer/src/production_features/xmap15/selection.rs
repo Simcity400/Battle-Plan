@@ -63,6 +63,13 @@ pub struct Xmap15ViewerPresentation {
 }
 
 impl Xmap15ViewerPresentation {
+    pub(super) fn held_alt_can_preserve_selected_green(self) -> bool {
+        self.interaction == Xmap15ArrowInteraction::Ordinary
+            && self.colour_callback == Xmap15ArrowColourCallback::Absent
+            && self.keyboard.control == Some([false; 2])
+            && self.keyboard.alt.is_some_and(|keys| keys[0] || keys[1])
+    }
+
     pub(super) fn selected_paradrop(self) -> Result<(), Missing> {
         match self.interaction {
             Xmap15ArrowInteraction::Unavailable => return Err(Missing::ViewerInteraction),
@@ -103,6 +110,34 @@ mod tests {
         for (alt, control) in [(None, Some([false; 2])), (Some([false; 2]), None), (None, None)] {
             assert_eq!(Xmap15ArrowKeyboard { alt, control, ui: Xmap15ArrowUiCapture::NoContext }.modifiers(),
                 Err(Missing::ViewerModifiers));
+        }
+    }
+
+    #[test]
+    fn held_alt_convergence_requires_released_control_and_proven_callback_and_tool() {
+        for mask in 0u8..16 {
+            for ui in [Xmap15ArrowUiCapture::Unavailable, Xmap15ArrowUiCapture::NoContext,
+                Xmap15ArrowUiCapture::Context { keyboard: true, text_input: false },
+                Xmap15ArrowUiCapture::Context { keyboard: false, text_input: true },
+                Xmap15ArrowUiCapture::Context { keyboard: false, text_input: false }] {
+                let input = Xmap15ViewerPresentation {
+                    keyboard: Xmap15ArrowKeyboard { alt: Some([mask & 1 != 0, mask & 2 != 0]),
+                        control: Some([mask & 4 != 0, mask & 8 != 0]), ui },
+                    interaction: Xmap15ArrowInteraction::Ordinary,
+                    colour_callback: Xmap15ArrowColourCallback::Absent,
+                };
+                assert_eq!(input.held_alt_can_preserve_selected_green(), mask & 3 != 0 && mask & 12 == 0);
+                for interaction in [Xmap15ArrowInteraction::Unavailable, Xmap15ArrowInteraction::Editing] {
+                    assert!(!Xmap15ViewerPresentation { interaction, ..input }.held_alt_can_preserve_selected_green());
+                }
+                for colour_callback in [Xmap15ArrowColourCallback::Unavailable, Xmap15ArrowColourCallback::Installed] {
+                    assert!(!Xmap15ViewerPresentation { colour_callback, ..input }.held_alt_can_preserve_selected_green());
+                }
+                for keyboard in [Xmap15ArrowKeyboard { alt: None, ..input.keyboard },
+                    Xmap15ArrowKeyboard { control: None, ..input.keyboard }] {
+                    assert!(!Xmap15ViewerPresentation { keyboard, ..input }.held_alt_can_preserve_selected_green());
+                }
+            }
         }
     }
 
