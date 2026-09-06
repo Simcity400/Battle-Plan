@@ -48,6 +48,13 @@ pub enum DesignTextObservation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DesignItemIconObservation {
+    Measured { active: bool, kind: u32, token: DesignTextObservation },
+    Unavailable { reason: DesignFieldRefusal },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DesignFieldRefusal {
     pub kind: String,
@@ -69,6 +76,32 @@ pub struct VariantModelInputs {
     pub explicit_entity: DesignTextObservation,
     pub owned: Vec<DesignSourceOccurrence>,
     pub developed: Vec<DesignSourceOccurrence>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeDesignerCountryInputs {
+    pub registry_index: u64,
+    pub tag: String,
+    pub designer_pointer_order_ordinal: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeDesignerVariantInputs {
+    pub design_id: String,
+    pub catalog_scan_ordinal: u64,
+    pub equipment_definition_token: String,
+    pub equipment_token_raw: u32,
+    pub item_icon_override: DesignItemIconObservation,
+    pub record: DesignRecord,
+    pub model: VariantModelInputs,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeDesignerInputs {
+    pub source_record_id: String,
+    pub hour: u64,
+    pub countries: Vec<NativeDesignerCountryInputs>,
+    pub variants: Vec<NativeDesignerVariantInputs>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1116,6 +1149,38 @@ impl PortableDesignCatalog {
         }))
     }
 
+    pub fn native_designer_inputs_at_hour(&self, hour: u64) -> Result<NativeDesignerInputs, String> {
+        let exact = self.exact_native_at_hour(hour)?;
+        let raw: RawCatalog = serde_json::from_value(exact)
+            .map_err(|error| format!("A27 native designer inputs: {error}"))?;
+        validate_raw_catalog(&raw)?;
+        let mut records: BTreeMap<_, _> = self.records_at_hour(hour)?.into_iter()
+            .map(|record| (record.design_id.clone(), record)).collect();
+        let variants = raw.variants.into_iter().map(|row| {
+            let design_id = format!("{}:{}", row.id, row.runtime_type);
+            let record = records.remove(&design_id)
+                .ok_or_else(|| format!("A27 native designer row {design_id} has no exact-hour record"))?;
+            let model = row.model_inputs();
+            Ok(NativeDesignerVariantInputs {
+                design_id, catalog_scan_ordinal: row.catalog_scan_ordinal,
+                equipment_definition_token: row.definition.archetype_token,
+                equipment_token_raw: row.definition.equipment_token_raw,
+                item_icon_override: row.definition.item_icon_override,
+                record, model,
+            })
+        }).collect::<Result<Vec<_>, String>>()?;
+        let source_record_id = self.temporal_deltas.iter()
+            .find(|delta| delta.capture_hour_index == hour)
+            .map(|delta| delta.source_record_id.clone()).unwrap_or_else(|| self.source_record_id.clone());
+        Ok(NativeDesignerInputs {
+            source_record_id, hour, variants,
+            countries: raw.countries.into_iter().map(|row| NativeDesignerCountryInputs {
+                registry_index: row.registry_index, tag: row.tag,
+                designer_pointer_order_ordinal: row.designer_pointer_order_ordinal,
+            }).collect(),
+        })
+    }
+
     pub fn variant_model_inputs_at_hour(
         &self,
         hour: u64,
@@ -1127,14 +1192,7 @@ impl PortableDesignCatalog {
         validate_raw_catalog(&raw)?;
         let row = raw.variants.into_iter().find(|row| row.id == variant_id)
             .ok_or_else(|| format!("A27 variant {variant_id} is absent at hour {hour}"))?;
-        Ok(VariantModelInputs {
-            creator_tag: row.creator_tag,
-            origin_override_tag: row.origin_override_tag,
-            explicit_entity: row.definition.explicit_entity,
-            owned: row.source_occurrences.into_iter()
-                .filter(|occurrence| occurrence.source_list == "A").collect(),
-            developed: row.developed_source_occurrences,
-        })
+        Ok(row.model_inputs())
     }
 
     pub fn division_composition_at_hour(
@@ -2290,6 +2348,32 @@ fn validate_raw_catalog(raw: &RawCatalog) -> Result<(), String> {
                 }
             }
         }
+        match &row.definition.item_icon_override {
+            DesignItemIconObservation::Measured { kind, token, .. } => {
+                if !matches!(kind, 0 | 1) {
+                    return Err(format!("A27 variant {} has an invalid item icon kind", row.id));
+                }
+                match token {
+                    DesignTextObservation::Measured { value, utf8_hex } => {
+                        if value.len() > 4096 || !utf8_hex_matches(Some(value), utf8_hex) {
+                            return Err(format!("A27 variant {} has an invalid item icon token", row.id));
+                        }
+                    }
+                    DesignTextObservation::Unavailable { reason } => {
+                        if !matches!(reason.kind.as_str(), "unreadable" | "invalid_string")
+                            || reason.field.is_empty() {
+                            return Err(format!("A27 variant {} has an invalid item icon token refusal", row.id));
+                        }
+                    }
+                }
+            }
+            DesignItemIconObservation::Unavailable { reason } => {
+                if !matches!(reason.kind.as_str(), "unreadable" | "invalid_identity")
+                    || reason.field.is_empty() {
+                    return Err(format!("A27 variant {} has an invalid item icon header refusal", row.id));
+                }
+            }
+        }
         {
             let occurrences = &row.developed_source_occurrences;
             for occurrence in occurrences {
@@ -2459,9 +2543,23 @@ struct RawVariant {
     runtime_type: u32,
 }
 
+impl RawVariant {
+    fn model_inputs(&self) -> VariantModelInputs {
+        VariantModelInputs {
+            creator_tag: self.creator_tag.clone(),
+            origin_override_tag: self.origin_override_tag.clone(),
+            explicit_entity: self.definition.explicit_entity.clone(),
+            owned: self.source_occurrences.iter()
+                .filter(|occurrence| occurrence.source_list == "A").cloned().collect(),
+            developed: self.developed_source_occurrences.clone(),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct RawVariantDefinition {
     explicit_entity: DesignTextObservation,
+    item_icon_override: DesignItemIconObservation,
     archetype_token: String,
     archetype_token_utf8_hex: String,
     cached_stats: Vec<RawStat>,
@@ -2599,6 +2697,7 @@ mod tests {
                     }],
                     "cached_stats_complete": true,
                     "explicit_entity": {"status":"measured","value":"","utf8_hex":""},
+                    "item_icon_override": {"status":"measured","active":false,"kind":1,"token":{"status":"measured","value":"","utf8_hex":""}},
                     "display_name": "Panzer",
                     "display_name_utf8_hex": "50616e7a6572",
                     "equipment_token_raw": 71,
@@ -3317,4 +3416,175 @@ mod tests {
             .unwrap()
             .is_empty());
     }
+    #[test]
+    fn native_designer_accessor_preserves_inputs_without_claiming_designer_outcomes() {
+        let catalog = PortableDesignCatalog::decode_a27_live_json(&fixture()).unwrap();
+        let inputs = catalog.native_designer_inputs_at_hour(900).unwrap();
+        assert_eq!(catalog.schema, A27_LIVE_CATALOG_SCHEMA);
+        assert_eq!(inputs.hour, 900);
+        assert_eq!(inputs.source_record_id, catalog.source_record_id);
+        assert_eq!(inputs.variants.len(), 1);
+        let row = &inputs.variants[0];
+        assert_eq!(row.design_id, "7:70");
+        assert_eq!(row.record, catalog.records_at_hour(900).unwrap().into_iter().find(|r| r.design_id == "7:70").unwrap());
+        assert_eq!(row.model, catalog.variant_model_inputs_at_hour(900, 7).unwrap());
+        assert_eq!(row.equipment_definition_token, catalog.exact_native_catalog["variants"][0]["definition"]["archetype_token"].as_str().unwrap());
+        assert_eq!(row.equipment_token_raw as u64, catalog.exact_native_catalog["variants"][0]["definition"]["equipment_token_raw"].as_u64().unwrap());
+        assert_eq!(inputs.countries[0].registry_index, 0);
+        assert_eq!(inputs.countries[0].tag, "GER");
+        assert_eq!(inputs.countries[0].designer_pointer_order_ordinal, None);
+        assert!(catalog.native_designer_inputs_at_hour(899).is_err());
+        assert!(catalog.native_designer_inputs_at_hour(901).is_err());
+    }
+
+    #[test]
+    fn native_designer_accessor_preserves_zero_pointer_ordinal_and_refuses_gap() {
+        let mut raw: Value = serde_json::from_slice(&fixture()).unwrap();
+        raw["countries"][0]["designer_pointer_order_ordinal"] = 0.into();
+        let mut catalog = PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).unwrap();
+        assert_eq!(catalog.native_designer_inputs_at_hour(900).unwrap().countries[0].designer_pointer_order_ordinal, Some(0));
+        catalog.gaps.push(DesignCatalogGap { first_hour_index: 900, last_hour_index: 900,
+            cause: DesignCatalogGapCause::Torn, witness: serde_json::json!({"test":"exact_gap"}) });
+        assert!(catalog.native_designer_inputs_at_hour(900).unwrap_err().contains("Torn"));
+    }
+
+    fn item_icon_states() -> Vec<DesignItemIconObservation> {
+        let measured = |active, kind, value: &str| DesignItemIconObservation::Measured {
+            active, kind, token: DesignTextObservation::Measured {
+                value: value.into(),
+                utf8_hex: value.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect(),
+            },
+        };
+        vec![
+            measured(false, 1, ""),
+            measured(true, 0, "GFX_tank"),
+            measured(true, 1, "."),
+            measured(true, 1, "gfx/interface/t\u{e4}nk.dds"),
+            DesignItemIconObservation::Measured {
+                active: true, kind: 0,
+                token: DesignTextObservation::Unavailable { reason: DesignFieldRefusal {
+                    kind: "invalid_string".into(), field: "variant.item_icon_override.token".into(),
+                } },
+            },
+            DesignItemIconObservation::Unavailable { reason: DesignFieldRefusal {
+                kind: "invalid_identity".into(), field: "variant.item_icon_override.kind".into(),
+            } },
+        ]
+    }
+
+    #[test]
+    fn item_icon_accessor_preserves_each_observation_and_exact_record_join() {
+        let mut states = item_icon_states();
+        states.push(DesignItemIconObservation::Measured { active: false, kind: 1,
+            token: DesignTextObservation::Unavailable { reason: DesignFieldRefusal {
+                kind: "unreadable".into(), field: "variant.item_icon_override.token".into(),
+            } } });
+        states.push(DesignItemIconObservation::Unavailable { reason: DesignFieldRefusal {
+            kind: "unreadable".into(), field: "variant.item_icon_override.header".into(),
+        } });
+        for expected in states {
+            let mut raw: Value = serde_json::from_slice(&fixture()).unwrap();
+            raw["variants"][0]["definition"]["item_icon_override"] = serde_json::to_value(&expected).unwrap();
+            let catalog = PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).unwrap();
+            let row = catalog.native_designer_inputs_at_hour(900).unwrap().variants.remove(0);
+            assert_eq!(row.item_icon_override, expected);
+            assert_eq!(row.design_id, "7:70");
+            assert_eq!(row.record, catalog.get("7:70").unwrap().clone());
+            assert_eq!(row.model, catalog.variant_model_inputs_at_hour(900, 7).unwrap());
+            assert_eq!(catalog.exact_native_catalog["variants"][0]["definition"]["item_icon_override"], serde_json::to_value(expected).unwrap());
+        }
+    }
+
+    #[test]
+    fn item_icon_rejects_missing_malformed_and_cross_level_refusals() {
+        let measured = serde_json::to_value(&item_icon_states()[0]).unwrap();
+        let mut invalid = Vec::new();
+        for (key, value) in [("kind", serde_json::json!(2)), ("kind", serde_json::json!(-1)),
+            ("active", serde_json::json!(1)), ("extra", serde_json::json!(true))] {
+            let mut icon = measured.clone();
+            icon[key] = value;
+            invalid.push(icon);
+        }
+        for (value, hex) in [("\u{e9}", "e9"), ("x", ""), ("", "00")] {
+            let mut icon = measured.clone();
+            icon["token"] = serde_json::json!({"status":"measured","value":value,"utf8_hex":hex});
+            invalid.push(icon);
+        }
+        let mut oversized = measured.clone();
+        oversized["token"] = serde_json::json!({"status":"measured","value":"x".repeat(4097),"utf8_hex":"78".repeat(4097)});
+        invalid.push(oversized);
+        for (kind, field) in [("invalid_identity", "token"), ("unreadable", ""), ("torn", "token")] {
+            let mut icon = measured.clone();
+            icon["token"] = serde_json::json!({"status":"unavailable","reason":{"kind":kind,"field":field}});
+            invalid.push(icon);
+        }
+        for (kind, field) in [("invalid_string", "header"), ("invalid_identity", ""), ("bound_exceeded", "header")] {
+            invalid.push(serde_json::json!({"status":"unavailable","reason":{"kind":kind,"field":field}}));
+        }
+        invalid.push(serde_json::json!({"status":"measured","active":true,"kind":1}));
+        invalid.push(Value::Null);
+        for icon in invalid {
+            let mut raw: Value = serde_json::from_slice(&fixture()).unwrap();
+            raw["variants"][0]["definition"]["item_icon_override"] = icon.clone();
+            assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).is_err(), "{icon}");
+        }
+        let mut raw: Value = serde_json::from_slice(&fixture()).unwrap();
+        raw["variants"][0]["definition"].as_object_mut().unwrap().remove("item_icon_override");
+        assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).unwrap_err().contains("item_icon_override"));
+        let mut boundary = measured;
+        boundary["token"] = serde_json::json!({"status":"measured","value":"x".repeat(4096),"utf8_hex":"78".repeat(4096)});
+        raw["variants"][0]["definition"]["item_icon_override"] = boundary;
+        assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn item_icon_timeline_retains_deltas_rechecks_gap_and_full_recovery() {
+        let states = item_icon_states();
+        let mut captures = Vec::new();
+        let mut previous = None;
+        for (index, icon) in states.iter().chain(states.first()).enumerate() {
+            let hour = 900 + index as u64 + u64::from(index == states.len());
+            if index == states.len() {
+                captures.push(serde_json::json!({"sequence":index,"capture_hour_index":hour-1,
+                    "gap": DesignCatalogGap { first_hour_index:hour-1, last_hour_index:hour-1,
+                        cause: DesignCatalogGapCause::Torn, witness:serde_json::json!({"field":"item_icon_override"}) }}));
+            }
+            let mut raw: Value = serde_json::from_slice(&fixture()).unwrap();
+            raw["authority"]["capture_hour_index"] = hour.into();
+            raw["authority"]["current_date_raw"] = (DATE_EPOCH_RAW + hour).into();
+            raw["variants"][0]["definition"]["item_icon_override"] = serde_json::to_value(icon).unwrap();
+            let bytes = serde_json::to_vec(&canonical_json_value(&raw)).unwrap();
+            let current = PortableDesignCatalog::decode_a27_live_json(&bytes).unwrap();
+            let mut entry = serde_json::json!({"sequence":captures.len(),"capture_hour_index":hour,
+                "same_hour_rechecks":1,"same_hour_recheck_sha256":[Sha256::hex(&bytes)],"snapshot_sha256":Sha256::hex(&bytes)});
+            if index == 0 || index == states.len() {
+                entry["snapshot"] = raw;
+            } else {
+                let delta = current.native_row_delta_from(previous.as_ref().unwrap()).unwrap();
+                assert_eq!(delta["variant_upserts"].as_array().unwrap().len(), 1);
+                assert_eq!(delta["variant_upserts"][0]["definition"]["item_icon_override"], serde_json::to_value(icon).unwrap());
+                entry["delta"] = delta;
+            }
+            captures.push(entry);
+            previous = Some(current);
+        }
+        let mut timeline = serde_json::json!({"schema":A27_LIVE_CATALOG_TIMELINE_SCHEMA,
+            "authority":{"program":EXACT_A729_PROGRAM,"program_sha256":EXACT_A729_SHA256},
+            "complete_sequence":true,"transport":"first_full_then_native_row_deltas",
+            "capture_count":captures.len(),"same_hour_recheck_count":states.len()+1,
+            "first_capture_hour_index":900,"last_capture_hour_index":907,"captures":captures});
+        let catalog = PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&timeline).unwrap()).unwrap();
+        let relocated = PortableDesignCatalog::decode_a27_live_json(&catalog.encode_portable_json().unwrap()).unwrap();
+        for (index, expected) in states.iter().enumerate() {
+            let inputs = relocated.native_designer_inputs_at_hour(900 + index as u64).unwrap();
+            assert_eq!(&inputs.variants[0].item_icon_override, expected);
+            assert_eq!(inputs.variants[0].record.source_record_id, format!("{}:variant:7:70", inputs.source_record_id));
+        }
+        assert!(relocated.native_designer_inputs_at_hour(906).unwrap_err().contains("Torn"));
+        assert_eq!(relocated.native_designer_inputs_at_hour(907).unwrap().variants[0].item_icon_override, states[0]);
+        assert!(relocated.native_designer_inputs_at_hour(908).is_err());
+        timeline["captures"][1]["same_hour_recheck_sha256"][0] = "0".repeat(64).into();
+        assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&timeline).unwrap()).is_err());
+    }
+
 }

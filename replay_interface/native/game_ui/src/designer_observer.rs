@@ -1286,6 +1286,7 @@ mod tests {
                     "cached_stats": [],
                     "cached_stats_complete": true,
                     "explicit_entity": {"status":"measured","value":"","utf8_hex":""},
+                    "item_icon_override": {"status":"measured","active":false,"kind":1,"token":{"status":"measured","value":"","utf8_hex":""}},
                     "display_name": "Panzer",
                     "display_name_utf8_hex": "50616e7a6572",
                     "equipment_token_raw": 71,

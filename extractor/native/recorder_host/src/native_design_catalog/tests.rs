@@ -147,6 +147,8 @@ fn fixture() -> Fixture {
     f.string(VARIANT + 0x28, "Vessel");
     f.string(VARIANT + 0x48, "");
     f.string(VARIANT + 0x430, "");
+    f.u32(VARIANT + 0x454, 1);
+    f.string(VARIANT + 0x458, "");
     f.u64(VARIANT + 0xb0, BASE + 0x306d170);
     f.u64(VARIANT + 0x68, BASE + 0x27ab628);
     f.zero(EQUIPMENT, 64);
@@ -812,5 +814,175 @@ fn campaign_pair_change_during_the_census_is_a_typed_torn_observation() {
     assert_eq!(
         capture(&memory, BASE, DATE).unwrap_err().kind,
         FailureKind::Torn
+    );
+}
+
+#[test]
+fn country_pointer_order_is_independent_of_registry_order_and_survives_portable_admission() {
+    let mut f = fixture();
+    let other_country = HEAP + 0x90000;
+    let country_bytes = f.read(COUNTRY, 0x1100).unwrap();
+    f.put(other_country, &country_bytes);
+    f.u32(other_country + 8, 2);
+    let tag_db = HEAP + 0x2000;
+    f.u32(tag_db + 8, 3);
+    f.u32(tag_db + 12, 3);
+    f.u32(tag_db + 0x88, 3);
+    f.string(HEAP + 0x3000 + 64, "ITA");
+    f.vector(
+        STATE,
+        0x310,
+        0x31c,
+        HEAP + 0x3800,
+        &[other_country, COUNTRY],
+    );
+    let raw = capture(&f, BASE, DATE).unwrap();
+    assert_eq!(
+        raw["schema"],
+        snapshot::design_catalog::A27_LIVE_CATALOG_SCHEMA
+    );
+    assert_eq!(
+        raw["countries"],
+        json!([
+            {"registry_index":0,"tag":"ITA","designer_pointer_order_ordinal":1},
+            {"registry_index":1,"tag":"POR","designer_pointer_order_ordinal":0},
+        ])
+    );
+    let portable = snapshot::design_catalog::PortableDesignCatalog::decode_a27_live_json(
+        &serde_json::to_vec(&raw).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(portable.exact_native_catalog["countries"], raw["countries"]);
+    f.vector(
+        STATE,
+        0x310,
+        0x31c,
+        HEAP + 0x3800,
+        &[COUNTRY, other_country],
+    );
+    let reordered = capture(&f, BASE, DATE).unwrap();
+    assert_eq!(
+        reordered["countries"],
+        json!([
+            {"registry_index":0,"tag":"POR","designer_pointer_order_ordinal":0},
+            {"registry_index":1,"tag":"ITA","designer_pointer_order_ordinal":1},
+        ])
+    );
+}
+
+#[test]
+fn item_icon_override_preserves_raw_identity_without_reading_runtime_resource() {
+    for (active, kind, token) in [
+        (0, 1, ""),
+        (1, 0, "GFX_test"),
+        (1, 1, "."),
+        (1, 1, "gfx/icon.dds"),
+        (1, 1, "gfx/interface/custom_icon.dds"),
+    ] {
+        let mut f = fixture();
+        f.put(VARIANT + 0x450, &[active]);
+        f.u32(VARIANT + 0x454, kind);
+        if token.len() < 16 {
+            f.string(VARIANT + 0x458, token);
+        } else {
+            f.u64(VARIANT + 0x458, HEAP + 0x9000);
+            f.u64(VARIANT + 0x468, token.len() as u64);
+            f.u64(VARIANT + 0x470, token.len() as u64);
+            f.put(HEAP + 0x9000, token.as_bytes());
+        }
+        let memory = |address, length| {
+            assert!(address + length as u64 <= VARIANT + 0x478 || address >= VARIANT + 0x480);
+            f.read(address, length)
+        };
+        let raw = capture(&memory, BASE, DATE).unwrap();
+        let icon = &raw["variants"][0]["definition"]["item_icon_override"];
+        assert_eq!(
+            icon,
+            &json!({"status":"measured", "active":active != 0, "kind":kind,
+            "token":{"status":"measured", "value":token, "utf8_hex":hex(token.as_bytes())}})
+        );
+        let portable = snapshot::design_catalog::PortableDesignCatalog::decode_a27_live_json(
+            &serde_json::to_vec(&raw).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            portable.exact_native_catalog["variants"][0]["definition"]["item_icon_override"],
+            *icon
+        );
+    }
+}
+
+#[test]
+fn item_icon_unavailable_token_retains_measured_header_and_invalid_header_is_named() {
+    for invalid_string in [false, true] {
+        let mut f = fixture();
+        f.put(VARIANT + 0x450, &[1]);
+        if invalid_string {
+            f.u64(VARIANT + 0x468, 4097);
+        } else {
+            f.bytes.remove(&(VARIANT + 0x458));
+        }
+        let raw = capture(&f, BASE, DATE).unwrap();
+        let icon = &raw["variants"][0]["definition"]["item_icon_override"];
+        assert_eq!(icon["status"], "measured");
+        assert_eq!(icon["active"], true);
+        assert_eq!(icon["kind"], 1);
+        assert_eq!(icon["token"]["status"], "unavailable");
+        assert_eq!(
+            icon["token"]["reason"]["kind"],
+            if invalid_string {
+                "invalid_string"
+            } else {
+                "unreadable"
+            }
+        );
+        assert!(icon["token"].get("value").is_none());
+    }
+    for (active, kind) in [(2, 1), (1, 2)] {
+        let mut f = fixture();
+        f.put(VARIANT + 0x450, &[active]);
+        f.u32(VARIANT + 0x454, kind);
+        let raw = capture(&f, BASE, DATE).unwrap();
+        let icon = &raw["variants"][0]["definition"]["item_icon_override"];
+        assert_eq!(icon["status"], "unavailable");
+        assert_eq!(icon["reason"]["kind"], "invalid_identity");
+        assert!(!icon["reason"]["field"].as_str().unwrap().is_empty());
+        assert!(icon.get("token").is_none());
+    }
+    let mut f = fixture();
+    f.bytes.remove(&(VARIANT + 0x454));
+    let raw = capture(&f, BASE, DATE).unwrap();
+    assert_eq!(
+        raw["variants"][0]["definition"]["item_icon_override"]["reason"]["kind"],
+        "unreadable"
+    );
+}
+
+#[test]
+fn item_icon_torn_header_or_token_refuses_census_and_budget_is_not_field_unknown() {
+    for offset in [0x450, 0x454, 0x458] {
+        let f = fixture();
+        let count = Cell::new(0);
+        let memory = |address, length| {
+            let mut bytes = f.read(address, length)?;
+            if address == VARIANT + offset {
+                count.set(count.get() + 1);
+                if count.get() > 1 {
+                    bytes[0] ^= 1;
+                }
+            }
+            Ok(bytes)
+        };
+        assert_eq!(
+            capture(&memory, BASE, DATE).unwrap_err().kind,
+            FailureKind::Torn
+        );
+    }
+    let f = fixture();
+    let mut read = ReadSet::new(&f, BASE);
+    read.bytes = MAX_READ_BYTES;
+    assert_eq!(
+        item_icon_override(&mut read, VARIANT).unwrap_err().kind,
+        FailureKind::BoundExceeded
     );
 }

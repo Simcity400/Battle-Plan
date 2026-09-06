@@ -269,6 +269,45 @@ fn nullable_string(value: &str) -> Value {
     }
 }
 
+fn item_icon_override<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Result<Value> {
+    let header = (|| {
+        let active = read.u8(pointer + 0x450)?;
+        let kind = read.u32(pointer + 0x454)?;
+        if active > 1 || kind > 1 {
+            return Err(failure(
+                FailureKind::InvalidIdentity,
+                format!("item icon active {active} kind {kind}"),
+            ));
+        }
+        Ok((active != 0, kind))
+    })();
+    let (active, kind) = match header {
+        Ok(header) => header,
+        Err(error)
+            if matches!(
+                error.kind,
+                FailureKind::Unreadable | FailureKind::InvalidIdentity
+            ) =>
+        {
+            return Ok(json!({"status":"unavailable", "reason":error}));
+        }
+        Err(error) => return Err(error),
+    };
+    let token = match read.string(pointer + 0x458, 4096) {
+        Ok(value) => json!({"status":"measured", "value":value, "utf8_hex":hex(value.as_bytes())}),
+        Err(error)
+            if matches!(
+                error.kind,
+                FailureKind::Unreadable | FailureKind::InvalidString
+            ) =>
+        {
+            json!({"status":"unavailable", "reason":error})
+        }
+        Err(error) => return Err(error),
+    };
+    Ok(json!({"status":"measured", "active":active, "kind":kind, "token":token}))
+}
+
 fn variant_definition<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Result<Value> {
     let equipment_token = read.u32(pointer + 0x18)?;
     let definition = read.pointer(pointer + 0x3f0)?;
@@ -286,6 +325,7 @@ fn variant_definition<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Res
     }
     let display = read.string(pointer + 0x28, 256)?;
     let name = read.string(pointer + 0x48, 256)?;
+    let item_icon_override = item_icon_override(read, pointer)?;
     let explicit_entity = match read.string(pointer + 0x430, 4096) {
         Ok(value) => json!({"status":"measured", "value":value, "utf8_hex":hex(value.as_bytes())}),
         Err(error)
@@ -341,7 +381,7 @@ fn variant_definition<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Res
         stats.push(json!({"source_ordinal":ordinal,"stat_id":name,"raw_i32":read.u32(pointer+offset)? as i32,"scale":scale}));
     }
     Ok(
-        json!({"equipment_token_raw":equipment_token,"archetype_token":archetype,"archetype_token_utf8_hex":hex(archetype.as_bytes()),"display_name":nullable_string(&display),"display_name_utf8_hex":hex(display.as_bytes()),"variant_name":nullable_string(&name),"variant_name_utf8_hex":hex(name.as_bytes()),"explicit_entity":explicit_entity,"modules_complete":true,"modules":modules,"upgrades_complete":true,"upgrades":upgrades,"cached_stats_complete":true,"cached_stats":stats}),
+        json!({"equipment_token_raw":equipment_token,"archetype_token":archetype,"archetype_token_utf8_hex":hex(archetype.as_bytes()),"display_name":nullable_string(&display),"display_name_utf8_hex":hex(display.as_bytes()),"variant_name":nullable_string(&name),"variant_name_utf8_hex":hex(name.as_bytes()),"explicit_entity":explicit_entity,"item_icon_override":item_icon_override,"modules_complete":true,"modules":modules,"upgrades_complete":true,"upgrades":upgrades,"cached_stats_complete":true,"cached_stats":stats}),
     )
 }
 
@@ -495,6 +535,11 @@ pub fn capture<M: Memory>(memory: &M, base: u64, expected_date: u32) -> Result<V
             .clone();
         countries.push((index, tag, pointer));
     }
+    let country_pointer_ordinals: BTreeMap<_, _> = country_pointers
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, pointer)| (pointer, ordinal))
+        .collect();
     let variants = read.registry(70, VARIANT_VTABLE)?;
     let templates = read.registry(52, TEMPLATE_VTABLE)?;
     let variants_by_pointer: BTreeMap<_, _> = variants
@@ -596,7 +641,7 @@ pub fn capture<M: Memory>(memory: &M, base: u64, expected_date: u32) -> Result<V
     if observe_date(memory, base)? != expected_date {
         return Err(failure(FailureKind::HourLabelMismatch, "closing date"));
     }
-    let value = json!({"schema":snapshot::design_catalog::A27_LIVE_CATALOG_SCHEMA,"authority":{"program":"hoi4.exe 1.19.2.0.a729","program_sha256":PROGRAM_SHA256,"campaign":campaign,"current_date_raw":expected_date,"capture_hour_index":hour,"coherence":"double_read_all_roots_fields_and_membership"},"full_replacement":true,"completeness":{"membership":true,"owner":template_rows.iter().all(|row|row["owner_tag"].is_string()),"definitions":true,"lifecycle":true,"ui_occurrences":true},"catalog_roots":{"variants":"CReferenceObject/type70","division_templates":"CReferenceObject/type52","template_owner_order":"CCountry+0x1B8/+0x1C4","equipment_ui_occurrences":"CCountry+0xF68 manager A(+0xA0/+0xAC) then B(+0xE8/+0xF4)","equipment_developed_occurrences":"CCountry+0xF68 manager developed(+0xB8/+0xC4)"},"country_count":countries.len(),"countries":countries.iter().map(|(index,tag,_)|json!({"registry_index":index,"tag":tag})).collect::<Vec<_>>(),"variants":variant_rows,"division_templates":template_rows,"ui_occurrence_counts":{"unique_variants":first_discovery.len(),"catalog_variants_without_occurrence":variants.len()-first_discovery.len()}});
+    let value = json!({"schema":snapshot::design_catalog::A27_LIVE_CATALOG_SCHEMA,"authority":{"program":"hoi4.exe 1.19.2.0.a729","program_sha256":PROGRAM_SHA256,"campaign":campaign,"current_date_raw":expected_date,"capture_hour_index":hour,"coherence":"double_read_all_roots_fields_and_membership"},"full_replacement":true,"completeness":{"membership":true,"owner":template_rows.iter().all(|row|row["owner_tag"].is_string()),"definitions":true,"lifecycle":true,"ui_occurrences":true},"catalog_roots":{"variants":"CReferenceObject/type70","division_templates":"CReferenceObject/type52","template_owner_order":"CCountry+0x1B8/+0x1C4","equipment_ui_occurrences":"CCountry+0xF68 manager A(+0xA0/+0xAC) then B(+0xE8/+0xF4)","equipment_developed_occurrences":"CCountry+0xF68 manager developed(+0xB8/+0xC4)"},"country_count":countries.len(),"countries":countries.iter().map(|(index,tag,pointer)|json!({"registry_index":index,"tag":tag,"designer_pointer_order_ordinal":country_pointer_ordinals[pointer]})).collect::<Vec<_>>(),"variants":variant_rows,"division_templates":template_rows,"ui_occurrence_counts":{"unique_variants":first_discovery.len(),"catalog_variants_without_occurrence":variants.len()-first_discovery.len()}});
     let bytes = serde_json::to_vec(&value)
         .map_err(|_| failure(FailureKind::InvalidIdentity, "catalog serialization"))?;
     snapshot::design_catalog::PortableDesignCatalog::decode_a27_live_json(&bytes).map_err(
