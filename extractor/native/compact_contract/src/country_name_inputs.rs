@@ -2,7 +2,7 @@ pub const DOMAIN_VERSION_HEADER_LEN: usize = 8;
 pub const POLITICS_VERSION: u16 = 2;
 pub const POLITICS_COUNTRY_ROW_BYTES: usize = 36;
 pub const POLITICS_FLAG_CAPITAL_OVERRIDE: u32 = 1 << 11;
-pub const IDENTITY_VERSION: u16 = 2;
+pub const IDENTITY_VERSION: u16 = 3;
 
 fn domain_version(domain: u16) -> u16 {
     match domain { 14 => POLITICS_VERSION, 18 => IDENTITY_VERSION, _ => unreachable!("validated naming domain") }
@@ -60,6 +60,59 @@ pub enum NameToken {
     Unavailable(NameInputRefusal),
     Absent,
     Present(String),
+}
+
+
+pub const COUNTRY_LINK_HEADER_LEN: usize = 8;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CountryLinkIndices {
+    Measured(Vec<u32>),
+    Unavailable(NameInputRefusal),
+}
+
+pub fn encode_country_link_indices(value: &CountryLinkIndices, out: &mut Vec<u8>) {
+    match value {
+        CountryLinkIndices::Measured(indices) => {
+            assert!(indices.len() <= i32::MAX as usize);
+            out.extend_from_slice(&[1, 0, 0, 0]);
+            out.extend_from_slice(&(indices.len() as u32).to_le_bytes());
+            for value in indices { out.extend_from_slice(&value.to_le_bytes()); }
+        }
+        CountryLinkIndices::Unavailable(reason) => {
+            out.extend_from_slice(&[0, *reason as u8, 0, 0, 0, 0, 0, 0]);
+        }
+    }
+}
+
+pub fn decode_country_link_indices(bytes: &[u8], cursor: &mut usize) -> Result<CountryLinkIndices, &'static str> {
+    let header = take(bytes, cursor, COUNTRY_LINK_HEADER_LEN)?;
+    let count = u32::from_le_bytes(header[4..8].try_into().unwrap());
+    if header[2..4] != [0, 0] { return Err("country link reserved bytes"); }
+    match header[0] {
+        0 => {
+            if count != 0 { return Err("country link unavailable count"); }
+            let reason = match header[1] {
+                1 => NameInputRefusal::Unreadable, 2 => NameInputRefusal::InvalidIdentity,
+                3 => NameInputRefusal::InvalidVector, 4 => NameInputRefusal::Changed,
+                5 => NameInputRefusal::ClockChanged, 6 => NameInputRefusal::InvalidUtf8,
+                7 => NameInputRefusal::OutOfBounds,
+                _ => return Err("country link invalid refusal"),
+            };
+            Ok(CountryLinkIndices::Unavailable(reason))
+        }
+        1 => {
+            if header[1] != 0 || count > i32::MAX as u32 { return Err("country link measured header"); }
+            let len = (count as usize).checked_mul(4).ok_or("country link size overflow")?;
+            if len > crate::COMPACT_MAX_PAYLOAD_LEN as usize { return Err("country link exceeds payload bound"); }
+            let body = take(bytes, cursor, len)?;
+            let mut indices = Vec::new();
+            indices.try_reserve_exact(count as usize).map_err(|_| "country link allocation refused")?;
+            indices.extend(body.chunks_exact(4).map(|cell| u32::from_le_bytes(cell.try_into().unwrap())));
+            Ok(CountryLinkIndices::Measured(indices))
+        }
+        _ => Err("country link invalid status"),
+    }
 }
 
 pub const MAX_NAME_TOKEN_BYTES: usize = 4096;
@@ -192,7 +245,7 @@ mod tests {
     fn identity_culture_promotes_only_its_domain_grammar() {
         let mut bytes = Vec::new();
         encode_domain_version(18, &mut bytes);
-        assert_eq!(&bytes, b"CIDN\x02\0\x08\0");
+        assert_eq!(&bytes, b"CIDN\x03\0\x08\0");
         bytes[4] = 1;
         assert!(decode_domain_version(18, &bytes, &mut 0).is_err());
         bytes.clear();
@@ -274,5 +327,34 @@ mod tests {
         assert_eq!(select_name_tag(5, 0, 101, 100), (NameTagSource::Base, 5));
         assert_eq!(select_name_tag(5, -1, 101, 100), (NameTagSource::Base, 5));
         assert_eq!(select_name_tag(0, 9, 0, 0), (NameTagSource::Override, 9));
+    }
+}
+
+#[cfg(test)]
+mod country_link_tests {
+    use super::*;
+    #[test]
+    fn cidn3_link_truth_states_preserve_every_raw_bit() {
+        for value in [CountryLinkIndices::Measured(vec![]), CountryLinkIndices::Measured(vec![0,u32::MAX,7,7,0x80000000]),
+            CountryLinkIndices::Unavailable(NameInputRefusal::Unreadable),CountryLinkIndices::Unavailable(NameInputRefusal::ClockChanged)] {
+            let mut bytes=vec![];encode_domain_version(18,&mut bytes);encode_country_link_indices(&value,&mut bytes);
+            let mut cursor=0;decode_domain_version(18,&bytes,&mut cursor).unwrap();
+            assert_eq!(decode_country_link_indices(&bytes,&mut cursor),Ok(value));assert_eq!(cursor,bytes.len());
+            bytes[4..6].copy_from_slice(&2u16.to_le_bytes());
+            assert!(decode_domain_version(18,&bytes,&mut 0).is_err());
+        }
+    }
+    #[test]
+    fn link_header_contradictions_bounds_and_truncation_refuse() {
+        let mut bytes=vec![];encode_country_link_indices(&CountryLinkIndices::Measured(vec![1,2]),&mut bytes);
+        for end in 0..bytes.len() { assert!(decode_country_link_indices(&bytes[..end],&mut 0).is_err()); }
+        for (index,value) in [(0,2),(1,1),(2,1),(3,1)] {
+            let mut bad=bytes.clone();bad[index]=value;assert!(decode_country_link_indices(&bad,&mut 0).is_err());
+        }
+        for count in [i32::MAX as u32,u32::MAX] {
+            let mut bad=bytes.clone();bad[4..8].copy_from_slice(&count.to_le_bytes());assert!(decode_country_link_indices(&bad,&mut 0).is_err());
+        }
+        for cause in [0,8,255] { assert!(decode_country_link_indices(&[0,cause,0,0,0,0,0,0],&mut 0).is_err()); }
+        assert!(decode_country_link_indices(&[0,1,0,0,1,0,0,0],&mut 0).is_err());
     }
 }

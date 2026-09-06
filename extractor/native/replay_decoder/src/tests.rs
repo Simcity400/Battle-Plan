@@ -56,6 +56,8 @@ fn country_identity_payload(rows: &[(u32, &str)]) -> Vec<u8> {
     p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
     p.extend_from_slice(&0u32.to_le_bytes());
     compact_contract::country_name_inputs::encode_domain_version(18, &mut p);
+    compact_contract::country_name_inputs::encode_country_link_indices(
+        &compact_contract::country_name_inputs::CountryLinkIndices::Unavailable(compact_contract::country_name_inputs::NameInputRefusal::Unreadable), &mut p);
     for (id, tag) in rows {
         p.extend_from_slice(&id.to_le_bytes());
         p.extend_from_slice(&(tag.len() as u16).to_le_bytes());
@@ -894,6 +896,13 @@ fn legacy_container_opens_and_matches_reference() {
         Some(16_959_360)
     );
     assert_eq!(v.get("game_id").and_then(|x| x.as_str()), Some("legacy"));
+    assert_eq!(v.pointer("/measured_countries/known"), Some(&serde_json::json!(true)));
+    assert_eq!(v.pointer("/measured_countries/count"), Some(&serde_json::json!(1)));
+    assert_eq!(v.pointer("/measured_countries/tag_db_ids"), Some(&serde_json::json!([47])));
+    assert_eq!(v.pointer("/measured_countries/tags"), Some(&serde_json::json!(["GER"])));
+    assert_eq!(v.pointer("/tag_db_id_index/country_link_indices"), Some(&serde_json::json!({
+        "status": "unavailable", "reason": "unreadable"
+    })));
 
     let container = snapshot::container::Container::open_strict_with_file_receipt_from_file(
         std::fs::File::open(&path).expect("open container directly"),

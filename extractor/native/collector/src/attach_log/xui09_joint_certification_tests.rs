@@ -59,6 +59,8 @@ fn country_identity_payload(rows: &[(u32, &str)]) -> Vec<u8> {
     let mut payload = vec![0u8; 20];
     payload[8..12].copy_from_slice(&(rows.len() as u32).to_le_bytes());
     compact_contract::country_name_inputs::encode_domain_version(18, &mut payload);
+    compact_contract::country_name_inputs::encode_country_link_indices(
+        &compact_contract::country_name_inputs::CountryLinkIndices::Unavailable(compact_contract::country_name_inputs::NameInputRefusal::Unreadable), &mut payload);
     for (tag_db_id, tag) in rows {
         payload.extend_from_slice(&tag_db_id.to_le_bytes());
         payload.extend_from_slice(&(tag.len() as u16).to_le_bytes());

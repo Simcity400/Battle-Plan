@@ -2113,6 +2113,8 @@ mod tests {
             countries.extend_from_slice(&1u32.to_le_bytes());
             countries.extend_from_slice(&0u32.to_le_bytes());
             compact_contract::country_name_inputs::encode_domain_version(18, &mut countries);
+            compact_contract::country_name_inputs::encode_country_link_indices(
+                &compact_contract::country_name_inputs::CountryLinkIndices::Unavailable(compact_contract::country_name_inputs::NameInputRefusal::Unreadable), &mut countries);
             countries.extend_from_slice(&1u32.to_le_bytes());
             countries.extend_from_slice(&3u16.to_le_bytes());
             countries.extend_from_slice(b"TST");

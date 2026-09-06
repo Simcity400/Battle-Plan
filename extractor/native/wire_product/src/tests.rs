@@ -119,6 +119,8 @@ fn d18_country_payload_for(status: u32, source_id: u32, tag: &str) -> Vec<u8> {
     payload.extend_from_slice(&1u32.to_le_bytes());
     payload.extend_from_slice(&status.to_le_bytes());
     compact_contract::country_name_inputs::encode_domain_version(18, &mut payload);
+    compact_contract::country_name_inputs::encode_country_link_indices(
+        &compact_contract::country_name_inputs::CountryLinkIndices::Unavailable(compact_contract::country_name_inputs::NameInputRefusal::Unreadable), &mut payload);
     payload.extend_from_slice(&source_id.to_le_bytes());
     payload.extend_from_slice(&(tag.len() as u16).to_le_bytes());
     payload.extend_from_slice(tag.as_bytes());
@@ -303,6 +305,8 @@ fn d18_country_payload_families(
     payload.extend_from_slice(&1u32.to_le_bytes());
     payload.extend_from_slice(&outer.to_le_bytes());
     compact_contract::country_name_inputs::encode_domain_version(18, &mut payload);
+    compact_contract::country_name_inputs::encode_country_link_indices(
+        &compact_contract::country_name_inputs::CountryLinkIndices::Unavailable(compact_contract::country_name_inputs::NameInputRefusal::Unreadable), &mut payload);
     payload.extend_from_slice(&source_id.to_le_bytes());
     payload.extend_from_slice(&(tag.len() as u16).to_le_bytes());
     payload.extend_from_slice(tag.as_bytes());
@@ -2864,7 +2868,9 @@ fn d18_binding_parses_required_name_inputs_and_refuses_unknown_selection() {
     let payload = d18_country_payload(0);
     assert!(d18_binding_result(0, payload.clone()).is_ok());
     let mut unknown = payload.clone();
-    let selection = 20 + compact_contract::country_name_inputs::DOMAIN_VERSION_HEADER_LEN + 4 + 2 + 3 + 1;
+    let mut selection = 20 + compact_contract::country_name_inputs::DOMAIN_VERSION_HEADER_LEN;
+        compact_contract::country_name_inputs::decode_country_link_indices(&payload, &mut selection).unwrap();
+        selection += 4 + 2 + 3 + 1;
     unknown[selection] = 3;
     assert!(d18_binding_result(0, unknown).is_err());
     let mut missing = payload;
@@ -2893,7 +2899,9 @@ fn d18_wire_binding_refuses_base_id_or_tag_mismatch_with_containing_country() {
         (2, 2, "", true),
     ] {
         let mut payload = d18_country_payload_for(0, 47, "GER");
-        let selection = 20 + compact_contract::country_name_inputs::DOMAIN_VERSION_HEADER_LEN + 4 + 2 + 3 + 1;
+        let mut selection = 20 + compact_contract::country_name_inputs::DOMAIN_VERSION_HEADER_LEN;
+        compact_contract::country_name_inputs::decode_country_link_indices(&payload, &mut selection).unwrap();
+        selection += 4 + 2 + 3 + 1;
         assert_eq!(&payload[selection..selection + 2], &[0, 1]);
         let mut wire = vec![source];
         wire.extend_from_slice(&selected_id.to_le_bytes());
@@ -2908,5 +2916,28 @@ fn d18_wire_binding_refuses_base_id_or_tag_mismatch_with_containing_country() {
             let error = result.expect_err("mismatched base selection must be refused");
             assert!(error.contains("country name base selection identity mismatch"), "{error}");
         }
+    }
+}
+
+#[test]
+fn d18_wire_product_validates_mandatory_link_block_before_country_rows() {
+    use compact_contract::country_name_inputs::{CountryLinkIndices, NameInputRefusal, encode_country_link_indices};
+    for links in [CountryLinkIndices::Measured(vec![]),
+        CountryLinkIndices::Measured(vec![0, u32::MAX, 7, 7, 0x80000000]),
+        CountryLinkIndices::Unavailable(NameInputRefusal::ClockChanged)] {
+        let mut block=Vec::new(); encode_country_link_indices(&links, &mut block);
+        let mut payload=d18_country_payload(0);
+        payload.splice(28..36, block.clone());
+        assert!(d18_binding_result(0, payload.clone()).is_ok());
+        for (offset, byte) in [(0,2),(2,1),(3,1)] {
+            let mut bad=payload.clone(); bad[28+offset]=byte;
+            assert!(d18_binding_result(0,bad).unwrap_err().contains("country link"));
+        }
+        for end in 0..block.len() {
+            let bad=payload[..28+end].to_vec();
+            assert!(d18_binding_result(0,bad).is_err());
+        }
+        let mut old=payload; old[24..26].copy_from_slice(&2u16.to_le_bytes());
+        assert!(d18_binding_result(0,old).unwrap_err().contains("unsupported payload version"));
     }
 }

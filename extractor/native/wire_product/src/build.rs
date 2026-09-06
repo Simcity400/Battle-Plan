@@ -1895,6 +1895,7 @@ fn decode_complete_d18_country_rows(payload: &[u8]) -> Result<D18CountryCarrier,
     }
     let mut cursor = 20usize;
     compact_contract::country_name_inputs::decode_domain_version(18, payload, &mut cursor)?;
+    compact_contract::country_name_inputs::decode_country_link_indices(payload, &mut cursor)?;
     let mut rows = BTreeMap::<u32, String>::new();
     let mut source_by_symbol = BTreeMap::<String, u32>::new();
     for index in 0..row_count {

@@ -3306,6 +3306,8 @@ mod tests {
         p.extend_from_slice(&(rows.len() as u32).to_le_bytes());
         p.extend_from_slice(&0u32.to_le_bytes());
         compact_contract::country_name_inputs::encode_domain_version(18, &mut p);
+        compact_contract::country_name_inputs::encode_country_link_indices(
+            &compact_contract::country_name_inputs::CountryLinkIndices::Unavailable(compact_contract::country_name_inputs::NameInputRefusal::Unreadable), &mut p);
         for (id, tag) in rows {
             p.extend_from_slice(&id.to_le_bytes());
             p.extend_from_slice(&(tag.len() as u16).to_le_bytes());
