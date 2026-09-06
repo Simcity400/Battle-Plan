@@ -279,6 +279,78 @@ fn test_audit_mentions() -> [(&'static str, &'static str, &'static str, String);
     ]
 }
 
+fn rust_structure(source: &str) -> Vec<String> {
+    let bytes = source.as_bytes();
+    let mut code = bytes.to_vec();
+    let mut index = 0;
+    while index < bytes.len() {
+        let start = index;
+        if bytes[index..].starts_with(b"//") {
+            while index < bytes.len() && bytes[index] != b'\n' { index += 1; }
+        } else if bytes[index..].starts_with(b"/*") {
+            index += 2;
+            let mut depth = 1;
+            while depth != 0 {
+                assert!(index < bytes.len(), "unterminated Rust comment");
+                if bytes[index..].starts_with(b"/*") { depth += 1; index += 2; }
+                else if bytes[index..].starts_with(b"*/") { depth -= 1; index += 2; }
+                else { index += 1; }
+            }
+        } else {
+            let hashes = if bytes[index] == b'r' {
+                bytes[index + 1..].iter().take_while(|byte| **byte == b'#').count()
+            } else { 0 };
+            if bytes[index] == b'r' && bytes.get(index + 1 + hashes) == Some(&b'"') {
+                index += 2 + hashes;
+                loop {
+                    assert!(index < bytes.len(), "unterminated Rust raw string");
+                    if bytes[index] == b'"' && bytes.get(index + 1..index + 1 + hashes)
+                        .is_some_and(|suffix| suffix.iter().all(|byte| *byte == b'#')) {
+                        index += 1 + hashes;
+                        break;
+                    }
+                    index += 1;
+                }
+            } else {
+                let character = bytes[index] == b'\'' && (bytes.get(index + 1) == Some(&b'\\')
+                    || source[index + 1..].chars().next().is_some_and(|ch|
+                        bytes.get(index + 1 + ch.len_utf8()) == Some(&b'\'')));
+                if bytes[index] == b'"' || character {
+                    let delimiter = bytes[index];
+                    index += 1;
+                    loop {
+                        assert!(index < bytes.len(), "unterminated Rust literal");
+                        if bytes[index] == delimiter { index += 1; break; }
+                        if bytes[index] == b'\\' { index += 1; }
+                        index += 1;
+                    }
+                } else {
+                    index += 1;
+                    continue;
+                }
+            }
+        }
+        for byte in &mut code[start..index] {
+            if *byte != b'\n' && *byte != b'\r' { *byte = b' '; }
+        }
+    }
+    String::from_utf8(code).unwrap().lines().map(str::to_owned).collect()
+}
+
+fn rust_block_end(lines: &[String], start: usize) -> usize {
+    assert!(lines[start].ends_with('{'));
+    let mut depth = 0i32;
+    for (index, line) in lines.iter().enumerate().skip(start) {
+        for byte in line.bytes() {
+            if byte == b'{' { depth += 1; }
+            if byte == b'}' { depth -= 1; }
+            assert!(depth >= 0, "unbalanced Rust block");
+        }
+        if depth == 0 { return index; }
+    }
+    panic!("unterminated Rust block")
+}
+
 #[test]
 fn allowed_instruction_oracle_and_producer_audits_remain_exact_and_test_only() {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -288,18 +360,19 @@ fn allowed_instruction_oracle_and_producer_audits_remain_exact_and_test_only() {
         let source = fs::read_to_string(repo.join(path)).expect("read owning audit source");
         let lines = source.lines().collect::<Vec<_>>();
         assert_eq!(lines.iter().filter(|line| line.trim() == mention).count(), 1, "{path}: {mention}");
+        let structure = rust_structure(&source);
         let declaration = format!("mod {module} {{");
-        let start = lines.windows(2)
-            .position(|pair| pair == ["#[cfg(test)]", declaration.as_str()])
-            .expect("owning module must remain explicitly test-only") + 2;
-        let module_lines = lines[start..].iter().copied()
-            .take_while(|line| *line != "}").collect::<Vec<_>>();
+        let module_start = structure.windows(2)
+            .position(|pair| pair[0] == "#[cfg(test)]" && pair[1] == declaration)
+            .expect("owning module must remain explicitly test-only") + 1;
+        let module_end = rust_block_end(&structure, module_start);
         let declaration = format!("    fn {function}() {{");
-        let start = module_lines.windows(2)
-            .position(|pair| pair == ["    #[test]", declaration.as_str()])
-            .expect("owning instruction or producer audit must remain a test") + 2;
-        let body = module_lines[start..].iter().copied()
-            .take_while(|line| *line != "    }").collect::<Vec<_>>();
+        let function_start = structure[module_start + 1..module_end].windows(2)
+            .position(|pair| pair[0] == "    #[test]" && pair[1] == declaration)
+            .expect("owning instruction or producer audit must remain a test") + module_start + 2;
+        let function_end = rust_block_end(&structure, function_start);
+        assert!(function_end < module_end);
+        let body = &lines[function_start + 1..function_end];
         assert_eq!(body.iter().filter(|line| line.trim() == mention).count(), 1, "{path}: {function}");
         assert!(is_allowed_extractor_path_mention(path, &mention));
         assert!(!is_allowed_extractor_path_mention("replay_interface/native/map_viewer/src/lib.rs", &mention));
