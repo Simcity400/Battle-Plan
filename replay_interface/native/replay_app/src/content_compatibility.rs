@@ -586,6 +586,7 @@ mod tests {
             required_settings: BTreeMap::new(),
             recorder_local_settings: BTreeMap::new(),
             required_content: Vec::new(),
+            witnessed_absent_content: Vec::new(),
             manifest_digest_sha256: None,
         }
     }
@@ -1034,6 +1035,7 @@ graphics={
                 observation_count: 1,
                 consumers: vec!["production-non-ui".into()],
             }],
+            witnessed_absent_content: Vec::new(),
             manifest_digest_sha256: None,
         };
         manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();

@@ -2844,6 +2844,15 @@ pub(crate) fn admitted_vanilla_resolver(
     paths: &std::collections::BTreeSet<String>,
     label: &str,
 ) -> (GameFileResolver, replay_core::ValidatedContentAdmission) {
+    admitted_vanilla_resolver_with_absences(resolver, paths, label, Vec::new())
+}
+
+pub(crate) fn admitted_vanilla_resolver_with_absences(
+    resolver: &GameFileResolver,
+    paths: &std::collections::BTreeSet<String>,
+    label: &str,
+    witnessed_absent_content: Vec<String>,
+) -> (GameFileResolver, replay_core::ValidatedContentAdmission) {
     use replay_core::{
         ContentManifest, LayerStorageKind, RecordedContentLayer, RequiredContent,
         SourceGameIdentity, SourceProfileIdentity, UsedContentKey,
@@ -2925,6 +2934,7 @@ pub(crate) fn admitted_vanilla_resolver(
         required_settings: BTreeMap::new(),
         recorder_local_settings: BTreeMap::new(),
         required_content,
+        witnessed_absent_content,
         manifest_digest_sha256: None,
     };
     manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();

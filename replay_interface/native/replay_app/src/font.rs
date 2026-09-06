@@ -1507,6 +1507,7 @@ mod tests {
                 observation_count: 1,
                 consumers: vec!["font-atlas-test".into()],
             }],
+            witnessed_absent_content: Vec::new(),
             manifest_digest_sha256: None,
         };
         manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();

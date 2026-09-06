@@ -6139,6 +6139,7 @@ mod tests {
                 ),
             ]),
             required_content: Vec::new(),
+            witnessed_absent_content: Vec::new(),
             manifest_digest_sha256: None,
         };
         manifest.source_profile.selection_sha256 =

@@ -152,6 +152,7 @@ fn content_admission() -> ValidatedContentAdmission {
         required_settings: std::collections::BTreeMap::new(),
         recorder_local_settings: BTreeMap::new(),
         required_content: Vec::new(),
+        witnessed_absent_content: Vec::new(),
         manifest_digest_sha256: None,
     };
     source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();

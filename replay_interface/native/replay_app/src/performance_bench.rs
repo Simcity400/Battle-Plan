@@ -896,6 +896,7 @@ fn build_stress_content(
             observation_count: u64::try_from(contract.map_operation_count)?,
             consumers: vec![expected_consumer.into()],
         }],
+        witnessed_absent_content: Vec::new(),
         manifest_digest_sha256: None,
     };
     manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256()?;

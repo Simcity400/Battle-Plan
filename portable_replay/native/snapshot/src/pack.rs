@@ -2087,6 +2087,7 @@ mod tests {
                 observation_count: 1,
                 consumers: vec!["production-render".into()],
             }],
+            witnessed_absent_content: Vec::new(),
             manifest_digest_sha256: None,
         };
         content.source_profile.selection_sha256 = content.computed_selection_sha256().unwrap();

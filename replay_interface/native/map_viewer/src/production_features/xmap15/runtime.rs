@@ -126,7 +126,6 @@ impl RetainedPlans {
                     object.selection_unproven |= context.xmap15_selection.selected_owner.is_some()
                         || context.xmap15_selection.selected_plan.is_some() || !context.viewer.selected_object_ids.is_empty();
                     if object.selection_unproven { return Err(Missing::SelectedPresentation); }
-                    if row.active { return Err(Missing::ActiveReadiness); }
                     let assigned = !row.member_division_ids.is_empty();
                     let texture_variant = if assigned {
                         // With no owner override, native count excludes at most its single deployed leader unit.
@@ -145,6 +144,10 @@ impl RetainedPlans {
                     if definition.culling_direction.is_some_and(|direction| direction != 0) {
                         return Err(Missing::CullingDirection);
                     }
+                    let speed = definition.texture_anim_speed_f32_bits.map(f32::from_bits).unwrap_or(0.0);
+                    let animation_speed = if speed.abs() > f32::from_bits(0x38d1b717) { speed.to_bits() } else { 0 };
+                    // Native skips readiness when the authored animation speed is within epsilon.
+                    if row.active && animation_speed != 0 { return Err(Missing::ActiveReadiness); }
                     let semantic = Xmap15PlanSemanticRow {
                         key: identity.clone(), owner_country: country.clone(),
                         selector: portable_render_stream::Xmap15PlanDefinitionSelector {
@@ -152,7 +155,7 @@ impl RetainedPlans {
                             fallback_298: false, virtual_299: false, blitz_118: false,
                             army_group_style_39_and_378: false,
                         }, resolved_definition_name: "paradrop".into(),
-                        ordered_assigned_division_ids: row.member_division_ids.clone(), assigned, active: false,
+                        ordered_assigned_division_ids: row.member_division_ids.clone(), assigned, active: row.active,
                         route: object.route.clone(), manager_insertion_ordinal: None,
                         definition_group_ordinal: None, final_engine_draw_ordinal: None,
                         object_width_multiplier_f32_bits: 0, comparator_tie_17c_f32_bits: 0,
@@ -163,10 +166,8 @@ impl RetainedPlans {
                         exact_head_vertices_f32_bits: None,
                         lifecycle_tombstone_sha256: None,
                     };
-                    let speed = definition.texture_anim_speed_f32_bits.map(f32::from_bits).unwrap_or(0.0);
                     let draw = Xmap15ViewerPlanDrawInputs { key: identity.clone(), base_rgba_f32_bits: object.base_colour,
-                        inner_highlight: false, animation_speed_f32_bits:
-                            if speed.abs() > f32::from_bits(0x38d1b717) { speed.to_bits() } else { 0 } };
+                        inner_highlight: false, animation_speed_f32_bits: animation_speed };
                     Ok((semantic, draw))
                 })();
                 match result {
@@ -358,6 +359,28 @@ mod tests {
             &mut sort, Some(&witness), &"a".repeat(64));
         assert_eq!(submitted.submissions.len(), 1, "{:?}", submitted.refusals);
         assert_eq!(submitted.submissions[0].registration_ordinal, None);
+        let mut active_raw = raw(original);
+        let row = &mut active_raw["order_of_battle"]["extra"]["army_battleplans_depth_live"]["orders"][0];
+        row["path_provinces"] = serde_json::json!([1, 2]);
+        row["generation"] = serde_json::json!(4);
+        row["active"] = serde_json::json!(true);
+        let active_world = crate::test_support::frame_with_rest(active_raw);
+        let active_output = prepare(&active_world, &unselected);
+        assert!(matches!(active_output.disposition, FamilyDisposition::Present { .. }), "{:?}", active_output.disposition);
+        let active_frame = active_output.prepared_orders.unwrap().native.unwrap();
+        let Xmap15PreparedRow::Plan { semantic: active_row, .. } = &active_frame.portable.ordered_rows[0] else { panic!() };
+        assert!(active_row.active);
+        assert_eq!(active_frame.plan_draw_inputs(&active_row.key).unwrap().animation_speed_f32_bits, 0);
+        let active_witness = lifecycle.apply(&active_frame).unwrap();
+        assert_eq!(active_witness.edited.len(), 1);
+        let active_submission = ArrowSubmissionOrder::from_frames(ArrowFrameInput::Present(&active_frame), ArrowFrameInput::ViewInactive,
+            &mut sort, Some(&active_witness), &"a".repeat(64));
+        assert_eq!(active_submission.submissions.len(), 1, "{:?}", active_submission.refusals);
+        #[cfg(windows)] for (outer, expected_active) in [(false, 1.0f32), (true, 0.0)] {
+            let cb3 = crate::xmap15_d3d_handoff::plan_cb3_for_test(&active_frame, active_row, mesh.total_length_f32_bits, outer).unwrap();
+            assert_eq!(&cb3[68..72], &0u32.to_le_bytes());
+            assert_eq!(&cb3[72..76], &expected_active.to_le_bytes());
+        }
         let changed_colour = [0.75f32, 0.25, 0.5, 0.5].map(f32::to_bits);
         let changed_world = make_world(changed_colour, 4);
         let changed = prepare(&changed_world, &unselected).prepared_orders.unwrap().native.unwrap();
@@ -453,6 +476,27 @@ mod tests {
         base.paradrop_profile = Some(PreparedXmap15ParadropProfile { parameters: profile, ordered_used_content: vec![defines.clone()] });
         base.portable.ordered_used_content.push(defines); base.portable.ordered_used_content.sort();
         base.map_width = 16; base.map_height = 8;
+        let mut active_raw = raw(original_colour);
+        active_raw["order_of_battle"]["extra"]["army_battleplans_depth_live"]["orders"][0]["active"] = serde_json::json!(true);
+        let active_world = crate::test_support::frame_with_rest(active_raw);
+        let active_context = FoundationFeatureContext::new_for_owned_accounting_tests(&active_world, &viewer, &[], &[], &selection);
+        let Xmap15PlanProvider::Present(active_census) = derive_xmap15_orders(&active_world, Some(&anchors)) else { panic!() };
+        for (bits, admitted) in [(0, true), (0x80000000, true), (0x38d1b716, true),
+            (0x38d1b717, true), (0xb8d1b717, true), (0x38d1b718, false), (0xb8d1b718, false)] {
+            let mut definitions = base.plan_definitions.clone();
+            definitions[0].texture_anim_speed_f32_bits = Some(bits);
+            definitions[0].deterministic_sha256.clear();
+            definitions[0].deterministic_sha256 = Sha256::hex(&serde_json::to_vec(&serde_json::to_value(&definitions[0]).unwrap()).unwrap());
+            let input = RetainedPlans::default().advance(&active_context, &active_census, &Units, &definitions, 16).unwrap();
+            if admitted {
+                assert_eq!(input.plans.len(), 1, "speed={bits:08x}, {:?}", input.viewer_runtime);
+                assert!(input.plans[0].active);
+                assert_eq!(input.viewer_runtime.unwrap().draw_inputs[0].animation_speed_f32_bits, 0);
+            } else {
+                assert!(input.plans.is_empty());
+                assert!(input.viewer_runtime.unwrap().refusals.iter().any(|row| row.input == Missing::ActiveReadiness));
+            }
+        }
         let mut runtime = RetainedPlans::default();
         let input = runtime.advance(&context, census, &Units, &base.plan_definitions, 16).unwrap();
         assert_eq!(input.plans.len(), 1, "{:?}", input.viewer_runtime);

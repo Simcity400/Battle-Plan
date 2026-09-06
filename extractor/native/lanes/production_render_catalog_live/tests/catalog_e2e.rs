@@ -184,6 +184,7 @@ fn manifest() -> ContentManifest {
                 &bytes["gfx/fx/runtime.shader"],
             ),
         ],
+        witnessed_absent_content: Vec::new(),
         manifest_digest_sha256: None,
     };
     for row in value.required_content.iter_mut() {

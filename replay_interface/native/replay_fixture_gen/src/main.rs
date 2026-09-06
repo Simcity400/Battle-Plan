@@ -2499,6 +2499,7 @@ fn fixture_content_manifest(seed: u64, modset_id: &str) -> Result<ContentManifes
                 "replay_fixture_gen.mod_override",
             )?,
         ],
+        witnessed_absent_content: Vec::new(),
         manifest_digest_sha256: None,
     };
     manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256()?;
