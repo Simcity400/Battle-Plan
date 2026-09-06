@@ -1917,6 +1917,17 @@ function Confirm-CollectorTeardownReceipt {
         -SessionId $sessionId `
         -CaptureId $captureId `
         -ReadyAuthority $authority
+    if ($null -ne $script:sharedTeardownAuthority.CollectorTerminalReport -and
+        -not @($captureRefusals | Where-Object { $_.class -ceq 'collector_terminal_failure' }).Count) {
+        [void]$captureRefusals.Add([pscustomobject]@{
+            stage = 'collector_terminal'
+            class = 'collector_terminal_failure'
+            message = [string]$script:sharedTeardownAuthority.CollectorTerminalReport
+            custody_established = $true
+            clauses = @()
+        })
+        Write-CaptureRefusalReceipt
+    }
     if (-not [bool]$authority.CaptureAdmitted) {
         Write-Host (
             'phase=teardown_admitted_on_custody_only ' +

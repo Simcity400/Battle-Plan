@@ -2430,14 +2430,55 @@ fn hash_entries(
     Ok(results)
 }
 
+pub struct AttachCorpusCensus {
+    pub required_content: Vec<RequiredContent>,
+    pub witnessed_absent_content: Vec<String>,
+    pub stats: AttachCorpusCensusStats,
+}
+
+const OPTIONAL_AUTHORED_CONTENT: [&str; 1] = ["map/adjacencies.csv"];
+
+fn observe_optional_authored_content(
+    vfs: &portable_content_manifest::effective_vfs::EffectiveVfs,
+) -> Result<Vec<Option<UsedContentKey>>, String> {
+    OPTIONAL_AUTHORED_CONTENT.iter().map(|path| {
+        vfs.resolve(path)
+            .map(|resolved| resolved.map(|file| file.content))
+            .map_err(|error| format!("optional authored content observation {path}: {error}"))
+    }).collect()
+}
+
+fn reconcile_optional_authored_content(
+    before: &[Option<UsedContentKey>],
+    after: &[Option<UsedContentKey>],
+    rows: &BTreeMap<String, RequiredContent>,
+) -> Result<Vec<String>, String> {
+    if before.len() != OPTIONAL_AUTHORED_CONTENT.len() || after.len() != before.len() {
+        return Err("optional authored content observation roster is incomplete".into());
+    }
+    let mut absent = Vec::new();
+    for ((path, before), after) in OPTIONAL_AUTHORED_CONTENT.iter().zip(before).zip(after) {
+        match (before, after, rows.get(*path)) {
+            (None, None, None) => absent.push((*path).to_string()),
+            (Some(before), Some(after), Some(row))
+                if before == after && before == &row.content => {},
+            _ => return Err(format!(
+                "optional authored content {path} differs between before/after observations and census winner"
+            )),
+        }
+    }
+    Ok(absent)
+}
+
 pub fn census_effective_vfs_corpus(
     vfs: &portable_content_manifest::effective_vfs::EffectiveVfs,
     cache_dir: Option<&Path>,
-) -> Result<(Vec<RequiredContent>, AttachCorpusCensusStats), String> {
+) -> Result<AttachCorpusCensus, String> {
     use crate::content_census_cache::{self, CacheEntry, CacheLoad};
     use portable_content_manifest::effective_vfs::EffectiveVfsEntryFacts;
 
     let started = std::time::Instant::now();
+    let optional_before = observe_optional_authored_content(vfs)?;
     let entries = vfs.effective_entries()?;
     crate::finalize_progress::tick(entries.len() as u64);
     let listing_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
@@ -2626,16 +2667,20 @@ pub fn census_effective_vfs_corpus(
         }
     }
 
-    Ok((
-        rows.into_values().collect(),
-        AttachCorpusCensusStats {
+    let optional_after = observe_optional_authored_content(vfs)?;
+    let witnessed_absent_content =
+        reconcile_optional_authored_content(&optional_before, &optional_after, &rows)?;
+    Ok(AttachCorpusCensus {
+        required_content: rows.into_values().collect(),
+        witnessed_absent_content,
+        stats: AttachCorpusCensusStats {
             files,
             payload_bytes,
             elapsed_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             excluded_engine_written_sinks,
             cache,
         },
-    ))
+    })
 }
 
 pub const ATTACH_CENSUS_CONSUMER: &str = "attach_time_effective_vfs_census";
@@ -2663,6 +2708,7 @@ fn attach_census_content_kind(normalized_path: &str) -> RequiredContentKind {
 pub fn build_from_attach_time_corpus(
     ordered_layers: Vec<RecordedContentLayer>,
     required_content: Vec<RequiredContent>,
+    witnessed_absent_content: Vec<String>,
     launch: &PortableLaunchBinding,
     effective_vfs_manifest_sha256: &str,
     product_modset_sha256: &str,
@@ -2749,6 +2795,7 @@ pub fn build_from_attach_time_corpus(
         required_settings: launch.required_settings.clone(),
         recorder_local_settings: launch.recorder_local_settings.clone(),
         required_content,
+        witnessed_absent_content,
         manifest_digest_sha256: None,
     };
     manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256()?;
@@ -2891,6 +2938,7 @@ pub fn build(
         required_settings: trace.required_settings,
         recorder_local_settings: trace.recorder_local_settings,
         required_content,
+        witnessed_absent_content: Vec::new(),
         manifest_digest_sha256: None,
     };
     manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256()?;
@@ -3371,7 +3419,9 @@ mod tests {
         )
         .unwrap();
 
-        let (rows, stats) = census_effective_vfs_corpus(&vfs, None).unwrap();
+        let census = census_effective_vfs_corpus(&vfs, None).unwrap();
+        let rows = census.required_content;
+        let stats = census.stats;
         let recorded: Vec<&str> = rows
             .iter()
             .map(|row| row.content.normalized_game_relative_path.as_str())
@@ -3405,6 +3455,101 @@ mod tests {
             stats.files as usize,
             rows.len() + stats.excluded_engine_written_sinks.len()
         );
+    }
+
+    fn optional_census_fixture() -> (TempFixtureCleanup, portable_content_manifest::effective_vfs::EffectiveVfs) {
+        use portable_content_manifest::effective_vfs::{EffectiveVfs, EffectiveVfsLayerMount};
+        let root = std::env::temp_dir().join(format!("hoi4_optional_census_{}_{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(root.join("common")).unwrap();
+        fs::create_dir_all(root.join("map")).unwrap();
+        fs::write(root.join("common/base.txt"), b"required content").unwrap();
+        let vfs = EffectiveVfs::new(sha('a'), vec![EffectiveVfsLayerMount {
+            ordinal: 0, layer_kind: ContentLayerKind::Base, layer_id: "base".into(),
+            storage_kind: LayerStorageKind::Directory, local_source: root.clone(),
+            source_container_sha256: None, replace_paths: Vec::new(),
+        }]).unwrap();
+        (TempFixtureCleanup(root), vfs)
+    }
+
+    #[test]
+    fn optional_census_publication_binds_absence_and_present_winner() {
+        let (root, vfs) = optional_census_fixture();
+        let (trace, mut launch) = base_trace();
+        launch.enabled_dlc_ids.clear();
+        for present in [false, true] {
+            if present { fs::write(root.0.join("map/adjacencies.csv"), b"authored adjacency").unwrap(); }
+            let census = census_effective_vfs_corpus(&vfs, None).unwrap();
+            let expected = if present { Vec::new() } else { vec!["map/adjacencies.csv".to_string()] };
+            assert_eq!(census.witnessed_absent_content, expected);
+            let manifest = build_from_attach_time_corpus(vec![trace.ordered_layers[0].clone()],
+                census.required_content, census.witnessed_absent_content, &launch, &sha('a'),
+                &sha('9'), trace.source_game.clone(), "profile", "playset").unwrap();
+            let encoded = manifest.encode_json().unwrap();
+            let reopened = ContentManifest::decode_json(&encoded).unwrap();
+            assert_eq!(reopened.witnessed_absent_content, expected);
+            assert_eq!(reopened.required_content.iter().any(|r| r.content.normalized_game_relative_path == "map/adjacencies.csv"), present);
+            let mut conflicting = reopened.clone();
+            conflicting.witnessed_absent_content = if present { vec!["map/adjacencies.csv".into()] } else { Vec::new() };
+            if present { assert!(conflicting.with_computed_digest().is_err()); }
+            else { assert_ne!(conflicting.with_computed_digest().unwrap().manifest_digest_sha256, reopened.manifest_digest_sha256); }
+        }
+        assert!(build(trace, &base_trace().1, &sha('9')).unwrap().witnessed_absent_content.is_empty());
+    }
+
+    #[test]
+    fn optional_census_change_or_missing_winner_never_becomes_absence() {
+        let (root, vfs) = optional_census_fixture();
+        let absent = observe_optional_authored_content(&vfs).unwrap();
+        fs::write(root.0.join("map/adjacencies.csv"), b"first").unwrap();
+        let first = observe_optional_authored_content(&vfs).unwrap();
+        let rows = census_effective_vfs_corpus(&vfs, None).unwrap().required_content.into_iter()
+            .map(|row| (row.content.normalized_game_relative_path.clone(), row)).collect::<BTreeMap<_, _>>();
+        assert!(reconcile_optional_authored_content(&absent, &first, &rows).is_err());
+        assert!(reconcile_optional_authored_content(&first, &first, &BTreeMap::new()).is_err());
+        assert!(reconcile_optional_authored_content(&absent, &absent, &rows).is_err());
+        fs::write(root.0.join("map/adjacencies.csv"), b"other").unwrap();
+        let changed = observe_optional_authored_content(&vfs).unwrap();
+        assert!(reconcile_optional_authored_content(&first, &changed, &rows).is_err());
+        assert!(reconcile_optional_authored_content(&changed, &changed, &rows).is_err());
+        assert!(reconcile_optional_authored_content(&[], &[], &rows).is_err());
+    }
+
+    #[test]
+    fn optional_census_honors_archive_replace_path_and_refuses_read_errors() {
+        use portable_content_manifest::effective_vfs::{EffectiveVfs, EffectiveVfsLayerMount};
+        use std::io::Write;
+        let (root, _) = optional_census_fixture();
+        fs::write(root.0.join("map/adjacencies.csv"), b"hidden lower winner").unwrap();
+        let archive = root.0.join("override.zip");
+        let mut writer = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+        writer.start_file("common/override.txt", zip::write::SimpleFileOptions::default()).unwrap();
+        writer.write_all(b"archive content").unwrap();
+        writer.finish().unwrap();
+        let archive_sha = Sha256::hex(&fs::read(&archive).unwrap());
+        let vfs = EffectiveVfs::new(sha('a'), vec![EffectiveVfsLayerMount {
+            ordinal: 0, layer_kind: ContentLayerKind::Base, layer_id: "base".into(),
+            storage_kind: LayerStorageKind::Directory, local_source: root.0.clone(),
+            source_container_sha256: None, replace_paths: Vec::new(),
+        }, EffectiveVfsLayerMount {
+            ordinal: 1, layer_kind: ContentLayerKind::Mod, layer_id: "mod/override.mod".into(),
+            storage_kind: LayerStorageKind::ZipArchive, local_source: archive.clone(),
+            source_container_sha256: Some(archive_sha), replace_paths: vec!["map".into()],
+        }]).unwrap();
+        let census = census_effective_vfs_corpus(&vfs, None).unwrap();
+        assert_eq!(census.witnessed_absent_content, vec!["map/adjacencies.csv"]);
+        assert!(!census.required_content.iter().any(|r| r.content.normalized_game_relative_path == "map/adjacencies.csv"));
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let (locked_root, locked_vfs) = optional_census_fixture();
+            let path = locked_root.0.join("map/adjacencies.csv");
+            fs::write(&path, b"unreadable authored file").unwrap();
+            let _exclusive = fs::OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+            assert!(observe_optional_authored_content(&locked_vfs).unwrap_err()
+                .contains("optional authored content observation map/adjacencies.csv"));
+            assert!(census_effective_vfs_corpus(&locked_vfs, None).is_err());
+        }
     }
 
     struct TempFixtureCleanup(PathBuf);

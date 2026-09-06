@@ -1909,7 +1909,7 @@ mod tests {
         vec![(play_order as u8).wrapping_add(1); len]
     }
 
-    fn stitched_wire_test_catalog() -> wire_product::AuthenticatedProvinceCatalog {
+    fn stitched_wire_test_manifest() -> (portable_content_manifest::ContentManifest, Vec<u8>) {
         use portable_content_manifest::{
             ContentLayerKind, ContentManifest, LayerStorageKind, RecordedContentLayer,
             RequiredContent, RequiredContentKind, SourceGameIdentity, SourceProfileIdentity,
@@ -1920,6 +1920,7 @@ mod tests {
         let definition_sha = Sha256::hex(&definition);
         let vfs_sha = "f".repeat(64);
         let mut manifest = ContentManifest {
+            witnessed_absent_content: Vec::new(),
             schema: portable_content_manifest::SCHEMA.to_string(),
             product_modset_sha256: "9".repeat(64),
             source_game: SourceGameIdentity {
@@ -1971,11 +1972,40 @@ mod tests {
             consumers: vec!["wire_product.d81".into()],
         });
         manifest = manifest.with_computed_digest().unwrap();
+        (manifest, definition)
+    }
+
+    fn stitched_wire_test_catalog() -> wire_product::AuthenticatedProvinceCatalog {
+        let (manifest, definition) = stitched_wire_test_manifest();
         wire_product::AuthenticatedProvinceCatalog::from_content_manifest(
-            &manifest.encode_json().unwrap(),
-            &definition,
-        )
-        .unwrap()
+            &manifest.encode_json().unwrap(), &definition,
+        ).unwrap()
+    }
+
+    #[test]
+    fn stitched_pack_preserves_witnessed_absence_and_digest_conflicts() {
+        let plan = rollback_plan();
+        let source = MemorySource::for_plan(&plan);
+        let entries = build_stitched_entries(&plan, &source).unwrap();
+        let (mut manifest, _) = stitched_wire_test_manifest();
+        let unwitnessed_sha = manifest.sha256().unwrap();
+        manifest.witnessed_absent_content = vec!["map/adjacencies.csv".into()];
+        manifest = manifest.with_computed_digest().unwrap();
+        assert_ne!(manifest.sha256().unwrap(), unwitnessed_sha);
+        let bytes = pack_with(&plan.game_id, &entries, &pack_identity(&plan, Some(manifest.clone())),
+            false, &stitched_pack_options()).unwrap();
+        let container = Container::from_bytes(bytes, &ExpectedIdentity::default()).unwrap();
+        container.verify_all().unwrap();
+        let reopened = container.content_manifest().unwrap();
+        assert_eq!(reopened.witnessed_absent_content, vec!["map/adjacencies.csv"]);
+        assert_eq!(reopened.sha256().unwrap(), manifest.sha256().unwrap());
+        let mut conflicting = manifest.required_content[0].clone();
+        conflicting.content_key = "map/adjacencies.csv".into();
+        conflicting.content.stored_game_relative_path = "map/adjacencies.csv".into();
+        conflicting.content.normalized_game_relative_path = "map/adjacencies.csv".into();
+        manifest.required_content.push(conflicting);
+        assert!(pack_with(&plan.game_id, &entries, &pack_identity(&plan, Some(manifest)),
+            false, &stitched_pack_options()).is_err());
     }
 
     fn push_stitched_wire_record(

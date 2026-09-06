@@ -786,6 +786,7 @@ mod tests {
         assert_eq!(&encoded[0][4..6], &2u16.to_le_bytes());
         fs::write(root.join("winner.evrw"), &encoded[0]).unwrap();
         let mut manifest = ContentManifest {
+            witnessed_absent_content: Vec::new(),
             schema: portable_content_manifest::SCHEMA.into(), product_modset_sha256: "9".repeat(64),
             source_game: SourceGameIdentity { version: "1.19.2".into(), build: "a729".into(), executable_sha256: "7".repeat(64), build_profile: "case-chain".into() },
             source_profile: SourceProfileIdentity { profile_id: "case-chain".into(), playset_id: "case-chain".into(), selection_sha256: "0".repeat(64) },

@@ -497,6 +497,7 @@ mod tests {
         )
         .unwrap();
         let manifest = ContentManifest {
+            witnessed_absent_content: Vec::new(),
             schema: portable_content_manifest::SCHEMA.into(),
             product_modset_sha256: "9".repeat(64),
             source_game: SourceGameIdentity {

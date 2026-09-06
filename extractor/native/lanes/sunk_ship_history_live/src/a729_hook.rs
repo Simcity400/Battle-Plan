@@ -319,6 +319,7 @@ struct CaptureQueueState {
     pending: VecDeque<RawSunkShipCapture>,
     reservation: Option<DrainReservationState>,
     sealed_complete_snapshot: Option<SealedCompleteSnapshotState>,
+    published_terminal_loss: Option<(u64, Option<crate::SunkShipProducerLoss>)>,
 }
 
 impl CaptureQueueState {
@@ -327,6 +328,7 @@ impl CaptureQueueState {
             pending: VecDeque::with_capacity(MAX_PENDING_EVENTS),
             reservation: None,
             sealed_complete_snapshot: None,
+            published_terminal_loss: None,
         }
     }
 
@@ -334,6 +336,7 @@ impl CaptureQueueState {
         self.pending.clear();
         self.reservation = None;
         self.sealed_complete_snapshot = None;
+        self.published_terminal_loss = None;
     }
 }
 
@@ -1068,11 +1071,30 @@ fn next_drain_reservation_id() -> Result<u64, String> {
 }
 
 pub fn commit_drain(reservation_id: u64) -> Result<(), String> {
+    commit_drain_inner(reservation_id, false)
+}
+
+/// Call only after the sealed snapshot's stream publication commits.
+pub fn commit_published_terminal_snapshot(reservation_id: u64) -> Result<(), String> {
+    commit_drain_inner(reservation_id, true)
+}
+
+fn commit_drain_inner(reservation_id: u64, published: bool) -> Result<(), String> {
     let mut queue = STATE
         .get_or_init(|| Mutex::new(CaptureQueueState::new()))
         .lock()
         .map_err(|_| "A33 queue lock poisoned")?;
     let reservation = matching_drain_reservation(&queue, reservation_id)?;
+    let published_loss = if published {
+        if INSTALL_PHASE.load(Ordering::Acquire) != INSTALL_PHASE_NONE {
+            return Err("A33 terminal publication cannot commit before physical teardown".into());
+        }
+        let sealed = queue.sealed_complete_snapshot.as_ref()
+            .ok_or("A33 terminal publication has no sealed snapshot custody")?;
+        Some((ACTIVE_HOOK_EPOCH.load(Ordering::Acquire), sealed.snapshot.producer_loss))
+    } else {
+        None
+    };
     if queue
         .sealed_complete_snapshot
         .as_ref()
@@ -1097,6 +1119,9 @@ pub fn commit_drain(reservation_id: u64) -> Result<(), String> {
     queue.pending.drain(..reservation.row_count);
     queue.reservation = None;
     queue.sealed_complete_snapshot = None;
+    if let Some(published_loss) = published_loss {
+        queue.published_terminal_loss = Some(published_loss);
+    }
     DROPPED_UNBOUND.fetch_sub(reservation.dropped_unbound, Ordering::AcqRel);
     DROPPED_REENTRANT.fetch_sub(reservation.dropped_reentrant, Ordering::AcqRel);
     DROPPED_UNREADABLE.fetch_sub(reservation.dropped_unreadable, Ordering::AcqRel);
@@ -1480,7 +1505,43 @@ pub fn seal_reserve_and_uninstall() -> Result<HookDrainReservation, String> {
     seal_reserve_and_uninstall_inner(None, None)
 }
 
-/// forever. Physical restoration, quiescence and release-receipt observation
+pub fn terminal_drain_has_unpublished_custody(reservation: &HookDrainReservation) -> bool {
+    let drain = &reservation.drain;
+    if !drain.events.is_empty()
+        || drain.dropped_unbound != 0
+        || drain.dropped_reentrant != 0
+        || drain.dropped_unreadable != 0
+        || drain.dropped_lock_busy != 0
+        || drain.dropped_overflow != 0
+    {
+        return true;
+    }
+    let Ok(queue) = STATE.get_or_init(|| Mutex::new(CaptureQueueState::new())).lock() else {
+        return true;
+    };
+    if matching_drain_reservation(&queue, reservation.reservation_id).is_err()
+        || !queue.pending.is_empty()
+        || queue.sealed_complete_snapshot.is_some()
+    {
+        return true;
+    }
+    let current = load_completeness_state();
+    if current.dropped_unbound != 0 || current.dropped_reentrant != 0
+        || current.dropped_unreadable != 0 || current.dropped_lock_busy != 0
+        || current.dropped_overflow != 0
+    {
+        return true;
+    }
+    if !drain.completeness_poisoned && !current.poisoned {
+        return false;
+    }
+    let loss = producer_loss_since_install();
+    // Cumulative completeness never heals. Only a committed terminal snapshot
+    // can prove this same loss was published rather than discarded at teardown.
+    loss.is_none()
+        || queue.published_terminal_loss != Some((drain.hook_epoch, loss))
+}
+
 pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, String> {
     let reservation = seal_reserve_and_uninstall()?;
     let discard = InstallAbortDiscard {
@@ -1493,7 +1554,8 @@ pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, Stri
             .saturating_add(reservation.drain.dropped_unreadable)
             .saturating_add(reservation.drain.dropped_lock_busy)
             .saturating_add(reservation.drain.dropped_overflow),
-        poisoned: reservation.drain.completeness_poisoned,
+        poisoned: reservation.drain.completeness_poisoned
+            && terminal_drain_has_unpublished_custody(&reservation),
     };
     if let Err(error) = commit_drain(reservation.reservation_id) {
         return Err(rollback_drain_error(
@@ -2856,6 +2918,147 @@ mod tests {
     use super::*;
 
     static WITNESS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct TerminalCustodyFixture {
+        queue: Option<CaptureQueueState>,
+        epoch: u64,
+        phase: u8,
+        poison: bool,
+        sequence_regression: bool,
+        counts: [(u64, u64); 5],
+    }
+
+    impl TerminalCustodyFixture {
+        fn new() -> Self {
+            let queue = std::mem::replace(
+                &mut *STATE.get_or_init(|| Mutex::new(CaptureQueueState::new())).lock().unwrap(),
+                CaptureQueueState::new(),
+            );
+            Self {
+                queue: Some(queue),
+                epoch: ACTIVE_HOOK_EPOCH.swap(777, Ordering::AcqRel),
+                phase: INSTALL_PHASE.swap(INSTALL_PHASE_NONE, Ordering::AcqRel),
+                poison: COMPLETENESS_POISONED.swap(false, Ordering::AcqRel),
+                sequence_regression: SEQUENCE_REGRESSION_SINCE_INSTALL.swap(false, Ordering::AcqRel),
+                counts: LOSS_CAUSES.map(|cause| (
+                    cause.reservable.swap(0, Ordering::AcqRel),
+                    cause.cumulative.swap(0, Ordering::AcqRel),
+                )),
+            }
+        }
+
+        fn stage(&self) -> HookDrainReservation {
+            let mut captured = event(2);
+            captured.sink_date_raw = compact_contract::calendar::DATE_EPOCH_CONST + 16_959_300;
+            STATE.get().unwrap().lock().unwrap().pending.push_back(captured.clone());
+            poison(LOSS_UNBOUND);
+            let reservation = peek_drain().unwrap();
+            let snapshot = crate::SunkShipSnapshot {
+                source_sequence: 2,
+                producer_complete: false,
+                records_with_unavailable_text: 0,
+                producer_hour_raw: None,
+                producer_loss: producer_loss_since_install(),
+                events: vec![capture_to_event(captured)],
+            };
+            let frame = crate::SunkShipFrame {
+                elapsed_wall_ms: 1,
+                frame_hour: 16_959_360,
+                status_flags: crate::receipt_status_word(&snapshot),
+                authority: crate::AuthorityState::StaticExact20Receipt,
+                snapshot: Some(snapshot.clone()),
+            };
+            let decoded = crate::decode_payload(&crate::encode_payload(&frame).unwrap()).unwrap();
+            assert_eq!(decoded.snapshot, Some(snapshot.clone()));
+            let mut queue = STATE.get().unwrap().lock().unwrap();
+            queue.sealed_complete_snapshot = Some(SealedCompleteSnapshotState {
+                reserved_prefix: queue.reservation.unwrap(), snapshot,
+            });
+            reservation
+        }
+    }
+
+    impl Drop for TerminalCustodyFixture {
+        fn drop(&mut self) {
+            *STATE.get().unwrap().lock().unwrap() = self.queue.take().unwrap();
+            ACTIVE_HOOK_EPOCH.store(self.epoch, Ordering::Release);
+            INSTALL_PHASE.store(self.phase, Ordering::Release);
+            COMPLETENESS_POISONED.store(self.poison, Ordering::Release);
+            SEQUENCE_REGRESSION_SINCE_INSTALL.store(self.sequence_regression, Ordering::Release);
+            for (cause, (reserved, cumulative)) in LOSS_CAUSES.iter().zip(self.counts) {
+                cause.reservable.store(reserved, Ordering::Release);
+                cause.cumulative.store(cumulative, Ordering::Release);
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_publication_acknowledges_custody_without_healing_partial_history() {
+        let _lock = WITNESS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let fixture = TerminalCustodyFixture::new();
+        let reservation = fixture.stage();
+        assert!(terminal_drain_has_unpublished_custody(&reservation));
+        commit_published_terminal_snapshot(reservation.reservation_id).unwrap();
+        assert_eq!(DROPPED_UNBOUND.load(Ordering::Acquire), 0);
+        assert!(COMPLETENESS_POISONED.load(Ordering::Acquire));
+        assert_eq!(producer_loss_since_install().unwrap().dropped_unbound, 1);
+        for _ in 0..2 {
+            let empty = peek_drain().unwrap();
+            assert!(empty.drain.completeness_poisoned);
+            assert!(!empty.drain.loss_free());
+            assert!(!terminal_drain_has_unpublished_custody(&empty));
+            commit_drain(empty.reservation_id).unwrap();
+        }
+        STATE.get().unwrap().lock().unwrap().reset();
+        let reset = peek_drain().unwrap();
+        assert!(terminal_drain_has_unpublished_custody(&reset));
+    }
+
+    #[test]
+    fn terminal_failed_commit_rollback_and_raw_discard_never_acknowledge_publication() {
+        let _lock = WITNESS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for action in 0..3 {
+            let fixture = TerminalCustodyFixture::new();
+            let reservation = fixture.stage();
+            match action {
+                0 => {
+                    assert!(commit_published_terminal_snapshot(reservation.reservation_id + 1).is_err());
+                    INSTALL_PHASE.store(INSTALL_PHASE_ACTIVE, Ordering::Release);
+                    assert!(commit_published_terminal_snapshot(reservation.reservation_id).is_err());
+                    INSTALL_PHASE.store(INSTALL_PHASE_NONE, Ordering::Release);
+                    assert_eq!(DROPPED_UNBOUND.load(Ordering::Acquire), 1);
+                    rollback_drain(reservation.reservation_id).unwrap();
+                }
+                1 => rollback_drain(reservation.reservation_id).unwrap(),
+                _ => commit_drain(reservation.reservation_id).unwrap(),
+            }
+            assert!(STATE.get().unwrap().lock().unwrap().published_terminal_loss.is_none());
+            let pending = peek_drain().unwrap();
+            assert!(terminal_drain_has_unpublished_custody(&pending));
+            assert!(producer_loss_since_install().is_some());
+        }
+    }
+
+    #[test]
+    fn terminal_new_rows_drops_and_sequence_faults_remain_unpublished() {
+        let _lock = WITNESS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for kind in 0..3 {
+            let fixture = TerminalCustodyFixture::new();
+            let reservation = fixture.stage();
+            commit_published_terminal_snapshot(reservation.reservation_id).unwrap();
+            let old_empty = peek_drain().unwrap();
+            assert!(!terminal_drain_has_unpublished_custody(&old_empty));
+            match kind {
+                0 => STATE.get().unwrap().lock().unwrap().pending.push_back(event(3)),
+                1 => poison(LOSS_UNREADABLE),
+                _ => SEQUENCE_REGRESSION_SINCE_INSTALL.store(true, Ordering::Release),
+            }
+            assert!(terminal_drain_has_unpublished_custody(&old_empty));
+            rollback_drain(old_empty.reservation_id).unwrap();
+            let new = peek_drain().unwrap();
+            assert!(terminal_drain_has_unpublished_custody(&new));
+        }
+    }
 
     fn clear_member_unresolved_witness() {
         UNBOUND_MEMBER_UNRESOLVED_SNAPSHOT_HOUR.store(i64::MIN, Ordering::Release);
