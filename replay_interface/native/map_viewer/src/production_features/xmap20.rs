@@ -842,6 +842,7 @@ mod carrier_tests {
             frame_delta_seconds_f32_bits: 0,
         };
         let selection = Xmap15ViewerSelection {
+            selected_owner: None,
             selected_plan: None,
         };
         // The projection fills a gap's reason from the requirement's own

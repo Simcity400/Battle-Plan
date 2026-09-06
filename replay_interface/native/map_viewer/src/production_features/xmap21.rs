@@ -243,6 +243,7 @@ mod tests {
                     frame_delta_seconds_f32_bits: 0,
                 },
                 selection: Xmap15ViewerSelection {
+                    selected_owner: None,
                     selected_plan: None,
                 },
             }

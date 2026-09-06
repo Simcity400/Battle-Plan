@@ -282,7 +282,7 @@ pub(crate) fn run(
         &resolver,
         crate::win32::actual_client_input_variant(),
     )?;
-    let xmap15_selection = map_viewer::xmap15_viewer_selection(&frame, None);
+    let xmap15_selection = map_viewer::xmap15_viewer_selection(&frame, None, None);
     let gpu = composition.adapter_identity()?;
     validate_reference_gpu(&gpu)?;
     let mut render_one = |composition: &mut crate::app::ProductMapCompositionSession| {

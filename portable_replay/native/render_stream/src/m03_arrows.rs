@@ -533,8 +533,8 @@ pub struct Xmap15PlanSemanticRow {
     pub assigned: bool,
     pub active: bool,
     pub route: Xmap15PreparedRoute,
-    pub manager_insertion_ordinal: u32,
-    pub definition_group_ordinal: u32,
+    pub manager_insertion_ordinal: Option<u32>,
+    pub definition_group_ordinal: Option<u32>,
     pub object_width_multiplier_f32_bits: u32,
     pub comparator_tie_17c_f32_bits: u32,
     pub fade_in_f32_bits: u32,
@@ -545,7 +545,7 @@ pub struct Xmap15PlanSemanticRow {
     pub texture_variant: u8,
     pub see_through: bool,
     pub visible: bool,
-    pub final_engine_draw_ordinal: u32,
+    pub final_engine_draw_ordinal: Option<u32>,
     pub exact_head_vertices_f32_bits: Option<[[u32; 8]; 4]>,
     pub lifecycle_tombstone_sha256: String,
 }
@@ -643,8 +643,11 @@ impl Xmap15SemanticFrame {
                 || row.selector.resolved_definition_name() != Some(&row.resolved_definition_name)
                 || row.ordered_assigned_division_ids.is_empty() != !row.assigned
                 || (!row.assigned && row.active)
+                || row.manager_insertion_ordinal.is_none()
+                || row.definition_group_ordinal.is_none()
+                || row.final_engine_draw_ordinal.is_none()
                 || !plan_keys.insert(row.key.clone())
-                || !final_draw_ordinals.insert(row.final_engine_draw_ordinal)
+                || !final_draw_ordinals.insert(row.final_engine_draw_ordinal.unwrap())
             {
                 return Err("XMAP15 plan semantic row violates identity/selector state".into());
             }
@@ -1271,9 +1274,13 @@ impl Xmap15PreparedFrame {
         if self.ordered_rows.windows(2).any(|pair| {
             let ordinal = |row: &Xmap15PreparedRow| match row {
                 Xmap15PreparedRow::Plan { semantic, .. } => semantic.final_engine_draw_ordinal,
-                Xmap15PreparedRow::Movement { semantic, .. } => semantic.final_engine_draw_ordinal,
+                Xmap15PreparedRow::Movement { semantic, .. } => Some(semantic.final_engine_draw_ordinal),
             };
-            ordinal(&pair[0]) >= ordinal(&pair[1])
+            match (ordinal(&pair[0]), ordinal(&pair[1])) {
+                (Some(a), Some(b)) => a >= b,
+                (None, None) => false,
+                _ => true,
+            }
         }) {
             return Err("XMAP15 prepared rows are not in strict final engine draw order".into());
         }
@@ -1440,8 +1447,8 @@ mod tests {
                 explicit_height_f32_bits: None,
                 wrap_offset_world: 0,
             },
-            manager_insertion_ordinal: 0,
-            definition_group_ordinal: 0,
+            manager_insertion_ordinal: Some(0),
+            definition_group_ordinal: Some(0),
             object_width_multiplier_f32_bits: 0.0f32.to_bits(),
             comparator_tie_17c_f32_bits: 0.0f32.to_bits(),
             fade_in_f32_bits: 0.0f32.to_bits(),
@@ -1452,7 +1459,7 @@ mod tests {
             texture_variant: 0,
             see_through: false,
             visible: true,
-            final_engine_draw_ordinal: 0,
+            final_engine_draw_ordinal: Some(0),
             exact_head_vertices_f32_bits: None,
             lifecycle_tombstone_sha256: "a".repeat(64),
         };
@@ -1469,6 +1476,48 @@ mod tests {
             head_length_f32_bits: 0.0f32.to_bits(),
         };
         (row, profile)
+    }
+
+    #[test]
+    fn viewer_rows_allow_missing_provenance_without_weakening_native_sidecar() {
+        let (row, _) = terrain_arrow_fixture();
+        let native = Xmap15SemanticFrame {
+            schema: XMAP15_SEMANTIC_INPUT_SCHEMA.into(), executable_sha256: M03_A729_EXECUTABLE_SHA256.into(),
+            producer_registration_sha256: xmap15_semantic_producer_registration_sha256(),
+            hour_index: 17, observation_sequence: 1, baseline_complete: true,
+            omitted_plan_rows: 0, omitted_movement_rows: 0, plan_object_census: 1, movement_object_census: 0,
+            plans: vec![row.clone()], movements: vec![], enumerator_witness_sha256: "a".repeat(64),
+        };
+        native.validate().unwrap();
+        for field in ["manager_insertion_ordinal", "definition_group_ordinal", "final_engine_draw_ordinal"] {
+            for missing in [false, true] {
+                let mut value = serde_json::to_value(&native).unwrap();
+                if missing { value["plans"][0].as_object_mut().unwrap().remove(field); }
+                else { value["plans"][0][field] = serde_json::Value::Null; }
+                assert!(Xmap15SemanticFrame::decode_json(&serde_json::to_vec(&value).unwrap()).is_err());
+            }
+        }
+        let mut first = row;
+        first.manager_insertion_ordinal = None;
+        first.definition_group_ordinal = None;
+        first.final_engine_draw_ordinal = None;
+        let mut second = first.clone();
+        second.key.engine_order_instance_id += 1;
+        let prepared = Xmap15PreparedFrame {
+            schema: XMAP15_STATE_FIRST_SCHEMA.into(), hour_index: 17, observation_sequence: 1,
+            semantic_input_sha256: "a".repeat(64), enumerator_witness_sha256: "b".repeat(64),
+            xmap13_census_sha256: "c".repeat(64), xmap13_admission_sha256: "d".repeat(64),
+            selected_plan: None, ordered_rows: vec![first.clone(), second].into_iter().map(|semantic|
+                Xmap15PreparedRow::Plan { semantic, definition_sha256: "e".repeat(64) }).collect(),
+            ordered_used_content: vec![], deterministic_sha256: String::new(),
+        }.seal().unwrap();
+        let mut duplicate = prepared.clone();
+        duplicate.ordered_rows[1] = duplicate.ordered_rows[0].clone();
+        assert!(duplicate.seal().is_err());
+        let mut mixed = prepared;
+        let Xmap15PreparedRow::Plan { semantic, .. } = &mut mixed.ordered_rows[1] else { unreachable!() };
+        semantic.final_engine_draw_ordinal = Some(0);
+        assert!(mixed.seal().is_err());
     }
 
     #[test]

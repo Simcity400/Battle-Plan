@@ -300,7 +300,7 @@ impl ArrowSubmissionOrder {
                 let definition = frame.plan_definitions.iter().find(|d| d.name == semantic.resolved_definition_name);
                 Some(resolve_arrow(ArrowFamily::Orders, row, definition.map(|d| (d.name.as_str(), d.definition_index,
                     d.body_width_f32_bits.map(f32::from_bits), f32::from_bits(d.width_scale_f32_bits))),
-                    Some(semantic.manager_insertion_ordinal), f32::from_bits(semantic.object_width_multiplier_f32_bits), secondary))
+                    semantic.manager_insertion_ordinal, f32::from_bits(semantic.object_width_multiplier_f32_bits), secondary))
             }).collect()
         });
         let supply_rows = supply.candidates(|frame| Self::supply_candidates(
@@ -486,8 +486,8 @@ mod tests {
                 explicit_height_f32_bits: None,
                 wrap_offset_world: 0,
             },
-            manager_insertion_ordinal: 0,
-            definition_group_ordinal: 0,
+            manager_insertion_ordinal: Some(0),
+            definition_group_ordinal: Some(0),
             object_width_multiplier_f32_bits: 0.0f32.to_bits(),
             comparator_tie_17c_f32_bits: 0.0f32.to_bits(),
             fade_in_f32_bits: 0.0f32.to_bits(),
@@ -498,15 +498,15 @@ mod tests {
             texture_variant: 0,
             see_through: false,
             visible: true,
-            final_engine_draw_ordinal: 0,
+            final_engine_draw_ordinal: Some(0),
             exact_head_vertices_f32_bits: None,
             lifecycle_tombstone_sha256: "a".repeat(64),
         };
         let ordered_rows = if populated { (0..2).map(|index| {
             let mut semantic = semantic.clone();
             semantic.key.slot_index = index;
-            semantic.manager_insertion_ordinal = index;
-            semantic.final_engine_draw_ordinal = index;
+            semantic.manager_insertion_ordinal = Some(index);
+            semantic.final_engine_draw_ordinal = Some(index);
             Xmap15PreparedRow::Plan { semantic, definition_sha256: definition.deterministic_sha256.clone() }
         }).collect::<Vec<_>>() } else { Vec::new() };
         let selected_plan = selected.map(|index| match &ordered_rows[index] {
@@ -618,6 +618,48 @@ mod tests {
         assert!(order.refusals.is_empty());
         frame.paradrop_profile.as_mut().unwrap().ordered_used_content.clear();
         assert!(frame.validate().unwrap_err().to_string().contains("authenticated defines closure"));
+    }
+
+    #[test]
+    fn prepared_viewer_rows_without_native_ordinals_submit_unique_keys_and_refuse_ties() {
+        let mut frame = prepared_orders(1, true, None);
+        let definition = &mut frame.plan_definitions[0];
+        definition.width_scale_f32_bits = 1.0f32.to_bits();
+        definition.deterministic_sha256.clear();
+        definition.deterministic_sha256 = snapshot::sha256::Sha256::hex(&serde_json::to_vec(&serde_json::to_value(&*definition).unwrap()).unwrap());
+        for (index, row) in frame.portable.ordered_rows.iter_mut().enumerate() {
+            let Xmap15PreparedRow::Plan { semantic, definition_sha256 } = row else { unreachable!() };
+            semantic.manager_insertion_ordinal = None;
+            semantic.definition_group_ordinal = None;
+            semantic.final_engine_draw_ordinal = None;
+            semantic.object_width_multiplier_f32_bits = (index as f32).to_bits();
+            *definition_sha256 = frame.plan_definitions[0].deterministic_sha256.clone();
+        }
+        frame.portable = frame.portable.seal().unwrap();
+        frame.validate().unwrap();
+        let mut lifecycle = crate::Xmap15LifecycleState::default();
+        let mut viewer = ArrowViewerSortState::default();
+        let witness = lifecycle.apply(&frame).unwrap();
+        let result = ArrowSubmissionOrder::from_frames(ArrowFrameInput::Present(&frame),
+            ArrowFrameInput::ViewInactive, &mut viewer, Some(&witness), &"a".repeat(64));
+        assert_eq!(result.submissions.len(), 2);
+        assert!(result.refusals.is_empty());
+        assert!(result.submissions.iter().all(|row| row.registration_ordinal.is_none()));
+        assert_eq!(result.submissions.iter().map(|row| row.row).collect::<BTreeSet<_>>(), [0, 1].into_iter().collect());
+        for row in &mut frame.portable.ordered_rows {
+            let Xmap15PreparedRow::Plan { semantic, .. } = row else { unreachable!() };
+            semantic.object_width_multiplier_f32_bits = 0.0f32.to_bits();
+        }
+        frame.portable.observation_sequence += 1;
+        frame.portable = frame.portable.seal().unwrap();
+        let witness = lifecycle.apply(&frame).unwrap();
+        let result = ArrowSubmissionOrder::from_frames(ArrowFrameInput::Present(&frame),
+            ArrowFrameInput::ViewInactive, &mut viewer, Some(&witness), &"a".repeat(64));
+        assert!(result.submissions.is_empty());
+        assert_eq!(result.refusals.iter().map(|reason| match reason {
+            ArrowOrderRefusal::MissingRegistrationOrdinal { family: ArrowFamily::Orders, row } => *row,
+            other => panic!("unexpected refusal: {other:?}"),
+        }).collect::<BTreeSet<_>>(), [0, 1].into_iter().collect());
     }
 
     #[test]
@@ -1112,7 +1154,7 @@ mod tests {
                 let frame: portable_render_stream::Xmap15SemanticFrame = serde_json::from_value(value.clone()).unwrap();
                 frame.validate().unwrap();
                 frame.plans.iter().enumerate().map(|(row, semantic)| resolve_arrow(ArrowFamily::Orders, row,
-                    None, Some(semantic.manager_insertion_ordinal), f32::from_bits(semantic.object_width_multiplier_f32_bits), 0.0))
+                    None, semantic.manager_insertion_ordinal, f32::from_bits(semantic.object_width_multiplier_f32_bits), 0.0))
                     .collect::<Vec<_>>()
             });
             let supply = world.rail_replay().supply_arrows.as_ref().map(|frame| {

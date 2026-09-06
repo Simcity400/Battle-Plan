@@ -127,7 +127,7 @@ fn execute(
         &resolver,
         crate::win32::actual_client_input_variant(),
     )?;
-    let selection = map_viewer::xmap15_viewer_selection(&world, None);
+    let selection = map_viewer::xmap15_viewer_selection(&world, None, None);
     let mut composition = crate::app::ProductMapCompositionSession::start_for_headless(
         &resolver,
         &admission,

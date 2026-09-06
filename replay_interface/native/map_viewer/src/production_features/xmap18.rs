@@ -3843,6 +3843,7 @@ mod tests {
             frame_delta_seconds_f32_bits: 0,
         };
         let selection = Xmap15ViewerSelection {
+            selected_owner: None,
             selected_plan: None,
         };
         let adapter = Xmap18MapModeAdapter::new_for_owned_accounting_tests();

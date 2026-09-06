@@ -526,7 +526,7 @@ mod tests {
             "active_status": "exact",
             "style_flags": 0,
             "style_status": "exact",
-            "linked_orders": {"version": 3, "status": 2, "predecessors": [], "successors": [], "virtual_predecessors": [], "virtual_successors": []}
+            "linked_orders": {"version": 5, "front_binding": {"status": 0, "words": null}, "root_status": 0, "root_positions": [null, null, null], "status": 2, "predecessors": [], "successors": [], "virtual_predecessors": [], "virtual_successors": []}
         })
     }
 
@@ -549,7 +549,20 @@ mod tests {
         let mut row = line_order();
         row.as_object_mut().unwrap().remove("linked_orders");
         assert_eq!(parse_army_battleplans(&raw(row), &manager()).status, ViewStatus::DomainUnavailable);
-        let mut row = line_order(); row["linked_orders"]["version"] = json!(2);
+        let mut row = line_order();
+        row["linked_orders"]["root_status"] = json!(1);
+        row["linked_orders"]["root_positions"] = json!([0, null, 2]);
+        let measured = parse_army_battleplans(&raw(row.clone()), &manager());
+        assert_eq!(measured.orders[0].linked_orders.root_positions, [Some(0), None, Some(2)]);
+        for field in ["root_status", "root_positions"] {
+            let mut missing = row.clone(); missing["linked_orders"].as_object_mut().unwrap().remove(field);
+            assert!(parse_army_battleplans(&raw(missing), &manager()).orders.is_empty());
+        }
+        row["linked_orders"]["root_positions"] = json!([null, null, null]);
+        assert_eq!(parse_army_battleplans(&raw(row.clone()), &manager()).orders[0].linked_orders.root_status, 1);
+        row["linked_orders"]["root_positions"] = json!([256, null, null]);
+        assert!(parse_army_battleplans(&raw(row), &manager()).orders.is_empty());
+        let mut row = line_order(); row["linked_orders"]["version"] = json!(3);
         assert_eq!(parse_army_battleplans(&raw(row), &manager()).status, ViewStatus::DomainUnavailable);
     }
 
@@ -572,6 +585,21 @@ mod tests {
             let mut duplicate = row.clone(); duplicate["linked_orders"][field] = json!([a, a]);
             assert_eq!(parse_army_battleplans(&raw(duplicate), &manager()).status, ViewStatus::DomainUnavailable);
         }
+    }
+
+    #[test]
+    fn current_order_front_binding_keeps_absent_unavailable_and_exact_read_distinct() {
+        for (status, words) in [(0, None), (1, Some([0, 0, 7])), (2, Some([77, 123, 7]))] {
+            let mut row = line_order();
+            row["linked_orders"]["front_binding"] = json!({"status": status, "words": words});
+            let view = parse_army_battleplans(&raw(row), &manager());
+            assert_eq!(view.status, ViewStatus::Present);
+            assert_eq!(view.orders[0].linked_orders.front_binding,
+                portable_render_stream::D54FrontBinding { status, words });
+        }
+        let mut missing = line_order();
+        missing["linked_orders"].as_object_mut().unwrap().remove("front_binding");
+        assert_eq!(parse_army_battleplans(&raw(missing), &manager()).status, ViewStatus::DomainUnavailable);
     }
 
     #[test]

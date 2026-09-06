@@ -9,7 +9,7 @@ use portable_render_stream::{
     XMAP15_STATE_FIRST_SCHEMA,
 };
 use replay_core::{
-    ArmyBattleplanGeometry, ArmyBattleplanOrderKey, ArmyBattleplanOwnerKind,
+    ArmyBattleplanGeometry, ArmyBattleplanOrderKey, ArmyBattleplanOwnerKey, ArmyBattleplanOwnerKind,
     ValidatedContentAdmission, ViewStatus, WorldFrame,
 };
 use serde::{Deserialize, Serialize};
@@ -32,14 +32,17 @@ const XMAP15_REGISTRATION_EVIDENCE: &str =
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Xmap15ViewerSelection {
+    pub selected_owner: Option<(portable_render_stream::Xmap15OwnerKind, u32)>,
     pub selected_plan: Option<Xmap15PlanKey>,
 }
 
 pub fn xmap15_viewer_selection(
     world: &WorldFrame,
+    selected_owner: Option<ArmyBattleplanOwnerKey>,
     selected: Option<&ArmyBattleplanOrderKey>,
 ) -> Xmap15ViewerSelection {
     let selected_plan = selected.and_then(|selected| {
+        if selected_owner != Some(selected.owner) { return None; }
         let census = world.army_battleplans();
         if census.status != ViewStatus::Present { return None; }
         let mut matches = census.orders.iter().filter(|order|
@@ -57,7 +60,13 @@ pub fn xmap15_viewer_selection(
             slot_index: order.slot_index,
         })
     });
-    Xmap15ViewerSelection { selected_plan }
+    Xmap15ViewerSelection {
+        selected_owner: selected_owner.map(|owner| (match owner.kind {
+            ArmyBattleplanOwnerKind::Army => portable_render_stream::Xmap15OwnerKind::Army,
+            ArmyBattleplanOwnerKind::ArmyGroup => portable_render_stream::Xmap15OwnerKind::ArmyGroup,
+        }, owner.id)),
+        selected_plan,
+    }
 }
 
 pub trait Xmap15UnitIdentityProvider {
@@ -1360,8 +1369,8 @@ pub fn prepare_xmap15_frame(
             semantic.definition_group_ordinal,
         ),
         Xmap15PreparedRow::Movement { semantic, .. } => (
-            semantic.final_engine_draw_ordinal,
-            semantic.definition_group_ordinal,
+            Some(semantic.final_engine_draw_ordinal),
+            Some(semantic.definition_group_ordinal),
         ),
     });
 
@@ -2265,7 +2274,7 @@ mod tests {
                 usize::from(id == 301 && country == "GER")
             }
         }
-        let linked_orders = serde_json::json!({"version": 3, "status": 1,
+        let linked_orders = serde_json::json!({"version": 5, "front_binding": {"status": 0, "words": null}, "root_status": 0, "root_positions": [null, null, null], "status": 1,
             "predecessors": [], "successors": [],
             "virtual_predecessors": [], "virtual_successors": []});
         let world = crate::test_support::frame_with_rest(serde_json::json!({
@@ -2299,11 +2308,11 @@ mod tests {
                 order_type: 4, move_special_118: false, withdraw_119: false,
                 fallback_298: false, virtual_299: false, blitz_118: false, army_group_style_39_and_378: false },
             resolved_definition_name: "paradrop".into(), ordered_assigned_division_ids: vec![301],
-            assigned: true, active: false, route, manager_insertion_ordinal: 0, definition_group_ordinal: 0,
+            assigned: true, active: false, route, manager_insertion_ordinal: Some(0), definition_group_ordinal: Some(0),
             object_width_multiplier_f32_bits: 0, comparator_tie_17c_f32_bits: 0,
             fade_in_f32_bits: 0, fade_out_f32_bits: 0, culling_offset_f32_bits: 0,
             inner_rgba_f32_bits: [1.0f32.to_bits(); 4], outer_rgba_f32_bits: [1.0f32.to_bits(); 4],
-            texture_variant: 0, see_through: false, visible: true, final_engine_draw_ordinal: 0,
+            texture_variant: 0, see_through: false, visible: true, final_engine_draw_ordinal: Some(0),
             exact_head_vertices_f32_bits: None, lifecycle_tombstone_sha256: "a".repeat(64),
         };
         let mut semantic = Xmap15SemanticFrame {

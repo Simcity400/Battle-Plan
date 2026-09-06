@@ -11,7 +11,7 @@ pub const XMAP15_MOVEMENT_CB1_BYTES: u32 = 112;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Xmap15NativeRowReceipt {
     pub outer_pass: Option<bool>,
-    pub final_engine_draw_ordinal: u32,
+    pub final_engine_draw_ordinal: Option<u32>,
     pub stable_key: String,
     pub definition_name: String,
     pub visible: bool,
@@ -82,9 +82,12 @@ impl Xmap15NativeExecutionReceipt {
         {
             return Err("XMAP15 native execution receipt is invalid".into());
         }
+        let mut identities = BTreeSet::new();
         let mut ordinals = BTreeSet::new();
         if self.ordered_rows.iter().any(|row| {
-            !ordinals.insert((row.final_engine_draw_ordinal, row.outer_pass))
+            !identities.insert((&row.stable_key, row.outer_pass))
+                || row.stable_key.is_empty()
+                || row.final_engine_draw_ordinal.is_some_and(|ordinal| !ordinals.insert((ordinal, row.outer_pass)))
                 || row.geometry_sha256.len() != 64
                 || row.constant_payload_sha256.len() != 64
                 || (!row.visible && row.submitted_draw_count != 0)
@@ -351,7 +354,7 @@ mod native {
             }
             let mut commands = Vec::new();
             let mut refusals = Vec::new();
-            for (row, native) in frame.portable.ordered_rows.iter().zip(&self.rows) {
+            for (row_index, (row, native)) in frame.portable.ordered_rows.iter().zip(&self.rows).enumerate() {
                 let (Xmap15PreparedRow::Plan { semantic, .. }, RowGeometry::Plan { buffer, vertex_count, total_length_f32_bits, wrap_offset_world }) = (row, &native.geometry) else { continue; };
                 let definition = frame.plan_definition(&semantic.resolved_definition_name)?;
                 if !semantic.visible || !definition.draw_last || !definition.draw_shadows { continue; }
@@ -363,7 +366,7 @@ mod native {
                         for outer in [false, true] {
                             refusals.push(crate::map_arrow_light_depth::MapArrowLightDrawRefusal {
                                 owner_packet: "XMAP15".into(), prepared_frame_sha256: self.prepared_frame_sha256.clone(),
-                                row_ordinal: semantic.final_engine_draw_ordinal, outer, reason: reason.clone() });
+                                row_ordinal: u32::try_from(row_index)?, outer, reason: reason.clone() });
                         }
                         continue;
                     }
@@ -379,7 +382,7 @@ mod native {
                         scene.application_elapsed_seconds, frame.portable.selected_plan.as_ref() == Some(&semantic.key), outer)?;
                     cb3[96..104].fill(0);
                     let submission = crate::MapArrowLightDraw { owner_packet: "XMAP15".into(), prepared_frame_sha256: self.prepared_frame_sha256.clone(),
-                        row_ordinal: semantic.final_engine_draw_ordinal, outer, geometry_sha256: native.geometry_sha256.clone(),
+                        row_ordinal: u32::try_from(row_index)?, outer, geometry_sha256: native.geometry_sha256.clone(),
                         scene_cb0_sha256: scene.payload_sha256.clone(), cb3_sha256: Sha256::hex(&cb3), pixel_bytecode_sha256: light_program.pixel_bytecode_sha256.clone(),
                     retained_shadow: if light_program.retained_t2_required { retained_view.map(|v| v.receipt().clone()) } else { None },
                         vertex_count: *vertex_count, first_vertex: 0 };
@@ -618,7 +621,7 @@ mod native {
                         }
                         Xmap15NativeRowReceipt {
                             outer_pass: None,
-                            final_engine_draw_ordinal: semantic.final_engine_draw_ordinal,
+                            final_engine_draw_ordinal: Some(semantic.final_engine_draw_ordinal),
                             stable_key: format!(
                                 "movement:{}:{}:{}",
                                 semantic.key.owner_country,
@@ -1744,5 +1747,26 @@ mod tests {
         assert_eq!(receipt.arrow_refusals, [reason]);
         receipt.arrow_refusals.clear();
         assert!(receipt.validate().is_err());
+        let row = |key: &str| Xmap15NativeRowReceipt {
+            outer_pass: Some(false), final_engine_draw_ordinal: None, stable_key: key.into(),
+            definition_name: "paradrop".into(), visible: true,
+            submitted_draw_count: 1, submitted_vertex_count: 3, submitted_index_count: 0,
+            geometry_sha256: "1".repeat(64), constant_payload_sha256: "2".repeat(64),
+        };
+        receipt.ordered_rows = vec![row("plan:Army:17:1:1:0"), row("plan:Army:17:2:1:1")];
+        receipt.deterministic_sha256 = execution_digest(&receipt).unwrap();
+        receipt.validate().unwrap();
+        let mut outer = receipt.ordered_rows[0].clone();
+        outer.outer_pass = Some(true);
+        receipt.ordered_rows.push(outer);
+        receipt.deterministic_sha256 = execution_digest(&receipt).unwrap();
+        receipt.validate().unwrap();
+        let mut duplicate = receipt.clone();
+        duplicate.ordered_rows.push(duplicate.ordered_rows[0].clone());
+        duplicate.deterministic_sha256 = execution_digest(&duplicate).unwrap();
+        assert!(duplicate.validate().is_err());
+        for row in &mut receipt.ordered_rows { row.final_engine_draw_ordinal = Some(0); }
+        receipt.deterministic_sha256 = execution_digest(&receipt).unwrap();
+        assert!(receipt.validate().is_err(), "known engine ordinals still require unique row identities");
     }
 }

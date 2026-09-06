@@ -365,6 +365,14 @@ pub mod field {
     pub const COLOUR_G_BITS: u32 = 94;
     pub const COLOUR_B_BITS: u32 = 95;
     pub const COLOUR_A_BITS: u32 = 96;
+    pub const ROOT_STATUS: u32 = 97;
+    pub const ROOT_PRIMARY: u32 = 98;
+    pub const ROOT_SECONDARY: u32 = 99;
+    pub const ROOT_TERTIARY: u32 = 100;
+    pub const FRONT_STATUS: u32 = 101;
+    pub const FRONT_REFERENCE_TYPE: u32 = 102;
+    pub const FRONT_REFERENCE_ID: u32 = 103;
+    pub const FRONT_ORDER_ID: u32 = 104;
 }
 
 // --- Transcribed shipping constants -----------------------------------------
@@ -548,6 +556,14 @@ pub fn schema() -> Schema {
             Field::new(f::NON_TYPE5_GEOMETRY_BLOCKED, Kind::Boolean),
             Field::new(f::EXECUTION_BLOCKED, Kind::Boolean),
             Field::new(f::LINK_STATUS, Kind::Enum).enum_card(3),
+            Field::new(f::ROOT_STATUS, Kind::Enum).enum_card(3),
+            Field::new(f::ROOT_PRIMARY, Kind::Unsigned).optional().unknown_capable(),
+            Field::new(f::ROOT_SECONDARY, Kind::Unsigned).optional().unknown_capable(),
+            Field::new(f::ROOT_TERTIARY, Kind::Unsigned).optional().unknown_capable(),
+            Field::new(f::FRONT_STATUS, Kind::Enum).enum_card(3),
+            Field::new(f::FRONT_REFERENCE_TYPE, Kind::Unsigned).unknown_capable(),
+            Field::new(f::FRONT_REFERENCE_ID, Kind::Unsigned).unknown_capable(),
+            Field::new(f::FRONT_ORDER_ID, Kind::Unsigned).unknown_capable(),
         ],
     };
 
@@ -1414,6 +1430,12 @@ pub fn record_from_order_row(
         // not read or accept (`lane lib.rs:1150`-`:1183`).
         None => Value::Unknown,
     };
+    let root_position = |index: usize| match linked_orders.root_status {
+        links::OrderLinkStatus::Absent => Value::Unknown,
+        links::OrderLinkStatus::Unavailable => Value::Unknown,
+        links::OrderLinkStatus::Exact => linked_orders.root_positions[index]
+            .map(|slot| Value::Unsigned(slot as u64)).unwrap_or(Value::Absent),
+    };
     Ok(Record::new(vec![
         Value::Unsigned(parsed.slot_index as u64),
         Value::Signed(parsed.order_type as i64),
@@ -1427,6 +1449,12 @@ pub fn record_from_order_row(
         Value::Bool(parsed.flags & FLAG_NON_TYPE5_GEOMETRY_BLOCKED != 0),
         Value::Bool(parsed.flags & FLAG_EXECUTION_BLOCKED != 0),
         Value::Enum(linked_orders.status as u32),
+        Value::Enum(linked_orders.root_status as u32),
+        root_position(0), root_position(1), root_position(2),
+        Value::Enum(linked_orders.front_binding.status()),
+        linked_orders.front_binding.words().map(|words| Value::Unsigned(words[0] as u64)).unwrap_or(Value::Unknown),
+        linked_orders.front_binding.words().map(|words| Value::Unsigned(words[1] as u64)).unwrap_or(Value::Unknown),
+        linked_orders.front_binding.words().map(|words| Value::Unsigned(words[2] as u64)).unwrap_or(Value::Unknown),
     ]))
 }
 
@@ -2147,7 +2175,7 @@ mod tests {
     // ---- 1. Schema validity --------------------------------------------------
 
     #[test]
-    fn version_three_links_survive_fold_codec_and_tombstone() {
+    fn version_five_links_roots_and_front_binding_survive_fold_codec_and_tombstone() {
         let mut frame = full_frame();
         let raw = frame.encode();
         let split = split_payload(&raw).unwrap();
@@ -2158,8 +2186,9 @@ mod tests {
             generation: 99, engine_order_instance_id: 4 };
         let b = links::OrderLinkIdentity { owner_kind: 1, generation: 100, ..a };
         let mut link_rows = split.linked_orders.clone();
-        link_rows[0] = links::OrderedOrderLinks { status: links::OrderLinkStatus::Exact,
+        link_rows[0] = links::OrderedOrderLinks { front_binding: Default::default(), root_status: links::OrderLinkStatus::Exact, root_positions: [Some(0), None, Some(1)], status: links::OrderLinkStatus::Exact,
             predecessors: vec![b, a], successors: vec![a], virtual_predecessors: vec![a, b], virtual_successors: vec![b, a] };
+        link_rows[0].front_binding = links::OrderFrontBinding::Exact([77, 123, 55]);
         let mut payload = raw[..base].to_vec();
         payload.extend(links::encode_order_links(&link_rows));
         payload.extend_from_slice(&raw[base + old_link_len..]);
@@ -2177,6 +2206,10 @@ mod tests {
             let mut virtual_key = parent.clone(); virtual_key.0.extend([direction, 0]);
             assert_eq!(state.order_links[&virtual_key].values[3], Value::Unsigned(if direction == 2 { 99 } else { 100 }));
         }
+        assert_eq!(&state.orders[&parent].values[16..],
+            &[Value::Enum(2), Value::Unsigned(77), Value::Unsigned(123), Value::Unsigned(55)]);
+        assert_eq!(&state.orders[&parent].values[12..16],
+            &[Value::Enum(1), Value::Unsigned(0), Value::Absent, Value::Unsigned(1)]);
         let states = state.collections();
         let mut bytes = Vec::new();
         encode_baseline(&schema, &states, &mut bytes).unwrap();
@@ -2438,6 +2471,10 @@ mod tests {
                 Value::Bool(true),
                 Value::Bool(true),
                 Value::Enum(2),
+                Value::Enum(0),
+                Value::Unknown, Value::Unknown, Value::Unknown,
+                Value::Enum(0),
+                Value::Unknown, Value::Unknown, Value::Unknown,
             ]
         );
 
@@ -2527,13 +2564,7 @@ mod tests {
     // ---- 3. States through the mapper ---------------------------------------
 
     #[test]
-    fn only_target_declared_count_reaches_an_empty_state() {
-        // Step 8.3: every capability the schema declares gets its own raw-bytes
-        // case, and a collection that declares none says so. Here exactly one
-        // field is `.optional().unknown_capable()` and NOTHING anywhere is
-        // `.nullable()` — the fold never emits a record-state contract null for this domain, and
-        // declaring one would cost a null bitmap bit for a state no input can
-        // produce.
+    fn target_count_and_root_positions_preserve_absent_and_unknown_states() {
         let s = schema();
         let mut optional = Vec::new();
         for collection in &s.collections {
@@ -2550,8 +2581,14 @@ mod tests {
         }
         assert_eq!(
             optional,
-            vec![(ORDERS, field::TARGET_DECLARED_COUNT, true, true)],
-            "one field, both capabilities, nothing else"
+            vec![(ORDERS, field::TARGET_DECLARED_COUNT, true, true),
+                (ORDERS, field::ROOT_PRIMARY, true, true),
+                (ORDERS, field::ROOT_SECONDARY, true, true),
+                (ORDERS, field::ROOT_TERTIARY, true, true),
+                (ORDERS, field::FRONT_REFERENCE_TYPE, false, true),
+                (ORDERS, field::FRONT_REFERENCE_ID, false, true),
+                (ORDERS, field::FRONT_ORDER_ID, false, true)],
+            "only fields with observed absent/unknown truth declare those capabilities"
         );
 
         let orders = collection_of(&s, ORDERS).unwrap();
@@ -3113,7 +3150,7 @@ mod tests {
             if f.kind == Kind::Enum {
                 let expected = match f.field_id {
                     field::STYLE_FLAGS => STYLE_FLAG_CARD,
-                    field::LINK_STATUS => 3,
+                    field::LINK_STATUS | field::ROOT_STATUS | field::FRONT_STATUS => 3,
                     _ => STATUS_CARD,
                 };
                 assert_eq!(f.enum_card, Some(expected), "field {}", f.field_id);
@@ -3224,7 +3261,7 @@ mod tests {
         assert_eq!(collection.collection_id, 9);
         assert_eq!(collection.fields.iter().map(|f| f.field_id).collect::<Vec<_>>(), (90..=96).collect::<Vec<_>>());
         assert!(schema.collections.iter().filter(|c| c.collection_id != OWNER_COLOURS)
-            .flat_map(|c| &c.fields).all(|f| f.field_id < 90));
+            .flat_map(|c| &c.fields).all(|f| !(90..=96).contains(&f.field_id)));
         let good = ogs_extension(EXTENSION_VERSION, &[(7, 0, 0, 0)], &[11]);
         for bytes in [&good[..good.len() - 28], &good[..good.len() - 1]] {
             assert!(decode_extension(bytes).is_err());

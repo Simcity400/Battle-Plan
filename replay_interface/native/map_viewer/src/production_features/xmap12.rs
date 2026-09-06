@@ -479,6 +479,7 @@ mod tests {
         ];
         let viewer = crate::test_support::bare_viewer();
         let selection = crate::production_features::xmap15::Xmap15ViewerSelection {
+            selected_owner: None,
             selected_plan: None,
         };
         let frame = crate::test_support::frame_with_rest(serde_json::json!({}));
@@ -571,6 +572,7 @@ mod tests {
             let frame = frame_with_rest(rest);
             let viewer = bare_viewer();
             let selection = crate::production_features::xmap15::Xmap15ViewerSelection {
+                selected_owner: None,
                 selected_plan: None,
             };
             let context = FoundationFeatureContext::new_for_owned_accounting_tests(

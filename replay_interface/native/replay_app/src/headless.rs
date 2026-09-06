@@ -967,7 +967,7 @@ fn dump_production_recording_frame(
         &game_resolver,
         crate::win32::actual_client_input_variant(),
     )?;
-    let xmap15_selection = map_viewer::xmap15_viewer_selection(&frame, None);
+    let xmap15_selection = map_viewer::xmap15_viewer_selection(&frame, None, None);
     let executed = composition.execute(
         &game_resolver,
         &content_admission,
