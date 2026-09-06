@@ -2672,6 +2672,33 @@ mod tests {
     }
 
     #[test]
+    fn current_packed_admission_preserves_the_post_pack_crc_failure() {
+        let entries = minimal_entries("current-admission", MODSET, "clean").unwrap();
+        let identity = pack_identity(DEFAULT_SEED, MODSET).unwrap();
+        let bytes = pack("current-admission", &entries, &identity, false).unwrap();
+        let expected = snapshot::ExpectedIdentity::default();
+        let container = snapshot::Container::from_bytes(bytes, &expected).unwrap();
+        let content = container.content_manifest().unwrap();
+        assert_eq!(content.schema, SCHEMA);
+        content.validate().unwrap();
+        assert_eq!(content, identity.content_manifest.as_ref().unwrap());
+        for entry in entries {
+            assert_eq!(container.read_entry_bytes(&entry.path).unwrap(), entry.bytes);
+        }
+        let corrupted = negative_fixtures(DEFAULT_SEED).unwrap().into_iter()
+            .find(|fixture| fixture.name == "neg_bad_snapshot_hash").unwrap();
+        let error = match snapshot::Container::from_bytes(corrupted.bytes, &expected) {
+            Err(error) => error,
+            Ok(container) => {
+                let snapshots = container.entries_by_role("snapshot");
+                assert_eq!(snapshots.len(), 1);
+                container.read_entry_bytes(&snapshots[0].path).unwrap_err()
+            }
+        };
+        assert!(error.to_string().contains("crc32 mismatch"), "{error}");
+    }
+
+    #[test]
     fn generated_fixture_set_is_byte_identical_after_relocation() {
         let root = std::env::temp_dir().join(format!(
             "battle-plan-fixture-relocation-{}",

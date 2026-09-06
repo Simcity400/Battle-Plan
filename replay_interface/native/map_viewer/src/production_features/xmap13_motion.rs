@@ -22,6 +22,7 @@ enum SplineState {
 
 #[derive(Clone, Debug, Default)]
 pub struct Xmap13MotionState {
+    geometry: Option<std::result::Result<std::sync::Arc<super::geometry::AdmittedLandGeometry>, String>>,
     previous_hour: Option<i64>,
     previous_seconds: f64,
     previous_frame: String,
@@ -33,6 +34,8 @@ pub struct Xmap13MotionState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Xmap13MotionSample {
+    placements: BTreeMap<String, std::result::Result<super::Xmap13HelperPlacement, String>>,
+    geometry_sources: Vec<portable_content_manifest::UsedContentKey>,
     frame: String,
     content: String,
     pub(crate) history_sha256: String,
@@ -40,7 +43,19 @@ pub struct Xmap13MotionSample {
 }
 
 impl Xmap13MotionSample {
+    pub(super) fn placement(&self, identity: &crate::Xmap13UnitIdentity) -> Result<&super::Xmap13HelperPlacement> {
+        self.placements.get(&identity.canonical_id()).ok_or("XMAP13 helper placement has no current identity")?
+            .as_ref().map_err(|reason| reason.clone().into())
+    }
+
+    pub(super) fn geometry_sources(&self) -> &[portable_content_manifest::UsedContentKey] { &self.geometry_sources }
     pub(super) fn content_digest(&self) -> &str { &self.content }
+    pub(super) fn validate_world_digest(&self, world_digest: &str) -> Result<()> {
+        if self.frame != world_digest {
+            return Err("XMAP13 helper history belongs to another world input".into());
+        }
+        Ok(())
+    }
     pub(crate) fn validate_frame(&self, world: &WorldFrame, content: &str) -> Result<()> {
         if self.frame != derived_frame_digest(world)? || self.content != content {
             return Err("XMAP13 helper history belongs to another frame or content admission".into());
@@ -59,6 +74,10 @@ impl Xmap13MotionSample {
 }
 
 impl Xmap13MotionState {
+    pub fn with_admitted_map(resolver: &crate::GameFileResolver, admission: &replay_core::ValidatedContentAdmission) -> Self {
+        Self { geometry: Some(super::geometry::AdmittedLandGeometry::load(resolver, admission)
+            .map(std::sync::Arc::new).map_err(|reason| reason.to_string())), ..Self::default() }
+    }
     pub fn sample(&mut self, world: &WorldFrame, content: &str, clock: Xmap13MotionClock) -> Result<Xmap13MotionSample> {
         let prior_failed = self.failed_update;
         self.failed_update = true;
@@ -81,6 +100,7 @@ impl Xmap13MotionState {
         }
         let models = DivisionModelFrame::new(world, content)?;
         let mut helpers = BTreeMap::new();
+        let mut placements = BTreeMap::new();
         let mut retained = if reset { BTreeMap::new() } else { self.helpers.clone() };
         let mut census_complete = models.division_status() == ViewStatus::Present;
         if models.division_status() == ViewStatus::Present {
@@ -99,6 +119,20 @@ impl Xmap13MotionState {
                     },
                     Err(_) => SplineState::SemanticUnavailable,
                 };
+                let placement: Result<super::Xmap13HelperPlacement> = (|| {
+                    if state != SplineState::Empty { return Err("XMAP13 helper placement requires resolved retained geometry".into()); }
+                    let geometry = self.geometry.as_ref().ok_or("XMAP13 helper map content is unbound")?
+                        .as_ref().map_err(|reason| reason.clone())?;
+                    let input = models.inputs(&identity)?;
+                    let province = match input.route_head {
+                        Leaf::Measured(crate::production_features::xmap13_model::RouteHead::Measured { province_id }) => province_id,
+                        _ => return Err("XMAP13 helper province pointer is absent or unavailable".into()),
+                    };
+                    let unit = &world.division_units()[ordinal];
+                    let owner = unit.owner.measured().ok_or("XMAP13 helper owner is unavailable")?;
+                    geometry.stationary(world, content, province, owner.tag())
+                })();
+                placements.insert(key.clone(), placement.map_err(|reason| reason.to_string()));
                 helpers.insert(key, state);
             }
         }
@@ -110,13 +144,16 @@ impl Xmap13MotionState {
         }
         let history_sha256 = Sha256::hex(&serde_json::to_vec(&(
             "XMAP13_HELPER_HISTORY_V1", &self.history, &frame, content, reset,
-            clock.seconds.to_bits(), clock.speed_step, &helpers, &retained,
+            clock.seconds.to_bits(), clock.speed_step, &helpers, &retained, &placements,
         ))?);
+        let geometry_sources = self.geometry.as_ref().and_then(|value| value.as_ref().ok())
+            .map(|geometry| geometry.sources.clone()).unwrap_or_default();
         *self = Self {
+            geometry: self.geometry.clone(),
             previous_hour: Some(hour), previous_seconds: clock.seconds,
             previous_frame: frame.clone(), content: content.into(),
             history: history_sha256.clone(), failed_update: false, helpers: retained,
         };
-        Ok(Xmap13MotionSample { frame, content: content.into(), history_sha256, helpers })
+        Ok(Xmap13MotionSample { frame, content: content.into(), history_sha256, helpers, placements, geometry_sources })
     }
 }

@@ -99,7 +99,7 @@ impl ProductMapFoundationSession {
         )
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
         Ok(Self {
-            unit_motion: Default::default(),
+            unit_motion: map_viewer::Xmap13MotionState::with_admitted_map(resolver, content_admission),
             content_receipt,
             adapters: map_viewer::product_feature_adapters_with_assigned_stage_schedule(
                 resolver,
