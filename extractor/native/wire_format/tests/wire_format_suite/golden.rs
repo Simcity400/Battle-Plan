@@ -13,7 +13,7 @@ use wire_format::{
     FrontierDiscontinuity, FrontierOutcome, Kind as FieldKind, TickGrid,
 };
 
-const D20_SCHEMA_HASH: u64 = 8669914881139233020;
+const D20_SCHEMA_HASH: u64 = 7739101543602897761;
 
 fn tiny() -> Schema {
     Schema {
@@ -491,17 +491,25 @@ fn vector_d20_baseline_row_is_stable() {
     assert_eq!(pos, bytes.len());
     assert_eq!(back, record);
 
+    assert_eq!(c.optional_count(), 36);
+    assert_eq!(
+        c.value_fields().filter(|field| !field.optional).map(|field| field.field_id).collect::<Vec<_>>(),
+        vec![4, 28, 30, 6, 8, 12, 44]
+    );
     assert_eq!(
         bytes,
-        vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,],
-        "a blank d20 row is eight bytes; the null and unknown bitmaps cost zero"
+        vec![0x00; 13],
+        "five presence bytes, one escape byte, one boolean byte, six scalar bytes"
     );
+    assert!(Record::decode(c, &[0x00; 8], 0).is_err());
 }
 
 #[test]
 fn d20_schema_hash_is_pinned() {
     let schema = wire_format::d20::schema();
     schema.validate(TickGrid::new(3).unwrap().log2()).unwrap();
+    assert_eq!(schema.collections.iter().map(|c| c.collection_id).collect::<Vec<_>>(), vec![1, 5, 6, 3, 4]);
+    assert!(!schema.collections[0].fields.iter().any(|field| [11, 27].contains(&field.field_id)));
     assert_eq!(
         schema.schema_hash(),
         D20_SCHEMA_HASH,
