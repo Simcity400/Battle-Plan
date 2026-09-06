@@ -537,6 +537,7 @@ impl<'a> Parser<'a> {
         let mut entries = Vec::new();
         loop {
             let token = self.next_token();
+            let quoted = matches!(&token.kind, TokenKind::Quoted(_));
             match token.kind {
                 TokenKind::Eof => {
                     if stop_on_close {
@@ -576,7 +577,7 @@ impl<'a> Parser<'a> {
                         self.push_token(next);
                         entries.push(Entry {
                             key: None,
-                            value: Value::Scalar(Scalar::Bare(text)),
+                            value: Value::Scalar(if quoted { Scalar::Quoted(text) } else { Scalar::Bare(text) }),
                             line: token.line,
                             column: token.column,
                         });
@@ -870,6 +871,38 @@ pub fn required_object<'a>(value: &'a Value, label: &str) -> Result<&'a [Entry]>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn keyless_lists_preserve_mixed_and_nested_scalar_kinds() {
+        use super::{Scalar, Value};
+        let root = super::parse_str_strict(r#"list = { 5 "5" { "6" 6 } "quoted_key" = "7" }"#).unwrap();
+        let rows = root.first_value_ci("list").unwrap().as_object().unwrap();
+        assert_eq!(rows[0].value, Value::Scalar(Scalar::Bare("5".into())));
+        assert_eq!(rows[1].value, Value::Scalar(Scalar::Quoted("5".into())));
+        assert_eq!(rows[0].value.as_scalar(), rows[1].value.as_scalar());
+        let nested = rows[2].value.as_object().unwrap();
+        assert_eq!(nested[0].value, Value::Scalar(Scalar::Quoted("6".into())));
+        assert_eq!(nested[1].value, Value::Scalar(Scalar::Bare("6".into())));
+        assert_eq!(rows[3].key.as_deref(), Some("quoted_key"));
+        assert_eq!(rows[3].value, Value::Scalar(Scalar::Quoted("7".into())));
+        assert!(rows[..3].iter().all(|row| row.key.is_none()));
+    }
+
+    #[test]
+    fn keyless_variable_expansion_keeps_definition_kind_and_quoted_literals() {
+        use super::{Scalar, Value};
+        let mut root = super::parse_str_strict(r#"@quoted = "8" @bare = 9 list = { @quoted @bare "@missing" { @quoted "@bare" } }"#).unwrap();
+        super::expand_file_scoped_variables(&mut root).unwrap();
+        let rows = root.first_value_ci("list").unwrap().as_object().unwrap();
+        assert_eq!(rows[0].value, Value::Scalar(Scalar::Quoted("8".into())));
+        assert_eq!(rows[1].value, Value::Scalar(Scalar::Bare("9".into())));
+        assert_eq!(rows[2].value, Value::Scalar(Scalar::Quoted("@missing".into())));
+        let nested = rows[3].value.as_object().unwrap();
+        assert_eq!(nested[0].value, Value::Scalar(Scalar::Quoted("8".into())));
+        assert_eq!(nested[1].value, Value::Scalar(Scalar::Quoted("@bare".into())));
+        let mut unknown = super::parse_str_strict("list = { @missing }").unwrap();
+        assert!(matches!(super::expand_file_scoped_variables(&mut unknown), Err(super::VariableExpansion::Undefined { .. })));
+    }
+
     #[test]
     fn asset_reader_terminates_at_root_close_without_reading_later_declarations() {
         let text = "entity = { name = \"\u{e9}t\u{e9}}\" } } entity = { name = discarded }";

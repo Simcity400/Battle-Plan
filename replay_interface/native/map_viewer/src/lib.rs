@@ -1,3 +1,4 @@
+pub mod authored_icon_context;
 pub mod authored_fixed;
 pub mod authored_equipment;
 pub mod particle_authored;
@@ -744,9 +745,11 @@ pub use xmap15_orders::{
     derive_xmap15_orders, xmap15_arrow_definition, Xmap15DerivedAnchor, Xmap15DerivedOrder,
     Xmap15OrderDerivation, Xmap15OrderRefusal, Xmap15PlanProvider,
 };
+pub use game_data::ordered_state_provinces;
 pub use rail_files::{
+    engine_coastal_provinces,
     bind_exact_rail_construction_arrows, bind_exact_rail_d80_draws, compute_province_centroids,
-    country_tags_from_resolver, cubic_bezier, exact_rail_segments_from_replay,
+    country_tags_from_resolver, country_tags_from_sources, country_tags_from_admission_lease, cubic_bezier, exact_rail_segments_from_replay,
     port_building_tokens_from_resolver,
     prepare_exact_rail_replay_carrier, rail_control_handle_len, rail_endpoint_placement_arm,
     rail_file_derived_layer_from_resolver, rail_geometry_defines_from_resolver, rail_level_v_band,

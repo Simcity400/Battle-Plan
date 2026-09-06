@@ -10,6 +10,9 @@ pub struct DesignerAuthoredInputs {
     equipment: AuthoredEquipmentCatalog,
     windows: std::collections::BTreeMap<String, super::EffectiveDesignerWindow>,
     pub thresholds: DesignerIntelThresholds,
+    assets: crate::assets::AssetResolver,
+    icon_database: std::sync::Arc<std::sync::OnceLock<std::result::Result<super::item_database::AuthoredIconDatabase, String>>>,
+    icon_sprites: std::sync::Arc<std::sync::OnceLock<std::result::Result<crate::gfx::SpriteRegistry, String>>>,
 }
 
 impl DesignerAuthoredInputs {
@@ -25,7 +28,40 @@ impl DesignerAuthoredInputs {
         windows: std::collections::BTreeMap<String, super::EffectiveDesignerWindow>,
     ) -> Result<Self> {
         Ok(Self { equipment: resolver.authored_equipment()?, windows,
-            thresholds: DesignerIntelThresholds::from_assets(resolver)? })
+            thresholds: DesignerIntelThresholds::from_assets(resolver)?, assets: resolver.clone(),
+            icon_database: Default::default(), icon_sprites: Default::default() })
+    }
+
+    pub(super) fn fallback_icon(&self, equipment: &AuthoredEquipmentCatalog, frame: &replay_core::WorldFrame,
+        runtime: &DesignU32Observation, variant: &NativeDesignerVariantInputs,
+    ) -> std::result::Result<crate::design_catalog::DesignerRowIcon, String> {
+        let database = self.icon_database.get_or_init(|| {
+            let lease = self.assets.icon_content_lease().map_err(|error| error.to_string())?;
+            let countries = map_viewer::country_tags_from_admission_lease(lease).map_err(|error| error.to_string())?;
+            let context = map_viewer::authored_icon_context::AuthoredIconContext::from_admission_lease(lease)
+                .map_err(|error| error.to_string())?;
+            super::item_database::AuthoredIconDatabase::load(&self.assets, &countries, &context.continent_names())
+        }).as_ref().map_err(Clone::clone)?;
+        let selected = database.resolve(equipment, frame, &variant.model.creator_tag, &variant.equipment_definition_token, runtime,
+            |state| Err(format!("XUI13 positive capital {state}: runtime GS state-slot admission is unavailable")),
+            |icon| match icon {
+                crate::design_catalog::DesignerRowIcon::Sprite(name) => {
+                    let sprites = self.icon_sprites.get_or_init(|| {
+                        let mut registry = crate::gfx::SpriteRegistry::new();
+                        for file in self.assets.list_files_recursive("interface", Some("gfx")).map_err(|error| error.to_string())? {
+                            registry.parse_content(&self.assets.read_file(&file).map_err(|error| error.to_string())?, &file.rel_path)
+                                .map_err(|error| error.to_string())?;
+                        }
+                        if registry.decode_loss_events() != 0 { return Err("XUI13 sprite registry has undecoded content".into()); }
+                        Ok(registry)
+                    }).as_ref().map_err(Clone::clone)?;
+                    Ok(sprites.get(name).is_some())
+                },
+                crate::design_catalog::DesignerRowIcon::Texture(path) => self.assets.resolve_optional_file(path)
+                    .map(|file| file.is_some()).map_err(|error| error.to_string()),
+                crate::design_catalog::DesignerRowIcon::Authored => Err("XUI13 database row contains a non-item authored icon".into()),
+            })?;
+        Ok(selected.map(|selected| selected.icon).unwrap_or(crate::design_catalog::DesignerRowIcon::Authored))
     }
 
     pub fn admits_window(&self, tokens: &[String], owner: &str) -> Result<bool> {

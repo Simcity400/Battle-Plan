@@ -24,9 +24,15 @@ pub(crate) fn admit_vanilla(
     paths: &[&str],
     label: &str,
 ) -> (GameFileResolver, ValidatedContentAdmission) {
+    admit_vanilla_scope(game, language, paths, label, &ContentNamespaceScope::root())
+}
+
+pub(crate) fn admit_vanilla_scope(game: &Path, language: &str, paths: &[&str], label: &str,
+    scope: &ContentNamespaceScope,
+) -> (GameFileResolver, ValidatedContentAdmission) {
     let resolver = GameFileResolver::vanilla(game).unwrap();
     let vfs = "e".repeat(64);
-    let sealed = seal_vanilla_namespace(game, &vfs);
+    let sealed = seal_vanilla_namespace_scope(game, &vfs, scope);
     for path in paths {
         let path = portable_content_manifest::normalize_game_relative_path(path).unwrap();
         assert!(sealed.winners().iter().any(|row| row.normalized_game_relative_path == path),
@@ -96,6 +102,10 @@ pub(crate) fn admit_vanilla(
 }
 
 pub(crate) fn seal_vanilla_namespace(game: &Path, authority: &str) -> SealedContentNamespace {
+    seal_vanilla_namespace_scope(game, authority, &ContentNamespaceScope::root())
+}
+
+fn seal_vanilla_namespace_scope(game: &Path, authority: &str, scope: &ContentNamespaceScope) -> SealedContentNamespace {
     let vfs = EffectiveVfs::new(authority, [EffectiveVfsLayerMount {
         ordinal: 0,
         layer_kind: ContentLayerKind::Base,
@@ -105,7 +115,7 @@ pub(crate) fn seal_vanilla_namespace(game: &Path, authority: &str) -> SealedCont
         source_container_sha256: None,
         replace_paths: Vec::new(),
     }]).unwrap();
-    vfs.observe_namespace(&ContentNamespaceScope::root()).unwrap().seal(&vfs).unwrap()
+    vfs.observe_namespace(scope).unwrap().seal(&vfs).unwrap()
 }
 
 /// Admission snapshots are written read-only; a tamper has to clear that first.

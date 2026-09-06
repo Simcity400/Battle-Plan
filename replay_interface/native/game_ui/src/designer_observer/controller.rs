@@ -91,7 +91,8 @@ pub(crate) fn admit(authored: &DesignerAuthoredInputs, frame: &WorldFrame,
                 || excluded.contains(selected_country) { return Ok(None) }
             Ok(Some(ObserverDesignerCandidate {
                 record: variant.record.clone(), designer_window_tokens: windows, flag_country_tag: selected_country.into(),
-                icon: item_icon(&variant.item_icon_override),
+                icon: item_icon_with_fallback(&variant.item_icon_override, ||
+                    authored.fallback_icon(&equipment, frame, &native.runtime_dlc_mask, variant)),
                 missions: mission_mask(&equipment, &native.runtime_dlc_mask, variant),
             }))
         })();
@@ -169,12 +170,19 @@ fn mission_mask(equipment: &map_viewer::authored_equipment::AuthoredEquipmentCat
     Ok(mask)
 }
 
+#[cfg(test)]
 fn item_icon(icon: &DesignItemIconObservation) -> Result<DesignerRowIcon, String> {
+    item_icon_with_fallback(icon, || Err("XUI13 item-database fixture has no provider".into()))
+}
+
+fn item_icon_with_fallback(icon: &DesignItemIconObservation,
+    fallback: impl FnOnce() -> Result<DesignerRowIcon, String>,
+) -> Result<DesignerRowIcon, String> {
     match icon {
         DesignItemIconObservation::Measured { active: false, kind: 0, .. } => Ok(DesignerRowIcon::Authored),
         DesignItemIconObservation::Measured { active, kind, token: DesignTextObservation::Measured { value, .. } } => {
             match (*kind, value.as_str()) {
-                (1, ".") => Err("XUI13 authored item-database fallback is not yet bound".into()),
+                (1, ".") => fallback(),
                 (1, _) if !active => Ok(DesignerRowIcon::Authored),
                 (0, value) => Ok(DesignerRowIcon::Sprite(value.into())),
                 (1, value) => Ok(DesignerRowIcon::Texture(value.into())),
@@ -242,6 +250,60 @@ mod tests {
 
     fn projected(authored: &DesignerAuthoredInputs, frame: &WorldFrame, viewer: &ObserverDesignerViewState) -> Result<ObserverDesignerCatalog,String> {
         admit(authored, frame, frame.design_catalog().unwrap().native_designer_inputs_at_hour(900), "GER", ObserverDesignerFamily::Tank, viewer)
+    }
+
+    #[test]
+    fn actual_sentinel_fallback_draws_later_family_pool_and_preserves_unknown_resource_refusal() {
+        let (root, _) = production_fixture();
+        std::fs::create_dir_all(root.0.join("gfx/interface/equipmentdesigner/graphic_db")).unwrap();
+        std::fs::create_dir_all(root.0.join("common/country_tags")).unwrap();
+        std::fs::create_dir_all(root.0.join("map")).unwrap();
+        std::fs::write(root.0.join("common/country_tags/tags.txt"), br#"GER = "countries/Germany.txt""#).unwrap();
+        std::fs::write(root.0.join("map/default.map"), br#"continent = "continent.txt" definitions = "definition.csv" provinces = "provinces.bmp""#).unwrap();
+        std::fs::write(root.0.join("map/continent.txt"), b"continents = { europe }").unwrap();
+        std::fs::write(root.0.join("common/units/equipment/designer.txt"), b"equipments = { family_source = { is_archetype = yes type = armor } light_tank_chassis_1 = { is_archetype = yes type = armor module_slots = { main = {} } family = family_source } }").unwrap();
+        let mut texture = std::fs::read(root.0.join("gfx/interface/xui13_test.tga")).unwrap();
+        for pixel in texture[18..].chunks_exact_mut(4) { pixel.copy_from_slice(&[0,255,0,255]); }
+        std::fs::write(root.0.join("gfx/interface/fallback_green.tga"), texture).unwrap();
+        std::fs::write(root.0.join("gfx/interface/equipmentdesigner/graphic_db/default.txt"),
+            b"default = { light_tank_chassis_1 = { pool = { icons = { GFX_xui13_test } weight = 1 } } family_source = { pool = { icons = { gfx/interface/fallback_green.tga } weight = 2 } pool = { icons = { GFX_witnessed_missing } weight = 3 } } }").unwrap();
+        let renderer = admitted_production_renderer(&root.0, None);
+        let omitted = admitted_production_renderer_with_assets(&root.0, Some("gfx/interface/fallback_green.tga"), &[]);
+        let (mut raw, mut rest) = owner_prefix_inputs();
+        raw["variants"].as_array_mut().unwrap().truncate(1);
+        rest["countries"]["GER"]["politics"]["capital_override_raw"] = json!(-1);
+        rest["diplomacy_world"] = json!({"domain53_extra":{"faction_member_order_schema":1,"faction_roster_status":"measured_empty","faction_rows":[]}});
+        let original = world_from_catalog(raw.clone(), rest.clone());
+        raw["variants"][0]["definition"]["item_icon_override"] = json!({"status":"measured","active":false,"kind":1,
+            "token":{"status":"measured","value":".","utf8_hex":"2e"}});
+        let fallback = world_from_catalog(raw.clone(), rest.clone());
+        let mut positive_capital = rest.clone();
+        positive_capital["countries"]["GER"]["politics"]["capital_override_raw"] = json!(1);
+        let unknown_state_slot = world_from_catalog(raw.clone(), positive_capital);
+        let token = "gfx/interface/fallback_green.tga";
+        raw["variants"][0]["definition"]["item_icon_override"] = json!({"status":"measured","active":true,"kind":1,
+            "token":{"status":"measured","value":token,"utf8_hex":token.as_bytes().iter().map(|byte|format!("{byte:02x}")).collect::<String>()}});
+        let direct = world_from_catalog(raw, rest);
+        let compose = |renderer: &crate::production_renderer::ProductionUiRenderer, frame: &WorldFrame| {
+            renderer.compose_xui13_designer_surface(frame, frame.named_country("GER").unwrap(), &viewer(), 160, 120).unwrap()
+        };
+        let base = compose(&renderer, &original);
+        let actual = compose(&renderer, &fallback);
+        let expected = compose(&renderer, &direct);
+        assert_eq!(actual.visible_design_ids,["7:70"]);
+        assert!(!actual.field_refusals.contains_key("7:70/equipment_icon"), "{:?}",actual.field_refusals);
+        assert_eq!(row_element_pixels(&actual,"equipment"),row_element_pixels(&expected,"equipment"));
+        assert_ne!(row_element_pixels(&actual,"equipment"),row_element_pixels(&base,"equipment"));
+        assert_eq!(row_element_pixels(&actual,"creator_flag"),row_element_pixels(&base,"creator_flag"));
+        let unknown_later_pool = compose(&renderer, &unknown_state_slot);
+        assert_eq!(unknown_later_pool.visible_design_ids, actual.visible_design_ids);
+        assert!(unknown_later_pool.field_refusals["7:70/equipment_icon"].contains("runtime GS state-slot"));
+        assert_eq!(row_element_pixels(&unknown_later_pool,"creator_flag"),row_element_pixels(&actual,"creator_flag"));
+        let unavailable = compose(&omitted, &fallback);
+        assert_eq!(unavailable.visible_design_ids,actual.visible_design_ids);
+        assert!(unavailable.membership_complete);
+        assert!(unavailable.field_refusals["7:70/equipment_icon"].contains("capability"));
+        assert_eq!(row_element_pixels(&unavailable,"creator_flag"),row_element_pixels(&actual,"creator_flag"));
     }
 
     #[test]

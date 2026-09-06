@@ -1,6 +1,7 @@
 mod generation;
 mod designer;
 mod missions;
+mod graphics;
 pub use missions::EquipmentMissionMasks;
 
 use crate::{ActiveDlcPresentation, ContentAdmissionLease, GameFileResolver};
@@ -46,6 +47,7 @@ pub struct AuthoredEquipmentDefinition {
     expanded: Value,
     generated_type_mask: Option<u64>,
     resolved_module_slots: Option<EquipmentResult<Vec<String>>>,
+    resolved_graphics_source: Option<EquipmentResult<String>>,
     container_limit: Option<Value>,
 }
 
@@ -479,7 +481,7 @@ impl AuthoredEquipmentCatalog {
                 let definitions = if modules { &mut self.modules } else { &mut self.definitions };
                 definitions.entry(token.into()).or_default().push(AuthoredEquipmentDefinition {
                     token: token.into(), source: source.clone(), authored: definition.value.clone(),
-                    generation: None, generated_type_mask: None, resolved_module_slots: None,
+                    generation: None, generated_type_mask: None, resolved_module_slots: None, resolved_graphics_source: None,
                     expanded: expanded_definition.value.clone(), container_limit: limit.clone(),
                 });
             }

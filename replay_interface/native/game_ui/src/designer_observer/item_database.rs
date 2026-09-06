@@ -1,3 +1,7 @@
+mod database;
+pub use database::{AuthoredIconDatabase, SelectedAuthoredIcon};
+mod authored;
+pub use authored::{AuthoredIconPool, AuthoredIconPoolTypeMap};
 use crate::ability_visibility::{
     ability_visibility, parse_allowed_body, AllowedBody, AllowedScope, AllowedWorldFacts, Operand,
     Verdict,

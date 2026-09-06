@@ -427,6 +427,10 @@ impl AssetResolver {
         })
     }
 
+    pub(crate) fn icon_content_lease(&self) -> Result<&map_viewer::ContentAdmissionLease> {
+        self.admission_lease.as_ref().ok_or_else(|| GameUiError::missing("XUI13 icon database requires authenticated content"))
+    }
+
     pub(crate) fn authored_equipment(&self) -> Result<map_viewer::authored_equipment::AuthoredEquipmentCatalog> {
         let lease = self.admission_lease.as_ref().ok_or_else(||
             GameUiError::missing("XUI13 equipment definitions require authenticated content"))?;
@@ -520,11 +524,19 @@ impl AssetResolver {
         rel_dir: &str,
         extension: Option<&str>,
     ) -> Result<Vec<ResolvedFile>> {
+        self.list_files(rel_dir, extension, true)
+    }
+
+    pub fn list_files_immediate(&self, rel_dir: &str, extension: Option<&str>) -> Result<Vec<ResolvedFile>> {
+        self.list_files(rel_dir, extension, false)
+    }
+
+    fn list_files(&self, rel_dir: &str, extension: Option<&str>, recursive: bool) -> Result<Vec<ResolvedFile>> {
         let rel_dir = normalize_rel_path(rel_dir);
         let wanted_ext = extension.map(|ext| ext.trim_start_matches('.').to_ascii_lowercase());
         if let Some(files) = &self.restricted_files {
             if let Some(lease) = &self.admission_lease {
-                let complete = lease.require_complete_admitted_dir(&rel_dir, extension, true, "UI effective namespace")
+                let complete = lease.require_complete_admitted_dir(&rel_dir, extension, recursive, "UI effective namespace")
                     .map_err(|error| GameUiError::missing(error.to_string()))?;
                 for content in complete {
                     if !files.contains_key(&content.normalized_game_relative_path.to_ascii_lowercase()) {
@@ -541,6 +553,7 @@ impl AssetResolver {
                 .iter()
                 .filter(|(folded, row)| {
                     folded.starts_with(&prefix)
+                        && (recursive || !folded[prefix.len()..].contains('/'))
                         && wanted_ext.as_ref().is_none_or(|wanted| {
                             row.path
                                 .extension()
@@ -561,7 +574,7 @@ impl AssetResolver {
                 continue;
             };
             let mut files = Vec::new();
-            collect_files(&dir, &mut files)?;
+            collect_files(&dir, &mut files, recursive)?;
             for path in files {
                 if let Some(ext) = &wanted_ext {
                     let actual = path
@@ -878,11 +891,11 @@ fn find_file_in_dir(dir: &Path, file: &str) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
-fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+fn collect_files(dir: &Path, out: &mut Vec<PathBuf>, recursive: bool) -> Result<()> {
     for entry in fs::read_dir(dir)? {
         let path = entry?.path();
         if path.is_dir() {
-            collect_files(&path, out)?;
+            if recursive { collect_files(&path, out, true)?; }
         } else if path.is_file() {
             out.push(path);
         }
@@ -936,6 +949,30 @@ pub(crate) fn texture_slot_paths_match(authored_normalized: &str, bound: &str) -
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn immediate_namespace_does_not_require_unwitnessed_descendants() {
+        let root = temp_root("immediate_namespace");
+        fs::create_dir_all(root.join("graphic_db/nested")).unwrap();
+        fs::write(root.join("graphic_db/root.txt"), b"default = {}").unwrap();
+        fs::write(root.join("graphic_db/nested/hidden.txt"), b"unwitnessed").unwrap();
+        let scope = portable_content_manifest::ContentNamespaceScope {
+            directory: "graphic_db".into(), extension: Some("txt".into()), recursive: false,
+        };
+        let (resolver, admission) = crate::test_admission::admit_vanilla_scope(&root, "l_english",
+            &["graphic_db/root.txt"], "immediate-UI-namespace", &scope);
+        let rows: Vec<_> = admission.required_paths().map(|path| admission.require_used_content(path).unwrap().clone()).collect();
+        let assets = AssetResolver::from_used_content_rows(&resolver, &admission, rows).unwrap();
+        let files = assets.list_files_immediate("graphic_db", Some("txt")).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(assets.read_file(&files[0]).unwrap(), b"default = {}");
+        assert!(assets.list_files_recursive("graphic_db", Some("txt")).is_err());
+        assert!(assets.resolve_optional_file("graphic_db/nested/hidden.txt").is_err());
+        fs::write(root.join("graphic_db/nested/later.txt"), b"unobserved later").unwrap();
+        assert_eq!(assets.list_files_immediate("graphic_db", Some("txt")).unwrap(), files);
+        drop(assets); drop(resolver);
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn resolver_uses_first_root_and_ignores_case() {

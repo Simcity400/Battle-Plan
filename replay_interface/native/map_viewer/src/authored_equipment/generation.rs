@@ -47,9 +47,10 @@ impl AuthoredEquipmentCatalog {
             if entry.value.as_object().is_none() { return Err(malformed(token, "definition")) }
             let mut definition = AuthoredEquipmentDefinition {
                 token: token.into(), source: source.clone(), authored: raw.value.clone(),
-                expanded: entry.value.clone(), container_limit: None, generation: None, generated_type_mask: None, resolved_module_slots: None,
+                expanded: entry.value.clone(), container_limit: None, generation: None, generated_type_mask: None, resolved_module_slots: None, resolved_graphics_source: None,
             };
             if !modules {
+                definition.resolved_graphics_source = Some(self.graphics_source_before_insert(&definition));
                 for field in VERIFIED_STATS {
                     let raw = self.stat_before_clone(&definition, field)?;
                     set_scalar(&mut definition.expanded, field, &format_fixed5(raw));
@@ -82,7 +83,7 @@ impl AuthoredEquipmentCatalog {
             } else {
                 recipes.push(AuthoredEquipmentDefinition {
                     token: token.into(), source: source.clone(), authored: raw.value.clone(),
-                    expanded: entry.value.clone(), container_limit: None, generation: None, generated_type_mask: None, resolved_module_slots: None,
+                    expanded: entry.value.clone(), container_limit: None, generation: None, generated_type_mask: None, resolved_module_slots: None, resolved_graphics_source: None,
                 });
             }
         }
@@ -141,6 +142,8 @@ impl AuthoredEquipmentCatalog {
             let parent = remapped.get(old_parent).cloned().unwrap_or_else(|| token.clone());
             let mut generated = original.clone();
             generated.token = token.clone();
+            // 140c84dd0 writes +4e8 to the original object, not its own family pointer.
+            generated.resolved_graphics_source = Some(Ok(original_token.clone()));
             generated.source = recipe.source.clone();
             generated.generation = Some(EquipmentGeneration {
                 recipe: recipe.identity(), original: original.identity(), authored_recipe: recipe.authored.clone(),
