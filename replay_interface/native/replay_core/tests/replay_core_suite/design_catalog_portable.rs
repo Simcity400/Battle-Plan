@@ -39,6 +39,7 @@ fn catalog() -> Vec<u8> {
             "definitions": true, "lifecycle": true, "membership": true,
             "owner": true, "ui_occurrences": true
         },
+        "runtime_dlc_mask": {"status":"measured","raw_u32":0},
         "country_count": 1,
         "countries": [{"registry_index": 0, "tag": "GER"}],
         "division_templates": [{
@@ -68,6 +69,7 @@ fn catalog() -> Vec<u8> {
                     "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
                     "cached_stats": [], "cached_stats_complete": true,
                     "explicit_entity": {"status":"measured","value":"","utf8_hex":""},
+                    "serialized_variant_flag_2b9d": {"status":"measured","raw_u8":0},
                     "item_icon_override": {"status":"measured","active":false,"kind":1,"token":{"status":"measured","value":"","utf8_hex":""}},
                     "display_name": "Seven", "display_name_utf8_hex": "536576656e",
                     "equipment_token_raw": 71, "modules": [], "modules_complete": true,
@@ -87,6 +89,7 @@ fn catalog() -> Vec<u8> {
                     "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
                     "cached_stats": [], "cached_stats_complete": true,
                     "explicit_entity": {"status":"measured","value":"","utf8_hex":""},
+                    "serialized_variant_flag_2b9d": {"status":"measured","raw_u8":0},
                     "item_icon_override": {"status":"measured","active":false,"kind":1,"token":{"status":"measured","value":"","utf8_hex":""}},
                     "display_name": "Fifty Five", "display_name_utf8_hex": "46696674792046697665",
                     "equipment_token_raw": 71, "modules": [], "modules_complete": true,

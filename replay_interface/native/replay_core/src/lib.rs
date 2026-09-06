@@ -13,6 +13,7 @@ pub mod d18_roster;
 pub mod decision_evaluation;
 pub mod decisions_live;
 pub mod design_catalog;
+pub mod designer_intel;
 pub mod frd_depth;
 pub mod intelligence_controller_companion;
 pub mod intelligence_presentation;

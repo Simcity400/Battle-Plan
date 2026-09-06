@@ -156,7 +156,7 @@ enum Projection {
 }
 
 const PROJECTIONS: &[(Projection, &[u16])] = &[
-    (Projection::Identity, &[18]),
+    (Projection::Identity, &[18, 53]),
     (Projection::Collaboration, &[52, 18]),
     (Projection::AceRoster, &[46, 18]),
     (Projection::DynamicModifierNull, &[67]),
@@ -709,7 +709,7 @@ impl WorldFold {
 
     /// The identity layer of the base loop, for one staged row.
     fn v3_identity_layer(&self, row: &mut Map<String, Value>, id: u32) {
-        if self.attach_country_identity_witness(row, id) {
+        if self.attach_country_identity_and_names(row, id) {
             if let Some(claims) = self
                 .country_claims_this_hour
                 .as_ref()
@@ -945,7 +945,10 @@ impl WorldFold {
         for (projection, domains) in PROJECTIONS {
             let ran_now = domains.iter().any(|&domain| self.v3_domain_ran(seam, domain));
             let gate_flipped = seam.last_country_flags.map_or(true, |last| match projection {
-                Projection::Identity => last.identity_known != flags.identity_known,
+                Projection::Identity => {
+                    last.identity_known != flags.identity_known
+                        || last.domain53_known != flags.domain53_known
+                },
                 Projection::Collaboration => {
                     last.collaboration_present != flags.collaboration_present
                 }

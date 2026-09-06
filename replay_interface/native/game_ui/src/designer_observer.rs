@@ -1245,6 +1245,44 @@ mod tests {
     }
 
     fn designer_catalog_value() -> serde_json::Value {
+        let definition = json!({
+        "archetype_token": "light_tank_chassis_1",
+        "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
+        "cached_stats": [],
+        "cached_stats_complete": true,
+        "explicit_entity": {"status":"measured","value":"","utf8_hex":""},
+        "serialized_variant_flag_2b9d": {"status":"measured","raw_u8":0},
+        "item_icon_override": {"status":"measured","active":false,"kind":1,"token":{"status":"measured","value":"","utf8_hex":""}},
+        "display_name": "Panzer",
+        "display_name_utf8_hex": "50616e7a6572",
+        "equipment_token_raw": 71,
+        "modules": [],
+        "modules_complete": true,
+        "upgrades": [],
+        "upgrades_complete": true,
+        "variant_name": null,
+        "variant_name_utf8_hex": "",
+        "designer_classification": {
+            "authority": "exact_a729_equipment_definition_classifiers",
+            "classifier_manifest_sha256": "733bfeb07165754e30cec9d8395f244b0515f92bc431baff5d236b51b4f70df9",
+            "family_membership": ["tank"],
+            "generic_equipment_predicate": false,
+            "definition_chain_depth": 1,
+            "designer_window_tokens": ["light_tank_chassis_1"],
+            "dlc_feature_bits_raw": 16,
+            "controller_availability_mask_hex": "00000080004001c0",
+            "controller_candidate_base": true,
+            "normalized_category_masks_hex": ["0000000000000004"]
+        },
+        "designer_row_visual": {
+            "authority": "exact_a729_designer_equipment_variant_item",
+            "mission_mask": 1,
+            "icon_entry_kind": 0,
+            "icon_authority": "embedded_string",
+            "icon_token": "GFX_xui13_test",
+            "icon_token_utf8_hex": "4746585f78756931335f74657374"
+        }
+    });
         json!({
             "schema": A27_LIVE_CATALOG_DESIGNER_SCHEMA,
             "authority": {
@@ -1262,6 +1300,7 @@ mod tests {
                 "owner": true,
                 "ui_occurrences": true
             },
+            "runtime_dlc_mask": {"status":"measured","raw_u32":0},
             "country_count": 1,
             "countries": [{
                 "registry_index": 0,
@@ -1281,43 +1320,7 @@ mod tests {
             "variants": [{
                 "catalog_scan_ordinal": 0,
                 "creator_tag": "GER",
-                "definition": {
-                    "archetype_token": "light_tank_chassis_1",
-                    "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
-                    "cached_stats": [],
-                    "cached_stats_complete": true,
-                    "explicit_entity": {"status":"measured","value":"","utf8_hex":""},
-                    "item_icon_override": {"status":"measured","active":false,"kind":1,"token":{"status":"measured","value":"","utf8_hex":""}},
-                    "display_name": "Panzer",
-                    "display_name_utf8_hex": "50616e7a6572",
-                    "equipment_token_raw": 71,
-                    "modules": [],
-                    "modules_complete": true,
-                    "upgrades": [],
-                    "upgrades_complete": true,
-                    "variant_name": null,
-                    "variant_name_utf8_hex": "",
-                    "designer_classification": {
-                        "authority": "exact_a729_equipment_definition_classifiers",
-                        "classifier_manifest_sha256": "733bfeb07165754e30cec9d8395f244b0515f92bc431baff5d236b51b4f70df9",
-                        "family_membership": ["tank"],
-                        "generic_equipment_predicate": false,
-                        "definition_chain_depth": 1,
-                        "designer_window_tokens": ["light_tank_chassis_1"],
-                        "dlc_feature_bits_raw": 16,
-                        "controller_availability_mask_hex": "00000080004001c0",
-                        "controller_candidate_base": true,
-                        "normalized_category_masks_hex": ["0000000000000004"]
-                    },
-                    "designer_row_visual": {
-                        "authority": "exact_a729_designer_equipment_variant_item",
-                        "mission_mask": 1,
-                        "icon_entry_kind": 0,
-                        "icon_authority": "embedded_string",
-                        "icon_token": "GFX_xui13_test",
-                        "icon_token_utf8_hex": "4746585f78756931335f74657374"
-                    }
-                },
+                "definition": definition,
                 "definition_complete": true,
                 "developed_source_occurrences": [],
                 "first_ui_discovery_ordinal": 0,

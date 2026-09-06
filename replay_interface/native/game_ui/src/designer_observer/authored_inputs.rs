@@ -29,6 +29,14 @@ impl DesignerIntelThresholds {
         })
     }
 
+    pub fn admits_recorded_foreign_country(&self, frame: &replay_core::WorldFrame,
+        catalog: &replay_core::design_catalog::NativeDesignerInputs, family: ObserverDesignerFamily,
+        owner: &str, target: &str,
+    ) -> std::result::Result<bool, replay_core::designer_intel::DesignerIntelRefusal> {
+        frame.designer_intel_lane2(catalog, owner, target)
+            .map(|raw| self.admits_foreign_country(family, raw))
+    }
+
     pub fn admits_foreign_country(&self, family: ObserverDesignerFamily, lane2_raw: i64) -> bool {
         let raw = match family {
             ObserverDesignerFamily::Ship => self.ship_raw,
@@ -85,4 +93,15 @@ mod tests {
             assert!(DesignerIntelThresholds::from_defines(&defines).is_err());
         }
     }
+    #[test]
+    fn signed_threshold_comparison_is_strict_and_wraps_as_engine_i64() {
+        let thresholds = DesignerIntelThresholds { ship_raw: -50_000, tank_raw: i64::MAX, plane_raw: 0 };
+        assert!(!thresholds.admits_foreign_country(ObserverDesignerFamily::Ship, -5_000_000));
+        assert!(thresholds.admits_foreign_country(ObserverDesignerFamily::Ship, -4_999_999));
+        assert!(!thresholds.admits_foreign_country(ObserverDesignerFamily::Plane, i64::MIN));
+        assert!(thresholds.admits_foreign_country(ObserverDesignerFamily::Plane, i64::MAX));
+        assert!(!thresholds.admits_foreign_country(ObserverDesignerFamily::Tank, -100));
+        assert!(thresholds.admits_foreign_country(ObserverDesignerFamily::Tank, -99));
+    }
+
 }

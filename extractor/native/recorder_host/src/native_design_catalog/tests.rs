@@ -116,6 +116,7 @@ fn set_campaign(f: &mut Fixture, binding: &custody::StreamBinding) {
 fn fixture() -> Fixture {
     let mut f = Fixture::default();
     f.u64(BASE + GAME_STATE_RVA, STATE);
+    f.u32(BASE + RUNTIME_DLC_MASK_RVA, 0);
     f.zero(STATE, 0x500);
     f.u32(STATE + DATE_OFFSET, DATE);
     set_campaign(&mut f, &test_binding());
@@ -985,4 +986,100 @@ fn item_icon_torn_header_or_token_refuses_census_and_budget_is_not_field_unknown
         item_icon_override(&mut read, VARIANT).unwrap_err().kind,
         FailureKind::BoundExceeded
     );
+}
+
+#[test]
+fn serialized_variant_flag_preserves_all_bytes_and_unavailable_through_actual_capture() {
+    for value in 0..=u8::MAX {
+        let mut f = fixture();
+        f.put(VARIANT + 0x41e, &[value]);
+        let raw = capture(&f, BASE, DATE).unwrap();
+        let observation = &raw["variants"][0]["definition"]["serialized_variant_flag_2b9d"];
+        assert_eq!(observation, &json!({"status":"measured", "raw_u8":value}));
+        let portable = snapshot::design_catalog::PortableDesignCatalog::decode_a27_live_json(
+            &serde_json::to_vec(&raw).unwrap(),
+        ).unwrap();
+        assert_eq!(portable.exact_native_catalog["variants"][0]["definition"]["serialized_variant_flag_2b9d"], *observation);
+    }
+    let mut f = fixture();
+    f.bytes.remove(&(VARIANT + 0x41e));
+    let raw = capture(&f, BASE, DATE).unwrap();
+    let observation = &raw["variants"][0]["definition"]["serialized_variant_flag_2b9d"];
+    assert_eq!(observation["status"], "unavailable");
+    assert_eq!(observation["reason"]["kind"], "unreadable");
+    assert!(!observation["reason"]["field"].as_str().unwrap().is_empty());
+    assert!(observation.get("raw_u8").is_none());
+    snapshot::design_catalog::PortableDesignCatalog::decode_a27_live_json(
+        &serde_json::to_vec(&raw).unwrap(),
+    ).unwrap();
+}
+
+#[test]
+fn serialized_variant_flag_torn_or_over_budget_refuses_the_catalog() {
+    let f = fixture();
+    let count = Cell::new(0);
+    let memory = |address, length| {
+        let mut bytes = f.read(address, length)?;
+        if address == VARIANT + 0x41e {
+            assert_eq!(length, 1);
+            count.set(count.get() + 1);
+            if count.get() > 1 { bytes[0] ^= 1; }
+        }
+        Ok(bytes)
+    };
+    assert_eq!(capture(&memory, BASE, DATE).unwrap_err().kind, FailureKind::Torn);
+    assert_eq!(count.get(), 2);
+    let mut read = ReadSet::new(&f, BASE);
+    read.bytes = MAX_READ_BYTES;
+    assert_eq!(serialized_variant_flag_2b9d(&mut read, VARIANT).unwrap_err().kind, FailureKind::BoundExceeded);
+}
+
+#[test]
+fn runtime_dlc_mask_preserves_each_bit_zero_and_unavailable_in_actual_census() {
+    for raw_u32 in [0, u32::MAX].into_iter().chain((0..32).map(|bit| 1u32 << bit)) {
+        let mut f = fixture();
+        f.u32(BASE + RUNTIME_DLC_MASK_RVA, raw_u32);
+        let count = Cell::new(0);
+        let memory = |address, length| {
+            if address == BASE + RUNTIME_DLC_MASK_RVA {
+                assert_eq!(length, 4);
+                count.set(count.get() + 1);
+            }
+            f.read(address, length)
+        };
+        let raw = capture(&memory, BASE, DATE).unwrap();
+        assert_eq!(count.get(), 2, "one observation plus its seal witness");
+        let expected = json!({"status":"measured", "raw_u32":raw_u32});
+        assert_eq!(raw["runtime_dlc_mask"], expected);
+        let portable = snapshot::design_catalog::PortableDesignCatalog::decode_a27_live_json(
+            &serde_json::to_vec(&raw).unwrap(),
+        ).unwrap();
+        assert_eq!(portable.exact_native_catalog["runtime_dlc_mask"], expected);
+    }
+    let mut f = fixture();
+    f.bytes.remove(&(BASE + RUNTIME_DLC_MASK_RVA + 2));
+    let raw = capture(&f, BASE, DATE).unwrap();
+    assert_eq!(raw["runtime_dlc_mask"]["status"], "unavailable");
+    assert_eq!(raw["runtime_dlc_mask"]["reason"]["kind"], "unreadable");
+    assert!(!raw["runtime_dlc_mask"]["reason"]["field"].as_str().unwrap().is_empty());
+    assert!(raw["runtime_dlc_mask"].get("raw_u32").is_none());
+}
+
+#[test]
+fn runtime_dlc_mask_torn_or_budget_exhaustion_refuses_the_whole_census() {
+    let f = fixture();
+    let count = Cell::new(0);
+    let memory = |address, length| {
+        let mut bytes = f.read(address, length)?;
+        if address == BASE + RUNTIME_DLC_MASK_RVA {
+            count.set(count.get() + 1);
+            if count.get() > 1 { bytes[0] ^= 1; }
+        }
+        Ok(bytes)
+    };
+    assert_eq!(capture(&memory, BASE, DATE).unwrap_err().kind, FailureKind::Torn);
+    assert_eq!(count.get(), 2);
+    let mut read = ReadSet::new(&f, BASE);
+    read.bytes = MAX_READ_BYTES;
+    assert_eq!(runtime_dlc_mask(&mut read).unwrap_err().kind, FailureKind::BoundExceeded);
 }

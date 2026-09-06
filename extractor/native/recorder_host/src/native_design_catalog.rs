@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const PROGRAM_SHA256: &str = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 const GAME_STATE_RVA: u64 = 0x3316e90;
+const RUNTIME_DLC_MASK_RVA: u64 = 0x3316e78;
 const REFERENCE_TABLES_RVA: u64 = 0x3438e60;
 const DATE_OFFSET: u64 = 0x468;
 pub const DATE_EPOCH: u32 = 43_799_999;
@@ -308,6 +309,16 @@ fn item_icon_override<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Res
     Ok(json!({"status":"measured", "active":active, "kind":kind, "token":token}))
 }
 
+fn serialized_variant_flag_2b9d<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Result<Value> {
+    match read.u8(pointer + 0x41e) {
+        Ok(raw_u8) => Ok(json!({"status":"measured", "raw_u8":raw_u8})),
+        Err(error) if error.kind == FailureKind::Unreadable => {
+            Ok(json!({"status":"unavailable", "reason":error}))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn variant_definition<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Result<Value> {
     let equipment_token = read.u32(pointer + 0x18)?;
     let definition = read.pointer(pointer + 0x3f0)?;
@@ -326,6 +337,7 @@ fn variant_definition<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Res
     let display = read.string(pointer + 0x28, 256)?;
     let name = read.string(pointer + 0x48, 256)?;
     let item_icon_override = item_icon_override(read, pointer)?;
+    let serialized_variant_flag_2b9d = serialized_variant_flag_2b9d(read, pointer)?;
     let explicit_entity = match read.string(pointer + 0x430, 4096) {
         Ok(value) => json!({"status":"measured", "value":value, "utf8_hex":hex(value.as_bytes())}),
         Err(error)
@@ -381,7 +393,7 @@ fn variant_definition<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Res
         stats.push(json!({"source_ordinal":ordinal,"stat_id":name,"raw_i32":read.u32(pointer+offset)? as i32,"scale":scale}));
     }
     Ok(
-        json!({"equipment_token_raw":equipment_token,"archetype_token":archetype,"archetype_token_utf8_hex":hex(archetype.as_bytes()),"display_name":nullable_string(&display),"display_name_utf8_hex":hex(display.as_bytes()),"variant_name":nullable_string(&name),"variant_name_utf8_hex":hex(name.as_bytes()),"explicit_entity":explicit_entity,"item_icon_override":item_icon_override,"modules_complete":true,"modules":modules,"upgrades_complete":true,"upgrades":upgrades,"cached_stats_complete":true,"cached_stats":stats}),
+        json!({"equipment_token_raw":equipment_token,"archetype_token":archetype,"archetype_token_utf8_hex":hex(archetype.as_bytes()),"display_name":nullable_string(&display),"display_name_utf8_hex":hex(display.as_bytes()),"variant_name":nullable_string(&name),"variant_name_utf8_hex":hex(name.as_bytes()),"explicit_entity":explicit_entity,"item_icon_override":item_icon_override,"serialized_variant_flag_2b9d":serialized_variant_flag_2b9d,"modules_complete":true,"modules":modules,"upgrades_complete":true,"upgrades":upgrades,"cached_stats_complete":true,"cached_stats":stats}),
     )
 }
 
@@ -479,6 +491,16 @@ pub fn observe_campaign<M: Memory>(memory: &M, base: u64) -> Result<(u32, Value)
     Ok((date, pair))
 }
 
+fn runtime_dlc_mask<M: Memory>(read: &mut ReadSet<'_, M>) -> Result<Value> {
+    match read.u32(read.base + RUNTIME_DLC_MASK_RVA) {
+        Ok(raw_u32) => Ok(json!({"status":"measured", "raw_u32":raw_u32})),
+        Err(error) if error.kind == FailureKind::Unreadable => {
+            Ok(json!({"status":"unavailable", "reason":error}))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub fn capture<M: Memory>(memory: &M, base: u64, expected_date: u32) -> Result<Value> {
     let hour = expected_date
         .checked_sub(DATE_EPOCH)
@@ -489,6 +511,7 @@ pub fn capture<M: Memory>(memory: &M, base: u64, expected_date: u32) -> Result<V
         return Err(failure(FailureKind::HourLabelMismatch, "opening date"));
     }
     let campaign = campaign_pair(&mut read, state)?;
+    let runtime_dlc_mask = runtime_dlc_mask(&mut read)?;
     let tag_db = read.pointer(base + 0x33189c8)?;
     let tag_data = read.pointer(tag_db)?;
     let tag_cap = read.u32(tag_db + 8)?;
@@ -641,7 +664,7 @@ pub fn capture<M: Memory>(memory: &M, base: u64, expected_date: u32) -> Result<V
     if observe_date(memory, base)? != expected_date {
         return Err(failure(FailureKind::HourLabelMismatch, "closing date"));
     }
-    let value = json!({"schema":snapshot::design_catalog::A27_LIVE_CATALOG_SCHEMA,"authority":{"program":"hoi4.exe 1.19.2.0.a729","program_sha256":PROGRAM_SHA256,"campaign":campaign,"current_date_raw":expected_date,"capture_hour_index":hour,"coherence":"double_read_all_roots_fields_and_membership"},"full_replacement":true,"completeness":{"membership":true,"owner":template_rows.iter().all(|row|row["owner_tag"].is_string()),"definitions":true,"lifecycle":true,"ui_occurrences":true},"catalog_roots":{"variants":"CReferenceObject/type70","division_templates":"CReferenceObject/type52","template_owner_order":"CCountry+0x1B8/+0x1C4","equipment_ui_occurrences":"CCountry+0xF68 manager A(+0xA0/+0xAC) then B(+0xE8/+0xF4)","equipment_developed_occurrences":"CCountry+0xF68 manager developed(+0xB8/+0xC4)"},"country_count":countries.len(),"countries":countries.iter().map(|(index,tag,pointer)|json!({"registry_index":index,"tag":tag,"designer_pointer_order_ordinal":country_pointer_ordinals[pointer]})).collect::<Vec<_>>(),"variants":variant_rows,"division_templates":template_rows,"ui_occurrence_counts":{"unique_variants":first_discovery.len(),"catalog_variants_without_occurrence":variants.len()-first_discovery.len()}});
+    let value = json!({"schema":snapshot::design_catalog::A27_LIVE_CATALOG_SCHEMA,"runtime_dlc_mask":runtime_dlc_mask,"authority":{"program":"hoi4.exe 1.19.2.0.a729","program_sha256":PROGRAM_SHA256,"campaign":campaign,"current_date_raw":expected_date,"capture_hour_index":hour,"coherence":"double_read_all_roots_fields_and_membership"},"full_replacement":true,"completeness":{"membership":true,"owner":template_rows.iter().all(|row|row["owner_tag"].is_string()),"definitions":true,"lifecycle":true,"ui_occurrences":true},"catalog_roots":{"variants":"CReferenceObject/type70","division_templates":"CReferenceObject/type52","template_owner_order":"CCountry+0x1B8/+0x1C4","equipment_ui_occurrences":"CCountry+0xF68 manager A(+0xA0/+0xAC) then B(+0xE8/+0xF4)","equipment_developed_occurrences":"CCountry+0xF68 manager developed(+0xB8/+0xC4)"},"country_count":countries.len(),"countries":countries.iter().map(|(index,tag,pointer)|json!({"registry_index":index,"tag":tag,"designer_pointer_order_ordinal":country_pointer_ordinals[pointer]})).collect::<Vec<_>>(),"variants":variant_rows,"division_templates":template_rows,"ui_occurrence_counts":{"unique_variants":first_discovery.len(),"catalog_variants_without_occurrence":variants.len()-first_discovery.len()}});
     let bytes = serde_json::to_vec(&value)
         .map_err(|_| failure(FailureKind::InvalidIdentity, "catalog serialization"))?;
     snapshot::design_catalog::PortableDesignCatalog::decode_a27_live_json(&bytes).map_err(

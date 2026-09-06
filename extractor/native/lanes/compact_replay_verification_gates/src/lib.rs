@@ -11096,7 +11096,7 @@ mod tests {
             },
             |_, _| {},
         );
-        assert!(error.contains("not v2 product-modset-bound"), "{error}");
+        assert!(error.contains("not v3 product-modset-bound"), "{error}");
 
         let error = static_authority_error(
             "portable_content_foreign_product",
