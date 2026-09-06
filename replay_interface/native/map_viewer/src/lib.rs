@@ -4,7 +4,7 @@ pub mod particle_runtime;
 #[cfg(windows)]
 mod particle_d3d;
 #[cfg(windows)]
-pub use particle_d3d::{ParticleDrawCounts, ParticleNativeDraw, ParticleSceneBindings};
+pub use particle_d3d::{ParticleDrawReceipt, ParticleDrawCounts, ParticleNativeDraw, ParticleSceneBindings};
 use std::error::Error;
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -918,12 +918,12 @@ pub use production_features::xmap10::{
     XMAP10_TEMPORAL_RECEIPT_SCHEMA,
 };
 pub use production_features::xmap20::{
-    prepare_xmap20_effects, PreparedXmap20Frame, Xmap20EffectsAdapter,
+    Xmap20EffectsAdapter,
     Xmap20AuthoredEntityRuntime, Xmap20AuthoredParticleBinding,
-    Xmap20ProductionTriggerProvider, Xmap20TriggerProvider, Xmap20TriggerReceipt,
-    XMAP20_ASSIGNED_OPERATION_NAME, XMAP20_ASSIGNED_STAGE_NAME, XMAP20_CARRIER_ABSENT_GAP_ID,
-    XMAP20_EFFECT_DRAW_CONTRACT, XMAP20_EFFECT_LIFECYCLE_INPUT, XMAP20_EFFECT_LIFECYCLE_WIRE_KEY,
-    XMAP20_OPEN_CARRIER_GATES, XMAP20_PREPARED_FRAME_SCHEMA, XMAP20_TRIGGER_RECEIPT_SCHEMA,
+    Xmap20TriggerProvider, Xmap20TriggerReceipt,
+    XMAP20_ASSIGNED_OPERATION_NAME, XMAP20_ASSIGNED_STAGE_NAME,
+    XMAP20_EFFECT_DRAW_CONTRACT, XMAP20_EFFECT_LIFECYCLE_INPUT,
+    XMAP20_AUTHORED_FRAME_SCHEMA, XMAP20_TRIGGER_RECEIPT_SCHEMA,
 };
 pub use production_features::xmap21::{
     xmap21_required_authority_inputs, Xmap21MapFurnitureAdapter,

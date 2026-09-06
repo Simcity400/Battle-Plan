@@ -2941,14 +2941,8 @@ mod tests {
         let refusals = [
             (
                 MapVisualFamily::ParticlesEffects,
-                "XMAP20.effect_lifecycle_carrier_absent",
-                crate::production_features::xmap20::Xmap20EffectsAdapter::carrier_absent_output(
-                    hour,
-                    crate::map_authority::MapAuthorityRequirementDisposition::Absent,
-                    "the recorder emitted no key",
-                    vec!["effects.semantic_lifecycle".into()],
-                )
-                .expect("an Absent input yields a row"),
+                "XMAP20.test_unused_gap",
+                crate::production_features::xmap20::Xmap20EffectsAdapter::deferred_to_draw_output(),
             ),
             (
                 MapVisualFamily::MapFurnitureIcons,
@@ -2960,6 +2954,10 @@ mod tests {
         ];
         for (family, gap_id, output) in &refusals {
             match &output.disposition {
+                FamilyDisposition::DeferredToDraw { draw_contract_id, .. } => {
+                    assert_eq!(*family, MapVisualFamily::ParticlesEffects);
+                    assert_eq!(draw_contract_id, crate::XMAP20_EFFECT_DRAW_CONTRACT);
+                }
                 FamilyDisposition::Unavailable { gap } => {
                     assert_eq!(&gap.gap_id, gap_id, "{family:?}");
                     assert!(!gap.reason.trim().is_empty(), "{family:?} refuses silently");
@@ -2994,11 +2992,17 @@ mod tests {
                 .collect(),
             element_diagnostics: Vec::new(),
         };
-        assert_eq!(envelope.gaps().count(), 2);
+        assert_eq!(envelope.gaps().count(), 1);
         let refusal = envelope
             .seal_readiness(&std::collections::BTreeSet::new())
             .unwrap_err();
         assert!(refusal.contains("ParticlesEffects"), "{refusal}");
+        let particle_contract = std::collections::BTreeSet::from([
+            FoundationRenderEnvelope::draw_contract_key(
+                MapVisualFamily::ParticlesEffects, crate::XMAP20_EFFECT_DRAW_CONTRACT,
+            ),
+        ]);
+        assert!(envelope.seal_readiness(&particle_contract).unwrap_err().contains("MapFurnitureIcons"));
     }
 
     /// The map authority the family loop reads is derived from the frame being
@@ -3156,7 +3160,7 @@ mod tests {
             ),
             (
                 MapVisualFamily::ParticlesEffects,
-                "XMAP20.effect_lifecycle_carrier_absent",
+                "XMAP20.test_unused_gap",
             ),
             (
                 MapVisualFamily::MapFurnitureIcons,
@@ -3782,13 +3786,7 @@ pub fn ")
         let dispositions = [
             (
                 MapVisualFamily::ParticlesEffects,
-                crate::production_features::xmap20::Xmap20EffectsAdapter::carrier_absent_output(
-                    hour,
-                    crate::map_authority::MapAuthorityRequirementDisposition::Absent,
-                    "the recorder emitted no key",
-                    vec!["effects.semantic_lifecycle".into()],
-                )
-                .expect("an Absent input yields a row")
+                crate::production_features::xmap20::Xmap20EffectsAdapter::deferred_to_draw_output()
                 .disposition,
             ),
             (
@@ -3800,6 +3798,11 @@ pub fn ")
             ),
         ];
         for (family, disposition) in dispositions {
+            if let FamilyDisposition::DeferredToDraw { draw_contract_id, .. } = &disposition {
+                assert_eq!(family, MapVisualFamily::ParticlesEffects);
+                assert_eq!(draw_contract_id, crate::XMAP20_EFFECT_DRAW_CONTRACT);
+                continue;
+            }
             let FamilyDisposition::Unavailable { gap } = &disposition else {
                 panic!("{family:?} must name a real blocker while it cannot vouch");
             };
@@ -3893,11 +3896,11 @@ pub fn ")
             .expect("every family is in ALL")]
         .disposition = FamilyDisposition::Unavailable {
             gap: FoundationGap {
-                gap_id: crate::XMAP20_CARRIER_ABSENT_GAP_ID.into(),
+                gap_id: "XMAP20.test_unavailable_runtime".into(),
                 first_unavailable_hour: hour,
                 last_unavailable_hour: hour,
                 witness_sha256: "a".repeat(64),
-                reason: "no effect-lifecycle carrier exists on the wire".into(),
+                reason: "test runtime provider unavailable".into(),
             },
         };
         let refusal = envelope.seal_readiness(&discharged).unwrap_err();

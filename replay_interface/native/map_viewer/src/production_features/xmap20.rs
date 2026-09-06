@@ -1,20 +1,19 @@
-
 use crate::{
     FoundationFeatureContext, FoundationFeatureOutput, GameFileResolver,
     ProductionMapFeatureAdapter, Result,
 };
 use portable_content_manifest::UsedContentKey;
+#[cfg(test)]
+use portable_render_stream::ParentAnchor;
 use portable_render_stream::{
-    BufferSource, FamilyDisposition, MapVisualFamily, ParentAnchor, ParticlePacket, TextureBinding,
-    Xmap20ActiveEffect, Xmap20DependencyReceipts, Xmap20EffectAdmission, Xmap20EffectFrame,
-    XMAP20_EXECUTABLE_SHA256, XMAP20_PARTICLE_DEFINITION_LOOKUP_RVA, XMAP20_PARTICLE_REGISTRY_RVA,
+    FamilyDisposition, MapVisualFamily, Xmap20ActiveEffect, XMAP20_EXECUTABLE_SHA256,
+    XMAP20_PARTICLE_DEFINITION_LOOKUP_RVA, XMAP20_PARTICLE_REGISTRY_RVA,
     XMAP20_PARTICLE_SUBMIT_BOUNDARY_RVA,
 };
 use serde::{Deserialize, Serialize};
 use snapshot::sha256::Sha256;
-use std::collections::BTreeSet;
 
-pub const XMAP20_PREPARED_FRAME_SCHEMA: &str = "hoi4.xmap20.prepared-effects.a729.v1";
+pub const XMAP20_AUTHORED_FRAME_SCHEMA: &str = "hoi4.xmap20.authored-effects.a729.v1";
 pub const XMAP20_TRIGGER_RECEIPT_SCHEMA: &str = "hoi4.xmap20.authored-trigger.a729.v2";
 pub const XMAP20_ASSIGNED_STAGE_NAME: &str = "particles_effects";
 pub const XMAP20_ASSIGNED_OPERATION_NAME: &str = "particles.effects.draw";
@@ -119,119 +118,7 @@ pub trait Xmap20TriggerProvider {
     fn trigger_for_effect(&self, effect: &Xmap20ActiveEffect) -> Result<Xmap20TriggerReceipt>;
 }
 
-pub struct Xmap20ProductionTriggerProvider<'a> {
-    pub entity_identities: &'a crate::Xmap13EffectIdentityProvider,
-    pub weather: &'a crate::PreparedXmap19WeatherFrame,
-}
-
-impl Xmap20TriggerProvider for Xmap20ProductionTriggerProvider<'_> {
-    fn trigger_for_effect(&self, effect: &Xmap20ActiveEffect) -> Result<Xmap20TriggerReceipt> {
-        match &effect.parent_anchor {
-            ParentAnchor::Entity { .. } => self.entity_identities.trigger_for_effect(effect),
-            ParentAnchor::World { .. } => {
-                let trigger = self.weather.weather_trigger(
-                    &effect.producer_instance_id,
-                    effect.authored_event_index,
-                    effect.authored_effect_index,
-                )?;
-                Xmap20TriggerReceipt {
-                    schema: XMAP20_TRIGGER_RECEIPT_SCHEMA.into(),
-                    semantic_owner_packet: "XMAP19".into(),
-                    semantic_source_id: trigger.semantic_source_id,
-                    entity_instance_id: None,
-                    source_content: trigger.source_content,
-                    entity_name: None,
-                    state_name: None,
-                    authored_event_index: trigger.authored_event_index,
-                    authored_effect_index: trigger.authored_effect_index,
-                    particle_token: trigger.particle_token,
-                    node_token: trigger.node_token,
-                    time_f32_bits: trigger.time_f32_bits,
-                    keep_particle: trigger.keep_particle,
-                    trigger_once: trigger.trigger_once,
-                    owner_admission_sha256: trigger.owner_admission_sha256,
-                    deterministic_sha256: String::new(),
-                }
-                .seal()
-            }
-            // An unattributed scene-node effect has no owner packet to ASK,
-            // because its producer reported obtaining no join to XMAP13 or
-            // XMAP19 — a statement about the lookup, not about who owns it. A receipt still needs a
-            // resolved `source_content` key, and the only path to one is the
-            // effect's own particle packets, which this per-effect signature
-            // does not receive. Refusing names that gap instead of minting a
-            // receipt over invented content.
-            ParentAnchor::SceneNode { .. } => Err(XMAP20_UNATTRIBUTED_TRIGGER_GAP.into()),
-        }
-    }
-}
-
-/// Why an unattributed scene-node effect cannot yet be given a trigger receipt.
-///
-/// This is the one open item the scene-node anchor leaves for the producer
-/// lane: the receipt's `source_content` must be a resolved `UsedContentKey`,
-/// and an effect whose producer obtained no semantic join can only get one from its own
-/// particle packets. `Xmap20TriggerProvider::trigger_for_effect` takes an
-/// effect without its packets, so closing this is a producer-side signature
-/// decision, not a further reverse-engineering task.
-pub const XMAP20_UNATTRIBUTED_TRIGGER_GAP: &str =
-    "XMAP20 unattributed scene-node effects have no authored-trigger provider: their producer \
-     reported obtaining no semantic join, so there is no owner packet to ask for a receipt, and \
-     their resolved content key must come from their own particle packets, which the per-effect \
-     trigger signature does not carry";
-
-/// The gates that stop an effect-lifecycle carrier from existing at all.
-///
-/// Lane OI proved the engine read path, PJ mapped the owner chain, and PO
-/// closed the live gate and amended the schema. Three of the original five are
-/// gone and one is new, so what remains is genuinely producer-side work:
-///
-/// * `G1-xmap13-join` is ANSWERED, not closed by building XMAP13. The census
-///   cannot name a semantic owner, and PJ's weather-side shortcut does not open
-///   either, so the carrier records the engine's own scene-node identity
-///   instead (`ParentAnchor::SceneNode` with `producer_kind` `"unattributed"`)
-///   and no longer needs the entity census to exist. That name is deliberate:
-///   it records that no join was OBTAINED, and does not assert the engine owns
-///   the effect. The carrier cannot verify that a producer genuinely attempted
-///   the join before falling back here, so G1 stays open on that obligation.
-/// * `G3-live-confirmation` is CLOSED: one bounded read against a matching
-///   running build walked manager to census to instance to node to descriptor
-///   to authored type, and every self-check passed.
-/// * `G4-initial-versus-current-prng-state` is RESOLVED by the owner's ruling
-///   that effect randomness is viewer-local. The carrier records no RNG state,
-///   so there is nothing left to satisfy.
-///
-/// The four below are what a producer still has to answer. G7 in particular is
-/// why "the carrier is no longer blocked" would be the wrong reading of the
-/// amendment: three required wire fields are still unsourced, and the validator
-/// accepts a zero for each, so a producer landing today would invent them. See
-/// `replay_interface/re_evidence/rendering_laws/XMAP20/effect_census_authority.json`.
-pub const XMAP20_OPEN_CARRIER_GATES: [&str; 4] = [
-    "XMAP20-G2-lifecycle-sequencing",
-    "XMAP20-G5-census-completeness-and-snapshot-safety",
-    "XMAP20-G6-unattributed-trigger-receipt",
-    "XMAP20-G7-unsourced-required-wire-fields",
-];
-
-/// No recorder build emitted the key at all.
-pub const XMAP20_CARRIER_ABSENT_GAP_ID: &str = "XMAP20.effect_lifecycle_carrier_absent";
-
-/// The key reached the WorldFrame and XMAP00 still would not admit it - a
-/// typed null, an unreadable payload, or a law the census failed.
-///
-/// A separate id because "carrier absent" is a statement about the RECORDER
-/// and this one is a statement about the hour; a reader routed by the id
-/// alone must not be sent to build a producer that already exists.
-pub const XMAP20_CARRIER_UNUSABLE_GAP_ID: &str =
-    "XMAP20.effect_lifecycle_authority_unavailable";
-
-/// The XMAP00 authority input this family owns, and the wire key that feeds it.
-///
-/// Both are named in the refusal so a reader is told which recording input is
-/// missing, not merely that "a carrier" is.
 pub const XMAP20_EFFECT_LIFECYCLE_INPUT: &str = "effects.semantic_lifecycle";
-pub const XMAP20_EFFECT_LIFECYCLE_WIRE_KEY: &str =
-    replay_core::WorldFrame::XMAP20_EFFECT_LIFECYCLE_WIRE_KEY;
 
 /// What the draw path must present before a frame that deferred XMAP20 may seal.
 pub const XMAP20_EFFECT_DRAW_CONTRACT: &str = "XMAP20.effect_frame_receipt";
@@ -254,7 +141,10 @@ pub struct Xmap20AuthoredEntityRuntime {
 
 impl Default for Xmap20AuthoredEntityRuntime {
     fn default() -> Self {
-        Self { lifecycle: crate::xmap09_light_lifecycle::ViewerLightLifecycle::for_authored_particles() }
+        Self {
+            lifecycle: crate::xmap09_light_lifecycle::ViewerLightLifecycle::for_authored_particles(
+            ),
+        }
     }
 }
 
@@ -264,87 +154,27 @@ impl Xmap20AuthoredEntityRuntime {
         resolver: &GameFileResolver,
         placed: &[crate::xmap09_light_lifecycle::Xmap09PlacedEntity],
         viewer: &crate::ViewerOwnedMapState,
-    ) -> std::result::Result<Vec<Xmap20AuthoredParticleBinding>, crate::xmap09_light_census::Xmap09LightCensusRefusal> {
-        Ok(self.lifecycle.derive_light_instance_rows(resolver, placed, viewer)?.authored_particles)
+    ) -> std::result::Result<
+        Vec<Xmap20AuthoredParticleBinding>,
+        crate::xmap09_light_census::Xmap09LightCensusRefusal,
+    > {
+        Ok(self
+            .lifecycle
+            .derive_light_instance_rows(resolver, placed, viewer)?
+            .authored_particles)
     }
 }
 
-/// XMAP20 answers at DRAW time, and only for a recording that carries the
-/// effect-lifecycle carrier.
-///
-/// Nothing about the answer is computable once per hour: an effect packet's
-/// operation identity binds the live D3D main-scene resource identity, the
-/// pre-particle compositor receipt and XMAP09's completed light/depth execution,
-/// none of which exist at foundation time. So the family reports what it CAN
-/// decide here — whether the recording admits `effects.semantic_lifecycle` at
-/// all — and defers the rest under [`XMAP20_EFFECT_DRAW_CONTRACT`], which
-/// `seal_readiness` will not let the frame skip.
 pub struct Xmap20EffectsAdapter;
 
 impl Xmap20EffectsAdapter {
     pub(crate) fn producer_registration_sha256() -> String {
         Sha256::hex(
             format!(
-                "XMAP20\0{XMAP20_PREPARED_FRAME_SCHEMA}\0{XMAP20_EXECUTABLE_SHA256}\0{XMAP20_PARTICLE_DEFINITION_LOOKUP_RVA:08x}\0{XMAP20_PARTICLE_REGISTRY_RVA:08x}\0{XMAP20_PARTICLE_SUBMIT_BOUNDARY_RVA:08x}"
+                "XMAP20\0{XMAP20_AUTHORED_FRAME_SCHEMA}\0{XMAP20_EXECUTABLE_SHA256}\0{XMAP20_PARTICLE_DEFINITION_LOOKUP_RVA:08x}\0{XMAP20_PARTICLE_REGISTRY_RVA:08x}\0{XMAP20_PARTICLE_SUBMIT_BOUNDARY_RVA:08x}"
             )
             .as_bytes(),
         )
-    }
-
-    /// This recording does not admit the effect-lifecycle carrier for this hour.
-    ///
-    /// `authority_blocker` is XMAP00's own words for the input, so the refusal
-    /// distinguishes "the recorder never emitted the key" from "the key is there
-    /// and unusable" without this module restating either.
-    pub(crate) fn carrier_absent_output(
-        hour: i64,
-        disposition: crate::map_authority::MapAuthorityRequirementDisposition,
-        authority_blocker: &str,
-        consumed_gap_ids: Vec<String>,
-    ) -> Result<FoundationFeatureOutput> {
-        use crate::map_authority::MapAuthorityRequirementDisposition as Disposition;
-        let (gap_id, what) = match disposition {
-            Disposition::Absent => (
-                XMAP20_CARRIER_ABSENT_GAP_ID,
-                "carries no key {key} at all (root scope)",
-            ),
-            Disposition::Unavailable => (
-                XMAP20_CARRIER_UNUSABLE_GAP_ID,
-                "carries key {key} (root scope) and XMAP00 will not admit it",
-            ),
-            // The projection files a row as a gap only when it is Absent or
-            // Unavailable, so this is a contradiction in the caller and not a
-            // fact about the recording. Minting an Unavailable row that says
-            // "is Admitted" would file the defect as an outcome.
-            Disposition::Admitted => {
-                return Err(format!(
-                    "XMAP20 was asked to refuse {XMAP20_EFFECT_LIFECYCLE_INPUT} while the \
-                     projection reports it Admitted"
-                )
-                .into())
-            }
-        };
-        let what = what.replace("{key}", XMAP20_EFFECT_LIFECYCLE_WIRE_KEY);
-        let reason = format!(
-            "this recording {what}, so XMAP20 authority input \
-             {XMAP20_EFFECT_LIFECYCLE_INPUT} is {disposition:?}: {authority_blocker}; the producer \
-             is held by {}",
-            XMAP20_OPEN_CARRIER_GATES.join(", ")
-        );
-        let witness_sha256 =
-            Sha256::hex(format!("{gap_id}\n{hour}\n{hour}\n{reason}").as_bytes());
-        Ok(FoundationFeatureOutput::without_payload(
-            FamilyDisposition::Unavailable {
-                gap: portable_render_stream::FoundationGap {
-                    gap_id: gap_id.into(),
-                    first_unavailable_hour: hour,
-                    last_unavailable_hour: hour,
-                    witness_sha256,
-                    reason,
-                },
-            },
-            consumed_gap_ids,
-        ))
     }
 
     pub(crate) fn deferred_to_draw_output() -> FoundationFeatureOutput {
@@ -352,12 +182,7 @@ impl Xmap20EffectsAdapter {
             FamilyDisposition::DeferredToDraw {
                 producer_registration_sha256: Self::producer_registration_sha256(),
                 draw_contract_id: XMAP20_EFFECT_DRAW_CONTRACT.into(),
-                reason: format!(
-                    "the recording admits {XMAP20_EFFECT_LIFECYCLE_INPUT}, but an effect packet's \
-                     operation identity binds the live main-scene resource identity, the \
-                     pre-particle compositor receipt and XMAP09's completed light/depth \
-                     execution, none of which exist at foundation time"
-                ),
+                reason: "authored particle runtime submission requires the current main-scene resource identity, shader providers and completed pre-particle scene".into(),
             },
             Vec::new(),
         )
@@ -380,156 +205,23 @@ impl ProductionMapFeatureAdapter for Xmap20EffectsAdapter {
             context.map_authority_gaps,
             context.map_authority_admitted,
         )?;
-        if consumed_gap_ids.is_empty() {
-            return Ok(Self::deferred_to_draw_output());
+        if !consumed_gap_ids.is_empty() {
+            return Err("XMAP20 viewer-derived lifecycle was incorrectly classified as a captured input gap".into());
         }
-        let gap = context
-            .map_authority_gaps
-            .iter()
-            .find(|gap| gap.input_id == XMAP20_EFFECT_LIFECYCLE_INPUT)
-            .ok_or("XMAP20 owned-input accounting reported a gap the projection does not hold")?;
-        Self::carrier_absent_output(
-            context.world_frame.hour_index(),
-            gap.disposition,
-            &gap.reason,
-            consumed_gap_ids,
-        )
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PreparedXmap20Frame {
-    pub schema: String,
-    pub content_manifest_sha256: String,
-    pub product_modset_sha256: String,
-    pub effective_vfs_manifest_sha256: String,
-    pub admission: Xmap20EffectAdmission,
-    pub trigger_receipts: Vec<Xmap20TriggerReceipt>,
-    pub ordered_used_content: Vec<UsedContentKey>,
-    pub ordered_particles: Vec<ParticlePacket>,
-    pub deterministic_sha256: String,
-}
-
-impl PreparedXmap20Frame {
-    pub fn validate(&self) -> Result<()> {
-        self.admission
-            .validate()
-            .map_err(|error| format!("XMAP20 portable admission: {error}"))?;
-        for digest in [
-            &self.content_manifest_sha256,
-            &self.product_modset_sha256,
-            &self.effective_vfs_manifest_sha256,
+        let mut output = Self::deferred_to_draw_output();
+        for (branch, detail) in [
+            ("unit-event-phase-unbound", "XMAP13 prepared unit animation phase is not yet joined to the retained authored event clock; unit particle instances are unavailable, not measured empty"),
+            ("weather-event-phase-unbound", "XMAP19 primary/fading entity epochs, visibility and playback rate are not yet joined to the retained authored event clock; weather particle instances are unavailable, not measured empty"),
         ] {
-            if !valid_sha256(digest) {
-                return Err("XMAP20 prepared frame has invalid content identity".into());
-            }
+            output.element_diagnostics.push(portable_render_stream::ElementDiagnostic::family_exception(
+                MapVisualFamily::ParticlesEffects, branch, 0, detail.into(),
+            ));
         }
-        if self.schema != XMAP20_PREPARED_FRAME_SCHEMA
-            || self.trigger_receipts.len() != self.admission.active_effects.len()
-            || self.ordered_particles.len() != self.admission.ordered_particle_submissions.len()
-        {
-            return Err("XMAP20 prepared frame is incomplete".into());
-        }
-        for (trigger, effect) in self
-            .trigger_receipts
-            .iter()
-            .zip(&self.admission.active_effects)
-        {
-            validate_trigger_join(effect, trigger)?;
-        }
-        let mut content = BTreeSet::new();
-        for key in &self.ordered_used_content {
-            key.validate()
-                .map_err(|error| format!("XMAP20 used-content identity: {error}"))?;
-            if key.effective_vfs_manifest_sha256 != self.effective_vfs_manifest_sha256 {
-                return Err("XMAP20 used content belongs to a different effective VFS".into());
-            }
-            if !content.insert(key.clone()) {
-                return Err("XMAP20 prepared content list contains a duplicate".into());
-            }
-        }
-        let mut expected_content = self
-            .trigger_receipts
-            .iter()
-            .map(|trigger| trigger.source_content.clone())
-            .collect::<BTreeSet<_>>();
-        for packet in &self.ordered_particles {
-            collect_packet_content(packet, &mut expected_content);
-        }
-        if content != expected_content {
-            return Err("XMAP20 prepared used-content census is incomplete or extraneous".into());
-        }
-        portable_render_stream::validate_xmap20_admitted_particles(
-            &self.admission,
-            &self.ordered_particles,
-            &self.effective_vfs_manifest_sha256,
-        )?;
-        let mut unsigned = self.clone();
-        unsigned.deterministic_sha256.clear();
-        if self.deterministic_sha256 != Sha256::hex(&serde_json::to_vec(&unsigned)?) {
-            return Err("XMAP20 prepared-frame digest mismatch".into());
-        }
-        Ok(())
+        Ok(output)
     }
 }
 
-pub fn prepare_xmap20_effects(
-    resolver: &GameFileResolver,
-    frame: &Xmap20EffectFrame,
-    dependencies: &Xmap20DependencyReceipts,
-    triggers: &dyn Xmap20TriggerProvider,
-) -> Result<PreparedXmap20Frame> {
-    if !resolver.has_content_admission() {
-        return Err("XMAP20 requires validated effective-VFS admission".into());
-    }
-    let admission = portable_render_stream::admit_xmap20_effects(frame, dependencies)
-        .map_err(|error| format!("XMAP20 portable admission: {error}"))?;
-    let mut trigger_receipts = Vec::with_capacity(admission.active_effects.len());
-    let mut used = BTreeSet::new();
-    for effect in &admission.active_effects {
-        let trigger = triggers.trigger_for_effect(effect)?;
-        validate_trigger_join(effect, &trigger)?;
-        resolver.read_admitted_used_content(&trigger.source_content)?;
-        used.insert(trigger.source_content.clone());
-        trigger_receipts.push(trigger);
-    }
-    for packet in &frame.particles {
-        collect_packet_content(packet, &mut used);
-    }
-    for content in &used {
-        resolver.read_admitted_used_content(content)?;
-    }
-    let mut prepared = PreparedXmap20Frame {
-        schema: XMAP20_PREPARED_FRAME_SCHEMA.into(),
-        content_manifest_sha256: frame.content_manifest_sha256.clone(),
-        product_modset_sha256: frame.product_modset_sha256.clone(),
-        effective_vfs_manifest_sha256: frame.effective_vfs_manifest_sha256.clone(),
-        admission,
-        trigger_receipts,
-        ordered_used_content: used.into_iter().collect(),
-        ordered_particles: frame.particles.clone(),
-        deterministic_sha256: String::new(),
-    };
-    prepared.deterministic_sha256 = Sha256::hex(&serde_json::to_vec(&prepared)?);
-    prepared.validate()?;
-    // Derivation join on the PRODUCT preparation route: every packet that will
-    // be executed must join its authoritative definition through the recorded
-    // census laws (identity equality, FNV-1a-32 registration hash, definition
-    // digest, one setup per definition identity, single gfx/fx/particle.shader
-    // program path). Execution consumes these packets directly; the setup
-    // fields stay KEEP inside the authoritative carrier, and this gate requires
-    // the lawful census join before the packets may execute.
-    let derivation_authority = super::xmap20_derive::Xmap20DefinitionAuthority::from_census(
-        &prepared.admission.active_effects,
-        &prepared.ordered_particles,
-    )?;
-    for packet in &prepared.ordered_particles {
-        derivation_authority.derive_packet_draw_setup(packet)?;
-    }
-    Ok(prepared)
-}
-
+#[cfg(test)]
 fn validate_trigger_join(
     effect: &Xmap20ActiveEffect,
     trigger: &Xmap20TriggerReceipt,
@@ -584,34 +276,6 @@ fn validate_trigger_join(
         }
     }
     Ok(())
-}
-
-fn collect_packet_content(packet: &ParticlePacket, out: &mut BTreeSet<UsedContentKey>) {
-    out.insert(packet.content_identity.definition_content.clone());
-    out.insert(packet.content_identity.texture_content.clone());
-    out.insert(packet.shader_program.source.clone());
-    for texture in &packet.ordered_texture_bindings {
-        collect_texture_content(texture, out);
-    }
-    for vertex in &packet.geometry.ordered_vertex_buffers {
-        collect_buffer_content(&vertex.source, out);
-    }
-    if let Some(index) = &packet.geometry.index_buffer {
-        collect_buffer_content(&index.source, out);
-    }
-}
-
-fn collect_texture_content(texture: &TextureBinding, out: &mut BTreeSet<UsedContentKey>) {
-    out.insert(texture.content.clone());
-    for subresource in &texture.resource.ordered_subresources {
-        collect_buffer_content(&subresource.source, out);
-    }
-}
-
-fn collect_buffer_content(source: &BufferSource, out: &mut BTreeSet<UsedContentKey>) {
-    if let BufferSource::UsedContentRange { content, .. } = source {
-        out.insert(content.clone());
-    }
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -779,39 +443,20 @@ mod tests {
 }
 
 #[cfg(test)]
-mod carrier_tests {
+mod authored_admission_tests {
     use super::*;
 
-    /// XMAP20's own authority record, read at test time.
-    ///
-    /// The blocker is checked against THIS, not against the production constant
-    /// beside it: a constant compared with itself accepts any pair of edits that
-    /// agree, which is exactly how a gate the authority excludes would get into
-    /// the refusal.
-    fn xmap20_effect_census_authority() -> serde_json::Value {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../re_evidence/rendering_laws/XMAP20/effect_census_authority.json");
-        let bytes = std::fs::read(&path)
-            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-        serde_json::from_slice(&bytes).expect("XMAP20 authority record is JSON")
-    }
-
     #[test]
-    fn the_row_follows_the_recording_and_names_the_input_when_it_is_missing() {
-        use crate::map_authority::{
-            MapAuthorityAdmittedInput, MapAuthorityGap, MapAuthorityRequirementDisposition,
-        };
+    fn authored_lifecycle_defers_without_a_captured_particle_carrier() {
         use crate::production_features::xmap15::Xmap15ViewerSelection;
-        use crate::production_foundation::{FoundationFeatureContext, ViewerOwnedMapState};
         use replay_core::{RawFrame, ReplaySource, SourceError, WorldTimeline};
-
-        struct EmptySource;
-        impl ReplaySource for EmptySource {
+        struct Source;
+        impl ReplaySource for Source {
             fn game_id(&self) -> &str {
-                "xmap20-carrier-seam"
+                "authored-particles"
             }
             fn hours(&self) -> &[i64] {
-                &[11, 12]
+                &[11]
             }
             fn warnings(&self) -> &[String] {
                 &[]
@@ -826,246 +471,54 @@ mod carrier_tests {
                 })
             }
         }
-
-        let timeline = WorldTimeline::open(Box::new(EmptySource)).expect("timeline");
-        let viewer = ViewerOwnedMapState {
+        let timeline = WorldTimeline::open(Box::new(Source)).unwrap();
+        let frame = timeline.frame(11).unwrap();
+        assert!(frame.xmap20_effects().is_none());
+        let viewer = crate::ViewerOwnedMapState {
             sky_enabled: true,
             viewport_width: 16,
             viewport_height: 16,
             camera: None,
             observer_country_id: None,
-            map_mode_id: "not_a_mode".to_string(),
+            map_mode_id: "test".into(),
             map_mode_selection_epoch: 0,
             selected_object_ids: Vec::new(),
             input_revision: 0,
             animation_time_f32_bits: 0,
             frame_delta_seconds_f32_bits: 0,
         };
+        let admission = crate::map_authority::map_authority_viewer_derived_admission(
+            XMAP20_EFFECT_LIFECYCLE_INPUT,
+        )
+        .unwrap();
+        assert_eq!((admission.status)(&frame), replay_core::ViewStatus::Present);
+        let admitted = [crate::MapAuthorityAdmittedInput {
+            input_id: admission.input_id.into(),
+            owner_packet: admission.owner_packet.into(),
+            payload_schema: admission.payload_schema.into(),
+            cadence: admission.cadence.into(),
+            identity_order: admission.identity_order.into(),
+            source: crate::MapAuthorityAdmissionSource::ViewerDerivation,
+            derivation: Some(admission.derivation.into()),
+        }];
         let selection = Xmap15ViewerSelection {
             selected_owner: None,
             selected_plan: None,
         };
-        // The projection fills a gap's reason from the requirement's own
-        // blocker (map_authority.rs, the Absent/Unavailable arm), so the fixture
-        // carries the REAL blocker. A stand-in string here would prove the
-        // format slot passes something through and nothing about what the wire
-        // actually says.
-        let authority_blocker =
-            crate::map_authority::map_authority_requirement_metadata(XMAP20_EFFECT_LIFECYCLE_INPUT)
-                .expect("XMAP20 owns this authority input")
-                .blocker;
-        let gapped = vec![MapAuthorityGap {
-            input_id: XMAP20_EFFECT_LIFECYCLE_INPUT.to_string(),
-            disposition: MapAuthorityRequirementDisposition::Absent,
-            reason: authority_blocker.to_string(),
-        }];
-        let admitted = vec![MapAuthorityAdmittedInput {
-            input_id: XMAP20_EFFECT_LIFECYCLE_INPUT.to_string(),
-            owner_packet: "XMAP20".to_string(),
-            payload_schema: "test".to_string(),
-            cadence: "hourly".to_string(),
-            identity_order: "test".to_string(),
-            source: crate::MapAuthorityAdmissionSource::RecordedCarrier,
-            derivation: None,
-        }];
-
-        // Arm 1 - the recording does NOT admit the input: refuse, and name the
-        // input, the wire key, XMAP00's own blocker and every open gate.
-        let frame = timeline.frame(11).expect("frame");
         let context = FoundationFeatureContext::new_for_owned_accounting_tests(
             &frame,
             &viewer,
-            &gapped,
             &[],
+            &admitted,
             &selection,
         );
-        let output = Xmap20EffectsAdapter.prepare(&context).expect("row");
-        let FamilyDisposition::Unavailable { gap } = &output.disposition else {
-            panic!("XMAP20 must refuse while the recording does not admit its input");
-        };
-        assert_eq!(gap.gap_id, XMAP20_CARRIER_ABSENT_GAP_ID);
-        assert!(gap.reason.contains("carries no key"), "{}", gap.reason);
-        assert!(!gap.gap_id.contains("adapter_unimplemented"));
-        assert!(gap.reason.contains(XMAP20_EFFECT_LIFECYCLE_INPUT), "{}", gap.reason);
-        assert!(gap.reason.contains(XMAP20_EFFECT_LIFECYCLE_WIRE_KEY), "{}", gap.reason);
-        for gate in XMAP20_OPEN_CARRIER_GATES {
-            assert!(gap.reason.contains(gate), "reason omitted {gate}");
-        }
-        assert_eq!(
-            output.consumed_gap_ids,
-            vec![XMAP20_EFFECT_LIFECYCLE_INPUT.to_string()]
-        );
-        assert_eq!(gap.first_unavailable_hour, 11);
-        assert_eq!(gap.last_unavailable_hour, 11);
-
-        // The blocker the refusal quotes states the EXACT missing inputs, and no
-        // retired one, and the refusal on the wire CARRIES it whole.
-        //
-        // kills: a refusal that keeps demanding effect randomness - owner ruling
-        // 2026-08-22 assigned it to the viewer, XMAP20-G4 is RESOLVED, and the
-        // carrier records no RNG state, so a reader routed by this text would be
-        // sent to produce something nobody owes; a blocker that names a gate
-        // which does NOT hold the carrier shut, which sends a producer to close
-        // something the authority excludes (G1 is open and blocks a join, not
-        // the carrier); one that names G7 without naming the three fields, which
-        // says a gate is open but not what to go and measure; and dropping the
-        // blocker from the refusal's own format string, after which the wire
-        // says only that four gates exist and none of what they ask for.
-        let blocker = authority_blocker;
-        assert!(gap.reason.contains(blocker), "{}", gap.reason);
-
-        // The AUTHORITY decides which gates hold the carrier shut and what each
-        // asks for. The WHOLE blocker is composed from it and compared EQUAL,
-        // not merely searched: a containment test passes any text that keeps the
-        // required substrings, including "the producer that would is NOT held
-        // by ..." and any extra sentence appended after them.
-        let authority = xmap20_effect_census_authority();
-        let carrier_gates = &authority["open_carrier_gates"];
-        let authoritative_ids = carrier_gates["ids"]
-            .as_array()
-            .expect("open_carrier_gates.ids is an array")
-            .iter()
-            .map(|id| id.as_str().expect("gate id is a string").to_string())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            XMAP20_OPEN_CARRIER_GATES.to_vec(),
-            authoritative_ids,
-            "the production gate constant disagrees with the authority record"
-        );
-        let clauses = carrier_gates["carrier_blocker_clauses"]
-            .as_object()
-            .expect("open_carrier_gates.carrier_blocker_clauses is an object");
-        let rendered = authoritative_ids
-            .iter()
-            .map(|id| {
-                let clause = clauses[id]
-                    .as_str()
-                    .unwrap_or_else(|| panic!("the authority record has no clause for {id}"));
-                format!("{id} ({clause})")
-            })
-            .collect::<Vec<_>>();
-        let (last, leading) = rendered
-            .split_last()
-            .expect("the carrier is held by at least one gate");
-        let composed = format!(
-            "{}{}{}{last}",
-            clauses["preamble"]
-                .as_str()
-                .expect("the authority record carries the blocker preamble"),
-            leading.join(", "),
-            if leading.is_empty() { "" } else { " and " },
-        );
-        assert_eq!(blocker, composed);
-        // The retired obligation, by every name it goes under, checked on the
-        // AUTHORITY's own words so the evidence record cannot reintroduce it
-        // either.
-        let lowered = composed.to_ascii_lowercase();
-        for retired in ["seed", "rng", "random", "prng", "g4"] {
-            assert!(!lowered.contains(retired), "the blocker demands {retired:?}");
-        }
-
-        // The witness must bind the hour, or two hours would share one receipt.
-        let later = timeline.frame(12).expect("frame");
-        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
-            &later,
-            &viewer,
-            &gapped,
-            &[],
-            &selection,
-        );
-        let other = Xmap20EffectsAdapter.prepare(&context).expect("row");
-        let FamilyDisposition::Unavailable { gap: other_gap } = &other.disposition else {
-            unreachable!()
-        };
-        assert_ne!(gap.witness_sha256, other_gap.witness_sha256);
-
-        // Arm 1b - the key IS on the wire and XMAP00 still will not admit it.
-        // That is a different defect class from "no recorder emits the key", and
-        // a reader routed by the gap id alone must not be sent to build a
-        // producer that already exists (Codex review, round 1).
-        let unusable = vec![MapAuthorityGap {
-            input_id: XMAP20_EFFECT_LIFECYCLE_INPUT.to_string(),
-            disposition: MapAuthorityRequirementDisposition::Unavailable,
-            reason: "the hour's payload failed the census law".to_string(),
-        }];
-        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
-            &frame,
-            &viewer,
-            &unusable,
-            &[],
-            &selection,
-        );
-        let output = Xmap20EffectsAdapter.prepare(&context).expect("row");
-        let FamilyDisposition::Unavailable { gap } = &output.disposition else {
-            panic!("an unusable carrier must still refuse");
-        };
-        assert_eq!(gap.gap_id, XMAP20_CARRIER_UNUSABLE_GAP_ID);
-        assert_ne!(gap.gap_id, XMAP20_CARRIER_ABSENT_GAP_ID);
-        assert!(gap.reason.contains("will not admit it"), "{}", gap.reason);
+        let output = Xmap20EffectsAdapter.prepare(&context).unwrap();
         assert!(
-            gap.reason.contains("the hour's payload failed the census law"),
-            "{}",
-            gap.reason
+            matches!(output.disposition, FamilyDisposition::DeferredToDraw { ref draw_contract_id, .. } if draw_contract_id == XMAP20_EFFECT_DRAW_CONTRACT)
         );
-
-        // ...and an Admitted input is a contradiction in the caller, not a row.
-        let contradiction = match Xmap20EffectsAdapter::carrier_absent_output(
-            11,
-            MapAuthorityRequirementDisposition::Admitted,
-            "unreachable",
-            Vec::new(),
-        ) {
-            Ok(_) => panic!("refusing an admitted input must abort"),
-            Err(error) => error.to_string(),
-        };
-        assert!(contradiction.contains("reports it Admitted"), "{contradiction}");
-
-        // Arm 2 - the recording DOES admit the input: the family stops refusing
-        // and defers under its draw contract. This is the arm the old
-        // constructor-shaped adapter could never reach.
-        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
-            &frame,
-            &viewer,
-            &[],
-            &admitted,
-            &selection,
-        );
-        let output = Xmap20EffectsAdapter.prepare(&context).expect("row");
-        let FamilyDisposition::DeferredToDraw {
-            draw_contract_id,
-            reason,
-            producer_registration_sha256,
-        } = &output.disposition
-        else {
-            panic!("an admitted carrier must defer, not refuse: {:?}", output.disposition);
-        };
-        assert_eq!(draw_contract_id, XMAP20_EFFECT_DRAW_CONTRACT);
-        assert_eq!(
-            producer_registration_sha256,
-            &Xmap20EffectsAdapter::producer_registration_sha256()
-        );
-        assert!(reason.contains("main-scene resource identity"), "{reason}");
-        assert!(output.consumed_gap_ids.is_empty());
-
-        // Arm 3 - a row that is both admitted and gapped is a contradiction the
-        // adapter must abort on rather than pick a side.
-        let mut both = gapped.clone();
-        both.push(MapAuthorityGap {
-            input_id: XMAP20_EFFECT_LIFECYCLE_INPUT.to_string(),
-            disposition: MapAuthorityRequirementDisposition::Unavailable,
-            reason: "second opinion".to_string(),
-        });
-        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
-            &frame,
-            &viewer,
-            &both,
-            &admitted,
-            &selection,
-        );
-        let error = match Xmap20EffectsAdapter.prepare(&context) {
-            Ok(_) => panic!("a double-booked input must abort"),
-            Err(error) => error.to_string(),
-        };
-        assert!(error.contains("both admitted and gapped"), "{error}");
+        assert_eq!(output.element_diagnostics.len(), 2);
+        for diagnostic in output.element_diagnostics {
+            diagnostic.validate().unwrap();
+        }
     }
 }

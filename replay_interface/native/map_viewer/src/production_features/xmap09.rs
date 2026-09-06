@@ -1058,7 +1058,7 @@ impl Xmap09LightingAdapter {
         let defines = crate::Xmap09LightingDefines::from_effective_sources(&sources)?;
         Ok(Self {
             resolver: resolver.clone(),
-            lifecycle: Default::default(),
+            lifecycle: std::sync::Mutex::new(crate::xmap09_light_lifecycle::ViewerLightLifecycle::for_authored_particles()),
             defines,
             ordered_used_content,
             defines_source_sha256: Sha256::hex(&digest_bytes),

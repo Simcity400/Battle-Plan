@@ -841,6 +841,11 @@ portable_replay/native/engine_evidence/artifacts/sampler_constructor_defaults.tx
 portable_replay/native/engine_evidence/artifacts/sampler_reader_callbacks.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/sampler_enum_integer_format.txt text eol=lf
 
+portable_replay/native/engine_evidence/artifacts/func_1424e8780.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1424e8780.instructions.txt text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/particle_spin_cases.json text eol=lf
 /portable_replay/native/engine_evidence/artifacts/func_1416307f0.decompile.c text eol=lf
 /portable_replay/native/engine_evidence/artifacts/func_141630750.decompile.c text eol=lf
 /portable_replay/native/engine_evidence/artifacts/func_1422be5d0.decompile.c text eol=lf

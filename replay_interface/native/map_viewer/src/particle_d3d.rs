@@ -14,6 +14,7 @@ pub(crate) struct ParticleRecordUpload {
 pub(crate) struct UploadedParticleRecords<'buffer> {
     pub buffer: &'buffer D3dPtr<ID3D11Buffer>,
     pub count: u32,
+    pub payload_sha256: String,
     pub stride: u32,
     pub trail: bool,
     pub world_matrix_f32_bits: [u32; 16],
@@ -110,12 +111,14 @@ impl ParticleRecordUpload {
             return Err("PARTICLE_GPU_UPLOAD mapped buffer returned null".into());
         }
         let mut offset = 0;
+        let mut payload = snapshot::sha256::Sha256::new();
         visit_upload_bytes(subsystem, camera, scale_f32_bits, |bytes| {
             ptr::copy_nonoverlapping(
                 bytes.as_ptr(),
                 (mapped.pData as *mut u8).add(offset),
                 bytes.len(),
             );
+            payload.update(bytes);
             offset += bytes.len();
             Ok(())
         })?;
@@ -123,6 +126,7 @@ impl ParticleRecordUpload {
         Ok(Some(UploadedParticleRecords {
             buffer,
             count,
+            payload_sha256: snapshot::sha256::to_hex(&payload.finalize()),
             stride,
             trail,
             world_matrix_f32_bits,
@@ -408,6 +412,22 @@ pub struct ParticleDrawCounts {
     pub trail_vertices: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParticleDrawReceipt {
+    counts: ParticleDrawCounts,
+    submission_sha256: String,
+}
+
+impl ParticleDrawReceipt {
+    pub fn counts(&self) -> ParticleDrawCounts {
+        self.counts
+    }
+
+    pub fn submission_sha256(&self) -> &str {
+        &self.submission_sha256
+    }
+}
+
 pub struct ParticleNativeDraw {
     upload: ParticleRecordUpload,
     catalog: ParticleShaderCatalog,
@@ -516,7 +536,7 @@ impl ParticleNativeDraw {
         presentation_id: u64,
         sort_camera: ParticleSortCamera,
         bindings: &ParticleSceneBindings<'_>,
-    ) -> Result<ParticleDrawCounts> {
+    ) -> Result<ParticleDrawReceipt> {
         if raw_context.is_null()
             || view.content_lease() != &capacity.lease
             || view.content_lease() != &self.catalog.lease
@@ -527,42 +547,56 @@ impl ParticleNativeDraw {
         let context = D3dPtr::from_raw(raw_context, "particle draw context")?;
         let scale = view.draw_scale_f32_bits()?;
         let mut counts = ParticleDrawCounts::default();
+        let mut submission_sha256 =
+            snapshot::sha256::Sha256::hex(b"PARTICLE_DRAW.native-submissions.a729.v1");
         for trail in [false, true] {
-            let packed = view.visit_draw_subsystems(capacity.packets, trail, |_, subsystem| {
-                if subsystem.authored_capacity() > capacity.particles {
-                    return Err(
-                        "PARTICLE_DRAW subsystem exceeds admitted global particle capacity".into(),
-                    );
-                }
-                let count = self.draw_subsystem(
-                    &context,
-                    resolver,
-                    admission,
-                    subsystem,
-                    presentation_id,
-                    sort_camera,
-                    scale,
-                    bindings,
-                )?;
-                if count != 0 {
-                    counts.draw_calls = counts
-                        .draw_calls
-                        .checked_add(1)
-                        .ok_or("PARTICLE_DRAW draw count overflow")?;
-                    let total = if trail {
-                        &mut counts.trail_vertices
-                    } else {
-                        &mut counts.normal_instances
-                    };
-                    *total = total
-                        .checked_add(u64::from(count))
-                        .ok_or("PARTICLE_DRAW record count overflow")?;
-                }
-                Ok(())
-            })?;
+            let packed =
+                view.visit_draw_subsystems(capacity.packets, trail, |ordinal, subsystem| {
+                    if subsystem.authored_capacity() > capacity.particles {
+                        return Err(
+                            "PARTICLE_DRAW subsystem exceeds admitted global particle capacity"
+                                .into(),
+                        );
+                    }
+                    let submitted = self.draw_subsystem(
+                        &context,
+                        resolver,
+                        admission,
+                        subsystem,
+                        presentation_id,
+                        sort_camera,
+                        scale,
+                        bindings,
+                    )?;
+                    if let Some((count, digest)) = submitted {
+                        submission_sha256 = replay_core::canonical_json_sha256(&(
+                            &submission_sha256,
+                            trail,
+                            ordinal,
+                            count,
+                            digest,
+                        ))?;
+                        counts.draw_calls = counts
+                            .draw_calls
+                            .checked_add(1)
+                            .ok_or("PARTICLE_DRAW draw count overflow")?;
+                        let total = if trail {
+                            &mut counts.trail_vertices
+                        } else {
+                            &mut counts.normal_instances
+                        };
+                        *total = total
+                            .checked_add(u64::from(count))
+                            .ok_or("PARTICLE_DRAW record count overflow")?;
+                    }
+                    Ok(())
+                })?;
             counts.packed_subsystems = u64::try_from(packed)?;
         }
-        Ok(counts)
+        Ok(ParticleDrawReceipt {
+            counts,
+            submission_sha256,
+        })
     }
 
     pub(crate) unsafe fn draw_subsystem(
@@ -575,7 +609,7 @@ impl ParticleNativeDraw {
         sort_camera: ParticleSortCamera,
         scale_f32_bits: [u32; 2],
         bindings: &ParticleSceneBindings<'_>,
-    ) -> Result<u32> {
+    ) -> Result<Option<(u32, String)>> {
         subsystem.validate_draw_presentation(presentation_id, sort_camera)?;
         bindings.camera.validate()?;
         bindings.target.desc().validate()?;
@@ -592,7 +626,7 @@ impl ParticleNativeDraw {
             return Err("PARTICLE_DRAW scene/camera/content binding mismatch".into());
         }
         if subsystem.live_count() == 0 || (subsystem.trail() && subsystem.live_count() < 2) {
-            return Ok(0);
+            return Ok(None);
         }
         let authored = subsystem
             .texture()
@@ -658,6 +692,38 @@ impl ParticleNativeDraw {
         for (index, bits) in scale_f32_bits.into_iter().enumerate() {
             scale[index * 4..index * 4 + 4].copy_from_slice(&bits.to_le_bytes());
         }
+        let shared_identities: Vec<_> = shared
+            .iter()
+            .map(|binding| {
+                (
+                    &binding.semantic,
+                    binding.shader_register,
+                    &binding.payload_sha256,
+                    &binding.descriptor_sha256,
+                    binding.view_dimension,
+                )
+            })
+            .collect();
+        let submission_sha256 = replay_core::canonical_json_sha256(&(
+            "PARTICLE_DRAW.native-payload.a729.v1",
+            (
+                &uploaded.payload_sha256,
+                uploaded.count,
+                uploaded.stride,
+                uploaded.trail,
+            ),
+            (&material.identity_sha256, material.texture_dimensions),
+            (&projection, &scale, cb3.as_slice()),
+            (
+                bindings.scene.payload_sha256(),
+                bindings.scene.descriptor_sha256(),
+                bindings.scene.composition_receipt_sha256(),
+                bindings.scene.reflected_layout_sha256(),
+            ),
+            shared_identities,
+            bindings.target.desc(),
+            "depth-enabled/write-zero/less-equal/stencil-disabled/ref-zero",
+        ))?;
         let raw = context.as_raw();
         for (buffer, bytes) in [
             (&self.projection, projection.as_slice()),
@@ -756,7 +822,7 @@ impl ParticleNativeDraw {
             &self.upload.device,
             "particle authored draw",
         )?;
-        Ok(count)
+        Ok(Some((count, submission_sha256)))
     }
 }
 
@@ -1289,7 +1355,10 @@ Effect fixture { VertexShader="VS" PixelShader="PS" }
                 })
                 .unwrap();
             assert_eq!(
-                counts,
+                counts
+                    .iter()
+                    .map(ParticleDrawReceipt::counts)
+                    .collect::<Vec<_>>(),
                 [ParticleDrawCounts {
                     packed_subsystems: 1,
                     draw_calls: 1,
@@ -1385,6 +1454,81 @@ Effect fixture { VertexShader="VS" PixelShader="PS" }
             }
             (*context.as_raw()).Unmap(staging.as_raw().cast(), 0);
             assert_eq!(occluded, vec![0; 256]);
+            let mut definitions =
+                crate::particle_authored::ParticleDefinitions::load(&resolver).unwrap();
+            let capacity = definitions.draw_capacity().unwrap();
+            let presentation = u64::from(0.5f32.to_bits());
+            let mut submitted = Vec::new();
+            let mut alpha = Vec::new();
+            for opacity in [1.0, 0.5, 0.5] {
+                let mut runtime =
+                    crate::particle_runtime::ParticleRuntime::new(definitions.content_lease(), 1)
+                        .unwrap();
+                let handle = runtime
+                    .spawn(
+                        1,
+                        definitions.resolve("paired").unwrap(),
+                        crate::particle_runtime::ViewerParticleSeed {
+                            counter: 0,
+                            seed: 1,
+                        },
+                        identity,
+                        1.,
+                    )
+                    .unwrap();
+                runtime.set_opacity(handle, opacity).unwrap();
+                runtime.advance(presentation, 0.5, &[]).unwrap();
+                runtime.sort_for_draw(handle, presentation, sort).unwrap();
+                let view = runtime.gpu_view(handle).unwrap();
+                assert_eq!(view.presentation_id, Some(presentation));
+                assert_eq!(view.world_matrix_f32_bits(), identity);
+                (*context.as_raw()).ClearRenderTargetView(target.color_rtv(), &[0.; 4]);
+                (*context.as_raw()).ClearDepthStencilView(
+                    target.depth_dsv(),
+                    D3D11_CLEAR_DEPTH,
+                    1.,
+                    0,
+                );
+                submitted.push(
+                    renderer
+                        .draw_instance(
+                            context.as_raw(),
+                            &resolver,
+                            &admission,
+                            &capacity,
+                            view,
+                            presentation,
+                            sort,
+                            &bindings,
+                        )
+                        .unwrap(),
+                );
+                (*context.as_raw())
+                    .CopyResource(staging.as_raw().cast(), target.color_texture().cast());
+                native_d3d11_hr(
+                    (*context.as_raw()).Map(
+                        staging.as_raw().cast(),
+                        0,
+                        D3D11_MAP_READ,
+                        0,
+                        &mut mapped,
+                    ),
+                    "particle altered-state readback",
+                )
+                .unwrap();
+                alpha.push(
+                    *((mapped.pData as *const u8).add(3 * mapped.RowPitch as usize + 3 * 4 + 3)),
+                );
+                (*context.as_raw()).Unmap(staging.as_raw().cast(), 0);
+            }
+            assert_eq!(submitted[0].counts(), submitted[1].counts());
+            assert_eq!(submitted[0].counts().draw_calls, 1);
+            assert_ne!(
+                submitted[0].submission_sha256(),
+                submitted[1].submission_sha256()
+            );
+            assert_eq!(submitted[1], submitted[2]);
+            assert_eq!(alpha, [255, 128, 128]);
             (*context.as_raw()).ClearState();
         }
     }

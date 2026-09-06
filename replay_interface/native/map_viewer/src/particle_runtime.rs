@@ -500,6 +500,42 @@ pub struct ParticleInstanceUpdate {
     pub action: ParticleAction,
 }
 
+fn native_normalize(vector: [f32; 3], reset_zero: bool) -> [f32; 3] {
+    let length = (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt();
+    if length == 0.0 {
+        if reset_zero {
+            [0.0; 3]
+        } else {
+            vector
+        }
+    } else {
+        vector.map(|value| value / length)
+    }
+}
+
+fn native_axis_matrix(
+    authored: &AuthoredSubsystem,
+    [x, y, z]: [f32; 3],
+    angle: f32,
+) -> ParticleResult<[f32; 9]> {
+    let (sin, cos) = native_angles(authored, "spin_angle", angle)?;
+    let complement = 1.0 - cos;
+    let zx = z * x * complement;
+    let xy = x * y * complement;
+    let zy = z * y * complement;
+    Ok([
+        x * x * complement + cos,
+        z * sin + xy,
+        zx - y * sin,
+        xy - z * sin,
+        y * y * complement + cos,
+        x * sin + zy,
+        y * sin + zx,
+        zy - x * sin,
+        z * z * complement + cos,
+    ])
+}
+
 fn native_angles(
     authored: &AuthoredSubsystem,
     input: &str,
@@ -954,6 +990,49 @@ impl Subsystem {
                                     accumulated[axis] = factor * radial[axis] + accumulated[axis];
                                 }
                             }
+                        }
+                    }
+                }
+                ParticleForceKind::Spin => {
+                    let axis = native_normalize(force.direction, true);
+                    let forward = native_axis_matrix(authored, axis, -(amount * delta))?;
+                    let inverse = native_axis_matrix(authored, axis, -((-amount) * delta))?;
+                    let origin = std::array::from_fn::<_, 3, _>(|axis| {
+                        force.position[axis] * scale
+                            + if force.local_force {
+                                world[12 + axis]
+                            } else {
+                                0.0
+                            }
+                    });
+                    for (accumulated, particle) in forces.iter_mut().zip(&self.particles) {
+                        let position = particle.visual.position;
+                        let radial =
+                            std::array::from_fn::<_, 3, _>(|axis| position[axis] - origin[axis]);
+                        let tangent = native_normalize(
+                            std::array::from_fn(|axis| {
+                                position[axis]
+                                    - (inverse[3 + axis] * radial[1]
+                                        + inverse[axis] * radial[0]
+                                        + inverse[6 + axis] * radial[2]
+                                        + origin[axis])
+                            }),
+                            false,
+                        );
+                        let velocity = particle.visual.velocity;
+                        let projected = velocity[1] * tangent[1]
+                            + velocity[0] * tangent[0]
+                            + velocity[2] * tangent[2];
+                        let divisor = (scaled_delta * delta) / particle.visual.columns[7];
+                        for axis in 0..3 {
+                            let displaced = radial[0] * forward[axis]
+                                + radial[1] * forward[3 + axis]
+                                + radial[2] * forward[6 + axis]
+                                + origin[axis]
+                                - position[axis];
+                            accumulated[axis] = (displaced - tangent[axis] * projected * delta)
+                                / divisor
+                                + accumulated[axis];
                         }
                     }
                 }
@@ -2372,7 +2451,7 @@ mod tests {
 
     #[test]
     fn public_advance_refuses_unsupported_motion_and_keeps_the_instance_failure() {
-        for (kind, extra) in [("turbulence", ""), ("spin", "")] {
+        for (kind, extra) in [("turbulence", "")] {
             let (_fixture, mut runtime, handle) = setup(&format!("force={{name=unclosed type={kind} amount=1 {extra}}} subsystem={{name=s max_amount=1 duration=0 emission=4 life=4 mass=1 force=unclosed}}"));
             let error = runtime.advance(1, 0.25, &[]).unwrap_err();
             assert_eq!(error.event_instance_id, Some(17));
@@ -2384,6 +2463,104 @@ mod tests {
             );
             assert!(error.input.starts_with("force:unclosed:"));
             assert_eq!(runtime.light_binding(handle).unwrap_err(), error);
+        }
+    }
+
+    #[test]
+    fn spin_motion_matches_native_instruction_cases() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(portable_engine_evidence::particle_runtime::SPIN_CASES).unwrap();
+        let scalar = |value: &serde_json::Value| f32::from_bits(value.as_u64().unwrap() as u32);
+        let triple =
+            |value: &serde_json::Value| std::array::from_fn::<_, 3, _>(|axis| scalar(&value[axis]));
+        let mut checked = 0;
+        for case in fixture["cases"].as_array().unwrap() {
+            if case["fma"].as_bool().unwrap()
+                != portable_render_stream::exact_math::viewer_uses_fma()
+            {
+                continue;
+            }
+            checked += 1;
+            let direction = triple(&case["direction_f32_bits"]);
+            let amount = scalar(&case["amount_f32_bits"]);
+            let (_fixture, mut runtime, handle) = setup(&format!("force={{name=spin type=spin division=0 direction={{{} {} {}}} position={{1 -0.5 3}} amount={amount}}} subsystem={{name=s max_amount=3 mass=1 force=spin}}", direction[0],direction[1],direction[2]));
+            let delta = scalar(&fixture["delta_f32_bits"]);
+            let scale = scalar(&fixture["scale_f32_bits"]);
+            let mut world = matrix().map(f32::from_bits);
+            world[12..15].copy_from_slice(&triple(&fixture["translation_f32_bits"]));
+            let instance = runtime.instances[handle.slot].as_mut().unwrap();
+            let definition = instance.definition.clone();
+            let state = &mut instance.subsystems[0];
+            state.live = 3;
+            state.retained = 3;
+            for index in 0..3 {
+                state.particles[index].visual.position =
+                    triple(&fixture["positions_f32_bits"][index]);
+                state.particles[index].visual.velocity =
+                    triple(&fixture["velocities_f32_bits"][index]);
+                state.particles[index].visual.columns[7] =
+                    scalar(&fixture["masses_f32_bits"][index]);
+            }
+            state
+                .advance_motion(
+                    &definition.subsystems[0],
+                    delta,
+                    scale,
+                    &world,
+                    &mut ViewerParticleSeed {
+                        counter: 0,
+                        seed: 1,
+                    },
+                )
+                .unwrap();
+            for index in 0..3 {
+                let native_force = triple(&case["force_f32_bits"][index]);
+                let prior_velocity = triple(&fixture["velocities_f32_bits"][index]);
+                let prior_position = triple(&fixture["positions_f32_bits"][index]);
+                let mass = scalar(&fixture["masses_f32_bits"][index]);
+                let expected_velocity = std::array::from_fn::<_, 3, _>(|axis| {
+                    native_force[axis] * (delta / mass) + prior_velocity[axis]
+                });
+                let expected_position = std::array::from_fn::<_, 3, _>(|axis| {
+                    expected_velocity[axis] * (scale * delta) + prior_position[axis]
+                });
+                assert_eq!(
+                    state.particles[index].visual.velocity.map(f32::to_bits),
+                    expected_velocity.map(f32::to_bits),
+                    "{case} particle {index}"
+                );
+                assert_eq!(
+                    state.particles[index].visual.position.map(f32::to_bits),
+                    expected_position.map(f32::to_bits),
+                    "{case} particle {index}"
+                );
+            }
+        }
+        assert_eq!(checked, 6);
+    }
+
+    #[test]
+    fn public_advance_admits_spin_and_rejects_its_nonfinite_mass_result() {
+        for mass in [1, 0] {
+            let (_fixture, mut runtime, handle) = setup(&format!("force={{name=spin type=spin direction={{0 2 0}} amount=2}} subsystem={{name=s max_amount=1 duration=0 emission=4 life=4 mass={mass} force=spin}}"));
+            let result = runtime.advance(1, 0.25, &[]);
+            if mass == 1 {
+                result.unwrap();
+                assert_eq!(
+                    runtime
+                        .gpu_view(handle)
+                        .unwrap()
+                        .root_subsystems()
+                        .next()
+                        .unwrap()
+                        .live_count(),
+                    1
+                );
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(error.reason, ParticleRefusalReason::ArithmeticOverflow);
+                assert_eq!(runtime.light_binding(handle).unwrap_err(), error);
+            }
         }
     }
 
