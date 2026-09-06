@@ -80,6 +80,7 @@ mod mapmode_diplomacy;
 mod mapmode_factions;
 mod mapmode_infrastructure;
 mod mod_resolver;
+pub mod native_model_selection;
 mod naval_supremacy_tint;
 mod o05_fixed_object_law;
 mod occupation_mapmode;

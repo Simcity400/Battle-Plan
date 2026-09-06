@@ -1453,3 +1453,7 @@ portable_replay/native/engine_evidence/artifacts/func_1424afca0.decompile.c text
 extractor/native/runs/view2_state_registry/registry_ids.tsv text eol=lf
 
 extractor/native/runs/view2_state_registry/sources.json text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1422627e0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1422627e0.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260906T221520Z-arroword-model-ray-loader-keys-and-bound-b3c12945.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260906T221520Z-arroword-model-ray-loader-keys-and-bound-b3c12945.job.json text eol=lf
