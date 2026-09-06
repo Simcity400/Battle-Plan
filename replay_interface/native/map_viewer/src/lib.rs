@@ -1,3 +1,4 @@
+pub mod authored_fixed;
 pub mod authored_equipment;
 pub mod particle_authored;
 pub mod particle_runtime;

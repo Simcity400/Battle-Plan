@@ -1,4 +1,5 @@
 use super::*;
+use crate::authored_fixed::parse_fixed5;
 use paradox_text::{Entry, Scalar};
 
 impl AuthoredEquipmentCatalog {
@@ -291,19 +292,6 @@ fn set_value(value: &mut Value, field: &str, replacement: Value) {
 }
 fn set_scalar(value: &mut Value, field: &str, replacement: &str) {
     set_value(value, field, Value::Scalar(Scalar::Bare(replacement.into())));
-}
-fn parse_fixed5(text: &str) -> Option<i64> {
-    let negative = text.starts_with('-');
-    let unsigned = text.strip_prefix('-').or_else(|| text.strip_prefix('+')).unwrap_or(text);
-    let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
-    if whole.is_empty() || !whole.bytes().chain(fraction.bytes()).all(|x| x.is_ascii_digit()) { return None }
-    let whole = whole.parse::<u64>().ok()?;
-    let bound = i64::MAX as u64 + u64::from(negative);
-    if whole > bound { return None }
-    let mut part = 0i64;
-    for index in 0..5 { part = part * 10 + fraction.as_bytes().get(index).map_or(0, |x| i64::from(x - b'0')); }
-    let raw = (whole as i64).wrapping_mul(100_000).wrapping_add(part);
-    Some(if negative { raw.wrapping_neg() } else { raw })
 }
 fn format_fixed5(raw: i64) -> String {
     let magnitude = raw.unsigned_abs();

@@ -804,6 +804,22 @@ mod tests {
     }
 
     #[test]
+    fn generated_stats_and_operations_use_native_numeric_prefixes() {
+        let catalog = catalog(r#"
+            equipments = { base = { is_archetype = yes air_superiority = "010junk.5" } child = { archetype = base } }
+            duplicate_archetypes = {
+                scaled = { archetype = base for_each = { air_superiority = { multiply = "0x2tail" } } }
+                shifted = { archetype = base for_each = { air_superiority = { add = "-0.25" } } }
+                wrapped = { archetype = base for_each = { air_superiority = { set = "9223372036854775808" } } }
+            }
+        "#).resolve_generated().unwrap();
+        for (token, expected) in [("base","8.50000"), ("child","8.50000"),
+            ("scaled","17.00000"), ("shifted","8.25000"), ("wrapped","-1.00000")] {
+            assert_eq!(catalog.definition(token).unwrap().scalar("air_superiority").unwrap(), Some(expected));
+        }
+    }
+
+    #[test]
     fn for_each_last_operation_and_first_substring_then_explicit_name_override() {
         let catalog = catalog(r#"
             equipments = { chassis = { is_archetype = yes type = armor air_superiority = 2 } chassis_chassis = { archetype = chassis parent = chassis air_superiority = 3 } chassis_2 = { archetype = chassis parent = chassis } }
