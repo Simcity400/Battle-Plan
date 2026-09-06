@@ -820,3 +820,45 @@ fn a_delta_frame_carries_the_intel_roster_with_its_table() {
         diplomacy53::compact::decode_payload(0, &built.payload).parse_errors
     );
 }
+
+#[test]
+fn faction_order_only_change_survives_zero_base_row_delta_and_refusal() {
+    fn frame(members: Vec<u32>) -> ExtractedDomain53Rows {
+        let mut r = diplomacy53::extractor::proof_fixture_rows();
+        r.operation_anchors.clear();
+        r.intel_map.clear();
+        r.factions = vec![diplomacy53::compact::FactionRow {
+            faction_id: 1, faction_type: 88, name_hash: 1,
+            leader_tag_db_id: members[0], member_tag_db_ids: members,
+            display_text: None, display_text_engine_cached: false,
+        }];
+        r.faction_roster_complete = true;
+        r
+    }
+    let mut tracker = CompactDiplomacyIntelOperativesLiveTracker::default();
+    apply_mode(frame(vec![7, 3, 5]), CLEAN, D53EmitMode::Delta, &mut tracker);
+    let (emitted, status) = apply_mode(frame(vec![7, 5, 3]), CLEAN, D53EmitMode::Delta, &mut tracker);
+    assert!(is_delta(status));
+    assert_eq!(emitted.changed_rows, Some(0));
+    assert_eq!(emitted.factions[0].member_tag_db_ids, vec![7, 5, 3]);
+    let built = diplomacy53::extractor::build_domain53_payload_with_status(
+        emitted, diplomacy53::extractor::CURRENT_VALIDATED_SOURCE_PROOFS, status);
+    assert!(built.ok(), "{:?}", built.errors);
+    let decoded = diplomacy53::compact::decode_snapshot_payload(0, &built.payload).unwrap();
+    assert_eq!(decoded.factions[0].member_tag_db_ids, vec![7, 5, 3]);
+    let mut refused = frame(vec![7, 3, 5]);
+    refused.factions.clear();
+    refused.faction_roster_complete = false;
+    let mut declaration = diplomacy53::compact::Domain53OmissionDeclaration::default();
+    declaration.declare(diplomacy53::compact::Domain53OmissionClass::FactionSlot, (0, 0));
+    refused.omissions = Some(declaration);
+    let (emitted, status, commit) = compact_domain53_apply_emit_mode(
+        refused, PARTIAL, D53EmitMode::Delta, &tracker);
+    assert!(!is_delta(status));
+    assert!(matches!(commit, Domain53BaselineCommit::None));
+    assert!(emitted.factions.is_empty());
+    let (recovery, status) = apply_mode(frame(vec![7, 3, 5]), CLEAN, D53EmitMode::Full, &mut tracker);
+    assert!(!is_delta(status));
+    assert_eq!(recovery.factions[0].member_tag_db_ids, vec![7, 3, 5]);
+    assert!(!tracker.baseline_seeded);
+}

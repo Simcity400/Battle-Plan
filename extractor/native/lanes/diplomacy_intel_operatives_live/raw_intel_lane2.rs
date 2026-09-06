@@ -594,7 +594,7 @@ mod tests {
         }
     }
     #[test]
-    fn owning_d53_payload_requires_one_valid_trailer_and_schema_four() {
+    fn owning_d53_payload_requires_one_valid_trailer_and_schema_five() {
         let snapshot = super::super::DiplomacyIntelSnapshot {
             status_flags: super::super::STATUS_INTEL_MAP_UNPROVEN,
             intel_raw_lane2: Some(raw()),
@@ -609,7 +609,7 @@ mod tests {
         );
         let decoded = super::super::decode_snapshot_payload(0, &bytes).unwrap();
         assert_eq!(decoded.intel_raw_lane2, snapshot.intel_raw_lane2);
-        assert_eq!(&bytes[20..24], &4u32.to_le_bytes());
+        assert_eq!(&bytes[20..24], &5u32.to_le_bytes());
         let start = bytes.windows(4).position(|w| w == MAGIC).unwrap();
         let mut absent = bytes.clone();
         absent.drain(start..start + encoded_len(snapshot.intel_raw_lane2.as_ref()));
