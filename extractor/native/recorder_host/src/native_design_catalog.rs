@@ -390,7 +390,7 @@ fn variant_definition<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Res
     ];
     let mut stats = Vec::new();
     for (ordinal, (name, offset, scale)) in fields.iter().enumerate() {
-        stats.push(json!({"source_ordinal":ordinal,"stat_id":name,"raw_i32":read.u32(pointer+offset)? as i32,"scale":scale}));
+        stats.push(json!({"source_ordinal":ordinal,"stat_id":name,"raw_i64":read.u64(pointer+offset)? as i64,"scale":scale}));
     }
     Ok(
         json!({"equipment_token_raw":equipment_token,"archetype_token":archetype,"archetype_token_utf8_hex":hex(archetype.as_bytes()),"display_name":nullable_string(&display),"display_name_utf8_hex":hex(display.as_bytes()),"variant_name":nullable_string(&name),"variant_name_utf8_hex":hex(name.as_bytes()),"explicit_entity":explicit_entity,"item_icon_override":item_icon_override,"serialized_variant_flag_2b9d":serialized_variant_flag_2b9d,"modules_complete":true,"modules":modules,"upgrades_complete":true,"upgrades":upgrades,"cached_stats_complete":true,"cached_stats":stats}),

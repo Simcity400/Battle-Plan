@@ -102,6 +102,7 @@ pub struct NativeDesignerVariantInputs {
     pub source_occurrences: Vec<DesignSourceOccurrence>,
     pub item_icon_override: DesignItemIconObservation,
     pub serialized_variant_flag_2b9d: DesignByteObservation,
+    pub cached_stats: Vec<DesignFixedStat>,
     pub record: DesignRecord,
     pub model: VariantModelInputs,
 }
@@ -431,7 +432,7 @@ impl PortableDesignCatalog {
                     }
                     Ok(DesignStat {
                         stat_id: stat.stat_id,
-                        value: stat.raw_i32 as f64 / stat.scale as f64,
+                        value: stat.raw_i64 as f64 / stat.scale as f64,
                         source_record_id: format!("{record_id}:stat:{}", stat.source_ordinal),
                     })
                 })
@@ -882,6 +883,7 @@ impl PortableDesignCatalog {
                 source_occurrences: row.source_occurrences,
                 item_icon_override: row.definition.item_icon_override,
                 serialized_variant_flag_2b9d: row.definition.serialized_variant_flag_2b9d,
+                cached_stats: row.definition.cached_stats,
                 record, model,
             })
         }).collect::<Result<Vec<_>, String>>()?;
@@ -2089,7 +2091,7 @@ struct RawVariantDefinition {
     serialized_variant_flag_2b9d: DesignByteObservation,
     archetype_token: String,
     archetype_token_utf8_hex: String,
-    cached_stats: Vec<RawStat>,
+    cached_stats: Vec<DesignFixedStat>,
     cached_stats_complete: bool,
     display_name: Option<String>,
     display_name_utf8_hex: String,
@@ -2111,12 +2113,13 @@ struct RawModule {
     source_ordinal: u32,
 }
 
-#[derive(Deserialize)]
-struct RawStat {
-    raw_i32: i64,
-    scale: i64,
-    source_ordinal: u32,
-    stat_id: String,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesignFixedStat {
+    pub raw_i64: i64,
+    pub scale: i64,
+    pub source_ordinal: u32,
+    pub stat_id: String,
 }
 
 #[derive(Deserialize)]
@@ -2190,7 +2193,7 @@ mod tests {
                     "archetype_token": "light_tank_chassis_1",
                     "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
                     "cached_stats": [{
-                        "raw_i32": 250000,
+                        "raw_i64": 250000,
                         "scale": 100000,
                         "source_ordinal": 0,
                         "stat_id": "armor"
@@ -3026,4 +3029,85 @@ mod tests {
         timeline["captures"][1]["same_hour_recheck_sha256"][0] = "0".repeat(64).into();
         assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&timeline).unwrap()).is_err());
     }
+    #[test]
+    fn cached_stats_preserve_full_signed_width_beyond_float_and_i32_precision() {
+        let values = [i64::MIN, i64::MAX, -(1_i64<<32)-17, (1_i64<<32)+19,
+            (1_i64<<53), (1_i64<<53)+1, -1, 0, 1, i32::MAX as i64 + 1];
+        let expected: Vec<_> = values.into_iter().enumerate().map(|(ordinal,raw_i64)| DesignFixedStat {
+            raw_i64, scale:100_000, source_ordinal:ordinal as u32, stat_id:format!("stat_{ordinal}"),
+        }).collect();
+        let mut raw: Value=serde_json::from_slice(&fixture()).unwrap();
+        raw["variants"][0]["definition"]["cached_stats"]=serde_json::to_value(&expected).unwrap();
+        let catalog=PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).unwrap();
+        let relocated=PortableDesignCatalog::decode_a27_live_json(&catalog.encode_portable_json().unwrap()).unwrap();
+        let input=relocated.native_designer_inputs_at_hour(900).unwrap();
+        assert_eq!(input.variants[0].cached_stats,expected);
+        assert_eq!(relocated.exact_native_catalog["variants"][0]["definition"]["cached_stats"],serde_json::to_value(&expected).unwrap());
+        assert_ne!(input.variants[0].cached_stats[4],input.variants[0].cached_stats[5]);
+        assert_ne!(input.variants[0].cached_stats[4].raw_i64,input.variants[0].cached_stats[5].raw_i64);
+        assert_eq!(input.variants[0].record.stats[4].value,input.variants[0].record.stats[5].value,
+            "display floats can coincide; exact native operands must not");
+    }
+
+    #[test]
+    fn cached_stats_refuse_old_missing_mixed_or_non_i64_raw_values() {
+        let raw:Value=serde_json::from_slice(&fixture()).unwrap();
+        let base=raw["variants"][0]["definition"]["cached_stats"][0].clone();
+        let mut invalid=Vec::new();
+        let mut old=base.clone(); let value=old.as_object_mut().unwrap().remove("raw_i64").unwrap();
+        old["raw_i32"]=value; invalid.push(old);
+        let mut missing=base.clone();missing.as_object_mut().unwrap().remove("raw_i64");invalid.push(missing);
+        let mut mixed=base.clone();mixed["raw_i32"]=0.into();invalid.push(mixed);
+        for value in [Value::Null,serde_json::json!(true),serde_json::json!(1.5),serde_json::json!("1"),serde_json::json!(u64::MAX)] {
+            let mut row=base.clone();row["raw_i64"]=value;invalid.push(row);
+        }
+        for row in invalid {
+            let mut current=raw.clone();current["variants"][0]["definition"]["cached_stats"][0]=row.clone();
+            assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&current).unwrap()).is_err(),"{row}");
+        }
+    }
+
+    #[test]
+    fn cached_stat_high_bits_survive_row_deltas_same_hour_rechecks_gaps_and_full_recovery() {
+        let values=[(1_i64<<53),(1_i64<<53)+1,i64::MIN];
+        let mut previous=None;let mut captures=Vec::new();
+        for (index,raw_i64) in values.into_iter().enumerate() {
+            let hour=900+index as u64+u64::from(index==2);
+            if index==2 {
+                captures.push(serde_json::json!({"sequence":captures.len(),"capture_hour_index":902,
+                    "gap":DesignCatalogGap { first_hour_index:902,last_hour_index:902,cause:DesignCatalogGapCause::Torn,
+                        witness:serde_json::json!({"field":"cached_stats"}) }}));
+            }
+            let mut raw:Value=serde_json::from_slice(&fixture()).unwrap();
+            raw["authority"]["capture_hour_index"]=hour.into();raw["authority"]["current_date_raw"]=(DATE_EPOCH_RAW+hour).into();
+            raw["variants"][0]["definition"]["cached_stats"][0]["raw_i64"]=raw_i64.into();
+            let bytes=serde_json::to_vec(&canonical_json_value(&raw)).unwrap();
+            let current=PortableDesignCatalog::decode_a27_live_json(&bytes).unwrap();
+            let mut capture=serde_json::json!({"sequence":captures.len(),"capture_hour_index":hour,"same_hour_rechecks":1,
+                "same_hour_recheck_sha256":[Sha256::hex(&bytes)],"snapshot_sha256":Sha256::hex(&bytes)});
+            if index==1 {
+                let delta=current.native_row_delta_from(previous.as_ref().unwrap()).unwrap();
+                assert_eq!(delta["variant_upserts"].as_array().unwrap().len(),1,"high bits are not display-float equality");
+                capture["delta"]=delta;
+            } else { capture["snapshot"]=raw; }
+            captures.push(capture);previous=Some(current);
+        }
+        let mut timeline=serde_json::json!({"schema":A27_LIVE_CATALOG_TIMELINE_SCHEMA,
+            "authority":{"program":EXACT_A729_PROGRAM,"program_sha256":EXACT_A729_SHA256},
+            "complete_sequence":true,"transport":"first_full_then_native_row_deltas","capture_count":4,
+            "same_hour_recheck_count":3,"first_capture_hour_index":900,"last_capture_hour_index":903,"captures":captures});
+        let catalog=PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&timeline).unwrap()).unwrap();
+        let relocated=PortableDesignCatalog::decode_a27_live_json(&catalog.encode_portable_json().unwrap()).unwrap();
+        for (hour,raw) in [(900,values[0]),(901,values[1]),(903,values[2])] {
+            let inputs=relocated.native_designer_inputs_at_hour(hour).unwrap();
+            assert_eq!(inputs.variants[0].cached_stats[0].raw_i64,raw);
+            assert_eq!(inputs.variants[0].cached_stats[0].scale,100_000);
+            assert_eq!(&inputs.variants[0].record,relocated.records_at_hour(hour).unwrap().iter().find(|row|row.design_id=="7:70").unwrap());
+        }
+        assert!(relocated.native_designer_inputs_at_hour(902).unwrap_err().contains("Torn"));
+        assert!(relocated.native_designer_inputs_at_hour(904).is_err());
+        timeline["captures"][1]["same_hour_recheck_sha256"][0]="0".repeat(64).into();
+        assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&timeline).unwrap()).is_err());
+    }
+
 }

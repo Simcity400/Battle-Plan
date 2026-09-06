@@ -1083,3 +1083,55 @@ fn runtime_dlc_mask_torn_or_budget_exhaustion_refuses_the_whole_census() {
     read.bytes = MAX_READ_BYTES;
     assert_eq!(runtime_dlc_mask(&mut read).unwrap_err().kind, FailureKind::BoundExceeded);
 }
+
+#[test]
+fn cached_stats_capture_all_signed_bits_at_existing_offsets_and_scales() {
+    let fields = [
+        ("speed_cache", 0x270, 100_000, i64::MIN),
+        ("range", 0x278, 1_000, i64::MAX),
+        ("air_attack", 0x280, 100_000, -(1_i64 << 32) - 17),
+        ("agility", 0x288, 100_000, (1_i64 << 32) + 19),
+        ("max_speed", 0x2f0, 100_000, 1_i64 << 53),
+        ("reliability", 0x308, 100_000, (1_i64 << 53) + 1),
+        ("air_defence", 0x318, 100_000, -1),
+        ("thrust", 0x320, 100_000, 0),
+        ("fuel_consumption", 0x328, 100_000, 1),
+        ("build_cost_ic", 0x368, 100_000, i64::from(i32::MAX) + 1),
+    ];
+    let mut f = fixture();
+    for (_, offset, _, raw) in fields { f.put(VARIANT + offset, &raw.to_le_bytes()); }
+    let value = capture(&f, BASE, DATE).unwrap();
+    let stats = value["variants"][0]["definition"]["cached_stats"].as_array().unwrap();
+    assert_eq!(stats.len(), fields.len());
+    let portable = snapshot::design_catalog::PortableDesignCatalog::decode_a27_live_json(
+        &serde_json::to_vec(&value).unwrap()).unwrap();
+    let inputs = portable.native_designer_inputs_at_hour(100).unwrap();
+    assert_eq!(inputs.variants[0].cached_stats.len(), fields.len());
+    for (ordinal, (name, _, scale, raw)) in fields.into_iter().enumerate() {
+        assert_eq!(stats[ordinal], json!({"source_ordinal":ordinal,"stat_id":name,"raw_i64":raw,"scale":scale}));
+        let exact = &inputs.variants[0].cached_stats[ordinal];
+        assert_eq!((exact.stat_id.as_str(), exact.scale, exact.raw_i64, exact.source_ordinal),
+            (name, scale, raw, ordinal as u32));
+    }
+}
+
+#[test]
+fn cached_stat_upper_bytes_are_required_and_part_of_the_same_seal() {
+    for offset in [0x270, 0x278, 0x280, 0x288, 0x2f0, 0x308, 0x318, 0x320, 0x328, 0x368] {
+        let mut missing = fixture();
+        missing.bytes.remove(&(VARIANT + offset + 7));
+        assert_eq!(capture(&missing, BASE, DATE).unwrap_err().kind, FailureKind::Unreadable);
+        let f = fixture();
+        let reads = Cell::new(0);
+        let memory = |address, length| {
+            let mut bytes = f.read(address, length)?;
+            if address == VARIANT + offset && length == 8 {
+                let n = reads.get(); reads.set(n + 1);
+                if n > 0 { bytes[7] ^= 0x80; }
+            }
+            Ok(bytes)
+        };
+        assert_eq!(capture(&memory, BASE, DATE).unwrap_err().kind, FailureKind::Torn);
+        assert!(reads.get() >= 2);
+    }
+}
