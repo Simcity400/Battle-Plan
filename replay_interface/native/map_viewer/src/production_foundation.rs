@@ -208,6 +208,8 @@ pub struct FoundationFeatureContext<'a> {
     pub prepared_terrain: Option<&'a crate::PreparedTerrainFrame>,
     pub prepared_political: Option<&'a crate::PreparedPoliticalFrame>,
     pub prepared_units: Option<&'a crate::PreparedXmap13Frame>,
+    pub prepared_weather: Option<&'a crate::PreparedXmap19WeatherFrame>,
+    pub weather_particles_bound: bool,
     /// The map objects XMAP12 placed earlier in this same frame; `None` when
     /// XMAP12 did not vouch this hour, which is not a measured-empty placement.
     pub prepared_map_objects: Option<&'a crate::PreparedXmap12RenderFrame>,
@@ -250,6 +252,8 @@ impl<'a> FoundationFeatureContext<'a> {
             prepared_political: None,
             prepared_units: None,
             prepared_map_objects: None,
+            prepared_weather: None,
+            weather_particles_bound: false,
             xmap15_units: None,
             xmap15_selection,
             xmap13_motion: None,
@@ -334,6 +338,9 @@ impl FoundationFeatureOutput {
 pub trait ProductionMapFeatureAdapter {
     fn family(&self) -> MapVisualFamily;
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput>;
+    fn weather_particles_bound(&self, _time: f32, _identity: &str) -> Result<bool> {
+        Ok(false)
+    }
     fn visit_particles_for_draw(
         &self,
         _presentation_time: f32,
@@ -1271,7 +1278,7 @@ fn prepare_foundation_frame_inner(
     let mut prepared_xmap12 = None;
     let mut prepared_xmap12_building_visual = None;
     let mut prepared_xmap12_fixed_runtime = None;
-    let mut prepared_weather = None;
+    let mut prepared_weather: Option<crate::PreparedXmap19WeatherFrame> = None;
     let mut prepared_water = None;
     let mut prepared_units = None;
     let mut prepared_combat = None;
@@ -1280,9 +1287,15 @@ fn prepare_foundation_frame_inner(
     let mut prepared_rail_supply = None;
     let mut prepared_labels = None;
     let mut prepared_map_modes = None;
+    let mut early_weather: Option<FamilyPreparation<FoundationFeatureOutput>> = None;
     for family in MapVisualFamily::ALL {
         let family_started = std::time::Instant::now();
-        let context = FoundationFeatureContext {
+        let weather_preparation = if family == MapVisualFamily::WeatherAtmosphere {
+            early_weather.take()
+        } else {
+            None
+        };
+        let mut context = FoundationFeatureContext {
             world_frame,
             viewer,
             map_authority_gaps: map_admission.gaps(),
@@ -1296,6 +1309,8 @@ fn prepare_foundation_frame_inner(
             prepared_political: prepared_political.as_ref(),
             prepared_units: prepared_units.as_ref(),
             prepared_map_objects: prepared_xmap12.as_ref(),
+            prepared_weather: prepared_weather.as_ref(),
+            weather_particles_bound: false,
             xmap15_units: prepared_units.as_ref().map(|frame| {
                 &frame.identity_provider
                     as &dyn crate::production_features::xmap15::Xmap15UnitIdentityProvider
@@ -1349,9 +1364,45 @@ fn prepare_foundation_frame_inner(
         } else {
             None
         };
-        let generic_preparation = match adapters.get(family) {
-            Some(adapter) => prepared_or_refusal!(adapter.prepare(&context)),
-            None => None,
+        // Weather setters precede entity events and particle updates; render-stage order stays assigned separately.
+        if family == MapVisualFamily::LightingShadows {
+            if let Some(adapter) = adapters.get(MapVisualFamily::WeatherAtmosphere) {
+                early_weather = Some(classify_family_preparation(
+                    MapVisualFamily::WeatherAtmosphere, hour, adapter.prepare(&context))?);
+            }
+            context.prepared_weather = match early_weather.as_ref() {
+                Some(FamilyPreparation::Prepared(output)) => output.prepared_weather.as_ref(),
+                _ => None,
+            };
+        }
+        if family == MapVisualFamily::ParticlesEffects {
+            if let (Some(weather), Some(lighting)) =
+                (prepared_weather.as_ref(), adapters.get(MapVisualFamily::LightingShadows))
+            {
+                context.weather_particles_bound = prepared_or_refusal!(
+                    lighting.weather_particles_bound(
+                        f32::from_bits(viewer.animation_time_f32_bits),
+                        &weather.deterministic_sha256,
+                    ).map_err(|error| FamilyContentRefusal::new(
+                        "XMAP20.weather_particle_binding_unavailable", error.to_string(),
+                    ))
+                ).unwrap_or(false);
+            }
+        }
+        let generic_preparation = if content_refusal.is_some() {
+            None
+        } else {
+    match weather_preparation {
+                Some(FamilyPreparation::Prepared(output)) => Some(output),
+                Some(FamilyPreparation::Refused(gap)) => {
+                    content_refusal = Some(gap);
+                    None
+                }
+                None => match adapters.get(family) {
+                    Some(adapter) => prepared_or_refusal!(adapter.prepare(&context)),
+                    None => None,
+                },
+            }
         };
         let disposition = if let Some(gap) = content_refusal {
             FamilyDisposition::Unavailable { gap }
@@ -3060,12 +3111,9 @@ mod tests {
         }
     }
 
-    /// kills: routing a fifth adapter preparation around the accounting, and
-    /// reverting any of the four back to a bare `?` that aborts the whole
-    /// preparation on one family's refusal.
     #[test]
     fn every_adapter_preparation_in_the_family_loop_is_accounted() {
-        let source = include_str!("production_foundation.rs");
+        let source = include_str!("production_foundation.rs").lines().collect::<Vec<_>>().join("\n");
         let body = source
             .split_once("fn prepare_foundation_frame_inner(")
             .expect("the family loop must exist")
@@ -3075,12 +3123,12 @@ mod tests {
             .0;
         assert_eq!(
             body.matches(".prepare(").count(),
-            4,
+            5,
             "the family loop prepares a number of adapters this test does not account for"
         );
         assert_eq!(
             body.matches("prepared_or_refusal!(").count(),
-            4,
+            5,
             "an adapter preparation bypasses the content-refusal accounting"
         );
         let arm = body
@@ -3113,6 +3161,11 @@ mod tests {
             ),
             "a recorded refusal no longer becomes this family's row"
         );
+
+        assert!(flat.contains("early_weather = Some(classify_family_preparation( MapVisualFamily::WeatherAtmosphere, hour, adapter.prepare(&context))?);"));
+        assert!(flat.contains("let weather_preparation = if family == MapVisualFamily::WeatherAtmosphere { early_weather.take() } else { None };"));
+        assert!(flat.contains("Some(FamilyPreparation::Prepared(output)) => Some(output)"));
+        assert!(flat.contains("Some(FamilyPreparation::Refused(gap)) => { content_refusal = Some(gap); None }"));
 
         // Registration is what keeps that per-family preparation single.
         let register = source

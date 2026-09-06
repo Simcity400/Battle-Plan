@@ -120,7 +120,7 @@ fn recovered_06_whole_recording_viewer_light_census() {
                             e.clone()
                         })
                         .and_then(|placed| {
-                            lights.derive_light_instance_rows(&resolver, placed, &viewer)
+                            lights.derive_light_instance_rows(&resolver, placed, &viewer, None)
                         })
                         .and_then(|rows| {
                             rows.with_rows(|rows| {

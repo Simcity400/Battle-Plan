@@ -1166,6 +1166,11 @@ impl Xmap09LightingAdapter {
 }
 
 impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
+    fn weather_particles_bound(&self, time: f32, identity: &str) -> Result<bool> {
+        Ok(self.lifecycle.lock().map_err(|_| "XMAP09 viewer lifecycle lock is poisoned")?
+            .weather_particles_bound(time, identity))
+    }
+
     fn visit_particles_for_draw(
         &self,
         presentation_time: f32,
@@ -1198,7 +1203,7 @@ impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
             .transpose().map_err(|_| "XMAP09 placed population counter overflow")?;
         let derived = population.and_then(|rows| self.lifecycle.lock()
             .map_err(|_| Xmap09LightCensusRefusal::MissingDomain { domain: "viewer.light_lifecycle".into() })?
-            .derive_light_instance_rows(&self.resolver, rows, context.viewer));
+            .derive_light_instance_rows(&self.resolver, rows, context.viewer, context.prepared_weather));
         let input = match derived {
             Ok(rows) => rows.with_rows(|rows| self.derive_lighting_input(
                 context.world_frame.hour_index(), context.product_modset_sha256,

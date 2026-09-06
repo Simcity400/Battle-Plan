@@ -259,6 +259,7 @@ pub const VANILLA_WEATHER_DISTANCE_FOG: WeatherDistanceFogDefines = WeatherDista
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeatherVisibilityLaw {
+    pub primary_control_written: bool,
     pub primary_alpha: f32,
     pub fading_alpha: f32,
     pub playback_rate: f32,
@@ -321,6 +322,7 @@ pub fn weather_visibility_law(
         defines.playback_rate
     };
     Ok(WeatherVisibilityLaw {
+        primary_control_written: camera_distance > far_band_start,
         primary_alpha: far_alpha.clamp(0.0, 1.0),
         fading_alpha: (near_fading_alpha * far_alpha).clamp(0.0, 1.0),
         playback_rate: playback_rate.clamp(0.0, 1.0),
@@ -2152,6 +2154,10 @@ entity = {
         assert!((at(468.0).fading_alpha - 0.5).abs() < 1e-6);
         assert_eq!(at(578.0).primary_alpha, 1.0);
         assert_eq!(at(578.0).fading_alpha, 1.0);
+        assert!(!at(0.0).primary_control_written);
+        assert!(!at(1100.0).primary_control_written);
+        assert!(at(f32::from_bits(1100.0f32.to_bits() + 1)).primary_control_written);
+        assert!(at(1501.0).primary_control_written);
         assert_eq!(at(1100.0).primary_alpha, 1.0);
         assert_eq!(at(1100.0).fading_alpha, 1.0);
         assert!((at(1300.0).primary_alpha - 0.5).abs() < 1e-6);

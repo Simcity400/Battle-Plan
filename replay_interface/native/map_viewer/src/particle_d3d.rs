@@ -1221,7 +1221,7 @@ Effect fixture { VertexShader="VS" PixelShader="PS" }
         };
         let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
         let rows = lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         assert_eq!(rows.authored_particles.len(), 1);
         let paired = rows.authored_particles[0].particle_phase;

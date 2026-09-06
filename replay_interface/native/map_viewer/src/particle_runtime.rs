@@ -632,7 +632,7 @@ fn native_normalize(vector: [f32; 3], reset_zero: bool) -> [f32; 3] {
     }
 }
 
-fn native_axis_matrix(
+pub(crate) fn native_axis_matrix(
     subsystem: Option<&str>,
     [x, y, z]: [f32; 3],
     angle: f32,

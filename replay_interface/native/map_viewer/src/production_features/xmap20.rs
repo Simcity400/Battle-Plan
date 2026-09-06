@@ -160,7 +160,7 @@ impl Xmap20AuthoredEntityRuntime {
     > {
         Ok(self
             .lifecycle
-            .derive_light_instance_rows(resolver, placed, viewer)?
+            .derive_light_instance_rows(resolver, placed, viewer, None)?
             .authored_particles)
     }
 }
@@ -213,6 +213,9 @@ impl ProductionMapFeatureAdapter for Xmap20EffectsAdapter {
             ("unit-event-phase-unbound", "XMAP13 prepared unit animation phase is not yet joined to the retained authored event clock; unit particle instances are unavailable, not measured empty"),
             ("weather-event-phase-unbound", "XMAP19 primary/fading entity epochs, visibility and playback rate are not yet joined to the retained authored event clock; weather particle instances are unavailable, not measured empty"),
         ] {
+            if branch == "weather-event-phase-unbound" && context.weather_particles_bound {
+                continue;
+            }
             output.element_diagnostics.push(portable_render_stream::ElementDiagnostic::family_exception(
                 MapVisualFamily::ParticlesEffects, branch, 0, detail.into(),
             ));
@@ -382,6 +385,7 @@ mod tests {
         .unwrap()
     }
 
+
     #[test]
     fn entity_trigger_requires_exact_xmap13_authored_row() {
         validate_trigger_join(&effect(), &trigger()).unwrap();
@@ -505,7 +509,7 @@ mod authored_admission_tests {
             selected_owner: None,
             selected_plan: None,
         };
-        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
+        let mut context = FoundationFeatureContext::new_for_owned_accounting_tests(
             &frame,
             &viewer,
             &[],
@@ -516,9 +520,18 @@ mod authored_admission_tests {
         assert!(
             matches!(output.disposition, FamilyDisposition::DeferredToDraw { ref draw_contract_id, .. } if draw_contract_id == XMAP20_EFFECT_DRAW_CONTRACT)
         );
-        assert_eq!(output.element_diagnostics.len(), 2);
+        assert_eq!(output.element_diagnostics.iter().map(|d| d.cause_id.as_str()).collect::<Vec<_>>(),
+            ["unit-event-phase-unbound", "weather-event-phase-unbound"]);
         for diagnostic in output.element_diagnostics {
             diagnostic.validate().unwrap();
         }
+        context.weather_particles_bound = true;
+        let bound = Xmap20EffectsAdapter.prepare(&context).unwrap();
+        assert_eq!(bound.element_diagnostics.iter().map(|d| d.cause_id.as_str()).collect::<Vec<_>>(),
+            ["unit-event-phase-unbound"]);
+        assert!(
+            matches!(bound.disposition, FamilyDisposition::DeferredToDraw { ref draw_contract_id, .. } if draw_contract_id == XMAP20_EFFECT_DRAW_CONTRACT)
+        );
+        bound.element_diagnostics[0].validate().unwrap();
     }
 }

@@ -111,6 +111,7 @@ struct Assets {
     models: Mutex<BTreeMap<String, Arc<PdxModel>>>,
     animations: Mutex<BTreeMap<String, Arc<PdxAnimData>>>,
     poses: BTreeMap<String, BuildingEntityPose>,
+    static_attachments: BTreeSet<String>,
     meshes: BTreeMap<String, BuildingPdxmeshBinding>,
     mesh_clips: BTreeMap<String, BTreeMap<String, String>>,
     clips: BTreeMap<String, String>,
@@ -151,6 +152,7 @@ impl Assets {
     fn load(resolver: &GameFileResolver) -> Result<Self> {
         let mut text = String::new();
         let mut clips = BTreeMap::new();
+        let mut static_attachments = BTreeSet::new();
         for extension in ["asset", "gfx"] {
             for key in resolver.require_complete_admitted_dir(
                 "",
@@ -159,13 +161,21 @@ impl Assets {
                 "XMAP09 asset events",
             )? {
                 let source = latin1_bytes_to_string(&resolver.read_admitted_used_content(&key)?);
-                let source = if extension == "asset" {
+                let (document, source) = if extension == "asset" {
                     portable_content_manifest::paradox_text::parse_asset_str(&source)
                         .map_err(|e| format!("{}: {e:?}", key.normalized_game_relative_path))?
-                        .1
                 } else {
-                    std::borrow::Cow::Borrowed(source.as_str())
+                    (portable_content_manifest::paradox_text::parse_str_strict(&source)
+                        .map_err(|e| format!("{}: {e:?}", key.normalized_game_relative_path))?,
+                        std::borrow::Cow::Borrowed(source.as_str()))
                 };
+                for entity in document.values_ci("entity") {
+                    if entity.first_value_ci("attach").is_some() {
+                        if let Some(name) = entity.first_scalar_ci("name") {
+                            static_attachments.insert(name.to_owned());
+                        }
+                    }
+                }
                 for (name, file) in
                     parse_building_animation_bindings(&source, &key.normalized_game_relative_path)?
                 {
@@ -194,6 +204,7 @@ impl Assets {
                 .collect(),
             mesh_clips: parse_pdxmesh_animation_bindings(&text, "authenticated asset namespace")?,
             clips,
+            static_attachments,
             templates: parse_light_templates(&text, "authenticated asset namespace")?,
         })
     }
@@ -209,6 +220,7 @@ struct EntityAnimation {
     requested_state: Option<String>,
     events: Arc<Vec<BuildingEntityEvent>>,
     speed: f64,
+    visible: bool,
     length: f64,
     looping: bool,
     elapsed: f64,
@@ -259,6 +271,8 @@ pub(crate) struct ViewerLightLifecycle {
     next_instance: u64,
     next_particle_only_instance: u64,
     last_presentation_time: Option<f32>,
+    publication_refusal: Option<Xmap09LightCensusRefusal>,
+    weather_binding: Option<(u32, String)>,
 }
 
 pub(crate) struct DerivedLightRows {
@@ -354,6 +368,9 @@ impl EntityAnimation {
         require_pose: bool,
         include_particle_only_events: bool,
     ) -> Result<Self> {
+        if assets.static_attachments.contains(&row.entity_token) {
+            return Err(format!("entity {} static attachment selection/phase is unbound", row.entity_token).into());
+        }
         let pose = assets
             .poses
             .get(&row.entity_token)
@@ -429,6 +446,7 @@ impl EntityAnimation {
             requested_state: row.state.clone(),
             events: Arc::new(events),
             speed: 1.0,
+            visible: true,
             length: state.and_then(|s| s.length).unwrap_or(-1.0) as f64,
             looping: state.and_then(|s| s.looping).unwrap_or(true),
             elapsed: 0.0,
@@ -485,7 +503,9 @@ impl EntityAnimation {
 
     fn advance(&mut self, delta: f64) -> Vec<usize> {
         let previous = self.playhead;
-        self.elapsed += delta;
+        if self.visible {
+            self.elapsed += delta;
+        }
         self.playhead += delta
             * self.speed
             * if self.clip.is_some() {
@@ -500,6 +520,9 @@ impl EntityAnimation {
             }
         } else if self.clip.is_some() {
             self.playhead = self.playhead.clamp(0.0, self.length);
+        }
+        if !self.visible {
+            return Vec::new();
         }
         self.events
             .iter()
@@ -561,6 +584,9 @@ impl ViewerLightLifecycle {
         camera: crate::particle_runtime::ParticleSortCamera,
         visit: &mut dyn FnMut(&str, &crate::particle_authored::ParticleDrawCapacity, crate::particle_runtime::ParticleGpuView<'_>) -> Result<()>,
     ) -> Result<()> {
+        if let Some(refusal) = &self.publication_refusal {
+            return Err(format!("PARTICLE_DRAW lifecycle update failed; reset_population required: {refusal:?}").into());
+        }
         if self.last_presentation_time.map(f32::to_bits) != Some(presentation_time.to_bits()) {
             return Err("PARTICLE_DRAW retained lifecycle belongs to another presentation".into());
         }
@@ -576,6 +602,16 @@ impl ViewerLightLifecycle {
 
     pub(crate) fn for_authored_particles() -> Self {
         Self { include_particle_only_events: true, ..Default::default() }
+    }
+
+    fn entity_update_reached<'a>(&'a self, mut id: &'a str) -> bool {
+        while let Some(child) = self.children.get(id) {
+            id = &child.parent;
+            if !self.entities[id].visible {
+                return false;
+            }
+        }
+        true
     }
 
     fn leave_state(&mut self, id: &str) {
@@ -636,6 +672,9 @@ impl ViewerLightLifecycle {
             }
         }
         let fired = self.entities.get_mut(id).unwrap().advance(delta);
+        if !self.entities[id].visible {
+            return Ok(());
+        }
         for event_index in fired {
             let state = &self.entities[id];
             let event = state.events[event_index].clone();
@@ -753,6 +792,10 @@ impl ViewerLightLifecycle {
         Ok(())
     }
 
+    pub(crate) fn weather_particles_bound(&self, time: f32, identity: &str) -> bool {
+        self.weather_binding.as_ref().is_some_and(|(bits, hash)| *bits == time.to_bits() && hash == identity)
+    }
+
     pub(crate) fn reset_population(&mut self) {
         self.entities.clear();
         self.children.clear();
@@ -760,6 +803,8 @@ impl ViewerLightLifecycle {
         self.next_instance = 0;
         self.next_particle_only_instance = 0;
         self.last_presentation_time = None;
+        self.publication_refusal = None;
+        self.weather_binding = None;
     }
 
     pub(crate) fn derive_light_instance_rows(
@@ -767,7 +812,70 @@ impl ViewerLightLifecycle {
         resolver: &GameFileResolver,
         placed: &[Xmap09PlacedEntity],
         viewer: &ViewerOwnedMapState,
+        weather: Option<&crate::PreparedXmap19WeatherFrame>,
     ) -> std::result::Result<DerivedLightRows, Xmap09LightCensusRefusal> {
+        if let Some(refusal) = &self.publication_refusal {
+            return Err(refusal.clone());
+        }
+        self.weather_binding = None;
+        match self.update_light_instance_rows(resolver, placed, viewer, weather) {
+            Ok(rows) => {
+                let now = f32::from_bits(viewer.animation_time_f32_bits);
+                self.last_presentation_time = Some(now);
+                self.weather_binding = weather.map(|frame| (now.to_bits(), frame.deterministic_sha256.clone()));
+                Ok(rows)
+            }
+            Err(refusal) => {
+                // Event clocks and native particle columns may already have advanced.
+                self.last_presentation_time = None;
+                self.weather_binding = None;
+                self.publication_refusal = Some(refusal.clone());
+                Err(refusal)
+            }
+        }
+    }
+
+    fn update_light_instance_rows(
+        &mut self,
+        resolver: &GameFileResolver,
+        placed: &[Xmap09PlacedEntity],
+        viewer: &ViewerOwnedMapState,
+        weather: Option<&crate::PreparedXmap19WeatherFrame>,
+    ) -> std::result::Result<DerivedLightRows, Xmap09LightCensusRefusal> {
+        let mut population = std::borrow::Cow::Borrowed(placed);
+        let mut controls = Vec::new();
+        if let Some(weather) = weather {
+            weather.validate().map_err(|e| missing(format!("XMAP19.weather_control: {e}")))?;
+            let rotation = crate::particle_runtime::native_axis_matrix(None, [0.0, 1.0, 0.0], -0.0)
+                .map_err(|e| missing(format!("XMAP19.weather_transform: {e}")))?;
+            for position in &weather.ordered_positions {
+                let Some(selection) = &position.selection else { continue };
+                let mut world = IDENTITY;
+                for row in 0..3 {
+                    for column in 0..3 {
+                        world[row * 4 + column] = rotation[row * 3 + column] * 1.0;
+                    }
+                }
+                for axis in 0..3 {
+                    world[12 + axis] = f32::from_bits(position.position_xyz_f32_bits[axis]);
+                }
+                for (id, program) in std::iter::once((&selection.primary_source_id, &selection.primary))
+                    .chain(selection.fading_source_id.as_ref().zip(selection.fading.as_ref()))
+                {
+                    population.to_mut().push(Xmap09PlacedEntity {
+                        id: id.clone(), entity_token: program.entity_name.clone(),
+                        state: Some(program.default_state_name.clone()), animate: true,
+                        world_matrix_f32_bits: world.map(f32::to_bits),
+                    });
+                }
+                if let Some(id) = &selection.fading_source_id {
+                    controls.push((id.as_str(), Some(f32::from_bits(weather.fading_visibility_alpha_f32_bits))));
+                }
+                controls.push((selection.primary_source_id.as_str(),
+                    weather.primary_control_written.then(|| f32::from_bits(weather.primary_visibility_alpha_f32_bits))));
+            }
+        }
+        let placed = population.as_ref();
         let now = f32::from_bits(viewer.animation_time_f32_bits);
         let delta = viewer.frame_delta_seconds();
         if !now.is_finite() || now < 0.0 || !delta.is_finite() || delta < 0.0 {
@@ -848,11 +956,36 @@ impl ViewerLightLifecycle {
                 self.entities.insert(row.id.clone(), state);
             }
         }
-        self.last_presentation_time = Some(now);
+        if let Some(weather) = weather {
+            for (id, alpha) in &controls {
+                if let Some(alpha) = alpha {
+                    self.entities.get_mut(*id).unwrap().visible = *alpha > 0.0;
+                    for instance in self.instances.iter_mut().filter(|instance| instance.entity_id == *id) {
+                        if let Some(particle) = &mut instance.particle {
+                            let refusal = |refusal| Xmap09LightCensusRefusal::ParticleInput {
+                                instance: instance.id.clone(), refusal,
+                            };
+                            particle.runtime.set_visible(particle.handle, *alpha > 0.0).map_err(refusal)?;
+                            if *alpha > 0.0 {
+                                particle.runtime.set_opacity(particle.handle, *alpha).map_err(refusal)?;
+                            }
+                        }
+                    }
+                }
+            }
+            for (id, _) in &controls {
+                self.entities.get_mut(*id).unwrap().speed =
+                    f64::from(f32::from_bits(weather.playback_rate_f32_bits));
+            }
+        }
         if advance {
             let mut index = 0;
             while index < self.instances.len() {
                 let instance = &self.instances[index];
+                if !self.entity_update_reached(&instance.entity_id) {
+                    index += 1;
+                    continue;
+                }
                 let finished = instance
                     .particle
                     .as_ref()
@@ -874,7 +1007,10 @@ impl ViewerLightLifecycle {
                     index += 1;
                 }
             }
-            for instance in &mut self.instances {
+            let updated = self.entities.iter()
+                .filter(|(id, state)| state.visible && self.entity_update_reached(id))
+                .map(|(id, _)| id.clone()).collect::<BTreeSet<_>>();
+            for instance in self.instances.iter_mut().filter(|instance| updated.contains(&instance.entity_id)) {
                 instance
                     .clock
                     .advance(delta as f64, true)
@@ -959,7 +1095,21 @@ impl ViewerLightLifecycle {
                     refusal: refusal.event(instance.ordinal),
                 }
             };
-            let world = rows
+            let mut ancestor = instance.entity_id.as_str();
+            let mut attachment_updates = rows.poses[ancestor].visible;
+            while let Some(child) = rows.children.get(ancestor) {
+                ancestor = &child.parent;
+                attachment_updates &= rows.poses[ancestor].visible;
+            }
+            let frozen_world = if !attachment_updates {
+                instance.particle.as_ref().map(|particle| particle.binding.world_matrix_f32_bits)
+            } else {
+                None
+            };
+            let world = if let Some(bits) = frozen_world {
+                Ok(std::array::from_fn(|i| f32::from_bits(bits[(i % 4) * 4 + i / 4])))
+            } else {
+                rows
                 .world(&instance.entity_id)
                 .and_then(|world| {
                     Ok(multiply_4x4(
@@ -967,7 +1117,7 @@ impl ViewerLightLifecycle {
                         rows.poses[&instance.entity_id].attach_event(&instance.event)?,
                     ))
                 })
-                .map_err(|e| missing(format!("assets.light_attach.{}: {e}", instance.id)))?;
+            }.map_err(|e| missing(format!("assets.light_attach.{}: {e}", instance.id)))?;
             let bits = std::array::from_fn(|i| world[(i % 4) * 4 + i / 4].to_bits());
             let speed = rows.poses[&instance.entity_id].speed as f32;
             if instance.particle.is_none() {
@@ -1043,7 +1193,6 @@ impl ViewerLightLifecycle {
             rows.particle_bindings
                 .insert(instance.id.clone(), particle.binding);
         }
-        self.last_presentation_time = Some(now);
         Ok(rows)
     }
 }
@@ -1065,6 +1214,7 @@ mod tests {
                 models: Mutex::new(BTreeMap::new()),
                 animations: Mutex::new(BTreeMap::new()),
                 poses: BTreeMap::new(),
+                static_attachments: BTreeSet::new(),
                 meshes: BTreeMap::new(),
                 mesh_clips: BTreeMap::new(),
                 clips: BTreeMap::new(),
@@ -1145,11 +1295,431 @@ light = {
         (content, ViewerLightLifecycle::default(), placed, viewer)
     }
 
+
+    fn weather_frame(resolver: &GameFileResolver, distance: f32) -> PreparedXmap19WeatherFrame {
+        use crate::production_features::xmap19::*;
+        let content = resolver.require_complete_admitted_dir("", None, true, "weather fixture").unwrap();
+        let key = |path: &str| content.iter().find(|key| key.normalized_game_relative_path == path).unwrap().clone();
+        let program = PreparedWeatherEntityProgram {
+            entity_name: "weather".into(),
+            entity_definition_source: key("gfx/entity.asset"),
+            default_state_name: "idle".into(),
+            ordered_events: vec![PreparedWeatherAuthoredEvent {
+                authored_event_index: 0,
+                ordered_particle_effects: vec![PreparedWeatherParticleEffect {
+                    authored_effect_index: 0, particle_token: "paired".into(),
+                }],
+                node_token: None, time_f32_bits: Some(0.25f32.to_bits()),
+                keep_particle: None, trigger_once: None,
+            }],
+            ordered_particle_names: vec!["paired".into()],
+            ordered_particle_types: vec!["effect".into()],
+            ordered_particle_registration_sources: vec![key("gfx/particles.gfx")],
+            ordered_particle_asset_paths: vec!["gfx/particles.asset".into()],
+            ordered_particle_shader_effects: vec![vec!["Weather".into()]],
+            ordered_particle_shader_paths: vec![vec!["gfx/weather.shader".into()]],
+            ordered_texture_paths: vec!["gfx/weather.dds".into()],
+            ordered_content: content.clone(),
+        };
+        let primary = weather_membership_producer_instance_id(0, 12, 2, 1, "primary");
+        let fading = weather_membership_producer_instance_id(0, 12, 2, 1, "fading");
+        let law = weather_visibility_law(distance, &VANILLA_WEATHER_FADE_DEFINES).unwrap();
+        let mut frame = PreparedXmap19WeatherFrame {
+            schema: XMAP19_WEATHER_SCHEMA.into(), hour_index: 1,
+            viewer_visual_lifecycle_sha256: "a".repeat(64),
+            camera_distance_f32_bits: distance.to_bits(),
+            primary_control_written: law.primary_control_written,
+            primary_visibility_alpha_f32_bits: law.primary_alpha.to_bits(),
+            fading_visibility_alpha_f32_bits: law.fading_alpha.to_bits(),
+            playback_rate_f32_bits: law.playback_rate.to_bits(),
+            distance_fog_color_f32_bits: VANILLA_WEATHER_DISTANCE_FOG.color.map(f32::to_bits),
+            distance_fog_begin_f32_bits: VANILLA_WEATHER_DISTANCE_FOG.begin.to_bits(),
+            distance_fog_end_f32_bits: VANILLA_WEATHER_DISTANCE_FOG.end.to_bits(),
+            distance_fog_max_f32_bits: VANILLA_WEATHER_DISTANCE_FOG.max.to_bits(),
+            ordered_used_content: content,
+            regions: (0..XMAP19_STRATEGIC_REGION_COUNT).map(|id| PreparedWeatherRegionEpoch {
+                strategic_region_id: id, airborne_runtime_code: if id == 0 { 2 } else { 0 },
+                transition_expiry_game_hour: 12, epoch_identity: 12,
+                selection_seed_words: (id == 0).then_some([0, 1]),
+                selection_seed_after_positions: (id == 0).then_some([1, 1]),
+                derived_producer_instance_ids: if id == 0 { vec![primary.clone(), fading.clone()] } else { vec![] },
+            }).collect(),
+            ordered_positions: vec![PreparedWeatherPosition {
+                source_ordinal: 1, strategic_region_id: 0,
+                position_xyz_f32_bits: [7.0f32, 11.0, -13.0].map(f32::to_bits),
+                size: "big".into(), airborne_runtime_code: 2, weather_effect_key: Some("rain_light".into()),
+                selection: Some(PreparedWeatherSelection {
+                    authored_weather_effect_index: 0, primary_source_id: primary,
+                    fading_source_id: Some(fading), primary: program.clone(), fading: Some(program),
+                }),
+            }],
+            deterministic_sha256: String::new(),
+        };
+        frame.deterministic_sha256 = snapshot::sha256::Sha256::hex(&serde_json::to_vec(&frame).unwrap());
+        frame.validate().unwrap();
+        frame
+    }
+
+    fn weather_content() -> crate::particle_authored::test_support::Fixture {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        Fixture::with_extra_files(REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=8 duration=-1 emission=4 life=20 color={a=255} texture={file=gfx/weather.dds shader=Weather}}}",
+            &[("gfx/entity.asset", br#"
+entity = {
+ name = weather
+ default_state = idle
+ state = {
+  name = idle
+  event = { time = 0.25 particle = paired }
+ }
+}
+"#), ("gfx/weather.shader", b"Effect Weather = { VertexShader = VS PixelShader = PS }"),
+                ("gfx/weather.dds", b"lifecycle fixture: texture is not decoded by this consumer")])
+    }
+
+    #[test]
+    fn foundation_weather_binding_failure_is_local_and_checks_exact_custody_once() {
+        use crate::production_foundation::*;
+        use crate::production_features::{xmap19, xmap20};
+        use portable_render_stream::{FamilyDisposition, MapVisualFamily};
+        use replay_core::{RawFrame, ReplaySource, SourceError, WorldTimeline};
+        use std::{cell::{Cell, RefCell}, rc::Rc};
+        struct Source;
+        impl ReplaySource for Source {
+            fn game_id(&self) -> &str { "weather-binding" }
+            fn hours(&self) -> &[i64] { &[1] }
+            fn warnings(&self) -> &[String] { &[] }
+            fn frame(&self, hour_index: i64) -> std::result::Result<RawFrame, SourceError> {
+                Ok(RawFrame { hour_index, date: None, save_version: None, schema_version: None, rest: Default::default() })
+            }
+        }
+        struct Boundary {
+            family: MapVisualFamily,
+            weather: PreparedXmap19WeatherFrame,
+            time: u32,
+            mode: Rc<Cell<u8>>,
+            calls: Rc<RefCell<Vec<&'static str>>>,
+        }
+        impl ProductionMapFeatureAdapter for Boundary {
+            fn family(&self) -> MapVisualFamily { self.family }
+            fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput> {
+                match self.family {
+                    MapVisualFamily::WeatherAtmosphere => {
+                        self.calls.borrow_mut().push("weather");
+                        self.weather.validate()?;
+                        let topology = product_foundation_assigned_stage_topology()?;
+                        let schedule = portable_render_stream::AssignedStageSchedule::from_topology(&topology)?;
+                        let operation = schedule.require(xmap19::XMAP19_ASSIGNED_STAGE_NAME, xmap19::XMAP19_ASSIGNED_OPERATION_NAME)?
+                            .foundation_operation_identity("a".repeat(64), "b".repeat(64), "c".repeat(64))?;
+                        let mut output = FoundationFeatureOutput::without_payload(FamilyDisposition::Present {
+                            payload_schema: self.weather.schema.clone(),
+                            producer_registration_sha256: "a".repeat(64),
+                            payload_sha256: self.weather.deterministic_sha256.clone(),
+                            ordered_operations: vec![operation],
+                            ordered_used_content: self.weather.ordered_used_content.clone(),
+                        }, context.map_authority_gaps.iter().filter(|gap| matches!(gap.input_id.as_str(),
+                            "weather.region_gameplay" | "weather.visual_membership_lifecycle"))
+                            .map(|gap| gap.input_id.clone()).collect());
+                        output.prepared_weather = Some(self.weather.clone());
+                        Ok(output)
+                    }
+                    MapVisualFamily::LightingShadows => {
+                        self.calls.borrow_mut().push("lighting");
+                        assert_eq!(context.prepared_weather.unwrap().deterministic_sha256, self.weather.deterministic_sha256);
+                        Err(FamilyContentRefusal::new("XMAP09.fixture", "boundary fixture has no lighting draw"))
+                    }
+                    MapVisualFamily::ParticlesEffects => {
+                        self.calls.borrow_mut().push("particles");
+                        let output = xmap20::Xmap20EffectsAdapter.prepare(context)?;
+                        let causes = output.element_diagnostics.iter().map(|row| row.cause_id.as_str()).collect::<Vec<_>>();
+                        assert!(causes.contains(&"unit-event-phase-unbound"));
+                        assert_eq!(causes.contains(&"weather-event-phase-unbound"), self.mode.get() == 1);
+                        Ok(output)
+                    }
+                    MapVisualFamily::MapFurnitureIcons => {
+                        self.calls.borrow_mut().push("later-family");
+                        Err(FamilyContentRefusal::new("XMAP21.fixture", "boundary fixture has no furniture"))
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            fn weather_particles_bound(&self, time: f32, identity: &str) -> Result<bool> {
+                assert_eq!(self.family, MapVisualFamily::LightingShadows);
+                assert_eq!(time.to_bits(), self.time);
+                assert_eq!(identity, self.weather.deterministic_sha256);
+                self.calls.borrow_mut().push("binding");
+                match self.mode.get() {
+                    0 => Err("retained weather custody unavailable".into()),
+                    1 => Ok(false),
+                    2 => Ok(true),
+                    _ => unreachable!(),
+                }
+            }
+        }
+        let content = weather_content();
+        let weather = weather_frame(&content.resolver, 300.0);
+        let (_, _, viewer) = fixture(0);
+        let timeline = WorldTimeline::open(Box::new(Source)).unwrap();
+        let world = timeline.frame(1).unwrap();
+        let mut manifest: replay_core::ContentManifest = serde_json::from_value(serde_json::json!({
+            "schema": replay_core::PORTABLE_CONTENT_MANIFEST_SCHEMA,
+            "product_modset_sha256": "1".repeat(64),
+            "source_game": { "version": "1.19.2", "build": "a729",
+                "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad", "build_profile": "weather-binding" },
+            "source_profile": { "profile_id": "weather-binding", "playset_id": "vanilla", "selection_sha256": "0".repeat(64) },
+            "effective_vfs_manifest_sha256": "2".repeat(64), "ordered_layers": [], "dlc_selection": [],
+            "localisation_language": "l_english", "required_settings": {}, "recorder_local_settings": {},
+            "required_content": [], "witnessed_absent_content": [], "manifest_digest_sha256": null
+        })).unwrap();
+        manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
+        let manifest = manifest.with_computed_digest().unwrap();
+        let receipt = FoundationContentExecutionReceipt {
+            schema: FOUNDATION_CONTENT_EXECUTION_RECEIPT_SCHEMA.into(),
+            content_manifest_sha256: manifest.manifest_digest_sha256.clone().unwrap(),
+            product_modset_sha256: manifest.product_modset_sha256.clone(),
+            effective_vfs_manifest_sha256: manifest.effective_vfs_manifest_sha256.clone(),
+            content_authority_sha256: "3".repeat(64), resolved_operation_sha256: "4".repeat(64),
+            ordered_program_stage_sha256: vec!["5".repeat(64)], resource_identity_sha256: "6".repeat(64),
+            descriptor_identity_sha256: "7".repeat(64), compiled_or_loaded_programs: 1,
+            created_resources: 1, created_descriptors: 1, deterministic_sha256: String::new(),
+        }.seal().unwrap();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mode = Rc::new(Cell::new(0));
+        let mut adapters = ProductionMapFeatureAdapters::default();
+        for family in [MapVisualFamily::WeatherAtmosphere, MapVisualFamily::LightingShadows,
+            MapVisualFamily::ParticlesEffects, MapVisualFamily::MapFurnitureIcons] {
+            adapters.register(Box::new(Boundary { family, weather: weather.clone(), time: viewer.animation_time_f32_bits,
+                mode: mode.clone(), calls: calls.clone() })).unwrap();
+        }
+        for outcome in 0..3 {
+            mode.set(outcome);
+            calls.borrow_mut().clear();
+            let error = prepare_foundation_frame(&world, &viewer, &manifest, &receipt, &adapters, None)
+                .err().expect("the fixture deliberately omits mandatory terrain").to_string();
+            assert!(error.contains("XMAP04 refuses the mandatory Terrain"), "{error}");
+            let expected = if outcome == 0 {
+                vec!["weather", "lighting", "binding", "later-family"]
+            } else {
+                vec!["weather", "lighting", "binding", "particles", "later-family"]
+            };
+            assert_eq!(*calls.borrow(), expected);
+        }
+    }
+
+    #[test]
+    fn failed_event_update_refuses_retry_and_draw_until_explicit_reset() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let repaired = weather_content();
+        let particles = read_asset(&repaired.resolver, "gfx/particles.asset").unwrap();
+        let shader = read_asset(&repaired.resolver, "gfx/weather.shader").unwrap();
+        let texture = read_asset(&repaired.resolver, "gfx/weather.dds").unwrap();
+        let broken = Fixture::with_extra_files(REGISTRATION, std::str::from_utf8(&particles).unwrap(), &[
+            ("gfx/entity.asset", br#"
+entity = {
+ name = weather
+ default_state = idle
+ state = {
+  name = idle
+  event = { time = 0.25 particle = paired }
+  event = { time = 0.3 entity = missing_child }
+ }
+}
+"#), ("gfx/weather.shader", &shader), ("gfx/weather.dds", &texture),
+        ]);
+        let weather = weather_frame(&broken.resolver, 300.0);
+        let primary = &weather.ordered_positions[0].selection.as_ref().unwrap().primary_source_id;
+        let (_, _, mut viewer) = fixture(0);
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+        viewer.animation_time_f32_bits = 0.125f32.to_bits();
+        viewer.frame_delta_seconds_f32_bits = 0.125f32.to_bits();
+        lifecycle.derive_light_instance_rows(&broken.resolver, &[], &viewer, Some(&weather)).unwrap();
+        assert!(lifecycle.weather_particles_bound(0.125, &weather.deterministic_sha256));
+
+        viewer.animation_time_f32_bits = 0.5f32.to_bits();
+        viewer.frame_delta_seconds_f32_bits = 0.375f32.to_bits();
+        let first = lifecycle.derive_light_instance_rows(&broken.resolver, &[], &viewer, Some(&weather))
+            .err().expect("the second crossed event has no authored child definition");
+        assert!(matches!(&first, Xmap09LightCensusRefusal::MissingDomain { domain }
+            if domain.contains("missing_child")), "{first:?}");
+        assert_eq!(lifecycle.entities[primary].playhead, 0.5);
+        assert_eq!(lifecycle.instances.len(), 1, "the earlier event has already mutated retained state");
+        assert!(lifecycle.instances[0].particle.is_none());
+        assert_eq!(lifecycle.last_presentation_time, None);
+        assert!(!lifecycle.weather_particles_bound(0.125, &weather.deterministic_sha256));
+        assert!(!lifecycle.weather_particles_bound(0.5, &weather.deterministic_sha256));
+        let first_ordinal = lifecycle.next_particle_only_instance;
+        let camera = crate::particle_runtime::ParticleSortCamera {
+            position_f32_bits: [0; 3], forward_f32_bits: [0, 0, 1.0f32.to_bits()],
+        };
+        for phase in [0.5f32, 1.0, 0.0] {
+            viewer.animation_time_f32_bits = phase.to_bits();
+            assert_eq!(lifecycle.derive_light_instance_rows(&broken.resolver, &[], &viewer, Some(&weather))
+                .err().unwrap(), first);
+            assert_eq!(lifecycle.entities[primary].playhead, 0.5);
+            assert_eq!(lifecycle.next_particle_only_instance, first_ordinal);
+            assert_eq!(lifecycle.instances.len(), 1);
+            let error = lifecycle.visit_particles_for_draw(phase, camera, &mut |_, _, _| {
+                panic!("failed lifecycle state reached the draw boundary")
+            }).unwrap_err().to_string();
+            assert!(error.contains("reset_population required") && error.contains("missing_child"), "{error}");
+            assert!(!lifecycle.weather_particles_bound(phase, &weather.deterministic_sha256));
+        }
+        let repaired_weather = weather_frame(&repaired.resolver, 300.0);
+        viewer.animation_time_f32_bits = 0.5f32.to_bits();
+        viewer.frame_delta_seconds_f32_bits = 0.5f32.to_bits();
+        assert_eq!(lifecycle.derive_light_instance_rows(&repaired.resolver, &[], &viewer, Some(&repaired_weather))
+            .err().unwrap(), first, "a new content lease must not implicitly publish partial state");
+        lifecycle.reset_population();
+        assert!(lifecycle.entities.is_empty() && lifecycle.instances.is_empty());
+        assert!(lifecycle.publication_refusal.is_none());
+        assert!(lifecycle.visit_particles_for_draw(0.5, camera, &mut |_, _, _| {
+            panic!("reset alone cannot publish a frame")
+        }).is_err());
+        let rows = lifecycle.derive_light_instance_rows(&repaired.resolver, &[], &viewer, Some(&repaired_weather)).unwrap();
+        assert_eq!(rows.authored_particles.len(), 1);
+        assert!(lifecycle.weather_particles_bound(0.5, &repaired_weather.deterministic_sha256));
+        let mut records = 0;
+        lifecycle.visit_particles_for_draw(0.5, camera, &mut |_, capacity, view| {
+            view.visit_draw_subsystems(capacity.packets as usize, false, |_, subsystem| {
+                records += subsystem.records().collect::<std::result::Result<Vec<_>, _>>()?.len();
+                Ok(())
+            })?;
+            Ok(())
+        }).unwrap();
+        assert!(records > 0, "explicit reset and valid inputs must restore real particle output");
+    }
+
+    #[test]
+    fn weather_controls_drive_retained_particles_and_the_real_draw_visitor() {
+        let content = weather_content();
+        let (_, _, mut viewer) = fixture(0);
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+        let first = weather_frame(&content.resolver, 300.0);
+        let selection = first.ordered_positions[0].selection.as_ref().unwrap();
+        let primary = selection.primary_source_id.clone();
+        let fading = selection.fading_source_id.clone().unwrap();
+        // At near zoom, the primary is untouched and the fading entity is hidden before events.
+        lifecycle.derive_light_instance_rows(&content.resolver, &[], &viewer, Some(&first)).unwrap();
+        assert!(lifecycle.weather_particles_bound(0.5, &first.deterministic_sha256));
+        assert!(!lifecycle.weather_particles_bound(0.75, &first.deterministic_sha256));
+        assert_eq!(lifecycle.instances.len(), 1);
+        assert_eq!(lifecycle.instances[0].entity_id, primary);
+        assert_eq!(lifecycle.entities[&fading].playhead, 0.5);
+        assert_eq!(lifecycle.entities[&fading].elapsed, 0.0);
+        let particle = lifecycle.instances[0].particle.as_ref().unwrap();
+        let original = particle.runtime.gpu_view(particle.handle).unwrap().root_subsystems().next().unwrap()
+            .records().collect::<std::result::Result<Vec<_>, _>>().unwrap();
+        assert_eq!(original.len(), 2);
+        assert!(original.iter().all(|record| record.0[35] == 255));
+        assert_eq!(particle.binding.world_matrix_f32_bits[12..15], first.ordered_positions[0].position_xyz_f32_bits);
+
+        let hidden = weather_frame(&content.resolver, 1600.0);
+        viewer.animation_time_f32_bits = 1.0f32.to_bits();
+        lifecycle.derive_light_instance_rows(&content.resolver, &[], &viewer, Some(&hidden)).unwrap();
+        let particle = lifecycle.instances[0].particle.as_ref().unwrap();
+        assert_eq!(original, particle.runtime.gpu_view(particle.handle).unwrap().root_subsystems().next().unwrap()
+            .records().collect::<std::result::Result<Vec<_>, _>>().unwrap());
+        let camera = crate::particle_runtime::ParticleSortCamera {
+            position_f32_bits: [0; 3], forward_f32_bits: [0, 0, 1.0f32.to_bits()],
+        };
+        let mut draws = 0;
+        lifecycle.visit_particles_for_draw(1.0, camera, &mut |_, cap, view| {
+            draws += view.visit_draw_subsystems(cap.packets as usize, false, |_, _| Ok(()))?;
+            Ok(())
+        }).unwrap();
+        assert_eq!(draws, 0);
+
+        viewer.animation_time_f32_bits = 1.5f32.to_bits();
+        lifecycle.derive_light_instance_rows(&content.resolver, &[], &viewer, Some(&first)).unwrap();
+        assert!(!lifecycle.entities[&primary].visible, "near branch must not reset the retained primary flag");
+        assert_eq!(lifecycle.entities[&primary].speed, 1.0);
+        assert_eq!(lifecycle.entities[&primary].elapsed, 0.5);
+
+        let middle = weather_frame(&content.resolver, 1300.0);
+        viewer.animation_time_f32_bits = 2.0f32.to_bits();
+        lifecycle.derive_light_instance_rows(&content.resolver, &[], &viewer, Some(&middle)).unwrap();
+        assert!(lifecycle.entities[&primary].visible);
+        assert!(lifecycle.entities[&fading].visible);
+        assert_eq!(lifecycle.entities[&primary].speed, f64::from(0.15f32));
+        let particle = lifecycle.instances[0].particle.as_ref().unwrap();
+        let faded = particle.runtime.gpu_view(particle.handle).unwrap().root_subsystems().next().unwrap()
+            .records().collect::<std::result::Result<Vec<_>, _>>().unwrap();
+        assert_eq!(faded[0].0[35], 128);
+        draws = 0;
+        lifecycle.visit_particles_for_draw(2.0, camera, &mut |_, cap, view| {
+            draws += view.visit_draw_subsystems(cap.packets as usize, false, |_, _| Ok(()))?;
+            Ok(())
+        }).unwrap();
+        assert!(draws > 0);
+        lifecycle.derive_light_instance_rows(&content.resolver, &[], &viewer, Some(&middle)).unwrap();
+        let particle = lifecycle.instances[0].particle.as_ref().unwrap();
+        assert_eq!(faded, particle.runtime.gpu_view(particle.handle).unwrap().root_subsystems().next().unwrap()
+            .records().collect::<std::result::Result<Vec<_>, _>>().unwrap());
+        lifecycle.derive_light_instance_rows(&content.resolver, &[], &viewer, None).unwrap();
+        assert!(lifecycle.instances.is_empty());
+        assert!(!lifecycle.weather_particles_bound(2.0, &middle.deterministic_sha256));
+    }
+
+    #[test]
+    fn weather_opacity_setter_changes_existing_particles_but_is_not_inherited_by_later_births() {
+        let content = weather_content();
+        let weather = weather_frame(&content.resolver, 1300.0);
+        let (_, _, mut viewer) = fixture(0);
+        viewer.animation_time_f32_bits = 2.0f32.to_bits();
+        viewer.frame_delta_seconds_f32_bits = 2.0f32.to_bits();
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+        lifecycle.derive_light_instance_rows(&content.resolver, &[], &viewer, Some(&weather)).unwrap();
+        assert_eq!(lifecycle.instances.len(), 2);
+        for instance in &lifecycle.instances {
+            let particle = instance.particle.as_ref().unwrap();
+            let records = particle.runtime.gpu_view(particle.handle).unwrap().root_subsystems().next().unwrap()
+                .records().collect::<std::result::Result<Vec<_>, _>>().unwrap();
+            assert!(!records.is_empty());
+            assert!(records.iter().all(|record| record.0[35] == 255));
+        }
+        viewer.animation_time_f32_bits = 2.5f32.to_bits();
+        viewer.frame_delta_seconds_f32_bits = 0.5f32.to_bits();
+        lifecycle.derive_light_instance_rows(&content.resolver, &[], &viewer, Some(&weather)).unwrap();
+        for instance in &lifecycle.instances {
+            let particle = instance.particle.as_ref().unwrap();
+            let record = particle.runtime.gpu_view(particle.handle).unwrap().root_subsystems().next().unwrap()
+                .records().next().unwrap().unwrap();
+            assert_eq!(record.0[35], 128);
+        }
+    }
+
+    #[test]
+    fn an_unbound_static_attachment_is_named_only_when_its_entity_is_instantiated() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}",
+            &[("gfx/entity.asset", b"entity={\n name=unbound\n attach={node=child}\n}\nentity={\n name=empty\n}\n")]);
+        let (_, mut placed, viewer) = fixture(1);
+        let mut lifecycle = ViewerLightLifecycle::default();
+        placed[0].entity_token = "empty".into();
+        lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        placed[0].entity_token = "unbound".into();
+        let error = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).err().unwrap();
+        assert!(format!("{error:?}").contains("unbound static attachment selection/phase"));
+    }
+
+    #[test]
+    fn hidden_entity_advances_playhead_without_firing_missed_events_or_elapsed_time() {
+        let mut state = animation(false, false);
+        state.visible = false;
+        assert!(state.advance(0.5).is_empty());
+        assert_eq!(state.playhead, 0.5);
+        assert_eq!(state.elapsed, 0.0);
+        state.visible = true;
+        assert!(state.advance(0.1).is_empty());
+        assert_eq!(state.playhead, 0.6);
+        assert_eq!(state.elapsed, 0.1);
+    }
+
     #[test]
     fn particle_draw_borrows_the_same_paired_runtime_and_rejects_stale_phase() {
         let (content, mut lights, placed, viewer) =
             paired_fixture("subsystem={name=s max_amount=4 duration=-1 emission=2 life=5}");
-        let rows = lights.derive_light_instance_rows(&content.resolver, &placed, &viewer).unwrap();
+        let rows = lights.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
         let camera = crate::particle_runtime::ParticleSortCamera {
             position_f32_bits: [0; 3],
             forward_f32_bits: [0, 0, 1.0_f32.to_bits()],
@@ -1186,7 +1756,7 @@ light = {
         let mut first = None;
         for frame in 1..=4 {
             viewer.animation_time_f32_bits = (frame as f32 * 0.5).to_bits();
-            let light_rows = lights.derive_light_instance_rows(&content.resolver, &placed, &viewer).unwrap();
+            let light_rows = lights.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
             let effect_rows = effects.prepare(&content.resolver, &placed, &viewer).unwrap();
             assert_eq!(effect_rows.len(), light_rows.particle_bindings.len());
             for effect in &effect_rows {
@@ -1223,7 +1793,7 @@ light = {
             assert_eq!(rows.len(), 2);
             assert_ne!(rows[0].light_phase.event_instance_id, rows[1].light_phase.event_instance_id);
             let paired = rows.iter().find(|row| row.paired_light.is_some()).unwrap();
-            let light_rows = lights.derive_light_instance_rows(&content.resolver, &placed, &viewer).unwrap();
+            let light_rows = lights.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
             assert_eq!(light_rows.particle_bindings.len(), 1);
             assert_eq!(paired.light_phase, light_rows.particle_bindings[&paired.instance_id]);
         }
@@ -1261,7 +1831,7 @@ light = {
         for frame in 1..=4 {
             viewer.animation_time_f32_bits = (frame as f32 * 0.5).to_bits();
             let rows = lifecycle
-                .derive_light_instance_rows(&content.resolver, &placed, &viewer)
+                .derive_light_instance_rows(&content.resolver, &placed, &viewer, None)
                 .unwrap();
             let census = rows
                 .with_rows(|r| admit_light_census(Ok(r), [0., 0., 0.125, 0.125]))
@@ -1292,10 +1862,10 @@ light = {
         let (content, mut lifecycle, placed, mut viewer) =
             paired_fixture("subsystem={name=s max_amount=4 duration=0 emission=2 life={0.5 0.25}}");
         let first = lifecycle
-            .derive_light_instance_rows(&content.resolver, &placed, &viewer)
+            .derive_light_instance_rows(&content.resolver, &placed, &viewer, None)
             .unwrap();
         let repeated = lifecycle
-            .derive_light_instance_rows(&content.resolver, &placed, &viewer)
+            .derive_light_instance_rows(&content.resolver, &placed, &viewer, None)
             .unwrap();
         assert_eq!(first.particle_bindings, repeated.particle_bindings);
         assert_eq!(lifecycle.instances.len(), 1);
@@ -1310,11 +1880,11 @@ light = {
         );
         viewer.animation_time_f32_bits = 1f32.to_bits();
         lifecycle
-            .derive_light_instance_rows(&content.resolver, &placed, &viewer)
+            .derive_light_instance_rows(&content.resolver, &placed, &viewer, None)
             .unwrap();
         viewer.animation_time_f32_bits = 0.5f32.to_bits();
         let sought = lifecycle
-            .derive_light_instance_rows(&content.resolver, &placed, &viewer)
+            .derive_light_instance_rows(&content.resolver, &placed, &viewer, None)
             .unwrap();
         assert_eq!(first.particle_bindings, sought.particle_bindings);
         assert_eq!(lifecycle.instances.len(), 1);
@@ -1325,14 +1895,14 @@ light = {
         let (content, mut lifecycle, mut placed, mut viewer) =
             paired_fixture("subsystem={name=s max_amount=4 duration=-1 emission=2 life=0.5}");
         lifecycle
-            .derive_light_instance_rows(&content.resolver, &placed, &viewer)
+            .derive_light_instance_rows(&content.resolver, &placed, &viewer, None)
             .unwrap();
         placed[0].state = Some("stopped".into());
         let mut counts = Vec::new();
         for frame in 2..=5 {
             viewer.animation_time_f32_bits = (frame as f32 * 0.5).to_bits();
             let rows = lifecycle
-                .derive_light_instance_rows(&content.resolver, &placed, &viewer)
+                .derive_light_instance_rows(&content.resolver, &placed, &viewer, None)
                 .unwrap();
             counts.push(
                 rows.with_rows(|r| admit_light_census(Ok(r), [0., 0., 0.125, 0.125]))
@@ -1348,7 +1918,7 @@ light = {
     fn empty_paired_roster_lights_its_creation_frame_then_releases_storage() {
         let (content, mut lifecycle, placed, mut viewer) = paired_fixture("");
         let first = lifecycle
-            .derive_light_instance_rows(&content.resolver, &placed, &viewer)
+            .derive_light_instance_rows(&content.resolver, &placed, &viewer, None)
             .unwrap();
         assert!(first.particle_bindings.values().next().unwrap().finished);
         assert_eq!(
@@ -1361,7 +1931,7 @@ light = {
         );
         viewer.animation_time_f32_bits = 1f32.to_bits();
         let next = lifecycle
-            .derive_light_instance_rows(&content.resolver, &placed, &viewer)
+            .derive_light_instance_rows(&content.resolver, &placed, &viewer, None)
             .unwrap();
         assert!(next.instances.is_empty());
         assert!(lifecycle.instances.is_empty());
@@ -1380,7 +1950,7 @@ light = {
             .get_mut("entity")
             .unwrap();
         pose.states[0].events[0].particle = Some("absent".into());
-        let error = match lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer)
+        let error = match lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None)
         {
             Err(error) => error,
             Ok(_) => panic!("missing particle was admitted"),
@@ -1433,7 +2003,7 @@ entity = {
         let cached = assets.model(&resolver, "admitted.mesh").unwrap();
         assert!(Arc::ptr_eq(&cached, &model));
         let rows = lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         assert!(Arc::ptr_eq(&rows.assets, &assets));
         assert!(Arc::ptr_eq(
@@ -1456,7 +2026,7 @@ entity = {
             .duration = 0.1;
         let resolver = GameFileResolver::vanilla(".").unwrap();
         let rows = lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         let first = rows
             .with_rows(|rows| admit_light_census(Ok(rows), [0., 0., 0.125, 0.125]))
@@ -1467,7 +2037,7 @@ entity = {
         );
         viewer.animation_time_f32_bits = 1f32.to_bits();
         let rows = lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         let expired = rows
             .with_rows(|rows| admit_light_census(Ok(rows), [0., 0., 0.125, 0.125]))
@@ -1484,7 +2054,7 @@ entity = {
             Some("missing".into());
         let resolver = GameFileResolver::vanilla(".").unwrap();
         let rows = lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         let census = rows
             .with_rows(|rows| admit_light_census(Ok(rows), [0., 0., 0.125, 0.125]))
@@ -1512,7 +2082,7 @@ entity = {
             .collect();
         let resolver = GameFileResolver::vanilla(".").unwrap();
         let rows = lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         let census = rows
             .with_rows(|rows| admit_light_census(Ok(rows), [0., 0., 0.125, 0.125]))
@@ -1529,7 +2099,7 @@ entity = {
         assert_eq!(rows.poses[rows.instances[0].1.as_str()].playhead, 0.5);
         viewer.animation_time_f32_bits = 1f32.to_bits();
         let rows = lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         assert_eq!(rows.entities.len(), 1);
         assert!(rows.instances.is_empty());
@@ -1650,7 +2220,7 @@ entity = {
         viewer.animation_time_f32_bits = 0.01f32.to_bits();
         viewer.frame_delta_seconds_f32_bits = 0.01f32.to_bits();
         lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         assert_eq!(
             lifecycle.entities["placed-000"].next_state.as_deref(),
@@ -1660,7 +2230,7 @@ entity = {
         viewer.animation_time_f32_bits = 0.21f32.to_bits();
         viewer.frame_delta_seconds_f32_bits = 0.2f32.to_bits();
         lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         assert_eq!(
             lifecycle.entities["placed-000"].next_state.as_deref(),
@@ -1669,7 +2239,7 @@ entity = {
         assert_eq!(lifecycle.entities["placed-000"].playhead, 0.5);
         viewer.animation_time_f32_bits = 0.41f32.to_bits();
         let lit = lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         let census = lit
             .with_rows(|rows| admit_light_census(Ok(rows), [0., 0., 0.125, 0.125]))
@@ -1684,7 +2254,7 @@ entity = {
         viewer.animation_time_f32_bits = 0.91f32.to_bits();
         viewer.frame_delta_seconds_f32_bits = 0.5f32.to_bits();
         let off = lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         assert!(off.instances.is_empty());
         assert!(lifecycle.entities["placed-000"].events.is_empty());
@@ -1709,24 +2279,24 @@ entity = {
             .collect();
         let resolver = GameFileResolver::vanilla(".").unwrap();
         let first = lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         assert!(first.instances.is_empty());
         viewer.animation_time_f32_bits = 1f32.to_bits();
         let lit = lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         assert_eq!(lit.instances.len(), 1);
         lifecycle.reset_population();
         viewer.animation_time_f32_bits = 1.5f32.to_bits();
         let restored = lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         assert!(restored.instances.is_empty());
         assert_eq!(lifecycle.entities["placed-000"].playhead, 0.0);
         viewer.animation_time_f32_bits = 2f32.to_bits();
         let lit = lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         assert_eq!(lit.instances.len(), 1);
         assert_eq!(lit.instances[0].3.age_seconds(), 0.0);
@@ -1751,6 +2321,7 @@ entity = {
                 trigger_once: once,
             }]),
             speed: 1.0,
+            visible: true,
             length: if looping { 1.0 } else { -1.0 },
             looping,
             elapsed: 0.0,
@@ -1797,6 +2368,7 @@ entity = {
                 models: Mutex::new(BTreeMap::new()),
                 animations: Mutex::new(BTreeMap::new()),
                 poses: BTreeMap::new(),
+                static_attachments: BTreeSet::new(),
                 meshes: BTreeMap::new(),
                 mesh_clips: BTreeMap::new(),
                 clips: BTreeMap::new(),
@@ -1832,7 +2404,7 @@ entity = {
         };
         let resolver = GameFileResolver::vanilla(".").unwrap();
         let rows = lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         let census = rows
             .with_rows(|rows| admit_light_census(Ok(rows), [0.0, 0.0, 0.125, 0.125]))
@@ -1847,18 +2419,18 @@ entity = {
         );
         viewer.animation_time_f32_bits = 1.0f32.to_bits();
         lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         viewer.animation_time_f32_bits = 1.5f32.to_bits();
         let rows = lifecycle
-            .derive_light_instance_rows(&resolver, &placed, &viewer)
+            .derive_light_instance_rows(&resolver, &placed, &viewer, None)
             .unwrap();
         assert_eq!(rows.instances.len(), 2);
         assert_eq!(rows.instances[0].3.age_seconds(), 1.0);
         assert_eq!(rows.instances[1].3.age_seconds(), 0.0);
         viewer.animation_time_f32_bits = 2.0f32.to_bits();
         let empty = lifecycle
-            .derive_light_instance_rows(&resolver, &[], &viewer)
+            .derive_light_instance_rows(&resolver, &[], &viewer, None)
             .unwrap();
         assert!(empty.instances.is_empty());
         assert!(empty.entities.is_empty());
