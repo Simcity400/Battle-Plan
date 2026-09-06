@@ -499,6 +499,21 @@ pub struct ProductionMapFeatureAdapters<'a> {
 }
 
 impl<'a> ProductionMapFeatureAdapters<'a> {
+    fn collect_prepared_entity_owners(&self) -> Result<Vec<Box<dyn PreparedEntityManagerOwner + '_>>> {
+        let mut owners = Vec::new();
+        for adapter in self.slots.values() {
+            match adapter.take_prepared_entity_manager_owner() {
+                Ok(Some(owner)) => owners.push(owner),
+                Ok(None) => {},
+                Err(error) => {
+                    refuse_prepared_entity_owners(&mut owners, &error.to_string());
+                    return Err(error);
+                }
+            }
+        }
+        Ok(owners)
+    }
+
     pub fn visit_particles_for_draw(
         &self,
         presentation_time: f32,
@@ -1435,17 +1450,7 @@ fn prepare_foundation_frame_inner(
                 if let Some(lighting) = adapters.get(family) {
                     lighting.prepare_entity_manager_population(&context)?;
                 }
-                let mut owners = Vec::new();
-                for adapter in adapters.slots.values() {
-                    match adapter.take_prepared_entity_manager_owner() {
-                        Ok(Some(owner)) => owners.push(owner),
-                        Ok(None) => {},
-                        Err(error) => {
-                            refuse_prepared_entity_owners(&mut owners, &error.to_string());
-                            return Err(error);
-                        }
-                    }
-                }
+                let mut owners = adapters.collect_prepared_entity_owners()?;
                 dispatch_prepared_entity_owners(&mut owners)
             })().map_err(|error| FamilyContentRefusal::new(
                 "XMAP09.entity_manager_frame_unavailable", error.to_string()));
@@ -2630,6 +2635,54 @@ mod tests {
         assert!(dispatch_prepared_entity_owners(&mut owners).is_err());
         assert_eq!(manager.lock().unwrap().random_state().counter, 6);
         assert_eq!(order.borrow().len(), 6);
+    }
+
+    #[test]
+    fn later_adapter_collection_failure_revokes_taken_owner_without_draws() {
+        struct Adapter {
+            family: MapVisualFamily,
+            pending: std::cell::RefCell<Option<Box<FrameOwner>>>,
+            fail_take: bool,
+            taken: std::rc::Rc<std::cell::Cell<u32>>,
+        }
+        impl ProductionMapFeatureAdapter for Adapter {
+            fn family(&self) -> MapVisualFamily { self.family }
+            fn prepare(&self, _: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput> {
+                panic!("owner collection must not run family preparation")
+            }
+            fn take_prepared_entity_manager_owner(&self) -> Result<Option<Box<dyn PreparedEntityManagerOwner + '_>>> {
+                self.taken.set(self.taken.get() + 1);
+                if self.fail_take { return Err("fixture later owner collection failure".into()); }
+                Ok(self.pending.borrow_mut().take().map(|owner| owner as Box<dyn PreparedEntityManagerOwner>))
+            }
+        }
+        let [first, second] = frame_owners();
+        let manager = first.manager.clone();
+        let frame = first.frame;
+        let order = first.order.clone();
+        let publication = first.published.clone();
+        publication.set(true);
+        let taken = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut adapters = ProductionMapFeatureAdapters::default();
+        adapters.register(Box::new(Adapter { family: MapVisualFamily::LightingShadows,
+            pending: std::cell::RefCell::new(Some(first)), fail_take: false, taken: taken.clone() })).unwrap();
+        adapters.register(Box::new(Adapter { family: MapVisualFamily::UnitsCounters,
+            pending: std::cell::RefCell::new(Some(second)), fail_take: true, taken: taken.clone() })).unwrap();
+        let error = adapters.collect_prepared_entity_owners().err().unwrap();
+        assert!(error.to_string().contains("later owner collection failure"));
+        assert_eq!(taken.get(), 2);
+        assert!(order.borrow().is_empty());
+        assert!(!publication.get());
+        let mut manager = manager.lock().unwrap();
+        assert_eq!(manager.random_state().counter, 0);
+        assert!(!manager.frame_is_published(frame.presentation_time_f32_bits));
+        for frame in [frame, crate::particle_runtime::EntityManagerFrame {
+            presentation_time_f32_bits: 2.0f32.to_bits(), ..frame
+        }] {
+            let refusal = manager.advance_frame(frame, &mut []).unwrap_err();
+            assert!(refusal.to_string().contains("later owner collection failure"));
+            assert_eq!(manager.random_state().counter, 0);
+        }
     }
 
     #[test]
