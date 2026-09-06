@@ -3926,7 +3926,7 @@ mod native {
             let paths = crate::shader_compile::effect_translation_unit_files(source, "gfx/FX/pdxmap.shader")
                 .unwrap().into_iter().map(|row| row.0.to_ascii_lowercase())
                 .chain([crate::shader_compile::DX11_PLATFORM_HEADER.to_ascii_lowercase()]).collect();
-            crate::test_support::admitted_vanilla_resolver(source, &paths, "terrain-unlit-inputs").0
+            crate::test_support::admitted_fixture_read_set(source, &paths, &[], "terrain-unlit-inputs").0
         }
 
         #[test]
@@ -4035,7 +4035,7 @@ Effect terrainunlit {{ VertexShader="VS" PixelShader="PS" }}
                 .map(|row| row.0.to_ascii_lowercase())
                 .chain([crate::shader_compile::DX11_PLATFORM_HEADER.to_ascii_lowercase()])
                 .collect();
-            crate::test_support::admitted_vanilla_resolver(source, &paths, "lut-native-bindings").0
+            crate::test_support::admitted_fixture_read_set(source, &paths, &[], "lut-native-bindings").0
         }
 
         unsafe fn draw_both(resolver: &GameFileResolver) {

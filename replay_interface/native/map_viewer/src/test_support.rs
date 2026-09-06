@@ -2839,9 +2839,6 @@ pub(crate) fn write_minimal_runtime_import_bundle(root: &Path) -> Manifest {
     manifest
 }
 
-/// A vanilla-install resolver carrying a validated content admission over
-/// `paths`, for the install gates whose production entry point calls
-/// `require_complete_admitted_dir`.
 pub(crate) fn admitted_vanilla_resolver(
     resolver: &GameFileResolver,
     paths: &std::collections::BTreeSet<String>,
@@ -2856,11 +2853,6 @@ pub(crate) fn admitted_vanilla_resolver_with_absences(
     label: &str,
     witnessed_absent_content: Vec<String>,
 ) -> (GameFileResolver, replay_core::ValidatedContentAdmission) {
-    use replay_core::{
-        ContentManifest, LayerStorageKind, RecordedContentLayer, RequiredContent,
-        SourceGameIdentity, SourceProfileIdentity,
-    };
-
     let effective_vfs_manifest_sha256 = "ab".repeat(32);
     let sealed = resolver.observe_test_content_namespace(&effective_vfs_manifest_sha256)
         .unwrap_or_else(|error| panic!("{label} namespace observation: {error}"));
@@ -2873,7 +2865,61 @@ pub(crate) fn admitted_vanilla_resolver_with_absences(
         assert!(!sealed.winners().iter().any(|key| &key.normalized_game_relative_path == path));
         assert!(!sealed.excluded_winners().iter().any(|key| &key.normalized_game_relative_path == path));
     }
-    let required_content = sealed.winners().iter().enumerate().map(|(index, key)| RequiredContent {
+    admit_fixture_content(resolver, label, &effective_vfs_manifest_sha256,
+        sealed.winners().to_vec(), vec![sealed], witnessed_absent_content)
+}
+
+pub(crate) fn admitted_fixture_read_set(
+    resolver: &GameFileResolver,
+    paths: &std::collections::BTreeSet<String>,
+    scopes: &[portable_content_manifest::ContentNamespaceScope],
+    label: &str,
+) -> (GameFileResolver, replay_core::ValidatedContentAdmission) {
+    use portable_content_manifest::effective_vfs::{EffectiveVfs, EffectiveVfsLayerMount};
+    assert!(resolver.content_admission_lease().is_none(), "{label} requires the original VFS");
+    let sources = resolver.active_sources();
+    let roots = resolver.mounted_layer_roots();
+    assert_eq!(sources.len(), roots.len());
+    let mounts = sources.into_iter().zip(roots).map(|(source, (id, root))| {
+        assert_eq!(source.source_id, id);
+        assert!(source.archive_sha256.is_none(), "{label} requires the original archive mount");
+        EffectiveVfsLayerMount {
+            ordinal: source.ordinal as u32,
+            layer_kind: admitted_layer_kind(&source.kind),
+            layer_id: source.source_id,
+            storage_kind: portable_content_manifest::LayerStorageKind::Directory,
+            local_source: root,
+            source_container_sha256: None,
+            replace_paths: source.replace_path,
+        }
+    }).collect::<Vec<_>>();
+    let identity = "ab".repeat(32);
+    let vfs = EffectiveVfs::new(&identity, mounts).unwrap();
+    let namespaces = scopes.iter().map(|scope| vfs.observe_namespace(scope).unwrap().seal(&vfs).unwrap())
+        .collect::<Vec<_>>();
+    let mut keys = BTreeMap::new();
+    for key in paths.iter().map(|path| vfs.resolve_required(path, label).unwrap().content)
+        .chain(namespaces.iter().flat_map(|namespace| namespace.winners().iter().cloned())) {
+        if let Some(previous) = keys.insert(key.normalized_game_relative_path.clone(), key.clone()) {
+            assert_eq!(previous, key, "{label} changed between exact read and namespace observation");
+        }
+    }
+    admit_fixture_content(resolver, label, &identity, keys.into_values().collect(), namespaces, Vec::new())
+}
+
+fn admit_fixture_content(
+    resolver: &GameFileResolver,
+    label: &str,
+    identity: &str,
+    keys: Vec<portable_content_manifest::UsedContentKey>,
+    namespaces: Vec<portable_content_manifest::SealedContentNamespace>,
+    witnessed_absent_content: Vec<String>,
+) -> (GameFileResolver, replay_core::ValidatedContentAdmission) {
+    use replay_core::{
+        ContentManifest, LayerStorageKind, RecordedContentLayer, RequiredContent,
+        SourceGameIdentity, SourceProfileIdentity,
+    };
+    let required_content = keys.iter().enumerate().map(|(index, key)| RequiredContent {
         content_key: format!("{label}-{index}"),
         kind: admitted_content_kind(&key.normalized_game_relative_path),
         content: key.clone(), observation_count: 1, consumers: vec![label.to_string()],
@@ -2917,7 +2963,7 @@ pub(crate) fn admitted_vanilla_resolver_with_absences(
             playset_id: "vanilla".into(),
             selection_sha256: "00".repeat(32),
         },
-        effective_vfs_manifest_sha256,
+        effective_vfs_manifest_sha256: identity.to_string(),
         ordered_layers,
         dlc_selection: Vec::new(),
         localisation_language: "l_english".into(),
@@ -2928,7 +2974,9 @@ pub(crate) fn admitted_vanilla_resolver_with_absences(
         witnessed_absent_content,
         manifest_digest_sha256: None,
     };
-    manifest.bind_observed_namespace(sealed).unwrap();
+    for namespace in namespaces {
+        manifest.bind_observed_namespace(namespace).unwrap();
+    }
     manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
     manifest = manifest.with_computed_digest().unwrap();
     let inventory = resolver
@@ -3026,4 +3074,54 @@ pub(crate) fn overwrite_readonly(path: &Path, bytes: &[u8]) {
     permissions.set_readonly(false);
     fs::set_permissions(path, permissions).unwrap();
     fs::write(path, bytes).unwrap();
+}
+
+#[cfg(test)]
+mod read_set_admission_tests {
+    use super::*;
+
+    #[test]
+    fn exact_files_do_not_grant_directory_or_unrequested_content() {
+        let root = temp_test_dir("exact_fixture_read_set");
+        write_modvfs_fixture(&root, "gfx/fx/selected.shader", b"selected");
+        write_modvfs_fixture(&root, "gfx/fx/unrequested.shader", b"unrequested");
+        let raw = GameFileResolver::vanilla(&root).unwrap();
+        let paths = ["gfx/fx/selected.shader".to_string()].into_iter().collect();
+        let (admitted, admission) = admitted_fixture_read_set(&raw, &paths, &[], "exact-fixture");
+        assert_eq!(admission.required_paths().collect::<Vec<_>>(), vec!["gfx/fx/selected.shader"]);
+        assert_eq!(admitted.read_required_text("gfx/fx/selected.shader", "selected").unwrap(), "selected");
+        assert!(admitted.read_required_text("gfx/fx/unrequested.shader", "unrequested").is_err());
+        let error = admitted.require_complete_admitted_dir("gfx/fx", Some("shader"), false, "shaders").unwrap_err();
+        assert!(error.to_string().contains("content_namespace_unwitnessed"), "{error}");
+        drop((admitted, raw));
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn observed_scope_carries_all_winners_and_does_not_grant_other_scopes() {
+        let root = temp_test_dir("scoped_fixture_read_set");
+        write_modvfs_fixture(&root, "interface/one.gfx", b"one");
+        write_modvfs_fixture(&root, "interface/two.gfx", b"two");
+        write_modvfs_fixture(&root, "interface/extra.gui", b"extra");
+        write_modvfs_fixture(&root, "gfx/fx/selected.shader", b"selected");
+        let raw = GameFileResolver::vanilla(&root).unwrap();
+        let paths = ["gfx/fx/selected.shader".to_string()].into_iter().collect();
+        let scope = portable_content_manifest::ContentNamespaceScope {
+            directory: "interface".into(), extension: Some("gfx".into()), recursive: false,
+        };
+        let (admitted, admission) = admitted_fixture_read_set(&raw, &paths, &[scope], "scoped-fixture");
+        assert_eq!(admission.required_paths().count(), 3);
+        let keys = admitted.require_complete_admitted_dir("interface", Some("gfx"), false, "sprites").unwrap();
+        assert_eq!(keys.iter().map(|key| key.normalized_game_relative_path.as_str()).collect::<Vec<_>>(),
+            vec!["interface/one.gfx", "interface/two.gfx"]);
+        assert_eq!(admitted.read_required_text("interface/two.gfx", "second winner").unwrap(), "two");
+        assert!(admitted.require_complete_admitted_dir("interface", Some("gui"), false, "GUI").is_err());
+        assert!(admitted.read_required_text("interface/extra.gui", "extra").is_err());
+        drop(admitted);
+        let (whole, _) = admitted_vanilla_resolver(&raw, &paths, "whole-fixture");
+        assert_eq!(whole.require_complete_admitted_dir("interface", Some("gui"), false, "GUI").unwrap().len(), 1);
+        assert_eq!(whole.read_required_text("interface/extra.gui", "extra").unwrap(), "extra");
+        drop((whole, raw));
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
 }
