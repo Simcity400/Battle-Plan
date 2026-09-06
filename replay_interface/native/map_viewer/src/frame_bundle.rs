@@ -5219,7 +5219,7 @@ mod tests {
         );
         for loader in ["load_water", "load_rivers", "load_borders", "load_trees"] {
             assert!(
-                cli_arm.contains(&format!("{loader}_with_resolver(path, resolver)")),
+                cli_arm.contains(&format!("{loader}_with_resolver(path, &resolver)")),
                 "the render-production-map-d3d11 arm must use the resolver for the {loader} layer"
             );
         }

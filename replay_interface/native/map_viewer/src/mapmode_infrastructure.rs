@@ -229,7 +229,7 @@ mod tests {
 
     const GRAPHICS_SNIPPET: &str = r#"
 NDefines = {
-	NGraphics = {
+	NMapMode = {
 		MAP_MODE_MANPOWER_RANGE_COLOR_FROM = { 0.2, 0.2, 0.7, 0.18 },
 		MAP_MODE_MANPOWER_RANGE_COLOR_TO = { 1, 0.125, 0.0, 0.6 },
 		MAP_MODE_INFRA_RANGE_COLOR_FROM = { 1, 0.125, 0.0, 0.1 },
@@ -262,6 +262,13 @@ buildings = {
     fn gradient_colors_parse_matches_vanilla_constant() {
         let parsed = crate::test_support::with_define_fixture(GRAPHICS_SNIPPET, infra_gradient_colors_from_resolver).expect("parse colours");
         assert_eq!(parsed, VANILLA_INFRA_GRADIENT_COLORS);
+        let wrong_namespace = GRAPHICS_SNIPPET.replace("NMapMode", "NGraphics");
+        let error = crate::test_support::with_define_fixture(
+            &wrong_namespace, infra_gradient_colors_from_resolver,
+        ).unwrap_err();
+        assert!(error.to_string().contains(
+            "NDefines.NMapMode.MAP_MODE_INFRA_RANGE_COLOR_FROM: namespace is missing"
+        ));
     }
 
     #[test]
