@@ -171,9 +171,11 @@ fn mission_mask(equipment: &map_viewer::authored_equipment::AuthoredEquipmentCat
 
 fn item_icon(icon: &DesignItemIconObservation) -> Result<DesignerRowIcon, String> {
     match icon {
-        DesignItemIconObservation::Measured { kind, token: DesignTextObservation::Measured { value, .. }, .. } => {
+        DesignItemIconObservation::Measured { active: false, kind: 0, .. } => Ok(DesignerRowIcon::Authored),
+        DesignItemIconObservation::Measured { active, kind, token: DesignTextObservation::Measured { value, .. } } => {
             match (*kind, value.as_str()) {
                 (1, ".") => Err("XUI13 authored item-database fallback is not yet bound".into()),
+                (1, _) if !active => Ok(DesignerRowIcon::Authored),
                 (0, value) => Ok(DesignerRowIcon::Sprite(value.into())),
                 (1, value) => Ok(DesignerRowIcon::Texture(value.into())),
                 _ => Err("XUI13 item icon has an invalid kind".into()),
@@ -613,10 +615,50 @@ mod tests {
             for active in [false,true] {
                 let icon=DesignItemIconObservation::Measured { active, kind, token:DesignTextObservation::Measured {
                     value:value.into(),utf8_hex:value.as_bytes().iter().map(|b|format!("{b:02x}")).collect() } };
-                assert_eq!(item_icon(&icon),Ok(expected.clone()));
+                assert_eq!(item_icon(&icon),Ok(if active { expected.clone() } else { DesignerRowIcon::Authored }));
             }
         }
         let sentinel=DesignItemIconObservation::Measured { active:false,kind:1,token:DesignTextObservation::Measured { value:".".into(),utf8_hex:"2e".into() } };
         assert!(item_icon(&sentinel).unwrap_err().contains("item-database"));
     }
+    #[test]
+    fn inactive_override_preserves_actual_authored_pixels_before_active_override_changes_them() {
+        let (root,_) = production_fixture();
+        let mut texture=std::fs::read(root.0.join("gfx/interface/xui13_test.tga")).unwrap();
+        for pixel in texture[18..].chunks_exact_mut(4) { pixel.copy_from_slice(&[0,255,0,255]); }
+        std::fs::write(root.0.join("gfx/interface/xui13_override.tga"),texture).unwrap();
+        let gfx=root.0.join("interface/designer.gfx");
+        let mut definitions=std::fs::read_to_string(&gfx).unwrap();
+        definitions.push_str(r#"spriteTypes = { spriteType = { name = "GFX_xui13_override" texturefile = "gfx/interface/xui13_override.tga" } }"#);
+        std::fs::write(gfx,definitions).unwrap();
+        let renderer=admitted_production_renderer_with_assets(&root.0,None,&["gfx/interface/xui13_override.tga"]);
+        let (mut raw,rest)=owner_prefix_inputs();
+        raw["variants"].as_array_mut().unwrap().truncate(1);
+        let compose=|raw:Value| {
+            let frame=world_from_catalog(raw,rest.clone());
+            renderer.compose_xui13_designer_surface(&frame,frame.named_country("GER").unwrap(),&viewer(),160,120).unwrap()
+        };
+        let baseline=compose(raw.clone());
+        raw["variants"][0]["definition"]["item_icon_override"]=json!({"status":"measured","active":false,"kind":0,
+            "token":{"status":"measured","value":"GFX_xui13_override","utf8_hex":"4746585f78756931335f6f76657272696465"}});
+        let inactive=compose(raw.clone());
+        assert_eq!(inactive.ordered_design_ids,baseline.ordered_design_ids);
+        assert_eq!(inactive.visible_design_ids,["7:70"]);
+        assert!(!inactive.field_refusals.contains_key("7:70/equipment_icon"));
+        assert_eq!(row_element_pixels(&inactive,"equipment"),row_element_pixels(&baseline,"equipment"));
+        raw["variants"][0]["definition"]["item_icon_override"]["active"]=json!(true);
+        let active=compose(raw);
+        assert_ne!(row_element_pixels(&active,"equipment"),row_element_pixels(&inactive,"equipment"));
+        assert_eq!(row_element_pixels(&active,"creator_flag"),row_element_pixels(&inactive,"creator_flag"));
+    }
+
+    #[test]
+    fn inactive_sprite_does_not_need_token_but_texture_must_exclude_sentinel() {
+        let mut value=serde_json::from_value::<DesignItemIconObservation>(json!({"status":"measured","active":false,"kind":0,
+            "token":{"status":"unavailable","reason":{"kind":"unreadable","field":"icon.token"}}})).unwrap();
+        assert_eq!(item_icon(&value),Ok(DesignerRowIcon::Authored));
+        if let DesignItemIconObservation::Measured {kind,..}=&mut value { *kind=1; }
+        assert!(item_icon(&value).is_err());
+    }
+
 }

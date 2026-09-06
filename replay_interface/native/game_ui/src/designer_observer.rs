@@ -467,6 +467,7 @@ impl ObserverDesignerChromeCatalog {
             };
             row_option.text_overrides.insert("name".to_string(), name);
             let icon = match &candidate.icon {
+                Ok(crate::design_catalog::DesignerRowIcon::Authored) => Ok(()),
                 Ok(crate::design_catalog::DesignerRowIcon::Sprite(token)) => {
                     row_option.sprite_name_overrides.insert("equipment".into(), token.clone());
                     Ok(())

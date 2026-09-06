@@ -7,6 +7,7 @@ use crate::designer_observer::authored_inputs::DesignerAuthoredInputs;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DesignerRowIcon {
+    Authored,
     Sprite(String),
     Texture(String),
 }
