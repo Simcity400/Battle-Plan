@@ -7,6 +7,10 @@ pub enum Xmap15ArrowUiCapture {
     Unavailable,
     NoContext,
     Context { keyboard: bool, text_input: bool },
+    ViewerEventRouting {
+        alt_map_owned: [Option<bool>; 2],
+        control_map_owned: [Option<bool>; 2],
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +30,20 @@ impl Xmap15ArrowKeyboard {
                     return Ok((false, false));
                 }
                 return Err(Missing::ViewerKeyboardCapture);
+            },
+            Xmap15ArrowUiCapture::ViewerEventRouting { alt_map_owned, control_map_owned } => {
+                let effective = |pressed: Option<[bool; 2]>, owned: [Option<bool>; 2]| -> Result<bool, Missing> {
+                    let pressed = pressed.ok_or(Missing::ViewerModifiers)?;
+                    let mut result = false;
+                    for side in 0..2 {
+                        if pressed[side] {
+                            result |= owned[side].ok_or(Missing::ViewerKeyboardCapture)?;
+                        }
+                    }
+                    Ok(result)
+                };
+                return Ok((effective(self.alt, alt_map_owned)?,
+                    effective(self.control, control_map_owned)?));
             },
             Xmap15ArrowUiCapture::Context { keyboard, text_input } if keyboard || text_input =>
                 return Ok((false, false)),
@@ -157,4 +175,28 @@ mod tests {
             assert_eq!(input.selected_paradrop(), Err(Missing::SelectedPresentation));
         }
     }
+    #[test]
+    fn viewer_event_routes_suppress_only_the_consumed_modifier_side() {
+        let keyboard = Xmap15ArrowKeyboard {
+            alt: Some([true, true]), control: Some([true, true]),
+            ui: Xmap15ArrowUiCapture::ViewerEventRouting {
+                alt_map_owned: [Some(false), Some(true)],
+                control_map_owned: [Some(true), Some(false)],
+            },
+        };
+        assert_eq!(keyboard.modifiers(), Ok((true, true)));
+        let released = Xmap15ArrowKeyboard { alt: Some([true, false]), control: Some([false, true]), ..keyboard };
+        assert_eq!(released.modifiers(), Ok((false, false)));
+        assert_eq!(Xmap15ArrowKeyboard { alt: None, ..keyboard }.modifiers(), Err(Missing::ViewerModifiers));
+        let unknown = Xmap15ArrowKeyboard {
+            ui: Xmap15ArrowUiCapture::ViewerEventRouting {
+                alt_map_owned: [None; 2], control_map_owned: [None; 2],
+            }, ..keyboard
+        };
+        assert_eq!(unknown.modifiers(), Err(Missing::ViewerKeyboardCapture));
+        assert_eq!(Xmap15ArrowKeyboard { alt: Some([false; 2]), control: Some([false; 2]), ..unknown }
+            .modifiers(), Ok((false, false)));
+        assert_ne!(keyboard.ui, Xmap15ArrowUiCapture::Context { keyboard: false, text_input: false });
+    }
+
 }

@@ -13,7 +13,8 @@ use winapi::um::winuser::{
     GetClientRect, GetFocus, GetKeyboardState, GetKeyState, LoadCursorW, PeekMessageW, PostQuitMessage, RegisterClassW,
     ReleaseCapture, ScreenToClient, SetCapture, SetWindowTextW, TranslateMessage, CS_HREDRAW,
     CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW, MSG, PM_REMOVE, VK_SHIFT,
-    VK_LMENU, VK_RMENU, VK_LCONTROL, VK_RCONTROL, WM_CAPTURECHANGED, WM_DESTROY,
+    VK_MENU, VK_CONTROL, VK_LMENU, VK_RMENU, VK_LCONTROL, VK_RCONTROL, WM_CAPTURECHANGED, WM_DESTROY,
+    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_KILLFOCUS,
     WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
     WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
     WS_VISIBLE,
@@ -44,6 +45,8 @@ pub enum WindowEvent {
     KeyUp {
         vk: i32,
     },
+    ModifierKeyDown { vk: i32, repeated: bool },
+    KeyboardFocusLost,
     MouseMove {
         x: i32,
         y: i32,
@@ -84,6 +87,66 @@ fn lparam_xy(lparam: LPARAM) -> (i32, i32) {
     (x, y)
 }
 
+fn keyboard_event(msg: UINT, vk: i32, lparam: LPARAM, shift: bool) -> Option<WindowEvent> {
+    let right = lparam & (1 << 24) != 0;
+    let modifier = match vk {
+        VK_MENU => Some(if right { VK_RMENU } else { VK_LMENU }),
+        VK_CONTROL => Some(if right { VK_RCONTROL } else { VK_LCONTROL }),
+        VK_LMENU | VK_RMENU | VK_LCONTROL | VK_RCONTROL => Some(vk),
+        _ => None,
+    };
+    match msg {
+        WM_KEYDOWN | WM_SYSKEYDOWN if modifier.is_some() => Some(WindowEvent::ModifierKeyDown {
+            vk: modifier.unwrap(), repeated: lparam & (1 << 30) != 0,
+        }),
+        WM_KEYUP | WM_SYSKEYUP if modifier.is_some() => Some(WindowEvent::KeyUp { vk: modifier.unwrap() }),
+        WM_KEYDOWN => Some(WindowEvent::KeyDown { vk, shift }),
+        WM_KEYUP => Some(WindowEvent::KeyUp { vk }),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewerKeyRoute { MapOwned, UiConsumed }
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ViewerKeyRouting {
+    held: [Option<ViewerKeyRoute>; 4],
+}
+
+impl ViewerKeyRouting {
+    fn modifier_index(vk: i32) -> Option<usize> {
+        [VK_LMENU, VK_RMENU, VK_LCONTROL, VK_RCONTROL].iter().position(|key| *key == vk)
+    }
+
+    pub fn key_down(&mut self, vk: i32, route: ViewerKeyRoute, repeated: bool) {
+        if let Some(index) = Self::modifier_index(vk) {
+            // Autorepeat neither transfers the original press nor proves one lost with focus.
+            if !repeated { self.held[index] = Some(route); }
+        }
+    }
+
+    pub fn key_up(&mut self, vk: i32) {
+        if let Some(index) = Self::modifier_index(vk) { self.held[index] = None; }
+    }
+
+    pub fn focus_lost(&mut self) { self.held = [None; 4]; }
+
+    pub fn rollback(&mut self, checkpoint: Self) {
+        *self = checkpoint;
+        // OS key and focus transitions cannot be rolled back with an undisplayed frame.
+        self.focus_lost();
+    }
+
+    fn project(&self, mut keyboard: map_viewer::Xmap15ArrowKeyboard) -> map_viewer::Xmap15ArrowKeyboard {
+        let owned = self.held.map(|route| route.map(|route| route == ViewerKeyRoute::MapOwned));
+        keyboard.ui = map_viewer::Xmap15ArrowUiCapture::ViewerEventRouting {
+            alt_map_owned: [owned[0], owned[1]], control_map_owned: [owned[2], owned[3]],
+        };
+        keyboard
+    }
+}
+
 unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
     msg: UINT,
@@ -101,16 +164,18 @@ unsafe extern "system" fn wnd_proc(
             push_event(WindowEvent::Resized { width, height });
             0
         }
-        WM_KEYDOWN => {
-            push_event(WindowEvent::KeyDown {
-                vk: wparam as i32,
-                shift: GetKeyState(VK_SHIFT) < 0,
-            });
-            0
+        WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP => {
+            if let Some(event) = keyboard_event(msg, wparam as i32, lparam,
+                GetKeyState(VK_SHIFT) < 0) {
+                push_event(event);
+            }
+            if msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP {
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            } else { 0 }
         }
-        WM_KEYUP => {
-            push_event(WindowEvent::KeyUp { vk: wparam as i32 });
-            0
+        WM_KILLFOCUS => {
+            push_event(WindowEvent::KeyboardFocusLost);
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_MOUSEMOVE => {
             let (x, y) = lparam_xy(lparam);
@@ -265,10 +330,10 @@ impl Window {
         (events, alive)
     }
 
-    pub fn arrow_keyboard(&self) -> map_viewer::Xmap15ArrowKeyboard {
+    pub fn arrow_keyboard(&self, routing: &ViewerKeyRouting) -> map_viewer::Xmap15ArrowKeyboard {
         let mut keys = [0u8; 256];
         let observed = unsafe { GetFocus() == self.hwnd && GetKeyboardState(keys.as_mut_ptr()) != 0 };
-        arrow_keyboard_snapshot(observed.then_some(&keys))
+        routing.project(arrow_keyboard_snapshot(observed.then_some(&keys)))
     }
 
     pub fn set_title(&mut self, title: &str) {
@@ -316,4 +381,94 @@ mod tests {
             assert_eq!(snapshot.ui, map_viewer::Xmap15ArrowUiCapture::Unavailable);
         }
     }
+    #[test]
+    fn native_keyboard_messages_keep_modifier_sides_repeat_and_system_shortcuts_distinct() {
+        for (generic, left, right) in [(VK_MENU, VK_LMENU, VK_RMENU),
+            (VK_CONTROL, VK_LCONTROL, VK_RCONTROL)] {
+            for (extended, physical) in [(0, left), (1 << 24, right)] {
+                for (down, up) in [(WM_KEYDOWN, WM_KEYUP), (WM_SYSKEYDOWN, WM_SYSKEYUP)] {
+                    assert_eq!(keyboard_event(down, generic, extended, false),
+                        Some(WindowEvent::ModifierKeyDown { vk: physical, repeated: false }));
+                    assert_eq!(keyboard_event(down, generic, extended | (1 << 30), false),
+                        Some(WindowEvent::ModifierKeyDown { vk: physical, repeated: true }));
+                    assert_eq!(keyboard_event(up, generic, extended, false),
+                        Some(WindowEvent::KeyUp { vk: physical }));
+                }
+            }
+        }
+        assert_eq!(keyboard_event(WM_SYSKEYDOWN, winapi::um::winuser::VK_F4, 0, false), None);
+        assert_eq!(keyboard_event(WM_SYSKEYUP, winapi::um::winuser::VK_F4, 0, false), None);
+        assert_eq!(keyboard_event(WM_KEYDOWN, winapi::um::winuser::VK_TAB, 0, true),
+            Some(WindowEvent::KeyDown { vk: winapi::um::winuser::VK_TAB, shift: true }));
+    }
+
+    fn routed_key(routing: &mut ViewerKeyRouting, msg: UINT, vk: i32, flags: LPARAM,
+        route: ViewerKeyRoute) {
+        match keyboard_event(msg, vk, flags, false).unwrap() {
+            WindowEvent::ModifierKeyDown { vk, repeated } => routing.key_down(vk, route, repeated),
+            WindowEvent::KeyUp { vk } => routing.key_up(vk),
+            event => panic!("unexpected event: {event:?}"),
+        }
+    }
+
+    fn routed_snapshot(routing: &ViewerKeyRouting, down: &[i32]) -> map_viewer::Xmap15ArrowKeyboard {
+        let mut keys = [0; 256];
+        for vk in down { keys[*vk as usize] = 0x80; }
+        routing.project(arrow_keyboard_snapshot(Some(&keys)))
+    }
+
+    #[test]
+    fn consumed_press_release_and_independent_sides_preserve_actual_routes() {
+        use map_viewer::Xmap15ArrowUiCapture::ViewerEventRouting;
+        let mut routing = ViewerKeyRouting::default();
+        routed_key(&mut routing, WM_KEYDOWN, VK_CONTROL, 0, ViewerKeyRoute::UiConsumed);
+        let consumed_press = routed_snapshot(&routing, &[VK_LCONTROL]);
+        routed_key(&mut routing, WM_KEYDOWN, VK_CONTROL, 1 << 30, ViewerKeyRoute::MapOwned);
+        assert_eq!(routed_snapshot(&routing, &[VK_LCONTROL]), consumed_press);
+        assert_eq!(consumed_press.ui, ViewerEventRouting {
+            alt_map_owned: [None; 2], control_map_owned: [Some(false), None] });
+        routed_key(&mut routing, WM_KEYDOWN, VK_CONTROL, 1 << 24, ViewerKeyRoute::MapOwned);
+        let mixed_press = routed_snapshot(&routing, &[VK_LCONTROL, VK_RCONTROL]);
+        routed_key(&mut routing, WM_KEYDOWN, VK_CONTROL, (1 << 24) | (1 << 30), ViewerKeyRoute::UiConsumed);
+        assert_eq!(routed_snapshot(&routing, &[VK_LCONTROL, VK_RCONTROL]), mixed_press);
+        assert_eq!(routed_snapshot(&routing, &[VK_LCONTROL, VK_RCONTROL]).ui,
+            ViewerEventRouting { alt_map_owned: [None; 2], control_map_owned: [Some(false), Some(true)] });
+        routed_key(&mut routing, WM_KEYUP, VK_CONTROL, 0, ViewerKeyRoute::UiConsumed);
+        let snapshot = routed_snapshot(&routing, &[VK_RCONTROL]);
+        assert_eq!(snapshot.control, Some([false, true]));
+        assert_eq!(snapshot.ui, ViewerEventRouting {
+            alt_map_owned: [None; 2], control_map_owned: [None, Some(true)] });
+        routed_key(&mut routing, WM_KEYUP, VK_CONTROL, 1 << 24, ViewerKeyRoute::MapOwned);
+        assert_eq!(routed_snapshot(&routing, &[]).control, Some([false; 2]));
+        assert_eq!(routing.held, [None; 4]);
+        routed_key(&mut routing, WM_SYSKEYDOWN, VK_MENU, 0, ViewerKeyRoute::MapOwned);
+        routed_key(&mut routing, WM_SYSKEYDOWN, VK_MENU, 1 << 24, ViewerKeyRoute::UiConsumed);
+        assert_eq!(routed_snapshot(&routing, &[VK_LMENU, VK_RMENU]).ui,
+            ViewerEventRouting { alt_map_owned: [Some(true), Some(false)], control_map_owned: [None; 2] });
+    }
+
+    #[test]
+    fn focus_reacquisition_and_frame_rollback_cannot_reuse_a_held_press_witness() {
+        let mut routing = ViewerKeyRouting::default();
+        routed_key(&mut routing, WM_SYSKEYDOWN, VK_MENU, 0, ViewerKeyRoute::MapOwned);
+        let checkpoint = routing.clone();
+        routing.focus_lost();
+        assert_eq!(routing.project(arrow_keyboard_snapshot(None)).alt, None);
+        routed_key(&mut routing, WM_SYSKEYDOWN, VK_MENU, 1 << 30, ViewerKeyRoute::MapOwned);
+        assert_eq!(routing.held, [None; 4]);
+        assert_eq!(routed_snapshot(&routing, &[VK_LMENU]).alt, Some([true, false]));
+        routing.rollback(checkpoint);
+        assert_eq!(routing.held, [None; 4]);
+        routed_key(&mut routing, WM_SYSKEYDOWN, VK_MENU, 1 << 30, ViewerKeyRoute::MapOwned);
+        assert_eq!(routing.held, [None; 4]);
+        routed_key(&mut routing, WM_SYSKEYUP, VK_MENU, 0, ViewerKeyRoute::MapOwned);
+        routed_key(&mut routing, WM_SYSKEYDOWN, VK_MENU, 0, ViewerKeyRoute::MapOwned);
+        assert_eq!(routing.held[0], Some(ViewerKeyRoute::MapOwned));
+        let checkpoint = routing.clone();
+        routed_key(&mut routing, WM_SYSKEYUP, VK_MENU, 0, ViewerKeyRoute::MapOwned);
+        routing.rollback(checkpoint);
+        assert_eq!(routing.held, [None; 4]);
+        assert_eq!(routed_snapshot(&routing, &[]).alt, Some([false; 2]));
+    }
+
 }
