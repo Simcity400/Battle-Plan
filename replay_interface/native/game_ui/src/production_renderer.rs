@@ -6341,7 +6341,7 @@ impl ProductionUiRenderer {
                             surface: "XUI13/designer",
                             field: "designer_candidate_authority",
                             required_domain:
-                                "extractor.a27.live_heap_catalog.a729.v3 complete all-country designer candidate carrier",
+                                "extractor.a27.native_designer_catalog.a729.v5 complete all-country designer candidate carrier",
                             reason: format!(
                                 "XUI13 strict designer authority is unavailable: {error:?}"
                             ),

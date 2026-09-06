@@ -43,6 +43,7 @@ fn catalog() -> Vec<u8> {
         "countries": [{"registry_index": 0, "tag": "GER"}],
         "division_templates": [{
             "catalog_scan_ordinal": 0, "country_vector_ordinal": 0,
+                "country_source_occurrences": [{"source_country_tag":"GER","source_country_registry_index":0,"country_vector_ordinal":0}],
             "definition": {
                 "name": "Infantry", "name_utf8_hex": "496e66616e747279",
                 "regiment_grid_columns": 5, "regiment_grid_rows": 5,
@@ -66,12 +67,14 @@ fn catalog() -> Vec<u8> {
                     "archetype_token": "light_tank_chassis_1",
                     "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
                     "cached_stats": [], "cached_stats_complete": true,
+                    "explicit_entity": {"status":"measured","value":"","utf8_hex":""},
                     "display_name": "Seven", "display_name_utf8_hex": "536576656e",
                     "equipment_token_raw": 71, "modules": [], "modules_complete": true,
                     "upgrades": [], "upgrades_complete": true, "variant_name": null,
                     "variant_name_utf8_hex": ""
                 },
                 "definition_complete": true, "first_ui_discovery_ordinal": null,
+                "developed_source_occurrences": [],
                 "id": 7, "obsolete": false, "origin_override_tag": null,
                 "owner_tag": "GER", "selected_country_tag": "GER",
                 "source_occurrences": [], "type": 70
@@ -82,12 +85,14 @@ fn catalog() -> Vec<u8> {
                     "archetype_token": "light_tank_chassis_1",
                     "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
                     "cached_stats": [], "cached_stats_complete": true,
+                    "explicit_entity": {"status":"measured","value":"","utf8_hex":""},
                     "display_name": "Fifty Five", "display_name_utf8_hex": "46696674792046697665",
                     "equipment_token_raw": 71, "modules": [], "modules_complete": true,
                     "upgrades": [], "upgrades_complete": true, "variant_name": null,
                     "variant_name_utf8_hex": ""
                 },
                 "definition_complete": true, "first_ui_discovery_ordinal": null,
+                "developed_source_occurrences": [],
                 "id": 55, "obsolete": true, "origin_override_tag": null,
                 "owner_tag": "GER", "selected_country_tag": "GER",
                 "source_occurrences": [], "type": 70

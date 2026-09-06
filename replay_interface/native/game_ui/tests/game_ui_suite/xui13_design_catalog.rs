@@ -255,6 +255,7 @@ fn observer_catalogue_bytes() -> Vec<u8> {
         "division_templates": [{
             "catalog_scan_ordinal": 0,
             "country_vector_ordinal": 0,
+                "country_source_occurrences": [{"source_country_tag":"GER","source_country_registry_index":0,"country_vector_ordinal":0}],
             "definition": {
                 "name": "Infantry",
                 "name_utf8_hex": "496e66616e747279",
@@ -291,6 +292,7 @@ fn observer_catalogue_bytes() -> Vec<u8> {
                     "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
                     "cached_stats": [],
                     "cached_stats_complete": true,
+                    "explicit_entity": {"status":"measured","value":"","utf8_hex":""},
                     "display_name": "Seven",
                     "display_name_utf8_hex": "536576656e",
                     "equipment_token_raw": 71,
@@ -302,6 +304,7 @@ fn observer_catalogue_bytes() -> Vec<u8> {
                     "variant_name_utf8_hex": ""
                 },
                 "definition_complete": true,
+                "developed_source_occurrences": [],
                 "first_ui_discovery_ordinal": null,
                 "id": 7,
                 "obsolete": false,
@@ -319,6 +322,7 @@ fn observer_catalogue_bytes() -> Vec<u8> {
                     "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
                     "cached_stats": [],
                     "cached_stats_complete": true,
+                    "explicit_entity": {"status":"measured","value":"","utf8_hex":""},
                     "display_name": "Fifty Five",
                     "display_name_utf8_hex": "46696674792046697665",
                     "equipment_token_raw": 71,
@@ -330,6 +334,7 @@ fn observer_catalogue_bytes() -> Vec<u8> {
                     "variant_name_utf8_hex": ""
                 },
                 "definition_complete": true,
+                "developed_source_occurrences": [],
                 "first_ui_discovery_ordinal": null,
                 "id": 55,
                 "obsolete": true,

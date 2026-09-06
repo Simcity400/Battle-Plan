@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const A27_LIVE_CATALOG_SCHEMA: &str = "extractor.a27.live_heap_catalog.a729.v2";
-pub const A27_LIVE_CATALOG_DESIGNER_SCHEMA: &str = "extractor.a27.live_heap_catalog.a729.v3";
+pub const A27_LIVE_CATALOG_SCHEMA: &str = "extractor.a27.native_catalog.a729.v4";
+pub const A27_LIVE_CATALOG_DESIGNER_SCHEMA: &str = "extractor.a27.native_designer_catalog.a729.v5";
 pub const A27_LIVE_CATALOG_TIMELINE_SCHEMA: &str =
-    "extractor.a27.live_heap_catalog_timeline.a729.v1";
-pub const PORTABLE_DESIGN_CATALOG_SCHEMA: &str = "hoi4.portable-design-catalog.v3";
+    "extractor.a27.live_heap_catalog_timeline.a729.v2";
+pub const PORTABLE_DESIGN_CATALOG_SCHEMA: &str = "hoi4.portable-design-catalog.v4";
 pub const PORTABLE_ARTIFACT_PATH: &str = "static/design_catalog_live/a27_live_catalog.json";
 const DATE_EPOCH_RAW: u64 = 43_799_999;
 const EXACT_A729_PROGRAM: &str = "hoi4.exe 1.19.2.0.a729";
@@ -38,6 +38,37 @@ pub enum DesignLifecycleState {
     Active,
     Obsolete,
     Deleted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DesignTextObservation {
+    Measured { value: String, utf8_hex: String },
+    Unavailable { reason: DesignFieldRefusal },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesignFieldRefusal {
+    pub kind: String,
+    pub field: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignSourceOccurrence {
+    pub source_country_tag: String,
+    pub source_country_registry_index: u64,
+    pub source_list: String,
+    pub source_list_ordinal: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VariantModelInputs {
+    pub creator_tag: String,
+    pub origin_override_tag: Option<String>,
+    pub explicit_entity: DesignTextObservation,
+    pub owned: Vec<DesignSourceOccurrence>,
+    pub developed: Vec<DesignSourceOccurrence>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +143,22 @@ pub struct DisplayOrderSnapshot {
     pub ordered_design_ids: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesignCatalogGapCause {
+    Unreadable, InvalidRoot, InvalidIdentity, InvalidString, InvalidVector,
+    RegistryCountMismatch, Torn, HourLabelMismatch, BoundExceeded, NotObserved,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesignCatalogGap {
+    pub first_hour_index: u64,
+    pub last_hour_index: u64,
+    pub cause: DesignCatalogGapCause,
+    pub witness: Value,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PortableDesignCatalog {
     pub schema: String,
@@ -120,6 +167,7 @@ pub struct PortableDesignCatalog {
     pub capture_hour_index: u64,
     pub exact_native_catalog: Value,
     pub temporal_deltas: Vec<PortableDesignCatalogDelta>,
+    pub gaps: Vec<DesignCatalogGap>,
     pub records: Vec<DesignRecord>,
 }
 
@@ -214,6 +262,16 @@ impl PortableDesignCatalog {
             {
                 return Err("portable A27 catalog source schema mismatch".into());
             }
+            if artifact.exact_native_catalog.is_null() {
+                let catalog = Self {
+                    schema: artifact.source_schema, source_record_id: artifact.source_record_id,
+                    source_sha256: artifact.source_sha256, capture_hour_index: artifact.capture_hour_index,
+                    exact_native_catalog: Value::Null, temporal_deltas: artifact.temporal_deltas,
+                    gaps: artifact.gaps, records: artifact.records,
+                };
+                catalog.validate_portable()?;
+                return Ok(catalog);
+            }
             if artifact
                 .exact_native_catalog
                 .get("schema")
@@ -231,6 +289,7 @@ impl PortableDesignCatalog {
             catalog.capture_hour_index = artifact.capture_hour_index;
             catalog.exact_native_catalog = artifact.exact_native_catalog;
             catalog.temporal_deltas = artifact.temporal_deltas;
+            catalog.gaps = artifact.gaps;
             rebase_record_ids(&mut catalog.records, &catalog.source_record_id);
             if artifact.records != catalog.records {
                 return Err("portable A27 UI projection diverges from native authority".into());
@@ -252,7 +311,6 @@ impl PortableDesignCatalog {
             || !raw.completeness.definitions
             || !raw.completeness.lifecycle
             || !raw.completeness.membership
-            || !raw.completeness.owner
             || !raw.completeness.ui_occurrences
         {
             return Err("A27 live catalog is not a complete full replacement".into());
@@ -275,7 +333,6 @@ impl PortableDesignCatalog {
             if row.catalog_scan_ordinal != ordinal as u64
                 || row.runtime_type != 52
                 || !row.definition_complete
-                || row.owner_tag.trim().is_empty()
             {
                 return Err(format!(
                     "A27 division template ordinal {ordinal} has incomplete/wrong-typed identity"
@@ -290,7 +347,7 @@ impl PortableDesignCatalog {
                 design_id,
                 source_record_id: record_id,
                 kind: DesignKind::DivisionTemplate,
-                owner: Some(row.owner_tag),
+                owner: row.owner_tag.clone(),
                 name: row.definition.name.filter(|name| !name.trim().is_empty()),
                 archetype: None,
                 lifecycle_state: Some(if row.obsolete {
@@ -302,7 +359,7 @@ impl PortableDesignCatalog {
                 stats: Vec::new(),
                 upgrades: Vec::new(),
                 definition_completeness: FieldCompleteness::Complete,
-                owner_completeness: FieldCompleteness::Complete,
+                owner_completeness: if row.owner_tag.is_some() { FieldCompleteness::Complete } else { FieldCompleteness::Unknown },
                 lifecycle_completeness: FieldCompleteness::Complete,
                 module_completeness: FieldCompleteness::NotApplicable,
                 stat_completeness: FieldCompleteness::NotApplicable,
@@ -430,6 +487,7 @@ impl PortableDesignCatalog {
             capture_hour_index,
             exact_native_catalog,
             temporal_deltas: Vec::new(),
+            gaps: Vec::new(),
             records,
         })
     }
@@ -438,7 +496,7 @@ impl PortableDesignCatalog {
         let authority = value
             .get("authority")
             .and_then(Value::as_object)
-            .ok_or_else(|| "A27 timeline authority is missing".to_string())?;
+            .ok_or("A27 timeline authority is missing")?;
         if authority.get("program").and_then(Value::as_str) != Some(EXACT_A729_PROGRAM)
             || authority.get("program_sha256").and_then(Value::as_str) != Some(EXACT_A729_SHA256)
             || value.get("complete_sequence").and_then(Value::as_bool) != Some(true)
@@ -448,123 +506,219 @@ impl PortableDesignCatalog {
         {
             return Err("A27 timeline has unauthenticated/incomplete authority".into());
         }
-        let captures = value
+        let entries = value
             .get("captures")
             .and_then(Value::as_array)
-            .filter(|captures| !captures.is_empty())
-            .ok_or_else(|| "A27 timeline contains no complete captures".to_string())?;
-        if value.get("capture_count").and_then(Value::as_u64) != Some(captures.len() as u64)
-            || value
-                .get("first_capture_hour_index")
-                .and_then(Value::as_u64)
-                != captures
-                    .first()
-                    .and_then(|capture| capture.get("capture_hour_index"))
-                    .and_then(Value::as_u64)
-            || value.get("last_capture_hour_index").and_then(Value::as_u64)
-                != captures
-                    .last()
-                    .and_then(|capture| capture.get("capture_hour_index"))
-                    .and_then(Value::as_u64)
-        {
-            return Err("A27 timeline summary disagrees with its capture sequence".into());
+            .filter(|entries| !entries.is_empty())
+            .ok_or("A27 timeline has no outcomes")?;
+        if value["capture_count"].as_u64() != Some(entries.len() as u64) {
+            return Err("A27 timeline outcome count disagrees with sequence".into());
         }
-        let total_rechecks = captures.iter().try_fold(0_u64, |total, capture| {
-            capture
-                .get("same_hour_rechecks")
-                .and_then(Value::as_u64)
-                .and_then(|count| total.checked_add(count))
-        });
-        if value.get("same_hour_recheck_count").and_then(Value::as_u64) != total_rechecks {
-            return Err("A27 timeline recheck summary disagrees with its captures".into());
-        }
-        let decode_snapshot = |sequence: usize,
-                               capture: &Value,
-                               snapshot: &Value|
-         -> Result<Self, String> {
-            if capture.get("sequence").and_then(Value::as_u64) != Some(sequence as u64) {
+        let first = value["first_capture_hour_index"]
+            .as_u64()
+            .ok_or("A27 timeline first hour missing")?;
+        let last = value["last_capture_hour_index"]
+            .as_u64()
+            .ok_or("A27 timeline last hour missing")?;
+        let mut expected = Some(first);
+        let mut baseline: Option<Self> = None;
+        let mut previous: Option<Self> = None;
+        let mut previous_snapshot: Option<Value> = None;
+        let mut gaps = Vec::new();
+        let mut rechecks = 0u64;
+        let mut after_gap = false;
+        for (sequence, entry) in entries.iter().enumerate() {
+            if entry["sequence"].as_u64() != Some(sequence as u64) {
                 return Err(format!(
                     "A27 timeline capture {sequence} has a sequence gap"
                 ));
             }
-            if capture.get("same_hour_rechecks").and_then(Value::as_u64) == Some(0)
-                || capture
-                    .get("same_hour_rechecks")
-                    .and_then(Value::as_u64)
-                    .is_none()
-            {
-                return Err(format!(
-                    "A27 timeline capture {sequence} lacks a same-hour mutation recheck"
-                ));
+            if let Some(gap) = entry.get("gap") {
+                if entry.get("snapshot").is_some()
+                    || entry.get("delta").is_some()
+                    || entry.get("snapshot_sha256").is_some()
+                    || entry.get("same_hour_rechecks").is_some()
+                {
+                    return Err("A27 gap also claims a measurement".into());
+                }
+                let gap: DesignCatalogGap = serde_json::from_value(gap.clone())
+                    .map_err(|error| format!("A27 typed gap: {error}"))?;
+                if Some(gap.first_hour_index) != expected
+                    || gap.first_hour_index > gap.last_hour_index
+                    || gap.last_hour_index > last
+                    || gap
+                        .witness
+                        .as_object()
+                        .is_none_or(|witness| witness.is_empty())
+                    || entry["capture_hour_index"].as_u64() != Some(gap.first_hour_index)
+                {
+                    return Err("A27 gap range/witness disagrees with sequence".into());
+                }
+                expected = gap.last_hour_index.checked_add(1);
+                gaps.push(gap);
+                after_gap = true;
+                continue;
             }
-            let snapshot_bytes = serde_json::to_vec(&canonical_json_value(snapshot))
-                .map_err(|error| format!("serialize A27 timeline capture {sequence}: {error}"))?;
-            let snapshot_sha256 = Sha256::hex(&snapshot_bytes);
-            if capture.get("snapshot_sha256").and_then(Value::as_str)
-                != Some(snapshot_sha256.as_str())
-            {
-                return Err(format!("A27 timeline capture {sequence} hash mismatch"));
-            }
-            let recheck_hashes = capture
-                .get("same_hour_recheck_sha256")
-                .and_then(Value::as_array)
-                .ok_or_else(|| format!("A27 timeline capture {sequence} lacks recheck hashes"))?;
-            if capture.get("same_hour_rechecks").and_then(Value::as_u64)
-                != Some(recheck_hashes.len() as u64)
-                || recheck_hashes
+            let full = previous_snapshot.is_none() || after_gap;
+            let snapshot = if full {
+                if entry.get("delta").is_some() {
+                    return Err("A27 gap recovery requires a complete baseline".into());
+                }
+                entry
+                    .get("snapshot")
+                    .cloned()
+                    .ok_or("A27 timeline baseline has no full snapshot")?
+            } else {
+                if entry.get("snapshot").is_some() {
+                    return Err("A27 timeline repeats a full snapshot without a gap".into());
+                }
+                apply_a27_row_delta(
+                    previous_snapshot.as_ref().unwrap(),
+                    entry.get("delta").ok_or("A27 timeline delta missing")?,
+                )?
+            };
+            let bytes = serde_json::to_vec(&canonical_json_value(&snapshot))
+                .map_err(|error| error.to_string())?;
+            let hash = Sha256::hex(&bytes);
+            let checks = entry["same_hour_rechecks"]
+                .as_u64()
+                .filter(|count| *count > 0)
+                .ok_or("A27 timeline lacks a same-hour mutation recheck")?;
+            let hashes = entry["same_hour_recheck_sha256"]
+                .as_array()
+                .ok_or("A27 timeline lacks recheck hashes")?;
+            if entry["snapshot_sha256"].as_str() != Some(hash.as_str())
+                || hashes.len() as u64 != checks
+                || hashes
                     .iter()
-                    .any(|hash| hash.as_str() != Some(snapshot_sha256.as_str()))
+                    .any(|witness| witness.as_str() != Some(hash.as_str()))
             {
                 return Err(format!(
-                    "A27 timeline capture {sequence} recheck hashes disagree"
+                    "A27 timeline capture {sequence} hash/recheck mismatch"
                 ));
             }
-            let catalog = Self::decode_a27_live_json(&snapshot_bytes)?;
-            if capture.get("capture_hour_index").and_then(Value::as_u64)
-                != Some(catalog.capture_hour_index)
+            rechecks = rechecks
+                .checked_add(checks)
+                .ok_or("A27 recheck count overflow")?;
+            let current = Self::decode_a27_live_json(&bytes)?;
+            if Some(current.capture_hour_index) != expected
+                || current.capture_hour_index > last
+                || entry["capture_hour_index"].as_u64() != Some(current.capture_hour_index)
             {
-                return Err(format!("A27 timeline capture {sequence} hour mismatch"));
+                return Err("A27 timeline census is not the next game hour".into());
             }
-            Ok(catalog)
+            expected = current.capture_hour_index.checked_add(1);
+            if let Some(baseline) = baseline.as_mut() {
+                let mut delta = build_temporal_delta(
+                    baseline.temporal_deltas.len() as u64 + 1,
+                    previous.as_ref().unwrap(),
+                    &current,
+                )?;
+                if after_gap {
+                    delta.variant_upserts = current.exact_native_catalog["variants"]
+                        .as_array()
+                        .unwrap()
+                        .clone();
+                    delta.template_upserts = current.exact_native_catalog["division_templates"]
+                        .as_array()
+                        .unwrap()
+                        .clone();
+                    delta.record_upserts = current.records.clone();
+                }
+                baseline.temporal_deltas.push(delta);
+            } else {
+                baseline = Some(current.clone());
+            }
+            previous = Some(current);
+            previous_snapshot = Some(snapshot);
+            after_gap = false;
+        }
+        if expected != last.checked_add(1)
+            || value["same_hour_recheck_count"].as_u64() != Some(rechecks)
+        {
+            return Err("A27 timeline terminal/recheck summary disagrees with outcomes".into());
+        }
+        let mut catalog = match baseline {
+            Some(catalog) => catalog,
+            None => {
+                let bytes = serde_json::to_vec(&canonical_json_value(&value))
+                    .map_err(|error| error.to_string())?;
+                let hash = Sha256::hex(&bytes);
+                Self {
+                    schema: A27_LIVE_CATALOG_SCHEMA.into(),
+                    source_record_id: format!("a27-live-catalog:{hash}"),
+                    source_sha256: hash,
+                    capture_hour_index: first,
+                    exact_native_catalog: Value::Null,
+                    temporal_deltas: Vec::new(),
+                    gaps: Vec::new(),
+                    records: Vec::new(),
+                }
+            }
         };
-        let mut previous_snapshot = captures[0]
-            .get("snapshot")
-            .cloned()
-            .ok_or_else(|| "A27 timeline baseline has no full snapshot".to_string())?;
-        if captures[0].get("delta").is_some() {
-            return Err("A27 timeline baseline cannot be a delta".into());
+        catalog.gaps = gaps;
+        catalog.validate_portable()?;
+        if catalog.coverage_range()? != (first, last) {
+            return Err("A27 timeline coverage summary mismatch".into());
         }
-        let mut baseline = decode_snapshot(0, &captures[0], &previous_snapshot)?;
-        let mut previous = baseline.clone();
-        for (sequence, capture) in captures.iter().enumerate().skip(1) {
-            if capture.get("snapshot").is_some() {
-                return Err(format!(
-                    "A27 timeline capture {sequence} repeats a full snapshot"
-                ));
-            }
-            let delta = capture
-                .get("delta")
-                .ok_or_else(|| format!("A27 timeline capture {sequence} has no delta"))?;
-            let current_snapshot = apply_raw_timeline_delta(&previous_snapshot, delta)?;
-            let current = decode_snapshot(sequence, capture, &current_snapshot)?;
-            if current.capture_hour_index != previous.capture_hour_index.saturating_add(1) {
-                return Err(format!(
-                    "A27 timeline capture {sequence} is not the next game hour"
-                ));
-            }
-            baseline.temporal_deltas.push(build_temporal_delta(
-                sequence as u64,
-                &previous,
-                &current,
-            )?);
-            previous = current;
-            previous_snapshot = current_snapshot;
+        Ok(catalog)
+    }
+
+    fn refuse_gap(&self, hour: u64) -> Result<(), String> {
+        if let Some(gap) = self
+            .gaps
+            .iter()
+            .find(|gap| (gap.first_hour_index..=gap.last_hour_index).contains(&hour))
+        {
+            return Err(format!(
+                "A27 catalog gap at hour {hour}: {:?}; witness {}",
+                gap.cause, gap.witness
+            ));
         }
-        baseline.validate_portable()?;
-        Ok(baseline)
+        Ok(())
+    }
+
+    pub fn coverage_range(&self) -> Result<(u64, u64), String> {
+        let mut spans = Vec::new();
+        if !self.exact_native_catalog.is_null() {
+            spans.push((self.capture_hour_index, self.capture_hour_index));
+            spans.extend(
+                self.temporal_deltas
+                    .iter()
+                    .map(|delta| (delta.capture_hour_index, delta.capture_hour_index)),
+            );
+        }
+        let mut previous_gap = None;
+        for gap in &self.gaps {
+            if gap.first_hour_index > gap.last_hour_index
+                || previous_gap.is_some_and(|last| gap.first_hour_index <= last)
+                || gap
+                    .witness
+                    .as_object()
+                    .is_none_or(|witness| witness.is_empty())
+            {
+                return Err("A27 gap range/order/witness is invalid".into());
+            }
+            previous_gap = Some(gap.last_hour_index);
+            spans.push((gap.first_hour_index, gap.last_hour_index));
+        }
+        spans.sort_unstable();
+        let first = spans
+            .first()
+            .ok_or("A27 catalog has no measured or gap hours")?
+            .0;
+        let mut last = spans[0].1;
+        for &(start, end) in spans.iter().skip(1) {
+            if last.checked_add(1) != Some(start) {
+                return Err("A27 catalog overlaps or omits an hour".into());
+            }
+            last = end;
+        }
+        Ok((first, last))
     }
 
     pub fn records_at_hour(&self, hour: u64) -> Result<Vec<DesignRecord>, String> {
+        self.refuse_gap(hour)?;
         if hour == self.capture_hour_index {
             return Ok(self.records.clone());
         }
@@ -613,6 +767,7 @@ impl PortableDesignCatalog {
     }
 
     fn exact_native_at_hour(&self, hour: u64) -> Result<Value, String> {
+        self.refuse_gap(hour)?;
         if hour == self.capture_hour_index {
             return Ok(self.exact_native_catalog.clone());
         }
@@ -949,10 +1104,44 @@ impl PortableDesignCatalog {
         })
     }
 
+    pub fn native_row_delta_from(&self, previous: &Self) -> Result<Value, String> {
+        let delta = build_temporal_delta(1, previous, self)?;
+        Ok(serde_json::json!({
+            "frame_metadata": delta.native_frame_metadata,
+            "variant_upserts": delta.variant_upserts,
+            "variant_tombstones": delta.variant_tombstones,
+            "template_upserts": delta.template_upserts,
+            "template_tombstones": delta.template_tombstones,
+            "ordered_design_ids": delta.ordered_design_ids,
+        }))
+    }
+
+    pub fn variant_model_inputs_at_hour(
+        &self,
+        hour: u64,
+        variant_id: u32,
+    ) -> Result<VariantModelInputs, String> {
+        let exact = self.exact_native_at_hour(hour)?;
+        let raw: RawCatalog = serde_json::from_value(exact)
+            .map_err(|error| format!("A27 variant model inputs: {error}"))?;
+        validate_raw_catalog(&raw)?;
+        let row = raw.variants.into_iter().find(|row| row.id == variant_id)
+            .ok_or_else(|| format!("A27 variant {variant_id} is absent at hour {hour}"))?;
+        Ok(VariantModelInputs {
+            creator_tag: row.creator_tag,
+            origin_override_tag: row.origin_override_tag,
+            explicit_entity: row.definition.explicit_entity,
+            owned: row.source_occurrences.into_iter()
+                .filter(|occurrence| occurrence.source_list == "A").collect(),
+            developed: row.developed_source_occurrences,
+        })
+    }
+
     pub fn division_composition_at_hour(
         &self,
         hour: u64,
     ) -> Result<BTreeMap<String, DivisionComposition>, String> {
+        self.refuse_gap(hour)?;
         let mut rows = exact_rows(self, "division_templates")?;
         if hour == self.capture_hour_index {
             return project_division_compositions(rows);
@@ -987,22 +1176,11 @@ impl PortableDesignCatalog {
             .copied()
             .and_then(|hour| u64::try_from(hour).ok())
             .ok_or_else(|| "A27 replay hour index is empty/negative".to_string())?;
-        let catalog_last = self
-            .temporal_deltas
-            .last()
-            .map(|delta| delta.capture_hour_index)
-            .unwrap_or(self.capture_hour_index);
-        if first != self.capture_hour_index
-            || last != catalog_last
-            || hours.len() != self.temporal_deltas.len().saturating_add(1)
-            || hours
-                .windows(2)
-                .any(|pair| pair[1] != pair[0].saturating_add(1))
-        {
-            return Err(format!(
-                "A27 catalog hours {}..{} do not exactly cover replay hours {first}..{last}",
-                self.capture_hour_index, catalog_last
-            ));
+        let (catalog_first,catalog_last)=self.coverage_range()?;
+        if first!=catalog_first || last!=catalog_last
+            || hours.len() as u64!=last.checked_sub(first).and_then(|span|span.checked_add(1)).ok_or("A27 replay hour span overflow")?
+            || hours.windows(2).any(|pair|pair[0].checked_add(1)!=Some(pair[1])) {
+            return Err(format!("A27 catalog hours {catalog_first}..{catalog_last} do not exactly cover replay hours {first}..{last}"));
         }
         Ok(())
     }
@@ -1017,6 +1195,7 @@ impl PortableDesignCatalog {
             capture_hour_index: self.capture_hour_index,
             exact_native_catalog: self.exact_native_catalog.clone(),
             temporal_deltas: self.temporal_deltas.clone(),
+            gaps: self.gaps.clone(),
             records: self.records.clone(),
         })
         .map_err(|error| format!("serialize portable A27 catalog: {error}"))
@@ -1034,16 +1213,27 @@ impl PortableDesignCatalog {
         {
             return Err("portable A27 catalog source identity is invalid".into());
         }
+        let coverage=self.coverage_range()?;
+        if self.exact_native_catalog.is_null() {
+            if !self.records.is_empty() || !self.temporal_deltas.is_empty() || self.gaps.is_empty()
+                || self.capture_hour_index!=coverage.0 {
+                return Err("A27 unavailable baseline also claims measured state".into());
+            }
+            return Ok(());
+        }
         validate_exact_native_catalog(&self.exact_native_catalog, self.capture_hour_index)?;
         let mut ids = BTreeSet::new();
         for record in &self.records {
-            if record.design_id.trim().is_empty()
+            let owner_valid = match (&record.owner, record.owner_completeness) {
+                (Some(owner), FieldCompleteness::Complete) => !owner.is_empty(),
+                (None, FieldCompleteness::Unknown) => record.kind == DesignKind::DivisionTemplate,
+                _ => false,
+            };
+            if !owner_valid || record.design_id.trim().is_empty()
                 || record.source_record_id.trim().is_empty()
                 || !ids.insert(record.design_id.as_str())
                 || record.definition_completeness != FieldCompleteness::Complete
-                || record.owner_completeness != FieldCompleteness::Complete
                 || record.lifecycle_completeness != FieldCompleteness::Complete
-                || record.owner.as_deref().is_none_or(str::is_empty)
                 || record.lifecycle_state.is_none()
             {
                 return Err("portable A27 catalog contains an incomplete/duplicate record".into());
@@ -1101,7 +1291,7 @@ fn strip_relocation_fields(value: &mut Value) {
     }
 }
 
-fn canonical_json_value(value: &Value) -> Value {
+pub fn canonical_json_value(value: &Value) -> Value {
     match value {
         Value::Object(object) => {
             let mut keys = object.keys().collect::<Vec<_>>();
@@ -1117,7 +1307,7 @@ fn canonical_json_value(value: &Value) -> Value {
     }
 }
 
-fn apply_raw_timeline_delta(previous: &Value, delta: &Value) -> Result<Value, String> {
+pub fn apply_a27_row_delta(previous: &Value, delta: &Value) -> Result<Value, String> {
     let mut rows = BTreeMap::new();
     for key in ["division_templates", "variants"] {
         for row in previous
@@ -1476,7 +1666,6 @@ fn validate_exact_native_catalog(value: &Value, capture_hour_index: u64) -> Resu
         || !raw.completeness.definitions
         || !raw.completeness.lifecycle
         || !raw.completeness.membership
-        || !raw.completeness.owner
         || !raw.completeness.ui_occurrences
     {
         return Err("portable A27 native authority is incomplete".into());
@@ -1541,7 +1730,7 @@ fn validate_temporal_deltas(catalog: &PortableDesignCatalog) -> Result<(), Strin
     let mut previous_hour = catalog.capture_hour_index;
     for (offset, delta) in catalog.temporal_deltas.iter().enumerate() {
         if delta.sequence != (offset + 1) as u64
-            || delta.capture_hour_index != previous_hour.saturating_add(1)
+            || delta.capture_hour_index <= previous_hour
             || delta.source_record_id != format!("a27-live-catalog:{}", delta.source_sha256)
             || delta.source_sha256.len() != 64
             || !delta
@@ -1591,6 +1780,10 @@ fn validate_temporal_deltas(catalog: &PortableDesignCatalog) -> Result<(), Strin
                     delta.sequence
                 ));
             }
+        }
+        if previous_hour.checked_add(1)!=Some(delta.capture_hour_index)
+            && upsert_ids != delta.ordered_design_ids.iter().cloned().collect::<BTreeSet<_>>() {
+            return Err("A27 gap recovery delta omits complete baseline definitions".into());
         }
         let mut tombstones = BTreeSet::new();
         for id in delta
@@ -1756,6 +1949,7 @@ fn validate_raw_catalog(raw: &RawCatalog) -> Result<(), String> {
         return Err("A27 live catalog lacks a whole-sweep seal/country census".into());
     }
     let mut country_tags = BTreeSet::new();
+    let mut developed_slots = BTreeSet::new();
     let mut designer_pointer_ordinals = BTreeSet::new();
     for (ordinal, country) in raw.countries.iter().enumerate() {
         if country.registry_index != ordinal as u64
@@ -1837,13 +2031,30 @@ fn validate_raw_catalog(raw: &RawCatalog) -> Result<(), String> {
     } else if !raw.designer_controller_contexts.is_empty() {
         return Err("legacy A27 schema contains unversioned designer contexts".into());
     }
+    if raw.completeness.owner != raw.division_templates.iter().all(|row|row.owner_tag.is_some()) {
+        return Err("A27 owner completeness disagrees with measured template membership".into());
+    }
+    let mut template_slots = BTreeSet::new();
     for row in &raw.division_templates {
-        let country = raw
-            .countries
-            .get(row.source_country_registry_index as usize)
-            .ok_or_else(|| format!("A27 template {} has an invalid country source", row.id))?;
-        if country.tag != row.source_country_tag
-            || row.owner_tag != row.source_country_tag
+        {
+            let sources = &row.country_source_occurrences;
+            for source in sources {
+                let country = raw.countries.get(source.source_country_registry_index as usize)
+                    .ok_or("A27 template membership has an invalid country")?;
+                if country.tag != source.source_country_tag
+                    || !template_slots.insert((source.source_country_registry_index, source.country_vector_ordinal)) {
+                    return Err("A27 template membership has an invalid/duplicate country slot".into());
+                }
+            }
+            let sole = if sources.len()==1 {sources.first()} else {None};
+            if row.owner_tag.as_deref()!=sole.map(|source|source.source_country_tag.as_str())
+                || row.source_country_tag.as_deref()!=sole.map(|source|source.source_country_tag.as_str())
+                || row.source_country_registry_index!=sole.map(|source|source.source_country_registry_index)
+                || row.country_vector_ordinal!=sole.map(|source|source.country_vector_ordinal) {
+                return Err("A27 template owner projection differs from country membership".into());
+            }
+        }
+        if row.owner_tag != row.source_country_tag
             || row.definition.obsolete != row.obsolete
             || !utf8_hex_matches(
                 row.definition.name.as_deref(),
@@ -2063,6 +2274,34 @@ fn validate_raw_catalog(raw: &RawCatalog) -> Result<(), String> {
             }
             let _ = occurrence.source_list_ordinal;
         }
+        {
+            let entity = &row.definition.explicit_entity;
+            match entity {
+                DesignTextObservation::Measured { value, utf8_hex } => {
+                    if value.len() > 4096 || !utf8_hex_matches(Some(value), utf8_hex) {
+                        return Err(format!("A27 variant {} has an invalid explicit entity", row.id));
+                    }
+                }
+                DesignTextObservation::Unavailable { reason } => {
+                    if !matches!(reason.kind.as_str(), "unreadable" | "invalid_string")
+                        || reason.field.is_empty() {
+                        return Err(format!("A27 variant {} has an invalid entity refusal", row.id));
+                    }
+                }
+            }
+        }
+        {
+            let occurrences = &row.developed_source_occurrences;
+            for occurrence in occurrences {
+                let country = raw.countries.get(occurrence.source_country_registry_index as usize)
+                    .ok_or("A27 developed membership country is outside the registry")?;
+                if occurrence.source_country_tag != country.tag
+                    || occurrence.source_list != "developed"
+                    || !developed_slots.insert((occurrence.source_country_registry_index, occurrence.source_list_ordinal)) {
+                    return Err("A27 developed membership has an invalid or duplicate source slot".into());
+                }
+            }
+        }
         let _ = row.definition.equipment_token_raw;
     }
     if raw.schema == A27_LIVE_CATALOG_DESIGNER_SCHEMA {
@@ -2093,6 +2332,7 @@ struct PortableArtifact {
     exact_native_catalog: Value,
     #[serde(default)]
     temporal_deltas: Vec<PortableDesignCatalogDelta>,
+    gaps: Vec<DesignCatalogGap>,
     records: Vec<DesignRecord>,
 }
 
@@ -2149,16 +2389,24 @@ struct RawCompleteness {
 #[derive(Deserialize)]
 struct RawDivisionTemplate {
     catalog_scan_ordinal: u64,
-    country_vector_ordinal: u64,
+    country_vector_ordinal: Option<u64>,
     definition: RawDivisionDefinition,
     definition_complete: bool,
     id: u32,
     obsolete: bool,
-    owner_tag: String,
-    source_country_registry_index: u64,
-    source_country_tag: String,
+    owner_tag: Option<String>,
+    source_country_registry_index: Option<u64>,
+    source_country_tag: Option<String>,
+    country_source_occurrences: Vec<TemplateSourceOccurrence>,
     #[serde(rename = "type")]
     runtime_type: u32,
+}
+
+#[derive(Deserialize)]
+struct TemplateSourceOccurrence {
+    source_country_tag: String,
+    source_country_registry_index: u64,
+    country_vector_ordinal: u64,
 }
 
 #[derive(Deserialize)]
@@ -2205,21 +2453,15 @@ struct RawVariant {
     origin_override_tag: Option<String>,
     owner_tag: String,
     selected_country_tag: String,
-    source_occurrences: Vec<RawSourceOccurrence>,
+    source_occurrences: Vec<DesignSourceOccurrence>,
+    developed_source_occurrences: Vec<DesignSourceOccurrence>,
     #[serde(rename = "type")]
     runtime_type: u32,
 }
 
 #[derive(Deserialize)]
-struct RawSourceOccurrence {
-    source_country_tag: String,
-    source_country_registry_index: u64,
-    source_list: String,
-    source_list_ordinal: u64,
-}
-
-#[derive(Deserialize)]
 struct RawVariantDefinition {
+    explicit_entity: DesignTextObservation,
     archetype_token: String,
     archetype_token_utf8_hex: String,
     cached_stats: Vec<RawStat>,
@@ -2315,6 +2557,7 @@ mod tests {
             "division_templates": [{
                 "catalog_scan_ordinal": 0,
                 "country_vector_ordinal": 0,
+                "country_source_occurrences": [{"source_country_tag":"GER","source_country_registry_index":0,"country_vector_ordinal":0}],
                 "definition": {
                     "name": "Infantry",
                     "name_utf8_hex": "496e66616e747279",
@@ -2355,6 +2598,7 @@ mod tests {
                         "stat_id": "armor"
                     }],
                     "cached_stats_complete": true,
+                    "explicit_entity": {"status":"measured","value":"","utf8_hex":""},
                     "display_name": "Panzer",
                     "display_name_utf8_hex": "50616e7a6572",
                     "equipment_token_raw": 71,
@@ -2377,6 +2621,7 @@ mod tests {
                     "variant_name_utf8_hex": ""
                 },
                 "definition_complete": true,
+                "developed_source_occurrences": [],
                 "first_ui_discovery_ordinal": null,
                 "id": 7,
                 "obsolete": false,
@@ -2388,6 +2633,28 @@ mod tests {
             }]
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn variant_model_inputs_preserve_creator_and_independent_origin_override() {
+        let mut raw: Value = serde_json::from_slice(&fixture()).unwrap();
+        raw["country_count"] = 2.into();
+        raw["countries"].as_array_mut().unwrap().push(
+            serde_json::json!({"registry_index": 1, "tag": "ITA"}),
+        );
+        for origin in [Some("ITA"), None] {
+            raw["variants"][0]["origin_override_tag"] = serde_json::json!(origin);
+            raw["variants"][0]["selected_country_tag"] = origin.unwrap_or("GER").into();
+            let catalog = PortableDesignCatalog::decode_a27_live_json(
+                &serde_json::to_vec(&raw).unwrap(),
+            ).unwrap();
+            let inputs = catalog.variant_model_inputs_at_hour(900, 7).unwrap();
+            assert_eq!(inputs.creator_tag, "GER");
+            assert_eq!(inputs.origin_override_tag.as_deref(), origin);
+            let records = catalog.records_at_hour(900).unwrap();
+            let variant = records.iter().find(|row| row.design_id == "7:70").unwrap();
+            assert_eq!(variant.owner.as_deref(), Some("GER"));
+        }
     }
 
     #[test]

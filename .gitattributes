@@ -627,6 +627,22 @@ portable_replay/native/engine_evidence/artifacts/func_140607560.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_1406082b0.decompile.c text eol=lf
 
 portable_replay/native/engine_evidence/artifacts/func_1406097e0.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_140e53870.decompile.c text eol=lf whitespace=-trailing-space,-space-before-tab
+
+portable_replay/native/engine_evidence/artifacts/func_140e54540.decompile.c text eol=lf whitespace=-trailing-space,-space-before-tab
+
+portable_replay/native/engine_evidence/artifacts/func_14191a580.decompile.c text eol=lf whitespace=-trailing-space,-space-before-tab
+
+portable_replay/native/engine_evidence/artifacts/func_141236ed0.decompile.c text eol=lf whitespace=-trailing-space,-space-before-tab
+
+portable_replay/native/engine_evidence/artifacts/func_14220ae10.decompile.c text eol=lf whitespace=-trailing-space,-space-before-tab
+
+portable_replay/native/engine_evidence/artifacts/func_142207f80.decompile.c text eol=lf whitespace=-trailing-space,-space-before-tab
+
+portable_replay/native/engine_evidence/artifacts/func_14220a4f0.decompile.c text eol=lf whitespace=-trailing-space,-space-before-tab
+
+portable_replay/native/engine_evidence/artifacts/func_142209b20.decompile.c text eol=lf whitespace=-trailing-space,-space-before-tab
 portable_replay/native/engine_evidence/artifacts/func_1424000f0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_142400090.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/shadow_blur_constant_binder.datdump.txt text eol=lf
@@ -638,6 +654,8 @@ portable_replay/native/engine_evidence/artifacts/func_141030fb0.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_141030fb0.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141031020.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141031020.instructions.txt text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_140ab54b0.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141247220.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_141247220.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1423e8ee0.decompile.c text eol=lf
