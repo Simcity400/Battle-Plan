@@ -3392,7 +3392,7 @@ mod native {
             let device = D3dPtr::from_raw(device, "XMAP10 screen-shadow device")?;
             let plan_sha256 = Sha256::hex(&serde_json::to_vec(&plan)?);
             let (terrain_unlit, terrain_input_layout) =
-                compile_terrain_unlit(&device, resolver, terrain)?;
+                compile_terrain_unlit(&device, resolver, terrain.map_width, terrain.map_height)?;
             let blur_horizontal = compile_shadow_blur(&device, resolver, "ShadowBlurHorizontal")?;
             let blur_vertical = compile_shadow_blur(&device, resolver, "ShadowBlurVertical")?;
             let blur_input_layout =
@@ -3849,12 +3849,13 @@ mod native {
     unsafe fn compile_terrain_unlit(
         device: &D3dPtr<ID3D11Device>,
         resolver: &GameFileResolver,
-        terrain: &PreparedTerrainFrame,
+        map_width: u32,
+        map_height: u32,
     ) -> Result<(NativeProgram, D3dPtr<ID3D11InputLayout>)> {
         let defines =
             crate::engine_map_shader_defines(crate::derive_a729_engine_map_shader_constants(
-                terrain.map_width,
-                terrain.map_height,
+                map_width,
+                map_height,
                 false,
                 0,
             )?);
@@ -3878,13 +3879,6 @@ mod native {
             d3d_compile_stage(&pixel_hlsl, ShaderStage::Pixel, ENGINE_COMPILE_FLAGS)?;
         let vertex_reflection = parse_dxbc_reflection(&vertex_bytecode)?;
         let pixel_reflection = parse_dxbc_reflection(&pixel_bytecode)?;
-        require_cbuffer(&vertex_reflection, 0, 416)?;
-        require_cbuffer(&vertex_reflection, 1, crate::TERRAIN_CHUNK_CB1_BYTES as u32)?;
-        require_cbuffer(&pixel_reflection, 0, 416)?;
-        for slot in [0u32, 1, 2, 12] {
-            require_texture(&pixel_reflection, slot)?;
-            require_sampler(&pixel_reflection, slot)?;
-        }
         require_unlit_texture_providers("terrainunlit", &pixel_reflection.resources)?;
         for (reflection, vertex) in [(&vertex_reflection, true), (&pixel_reflection, false)] {
             for resource in &reflection.resources {
@@ -3910,6 +3904,74 @@ mod native {
             "terrainunlit",
         )?;
         Ok((program, input_layout))
+    }
+
+    #[cfg(test)]
+    mod terrain_unlit_compilation_tests {
+        use super::*;
+
+        unsafe fn device() -> D3dPtr<ID3D11Device> {
+            let mut raw = ptr::null_mut();
+            hr(D3D11CreateDevice(ptr::null_mut(), winapi::um::d3dcommon::D3D_DRIVER_TYPE_WARP,
+                ptr::null_mut(), 0, ptr::null(), 0, D3D11_SDK_VERSION, &mut raw,
+                ptr::null_mut(), ptr::null_mut()), "terrain compile WARP").unwrap();
+            D3dPtr::from_raw(raw, "terrain compile device").unwrap()
+        }
+
+        fn admitted(source: &GameFileResolver) -> GameFileResolver {
+            let paths = crate::shader_compile::effect_translation_unit_files(source, "gfx/FX/pdxmap.shader")
+                .unwrap().into_iter().map(|row| row.0.to_ascii_lowercase())
+                .chain([crate::shader_compile::DX11_PLATFORM_HEADER.to_ascii_lowercase()]).collect();
+            crate::test_support::admitted_vanilla_resolver(source, &paths, "terrain-unlit-inputs").0
+        }
+
+        #[test]
+        fn actual_terrain_compiler_accepts_eliminated_inputs_and_refuses_unbound_texture() {
+            let root = crate::test_support::temp_test_dir("terrain_unlit_inputs");
+            unsafe {
+                let device = device();
+                for (case, pixel, expected_slot) in [
+                    ("constant", "float4 main():SV_Target { return float4(0.25,0.5,0.75,1); }", None),
+                    ("load", "Texture2D Image:register(t0); float4 main():SV_Target { return Image.Load(int3(0,0,0)); }", Some(0)),
+                    ("unbound", "Texture2D Image:register(t5); float4 main():SV_Target { return Image.Load(int3(0,0,0)); }", Some(5)),
+                ] {
+                    let case_root = root.join(case);
+                    let fx = case_root.join("gfx/FX");
+                    std::fs::create_dir_all(&fx).unwrap();
+                    std::fs::write(fx.join("defines_hlsl_dx11.fxh"), "").unwrap();
+                    let source = format!(r#"
+VertexStruct Input {{ int4 position:POSITION; int2 uv:TEXCOORD0; }}
+VertexShader = {{ MainCode VS [[ float4 main(Input i):SV_POSITION {{ return float4(i.position.xy+i.uv,0,1); }} ]] }}
+PixelShader = {{ MainCode PS [[ {pixel} ]] }}
+Effect terrainunlit {{ VertexShader="VS" PixelShader="PS" }}
+"#);
+                    std::fs::write(fx.join("pdxmap.shader"), source).unwrap();
+                    let resolver = admitted(&GameFileResolver::vanilla(&case_root).unwrap());
+                    let compiled = compile_terrain_unlit(&device, &resolver, 5632, 2048);
+                    if expected_slot == Some(5) {
+                        let error = match compiled { Ok(_) => panic!("unbound texture admitted"), Err(error) => error.to_string() };
+                        assert!(error.contains("unlit-reflected-texture-provider-unavailable: terrainunlit t5"), "{error}");
+                    } else {
+                        let (program, _layout) = compiled.unwrap();
+                        assert!(parse_dxbc_reflection(&program.vertex_bytecode).unwrap().resources.is_empty());
+                        let pixel = parse_dxbc_reflection(&program.pixel_bytecode).unwrap();
+                        let actual = pixel.resources.iter().map(|r| (r.resource_type, r.bind_point)).collect::<Vec<_>>();
+                        assert_eq!(actual, expected_slot.map(|slot| vec![(2,slot)]).unwrap_or_default());
+                    }
+                }
+            }
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn shipped_terrain_unlit_creates_with_its_consumed_providers() {
+            let resolver = admitted(&GameFileResolver::vanilla(replay_test_gates::require_vanilla_game_root()).unwrap());
+            unsafe {
+                let (program, _layout) = compile_terrain_unlit(&device(), &resolver, 5632, 2048).unwrap();
+                let pixel = parse_dxbc_reflection(&program.pixel_bytecode).unwrap();
+                assert!(pixel.resources.iter().any(|r| r.resource_type == 2 && r.bind_point == 12));
+            }
+        }
     }
 
     #[cfg(test)]
@@ -5155,30 +5217,6 @@ Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" }
             }
         }
         Ok(())
-    }
-
-    fn require_texture(reflection: &DxbcReflection, slot: u32) -> Result<()> {
-        if reflection
-            .resources
-            .iter()
-            .any(|resource| resource.resource_type == 2 && resource.bind_point == slot)
-        {
-            Ok(())
-        } else {
-            Err(format!("XMAP10 reflection omitted texture t{slot}").into())
-        }
-    }
-
-    fn require_sampler(reflection: &DxbcReflection, slot: u32) -> Result<()> {
-        if reflection
-            .resources
-            .iter()
-            .any(|resource| resource.resource_type == 3 && resource.bind_point == slot)
-        {
-            Ok(())
-        } else {
-            Err(format!("XMAP10 reflection omitted sampler s{slot}").into())
-        }
     }
 
     fn require_cbuffer(reflection: &DxbcReflection, slot: u32, size: u32) -> Result<()> {
