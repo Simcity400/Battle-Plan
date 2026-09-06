@@ -234,6 +234,9 @@ fn names_extractor_path(code: &str) -> bool {
 }
 
 fn is_allowed_extractor_path_mention(relative: &str, code: &str) -> bool {
+    if test_audit_mentions().iter().any(|(path, _, _, line)| relative == *path && code.trim() == line) {
+        return true;
+    }
     if relative == "replay_interface/re_evidence/rendering_laws/xui27/external_dependency_ledger.py"
     {
         let exclusion_check = format!("require(\"{ACQUISITION_TREE}/\" not in relative.lower(),");
@@ -250,6 +253,57 @@ fn is_allowed_extractor_path_mention(relative: &str, code: &str) -> bool {
             code.trim() == format!("assert!(!manifest.contains(\"{ACQUISITION_TREE}/\"), \"{{manifest}}\");")
         }
         _ => false,
+    }
+}
+
+fn test_audit_mentions() -> [(&'static str, &'static str, &'static str, String); 3] {
+    [
+        (
+            "replay_interface/native/map_viewer/src/particle_authored.rs",
+            "entity_attachment_tests",
+            "weighted_index_matches_pinned_instruction_cases_including_sign_extended_totals",
+            format!("\"../../../../{ACQUISITION_TREE}/native/runs/paired_particle_viewer_runtime/STATIC_ATTACHMENT_LAW.json\""),
+        ),
+        (
+            "replay_interface/native/map_viewer/src/production_features/xmap13_derive.rs",
+            "tests",
+            "helper_state_law_pins_constructor_retention_and_raw_combat_count",
+            format!("let collector = include_str!(\"../../../../../{ACQUISITION_TREE}/native/collector/src/attach_log.rs\");"),
+        ),
+        (
+            "replay_interface/native/map_viewer/src/production_features/xmap13_derive.rs",
+            "tests",
+            "helper_state_law_pins_constructor_retention_and_raw_combat_count",
+            format!("let offsets = include_str!(\"../../../../../{ACQUISITION_TREE}/native/collector/src/attach_log/offsets.rs\");"),
+        ),
+    ]
+}
+
+#[test]
+fn allowed_instruction_oracle_and_producer_audits_remain_exact_and_test_only() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent().and_then(Path::parent).and_then(Path::parent)
+        .expect("repository root").to_path_buf();
+    for (path, module, function, mention) in test_audit_mentions() {
+        let source = fs::read_to_string(repo.join(path)).expect("read owning audit source");
+        let lines = source.lines().collect::<Vec<_>>();
+        assert_eq!(lines.iter().filter(|line| line.trim() == mention).count(), 1, "{path}: {mention}");
+        let declaration = format!("mod {module} {{");
+        let start = lines.windows(2)
+            .position(|pair| pair == ["#[cfg(test)]", declaration.as_str()])
+            .expect("owning module must remain explicitly test-only") + 2;
+        let module_lines = lines[start..].iter().copied()
+            .take_while(|line| *line != "}").collect::<Vec<_>>();
+        let declaration = format!("    fn {function}() {{");
+        let start = module_lines.windows(2)
+            .position(|pair| pair == ["    #[test]", declaration.as_str()])
+            .expect("owning instruction or producer audit must remain a test") + 2;
+        let body = module_lines[start..].iter().copied()
+            .take_while(|line| *line != "    }").collect::<Vec<_>>();
+        assert_eq!(body.iter().filter(|line| line.trim() == mention).count(), 1, "{path}: {function}");
+        assert!(is_allowed_extractor_path_mention(path, &mention));
+        assert!(!is_allowed_extractor_path_mention("replay_interface/native/map_viewer/src/lib.rs", &mention));
+        assert!(!is_allowed_extractor_path_mention(path, &format!("{mention} extra")));
     }
 }
 

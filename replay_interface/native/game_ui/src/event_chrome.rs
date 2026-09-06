@@ -2722,9 +2722,29 @@ mod tests {
     }
 
     #[test]
+    fn popup_localisation_misses_display_exact_keys_and_preserve_other_text() {
+        for missing in ["generic.1.t", "generic.1.d_good", "generic.1.a"] {
+            let (row, def, mut loc, sprites, runtime) = popup_fixture();
+            loc.entries.remove(missing);
+            let admitted = admit_fixture(row, def, &loc, &sprites, &runtime);
+            assert_eq!(admitted.popup_suppression, None);
+            let popup = admitted.popup.expect("missing localisation preserves the popup");
+            assert_eq!(popup.title, if missing == "generic.1.t" { missing } else { "A Title" });
+            assert_eq!(popup.description, if missing == "generic.1.d_good" { missing } else { "Good description" });
+            assert_eq!(popup.options.len(), 2);
+            assert_eq!(popup.options[0].text, if missing == "generic.1.a" { missing } else { "Option A" });
+            assert_eq!(popup.options[1].text, "Option B");
+            assert_eq!(
+                popup.localisation_misses.iter().cloned().collect::<Vec<_>>(),
+                vec![LocalisationMiss::effective_vfs(missing, "")]
+            );
+        }
+    }
+
+    #[test]
     fn popup_suppression_title_text_unresolved() {
         let (row, def, mut loc, sprites, runtime) = popup_fixture();
-        loc.entries.remove("generic.1.t");
+        loc.entries.insert("generic.1.t".into(), "$UNBOUND_POPUP_VARIABLE$".into());
         assert_suppression(
             row,
             def,
@@ -2738,7 +2758,7 @@ mod tests {
     #[test]
     fn popup_suppression_description_text_unresolved() {
         let (row, def, mut loc, sprites, runtime) = popup_fixture();
-        loc.entries.remove("generic.1.d_good");
+        loc.entries.insert("generic.1.d_good".into(), "$UNBOUND_POPUP_VARIABLE$".into());
         assert_suppression(
             row,
             def,
@@ -2766,7 +2786,7 @@ mod tests {
     #[test]
     fn popup_suppression_option_text_unresolved() {
         let (row, def, mut loc, sprites, runtime) = popup_fixture();
-        loc.entries.remove("generic.1.a");
+        loc.entries.insert("generic.1.a".into(), "$UNBOUND_POPUP_VARIABLE$".into());
         assert_suppression(
             row,
             def,

@@ -2067,7 +2067,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_name_localisation_rejects_the_catalog() {
+    fn missing_name_localisation_displays_the_key_and_records_the_miss() {
         let definitions = ordered_definitions_from_documents(
             &[(
                 "common/abilities/a.txt".into(),
@@ -2076,15 +2076,19 @@ mod tests {
             &resolved_sprites(&["x"], true),
         )
         .expect("definition");
-        let error = admit_ability_catalog(definitions, &localisation(&[("X_DESC", "Description")]))
-            .expect_err("missing name localisation must reject");
-        assert!(error
-            .to_string()
-            .contains("name localisation X is missing"));
+        let admitted = admit_ability_catalog(definitions, &localisation(&[("X_DESC", "Description")]))
+            .expect("a localisation miss displays the authored key");
+        assert_eq!(admitted.abilities.len(), 1);
+        assert_eq!(admitted.abilities[0].name, "X");
+        assert_eq!(admitted.abilities[0].description, "Description");
+        assert_eq!(
+            admitted.localisation_misses.iter().cloned().collect::<Vec<_>>(),
+            vec![replay_core::LocalisationMiss::effective_vfs("X", "")]
+        );
     }
 
     #[test]
-    fn missing_description_localisation_rejects_the_catalog() {
+    fn missing_description_localisation_displays_the_key_and_records_the_miss() {
         let definitions = ordered_definitions_from_documents(
             &[(
                 "common/abilities/a.txt".into(),
@@ -2093,11 +2097,15 @@ mod tests {
             &resolved_sprites(&["x"], true),
         )
         .expect("definition");
-        let error = admit_ability_catalog(definitions, &localisation(&[("X", "Name")]))
-            .expect_err("missing description localisation must reject");
-        assert!(error
-            .to_string()
-            .contains("description localisation X_DESC is missing"));
+        let admitted = admit_ability_catalog(definitions, &localisation(&[("X", "Name")]))
+            .expect("a localisation miss displays the authored key");
+        assert_eq!(admitted.abilities.len(), 1);
+        assert_eq!(admitted.abilities[0].description, "X_DESC");
+        assert_eq!(admitted.abilities[0].name, "Name");
+        assert_eq!(
+            admitted.localisation_misses.iter().cloned().collect::<Vec<_>>(),
+            vec![replay_core::LocalisationMiss::effective_vfs("X_DESC", "")]
+        );
     }
 
     #[test]
