@@ -2380,6 +2380,7 @@ mod native {
 
             let lut_execution = self.execute_lut_program(frame)?;
             lut_execution.validate_against(frame)?;
+            self.bind_common_pipeline();
 
             let post_cb = post_effect_constants(frame, self.main_width, self.main_height);
             update_constant_buffer(&self.context, &self.device, &self.post_effect_cb, &post_cb)?;
@@ -2730,8 +2731,7 @@ mod native {
             (*self.context.as_raw()).IASetInputLayout(self.input_layout.as_raw());
             (*self.context.as_raw()).IASetVertexBuffers(0, 1, vertex.as_ptr(), &stride, &offset);
             (*self.context.as_raw()).IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-            (*self.context.as_raw()).OMSetDepthStencilState(self.depth_disabled.as_raw(), 0);
-            (*self.context.as_raw()).RSSetState(self.rasterizer.as_raw());
+            bind_postfx_caller_states(self.context.as_raw(), self.depth_disabled.as_raw(), self.rasterizer.as_raw());
         }
 
         unsafe fn execute_lut_program(
@@ -4213,6 +4213,78 @@ Effect LutBlend2 { VertexShader="VS" PixelShader="PS" BlendState="Selected" Dept
         }
 
         #[test]
+        fn lut_selected_states_do_not_leak_into_following_hdr_draw() {
+            let root = crate::test_support::temp_test_dir("lut_hdr_states");
+            std::fs::create_dir_all(root.join("gfx/FX")).unwrap();
+            std::fs::write(root.join("gfx/FX/lut_blender.shader"), r#"
+VertexStruct Input { int2 p : POSITION; }
+VertexShader = { MainCode VS [[ float4 main(Input i):SV_POSITION { return float4(i.p,0,1); } ]] }
+PixelShader = {
+    MainCode Lut [[ float4 main():SV_Target { return float4(0,1,0,1); } ]]
+    MainCode Hdr [[ float4 main():SV_Target { return float4(0.25,0.5,0.75,1); } ]]
+}
+DepthStencilState Selected { DepthEnable=yes DepthFunc="ALWAYS" }
+RasterizerState Selected { CullMode="NONE" ScissorEnable=yes }
+Effect LutBlend1 { VertexShader="VS" PixelShader="Lut" DepthStencilState="Selected" RasterizerState="Selected" }
+Effect Bright { VertexShader="VS" PixelShader="Hdr" }
+"#).unwrap();
+            std::fs::write(root.join("gfx/FX/defines_hlsl_dx11.fxh"), "").unwrap();
+            let resolver = admitted(&GameFileResolver::vanilla(&root).unwrap());
+            unsafe {
+                let mut raw_device = ptr::null_mut(); let mut context = ptr::null_mut();
+                hr(D3D11CreateDevice(ptr::null_mut(), winapi::um::d3dcommon::D3D_DRIVER_TYPE_WARP,
+                    ptr::null_mut(), 0, ptr::null(), 0, D3D11_SDK_VERSION, &mut raw_device,
+                    ptr::null_mut(), &mut context), "LUT HDR WARP").unwrap();
+                let device = D3dPtr::from_raw(raw_device, "LUT HDR device").unwrap();
+                let _context = D3dPtr::from_raw(context, "LUT HDR context").unwrap();
+                let lut = compile_lut_program(&device, &resolver, "LutBlend1").unwrap();
+                let hdr = compile_program(&device, &resolver, LUT_SHADER, "Bright", Xmap10ProgramRole::BrightPass, &[]).unwrap();
+                let layout = create_fullscreen_input_layout(&device, &hdr.program.vertex_bytecode).unwrap();
+                let vertices = create_fullscreen_vertices(&device).unwrap();
+                let cb = create_constant_buffer(&device, 16, "LUT HDR cb").unwrap();
+                let depth = create_depth_disabled(&device).unwrap(); let raster = create_rasterizer(&device).unwrap();
+                let target = create_target(&device, &"a".repeat(64), 8, 8, 28, "LUT HDR output").unwrap();
+                let mut desc: D3D11_TEXTURE2D_DESC = mem::zeroed(); (*target._texture.as_raw()).GetDesc(&mut desc);
+                desc.Usage=D3D11_USAGE_STAGING; desc.BindFlags=0; desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
+                let mut staging=ptr::null_mut(); hr((*raw_device).CreateTexture2D(&desc,ptr::null(),&mut staging),"LUT HDR staging").unwrap();
+                let staging=D3dPtr::from_raw(staging,"LUT HDR staging").unwrap();
+                (*context).IASetInputLayout(layout.as_raw()); (*context).IASetVertexBuffers(0,1,&vertices.as_raw(),&8,&0);
+                (*context).IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+                (*context).RSSetViewports(1,&D3D11_VIEWPORT{TopLeftX:0.0,TopLeftY:0.0,Width:8.0,Height:8.0,MinDepth:0.0,MaxDepth:1.0});
+                (*context).RSSetScissorRects(1,&winapi::shared::windef::RECT{left:0,top:0,right:1,bottom:1});
+                bind_postfx_caller_states(context, depth.as_raw(), raster.as_raw());
+                (*context).ClearRenderTargetView(target.rtv.as_raw(),&[1.0,0.0,1.0,1.0]);
+                (*context).OMSetRenderTargets(1,&target.rtv.as_raw(),ptr::null_mut());
+                lut.bind(context,cb.as_raw()).unwrap();
+                let mut bound_depth=ptr::null_mut();let mut stencil=0;let mut bound_raster=ptr::null_mut();
+                (*context).OMGetDepthStencilState(&mut bound_depth,&mut stencil);(*context).RSGetState(&mut bound_raster);
+                assert_eq!(bound_depth,lut.depth.as_raw());assert_eq!(bound_raster,lut.raster.as_raw());
+                (*bound_depth).Release();(*bound_raster).Release();
+                (*context).Draw(4,0);
+                for main_pass in [false,true] {
+                    if main_pass {
+                        bind_postfx_caller_states(context,depth.as_raw(),raster.as_raw());
+                        (*context).OMGetDepthStencilState(&mut bound_depth,&mut stencil);(*context).RSGetState(&mut bound_raster);
+                        assert_eq!(bound_depth,depth.as_raw());assert_eq!(bound_raster,raster.as_raw());assert_eq!(stencil,0);
+                        (*bound_depth).Release();(*bound_raster).Release();
+                        (*context).OMSetRenderTargets(1,&target.rtv.as_raw(),ptr::null_mut());
+                        hdr.bind(context,&hdr,&hdr).unwrap();(*context).Draw(4,0);
+                    }
+                    (*context).OMSetRenderTargets(0,ptr::null(),ptr::null_mut());
+                    (*context).CopyResource(staging.as_raw().cast(),target._texture.as_raw().cast());
+                    let mut mapped:D3D11_MAPPED_SUBRESOURCE=mem::zeroed();hr((*context).Map(staging.as_raw().cast(),0,D3D11_MAP_READ,0,&mut mapped),"LUT HDR readback").unwrap();
+                    for y in 0..8 { for x in 0..8 {
+                        let pixel=std::slice::from_raw_parts((mapped.pData as *const u8).add(y*mapped.RowPitch as usize+x*4),4);
+                        let expected=if main_pass {[64u8,128,191,255]} else if x==0&&y==0 {[0,255,0,255]} else {[255,0,255,255]};
+                        assert_eq!(pixel,expected,"main={main_pass} x={x} y={y}");
+                    } }
+                    (*context).Unmap(staging.as_raw().cast(),0);
+                }
+            }
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
         #[ignore = "requires an authenticated the game content install"]
         fn shipped_lut_programs_create_and_draw_exact_two_and_four_source_bindings() {
             let source =
@@ -4817,6 +4889,15 @@ Effect ShadowBlurHorizontal { VertexShader = "VS" PixelShader = "PS" }
             "CreateBuffer(XMAP10 shadow blur vertices)",
         )?;
         D3dPtr::from_raw(buffer, "XMAP10 shadow blur vertices")
+    }
+
+    unsafe fn bind_postfx_caller_states(
+        context: *mut ID3D11DeviceContext,
+        depth: *mut ID3D11DepthStencilState,
+        raster: *mut ID3D11RasterizerState,
+    ) {
+        (*context).OMSetDepthStencilState(depth, 0);
+        (*context).RSSetState(raster);
     }
 
     unsafe fn create_terrain_rasterizer(
