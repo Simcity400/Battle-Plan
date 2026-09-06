@@ -54,6 +54,99 @@ function Invoke-Captured {
     return $result
 }
 
+function Start-ValidationRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Program,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)][string]$OutputDirectory,
+        [string]$WorkerPath,
+        [string]$WorkerSha256
+    )
+
+    New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
+    $stdoutPath = Join-Path $OutputDirectory 'stdout.txt'
+    $stderrPath = Join-Path $OutputDirectory 'stderr.txt'
+    $receiptPath = Join-Path $OutputDirectory 'exit.json'
+    @{
+        Name = $Name; Program = $Program; Arguments = @($Arguments)
+        WorkingDirectory = $WorkingDirectory
+        WorkerPath = $WorkerPath; WorkerSha256 = $WorkerSha256
+    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'request.json') -Encoding UTF8
+    $job = Start-Job -ArgumentList @(
+        $Program, @($Arguments), $WorkingDirectory, $OutputDirectory,
+        $WorkerPath, $WorkerSha256
+    ) -ScriptBlock {
+        param($Prog, $ArgArr, $Cwd, $OutDir, $WorkerPath, $WorkerSha256)
+        $ErrorActionPreference = 'Stop'
+        $startedAt = [DateTime]::UtcNow.ToString('o')
+        $exitCode = $null
+        $failure = $null
+        $process = $null
+        $stdout = $null
+        $stderr = $null
+        try {
+            Set-Location $Cwd
+            if ($WorkerPath) {
+                $env:BATTLE_PLAN_TEST_RECORDER_WORKER = $WorkerPath
+                $env:BATTLE_PLAN_TEST_RECORDER_WORKER_SHA256 = $WorkerSha256
+            }
+            $start = [Diagnostics.ProcessStartInfo]::new()
+            $start.FileName = (Get-Command $Prog -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+            $start.Arguments = (($ArgArr | ForEach-Object {
+                $value = [string]$_
+                if ($value.Length -eq 0 -or $value -match '[\s"]') {
+                    '"' + ($value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
+                } else { $value }
+            }) -join ' ')
+            $start.WorkingDirectory = $Cwd
+            $start.UseShellExecute = $false
+            $start.CreateNoWindow = $true
+            $start.RedirectStandardInput = $true
+            $start.RedirectStandardOutput = $true
+            $start.RedirectStandardError = $true
+            $stdout = [IO.FileStream]::new((Join-Path $OutDir 'stdout.txt'),
+                [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read,
+                1, [IO.FileOptions]::WriteThrough)
+            $stderr = [IO.FileStream]::new((Join-Path $OutDir 'stderr.txt'),
+                [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read,
+                1, [IO.FileOptions]::WriteThrough)
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $start
+            [void]$process.Start()
+            $process.StandardInput.Close()
+            @{
+                ProcessId = $process.Id; StartedAt = $startedAt
+                ProcessStartedAt = $process.StartTime.ToUniversalTime().ToString('o')
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $OutDir 'started.json') -Encoding UTF8
+            $stdoutCopy = $process.StandardOutput.BaseStream.CopyToAsync($stdout)
+            $stderrCopy = $process.StandardError.BaseStream.CopyToAsync($stderr)
+            $process.WaitForExit()
+            $exitCode = $process.ExitCode
+            $stdoutCopy.GetAwaiter().GetResult()
+            $stderrCopy.GetAwaiter().GetResult()
+        } catch {
+            $failure = $_.ToString()
+        } finally {
+            if ($stdout) { $stdout.Dispose() }
+            if ($stderr) { $stderr.Dispose() }
+            if ($process) { $process.Dispose() }
+        }
+        $receipt = @{
+            ExitCode = $exitCode; Error = $failure; StartedAt = $startedAt
+            CompletedAt = [DateTime]::UtcNow.ToString('o')
+        }
+        $pending = Join-Path $OutDir 'exit.json.partial'
+        $receipt | ConvertTo-Json | Set-Content -LiteralPath $pending -Encoding UTF8
+        Move-Item -LiteralPath $pending -Destination (Join-Path $OutDir 'exit.json')
+    }
+    return [pscustomobject]@{
+        Name = $Name; Job = $job; StdoutPath = $stdoutPath
+        StderrPath = $stderrPath; ReceiptPath = $receiptPath
+    }
+}
+
 function Convert-ToRepoPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -497,39 +590,34 @@ function Invoke-ShippingTests {
         # CARGO_TARGET_DIR overlapped; the second finished its own build while
         # the first's 25 s test was still running). Phase-A left fresh
         # fingerprints, so phase-B builds are seconds-long freshness checks.
-        # Each lane's output is buffered and printed on completion to keep the
-        # gate log readable; unlike the old serial loop, one failing root no
-        # longer aborts the remaining roots - all lanes run, then failures are
-        # reported together (per-root --no-fail-fast semantics already in
-        # place inside each plan).
+        $runDirectory = Join-Path ([IO.Path]::GetTempPath()) ('hoi4-validation-' + [Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $runDirectory | Out-Null
+        Write-Host "VALIDATION_ROOT_LOGS_V1 $runDirectory"
         $lanes = @()
         foreach ($item in $plans) {
-            $laneScript = {
-                param($Prog, $ArgArr, $Cwd, $WorkerPath, $WorkerSha256)
-                Set-Location $Cwd
-                if ($WorkerPath) {
-                    $env:BATTLE_PLAN_TEST_RECORDER_WORKER = $WorkerPath
-                    $env:BATTLE_PLAN_TEST_RECORDER_WORKER_SHA256 = $WorkerSha256
-                }
-                $output = & $Prog @ArgArr 2>&1
-                $exitCode = if ($null -eq $LASTEXITCODE) { 1 } else { $LASTEXITCODE }
-                [pscustomobject]@{ ExitCode = $exitCode; Output = @($output) }
-            }
-            $lanes += @{
-                Name = [string]$item.Name
-                Job = Start-Job -ScriptBlock $laneScript -ArgumentList @(
-                    [string]$item.Program, (, @($item.Arguments)), $script:RepoRoot,
-                    $recorderWorkerPath, $recorderWorkerSha256)
-            }
+            $lanes += Start-ValidationRoot -Name ([string]$item.Name) -Program ([string]$item.Program) `
+                -Arguments @($item.Arguments) -WorkingDirectory $script:RepoRoot `
+                -OutputDirectory (Join-Path $runDirectory ('{0:D3}' -f $lanes.Count)) `
+                -WorkerPath $recorderWorkerPath -WorkerSha256 $recorderWorkerSha256
         }
         $failures = @()
         foreach ($lane in $lanes) {
             Wait-Job $lane.Job | Out-Null
-            $result = Receive-Job $lane.Job
+            $jobState = $lane.Job.State
+            Receive-Job $lane.Job -ErrorAction Continue | Out-Host
             Remove-Job $lane.Job
-            foreach ($line in @($result.Output)) { Write-Host "[$($lane.Name)] $line" }
-            if ([int]$result.ExitCode -ne 0) {
-                $failures += "$($lane.Name) validation failed with exit code $($result.ExitCode)"
+            foreach ($path in @($lane.StdoutPath, $lane.StderrPath)) {
+                if (Test-Path -LiteralPath $path) {
+                    Get-Content -LiteralPath $path | ForEach-Object { Write-Host "[$($lane.Name)] $_" }
+                }
+            }
+            if (-not (Test-Path -LiteralPath $lane.ReceiptPath)) {
+                $failures += "$($lane.Name) validation has no exit receipt (job $jobState): $($lane.ReceiptPath)"
+                continue
+            }
+            $result = Get-Content -LiteralPath $lane.ReceiptPath -Raw | ConvertFrom-Json
+            if ($null -eq $result.ExitCode -or $result.Error -or [int]$result.ExitCode -ne 0) {
+                $failures += "$($lane.Name) validation failed with exit code $($result.ExitCode): $($result.Error)"
             }
         }
         if ($failures.Count -gt 0) { throw ($failures -join '; ') }
