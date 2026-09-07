@@ -35,6 +35,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot '..\..\..\portable_replay\native\scripts\PortableProduct.PeImports.ps1')
 . (Join-Path $PSScriptRoot 'PortableProduct.InteractionClosure.ps1')
+. (Join-Path $PSScriptRoot 'PortableProduct.PackageContents.ps1')
 . (Join-Path $PSScriptRoot 'ProductionCapture.Promotion.ps1')
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $readOnlyWitnessPath = Join-Path $PSScriptRoot 'Read-Hoi4GameState.ps1'
@@ -680,11 +681,7 @@ function Assert-PackageZipBytes {
     try {
         $archive = [IO.Compression.ZipArchive]::new($memory, [IO.Compression.ZipArchiveMode]::Read, $false)
         try {
-            $names = @($archive.Entries | ForEach-Object FullName)
-            $exeCount = @($names | Where-Object { $_.EndsWith('.exe', [StringComparison]::OrdinalIgnoreCase) }).Count
-            if ($exeCount -ne 2 -or $names.Count -ne 5 -or $names -contains '') {
-                throw "portable package shape is invalid: entries=$($names.Count), executables=$exeCount"
-            }
+            Assert-PortableProductPackageContents -Archive $archive -Version $Version -BinaryHashes $ExpectedBinaryHashes
             foreach ($expected in @('Battle Plan Recorder.exe', 'Battle Plan.exe', 'collector.dll', 'README.txt', 'SHA256SUMS.txt')) {
                 $matching = @($archive.Entries | Where-Object FullName -CEQ $expected)
                 if ($matching.Count -ne 1) {
@@ -818,52 +815,17 @@ $entries = [ordered]@{
     'collector.dll' = $collectorBytes
 }
 $binaryHashes = [ordered]@{}
-$hashLines = foreach ($name in $entries.Keys) {
+foreach ($name in $entries.Keys) {
     $hash = Get-BytesSha256 -Bytes $entries[$name]
     $binaryHashes[$name] = $hash
-    "$hash  $name"
 }
-$readme = @"
-Battle Plan $Version
-
-This is a portable Windows package. It has no installer, service, tray process,
-administrator requirement, automatic updater, or network dependency.
-
-Run "Battle Plan Recorder.exe" once and leave its window open while you play.
-It watches for supported the game sessions automatically. Use "Stop and
-finish recordings" (or close the window) to stop cooperatively and verify any
-active recording before exit. The window reports recording start, verified
-completion, or failure and shows the exact output path. Use "Open recordings
-folder" to reveal the current output directory.
-
-This recorder supports one the game version. When Paradox patches the
-game, the recorder tells you that this game version is not supported yet and
-that an update to the recorder will add it. Nothing is changed in your game and
-no recording is started; wait for a recorder update that adds that version.
-
-The recorder is a passive injected observer. It does not pause the game, change game
-speed, send input, move or focus the game window, or start/stop the game process.
-Evidence-backed observation hooks are allowed only for values that cannot be
-sampled reliably; they do not grant authority to mutate the simulation. Capture
-is designed to remain passive while the player runs at speed five.
-
-Run "Battle Plan.exe" to open and view a replay. Its picker starts in the
-recorder output root when that folder exists. On first use, select the Hearts of
-Iron IV installation folder and user-data folder when prompted.
-
-Recorder data is stored under the current user's LocalAppData in
-"Battle Plan Recorder" with a protected user/SYSTEM ACL. SHA256SUMS.txt detects
-accidental package corruption; it is not a publisher signature.
-"@
-$utf8 = [Text.UTF8Encoding]::new($false)
-$readmeBytes = $utf8.GetBytes($readme.Replace("`r`n", "`n"))
-$checksumBytes = $utf8.GetBytes((($hashLines -join "`n") + "`n"))
+$documents = Get-PortableProductPackageDocuments -Version $Version -BinaryHashes $binaryHashes
 $packageEntries = [ordered]@{
     'Battle Plan Recorder.exe' = $recorderBytes
     'Battle Plan.exe' = $replayBytes
     'collector.dll' = $collectorBytes
-    'README.txt' = $readmeBytes
-    'SHA256SUMS.txt' = $checksumBytes
+    'README.txt' = $documents['README.txt']
+    'SHA256SUMS.txt' = $documents['SHA256SUMS.txt']
 }
 
 $temporary = Join-Path $outputParent ('.' + [IO.Path]::GetFileName($outputFull) + '.' + [Guid]::NewGuid().ToString('N') + '.tmp')

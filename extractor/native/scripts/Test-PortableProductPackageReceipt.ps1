@@ -17,6 +17,7 @@ $readOnlyWitness = Join-Path $repo 'extractor\native\scripts\Read-Hoi4GameState.
 $passivePolicy = Join-Path $repo 'extractor\native\scripts\Test-PassiveCapturePolicy.ps1'
 $passiveLifecycle = Join-Path $repo 'extractor\native\scripts\PassiveCapture.Lifecycle.ps1'
 . (Join-Path $repo 'extractor\native\scripts\PortableProduct.InteractionClosure.ps1')
+. (Join-Path $repo 'extractor\native\scripts\PortableProduct.PackageContents.ps1')
 . (Join-Path $repo 'extractor\native\scripts\ProductionCapture.Promotion.ps1')
 $productionSourceCapabilityPaths = [ordered]@{
     recorder_host_cargo_sha256 = Join-Path $repo 'extractor\native\recorder_host\Cargo.toml'
@@ -525,11 +526,12 @@ $memory = [IO.MemoryStream]::new($zipBytes, $false)
 try {
     $archive = [IO.Compression.ZipArchive]::new($memory, [IO.Compression.ZipArchiveMode]::Read, $false)
     try {
-        $expectedNames = @('Battle Plan Recorder.exe', 'Battle Plan.exe', 'collector.dll', 'README.txt', 'SHA256SUMS.txt')
-        if ($archive.Entries.Count -ne 5) { throw 'portable package does not contain exactly five entries' }
-        foreach ($name in $expectedNames) {
-            if (@($archive.Entries | Where-Object FullName -CEQ $name).Count -ne 1) { throw "portable package entry is missing or duplicated: $name" }
+        $binaryHashes = [ordered]@{
+            'Battle Plan Recorder.exe' = [string]$attested.artifact_sha256['recorder_host']
+            'Battle Plan.exe' = [string]$attested.artifact_sha256['replay_app']
+            'collector.dll' = [string]$attested.artifact_sha256['collector_dll']
         }
+        Assert-PortableProductPackageContents -Archive $archive -Version $version -BinaryHashes $binaryHashes
         $roles = [ordered]@{
             'Battle Plan Recorder.exe' = 'recorder_host'
             'Battle Plan.exe' = 'replay_app'

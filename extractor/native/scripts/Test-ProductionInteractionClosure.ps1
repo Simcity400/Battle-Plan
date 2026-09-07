@@ -780,6 +780,28 @@ Assert-ClosureCase 'a permitted role capability is admitted by both enforcers an
 )
 $cases++
 
+Assert-ClosureCase 'builder and receipt verifier enforce the canonical package documents' (
+    $package.Contains("PortableProduct.PackageContents.ps1") -and
+    $package.Contains('Get-PortableProductPackageDocuments -Version $Version -BinaryHashes $binaryHashes') -and
+    $package.Contains('Assert-PortableProductPackageContents -Archive $archive -Version $Version -BinaryHashes $ExpectedBinaryHashes') -and
+    $packageVerifier.Contains("PortableProduct.PackageContents.ps1") -and
+    $packageVerifier.Contains('Assert-PortableProductPackageContents -Archive $archive -Version $version -BinaryHashes $binaryHashes')
+)
+$cases++
+$packageContentsOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $scriptDir 'Test-PortableProductPackageContents.ps1'))
+$packageContentsExit = $LASTEXITCODE
+try {
+    $packageContentsReceipt = ($packageContentsOutput -join "`n") | ConvertFrom-Json
+    Assert-ClosureCase 'package document and negative ZIP behavior passes' (
+        $packageContentsExit -eq 0 -and
+        [string]$packageContentsReceipt.schema -ceq 'battle-plan.portable_package_contents_test.v1' -and
+        [string]$packageContentsReceipt.status -ceq 'PASS' -and
+        [int]$packageContentsReceipt.cases -ge 24
+    )
+}
+catch { Assert-ClosureCase 'package document tests return a structured receipt' $false }
+$cases++
+
 Assert-ClosureCase 'package rechecks interaction closure on ZIP entry bytes' (
     $package.Contains('ExpectedInteractionClosures') -and
     $package.Contains('zip_entry_bytes_reverified = $true') -and
