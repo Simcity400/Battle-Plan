@@ -3951,3 +3951,14 @@ mod tests {
         assert_eq!(compact_status_unassigned_bit_indices(u32::MAX).len(), 32);
     }
 }
+
+#[cfg(test)]
+extern crate self as compact_contract;
+
+#[cfg(test)]
+#[path = "../../lanes/division_state_movement_live/domain20_compact.rs"]
+mod standalone_d20_decoder;
+
+#[cfg(test)]
+#[path = "../../lanes/naval_oob_fleets_ships_live/domain28_29_compact.rs"]
+mod standalone_d28_decoder;
