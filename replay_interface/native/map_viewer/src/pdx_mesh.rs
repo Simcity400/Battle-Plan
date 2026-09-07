@@ -116,6 +116,14 @@ pub enum NativePdxCollisionRefusal {
     },
 }
 
+// Native lookups select the first material/property/string, before drawable stream loading.
+fn native_collision_shader(mesh: &PdxNode) -> bool {
+    let Some(material) = mesh.children_named("material").next() else { return false; };
+    let Some(PdxProperty { values: PdxValues::Str(shader), .. }) = material.property("shader")
+        else { return false; };
+    shader.first().map(String::as_str) == Some("Collision")
+}
+
 impl PdxAssetTree {
     pub fn native_collision(
         &self,
@@ -136,21 +144,7 @@ impl PdxAssetTree {
                         shape_child,
                         mesh_child,
                     };
-                    // Native name lookups return the first child/property; the shader getter
-                    // accepts a nonempty string array and compares its first string.
-                    let Some(material) = mesh.children_named("material").next() else {
-                        continue;
-                    };
-                    let Some(PdxProperty {
-                        values: PdxValues::Str(shader),
-                        ..
-                    }) = material.property("shader")
-                    else {
-                        continue;
-                    };
-                    if shader.first().map(String::as_str) != Some("Collision") {
-                        continue;
-                    }
+                    if !native_collision_shader(mesh) { continue; }
                     let (Some(p), Some(tri)) = (mesh.property("p"), mesh.property("tri")) else {
                         continue;
                     };
@@ -599,6 +593,8 @@ pub struct PdxLocator {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PdxMeshData {
+    /// Original shape-child slot, including skipped Collision and non-mesh children.
+    pub source_mesh_ordinal: usize,
     pub verts: Vec<[f32; 3]>,
     pub normals: Option<Vec<[f32; 3]>>,
     pub tangents: Option<Vec<[f32; 4]>>,
@@ -618,6 +614,12 @@ pub struct PdxShape {
     pub lod: Option<i32>,
     pub meshes: Vec<PdxMeshData>,
     pub skeleton: Vec<PdxJoint>,
+}
+
+impl PdxShape {
+    pub fn mesh_by_source_ordinal(&self, ordinal: usize) -> Option<&PdxMeshData> {
+        self.meshes.iter().find(|mesh| mesh.source_mesh_ordinal == ordinal)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -787,9 +789,12 @@ fn extract_shape(shape_node: &PdxNode, unknown: &mut UnknownCollector) -> Result
             _ => unknown.property(&path, prop),
         }
     }
-    for child in &shape_node.children {
+    for (source_mesh_ordinal, child) in shape_node.children.iter().enumerate() {
         match child.name.as_str() {
-            "mesh" => shape.meshes.push(extract_mesh(&path, child, unknown)?),
+            "mesh" => {
+                if native_collision_shader(child) { continue; }
+                shape.meshes.push(extract_mesh(&path, child, source_mesh_ordinal, unknown)?);
+            }
             "skeleton" => {
                 if !child.properties.is_empty() {
                     for prop in &child.properties {
@@ -811,6 +816,7 @@ fn extract_shape(shape_node: &PdxNode, unknown: &mut UnknownCollector) -> Result
 fn extract_mesh(
     shape_path: &str,
     mesh_node: &PdxNode,
+    source_mesh_ordinal: usize,
     unknown: &mut UnknownCollector,
 ) -> Result<PdxMeshData> {
     let path = format!("{shape_path}/mesh");
@@ -899,6 +905,7 @@ fn extract_mesh(
         .ok_or_else(|| format!("{path}: missing material node (present in every shipped mesh)"))?;
 
     Ok(PdxMeshData {
+        source_mesh_ordinal,
         verts,
         normals,
         tangents,
@@ -1274,7 +1281,8 @@ pub struct PdxMeshValidationRow {
 pub fn validate_pdx_model(model: &PdxModel) -> Vec<PdxMeshValidationRow> {
     let mut rows = Vec::new();
     for shape in &model.shapes {
-        for (mesh_index, mesh) in shape.meshes.iter().enumerate() {
+        for mesh in &shape.meshes {
+            let mesh_index = mesh.source_mesh_ordinal;
             let max_index = mesh.indices.iter().copied().max().unwrap_or(0);
             let mut deviation = 0f32;
             for vert in &mesh.verts {
@@ -1468,7 +1476,8 @@ pub fn pdx_model_to_obj(model: &PdxModel, source_label: &str) -> String {
     );
     let mut vertex_base = 1usize;
     for shape in &model.shapes {
-        for (mesh_index, mesh) in shape.meshes.iter().enumerate() {
+        for mesh in &shape.meshes {
+            let mesh_index = mesh.source_mesh_ordinal;
             let _ = writeln!(
                 out,
                 "g {}_mesh{}_{}",
@@ -1550,6 +1559,24 @@ fn sanitize_obj_name(name: &str) -> String {
 #[cfg(test)]
 pub(crate) mod test_fixtures {
     use super::PDX_ASSET_BINARY_MAGIC;
+
+    pub(crate) fn collision_before_drawable_bytes() -> Vec<u8> {
+        let mut bytes = PDX_ASSET_BINARY_MAGIC.to_vec();
+        push_prop_i(&mut bytes, "pdxasset", &[1, 0]);
+        push_object(&mut bytes, 1, "object");
+        push_object(&mut bytes, 2, "mixedShape");
+        push_object(&mut bytes, 3, "skeleton");
+        push_object(&mut bytes, 3, "mesh");
+        push_prop_f(&mut bytes, "p", &[100.0, 0.0, 0.0, 101.0, 0.0, 0.0, 100.0, 1.0, 0.0]);
+        push_prop_i(&mut bytes, "tri", &[-65536, 65537, 65538]);
+        push_prop_i(&mut bytes, "n", &[99]);
+        push_prop_f(&mut bytes, "boundingsphere", &[99.0]);
+        push_object(&mut bytes, 4, "material");
+        push_prop_s(&mut bytes, "shader", "Collision");
+        push_prop_i(&mut bytes, "diff", &[99]);
+        push_mesh(&mut bytes, 4.0, false, false);
+        bytes
+    }
 
     pub(crate) fn append_collision(bytes: &mut Vec<u8>, positions: &[f32], indices: &[i32]) {
         push_object(bytes, 1, "object");
@@ -1845,8 +1872,8 @@ mod tests {
         let tree = parse_pdx_asset(text).expect("parse text twin");
         let model = extract_pdx_model(&tree).expect("extract text twin");
         assert_eq!(model.shapes.len(), 1);
-        assert_eq!(model.shapes[0].meshes[0].material.shader, "Collision");
-        assert!(model.shapes[0].meshes[0].material.is_collision());
+        assert!(model.shapes[0].meshes.is_empty());
+        assert_eq!(tree.native_collision(1.0).unwrap().unwrap().indices, [0, 2, 1]);
         assert_eq!(model.locators.len(), 1);
     }
 
@@ -2233,11 +2260,48 @@ mod native_collision_tests {
     }
 
     #[test]
+    fn drawable_extraction_skips_collision_streams_and_keeps_the_original_child_slot() {
+        let bytes = super::test_fixtures::collision_before_drawable_bytes();
+        let tree = parse_pdx_asset(&bytes).unwrap();
+        let collision = tree.native_collision(1.0).unwrap().unwrap();
+        assert_eq!(collision.source.mesh_child, 1);
+        assert_eq!(collision.indices, [0, 1, 2]);
+        let model = extract_pdx_model(&tree).unwrap();
+        let shape = &model.shapes[0];
+        assert_eq!(shape.meshes.len(), 1);
+        let mesh = shape.mesh_by_source_ordinal(2).unwrap();
+        assert_eq!(mesh.source_mesh_ordinal, 2);
+        assert_eq!(mesh.aabb_min, [4.0, 0.0, 0.0]);
+        assert_eq!(mesh.aabb_max, [5.0, 1.0, 0.0]);
+        assert_eq!(mesh.verts.len(), 3);
+        assert!(shape.mesh_by_source_ordinal(0).is_none());
+        assert!(shape.mesh_by_source_ordinal(1).is_none());
+        assert_eq!(validate_pdx_model(&model)[0].mesh_index, 2);
+        assert!(pdx_model_to_obj(&model, "fixture").contains("g mixedShape_mesh2_PdxMeshStandard"));
+        assert_eq!(tree.native_collision(1.0).unwrap(), Some(collision));
+    }
+
+    #[test]
+    fn only_the_first_exact_collision_shader_bypasses_drawable_validation() {
+        let bytes = super::test_fixtures::collision_before_drawable_bytes();
+        let mut tree = parse_pdx_asset(&bytes).unwrap();
+        let collision = &mut tree.root.children[0].children[0].children[1];
+        collision.children[0].properties[0].values = PdxValues::Str(vec!["Collision".into(), "other".into()]);
+        assert!(extract_pdx_model(&tree).is_ok());
+        let collision = &mut tree.root.children[0].children[0].children[1];
+        let exact = collision.children[0].clone();
+        collision.children[0].properties[0].values = PdxValues::Str(vec!["collision".into()]);
+        collision.children.push(exact);
+        assert!(extract_pdx_model(&tree).is_err());
+        assert_eq!(tree.native_collision(1.0), Ok(None));
+    }
+
+    #[test]
     fn raw_i32_indices_are_narrowed_before_bounds_validation() {
         let mut bytes = header();
         append_collision(&mut bytes, TRIANGLE, &[-65536, 65537, i32::MIN + 2]);
         let tree = parse_pdx_asset(&bytes).unwrap();
-        assert!(extract_pdx_model(&tree).is_err());
+        assert!(extract_pdx_model(&tree).unwrap().shapes[0].meshes.is_empty());
         assert_eq!(
             tree.native_collision(1.0).unwrap().unwrap().indices,
             [0, 1, 2]
