@@ -150,6 +150,12 @@ const EXTERNAL_FIXTURES: &[&str] = &[
     "xmap17_faction_joint_certification.json",
     "xmap19_weather_visual_lifecycle_joint_certification.json",
     "xui09_research_joint_certification.json",
+    // Native producer/fold fixtures consumed by game_ui::designer_observer.
+    "cpni3_capital_slot_joint.json",
+    "xui13_full_panel_catalog.json",
+    "xui13_full_panel_cid1.h4cr",
+    "xui13_full_panel_d53.json",
+    "xui13_full_panel_snapshots.json",
 ];
 
 fn reset_dir(out_dir: &Path, path: &Path) -> Result<()> {
@@ -2713,8 +2719,22 @@ mod tests {
 
         let result = (|| -> Result<()> {
             generate(&first, DEFAULT_SEED)?;
+            // Independent producer artifacts remain byte-for-byte owned by their producers.
+            let external: BTreeMap<String, Vec<u8>> = super::EXTERNAL_FIXTURES.iter()
+                .map(|path| (path.to_string(), format!("external producer: {path}").into_bytes()))
+                .collect();
+            for (path, bytes) in &external {
+                let path = first.join(path);
+                fs::create_dir_all(path.parent().unwrap())?;
+                fs::write(path, bytes)?;
+            }
+            generate(&first, DEFAULT_SEED)?;
+            let mut regenerated = read_tree(&first)?;
+            for (path, bytes) in &external {
+                assert_eq!(regenerated.remove(path).as_ref(), Some(bytes), "{path}");
+            }
             generate(&second, DEFAULT_SEED)?;
-            let generated = read_tree(&first)?;
+            let generated = regenerated;
             assert_fixture_trees_equal("relocated generation", &generated, &read_tree(&second)?);
             assert_fixture_trees_equal(
                 "committed replay_interface/fixtures corpus",
@@ -2726,6 +2746,23 @@ mod tests {
         let cleanup = fs::remove_dir_all(&root);
         result.expect("generate relocated fixtures");
         cleanup.expect("clean fixture relocation test root");
+    }
+
+    #[test]
+    fn external_fixture_boundary_rejects_unregistered_paths() {
+        let empty = BTreeMap::new();
+        let external: BTreeMap<String, Vec<u8>> = super::EXTERNAL_FIXTURES.iter()
+            .map(|path| (path.to_string(), vec![1]))
+            .collect();
+        assert_fixture_trees_equal("committed replay_interface/fixtures corpus", &empty, &external);
+        let mut unexpected = external.clone();
+        unexpected.insert("xui13_full_panel_unregistered.json".into(), vec![1]);
+        assert!(std::panic::catch_unwind(|| assert_fixture_trees_equal(
+            "committed replay_interface/fixtures corpus", &empty, &unexpected,
+        )).is_err());
+        assert!(std::panic::catch_unwind(|| assert_fixture_trees_equal(
+            "relocated generation", &empty, &external,
+        )).is_err());
     }
 
     fn assert_fixture_trees_equal(

@@ -6113,6 +6113,8 @@
     "fs::remove_dir_all(&entry)?;",
     "fs::remove_file(&entry)?;",
     "fs::create_dir_all(path)?;",
+    "fs::create_dir_all(path.parent().unwrap())?;",
+    "fs::write(path, bytes)?;",
     "let cleanup = fs::remove_dir_all(&root);",
     "for entry in fs::read_dir(dir)? {",
     "out.insert(rel_slash(&path, root), fs::read(path)?);"
