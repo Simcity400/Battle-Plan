@@ -6,7 +6,7 @@ use crate::particle_authored::{
 };
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 
 static NEXT_RUNTIME: AtomicU64 = AtomicU64::new(1);
@@ -23,12 +23,18 @@ pub struct ViewerParticleSeed {
 pub struct ViewerEntityManager {
     random: ViewerParticleSeed,
     scenes: EntityManagerScenes,
+    effects: Arc<Mutex<EntityEffectRegistry>>,
     frame_outcome: Option<(EntityManagerFrame, u64, Result<(), EntityManagerFrameRefusal>)>,
 }
 
 impl ViewerEntityManager {
     pub fn new(initial: ViewerParticleSeed) -> Self {
-        Self { random: initial, scenes: EntityManagerScenes::default(), frame_outcome: None }
+        Self { random: initial, scenes: EntityManagerScenes::default(),
+            effects: Arc::new(Mutex::new(EntityEffectRegistry::default())), frame_outcome: None }
+    }
+
+    pub(crate) fn effect_registry(&self) -> Arc<Mutex<EntityEffectRegistry>> {
+        Arc::clone(&self.effects)
     }
 
     pub fn random_state(&self) -> ViewerParticleSeed {
@@ -108,7 +114,41 @@ impl ViewerEntityManager {
                 .then_some(*revision))
     }
 
+    pub(crate) fn particle_draw_roots(
+        &self, time: u32, owners: &[EntityManagerOwner],
+    ) -> crate::Result<(u64, Vec<(EntityManagerOwner, String, u32)>)> {
+        let revision = self.publication_revision(time).ok_or("entity_manager.frame.unpublished")?;
+        for (index, owner) in owners.iter().enumerate() {
+            if owners[..index].contains(owner) {
+                return Err("entity_manager.particle_draw.duplicate_owner".into());
+            }
+        }
+        let frame = self.frame_outcome.as_ref().ok_or("entity_manager.frame.unpublished")?.0;
+        let cameras = match frame.cameras {
+            Some(cameras) => cameras,
+            None if !self.scenes.requires_camera(u32::MAX) => [false; 3],
+            None => return Err("entity_manager.particle_draw.camera_unavailable".into()),
+        };
+        let mut roots = Vec::new();
+        // 14227ce00 supplies camera index as pass; scene zero has no camera and cannot enqueue.
+        for (pass, visible) in cameras.into_iter().enumerate() {
+            if !visible { continue; }
+            for root in self.scenes.cells[pass + 1].iter().rev() {
+                if !owners.contains(&root.owner) {
+                    return Err(format!("entity_manager.particle_draw.unprepared_owner.{:?}.{}",
+                        root.owner, root.id).into());
+                }
+                // The update mask does not suppress 14226ef30's enqueue branch.
+                roots.push((root.owner, root.id.clone(), pass as u32));
+            }
+        }
+        Ok((revision, roots))
+    }
+
     pub(crate) fn reset_frame_publication(&mut self) -> Result<(), EntityManagerFrameRefusal> {
+        if !self.effects.lock().map_err(|_| EntityManagerFrameRefusal::EffectsLockPoisoned)?.entries.is_empty() {
+            return Err(EntityManagerFrameRefusal::RegisteredEffectsOnReset);
+        }
         if self.scenes.cells.iter().any(|cell| !cell.is_empty()) {
             return Err(EntityManagerFrameRefusal::RegisteredRootsOnReset);
         }
@@ -117,6 +157,7 @@ impl ViewerEntityManager {
     }
 
     pub(crate) fn remove_owner(&mut self, owner: EntityManagerOwner) {
+        if let Ok(mut effects) = self.effects.lock() { effects.entries.retain(|entry| entry.owner != owner); }
         for cell in &mut self.scenes.cells {
             let mut index = 0;
             while index < cell.len() {
@@ -201,12 +242,132 @@ pub(crate) struct EntityManagerDispatch<'a> {
     pub advance_root: &'a mut dyn FnMut(&str, u32, &mut ViewerParticleSeed) -> crate::Result<()>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntityEffectPhase {
+    ParticlePrepare,
+    ParticleStep { ordinal: u32, delta_f32_bits: u32 },
+    ParticleFinish,
+    Light,
+}
+
+pub(crate) fn particle_update_slices(delta: f32) -> crate::Result<Vec<f32>> {
+    if !delta.is_finite() || delta < 0.0 { return Err("entity_manager.effects.invalid_delta".into()); }
+    // 1423e9500 keeps the remainder in binary64, but the slice cap and callback are binary32.
+    let quarter = f32::from_bits((delta * f32::from_bits(0x3e80_0000)).to_bits() & 0x7fff_ffff);
+    let cap = f32::from_bits(0x3dcc_cccd).max(quarter);
+    let mut remaining = f64::from(delta);
+    let mut slices = Vec::with_capacity(4);
+    while remaining != 0.0 {
+        if slices.len() == 4 { return Err("entity_manager.effects.slice_bound".into()); }
+        let step = if remaining <= f64::from(cap) {
+            let step = remaining as f32;
+            remaining = 0.0;
+            step
+        } else {
+            remaining += f64::from(f32::from_bits(cap.to_bits() ^ 0x8000_0000));
+            cap
+        };
+        slices.push(step);
+    }
+    Ok(slices)
+}
+
+#[derive(Clone, Debug)]
+struct EntityEffectEntry {
+    owner: EntityManagerOwner,
+    id: String,
+    particle: bool,
+    light: bool,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct EntityEffectRegistry { entries: Vec<EntityEffectEntry> }
+
+pub(crate) struct EntityEffectRegistration {
+    registry: Arc<Mutex<EntityEffectRegistry>>,
+    owner: EntityManagerOwner,
+    id: String,
+}
+
+impl EntityEffectRegistration {
+    pub(crate) fn new(registry: Arc<Mutex<EntityEffectRegistry>>, owner: EntityManagerOwner,
+        id: &str, particle: bool, light: bool) -> crate::Result<Self> {
+        {
+            let mut entries = registry.lock().map_err(|_| "entity_manager.effects.lock_poisoned")?;
+            if entries.entries.iter().any(|entry| entry.owner == owner && entry.id == id) {
+                return Err(format!("entity_manager.effects.duplicate_registration.{id}").into());
+            }
+            entries.entries.push(EntityEffectEntry { owner, id: id.into(), particle, light });
+        }
+        Ok(Self { registry, owner, id: id.into() })
+    }
+}
+
+impl Drop for EntityEffectRegistration {
+    fn drop(&mut self) {
+        // 1423e8400 and 1423c9c90 compact survivors without a tail swap.
+        if let Ok(mut registry) = self.registry.lock() {
+            registry.entries.retain(|entry| entry.owner != self.owner || entry.id != self.id);
+        }
+    }
+}
+
+pub(crate) struct EntityEffectDispatch<'a> {
+    pub owner: EntityManagerOwner,
+    pub advance: &'a mut dyn FnMut(&str, EntityEffectPhase) -> crate::Result<()>,
+}
+
+pub(crate) fn dispatch_entity_effects(manager: &Arc<Mutex<ViewerEntityManager>>, frame: EntityManagerFrame,
+    owners: &mut [EntityEffectDispatch<'_>]) -> crate::Result<()> {
+    let result: crate::Result<()> = (|| {
+        let registry = {
+            let manager = manager.lock().map_err(|_| "entity_manager.lock_poisoned")?;
+            if !manager.frame_is_published(frame.presentation_time_f32_bits)
+                || manager.frame_outcome.as_ref().map(|outcome| outcome.0) != Some(frame) {
+                return Err("entity_manager.frame.unpublished".into());
+            }
+            manager.effect_registry()
+        };
+        let entries = registry.lock().map_err(|_| "entity_manager.effects.lock_poisoned")?.entries.clone();
+        for (index, owner) in owners.iter().enumerate() {
+            if owners[..index].iter().any(|other| other.owner == owner.owner) {
+                return Err("entity_manager.effects.duplicate_owner".into());
+            }
+        }
+        for entry in &entries {
+            if !owners.iter().any(|owner| owner.owner == entry.owner) {
+                return Err(format!("entity_manager.effects.unprepared_owner.{:?}.{}", entry.owner, entry.id).into());
+            }
+        }
+        let slices = particle_update_slices(f32::from_bits(frame.delta_seconds_f32_bits))?;
+        let phases = std::iter::once(EntityEffectPhase::ParticlePrepare)
+            .chain(slices.into_iter().enumerate().map(|(ordinal, delta)|
+                EntityEffectPhase::ParticleStep { ordinal: ordinal as u32, delta_f32_bits: delta.to_bits() }))
+            .chain([EntityEffectPhase::ParticleFinish, EntityEffectPhase::Light]);
+        for phase in phases {
+            for entry in entries.iter().filter(|entry| if phase == EntityEffectPhase::Light { entry.light } else { entry.particle }) {
+                let owner = owners.iter_mut().find(|owner| owner.owner == entry.owner).unwrap();
+                (owner.advance)(&entry.id, phase)?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = &result {
+        if let Ok(mut manager) = manager.lock() {
+            manager.refuse_frame(frame, EntityManagerFrameRefusal::Finalization(error.to_string()));
+        }
+    }
+    result
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum EntityManagerFrameRefusal {
     InvalidClock,
     MissingCamera,
     ChangedPresentation,
     RegisteredRootsOnReset,
+    RegisteredEffectsOnReset,
+    EffectsLockPoisoned,
     Finalization(String),
     Preparation(String),
     DuplicateOwner(EntityManagerOwner),
@@ -806,6 +967,9 @@ impl<'a> ParticleGpuSubsystem<'a> {
     pub fn trail(self) -> bool {
         self.authored.trail
     }
+    #[cfg(test)]
+    pub(crate) fn emission_end_bits(self) -> u32 { self.state.end.to_bits() }
+
     pub fn local_time_bits(self) -> u32 {
         self.state.local_time.to_bits()
     }
@@ -1745,7 +1909,23 @@ struct Instance {
     last_sort: Option<(u64, ParticleSortCamera)>,
 }
 
+pub(crate) fn native_matrix_scale(world: [f32; 16]) -> f32 {
+    let lengths = [0, 4, 8].map(|base| {
+        world[base] * world[base] + world[base + 1] * world[base + 1]
+            + world[base + 2] * world[base + 2]
+    });
+    let other = if lengths[1] <= lengths[2] { lengths[2] } else { lengths[1] };
+    let largest = if lengths[0] <= other { other } else { lengths[0] };
+    largest.sqrt()
+}
+
 impl Instance {
+    fn stop_unbounded_emission(&mut self) {
+        if self.subsystems.iter().any(|subsystem| subsystem.end < 0.0) {
+            for subsystem in &mut self.subsystems { subsystem.end = subsystem.local_time; }
+        }
+    }
+
     fn effective_scale(&self) -> ParticleResult<f32> {
         let mut scale = self.definition.scale;
         if self
@@ -1755,22 +1935,7 @@ impl Instance {
             .any(|system| system.local_space)
         {
             let world = self.world.map(f32::from_bits);
-            let lengths = [0, 4, 8].map(|base| {
-                world[base] * world[base]
-                    + world[base + 1] * world[base + 1]
-                    + world[base + 2] * world[base + 2]
-            });
-            let other = if lengths[1] <= lengths[2] {
-                lengths[2]
-            } else {
-                lengths[1]
-            };
-            let largest = if lengths[0] <= other {
-                other
-            } else {
-                lengths[0]
-            };
-            scale *= largest.sqrt();
+            scale *= native_matrix_scale(world);
         }
         if !scale.is_finite() {
             return Err(runtime_refusal(
@@ -1783,8 +1948,7 @@ impl Instance {
     }
 }
 
-/// Call light_binding during entity-event preparation, then advance once in the
-/// particle-update phase. 142276040 reads Finished before 1423ddaa0 advances time.
+/// 142276040 reads Finished before the global particle phase advances any time slices.
 pub struct ParticleRuntime {
     identity: u64,
     generation: u64,
@@ -1792,6 +1956,7 @@ pub struct ParticleRuntime {
     instances: Vec<Option<Instance>>,
     touched: Vec<bool>,
     presentation: Option<u64>,
+    substep: Option<u32>,
 }
 
 impl ParticleRuntime {
@@ -1822,6 +1987,7 @@ impl ParticleRuntime {
             instances,
             touched,
             presentation: None,
+            substep: None,
         })
     }
 
@@ -2027,6 +2193,13 @@ impl ParticleRuntime {
         })
     }
 
+    pub(crate) fn stop_unbounded_emission(&mut self, handle: ParticleHandle) -> ParticleResult<()> {
+        let instance = self.instance(handle)?;
+        if let Some(refusal) = &instance.failure { return Err(refusal.clone()); }
+        self.instances[handle.slot].as_mut().unwrap().stop_unbounded_emission();
+        Ok(())
+    }
+
     pub fn refresh_attachment(
         &mut self,
         handle: ParticleHandle,
@@ -2054,7 +2227,36 @@ impl ParticleRuntime {
         renderer_delta: f32,
         updates: &[ParticleInstanceUpdate],
     ) -> ParticleResult<()> {
-        if self.presentation == Some(presentation_id) {
+        self.advance_inner(presentation_id, renderer_delta, updates, false)
+    }
+
+    pub(crate) fn advance_substep(&mut self, presentation_id: u64, delta: f32,
+        updates: &[ParticleInstanceUpdate], ordinal: u32) -> ParticleResult<()> {
+        let continuation = ordinal != 0;
+        if continuation && (self.presentation != Some(presentation_id) || self.substep != Some(ordinal - 1)) {
+            return Err(runtime_refusal("particle_substep", ParticleRefusalReason::PresentationOutOfOrder));
+        }
+        self.advance_inner(presentation_id, delta, updates, continuation)?;
+        self.substep = Some(ordinal);
+        Ok(())
+    }
+
+    pub(crate) fn finish_substeps(&mut self, presentation_id: u64, count: usize) -> ParticleResult<()> {
+        if count == 0 {
+            if self.presentation.is_some_and(|previous| previous >= presentation_id) {
+                return Err(runtime_refusal("particle_zero_delta_frame", ParticleRefusalReason::PresentationOutOfOrder));
+            }
+            self.presentation = Some(presentation_id);
+            self.substep = None;
+        } else if self.presentation != Some(presentation_id) || self.substep != Some((count - 1) as u32) {
+            return Err(runtime_refusal("particle_substeps_unfinished", ParticleRefusalReason::PresentationOutOfOrder));
+        }
+        Ok(())
+    }
+
+    fn advance_inner(&mut self, presentation_id: u64, renderer_delta: f32,
+        updates: &[ParticleInstanceUpdate], continuation: bool) -> ParticleResult<()> {
+        if self.presentation == Some(presentation_id) && !continuation {
             return Err(runtime_refusal(
                 "presentation_id",
                 ParticleRefusalReason::DuplicatePresentation,
@@ -2115,13 +2317,7 @@ impl ParticleRuntime {
                 instance.speed = speed;
             }
             match update.action {
-                ParticleAction::StopUnboundedEmission => {
-                    if instance.subsystems.iter().any(|s| s.end < 0.0) {
-                        for subsystem in &mut instance.subsystems {
-                            subsystem.end = subsystem.local_time;
-                        }
-                    }
-                }
+                ParticleAction::StopUnboundedEmission => instance.stop_unbounded_emission(),
                 ParticleAction::StopEmission | ParticleAction::StopAndDetach => {
                     for subsystem in &mut instance.subsystems {
                         subsystem.end = subsystem.local_time;
@@ -2135,6 +2331,7 @@ impl ParticleRuntime {
             }
         }
         self.presentation = Some(presentation_id);
+        self.substep = None;
         let mut first_failure = None;
         for instance in self.instances.iter_mut().flatten() {
             if instance.failure.is_some() || !instance.visible {
@@ -2197,6 +2394,7 @@ impl ParticleRuntime {
             *slot = None;
         }
         self.presentation = None;
+        self.substep = None;
     }
 
     pub fn live_instance_count(&self) -> usize {
@@ -2241,6 +2439,38 @@ mod tests {
         test_support::{Fixture, REGISTRATION},
         ParticleDefinitions,
     };
+
+    #[test]
+    fn particle_enqueue_roots_share_scene_order_without_update_mask_or_scene_zero() {
+        let mut manager = ViewerEntityManager::default();
+        let a = EntityManagerOwner::default();
+        let b = EntityManagerOwner::default();
+        for (owner, id, mask) in [(a, "a", 7), (b, "b", 7), (a, "without_camera", 0)] {
+            manager.scenes.apply(owner, &mut vec![EntityRootChange::Register {
+                id: id.into(), scene_mask: mask, update_mask: 0,
+            }]);
+        }
+        let frame = EntityManagerFrame { presentation_time_f32_bits: 0.5f32.to_bits(),
+            delta_seconds_f32_bits: 0.5f32.to_bits(), cameras: Some([true, false, true]) };
+        let mut advance_a = |_: &str, _, _: &mut ViewerParticleSeed| Ok(());
+        let mut advance_b = |_: &str, _, _: &mut ViewerParticleSeed| Ok(());
+        manager.advance_frame(frame, &mut [
+            EntityManagerDispatch { owner: a, prepared_for: frame, advance_root: &mut advance_a },
+            EntityManagerDispatch { owner: b, prepared_for: frame, advance_root: &mut advance_b },
+        ]).unwrap();
+        let random = manager.random_state();
+        let (revision, roots) = manager.particle_draw_roots(frame.presentation_time_f32_bits, &[a,b]).unwrap();
+        assert_eq!(roots, [(b,"b".into(),0),(a,"a".into(),0),(b,"b".into(),2),(a,"a".into(),2)]);
+        assert_eq!(manager.particle_draw_roots(frame.presentation_time_f32_bits, &[b,a]).unwrap(), (revision, roots));
+        assert_eq!(manager.random_state(), random);
+        assert!(manager.particle_draw_roots(frame.presentation_time_f32_bits, &[a]).err().unwrap()
+            .to_string().contains("unprepared_owner"));
+        assert!(manager.particle_draw_roots(frame.presentation_time_f32_bits, &[a,b,a]).err().unwrap()
+            .to_string().contains("duplicate_owner"));
+        manager.refuse_frame(frame, EntityManagerFrameRefusal::Finalization("failed owner".into()));
+        assert!(manager.particle_draw_roots(frame.presentation_time_f32_bits, &[a,b]).err().unwrap()
+            .to_string().contains("unpublished"));
+    }
 
     #[test]
     fn one_frame_dispatches_both_prepared_owners_and_retains_partial_failure() {
@@ -2328,6 +2558,55 @@ mod tests {
         }).unwrap();
         assert_eq!(remaining, [("b".into(), 1), ("zero".into(), 0)]);
         assert_eq!(random.counter, 12);
+    }
+
+    #[test]
+    fn native_global_slices_keep_binary64_remainder_and_zero_delta_without_updates() {
+        for (delta, expected) in [
+            (0u32, vec![]), (0x8000_0000, vec![]), (1, vec![1]),
+            (0x3e80_0000, vec![0x3dcc_cccd, 0x3dcc_cccd, 0x3d4c_cccc]),
+            (0x3e99_999a, vec![0x3dcc_cccd, 0x3dcc_cccd, 0x3dcc_cccd, 0x3200_0000]),
+            (0x3f00_0000, vec![0x3e00_0000; 4]),
+            (0x7f7f_ffff, vec![0x7e7f_ffff; 4]),
+        ] {
+            assert_eq!(particle_update_slices(f32::from_bits(delta)).unwrap().into_iter().map(f32::to_bits)
+                .collect::<Vec<_>>(), expected, "delta={delta:08x}");
+        }
+        assert!(particle_update_slices(-1.0).is_err());
+        assert!(particle_update_slices(f32::INFINITY).is_err());
+        assert!(particle_update_slices(f32::NAN).is_err());
+        let (_fixture, mut runtime, handle) = setup("subsystem={name=s max_amount=8 emission=4 duration=10 life=20}");
+        let random = runtime.instance(handle).unwrap().random;
+        runtime.finish_substeps(1, 0).unwrap();
+        assert_eq!(runtime.instance(handle).unwrap().random, random);
+        assert_eq!(runtime.gpu_view(handle).unwrap().root_subsystems().next().unwrap().local_time_bits(), 0x8000_0000);
+        assert!(runtime.advance_substep(2, 0.125, &[], 1).is_err());
+        for step in 0..4 { runtime.advance_substep(2, 0.125, &[], step).unwrap(); }
+        assert!(runtime.finish_substeps(2, 3).is_err());
+        runtime.finish_substeps(2, 4).unwrap();
+        assert_eq!(runtime.light_binding(handle).unwrap().presentation_id, Some(2));
+        assert_eq!(runtime.gpu_view(handle).unwrap().root_subsystems().next().unwrap().local_time_bits(), 0.5f32.to_bits());
+        assert!(!gpu_records(&runtime, handle).is_empty());
+        assert!(runtime.advance_substep(2, 0.125, &[], 3).is_err());
+        assert!(runtime.advance(2, 0.5, &[]).is_err());
+        runtime.reset();
+        assert_eq!(runtime.substep, None);
+    }
+
+    #[test]
+    fn orphan_only_effect_registration_keeps_failed_manager_poisoned_until_owner_reset() {
+        let mut manager = ViewerEntityManager::default();
+        let owner = EntityManagerOwner::default();
+        let registration = EntityEffectRegistration::new(manager.effect_registry(), owner, "orphan", true, false).unwrap();
+        let frame = EntityManagerFrame { presentation_time_f32_bits: 1.0f32.to_bits(),
+            delta_seconds_f32_bits: 0.5f32.to_bits(), cameras: None };
+        manager.refuse_frame(frame, EntityManagerFrameRefusal::Finalization("orphan failed".into()));
+        assert_eq!(manager.reset_frame_publication(), Err(EntityManagerFrameRefusal::RegisteredEffectsOnReset));
+        assert!(manager.advance_frame(frame, &mut []).unwrap_err().to_string().contains("orphan failed"));
+        drop(registration);
+        manager.remove_owner(owner);
+        manager.reset_frame_publication().unwrap();
+        manager.advance_frame(frame, &mut []).unwrap();
     }
 
     #[test]
@@ -3472,6 +3751,34 @@ mod tests {
                 );
                 assert_eq!(slot.visual.shape_coordinates.map(f32::to_bits), [0; 3]);
             }
+        }
+    }
+
+    #[test]
+    fn immediate_stop_notification_changes_only_ends_without_a_frame_or_random_draw() {
+        for end in [2.0, -1.0] {
+            let (_fixture, mut runtime, handle) = setup(&format!(
+                "subsystem={{name=a max_amount=8 duration=1 emission=4 life=20}} subsystem={{name=b max_amount=8 duration={end} emission=4 life=20}}"));
+            runtime.advance(17, 0.25, &[]).unwrap();
+            let random = runtime.instance(handle).unwrap().random;
+            let clocks = runtime.instance(handle).unwrap().subsystems.iter().map(|state|
+                (state.local_time.to_bits(), state.fractional_emission.to_bits(), state.live, state.retained)).collect::<Vec<_>>();
+            let records = gpu_records(&runtime, handle);
+            runtime.stop_unbounded_emission(handle).unwrap();
+            assert_eq!(runtime.presentation, Some(17));
+            assert_eq!(runtime.instance(handle).unwrap().random, random);
+            let state = runtime.instance(handle).unwrap();
+            assert_eq!(state.subsystems.iter().map(|state|
+                (state.local_time.to_bits(), state.fractional_emission.to_bits(), state.live, state.retained)).collect::<Vec<_>>(), clocks);
+            assert_eq!(state.subsystems.iter().map(|state| state.end).collect::<Vec<_>>(),
+                if end < 0.0 { vec![0.25, 0.25] } else { vec![1.0, 2.0] });
+            assert_eq!(gpu_records(&runtime, handle), records);
+            assert!(!runtime.light_binding(handle).unwrap().finished, "end equals time and live particles survive");
+            runtime.stop_unbounded_emission(handle).unwrap();
+            assert_eq!(runtime.instance(handle).unwrap().random, random);
+            assert_eq!(gpu_records(&runtime, handle), records);
+            runtime.reset();
+            assert!(runtime.stop_unbounded_emission(handle).is_err());
         }
     }
 

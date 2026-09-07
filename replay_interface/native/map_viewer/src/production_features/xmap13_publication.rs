@@ -13,23 +13,35 @@ pub enum Xmap13ModelObjectRefusal {
     PreparedFrame,
     CandidateUnavailable,
     CategoryUnavailable,
-    BoundsUnavailable,
+    AnimationConstruction(String),
+    AnimatedBoundsUnavailable,
     Collision(crate::pdx_mesh::NativePdxCollisionRefusal),
     Ray(crate::native_model_selection::NativeCollisionRefusal),
+}
+
+enum PublishedModelBounds {
+    Static {
+        animation: Arc<crate::xmap09_light_lifecycle::MeshAnimationAdmission>,
+        library: Arc<crate::Xmap12MeshLibrary>,
+        declaration_source: UsedContentKey,
+        declaration_line: usize,
+    },
+    Unavailable(Xmap13ModelObjectRefusal),
 }
 
 pub(crate) struct Xmap13PublishedModelObject {
     identity: Xmap13UnitIdentity,
     root: String,
-    mesh: Arc<crate::Xmap12SharedMesh>,
+    normal_mesh: Arc<crate::xmap12_pdxmesh::AdmittedNormalMesh>,
     mesh_source: UsedContentKey,
     object_matrix: [f32; 16],
     authored_mesh_scale: f32,
+    bounds: PublishedModelBounds,
 }
 
 impl Xmap13PublishedModelObject {
     pub(crate) fn root(&self) -> &str { &self.root }
-    pub(crate) fn mesh(&self) -> &Arc<crate::Xmap12SharedMesh> { &self.mesh }
+    pub(crate) fn mesh(&self) -> &Arc<crate::Xmap12SharedMesh> { self.normal_mesh.mesh() }
     pub(crate) fn mesh_source(&self) -> &UsedContentKey { &self.mesh_source }
     pub(crate) fn object_matrix(&self) -> [f32; 16] { self.object_matrix }
     pub(crate) fn authored_mesh_scale(&self) -> f32 { self.authored_mesh_scale }
@@ -37,15 +49,19 @@ impl Xmap13PublishedModelObject {
     pub(crate) fn geometry_hit(&self, origin: [f32; 3], direction: [f32; 3])
         -> std::result::Result<bool, Xmap13ModelObjectRefusal>
     {
-        let collision = self.mesh.native_collision(self.authored_mesh_scale)
-            .map_err(Xmap13ModelObjectRefusal::Collision)?
-            .ok_or(Xmap13ModelObjectRefusal::BoundsUnavailable)?;
-        if collision.indices.is_empty() {
-            return Err(Xmap13ModelObjectRefusal::BoundsUnavailable);
+        let collision = self.mesh().native_collision(self.authored_mesh_scale)
+            .map_err(Xmap13ModelObjectRefusal::Collision)?;
+        if let Some(collision) = collision.as_ref().filter(|row| !row.indices.is_empty()) {
+            return crate::native_model_selection::model_geometry_hit(self.object_matrix, origin, direction,
+                &collision.scaled_positions, &collision.indices, None)
+                .map_err(Xmap13ModelObjectRefusal::Ray);
         }
+        let local_bounds = match &self.bounds {
+            PublishedModelBounds::Static { .. } => self.normal_mesh.local_bounds(),
+            PublishedModelBounds::Unavailable(reason) => return Err(reason.clone()),
+        };
         crate::native_model_selection::model_geometry_hit(self.object_matrix, origin, direction,
-            &collision.scaled_positions, &collision.indices, None)
-            .map_err(Xmap13ModelObjectRefusal::Ray)
+            &[], &[], Some(local_bounds)).map_err(Xmap13ModelObjectRefusal::Ray)
     }
 }
 
@@ -139,6 +155,22 @@ impl Xmap13PublishedLandObjects {
             return Err(Xmap13ModelObjectRefusal::PublicationUnavailable);
         }
         for object in self.0.objects.values() {
+            if object.normal_mesh.admission_lease() != &self.0.lease {
+                return Err(Xmap13ModelObjectRefusal::ContentLease);
+            }
+            if let PublishedModelBounds::Static { animation, library, declaration_source, declaration_line } = &object.bounds {
+                let view = animation.checked(resolver, admission, library)
+                    .map_err(|error| Xmap13ModelObjectRefusal::AnimationConstruction(error.to_string()))?;
+                if view.declaration_source != declaration_source || view.declaration_line != *declaration_line
+                    || view.mesh_source != &object.mesh_source || !Arc::ptr_eq(view.mesh, object.mesh())
+                    || !matches!(view.construction,
+                        crate::xmap09_light_lifecycle::MeshAnimationConstruction::NotInvokedEmptyLookup
+                        | crate::xmap09_light_lifecycle::MeshAnimationConstruction::LoaderReturnedNull)
+                {
+                    return Err(Xmap13ModelObjectRefusal::AnimationConstruction(
+                        "static bounds differ from retained construction".into()));
+                }
+            }
             self.0.published.root_animation(resolver, admission, &object.root)
                 .map_err(|error| Xmap13ModelObjectRefusal::PublicationGuard(error.to_string()))?;
         }
@@ -166,36 +198,6 @@ impl Xmap13PublishedLandObjects {
     }
 }
 
-pub(super) fn land_model_casts_light_depth(
-    model: &crate::PdxModel,
-    effects: &crate::EffectFile,
-) -> Result<bool> {
-    let mut casts = false;
-    for mesh in model.shapes.iter().flat_map(|shape| &shape.meshes) {
-        if mesh.material.is_collision() {
-            continue;
-        }
-        let shader = if mesh.skin.is_some() {
-            format!("{}Skinned", mesh.material.shader)
-        } else {
-            mesh.material.shader.clone()
-        };
-        let effect = effects.effect(&shader).ok_or_else(|| {
-            format!("XMAP13 whole-mesh shadow classification has no normal effect {shader}")
-        })?;
-        let rows = crate::xmap12_d3d_handoff::state_rows(
-            effect.blend_state.as_deref(), &effects.blend_states, "BlendState");
-        let mut blend_enabled = false;
-        for (key, value) in rows {
-            if key.eq_ignore_ascii_case("BlendEnable") {
-                blend_enabled = crate::xmap12_d3d_handoff::yes_no(value, key)?;
-            }
-        }
-        casts |= !blend_enabled;
-    }
-    Ok(casts)
-}
-
 #[derive(Clone)]
 pub(super) struct LandModelCandidate {
     pub ordinal: usize,
@@ -217,6 +219,13 @@ impl LandRuntime {
     #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.slots.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(super) fn animation_admission(&self, province: u32)
+        -> Option<&std::result::Result<Arc<crate::xmap09_light_lifecycle::MeshAnimationAdmission>, String>>
+    {
+        self.slots.get(&province)?.animation_admission()
     }
 
     pub(super) fn new(manager: Arc<Mutex<crate::particle_runtime::ViewerEntityManager>>) -> Self {
@@ -278,6 +287,18 @@ impl PreparedEntityManagerOwner for PreparedLandOwner<'_> {
                 .prepared,
             root,
             random,
+        )
+    }
+    fn advance_effect(
+        &mut self,
+        instance: &str,
+        phase: crate::particle_runtime::EntityEffectPhase,
+    ) -> Result<()> {
+        self.runtime.lifecycle.advance_prepared_effect(
+            &self.adapter.content.resolver,
+            &self.pending.as_ref().ok_or("XMAP13 owner already finished")?.prepared,
+            instance,
+            phase,
         )
     }
     fn finish(&mut self) -> Result<()> {
@@ -507,6 +528,16 @@ impl Xmap13Adapter {
                     .entry(province)
                     .or_insert_with(|| instance::LandModelSlot::new(true));
                 slot.refresh(&candidate.identity, Some(&candidate.chain), previous_land_draw)?;
+                if slot.animation_admission().is_none() {
+                    let receipt: Result<Arc<crate::xmap09_light_lifecycle::MeshAnimationAdmission>> = (|| {
+                        let assets = self.entity_assets.get().ok_or("XMAP13 model catalog unavailable")?
+                            .as_ref().map_err(|reason| reason.clone())?;
+                        assets.mesh_animation_admission(&self.content.resolver, &self.content.admission,
+                            &candidate.chain.pdxmesh.name, &candidate.chain.pdxmesh_source,
+                            &candidate.chain.mesh_source, &self.content.library)
+                    })();
+                    slot.bind_animation_admission(&candidate.chain, receipt.map_err(|error| error.to_string()))?;
+                }
                 slot.advance(
                     context.viewer.frame_delta_seconds(),
                     *self.popup_speed.as_ref().map_err(|reason| reason.clone())?,
@@ -703,6 +734,7 @@ impl Xmap13Adapter {
             .chain(model.helper_content.iter())
             .chain(unit.ordered_texture_content.iter())
             .chain(unit.animation_asset.iter())
+            .chain(object.normal_mesh.sources().iter())
             {
                 self.content.admit_content(key)?;
                 if used
@@ -866,15 +898,41 @@ impl Xmap13Adapter {
             &self.content.admission,
             &candidate.chain.mesh_source,
         )?;
-        let effects = self.content.library.effect_file(
-            &self.content.resolver,
-            &self.content.admission,
-            &candidate.chain.shader_source,
-        )?;
+        let declaration = assets.resolved_pdxmesh_declaration(
+            &self.content.resolver, &self.content.admission, &candidate.chain.pdxmesh.name)?
+            .ok_or("XMAP13 published mesh declaration unavailable")?;
+        let normal_mesh = self.content.library.normal_mesh_admission(
+            &self.content.resolver, &self.content.admission, &declaration,
+            &candidate.chain.mesh_source, &candidate.chain.shader_source,
+            [camera.map_width, camera.map_height])?;
+        if !Arc::ptr_eq(&mesh, normal_mesh.mesh()) {
+            return Err("XMAP13 normal rows belong to another shared mesh".into());
+        }
+        let bounds = (|| -> std::result::Result<PublishedModelBounds, Xmap13ModelObjectRefusal> {
+            let receipt = slot.animation_admission()
+                .ok_or_else(|| Xmap13ModelObjectRefusal::AnimationConstruction("retained model construction unavailable".into()))?
+                .as_ref().map_err(|reason| Xmap13ModelObjectRefusal::AnimationConstruction(reason.clone()))?;
+            let view = receipt.checked(&self.content.resolver, &self.content.admission, &self.content.library)
+                .map_err(|error| Xmap13ModelObjectRefusal::AnimationConstruction(error.to_string()))?;
+            if view.declaration_source != declaration.source || view.declaration_line != declaration.declaration.line
+                || view.mesh_source != &candidate.chain.mesh_source || !Arc::ptr_eq(view.mesh, &mesh)
+            {
+                return Err(Xmap13ModelObjectRefusal::AnimationConstruction("retained construction differs from published mesh".into()));
+            }
+            match view.construction {
+                crate::xmap09_light_lifecycle::MeshAnimationConstruction::NotInvokedEmptyLookup
+                | crate::xmap09_light_lifecycle::MeshAnimationConstruction::LoaderReturnedNull => {
+                    Ok(PublishedModelBounds::Static { animation: receipt.clone(), library: self.content.library.clone(),
+                        declaration_source: declaration.source.clone(), declaration_line: declaration.declaration.line })
+                },
+                crate::xmap09_light_lifecycle::MeshAnimationConstruction::Constructed { .. } =>
+                    Err(Xmap13ModelObjectRefusal::AnimatedBoundsUnavailable),
+            }
+        })().unwrap_or_else(PublishedModelBounds::Unavailable);
         let drawable = mesh.drawable_model()?;
-        let casts_light_depth = land_model_casts_light_depth(drawable, &effects)?;
-        let bounds = xmap13_lod_bounds(drawable);
-        let (min, max) = bounds
+        let casts_light_depth = normal_mesh.casts_light_depth();
+        let lod_bounds = xmap13_lod_bounds(drawable);
+        let (min, max) = lod_bounds
             .get(draw.selected_lod as usize)
             .and_then(|bounds| *bounds)
             .ok_or("XMAP13 drawn model has no authored LOD bounds")?;
@@ -966,11 +1024,12 @@ impl Xmap13Adapter {
         };
         published.root_animation(&self.content.resolver, &self.content.admission, root)?;
         let object = Xmap13PublishedModelObject {
-            identity: candidate.identity.clone(), root: root.to_owned(), mesh,
+            identity: candidate.identity.clone(), root: root.to_owned(), normal_mesh,
             mesh_source: candidate.chain.mesh_source.clone(),
             object_matrix: crate::xmap12_pdxmesh::scaled_world_matrix(
                 request.world_matrix_f32_bits, candidate.chain.entity.scale)?,
             authored_mesh_scale: candidate.chain.pdxmesh.scale,
+            bounds,
         };
         Ok(Some((model, unit, draw, object)))
     }

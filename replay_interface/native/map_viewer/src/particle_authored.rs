@@ -1,3 +1,8 @@
+mod native_float;
+pub(crate) use native_float::Context as NativeFloatContext;
+#[cfg(test)]
+pub(crate) use native_float::radius_test_context;
+
 use crate::mod_resolver::{ContentAdmissionLease, GameFileResolver};
 use portable_content_manifest::paradox_text::{self, Value};
 use std::collections::BTreeMap;
@@ -282,6 +287,7 @@ impl AdmittedParticleDefinition {
 struct SourceDefinition {
     value: Value,
     path: String,
+    registration_ordinal: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -368,7 +374,7 @@ impl ParticleDefinitions {
                         ParticleRefusalReason::MalformedContent,
                     )
                 })?;
-                collect_definitions(&root, &path, &mut result)?;
+                collect_definitions(&root, &path, &mut result, &mut 0)?;
             }
         }
         Ok(result)
@@ -519,6 +525,16 @@ impl ParticleDefinitions {
         Ok(capacity)
     }
 
+    pub(crate) fn registration_order(&self, name: &str) -> ParticleResult<(&str, usize)> {
+        let rows = self.registrations.get(name).ok_or_else(|| ParticleInputRefusal::new(
+            name, None, "pdxparticle", ParticleRefusalReason::MissingRegistration))?;
+        if rows.len() != 1 {
+            return Err(ParticleInputRefusal::new(name, None, "pdxparticle",
+                ParticleRefusalReason::ConflictingRegistration));
+        }
+        Ok((&rows[0].path, rows[0].registration_ordinal))
+    }
+
     pub fn content_lease(&self) -> ContentAdmissionLease {
         self.lease.clone()
     }
@@ -560,11 +576,14 @@ fn collect_definitions(
     value: &Value,
     path: &str,
     output: &mut ParticleDefinitions,
+    next_registration: &mut usize,
 ) -> ParticleResult<()> {
     for entry in value.fields() {
         if entry.key_matches("pdxparticle") || entry.key_matches("particle") {
             let name = required_scalar(&entry.value, "name", "", None)?.to_owned();
+            let registration_ordinal = *next_registration;
             let rows = if entry.key_matches("pdxparticle") {
+                *next_registration += 1;
                 &mut output.registrations
             } else {
                 &mut output.definitions
@@ -572,9 +591,10 @@ fn collect_definitions(
             rows.entry(name).or_default().push(SourceDefinition {
                 value: join_comma_terms(entry.value.clone()),
                 path: path.into(),
+                registration_ordinal,
             });
         } else if entry.key_matches("objectTypes") {
-            collect_definitions(&entry.value, path, output)?;
+            collect_definitions(&entry.value, path, output, next_registration)?;
         }
     }
     Ok(())
@@ -1503,6 +1523,7 @@ impl EntityAttachmentGroup {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct EntityAttachments {
+    cull_radius: Option<std::result::Result<f32, native_float::ReadRefusal>>,
     pub groups: Vec<EntityAttachmentGroup>,
     pub state_propagation: Vec<(String, Vec<(u32, u32)>)>,
     pub state_weights: Vec<(String, i32)>,
@@ -1534,6 +1555,10 @@ pub(crate) fn native_state_index(weights: &[(String, i32)], draw: u32) -> crate:
 }
 
 impl EntityAttachments {
+    pub(crate) fn cull_radius(&self) -> crate::Result<f32> {
+        self.cull_radius.unwrap_or(Ok(1.0)).map_err(Into::into)
+    }
+
     pub(crate) fn enter_state(
         &self,
         pose: &crate::BuildingEntityPose,
@@ -1616,11 +1641,20 @@ pub(crate) fn entity_token_hash(value: &str) -> crate::Result<u32> {
 
 impl EntityAttachmentCatalog {
     pub(crate) fn insert(&mut self, name: &str, entity: &Value) {
-        self.sources
-            .insert(name.into(), Self::read(entity).map_err(|e| e.to_string()));
+        self.insert_with_float_context(name, entity, None);
     }
 
-    fn read(entity: &Value) -> crate::Result<EntityAttachmentSource> {
+    pub(crate) fn insert_with_float_context(
+        &mut self,
+        name: &str,
+        entity: &Value,
+        context: Option<&NativeFloatContext<'_>>,
+    ) {
+        self.sources
+            .insert(name.into(), Self::read(entity, context).map_err(|e| e.to_string()));
+    }
+
+    fn read(entity: &Value, context: Option<&NativeFloatContext<'_>>) -> crate::Result<EntityAttachmentSource> {
         let mut own = EntityAttachments::default();
         let mut base = None;
         for field in entity.fields() {
@@ -1632,6 +1666,16 @@ impl EntityAttachmentCatalog {
                         .ok_or("attachment clone is not scalar")?,
                 );
                 base = (!name.is_empty()).then_some(name);
+            } else if field.key_matches("cull_radius") {
+                let text = field.value.as_scalar().ok_or("entity cull_radius is not scalar")?;
+                let previous = own.cull_radius.unwrap_or(Ok(1.0));
+                // Assigned overwrites scratch; EOF retains the prior observation, including refusal.
+                let mut bits = previous.map(f32::to_bits).unwrap_or(0);
+                own.cull_radius = Some(match native_float::read_with_context(text, &mut bits, context) {
+                    Ok(native_float::ReadOutcome::Assigned) => Ok(f32::from_bits(bits)),
+                    Ok(native_float::ReadOutcome::RetainedAtEof) => previous,
+                    Err(refusal) => Err(refusal),
+                });
             } else if field.key_matches("get_state_from_parent") {
                 own.parent_state_override = Some(
                     field
@@ -1814,12 +1858,68 @@ mod entity_attachment_tests {
     use super::*;
 
     fn catalog(text: &str) -> EntityAttachmentCatalog {
+        catalog_with_context(text, None)
+    }
+
+    fn catalog_with_context(text: &str, context: Option<&NativeFloatContext<'_>>) -> EntityAttachmentCatalog {
         let (document, _) = portable_content_manifest::paradox_text::parse_asset_str(text).unwrap();
         let mut catalog = EntityAttachmentCatalog::default();
         for entity in document.values_ci("entity") {
-            catalog.insert(entity.first_scalar_ci("name").unwrap(), entity);
+            catalog.insert_with_float_context(entity.first_scalar_ci("name").unwrap(), entity, context);
         }
         catalog
+    }
+
+    #[test]
+    fn dummy_radius_defaults_repeated_writes_and_clone_marker_match_entity_reader() {
+        let context = radius_test_context();
+        let catalog = catalog_with_context(r#"
+entity = { name = default }
+entity = { name = base cull_radius = 2 cull_radius = 10 }
+entity = { name = clone clone = base cull_radius = 99 }
+entity = { name = negative cull_radius = -3 }
+"#, Some(&context));
+        assert_eq!(catalog.resolve("default").unwrap().cull_radius().unwrap(), 1.0);
+        assert_eq!(catalog.resolve("base").unwrap().cull_radius, Some(Ok(10.0)));
+        // Reader token 0x1f4 writes the value but not the optional marker tested by clone materialization.
+        assert_eq!(catalog.resolve("clone").unwrap().cull_radius, Some(Ok(10.0)));
+        assert_eq!(catalog.resolve("negative").unwrap().cull_radius, Some(Ok(-3.0)));
+    }
+
+    #[test]
+    fn unknown_radius_context_is_retained_only_on_radius_and_eof_keeps_prior_observation() {
+        let catalog = catalog(r#"
+entity = { name = absent }
+entity = { name = eof cull_radius = "" }
+entity = { name = authored cull_radius = 500 attach={""=child} state={name=idle chance=2} }
+entity = { name = inherited clone = authored }
+entity = { name = ignored_own clone = absent cull_radius = 500 }
+entity = { name = repeated_unknown cull_radius = 500 cull_radius = "" }
+entity = { name = unrelated cull_radius = 500 group = invalid }
+"#);
+        assert_eq!(catalog.resolve("absent").unwrap().cull_radius, None);
+        let ignored = catalog.resolve("ignored_own").unwrap();
+        assert_eq!(ignored.cull_radius, None);
+        assert_eq!(ignored.cull_radius().unwrap().to_bits(), 1.0f32.to_bits());
+        assert_eq!(catalog.resolve("eof").unwrap().cull_radius().unwrap().to_bits(), 1.0f32.to_bits());
+        for name in ["authored", "inherited", "repeated_unknown"] {
+            let resolved = catalog.resolve(name).unwrap();
+            assert!(resolved.cull_radius().unwrap_err().to_string()
+                .contains("entity.cull_radius.native_float_context_unavailable"));
+        }
+        let authored = catalog.resolve("authored").unwrap();
+        let inherited = catalog.resolve("inherited").unwrap();
+        assert_eq!(authored.groups[0].variants[0].children, [(String::new(), "child".into())]);
+        assert_eq!(authored.state_weights, [("idle".into(), 200_000)]);
+        assert_eq!(inherited, authored);
+        assert!(catalog.resolve("unrelated").unwrap_err().to_string().contains("attachment group is not an object"));
+        let context = radius_test_context();
+        let catalog = catalog_with_context(r#"
+entity = { name = repeated cull_radius = 500tail cull_radius = "" }
+entity = { name = nonfinite cull_radius = 1e5201 }
+"#, Some(&context));
+        assert_eq!(catalog.resolve("repeated").unwrap().cull_radius().unwrap().to_bits(), 500.0f32.to_bits());
+        assert_eq!(catalog.resolve("nonfinite").unwrap().cull_radius().unwrap().to_bits(), f32::INFINITY.to_bits());
     }
 
     #[test]

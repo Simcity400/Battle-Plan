@@ -342,6 +342,9 @@ pub trait PreparedEntityManagerOwner {
     fn frame(&self) -> crate::particle_runtime::EntityManagerFrame;
     fn advance_root(&mut self, root: &str, scene: u32,
         random: &mut crate::particle_runtime::ViewerParticleSeed) -> Result<()>;
+    fn advance_effect(&mut self, instance: &str, phase: crate::particle_runtime::EntityEffectPhase) -> Result<()> {
+        Err(format!("entity_manager.effects.owner_callback_unavailable.{phase:?}.{instance}").into())
+    }
     fn finish(&mut self) -> Result<()>;
     fn refuse(&mut self, reason: &str);
 }
@@ -366,6 +369,14 @@ pub(crate) fn dispatch_prepared_entity_owners(owners: &mut [Box<dyn PreparedEnti
             manager.lock().map_err(|_| "entity_manager.lock_poisoned")?
                 .advance_frame(frame, &mut dispatch)?;
         }
+        {
+            let mut callbacks: Vec<_> = owners.iter_mut().map(|owner|
+                move |id: &str, phase: crate::particle_runtime::EntityEffectPhase|
+                    owner.advance_effect(id, phase)).collect();
+            let mut dispatch: Vec<_> = identities.iter().zip(callbacks.iter_mut()).map(|(owner, callback)|
+                crate::particle_runtime::EntityEffectDispatch { owner: *owner, advance: callback }).collect();
+            crate::particle_runtime::dispatch_entity_effects(&manager, frame, &mut dispatch)?;
+        }
         for owner in owners.iter_mut() { owner.finish()?; }
         Ok(())
     })();
@@ -381,6 +392,97 @@ fn refuse_prepared_entity_owners(owners: &mut [Box<dyn PreparedEntityManagerOwne
         }
         owner.refuse(reason);
     }
+}
+
+pub trait RetainedParticleDrawOwner {
+    fn manager(&self) -> std::sync::Arc<std::sync::Mutex<crate::particle_runtime::ViewerEntityManager>>;
+    fn owner(&self) -> crate::particle_runtime::EntityManagerOwner;
+    fn content_lease(&self) -> crate::mod_resolver::ContentAdmissionLease;
+    fn particle_count(&self) -> usize;
+    fn draw_capacity(&self) -> Option<&crate::particle_authored::ParticleDrawCapacity>;
+    fn check_publication(&self, time: f32) -> Result<()>;
+    fn collect_root(&mut self, root: &str, pass: u32,
+        enqueue: &mut dyn FnMut(&str, usize, &str, &str) -> Result<()>) -> Result<()>;
+    fn visit_instance(&mut self, instance: &str, pass: u32,
+        visit: &mut dyn FnMut(&str, u32, &crate::particle_authored::ParticleDrawCapacity,
+            crate::particle_runtime::ParticleGpuView<'_>) -> Result<()>) -> Result<()>;
+}
+
+pub(crate) fn dispatch_retained_particle_draws(
+    time: f32, owners: &mut [Box<dyn RetainedParticleDrawOwner + '_>],
+    visit: &mut dyn FnMut(&str, u32, &crate::particle_authored::ParticleDrawCapacity,
+        crate::particle_runtime::ParticleGpuView<'_>) -> Result<()>,
+) -> Result<()> {
+    let first = owners.first().ok_or("PARTICLE_DRAW retained owners unavailable")?;
+    let manager = first.manager();
+    let lease = first.content_lease();
+    let mut bound = 0usize;
+    let mut global_capacity = None;
+    for owner in owners.iter() {
+        if !std::sync::Arc::ptr_eq(&manager, &owner.manager()) || owner.content_lease() != lease {
+            return Err("PARTICLE_DRAW retained owner manager/content mismatch".into());
+        }
+        owner.check_publication(time)?;
+        if owner.particle_count() != 0 {
+            let capacity = owner.draw_capacity().ok_or("PARTICLE_DRAW owner capacity unavailable")?;
+            let dimensions = (capacity.packets, capacity.particles);
+            if capacity.lease != lease || global_capacity.is_some_and(|previous| previous != dimensions) {
+                return Err("PARTICLE_DRAW global authored capacity mismatch".into());
+            }
+            global_capacity = Some(dimensions);
+        }
+        bound = bound.checked_add(owner.particle_count()).ok_or("PARTICLE_DRAW count overflow")?;
+    }
+    bound = bound.checked_mul(3).ok_or("PARTICLE_DRAW pass count overflow")?;
+    let identities: Vec<_> = owners.iter().map(|owner| owner.owner()).collect();
+    let (revision, roots) = manager.lock().map_err(|_| "entity_manager.lock_poisoned")?
+        .particle_draw_roots(time.to_bits(), &identities)?;
+    let mut types = BTreeMap::<(String, usize), String>::new();
+    let mut sources = BTreeMap::<u32, String>::new();
+    let mut queue = Vec::new();
+    for (owner, root, pass) in roots {
+        let index = identities.iter().position(|candidate| *candidate == owner)
+            .ok_or("PARTICLE_DRAW root owner disappeared")?;
+        owners[index].collect_root(&root, pass, &mut |source, type_ordinal, registration, instance| {
+            if source.is_empty() || registration.is_empty() || instance.is_empty() {
+                return Err("PARTICLE_DRAW invalid native registration/instance".into());
+            }
+            if sources.get(&pass).is_some_and(|existing| existing != source) {
+                return Err("PARTICLE_DRAW native cross-file registration order unavailable".into());
+            }
+            sources.entry(pass).or_insert_with(|| source.to_owned());
+            let key = (source.to_owned(), type_ordinal);
+            if types.get(&key).is_some_and(|existing| existing != registration) {
+                return Err("PARTICLE_DRAW native registration ordinals disagree".into());
+            }
+            types.entry(key).or_insert_with(|| registration.to_owned());
+            if queue.len() >= bound { return Err("PARTICLE_DRAW enqueue exceeds retained population".into()); }
+            queue.push((pass, type_ordinal, index, registration.to_owned(), instance.to_owned()));
+            Ok(())
+        })?;
+    }
+    // 14227f420 visits type buckets in order, retaining 14227ecd0's append order within each.
+    queue.sort_by_key(|(pass, type_ordinal, _, _, _)| (*pass, *type_ordinal));
+    for owner in owners.iter() { owner.check_publication(time)?; }
+    if manager.lock().map_err(|_| "entity_manager.lock_poisoned")?
+        .publication_revision(time.to_bits()) != Some(revision) {
+        return Err("entity_manager.frame.unpublished".into());
+    }
+    for (pass, _, owner, registration, instance) in queue {
+        let mut visits = 0usize;
+        owners[owner].visit_instance(&instance, pass, &mut |id, actual_pass, capacity, view| {
+            visits += 1;
+            if visits != 1 || id != instance || actual_pass != pass || view.content_lease() != &lease
+                || view.definition().registration() != registration
+                || capacity.lease != lease || global_capacity != Some((capacity.packets, capacity.particles))
+                || view.presentation_id != Some(u64::from(time.to_bits())) {
+                return Err("PARTICLE_DRAW retained queue/payload identity mismatch".into());
+            }
+            visit(id, pass, capacity, view)
+        })?;
+        if visits != 1 { return Err("PARTICLE_DRAW retained queue entry was not submitted".into()); }
+    }
+    Ok(())
 }
 
 pub trait ProductionMapFeatureAdapter {
@@ -403,13 +505,10 @@ pub trait ProductionMapFeatureAdapter {
     fn weather_particles_bound(&self, _time: f32, _identity: &str) -> Result<bool> {
         Ok(false)
     }
-    fn visit_particles_for_draw(
-        &self,
-        _presentation_time: f32,
-        _camera: crate::particle_runtime::ParticleSortCamera,
-        _visit: &mut dyn FnMut(&str, &crate::particle_authored::ParticleDrawCapacity, crate::particle_runtime::ParticleGpuView<'_>) -> Result<()>,
-    ) -> Result<()> {
-        Err("PARTICLE_DRAW retained authored runtime provider unavailable".into())
+    fn take_retained_particle_draw_owner(
+        &self, _time: f32, _cameras: [crate::particle_runtime::ParticleSortCamera; 3],
+    ) -> Result<Option<Box<dyn RetainedParticleDrawOwner + '_>>> {
+        Ok(None)
     }
 }
 
@@ -553,12 +652,16 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
     pub fn visit_particles_for_draw(
         &self,
         presentation_time: f32,
-        camera: crate::particle_runtime::ParticleSortCamera,
-        visit: &mut dyn FnMut(&str, &crate::particle_authored::ParticleDrawCapacity, crate::particle_runtime::ParticleGpuView<'_>) -> Result<()>,
+        cameras: [crate::particle_runtime::ParticleSortCamera; 3],
+        visit: &mut dyn FnMut(&str, u32, &crate::particle_authored::ParticleDrawCapacity, crate::particle_runtime::ParticleGpuView<'_>) -> Result<()>,
     ) -> Result<()> {
-        self.get(MapVisualFamily::LightingShadows)
-            .ok_or("PARTICLE_DRAW lighting runtime provider unavailable")?
-            .visit_particles_for_draw(presentation_time, camera, visit)
+        let mut owners = Vec::new();
+        for adapter in self.slots.values() {
+            if let Some(owner) = adapter.take_retained_particle_draw_owner(presentation_time, cameras)? {
+                owners.push(owner);
+            }
+        }
+        dispatch_retained_particle_draws(presentation_time, &mut owners, visit)
     }
 
     pub fn set_xmap13_motion(&mut self, sample: Option<crate::Xmap13MotionSample>) {
@@ -2704,6 +2807,82 @@ mod tests {
                     delta_seconds_f32_bits: 0.5f32.to_bits(), cameras: Some([true; 3]) },
                 published: Default::default(), fail_finish: false })
         })
+    }
+
+    #[test]
+    fn common_effect_pass_preserves_registration_removal_and_first_refusal_across_owners() {
+        use crate::particle_runtime::{EntityEffectPhase, EntityEffectRegistration};
+        use std::{cell::{Cell, RefCell}, rc::Rc};
+        struct EffectOwner {
+            inner: Box<FrameOwner>,
+            effects: Rc<RefCell<Vec<(String, EntityEffectPhase)>>>,
+            fail: Rc<Cell<bool>>,
+            finishes: Rc<Cell<u32>>,
+            time: Rc<Cell<u32>>,
+        }
+        impl PreparedEntityManagerOwner for EffectOwner {
+            fn manager(&self) -> std::sync::Arc<std::sync::Mutex<crate::particle_runtime::ViewerEntityManager>> { self.inner.manager() }
+            fn owner(&self) -> crate::particle_runtime::EntityManagerOwner { self.inner.owner() }
+            fn frame(&self) -> crate::particle_runtime::EntityManagerFrame {
+                crate::particle_runtime::EntityManagerFrame { presentation_time_f32_bits: self.time.get(), ..self.inner.frame() }
+            }
+            fn advance_root(&mut self, root: &str, scene: u32, random: &mut crate::particle_runtime::ViewerParticleSeed) -> Result<()> {
+                self.inner.advance_root(root, scene, random)
+            }
+            fn advance_effect(&mut self, id: &str, phase: EntityEffectPhase) -> Result<()> {
+                self.effects.borrow_mut().push((id.to_owned(), phase));
+                if self.fail.get() && matches!(phase, EntityEffectPhase::ParticleStep { ordinal: 1, .. }) && id != "z-first" {
+                    return Err(format!("fixture hostile effect {id}").into());
+                }
+                Ok(())
+            }
+            fn finish(&mut self) -> Result<()> { self.finishes.set(self.finishes.get() + 1); self.inner.finish() }
+            fn refuse(&mut self, reason: &str) { self.inner.refuse(reason); }
+        }
+        let [first, second] = frame_owners();
+        let manager = first.manager.clone();
+        let registry = manager.lock().unwrap().effect_registry();
+        let first_publication = first.published.clone();
+        let second_publication = second.published.clone();
+        let mut registrations = vec![EntityEffectRegistration::new(registry.clone(), second.id, "z-first", true, false).unwrap()];
+        let removed = EntityEffectRegistration::new(registry.clone(), first.id, "removed", true, true).unwrap();
+        registrations.push(EntityEffectRegistration::new(registry.clone(), first.id, "m-paired", true, true).unwrap());
+        registrations.push(EntityEffectRegistration::new(registry.clone(), second.id, "a-last", true, false).unwrap());
+        drop(removed);
+        let effects = Rc::new(RefCell::new(Vec::new()));
+        let fail = Rc::new(Cell::new(false));
+        let finishes = Rc::new(Cell::new(0));
+        let time = Rc::new(Cell::new(1.0f32.to_bits()));
+        let mut owners: Vec<Box<dyn PreparedEntityManagerOwner>> = [first, second].into_iter().map(|inner|
+            Box::new(EffectOwner { inner, effects: effects.clone(), fail: fail.clone(), finishes: finishes.clone(), time: time.clone() })
+                as Box<dyn PreparedEntityManagerOwner>).collect();
+        dispatch_prepared_entity_owners(&mut owners).unwrap();
+        use EntityEffectPhase::{Light, ParticlePrepare, ParticleStep, ParticleFinish};
+        let mut expected = Vec::new();
+        for phase in [ParticlePrepare, ParticleStep { ordinal: 0, delta_f32_bits: 0x3e00_0000 },
+            ParticleStep { ordinal: 1, delta_f32_bits: 0x3e00_0000 },
+            ParticleStep { ordinal: 2, delta_f32_bits: 0x3e00_0000 },
+            ParticleStep { ordinal: 3, delta_f32_bits: 0x3e00_0000 }, ParticleFinish] {
+            for id in ["z-first", "m-paired", "a-last"] { expected.push((id.to_owned(), phase)); }
+        }
+        expected.push(("m-paired".into(), Light));
+        assert_eq!(*effects.borrow(), expected);
+        assert_eq!(finishes.get(), 2);
+        assert!(first_publication.get() && second_publication.get());
+        time.set(2.0f32.to_bits());
+        effects.borrow_mut().clear();
+        fail.set(true);
+        let error = dispatch_prepared_entity_owners(&mut owners).unwrap_err().to_string();
+        assert!(error.contains("m-paired"), "{error}");
+        assert_eq!(*effects.borrow(), expected[..8], "all owners consume slice zero before the first refusal in slice one");
+        assert_eq!(finishes.get(), 2, "no owner may finish after a partial effect pass");
+        assert!(!first_publication.get() && !second_publication.get());
+        assert!(!manager.lock().unwrap().frame_is_published(2.0f32.to_bits()));
+        let random = manager.lock().unwrap().random_state();
+        assert!(dispatch_prepared_entity_owners(&mut owners).is_err());
+        assert_eq!(manager.lock().unwrap().random_state(), random);
+        assert_eq!(effects.borrow().len(), 8, "retry must retain the first partial update");
+        drop(registrations);
     }
 
     #[test]

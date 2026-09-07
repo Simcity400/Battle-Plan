@@ -1238,6 +1238,19 @@ pub fn extract_pdx_anim(tree: &PdxAssetTree) -> Result<PdxAnimData> {
     })
 }
 
+pub(crate) fn validate_pdx_anim_info(node: &PdxNode) -> Result<()> {
+    let mut unknown = UnknownCollector::new();
+    let (_, sample_count, joint_count, joints) = extract_anim_info(node, &mut unknown)?;
+    unknown.finish("pdxasset anim info")?;
+    if sample_count < 0 || joint_count < 0 || joints.len() != joint_count as usize {
+        return Err("pdxasset anim info: count mismatch or negative count".into());
+    }
+    if sample_count.checked_mul(joint_count).is_none() {
+        return Err("pdxasset anim info: native allocation product overflows".into());
+    }
+    Ok(())
+}
+
 #[allow(clippy::type_complexity)]
 fn extract_anim_info(
     node: &PdxNode,
@@ -1991,6 +2004,40 @@ mod tests {
         assert!(model.shapes[0].meshes.is_empty());
         assert_eq!(tree.native_collision(1.0).unwrap().unwrap().indices, [0, 2, 1]);
         assert_eq!(model.locators.len(), 1);
+    }
+
+    #[test]
+    fn animation_info_validation_refuses_malformed_negative_and_mismatched_counts() {
+        let tree = parse_pdx_asset(&synthetic_anim_bytes()).unwrap();
+        let info = tree.root.children.iter().find(|node| node.name == "info").unwrap();
+        validate_pdx_anim_info(info).unwrap();
+        for (property, value) in [("sa", -1), ("j", -1), ("j", 3), ("sa", i32::MAX)] {
+            let mut invalid = info.clone();
+            invalid.properties.iter_mut().find(|p| p.name == property).unwrap().values =
+                PdxValues::I32(vec![value]);
+            let error = validate_pdx_anim_info(&invalid).unwrap_err().to_string();
+            assert!(error.contains("count") || error.contains("overflows"), "{error}");
+        }
+        let mut missing = info.clone();
+        missing.properties.retain(|property| property.name != "fps");
+        assert!(validate_pdx_anim_info(&missing).unwrap_err().to_string().contains("missing fps"));
+        let mut malformed = info.clone();
+        malformed.properties.iter_mut().find(|p| p.name == "fps").unwrap().values =
+            PdxValues::I32(vec![15]);
+        assert!(validate_pdx_anim_info(&malformed).is_err());
+        let mut missing_base = info.clone();
+        missing_base.children[0].properties.retain(|property| property.name != "q");
+        assert!(validate_pdx_anim_info(&missing_base).unwrap_err().to_string().contains("missing q"));
+    }
+
+    #[test]
+    fn animation_info_validation_does_not_require_or_invent_samples() {
+        let mut tree = parse_pdx_asset(&synthetic_anim_bytes()).unwrap();
+        tree.root.children.retain(|node| node.name != "samples");
+        let info = tree.root.children.iter().find(|node| node.name == "info").unwrap();
+        validate_pdx_anim_info(info).unwrap();
+        assert!(extract_pdx_anim(&tree).unwrap_err().to_string().contains("samples.t"));
+        assert!(tree.root.children.iter().all(|node| node.name != "samples"));
     }
 
     #[test]

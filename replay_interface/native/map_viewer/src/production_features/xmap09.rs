@@ -1038,6 +1038,7 @@ pub(crate) struct Xmap09LightingAdapter {
     lifecycle: std::sync::Mutex<crate::xmap09_light_lifecycle::ViewerLightLifecycle>,
     pending_entities: std::sync::Mutex<Option<crate::xmap09_light_lifecycle::PreparedLightEntityFrame>>,
     derived_entities: std::sync::Mutex<Option<std::result::Result<crate::xmap09_light_lifecycle::DerivedLightRows, Xmap09LightCensusRefusal>>>,
+    particle_visibility: std::sync::Mutex<Option<(u32, std::collections::BTreeMap<String, [bool; 3]>)>>,
     defines: crate::Xmap09LightingDefines,
     ordered_used_content: Vec<UsedContentKey>,
     defines_source_sha256: String,
@@ -1071,6 +1072,7 @@ impl Xmap09LightingAdapter {
             resolver: resolver.clone(),
             lifecycle: std::sync::Mutex::new(crate::xmap09_light_lifecycle::ViewerLightLifecycle::with_entity_manager(entity_manager)),
             pending_entities: std::sync::Mutex::new(None),
+            particle_visibility: std::sync::Mutex::new(None),
             derived_entities: std::sync::Mutex::new(None),
             defines,
             ordered_used_content,
@@ -1196,6 +1198,10 @@ impl crate::production_foundation::PreparedEntityManagerOwner for PreparedLighti
         self.lifecycle.advance_prepared_root(&self.adapter.resolver,
             self.prepared.as_ref().ok_or("entity_manager.light_owner.already_finished")?, root, random)
     }
+    fn advance_effect(&mut self, id: &str, phase: crate::particle_runtime::EntityEffectPhase) -> Result<()> {
+        self.lifecycle.advance_prepared_effect(&self.adapter.resolver,
+            self.prepared.as_ref().ok_or("entity_manager.light_owner.already_finished")?, id, phase)
+    }
     fn finish(&mut self) -> Result<()> {
         let prepared = self.prepared.take().ok_or("entity_manager.light_owner.already_finished")?;
         let result = self.lifecycle.finish_entity_frame(&self.adapter.resolver, prepared);
@@ -1213,6 +1219,18 @@ impl crate::production_foundation::PreparedEntityManagerOwner for PreparedLighti
 
 impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
     fn prepare_entity_manager_population(&self, context: &FoundationFeatureContext<'_>) -> Result<()> {
+        let mut visibility = std::collections::BTreeMap::<String, [bool; 3]>::new();
+        if let Some(frame) = context.prepared_map_objects {
+            for draw in &frame.ordered_draws {
+                let row = visibility.entry(draw.stable_typed_id.clone()).or_insert([false; 3]);
+                for (index, bit) in [crate::L03_PARTITION_PRIMARY, crate::L03_PARTITION_WRAP_WEST,
+                    crate::L03_PARTITION_WRAP_EAST].into_iter().enumerate() {
+                    row[index] |= draw.partition_mask & bit != 0;
+                }
+            }
+        }
+        *self.particle_visibility.lock().map_err(|_| "PARTICLE_DRAW visibility lock poisoned")? =
+            Some((context.viewer.animation_time_f32_bits, visibility));
         *self.derived_entities.lock().map_err(|_| "entity_manager.light_result.lock_poisoned")? = None;
         let mut pending = self.pending_entities.lock().map_err(|_| "entity_manager.light_pending.lock_poisoned")?;
         if pending.is_some() { return Err("entity_manager.light_owner.not_dispatched".into()); }
@@ -1222,7 +1240,19 @@ impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
         let mut lifecycle = self.lifecycle.lock().map_err(|_| "XMAP09 viewer lifecycle lock is poisoned")?;
         match population {
             Ok(rows) => match lifecycle.prepare_entity_frame(&self.resolver, rows, context.viewer, context.prepared_weather) {
-                Ok(prepared) => *pending = Some(prepared),
+                Ok(prepared) => {
+                    let mut visibility = self.particle_visibility.lock()
+                        .map_err(|_| "PARTICLE_DRAW visibility lock poisoned")?;
+                    let (_, roots) = visibility.as_mut().ok_or("PARTICLE_DRAW visibility unavailable")?;
+                    match lifecycle.extend_particle_only_visibility(&prepared, context.viewer.camera.as_ref(), roots) {
+                        Ok(()) => *pending = Some(prepared),
+                        Err(error) => {
+                            lifecycle.refuse_entity_publication(&error.to_string());
+                            *self.derived_entities.lock().map_err(|_| "entity_manager.light_result.lock_poisoned")? =
+                                Some(Err(Xmap09LightCensusRefusal::MissingDomain { domain: error.to_string() }));
+                        }
+                    }
+                },
                 Err(refusal) => *self.derived_entities.lock().map_err(|_| "entity_manager.light_result.lock_poisoned")? = Some(Err(refusal)),
             },
             Err(refusal) => {
@@ -1247,14 +1277,17 @@ impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
             .weather_particles_bound(time, identity))
     }
 
-    fn visit_particles_for_draw(
-        &self,
-        presentation_time: f32,
-        camera: crate::particle_runtime::ParticleSortCamera,
-        visit: &mut dyn FnMut(&str, &crate::particle_authored::ParticleDrawCapacity, crate::particle_runtime::ParticleGpuView<'_>) -> Result<()>,
-    ) -> Result<()> {
-        self.lifecycle.lock().map_err(|_| "PARTICLE_DRAW lifecycle lock poisoned")?
-            .visit_particles_for_draw(presentation_time, camera, visit)
+    fn take_retained_particle_draw_owner(
+        &self, time: f32, cameras: [crate::particle_runtime::ParticleSortCamera; 3],
+    ) -> Result<Option<Box<dyn crate::production_foundation::RetainedParticleDrawOwner + '_>>> {
+        let visibility = self.particle_visibility.lock().map_err(|_| "PARTICLE_DRAW visibility lock poisoned")?;
+        let (published_time, roots) = visibility.as_ref().ok_or("PARTICLE_DRAW visibility unavailable")?;
+        if *published_time != time.to_bits() { return Err("PARTICLE_DRAW visibility belongs to another frame".into()); }
+        let roots = roots.clone();
+        drop(visibility);
+        Ok(Some(Box::new(crate::xmap09_light_lifecycle::RetainedLifecycleParticleOwner::new(
+            self.lifecycle.lock().map_err(|_| "PARTICLE_DRAW lifecycle lock poisoned")?, time, cameras, roots,
+        )?)))
     }
 
     fn family(&self) -> MapVisualFamily {
@@ -1867,6 +1900,7 @@ mod tests {
             lifecycle: Default::default(),
             pending_entities: Default::default(),
             derived_entities: Default::default(),
+            particle_visibility: Default::default(),
             defines: crate::Xmap09LightingDefines::from_effective_sources(&sources).unwrap(),
             ordered_used_content: sources
                 .iter()

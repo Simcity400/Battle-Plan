@@ -50,10 +50,10 @@ impl ProductMapFoundationSession {
     pub(crate) fn visit_particles_for_draw(
         &self,
         presentation_time: f32,
-        camera: map_viewer::particle_runtime::ParticleSortCamera,
-        visit: &mut dyn FnMut(&str, &map_viewer::particle_authored::ParticleDrawCapacity, map_viewer::particle_runtime::ParticleGpuView<'_>) -> map_viewer::Result<()>,
+        cameras: [map_viewer::particle_runtime::ParticleSortCamera; 3],
+        visit: &mut dyn FnMut(&str, u32, &map_viewer::particle_authored::ParticleDrawCapacity, map_viewer::particle_runtime::ParticleGpuView<'_>) -> map_viewer::Result<()>,
     ) -> crate::Result<()> {
-        self.adapters.visit_particles_for_draw(presentation_time, camera, visit)
+        self.adapters.visit_particles_for_draw(presentation_time, cameras, visit)
     }
 
     pub(crate) fn start(
