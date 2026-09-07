@@ -246,3 +246,72 @@ fn viewer_selection_survives_only_the_same_conference_identity() {
         "conference lifecycle does not own viewer open/close"
     );
 }
+
+#[test]
+fn unavailable_frame_retains_intent_until_authenticated_reconciliation() {
+    let first = admit_peace_conference(&conference(40, "first", "participant:GER")).unwrap();
+    let mut state = PeaceConferenceViewerState::default();
+    state.set_open(true);
+    state.synchronize(&first);
+    state.selected_participant_id = Some("participant:GER".into());
+    state
+        .expanded_participant_ids
+        .insert("participant:GER".into());
+    state.expanded_action_kinds.insert("take_state".into());
+    state
+        .set_scroll(PeaceConferenceScrollRegion::CurrentAndHistory, 12, 30)
+        .unwrap();
+    let intent = state.clone();
+    state.suspend_unavailable_frame();
+    assert!(state.snapshot_identity().is_none());
+    assert_eq!(state.conference_id(), intent.conference_id());
+    assert_eq!(
+        state.selected_participant_id,
+        intent.selected_participant_id
+    );
+    assert_eq!(
+        state.expanded_participant_ids,
+        intent.expanded_participant_ids
+    );
+    assert_eq!(state.expanded_action_kinds, intent.expanded_action_kinds);
+    assert_eq!(state.current_and_history_scroll_px, 12);
+    assert!(state.open);
+
+    // An invalid candidate cannot supply the membership used for reconciliation.
+    let mut invalid = conference(40, "invalid", "participant:USA");
+    if let PeaceConferenceSnapshot::Active(active) = &mut invalid {
+        active.complete = false;
+    }
+    assert!(admit_peace_conference(&invalid).is_err());
+    state.suspend_unavailable_frame();
+    assert_eq!(
+        state.selected_participant_id.as_deref(),
+        Some("participant:GER")
+    );
+
+    let same = admit_peace_conference(&conference(40, "same", "participant:GER")).unwrap();
+    state.synchronize(&same);
+    assert_eq!(state.snapshot_identity(), Some("same"));
+    assert!(state.expanded_action_kinds.is_empty(), "authenticated current groups prune stale expansion keys");
+    assert_eq!(state.current_and_history_scroll_px, 12);
+    assert_eq!(
+        state.expanded_participant_ids,
+        intent.expanded_participant_ids
+    );
+
+    state.suspend_unavailable_frame();
+    let changed = admit_peace_conference(&conference(40, "changed", "participant:USA")).unwrap();
+    state.synchronize(&changed);
+    assert!(state.selected_participant_id.is_none());
+    assert!(state.expanded_participant_ids.is_empty());
+    assert_eq!(state.current_and_history_scroll_px, 12);
+    assert!(state.open);
+
+    state.suspend_unavailable_frame();
+    let replacement =
+        admit_peace_conference(&conference(41, "replacement", "participant:USA")).unwrap();
+    state.synchronize(&replacement);
+    assert!(state.expanded_action_kinds.is_empty());
+    assert_eq!(state.current_and_history_scroll_px, 0);
+    assert!(state.open);
+}

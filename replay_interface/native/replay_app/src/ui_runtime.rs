@@ -1620,6 +1620,20 @@ fn commit_xui08_staged_candidate<T>(
     Ok(pending.take())
 }
 
+fn reconcile_xui08_candidate(
+    viewer: &mut game_ui::peace_conference_ui::PeaceConferenceViewerState,
+    candidate: Option<&Xui08PresentedFrame>,
+) {
+    if let Some(candidate) = candidate {
+        viewer.synchronize(&candidate.admitted);
+        if !candidate.admitted.active() {
+            viewer.set_open(false);
+        }
+    } else {
+        viewer.suspend_unavailable_frame();
+    }
+}
+
 fn stage_xui08_viewer_input<'a>(
     pending_input: &'a mut Option<game_ui::peace_conference_ui::PeaceConferenceViewerState>,
     presented: &game_ui::peace_conference_ui::PeaceConferenceViewerState,
@@ -2929,19 +2943,14 @@ impl ProductObserverUiRuntime {
                     tooltip_targets: Vec::new(),
                 })
             });
-        if let Some(candidate) = xui08_candidate.as_ref() {
-            viewer.peace_conference.synchronize(&candidate.admitted);
-            if !candidate.admitted.active() {
-                viewer.peace_conference.set_open(false);
-            }
-        } else {
-            viewer.peace_conference = Default::default();
+        reconcile_xui08_candidate(&mut viewer.peace_conference, xui08_candidate.as_ref());
+        if xui08_candidate.is_none() {
             feature_local_gaps.push(format!(
                 "XUI08:field=passive_global_presentation:domain=_r2_peace_conference_presentation_exact:unavailable={:?}",
                 world_frame.peace_conference_presentation_exact_status()
             ));
         }
-        if viewer.peace_conference.open {
+        if xui08_candidate.is_some() && viewer.peace_conference.open {
             if let Some(input) = self
                 .xui08_presented
                 .as_ref()
@@ -8661,6 +8670,185 @@ mod tests {
             !invalidate.contains("self.xui08_history_anchor = None"),
             "resize invalidates pixels, not authenticated PCS3 continuity"
         );
+    }
+
+    mod xui08_availability_tests {
+        use super::*;
+        use game_ui::peace_conference_ui::{
+            PeaceConferenceHistoryTab, PeaceConferenceScrollRegion, PeaceConferenceScrollbarDrag,
+            PeaceConferenceViewerState,
+        };
+        use game_ui::readonly_design_peace::{
+            admit_peace_conference, ActivePeaceConferenceSnapshot, DisplayAtom,
+            PeaceConferenceReference, PeaceConferenceSnapshot, PeaceParticipantRole,
+            PeaceParticipantRow,
+        };
+        fn xui08_atom(id: &str, value: &str) -> DisplayAtom {
+            DisplayAtom {
+                source_record_id: id.into(),
+                raw_value: value.into(),
+                rendered_text: value.into(),
+            }
+        }
+
+        fn xui08_conference(
+            reference_id: u32,
+            snapshot_id: &str,
+            participant: &str,
+        ) -> PeaceConferenceSnapshot {
+            let reference = PeaceConferenceReference {
+                object_type: 9,
+                object_id: reference_id,
+            };
+            PeaceConferenceSnapshot::Active(ActivePeaceConferenceSnapshot {
+                source_record_id: snapshot_id.into(),
+                conference_reference: reference,
+                conference_id: reference.portable_id(),
+                phase: "bid".into(),
+                turn: 1,
+                remaining_score_turns: 1,
+                current_participant_id: participant.into(),
+                current_score: xui08_atom("score", "10"),
+                score_this_turn: xui08_atom("turn-score", "3"),
+                available_state_ids: Vec::new(),
+                contested_state_ids: Vec::new(),
+                participants: vec![PeaceParticipantRow {
+                    source_record_id: "participant-row".into(),
+                    ordinal: 0,
+                    participant_id: participant.into(),
+                    country_tag: "GER".into(),
+                    role: PeaceParticipantRole::Victor,
+                    score: xui08_atom("participant-score", "10"),
+                    score_ratio: xui08_atom("participant-ratio", "100%"),
+                    allocation_ids: Vec::new(),
+                    result_ids: Vec::new(),
+                    bid_count: xui08_atom("participant-bid-count", "0"),
+                    contested_bid_count: xui08_atom("participant-contested-count", "0"),
+                }],
+                allocations: Vec::new(),
+                allocation_groups: Vec::new(),
+                contested_popups: Vec::new(),
+                results: Vec::new(),
+                complete: true,
+            })
+        }
+
+        fn frame(record: &str) -> Xui08PresentedFrame {
+            Xui08PresentedFrame {
+                frame_hour: 40,
+                capture_sequence: 1,
+                record_sha256: record.into(),
+                admitted: admit_peace_conference(&xui08_conference(40, record, "participant:GER"))
+                    .unwrap(),
+                input_region: None,
+                hit_targets: Vec::new(),
+                tooltip_targets: Vec::new(),
+            }
+        }
+
+        #[test]
+        fn presented_gap_revokes_authority_and_recovery_reconciles_retained_intent() {
+            let mut presented = Some(frame("first"));
+            presented.as_mut().unwrap().hit_targets.push(
+                game_ui::peace_conference_ui::PeaceConferenceHitTarget {
+                    rect: [0, 0, 20, 20],
+                    action: game_ui::peace_conference_ui::PeaceConferenceHitAction::ClosePanel,
+                },
+            );
+            assert!(presented.as_ref().unwrap().hit_targets[0].contains((10, 10)));
+            let mut viewer = PeaceConferenceViewerState::default();
+            reconcile_xui08_candidate(&mut viewer, presented.as_ref());
+            viewer.set_open(true);
+            viewer.selected_participant_id = Some("participant:GER".into());
+            viewer
+                .expanded_participant_ids
+                .insert("participant:GER".into());
+            viewer.expanded_action_kinds.insert("take_state".into());
+            viewer
+                .set_scroll(PeaceConferenceScrollRegion::CurrentAndHistory, 12, 30)
+                .unwrap();
+            let mut input = None;
+            stage_xui08_viewer_input(&mut input, &viewer).history_tab =
+                PeaceConferenceHistoryTab::Beneficiaries;
+            let mut checkpoint = None;
+            begin_xui08_staged_candidate(&mut viewer, &mut input, &mut checkpoint).unwrap();
+            let mut candidate = None;
+            let mut staged = true;
+            reconcile_xui08_candidate(&mut viewer, candidate.as_ref());
+            assert!(
+                presented.is_some(),
+                "staging does not replace the presented frame"
+            );
+            assert!(viewer.snapshot_identity().is_none());
+            presented = commit_xui08_staged_candidate(&mut candidate, &mut staged, &mut checkpoint)
+                .unwrap();
+            assert!(
+                presented.is_none(),
+                "no old render, hit or tooltip targets survive Present"
+            );
+            assert!(!xui08_blocks_lower_pointer_input_state(
+                &viewer, None, 10, 10
+            ));
+            assert!(viewer.open);
+            assert_eq!(viewer.history_tab, PeaceConferenceHistoryTab::Beneficiaries);
+            assert_eq!(viewer.current_and_history_scroll_px, 12);
+            assert_eq!(
+                viewer.selected_participant_id.as_deref(),
+                Some("participant:GER")
+            );
+            assert!(viewer.expanded_participant_ids.contains("participant:GER"));
+            assert!(viewer.expanded_action_kinds.contains("take_state"));
+
+            begin_xui08_staged_candidate(&mut viewer, &mut input, &mut checkpoint).unwrap();
+            candidate = Some(frame("recovery"));
+            staged = true;
+            reconcile_xui08_candidate(&mut viewer, candidate.as_ref());
+            presented = commit_xui08_staged_candidate(&mut candidate, &mut staged, &mut checkpoint)
+                .unwrap();
+            assert_eq!(presented.as_ref().unwrap().record_sha256, "recovery");
+            assert_eq!(viewer.snapshot_identity(), Some("recovery"));
+            assert_eq!(
+                viewer.history_tab,
+                PeaceConferenceHistoryTab::Victors,
+                "current authenticated roster has no beneficiaries"
+            );
+            assert_eq!(viewer.current_and_history_scroll_px, 12);
+        }
+
+        #[test]
+        fn rejected_gap_and_close_restore_the_presented_viewer_transaction() {
+            for disposition in ["skipped", "occluded", "execute-error"] {
+                let presented = Some(frame("first"));
+                let mut viewer = PeaceConferenceViewerState::default();
+                reconcile_xui08_candidate(&mut viewer, presented.as_ref());
+                viewer.set_open(true);
+                viewer.active_scrollbar_drag = Some(PeaceConferenceScrollbarDrag {
+                    region: PeaceConferenceScrollRegion::CurrentAndHistory,
+                    grab_offset_y: 3,
+                });
+                let before = viewer.clone();
+                let mut input = None;
+                stage_xui08_closed(&mut input, &viewer);
+                let mut checkpoint = None;
+                begin_xui08_staged_candidate(&mut viewer, &mut input, &mut checkpoint).unwrap();
+                let mut candidate = None;
+                let mut staged = true;
+                reconcile_xui08_candidate(&mut viewer, candidate.as_ref());
+                assert!(!viewer.open);
+                assert!(viewer.active_scrollbar_drag.is_none());
+                rollback_xui08_staged_candidate(
+                    &mut viewer,
+                    &mut checkpoint,
+                    &mut candidate,
+                    &mut staged,
+                )
+                .unwrap();
+                assert_eq!(viewer, before, "{disposition}");
+                assert_eq!(presented.as_ref().unwrap().record_sha256, "first");
+                assert!(candidate.is_none());
+                assert!(!staged);
+            }
+        }
     }
 
     #[test]

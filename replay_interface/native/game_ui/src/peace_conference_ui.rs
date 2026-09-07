@@ -597,6 +597,13 @@ impl PeaceConferenceViewerState {
         Ok(())
     }
 
+    /// Retain local intent until an authenticated conference can reconcile it.
+    /// The previous record and its scrollbar capture cannot authorize this frame.
+    pub fn suspend_unavailable_frame(&mut self) {
+        self.snapshot_identity = None;
+        self.active_scrollbar_drag = None;
+    }
+
     pub fn synchronize(&mut self, conference: &AdmittedPeaceConference) {
         let snapshot = conference.render_model();
         let PeaceConferenceSnapshot::Active(active) = snapshot else {
@@ -624,6 +631,14 @@ impl PeaceConferenceViewerState {
         }
         self.expanded_participant_ids
             .retain(|id| participant_ids.contains(id.as_str()));
+
+        let group_ids = active
+            .allocation_groups
+            .iter()
+            .map(|row| row.group_id.as_str())
+            .collect::<BTreeSet<_>>();
+        self.expanded_action_kinds
+            .retain(|id| group_ids.contains(id.as_str()));
 
         let contested_allocation_ids = active
             .contested_popups
