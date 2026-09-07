@@ -430,6 +430,108 @@ fn native_journal_seals_real_censuses_rebased_to_the_recorded_spine() {
 }
 
 #[test]
+fn full_panel_catalog_comes_from_real_capture_recheck_and_seal() {
+    use snapshot::design_catalog::{DesignItemIconObservation, DesignTextObservation, DesignU32Observation};
+    use std::io::Write;
+
+    const FIRST_HOUR: u32 = 16_959_360;
+    const MAX_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
+    let (journal_path, output) = journal_test_paths("full-panel");
+    let mut f = fixture();
+    f.string(HEAP + 0x3000 + 32, "GER");
+    f.u32(BASE + RUNTIME_DLC_MASK_RVA, 1 << 4);
+    f.string(VARIANT + 0x458, ".");
+    f.u32(STATE + DATE_OFFSET, DATE_EPOCH + FIRST_HOUR);
+    let initial = capture(&f, BASE, DATE_EPOCH + FIRST_HOUR).unwrap();
+    let initial_recheck = capture(&f, BASE, DATE_EPOCH + FIRST_HOUR).unwrap();
+    use compact_contract::campaign_identity::{Cid1Fields, Cid1Observation, Cid1Witnesses, encode_cid1};
+    let observation = |raw: &Value| Cid1Observation {
+        game_unique_id: raw["authority"]["campaign"]["game_unique_id"].as_str().unwrap().into(),
+        game_unique_seed: i32::try_from(raw["authority"]["campaign"]["game_unique_seed"].as_i64().unwrap()).unwrap(),
+        game_hour_raw: i32::try_from(raw["authority"]["current_date_raw"].as_u64().unwrap()).unwrap(),
+    };
+    let fields = Cid1Fields::from_stable_observations(observation(&initial), observation(&initial_recheck),
+        compact_contract::build_profile::COLLECTOR_PROFILE_ID.into(), Cid1Witnesses::default()).unwrap();
+    let payload = encode_cid1(&fields).unwrap();
+    let mut cid1_record = vec![0; compact_contract::COMPACT_RECORD_HEADER_LEN];
+    cid1_record[..4].copy_from_slice(compact_contract::COMPACT_RECORD_MAGIC);
+    cid1_record[4..6].copy_from_slice(&compact_contract::COMPACT_RECORD_VERSION.to_le_bytes());
+    cid1_record[6..8].copy_from_slice(&(compact_contract::COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
+    cid1_record[16..20].copy_from_slice(&((DATE_EPOCH + FIRST_HOUR) as i32).to_le_bytes());
+    cid1_record[22..24].copy_from_slice(&compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER.to_le_bytes());
+    cid1_record[24..28].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+    cid1_record.extend_from_slice(&payload);
+    let first_record = crate::duplex_session::identity_control::ValidatedFirstCompactRecord::identity_v1(0, &cid1_record).unwrap();
+    let binding = custody::StreamBinding::from_cid1(0, first_record.validated_cid1().unwrap());
+    assert_ne!(binding.cid1_payload_sha256, test_binding().cid1_payload_sha256);
+    let mut journal = timeline::TimelineJournal::create(journal_path.clone(), binding.clone()).unwrap();
+    for hour in FIRST_HOUR..=FIRST_HOUR + 1 {
+        let date = DATE_EPOCH.checked_add(hour).unwrap();
+        f.u32(STATE + DATE_OFFSET, date);
+        let (first, recheck) = if hour == FIRST_HOUR {
+            (initial.clone(), initial_recheck.clone())
+        } else {
+            (capture(&f, BASE, date).unwrap(), capture(&f, BASE, date).unwrap())
+        };
+        assert_eq!(first, recheck);
+        assert_eq!(first["variants"].as_array().unwrap().len(), 1);
+        assert_eq!(first["division_templates"].as_array().unwrap().len(), 1);
+        journal.push(first, recheck).unwrap();
+    }
+    journal.finish().unwrap();
+    timeline::seal_journal(&journal_path, &output, FIRST_HOUR.into(), (FIRST_HOUR + 1).into(), &binding).unwrap();
+    assert!(std::fs::metadata(&output).unwrap().len() <= MAX_OUTPUT_BYTES);
+    let bytes = std::fs::read(&output).unwrap();
+    let raw: Value = snapshot::parse_json_strict(&bytes).unwrap();
+    assert_eq!(raw["capture_count"], 2);
+    assert_eq!(raw["authority"]["stream_binding"], serde_json::to_value(&binding).unwrap());
+    assert!(raw["captures"][0].get("snapshot").is_some());
+    assert!(raw["captures"][1].get("delta").is_some());
+    let catalog = snapshot::design_catalog::PortableDesignCatalog::decode_a27_live_json(&bytes).unwrap();
+    for hour in FIRST_HOUR..=FIRST_HOUR + 1 {
+        let inputs = catalog.native_designer_inputs_at_hour(hour.into()).unwrap();
+        assert_eq!(inputs.hour, u64::from(hour));
+        assert_eq!(inputs.runtime_dlc_mask, DesignU32Observation::Measured { raw_u32: 16 });
+        assert_eq!(inputs.countries.len(), 1);
+        assert_eq!(inputs.countries[0].tag, "GER");
+        assert_eq!(inputs.variants.len(), 1);
+        let variant = &inputs.variants[0];
+        assert_eq!(variant.equipment_definition_token, "ship_hull");
+        assert_eq!(variant.equipment_token_raw, 17);
+        assert_eq!(variant.model.creator_tag, "GER");
+        assert_eq!(variant.model.explicit_entity, DesignTextObservation::Measured { value: String::new(), utf8_hex: String::new() });
+        assert_eq!(variant.item_icon_override, DesignItemIconObservation::Measured {
+            active: false, kind: 1,
+            token: DesignTextObservation::Measured { value: ".".into(), utf8_hex: "2e".into() },
+        });
+        assert_eq!(variant.source_occurrences.iter().map(|row| row.source_list.as_str()).collect::<Vec<_>>(), vec!["A", "B"]);
+        assert!(variant.source_occurrences.iter().all(|row| row.source_country_tag == "GER"));
+        assert_eq!(variant.model.developed.len(), 1);
+        assert_eq!(variant.model.developed[0].source_country_tag, "GER");
+        assert_eq!(variant.model.developed[0].source_list, "developed");
+        assert_eq!(catalog.records_at_hour(hour.into()).unwrap().len(), 2);
+    }
+    assert!(catalog.native_designer_inputs_at_hour(u64::from(FIRST_HOUR - 1)).is_err());
+    let mut other_binding = binding.clone();
+    other_binding.game_unique_seed += 1;
+    let (_, rejected_output) = journal_test_paths("full-panel-wrong-campaign");
+    assert!(timeline::seal_journal(&journal_path, &rejected_output, FIRST_HOUR.into(), (FIRST_HOUR + 1).into(), &other_binding).is_err());
+    assert!(!rejected_output.exists());
+    if let Some(path) = std::env::var_os("BATTLE_PLAN_A27_FULL_PANEL_OUTPUT").or_else(|| std::env::var_os("HOI4_A27_FULL_PANEL_OUTPUT")) {
+        let path = std::path::PathBuf::from(path);
+        let identity_path = path.with_extension("cid1.h4cr");
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
+        let mut identity_file = std::fs::OpenOptions::new().write(true).create_new(true).open(identity_path).unwrap();
+        file.write_all(&bytes).unwrap();
+        identity_file.write_all(&cid1_record).unwrap();
+        file.sync_all().unwrap();
+        identity_file.sync_all().unwrap();
+    }
+    std::fs::remove_file(journal_path).unwrap();
+    std::fs::remove_file(output).unwrap();
+}
+
+#[test]
 fn independent_same_hour_disagreement_never_enters_the_journal() {
     let (journal_path, _) = journal_test_paths("disagreement");
     let mut journal =

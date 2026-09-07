@@ -172,3 +172,159 @@ fn actual_bracketed_cpni3_publisher_fold_fixture_keeps_historical_refusal_until_
         file.write_all(&serde_json::to_vec_pretty(&output).unwrap()).unwrap();
     }
 }
+
+fn full_panel_input(path_env: &str, hash_env: &str, limit: u64) -> Vec<u8> {
+    let path = std::env::var_os(path_env).expect(path_env);
+    let expected = std::env::var(hash_env).expect(hash_env);
+    assert!(std::fs::metadata(&path).unwrap().len() <= limit);
+    let bytes = std::fs::read(path).unwrap();
+    assert_eq!(format!("{:x}", Sha256::digest(&bytes)), expected, "{path_env} digest");
+    bytes
+}
+
+fn seal_full_panel(stream: &[u8], sequence: u64, hour: i32) -> (Vec<u8>, serde_json::Value) {
+    let mut raw = stream.to_vec();
+    let mut sequence = sequence;
+    append(&mut raw, &mut sequence, hour, compact_contract::COMPACT_DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END, &[0; compact_contract::record_semantics::COMPACT_FRAME_END_PAYLOAD_LEN]);
+    let mut validator = compact_contract::stream_validator::StatefulStreamValidator::identity_v1();
+    let mut offset = 0;
+    while offset < raw.len() {
+        let header = compact_contract::parse_compact_record_header(&raw[offset..]).unwrap();
+        let end = offset.checked_add(header.record_len()).unwrap();
+        assert!(end <= raw.len());
+        validator.validate_record(&header, &raw[offset + usize::from(COMPACT_RECORD_HEADER_LEN)..end]).unwrap();
+        offset = end;
+    }
+    assert_eq!(offset, raw.len());
+    let mut fold = recorder_host::world_fold::WorldFold::new(validator.identity().unwrap().campaign_id_hex());
+    fold.ingest_stream(&raw);
+    let snapshots = fold.finish();
+    (raw, serde_json::from_slice(&snapshots.last().unwrap().2).unwrap())
+}
+
+#[test]
+#[ignore = "requires the actual native A27 and D53 generator artifacts and their hashes"]
+fn full_panel_actual_generators_share_cid1_and_preserve_capital_gap_history() {
+    use compact_contract::build_profile as profile;
+    use recorder_host::native_design_catalog::custody::StreamBinding;
+    let catalog_bytes = full_panel_input("BATTLE_PLAN_FULL_PANEL_A27_INPUT", "BATTLE_PLAN_FULL_PANEL_A27_SHA256", 4 * 1024 * 1024);
+    let catalog: serde_json::Value = serde_json::from_slice(&catalog_bytes).unwrap();
+    let cid1_record = full_panel_input("BATTLE_PLAN_FULL_PANEL_CID1_INPUT", "BATTLE_PLAN_FULL_PANEL_CID1_SHA256", 2048);
+    let first = recorder_host::duplex_session::identity_control::ValidatedFirstCompactRecord::identity_v1(0, &cid1_record).unwrap();
+    let cid1 = first.validated_cid1().unwrap();
+    let binding = StreamBinding::from_cid1(0, cid1);
+    assert_eq!(catalog["authority"]["stream_binding"], serde_json::to_value(&binding).unwrap());
+    assert_eq!(cid1.game_unique_id(), "a4b17fed-ed12-4361-9064-fb6576638110");
+    assert_eq!(cid1.game_unique_seed(), -1234);
+    assert_eq!(cid1.game_hour_raw(), DATE_EPOCH_CONST + 16_959_360);
+    let d53_bytes = full_panel_input("BATTLE_PLAN_FULL_PANEL_D53_INPUT", "BATTLE_PLAN_FULL_PANEL_D53_SHA256", 1024 * 1024);
+    let d53: serde_json::Value = serde_json::from_slice(&d53_bytes).unwrap();
+    assert_eq!(d53["schema"], 1);
+    assert_eq!(d53["cid1_record_sha256"], format!("{:x}", Sha256::digest(&cid1_record)));
+    assert_eq!(d53["cid1_payload_sha256"], binding.cid1_payload_sha256);
+    assert_eq!(d53["logical_stream_id"], binding.logical_stream_id);
+    assert_eq!(d53["game_unique_id"], binding.game_unique_id);
+    assert_eq!(d53["game_unique_seed"], binding.game_unique_seed);
+    let observations = d53["observations"].as_array().unwrap();
+    assert_eq!(observations.len(), 2);
+    let mut faction_payloads = Vec::new();
+    for (offset, observation) in observations.iter().enumerate() {
+        assert_eq!(observation["game_hour_raw"], cid1.game_hour_raw() + offset as i32);
+        let payload: Vec<u8> = serde_json::from_value(observation["payload"].clone()).unwrap();
+        assert!(payload.len() <= 64 * 1024);
+        assert_eq!(observation["payload_sha256"], format!("{:x}", Sha256::digest(&payload)));
+        let decoded = diplomacy_intel_operatives_live::compact::decode_snapshot_payload(0, &payload).unwrap();
+        assert!(decoded.faction_roster_complete && decoded.subject_autonomy_status_complete);
+        assert_eq!(decoded.factions.len(), 1);
+        assert_eq!(decoded.factions[0].member_tag_db_ids, vec![1]);
+        assert!(decoded.subjects.is_empty());
+        faction_payloads.push(payload);
+    }
+    let hour = cid1.game_hour_raw();
+    let mut image = Image::new(hour);
+    let mut uuid = AlignedBytes::<40>::new();
+    uuid.write_bytes(0, cid1.game_unique_id().as_bytes());
+    image.roster.arena.write_i32(image.roster.pad + profile::DOMAIN_CAMPAIGN_ID_GAME_UNIQUE_SEED_OFF, cid1.game_unique_seed());
+    image.roster.arena.write_u64(image.roster.pad + profile::DOMAIN_CAMPAIGN_ID_GAME_UNIQUE_ID_OFF, uuid.addr() as u64);
+    image.roster.arena.write_u64(image.roster.pad + profile::DOMAIN_CAMPAIGN_ID_GAME_UNIQUE_ID_OFF + 16, 36);
+    image.roster.arena.write_u64(image.roster.pad + profile::DOMAIN_CAMPAIGN_ID_GAME_UNIQUE_ID_OFF + 24, 36);
+    let context = CampaignIdentityReadContext::from(&image.collector());
+    page_cache_new_frame();
+    let (observed_cid1, observed_record) = build_campaign_identity_candidate(&context).unwrap();
+    assert_eq!(observed_record, cid1_record, "actual collector campaign bytes must match A27 binding");
+    assert_eq!(StreamBinding::from_cid1(0, &observed_cid1), binding);
+    image.roster.arena.write_i32(image.roster.pad + profile::DOMAIN_CAMPAIGN_ID_GAME_UNIQUE_SEED_OFF, -1233);
+    page_cache_new_frame();
+    let (wrong_campaign, _) = build_campaign_identity_candidate(&context).unwrap();
+    assert_ne!(StreamBinding::from_cid1(0, &wrong_campaign), binding);
+    image.roster.arena.write_i32(image.roster.pad + profile::DOMAIN_CAMPAIGN_ID_GAME_UNIQUE_SEED_OFF, -1234);
+    page_cache_new_frame();
+    assert_eq!(build_campaign_identity_candidate(&context).unwrap().1, cid1_record);
+
+    let identity = compact_country_identity_data_payload(
+        &compact_contract::country_name_inputs::CountryLinkIndices::Unavailable(NameInputRefusal::Unreadable),
+        &[CompactCountryIdentityRow { tag_db_id: 1, tag: "GER".into(), cosmetic_tag: NameToken::Absent,
+            effective_name_tag: Err(NameInputRefusal::Unreadable), graphical_culture: NameToken::Unavailable(NameInputRefusal::Unreadable) }],
+        0, 0, &CompactCountryIdentityExtension::unavailable(0));
+    let mut tracker = CompactCountryFrameTracker::default();
+    let (accepted, _) = image.read(&mut tracker);
+    tracker.commit_staged_advance();
+    let baseline = tracker.country_politics[&1].0.clone();
+    let mut stream = observed_record;
+    let mut seq = 1;
+    append(&mut stream, &mut seq, hour, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, &identity);
+    append(&mut stream, &mut seq, hour, 53, COMPACT_RECORD_TYPE_DOMAIN_DATA, &faction_payloads[0]);
+    append(&mut stream, &mut seq, hour, 14, COMPACT_RECORD_TYPE_DOMAIN_DATA, &accepted);
+    let (raw, snapshot) = seal_full_panel(&stream, seq, hour);
+    assert_eq!(snapshot["diplomacy_world"]["domain53_extra"]["faction_roster_status"], "measured_nonempty");
+    assert_eq!(snapshot["diplomacy_world"]["domain53_extra"]["faction_member_order_schema"], 1);
+    let mut stages = vec![artifact("H_accept", &raw, snapshot)];
+    let (mut rejected, _) = image.read(&mut tracker);
+    rejected[48] ^= 1;
+    assert!(compact_contract::country_name_inputs::decode_politics_capital_slots(&rejected, Some(hour)).is_err());
+    tracker.roll_back_staged_advance();
+    assert!(tracker.country_politics[&1].0 == baseline);
+    append(&mut stream, &mut seq, hour, 14, COMPACT_RECORD_TYPE_DOMAIN_DATA, &rejected);
+    let (raw, snapshot) = seal_full_panel(&stream, seq, hour);
+    assert!(snapshot["countries"]["GER"]["politics"]["capital_slot"].is_null());
+    stages.push(artifact("H_refusal", &raw, snapshot));
+    let (recovered, recovered_bracket) = image.read(&mut tracker);
+    append(&mut stream, &mut seq, hour, 14, COMPACT_RECORD_TYPE_DOMAIN_DATA, &recovered);
+    tracker.commit_staged_advance();
+    let (raw, snapshot) = seal_full_panel(&stream, seq, hour);
+    assert_eq!(snapshot["countries"]["GER"]["politics"]["capital_slot"]["outcome"]["template_id"], 17);
+    assert!(snapshot["provenance"]["collector"]["domain_problems"].as_array().unwrap().iter().any(|p| p["domain_id"] == 14));
+    stages.push(artifact("H_raw_recovery_historical_refusal", &raw, snapshot));
+    append(&mut stream, &mut seq, hour, compact_contract::COMPACT_DOMAIN_FRAME, COMPACT_RECORD_TYPE_FRAME_END, &[0; compact_contract::record_semantics::COMPACT_FRAME_END_PAYLOAD_LEN]);
+    image.set_hour(hour + 1);
+    page_cache_new_frame();
+    let next_identity = read_campaign_identity_observation_from_context(&context).unwrap();
+    assert_eq!(next_identity.game_unique_id, binding.game_unique_id);
+    assert_eq!(next_identity.game_unique_seed, binding.game_unique_seed);
+    assert_eq!(next_identity.game_hour_raw, hour + 1);
+    let (next, next_bracket) = image.read(&mut tracker);
+    assert!(next_bracket.opening.unwrap().ordinal > recovered_bracket.opening.unwrap().ordinal);
+    append(&mut stream, &mut seq, hour + 1, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, &identity);
+    append(&mut stream, &mut seq, hour + 1, 53, COMPACT_RECORD_TYPE_DOMAIN_DATA, &faction_payloads[1]);
+    append(&mut stream, &mut seq, hour + 1, 14, COMPACT_RECORD_TYPE_DOMAIN_DATA, &next);
+    tracker.commit_staged_advance();
+    let (raw, snapshot) = seal_full_panel(&stream, seq, hour + 1);
+    assert_eq!(snapshot["countries"]["GER"]["politics"]["capital_slot"]["game_hour_raw"], hour + 1);
+    assert!(snapshot["provenance"]["collector"]["domain_problems"].as_array().unwrap().iter().all(|p| p["domain_id"] != 14 && p["domain_id"] != 53));
+    stages.push(artifact("H_plus_1_clean", &raw, snapshot));
+    for stage in &stages {
+        assert_eq!(stage["snapshot"]["diplomacy_world"]["domain53_extra"]["faction_member_order_schema"], 1);
+    }
+    let output = serde_json::json!({"schema":1,"producer":"full_panel_actual_generators_share_cid1_and_preserve_capital_gap_history",
+        "stream_binding":binding,"cid1_h4cr_sha256":format!("{:x}", Sha256::digest(&cid1_record)),
+        "a27_catalog_sha256":format!("{:x}", Sha256::digest(&catalog_bytes)),
+        "d53_source_sha256":format!("{:x}", Sha256::digest(&d53_bytes)),"stages":stages});
+    let bytes = serde_json::to_vec_pretty(&output).unwrap();
+    assert!(bytes.len() <= 4 * 1024 * 1024);
+    if let Some(path) = std::env::var_os("BATTLE_PLAN_FULL_PANEL_JOINT_OUTPUT").or_else(|| std::env::var_os("HOI4_FULL_PANEL_JOINT_OUTPUT")) {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path).unwrap();
+        file.write_all(&bytes).unwrap(); file.sync_all().unwrap();
+    }
+}
