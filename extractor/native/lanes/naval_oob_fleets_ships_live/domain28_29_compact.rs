@@ -296,7 +296,10 @@ pub fn decode_stream(raw: &[u8], minimum_game_hour_advancements: i64) -> NavalOo
                 // record; a corrupted or orphaned repeat refuses the stream
                 // by name instead of passing as unauthenticated authority.
                 match repeat_baselines.observe(header.domain_id, header.record_type, payload) {
-                    Ok(reconstructed) => repeat_reconstruction = reconstructed,
+                    Ok(reconstructed) => {
+                        repeat_reconstruction = reconstructed;
+                        true
+                    }
                     Err(error) => {
                         summary
                             .parse_errors
