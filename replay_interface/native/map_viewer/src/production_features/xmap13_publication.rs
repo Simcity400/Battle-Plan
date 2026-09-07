@@ -556,14 +556,14 @@ impl Xmap13Adapter {
         prepared: &PreparedXmap13Frame)
         -> std::result::Result<Xmap13PublishedLandObjects, Xmap13ModelObjectRefusal>
     {
+        prepared.validate().map_err(|_| Xmap13ModelObjectRefusal::PreparedFrame)?;
         let finished = self.finished_land.lock()
             .map_err(|_| Xmap13ModelObjectRefusal::PublicationUnavailable)?;
         let finished = finished.as_ref().ok_or(Xmap13ModelObjectRefusal::PublicationUnavailable)?;
         let objects = finished.objects.as_ref().ok_or(Xmap13ModelObjectRefusal::PublicationUnavailable)?;
         if finished.viewer != *context.viewer
             || finished.population.deterministic_sha256 != prepared.semantic_input_sha256
-            || objects.0.prepared_digest != prepared.deterministic_sha256
-            || prepared_digest(prepared).map_err(|_| Xmap13ModelObjectRefusal::PreparedFrame)? != prepared.deterministic_sha256 {
+            || objects.0.prepared_digest != prepared.deterministic_sha256 {
             return Err(Xmap13ModelObjectRefusal::PreparedFrame);
         }
         finished.population.validate_census(context.world_frame)
