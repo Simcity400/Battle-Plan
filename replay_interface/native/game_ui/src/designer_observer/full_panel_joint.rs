@@ -135,7 +135,7 @@ fn actual_bound_a27_d53_capital_stages_compose_known_rows_and_local_refusals() {
         (CATALOG, 6_744, "a7e2dff85388d04b771f6bdefe86d5b0a0f9f7e97009209a2264f8ac1512d9bd"),
         (CID1, 189, "6f81df0ba7cae5138ad36a28309a0e9689f37017cc614d3d104599a09a5f1010"),
         (D53, 4_346, "8868ce1d34c94887c74f2dcfed4c77283d9a8fb47df773d474ede2f368dc41c3"),
-        (JOINT, 50_118, "ad2b104abaa9507727bc5e4d549f4332bad85e4ee3a5855c59b03329c03e380f"),
+        (JOINT, 50_230, "f1b3919c9721ec0af8d126bd5a50dc1436da46fddcb838931c32d7209ca7565b"),
     ] {
         assert_eq!(bytes.len(), size);
         assert_eq!(digest(bytes), sha);
@@ -185,6 +185,13 @@ fn actual_bound_a27_d53_capital_stages_compose_known_rows_and_local_refusals() {
         let frame = frame(value, Some(Arc::clone(&catalog)));
         let hour = 16_959_360 + u64::from(index == 3);
         assert_eq!(frame.hour_index(), hour as i64);
+        let semantic_rosters = value["country_semantic_rosters"].as_object().unwrap();
+        assert_eq!(semantic_rosters.len(), 5);
+        assert_eq!(semantic_rosters["schema"], 2);
+        assert_eq!(semantic_rosters["hour_index"], hour);
+        for family in ["divisions", "fleets", "railways"] {
+            assert_eq!(semantic_rosters.get(family), Some(&Value::Null), "{label}: {family} unobserved");
+        }
         assert_eq!(frame.country_identity_for_tag("GER").unwrap(), 1);
         let native = catalog.native_designer_inputs_at_hour(hour).unwrap();
         assert_eq!(native.hour, hour);
