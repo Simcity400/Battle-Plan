@@ -1,3 +1,4 @@
+pub mod country_capital_slot;
 pub mod division_routes;
 pub mod division_equipment;
 use std::fs::{self, File};
