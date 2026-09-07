@@ -3425,6 +3425,34 @@ fn prepared_political_digest(prepared: &PreparedPoliticalFrame) -> String {
 }
 
 #[cfg(test)]
+pub(crate) fn political_frame_for_unit_publication_test(
+    resolver: &GameFileResolver,
+    admission: &replay_core::ValidatedContentAdmission,
+    hour_index: i64,
+) -> Result<PreparedPoliticalFrame> {
+    if resolver.content_admission_lease().as_ref().and_then(|lease| lease.manifest_digest_sha256())
+        != Some(admission.manifest_digest_sha256()) {
+        return Err("political fixture resolver and admission disagree".into());
+    }
+    let content = admission.require_used_content(GRAPHICS_DEFINES)?.clone();
+    resolver.read_admitted_used_content(&content)?;
+    let (sources, _) = crate::xmap09_lighting_law::admitted_effective_define_sources(resolver, "XMAP05 unit fixture")?;
+    let defines = crate::xmap09_lighting_law::EffectiveDefines::from_sources(&sources)?;
+    let scalar = |name| defines.scalar("NGraphics", name).map(f32::to_bits);
+    let law = Xmap05SceneCb0Law {
+        outline_cutoff_strategic_bits: scalar("GRADIENT_BORDERS_OUTLINE_CUTOFF_STRATEGIC_REGIONS")?,
+        outline_cutoff_country_bits: scalar("GRADIENT_BORDERS_OUTLINE_CUTOFF_COUNTRY")?,
+        camera_override_strategic_bits: scalar("GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_STRATEGIC_REGIONS")?,
+        camera_override_country_bits: scalar("GRADIENT_BORDERS_CAMERA_DISTANCE_OVERRIDE_COUNTRY")?,
+        draw_fow_cutoff_bits: scalar("DRAW_FOW_CUTOFF")?,
+        draw_fow_fade_length_bits: scalar("DRAW_FOW_FADE_LENGTH")?,
+    };
+    let frame = tests::scene_patch_frame_with_content(content, hour_index, law);
+    frame.validate()?;
+    Ok(frame)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -3488,6 +3516,19 @@ mod tests {
             payload_sha256: "c".repeat(64),
             payload_bytes: 1,
         };
+        scene_patch_frame_with_content(content, 42, Xmap05SceneCb0Law {
+                outline_cutoff_strategic_bits: 0.98f32.to_bits(),
+                outline_cutoff_country_bits: 0.973f32.to_bits(),
+                camera_override_strategic_bits: 1.0f32.to_bits(),
+                camera_override_country_bits: 0.0f32.to_bits(),
+                draw_fow_cutoff_bits: 400.0f32.to_bits(),
+                draw_fow_fade_length_bits: 350.0f32.to_bits(),
+            })
+    }
+
+    pub(super) fn scene_patch_frame_with_content(
+        content: UsedContentKey, hour_index: i64, scene_cb0_law: Xmap05SceneCb0Law,
+    ) -> PreparedPoliticalFrame {
         let mut visibility = PreparedXmap05Visibility {
             schema: XMAP05_VISIBILITY_SCHEMA.into(),
             viewer_country: None,
@@ -3505,7 +3546,7 @@ mod tests {
         visibility.deterministic_sha256 = visibility_digest(&visibility);
         let mut frame = PreparedPoliticalFrame {
             schema: XMAP05_POLITICAL_SCHEMA.into(),
-            hour_index: 42,
+            hour_index,
             ordered_used_content: vec![content],
             province_primary: generated_texture(
                 "ProvincePrimaryColorMap",
@@ -3559,14 +3600,7 @@ mod tests {
             fow_family_sha256: String::new(),
             deterministic_sha256: String::new(),
             excluded_presentation_identities: Vec::new(),
-            scene_cb0_law: Xmap05SceneCb0Law {
-                outline_cutoff_strategic_bits: 0.98f32.to_bits(),
-                outline_cutoff_country_bits: 0.973f32.to_bits(),
-                camera_override_strategic_bits: 1.0f32.to_bits(),
-                camera_override_country_bits: 0.0f32.to_bits(),
-                draw_fow_cutoff_bits: 400.0f32.to_bits(),
-                draw_fow_fade_length_bits: 350.0f32.to_bits(),
-            },
+            scene_cb0_law,
         };
         frame.political_family_sha256 = political_family_digest(&frame);
         frame.fow_family_sha256 = fow_family_digest(&frame);

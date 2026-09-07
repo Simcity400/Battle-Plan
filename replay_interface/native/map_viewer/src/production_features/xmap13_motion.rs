@@ -28,6 +28,7 @@ pub struct Xmap13MotionState {
     previous_frame: String,
     content: String,
     history: String,
+    lifetime: String,
     failed_update: bool,
     helpers: BTreeMap<String, SplineState>,
 }
@@ -39,10 +40,13 @@ pub struct Xmap13MotionSample {
     frame: String,
     content: String,
     pub(crate) history_sha256: String,
+    lifetime: String,
     helpers: BTreeMap<String, SplineState>,
 }
 
 impl Xmap13MotionSample {
+    pub(super) fn lifetime(&self) -> &str { &self.lifetime }
+
     pub(super) fn placement(&self, identity: &crate::Xmap13UnitIdentity) -> Result<&super::Xmap13HelperPlacement> {
         self.placements.get(&identity.canonical_id()).ok_or("XMAP13 helper placement has no current identity")?
             .as_ref().map_err(|reason| reason.clone().into())
@@ -146,14 +150,15 @@ impl Xmap13MotionState {
             "XMAP13_HELPER_HISTORY_V1", &self.history, &frame, content, reset,
             clock.seconds.to_bits(), clock.speed_step, &helpers, &retained, &placements,
         ))?);
+        let lifetime = if reset { history_sha256.clone() } else { self.lifetime.clone() };
         let geometry_sources = self.geometry.as_ref().and_then(|value| value.as_ref().ok())
             .map(|geometry| geometry.sources.clone()).unwrap_or_default();
         *self = Self {
             geometry: self.geometry.clone(),
             previous_hour: Some(hour), previous_seconds: clock.seconds,
             previous_frame: frame.clone(), content: content.into(),
-            history: history_sha256.clone(), failed_update: false, helpers: retained,
+            history: history_sha256.clone(), lifetime: lifetime.clone(), failed_update: false, helpers: retained,
         };
-        Ok(Xmap13MotionSample { frame, content: content.into(), history_sha256, helpers, placements, geometry_sources })
+        Ok(Xmap13MotionSample { frame, content: content.into(), history_sha256, lifetime, helpers, placements, geometry_sources })
     }
 }

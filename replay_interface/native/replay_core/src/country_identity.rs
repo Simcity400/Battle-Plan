@@ -286,6 +286,80 @@ impl PartialEq<String> for CountryIdentityRef {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CountryHandleEqualityRefusal {
+    Missing,
+    Unobtained,
+    Malformed(&'static str),
+    CollectorLedgerMalformed,
+    DomainUnavailable(String),
+    Unavailable(String),
+    OutOfRange { handle: u32, count: usize },
+}
+
+impl std::fmt::Display for CountryHandleEqualityRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "country handle equality: {self:?}")
+    }
+}
+
+impl std::error::Error for CountryHandleEqualityRefusal {}
+
+impl crate::WorldFrame {
+    /// Native handle equality short-circuits identical handles and distinct null handles before reading link cells.
+    pub fn country_handles_equal(&self, left: u32, right: u32) -> Result<bool, CountryHandleEqualityRefusal> {
+        use CountryHandleEqualityRefusal as Refusal;
+        use serde_json::Value;
+        if left == right { return Ok(true); }
+        if left == 0 || right == 0 { return Ok(false); }
+        match crate::world::rederive_collector_domain_problems(self.raw()) {
+            Err(()) => return Err(Refusal::CollectorLedgerMalformed),
+            Ok(Some(problems)) => {
+                if let Some(problem) = problems.iter().find(|problem| problem.domain == 18
+                    && !crate::world::domain_problem_is_per_family_accounted(problem)) {
+                    return Err(Refusal::DomainUnavailable(problem.problem.clone()));
+                }
+            }
+            Ok(None) => {}
+        }
+        let index = match self.raw().get("tag_db_id_index") {
+            None => return Err(Refusal::Missing),
+            Some(Value::Null) => return Err(Refusal::Unobtained),
+            Some(value) => value.as_object().ok_or(Refusal::Malformed("tag_db_id_index"))?,
+        };
+        let links = match index.get("country_link_indices") {
+            None => return Err(Refusal::Missing),
+            Some(Value::Null) => return Err(Refusal::Unobtained),
+            Some(value) => value.as_object().ok_or(Refusal::Malformed("country_link_indices"))?,
+        };
+        let indices = match links.get("status").and_then(Value::as_str) {
+            Some("measured") if links.len() == 2 => links.get("indices")
+                .and_then(Value::as_array).ok_or(Refusal::Malformed("measured indices"))?,
+            Some("unavailable") if links.len() == 2 => {
+                let reason = links.get("reason").and_then(Value::as_str)
+                    .ok_or(Refusal::Malformed("unavailable reason"))?;
+                if !matches!(reason, "unreadable" | "invalid_identity" | "invalid_vector" | "changed"
+                    | "clock_changed" | "invalid_utf8" | "out_of_bounds") {
+                    return Err(Refusal::Malformed("unavailable reason"));
+                }
+                return Err(Refusal::Unavailable(reason.to_owned()));
+            }
+            _ => return Err(Refusal::Malformed("status or fields")),
+        };
+        if indices.len() > i32::MAX as usize { return Err(Refusal::Malformed("signed native count")); }
+        let mut cells = [None, None];
+        for (index, value) in indices.iter().enumerate() {
+            let cell = value.as_u64().and_then(|raw| u32::try_from(raw).ok())
+                .ok_or(Refusal::Malformed("link cell"))?;
+            if index == left as usize { cells[0] = Some(cell); }
+            if index == right as usize { cells[1] = Some(cell); }
+        }
+        let left_cell = cells[0].ok_or(Refusal::OutOfRange { handle: left, count: indices.len() })?;
+        let right_cell = cells[1].ok_or(Refusal::OutOfRange { handle: right, count: indices.len() })?;
+        Ok(left_cell == right_cell)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,5 +678,72 @@ mod tests {
         let census = census_of(&["DUP"]);
         assert!(CountryIdentityRef::admitted("DUP", &census).is_none());
         assert!(CountryIdentityRef::admitted("GER", &census).is_some());
+    }
+}
+
+#[cfg(test)]
+mod raw_handle_tests {
+    use super::CountryHandleEqualityRefusal as Refusal;
+    use serde_json::{json, Value};
+
+    fn frame(value: Value, problems: Option<Value>, hour: i64) -> crate::WorldFrame {
+        let mut raw = json!({"tag_db_id_index":{"country_link_indices":value}});
+        if let Some(problems) = problems {
+            raw["provenance"] = json!({"collector":{"domain_problems":problems}});
+        }
+        crate::WorldFrame::from_raw_scheduled(crate::source::RawFrame {
+            hour_index:hour,date:None,save_version:None,schema_version:None,
+            rest:raw.as_object().unwrap().clone().into(),
+        },None,None,None,crate::BuildSchedule::Serial)
+    }
+
+    #[test]
+    fn raw_handle_equality_uses_all_current_cells_without_live_roster_substitution() {
+        let world = frame(json!({"status":"measured","indices":[9,0,0,4294967295u32,4294967295u32,3]}),None,7);
+        assert_eq!(world.country_handles_equal(1,2),Ok(true));
+        assert_eq!(world.country_handles_equal(3,4),Ok(true));
+        assert_eq!(world.country_handles_equal(2,3),Ok(false));
+        assert_eq!(world.country_handles_equal(4,5),Ok(false));
+        assert_eq!(world.country_handles_equal(6,1),Err(Refusal::OutOfRange {handle:6,count:6}));
+        assert_eq!(world.country_handles_equal(u32::MAX,1),Err(Refusal::OutOfRange {handle:u32::MAX,count:6}));
+        assert_eq!(frame(json!({"status":"measured","indices":[]}),None,7).country_handles_equal(1,2),
+            Err(Refusal::OutOfRange {handle:1,count:0}));
+        let absent = frame(Value::Null,None,7);
+        for (left,right,equal) in [(0,0,true),(7,7,true),(0,7,false),(7,0,false)] {
+            assert_eq!(absent.country_handles_equal(left,right),Ok(equal));
+        }
+    }
+
+    #[test]
+    fn raw_handle_equality_preserves_unknown_malformed_and_current_domain_refusals() {
+        let measured = json!({"status":"measured","indices":[0,23,23]});
+        for reason in ["unreadable","invalid_identity","invalid_vector","changed","clock_changed","invalid_utf8","out_of_bounds"] {
+            assert_eq!(frame(json!({"status":"unavailable","reason":reason}),None,8).country_handles_equal(1,2),
+                Err(Refusal::Unavailable(reason.into())));
+        }
+        assert_eq!(frame(Value::Null,None,8).country_handles_equal(1,2),Err(Refusal::Unobtained));
+        let missing = crate::WorldFrame::from_raw_scheduled(crate::source::RawFrame {
+            hour_index:8,date:None,save_version:None,schema_version:None,rest:Default::default(),
+        },None,None,None,crate::BuildSchedule::Serial);
+        assert_eq!(missing.country_handles_equal(1,2),Err(Refusal::Missing));
+        for value in [json!({}),json!([]),json!({"status":"measured","indices":null}),
+            json!({"status":"measured","indices":[0,23,23,-1]}),
+            json!({"status":"measured","indices":[0,23,23,4294967296u64]}),
+            json!({"status":"measured","indices":[0,23,23,1.0]}),
+            json!({"status":"measured","indices":[0,23,23,null]}),
+            json!({"status":"measured","indices":[0,23,23],"reason":"changed"}),
+            json!({"status":"unavailable","reason":"invented"}),
+            json!({"status":"unavailable","reason":"changed","indices":[]})] {
+            assert!(matches!(frame(value,None,8).country_handles_equal(1,2),Err(Refusal::Malformed(_))));
+        }
+        assert_eq!(frame(measured.clone(),None,7).country_handles_equal(1,2),Ok(true));
+        for problem in ["partial_data","missing_domain"] {
+            assert_eq!(frame(measured.clone(),Some(json!([{"domain_id":18,"problem":problem}])),8).country_handles_equal(1,2),
+                Err(Refusal::DomainUnavailable(problem.into())));
+        }
+        assert_eq!(frame(measured.clone(),Some(json!([{"domain_id":14,"problem":"partial_data"}])),8).country_handles_equal(1,2),Ok(true));
+        assert_eq!(frame(measured.clone(),Some(Value::Null),8).country_handles_equal(1,2),Err(Refusal::CollectorLedgerMalformed));
+        assert_eq!(frame(Value::Null,None,8).country_handles_equal(1,2),Err(Refusal::Unobtained));
+        assert_eq!(frame(measured,None,9).country_handles_equal(1,2),Ok(true));
     }
 }

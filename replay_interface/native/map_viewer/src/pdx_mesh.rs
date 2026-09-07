@@ -76,6 +76,162 @@ pub struct PdxAssetTree {
 }
 
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativePdxCollisionSource {
+    pub root_child: usize,
+    pub shape_child: usize,
+    pub mesh_child: usize,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct NativePdxCollision {
+    pub source: NativePdxCollisionSource,
+    pub scaled_positions: Vec<[f32; 3]>,
+    pub indices: Vec<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativePdxCollisionRefusal {
+    PropertyType {
+        source: NativePdxCollisionSource,
+        property: &'static str,
+    },
+    PositionTriple {
+        source: NativePdxCollisionSource,
+        float_count: usize,
+    },
+    IndexTriple {
+        source: NativePdxCollisionSource,
+        index_count: usize,
+    },
+    IndexOutOfBounds {
+        source: NativePdxCollisionSource,
+        ordinal: usize,
+        index: u16,
+        vertex_count: usize,
+    },
+    AllocationUnavailable {
+        source: NativePdxCollisionSource,
+        stream: &'static str,
+    },
+}
+
+impl PdxAssetTree {
+    pub fn native_collision(
+        &self,
+        authored_scale: f32,
+    ) -> std::result::Result<Option<NativePdxCollision>, NativePdxCollisionRefusal> {
+        let mut selected = None;
+        for (root_child, object) in self.root.children.iter().enumerate() {
+            if object.name != "object" {
+                continue;
+            }
+            for (shape_child, shape) in object.children.iter().enumerate() {
+                for (mesh_child, mesh) in shape.children.iter().enumerate() {
+                    if mesh.name != "mesh" {
+                        continue;
+                    }
+                    let source = NativePdxCollisionSource {
+                        root_child,
+                        shape_child,
+                        mesh_child,
+                    };
+                    // Native name lookups return the first child/property; the shader getter
+                    // accepts a nonempty string array and compares its first string.
+                    let Some(material) = mesh.children_named("material").next() else {
+                        continue;
+                    };
+                    let Some(PdxProperty {
+                        values: PdxValues::Str(shader),
+                        ..
+                    }) = material.property("shader")
+                    else {
+                        continue;
+                    };
+                    if shader.first().map(String::as_str) != Some("Collision") {
+                        continue;
+                    }
+                    let (Some(p), Some(tri)) = (mesh.property("p"), mesh.property("tri")) else {
+                        continue;
+                    };
+                    if p.values.len() / 3 == 0 || tri.values.is_empty() {
+                        continue;
+                    }
+                    let PdxValues::F32(positions) = &p.values else {
+                        return Err(NativePdxCollisionRefusal::PropertyType {
+                            source,
+                            property: "p",
+                        });
+                    };
+                    let PdxValues::I32(indices) = &tri.values else {
+                        return Err(NativePdxCollisionRefusal::PropertyType {
+                            source,
+                            property: "tri",
+                        });
+                    };
+                    // Native copies all floats into storage sized by count/3. A remainder
+                    // is not safe geometry even if a later source mesh would replace it.
+                    if positions.len() % 3 != 0 {
+                        return Err(NativePdxCollisionRefusal::PositionTriple {
+                            source,
+                            float_count: positions.len(),
+                        });
+                    }
+                    selected = Some((source, positions, indices));
+                }
+            }
+        }
+        let Some((source, positions, raw_indices)) = selected else {
+            return Ok(None);
+        };
+        if raw_indices.len() % 3 != 0 {
+            return Err(NativePdxCollisionRefusal::IndexTriple {
+                source,
+                index_count: raw_indices.len(),
+            });
+        }
+        let vertex_count = positions.len() / 3;
+        let mut indices = Vec::new();
+        indices.try_reserve_exact(raw_indices.len()).map_err(|_| {
+            NativePdxCollisionRefusal::AllocationUnavailable {
+                source,
+                stream: "indices",
+            }
+        })?;
+        for (ordinal, raw) in raw_indices.iter().enumerate() {
+            let index = *raw as u16;
+            if usize::from(index) >= vertex_count {
+                return Err(NativePdxCollisionRefusal::IndexOutOfBounds {
+                    source,
+                    ordinal,
+                    index,
+                    vertex_count,
+                });
+            }
+            indices.push(index);
+        }
+        let mut scaled_positions = Vec::new();
+        scaled_positions
+            .try_reserve_exact(vertex_count)
+            .map_err(|_| NativePdxCollisionRefusal::AllocationUnavailable {
+                source,
+                stream: "positions",
+            })?;
+        for p in positions.chunks_exact(3) {
+            scaled_positions.push([
+                authored_scale * p[0],
+                authored_scale * p[1],
+                authored_scale * p[2],
+            ]);
+        }
+        Ok(Some(NativePdxCollision {
+            source,
+            scaled_positions,
+            indices,
+        }))
+    }
+}
+
 pub fn parse_pdx_asset(bytes: &[u8]) -> Result<PdxAssetTree> {
     match bytes.get(..4) {
         Some(magic) if magic == PDX_ASSET_BINARY_MAGIC => parse_pdx_asset_binary(bytes),
@@ -1395,6 +1551,16 @@ fn sanitize_obj_name(name: &str) -> String {
 pub(crate) mod test_fixtures {
     use super::PDX_ASSET_BINARY_MAGIC;
 
+    pub(crate) fn append_collision(bytes: &mut Vec<u8>, positions: &[f32], indices: &[i32]) {
+        push_object(bytes, 1, "object");
+        push_object(bytes, 2, "collisionShape");
+        push_object(bytes, 3, "mesh");
+        push_prop_f(bytes, "p", positions);
+        push_prop_i(bytes, "tri", indices);
+        push_object(bytes, 4, "material");
+        push_prop_s(bytes, "shader", "Collision");
+    }
+
     pub(crate) fn push_prop_f(bytes: &mut Vec<u8>, name: &str, values: &[f32]) {
         bytes.push(b'!');
         bytes.push(name.len() as u8);
@@ -1996,5 +2162,194 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+
+#[cfg(test)]
+mod native_collision_tests {
+    use super::test_fixtures::{append_collision, push_object, push_prop_f, push_prop_i, push_prop_s};
+    use super::*;
+
+    fn header() -> Vec<u8> {
+        let mut bytes = PDX_ASSET_BINARY_MAGIC.to_vec();
+        push_prop_i(&mut bytes, "pdxasset", &[1, 0]);
+        bytes
+    }
+
+    const TRIANGLE: &[f32] = &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+
+    #[test]
+    fn last_nonempty_collision_preserves_source_ordinals_and_ignores_lod() {
+        let mut bytes = header();
+        push_object(&mut bytes, 1, "locator");
+        append_collision(&mut bytes, TRIANGLE, &[0, 1, 2]);
+        append_collision(&mut bytes, &[2.0; 9], &[2, 1, 0]);
+        append_collision(&mut bytes, &[], &[0, 1, 2]);
+        append_collision(&mut bytes, TRIANGLE, &[]);
+        let tree = parse_pdx_asset(&bytes).unwrap();
+        let hit = tree.native_collision(2.0).unwrap().unwrap();
+        assert_eq!(
+            hit.source,
+            NativePdxCollisionSource {
+                root_child: 2,
+                shape_child: 0,
+                mesh_child: 0
+            }
+        );
+        assert_eq!(hit.scaled_positions, [[4.0; 3]; 3]);
+        assert_eq!(hit.indices, [2, 1, 0]);
+        let mut tree = tree;
+        tree.root.children[2].children[0]
+            .properties
+            .push(PdxProperty {
+                name: "lod".into(),
+                values: PdxValues::I32(vec![999]),
+            });
+        assert_eq!(tree.native_collision(2.0).unwrap(), Some(hit));
+        let mut bytes = header();
+        push_object(&mut bytes, 1, "object");
+        push_object(&mut bytes, 2, "ignoredShape");
+        push_object(&mut bytes, 2, "actualShape");
+        push_object(&mut bytes, 3, "notMesh");
+        push_object(&mut bytes, 3, "mesh");
+        push_prop_f(&mut bytes, "p", TRIANGLE);
+        push_prop_i(&mut bytes, "tri", &[2, 1, 0]);
+        push_object(&mut bytes, 4, "material");
+        push_prop_s(&mut bytes, "shader", "Collision");
+        assert_eq!(
+            parse_pdx_asset(&bytes)
+                .unwrap()
+                .native_collision(1.0)
+                .unwrap()
+                .unwrap()
+                .source,
+            NativePdxCollisionSource {
+                root_child: 0,
+                shape_child: 1,
+                mesh_child: 1
+            }
+        );
+    }
+
+    #[test]
+    fn raw_i32_indices_are_narrowed_before_bounds_validation() {
+        let mut bytes = header();
+        append_collision(&mut bytes, TRIANGLE, &[-65536, 65537, i32::MIN + 2]);
+        let tree = parse_pdx_asset(&bytes).unwrap();
+        assert!(extract_pdx_model(&tree).is_err());
+        assert_eq!(
+            tree.native_collision(1.0).unwrap().unwrap().indices,
+            [0, 1, 2]
+        );
+        let mut bytes = header();
+        append_collision(&mut bytes, TRIANGLE, &[-1, 0, 1]);
+        assert!(matches!(
+            parse_pdx_asset(&bytes).unwrap().native_collision(1.0),
+            Err(NativePdxCollisionRefusal::IndexOutOfBounds {
+                ordinal: 0,
+                index: 65535,
+                vertex_count: 3,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn witnessed_no_qualifying_collision_is_distinct_from_malformed_geometry() {
+        let mut bytes = header();
+        append_collision(&mut bytes, &[], &[0, 1, 2]);
+        append_collision(&mut bytes, &[1.0, 2.0], &[0, 1, 2]);
+        append_collision(&mut bytes, TRIANGLE, &[]);
+        assert_eq!(
+            parse_pdx_asset(&bytes).unwrap().native_collision(1.0),
+            Ok(None)
+        );
+        append_collision(&mut bytes, &[1.0; 4], &[0, 0, 0]);
+        assert!(matches!(
+            parse_pdx_asset(&bytes).unwrap().native_collision(1.0),
+            Err(NativePdxCollisionRefusal::PositionTriple { float_count: 4, .. })
+        ));
+    }
+
+    #[test]
+    fn lookup_uses_first_material_first_property_and_first_shader_string() {
+        let mut bytes = header();
+        append_collision(&mut bytes, TRIANGLE, &[0, 1, 2]);
+        let mut tree = parse_pdx_asset(&bytes).unwrap();
+        let mesh = &mut tree.root.children[0].children[0].children[0];
+        mesh.properties.push(PdxProperty {
+            name: "tri".into(),
+            values: PdxValues::I32(vec![-1]),
+        });
+        mesh.children[0].properties[0].values =
+            PdxValues::Str(vec!["Collision".into(), "notCollision".into()]);
+        mesh.children[0].properties.push(PdxProperty {
+            name: "shader".into(),
+            values: PdxValues::Str(vec!["notCollision".into()]),
+        });
+        assert_eq!(
+            tree.native_collision(1.0).unwrap().unwrap().indices,
+            [0, 1, 2]
+        );
+        let mesh = &mut tree.root.children[0].children[0].children[0];
+        let correct = mesh.children[0].clone();
+        mesh.children[0].properties[0].values = PdxValues::Str(vec!["collision".into()]);
+        mesh.children.push(correct);
+        assert_eq!(tree.native_collision(1.0), Ok(None));
+    }
+
+    #[test]
+    fn only_final_indices_are_consumed_but_unsafe_position_copy_is_never_repaired() {
+        let mut bytes = header();
+        append_collision(&mut bytes, TRIANGLE, &[-1]);
+        append_collision(&mut bytes, TRIANGLE, &[0, 1, 2]);
+        assert!(parse_pdx_asset(&bytes)
+            .unwrap()
+            .native_collision(1.0)
+            .unwrap()
+            .is_some());
+        append_collision(&mut bytes, TRIANGLE, &[0]);
+        assert!(matches!(
+            parse_pdx_asset(&bytes).unwrap().native_collision(1.0),
+            Err(NativePdxCollisionRefusal::IndexTriple { index_count: 1, .. })
+        ));
+        let mut bytes = header();
+        append_collision(&mut bytes, &[1.0; 4], &[0, 0, 0]);
+        append_collision(&mut bytes, TRIANGLE, &[0, 1, 2]);
+        assert!(matches!(
+            parse_pdx_asset(&bytes).unwrap().native_collision(1.0),
+            Err(NativePdxCollisionRefusal::PositionTriple { .. })
+        ));
+    }
+
+    #[test]
+    fn wrong_payload_types_refuse_only_after_native_nonempty_qualification() {
+        let mut bytes = header();
+        append_collision(&mut bytes, TRIANGLE, &[0, 1, 2]);
+        let mut tree = parse_pdx_asset(&bytes).unwrap();
+        tree.root.children[0].children[0].children[0].properties[0].values =
+            PdxValues::I32(vec![0; 9]);
+        assert!(matches!(
+            tree.native_collision(1.0),
+            Err(NativePdxCollisionRefusal::PropertyType { property: "p", .. })
+        ));
+        tree.root.children[0].children[0].children[0].properties[0].values = PdxValues::I32(vec![]);
+        assert_eq!(tree.native_collision(1.0), Ok(None));
+    }
+
+    #[test]
+    fn authored_scale_preserves_native_float_multiply_special_values() {
+        let mut bytes = header();
+        append_collision(&mut bytes, &[0.0, -0.0, f32::INFINITY], &[0, 0, 0]);
+        let tree = parse_pdx_asset(&bytes).unwrap();
+        let hit = tree.native_collision(-2.0).unwrap().unwrap();
+        assert_eq!(
+            hit.scaled_positions[0].map(f32::to_bits),
+            [0x80000000, 0, 0xff800000]
+        );
+        let hit = tree.native_collision(0.0).unwrap().unwrap();
+        assert!(hit.scaled_positions[0][2].is_nan());
+        assert_eq!(hit.scaled_positions[0][1].to_bits(), 0x80000000);
     }
 }

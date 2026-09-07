@@ -1365,11 +1365,23 @@ portable_replay/native/engine_evidence/artifacts/func_1409f4f10.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_1409f4330.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1409f4240.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1409f4b70.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1401da340.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_141277a00.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_141277a00.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_140de8430.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/arrow_neutral_tint.datdump.txt text eol=lf
 /portable_replay/native/engine_evidence/artifacts/func_140f34410.decompile.c text eol=lf
 /portable_replay/native/engine_evidence/artifacts/func_140f34620.decompile.c text eol=lf
 
+portable_replay/native/engine_evidence/artifacts/func_140bf3580.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140bf3580.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14221f060.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14221f060.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140be9620.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140be9620.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140c7b9f0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140c7b9f0.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1424e80a0.decompile.c text eol=lf
 
 portable_replay/native/engine_evidence/artifacts/func_1424e80a0.instructions.txt text eol=lf
@@ -1439,6 +1451,21 @@ portable_replay/native/engine_evidence/artifacts/20260716T044833Z-c01-all-remain
 portable_replay/native/engine_evidence/artifacts/20260716T044833Z-c01-all-remaining-matrix-constants-v1-520633fa.job.json text eol=lf
 portable_replay/native/engine_evidence/artifacts/particle_projection_cases.json text eol=lf
 extractor/native/runs/paired_particle_viewer_runtime/author_projection_cases.py text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140b481a0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_142264cc0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1422611d0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1422f55b0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14224f250.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14224bb00.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14240c310.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_142347e10.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_142272140.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/xmap13_blend_enable_registration.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/xmap13_shadow_blend_descriptor.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/xmap13_shadow_blend_reader_vtable.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/xmap13_shadow_blend_reader_slots.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/xmap13_blend_enable_literal.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/xmap13_blend_enable_ordinal.datdump.txt text eol=lf
 
 portable_replay/native/engine_evidence/artifacts/func_142057ec0.decompile.c text eol=lf
 
@@ -1488,3 +1515,10 @@ portable_replay/native/engine_evidence/artifacts/authored_camouflage_registratio
 portable_replay/native/engine_evidence/artifacts/authored_camouflage_threshold.instructions.txt text eol=lf
 extractor/native/runs/view2_replay_targets/AUTHORED_CAMOUFLAGE_VALIDATION.json text eol=lf
 extractor/native/runs/orchestrator_20260905/CAMOUFLAGE_CCS1_CRO1_INTAKE.json text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14224dfc0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14224dfc0.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424f2200.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424f22c0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424f2330.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424f2270.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424f2290.decompile.c text eol=lf

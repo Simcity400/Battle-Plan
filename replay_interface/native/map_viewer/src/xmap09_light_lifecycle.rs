@@ -115,6 +115,18 @@ pub(crate) struct ResolvedEntityBinding {
     pub(crate) scale_source: Option<portable_content_manifest::UsedContentKey>,
 }
 
+pub(crate) struct SelectedEntityClip {
+    pub(crate) name: String,
+    pub(crate) source: portable_content_manifest::UsedContentKey,
+    pub(crate) animation: Arc<PdxAnimData>,
+}
+
+pub(crate) struct ResolvedPdxmeshDeclaration<'a> {
+    pub(crate) binding: &'a BuildingPdxmeshBinding,
+    pub(crate) source: &'a portable_content_manifest::UsedContentKey,
+    pub(crate) declaration: &'a portable_content_manifest::paradox_text::Entry,
+}
+
 pub(crate) struct EntityAssets {
     content_lease: Option<crate::mod_resolver::ContentAdmissionLease>,
     entity_sources: BTreeMap<String, portable_content_manifest::UsedContentKey>,
@@ -126,6 +138,7 @@ pub(crate) struct EntityAssets {
     static_attachments: EntityAttachmentCatalog,
     meshes: BTreeMap<String, BuildingPdxmeshBinding>,
     mesh_sources: BTreeMap<String, portable_content_manifest::UsedContentKey>,
+    mesh_declarations: Vec<(portable_content_manifest::UsedContentKey, Vec<portable_content_manifest::paradox_text::Entry>)>,
     mesh_clips: BTreeMap<String, BTreeMap<String, String>>,
     clips: BTreeMap<String, String>,
     templates: Vec<Xmap09LightTemplate>,
@@ -168,6 +181,33 @@ impl EntityAssets {
             return Err(format!("pdxmesh {name} binding differs from its admitted namespace winner").into());
         }
         Ok(Some((binding, source)))
+    }
+
+    pub(crate) fn resolved_pdxmesh_declaration(
+        &self, resolver: &GameFileResolver, admission: &replay_core::ValidatedContentAdmission,
+        name: &str,
+    ) -> Result<Option<ResolvedPdxmeshDeclaration<'_>>> {
+        let Some((binding, source)) = self.resolved_pdxmesh(resolver, admission, name)? else {
+            return Ok(None);
+        };
+        let mut winner = None;
+        let mut variants = None;
+        for (key, declarations) in &self.mesh_declarations {
+            for entry in declarations {
+                if entry.value.first_scalar_ci("name") != Some(name) { continue; }
+                let current = entity_parser_text(entry.value.fields().iter()
+                    .filter(|field| field.key_matches("variant"))).0;
+                if variants.as_ref().is_some_and(|previous| previous != &current) {
+                    return Err(format!("pdxmesh {name} has conflicting admitted variant declarations").into());
+                }
+                variants = Some(current);
+                if key == source && entry.line == binding.block_line {
+                    winner = Some(entry);
+                }
+            }
+        }
+        let declaration = winner.ok_or("pdxmesh declaration differs from its admitted binding")?;
+        Ok(Some(ResolvedPdxmeshDeclaration { binding, source, declaration }))
     }
 
     pub(crate) fn entity_declarations<'a>(
@@ -262,6 +302,34 @@ impl EntityAssets {
         Ok((pose, self.static_attachments.resolve(name)?))
     }
 
+    pub(crate) fn selected_state_clip(
+        &self,
+        resolver: &GameFileResolver,
+        admission: &replay_core::ValidatedContentAdmission,
+        name: &str,
+        source: &portable_content_manifest::UsedContentKey,
+        state_ordinal: usize,
+    ) -> Result<Option<SelectedEntityClip>> {
+        let (pose, _) = self.definition(resolver, admission, name, source)?;
+        self.clip_for_state(resolver, pose, state_ordinal)
+    }
+
+    fn clip_for_state(
+        &self, resolver: &GameFileResolver, pose: &BuildingEntityPose, state_ordinal: usize,
+    ) -> Result<Option<SelectedEntityClip>> {
+        let state = pose.states.get(state_ordinal).ok_or("entity selected state is unavailable")?;
+        let Some(animation) = state.animation.as_ref() else { return Ok(None) };
+        let mesh = pose.pdxmesh.as_ref().ok_or("animated entity has no pdxmesh")?;
+        let name = self.mesh_clips.get(mesh).and_then(|clips| clips.get(animation))
+            .ok_or("entity selected animation binding is unavailable")?;
+        let file = self.clips.get(name).ok_or("entity selected animation file is unavailable")?;
+        let source = resolver.admitted_used_content_key(file)?
+            .ok_or_else(|| format!("entity selected animation asset not admitted: {file}"))?;
+        Ok(Some(SelectedEntityClip {
+            name: name.clone(), source, animation: self.animation(resolver, file)?,
+        }))
+    }
+
     fn model(&self, resolver: &GameFileResolver, path: &str) -> Result<Arc<PdxModel>> {
         let mut cache = self
             .models
@@ -301,6 +369,7 @@ impl EntityAssets {
         let mut clips = BTreeMap::new();
         let mut meshes: BTreeMap<String, BuildingPdxmeshBinding> = BTreeMap::new();
         let mut mesh_sources = BTreeMap::new();
+        let mut mesh_declarations = Vec::new();
         let mut static_attachments = EntityAttachmentCatalog::default();
         for extension in ["asset", "gfx"] {
             for key in resolver.require_complete_admitted_dir(
@@ -320,6 +389,21 @@ impl EntityAssets {
                 };
                 portable_content_manifest::paradox_text::expand_file_scoped_variables(&mut document)
                     .map_err(|error| format!("{}: {error}", key.normalized_game_relative_path))?;
+                fn retain_meshes(
+                    entries: &[portable_content_manifest::paradox_text::Entry],
+                    out: &mut Vec<portable_content_manifest::paradox_text::Entry>,
+                ) {
+                    for entry in entries {
+                        if entry.key_matches("pdxmesh") && entry.value.as_object().is_some() {
+                            out.push(entry.clone());
+                        } else {
+                            retain_meshes(entry.value.fields(), out);
+                        }
+                    }
+                }
+                let mut declarations = Vec::new();
+                retain_meshes(document.fields(), &mut declarations);
+                mesh_declarations.push((key.clone(), declarations));
                 let (source, source_lines) = entity_parser_text(document.fields().iter());
                 for entity in document.values_ci("entity") {
                     if let Some(name) = entity.fields().iter().rev()
@@ -371,6 +455,7 @@ impl EntityAssets {
                 .collect(),
             meshes,
             mesh_sources,
+            mesh_declarations,
             mesh_clips: parse_pdxmesh_animation_bindings(&text, "authenticated asset namespace")?,
             clips,
             static_attachments,
@@ -724,35 +809,18 @@ impl EntityAnimation {
         if state.and_then(|s| s.animation.as_ref()).is_none() && out.length < 0.0 {
             out.looping = false;
         }
-        if !has_lights && !require_pose && out.next_state.is_none() {
-            return Ok(out);
+        if has_lights || require_pose || out.next_state.is_some() {
+            if let Some(mesh_name) = pose.pdxmesh.as_ref() {
+                let mesh = assets.meshes.get(mesh_name)
+                    .ok_or("light pdxmesh binding is unavailable")?;
+                out.model = Some(assets.model(resolver, &mesh.mesh)?);
+            }
         }
-        if let Some(mesh_name) = pose.pdxmesh.as_ref() {
-            let mesh = assets
-                .meshes
-                .get(mesh_name)
-                .ok_or("light pdxmesh binding is unavailable")?;
-            out.model = Some(assets.model(resolver, &mesh.mesh)?);
-        }
-        if let Some(animation) = state.and_then(|s| s.animation.as_ref()) {
-            let mesh_name = pose
-                .pdxmesh
-                .as_ref()
-                .ok_or("animated entity has no pdxmesh")?;
-            let clip_name = assets
-                .mesh_clips
-                .get(mesh_name)
-                .and_then(|c| c.get(animation))
-                .ok_or("light animation binding is unavailable")?;
-            let file = assets
-                .clips
-                .get(clip_name)
-                .ok_or("light animation file is unavailable")?;
-            let clip = assets.animation(resolver, file)?;
-            out.length = xmap13_clip_length_seconds(&clip) as f64;
-            out.clip = Some(clip);
-        } else if out.length < 0.0 {
-            out.looping = false;
+        if let Some(index) = index {
+            if let Some(selected) = assets.clip_for_state(resolver, pose, index)? {
+                out.length = xmap13_clip_length_seconds(&selected.animation) as f64;
+                out.clip = Some(selected.animation);
+            }
         }
         if !out.authored_speed.is_finite()
             || !out.speed.is_finite()
@@ -2033,6 +2101,73 @@ entity={name=clone clone=base state={name=walk animation=walking}}
     }
 
     #[test]
+    fn shared_mesh_variants_follow_cross_file_clone_and_expanded_declaration() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let files: &[(&str, &[u8])] = &[
+            ("gfx/a_clone.asset", b"entity={name=clone clone=base}\n"),
+            ("gfx/z_base.asset", b"entity={name=base pdxmesh=mesh}\n"),
+            ("gfx/variants.gfx", br#"@alternate = alternate
+@weight = 2
+objectTypes = {
+ pdxmesh = {
+  name = mesh
+  file = "gfx/shared.mesh"
+  variant = { pdxmesh = ignored pdxmesh = @alternate weight = 1 weight = @weight }
+  variant = { pdxmesh = alternate weight = 3 }
+ }
+ pdxmesh = { name = alternate file = "gfx/shared.mesh" }
+}
+"#),
+        ];
+        let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", files);
+        let assets = EntityAssets::load(&content.resolver).unwrap();
+        let entity = assets.resolved_binding(&content.resolver, &content.admission, "clone")
+            .unwrap().unwrap();
+        assert_eq!(entity.declaration_source.normalized_game_relative_path, "gfx/a_clone.asset");
+        assert_eq!(entity.pdxmesh_source.normalized_game_relative_path, "gfx/z_base.asset");
+        let selected = assets.resolved_pdxmesh_declaration(
+            &content.resolver, &content.admission, &entity.binding.pdxmesh).unwrap().unwrap();
+        assert_eq!(selected.source, content.admission.require_used_content("gfx/variants.gfx").unwrap());
+        assert_eq!(selected.binding.name, "mesh");
+        assert_eq!(selected.binding.block_line, selected.declaration.line);
+        let variants = selected.declaration.value.fields().iter()
+            .filter(|field| field.key_matches("variant")).collect::<Vec<_>>();
+        assert_eq!(variants.iter().map(|field| field.line).collect::<Vec<_>>(), [7, 8]);
+        assert_eq!(variants[0].value.fields().iter()
+            .map(|field| (field.key.as_deref(), field.value.as_scalar())).collect::<Vec<_>>(),
+            [(Some("pdxmesh"), Some("ignored")), (Some("pdxmesh"), Some("alternate")),
+             (Some("weight"), Some("1")), (Some("weight"), Some("2"))]);
+        assert_eq!(variants[1].value.first_scalar_ci("weight"), Some("3"));
+        let singleton = assets.resolved_pdxmesh_declaration(
+            &content.resolver, &content.admission, "alternate").unwrap().unwrap();
+        assert_eq!(singleton.declaration.value.values_ci("variant").count(), 0);
+        assert!(assets.resolved_pdxmesh_declaration(
+            &content.resolver, &content.admission, "absent").unwrap().is_none());
+        let other = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", files);
+        assert!(assets.resolved_pdxmesh_declaration(&other.resolver, &content.admission, "mesh").is_err());
+        let different = Fixture::new(REGISTRATION, "particle={name=different}");
+        assert!(assets.resolved_pdxmesh_declaration(&content.resolver, &different.admission, "mesh").is_err());
+    }
+
+    #[test]
+    fn conflicting_mesh_variants_refuse_only_the_requested_mesh() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[
+            ("gfx/a.gfx", br#"objectTypes={pdxmesh={name=mesh file="gfx/shared.mesh"
+ variant={pdxmesh=alternate weight=1}}}"#),
+            ("gfx/z.gfx", br#"objectTypes={pdxmesh={name=mesh file="gfx/shared.mesh"
+ variant={pdxmesh=alternate weight=2}}
+ pdxmesh={name=unrelated file="gfx/unrelated.mesh"}}"#),
+        ]);
+        let assets = EntityAssets::load(&content.resolver).unwrap();
+        let error = assets.resolved_pdxmesh_declaration(&content.resolver, &content.admission, "mesh")
+            .err().unwrap().to_string();
+        assert!(error.contains("conflicting admitted variant declarations"), "{error}");
+        assert!(assets.resolved_pdxmesh_declaration(
+            &content.resolver, &content.admission, "unrelated").unwrap().is_some());
+    }
+
+    #[test]
     fn constructor_default_then_requested_state_share_cursor_and_publish_retained_clock() {
         use crate::particle_authored::test_support::{Fixture, REGISTRATION};
         let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[
@@ -2215,6 +2350,7 @@ entity={name=child default_state=idle state={name=idle time_offset={30 100}}}
                 static_attachments: fixture_attachment_catalog(),
                 meshes: BTreeMap::new(),
                 mesh_sources: BTreeMap::new(),
+                mesh_declarations: Vec::new(),
                 mesh_clips: BTreeMap::new(),
                 clips: BTreeMap::new(),
                 templates,
@@ -3930,6 +4066,104 @@ entity = {
         );
     }
 
+    fn eventless_clip_fixture() -> crate::particle_authored::test_support::Fixture {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let mut clip = crate::pdx_mesh::test_fixtures::synthetic_anim_bytes();
+        let fps = clip.windows(4).enumerate().filter_map(|(index, bytes)|
+            (bytes == 15.0f32.to_le_bytes()).then_some(index)).collect::<Vec<_>>();
+        assert_eq!(fps.len(), 1);
+        clip[fps[0]..fps[0] + 4].copy_from_slice(&1.0f32.to_le_bytes());
+        let mesh = crate::pdx_mesh::test_fixtures::synthetic_mesh_bytes(0.0);
+        Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[
+            ("gfx/model.mesh", &mesh), ("gfx/test.anim", &clip),
+            ("gfx/entity.asset", br#"
+@animation_id = idle
+@clip_name = shared_clip
+@clip_file = test.anim
+pdxmesh = { name = mesh file = "gfx/model.mesh"
+ animation = { id = @animation_id type = @clip_name }
+}
+animation = { name = @clip_name file = @clip_file }
+entity = { name = entity pdxmesh = mesh default_state = boot
+ state = { name = boot animation = @animation_id animation_speed = 2 }
+ state = { name = steady animation = @animation_id animation_speed = 2 }
+ state = { name = run animation = @animation_id animation_speed = 2 looping = no next_state = done }
+ state = { name = done animation = @animation_id animation_speed = 2 }
+ state = { name = still }
+ state = { name = missing animation = unbound }
+}
+"#),
+        ])
+    }
+
+    #[test]
+    fn shared_selected_clip_uses_expanded_catalog_and_checks_content_lease() {
+        let content = eventless_clip_fixture();
+        let assets = EntityAssets::load(&content.resolver).unwrap();
+        let source = content.admission.require_used_content("gfx/entity.asset").unwrap();
+        let pose = &assets.poses["entity"];
+        let index = |name: &str| pose.states.iter().position(|state| state.name == name).unwrap();
+        let selected = assets.selected_state_clip(&content.resolver, &content.admission,
+            "entity", source, index("boot")).unwrap().unwrap();
+        assert_eq!(selected.name, "shared_clip");
+        assert_eq!(&selected.source, content.admission.require_used_content("gfx/test.anim").unwrap());
+        assert_eq!(xmap13_clip_length_seconds(&selected.animation), 2.0);
+        let next = assets.selected_state_clip(&content.resolver, &content.admission,
+            "entity", source, index("done")).unwrap().unwrap();
+        assert!(Arc::ptr_eq(&selected.animation, &next.animation));
+        assert!(assets.selected_state_clip(&content.resolver, &content.admission,
+            "entity", source, index("still")).unwrap().is_none());
+        assert!(assets.selected_state_clip(&content.resolver, &content.admission,
+            "entity", source, index("missing")).err().unwrap().to_string().contains("animation binding"));
+        assert!(assets.selected_state_clip(&content.resolver, &content.admission,
+            "entity", source, pose.states.len()).err().unwrap().to_string().contains("selected state"));
+        let other = eventless_clip_fixture();
+        assert!(assets.selected_state_clip(&other.resolver, &content.admission,
+            "entity", source, index("boot")).err().unwrap().to_string().contains("another content admission"));
+        let foreign = crate::particle_authored::test_support::Fixture::new(
+            crate::particle_authored::test_support::REGISTRATION, "particle={name=different}");
+        assert!(assets.selected_state_clip(&content.resolver, &foreign.admission,
+            "entity", source, index("boot")).err().unwrap().to_string().contains("another content admission"));
+        let mut wrong_source = source.clone();
+        wrong_source.payload_bytes += 1;
+        assert!(assets.selected_state_clip(&content.resolver, &content.admission,
+            "entity", &wrong_source, index("boot")).is_err());
+    }
+
+    #[test]
+    fn eventless_selected_clip_clock_survives_default_requested_and_next_state_publication() {
+        let content = eventless_clip_fixture();
+        let assets = Arc::new(EntityAssets::load(&content.resolver).unwrap());
+        let source = content.admission.require_used_content("gfx/entity.asset").unwrap();
+        let (_, mut placed, mut viewer) = fixture(1);
+        let mut lifecycle = ViewerLightLifecycle::default();
+        for (requested, time, delta, expected_state, expected_playhead) in [
+            (None, 0.25f32, 0.25f32, "boot", 0.5),
+            (Some("steady"), 0.5, 0.25, "steady", 0.5),
+            (Some("run"), 0.75, 0.25, "run", 0.5),
+            (Some("run"), 1.5, 0.75, "done", 0.0),
+            (Some("run"), 1.75, 0.25, "done", 0.5),
+        ] {
+            placed[0].state = requested.map(str::to_owned);
+            viewer.animation_time_f32_bits = time.to_bits();
+            viewer.frame_delta_seconds_f32_bits = delta.to_bits();
+            let rows = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+            let published = rows.root_animation(&content.resolver, &content.admission, &placed[0].id).unwrap();
+            let state = &lifecycle.entities[&placed[0].id];
+            assert_eq!(state.active_state.as_deref(), Some(expected_state));
+            assert!(state.events.is_empty());
+            assert_eq!(state.length, 2.0);
+            assert_eq!(published.authored_speed, 2.0);
+            assert_eq!(published.playhead_seconds, expected_playhead, "{expected_state} at {time}");
+            let selected = assets.selected_state_clip(&content.resolver, &content.admission,
+                "entity", source, published.state_ordinal.unwrap()).unwrap().unwrap();
+            assert_eq!(xmap13_clip_length_seconds(&selected.animation) as f64, state.length);
+            assert!(state.clip.is_some());
+            if expected_state != "run" { assert!(state.model.is_none()); }
+            assert!(lifecycle.instances.is_empty());
+        }
+    }
+
     #[test]
     fn viewer_catalog_loads_transition_clips_offsets_and_empty_destination_states() {
         let root = crate::test_support::temp_test_dir("viewer-transition-catalog");
@@ -4123,6 +4357,7 @@ entity = {
                 static_attachments: fixture_attachment_catalog(),
                 meshes: BTreeMap::new(),
                 mesh_sources: BTreeMap::new(),
+                mesh_declarations: Vec::new(),
                 mesh_clips: BTreeMap::new(),
                 clips: BTreeMap::new(),
                 templates,

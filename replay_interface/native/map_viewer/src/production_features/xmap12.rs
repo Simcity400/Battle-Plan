@@ -405,6 +405,8 @@ fn ordered_used_content(
         let chain =
             resolve_xmap12_entity_chain_cached(resolver, admission, chains, &draw.entity_token)?;
         push(&chain.entity_source)?;
+        push(&chain.entity_pdxmesh_source)?;
+        if let Some(source) = &chain.entity_scale_source { push(source)?; }
         push(&chain.pdxmesh_source)?;
         push(&chain.mesh_source)?;
         push(&chain.shader_source)?;

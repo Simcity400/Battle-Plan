@@ -501,17 +501,32 @@ pub struct ProductionMapFeatureAdapters<'a> {
 impl<'a> ProductionMapFeatureAdapters<'a> {
     fn collect_prepared_entity_owners(&self) -> Result<Vec<Box<dyn PreparedEntityManagerOwner + '_>>> {
         let mut owners = Vec::new();
+        let mut failure = None;
         for adapter in self.slots.values() {
             match adapter.take_prepared_entity_manager_owner() {
                 Ok(Some(owner)) => owners.push(owner),
                 Ok(None) => {},
-                Err(error) => {
-                    refuse_prepared_entity_owners(&mut owners, &error.to_string());
-                    return Err(error);
-                }
+                Err(error) => { if failure.is_none() { failure = Some(error); } }
             }
         }
+        if let Some(error) = failure {
+            refuse_prepared_entity_owners(&mut owners, &error.to_string());
+            return Err(error);
+        }
         Ok(owners)
+    }
+
+    fn prepare_lighting_entity_population(&self, context: &FoundationFeatureContext<'_>, preparation: Result<()>) -> Result<()> {
+        let preparation = preparation.and_then(|()| match self.get(MapVisualFamily::LightingShadows) {
+            Some(lighting) => lighting.prepare_entity_manager_population(context),
+            None => Ok(()),
+        });
+        let mut owners = self.collect_prepared_entity_owners()?;
+        if let Err(error) = preparation {
+            refuse_prepared_entity_owners(&mut owners, &error.to_string());
+            return Err(error);
+        }
+        dispatch_prepared_entity_owners(&mut owners)
     }
 
     pub fn visit_particles_for_draw(
@@ -682,6 +697,9 @@ fn foundation_feature_adapter_core(
     terrain_options: crate::TerrainLodCullOptions,
 ) -> Result<ProductionMapFeatureAdapters<'static>> {
     let mut adapters = ProductionMapFeatureAdapters::default();
+    let entity_manager = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::particle_runtime::ViewerEntityManager::default(),
+    ));
     adapters.register(Box::new(
         crate::production_features::xmap03::Xmap03CameraAdapter,
     ))?;
@@ -696,7 +714,9 @@ fn foundation_feature_adapter_core(
     adapters.register(Box::new(political))?;
     adapters.register(Box::new(fow))?;
     adapters.register(Box::new(
-        crate::production_features::xmap09::Xmap09LightingAdapter::new(resolver)?,
+        crate::production_features::xmap09::Xmap09LightingAdapter::with_entity_manager(
+            resolver, entity_manager.clone(),
+        )?,
     ))?;
     adapters.register_xmap11(crate::production_features::xmap11::Xmap11TreesAdapter::new(
         resolver,
@@ -721,7 +741,9 @@ fn foundation_feature_adapter_core(
         )?,
     ))?;
     adapters.register(Box::new(
-        crate::production_features::xmap13::Xmap13Adapter::new(resolver, admission)?,
+        crate::production_features::xmap13::Xmap13Adapter::with_entity_manager(
+            resolver, admission, entity_manager,
+        )?,
     ))?;
     adapters.register(Box::new(
         crate::production_features::xmap15::Xmap15OrdersAdapter::new(resolver, admission),
@@ -1358,7 +1380,16 @@ fn prepare_foundation_frame_inner(
     let mut prepared_labels = None;
     let mut prepared_map_modes = None;
     let mut early_weather: Option<FamilyPreparation<FoundationFeatureOutput>> = None;
+    let mut entity_preparation_refusal: Option<String> = None;
+    let mut entity_preparation_cost = [std::time::Duration::ZERO; 2];
     for family in MapVisualFamily::ALL {
+        let steps = match family {
+            MapVisualFamily::UnitsCounters => [Some((family, false)), None, None],
+            MapVisualFamily::LightingShadows => [Some((family, false)),
+                Some((MapVisualFamily::UnitsCounters, true)), Some((family, true))],
+            _ => [Some((family, true)), None, None],
+        };
+        for (family, publish) in steps.into_iter().flatten() {
         let family_started = std::time::Instant::now();
         let weather_preparation = if family == MapVisualFamily::WeatherAtmosphere {
             early_weather.take()
@@ -1406,6 +1437,21 @@ fn prepare_foundation_frame_inner(
                 }
             };
         }
+        if !publish && family == MapVisualFamily::UnitsCounters {
+            if let Some(adapter) = adapters.get(family) {
+                if let Err(error) = adapter.prepare_entity_manager_population(&context) {
+                    entity_preparation_refusal = Some(error.to_string());
+                }
+            }
+            entity_preparation_cost[0] = family_started.elapsed();
+            continue;
+        }
+        if publish && matches!(family, MapVisualFamily::UnitsCounters | MapVisualFamily::LightingShadows) {
+            if let Some(reason) = &entity_preparation_refusal {
+                prepared_or_refusal!(Err::<(), _>(FamilyContentRefusal::new(
+                    format!("{}.entity_manager_frame_unavailable", family.owner_packet()), reason.clone())));
+            }
+        }
         let xmap12_preparation = if family == MapVisualFamily::CitiesBuildingsMapObjects {
             match adapters.xmap12.as_ref() {
                 Some(adapter) => prepared_or_refusal!(adapter.prepare(
@@ -1434,27 +1480,33 @@ fn prepare_foundation_frame_inner(
         } else {
             None
         };
-        // Weather setters precede entity events and particle updates; render-stage order stays assigned separately.
-        if family == MapVisualFamily::LightingShadows {
-            if let Some(adapter) = adapters.get(MapVisualFamily::WeatherAtmosphere) {
-                early_weather = Some(classify_family_preparation(
-                    MapVisualFamily::WeatherAtmosphere, hour, adapter.prepare(&context))?);
-            }
+        // Weather setters precede entity events; all owners publish after common dispatch.
+        if !publish && family == MapVisualFamily::LightingShadows {
+            let preparation: Result<()> = (|| {
+                if let Some(reason) = &entity_preparation_refusal {
+                    return Err(reason.clone().into());
+                }
+                if let Some(adapter) = adapters.get(MapVisualFamily::WeatherAtmosphere) {
+                    early_weather = Some(classify_family_preparation(
+                        MapVisualFamily::WeatherAtmosphere, hour, adapter.prepare(&context))?);
+                }
+                Ok(())
+            })();
             context.prepared_weather = match early_weather.as_ref() {
                 Some(FamilyPreparation::Prepared(output)) => output.prepared_weather.as_ref(),
                 _ => None,
             };
+            if let Err(error) = adapters.prepare_lighting_entity_population(&context, preparation) {
+                entity_preparation_refusal = Some(error.to_string());
+            }
+            entity_preparation_cost[1] = family_started.elapsed();
+            continue;
         }
-        if family == MapVisualFamily::LightingShadows {
-            let shared_entities = (|| {
-                if let Some(lighting) = adapters.get(family) {
-                    lighting.prepare_entity_manager_population(&context)?;
-                }
-                let mut owners = adapters.collect_prepared_entity_owners()?;
-                dispatch_prepared_entity_owners(&mut owners)
-            })().map_err(|error| FamilyContentRefusal::new(
-                "XMAP09.entity_manager_frame_unavailable", error.to_string()));
-            prepared_or_refusal!(shared_entities);
+        if publish && matches!(family, MapVisualFamily::UnitsCounters | MapVisualFamily::LightingShadows) {
+            context.prepared_weather = match early_weather.as_ref() {
+                Some(FamilyPreparation::Prepared(output)) => output.prepared_weather.as_ref(),
+                _ => None,
+            };
         }
         if family == MapVisualFamily::ParticlesEffects {
             if let (Some(weather), Some(lighting)) =
@@ -1861,10 +1913,15 @@ fn prepare_foundation_frame_inner(
             process_private_bytes().unwrap_or((0, 0));
         family_costs.push(FamilyPreparationCost {
             family,
-            wall_ms: u64::try_from(family_started.elapsed().as_millis())?,
+            wall_ms: u64::try_from((family_started.elapsed() + match family {
+                MapVisualFamily::UnitsCounters => entity_preparation_cost[0],
+                MapVisualFamily::LightingShadows => entity_preparation_cost[1],
+                _ => std::time::Duration::ZERO,
+            }).as_millis())?,
             private_bytes_after,
             peak_private_bytes_after,
         });
+        }
     }
 
     for authority_gap in map_admission.gaps() {
@@ -2686,6 +2743,86 @@ mod tests {
     }
 
     #[test]
+    fn later_population_failure_drains_both_owners_and_requires_explicit_recovery() {
+        use crate::particle_runtime::*;
+        struct Adapter {
+            family: MapVisualFamily,
+            fail: std::rc::Rc<std::cell::Cell<bool>>,
+            pending: std::rc::Rc<std::cell::RefCell<Option<Box<FrameOwner>>>>,
+        }
+        impl ProductionMapFeatureAdapter for Adapter {
+            fn family(&self) -> MapVisualFamily { self.family }
+            fn prepare(&self, _: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput> {
+                panic!("failed population must not publish a family")
+            }
+            fn prepare_entity_manager_population(&self, context: &FoundationFeatureContext<'_>) -> Result<()> {
+                assert!(self.pending.borrow().is_some());
+                assert_eq!(context.viewer.animation_time_f32_bits, 1.0f32.to_bits());
+                if self.fail.get() { return Err("fixture lighting population preparation failed".into()); }
+                Ok(())
+            }
+            fn take_prepared_entity_manager_owner(&self) -> Result<Option<Box<dyn PreparedEntityManagerOwner + '_>>> {
+                Ok(self.pending.borrow_mut().take().map(|owner| owner as Box<dyn PreparedEntityManagerOwner>))
+            }
+        }
+        let [first, second] = frame_owners();
+        let manager = first.manager.clone();
+        let frame = first.frame;
+        let order = first.order.clone();
+        let identities = [first.id, second.id];
+        let publications = [first.published.clone(), second.published.clone()];
+        for publication in &publications { publication.set(true); }
+        let pending = [first, second].map(|owner| std::rc::Rc::new(std::cell::RefCell::new(Some(owner))));
+        let world = WorldFrame::from_raw_scheduled(replay_core::RawFrame {
+            hour_index: 79, date: None, save_version: None, schema_version: None, rest: Default::default(),
+        }, None, None, None, replay_core::BuildSchedule::Serial);
+        let viewer = ViewerOwnedMapState { sky_enabled: true, unit_models_enabled: true,
+            viewport_width: 512, viewport_height: 512, camera: None, observer_country_id: None,
+            map_mode_id: "political".into(), map_mode_selection_epoch: 0, selected_object_ids: vec![],
+            input_revision: 0, animation_time_f32_bits: 1.0f32.to_bits(), frame_delta_seconds_f32_bits: 0.5f32.to_bits() };
+        let selection = crate::production_features::xmap15::Xmap15ViewerSelection::default();
+        let context = FoundationFeatureContext::new_for_owned_accounting_tests(&world, &viewer, &[], &[], &selection);
+        let fail = std::rc::Rc::new(std::cell::Cell::new(true));
+        let mut adapters = ProductionMapFeatureAdapters::default();
+        for (family, pending) in [MapVisualFamily::UnitsCounters, MapVisualFamily::LightingShadows]
+            .into_iter().zip(&pending) {
+            adapters.register(Box::new(Adapter { family, fail: fail.clone(), pending: pending.clone() })).unwrap();
+        }
+        let error = adapters.prepare_lighting_entity_population(&context, Ok(())).unwrap_err();
+        assert!(error.to_string().contains("lighting population preparation"));
+        assert!(pending.iter().all(|pending| pending.borrow().is_none()));
+        assert!(publications.iter().all(|publication| !publication.get()));
+        assert!(order.borrow().is_empty());
+        let next = EntityManagerFrame { presentation_time_f32_bits: 2.0f32.to_bits(), ..frame };
+        {
+            let mut manager = manager.lock().unwrap();
+            assert!(!manager.frame_is_published(frame.presentation_time_f32_bits));
+            assert!(!manager.frame_is_published(next.presentation_time_f32_bits));
+            assert!(manager.advance_frame(next, &mut []).unwrap_err().to_string()
+                .contains("lighting population preparation"));
+            assert_eq!(manager.random_state().counter, 0);
+            assert_eq!(manager.reset_frame_publication(), Err(EntityManagerFrameRefusal::RegisteredRootsOnReset));
+            for identity in identities { manager.remove_owner(identity); }
+            manager.reset_frame_publication().unwrap();
+        }
+        for ((pending, id), root) in pending.iter().zip(identities).zip(["first", "second"]) {
+            manager.lock().unwrap().parts_mut().1.apply(id, &mut vec![EntityRootChange::Register {
+                id: root.into(), scene_mask: 7, update_mask: 6,
+            }]);
+            *pending.borrow_mut() = Some(Box::new(FrameOwner { manager: manager.clone(), id,
+                frame: next, root, order: order.clone(), published: publications[usize::from(root == "second")].clone(),
+                fail_finish: false }));
+        }
+        fail.set(false);
+        adapters.prepare_lighting_entity_population(&context, Ok(())).unwrap();
+        assert!(pending.iter().all(|pending| pending.borrow().is_none()));
+        assert!(publications.iter().all(|publication| publication.get()));
+        assert!(manager.lock().unwrap().frame_is_published(next.presentation_time_f32_bits));
+        assert_eq!(manager.lock().unwrap().random_state().counter, 6);
+        assert_eq!(order.borrow().len(), 6);
+    }
+
+    #[test]
     fn common_owner_dispatch_rejects_independent_manager_before_any_draw() {
         let [first, mut second] = frame_owners();
         let manager = first.manager.clone();
@@ -2734,7 +2871,9 @@ mod tests {
             before_loop.contains("let mut family_costs = Vec::with_capacity(MapVisualFamily::ALL.len());"),
             "the cost rows are not sized to the family list"
         );
-        let first_statement = loop_and_after
+        let phase_body = loop_and_after.split_once("for (family, publish) in steps.into_iter().flatten() {")
+            .expect("every preparation phase is timed").1;
+        let first_statement = phase_body
             .lines()
             .map(str::trim)
             .find(|line| !line.is_empty() && !line.starts_with("//"))
@@ -2768,8 +2907,8 @@ mod tests {
         let loop_body = &loop_and_after[..loop_end];
         assert_eq!(
             loop_body.matches("family_started").count(),
-            2,
-            "the timer is named beyond its start and its read: a reset or a shadow"
+            4,
+            "the timer must have one start, two retained phase costs, and one publication read"
         );
         // After the coverage row the iteration is exactly the two measurement
         // statements, verbatim: nothing can run between the timer's read and
@@ -2784,8 +2923,11 @@ mod tests {
                 "let (private_bytes_after, peak_private_bytes_after) = ",
                 "process_private_bytes().unwrap_or((0, 0)); ",
                 "family_costs.push(FamilyPreparationCost { family, ",
-                "wall_ms: u64::try_from(family_started.elapsed().as_millis())?, ",
-                "private_bytes_after, peak_private_bytes_after, });"
+                "wall_ms: u64::try_from((family_started.elapsed() + match family { ",
+                "MapVisualFamily::UnitsCounters => entity_preparation_cost[0], ",
+                "MapVisualFamily::LightingShadows => entity_preparation_cost[1], ",
+                "_ => std::time::Duration::ZERO, }).as_millis())?, ",
+                "private_bytes_after, peak_private_bytes_after, }); }"
             ),
             "the iteration's tail is not the two measurement statements, verbatim"
         );
