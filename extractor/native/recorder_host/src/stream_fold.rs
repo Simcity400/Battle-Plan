@@ -4578,9 +4578,10 @@ mod tests {
         payload[24..28].copy_from_slice(&1u32.to_le_bytes());
         payload[20..24].copy_from_slice(&100_000u32.to_le_bytes());
         compact_contract::country_name_inputs::encode_domain_version(14, &mut payload);
+        payload.extend_from_slice(&1u64.to_le_bytes());
         let error = crate::domain_data_authority::summarize_domain_data_payload(
             14, &payload, crate::domain_data_authority::DomainDataContext::default()).unwrap_err();
-        assert!(error.to_string().contains("politics popularity row"), "{error}");
+        assert!(error.to_string().contains("politics CCS1 truncated pool"), "{error}");
         expect_malformed_domain_degrades(14, &payload);
     }
 
@@ -4604,11 +4605,12 @@ mod tests {
         payload[24..28].copy_from_slice(&1u32.to_le_bytes());
         payload[20..24].copy_from_slice(&100_000u32.to_le_bytes());
         compact_contract::country_name_inputs::encode_domain_version(14, &mut payload);
+        payload.extend_from_slice(&1u64.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&0u16.to_le_bytes());
         let error = crate::domain_data_authority::summarize_domain_data_payload(
             14, &payload, crate::domain_data_authority::DomainDataContext::default()).unwrap_err();
-        assert!(error.to_string().contains("politics popularity row"), "{error}");
+        assert!(error.to_string().contains("politics CCS1 truncated pool"), "{error}");
         expect_malformed_domain_degrades(14, &payload);
     }
 
@@ -4635,6 +4637,7 @@ mod tests {
         // measured value: the decoder admits either the unmeasured marker or
         // 1..=600, and a zero-filled block quietly fails that.
         compact_contract::country_name_inputs::encode_domain_version(14, &mut payload);
+
         for value in [1u32, 0, 0, u32::MAX, 0, 0, 0, 0, 0] {
             payload.extend_from_slice(&value.to_le_bytes());
         }
@@ -4649,6 +4652,7 @@ mod tests {
         // The decode assertion this test used to spell out itself now lives
         // inside `expect_domain_boundary_acceptance`, where it polices every
         // domain that calls the helper rather than only this one.
+        crate::politics_fixture::append_test_politics_capital_slots(&mut payload, raw_for(HOUR_A), 1);
         expect_domain_boundary_acceptance(14, &payload);
     }
 
@@ -4666,6 +4670,7 @@ mod tests {
             if domain == 14 {
                 payload[20..24].copy_from_slice(&100_000u32.to_le_bytes());
                 compact_contract::country_name_inputs::encode_domain_version(14, &mut payload);
+                crate::politics_fixture::append_test_politics_capital_slots(&mut payload, raw_for(HOUR_A), 1);
             }
             append_complete_domain_record(&mut payload, raw_for(HOUR_A));
             expect_domain_boundary_degrades(domain, &payload);

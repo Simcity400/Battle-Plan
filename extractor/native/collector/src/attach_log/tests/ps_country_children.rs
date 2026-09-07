@@ -17,6 +17,7 @@ use std::collections::BTreeSet;
 /// without an engine.
 fn empty_bundle_read() -> CompactBundleRead {
     CompactBundleRead {
+        politics_capital_slots: None,
         worker_panic_reason: None,
         specs: Vec::new(),
         rows: Vec::new(),
@@ -140,6 +141,7 @@ fn the_join_returns_reads_in_table_order_not_completion_order() {
                 move || {
                     thread::sleep(Duration::from_millis(hold_ms));
                     CompactBundleRead {
+                        politics_capital_slots: None,
                         specs: vec![spec],
                         ..empty_bundle_read()
                     }

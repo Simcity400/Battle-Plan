@@ -1564,6 +1564,11 @@ portable_replay/native/engine_evidence/artifacts/permanent_snow_id_cell.datdump.
 portable_replay/native/engine_evidence/artifacts/permanent_snow_registration.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/permanent_snow_load_dispatch.instructions.txt text eol=lf
 extractor/native/runs/view2_replay_targets/PROVINCE_PERMANENT_SNOW_AUTHORITY.json text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1401770b0.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_140aad390.decompile.c text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1409c2cc0.decompile.c text eol=lf
 extractor/native/runs/orchestrator_20260905/CAMOUFLAGE_CCS1_CRO1_INTAKE.json text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_14224dfc0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_14224dfc0.instructions.txt text eol=lf
@@ -1576,3 +1581,7 @@ extractor/native/runs/orchestrator_20260905/LANDING_FC84_VALIDATION.json text eo
 extractor/native/runs/orchestrator_20260905/PREFOLD_WORKER_CONFIRMATION.json text eol=lf
 extractor/native/runs/view2_replay_targets/SNOW_CAPITAL_VALIDATION_9191.json text eol=lf
 extractor/native/runs/view2_replay_targets/SNOW_CAPITAL_PARENT_INTEGRATION_47486193.json text eol=lf
+extractor/native/runs/cap3_critical_path/CCS1_JOINT_FOUR_STAGE_SNAPSHOTS.json text eol=lf
+extractor/native/runs/cap3_critical_path/CCS1_JOINT_VALIDATION.json text eol=lf
+extractor/native/runs/cap3_critical_path/CCS1_REMAINING_TEST_INVENTORY.json text eol=lf
+extractor/native/runs/cap3_critical_path/CCS1_FULL_MODULE_VALIDATION.json text eol=lf

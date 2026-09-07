@@ -1,5 +1,5 @@
 pub const DOMAIN_VERSION_HEADER_LEN: usize = 8;
-pub const POLITICS_VERSION: u16 = 2;
+pub const POLITICS_VERSION: u16 = 3;
 pub const POLITICS_COUNTRY_ROW_BYTES: usize = 36;
 pub const POLITICS_FLAG_CAPITAL_OVERRIDE: u32 = 1 << 11;
 pub const IDENTITY_VERSION: u16 = 3;
@@ -250,7 +250,7 @@ mod tests {
         assert!(decode_domain_version(18, &bytes, &mut 0).is_err());
         bytes.clear();
         encode_domain_version(14, &mut bytes);
-        assert_eq!(&bytes, b"CPNI\x02\0\x08\0");
+        assert_eq!(&bytes, b"CPNI\x03\0\x08\0");
         bytes[4] = 1;
         assert!(decode_domain_version(14, &bytes, &mut 0).is_err());
     }
@@ -356,5 +356,125 @@ mod country_link_tests {
         }
         for cause in [0,8,255] { assert!(decode_country_link_indices(&[0,cause,0,0,0,0,0,0],&mut 0).is_err()); }
         assert!(decode_country_link_indices(&[0,1,0,0,1,0,0,0],&mut 0).is_err());
+    }
+}
+
+
+#[derive(Debug)]
+pub struct PoliticsCapitalSlots {
+    pub tail_offset: usize,
+    pub slots: crate::country_capital_slot::CapitalSlots,
+}
+
+/// The acquisition ordinal is independent of ordinary-record sequence numbers.
+pub fn decode_politics_capital_slots(payload: &[u8], expected_hour: Option<i32>) -> Result<PoliticsCapitalSlots, String> {
+    use crate::country_capital_slot::{CapitalSlots, Operands, MAX_GROUPS, HEADER_LEN, ROW_LEN};
+    let mut cursor = 0;
+    let header = take(payload, &mut cursor, 40)?;
+    let word = |offset| u32::from_le_bytes(header[offset..offset + 4].try_into().unwrap()) as usize;
+    let countries = word(8);
+    if countries > MAX_GROUPS { return Err("politics CCS1 country bound".into()); }
+    decode_domain_version(14, payload, &mut cursor)?;
+    let ordinal = u64::from_le_bytes(take(payload, &mut cursor, 8)?.try_into().unwrap());
+    let mut rows = Vec::with_capacity(countries);
+    fn string(payload: &[u8], cursor: &mut usize) -> Result<(), String> {
+        let length = u16::from_le_bytes(take(payload, cursor, 2)?.try_into().unwrap()) as usize;
+        std::str::from_utf8(take(payload, cursor, length)?).map_err(|_| "politics CCS1 invalid string")?;
+        Ok(())
+    }
+    for _ in 0..countries {
+        let row = take(payload, &mut cursor, POLITICS_COUNTRY_ROW_BYTES)?;
+        let id = u32::from_le_bytes(row[..4].try_into().unwrap());
+        let flags = u32::from_le_bytes(row[4..8].try_into().unwrap());
+        if id == 0 || id > i32::MAX as u32 { return Err("politics CCS1 invalid country identity".into()); }
+        let base = i32::from_le_bytes(row[28..32].try_into().unwrap());
+        let override_raw = i32::from_le_bytes(row[32..36].try_into().unwrap());
+        if (flags & (1 << 10) == 0 && base != 0) || (flags & (1 << 11) == 0 && override_raw != 0) {
+            return Err("politics CCS1 absent operand filler".into());
+        }
+        rows.push((id, Operands { base_raw: (flags & (1 << 10) != 0).then_some(base),
+            override_raw: (flags & (1 << 11) != 0).then_some(override_raw) }));
+        for _ in 0..4 { string(payload, &mut cursor)?; }
+        decode_token(payload, &mut cursor)?;
+    }
+    // Counts are bounded by the actual payload before traversing their variable strings.
+    for (count, strings, suffix) in [(word(24), 1, 4), (word(28), 2, 0), (word(32), 2, 0), (word(36), 1, 0)] {
+        let minimum = count.checked_mul(4 + strings * 2 + suffix).ok_or("politics CCS1 pool bound")?;
+        if minimum > payload.len().saturating_sub(cursor) { return Err("politics CCS1 truncated pool".into()); }
+        for _ in 0..count {
+            take(payload, &mut cursor, 4)?;
+            for _ in 0..strings { string(payload, &mut cursor)?; }
+            take(payload, &mut cursor, suffix)?;
+        }
+    }
+    let tail_offset = cursor;
+    let length = u32::from_le_bytes(take(payload, &mut cursor, 4)?.try_into().unwrap()) as usize;
+    let expected_length = HEADER_LEN.checked_add(countries.checked_mul(ROW_LEN).ok_or("politics CCS1 length")?).ok_or("politics CCS1 length")?;
+    if length != expected_length { return Err("politics CCS1 exact row count/length".into()); }
+    let slots = CapitalSlots::decode(take(payload, &mut cursor, length)?)?;
+    if cursor != payload.len() { return Err("politics CCS1 trailing bytes".into()); }
+    if slots.observation_ordinal != ordinal { return Err("politics CCS1 observation ordinal mismatch".into()); }
+    if expected_hour.is_some_and(|hour| slots.game_hour_raw != hour) { return Err("politics CCS1 record hour mismatch".into()); }
+    if slots.groups.len() != rows.len() || slots.groups.iter().zip(rows).any(|(group, (id, operands))|
+        group.tag_db_id != id || group.operands != operands) {
+        return Err("politics CCS1 country order/operand mismatch".into());
+    }
+    Ok(PoliticsCapitalSlots { tail_offset, slots })
+}
+
+
+#[cfg(test)]
+mod politics_capital_tests {
+    use super::*;
+    use crate::country_capital_slot::{CapitalSlots, CountryGroup, Operands, Outcome};
+    fn payload() -> Vec<u8> {
+        let groups = vec![
+            CountryGroup { tag_db_id: 27, operands: Operands { override_raw: Some(0), base_raw: Some(4) },
+                outcome: Outcome::Present { slot_count: 100, state_id: 73, template_id: 21 } },
+            CountryGroup { tag_db_id: 9, operands: Operands { override_raw: Some(-2), base_raw: None },
+                outcome: Outcome::NonPositive },
+        ];
+        let mut out = vec![0; 40]; out[8..12].copy_from_slice(&2u32.to_le_bytes());
+        encode_domain_version(14, &mut out); out.extend_from_slice(&99u64.to_le_bytes());
+        for group in &groups {
+            let mut row = [0u8; POLITICS_COUNTRY_ROW_BYTES];
+            row[..4].copy_from_slice(&group.tag_db_id.to_le_bytes());
+            let flags: u32 = (if group.operands.base_raw.is_some() { 1 << 10 } else { 0 })
+                | if group.operands.override_raw.is_some() { 1 << 11 } else { 0 };
+            row[4..8].copy_from_slice(&flags.to_le_bytes());
+            row[28..32].copy_from_slice(&group.operands.base_raw.unwrap_or(0).to_le_bytes());
+            row[32..36].copy_from_slice(&group.operands.override_raw.unwrap_or(0).to_le_bytes());
+            out.extend_from_slice(&row); out.extend_from_slice(&[0; 8]);
+            encode_token(&NameToken::Unavailable(NameInputRefusal::Unreadable), &mut out);
+        }
+        let tail = CapitalSlots { game_hour_raw: 123, observation_ordinal: 99, groups }.encode().unwrap();
+        out.extend_from_slice(&(tail.len() as u32).to_le_bytes()); out.extend_from_slice(&tail); out
+    }
+    #[test]
+    fn exact_country_order_operands_and_independent_acquisition_witness_are_mandatory() {
+        let good = payload(); let decoded = decode_politics_capital_slots(&good, Some(123)).unwrap();
+        assert_eq!(decoded.slots.groups.iter().map(|g| g.tag_db_id).collect::<Vec<_>>(), [27, 9]);
+        assert_eq!(decoded.slots.groups[0].outcome, Outcome::Present { slot_count: 100, state_id: 73, template_id: 21 });
+        for offset in [44, 48, 56, 84, 88, decoded.tail_offset, decoded.tail_offset + 4 + 16, decoded.tail_offset + 4 + 24] {
+            let mut bad = good.clone(); bad[offset] ^= 1;
+            assert!(decode_politics_capital_slots(&bad, Some(123)).is_err(), "offset {offset}");
+        }
+        let mut order = good.clone(); let start = decoded.tail_offset + 4 + 32;
+        let (left, right) = order[start..].split_at_mut(48); left.swap_with_slice(&mut right[..48]);
+        assert!(decode_politics_capital_slots(&order, Some(123)).unwrap_err().contains("country order/operand"));
+        assert!(decode_politics_capital_slots(&good, Some(124)).unwrap_err().contains("record hour"));
+    }
+    #[test]
+    fn truncation_reserved_tail_duplicate_identity_and_old_version_are_refused() {
+        let good = payload(); let decoded = decode_politics_capital_slots(&good, Some(123)).unwrap();
+        for end in 0..good.len() { assert!(decode_politics_capital_slots(&good[..end], Some(123)).is_err(), "{end}"); }
+        let mut old = good.clone(); old[44..46].copy_from_slice(&2u16.to_le_bytes());
+        assert!(decode_politics_capital_slots(&old, Some(123)).unwrap_err().contains("unsupported payload version"));
+        let mut reserved = good.clone(); reserved[decoded.tail_offset + 4 + 20] = 1;
+        assert!(decode_politics_capital_slots(&reserved, Some(123)).is_err());
+        let mut extra = good.clone(); extra.push(0); assert!(decode_politics_capital_slots(&extra, Some(123)).is_err());
+        let mut duplicate = good; let start = decoded.tail_offset + 4 + 32;
+        duplicate[start + 48..start + 52].copy_from_slice(&27u32.to_le_bytes());
+        assert!(decode_politics_capital_slots(&duplicate, Some(123)).is_err());
     }
 }

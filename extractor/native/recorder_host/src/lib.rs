@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod politics_fixture;
+
 pub mod attach_content_proof;
 pub mod auto_attach;
 pub mod build_declaration;

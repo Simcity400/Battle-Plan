@@ -1,3 +1,5 @@
+#[path = "../../../../portable_replay/native/compact_stream/src/country_capital_slot.rs"]
+pub mod country_capital_slot;
 #[path = "../../../../portable_replay/native/compact_stream/src/country_roster.rs"]
 pub mod country_roster;
 pub mod owner_colour;

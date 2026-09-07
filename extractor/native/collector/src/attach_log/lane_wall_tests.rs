@@ -553,6 +553,7 @@ fn country_bundle_sub_reads_are_attributed_under_their_own_units() {
             .expect("country spec")
     };
     let read = |spec_ids: &[u16], read_time_us: u64| CompactBundleRead {
+        politics_capital_slots: None,
         specs: spec_ids.iter().copied().map(spec_of).collect(),
         rows: Vec::new(),
         read_time_us,

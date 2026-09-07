@@ -1420,6 +1420,7 @@ fn a_panic_in_the_tech_childs_publish_tail_gaps_d13_and_takes_its_baseline() {
 /// without an engine.
 fn empty_bundle_read() -> CompactBundleRead {
     CompactBundleRead {
+        politics_capital_slots: None,
         worker_panic_reason: None,
         specs: Vec::new(),
         rows: Vec::new(),

@@ -78,6 +78,7 @@ fn mixed_rows() -> Vec<CountryObjectRow> {
 
 fn bundle_read(specs: &[u16], rows: Vec<CountryObjectRow>) -> CompactBundleRead {
     CompactBundleRead {
+        politics_capital_slots: Some(test_politics_capital_slots(&rows)),
         specs: specs.iter().copied().map(spec_of).collect(),
         rows,
         read_time_us: 4_242,
@@ -156,10 +157,11 @@ fn reference_inline_drain(
                     &read.technology_ids,
                 ),
             ),
-            CompactCountryDomainKind::Politics => (
-                COMPACT_DOMAIN_POLITICS,
-                compact_politics_data_payload(&read.rows, elapsed_wall_ms, read.status_flags),
-            ),
+            CompactCountryDomainKind::Politics => {
+                let Some(slots) = read.politics_capital_slots.as_ref() else { continue; };
+                (COMPACT_DOMAIN_POLITICS,
+                    compact_politics_data_payload(&read.rows, elapsed_wall_ms, read.status_flags, slots))
+            },
             CompactCountryDomainKind::PoliticsResiduals => (
                 COMPACT_DOMAIN_POLITICS_RESIDUALS,
                 compact_politics_residuals_data_payload(
@@ -341,7 +343,7 @@ fn the_tail_fallback_republishes_a_real_panic_substitute_byte_identically() {
     assert_ne!(
         fallback_out.len(),
         0,
-        "a substitute still publishes sixteen records"
+        "a substitute preserves failure records without inventing a D14 acquisition"
     );
 }
 
@@ -439,4 +441,23 @@ fn the_prebuilt_records_carry_the_contract_order_and_perf_scalars() {
         u32::from_le_bytes(fuel_data.payload[12..16].try_into().unwrap()),
         fuel_rows
     );
+}
+
+#[test]
+fn missing_cpni3_acquisition_never_fabricates_hour_or_empty_data() {
+    let mut read = bundle_read(&[COMPACT_DOMAIN_POLITICS], Vec::new());
+    read.politics_capital_slots = None;
+    read.status_flags = COMPACT_STATUS_NO_CLOCK;
+    let records = country_bundle_publication_records(&read, 12, None);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].domain_id, COMPACT_DOMAIN_POLITICS);
+    assert_eq!(records[0].record_type, COMPACT_RECORD_TYPE_DOMAIN_PERF);
+    assert!(!records[0].is_data_record);
+    read.politics_capital_slots = Some(test_politics_capital_slots(&[]));
+    let records = country_bundle_publication_records(&read, 12, None);
+    assert_eq!(records.len(), 2);
+    let slots = compact_contract::country_name_inputs::decode_politics_capital_slots(
+        &records[1].payload, Some(0)).unwrap().slots;
+    assert!(slots.groups.is_empty());
+    assert_eq!(slots.observation_ordinal, 1);
 }
