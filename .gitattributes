@@ -1522,3 +1522,4 @@ portable_replay/native/engine_evidence/artifacts/func_1424f22c0.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_1424f2330.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1424f2270.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1424f2290.decompile.c text eol=lf
+extractor/native/runs/orchestrator_20260905/LANDING_FC84_VALIDATION.json text eol=lf
