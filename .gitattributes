@@ -1475,3 +1475,15 @@ extractor/native/runs/view2_replay_targets/XUI13_QUOTED_FIELD_VALIDATION.json te
 extractor/native/runs/orchestrator_20260905/QUOTED_FIELDS_INTEGRATION_EVIDENCE_048.json text eol=lf
 extractor/native/runs/view2_replay_targets/XUI13_QUOTED_DEFAULT_VALIDATION.json text eol=lf
 extractor/native/runs/orchestrator_20260905/INTEGRATION_VIEW2_QUOTED_DEFAULT_A5F3.json text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140608f60.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140608be0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1401426e0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14012ad90.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424ab540.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1408353f0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140835600.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140607900.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/authored_camouflage_lexical.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/authored_camouflage_registration.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/authored_camouflage_threshold.instructions.txt text eol=lf
+extractor/native/runs/view2_replay_targets/AUTHORED_CAMOUFLAGE_VALIDATION.json text eol=lf

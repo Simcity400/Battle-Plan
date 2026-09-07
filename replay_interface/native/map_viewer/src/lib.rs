@@ -1,3 +1,4 @@
+pub mod authored_camouflage;
 pub mod authored_icon_context;
 pub mod authored_fixed;
 pub mod authored_equipment;
