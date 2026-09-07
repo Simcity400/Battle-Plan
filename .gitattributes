@@ -1592,3 +1592,10 @@ extractor/native/runs/orchestrator_20260905/RAILWAY_LEDGER_PARENT_INTEGRATION_A8
 portable_replay/native/engine_evidence/artifacts/func_14224f250.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/pdxmesh_bounds_keys.datdump.txt text eol=lf
 extractor/native/runs/orchestrator_20260905/ABSENT_AABB_PARENT_INTEGRATION_3CA35D81.json text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1424f1b80.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424f1b80.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424f1930.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424f1930.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424f1a60.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424f1a60.instructions.txt text eol=lf

@@ -77,10 +77,7 @@ impl PdxNode {
                 .ok_or(NativePdxAabbRefusal::MissingCoordinate { property: name })?;
             let values = match &property.values {
                 PdxValues::F32(values) => values,
-                PdxValues::I32(_) => return Err(NativePdxAabbRefusal::IntegerCoordinatesUnproven {
-                    property: name,
-                }),
-                PdxValues::Str(_) => return Err(NativePdxAabbRefusal::CoordinateType {
+                PdxValues::I32(_) | PdxValues::Str(_) => return Err(NativePdxAabbRefusal::CoordinateType {
                     property: name,
                 }),
             };
@@ -117,7 +114,6 @@ impl NativePdxAabb<'_> {
 pub(crate) enum NativePdxAabbRefusal {
     MissingCoordinate { property: &'static str },
     CoordinateType { property: &'static str },
-    IntegerCoordinatesUnproven { property: &'static str },
     CoordinateUnderflow { property: &'static str, count: usize },
 }
 
@@ -2391,9 +2387,7 @@ mod native_aabb_tests {
                 aabb.properties.iter_mut().find(|p| p.name == property).unwrap().values = if integer {
                     PdxValues::I32(vec![0x3f80_0000; 3])
                 } else { PdxValues::Str(vec!["1".into(); 3]) };
-                let expected = if integer { NativePdxAabbRefusal::IntegerCoordinatesUnproven { property } }
-                    else { NativePdxAabbRefusal::CoordinateType { property } };
-                assert_eq!(row.native_aabb(), Err(expected));
+                assert_eq!(row.native_aabb(), Err(NativePdxAabbRefusal::CoordinateType { property }));
             }
         }
         let mut row = mesh(Some((&[1.0; 3], &[2.0; 3])));
