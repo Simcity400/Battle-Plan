@@ -1773,13 +1773,8 @@ mod tests {
         let vfs = EffectiveVfs::new("a".repeat(64), mounts(&root)).unwrap();
         fs::rename(root.join("mod"), root.join("moved_mod")).unwrap();
         // Junction creation needs no developer mode or administrator rights.
-        let output = std::process::Command::new("cmd.exe")
-            .args(["/d", "/c", "mklink", "/J"])
-            .arg(root.join("mod"))
-            .arg(root.join("moved_mod"))
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "junction fixture: {output:?}");
+        portable_test_fs_retry::create_junction(&root.join("mod"), &root.join("moved_mod"))
+            .expect("create native junction fixture");
         let results = [
             resolve_literal_layer_path(&root.join("mod"), "absent/file.gfx").map(|_| ()),
             vfs.resolve("gfx/fx/shared.shader").map(|_| ()),
