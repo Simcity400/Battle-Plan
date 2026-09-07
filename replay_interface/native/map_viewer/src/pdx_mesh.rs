@@ -899,8 +899,7 @@ fn extract_mesh(
             _ => unknown.object(&path, child),
         }
     }
-    let (aabb_min, aabb_max) =
-        aabb.ok_or_else(|| format!("{path}: missing aabb node (present in every shipped mesh)"))?;
+    let (aabb_min, aabb_max) = aabb.unwrap_or(([0.0; 3], [0.0; 3]));
     let material = material
         .ok_or_else(|| format!("{path}: missing material node (present in every shipped mesh)"))?;
 
@@ -1740,6 +1739,26 @@ pub(crate) mod test_fixtures {
         }
     }
 
+    pub(crate) fn collision_before_drawable_aabb_bytes(
+        bounds: Option<(&[f32], &[f32])>,
+    ) -> Vec<u8> {
+        let mut bytes = collision_before_drawable_bytes();
+        let aabb_marker = b"[[[[aabb\0";
+        let material_marker = b"[[[[material\0";
+        assert_eq!(bytes.windows(aabb_marker.len()).filter(|w| *w == aabb_marker).count(), 1);
+        let start = bytes.windows(aabb_marker.len()).position(|w| w == aabb_marker).unwrap();
+        let end = start + bytes[start..].windows(material_marker.len())
+            .position(|w| w == material_marker).unwrap();
+        let mut replacement = Vec::new();
+        if let Some((min, max)) = bounds {
+            push_object(&mut replacement, 4, "aabb");
+            push_prop_f(&mut replacement, "min", min);
+            push_prop_f(&mut replacement, "max", max);
+        }
+        bytes.splice(start..end, replacement);
+        bytes
+    }
+
     pub(crate) fn synthetic_mesh_bytes(x_offset: f32) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(PDX_ASSET_BINARY_MAGIC);
@@ -1827,6 +1846,55 @@ mod tests {
     use std::path::{Path, PathBuf};
 
 
+
+    #[test]
+    fn absent_whole_aabb_retains_six_positive_zeros_not_vertex_extrema() {
+        let bytes = test_fixtures::collision_before_drawable_aabb_bytes(None);
+        let tree = parse_pdx_asset(&bytes).unwrap();
+        let model = extract_pdx_model(&tree).unwrap();
+        let mesh = &model.shapes[0].meshes[0];
+        assert_eq!(mesh.source_mesh_ordinal, 2);
+        assert_eq!(mesh.aabb_min.map(f32::to_bits), [0; 3]);
+        assert_eq!(mesh.aabb_max.map(f32::to_bits), [0; 3]);
+        assert_eq!(mesh.verts[0], [4.0, 0.0, 0.0]);
+        assert_eq!(mesh.verts[1], [5.0, 0.0, 0.0]);
+        assert!(!tree.root.children[0].children[0].children[2].children.iter()
+            .any(|node| node.name == "aabb"));
+        assert_eq!(tree.native_collision(1.0).unwrap().unwrap().source.mesh_child, 1);
+    }
+
+    #[test]
+    fn present_aabb_retains_authored_coordinates_and_negative_zero() {
+        let min = [-0.0, -2.0, -3.0];
+        let max = [8.0, 4.0, 6.0];
+        let bytes = test_fixtures::collision_before_drawable_aabb_bytes(Some((&min, &max)));
+        let tree = parse_pdx_asset(&bytes).unwrap();
+        let model = extract_pdx_model(&tree).unwrap();
+        let mesh = &model.shapes[0].meshes[0];
+        assert_eq!(mesh.aabb_min.map(f32::to_bits), min.map(f32::to_bits));
+        assert_eq!(mesh.aabb_max.map(f32::to_bits), max.map(f32::to_bits));
+        assert_eq!(mesh.source_mesh_ordinal, 2);
+        assert_eq!(mesh.verts[0], [4.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn present_aabb_missing_or_malformed_members_never_take_absent_branch() {
+        for (min, max) in [(&[][..], &[1.0; 3][..]), (&[0.0; 2][..], &[1.0; 3][..]),
+            (&[0.0; 4][..], &[1.0; 3][..]), (&[0.0; 3][..], &[1.0; 2][..])] {
+            let bytes = test_fixtures::collision_before_drawable_aabb_bytes(Some((min, max)));
+            let tree = parse_pdx_asset(&bytes).unwrap();
+            assert!(extract_pdx_model(&tree).unwrap_err().to_string().contains("aabb"));
+            assert!(tree.native_collision(1.0).unwrap().is_some());
+        }
+        for missing in ["min", "max"] {
+            let bytes = test_fixtures::collision_before_drawable_bytes();
+            let mut tree = parse_pdx_asset(&bytes).unwrap();
+            let aabb = tree.root.children[0].children[0].children[2].children.iter_mut()
+                .find(|node| node.name == "aabb").unwrap();
+            aabb.properties.retain(|prop| prop.name != missing);
+            assert!(extract_pdx_model(&tree).unwrap_err().to_string().contains("needs both min and max"));
+        }
+    }
 
     #[test]
     fn binary_round_trip_parses_tree_and_extracts_model() {
