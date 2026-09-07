@@ -5,6 +5,135 @@ use crate::xmap09_light_lifecycle::{
 };
 use std::sync::{Arc, Mutex, MutexGuard};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Xmap13ModelObjectRefusal {
+    ContentLease,
+    PublicationUnavailable,
+    PublicationGuard(String),
+    PreparedFrame,
+    CandidateUnavailable,
+    CategoryUnavailable,
+    BoundsUnavailable,
+    Collision(crate::pdx_mesh::NativePdxCollisionRefusal),
+    Ray(crate::native_model_selection::NativeCollisionRefusal),
+}
+
+pub(crate) struct Xmap13PublishedModelObject {
+    identity: Xmap13UnitIdentity,
+    root: String,
+    mesh: Arc<crate::Xmap12SharedMesh>,
+    mesh_source: UsedContentKey,
+    object_matrix: [f32; 16],
+    authored_mesh_scale: f32,
+}
+
+impl Xmap13PublishedModelObject {
+    pub(crate) fn root(&self) -> &str { &self.root }
+    pub(crate) fn mesh(&self) -> &Arc<crate::Xmap12SharedMesh> { &self.mesh }
+    pub(crate) fn mesh_source(&self) -> &UsedContentKey { &self.mesh_source }
+    pub(crate) fn object_matrix(&self) -> [f32; 16] { self.object_matrix }
+    pub(crate) fn authored_mesh_scale(&self) -> f32 { self.authored_mesh_scale }
+
+    pub(crate) fn geometry_hit(&self, origin: [f32; 3], direction: [f32; 3])
+        -> std::result::Result<bool, Xmap13ModelObjectRefusal>
+    {
+        let collision = self.mesh.native_collision(self.authored_mesh_scale)
+            .map_err(Xmap13ModelObjectRefusal::Collision)?
+            .ok_or(Xmap13ModelObjectRefusal::BoundsUnavailable)?;
+        if collision.indices.is_empty() {
+            return Err(Xmap13ModelObjectRefusal::BoundsUnavailable);
+        }
+        crate::native_model_selection::model_geometry_hit(self.object_matrix, origin, direction,
+            &collision.scaled_positions, &collision.indices, None)
+            .map_err(Xmap13ModelObjectRefusal::Ray)
+    }
+}
+
+pub(crate) enum Xmap13ModelFallbackSlot<'a> {
+    KnownNull,
+    Present(&'a Xmap13PublishedModelObject),
+    Unavailable(Xmap13ModelObjectRefusal),
+}
+
+pub(crate) enum Xmap13ModelPrimary<'a> {
+    Present(&'a Xmap13PublishedModelObject),
+    KnownAbsent { fallback: [Xmap13ModelFallbackSlot<'a>; 4] },
+    Unavailable(Xmap13ModelObjectRefusal),
+}
+
+impl Xmap13ModelPrimary<'_> {
+    pub(crate) fn geometry_hit(self, origin: [f32; 3], direction: [f32; 3])
+        -> std::result::Result<bool, Xmap13ModelObjectRefusal>
+    {
+        match self {
+            Self::Present(object) => object.geometry_hit(origin, direction),
+            Self::Unavailable(reason) => Err(reason),
+            Self::KnownAbsent { fallback } => {
+                for slot in fallback {
+                    match slot {
+                        Xmap13ModelFallbackSlot::KnownNull => {},
+                        Xmap13ModelFallbackSlot::Unavailable(reason) => return Err(reason),
+                        Xmap13ModelFallbackSlot::Present(object) => {
+                            if object.geometry_hit(origin, direction)? { return Ok(true); }
+                        },
+                    }
+                }
+                Ok(false)
+            },
+        }
+    }
+}
+
+struct PublishedLandObjects {
+    owner: std::sync::Weak<()>,
+    lease: crate::mod_resolver::ContentAdmissionLease,
+    prepared_digest: String,
+    objects: BTreeMap<(u32, u32), Xmap13PublishedModelObject>,
+    published: Arc<DerivedLightRows>,
+}
+
+#[derive(Clone)]
+pub(crate) struct Xmap13PublishedLandObjects(Arc<PublishedLandObjects>);
+
+impl Xmap13PublishedLandObjects {
+    fn validate(&self, resolver: &GameFileResolver, admission: &ValidatedContentAdmission)
+        -> std::result::Result<(), Xmap13ModelObjectRefusal>
+    {
+        if resolver.content_admission_lease().as_ref() != Some(&self.0.lease)
+            || self.0.lease.manifest_digest_sha256() != Some(admission.manifest_digest_sha256()) {
+            return Err(Xmap13ModelObjectRefusal::ContentLease);
+        }
+        if self.0.owner.upgrade().is_none() {
+            return Err(Xmap13ModelObjectRefusal::PublicationUnavailable);
+        }
+        for object in self.0.objects.values() {
+            self.0.published.root_animation(resolver, admission, &object.root)
+                .map_err(|error| Xmap13ModelObjectRefusal::PublicationGuard(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn with_primary<T>(&self, resolver: &GameFileResolver,
+        admission: &ValidatedContentAdmission, identity: &Xmap13UnitIdentity,
+        province: u32, category: u32,
+        visit: impl FnOnce(Xmap13ModelPrimary<'_>) -> std::result::Result<T, Xmap13ModelObjectRefusal>)
+        -> std::result::Result<T, Xmap13ModelObjectRefusal>
+    {
+        self.validate(resolver, admission)?;
+        let primary = if category != 0 {
+            Xmap13ModelPrimary::Unavailable(Xmap13ModelObjectRefusal::CategoryUnavailable)
+        } else {
+            match self.0.objects.get(&(province, category)) {
+                Some(object) if &object.identity == identity => Xmap13ModelPrimary::Present(object),
+                _ => Xmap13ModelPrimary::Unavailable(Xmap13ModelObjectRefusal::CandidateUnavailable),
+            }
+        };
+        let result = visit(primary);
+        self.validate(resolver, admission)?;
+        result
+    }
+}
+
 pub(super) fn land_model_casts_light_depth(
     model: &crate::PdxModel,
     effects: &crate::EffectFile,
@@ -80,7 +209,9 @@ pub(super) struct FinishedLandPopulation {
     population: Xmap13DerivedPopulation,
     candidates: Vec<LandModelCandidate>,
     viewer: crate::ViewerOwnedMapState,
-    published: DerivedLightRows,
+    published: Arc<DerivedLightRows>,
+    object_owner: Arc<()>,
+    objects: Option<Xmap13PublishedLandObjects>,
 }
 
 struct PreparedLandOwner<'a> {
@@ -131,7 +262,9 @@ impl PreparedEntityManagerOwner for PreparedLandOwner<'_> {
             population: pending.population,
             candidates: pending.candidates,
             viewer: pending.viewer,
-            published,
+            published: Arc::new(published),
+            object_owner: Arc::new(()),
+            objects: None,
         });
         Ok(())
     }
@@ -419,19 +552,41 @@ impl Xmap13Adapter {
         })))
     }
 
+    pub(crate) fn published_land_objects(&self, context: &FoundationFeatureContext<'_>,
+        prepared: &PreparedXmap13Frame)
+        -> std::result::Result<Xmap13PublishedLandObjects, Xmap13ModelObjectRefusal>
+    {
+        let finished = self.finished_land.lock()
+            .map_err(|_| Xmap13ModelObjectRefusal::PublicationUnavailable)?;
+        let finished = finished.as_ref().ok_or(Xmap13ModelObjectRefusal::PublicationUnavailable)?;
+        let objects = finished.objects.as_ref().ok_or(Xmap13ModelObjectRefusal::PublicationUnavailable)?;
+        if finished.viewer != *context.viewer
+            || finished.population.deterministic_sha256 != prepared.semantic_input_sha256
+            || objects.0.prepared_digest != prepared.deterministic_sha256
+            || prepared_digest(prepared).map_err(|_| Xmap13ModelObjectRefusal::PreparedFrame)? != prepared.deterministic_sha256 {
+            return Err(Xmap13ModelObjectRefusal::PreparedFrame);
+        }
+        finished.population.validate_census(context.world_frame)
+            .map_err(|_| Xmap13ModelObjectRefusal::PreparedFrame)?;
+        objects.validate(&self.content.resolver, &self.content.admission)?;
+        Ok(objects.clone())
+    }
+
     pub(super) fn append_finished_land_models(
         &self,
         context: &FoundationFeatureContext<'_>,
         visibility: &crate::PreparedXmap05Visibility,
         prepared: &mut PreparedXmap13Frame,
     ) -> Result<()> {
-        let finished = self
+        let mut finished = self
             .finished_land
             .lock()
             .map_err(|_| "XMAP13 publication lock poisoned")?;
-        let Some(finished) = finished.as_ref() else {
+        let Some(finished) = finished.as_mut() else {
             return Ok(());
         };
+        finished.objects = None;
+        finished.object_owner = Arc::new(());
         if finished.viewer != *context.viewer
             || finished.population.deterministic_sha256 != prepared.semantic_input_sha256
         {
@@ -454,6 +609,7 @@ impl Xmap13Adapter {
             .map(|key| (key.normalized_game_relative_path.clone(), key.clone()))
             .collect::<BTreeMap<_, _>>();
         let mut drawn_provinces = BTreeSet::new();
+        let mut objects = BTreeMap::new();
         for candidate in &finished.candidates {
             let root = root_id(candidate.placement.anchor_province_id);
             let slot = runtime
@@ -469,7 +625,7 @@ impl Xmap13Adapter {
                 &finished.published,
                 u32::try_from(prepared.native_entity_draws.len())?,
             );
-            let (model, unit, draw) = match result {
+            let (model, unit, draw, object) = match result {
                 Ok(Some(result)) => result,
                 Ok(None) => {
                     if let Some(row) = prepared.element_diagnostics.iter_mut().find(|row| {
@@ -542,6 +698,7 @@ impl Xmap13Adapter {
             if unit.casts_light_depth {
                 prepared.light_depth_casters.push(draw.l03_caster_row()?);
             }
+            objects.insert((candidate.placement.anchor_province_id, 0), object);
             prepared.prepared_model_poses.push(model);
             prepared.visible_units.push(unit.clone());
             prepared.identity_provider.ordered_units.push(unit);
@@ -582,6 +739,13 @@ impl Xmap13Adapter {
         )?;
         prepared.deterministic_sha256 = prepared_digest(prepared)?;
         prepared.validate()?;
+        let lease = self.content.resolver.content_admission_lease()
+            .ok_or("XMAP13 model publication has no content lease")?;
+        finished.objects = Some(Xmap13PublishedLandObjects(Arc::new(PublishedLandObjects {
+            owner: Arc::downgrade(&finished.object_owner), lease,
+            prepared_digest: prepared.deterministic_sha256.clone(), objects,
+            published: finished.published.clone(),
+        })));
         runtime.drawn_provinces = drawn_provinces;
         Ok(())
     }
@@ -600,6 +764,7 @@ impl Xmap13Adapter {
             PreparedXmap13ModelPose,
             PreparedXmap13Unit,
             crate::Xmap12PdxMeshMaterialization,
+            Xmap13PublishedModelObject,
         )>,
     > {
         let mut model =
@@ -756,6 +921,13 @@ impl Xmap13Adapter {
             local_aabb_max_f32_bits: max.map(f32::to_bits),
         };
         published.root_animation(&self.content.resolver, &self.content.admission, root)?;
-        Ok(Some((model, unit, draw)))
+        let object = Xmap13PublishedModelObject {
+            identity: candidate.identity.clone(), root: root.to_owned(), mesh,
+            mesh_source: candidate.chain.mesh_source.clone(),
+            object_matrix: crate::xmap12_pdxmesh::scaled_world_matrix(
+                request.world_matrix_f32_bits, candidate.chain.entity.scale)?,
+            authored_mesh_scale: candidate.chain.pdxmesh.scale,
+        };
+        Ok(Some((model, unit, draw, object)))
     }
 }
