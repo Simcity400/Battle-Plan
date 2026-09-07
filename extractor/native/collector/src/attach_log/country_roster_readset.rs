@@ -39,7 +39,18 @@ impl Budget {
         }
     }
     #[cfg(test)]
+    pub(super) fn test_limits(verification_limit: usize, retained_limit: usize) -> Self {
+        Self::new(verification_limit, retained_limit)
+    }
+    #[cfg(test)]
     pub(super) fn verification_bytes(&self) -> usize { self.verification.load(Ordering::Relaxed) }
+
+    pub(super) fn reserve_read(&self, address: usize, width: usize) -> Result<ReservedRead, Cause> {
+        if !(1..=8).contains(&width) { return Err(Cause::BoundExceeded); }
+        address.checked_add(width).ok_or(Cause::BoundExceeded)?;
+        Self::charge(&self.verification, self.verification_limit, width * 2)?;
+        Ok(ReservedRead { address, width })
+    }
 
     pub(super) fn retain(&self, bytes: usize) -> Result<(), Cause> {
         Self::charge(&self.retained, self.retained_limit, bytes)
@@ -71,9 +82,61 @@ impl Budget {
     }
 }
 
+// Neither capability is Clone: opening and closing each consume their reservation.
+pub(super) struct ReservedRead { address: usize, width: usize }
+pub(super) struct OpenedRead { address: usize, width: usize, bytes: [u8; 8] }
+impl ReservedRead {
+    pub(super) fn open(self, read: &mut impl FnMut(usize, &mut [u8]) -> bool) -> Result<OpenedRead, Cause> {
+        let mut bytes = [0; 8];
+        if !read(self.address, &mut bytes[..self.width]) { return Err(Cause::VectorUnreadable); }
+        Ok(OpenedRead { address: self.address, width: self.width, bytes })
+    }
+}
+impl OpenedRead {
+    pub(super) fn bytes(&self) -> &[u8] { &self.bytes[..self.width] }
+    pub(super) fn width(&self) -> usize { self.width }
+    pub(super) fn close(self, read: &mut impl FnMut(usize, &mut [u8]) -> bool) -> Result<(), Cause> {
+        let mut current = [0; 8];
+        if !read(self.address, &mut current[..self.width]) { return Err(Cause::VectorUnreadable); }
+        if current[..self.width] != self.bytes[..self.width] { return Err(Cause::VectorChanged); }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn closing_capability_remains_funded_after_shared_ceiling_is_exhausted() {
+        let budget = Budget::new(16, 1);
+        let mut calls = Vec::new();
+        let opening = budget.reserve_read(0x1000, 8).unwrap().open(&mut |address, out| {
+            calls.push((address, out.len())); out.copy_from_slice(&7u64.to_le_bytes()); true
+        }).unwrap();
+        assert!(matches!(budget.reserve_read(0x2000, 1), Err(Cause::BoundExceeded)));
+        assert_eq!(opening.close(&mut |address, out| {
+            calls.push((address, out.len())); out.copy_from_slice(&7u64.to_le_bytes()); true
+        }), Ok(()));
+        assert_eq!(calls, [(0x1000, 8), (0x1000, 8)]);
+        assert_eq!(budget.verification_bytes(), 17);
+    }
+    #[test]
+    fn unsuccessful_opening_keeps_its_closing_bytes_reserved_and_invalid_widths_do_not_read() {
+        let budget = Budget::new(16, 1);
+        for width in [0, 9, usize::MAX] {
+            assert!(matches!(budget.reserve_read(0x1000, width), Err(Cause::BoundExceeded)));
+        }
+        assert!(matches!(budget.reserve_read(usize::MAX, 1), Err(Cause::BoundExceeded)));
+        assert_eq!(budget.verification_bytes(), 0);
+        let mut calls = 0;
+        assert!(matches!(budget.reserve_read(0x1000, 8).unwrap().open(&mut |_, out| {
+            calls += 1; assert_eq!(out.len(), 8); false
+        }), Err(Cause::VectorUnreadable)));
+        assert_eq!(budget.verification_bytes(), 16);
+        assert!(matches!(budget.reserve_read(0x2000, 1), Err(Cause::BoundExceeded)));
+        assert_eq!(calls, 1);
+    }
+
     #[test]
     fn fresh_read_trace_detects_mutation_without_following_new_pointer() {
         let budget = Budget::new(32, 32);
