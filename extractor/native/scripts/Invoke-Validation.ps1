@@ -9,6 +9,8 @@ param(
 
     [string]$ProductionCaptureReceiptPath = '',
 
+    [switch]$PackagePrebuilt,
+
     [string]$C07GameRoot = '',
 
     [switch]$Plan,
@@ -692,6 +694,9 @@ try {
     $script:RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
     Set-Location $script:RepoRoot
 
+    if ($PackagePrebuilt -and ($Mode -ne 'ReleaseManual' -or $Since -or $AllValidators)) {
+        throw 'PackagePrebuilt requires unfiltered ReleaseManual; Since and AllValidators are not publication arguments.'
+    }
     if ($Mode -eq 'ReleaseManual') {
         if (-not $AllowReleaseManual) {
             throw 'ReleaseManual is blocked. Re-run with -Mode ReleaseManual -AllowReleaseManual only when the owner explicitly requests release/manual validation.'
@@ -699,6 +704,7 @@ try {
         $releaseArguments = @{
             AllowReleaseManual = $true
             Plan = $Plan.IsPresent
+            PackagePrebuilt = $PackagePrebuilt.IsPresent
         }
         if (-not [string]::IsNullOrWhiteSpace($ProductionCaptureReceiptPath)) {
             $releaseArguments.ProductionCaptureReceiptPath = $ProductionCaptureReceiptPath

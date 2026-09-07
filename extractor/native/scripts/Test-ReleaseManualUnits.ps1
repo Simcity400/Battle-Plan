@@ -84,6 +84,20 @@ try {
     if ($receipt.schema -cne 'multiline' -or ($receipt.values -join ',') -cne '1,2') { throw 'multiline receipt changed' }
     Write-Host 'PASS multiline native stdout'
 } catch { $failures.Add("multiline native stdout: $_"); Write-Host 'FAIL multiline native stdout' }
+$script:cases++
+try {
+    $output = @(Invoke-NativeChecked -Program 'python' -Arguments @(
+        '-B', (Join-Path $PSScriptRoot 'test_prebuilt_package_publication.py')
+    ) -Label 'prebuilt package publication units')
+    $publication = ConvertFrom-GateJson -Output $output -Label 'prebuilt package publication units'
+    if ($publication.schema -cne 'hoi4-prebuilt-package-publication-tests.v1' -or
+        $publication.status -cne 'pass' -or
+        -not (Test-JsonIntegerAtLeast -Value $publication.cases -Minimum 16)) {
+        throw 'prebuilt publication returned no complete unit receipt'
+    }
+    Write-Host 'PASS prebuilt package publication units'
+}
+catch { $failures.Add("prebuilt package publication units: $_"); Write-Host 'FAIL prebuilt package publication units' }
 # Preserve the exact native child fixtures for reproducing failures.
 $status = if ($failures.Count -eq 0) { 'pass' } else { 'fail' }
 [ordered]@{ Schema = 'hoi4-release-manual-unit-test-v1'; Status = $status; Cases = $cases; Scratch = $root; Failures = @($failures.ToArray()) } | ConvertTo-Json -Depth 5 -Compress
