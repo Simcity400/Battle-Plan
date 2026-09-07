@@ -33,6 +33,7 @@ param(
     [int]$CancellationGraceSeconds = 5,
     [string]$AttemptStateRoot = "",
     [string]$PrebuiltArtifactAttestationPath = "",
+    [Parameter(Mandatory = $true)][string]$ValidationToolsReceiptPath,
     [string]$DeploymentProfilePath = "",
     [string]$Rung = "",
     [ValidateSet("production", "synthetic-fault")][string]$AcceptanceMode = "production",
@@ -53,9 +54,6 @@ $env:CARGO_TARGET_DIR = $targetRoot
 $releaseRoot = Join-Path $targetRoot "release"
 $sourceDll = Join-Path $releaseRoot "collector.dll"
 $recorder = Join-Path $releaseRoot "collector_record.exe"
-$foldCheck = Join-Path $releaseRoot "fold_check.exe"
-$compactGate = Join-Path $releaseRoot "compact_replay_gate.exe"
-$packReplay = Join-Path $releaseRoot "pack_replay.exe"
 $domainRosterTool = Join-Path $releaseRoot "domain_roster.exe"
 $registryPath = Join-Path $nativeRoot "domain_registry.json"
 $profilePath = Join-Path $repoRoot "extractor\live_capture\collector_profiles\vanilla_latest_2026_06_30.json"
@@ -79,8 +77,26 @@ $expectedHoi4ExeSha = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c
 . (Join-Path $scriptDir "ProductionCapture.Validation.ps1")
 # Neutral, shared build machinery; see Invoke-ReleaseManual.ps1.
 . (Join-Path $repoRoot "portable_replay\native\scripts\ProductionArtifact.Attestation.ps1")
+. (Join-Path $scriptDir 'CaptureValidation.Tools.ps1')
 . (Join-Path $scriptDir "WindowsPath.Identity.ps1")
 . (Join-Path $scriptDir "PassiveCapture.Lifecycle.ps1")
+if ([string]::IsNullOrWhiteSpace($PrebuiltArtifactAttestationPath)) {
+    $PrebuiltArtifactAttestationPath = Join-Path $releaseRoot "hoi4-production-prebuilt-artifacts.json"
+}
+$prebuiltArtifacts = Test-ProductionArtifactAttestation `
+    -RepoRoot $repoRoot `
+    -ReceiptPath $PrebuiltArtifactAttestationPath `
+    -ExpectedDriverPath $MyInvocation.MyCommand.Path
+$sourceDll = [string]$prebuiltArtifacts.artifacts.collector_dll
+$recorder = [string]$prebuiltArtifacts.artifacts.recorder_host
+# Admit all verifier inputs before consuming speed-evidence nonces or acquiring
+# a game process. Their authority never extends the shipping-artifact roster.
+$validationTools = Open-CaptureValidationTools -RepoRoot $repoRoot -ReceiptPath $ValidationToolsReceiptPath `
+    -ExpectedSourceInputSha256 $prebuiltArtifacts.source_input_sha256
+try {
+$foldCheck = [string]$validationTools.Tools.fold_check
+$compactGate = [string]$validationTools.Tools.compact_replay_gate
+$packReplay = [string]$validationTools.Tools.container_verify
 $pythonCommand=Get-Command $PythonExe -CommandType Application -ErrorAction Stop
 $PythonExe=$pythonCommand.Source
 $preparedModsetReceipt=$null
@@ -265,18 +281,6 @@ $drive = [System.IO.DriveInfo]::new($driveRoot)
 $requiredBytes = [int64]($DurationSeconds * $EstimatedMegabytesPerSecond * 1MB * 1.25)
 if ($drive.AvailableFreeSpace -lt $requiredBytes) { throw "insufficient disk: need $requiredBytes bytes, free $($drive.AvailableFreeSpace) bytes" }
 
-if ([string]::IsNullOrWhiteSpace($PrebuiltArtifactAttestationPath)) {
-    $PrebuiltArtifactAttestationPath = Join-Path $releaseRoot "hoi4-production-prebuilt-artifacts.json"
-}
-$prebuiltArtifacts = Test-ProductionArtifactAttestation `
-    -RepoRoot $repoRoot `
-    -ReceiptPath $PrebuiltArtifactAttestationPath `
-    -ExpectedDriverPath $MyInvocation.MyCommand.Path
-$sourceDll = [string]$prebuiltArtifacts.artifacts.collector_dll
-$recorder = [string]$prebuiltArtifacts.artifacts.recorder_host
-$foldCheck = [string]$prebuiltArtifacts.artifacts.fold_check
-$compactGate = [string]$prebuiltArtifacts.artifacts.compact_replay_gate
-$packReplay = [string]$prebuiltArtifacts.artifacts.container_verify
 if (-not $SkipBuild) {
     Write-Host "Using centralized prebuilt artifacts; the capture launcher never invokes Cargo."
 }
@@ -286,6 +290,17 @@ foreach ($file in @($sourceDll, $recorder, $foldCheck, $compactGate, $packReplay
 
 $stageDir = Join-Path $OutDir "staging\$nonce"
 New-Item -ItemType Directory -Path $stageDir | Out-Null
+$retainedToolsDir = Join-Path $stageDir 'validation-tools'
+New-Item -ItemType Directory -Path $retainedToolsDir | Out-Null
+foreach ($evidenceFile in $validationTools.EvidenceFiles) {
+    Copy-Item -LiteralPath $evidenceFile -Destination $retainedToolsDir
+}
+$retainedToolsReceiptPath = Join-Path $retainedToolsDir ([IO.Path]::GetFileName($ValidationToolsReceiptPath))
+$retainedTools = Open-CaptureValidationTools -RepoRoot $repoRoot -ReceiptPath $retainedToolsReceiptPath `
+    -ExpectedSourceInputSha256 $prebuiltArtifacts.source_input_sha256
+try {
+    if ($retainedTools.Receipt.sha256 -cne $validationTools.Receipt.sha256) { throw 'Retained validation tools receipt changed.' }
+} finally { Close-CaptureValidationTools $retainedTools }
 $retainedPrebuiltAttestationPath = Join-Path $stageDir "hoi4-production-prebuilt-artifacts.json"
 Copy-Item -LiteralPath $prebuiltArtifacts.receipt_path -Destination $retainedPrebuiltAttestationPath
 if ((Get-FileHash -LiteralPath $retainedPrebuiltAttestationPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$prebuiltArtifacts.receipt_sha256) {
@@ -470,6 +485,8 @@ $plan = [ordered]@{
     prebuilt_artifact_attestation_authority_path = $prebuiltArtifacts.receipt_path
     prebuilt_artifact_attestation_sha256 = $prebuiltArtifacts.receipt_sha256
     prebuilt_source_input_sha256 = $prebuiltArtifacts.source_input_sha256
+    validation_tools_receipt_path = $retainedToolsReceiptPath
+    validation_tools_receipt_sha256 = $validationTools.Receipt.sha256
     unpaused_required = $true
     read_only_scheduler_required = $true
     interaction_closure = [ordered]@{
@@ -1021,6 +1038,8 @@ $validationReceipt = [ordered]@{
     prebuilt_artifact_attestation_path = $retainedPrebuiltAttestationPath
     prebuilt_artifact_attestation_sha256 = $prebuiltArtifacts.receipt_sha256
     prebuilt_source_input_sha256 = $prebuiltArtifacts.source_input_sha256
+    validation_tools_receipt_path = $retainedToolsReceiptPath
+    validation_tools_receipt_sha256 = $validationTools.Receipt.sha256
     receipt_path = $validationReceiptPath
     resolved_attempt_marker_path = $resolvedMarker
     transported_resolved_attempt_marker_path = $transportedResolvedMarkerPath
@@ -1074,3 +1093,6 @@ try { $transportedMarkerStream.Flush($true) } finally { $transportedMarkerStream
 if ((Get-FileHash -LiteralPath $attemptMarkerPath -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $transportedResolvedMarkerPath -Algorithm SHA256).Hash) { throw "transported resolved-attempt marker hash mismatch" }
 Move-Item -LiteralPath $attemptMarkerPath -Destination $resolvedMarker
 Write-Host "$AcceptanceMode capture validated: $OutDir"
+} finally {
+    Close-CaptureValidationTools $validationTools
+}
