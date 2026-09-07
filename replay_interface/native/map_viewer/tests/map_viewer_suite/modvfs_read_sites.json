@@ -1769,6 +1769,7 @@
     "(\"20260906T003549Z-view2-controller-threshold-fixedpoint-c6b9f5bf.txt\", include_bytes!(\"../data/xui13_equipment/20260906T003549Z-view2-controller-threshold-fixedpoint-c6b9f5bf.txt\"), 416, \"2b6f4a313e6a1731d6be37233b15bc326414448ce865e45b5ad92e0650585b20\"),"
   ],
   "portable_replay/native/engine_evidence/src/xui13_authored_icons.rs": [
+    "(\"1424ad100\", include_str!(\"../artifacts/func_1424ad100.decompile.c\")),",
     "(\"1424afc10\", include_str!(\"../artifacts/func_1424afc10.decompile.c\")),",
     "(\"1409eb8b0\", include_str!(\"../artifacts/func_1409eb8b0.decompile.c\")),",
     "(\"1409dc590\", include_str!(\"../artifacts/func_1409dc590.decompile.c\")),",
@@ -1784,7 +1785,8 @@
     "(\"1401ad230\", include_str!(\"../artifacts/func_1401ad230.decompile.c\")),",
     "(\"xui13_icons_family_lexical.datdump.txt\", include_str!(\"../artifacts/xui13_icons_family_lexical.datdump.txt\")),",
     "(\"xui13_registration_copy_helper.datdump.txt\", include_str!(\"../artifacts/xui13_registration_copy_helper.datdump.txt\")),",
-    "(\"xui13_icons_family_registration.instructions.txt\", include_str!(\"../artifacts/xui13_icons_family_registration.instructions.txt\")),"
+    "(\"xui13_icons_family_registration.instructions.txt\", include_str!(\"../artifacts/xui13_icons_family_registration.instructions.txt\")),",
+    "(\"xui13_pool_field_forwarding.instructions.txt\", include_str!(\"../artifacts/xui13_pool_field_forwarding.instructions.txt\")),"
   ],
   "portable_replay/native/engine_evidence/src/xui13_icon_collection.rs": [
     "(\"1409f1540\", include_str!(\"../artifacts/func_1409f1540.decompile.c\")),",
