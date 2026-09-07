@@ -648,7 +648,13 @@
     "include_str!(\"../artifacts/func_1424f22c0.decompile.c\"),",
     "include_str!(\"../artifacts/func_1424f2330.decompile.c\"),",
     "include_str!(\"../artifacts/func_1424f2270.decompile.c\"),",
-    "include_str!(\"../artifacts/func_1424f2290.decompile.c\"),"
+    "include_str!(\"../artifacts/func_1424f2290.decompile.c\"),",
+    "(\"func_1424f1b80.decompile.c\", include_str!(\"../artifacts/func_1424f1b80.decompile.c\")),",
+    "(\"func_1424f1b80.instructions.txt\", include_str!(\"../artifacts/func_1424f1b80.instructions.txt\")),",
+    "(\"func_1424f1930.decompile.c\", include_str!(\"../artifacts/func_1424f1930.decompile.c\")),",
+    "(\"func_1424f1930.instructions.txt\", include_str!(\"../artifacts/func_1424f1930.instructions.txt\")),",
+    "(\"func_1424f1a60.decompile.c\", include_str!(\"../artifacts/func_1424f1a60.decompile.c\")),",
+    "(\"func_1424f1a60.instructions.txt\", include_str!(\"../artifacts/func_1424f1a60.instructions.txt\")),"
   ],
   "portable_replay/native/engine_evidence/src/native_sampler_state.rs": [
     "(\"1423fd550\", include_str!(\"../artifacts/func_1423fd550.decompile.c\")),",
@@ -1441,6 +1447,8 @@
     "(\"func_1422611d0.decompile.c\", include_str!(\"../artifacts/func_1422611d0.decompile.c\")),",
     "(\"func_1422f55b0.decompile.c\", include_str!(\"../artifacts/func_1422f55b0.decompile.c\")),",
     "(\"func_14224f250.decompile.c\", include_str!(\"../artifacts/func_14224f250.decompile.c\")),",
+    "(\"func_14224f250.instructions.txt\", include_str!(\"../artifacts/func_14224f250.instructions.txt\")),",
+    "(\"pdxmesh_bounds_keys.datdump.txt\", include_str!(\"../artifacts/pdxmesh_bounds_keys.datdump.txt\")),",
     "(\"func_14224bb00.decompile.c\", include_str!(\"../artifacts/func_14224bb00.decompile.c\")),",
     "(\"func_1423ef860.decompile.c\", include_str!(\"../artifacts/func_1423ef860.decompile.c\")),",
     "(\"func_14240c310.decompile.c\", include_str!(\"../artifacts/func_14240c310.decompile.c\")),",
