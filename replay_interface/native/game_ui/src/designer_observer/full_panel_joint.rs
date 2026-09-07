@@ -57,9 +57,11 @@ pub(super) fn authored_fixture() -> (TestRoot, ProductionUiRenderer) {
         ("gfx/interface/joint_default.tga", DEFAULT_RGBA),
         ("gfx/flags/small/GER_neutrality.tga", FLAG_RGBA),
     ] {
-        let mut texture = template.clone();
-        for pixel in texture[18..].chunks_exact_mut(4) {
-            pixel.copy_from_slice(&[blue, green, red, alpha]);
+        let mut texture = template[..18].to_vec();
+        texture[12..14].copy_from_slice(&8u16.to_le_bytes());
+        texture[14..16].copy_from_slice(&8u16.to_le_bytes());
+        for _ in 0..64 {
+            texture.extend_from_slice(&[blue, green, red, alpha]);
         }
         fs::write(root.0.join(path), texture).unwrap();
     }
@@ -158,6 +160,16 @@ fn actual_bound_a27_d53_capital_stages_compose_known_rows_and_local_refusals() {
     assert_eq!(stages.iter().map(|stage| stage["stage"].as_str().unwrap()).collect::<Vec<_>>(),
         ["H_accept", "H_refusal", "H_raw_recovery_historical_refusal", "H_plus_1_clean"]);
     let (_root, renderer) = authored_fixture();
+    for (path, rgba) in [
+        ("gfx/interface/joint_regional.tga", REGIONAL_RGBA),
+        ("gfx/interface/joint_default.tga", DEFAULT_RGBA),
+        ("gfx/flags/small/GER_neutrality.tga", FLAG_RGBA),
+    ] {
+        let image = renderer.resolver().decode_texture(path).unwrap().image;
+        assert_eq!((image.width, image.height), (8, 8));
+        assert_eq!(image.pixels.len(), 8 * 8 * 4);
+        assert!(image.pixels.chunks_exact(4).all(|pixel| pixel == rgba));
+    }
     let mut surfaces = Vec::new();
     for (index, stage) in stages.iter().enumerate() {
         let label = stage["stage"].as_str().unwrap();
