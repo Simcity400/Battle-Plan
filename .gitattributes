@@ -1487,3 +1487,4 @@ portable_replay/native/engine_evidence/artifacts/authored_camouflage_lexical.dat
 portable_replay/native/engine_evidence/artifacts/authored_camouflage_registration.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/authored_camouflage_threshold.instructions.txt text eol=lf
 extractor/native/runs/view2_replay_targets/AUTHORED_CAMOUFLAGE_VALIDATION.json text eol=lf
+extractor/native/runs/orchestrator_20260905/CAMOUFLAGE_CCS1_CRO1_INTAKE.json text eol=lf
