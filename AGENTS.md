@@ -2,7 +2,7 @@
 
 Do not change `AGENTS.md` or `PROJECT.md` without the owner: propose the diff and wait. Read `PROJECT.md` before changing product behaviour, formats, or architecture. Every harness reads this file. Read "Everyone", then only the parts that name your role and your harness.
 
-Roles. The **orchestrator** is the one agent the owner has explicitly named orchestrator this session; nobody assumes the role. A **lane** is an agent with its own worktree and branch that implements one scoped piece of work end to end. The orchestrator is the only reviewer.
+Roles. The **orchestrator** is the one agent the owner has explicitly named orchestrator this session; nobody assumes the role. A **lane** is an agent with its own worktree and branch that implements one scoped piece of work end to end. Each lane owns independent review; the orchestrator owns integration approval.
 
 ## Everyone
 
@@ -19,36 +19,28 @@ Roles. The **orchestrator** is the one agent the owner has explicitly named orch
 - No census or dump binaries in the tree; evidence is data plus the script that produced it, under the run dir.
 - `hoi4_re`: `re_status` first. Add to its registry only by running the tool, never by hand. Four-job offline queue. `hoi4_ghidra` (pinned a729/870ebf): `ghidra_status` first, `ghidra_verify` before relying on indexed evidence. Census and cross-analysis outputs are discovery, not proof. Pinned artifacts use the `engine_evidence` crate pattern with literal byte sizes and must pass `reverify_engine_evidence.py`.
 - Lanes never launch the game. A needed live probe goes back to the orchestrator as a bounded SPEC.
-- Testing: a lane runs the suites of the crates it touched, once, after approve. The gate runs everything else. Nobody reruns suites after a merge.
-- After implementation and validation, spawn exactly one reviewer subagent of your own kind and model.
-- Give it the requirements, diff, and raw validation evidence. Keep it read-only, fix every finding, and re-review with the same subagent until it approves. If the commit changes afterward, get one final confirmation.
+- Testing: lanes run the required suites and law checks; the orchestrator runs the integration gate. Reuse valid results unless changes or findings justify rerunning them.
 
 ## Lane
 
 1. Start: `git worktree lock`, one empty commit, and check `git rev-parse HEAD` equals the brief's base commit.
 2. Verify the brief's premise with file:line before you build. A false premise is a valid outcome; report it.
-3. Work only in your worktree. Implement everything yourself. Between review rounds run only `cargo check` on the crates you touched.
-4. Review with the orchestrator until it approves with zero blocking findings. Push back on a finding you can refute with code or a measurement.
-5. After approve, once: the full test modules of every crate and file you changed (no hand-picked subsets), then `bash extractor/native/scripts/lane_law_tests.sh` (`--collector` when the collector was touched). A step that starts zero tests fails. A failure is fixed and gets one confirmation round.
+3. Work only in your worktree. Implement everything yourself.
+4. Validate once: the full test modules of every crate and file you changed (no hand-picked subsets), then `bash extractor/native/scripts/lane_law_tests.sh` (`--collector` when the collector was touched). A step that starts zero tests fails. Fix failures and validate affected behavior.
+5. Spawn exactly one read-only reviewer subagent of your own kind and model. Provide the requirements, full diff, and raw validation evidence. It independently inspects code and evidence, checks `PROJECT.md` fidelity and affected consumers, and challenges test coverage and unnecessary complexity. Fix findings and reuse that reviewer until zero blocking findings; any later commit change requires its confirmation. Send the reviewed tip, approval, and evidence to the orchestrator.
 6. Merge `origin/master` (or the branch the brief names) before you finish. Commit early and often, push when converged, report.
 
 Never run the full workspace suite.
 
 ## Orchestrator (Skip if not referred to explicitly as the orchestrator)
 
-Staffs lanes, reviews, lands, runs the gate, runs captures, asks the owner. Never implements lane work itself. After a restart or limit kill, resume each agent by its id. Never relaunch a lane that has an id. Never replace a slow lane.
+Staffs lanes, reviews integration, lands, runs the gate, runs captures, asks the owner. Never implements lane work itself. After a restart or limit kill, resume each agent by its id. Never relaunch a lane that has an id. Never replace a slow lane.
 
-### Review, every lane, before any merge
+### Integration review
 
-You are the final reviewer and own every merged line. The lane's report is a claim, not evidence.
+Verify the lane's independent approval covers its exact tip and is backed by raw validation evidence. Review cross-lane contracts, merge conflicts, and end-to-end behavior; investigate consequential changes, contradictions, or evidence gaps more deeply. Delegate detailed implementation review to lane reviewers rather than repeating every line or suite. Approve integration only when blocking findings are resolved.
 
-1. Read the full production diff, never truncated. Read every new or changed test; each must assert something that can fail.
-2. Consumer sweep: `git grep` every crate that references a changed public item, wire name, contract, schema, or config. Run those suites yourself.
-3. Run the touched crates' suites and the law script yourself when the lane's counts are the only evidence.
-4. Simplify: duplicated logic, dead branches, one-caller abstractions, comments narrating history. Bounce with the concrete cut.
-5. Correctness against `PROJECT.md`: zero silent loss, mirror the engine, typed refusals by name, no default in place of a measurement.
-
-A finding names production or test code whose behaviour is wrong, unproven, or unsafe. Prose, naming, and wording are not findings. Bounce until zero findings. A commit after approve gets one more look.
+A finding identifies wrong, unproven, or unsafe behavior in code or tests. Naming and prose alone are not findings.
 
 ### Landing, per batch
 
