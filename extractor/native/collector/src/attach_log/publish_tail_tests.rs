@@ -724,7 +724,9 @@ fn the_three_build_tail_marks_are_adjacent_from_the_frame_time_stamp_to_frame_en
     );
     let reseq_part = &builder[probes..reseq];
     assert!(
-        reseq_part.contains("replace_rejected_domain_records_with_gaps(")
+        reseq_part.contains("replace_rejected_domain_records_with_root_dependencies(")
+            && reseq_part.contains("division_roots_cache.acquisition.dependencies()")
+            && reseq_part.contains("&root_dependencies,")
             && reseq_part.contains("close_unresolved_domain_hours("),
         "the resequencing part holds both passes"
     );

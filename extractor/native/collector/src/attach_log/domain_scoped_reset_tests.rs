@@ -24,10 +24,6 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
         "already domain-scoped by its own carve-out on d57",
     ),
     (
-        "division_roots",
-        "root cache shared by five readers and rebuilt on the main thread; not a pin",
-    ),
-    (
         "characters_leaders_cabinet_live",
         "d47 discovery cache (roots + sealed byte witness + walk families), carried across the \
          reset UNCONDITIONALLY by its own carve-out (lane MX): its validity is decided by the \
@@ -784,20 +780,22 @@ fn d53s_outside_bracket_borrow_is_only_the_snapshot_armer() {
 }
 
 #[test]
-fn the_division_root_cache_is_touched_outside_every_reader_bracket() {
+fn the_frame_local_division_root_cache_acquires_only_inside_its_first_consumer() {
     let source = attach_log_source();
     let body = frame_builder_body(&source);
-    let derived = derive_field_tags_from_source(body);
-
-    let field = "division_roots";
-    let tags = derived
-        .get(field)
-        .unwrap_or_else(|| panic!("{field} is bound in the frame builder"));
-    assert!(
-        tags.iter()
-            .any(|tag| tag.starts_with("OUTSIDE-EVERY-READER-CALL")),
-        "{field} is excluded from the domain-scoped allowlist because it is written          outside every reader bracket; the source now says its uses are {tags:?}, so the          exclusion needs re-deciding rather than keeping"
-    );
+    assert!(body.contains("let division_roots_cache = CompactFrameDivisionRootsCache::new("));
+    assert!(body.contains("let division_roots = &division_roots_cache;"));
+    assert!(!body.contains("trackers.division_roots"));
+    let start = source.find("impl<'a> CompactFrameDivisionRootsCache<'a>").expect("frame-local implementation");
+    let implementation = source[start..].lines().take_while(|line| *line != "}")
+        .collect::<Vec<_>>().join("\n");
+    let guard = implementation.find("let Some(tag) = self.acquisition.consumer() else").unwrap();
+    let once = implementation.find("self.roots.get_or_init(||").unwrap();
+    let begin = implementation.find("self.acquisition.begin(Some(tag));").unwrap();
+    let read = implementation.find("discover_compact_division_roots_from_countries_budgeted(").unwrap();
+    assert!(guard < once && once < begin && begin < read);
+    assert!(body.contains("division_roots_cache.acquisition.dependencies()"));
+    assert!(body.contains("replace_rejected_domain_records_with_root_dependencies("));
 }
 
 #[test]
