@@ -1,7 +1,8 @@
 use super::{native_line, ProvinceAdjacencies};
 use crate::authored_fixed::parse_fixed5;
 use crate::mod_resolver::GameFileResolver;
-use crate::province_positions::{engine_province_anchors, EngineMap};
+use crate::province_positions::{engine_province_anchors, engine_records_and_raster, for_each_run, EngineMap};
+use crate::ContentAdmissionLease;
 use portable_content_manifest::paradox_text::{self, Value};
 use portable_content_manifest::UsedContentKey;
 use std::collections::BTreeMap;
@@ -43,7 +44,8 @@ pub(super) fn populate(
     let mut sources = Vec::new();
     let inputs = Inputs::load(resolver, &mut sources);
     table.movement_content = ProvinceMovementContent {
-        sources, availability: inputs.as_ref().map(|_| ()).map_err(|reason| *reason),
+        sources, availability: inputs.as_ref().map_err(|reason| *reason)
+            .and_then(|inputs| inputs.movement_error.map_or(Ok(()), Err)),
     };
     let anchors = engine_province_anchors(&map.ids, map.width, map.height, &map.defined);
     let mut distances = BTreeMap::new();
@@ -74,10 +76,16 @@ pub(super) fn populate(
 struct Inputs {
     terrain: Terrain,
     costs: Vec<std::result::Result<i64, Missing>>,
+    snow: Vec<bool>,
+    movement_error: Option<Missing>,
 }
 
 impl Inputs {
     fn load(resolver: &GameFileResolver, sources: &mut Vec<UsedContentKey>) -> std::result::Result<Self, Missing> {
+        Self::load_with_map(resolver, sources).map(|(inputs, _)| inputs)
+    }
+
+    fn load_with_map(resolver: &GameFileResolver, sources: &mut Vec<UsedContentKey>) -> Result<(Self, Value), Missing> {
         let bytes = read_source(resolver, "map/default.map", sources)?;
         let root = document(&bytes)?;
         let mut terrain_path = None;
@@ -92,17 +100,20 @@ impl Inputs {
             .map_err(|_| Missing::Content)?;
         let mut categories = Vec::new();
         let mut costs = Vec::new();
+        let mut snow = Vec::new();
+        let mut movement_error = None;
         for (path, _) in files {
             let bytes = read_source(resolver, &path, sources)?;
             let root = document(&bytes)?;
-            append_definitions(&root, &mut categories, &mut costs)?;
+            append_definitions(&root, &mut categories, &mut costs, &mut snow, &mut movement_error)?;
         }
-        Ok(Self { terrain, costs })
+        Ok((Self { terrain, costs, snow, movement_error }, root))
     }
 
     fn distance(
         &self, a: [i32; 2], mut b: [i32; 2], crossing: [i32; 2], width: usize, height: usize,
     ) -> std::result::Result<i64, Missing> {
+        if let Some(reason) = self.movement_error { return Err(reason); }
         let width = i32::try_from(width).map_err(|_| Missing::NativePathCapacity)?;
         let capacity = (width as usize).checked_add(height).ok_or(Missing::NativePathCapacity)?;
         if b[0].wrapping_sub(a[0]).wrapping_abs() > width / 2 {
@@ -128,6 +139,106 @@ impl Inputs {
             }
         }
         Ok(native_distance_scale(sum))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermanentSnowUnavailable {
+    ContentAdmission,
+    Terrain(ProvinceMovementDistanceUnavailable),
+    ProvinceMap,
+    UnknownProvince,
+    InactiveProvince,
+    NativePixelCountFault,
+    NonPositivePixelCount,
+    MaximumUnobtained,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PermanentSnowCoverage {
+    pixel_count: u32,
+    snow_pixels: u32,
+}
+
+impl PermanentSnowCoverage {
+    pub fn pixel_count(self) -> u32 { self.pixel_count }
+    pub fn snow_pixels(self) -> u32 { self.snow_pixels }
+
+    /// Initial +30 only. Current province/row validity and the recorded maximum remain caller obligations.
+    pub fn raw_at_observed_max(self, maximum: Option<i64>) -> Result<i64, PermanentSnowUnavailable> {
+        let maximum = maximum.ok_or(PermanentSnowUnavailable::MaximumUnobtained)?;
+        let pixels = i64::from(self.pixel_count as i32);
+        if pixels <= 0 { return Err(PermanentSnowUnavailable::NonPositivePixelCount); }
+        // 140f088a7..8945 sign-extends both counters; each IMUL truncates before the signed division.
+        let numerator = i64::from(self.snow_pixels as i32).wrapping_mul(100_000);
+        let ratio = numerator.wrapping_mul(100_000) / pixels.wrapping_mul(100_000);
+        Ok((maximum.wrapping_mul(50_000) / 100_000).wrapping_mul(ratio) / 100_000)
+    }
+}
+
+pub struct ProvincePermanentSnow {
+    lease: ContentAdmissionLease,
+    sources: Vec<UsedContentKey>,
+    provinces: BTreeMap<u32, Result<PermanentSnowCoverage, PermanentSnowUnavailable>>,
+}
+
+impl ProvincePermanentSnow {
+    pub fn load(resolver: &GameFileResolver) -> Result<Self, PermanentSnowUnavailable> {
+        let lease = resolver.content_admission_lease().ok_or(PermanentSnowUnavailable::ContentAdmission)?;
+        let mut sources = Vec::new();
+        let (inputs, root) = Inputs::load_with_map(resolver, &mut sources).map_err(PermanentSnowUnavailable::Terrain)?;
+        let path = |key: &str| -> Result<String, PermanentSnowUnavailable> {
+            let mut value = None;
+            for field in root.fields().iter().filter(|field| field.key_matches(key)) {
+                value = Some(field.value.as_scalar().ok_or(PermanentSnowUnavailable::ProvinceMap)?);
+            }
+            let value = value.ok_or(PermanentSnowUnavailable::ProvinceMap)?;
+            if value.is_empty() || value.starts_with('/') || value.contains('\\')
+                || value.split('/').any(|part| matches!(part, "" | "." | "..")) {
+                return Err(PermanentSnowUnavailable::ProvinceMap);
+            }
+            Ok(format!("map/{value}"))
+        };
+        let definitions = read_source(resolver, &path("definitions")?, &mut sources).map_err(PermanentSnowUnavailable::Terrain)?;
+        let bitmap = read_source(resolver, &path("provinces")?, &mut sources).map_err(PermanentSnowUnavailable::Terrain)?;
+        let map = engine_records_and_raster(&definitions, &bitmap).map_err(|_| PermanentSnowUnavailable::ProvinceMap)?;
+        let provinces = inputs.snow_coverage(&map);
+        Ok(Self { lease, sources, provinces })
+    }
+
+    pub fn admission_lease(&self) -> &ContentAdmissionLease { &self.lease }
+    pub fn sources(&self) -> &[UsedContentKey] { &self.sources }
+    pub fn province(&self, id: u32) -> Result<PermanentSnowCoverage, PermanentSnowUnavailable> {
+        self.provinces.get(&id).copied().unwrap_or(Err(PermanentSnowUnavailable::UnknownProvince))
+    }
+}
+
+impl Inputs {
+    fn snow_coverage(&self, map: &EngineMap) -> BTreeMap<u32, Result<PermanentSnowCoverage, PermanentSnowUnavailable>> {
+        let mut counts: BTreeMap<_, _> = map.defined.iter().map(|id| (*id,
+            (false, PermanentSnowCoverage { pixel_count: 0, snow_pixels: 0 }, None))).collect();
+        for_each_run(&map.ids, map.width, map.height, |id, y, start, length| {
+            let Some((has_run, coverage, refusal)) = counts.get_mut(&id) else { return; };
+            *has_run = true;
+            coverage.pixel_count = coverage.pixel_count.wrapping_add(length as u32);
+            for pixel in 0..length {
+                match self.terrain.index(start.wrapping_add(pixel), y) {
+                    Ok(index) if self.snow.get(index as usize).copied().unwrap_or(false) => {
+                        coverage.snow_pixels = coverage.snow_pixels.wrapping_add(1);
+                    }
+                    Ok(_) => {}
+                    Err(reason) => { *refusal = Some(PermanentSnowUnavailable::Terrain(reason)); }
+                }
+            }
+        });
+        counts.into_iter().map(|(id, (has_run, coverage, refusal))| {
+            let value = if !has_run { Err(PermanentSnowUnavailable::InactiveProvince) }
+                else if coverage.pixel_count == 0 { Err(PermanentSnowUnavailable::NativePixelCountFault) }
+                else if coverage.pixel_count as i32 <= 0 { Err(PermanentSnowUnavailable::NonPositivePixelCount) }
+                else if let Some(reason) = refusal { Err(reason) }
+                else { Ok(coverage) };
+            (id, value)
+        }).collect()
     }
 }
 
@@ -159,14 +270,27 @@ fn append_definitions(
     root: &Value,
     categories: &mut Vec<(String, std::result::Result<i64, Missing>)>,
     costs: &mut Vec<std::result::Result<i64, Missing>>,
+    snow: &mut Vec<bool>,
+    movement_error: &mut Option<Missing>,
 ) -> std::result::Result<(), Missing> {
     for container in root.fields() {
-        if container.key_matches("categories") {
-            for category in container.value.as_object().ok_or(Missing::TerrainDefinitions)? {
-                let name = category.key.as_ref().ok_or(Missing::TerrainDefinitions)?;
+        if !container.key_is_quoted && container.key_matches("categories") {
+            let Some(entries) = container.value.as_object() else {
+                *movement_error = Some(Missing::TerrainDefinitions);
+                continue;
+            };
+            for category in entries {
+                let Some(name) = category.key.as_ref() else {
+                    *movement_error = Some(Missing::TerrainDefinitions);
+                    continue;
+                };
                 if name.starts_with('@') { continue; }
+                let Some(fields) = category.value.as_object() else {
+                    categories.push((name.clone(), Err(Missing::TerrainDefinitions)));
+                    continue;
+                };
                 let mut cost = Ok(0);
-                for field in category.value.as_object().ok_or(Missing::TerrainDefinitions)? {
+                for field in fields {
                     if field.key_matches("movement_cost") {
                         cost = field.value.as_scalar().and_then(parse_fixed5)
                             .map(|raw| raw.max(1000)).ok_or(Missing::TerrainDefinitions);
@@ -174,20 +298,31 @@ fn append_definitions(
                 }
                 categories.push((name.clone(), cost));
             }
-        } else if container.key_matches("terrain") {
+        } else if !container.key_is_quoted && container.key_matches("terrain") {
             for definition in container.value.as_object().ok_or(Missing::TerrainDefinitions)? {
                 if definition.key.as_deref().is_some_and(|name| name.starts_with('@')) { continue; }
                 let mut cost = Ok(0);
                 let mut colors = Vec::new();
+                let mut permanent = false;
                 for field in definition.value.as_object().ok_or(Missing::TerrainDefinitions)? {
-                    if field.key_matches("type") {
-                        let name = field.value.as_scalar().ok_or(Missing::TerrainDefinitions)?;
+                    if !field.key_is_quoted && field.key_matches("type") {
+                        let Some(name) = field.value.as_scalar() else {
+                            cost = Err(Missing::TerrainDefinitions);
+                            continue;
+                        };
                         cost = match categories.iter().find(|(candidate, _)| candidate.eq_ignore_ascii_case(name)) {
                             Some((candidate, value)) if candidate == name => *value,
                             Some(_) => Err(Missing::TerrainCategoryIdentity),
                             None => Ok(0),
                         };
-                    } else if field.key_matches("color") {
+                    } else if !field.key_is_quoted && field.key_matches("perm_snow") {
+                        // 1424b06e0 writes only exact yes/no; invalid text retains the constructor/prior byte.
+                        match field.value.as_scalar() {
+                            Some("yes") => permanent = true,
+                            Some("no") => permanent = false,
+                            _ => {}
+                        }
+                    } else if !field.key_is_quoted && field.key_matches("color") {
                         for item in field.value.as_object().ok_or(Missing::TerrainDefinitions)? {
                             let index = item.value.as_scalar().and_then(|s| s.parse::<i32>().ok())
                                 .filter(|index| *index >= 0).ok_or(Missing::TerrainDefinitions)?;
@@ -198,7 +333,9 @@ fn append_definitions(
                 for index in colors {
                     // Only byte indices are consumed; larger indices still extend the witnessed census.
                     costs.resize(costs.len().max(index.saturating_add(1).min(256)), Ok(0));
+                    snow.resize(snow.len().max(index.saturating_add(1).min(256)), false);
                     if let Some(slot) = costs.get_mut(index) { *slot = cost; }
+                    if let Some(slot) = snow.get_mut(index) { *slot = permanent; }
                 }
             }
         }
@@ -260,7 +397,7 @@ mod tests {
     fn palette(source: &str) -> Vec<std::result::Result<i64, Missing>> {
         let mut categories = Vec::new();
         let mut costs = Vec::new();
-        append_definitions(&document(source.as_bytes()).unwrap(), &mut categories, &mut costs).unwrap();
+        append_definitions(&document(source.as_bytes()).unwrap(), &mut categories, &mut costs, &mut Vec::new(), &mut None).unwrap();
         costs
     }
 
@@ -289,7 +426,7 @@ mod tests {
         }"#).unwrap();
         let mut categories = Vec::new();
         let mut costs = Vec::new();
-        append_definitions(&root, &mut categories, &mut costs).unwrap();
+        append_definitions(&root, &mut categories, &mut costs, &mut Vec::new(), &mut None).unwrap();
         assert_eq!(costs, [Ok(800_000), Ok(1_600_000), Ok(125_000), Ok(98_000),
             Ok(1_000), Err(Missing::TerrainDefinitions)]);
     }
@@ -341,7 +478,7 @@ mod tests {
     #[test]
     fn weighted_route_uses_file_rows_crossing_once_and_only_consumed_costs() {
         let input = Inputs { terrain: terrain(&[[0, 0, 2, 0], [0, 1, 0, 0]]),
-            costs: vec![Ok(100_000), Ok(200_000), Ok(400_000), Err(Missing::TerrainDefinitions)] };
+            costs: vec![Ok(100_000), Ok(200_000), Ok(400_000), Err(Missing::TerrainDefinitions)], snow: vec![], movement_error: None };
         assert_eq!(input.distance([0, 0], [2, 0], [1, 1], 4, 2), Ok(233_333));
         let input = Inputs { terrain: terrain(&[[0, 0, 2, 0], [0, 3, 0, 0]]), ..input };
         assert_eq!(input.distance([0, 0], [2, 0], [1, 1], 4, 2), Err(Missing::TerrainDefinitions));
@@ -350,7 +487,7 @@ mod tests {
     #[test]
     fn wrapped_path_and_unassigned_palette_slots_preserve_exact_zero() {
         let input = Inputs { terrain: terrain(&[[0, 1, 1, 2], [0, 0, 0, 0]]),
-            costs: vec![Ok(100_000), Ok(9_000_000), Ok(200_000)] };
+            costs: vec![Ok(100_000), Ok(9_000_000), Ok(200_000)], snow: vec![], movement_error: None };
         assert_eq!(input.distance([0, 0], [3, 0], [0, 0], 4, 2), Ok(100_000));
         let input = Inputs { costs: vec![], ..input };
         assert_eq!(input.distance([0, 0], [3, 0], [0, 0], 4, 2), Ok(0));
@@ -376,4 +513,131 @@ mod tests {
         data[22..26].copy_from_slice(&(-1i32).to_le_bytes());
         assert!(matches!(Terrain::decode(&data), Err(Missing::TerrainBitmap)));
     }
+
+    fn snow_inputs(source: &str, terrain: Terrain) -> Inputs {
+        let mut categories = Vec::new();
+        let mut costs = Vec::new();
+        let mut snow = Vec::new();
+        let mut movement_error = None;
+        append_definitions(&document(source.as_bytes()).unwrap(), &mut categories,
+            &mut costs, &mut snow, &mut movement_error).unwrap();
+        Inputs { terrain, costs, snow, movement_error }
+    }
+
+    #[test]
+    fn permanent_snow_preserves_boolean_no_write_and_last_graphics_color_writer() {
+        let input = snow_inputs(r#"
+            terrain={
+                first={perm_snow=yes color={1 2}}
+                reset={perm_snow=yes perm_snow=no color={2}}
+                invalid={perm_snow=yes perm_snow=YES perm_snow=unknown color={3}}
+                quoted_value={perm_snow="yes" color={4}}
+                quoted_key={"perm_snow"=yes color={5}}
+                default_value={color={6}}
+                mixed={PeRm_SnOw=yes color={7}}
+                false_value={perm_snow=no color={8}}
+                ignored_palette_key={perm_snow=no "color"={1}}
+            }
+            "terrain"={ignored={perm_snow=yes color={6}}}
+        "#, terrain(&[[1,2,3,4]]));
+        assert_eq!(input.snow, [false,true,false,true,true,false,false,true,false]);
+    }
+
+    #[test]
+    fn permanent_snow_is_independent_of_movement_category_and_type_failures() {
+        for source in [
+            "categories=broken terrain={a={perm_snow=yes color={1}}}",
+            "categories={bad=broken} terrain={a={type=bad perm_snow=yes color={1}}}",
+            "categories={bad={movement_cost=broken}} terrain={a={type=bad perm_snow=yes color={1}}}",
+            "terrain={a={type={} perm_snow=yes color={1}}}",
+        ] {
+            let input=snow_inputs(source, terrain(&[[1,1,1,1]]));
+            assert!(input.distance([0,0],[1,0],[0,0],4,1).is_err());
+            let map=EngineMap { ids:vec![1;4],width:4,height:1,defined:[1].into_iter().collect(),land:vec![false,true] };
+            assert_eq!(input.snow_coverage(&map)[&1],Ok(PermanentSnowCoverage {pixel_count:4,snow_pixels:4}));
+        }
+    }
+
+    #[test]
+    fn snow_samples_narrowed_runs_in_engine_rows_and_palette_zero_outside_bitmap() {
+        let input=snow_inputs("terrain={a={perm_snow=yes color={1}}}",terrain(&[[0,0,0,0],[1,1,0,0]]));
+        let map=EngineMap { ids:vec![1,1,2,2, 2,2,2,2],width:4,height:2,
+            defined:[1,2,3].into_iter().collect(),land:vec![false;4] };
+        let values=input.snow_coverage(&map);
+        assert_eq!(values[&1],Ok(PermanentSnowCoverage {pixel_count:2,snow_pixels:2}));
+        assert_eq!(values[&2],Ok(PermanentSnowCoverage {pixel_count:6,snow_pixels:0}));
+        assert_eq!(values[&3],Err(PermanentSnowUnavailable::InactiveProvince));
+        // A long run narrows to one pixel, rather than contributing its raster histogram.
+        let long=EngineMap {ids:vec![1;65_537],width:65_537,height:1,defined:[1].into_iter().collect(),land:vec![false,true]};
+        assert_eq!(input.snow_coverage(&long)[&1],Ok(PermanentSnowCoverage {pixel_count:1,snow_pixels:0}));
+        let zero=EngineMap {ids:vec![1;65_536],width:65_536,..long};
+        assert_eq!(input.snow_coverage(&zero)[&1],Err(PermanentSnowUnavailable::NativePixelCountFault));
+        let input=snow_inputs("terrain={a={perm_snow=yes color={0}}}",terrain(&[[2,2,2,2]]));
+        let outside=EngineMap {ids:vec![1;8],width:8,height:1,defined:[1].into_iter().collect(),land:vec![false,true]};
+        assert_eq!(input.snow_coverage(&outside)[&1],Ok(PermanentSnowCoverage {pixel_count:8,snow_pixels:4}));
+    }
+
+    #[test]
+    fn unreadable_terrain_pixel_withdraws_only_its_province() {
+        let input=Inputs {terrain:Terrain {width:4,height:1,components:1,pitch:4,bytes:vec![1,1]},
+            costs:vec![],snow:vec![false,true],movement_error:None};
+        let map=EngineMap {ids:vec![1,1,2,2],width:4,height:1,defined:[1,2].into_iter().collect(),land:vec![false;3]};
+        let values=input.snow_coverage(&map);
+        assert_eq!(values[&1],Ok(PermanentSnowCoverage {pixel_count:2,snow_pixels:2}));
+        assert_eq!(values[&2],Err(PermanentSnowUnavailable::Terrain(Missing::TerrainPixelUnwritten)));
+    }
+
+    #[test]
+    fn permanent_raw_preserves_signed_width_and_two_ordered_wrapping_products() {
+        let coverage=PermanentSnowCoverage {pixel_count:3,snow_pixels:1};
+        assert_eq!(coverage.raw_at_observed_max(None),Err(PermanentSnowUnavailable::MaximumUnobtained));
+        assert_eq!(coverage.raw_at_observed_max(Some(100_000)),Ok(16_666));
+        assert_eq!(coverage.raw_at_observed_max(Some(-100_000)),Ok(-16_666));
+        assert_eq!(coverage.raw_at_observed_max(Some(1)),Ok(0));
+        assert_eq!(coverage.raw_at_observed_max(Some(i64::MAX)),Ok(0));
+        assert_eq!(coverage.raw_at_observed_max(Some(i64::MIN)),Ok(0));
+        assert_eq!(PermanentSnowCoverage {pixel_count:2_147_483_647,snow_pixels:2_147_483_647}
+            .raw_at_observed_max(Some(100_000)),Ok(7_050));
+        assert_eq!(PermanentSnowCoverage {pixel_count:0,snow_pixels:0}.raw_at_observed_max(Some(0)),
+            Err(PermanentSnowUnavailable::NonPositivePixelCount));
+        assert_eq!(PermanentSnowCoverage {pixel_count:0x8000_0000,snow_pixels:0}.raw_at_observed_max(Some(0)),
+            Err(PermanentSnowUnavailable::NonPositivePixelCount));
+    }
+
+    #[test]
+    fn admitted_snow_uses_selected_files_frozen_namespace_and_shared_invented_province() {
+        let root=crate::test_support::temp_test_dir("permanent_snow_admission");
+        std::fs::create_dir_all(root.join("map")).unwrap();
+        std::fs::create_dir_all(root.join("common/terrain")).unwrap();
+        std::fs::write(root.join("map/default.map"),b"terrain=terrain.bmp definitions=custom.csv provinces=custom.bmp").unwrap();
+        std::fs::write(root.join("map/custom.csv"),b"0;0;0;0;land\n1;1;0;0;land\n").unwrap();
+        let mut bitmap=vec![0u8;66];
+        bitmap[..2].copy_from_slice(b"BM");
+        bitmap[10..14].copy_from_slice(&54u32.to_le_bytes());
+        bitmap[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bitmap[18..22].copy_from_slice(&4i32.to_le_bytes());
+        bitmap[22..26].copy_from_slice(&1i32.to_le_bytes());
+        bitmap[26..28].copy_from_slice(&1u16.to_le_bytes());
+        bitmap[28..30].copy_from_slice(&24u16.to_le_bytes());
+        bitmap[54..].copy_from_slice(&[0,0,1, 0,0,1, 0,0,2, 0,0,2]);
+        std::fs::write(root.join("map/custom.bmp"),&bitmap).unwrap();
+        bitmap[28..30].copy_from_slice(&8u16.to_le_bytes());
+        bitmap[54..58].copy_from_slice(&[1,0,1,1]);
+        std::fs::write(root.join("map/terrain.bmp"),&bitmap[..58]).unwrap();
+        std::fs::write(root.join("common/terrain/snow.txt"),b"categories=broken terrain={a={perm_snow=yes color={1}}}").unwrap();
+        let raw=GameFileResolver::vanilla(&root).unwrap();
+        assert!(matches!(ProvincePermanentSnow::load(&raw),Err(PermanentSnowUnavailable::ContentAdmission)));
+        let (resolver,_)=crate::test_support::admitted_vanilla_resolver(&raw,&Default::default(),"permanent-snow");
+        let snow=ProvincePermanentSnow::load(&resolver).unwrap();
+        assert_eq!(snow.province(1),Ok(PermanentSnowCoverage {pixel_count:2,snow_pixels:1}));
+        assert_eq!(snow.province(2),Ok(PermanentSnowCoverage {pixel_count:2,snow_pixels:2}));
+        assert_eq!(snow.province(0),Err(PermanentSnowUnavailable::UnknownProvince));
+        assert_eq!(snow.sources().len(),5);
+        assert!(snow.admission_lease().manifest_digest_sha256().is_some());
+        std::fs::write(root.join("common/terrain/later.txt"),b"terrain={a={perm_snow=no color={1}}}").unwrap();
+        assert_eq!(ProvincePermanentSnow::load(&resolver).unwrap().province(2),snow.province(2));
+        drop(snow);drop(resolver);drop(raw);
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
 }

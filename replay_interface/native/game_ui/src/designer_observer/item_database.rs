@@ -10,6 +10,7 @@ use crate::paradox_text::Value;
 use replay_core::design_catalog::DesignU32Observation;
 use map_viewer::authored_equipment::AuthoredEquipmentDefinition;
 use std::cell::Cell;
+use replay_core::designer_icon_context::{DesignerCapitalSlotObservation, CapitalSlotOutcome};
 
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,12 +22,12 @@ pub enum ItemPoolKey<'a> {
 }
 
 /// Rows retain pool traversal order; resource existence is evaluated after collection and sorting.
-/// `capital_region` must authenticate the state lookup; `None` means witnessed invalid state.
+/// `capital_region` joins the authenticated template identity to the same admitted content.
 pub fn collect_country_pools<T>(
     frame: &replay_core::WorldFrame,
     creator: &str,
     mut matching_rows: impl FnMut(ItemPoolKey<'_>) -> Result<Vec<T>, String>,
-    capital_region: impl FnOnce(i32) -> Result<Option<u32>, String>,
+    capital_region: impl FnOnce(DesignerCapitalSlotObservation) -> Result<Option<u32>, String>,
 ) -> Result<Vec<T>, String> {
     fn append<T>(rows: &mut Vec<T>, mut next: Vec<T>) -> Result<(), String> {
         rows.try_reserve(next.len()).map_err(|_| "XUI13 item pool row allocation refused".to_owned())?;
@@ -49,12 +50,16 @@ pub fn collect_country_pools<T>(
         }
     }
 
-    let capital = frame.designer_effective_capital(creator)
-        .map_err(|reason| format!("XUI13 item pool effective capital: {reason:?}"))?;
-    if capital > 0 {
-        if let Some(region) = capital_region(capital)? {
-            append(&mut rows, matching_rows(ItemPoolKey::CapitalRegion(region))?)?;
+    let observation = frame.designer_capital_slot(creator)
+        .map_err(|reason| format!("XUI13 item pool runtime GS state-slot: {reason:?}"))?;
+    match observation.outcome() {
+        CapitalSlotOutcome::NonPositive | CapitalSlotOutcome::OutOfRange { .. } | CapitalSlotOutcome::NullSlot { .. } => {}
+        CapitalSlotOutcome::Present { .. } => {
+            if let Some(region) = capital_region(observation)? {
+                append(&mut rows, matching_rows(ItemPoolKey::CapitalRegion(region))?)?;
+            }
         }
+        outcome => return Err(format!("XUI13 item pool runtime GS state-slot: {outcome:?}")),
     }
     append(&mut rows, matching_rows(ItemPoolKey::Default)?)?;
     Ok(rows)
@@ -73,7 +78,7 @@ pub fn collect_icon_pools<'a, T>(
     definition: ItemPoolDefinition<'a>,
     graphics_source: impl FnOnce() -> Result<ItemPoolDefinition<'a>, String>,
     mut matching_rows: impl FnMut(ItemPoolKey<'_>, &AuthoredEquipmentDefinition) -> Result<Vec<T>, String>,
-    mut capital_region: impl FnMut(i32) -> Result<Option<u32>, String>,
+    mut capital_region: impl FnMut(DesignerCapitalSlotObservation) -> Result<Option<u32>, String>,
 ) -> Result<Vec<T>, String> {
     let mut collect = |definition: ItemPoolDefinition<'_>| collect_country_pools(frame, creator, |key| {
         let mut rows = matching_rows(key, definition.definition)?;
@@ -251,7 +256,10 @@ mod traversal_tests {
 
     pub(super) fn raw() -> Value {
         json!({"tag_db_id_index":{"country_composition_version":2},
-            "countries":{"GER":{"_r2_tag_db_id":7,"politics":{"capital_override_raw":112,"capital_state":64}},
+            "countries":{"GER":{"_r2_tag_db_id":7,"politics":{"capital_override_raw":112,"capital_state":64,
+                    "capital_slot":{"schema":1,"game_hour_raw":43800006,"observation_ordinal":19,"tag_db_id":7,
+                        "operands":{"override_raw":112,"base_raw":64},
+                        "outcome":{"kind":"present","slot_count":200,"state_id":73,"template_id":21}}}},
                 "FRA":{"_r2_tag_db_id":9},"ITA":{"_r2_tag_db_id":3}},
             "diplomacy_world":{"domain53_extra":{"faction_member_order_schema":1,
                 "faction_roster_status":"measured_nonempty","faction_rows":[{
@@ -269,7 +277,7 @@ mod traversal_tests {
     #[test]
     fn nonempty_country_and_faction_pools_append_every_member_region_and_default() {
         let rows=collect_country_pools(&frame(raw()),"GER",|key| Ok(vec![format!("{key:?}")]),
-            |state| { assert_eq!(state,112); Ok(Some(0xdeadbeef)) }).unwrap();
+            |state| { assert_eq!(state.operands().effective(),Some(112)); assert_eq!(state.outcome(),CapitalSlotOutcome::Present {slot_count:200,state_id:73,template_id:21}); Ok(Some(0xdeadbeef)) }).unwrap();
         assert_eq!(rows,["Country(\"GER\")","FactionMember(\"GER\")","FactionMember(\"FRA\")",
             "FactionMember(\"ITA\")","CapitalRegion(3735928559)","Default"]);
     }
@@ -310,7 +318,7 @@ mod traversal_tests {
     #[test]
     fn only_witnessed_invalid_capital_skips_region_and_still_collects_default() {
         for capital in [0,-1,i32::MIN] {
-            let mut raw=raw();raw["countries"]["GER"]["politics"]=json!({"capital_override_raw":capital,"capital_state":0});
+            let mut raw=raw();raw["countries"]["GER"]["politics"]=json!({"capital_override_raw":capital,"capital_state":0,"capital_slot":{"schema":1,"game_hour_raw":43800006,"observation_ordinal":19,"tag_db_id":7,"operands":{"override_raw":capital,"base_raw":0},"outcome":{"kind":"non_positive"}}});
             let rows=collect_country_pools(&frame(raw),"GER",|key| {
                 assert!(!matches!(key,ItemPoolKey::CapitalRegion(_)));
                 Ok(if key==ItemPoolKey::Default {vec![1]} else {vec![]})
@@ -346,6 +354,24 @@ mod traversal_tests {
         assert!(collect_country_pools::<()>(&frame(raw),"GER",|_| panic!("creator identity was bypassed"),
             |_| panic!("creator identity was bypassed")).unwrap_err().contains("creator"));
     }
+
+    #[test]
+    fn authenticated_null_and_out_of_range_skip_region_but_unknown_slot_cannot_skip_competitors() {
+        for outcome in [json!({"kind":"null_slot","slot_count":200}),json!({"kind":"out_of_range","slot_count":112})] {
+            let mut input=raw();input["countries"]["GER"]["politics"]["capital_slot"]["outcome"]=outcome;
+            let rows=collect_country_pools(&frame(input),"GER",|key|Ok(if key==ItemPoolKey::Default {vec![1]} else {vec![]}),
+                |_|panic!("witnessed null/out-of-range reached admitted state lookup")).unwrap();
+            assert_eq!(rows,[1]);
+        }
+        for outcome in [json!({"kind":"failed","reason":"state_unreadable"}),
+            json!({"kind":"template_unavailable","slot_count":200,"state_id":73,"reason":"membership_unverified"})] {
+            let mut input=raw();input["countries"]["GER"]["politics"]["capital_slot"]["outcome"]=outcome;
+            let result=collect_country_pools(&frame(input),"GER",|key|{assert_ne!(key,ItemPoolKey::Default);Ok(vec![1])},
+                |_|panic!("unknown slot reached admitted lookup"));
+            assert!(result.unwrap_err().contains("runtime GS state-slot"));
+        }
+    }
+
 }
 
 #[cfg(test)]

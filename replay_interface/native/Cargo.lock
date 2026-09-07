@@ -520,6 +520,7 @@ name = "replay_core"
 version = "0.1.0"
 dependencies = [
  "portable_admission",
+ "portable_compact_stream",
  "portable_content_manifest",
  "portable_engine_evidence",
  "portable_render_stream",

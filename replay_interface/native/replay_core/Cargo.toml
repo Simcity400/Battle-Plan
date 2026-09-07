@@ -30,6 +30,7 @@ portable_content_manifest = { path = "../../../portable_replay/native/content_ma
 # Admission bounds shared with the extractor producer. See that crate's module
 # docs: a rule enforced in one place and not its sibling is not enforced.
 portable_admission = { path = "../../../portable_replay/native/admission" }
+portable_compact_stream = { path = "../../../portable_replay/native/compact_stream" }
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

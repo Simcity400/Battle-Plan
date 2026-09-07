@@ -267,11 +267,31 @@ mod tests {
         std::fs::write(root.0.join("gfx/interface/fallback_green.tga"), texture).unwrap();
         std::fs::write(root.0.join("gfx/interface/equipmentdesigner/graphic_db/default.txt"),
             b"default = { light_tank_chassis_1 = { pool = { icons = { GFX_xui13_test } weight = 1 } } family_source = { pool = { icons = { gfx/interface/fallback_green.tga } weight = 2 } pool = { icons = { GFX_witnessed_missing } weight = 3 } } }").unwrap();
+        std::fs::create_dir_all(root.0.join("history/states")).unwrap();
+        std::fs::write(root.0.join("history/states/capital.txt"), b"state={id=17 provinces={1}}").unwrap();
+        std::fs::write(root.0.join("map/definition.csv"), b"0;0;0;0;land;false;unknown;0\n1;1;0;0;land;false;plains;1\n").unwrap();
+        let mut province_bmp=vec![0u8;66];
+        province_bmp[..2].copy_from_slice(b"BM");
+        province_bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+        province_bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+        province_bmp[18..22].copy_from_slice(&4i32.to_le_bytes());
+        province_bmp[22..26].copy_from_slice(&1i32.to_le_bytes());
+        province_bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+        province_bmp[28..30].copy_from_slice(&24u16.to_le_bytes());
+        for pixel in province_bmp[54..].chunks_exact_mut(3) { pixel.copy_from_slice(&[0,0,1]); }
+        std::fs::write(root.0.join("map/provinces.bmp"),province_bmp).unwrap();
+        let mut blue=std::fs::read(root.0.join("gfx/interface/fallback_green.tga")).unwrap();
+        for pixel in blue[18..].chunks_exact_mut(4) { pixel.copy_from_slice(&[255,0,0,255]); }
+        std::fs::write(root.0.join("gfx/interface/capital_blue.tga"),blue).unwrap();
+        std::fs::write(root.0.join("gfx/interface/equipmentdesigner/graphic_db/region.txt"),
+            b"europe={light_tank_chassis_1={pool={icons={gfx/interface/capital_blue.tga} weight=20}}}").unwrap();
         let renderer = admitted_production_renderer(&root.0, None);
         let omitted = admitted_production_renderer_with_assets(&root.0, Some("gfx/interface/fallback_green.tga"), &[]);
         let (mut raw, mut rest) = owner_prefix_inputs();
         raw["variants"].as_array_mut().unwrap().truncate(1);
-        rest["countries"]["GER"]["politics"]["capital_override_raw"] = json!(-1);
+        rest["countries"]["GER"]["politics"] = json!({"capital_override_raw":-1,"capital_state":null,
+            "capital_slot":{"schema":1,"game_hour_raw":43800899,"observation_ordinal":11,"tag_db_id":800,
+                "operands":{"override_raw":-1,"base_raw":null},"outcome":{"kind":"non_positive"}}});
         rest["diplomacy_world"] = json!({"domain53_extra":{"faction_member_order_schema":1,"faction_roster_status":"measured_empty","faction_rows":[]}});
         let original = world_from_catalog(raw.clone(), rest.clone());
         raw["variants"][0]["definition"]["item_icon_override"] = json!({"status":"measured","active":false,"kind":1,
@@ -279,7 +299,18 @@ mod tests {
         let fallback = world_from_catalog(raw.clone(), rest.clone());
         let mut positive_capital = rest.clone();
         positive_capital["countries"]["GER"]["politics"]["capital_override_raw"] = json!(1);
-        let unknown_state_slot = world_from_catalog(raw.clone(), positive_capital);
+        let unknown_state_slot = world_from_catalog(raw.clone(), positive_capital.clone());
+        positive_capital["countries"]["GER"]["politics"]["capital_slot"]=json!({"schema":1,
+            "game_hour_raw":43800899,"observation_ordinal":55,"tag_db_id":800,
+            "operands":{"override_raw":1,"base_raw":null},
+            "outcome":{"kind":"present","slot_count":2,"state_id":73,"template_id":17}});
+        let present_state_slot = world_from_catalog(raw.clone(), positive_capital.clone());
+        positive_capital["countries"]["GER"]["politics"]["capital_slot"]["outcome"]["template_id"]=json!(73);
+        let missing_template = world_from_catalog(raw.clone(), positive_capital);
+        let mut blue_raw=raw.clone();let blue_token="gfx/interface/capital_blue.tga";
+        blue_raw["variants"][0]["definition"]["item_icon_override"]=json!({"status":"measured","active":true,"kind":1,
+            "token":{"status":"measured","value":blue_token,"utf8_hex":blue_token.as_bytes().iter().map(|byte|format!("{byte:02x}")).collect::<String>()}});
+        let direct_blue=world_from_catalog(blue_raw,rest.clone());
         let token = "gfx/interface/fallback_green.tga";
         raw["variants"][0]["definition"]["item_icon_override"] = json!({"status":"measured","active":true,"kind":1,
             "token":{"status":"measured","value":token,"utf8_hex":token.as_bytes().iter().map(|byte|format!("{byte:02x}")).collect::<String>()}});
@@ -299,6 +330,14 @@ mod tests {
         assert_eq!(unknown_later_pool.visible_design_ids, actual.visible_design_ids);
         assert!(unknown_later_pool.field_refusals["7:70/equipment_icon"].contains("runtime GS state-slot"));
         assert_eq!(row_element_pixels(&unknown_later_pool,"creator_flag"),row_element_pixels(&actual,"creator_flag"));
+        let regional=compose(&renderer,&present_state_slot);
+        assert!(!regional.field_refusals.contains_key("7:70/equipment_icon"),"{:?}",regional.field_refusals);
+        assert_eq!(row_element_pixels(&regional,"equipment"),row_element_pixels(&compose(&renderer,&direct_blue),"equipment"));
+        assert_ne!(row_element_pixels(&regional,"equipment"),row_element_pixels(&actual,"equipment"));
+        assert_eq!(row_element_pixels(&regional,"creator_flag"),row_element_pixels(&actual,"creator_flag"));
+        let missing=compose(&renderer,&missing_template);
+        assert_eq!(missing.visible_design_ids,actual.visible_design_ids);
+        assert!(missing.field_refusals["7:70/equipment_icon"].contains("template 73"));
         let unavailable = compose(&omitted, &fallback);
         assert_eq!(unavailable.visible_design_ids,actual.visible_design_ids);
         assert!(unavailable.membership_complete);
@@ -321,7 +360,9 @@ mod tests {
         std::fs::write(root.0.join(green), texture).unwrap();
         let (mut raw, mut rest) = owner_prefix_inputs();
         raw["variants"].as_array_mut().unwrap().truncate(1);
-        rest["countries"]["GER"]["politics"]["capital_override_raw"] = json!(-1);
+        rest["countries"]["GER"]["politics"] = json!({"capital_override_raw":-1,"capital_state":null,
+            "capital_slot":{"schema":1,"game_hour_raw":43800899,"observation_ordinal":11,"tag_db_id":800,
+                "operands":{"override_raw":-1,"base_raw":null},"outcome":{"kind":"non_positive"}}});
         rest["diplomacy_world"] = json!({"domain53_extra":{"faction_member_order_schema":1,"faction_roster_status":"measured_empty","faction_rows":[]}});
         raw["variants"][0]["definition"]["item_icon_override"] = json!({"status":"measured","active":false,"kind":1,
             "token":{"status":"measured","value":".","utf8_hex":"2e"}});
@@ -370,7 +411,9 @@ mod tests {
         std::fs::write(root.0.join(green), texture).unwrap();
         let (mut raw, mut rest) = owner_prefix_inputs();
         raw["variants"].as_array_mut().unwrap().truncate(1);
-        rest["countries"]["GER"]["politics"]["capital_override_raw"] = json!(-1);
+        rest["countries"]["GER"]["politics"] = json!({"capital_override_raw":-1,"capital_state":null,
+            "capital_slot":{"schema":1,"game_hour_raw":43800899,"observation_ordinal":11,"tag_db_id":800,
+                "operands":{"override_raw":-1,"base_raw":null},"outcome":{"kind":"non_positive"}}});
         rest["diplomacy_world"] = json!({"domain53_extra":{"faction_member_order_schema":1,"faction_roster_status":"measured_empty","faction_rows":[]}});
         raw["variants"][0]["definition"]["item_icon_override"] = json!({"status":"measured","active":false,"kind":1,
             "token":{"status":"measured","value":".","utf8_hex":"2e"}});

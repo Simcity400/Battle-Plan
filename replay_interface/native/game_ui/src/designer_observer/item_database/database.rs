@@ -54,7 +54,7 @@ impl AuthoredIconDatabase {
 
     pub fn resolve(&self, equipment: &AuthoredEquipmentCatalog, frame: &WorldFrame, creator: &str,
         token: &str, runtime: &DesignU32Observation,
-        mut capital_continent: impl FnMut(i32) -> Result<Option<String>, String>,
+        mut capital_continent: impl FnMut(replay_core::designer_icon_context::DesignerCapitalSlotObservation) -> Result<Option<String>, String>,
         mut available: impl FnMut(&DesignerRowIcon) -> Result<bool, String>,
     ) -> Result<Option<SelectedAuthoredIcon>, String> {
         let definition = equipment.definition(token).map_err(|error| error.to_string())?;
