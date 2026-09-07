@@ -321,6 +321,12 @@ pub fn verify_replay_container_streaming_file_at_path_with_policy(
     if manifest.get("format").and_then(Value::as_str) != Some("hoi4replay") {
         return Err("manifest.format != \"hoi4replay\"".to_string());
     }
+    let declared_game_id = manifest.get("game_id").and_then(Value::as_str);
+    if declared_game_id != Some(game_id) {
+        return Err(format!(
+            "manifest.game_id {declared_game_id:?} != expected {game_id:?}"
+        ));
+    }
     let unicode_paths = manifest_uses_unicode_paths(&manifest)?;
     validate_archive_paths(&entries, unicode_paths)?;
     if unicode_paths {
@@ -1873,6 +1879,80 @@ mod tests {
             .expect_err("a last-ordered decoy role must never bind the capture hash");
         assert!(error.contains("exactly one"), "{error}");
         assert!(error.contains("collector_compact_stream"), "{error}");
+    }
+
+    #[test]
+    fn streaming_verifier_binds_manifest_game_id_even_when_raw_stream_is_omitted() {
+        let dir = TmpDir::new("manifest_game_id");
+        for include_stream in [true, false] {
+            let mut entries = vec![PackEntry {
+                path: "payload/g/index.json".into(),
+                bytes: br#"{"game_id":"g","schema_version":"1","snapshots":[]}"#.to_vec(),
+                role: "index",
+                hour_index: None,
+            }];
+            if include_stream {
+                entries.push(PackEntry {
+                    path: "payload/g/collector_raw/collector_stream.bin".into(),
+                    bytes: b"captured stream".to_vec(),
+                    role: "collector_compact_stream",
+                    hour_index: None,
+                });
+            }
+            for declared in ["g", "another-campaign", "", "other"] {
+                if declared == "other" {
+                    entries.push(PackEntry {
+                        path: "payload/other/index.json".into(),
+                        bytes: br#"{"game_id":"other","schema_version":"1","snapshots":[]}"#
+                            .to_vec(),
+                        role: "index",
+                        hour_index: None,
+                    });
+                }
+                // A fully rehashed container: payload paths, lengths and hashes
+                // still match this capture, but the manifest names another game.
+                let bytes = pack(declared, &entries, &PackIdentity::default(), false).unwrap();
+                let path = dir.join(&format!("{include_stream}-{declared}.battleplan"));
+                fs::write(&path, &bytes).unwrap();
+                let mut file = portable_test_fs_retry::open(&path).unwrap();
+                let result = verify_replay_container_streaming_file_at_path_with_policy(
+                    &mut file,
+                    "g",
+                    "collector_compact_stream",
+                    "collector_raw/collector_stream.bin",
+                    if include_stream {
+                        StreamEntryPolicy::Required
+                    } else {
+                        StreamEntryPolicy::Optional
+                    },
+                );
+                if declared == "g" {
+                    let report = result.expect("matching identity must verify");
+                    assert_eq!(report.entries_verified, entries.len());
+                    assert_eq!(report.stream_entry_sha256.is_some(), include_stream);
+                    open_container_guarded(&path, &ExpectedIdentity::default())
+                        .expect("matching identity must open in the viewer's container reader");
+                } else {
+                    let error = result.expect_err("payload hashes cannot authorize another game");
+                    assert!(error.contains("manifest.game_id"), "{error}");
+                    assert!(error.contains(&format!("{declared:?}")), "{error}");
+                    assert!(error.contains("expected \"g\""), "{error}");
+                    let opened = open_container_guarded(&path, &ExpectedIdentity::default());
+                    if declared == "other" {
+                        // Both trees are valid. The viewer resolves from the
+                        // manifest, not from the campaign the recorder verified.
+                        assert_eq!(opened.expect("the other campaign opens").game_id(), "other");
+                    } else {
+                        assert!(opened.is_err());
+                    }
+                }
+                assert_eq!(
+                    portable_test_fs_retry::read(&path).unwrap(),
+                    bytes,
+                    "verification must preserve the original artifact for failure handling"
+                );
+            }
+        }
     }
 
     #[test]
