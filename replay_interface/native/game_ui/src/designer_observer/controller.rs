@@ -346,6 +346,76 @@ mod tests {
     }
 
     #[test]
+    fn authenticated_quoted_at_texture_and_variable_keep_pixels_and_bare_refusal_local() {
+        let (root, _) = production_fixture();
+        for directory in ["gfx/interface/equipmentdesigner/graphic_db", "common/country_tags", "map"] {
+            std::fs::create_dir_all(root.0.join(directory)).unwrap();
+        }
+        std::fs::write(root.0.join("common/country_tags/tags.txt"), br#"GER="countries/Germany.txt""#).unwrap();
+        std::fs::write(root.0.join("map/default.map"), br#"continent="continent.txt" definitions="definition.csv" provinces="provinces.bmp""#).unwrap();
+        std::fs::write(root.0.join("map/continent.txt"), b"continents={europe}").unwrap();
+        let path = "@Literal.TGA";
+        let rgba = [40, 180, 90, 255];
+        let mut texture = std::fs::read(root.0.join("gfx/interface/xui13_test.tga")).unwrap()[..18].to_vec();
+        texture[12..14].copy_from_slice(&8u16.to_le_bytes());
+        texture[14..16].copy_from_slice(&8u16.to_le_bytes());
+        for _ in 0..64 { texture.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]); }
+        std::fs::write(root.0.join(path), texture).unwrap();
+        let (mut raw, mut rest) = owner_prefix_inputs();
+        raw["variants"].as_array_mut().unwrap().truncate(1);
+        rest["countries"]["GER"]["cosmetic_tag"] = Value::Null;
+        rest["countries"]["GER"]["politics"] = json!({"ruling_party":"neutrality","capital_override_raw":-1,"capital_state":null,
+            "capital_slot":{"schema":1,"game_hour_raw":43800899,"observation_ordinal":11,"tag_db_id":800,
+                "operands":{"override_raw":-1,"base_raw":null},"outcome":{"kind":"non_positive"}}});
+        rest["diplomacy_world"] = json!({"domain53_extra":{"faction_member_order_schema":1,"faction_roster_status":"measured_empty","faction_rows":[]}});
+        raw["variants"][0]["definition"]["item_icon_override"] = json!({"status":"measured","active":false,"kind":1,
+            "token":{"status":"measured","value":".","utf8_hex":"2e"}});
+        let frame = world_from_catalog(raw, rest);
+        let mut surfaces = Vec::new();
+        for (definitions, token) in [
+            ("", "\"@Literal.TGA\""),
+            ("@chosen=\"@Literal.TGA\"", "@chosen"),
+            ("", "@missing"),
+        ] {
+            let source = format!(r#"{definitions} default={{ light_tank_chassis_1={{pool={{icons={{{token}}}}}}} unrelated_type={{pool={{"icons"={{GFX_Refused}}}}}} }}"#);
+            std::fs::write(root.0.join("gfx/interface/equipmentdesigner/graphic_db/default.txt"), source).unwrap();
+            let renderer = admitted_production_renderer_with_assets(&root.0, None, &[path]);
+            let decoded = renderer.resolver().decode_texture(path).unwrap().image;
+            assert_eq!((decoded.width, decoded.height), (8, 8));
+            assert!(decoded.pixels.chunks_exact(4).all(|pixel| pixel == rgba));
+            let surface = renderer.compose_xui13_designer_surface(&frame, frame.named_country("GER").unwrap(), &viewer(), 160, 120).unwrap();
+            assert_eq!(surface.ordered_design_ids, ["7:70"]);
+            assert_eq!(surface.visible_design_ids, ["7:70"]);
+            assert!(surface.membership_complete && surface.country_filters_complete);
+            surfaces.push(surface);
+        }
+        for known in &surfaces[..2] {
+            assert!(known.field_refusals.is_empty(), "{:?}", known.field_refusals);
+            let pixels = row_element_pixels(known, "equipment");
+            assert_eq!(pixels.len(), 8 * 8 * 4);
+            assert!(pixels.chunks_exact(4).all(|pixel| pixel == rgba));
+        }
+        assert_eq!(surfaces[0].output.image, surfaces[1].output.image);
+        let refused = &surfaces[2];
+        assert_eq!(refused.field_refusals.keys().map(String::as_str).collect::<Vec<_>>(), ["7:70/equipment_icon"]);
+        assert!(refused.field_refusals["7:70/equipment_icon"].contains("@missing"));
+        assert!(refused.field_refusals["7:70/equipment_icon"].contains("does not define"));
+        let rect = surfaces[0].output.debug_rects.iter().find(|rect|
+            rect.name.contains("7:70") && rect.name.ends_with("::equipment")).unwrap();
+        let expected = &surfaces[0].output.image;
+        let actual = &refused.output.image;
+        assert_eq!((actual.width, actual.height), (expected.width, expected.height));
+        assert_ne!(actual, expected);
+        for (offset, (pixel, known)) in actual.pixels.chunks_exact(4).zip(expected.pixels.chunks_exact(4)).enumerate() {
+            let (x, y) = (offset % actual.width, offset / actual.width);
+            let equipment = (rect.x as usize..(rect.x + rect.w) as usize).contains(&x)
+                && (rect.y as usize..(rect.y + rect.h) as usize).contains(&y);
+            if equipment { assert_ne!(pixel, rgba); }
+            else { assert_eq!(pixel, known, "known row/flag/chrome pixel {x},{y}"); }
+        }
+    }
+
+    #[test]
     fn authenticated_ascii_icon_keywords_keep_pixels_and_last_weight_assignment() {
         let (root, _) = production_fixture();
         std::fs::create_dir_all(root.0.join("gfx/interface/equipmentdesigner/graphic_db")).unwrap();

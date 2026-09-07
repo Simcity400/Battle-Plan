@@ -1,6 +1,6 @@
 use super::{ItemPoolLimit, ItemPoolRow};
 use crate::design_catalog::DesignerRowIcon;
-use crate::paradox_text::Value;
+use crate::paradox_text::{Scalar, Value};
 use replay_core::design_catalog::DesignU32Observation;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -130,7 +130,9 @@ fn tokens(value: &Value, field: &str) -> Result<Vec<String>, String> {
     value.as_object().ok_or_else(|| format!("XUI13 graphic pool {field} is not a list"))?.iter().map(|entry| {
         if entry.key.is_some() { return Err(format!("XUI13 graphic pool {field} has a keyed list entry")); }
         let token = entry.value.as_scalar().ok_or_else(|| format!("XUI13 graphic pool {field} has a nonscalar entry"))?;
-        if token.starts_with('@') { return Err(format!("XUI13 graphic pool {field} has unresolved variable {token:?}")); }
+        if matches!(&entry.value, Value::Scalar(Scalar::Bare(_))) && token.starts_with('@') {
+            return Err(format!("XUI13 graphic pool {field} has unresolved variable {token:?}"));
+        }
         Ok(token.to_owned())
     }).collect()
 }
@@ -144,6 +146,29 @@ mod tests {
         AuthoredIconPool::parse(document.root.first_value_ci("pool").unwrap()).unwrap()
     }
     fn runtime() -> DesignU32Observation { DesignU32Observation::Measured { raw_u32: 0 } }
+
+    #[test]
+    fn quoted_at_literal_and_quoted_variable_value_preserve_item_identity() {
+        let mut document = crate::paradox_text::parse_str(
+            r#"@chosen = "@Literal.TGA" pool = { icons = { "@Literal.TGA" @chosen } }"#);
+        crate::paradox_text::expand_file_scoped_variables(&mut document.root).unwrap();
+        let pool = AuthoredIconPool::parse(document.root.first_value_ci("pool").unwrap()).unwrap();
+        assert_eq!(pool.row.icons, [DesignerRowIcon::Texture("@Literal.TGA".into()),
+            DesignerRowIcon::Texture("@Literal.TGA".into())]);
+    }
+
+    #[test]
+    fn bare_unresolved_value_stays_named_without_poisoning_independent_type() {
+        let mut map = AuthoredIconPoolTypeMap::default();
+        map.append(&crate::paradox_text::parse_str(
+            r#"tank = { pool = { icons = { @missing } } } ship = { pool = { icons = { "@Literal.TGA" } } }"#).root).unwrap();
+        let context = || Ok(String::new());
+        assert_eq!(map.matching_rows("tank", &runtime(), context, context, context),
+            Err("XUI13 graphic pool icons has unresolved variable \"@missing\"".into()));
+        let rows = map.matching_rows("ship", &runtime(), context, context, context).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].icons, [DesignerRowIcon::Texture("@Literal.TGA".into())]);
+    }
 
     #[test]
     fn repeated_icon_lists_append_and_kind_is_slash_or_dot_not_gfx_prefix() {
