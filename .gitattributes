@@ -1610,3 +1610,11 @@ extractor/native/runs/orchestrator_20260905/FULL_PANEL_EMPTY_PARSER_INTEGRATION_
 extractor/native/runs/orchestrator_20260905/PARTICLE_CORRECTION_CONFIRMATION_79A4.json text eol=lf
 extractor/native/runs/view2_replay_targets/QUOTED_AT_VALIDATION_8DC9F8F2.json text eol=lf
 extractor/native/runs/view2_replay_targets/SCHEMA2_FIXTURE_VALIDATION_554C4F15.json text eol=lf
+extractor/native/runs/famorder3_scene_residuals/RADIUS_INSTRUMENTATION_SOURCE_PREFLIGHT.json text eol=lf
+extractor/native/runs/famorder3_scene_residuals/RADIUS_CONTEXT_UNAVAILABILITY.json text eol=lf
+extractor/native/runs/famorder3_scene_residuals/RADIUS_CURRENT_DEFINITION_LINEAGE_AUDIT.json text eol=lf
+extractor/native/runs/famorder3_scene_residuals/RADIUS_CURRENT_DEFINITION_AUDIT_SEAL.json text eol=lf
+extractor/native/runs/famorder3_scene_residuals/RADIUS_CLONE_AUTHORED_FLAG_CLARIFICATION.json text eol=lf
+extractor/native/runs/famorder3_scene_residuals/RADIUS_CLONE_FINALIZER_CLOSURE.json text eol=lf
+extractor/native/runs/famorder3_scene_residuals/PDX_NUMERIC_PROPERTY_STORAGE_MAPPING.json text eol=lf
+extractor/native/runs/famorder3_scene_residuals/PDX_NUMERIC_PROPERTY_STORAGE_SEAL.json text eol=lf
