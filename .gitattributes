@@ -1600,3 +1600,4 @@ portable_replay/native/engine_evidence/artifacts/func_1424f1930.instructions.txt
 portable_replay/native/engine_evidence/artifacts/func_1424f1a60.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1424f1a60.instructions.txt text eol=lf
 extractor/native/runs/cap3_critical_path/FULL_PANEL_GENERATORS_VALIDATION_45DB9681.json text eol=lf
+extractor/native/runs/orchestrator_20260905/CAP_HELPER_PARENT_INTEGRATION_D99648B1.json text eol=lf
