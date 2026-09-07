@@ -386,6 +386,38 @@ fn asset_registration_path_order(left: &str, right: &str) -> std::cmp::Ordering 
     }
 }
 
+type MeshClockLookups = BTreeMap<String, Vec<(
+    portable_content_manifest::UsedContentKey, portable_content_manifest::paradox_text::Entry,
+)>>;
+
+fn mesh_animation_lookup<T>(
+    entry: &portable_content_manifest::paradox_text::Entry, source: &str,
+    mut on_type: impl FnMut(&str, usize) -> Result<T>,
+) -> Result<(String, u32, T)> {
+    if entry.value.as_object().is_none() {
+        return Err(format!("mesh animation lookup grammar unavailable at {source}:{}", entry.line).into());
+    }
+    let mut id = None;
+    let mut loaded = None;
+    for field in entry.value.fields() {
+        let scalar = field.value.as_scalar().ok_or_else(|| format!(
+            "mesh animation lookup scalar unavailable at {source}:{}", field.line))?;
+        if field.key_matches("id") {
+            id = Some((scalar.to_owned(), entity_token_hash(scalar)?));
+        } else if field.key_matches("type") {
+            loaded = Some(on_type(scalar, field.line)?);
+        } else {
+            return Err(format!("mesh animation lookup member {:?} is unestablished at {source}:{}",
+                field.key, field.line).into());
+        }
+    }
+    let (id, hash) = id.ok_or_else(|| format!(
+        "mesh animation lookup omitted id initialization is unestablished at line {}", entry.line))?;
+    let loaded = loaded.ok_or_else(|| format!(
+        "mesh animation lookup omitted type initialization is unestablished at line {}", entry.line))?;
+    Ok((id, hash, loaded))
+}
+
 pub(crate) struct EntityAssets {
     content_lease: Option<crate::mod_resolver::ContentAdmissionLease>,
     entity_sources: BTreeMap<String, portable_content_manifest::UsedContentKey>,
@@ -398,7 +430,7 @@ pub(crate) struct EntityAssets {
     meshes: BTreeMap<String, BuildingPdxmeshBinding>,
     mesh_sources: BTreeMap<String, portable_content_manifest::UsedContentKey>,
     mesh_declarations: Vec<(portable_content_manifest::UsedContentKey, Vec<AuthoredMeshDeclaration>)>,
-    mesh_clips: BTreeMap<String, std::result::Result<BTreeMap<String, String>, String>>,
+    mesh_clips: BTreeMap<String, std::result::Result<MeshClockLookups, String>>,
     animation_declarations: Vec<AuthoredAnimationDeclaration>,
     templates: Vec<Xmap09LightTemplate>,
 }
@@ -474,6 +506,27 @@ impl EntityAssets {
     }
 
 
+    fn resolve_animation_lookup(
+        &self, resolver: &GameFileResolver,
+        entry: &portable_content_manifest::paradox_text::Entry,
+        source: &portable_content_manifest::UsedContentKey,
+    ) -> Result<(String, u32, (String, RegisteredEntityAnimation))> {
+        if resolver.admitted_used_content_key(&source.normalized_game_relative_path)?.as_ref() != Some(source) {
+            return Err("mesh animation lookup declaration belongs to another content admission".into());
+        }
+        mesh_animation_lookup(entry, &source.normalized_game_relative_path, |name, line| {
+            let registration = self.registered_animation(resolver, name)?;
+            if resolver.admitted_used_content_key(&registration.file_source.normalized_game_relative_path)?
+                .as_ref() != Some(&registration.file_source) {
+                return Err("mesh animation lookup belongs to another content admission".into());
+            }
+            registration.cached.outcome.as_ref().map_err(|reason| format!(
+                "mesh animation lookup {name:?} at {}:{line}: {reason}",
+                source.normalized_game_relative_path))?;
+            Ok((name.to_owned(), registration))
+        })
+    }
+
     pub(crate) fn mesh_animation_admission(
         &self, resolver: &GameFileResolver, admission: &replay_core::ValidatedContentAdmission,
         mesh_name: &str, declaration_source: &portable_content_manifest::UsedContentKey,
@@ -508,37 +561,8 @@ impl EntityAssets {
         let mut null_lookups = Vec::new();
         for (source_ordinal, entry) in selected.declaration.value.fields().iter().enumerate() {
             if !entry.key_matches("animation") { continue; }
-            if entry.value.as_object().is_none() {
-                return Err(format!("mesh animation lookup grammar unavailable at {}:{}",
-                    declaration_source.normalized_game_relative_path, entry.line).into());
-            }
-            let mut id = None;
-            let mut loaded = None;
-            for field in entry.value.fields() {
-                let scalar = field.value.as_scalar().ok_or_else(|| format!(
-                    "mesh animation lookup scalar unavailable at {}:{}",
-                    declaration_source.normalized_game_relative_path, field.line))?;
-                if field.key_matches("id") {
-                    id = Some((scalar.to_owned(), entity_token_hash(scalar)?));
-                } else if field.key_matches("type") {
-                    let registration = self.registered_animation(resolver, scalar)?;
-                    let source = &registration.file_source;
-                    if admission.require_used_content(&source.normalized_game_relative_path)? != source {
-                        return Err("mesh animation lookup belongs to another content admission".into());
-                    }
-                    registration.cached.outcome.as_ref().map_err(|reason| format!(
-                        "mesh animation lookup {scalar:?} at {}:{}: {reason}",
-                        declaration_source.normalized_game_relative_path, field.line))?;
-                    loaded = Some((scalar.to_owned(), registration));
-                } else {
-                    return Err(format!("mesh animation lookup member {:?} is unestablished at {}:{}",
-                        field.key, declaration_source.normalized_game_relative_path, field.line).into());
-                }
-            }
-            let (id, id_hash) = id.ok_or_else(|| format!(
-                "mesh animation lookup omitted id initialization is unestablished at line {}", entry.line))?;
-            let (clip_name, registration) = loaded.ok_or_else(|| format!(
-                "mesh animation lookup omitted type initialization is unestablished at line {}", entry.line))?;
+            let (id, id_hash, (clip_name, registration)) =
+                self.resolve_animation_lookup(resolver, entry, declaration_source)?;
             let clip_source = registration.file_source.clone();
             let registration_source = registration.declaration_source.clone();
             let registration_line = registration.declaration_line;
@@ -689,9 +713,14 @@ impl EntityAssets {
         let clips = self.mesh_clips.get(mesh)
             .ok_or("entity selected animation binding is unavailable")?
             .as_ref().map_err(|reason| format!("entity selected animation binding: {reason}"))?;
-        let name = clips.get(animation)
+        let lookups = clips.get(animation)
             .ok_or("entity selected animation binding is unavailable")?;
-        let registration = self.registered_animation(resolver, name)?;
+        let mut selected = None;
+        for (source, entry) in lookups {
+            let (_, _, resolved) = self.resolve_animation_lookup(resolver, entry, source)?;
+            selected = Some(resolved);
+        }
+        let (name, registration) = selected.ok_or("entity selected animation binding is unavailable")?;
         let animation = match registration.cached.outcome.as_ref()
             .map_err(|reason| format!("entity selected animation {name:?}: {reason}"))? {
             NativeAnimationLoad::Loaded(animation) => animation.clone(),
@@ -900,13 +929,31 @@ impl EntityAssets {
             ).then(left.source_ordinal.cmp(&right.source_ordinal))
         });
         let mesh_clips = meshes.keys().map(|name| {
-            let (text, _) = entity_parser_text(mesh_declarations.iter()
-                .flat_map(|(_, entries)| entries.iter().map(|retained| &retained.entry))
-                .filter(|entry| entry.value.first_scalar_ci("name") == Some(name.as_str())));
-            let clips = parse_pdxmesh_animation_bindings(&text, "authenticated mesh declaration")
-                .and_then(|mut meshes| meshes.remove(name)
-                    .ok_or_else(|| format!("mesh {name} animation binding is unavailable").into()))
-                .map_err(|error| error.to_string());
+            let clips = (|| -> Result<MeshClockLookups> {
+                let mut lookups = MeshClockLookups::new();
+                let mut previous = None;
+                for (source, declarations) in &mesh_declarations {
+                    for declaration in declarations.iter().filter(|retained|
+                        retained.entry.value.first_scalar_ci("name") == Some(name.as_str())) {
+                        let mut table = BTreeMap::new();
+                        for entry in declaration.entry.value.fields().iter()
+                            .filter(|entry| entry.key_matches("animation")) {
+                            let (id, _, clip) = mesh_animation_lookup(entry,
+                                &source.normalized_game_relative_path, |name, _| Ok(name.to_owned()))?;
+                            if table.get(&id).is_some_and(|previous| previous != &clip) {
+                                return Err(format!("pdxmesh {name:?} maps animation id {id:?} to different clips").into());
+                            }
+                            table.insert(id.clone(), clip);
+                            lookups.entry(id).or_default().push((source.clone(), entry.clone()));
+                        }
+                        if previous.as_ref().is_some_and(|previous| previous != &table) {
+                            return Err(format!("pdxmesh {name:?} is declared twice with different animation tables").into());
+                        }
+                        previous = Some(table);
+                    }
+                }
+                Ok(lookups)
+            })().map_err(|error| error.to_string());
             (name.clone(), clips)
         }).collect();
         let bindings = entity_sources.keys().map(|name| (name.clone(), std::sync::OnceLock::new())).collect();
@@ -6359,6 +6406,79 @@ animation={name=clip_b file="test.anim"}"#),
             &Xmap12MeshLibrary::new()).err().unwrap().to_string();
         assert!(error.contains("test.anim"), "{error}");
         assert!(assets.animations.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn selected_clock_and_construction_share_repeated_lookup_callbacks() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let mesh = crate::pdx_mesh::test_fixtures::synthetic_mesh_bytes(0.0);
+        let good = crate::pdx_mesh::test_fixtures::synthetic_anim_bytes();
+        let bad = construction_clip_bytes(true, false, "", false, 1, 1);
+        let null = construction_clip_bytes(false, false, "", true, 1, 1);
+        let registry = b"entity={name=entity pdxmesh=mesh default_state=idle state={name=idle animation=idle}}\n\
+            animation={name=first file=\"first.anim\"}\n\
+            animation={name=last file=\"last.anim\"}\n\
+            animation={name=bad file=\"bad.anim\"}\n\
+            animation={name=null file=\"null.anim\"}\n";
+        for (members, final_name, refusal) in [
+            ("id=idle type=first type=bad", None, Some("missing fps")),
+            ("id=idle type=bad type=first", None, Some("missing fps")),
+            ("id=early type=first id=idle type=last", Some("last"), None),
+            ("id=idle type=last type=first", Some("first"), None),
+            ("id=idle type=null type=last", Some("last"), None),
+            ("id=idle type=last type=null", None, Some("native loader returned null")),
+        ] {
+            let graphics = format!("objectTypes={{pdxmesh={{name=mesh file=\"gfx/model.mesh\" animation={{{members}}}}}}}");
+            let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[
+                ("gfx/model.mesh", &mesh), ("gfx/first.anim", &good), ("gfx/last.anim", &good),
+                ("gfx/bad.anim", &bad), ("gfx/null.anim", &null),
+                ("gfx/construction.asset", registry), ("gfx/construction.gfx", graphics.as_bytes()),
+            ]);
+            for through_entity_clock in [false, true] {
+                let assets = EntityAssets::load(&content.resolver).unwrap();
+                let source = content.admission.require_used_content("gfx/construction.asset").unwrap();
+                let placed = Xmap09PlacedEntity {
+                    id: "clock-root".into(), entity_token: "entity".into(), state: None, animate: true,
+                    world_matrix_f32_bits: IDENTITY.map(f32::to_bits),
+                };
+                let selected = if through_entity_clock {
+                    EntityAnimation::load(&placed, &assets, &content.resolver, false, true,
+                        &mut ViewerParticleSeed { seed: 1, counter: 0 }).map(|clock| clock.clip.unwrap())
+                } else {
+                    assets.selected_state_clip(&content.resolver, &content.admission, "entity", source, 0)
+                        .map(|clip| clip.unwrap().animation)
+                };
+                if let Some(reason) = refusal {
+                    let error = selected.err().expect("the actual clock must refuse").to_string();
+                    assert!(error.contains(reason), "{members}: {error}");
+                    if reason == "missing fps" {
+                        let cache = assets.animations.lock().unwrap();
+                        assert_eq!(cache.contains_key("gfx/first.anim"),
+                            members.starts_with("id=idle type=first"));
+                        assert!(cache["gfx/bad.anim"].outcome.is_err());
+                    }
+                } else {
+                    let selected = selected.unwrap();
+                    let final_name = final_name.unwrap();
+                    let registration = assets.registered_animation(&content.resolver, final_name).unwrap();
+                    let NativeAnimationLoad::Loaded(expected) = registration.cached.outcome.as_ref().unwrap() else {
+                        panic!("the final callback must select the loaded clip");
+                    };
+                    assert!(Arc::ptr_eq(&selected, expected), "{members}");
+                    let library = Xmap12MeshLibrary::new();
+                    let receipt = assets.mesh_animation_admission(
+                        &content.resolver, &content.admission, "mesh",
+                        content.admission.require_used_content("gfx/construction.gfx").unwrap(),
+                        content.admission.require_used_content("gfx/model.mesh").unwrap(), &library).unwrap();
+                    let view = receipt.checked(&content.resolver, &content.admission, &library).unwrap();
+                    assert_eq!(view.initial_lookups.len(), 1);
+                    assert_eq!(view.initial_lookups[0].id, "idle");
+                    assert_eq!(view.initial_lookups[0].clip_name, final_name);
+                    assert!(Arc::ptr_eq(&selected, &view.initial_lookups[0].animation));
+                    assert_eq!(view.initial_lookups[0].clip_source, registration.file_source);
+                }
+            }
+        }
     }
 
     #[test]
