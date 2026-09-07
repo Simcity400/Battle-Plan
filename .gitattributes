@@ -1606,3 +1606,4 @@ replay_interface/fixtures/xui13_full_panel_cid1.h4cr -text
 replay_interface/fixtures/xui13_full_panel_d53.json text eol=lf
 replay_interface/fixtures/xui13_full_panel_snapshots.json text eol=lf
 extractor/native/runs/view2_replay_targets/FULL_PANEL_JOINT_VALIDATION_4C7BD888.json text eol=lf
+extractor/native/runs/orchestrator_20260905/FULL_PANEL_EMPTY_PARSER_INTEGRATION_2A85A71B.json text eol=lf
