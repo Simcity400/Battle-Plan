@@ -1588,3 +1588,4 @@ extractor/native/runs/cap3_critical_path/CCS1_FULL_MODULE_VALIDATION.json text e
 replay_interface/fixtures/cpni3_capital_slot_joint.json text eol=lf
 extractor/native/runs/view2_replay_targets/CAPITAL_JOINT_VALIDATION_381354.json text eol=lf
 extractor/native/runs/orchestrator_20260905/CAPITAL_MODEL_PARENT_INTEGRATION_3043.json text eol=lf
+extractor/native/runs/orchestrator_20260905/RAILWAY_LEDGER_PARENT_INTEGRATION_A8B26823.json text eol=lf
