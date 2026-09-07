@@ -2819,7 +2819,7 @@ mod tests {
         assert!(summary
             .parse_errors
             .iter()
-            .any(|error| error.contains("expected at least 48")));
+            .any(|error| error.contains(&format!("expected at least {COMPACT_OOB_HEADER_LEN}"))));
         assert!(!summary.gate_passed());
     }
 
@@ -2838,7 +2838,7 @@ mod tests {
     #[test]
     fn rejects_bad_oob_member_range() {
         let mut payload = test_oob_command_data_payload(COMPACT_STATUS_DELTA_DATA);
-        let first_row_member_count_offset = 48 + 32;
+        let first_row_member_count_offset = COMPACT_OOB_HEADER_LEN + 32;
         payload[first_row_member_count_offset..first_row_member_count_offset + 4]
             .copy_from_slice(&999u32.to_le_bytes());
         let mut summary = NavalOobGateSummary::default();
@@ -3253,6 +3253,8 @@ mod tests {
         payload.extend_from_slice(&0u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_OOB_PAYLOAD_VERSION.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
 
         for (
             kind,
@@ -3386,12 +3388,28 @@ mod tests {
             payload.extend_from_slice(&leader_status.to_le_bytes());
             payload.extend_from_slice(&leader_trait_status.to_le_bytes());
             payload.extend_from_slice(&location_province_id.to_le_bytes());
-            payload.extend_from_slice(&0u32.to_le_bytes());
+            let id_space = if kind == COMPACT_OOB_KIND_TASK_FORCE {
+                61u32
+            } else {
+                0
+            };
+            payload.extend_from_slice(&id_space.to_le_bytes());
         }
-        for member_id in [101u32, 102u32, 17u32, 617u32, 1001u32, 1002u32] {
+        for (member_id, id_space) in [
+            (101u32, 0u32),
+            (102, 0),
+            (17, 0),
+            (617, 61),
+            (1001, 0),
+            (1002, 0),
+        ] {
             payload.extend_from_slice(&member_id.to_le_bytes());
-            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&id_space.to_le_bytes());
         }
+        payload.extend_from_slice(&d28_grammar::country_roster::Observation::unavailable(
+            d28_grammar::country_roster::Kind::Fleet,
+            d28_grammar::country_roster::Cause::ExternalBridge,
+        ).encode().unwrap());
         payload
     }
 
@@ -3405,7 +3423,7 @@ mod tests {
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&COMPACT_FIXED_SCALE_RAW.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&COMPACT_SHIPS_PAYLOAD_VERSION.to_le_bytes());
 
         for (
             instance_id,
@@ -3455,7 +3473,12 @@ mod tests {
             payload.extend_from_slice(&experience_raw.to_le_bytes());
             payload.extend_from_slice(&sunk_convoys.to_le_bytes());
             payload.extend_from_slice(&owner_tag_db_id.to_le_bytes());
-            payload.extend_from_slice(&0u32.to_le_bytes());
+            let id_space = if flags & COMPACT_SHIP_ROW_FLAG_TASK_FORCE != 0 {
+                61u32
+            } else {
+                0
+            };
+            payload.extend_from_slice(&id_space.to_le_bytes());
             append_compact_string(&mut payload, definition);
         }
         payload
