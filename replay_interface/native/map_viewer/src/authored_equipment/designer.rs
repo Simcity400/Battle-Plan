@@ -74,13 +74,8 @@ impl AuthoredEquipmentCatalog {
                         }
                     } else {
                         let source = slot.value.as_scalar().ok_or_else(|| definition.malformed("module_slots.slot"))?;
-                        if slots.iter().any(|current| current.eq_ignore_ascii_case(source)) { true }
-                        else if slots.is_empty() { false }
-                        else {
-                            return Err(EquipmentDefinitionError::UnsupportedAuthored {
-                                token: token.into(), field: format!("module_slots.{name}.unresolved_lexical_reference"),
-                            });
-                        }
+                        // 140c8c260 logs an unresolved source without appending a slot.
+                        slots.iter().any(|current| current.eq_ignore_ascii_case(source))
                     };
                     if append { slots.push(name.into()) }
                 }
@@ -113,14 +108,14 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_slots_and_scalar_copy_preserve_order_and_unclosed_lookup() {
+    fn duplicate_slots_and_scalar_copy_preserve_order_and_skip_unresolved_sources() {
         let c = catalog(r#"equipments = {
             slots = { module_slots = { first = {} FIRST = absent second = first third = second } }
-            unknown = { module_slots = { first = {} second = unregistered } }
+            unknown = { module_slots = { first = {} second = unregistered third = FIRST fourth = {} } }
             no_slots = { module_slots = { first = unregistered } }
         }"#);
         assert_eq!(c.designer_module_slots("slots").unwrap(), ["first", "second", "third"]);
-        assert!(matches!(c.designer_module_slots("unknown"), Err(EquipmentDefinitionError::UnsupportedAuthored { .. })));
+        assert_eq!(c.designer_module_slots("unknown").unwrap(), ["first", "third", "fourth"]);
         assert!(c.designer_module_slots("no_slots").unwrap().is_empty());
     }
 

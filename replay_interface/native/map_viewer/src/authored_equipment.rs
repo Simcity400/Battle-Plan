@@ -843,13 +843,10 @@ mod tests {
     }
 
     #[test]
-    fn generated_closure_keeps_unknowns_cycles_collisions_and_dlc_rebinding_explicit() {
-        for (text, field) in [
-            ("equipments = { base = { is_archetype = yes } } duplicate_archetypes = { new = { archetype = base for_each = { priority = { set = 9 } } } }", "for_each.priority.lexical_stat"),
-            ("equipments = { base = { is_archetype = yes } new = {} } duplicate_archetypes = { new = { archetype = base } }", "duplicate_archetypes.existing_definition_mode"),
-        ] {
-            assert!(matches!(catalog(text).resolve_generated(), Err(EquipmentDefinitionError::UnsupportedAuthored { field: actual, .. }) if actual == field));
-        }
+    fn generated_closure_keeps_unknowns_cycles_and_dlc_rebinding_explicit() {
+        let unknown = "equipments = { base = { is_archetype = yes } } duplicate_archetypes = { new = { archetype = base for_each = { priority = { set = 9 } } } }";
+        assert!(matches!(catalog(unknown).resolve_generated(),
+            Err(EquipmentDefinitionError::UnsupportedAuthored { field, .. }) if field == "for_each.priority.lexical_stat"));
         assert!(matches!(catalog("equipments = { base = { is_archetype = yes parent = child } child = { parent = base archetype = base } } duplicate_archetypes = { new = { archetype = base } }").resolve_generated(), Err(EquipmentDefinitionError::RelationshipCycle(_))));
         let text = r#"equipments = { limit = { has_dlc = "Pack" } base = { is_archetype = yes type = fighter } } equipments = { limit = { NOT = { has_dlc = "Pack" } } base = { is_archetype = yes type = armor } } duplicate_archetypes = { new = { archetype = base } }"#;
         assert!(matches!(catalog(text).resolve_generated(), Err(EquipmentDefinitionError::MissingActiveDlcProfile)));

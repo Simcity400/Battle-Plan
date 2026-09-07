@@ -132,9 +132,8 @@ impl AuthoredEquipmentCatalog {
             name.extend_from_slice(&original_token.as_bytes()[common..]);
             let token = String::from_utf8(name).map_err(|_| malformed(&recipe.token, "generated_token_utf8"))?;
             if self.definitions.contains_key(&token) {
-                return Err(EquipmentDefinitionError::UnsupportedAuthored {
-                    token, field: "duplicate_archetypes.existing_definition_mode".into(),
-                });
+                // Fresh-load mode skips the colliding candidate before clone/remap (1409ea240).
+                continue;
             }
             let old_archetype = self.resolve_archetype(&original_token, &mut Vec::new())?.map(|x| x.token);
             let archetype = old_archetype.as_ref().and_then(|x| remapped.get(x)).cloned().unwrap_or_else(|| token.clone());
@@ -279,7 +278,8 @@ impl AuthoredEquipmentCatalog {
 }
 
 const VERIFIED_STATS: &[&str] = &["recon", "air_range", "air_agility", "air_superiority", "air_bombing",
-    "anti_air_attack", "railway_gun_attack", "railway_gun_annex_ratio", "submarine_carrier_size", "armor_value"];
+    "anti_air_attack", "railway_gun_attack", "railway_gun_annex_ratio", "submarine_carrier_size", "armor_value",
+    "air_attack", "air_defence", "ap_attack", "naval_range"];
 fn verified_stat(field: &str) -> bool { VERIFIED_STATS.contains(&field) }
 
 fn malformed(token: &str, field: &str) -> EquipmentDefinitionError {
@@ -299,4 +299,67 @@ fn set_scalar(value: &mut Value, field: &str, replacement: &str) {
 fn format_fixed5(raw: i64) -> String {
     let magnitude = raw.unsigned_abs();
     format!("{}{}.{:05}", if raw < 0 { "-" } else { "" }, magnitude / 100_000, magnitude % 100_000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::tests::catalog;
+
+    #[test]
+    fn fresh_generation_keeps_colliding_definition_and_continues_other_candidates() {
+        let c = catalog(r#"equipments = {
+            base = { is_archetype = yes type = armor air_superiority = 2 }
+            base_1 = { archetype = base parent = base air_superiority = 3 }
+            base_2 = { archetype = base parent = base air_superiority = 4 }
+            copy_1 = { is_archetype = yes type = cas visual_level = 9 air_superiority = 17 }
+        } duplicate_archetypes = { copy = { archetype = base type = fighter
+            for_each = { air_superiority = { set = 25 } }
+        } }"#).resolve_generated().unwrap();
+        let retained = c.definition("copy_1").unwrap();
+        assert!(retained.generation.is_none());
+        assert_eq!(retained.scalar("air_superiority").unwrap(), Some("17.00000"));
+        assert_eq!(retained.signed_integer("visual_level").unwrap(), Some(9));
+        assert!(std::ptr::eq(c.graphics_source(retained).unwrap(), retained));
+        assert_eq!(c.definition("copy_2").unwrap().scalar("air_superiority").unwrap(), Some("25.00000"));
+        assert_eq!(c.definition("copy_2").unwrap().scalar("archetype").unwrap(), Some("copy"));
+        assert_eq!(c.definition_order.iter().filter(|name| name.as_str() == "copy_1").count(), 1);
+    }
+
+    #[test]
+    fn proven_stat_operations_preserve_inheritance_overrides_and_wrapping() {
+        let c = catalog(r#"equipments = {
+            base = { is_archetype = yes air_attack = 2 air_defence = 3 ap_attack = 4 naval_range = 5 }
+            base_1 = { air_attack = 99 archetype = base air_defence = -2 }
+        } duplicate_archetypes = { copy = { archetype = base for_each = {
+            air_attack = { add = 0.25 }
+            air_defence = { multiply = -0.5 }
+            ap_attack = { set = "9223372036854775808" }
+            naval_range = { multiply = 2 }
+        } } }"#).resolve_generated().unwrap();
+        for (field, base, child) in [("air_attack", "2.25000", "2.25000"),
+            ("air_defence", "-1.50000", "1.00000"), ("ap_attack", "-1.00000", "-1.00000"),
+            ("naval_range", "10.00000", "10.00000")] {
+            assert_eq!(c.definition("copy").unwrap().scalar(field).unwrap(), Some(base), "{field}");
+            assert_eq!(c.definition("copy_1").unwrap().scalar(field).unwrap(), Some(child), "{field}");
+        }
+        assert_eq!(c.definition("base_1").unwrap().scalar("air_attack").unwrap(), Some("2.00000"));
+        assert_eq!(c.definition("base_1").unwrap().scalar("naval_range").unwrap(), Some("5.00000"));
+    }
+
+    #[test]
+    fn skipped_archetype_collision_does_not_seed_descendant_remapping() {
+        let c = catalog(r#"equipments = {
+            base = { is_archetype = yes type = armor }
+            base_1 = { archetype = base parent = base }
+            copy = { is_archetype = yes type = cas }
+        } duplicate_archetypes = { copy = { archetype = base type = fighter } }"#)
+            .resolve_generated().unwrap();
+        assert!(c.definition("copy").unwrap().generation.is_none());
+        let child = c.definition("copy_1").unwrap();
+        assert_eq!(child.scalar("archetype").unwrap(), Some("copy_1"));
+        assert_eq!(child.scalar("parent").unwrap(), Some("copy_1"));
+        assert!(std::ptr::eq(c.graphics_source(child).unwrap(), c.definition("base_1").unwrap()));
+        assert_eq!(c.definition_order, ["base", "base_1", "copy", "copy_1"]);
+    }
 }

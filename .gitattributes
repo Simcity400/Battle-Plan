@@ -1618,3 +1618,10 @@ extractor/native/runs/famorder3_scene_residuals/RADIUS_CLONE_AUTHORED_FLAG_CLARI
 extractor/native/runs/famorder3_scene_residuals/RADIUS_CLONE_FINALIZER_CLOSURE.json text eol=lf
 extractor/native/runs/famorder3_scene_residuals/PDX_NUMERIC_PROPERTY_STORAGE_MAPPING.json text eol=lf
 extractor/native/runs/famorder3_scene_residuals/PDX_NUMERIC_PROPERTY_STORAGE_SEAL.json text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_1409e2ae0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1401760a0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140161c20.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1413d22a0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/data/xui13_generation_closure.json text eol=lf
+extractor/native/runs/view2_replay_targets/AUTHORED_GENERATION_VALIDATION_3C352482.json text eol=lf
