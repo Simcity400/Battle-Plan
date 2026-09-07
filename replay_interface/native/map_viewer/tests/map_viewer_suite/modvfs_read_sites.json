@@ -2560,6 +2560,14 @@
     "let mut blue=std::fs::read(root.0.join(\"gfx/interface/fallback_green.tga\")).unwrap();",
     "std::fs::write(root.0.join(\"gfx/interface/capital_blue.tga\"),blue).unwrap();",
     "std::fs::write(root.0.join(\"gfx/interface/equipmentdesigner/graphic_db/region.txt\"),",
+    "std::fs::create_dir_all(root.0.join(directory)).unwrap();",
+    "std::fs::write(root.0.join(\"common/country_tags/tags.txt\"), br#\"GER=\"countries/Germany.txt\"\"#).unwrap();",
+    "std::fs::write(root.0.join(\"map/default.map\"), br#\"continent=\"continent.txt\" definitions=\"definition.csv\" provinces=\"provinces.bmp\"\"#).unwrap();",
+    "std::fs::write(root.0.join(\"map/continent.txt\"), b\"continents={europe}\").unwrap();",
+    "std::fs::copy(root.0.join(\"gfx/flags/small/GER.tga\"), root.0.join(flag_path)).unwrap();",
+    "let mut texture = std::fs::read(root.0.join(\"gfx/interface/xui13_test.tga\")).unwrap()[..18].to_vec();",
+    "std::fs::write(root.0.join(path), texture).unwrap();",
+    "std::fs::write(root.0.join(\"gfx/interface/equipmentdesigner/graphic_db/default.txt\"), source).unwrap();",
     "std::fs::create_dir_all(root.0.join(\"gfx/interface/equipmentdesigner/graphic_db\")).unwrap();",
     "std::fs::create_dir_all(root.0.join(\"common/country_tags\")).unwrap();",
     "std::fs::create_dir_all(root.0.join(\"map\")).unwrap();",
@@ -5829,5 +5837,27 @@
     "let cleanup = fs::remove_dir_all(&root);",
     "for entry in fs::read_dir(dir)? {",
     "out.insert(rel_slash(&path, root), fs::read(path)?);"
+  ],
+  "portable_replay/native/engine_evidence/src/xui13_generation_closure.rs": [
+    "(\"1409e2ae0\", include_str!(\"../artifacts/func_1409e2ae0.decompile.c\")),",
+    "(\"1401760a0\", include_str!(\"../artifacts/func_1401760a0.decompile.c\")),",
+    "(\"140161c20\", include_str!(\"../artifacts/func_140161c20.decompile.c\")),",
+    "(\"1413d22a0\", include_str!(\"../artifacts/func_1413d22a0.decompile.c\")),",
+    "const JOINS: &str = include_str!(\"../data/xui13_generation_closure.json\");",
+    "let census = include_str!(\"../../../../extractor/native/runs/view2_state_registry/registry_ids.tsv\");"
+  ],
+  "replay_interface/native/game_ui/src/designer_observer/full_panel_joint.rs": [
+    "use std::fs;",
+    "fs::create_dir_all(root.0.join(directory)).unwrap();",
+    "fs::write(root.0.join(path), text).unwrap();",
+    "fs::write(root.0.join(\"map/provinces.bmp\"), bitmap).unwrap();",
+    "let template = fs::read(root.0.join(\"gfx/interface/xui13_test.tga\")).unwrap();",
+    "fs::write(root.0.join(path), texture).unwrap();",
+    "let mut font = fs::read_to_string(&font_path).unwrap();",
+    "fs::write(font_path, font).unwrap();",
+    "const CATALOG: &[u8] = include_bytes!(\"../../../../fixtures/xui13_full_panel_catalog.json\");",
+    "const CID1: &[u8] = include_bytes!(\"../../../../fixtures/xui13_full_panel_cid1.h4cr\");",
+    "const D53: &[u8] = include_bytes!(\"../../../../fixtures/xui13_full_panel_d53.json\");",
+    "const JOINT: &[u8] = include_bytes!(\"../../../../fixtures/xui13_full_panel_snapshots.json\");"
   ]
 }
