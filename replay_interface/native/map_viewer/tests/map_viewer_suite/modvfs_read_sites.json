@@ -5979,6 +5979,7 @@
     "const CANONICAL: &str = include_str!(",
     "let source = include_str!(\"designer_intel.rs\");",
     "let source = include_str!(\"country_semantic_rosters.rs\");",
+    "let source = include_str!(\"province_occupants.rs\");",
     "let source = include_str!(\"faction_order.rs\");",
     "let source = include_str!(\"designer_icon_context.rs\");",
     "const SOURCE: &str = include_str!(\"world.rs\");",
