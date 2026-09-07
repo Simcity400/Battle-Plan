@@ -1532,6 +1532,13 @@
     "pub const CONSTANTS: &str = include_str!(\"../artifacts/province_adjacency_constants.datdump.txt\");",
     "include_str!(\"../artifacts/func_1422b9100.instructions.txt\");"
   ],
+  "portable_replay/native/engine_evidence/src/province_occupant_order.rs": [
+  "include_str!(\"../artifacts/func_140e6b110.decompile.c\"),",
+  "include_str!(\"../artifacts/func_140e65210.decompile.c\"),",
+  "include_str!(\"../artifacts/func_140bf5060.decompile.c\"),",
+  "include_str!(\"../artifacts/func_140c7f290.decompile.c\"),",
+  "include_str!(\"../artifacts/func_140c63040.decompile.c\"),"
+] ,
   "portable_replay/native/engine_evidence/src/province_permanent_snow.rs": [
     "(\"140a507d0\", include_str!(\"../artifacts/func_140a507d0.decompile.c\")),",
     "(\"1413f4fd0\", include_str!(\"../artifacts/func_1413f4fd0.decompile.c\")),",
@@ -5682,6 +5689,10 @@
     "include_bytes!(\"../../../re_evidence/rendering_laws/XUI08/producer_contract.json\");",
     "include_bytes!(\"../../../re_evidence/rendering_laws/XUI08/evidence_manifest.json\");"
   ],
+  "replay_interface/native/replay_core/src/province_occupants.rs": [
+  "assert!(std::fs::metadata(&path).unwrap().len() <= 1024 * 1024);",
+  "let bytes = std::fs::read(path).unwrap();"
+] ,
   "replay_interface/native/replay_core/src/rollover_package_set.rs": [
     "use std::fs;",
     "let metadata = fs::symlink_metadata(path).map_err(|error| {",

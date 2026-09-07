@@ -152,7 +152,7 @@ pub const COMPACT_DOMAIN_DATA_REPEAT_KEYFRAME_CADENCE_HOURS: u32 = 64;
 /// * wire_format grammars documenting `elapsed_wall_ms` u64 at `+0`:
 ///   d10 `fuel_live`, d11 `production_live`, d13 `tech_live`, d16
 ///   `decisions_live`, d17 `diplomacy_live`, d21 `land_combats_live`,
-///   d22 `map_control_live`, d23 `map_detail_live`, d24 `weather_live`,
+///   d23 `map_detail_live`, d24 `weather_live`,
 ///   d26 `division_equipment_live`, d27 `army_orders_live`, d28
 ///   `oob_command_live`, d29 `ships_live`, d31 `air_region_activity_live`,
 ///   d32 `air_wing_loadouts_live`, d34 `air_base_status_live`, d35
@@ -180,23 +180,27 @@ pub const COMPACT_DOMAIN_DATA_REPEAT_KEYFRAME_CADENCE_HOURS: u32 = 64;
 ///   (their authority decoders read the row/group count at `+8`, so `+0..8`
 ///   is the same telemetry u64).
 ///
-/// Two grammars carry MORE than eight leading telemetry bytes, proven from
+/// These grammars carry MORE than eight leading telemetry bytes, proven from
 /// their own documented layouts:
 ///
 /// * d49 `naval_combat_lifecycle_live` and d50 `naval_combat_members_live`:
 ///   schema_version u16 at `+0` (constant 2) with padding to `+4`, then
 ///   `elapsed_wall_ms` u64 at `+4` (wire_format `d49.rs`/`d50.rs` headers) —
 ///   declared 12 so the whole elapsed field leaves the compared tail;
+/// * d22 `map_control_live`: `MAPC2` schema header at `+0..8`, followed
+///   by `elapsed_wall_ms` at `+8..16`; the mandatory fresh POC1 hour/ordinal
+///   remains in the compared tail and cannot be suppressed as telemetry;
 /// * d67 `country_dynamic_modifiers_live`: `DMI2` magic at `+0`, version at
 ///   `+4`, `elapsed_wall_ms` u64 at `+8` (wire_format `d67.rs` header table)
 ///   — declared 16.
 pub const fn domain_declared_volatile_prefix_len(domain_id: u16) -> usize {
     match domain_id {
-        10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 20 | 21 | 22 | 23 | 24 | 26 | 27 | 28 | 29
+        10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 20 | 21 | 23 | 24 | 26 | 27 | 28 | 29
         | 31 | 32 | 34 | 35 | 36 | 38 | 39 | 40 | 42 | 43 | 44 | 51 | 52 | 53 | 54 | 56 | 60
         | 61 | 62 | 63 | 64 | 65 | 66 | 68 | 69 => 8,
         49 | 50 => 12,
-        67 => 16,
+        // MAPC2's eight-byte schema header precedes its elapsed u64.
+        22 | 67 => 16,
         _ => 0,
     }
 }

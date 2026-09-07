@@ -4005,7 +4005,7 @@ fn ".len();
         ("COMPACT_RECORD_TYPE_DOMAIN_PERF", 1, "THE PERF RECORD, whose writers are pinned below"),
         ("COMPACT_RECORD_TYPE_FRAME_END", 1, "the frame terminator"),
         ("COMPACT_RECORD_TYPE_STREAM_HEADER", 1, "the stream's own header"),
-        ("compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP", 7, "a gap ledger row"),
+        ("compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP", 8, "gap ledger rows including unfunded D22 publication"),
         ("compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS", 2, "the freeze census"),
         (
             "compact_contract::COMPACT_RECORD_TYPE_CONTENT_IDENTITY_CENSUS",

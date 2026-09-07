@@ -251,7 +251,7 @@ fn every_worker_encoded_publish_late_record_is_byte_identical_to_the_inline_tail
     );
 
     // ---- Map control, WITH ROWS ------------------------------------------
-    let mut map_control = compact_map_control_worker_panic_read(0);
+    let mut map_control = compact_map_control_worker_panic_read(0, HOUR);
     map_control.state_rows = vec![CompactMapStateRow {
         state_id: 137,
         owner_tag_db_id: 139,
@@ -275,6 +275,7 @@ fn every_worker_encoded_publish_late_record_is_byte_identical_to_the_inline_tail
             map_control.changed_rows,
             map_control.changed_state_rows,
             map_control.changed_province_rows,
+            map_control.occupants.bytes(),
         ),
         COMPACT_DOMAIN_MAP_CONTROL,
         |out| {
@@ -289,6 +290,7 @@ fn every_worker_encoded_publish_late_record_is_byte_identical_to_the_inline_tail
                 map_control.changed_rows,
                 map_control.changed_state_rows,
                 map_control.changed_province_rows,
+            map_control.occupants.bytes(),
             )
         },
     );
@@ -533,7 +535,7 @@ fn between_builder_and_record(body: &str) -> &str {
 /// substitute's own encoded rows.
 #[test]
 fn a_panic_substitute_carries_no_worker_payload() {
-    let published = PublishedRead::unencoded(compact_map_control_worker_panic_read(0));
+    let published = PublishedRead::unencoded(compact_map_control_worker_panic_read(0, HOUR));
     let (read, payload) = published.split();
     assert!(
         payload.is_none(),
@@ -789,7 +791,7 @@ fn the_seven_converted_domains_are_wired_through_the_publishing_helper() {
         ),
         (
             "let map_control_handle =",
-            "compact_map_control_data_payload(",
+            "compact_map_control_read_payload(",
             "map_control_read",
             "COMPACT_DOMAIN_MAP_CONTROL",
         ),
@@ -853,7 +855,24 @@ fn the_seven_converted_domains_are_wired_through_the_publishing_helper() {
         let inline_at = block
             .find("None => ")
             .unwrap_or_else(|| panic!("{read_binding} must keep an inline fallback arm"));
-        let worker_fields = read_field_sequence(spawn);
+        // D22's wrapper checks allocation authority before handing the same
+        // rows and POC bytes to the encoder. Follow that exact helper.
+        let worker_fields = if *read_binding == "map_control_read" {
+            let wrapper = helper_body(&source, "fn compact_map_control_read_payload(");
+            let tokens: String = wrapper.split_whitespace().collect();
+            assert!(tokens.contains("if!read.occupants.publication_funded(){returnVec::new();}"));
+            assert!(spawn.contains("compact_map_control_read_payload(read, elapsed_wall_ms)"));
+            let gate = block.find("if !read.occupants.publication_funded()").unwrap();
+            let gap = block.find("append_unfunded_map_control_gap(").unwrap();
+            let data = block.find("Some(payload) => append_compact_record(").unwrap();
+            assert!(gate < gap && gap < data);
+            assert!(block[gap..data].contains("} else { match published_payload"));
+            let args = balanced_after(wrapper, "compact_map_control_data_payload(", '(', ')')
+                .expect("D22 worker wrapper must call the actual encoder");
+            read_field_sequence(args)
+        } else {
+            read_field_sequence(spawn)
+        };
         let inline_fields = read_field_sequence(&block[inline_at..]);
         assert_eq!(
             worker_fields, inline_fields,

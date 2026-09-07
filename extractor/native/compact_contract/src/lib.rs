@@ -1,5 +1,7 @@
 #[path = "../../../../portable_replay/native/compact_stream/src/country_capital_slot.rs"]
 pub mod country_capital_slot;
+#[path = "../../../../portable_replay/native/compact_stream/src/province_occupants.rs"]
+pub mod province_occupants;
 #[path = "../../../../portable_replay/native/compact_stream/src/country_roster.rs"]
 pub mod country_roster;
 pub mod owner_colour;
@@ -1479,7 +1481,7 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         CompactDomainStatus::Existing,
         true,
         true,
-        &["state_ownership", "state_control", "province_control"],
+        &["state_ownership", "state_control", "province_control", "province_occupants"],
     ),
     domain(
         23,

@@ -2068,3 +2068,10 @@ portable_replay/native/engine_evidence/artifacts/20260716T022119Z-ui01-political
 portable_replay/native/engine_evidence/artifacts/20260716T054339Z-ui03-animation-easing-constants-v1-3c949933.datdump.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/20260716T054339Z-ui03-animation-easing-constants-v1-3c949933.job.json text eol=lf
 portable_replay/native/engine_evidence/artifacts/container_pow_cases.json text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_140e6b110.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140e65210.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140bf5060.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140c7f290.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140c63040.decompile.c text eol=lf
+extractor/native/runs/cap3_province_occupants/PROVINCE_OCCUPANT_AUTHORITY.json text eol=lf

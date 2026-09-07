@@ -44,6 +44,8 @@ impl Budget {
     }
     #[cfg(test)]
     pub(super) fn verification_bytes(&self) -> usize { self.verification.load(Ordering::Relaxed) }
+    #[cfg(test)]
+    pub(super) fn retained_bytes(&self) -> usize { self.retained.load(Ordering::Relaxed) }
 
     pub(super) fn reserve_read(&self, address: usize, width: usize) -> Result<ReservedRead, Cause> {
         if !(1..=8).contains(&width) { return Err(Cause::BoundExceeded); }
@@ -54,6 +56,11 @@ impl Budget {
 
     pub(super) fn retain(&self, bytes: usize) -> Result<(), Cause> {
         Self::charge(&self.retained, self.retained_limit, bytes)
+    }
+    /// Fund a complete grouped opening/closing recipe before its first read.
+    /// The owning readset must attempt every funded close even after read failure.
+    pub(super) fn reserve_verification(&self, bytes: usize) -> Result<(), Cause> {
+        Self::charge(&self.verification, self.verification_limit, bytes)
     }
     pub(super) fn fleet_slots(&self, count: usize) -> Result<(), Cause> {
         Self::charge(&self.fleet_slots, FLEET_SLOT_LIMIT, count)

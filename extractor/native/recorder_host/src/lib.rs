@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod politics_fixture;
+#[cfg(test)]
+mod map_control_fixture;
 
 pub mod attach_content_proof;
 pub mod auto_attach;

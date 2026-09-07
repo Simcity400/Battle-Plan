@@ -8,6 +8,7 @@ pub mod cipher_controller;
 pub mod combat_presentation;
 pub mod country_identity;
 pub mod country_semantic_rosters;
+pub mod province_occupants;
 pub mod country_name_semantics;
 mod session_header_raw;
 pub mod d18_roster;
