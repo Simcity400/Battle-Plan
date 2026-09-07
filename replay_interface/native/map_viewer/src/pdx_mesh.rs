@@ -67,6 +67,58 @@ impl PdxNode {
     pub fn children_named<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a PdxNode> {
         self.children.iter().filter(move |child| child.name == name)
     }
+
+    pub(crate) fn native_aabb(&self) -> std::result::Result<NativePdxAabb<'_>, NativePdxAabbRefusal> {
+        let Some(aabb) = self.children_named("aabb").next() else {
+            return Ok(NativePdxAabb::Absent);
+        };
+        let coordinates = |name| {
+            let property = aabb.property(name)
+                .ok_or(NativePdxAabbRefusal::MissingCoordinate { property: name })?;
+            let values = match &property.values {
+                PdxValues::F32(values) => values,
+                PdxValues::I32(_) => return Err(NativePdxAabbRefusal::IntegerCoordinatesUnproven {
+                    property: name,
+                }),
+                PdxValues::Str(_) => return Err(NativePdxAabbRefusal::CoordinateType {
+                    property: name,
+                }),
+            };
+            values.get(..3).and_then(|first| first.try_into().ok())
+                .ok_or(NativePdxAabbRefusal::CoordinateUnderflow {
+                    property: name,
+                    count: values.len(),
+                })
+        };
+        Ok(NativePdxAabb::Present { min: coordinates("min")?, max: coordinates("max")? })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum NativePdxAabb<'a> {
+    Absent,
+    Present { min: &'a [f32; 3], max: &'a [f32; 3] },
+}
+
+impl NativePdxAabb<'_> {
+    pub(crate) fn scaled(self, scale: f32) -> ([f32; 3], [f32; 3]) {
+        match self {
+            // The absent branch bypasses multiplication, even for negative or NaN scale.
+            Self::Absent => ([0.0; 3], [0.0; 3]),
+            Self::Present { min, max } => (
+                [scale * min[0], min[1] * scale, min[2] * scale],
+                [scale * max[0], max[1] * scale, max[2] * scale],
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativePdxAabbRefusal {
+    MissingCoordinate { property: &'static str },
+    CoordinateType { property: &'static str },
+    IntegerCoordinatesUnproven { property: &'static str },
+    CoordinateUnderflow { property: &'static str, count: usize },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2260,6 +2312,96 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod native_aabb_tests {
+    use super::*;
+
+    fn mesh(bounds: Option<(&[f32], &[f32])>) -> PdxNode {
+        let bytes = test_fixtures::collision_before_drawable_aabb_bytes(bounds);
+        let tree = parse_pdx_asset(&bytes).unwrap();
+        tree.root.children[0].children[0].children[2].clone()
+    }
+
+    #[test]
+    fn absent_whole_node_bypasses_negative_zero_infinite_and_nan_scale() {
+        let row = mesh(None);
+        assert_eq!(row.native_aabb(), Ok(NativePdxAabb::Absent));
+        for scale in [-2.0, -0.0, 0.0, f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
+            let (min, max) = row.native_aabb().unwrap().scaled(scale);
+            assert_eq!(min.map(f32::to_bits), [0; 3]);
+            assert_eq!(max.map(f32::to_bits), [0; 3]);
+        }
+    }
+
+    #[test]
+    fn first_aabb_and_first_coordinates_borrow_same_raw_storage() {
+        let mut row = mesh(Some((&[1.0, 2.0, 3.0, 99.0], &[4.0, 5.0, 6.0, 88.0])));
+        let mut later = row.children.iter().find(|n| n.name == "aabb").unwrap().clone();
+        later.properties[0].values = PdxValues::F32(vec![70.0; 3]);
+        row.children.push(later);
+        let first = row.children.iter_mut().find(|n| n.name == "aabb").unwrap();
+        first.properties.push(PdxProperty { name: "min".into(), values: PdxValues::F32(vec![90.0; 3]) });
+        let NativePdxAabb::Present { min, max } = row.native_aabb().unwrap() else { panic!("present"); };
+        assert_eq!(*min, [1.0, 2.0, 3.0]);
+        assert_eq!(*max, [4.0, 5.0, 6.0]);
+        let first = row.children.iter().find(|n| n.name == "aabb").unwrap();
+        let PdxValues::F32(raw) = &first.property("min").unwrap().values else { panic!("floats"); };
+        assert_eq!(min.as_ptr(), raw.as_ptr());
+        assert_eq!(row.native_aabb().unwrap().scaled(-2.0), ([-2.0, -4.0, -6.0], [-8.0, -10.0, -12.0]));
+    }
+
+    #[test]
+    fn present_coordinates_multiply_signed_zero_and_nonfinite_values() {
+        let row = mesh(Some((&[-0.0, 0.0, -2.0], &[0.0, -0.0, f32::INFINITY])));
+        let (min, max) = row.native_aabb().unwrap().scaled(-2.0);
+        assert_eq!(min.map(f32::to_bits), [0, 0x8000_0000, 4.0f32.to_bits()]);
+        assert_eq!(max.map(f32::to_bits), [0x8000_0000, 0, f32::NEG_INFINITY.to_bits()]);
+        let (min, max) = row.native_aabb().unwrap().scaled(f32::NAN);
+        assert!(min.into_iter().chain(max).all(f32::is_nan));
+    }
+
+    #[test]
+    fn malformed_first_node_or_coordinate_is_not_repaired_by_later_duplicates() {
+        let valid = mesh(Some((&[1.0; 3], &[2.0; 3])));
+        let valid_aabb = valid.children.iter().find(|n| n.name == "aabb").unwrap();
+        for property in ["min", "max"] {
+            let mut row = valid.clone();
+            let first = row.children.iter_mut().find(|n| n.name == "aabb").unwrap();
+            first.properties.retain(|p| p.name != property);
+            row.children.push(valid_aabb.clone());
+            assert_eq!(row.native_aabb(), Err(NativePdxAabbRefusal::MissingCoordinate { property }));
+            for count in 0..3 {
+                let mut row = valid.clone();
+                let first = row.children.iter_mut().find(|n| n.name == "aabb").unwrap();
+                let index = first.properties.iter().position(|p| p.name == property).unwrap();
+                first.properties.push(first.properties[index].clone());
+                first.properties[index].values = PdxValues::F32(vec![0.0; count]);
+                assert_eq!(row.native_aabb(), Err(NativePdxAabbRefusal::CoordinateUnderflow { property, count }));
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_payloads_stay_named_independently_of_drawable_streams() {
+        for property in ["min", "max"] {
+            for integer in [false, true] {
+                let mut row = mesh(Some((&[1.0; 3], &[2.0; 3])));
+                let aabb = row.children.iter_mut().find(|n| n.name == "aabb").unwrap();
+                aabb.properties.iter_mut().find(|p| p.name == property).unwrap().values = if integer {
+                    PdxValues::I32(vec![0x3f80_0000; 3])
+                } else { PdxValues::Str(vec!["1".into(); 3]) };
+                let expected = if integer { NativePdxAabbRefusal::IntegerCoordinatesUnproven { property } }
+                    else { NativePdxAabbRefusal::CoordinateType { property } };
+                assert_eq!(row.native_aabb(), Err(expected));
+            }
+        }
+        let mut row = mesh(Some((&[1.0; 3], &[2.0; 3])));
+        row.properties.clear();
+        row.children.retain(|n| n.name == "aabb");
+        assert_eq!(row.native_aabb().unwrap().scaled(1.0), ([1.0; 3], [2.0; 3]));
+    }
+}
 
 #[cfg(test)]
 mod native_collision_tests {
