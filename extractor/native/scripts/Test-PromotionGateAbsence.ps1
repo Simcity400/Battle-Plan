@@ -135,6 +135,39 @@ Assert-Throws -Action { Get-ProductionPromotionRequiredUInt32 $dict 'absent' 'ro
     -Because 'a dictionary missing the key must fail the same way'
 
 # ---------------------------------------------------------------------------
+# The actual dot-source above must work in Windows PowerShell 5.1. Exercise
+# unsigned high-bit words through the shipped getter, with an independent
+# UInt64 complement so signed casts cannot silently erase or invent bits.
+$expectedLocalMasks = @{
+    18 = 65536; 45 = 2147483648; 49 = 2048; 51 = 14336
+    53 = 16711680; 55 = 2147549184; 60 = 196608
+    64 = 2147483648; 67 = 2147483648; 75 = 2147483648
+    86 = 2147483648; 90 = 2147483648; 99 = 458752
+}
+Assert-True -Condition ($script:ProductionPromotionLaneLocalStatusMask.Count -eq $expectedLocalMasks.Count) `
+    -Because 'the exact registered lane-local mask roster is retained'
+foreach ($domain in @($expectedLocalMasks.Keys) + @(0, 22, 65535)) {
+    $expectedMask = [uint64]0
+    if ($expectedLocalMasks.ContainsKey($domain)) {
+        $expectedMask = [uint64]$expectedLocalMasks[$domain]
+        Assert-True -Condition ($script:ProductionPromotionLaneLocalStatusMask[$domain] -is [uint32]) `
+            -Because "domain $domain mask remains an actual UInt32"
+        Assert-True -Condition ([uint64]$script:ProductionPromotionLaneLocalStatusMask[$domain] -eq $expectedMask) `
+            -Because "domain $domain retains its exact registered bits"
+    }
+    foreach ($word in @(0, 1, 2147483647, 2147483648, 2147549184, 4294967295)) {
+        $actual = Get-ProductionPromotionGlobalStatusFlags -DomainId $domain -StatusFlags ([uint32]$word)
+        $expected = [uint64]$word -band ([uint64]4294967295 -bxor $expectedMask)
+        Assert-True -Condition ($actual -is [uint32]) -Because "domain $domain word $word returns UInt32"
+        Assert-True -Condition ([uint64]$actual -eq $expected) `
+            -Because "domain $domain word $word strips only its registered lane-local bits"
+    }
+}
+Assert-Throws -Action { Get-ProductionPromotionGlobalStatusFlags -DomainId 45 -StatusFlags -1 } `
+    -Because 'negative status must not be reinterpreted as unsigned all-bits'
+Assert-Throws -Action { Get-ProductionPromotionGlobalStatusFlags -DomainId 45 -StatusFlags 4294967296 } `
+    -Because 'status above UInt32 must not wrap to a clean zero'
+
 # 3a. Wrongly-TYPED evidence is a second way to pass a gate without evidence.
 #     PowerShell coerces on -eq and on casts, so a manifest can satisfy a
 #     boolean requirement with a number or a string, and a "must be 0" count

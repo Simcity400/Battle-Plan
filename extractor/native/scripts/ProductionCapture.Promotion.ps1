@@ -29,19 +29,21 @@ $script:ProductionPromotionUnknownStatusMask =
 # `compact_status_for_global_interpretation` does in the Rust consumers.
 # Pinned against the contract by
 # `compact_contract/tests/compact_contract_suite/script_status_vocabulary_sweep.rs`.
+# Decimal high-bit values are positive Int64 literals in Windows PowerShell 5.1;
+# an unsuffixed eight-digit hex literal is signed before the uint32 cast.
 $script:ProductionPromotionLaneLocalStatusMask = @{
     18 = [uint32]0x00010000
-    45 = [uint32]0x80000000
+    45 = [uint32]2147483648
     49 = [uint32]0x00000800
     51 = [uint32]0x00003800
     53 = [uint32]0x00FF0000
-    55 = [uint32]0x80010000
+    55 = [uint32]2147549184
     60 = [uint32]0x00030000
-    64 = [uint32]0x80000000
-    67 = [uint32]0x80000000
-    75 = [uint32]0x80000000
-    86 = [uint32]0x80000000
-    90 = [uint32]0x80000000
+    64 = [uint32]2147483648
+    67 = [uint32]2147483648
+    75 = [uint32]2147483648
+    86 = [uint32]2147483648
+    90 = [uint32]2147483648
     99 = [uint32]0x00070000
 }
 

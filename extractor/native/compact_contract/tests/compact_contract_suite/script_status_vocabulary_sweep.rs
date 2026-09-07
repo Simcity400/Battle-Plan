@@ -870,18 +870,41 @@ fn production_promotion_lane_local_table_matches_the_contract() {
             .trim()
             .parse()
             .unwrap_or_else(|_| panic!("non-numeric domain key {domain:?}"));
-        let hex = value
-            .trim()
-            .strip_prefix("[uint32]0x")
-            .unwrap_or_else(|| panic!("promotion mask for domain {domain} is not [uint32]0x..."));
-        let mask = u32::from_str_radix(hex.trim(), 16)
-            .unwrap_or_else(|_| panic!("promotion mask for domain {domain} is not hex"));
+        let mask = promotion_mask_literal(value)
+            .unwrap_or_else(|| panic!("promotion mask for domain {domain} is not a PS5.1-safe UInt32 literal"));
         observed.insert(domain, mask);
     }
     check_table(
         "ProductionCapture.Promotion.ps1 ProductionPromotionLaneLocalStatusMask",
         &observed,
     );
+}
+
+fn promotion_mask_literal(value: &str) -> Option<u32> {
+    let literal = value.trim().strip_prefix("[uint32]")?;
+    if let Some(hex) = literal.strip_prefix("0x") {
+        if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) { return None; }
+        let mask = u32::from_str_radix(hex, 16).ok()?;
+        // PS5.1 interprets an unsuffixed high-bit hex literal as a negative
+        // Int32 before applying the UInt32 cast. Decimal stays positive.
+        (mask <= i32::MAX as u32).then_some(mask)
+    } else {
+        if literal.is_empty() || !literal.bytes().all(|b| b.is_ascii_digit()) { return None; }
+        literal.parse().ok()
+    }
+}
+
+#[test]
+fn promotion_unsigned_literal_parser_preserves_boundaries_and_rejects_expressions() {
+    for (text, expected) in [("[uint32]0",0), ("[uint32]0x7FFFFFFF",2147483647),
+        ("[uint32]2147483648",2147483648), ("[uint32]2147549184",2147549184), ("[uint32]4294967295",u32::MAX)] {
+        assert_eq!(promotion_mask_literal(text),Some(expected),"{text}");
+    }
+    for text in ["[uint32]0x80000000","[uint32]0xFFFFFFFF","[uint32]4294967296",
+        "[uint32]-1","[uint32]+1","[uint32]1+2","[uint32]1;0","[uint32]'1'",
+        "[uint32]0x","[uint32]","[int]1","[uint32]1L","[uint32]0x100000000"] {
+        assert_eq!(promotion_mask_literal(text),None,"{text}");
+    }
 }
 
 #[test]
