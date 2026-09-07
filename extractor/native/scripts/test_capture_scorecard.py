@@ -15,8 +15,12 @@ domain-hours were lost; all 4202 have a DOMAIN_DATA record in the stream.
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import json
 import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -775,6 +779,77 @@ class DegradedReasonGrouping(unittest.TestCase):
             self.entry("manager_is_readable", "the readable one"),
         ])
         self.assertIn("d47", detail)
+
+
+class EvidenceQualification(unittest.TestCase):
+    def test_passing_gate_does_not_hide_a_failed_container_publication(self):
+        value = manifest([], [], frames=1)
+        value["replay_artifact"] = {
+            "gate_problems": [], "reason": "gate_passed", "pack_failed": True,
+            "written_file": None, "pack_error": "no game hour is verified",
+        }
+        self.assertEqual(axis(value, "replay gate problems")[0], 0)
+        self.assertEqual(axis(value, "replay container packaging failed"),
+                         (1, "no game hour is verified"))
+
+    def test_identity_binds_parsed_bytes_even_if_manifest_is_replaced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "native_session_manifest.json"
+            raw = b'{"session_id":"historical"}\r\n'
+            path.write_bytes(raw)
+            loaded, source, identity = SCORECARD.load_manifest(directory)
+            path.write_bytes(b'{"session_id":"replacement"}')
+            self.assertEqual(loaded["session_id"], "historical")
+            self.assertEqual(identity, {
+                "path": str(path.resolve()), "bytes": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            })
+            self.assertEqual(source, str(path))
+
+    def test_missing_or_forged_lifecycle_receipts_never_establish_authority(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "CAPTURE_TEARDOWN_V1.json"
+            path.write_text('{"hooks_restored":true,"collector_unloaded":true}')
+            refs = SCORECARD.evidence_references(directory, {})
+            self.assertEqual(refs["scope"], "manifest_completeness_only")
+            receipts = refs["lifecycle_receipts"]
+            self.assertEqual(receipts["CAPTURE_READY_V2.json"]["status"], "missing")
+            self.assertEqual(receipts[path.name]["status"], "present_not_authenticated")
+            self.assertEqual(receipts[path.name]["identity"]["sha256"],
+                             hashlib.sha256(path.read_bytes()).hexdigest())
+            self.assertIn("hooks_restored_byte_for_byte", refs["not_evaluated"])
+            self.assertIn("current_release_artifact_binding", refs["not_evaluated"])
+
+    def test_unreadable_receipt_is_distinct_from_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "CAPTURE_READY_V2.json").mkdir()
+            refs = SCORECARD.evidence_references(directory, {})
+            self.assertEqual(refs["lifecycle_receipts"]["CAPTURE_READY_V2.json"]["status"],
+                             "unreadable")
+
+    def test_empty_capture_cli_fails_with_qualified_json_and_exact_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "session_manifest.json"
+            path.write_text(json.dumps(manifest([], [], frames=0, domain_ids=())))
+            result = subprocess.run([sys.executable, "-B", str(SCRIPT),
+                                     "--run-dir", directory, "--json"],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            receipt = json.loads(result.stdout)
+            self.assertFalse(receipt["complete"])
+            counts = {row["axis"]: row["count"] for row in receipt["axes"]}
+            self.assertEqual(counts["capture has no observed frames"], 1)
+            self.assertEqual(counts["capture has no expected domain roster"], 1)
+            self.assertEqual(receipt["evidence"]["manifest_identity"]["sha256"],
+                             hashlib.sha256(path.read_bytes()).hexdigest())
+            self.assertIn("container_and_content_admission",
+                          receipt["evidence"]["not_evaluated"])
+
+    def test_witnessed_frame_and_roster_clear_only_their_own_axes(self):
+        value = manifest([], [], frames=1)
+        self.assertEqual(axis(value, "capture has no observed frames")[0], 0)
+        self.assertEqual(axis(value, "capture has no expected domain roster")[0], 0)
+        self.assertTrue(any(count for _, count, _ in SCORECARD.score(value)))
 
 
 if __name__ == "__main__":

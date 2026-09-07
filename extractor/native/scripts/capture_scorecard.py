@@ -17,6 +17,7 @@ not about the harness that produced it.
 
 import argparse
 import collections
+import hashlib
 import json
 import os
 import sys
@@ -85,9 +86,52 @@ def load_manifest(run_dir):
     for name in ("native_session_manifest.json", "session_manifest.json"):
         path = os.path.join(run_dir, name)
         if os.path.isfile(path):
-            with open(path, encoding="utf-8") as handle:
-                return json.load(handle), path
+            with open(path, "rb") as handle:
+                raw = handle.read()
+            return json.loads(raw), path, byte_identity(path, raw)
     raise SystemExit(f"no session manifest in {run_dir}")
+
+
+def byte_identity(path, raw):
+    """Identify the bytes actually assessed, never a later reopen of the file."""
+    return {"path": os.path.abspath(path), "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def evidence_references(run_dir, manifest_identity):
+    """Inventory lifecycle evidence without impersonating its authority checks.
+
+    The PowerShell lifecycle verifier authenticates READY/teardown against
+    independently established process and configuration pins. Merely finding
+    those files beside a manifest cannot establish passive capture or unloading.
+    This inventory deliberately makes no current-build or admission claim.
+    """
+    references = {}
+    for name in ("CAPTURE_READY_V2.json", "CAPTURE_TEARDOWN_V1.json",
+                 "CAPTURE_REFUSAL_V1.json", "HOOK_INSTALL_OUTCOMES_V1.json",
+                 "HOOK_RESTORATION_OUTCOMES_V1.json", "passive_capture_policy.json",
+                 "PASSIVE_CLOCK_INTERVALS_V2.json"):
+        path = os.path.join(run_dir, name)
+        try:
+            with open(path, "rb") as handle:
+                raw = handle.read()
+        except FileNotFoundError:
+            references[name] = {"status": "missing"}
+        except OSError as error:
+            references[name] = {"status": "unreadable", "error": str(error)}
+        else:
+            references[name] = {"status": "present_not_authenticated",
+                                "identity": byte_identity(path, raw)}
+    return {
+        "scope": "manifest_completeness_only",
+        "manifest_identity": manifest_identity,
+        "lifecycle_receipts": references,
+        "not_evaluated": ["current_release_artifact_binding",
+                          "automatic_attachment_scenarios",
+                          "passive_capture", "authenticated_ready",
+                          "hooks_restored_byte_for_byte", "collector_unloaded",
+                          "container_and_content_admission"],
+    }
 
 
 def descheduled(manifest):
@@ -265,8 +309,8 @@ def score(manifest):
     reason_by_domain = collections.defaultdict(collections.Counter)
     sample_reason = {}
     predicate_label = {}
-    frames = stream.get("frame_degraded_outcomes")
-    for frame in frames if isinstance(frames, list) else []:
+    degraded_outcomes = stream.get("frame_degraded_outcomes")
+    for frame in degraded_outcomes if isinstance(degraded_outcomes, list) else []:
         if not isinstance(frame, dict):
             continue
         entries = frame.get("domains")
@@ -518,6 +562,10 @@ def score(manifest):
             + ", ".join(f"{e[0]} (d{e[1]})" for e in sorted(empty_but_clean)))
 
     axes = [
+        ("capture has no observed frames", int(frames <= 0),
+         f"frame_end_record_count={frames}; no frames cannot prove capture"),
+        ("capture has no expected domain roster", int(not expected),
+         "an empty schedule cannot establish scheduled-domain coverage"),
         ("the gap ledger could not be read", 1 if ledger_fault else 0,
          ledger_fault or "read"),
         ("hours the clock advanced but no frame observed", hours_unobserved,
@@ -592,6 +640,8 @@ def score(manifest):
          len((stream.get("domain_coverage", {}) or {}).get("errors", []) or []), ""),
         ("replay gate problems", len(artifact.get("gate_problems", []) or []),
          ", ".join(artifact.get("gate_problems", []) or []) or "none"),
+        ("replay container packaging failed", int(bool(artifact.get("pack_failed"))),
+         str(artifact.get("pack_error") or artifact.get("pack_failure_note") or "none")),
         ("replay gate problems as sealed under hourly_requirement",
          len(hourly.get("problems", []) or []),
          ", ".join(hourly.get("problems", []) or []) or "none"),
@@ -616,18 +666,20 @@ def main():
     args = parser.parse_args()
 
     run_dir = os.path.abspath(args.run_dir)
-    manifest, manifest_path = load_manifest(run_dir)
+    manifest, manifest_path, manifest_identity = load_manifest(run_dir)
     axes = score(manifest)
     misses = [axis for axis in axes if axis[1]]
     not_scheduled = descheduled(manifest)
 
     if args.json:
         json.dump({
+            "schema": "hoi4.capture_scorecard.v1",
             "run_dir": run_dir,
             "manifest": manifest_path,
             "complete": not misses,
             "axes": [{"axis": a, "count": n, "detail": d} for a, n, d in axes],
             "descheduled_domains": not_scheduled,
+            "evidence": evidence_references(run_dir, manifest_identity),
         }, sys.stdout, indent=2)
         print()
         return 0 if not misses else 1
@@ -635,6 +687,8 @@ def main():
     print(f"\n=== capture completeness: {manifest.get('session_id')} ===")
     print(f"  run dir  {run_dir}")
     print(f"  duration {manifest.get('duration_ms')} ms\n")
+    print("  Scope: manifest completeness only; artifact binding, passive capture,"
+          " hook restoration, unload, and container admission are not evaluated.\n")
     width = max(len(a) for a, _, _ in axes)
     for axis, count, detail in axes:
         mark = " " if count == 0 else "!"
