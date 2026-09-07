@@ -1176,7 +1176,7 @@ Effect fixture { VertexShader="VS" PixelShader="PS" }
         }
         dds[128..].copy_from_slice(&[192, 128, 64, 255].repeat(8));
         let content = Fixture::with_extra_files(REGISTRATION,
-            "particle={name=effect subsystem={name=s max_amount=1 duration=0 emission=2 life=2 size=0.5 color={r=255 g=255 b=255 a=255} texture={file=gfx/fixture.dds shader=fixture x=1 y=1}}}",
+            "particle={name=effect subsystem={name=s max_amount=1 duration=0.5 emission=2 life=2 size=0.5 color={r=255 g=255 b=255 a=255} texture={file=gfx/fixture.dds shader=fixture x=1 y=1}}}",
             &[("gfx/fixture.dds",&dds),("gfx/FX/particle.shader",SHADER.as_bytes()),("gfx/FX/defines_hlsl_dx11.fxh",HEADER),
             ("gfx/entity.asset",b"entity={name=entity default_state=idle state={name=idle event={time=0 particle=paired light=flash}}} light={name=flash color={r=1 g=1 b=1} position={x=0 y=0 z=0} intensity=1 radius=8 falloff=1}")]);
         let (resolver, admission) = (&content.resolver, &content.admission);
@@ -1327,6 +1327,10 @@ Effect fixture { VertexShader="VS" PixelShader="PS" }
                 .visit_particles_for_draw(0.5, sort, &mut |_, capacity, view| {
                     assert_eq!(view.presentation_id, paired.presentation_id);
                     assert_eq!(view.world_matrix_f32_bits(), paired.world_matrix_f32_bits);
+                    let subsystem = view.root_subsystems().next().unwrap();
+                    assert_eq!(subsystem.emission_end_bits(), 0.5f32.to_bits());
+                    assert_eq!(subsystem.local_time_bits(), 0.5f32.to_bits());
+                    assert_eq!(subsystem.live_count(), 1);
                     counts.push(renderer.draw_instance(
                         context.as_raw(),
                         &resolver,
