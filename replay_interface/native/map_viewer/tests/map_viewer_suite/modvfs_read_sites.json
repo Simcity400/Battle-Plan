@@ -2561,6 +2561,8 @@
     "let bytes = portable_test_fs_retry::read(source).unwrap();",
     "fs::write(output, tampered).unwrap();",
     "fs::write(&path, container).unwrap();",
+    "fs::write(&path, &bytes).unwrap();",
+    "portable_test_fs_retry::read(&path).unwrap(),",
     "fs::write(&clean_path, crate::zip::test_deflate_zip_with_trailing(0)).unwrap();",
     "fs::write(&dirty_path, crate::zip::test_deflate_zip_with_trailing(16)).unwrap();",
     "fs::write(",
