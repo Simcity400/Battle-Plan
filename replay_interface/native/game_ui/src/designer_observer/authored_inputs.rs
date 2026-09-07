@@ -43,16 +43,7 @@ impl DesignerAuthoredInputs {
             super::item_database::AuthoredIconDatabase::load(&self.assets, &countries, &context.continent_names())
         }).as_ref().map_err(Clone::clone)?;
         let selected = database.resolve(equipment, frame, &variant.model.creator_tag, &variant.equipment_definition_token, runtime,
-            |observation| {
-                let replay_core::designer_icon_context::CapitalSlotOutcome::Present { template_id, .. } = observation.outcome()
-                    else { return Err("XUI13 capital callback requires a present authenticated template".into()); };
-                let lease = self.assets.icon_content_lease().map_err(|error| error.to_string())?;
-                let context = map_viewer::authored_icon_context::AuthoredIconContext::from_admission_lease(lease)
-                    .map_err(|error| error.to_string())?;
-                let states = context.state_continents().map_err(|error| error.to_string())?;
-                states.get(&(template_id as u32)).cloned()
-                    .ok_or_else(|| format!("XUI13 authenticated capital template {template_id} is absent from admitted state content"))
-            },
+            |observation| self.capital_continent(observation),
             |icon| match icon {
                 crate::design_catalog::DesignerRowIcon::Sprite(name) => {
                     let sprites = self.icon_sprites.get_or_init(|| {
@@ -71,6 +62,19 @@ impl DesignerAuthoredInputs {
                 crate::design_catalog::DesignerRowIcon::Authored => Err("XUI13 database row contains a non-item authored icon".into()),
             })?;
         Ok(selected.map(|selected| selected.icon).unwrap_or(crate::design_catalog::DesignerRowIcon::Authored))
+    }
+
+    pub(super) fn capital_continent(&self,
+        observation: replay_core::designer_icon_context::DesignerCapitalSlotObservation,
+    ) -> std::result::Result<Option<String>, String> {
+        let replay_core::designer_icon_context::CapitalSlotOutcome::Present { template_id, .. } = observation.outcome()
+            else { return Err("XUI13 capital callback requires a present authenticated template".into()); };
+        let lease = self.assets.icon_content_lease().map_err(|error| error.to_string())?;
+        let context = map_viewer::authored_icon_context::AuthoredIconContext::from_admission_lease(lease)
+            .map_err(|error| error.to_string())?;
+        let states = context.state_continents().map_err(|error| error.to_string())?;
+        states.get(&(template_id as u32)).cloned()
+            .ok_or_else(|| format!("XUI13 authenticated capital template {template_id} is absent from admitted state content"))
     }
 
     pub fn admits_window(&self, tokens: &[String], owner: &str) -> Result<bool> {
