@@ -54,6 +54,50 @@ function Invoke-Captured {
     return $result
 }
 
+function New-ValidationWorkerSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$OutputDirectory,
+        [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string]$ExpectedSha256
+    )
+
+    $source = $null
+    $destination = $null
+    $lease = $null
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $source = [IO.FileStream]::new($SourcePath, [IO.FileMode]::Open,
+            [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $sourceHash = [BitConverter]::ToString($sha.ComputeHash($source)).Replace('-', '').ToLowerInvariant()
+        if ($sourceHash -cne $ExpectedSha256) { throw 'Recorder worker changed before snapshot' }
+        New-Item -ItemType Directory -Path $OutputDirectory -ErrorAction Stop | Out-Null
+        $path = Join-Path $OutputDirectory 'collector_record.exe'
+        $destination = [IO.FileStream]::new($path, [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $source.Position = 0
+        $source.CopyTo($destination)
+        $destination.Flush($true)
+        $destination.Dispose()
+        $destination = $null
+        $lease = [IO.FileStream]::new($path, [IO.FileMode]::Open,
+            [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $snapshotHash = [BitConverter]::ToString($sha.ComputeHash($lease)).Replace('-', '').ToLowerInvariant()
+        if ($snapshotHash -cne $ExpectedSha256 -or $lease.Length -ne $source.Length) {
+            throw 'Recorder worker snapshot differs from the built image'
+        }
+        $result = [pscustomobject]@{
+            Path = $path; Sha256 = $snapshotHash; Bytes = $lease.Length; Lease = $lease
+        }
+        $lease = $null
+        return $result
+    } finally {
+        if ($source) { $source.Dispose() }
+        if ($destination) { $destination.Dispose() }
+        if ($lease) { $lease.Dispose() }
+        $sha.Dispose()
+    }
+}
+
 function Start-ValidationRoot {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -503,6 +547,7 @@ function Invoke-ShippingTests {
     # run inside a live PowerShell session cannot leak -Adead_code (or its
     # cache key) into that session's later cargo builds.
     $gateSetRustFlags = $false
+    $workerSnapshot = $null
     if (-not [Environment]::GetEnvironmentVariable('RUSTFLAGS')) {
         $env:RUSTFLAGS = '-Adead_code'
         $gateSetRustFlags = $true
@@ -542,6 +587,9 @@ function Invoke-ShippingTests {
             }
         }
 
+        $runDirectory = Join-Path ([IO.Path]::GetTempPath()) ('hoi4-validation-' + [Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $runDirectory | Out-Null
+        Write-Host "VALIDATION_ROOT_LOGS_V1 $runDirectory"
         $recorderWorkerPath = $null
         $recorderWorkerSha256 = $null
         $needsRecorderWorker = @($plans | Where-Object {
@@ -549,11 +597,14 @@ function Invoke-ShippingTests {
         }).Count -gt 0
         if ($needsRecorderWorker) {
             # A bin test harness does not execute the recorder's production dispatch.
-            $workerBuild = Invoke-Captured -Program 'cargo' -Arguments @(
+            $workerBuildArguments = @(
                 'build', '--locked', '--offline', '--jobs', '2',
                 '--manifest-path', (Join-Path $script:RepoRoot 'extractor/native/Cargo.toml'),
                 '-p', 'recorder_host', '--bin', 'collector_record', '--message-format=json'
             )
+            $workerBuild = Invoke-Captured -Program 'cargo' -Arguments $workerBuildArguments
+            $workerBuild.Stdout | Set-Content -LiteralPath (Join-Path $runDirectory 'worker-build.stdout.txt') -Encoding UTF8
+            $workerBuild.Stderr | Set-Content -LiteralPath (Join-Path $runDirectory 'worker-build.stderr.txt') -Encoding UTF8
             if ($workerBuild.Stderr) { Write-Host $workerBuild.Stderr }
             $workerArtifacts = @()
             $workerBuildFinished = $false
@@ -567,20 +618,30 @@ function Invoke-ShippingTests {
                     $message.target.name -eq 'collector_record' -and
                     @($message.target.kind) -contains 'bin' -and
                     -not $message.profile.test -and $message.executable) {
-                    $workerArtifacts += [string]$message.executable
+                    $workerArtifacts += $message
                 }
             }
             if (-not $workerBuildFinished -or $workerArtifacts.Count -ne 1) {
                 throw 'Recorder worker build did not identify exactly one production executable'
             }
-            $recorderWorkerPath = [IO.Path]::GetFullPath($workerArtifacts[0])
+            $recorderWorkerPath = [IO.Path]::GetFullPath($workerArtifacts[0].executable)
             if (-not (Test-Path -LiteralPath $recorderWorkerPath -PathType Leaf)) {
                 throw "Recorder worker artifact is missing: $recorderWorkerPath"
             }
             $recorderWorkerSha256 = (Get-FileHash -LiteralPath $recorderWorkerPath -Algorithm SHA256).Hash.ToLowerInvariant()
-            Write-Host ('PREFOLD_WORKER_PAIRING_V1 ' + (@{
-                path = $recorderWorkerPath; sha256 = $recorderWorkerSha256
-            } | ConvertTo-Json -Compress))
+            $workerSnapshot = New-ValidationWorkerSnapshot -SourcePath $recorderWorkerPath `
+                -ExpectedSha256 $recorderWorkerSha256 -OutputDirectory (Join-Path $runDirectory 'worker')
+            $pairing = @{
+                path = $workerSnapshot.Path; sha256 = $workerSnapshot.Sha256; bytes = $workerSnapshot.Bytes
+                source_artifact = $recorderWorkerPath; compiler_artifact = $workerArtifacts[0]
+                build_program = 'cargo'; build_arguments = $workerBuildArguments; build_exit = $workerBuild.ExitCode
+                working_directory = $script:RepoRoot
+                source_head = (Invoke-Captured -Program 'git' -Arguments @('rev-parse', 'HEAD')).Stdout.Trim()
+                source_status = (Invoke-Captured -Program 'git' -Arguments @('status', '--porcelain=v1')).Stdout
+            }
+            $pairing | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $runDirectory 'worker-pairing.json') -Encoding UTF8
+            $recorderWorkerPath = $workerSnapshot.Path
+            Write-Host ('PREFOLD_WORKER_PAIRING_V1 ' + ($pairing | ConvertTo-Json -Depth 12 -Compress))
         }
 
         # ---- Phase B: overlap the test phases. ------------------------------
@@ -590,9 +651,6 @@ function Invoke-ShippingTests {
         # CARGO_TARGET_DIR overlapped; the second finished its own build while
         # the first's 25 s test was still running). Phase-A left fresh
         # fingerprints, so phase-B builds are seconds-long freshness checks.
-        $runDirectory = Join-Path ([IO.Path]::GetTempPath()) ('hoi4-validation-' + [Guid]::NewGuid().ToString('N'))
-        New-Item -ItemType Directory -Path $runDirectory | Out-Null
-        Write-Host "VALIDATION_ROOT_LOGS_V1 $runDirectory"
         $lanes = @()
         foreach ($item in $plans) {
             $lanes += Start-ValidationRoot -Name ([string]$item.Name) -Program ([string]$item.Program) `
@@ -623,6 +681,7 @@ function Invoke-ShippingTests {
         if ($failures.Count -gt 0) { throw ($failures -join '; ') }
         return $cargoPlanCount
     } finally {
+        if ($workerSnapshot) { $workerSnapshot.Lease.Dispose() }
         if ($gateSetRustFlags) {
             Remove-Item -LiteralPath 'Env:RUSTFLAGS' -ErrorAction SilentlyContinue
         }
