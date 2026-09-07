@@ -1,3 +1,5 @@
+#[path = "../../../../portable_replay/native/compact_stream/src/country_roster.rs"]
+pub mod country_roster;
 pub mod owner_colour;
 pub mod battleplan_links;
 #[path = "../../../../portable_replay/native/compact_stream/src/division_routes.rs"]

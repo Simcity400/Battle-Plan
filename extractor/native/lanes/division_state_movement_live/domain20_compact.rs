@@ -35,6 +35,8 @@ pub const DOMAIN_FRAME: u16 = 1000;
 pub const PROBE_DOMAIN_ID: u16 = 250;
 
 pub const PAYLOAD_HEADER_LEN: usize = 32;
+#[path = "../../../../portable_replay/native/compact_stream/src/country_roster.rs"]
+mod country_roster;
 #[path = "../../../../portable_replay/native/compact_stream/src/division_routes.rs"]
 mod division_routes;
 pub const ROW_LEN: usize = division_routes::ROW_LEN;
@@ -394,7 +396,7 @@ pub fn encode_payload(header: &DivisionStateHeader, rows: &[DivisionStateRow]) -
         division_routes::write_current_template(&mut payload, index, if row.deleted { None } else { row.current_template });
         division_routes::write_route_head(&mut payload, index, if row.deleted { None } else { row.route_head });
     }
-    division_routes::append_inputs(&mut payload, rows.iter().map(|row| if row.deleted { (None, None) } else { (row.ordinary_route.as_deref(), row.alternate_route.as_deref()) }), rows.iter().map(|row| if row.deleted { None } else { row.template_preference.as_ref() }), rows.iter().map(|row| if row.deleted { None } else { row.acclimatization.as_ref() }));
+    division_routes::append_inputs(&mut payload, rows.iter().map(|row| if row.deleted { (None, None) } else { (row.ordinary_route.as_deref(), row.alternate_route.as_deref()) }), rows.iter().map(|row| if row.deleted { None } else { row.template_preference.as_ref() }), rows.iter().map(|row| if row.deleted { None } else { row.acclimatization.as_ref() }), &division_routes::unavailable_roster());
     payload
 }
 
@@ -521,12 +523,12 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain20GateSummary {
             summary.parse_errors.push(format!(
                 "offset {offset}: divisions row {row_index} has zero div_id"
             ));
-        } else if !seen_divisions.insert(div_id) {
+        } else if !seen_divisions.insert((div_type, div_id)) {
             summary.parse_errors.push(format!(
                 "offset {offset}: divisions row {row_index} duplicates div_id {div_id}"
             ));
         }
-        if div_type != DIVISION_TYPE {
+        if !matches!(div_type, 4713 | 51) {
             summary.parse_errors.push(format!(
                 "offset {offset}: divisions row {row_index} has div_type {div_type}"
             ));

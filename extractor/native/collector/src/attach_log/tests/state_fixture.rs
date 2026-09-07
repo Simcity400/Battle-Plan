@@ -530,6 +530,32 @@ pub(super) fn bind_scheduler_clock(image: &mut ModuleImageWindow, state: &mut Co
     state.long_string_addr = base.saturating_add(GET_LONG_STRING_OFFSET);
 }
 
+pub(super) fn with_reader_clock_bracket<T>(
+    state: &CollectorState, tag: u16, read: impl FnOnce() -> T,
+) -> T {
+    let mut image = scheduler_clock_image();
+    image.write_u64_at_rva(
+        compact_contract::build_profile::DOMAIN57_CGAMESTATE_SINGLETON_RVA,
+        state.date_ptr,
+    );
+    let lanes = FrameLaneTracker::new(
+        Instant::now(), Instant::now(), image.module_base(),
+        state.date_ptr as usize + GS_CURRENT_DATE_OFFSET,
+    );
+    let result = {
+        let _guard = ReaderClockBracketGuard::new(&lanes, tag);
+        read()
+    };
+    let brackets = lanes.clock_brackets.lock().unwrap();
+    assert_eq!(brackets.len(), 1);
+    let opening = brackets[0].opening.expect("opening scheduler witness");
+    let closing = brackets[0].closing.expect("closing scheduler witness");
+    assert_eq!(opening.hour, closing.hour);
+    assert!(closing.ordinal > opening.ordinal);
+    assert!(!brackets[0].worker_panicked);
+    result
+}
+
 pub(super) fn naval_frame_fixture() -> (Box<AlignedBytes<0x9000>>, CollectorState, ModuleImageWindow)
 {
     let mut image = scheduler_clock_image();
@@ -604,8 +630,10 @@ fn populated_state_makes_the_ships_domain_emit_domain_data_rows_offline() {
     let data = outcome
         .domain_data(COMPACT_DOMAIN_SHIPS)
         .expect("d29 emitted a DOMAIN_DATA record");
-    let roots = discover_compact_naval_oob_roots(&state).expect("staged naval roots");
-    let native = sample_compact_ships_from_roots(state.base, &roots, true).expect("ship rows");
+    let native = with_reader_clock_bracket(&state, COMPACT_DOMAIN_SHIPS, || {
+        let roots = discover_compact_naval_oob_roots(&state).expect("staged naval roots");
+        sample_compact_ships_from_roots(state.base, &roots, true).expect("ship rows")
+    });
     let staged_row = |instance_id: u32, category_enum: u32, sunk_convoys: u32, definition: &str| {
         CompactShipRow {
             instance_id,

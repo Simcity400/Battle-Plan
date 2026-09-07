@@ -23,7 +23,7 @@ pub const HEADER_LEN: usize = 56;
 pub const V1_HEADER_LEN: usize = 48;
 
 /// The header's version word.
-pub const PAYLOAD_VERSION: u32 = 2;
+pub const PAYLOAD_VERSION: u32 = 3;
 
 /// Bytes per command row.
 pub const ROW_LEN: usize = 80;
@@ -170,8 +170,23 @@ mod tests {
     fn the_row_grammar_is_the_one_the_producer_writes() {
         assert_eq!(HEADER_LEN, 56);
         assert_eq!(V1_HEADER_LEN, 48);
-        assert_eq!(PAYLOAD_VERSION, 2);
+        assert_eq!(PAYLOAD_VERSION, 3);
         assert_eq!(ROW_LEN, 80);
         assert_eq!(MEMBER_ROW_LEN, 8);
     }
+}
+
+#[path = "../../../../portable_replay/native/compact_stream/src/country_roster.rs"]
+pub mod country_roster;
+
+pub fn country_roster_bytes(payload: &[u8]) -> Result<&[u8], String> {
+    if payload.len() < HEADER_LEN { return Err("D28 header truncated".into()); }
+    let word = |at| u32::from_le_bytes(payload[at..at + 4].try_into().unwrap());
+    if word(48) != PAYLOAD_VERSION || word(52) != 0 { return Err("D28 version or reserved header refused".into()); }
+    let at = (word(8) as usize).checked_mul(ROW_LEN).and_then(|n| n.checked_add(HEADER_LEN))
+        .and_then(|n| (word(32) as usize).checked_mul(MEMBER_ROW_LEN).and_then(|m| n.checked_add(m)))
+        .ok_or("D28 roster offset overflow")?;
+    let bytes = payload.get(at..).ok_or("D28 rows truncated")?;
+    country_roster::Observation::parse(bytes, country_roster::Kind::Fleet)?;
+    Ok(bytes)
 }

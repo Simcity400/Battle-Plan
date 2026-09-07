@@ -1,3 +1,5 @@
+#[path = "../../d28_grammar/src/lib.rs"]
+mod d28_grammar;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
@@ -70,7 +72,7 @@ pub const COMPACT_OOB_HEADER_LEN: usize = 56;
 /// d28's v1 header, kept only so the refusal can name the version.
 pub const COMPACT_OOB_V1_HEADER_LEN: usize = 48;
 /// The only d28 payload version this gate accepts.
-pub const COMPACT_OOB_PAYLOAD_VERSION: u32 = 2;
+pub const COMPACT_OOB_PAYLOAD_VERSION: u32 = d28_grammar::PAYLOAD_VERSION;
 /// The only d29 payload version this gate accepts. v1 wrote a hard zero into
 /// the header word it occupies (`+36`), so a v1 payload reads `0`.
 pub const COMPACT_SHIPS_PAYLOAD_VERSION: u32 = 2;
@@ -939,11 +941,8 @@ pub fn decode_oob_command_data_payload(
     let expected_len = COMPACT_OOB_HEADER_LEN
         .saturating_add(row_count.saturating_mul(COMPACT_OOB_ROW_LEN))
         .saturating_add(member_count.saturating_mul(COMPACT_OOB_MEMBER_ROW_LEN));
-    if payload.len() != expected_len {
-        summary.parse_errors.push(format!(
-            "offset {offset}: oob command data payload is {} byte(s), expected {expected_len}",
-            payload.len()
-        ));
+    if let Err(error) = d28_grammar::country_roster_bytes(payload) {
+        summary.parse_errors.push(format!("offset {offset}: {error}"));
         return;
     }
     if changed_rows > row_count {
@@ -3162,6 +3161,10 @@ mod tests {
         }
         let at = row + status_offset;
         payload[at..at + 4].copy_from_slice(&status_value.to_le_bytes());
+        payload.extend_from_slice(&d28_grammar::country_roster::Observation::unavailable(
+            d28_grammar::country_roster::Kind::Fleet,
+            d28_grammar::country_roster::Cause::ExternalBridge,
+        ).encode().unwrap());
         payload
     }
 

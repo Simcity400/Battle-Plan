@@ -7,6 +7,7 @@ pub mod character_presentation_g8;
 pub mod cipher_controller;
 pub mod combat_presentation;
 pub mod country_identity;
+pub mod country_semantic_rosters;
 pub mod country_name_semantics;
 mod session_header_raw;
 pub mod d18_roster;
