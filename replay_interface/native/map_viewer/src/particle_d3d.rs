@@ -980,7 +980,7 @@ fn validate_particle_resources(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1126,11 +1126,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn particle_global_lifecycle_upload_material_and_native_draw_produce_pixels() {
-        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
-        use crate::xmap09_light_lifecycle::{ViewerLightLifecycle, Xmap09PlacedEntity};
-        use winapi::um::d3dcommon::{D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0};
+    pub(crate) fn particle_draw_fixture_files() -> Vec<(&'static str, Vec<u8>)> {
         const HEADER: &[u8] = br#"#define PDX_POSITION SV_POSITION
 #define PDX_COLOR SV_TARGET
 struct STextureSampler2D { Texture2D _Texture; SamplerState _Sampler; };
@@ -1141,9 +1137,10 @@ STextureSampler2D CreateSampler2D(Texture2D t, SamplerState s) { STextureSampler
         const SHADER: &str = r#"
 VertexStruct Input { float2 uv : TEXCOORD0; float4 position_size : TEXCOORD1; float3 rest : TEXCOORD2; uint atlas : TEXCOORD3; float4 color : COLOR0; };
 VertexStruct Output { float4 position : PDX_POSITION; float2 uv : TEXCOORD0; float4 color : COLOR0; };
+ConstantBuffer(1, 64) { row_major float4x4 ViewProjection; };
 ConstantBuffer(3, 96) { float4x4 World; float2 Reciprocal; float2 Atlas; float Time; };
 VertexShader = { MainCode VS [[
-    Output main(Input v) { Output o; o.position=float4((v.uv*2-1)*v.position_size.w+v.position_size.xy, 0.5, 1); o.uv=v.uv; o.color=v.color*float4(Reciprocal.x*4,Reciprocal.y*8,1,1); return o; }
+    Output main(Input v) { Output o; o.position=mul(float4(v.position_size.xyz+float3((v.uv*2-1)*v.position_size.w,0),1),ViewProjection); o.uv=v.uv; o.color=v.color*float4(Reciprocal.x*4,Reciprocal.y*8,1,1); return o; }
 ]] }
 PixelShader = {
     Samplers = { Diffuse = { Index=0 MagFilter="Point" MinFilter="Point" MipFilter="Point" AddressU="Clamp" AddressV="Clamp" } }
@@ -1175,10 +1172,20 @@ Effect fixture { VertexShader="VS" PixelShader="PS" }
             dds[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         }
         dds[128..].copy_from_slice(&[192, 128, 64, 255].repeat(8));
+        vec![("gfx/fixture.dds", dds), ("gfx/FX/particle.shader", SHADER.as_bytes().to_vec()),
+            ("gfx/FX/defines_hlsl_dx11.fxh", HEADER.to_vec())]
+    }
+
+    #[test]
+    fn particle_global_lifecycle_upload_material_and_native_draw_produce_pixels() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        use crate::xmap09_light_lifecycle::{ViewerLightLifecycle, Xmap09PlacedEntity};
+        let files = particle_draw_fixture_files();
+        let mut extra = files.iter().map(|(path, bytes)| (*path, bytes.as_slice())).collect::<Vec<_>>();
+        extra.push(("gfx/entity.asset", b"entity={name=entity default_state=idle state={name=idle event={time=0 particle=paired light=flash}}} light={name=flash color={r=1 g=1 b=1} position={x=0 y=0 z=0} intensity=1 radius=8 falloff=1}"));
         let content = Fixture::with_extra_files(REGISTRATION,
             "particle={name=effect subsystem={name=s max_amount=1 duration=0.5 emission=2 life=2 size=0.5 color={r=255 g=255 b=255 a=255} texture={file=gfx/fixture.dds shader=fixture x=1 y=1}}}",
-            &[("gfx/fixture.dds",&dds),("gfx/FX/particle.shader",SHADER.as_bytes()),("gfx/FX/defines_hlsl_dx11.fxh",HEADER),
-            ("gfx/entity.asset",b"entity={name=entity default_state=idle state={name=idle event={time=0 particle=paired light=flash}}} light={name=flash color={r=1 g=1 b=1} position={x=0 y=0 z=0} intensity=1 radius=8 falloff=1}")]);
+            &extra);
         let (resolver, admission) = (&content.resolver, &content.admission);
         let identity = [
             1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
@@ -1211,6 +1218,34 @@ Effect fixture { VertexShader="VS" PixelShader="PS" }
             .unwrap();
         assert_eq!(rows.authored_particles.len(), 1);
         let paired = rows.authored_particles[0].particle_phase;
+        assert_native_particle_pixels(resolver, admission, paired, &mut |sort, visit| {
+            lifecycle.visit_particles_for_draw(0.5, sort, &mut |_, capacity, view| visit(capacity, view))
+        });
+    }
+
+    #[test]
+    fn static_unit_shared_owner_publishes_paired_light_and_real_particle_pixels() {
+        let (adapter, resolver, admission, paired) =
+            crate::production_features::xmap13::Xmap13Adapter::static_particle_publication_fixture();
+        let mut adapters = crate::ProductionMapFeatureAdapters::default();
+        adapters.register(Box::new(adapter)).unwrap();
+        assert_native_particle_pixels(&resolver, &admission, paired, &mut |sort, visit| {
+            adapters.visit_particles_for_draw(0.5, [sort; 3], &mut |_, pass, capacity, view| {
+                assert_eq!(pass, 0);
+                visit(capacity, view)
+            })
+        });
+    }
+
+    fn assert_native_particle_pixels(
+        resolver: &crate::GameFileResolver, admission: &replay_core::ValidatedContentAdmission,
+        paired: crate::particle_runtime::ParticleLightBinding,
+        visit: &mut dyn FnMut(ParticleSortCamera,
+            &mut dyn FnMut(&crate::particle_authored::ParticleDrawCapacity, crate::particle_runtime::ParticleGpuView<'_>) -> Result<()>) -> Result<()>,
+    ) {
+        use winapi::um::d3dcommon::{D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0};
+        let emitter_world = paired.world_matrix_f32_bits;
+        let center = [emitter_world[12], emitter_world[13], emitter_world[14]].map(f32::from_bits);
         unsafe {
             let mut device = ptr::null_mut();
             let mut context = ptr::null_mut();
@@ -1293,16 +1328,21 @@ Effect fixture { VertexShader="VS" PixelShader="PS" }
                 )
                 .unwrap(),
             );
+            // Orthographic width/height 2, near/far 0/2, looking down -Z at the retained emitter.
+            let eye = [center[0], center[1], center[2] + 1.0];
             let camera = crate::ProductionMapCamera::new(
                 [
                     [1., 0., 0., 0.],
                     [0., 1., 0., 0.],
-                    [0., 0., 1., 0.],
-                    [0., 0., 0., 1.],
+                    [0., 0., -0.5, 0.],
+                    [-eye[0], -eye[1], eye[2] * 0.5, 1.],
                 ],
-                [0., 0., 1.],
-            )
-            .unwrap();
+                eye,
+            ).unwrap();
+            let center_h = [center[0], center[1], center[2], 1.0];
+            let projected: [f32; 4] = std::array::from_fn(|column|
+                (0..4).map(|row| center_h[row] * camera.view_projection_matrix[row][column]).sum());
+            assert_eq!(projected, [0.0, 0.0, 0.5, 1.0]);
             let sort = ParticleSortCamera {
                 position_f32_bits: camera.position.map(f32::to_bits),
                 forward_f32_bits: [0, 0, (-1f32).to_bits()],
@@ -1323,14 +1363,17 @@ Effect fixture { VertexShader="VS" PixelShader="PS" }
                 0,
             );
             let mut counts = Vec::new();
-            lifecycle
-                .visit_particles_for_draw(0.5, sort, &mut |_, capacity, view| {
+            visit(sort, &mut |capacity, view| {
                     assert_eq!(view.presentation_id, paired.presentation_id);
                     assert_eq!(view.world_matrix_f32_bits(), paired.world_matrix_f32_bits);
                     let subsystem = view.root_subsystems().next().unwrap();
                     assert_eq!(subsystem.emission_end_bits(), 0.5f32.to_bits());
                     assert_eq!(subsystem.local_time_bits(), 0.5f32.to_bits());
                     assert_eq!(subsystem.live_count(), 1);
+                    let record = subsystem.records().next().unwrap().unwrap();
+                    let position: [u32; 3] = std::array::from_fn(|axis|
+                        u32::from_le_bytes(record.0[axis * 4..axis * 4 + 4].try_into().unwrap()));
+                    assert_eq!(position, center.map(f32::to_bits));
                     counts.push(renderer.draw_instance(
                         context.as_raw(),
                         &resolver,
@@ -1413,8 +1456,7 @@ Effect fixture { VertexShader="VS" PixelShader="PS" }
                 0.25,
                 0,
             );
-            lifecycle
-                .visit_particles_for_draw(0.5, sort, &mut |_, capacity, view| {
+            visit(sort, &mut |capacity, view| {
                     renderer.draw_instance(
                         context.as_raw(),
                         &resolver,
@@ -1462,7 +1504,7 @@ Effect fixture { VertexShader="VS" PixelShader="PS" }
                             counter: 0,
                             seed: 1,
                         },
-                        identity,
+                        emitter_world,
                         1.,
                     )
                     .unwrap();
@@ -1471,7 +1513,7 @@ Effect fixture { VertexShader="VS" PixelShader="PS" }
                 runtime.sort_for_draw(handle, presentation, sort).unwrap();
                 let view = runtime.gpu_view(handle).unwrap();
                 assert_eq!(view.presentation_id, Some(presentation));
-                assert_eq!(view.world_matrix_f32_bits(), identity);
+                assert_eq!(view.world_matrix_f32_bits(), emitter_world);
                 (*context.as_raw()).ClearRenderTargetView(target.color_rtv(), &[0.; 4]);
                 (*context.as_raw()).ClearDepthStencilView(
                     target.depth_dsv(),

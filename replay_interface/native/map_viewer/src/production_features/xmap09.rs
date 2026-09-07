@@ -1035,9 +1035,10 @@ fn xmap09_scene_cb0_field_contract(symbol: &str) -> Option<(u32, u32)> {
 
 pub(crate) struct Xmap09LightingAdapter {
     resolver: crate::GameFileResolver,
+    admission: Option<replay_core::ValidatedContentAdmission>,
     lifecycle: std::sync::Mutex<crate::xmap09_light_lifecycle::ViewerLightLifecycle>,
     pending_entities: std::sync::Mutex<Option<crate::xmap09_light_lifecycle::PreparedLightEntityFrame>>,
-    derived_entities: std::sync::Mutex<Option<std::result::Result<crate::xmap09_light_lifecycle::DerivedLightRows, Xmap09LightCensusRefusal>>>,
+    derived_entities: std::sync::Mutex<Option<std::result::Result<std::sync::Arc<crate::xmap09_light_lifecycle::DerivedLightRows>, Xmap09LightCensusRefusal>>>,
     particle_visibility: std::sync::Mutex<Option<(u32, std::collections::BTreeMap<String, [bool; 3]>)>>,
     defines: crate::Xmap09LightingDefines,
     ordered_used_content: Vec<UsedContentKey>,
@@ -1045,14 +1046,15 @@ pub(crate) struct Xmap09LightingAdapter {
 }
 
 impl Xmap09LightingAdapter {
-    pub(crate) fn new(resolver: &crate::GameFileResolver) -> Result<Self> {
-        Self::with_entity_manager(resolver, std::sync::Arc::new(std::sync::Mutex::new(
+    pub(crate) fn new(resolver: &crate::GameFileResolver, admission: &replay_core::ValidatedContentAdmission) -> Result<Self> {
+        Self::with_entity_manager(resolver, admission, std::sync::Arc::new(std::sync::Mutex::new(
             crate::particle_runtime::ViewerEntityManager::default(),
         )))
     }
 
     pub(crate) fn with_entity_manager(
         resolver: &crate::GameFileResolver,
+        admission: &replay_core::ValidatedContentAdmission,
         entity_manager: std::sync::Arc<std::sync::Mutex<crate::particle_runtime::ViewerEntityManager>>,
     ) -> Result<Self> {
         let (sources, ordered_used_content) =
@@ -1070,6 +1072,7 @@ impl Xmap09LightingAdapter {
         let defines = crate::Xmap09LightingDefines::from_effective_sources(&sources)?;
         Ok(Self {
             resolver: resolver.clone(),
+            admission: Some(admission.clone()),
             lifecycle: std::sync::Mutex::new(crate::xmap09_light_lifecycle::ViewerLightLifecycle::with_entity_manager(entity_manager)),
             pending_entities: std::sync::Mutex::new(None),
             particle_visibility: std::sync::Mutex::new(None),
@@ -1206,7 +1209,7 @@ impl crate::production_foundation::PreparedEntityManagerOwner for PreparedLighti
         let prepared = self.prepared.take().ok_or("entity_manager.light_owner.already_finished")?;
         let result = self.lifecycle.finish_entity_frame(&self.adapter.resolver, prepared);
         let outcome = result.as_ref().map(|_| ()).map_err(|error| Box::new(error.clone()) as Box<dyn std::error::Error>);
-        *self.adapter.derived_entities.lock().map_err(|_| "entity_manager.light_result.lock_poisoned")? = Some(result);
+        *self.adapter.derived_entities.lock().map_err(|_| "entity_manager.light_result.lock_poisoned")? = Some(result.map(std::sync::Arc::new));
         outcome
     }
     fn refuse(&mut self, reason: &str) {
@@ -1272,6 +1275,18 @@ impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
             prepared: Some(prepared), frame })))
     }
 
+    fn retained_entity_effects(&self, time: f32) -> Result<Option<crate::xmap09_light_lifecycle::RetainedEntityEffects>> {
+        let result = self.derived_entities.lock().map_err(|_| "entity_manager.light_result.lock_poisoned")?;
+        let rows = match result.as_ref() {
+            Some(Ok(rows)) => rows.clone(),
+            Some(Err(error)) => return Err(format!("entity_manager.light_result.{error:?}").into()),
+            None => return Ok(None),
+        };
+        drop(result);
+        let admission = self.admission.as_ref().ok_or("entity_manager.light_admission.unavailable")?;
+        Ok(Some(crate::xmap09_light_lifecycle::RetainedEntityEffects::new(rows, &self.resolver, admission, time)?))
+    }
+
     fn weather_particles_bound(&self, time: f32, identity: &str) -> Result<bool> {
         Ok(self.lifecycle.lock().map_err(|_| "XMAP09 viewer lifecycle lock is poisoned")?
             .weather_particles_bound(time, identity))
@@ -1308,9 +1323,10 @@ impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
         let placed_count = population.as_ref().ok().map(|rows| u32::try_from(rows.len()))
             .transpose().map_err(|_| "XMAP09 placed population counter overflow")?;
         let derived = self.derived_entities.lock().map_err(|_| "entity_manager.light_result.lock_poisoned")?
-            .take().ok_or("entity_manager.light_owner.not_prepared")?;
+            .as_ref().cloned().ok_or("entity_manager.light_owner.not_prepared")?;
         let input = match derived {
-            Ok(rows) => rows.with_rows(|rows| self.derive_lighting_input(
+            Ok(_) => context.shared_entity_effects.ok_or("entity_manager.effects.publication_unavailable")?
+                .with_rows(&self.resolver, self.admission.as_ref().ok_or("entity_manager.light_admission.unavailable")?, |rows| self.derive_lighting_input(
                 context.world_frame.hour_index(), context.product_modset_sha256,
                 context.effective_vfs_manifest_sha256, camera, placed_count, Ok(rows),
             ))?,
@@ -1897,6 +1913,7 @@ mod tests {
         }
         Xmap09LightingAdapter {
             resolver: crate::GameFileResolver::vanilla(".").unwrap(),
+            admission: None,
             lifecycle: Default::default(),
             pending_entities: Default::default(),
             derived_entities: Default::default(),

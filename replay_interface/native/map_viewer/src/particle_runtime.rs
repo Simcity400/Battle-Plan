@@ -145,6 +145,26 @@ impl ViewerEntityManager {
         Ok((revision, roots))
     }
 
+    pub(crate) fn published_light_order(
+        &self, time: u32, owners: &[EntityManagerOwner],
+    ) -> crate::Result<(u64, Vec<(EntityManagerOwner, String)>)> {
+        let revision = self.publication_revision(time).ok_or("entity_manager.frame.unpublished")?;
+        for (index, owner) in owners.iter().enumerate() {
+            if owners[..index].contains(owner) {
+                return Err("entity_manager.effects.duplicate_owner".into());
+            }
+        }
+        let registry = self.effects.lock().map_err(|_| "entity_manager.effects.lock_poisoned")?;
+        let mut lights = Vec::new();
+        for entry in &registry.entries {
+            if !owners.contains(&entry.owner) {
+                return Err(format!("entity_manager.effects.unprepared_owner.{:?}.{}", entry.owner, entry.id).into());
+            }
+            if entry.light { lights.push((entry.owner, entry.id.clone())); }
+        }
+        Ok((revision, lights))
+    }
+
     pub(crate) fn reset_frame_publication(&mut self) -> Result<(), EntityManagerFrameRefusal> {
         if !self.effects.lock().map_err(|_| EntityManagerFrameRefusal::EffectsLockPoisoned)?.entries.is_empty() {
             return Err(EntityManagerFrameRefusal::RegisteredEffectsOnReset);

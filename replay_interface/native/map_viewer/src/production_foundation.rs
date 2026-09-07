@@ -211,6 +211,8 @@ pub struct FoundationFeatureContext<'a> {
     pub prepared_units: Option<&'a crate::PreparedXmap13Frame>,
     pub prepared_weather: Option<&'a crate::PreparedXmap19WeatherFrame>,
     pub weather_particles_bound: bool,
+    pub(crate) unit_particle_publication: Option<crate::production_features::xmap13::Xmap13UnitParticlePublication>,
+    pub(crate) shared_entity_effects: Option<&'a crate::xmap09_light_lifecycle::SharedEntityEffects>,
     /// The map objects XMAP12 placed earlier in this same frame; `None` when
     /// XMAP12 did not vouch this hour, which is not a measured-empty placement.
     pub prepared_map_objects: Option<&'a crate::PreparedXmap12RenderFrame>,
@@ -255,6 +257,8 @@ impl<'a> FoundationFeatureContext<'a> {
             prepared_map_objects: None,
             prepared_weather: None,
             weather_particles_bound: false,
+            unit_particle_publication: None,
+            shared_entity_effects: None,
             xmap15_units: None,
             xmap15_selection,
             xmap13_motion: None,
@@ -505,6 +509,14 @@ pub trait ProductionMapFeatureAdapter {
     fn weather_particles_bound(&self, _time: f32, _identity: &str) -> Result<bool> {
         Ok(false)
     }
+    fn retained_entity_effects(&self, _time: f32) -> Result<Option<crate::xmap09_light_lifecycle::RetainedEntityEffects>> {
+        Ok(None)
+    }
+    fn unit_particle_publication(&self, _context: &FoundationFeatureContext<'_>)
+        -> Result<Option<crate::production_features::xmap13::Xmap13UnitParticlePublication>>
+    {
+        Ok(None)
+    }
     fn take_retained_particle_draw_owner(
         &self, _time: f32, _cameras: [crate::particle_runtime::ParticleSortCamera; 3],
     ) -> Result<Option<Box<dyn RetainedParticleDrawOwner + '_>>> {
@@ -597,6 +609,7 @@ fn classify_family_preparation<T>(
 #[derive(Default)]
 pub struct ProductionMapFeatureAdapters<'a> {
     xmap13_motion: Option<crate::Xmap13MotionSample>,
+    shared_entity_effects: std::cell::RefCell<Option<crate::xmap09_light_lifecycle::SharedEntityEffects>>,
     model_hit_publication: std::cell::RefCell<Option<crate::native_model_selection::policy::ModelPickerFrame>>,
     slots: BTreeMap<MapVisualFamily, Box<dyn ProductionMapFeatureAdapter + 'a>>,
     xmap11: Option<crate::production_features::xmap11::Xmap11TreesAdapter>,
@@ -637,6 +650,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
     }
 
     fn prepare_lighting_entity_population(&self, context: &FoundationFeatureContext<'_>, preparation: Result<()>) -> Result<()> {
+        *self.shared_entity_effects.borrow_mut() = None;
         let preparation = preparation.and_then(|()| match self.get(MapVisualFamily::LightingShadows) {
             Some(lighting) => lighting.prepare_entity_manager_population(context),
             None => Ok(()),
@@ -646,7 +660,32 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
             refuse_prepared_entity_owners(&mut owners, &error.to_string());
             return Err(error);
         }
-        dispatch_prepared_entity_owners(&mut owners)
+        dispatch_prepared_entity_owners(&mut owners)?;
+        let manager_frame = owners.first().map(|owner| (owner.manager(), owner.frame()));
+        drop(owners);
+        let publication = (|| -> Result<()> {
+            let mut retained = Vec::new();
+            let time = f32::from_bits(context.viewer.animation_time_f32_bits);
+            for adapter in self.slots.values() {
+                if let Some(owner) = adapter.retained_entity_effects(time)? { retained.push(owner); }
+            }
+            if retained.is_empty() {
+                if let Some((manager, frame)) = &manager_frame {
+                    manager.lock().map_err(|_| "entity_manager.lock_poisoned")?
+                        .published_light_order(frame.presentation_time_f32_bits, &[])?;
+                }
+                return Ok(());
+            }
+            *self.shared_entity_effects.borrow_mut() =
+                Some(crate::xmap09_light_lifecycle::SharedEntityEffects::new(time, retained)?);
+            Ok(())
+        })();
+        if let (Err(error), Some((manager, frame))) = (&publication, manager_frame) {
+            if let Ok(mut manager) = manager.lock() {
+                manager.refuse_frame(frame, crate::particle_runtime::EntityManagerFrameRefusal::Finalization(error.to_string()));
+            }
+        }
+        publication
     }
 
     pub fn visit_particles_for_draw(
@@ -839,7 +878,7 @@ fn foundation_feature_adapter_core(
     adapters.register(Box::new(fow))?;
     adapters.register(Box::new(
         crate::production_features::xmap09::Xmap09LightingAdapter::with_entity_manager(
-            resolver, entity_manager.clone(),
+            resolver, admission, entity_manager.clone(),
         )?,
     ))?;
     adapters.register_xmap11(crate::production_features::xmap11::Xmap11TreesAdapter::new(
@@ -1521,6 +1560,7 @@ fn prepare_foundation_frame_inner(
         } else {
             None
         };
+        let shared_entity_effects = publish.then(|| adapters.shared_entity_effects.borrow());
         let mut context = FoundationFeatureContext {
             world_frame,
             viewer,
@@ -1537,6 +1577,8 @@ fn prepare_foundation_frame_inner(
             prepared_map_objects: prepared_xmap12.as_ref(),
             prepared_weather: prepared_weather.as_ref(),
             weather_particles_bound: false,
+            unit_particle_publication: None,
+            shared_entity_effects: shared_entity_effects.as_ref().and_then(|rows| rows.as_ref()),
             xmap15_units: prepared_units.as_ref().map(|frame| {
                 &frame.identity_provider
                     as &dyn crate::production_features::xmap15::Xmap15UnitIdentityProvider
@@ -1634,6 +1676,12 @@ fn prepare_foundation_frame_inner(
             };
         }
         if family == MapVisualFamily::ParticlesEffects {
+            if let Some(units) = adapters.get(MapVisualFamily::UnitsCounters) {
+                context.unit_particle_publication = prepared_or_refusal!(
+                    units.unit_particle_publication(&context).map_err(|error|
+                        FamilyContentRefusal::new("XMAP20.unit_particle_binding_unavailable", error.to_string()))
+                ).flatten();
+            }
             if let (Some(weather), Some(lighting)) =
                 (prepared_weather.as_ref(), adapters.get(MapVisualFamily::LightingShadows))
             {
@@ -3686,7 +3734,7 @@ mod tests {
         );
         assert_eq!(
             body.matches("prepared_or_refusal!(").count(),
-            6,
+            7,
             "an adapter preparation bypasses the content-refusal accounting"
         );
         let arm = body
@@ -3710,6 +3758,18 @@ mod tests {
         // ...and what the loop then does with a recorded refusal: one row, and
         // on to the next family.
         let flat = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(body.matches("units.unit_particle_publication(&context)").count(), 1);
+        assert!(
+            flat.contains(concat!(
+                "if family == MapVisualFamily::ParticlesEffects { ",
+                "if let Some(units) = adapters.get(MapVisualFamily::UnitsCounters) { ",
+                "context.unit_particle_publication = prepared_or_refusal!( ",
+                "units.unit_particle_publication(&context).map_err(|error| ",
+                "FamilyContentRefusal::new(\"XMAP20.unit_particle_binding_unavailable\", error.to_string())) ",
+                ").flatten();"
+            )),
+            "unit particle publication must retain its named, family-local refusal accounting"
+        );
         assert!(
             flat.contains(
                 concat!(

@@ -209,11 +209,18 @@ impl ProductionMapFeatureAdapter for Xmap20EffectsAdapter {
             return Err("XMAP20 viewer-derived lifecycle was incorrectly classified as a captured input gap".into());
         }
         let mut output = Self::deferred_to_draw_output();
+        if let Some(publication) = &context.unit_particle_publication {
+            publication.with_diagnostics(context, |diagnostics| {
+                output.element_diagnostics.extend_from_slice(diagnostics);
+                Ok(())
+            })?;
+        }
         for (branch, detail) in [
             ("unit-event-phase-unbound", "XMAP13 prepared unit animation phase is not yet joined to the retained authored event clock; unit particle instances are unavailable, not measured empty"),
             ("weather-event-phase-unbound", "XMAP19 primary/fading entity epochs, visibility and playback rate are not yet joined to the retained authored event clock; weather particle instances are unavailable, not measured empty"),
         ] {
-            if branch == "weather-event-phase-unbound" && context.weather_particles_bound {
+            if (branch == "weather-event-phase-unbound" && context.weather_particles_bound)
+                || (branch == "unit-event-phase-unbound" && context.unit_particle_publication.is_some()) {
                 continue;
             }
             output.element_diagnostics.push(portable_render_stream::ElementDiagnostic::family_exception(

@@ -614,6 +614,75 @@ impl EntityAssets {
             entries.iter().map(move |entry| (source, entry))))
     }
 
+    fn checked_state_event_fields(&self, entity: &str, ordinal: usize) -> Result<()> {
+        self.checked_event_fields(entity, ordinal, None)
+    }
+
+    fn checked_event_fields(&self, entity: &str, ordinal: usize, event_index: Option<usize>) -> Result<()> {
+        use portable_content_manifest::paradox_text::Entry;
+        fn states<'a>(assets: &'a EntityAssets, name: &str, ancestry: &mut Vec<String>)
+            -> Result<Vec<&'a Entry>>
+        {
+            if ancestry.iter().any(|previous| previous == name) {
+                return Err("entity event declaration clone cycle".into());
+            }
+            ancestry.push(name.to_owned());
+            let mut answer: Option<Vec<&Entry>> = None;
+            for (_, declarations) in &assets.binding_declarations {
+                for declaration in declarations.iter().filter(|entry|
+                    entry.value.first_scalar_ci("name") == Some(name)) {
+                    let own = declaration.value.fields().iter()
+                        .filter(|entry| entry.key_matches("state") && entry.value.first_scalar_ci("name").is_some())
+                        .collect::<Vec<_>>();
+                    let mut resolved = match declaration.value.first_scalar_ci("clone") {
+                        Some(base) => states(assets, base, ancestry)?,
+                        None => Vec::new(),
+                    };
+                    resolved.retain(|state| !own.iter().any(|mine|
+                        mine.value.first_scalar_ci("name") == state.value.first_scalar_ci("name")));
+                    resolved.extend(own);
+                    if let Some(previous) = &answer {
+                        if entity_parser_text(previous.iter().copied()).0 != entity_parser_text(resolved.iter().copied()).0 {
+                            return Err(format!("entity {name} event declaration lineage is ambiguous").into());
+                        }
+                    } else { answer = Some(resolved); }
+                }
+            }
+            ancestry.pop();
+            answer.ok_or_else(|| format!("entity {name} event declaration unavailable").into())
+        }
+        let declarations = states(self, entity, &mut Vec::new())?;
+        let pose = self.poses.get(entity).ok_or("entity event pose unavailable")?;
+        if declarations.len() != pose.states.len() || declarations.iter().zip(&pose.states).any(|(entry, state)|
+            entry.value.first_scalar_ci("name") != Some(state.name.as_str())) {
+            return Err("entity event declaration order differs from retained state".into());
+        }
+        let state = declarations.get(ordinal).ok_or("entity event state ordinal unavailable")?;
+        let events = state.value.fields().iter().filter(|entry| entry.key_matches("event")).collect::<Vec<_>>();
+        if events.len() != pose.states[ordinal].events.len() {
+            return Err("entity event declaration count differs from retained state".into());
+        }
+        if event_index.is_some_and(|index| index >= events.len()) {
+            return Err("entity event declaration ordinal unavailable".into());
+        }
+        for (index, event) in events.into_iter().enumerate() {
+            if event_index.is_some_and(|selected| selected != index) { continue; }
+            let mut keys = BTreeSet::new();
+            for field in event.value.fields() {
+                let key = field.key.as_deref().ok_or("entity event has a keyless field")?.to_ascii_lowercase();
+                if !keys.insert(key) || field.value.as_scalar().is_none() {
+                    return Err(format!("entity {entity} repeated or nonscalar event field at line {} is unbound", field.line).into());
+                }
+                if !["particle", "keep_particle", "entity", "life", "time", "node", "light", "trigger_once"]
+                    .iter().any(|key| field.key_matches(key)) {
+                    return Err(format!("entity {entity} event field {:?} at line {} has no retained effect binding",
+                        field.key, field.line).into());
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn resolve_binding(&self, name: &str) -> Result<Option<ResolvedEntityBinding>> {
         let mut needed = BTreeSet::from([name.to_owned()]);
         loop {
@@ -1114,6 +1183,7 @@ impl Drop for EntityManagerRegistration {
 #[derive(Default)]
 pub(crate) struct ViewerLightLifecycle {
     include_particle_only_events: bool,
+    checked_effect_fields: bool,
     assets: Option<Arc<EntityAssets>>,
     particle_definitions: Option<ParticleDefinitions>,
     content_lease: Option<crate::mod_resolver::ContentAdmissionLease>,
@@ -1156,6 +1226,7 @@ pub(crate) struct EntityAnimationReadout<'a> {
 }
 
 pub(crate) struct DerivedLightRows {
+    owner: crate::particle_runtime::EntityManagerOwner,
     manager: std::sync::Weak<Mutex<ViewerEntityManager>>,
     publication: (u32, u64),
     publication_lease: std::sync::Weak<u64>,
@@ -1170,16 +1241,43 @@ pub(crate) struct DerivedLightRows {
 }
 
 impl DerivedLightRows {
-    pub(crate) fn root_animation(
-        &self, resolver: &GameFileResolver, admission: &replay_core::ValidatedContentAdmission, id: &str,
-    ) -> Result<EntityAnimationReadout<'_>> {
+    fn check_publication(
+        &self, resolver: &GameFileResolver, admission: &replay_core::ValidatedContentAdmission,
+    ) -> Result<()> {
         self.assets.check_admission(resolver, admission)?;
+        self.check_frame()
+    }
+
+    fn check_frame(&self) -> Result<()> {
         let _lease = self.publication_lease.upgrade().ok_or("entity_manager.frame.unpublished")?;
         let manager = self.manager.upgrade().ok_or("entity_manager.frame.retired")?;
         if manager.lock().map_err(|_| "entity_manager.lock_poisoned")?
             .publication_revision(self.publication.0) != Some(self.publication.1) {
             return Err("entity_manager.frame.unpublished".into());
         }
+        Ok(())
+    }
+
+    pub(crate) fn with_root_effects<T>(
+        &self, resolver: &GameFileResolver, admission: &replay_core::ValidatedContentAdmission,
+        root: &str, visit: impl FnOnce(&[BuildingEntityEvent], &[&crate::production_features::xmap20::Xmap20AuthoredParticleBinding]) -> Result<T>,
+    ) -> Result<T> {
+        self.root_animation(resolver, admission, root)?;
+        let state = self.poses.get(root).ok_or("entity_manager.root_effects.unavailable")?;
+        if let Some(ordinal) = state.state_index {
+            self.assets.checked_state_event_fields(&state.token, ordinal)?;
+        }
+        let bindings = self.authored_particles.iter().filter(|binding| binding.entity_id == root)
+            .collect::<Vec<_>>();
+        let result = visit(&state.events, &bindings);
+        self.root_animation(resolver, admission, root)?;
+        result
+    }
+
+    pub(crate) fn root_animation(
+        &self, resolver: &GameFileResolver, admission: &replay_core::ValidatedContentAdmission, id: &str,
+    ) -> Result<EntityAnimationReadout<'_>> {
+        self.check_publication(resolver, admission)?;
         if self.children.contains_key(id) || !self.entity_indices.contains_key(id) {
             return Err(format!("entity_manager.root_animation.{id}: root is unavailable").into());
         }
@@ -1224,6 +1322,152 @@ impl DerivedLightRows {
             templates: &self.assets.templates,
             fired_instances: &instances,
         })
+    }
+}
+
+#[derive(Clone)]
+pub struct RetainedEntityEffects {
+    rows: Arc<DerivedLightRows>,
+    lease: crate::mod_resolver::ContentAdmissionLease,
+}
+
+impl RetainedEntityEffects {
+    pub(crate) fn new(rows: Arc<DerivedLightRows>, resolver: &GameFileResolver,
+        admission: &replay_core::ValidatedContentAdmission, time: f32) -> Result<Self> {
+        rows.check_publication(resolver, admission)?;
+        let lease = resolver.content_admission_lease().ok_or("entity_manager.effects.admission_unavailable")?;
+        let result = Self { rows, lease };
+        result.check(time)?;
+        Ok(result)
+    }
+
+    pub(crate) fn with_root_effects<T>(
+        &self, resolver: &GameFileResolver, admission: &replay_core::ValidatedContentAdmission,
+        root: &str, visit: impl FnOnce(&[BuildingEntityEvent],
+            &[&crate::production_features::xmap20::Xmap20AuthoredParticleBinding]) -> Result<T>,
+    ) -> Result<T> {
+        self.check(f32::from_bits(self.rows.publication.0))?;
+        self.rows.with_root_effects(resolver, admission, root, visit)
+    }
+
+    fn check(&self, time: f32) -> Result<()> {
+        if self.rows.publication.0 != time.to_bits() {
+            return Err("entity_manager.effects.publication_time_mismatch".into());
+        }
+        if self.rows.assets.content_lease.as_ref() != Some(&self.lease) {
+            return Err("entity_manager.effects.content_lease_mismatch".into());
+        }
+        self.rows.check_frame()
+    }
+}
+
+pub struct SharedEntityEffects {
+    owners: Vec<RetainedEntityEffects>,
+    publication: (u32, u64),
+    light_order: Vec<(crate::particle_runtime::EntityManagerOwner, String)>,
+}
+
+impl SharedEntityEffects {
+    pub(crate) fn new(time: f32, owners: Vec<RetainedEntityEffects>) -> Result<Self> {
+        let first = owners.first().ok_or("entity_manager.effects.owners_unavailable")?;
+        let manager = first.rows.manager.upgrade().ok_or("entity_manager.frame.retired")?;
+        for owner in &owners {
+            owner.check(time)?;
+            let other = owner.rows.manager.upgrade().ok_or("entity_manager.frame.retired")?;
+            if !Arc::ptr_eq(&manager, &other)
+                || first.lease != owner.lease {
+                return Err("entity_manager.effects.owner_content_or_manager_mismatch".into());
+            }
+        }
+        let identities = owners.iter().map(|owner| owner.rows.owner).collect::<Vec<_>>();
+        let (revision, light_order) = manager.lock().map_err(|_| "entity_manager.lock_poisoned")?
+            .published_light_order(time.to_bits(), &identities)?;
+        if owners.iter().any(|owner| owner.rows.publication != (time.to_bits(), revision)) {
+            return Err("entity_manager.effects.owner_revision_mismatch".into());
+        }
+        Ok(Self { owners, publication: (time.to_bits(), revision), light_order })
+    }
+
+    fn check(&self, resolver: &GameFileResolver, admission: &replay_core::ValidatedContentAdmission) -> Result<()> {
+        let time = f32::from_bits(self.publication.0);
+        for owner in &self.owners {
+            owner.check(time)?;
+            owner.rows.check_publication(resolver, admission)?;
+        }
+        let first = self.owners.first().ok_or("entity_manager.effects.owners_unavailable")?;
+        let manager = first.rows.manager.upgrade().ok_or("entity_manager.frame.retired")?;
+        let identities = self.owners.iter().map(|owner| owner.rows.owner).collect::<Vec<_>>();
+        let current = manager.lock().map_err(|_| "entity_manager.lock_poisoned")?
+            .published_light_order(self.publication.0, &identities)?;
+        if current.0 != self.publication.1 || current.1 != self.light_order {
+            return Err("entity_manager.effects.registration_changed".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_owner(
+        &self, owner: &RetainedEntityEffects, time: f32,
+    ) -> Result<()> {
+        owner.check(time)?;
+        if self.publication != owner.rows.publication
+            || !self.owners.iter().any(|retained| Arc::ptr_eq(&retained.rows, &owner.rows)) {
+            return Err("entity_manager.effects.foreign_publication".into());
+        }
+        for retained in &self.owners { retained.check(time)?; }
+        let manager = owner.rows.manager.upgrade().ok_or("entity_manager.frame.retired")?;
+        let identities = self.owners.iter().map(|retained| retained.rows.owner).collect::<Vec<_>>();
+        let (revision, order) = manager.lock().map_err(|_| "entity_manager.lock_poisoned")?
+            .published_light_order(self.publication.0, &identities)?;
+        if revision != self.publication.1 || order != self.light_order {
+            return Err("entity_manager.effects.registration_changed".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn with_rows<T>(
+        &self, resolver: &GameFileResolver, admission: &replay_core::ValidatedContentAdmission,
+        visit: impl FnOnce(Xmap09LightCensusRows<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.check(resolver, admission)?;
+        let mut entities = Vec::new();
+        let mut templates = Vec::<Xmap09LightTemplate>::new();
+        let mut lights = BTreeMap::new();
+        for owner in &self.owners {
+            for template in &owner.rows.assets.templates {
+                match templates.iter().find(|existing| existing.name == template.name) {
+                    Some(existing) if existing != template =>
+                        return Err("entity_manager.effects.template_disagreement".into()),
+                    Some(_) => {},
+                    None => templates.push(template.clone()),
+                }
+            }
+            entities.extend(owner.rows.entities.iter().map(|(id, events)| Xmap09LightEntity {
+                id, scene_mask: 6, events, placement: Some(IDENTITY),
+            }));
+            for (id, entity_id, event_index, clock, attachment) in &owner.rows.instances {
+                if lights.insert(id.as_str(), (owner.rows.owner, Xmap09FiredLightInstance {
+                    id, entity_id, event_index: *event_index, creator_rva: 0x0227_6040,
+                    clock: Some(clock), attach_transform: *attachment,
+                    paired_particle: owner.rows.particle_bindings.get(id).copied(), enabled: Some(true),
+                })).is_some() {
+                    return Err("entity_manager.effects.duplicate_light".into());
+                }
+            }
+        }
+        let mut fired_instances = Vec::with_capacity(self.light_order.len());
+        for (owner, id) in &self.light_order {
+            let (actual_owner, light) = lights.remove(id.as_str())
+                .ok_or("entity_manager.effects.registered_light_unpublished")?;
+            if &actual_owner != owner { return Err("entity_manager.effects.light_owner_mismatch".into()); }
+            fired_instances.push(light);
+        }
+        if !lights.is_empty() { return Err("entity_manager.effects.unregistered_light".into()); }
+        // The callback runs without manager or registry locks; publication is rechecked afterward.
+        let result = visit(Xmap09LightCensusRows {
+            resolve_attach: None, entities: &entities, templates: &templates, fired_instances: &fired_instances,
+        });
+        self.check(resolver, admission)?;
+        result
     }
 }
 
@@ -1338,7 +1582,7 @@ impl EntityAnimation {
         Ok(out)
     }
 
-    fn advance(&mut self, delta: f64) -> Vec<usize> {
+    fn advance(&mut self, delta: f64, include_unrepresented_events: bool) -> Vec<usize> {
         let previous = self.playhead;
         if self.visible {
             self.elapsed += delta;
@@ -1366,7 +1610,7 @@ impl EntityAnimation {
             .enumerate()
             .filter_map(|(index, event)| {
                 let time = event.time? as f64;
-                if event.light.is_none() && event.entity.is_none()
+                if !include_unrepresented_events && event.light.is_none() && event.entity.is_none()
                     && !(self.include_particle_only_events && event.particle.is_some())
                     || self.speed <= 0.0
                     || previous == self.playhead
@@ -1530,6 +1774,11 @@ impl ViewerLightLifecycle {
 
     pub(crate) fn for_authored_particles() -> Self {
         Self::with_entity_manager(Arc::new(Mutex::new(ViewerEntityManager::default())))
+    }
+
+    pub(crate) fn with_checked_effect_fields(mut self) -> Self {
+        self.checked_effect_fields = true;
+        self
     }
 
     pub(crate) fn with_entity_manager(entity_manager: Arc<Mutex<ViewerEntityManager>>) -> Self {
@@ -1912,12 +2161,15 @@ impl ViewerLightLifecycle {
                 index += 1;
             }
         }
-        let fired = self.entities.get_mut(id).unwrap().advance(delta);
+        let fired = self.entities.get_mut(id).unwrap().advance(delta, self.checked_effect_fields);
         if !self.entities[id].visible {
             return Ok(());
         }
         for event_index in fired {
             let state = &self.entities[id];
+            if self.checked_effect_fields {
+                assets.checked_event_fields(&state.token, state.state_index.ok_or("entity event state unavailable")?, Some(event_index))?;
+            }
             let event = state.events[event_index].clone();
             let speed = state.speed;
             if event.light.is_some() || (self.include_particle_only_events && event.particle.is_some()) {
@@ -2609,6 +2861,7 @@ impl ViewerLightLifecycle {
         let publication_lease = Arc::new(revision);
         self.publication_lease = Some(publication_lease.clone());
         let mut rows = DerivedLightRows {
+            owner: self.manager_owner,
             publication_lease: Arc::downgrade(&publication_lease),
             manager: Arc::downgrade(&self.entity_manager),
             publication: (frame.presentation_time_f32_bits, revision),
@@ -3425,7 +3678,7 @@ entity={name=child pdxmesh=mesh cull_radius=500 default_state=boot state={name=b
         meshes.deterministic_sha256 = snapshot::sha256::Sha256::hex(&serde_json::to_vec(&meshes).unwrap());
         meshes.validate().unwrap();
         let manager = Arc::new(Mutex::new(ViewerEntityManager::new(ViewerParticleSeed { counter: 0, seed: 1 })));
-        let adapter = Xmap09LightingAdapter::with_entity_manager(&content.resolver, manager.clone()).unwrap();
+        let adapter = Xmap09LightingAdapter::with_entity_manager(&content.resolver, &content.admission, manager.clone()).unwrap();
         let selection = Xmap15ViewerSelection::default();
         let sort = crate::particle_runtime::ParticleSortCamera {
             position_f32_bits: camera.current_eye().map(f32::to_bits),
@@ -3901,6 +4154,17 @@ light={name=flash color={r=1 g=1 b=1} intensity=1 radius=8 falloff=1 position={x
             assert_eq!(admit_light_census(Ok(census), [0., 0., 0.125, 0.125]).expect("fixture light census must be admitted").counts.admitted_instances, 4);
         });
         assert!(rows.root_animation(&content.resolver, &content.admission, &child).is_err());
+        let shared = SharedEntityEffects::new(f32::from_bits(viewer.animation_time_f32_bits), vec![
+            RetainedEntityEffects::new(Arc::new(rows), &content.resolver, &content.admission,
+                f32::from_bits(viewer.animation_time_f32_bits)).unwrap(),
+        ]).unwrap();
+        shared.with_rows(&content.resolver, &content.admission, |census| {
+            assert_eq!(census.fired_instances.iter().map(|instance| instance.id.to_owned())
+                .collect::<Vec<_>>(), birth_order);
+            assert_eq!(census.fired_instances.len(), 4);
+            Ok(())
+        }).unwrap();
+
         let draws = retained_primary_particle_draws(&mut lifecycle, &content, &placed, &viewer);
         assert_eq!(draws.iter().map(|draw| draw.0.clone()).collect::<Vec<_>>(),
             [original[&root].0.clone(), original[&child].0.clone()]);
@@ -4863,6 +5127,211 @@ entity = { name = entity default_state = idle state = { name = idle chance = 1 }
         assert_eq!(lifecycle.entities[&placed[0].id].playhead, 0.5);
     }
 
+    fn publish_effect_test_owners(
+        lifecycles: &mut [&mut ViewerLightLifecycle], resolver: &GameFileResolver,
+        placed: &[Vec<Xmap09PlacedEntity>], viewer: &crate::ViewerOwnedMapState,
+    ) -> Vec<Arc<DerivedLightRows>> {
+        struct Owner<'a> {
+            lifecycle: &'a mut ViewerLightLifecycle, resolver: &'a GameFileResolver,
+            pending: Option<PreparedLightEntityFrame>, frame: crate::particle_runtime::EntityManagerFrame,
+            output: &'a mut Option<DerivedLightRows>,
+        }
+        impl crate::production_foundation::PreparedEntityManagerOwner for Owner<'_> {
+            fn manager(&self) -> Arc<Mutex<ViewerEntityManager>> { self.lifecycle.entity_manager() }
+            fn owner(&self) -> crate::particle_runtime::EntityManagerOwner { self.lifecycle.manager_owner() }
+            fn frame(&self) -> crate::particle_runtime::EntityManagerFrame { self.frame }
+            fn advance_root(&mut self, root: &str, _: u32, random: &mut ViewerParticleSeed) -> Result<()> {
+                self.lifecycle.advance_prepared_root(self.resolver, self.pending.as_ref().unwrap(), root, random)
+            }
+            fn advance_effect(&mut self, id: &str, phase: crate::particle_runtime::EntityEffectPhase) -> Result<()> {
+                self.lifecycle.advance_prepared_effect(self.resolver, self.pending.as_ref().unwrap(), id, phase)
+            }
+            fn finish(&mut self) -> Result<()> {
+                *self.output = Some(self.lifecycle.finish_entity_frame(self.resolver, self.pending.take().unwrap())?);
+                Ok(())
+            }
+            fn refuse(&mut self, reason: &str) { self.lifecycle.refuse_entity_publication(reason); }
+        }
+        assert_eq!(lifecycles.len(), placed.len());
+        let pending = lifecycles.iter_mut().zip(placed).map(|(lifecycle, placed)|
+            lifecycle.prepare_entity_frame(resolver, placed, viewer, None).unwrap()).collect::<Vec<_>>();
+        let mut output = (0..lifecycles.len()).map(|_| None).collect::<Vec<_>>();
+        {
+            let mut owners = lifecycles.iter_mut().zip(pending).zip(output.iter_mut())
+                .map(|((lifecycle, pending), output)| {
+                    let frame = pending.frame;
+                    Box::new(Owner { lifecycle: &mut **lifecycle, resolver, pending: Some(pending), frame, output })
+                        as Box<dyn crate::production_foundation::PreparedEntityManagerOwner + '_>
+                }).collect::<Vec<_>>();
+            crate::production_foundation::dispatch_prepared_entity_owners(&mut owners).unwrap();
+        }
+        output.into_iter().map(|rows| Arc::new(rows.unwrap())).collect()
+    }
+
+    #[test]
+    fn shared_light_census_uses_global_registration_and_rechecks_after_unlocked_callback() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=16 duration=10 emission=8 life=20}}",
+            &[("gfx/entity.asset", br#"
+entity={name=entity default_state=idle state={name=idle length=10
+ event={time=0 particle=paired light=flash trigger_once=yes}}}
+light={name=flash color={r=1 g=1 b=1} intensity=1 radius=8 falloff=1 position={x=1 y=0 z=0}}
+"#)]);
+        let (_, mut placed, viewer) = fixture(2);
+        let mut world = IDENTITY;
+        world[12..15].copy_from_slice(&viewer.camera.as_ref().unwrap().current_look_at());
+        for row in &mut placed { row.world_matrix_f32_bits = world.map(f32::to_bits); }
+        let manager = Arc::new(Mutex::new(ViewerEntityManager::default()));
+        let mut first = ViewerLightLifecycle::with_entity_manager(manager.clone());
+        let mut second = ViewerLightLifecycle::with_entity_manager(manager.clone());
+        let rows = publish_effect_test_owners(&mut [&mut first, &mut second], &content.resolver,
+            &[vec![placed[0].clone()], vec![placed[1].clone()]], &viewer);
+        let time = f32::from_bits(viewer.animation_time_f32_bits);
+        let owners = rows.iter().map(|rows| RetainedEntityEffects::new(
+            rows.clone(), &content.resolver, &content.admission, time).unwrap()).collect::<Vec<_>>();
+        let expected = vec![second.instances[0].id.clone(), first.instances[0].id.clone()];
+        for order in [owners.clone(), owners.iter().rev().cloned().collect()] {
+            let shared = SharedEntityEffects::new(time, order).unwrap();
+            shared.with_rows(&content.resolver, &content.admission, |census| {
+                assert_eq!(census.fired_instances.iter().map(|row| row.id.to_owned()).collect::<Vec<_>>(), expected);
+                for light in census.fired_instances {
+                    let pair = light.paired_particle.unwrap();
+                    assert!(!pair.finished);
+                    assert_eq!(pair.world_matrix_f32_bits, world.map(f32::to_bits));
+                }
+                let admitted = admit_light_census(Ok(census), [0., 0., 0.125, 0.125]).unwrap();
+                assert_eq!(admitted.counts.admitted_instances, 2);
+                Ok(())
+            }).unwrap();
+        }
+        assert!(SharedEntityEffects::new(time, vec![owners[0].clone()]).is_err());
+        assert!(SharedEntityEffects::new(time, vec![owners[0].clone(), owners[0].clone()]).is_err());
+        let shared = SharedEntityEffects::new(time, owners).unwrap();
+        let mut called = false;
+        let error = shared.with_rows(&content.resolver, &content.admission, |_| {
+            called = true;
+            assert!(manager.try_lock().is_ok(), "consumer must not inherit the manager lock");
+            first.reset_population();
+            Ok(())
+        }).unwrap_err();
+        assert!(called);
+        assert!(error.to_string().contains("unpublished"));
+        let mut stale_callbacks = 0;
+        assert!(shared.with_rows(&content.resolver, &content.admission, |_| {
+            stale_callbacks += 1; Ok(())
+        }).is_err());
+        assert_eq!(stale_callbacks, 0);
+    }
+
+    #[test]
+    fn camera_rejection_does_not_disable_events_but_entity_enable_does() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=16 duration=10 emission=8 life=20}}",
+            &[("gfx/entity.asset", br#"
+entity={name=entity default_state=idle state={name=idle length=10
+ event={time=0.25 particle=paired light=flash trigger_once=yes}}}
+light={name=flash color={r=1 g=1 b=1} intensity=1 radius=8 falloff=1 position={x=0 y=0 z=0}}
+"#)]);
+        let (_, mut placed, mut viewer) = fixture(2);
+        let camera = viewer.camera.as_ref().unwrap();
+        let mut world = IDENTITY;
+        world[12..15].copy_from_slice(&camera.current_look_at());
+        world[13] = camera.current_eye()[1] + 10000.0;
+        for row in &mut placed { row.world_matrix_f32_bits = world.map(f32::to_bits); }
+        viewer.animation_time_f32_bits = 0.0f32.to_bits();
+        viewer.frame_delta_seconds_f32_bits = 0.0f32.to_bits();
+        let manager = Arc::new(Mutex::new(ViewerEntityManager::default()));
+        let mut disabled = ViewerLightLifecycle::with_entity_manager(manager.clone());
+        let mut camera_hidden = ViewerLightLifecycle::with_entity_manager(manager);
+        let populations = [vec![placed[0].clone()], vec![placed[1].clone()]];
+        publish_effect_test_owners(&mut [&mut disabled, &mut camera_hidden], &content.resolver, &populations, &viewer);
+        disabled.entities.get_mut(&placed[0].id).unwrap().visible = false;
+        viewer.animation_time_f32_bits = 0.5f32.to_bits();
+        viewer.frame_delta_seconds_f32_bits = 0.5f32.to_bits();
+        let rows = publish_effect_test_owners(&mut [&mut disabled, &mut camera_hidden],
+            &content.resolver, &populations, &viewer);
+        assert_eq!(disabled.entities[&placed[0].id].playhead, 0.5);
+        assert_eq!(disabled.entities[&placed[0].id].elapsed, 0.0);
+        assert!(disabled.instances.is_empty());
+        assert_eq!(camera_hidden.entities[&placed[1].id].playhead, 0.5);
+        assert_eq!(camera_hidden.entities[&placed[1].id].elapsed, 0.5);
+        assert_eq!(rows[1].authored_particles.len(), 1);
+        let particle = camera_hidden.instances[0].particle.as_ref().unwrap();
+        let view = particle.runtime.gpu_view(particle.handle).unwrap();
+        assert!(!view.root_subsystems().next().unwrap().records()
+            .collect::<std::result::Result<Vec<_>, _>>().unwrap().is_empty());
+        let pending = camera_hidden.prepare_entity_frame(&content.resolver, &populations[1], &viewer, None).unwrap();
+        let mut visibility = BTreeMap::new();
+        camera_hidden.extend_particle_only_visibility(&pending, viewer.camera.as_ref(), &mut visibility).unwrap();
+        assert_eq!(visibility[&placed[1].id], [false; 3]);
+        assert!(camera_hidden.entities[&placed[1].id].visible, "frustum rejection cannot write entity +e8");
+    }
+
+    #[test]
+    fn checked_unit_events_refuse_unsupported_fields_before_child_or_next_state_birth() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        for attachment in ["attach={\"\"=child}", "state={name=idle event={time=0 entity=child}}"] {
+            let root_state = if attachment.starts_with("attach") { "state={name=idle}" } else { "" };
+            let source = format!(
+                "entity={{name=entity default_state=idle {attachment} {root_state}}}\nentity={{name=child default_state=idle state={{name=idle event={{time=0 particle=paired sound=alarm}}}}}}");
+            let content = Fixture::with_extra_files(REGISTRATION,
+                "particle={name=effect subsystem={name=s max_amount=4 duration=1 emission=8 life=2}}",
+                &[("gfx/entity.asset", source.as_bytes())]);
+            let (_, placed, viewer) = fixture(1);
+            let mut lifecycle = ViewerLightLifecycle::for_authored_particles().with_checked_effect_fields();
+            let error = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).err().unwrap();
+            assert!(format!("{error:?}").contains("sound"));
+            assert!(lifecycle.instances.is_empty(), "unsupported child callback must refuse before spawning its particle");
+            assert!(lifecycle.publication_refusal.is_some());
+        }
+        let content = Fixture::with_extra_files(REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=4 duration=1 emission=8 life=2}}",
+            &[("gfx/entity.asset", br#"
+entity={name=entity default_state=idle state={name=idle
+ event={time=0 particle=paired} event={time=0 sound=alarm}}}
+"#)]);
+        let (_, placed, viewer) = fixture(1);
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles().with_checked_effect_fields();
+        let error = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).err().unwrap();
+        assert!(format!("{error:?}").contains("sound"));
+        assert_eq!(lifecycle.instances.len(), 1, "earlier event side effects must survive the later refusal");
+        assert_eq!(lifecycle.instances[0].authored_event_index, 0);
+        assert!(lifecycle.publication_refusal.is_some());
+        assert!(lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).is_err());
+        assert_eq!(lifecycle.instances.len(), 1);
+        let content = Fixture::with_extra_files(REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=4 duration=1 emission=8 life=2}}",
+            &[("gfx/entity.asset", br#"
+entity={name=entity default_state=idle state={name=idle length=0.25 looping=no next_state=bad}
+ state={name=bad event={time=0 particle=paired sound=alarm}}}
+"#)]);
+        let (_, placed, mut viewer) = fixture(1);
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles().with_checked_effect_fields();
+        lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+        assert_eq!(lifecycle.entities[&placed[0].id].active_state.as_deref(), Some("bad"));
+        viewer.animation_time_f32_bits = 1.0f32.to_bits();
+        let error = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).err().unwrap();
+        assert!(format!("{error:?}").contains("sound"));
+        assert!(lifecycle.instances.is_empty());
+        assert!(lifecycle.publication_refusal.is_some());
+    }
+
+    #[test]
+    fn retained_effect_fields_follow_clone_state_and_refuse_unrepresented_sound() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}",
+            &[("gfx/base.asset", br#"
+entity={name=base state={name=idle event={time=0 particle=paired}} state={name=sound event={sound=alarm}}}
+"#), ("gfx/clone.asset", br#"entity={name=entity clone=base}"#)]);
+        let assets = EntityAssets::load(&content.resolver).unwrap();
+        assets.checked_state_event_fields("entity", 0).unwrap();
+        let error = assets.checked_state_event_fields("entity", 1).unwrap_err();
+        assert!(error.to_string().contains("sound"));
+        assert!(assets.checked_state_event_fields("entity", 2).is_err());
+    }
+
     #[test]
     fn separately_owned_roots_share_one_actual_event_and_particle_submission_pass() {
         use crate::particle_authored::test_support::Fixture;
@@ -5369,11 +5838,11 @@ entity = { name = child }
     fn hidden_entity_advances_playhead_without_firing_missed_events_or_elapsed_time() {
         let mut state = animation(false, false);
         state.visible = false;
-        assert!(state.advance(0.5).is_empty());
+        assert!(state.advance(0.5, false).is_empty());
         assert_eq!(state.playhead, 0.5);
         assert_eq!(state.elapsed, 0.0);
         state.visible = true;
-        assert!(state.advance(0.1).is_empty());
+        assert!(state.advance(0.1, false).is_empty());
         assert_eq!(state.playhead, 0.6);
         assert_eq!(state.elapsed, 0.1);
     }
@@ -5820,21 +6289,21 @@ entity = {
         state.speed = 1.0;
         state.authored_speed = 2.0;
         Arc::make_mut(&mut state.events)[0].time = Some(0.75);
-        assert_eq!(state.advance(0.5), [0]);
+        assert_eq!(state.advance(0.5, false), [0]);
         assert_eq!(state.playhead, 1.0);
         let mut end = state.clone();
         end.playhead = 0.8;
         end.elapsed = 0.8;
         end.authored_speed = 1.0;
         Arc::make_mut(&mut end.events)[0].time = Some(0.9);
-        assert_eq!(end.advance(0.3), [0]);
+        assert_eq!(end.advance(0.3, false), [0]);
         assert!(end.elapsed > end.length);
         assert_eq!(end.playhead, 1.0);
-        assert!(end.advance(0.1).is_empty());
+        assert!(end.advance(0.1, false).is_empty());
         let mut no_clip = end;
         no_clip.clip = None;
         no_clip.playhead = 0.8;
-        assert!(no_clip.advance(0.3).is_empty());
+        assert!(no_clip.advance(0.3, false).is_empty());
     }
 
     #[test]
@@ -5850,7 +6319,7 @@ entity = {
         }));
         state.authored_speed = -1.0;
         Arc::make_mut(&mut state.events)[0].time = Some(0.95);
-        assert!(state.advance(0.1).is_empty());
+        assert!(state.advance(0.1, false).is_empty());
         assert_eq!(state.playhead, 0.9);
     }
 
@@ -6969,20 +7438,20 @@ animation={name=clip_b file="test.anim"}"#),
     #[test]
     fn viewer_events_use_half_open_playhead_intervals_and_unscaled_trigger_once_elapsed() {
         let mut state = animation(true, false);
-        assert!(state.advance(0.25).is_empty());
-        assert_eq!(state.advance(0.25), [0]);
-        assert!(state.advance(0.5).is_empty());
-        assert_eq!(state.advance(0.5), [0]);
+        assert!(state.advance(0.25, false).is_empty());
+        assert_eq!(state.advance(0.25, false), [0]);
+        assert!(state.advance(0.5, false).is_empty());
+        assert_eq!(state.advance(0.5, false), [0]);
         let mut once = animation(true, true);
         once.speed = 2.0;
-        assert_eq!(once.advance(0.2), [0]);
-        assert!(once.advance(0.4).is_empty());
-        assert_eq!(once.advance(0.1), [0]);
-        assert!(once.advance(1.0).is_empty());
+        assert_eq!(once.advance(0.2, false), [0]);
+        assert!(once.advance(0.4, false).is_empty());
+        assert_eq!(once.advance(0.1, false), [0]);
+        assert!(once.advance(1.0, false).is_empty());
         let mut idle = animation(false, false);
-        assert_eq!(idle.advance(2.0), [0]);
+        assert_eq!(idle.advance(2.0, false), [0]);
         assert_eq!(idle.playhead, 2.0);
-        assert!(idle.advance(10.0).is_empty());
+        assert!(idle.advance(10.0, false).is_empty());
     }
 
     #[test]

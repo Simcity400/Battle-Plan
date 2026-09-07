@@ -613,7 +613,7 @@ pub use production_d3d::{
 };
 pub use production_features::xmap13_combat_identity::Xmap13CombatIdentityProvider;
 pub use production_features::xmap13::{
-    Xmap13ModelHitPublication, Xmap13ModelObjectRefusal,
+    Xmap13ModelHitPublication, Xmap13ModelObjectRefusal, Xmap13UnitParticlePublication,
     prepare_xmap13_effect_identity, Xmap13MotionClock, Xmap13MotionSample, Xmap13MotionState, PreparedXmap13CounterGroup, PreparedXmap13CounterItem,
     PreparedXmap13Frame, PreparedXmap13HitTarget, PreparedXmap13Unit, Xmap13AuthoredEffectKind,
     Xmap13AuthoredStateEvent, Xmap13CounterAllegiance, Xmap13CounterFrameSelection,

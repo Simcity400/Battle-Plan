@@ -207,6 +207,39 @@ pub(super) struct LandModelCandidate {
     pub placement: Xmap13HelperPlacement,
 }
 
+pub struct Xmap13UnitParticlePublication {
+    owner: crate::xmap09_light_lifecycle::RetainedEntityEffects,
+    viewer: crate::ViewerOwnedMapState,
+    prepared_sha256: String,
+    unbound: Vec<portable_render_stream::ElementDiagnostic>,
+}
+
+impl Xmap13UnitParticlePublication {
+    fn check(&self, context: &FoundationFeatureContext<'_>) -> Result<()> {
+        let prepared = context.prepared_units.ok_or("XMAP13 particle prepared units unavailable")?;
+        if context.viewer != &self.viewer || prepared.deterministic_sha256 != self.prepared_sha256 {
+            return Err("XMAP13 particle publication belongs to another viewer/frame".into());
+        }
+        prepared.validate()?;
+        let world = derived_frame_digest(context.world_frame)?;
+        if prepared.semantic_input_sha256 !=
+            derived::population_digest_from_world(&world, context.xmap13_motion)? {
+            return Err("XMAP13 particle publication belongs to another world/motion input".into());
+        }
+        context.shared_entity_effects.ok_or("entity_manager.effects.publication_unavailable")?
+            .check_owner(&self.owner, f32::from_bits(context.viewer.animation_time_f32_bits))
+    }
+
+    pub(crate) fn with_diagnostics<T>(&self, context: &FoundationFeatureContext<'_>,
+        visit: impl FnOnce(&[portable_render_stream::ElementDiagnostic]) -> Result<T>,
+    ) -> Result<T> {
+        self.check(context)?;
+        let result = visit(&self.unbound);
+        self.check(context)?;
+        result
+    }
+}
+
 pub(super) struct LandRuntime {
     lifecycle: ViewerLightLifecycle,
     refused: bool,
@@ -230,7 +263,7 @@ impl LandRuntime {
 
     pub(super) fn new(manager: Arc<Mutex<crate::particle_runtime::ViewerEntityManager>>) -> Self {
         Self {
-            lifecycle: ViewerLightLifecycle::with_entity_manager(manager),
+            lifecycle: ViewerLightLifecycle::with_entity_manager(manager).with_checked_effect_fields(),
             refused: false,
             motion_lifetime: None,
             drawn_provinces: BTreeSet::new(),
@@ -253,6 +286,18 @@ pub(super) struct FinishedLandPopulation {
     published: Arc<DerivedLightRows>,
     object_owner: Arc<()>,
     objects: Option<Xmap13PublishedLandObjects>,
+    particle_visibility: Option<BTreeMap<String, std::result::Result<[bool; 3], String>>>,
+}
+
+struct LandLifecycleGuard<'a>(MutexGuard<'a, LandRuntime>);
+
+impl std::ops::Deref for LandLifecycleGuard<'_> {
+    type Target = ViewerLightLifecycle;
+    fn deref(&self) -> &Self::Target { &self.0.lifecycle }
+}
+
+impl std::ops::DerefMut for LandLifecycleGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0.lifecycle }
 }
 
 struct PreparedLandOwner<'a> {
@@ -280,13 +325,8 @@ impl PreparedEntityManagerOwner for PreparedLandOwner<'_> {
     ) -> Result<()> {
         self.runtime.lifecycle.advance_prepared_root(
             &self.adapter.content.resolver,
-            &self
-                .pending
-                .as_ref()
-                .ok_or("XMAP13 owner already finished")?
-                .prepared,
-            root,
-            random,
+            &self.pending.as_ref().ok_or("XMAP13 owner already finished")?.prepared,
+            root, random,
         )
     }
     fn advance_effect(
@@ -318,6 +358,7 @@ impl PreparedEntityManagerOwner for PreparedLandOwner<'_> {
             published: Arc::new(published),
             object_owner: Arc::new(()),
             objects: None,
+            particle_visibility: None,
         });
         Ok(())
     }
@@ -627,6 +668,101 @@ impl Xmap13Adapter {
         })
     }
 
+    pub(super) fn retained_land_effects(&self, time: f32)
+        -> Result<Option<crate::xmap09_light_lifecycle::RetainedEntityEffects>>
+    {
+        let finished = self.finished_land.lock().map_err(|_| "XMAP13 publication lock poisoned")?;
+        let Some(finished) = finished.as_ref() else { return Ok(None); };
+        Ok(Some(crate::xmap09_light_lifecycle::RetainedEntityEffects::new(
+            finished.published.clone(), &self.content.resolver, &self.content.admission, time,
+        )?))
+    }
+
+    fn checked_land_particle_visibility(&self, time: f32, context: Option<&FoundationFeatureContext<'_>>)
+        -> Result<BTreeMap<String, [bool; 3]>>
+    {
+        let finished = self.finished_land.lock().map_err(|_| "XMAP13 publication lock poisoned")?;
+        let finished = finished.as_ref().ok_or("XMAP13 particle publication unavailable")?;
+        crate::xmap09_light_lifecycle::RetainedEntityEffects::new(
+            finished.published.clone(), &self.content.resolver, &self.content.admission, time,
+        )?;
+        if let Some(context) = context {
+            if finished.viewer != *context.viewer { return Err("XMAP13 particle viewer differs".into()); }
+            finished.population.validate_census(context.world_frame)?;
+        }
+        let visibility = finished.particle_visibility.as_ref()
+            .ok_or("XMAP13 particle materialization unavailable")?;
+        let mut roots = BTreeMap::new();
+        for candidate in &finished.candidates {
+            let root = root_id(candidate.placement.anchor_province_id);
+            finished.published.root_animation(&self.content.resolver, &self.content.admission, &root)?;
+            let mask = visibility.get(&root).ok_or("XMAP13 particle root visibility unavailable")?
+                .as_ref().map_err(|reason| format!("XMAP13 particle root {root}: {reason}"))?;
+            if roots.insert(root, *mask).is_some() {
+                return Err("XMAP13 particle root duplicated".into());
+            }
+        }
+        if roots.len() != visibility.len() {
+            return Err("XMAP13 particle visibility has foreign roots".into());
+        }
+        Ok(roots)
+    }
+
+    pub(super) fn retained_land_particle_owner(
+        &self, time: f32, cameras: [crate::particle_runtime::ParticleSortCamera; 3],
+    ) -> Result<Option<Box<dyn crate::production_foundation::RetainedParticleDrawOwner + '_>>> {
+        let roots = self.checked_land_particle_visibility(time, None)?;
+        let runtime = self.land_runtime.lock().map_err(|_| "XMAP13 lifecycle lock poisoned")?;
+        Ok(Some(Box::new(crate::xmap09_light_lifecycle::RetainedLifecycleParticleOwner::new(
+            LandLifecycleGuard(runtime), time, cameras, roots,
+        )?)))
+    }
+
+    pub(super) fn land_particle_publication(&self, context: &FoundationFeatureContext<'_>)
+        -> Result<Option<Xmap13UnitParticlePublication>>
+    {
+        self.checked_land_particle_visibility(f32::from_bits(context.viewer.animation_time_f32_bits), Some(context))?;
+        let prepared = context.prepared_units.ok_or("XMAP13 particle prepared units unavailable")?;
+        self.published_land_objects(context, prepared)
+            .map_err(|reason| format!("XMAP13 particle model publication: {reason:?}"))?;
+        let finished = self.finished_land.lock().map_err(|_| "XMAP13 publication lock poisoned")?;
+        let finished = finished.as_ref().ok_or("XMAP13 particle publication unavailable")?;
+        let owner = crate::xmap09_light_lifecycle::RetainedEntityEffects::new(
+            finished.published.clone(), &self.content.resolver, &self.content.admission,
+            f32::from_bits(context.viewer.animation_time_f32_bits),
+        )?;
+        let mut unbound = Vec::new();
+        let mut refuse = |branch: &str, count: u64, detail: String| {
+            unbound.push(portable_render_stream::ElementDiagnostic::family_exception(
+                MapVisualFamily::ParticlesEffects, branch, count, detail));
+        };
+        if context.world_frame.division_units_status() != ViewStatus::Present {
+            refuse("unit-division-event-phase-unbound", 0, "division census is unavailable".into());
+        } else if context.viewer.unit_models_enabled {
+            for (index, _) in context.world_frame.division_units().iter().enumerate() {
+                if !finished.candidates.iter().any(|candidate| candidate.ordinal == index) {
+                    let reason = finished.population.element_diagnostics.iter()
+                        .find(|row| row.element_id == format!("xmap13:division:source:{index}"))
+                        .map(|row| row.detail.as_str()).unwrap_or("division model eligibility unavailable");
+                    refuse(&format!("unit-division-{index}-event-phase-unbound"), 1, reason.into());
+                }
+            }
+        }
+        for (class, status, count) in [
+            ("task-force", context.world_frame.fleets_status(), context.world_frame.fleets().len()),
+            ("air-wing", context.world_frame.wings_status(), context.world_frame.wings().len()),
+        ] {
+            if status != ViewStatus::Present || count != 0 {
+                refuse(&format!("unit-{class}-event-phase-unbound"), u64::try_from(count)?,
+                    format!("{class} retained entity event binding is unavailable ({status:?})"));
+            }
+        }
+        Ok(Some(Xmap13UnitParticlePublication {
+            owner, viewer: finished.viewer.clone(),
+            prepared_sha256: prepared.deterministic_sha256.clone(), unbound,
+        }))
+    }
+
     pub(crate) fn published_land_objects(&self, context: &FoundationFeatureContext<'_>,
         prepared: &PreparedXmap13Frame)
         -> std::result::Result<Xmap13PublishedLandObjects, Xmap13ModelObjectRefusal>
@@ -661,6 +797,7 @@ impl Xmap13Adapter {
             return Ok(());
         };
         finished.objects = None;
+        finished.particle_visibility = None;
         finished.object_owner = Arc::new(());
         if finished.viewer != *context.viewer
             || finished.population.deterministic_sha256 != prepared.semantic_input_sha256
@@ -685,6 +822,7 @@ impl Xmap13Adapter {
             .collect::<BTreeMap<_, _>>();
         let mut drawn_provinces = BTreeSet::new();
         let mut objects = BTreeMap::new();
+        let mut particle_visibility = BTreeMap::new();
         for candidate in &finished.candidates {
             let root = root_id(candidate.placement.anchor_province_id);
             let slot = runtime
@@ -703,6 +841,7 @@ impl Xmap13Adapter {
             let (model, unit, draw, object) = match result {
                 Ok(Some(result)) => result,
                 Ok(None) => {
+                    particle_visibility.insert(root.clone(), Ok([false; 3]));
                     if let Some(row) = prepared.element_diagnostics.iter_mut().find(|row| {
                         row.element_id == format!("xmap13:division:source:{}", candidate.ordinal)
                     }) {
@@ -712,6 +851,7 @@ impl Xmap13Adapter {
                     continue;
                 }
                 Err(error) => {
+                    particle_visibility.insert(root.clone(), Err(error.to_string()));
                     if let Some(row) = prepared.element_diagnostics.iter_mut().find(|row| {
                         row.element_id == format!("xmap13:division:source:{}", candidate.ordinal)
                     }) {
@@ -722,6 +862,7 @@ impl Xmap13Adapter {
                     continue;
                 }
             };
+            particle_visibility.insert(root.clone(), Ok(std::array::from_fn(|pass| draw.partition_mask & (1 << pass) != 0)));
             for key in [
                 &candidate.chain.entity_source,
                 &candidate.chain.entity_pdxmesh_source,
@@ -822,6 +963,7 @@ impl Xmap13Adapter {
             prepared_digest: prepared.deterministic_sha256.clone(), objects,
             published: finished.published.clone(),
         })));
+        finished.particle_visibility = Some(particle_visibility);
         runtime.drawn_provinces = drawn_provinces;
         Ok(())
     }
@@ -890,9 +1032,32 @@ impl Xmap13Adapter {
             .state_ordinal
             .and_then(|ordinal| entity.states.get(ordinal))
             .ok_or("XMAP13 published state unavailable")?;
-        if !state.events.is_empty() {
-            return Err("XMAP13 model state-event projection is not yet bound".into());
-        }
+        let authored_state_events = published.with_root_effects(
+            &self.content.resolver, &self.content.admission, root, |events, _bindings| {
+                if events != state.events.as_slice() {
+                    return Err("XMAP13 retained state effects differ from selected definition".into());
+                }
+                let mut rows = Vec::new();
+                for (index, event) in events.iter().enumerate() {
+                    if event.entity.is_some() {
+                        return Err("XMAP13 unit event-child identity projection unavailable".into());
+                    }
+                    if let Some(token) = &event.particle {
+                        rows.push(Xmap13AuthoredStateEvent {
+                            authored_event_index: u32::try_from(index)?,
+                            authored_effect_index: 0,
+                            effect_kind: Xmap13AuthoredEffectKind::Particle,
+                            effect_token: token.clone(),
+                            node: event.node.clone(),
+                            event_time_f32_bits: event.time.map(f32::to_bits),
+                            keep_particle: Some(event.keep_particle),
+                            trigger_once: Some(event.trigger_once),
+                        });
+                    }
+                }
+                Ok(rows)
+            },
+        )?;
         let mesh = self.content.library.shared_mesh(
             &self.content.resolver,
             &self.content.admission,
@@ -993,8 +1158,8 @@ impl Xmap13Adapter {
             animation_phase_f32_bits: model.pose.animation_phase_f32_bits,
             animation_speed_f32_bits: model.pose.animation_speed_f32_bits,
             pose: model.pose.clone(),
-            authored_event_block_count: 0,
-            authored_state_events: Vec::new(),
+            authored_event_block_count: u32::try_from(state.events.len())?,
+            authored_state_events,
             task_force_members: None,
             counter: None,
             world_matrix_f32_bits: draw.world_matrix_f32_bits,
