@@ -973,7 +973,7 @@ pub fn resolve_literal_layer_path(
     logical_path: &str,
 ) -> Result<Option<(PathBuf, LayerPathFacts)>, String> {
     let logical_path = crate::sanitize_engine_path(logical_path)?;
-    let root = engine_namespace_root(root)?;
+    let root = checked_directory_root(root)?;
     let mut path = root.clone();
     let mut last_facts = None;
     for part in logical_path.split('/') {
@@ -990,6 +990,25 @@ pub fn resolve_literal_layer_path(
         }
     }
     Ok(last_facts.map(|facts| (path, facts)))
+}
+
+/// Validate a mounted directory root before treating a descendant as absent.
+/// Returns the root in the ordinary namespace used by engine path lookup.
+pub fn checked_directory_root(root: &Path) -> Result<PathBuf, String> {
+    let root = engine_namespace_root(root)?;
+    // A mounted root becoming unavailable is not evidence that a content path
+    // is absent. Refuse before lookup can select a lower layer or certify empty.
+    match stat_ordinary(&root)? {
+        None => return Err("effective VFS layer root is unavailable".into()),
+        Some(facts) if facts.is_reparse_point => {
+            return Err("effective VFS layer root is a reparse point".into());
+        }
+        Some(facts) if !facts.is_dir => {
+            return Err("effective VFS layer root is not a directory".into());
+        }
+        Some(_) => {}
+    }
+    Ok(root)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1301,6 +1320,7 @@ fn list_layer_entries_with_budget(
     match layer.storage_kind {
         LayerStorageKind::Directory => {
             let start = if prefix.is_empty() {
+                checked_directory_root(&layer.local_source)?;
                 layer.local_source.clone()
             } else {
                 for component in prefix.split('/') {
@@ -1679,6 +1699,99 @@ mod tests {
             portable_test_fs_retry::remove_dir_all(root).unwrap();
         }
         assert_eq!(resolved[0], resolved[1]);
+    }
+
+    #[test]
+    fn vanilla_relocation_preserves_content_and_missing_root_is_not_absence() {
+        let root = temp("vanilla_relocation");
+        let original = root.join("original");
+        let relocated = root.join("relocated");
+        write(&original, "interface/Fixture.gfx", b"spriteTypes = {}");
+        let mount = |source: &Path| EffectiveVfsLayerMount {
+            ordinal: 0,
+            layer_kind: ContentLayerKind::Base,
+            layer_id: "base".into(),
+            storage_kind: LayerStorageKind::Directory,
+            local_source: source.to_path_buf(),
+            source_container_sha256: None,
+            replace_paths: Vec::new(),
+        };
+        let before = EffectiveVfs::new("a".repeat(64), [mount(&original)]).unwrap();
+        let expected = before.resolve_required("interface/Fixture.gfx", "fixture").unwrap();
+        assert!(before.resolve("interface/absent.gfx").unwrap().is_none());
+        assert!(before.list_recursive("absent", None).unwrap().is_empty());
+        fs::rename(&original, &relocated).unwrap();
+        let after = EffectiveVfs::new("a".repeat(64), [mount(&relocated)]).unwrap();
+        // A new unrelated file does not change the identity of the consumed winner.
+        write(&relocated, "unrelated/local.txt", b"local only");
+        assert_eq!(after.resolve_required("interface/Fixture.gfx", "fixture").unwrap(), expected);
+        let encoded = serde_json::to_string(&expected.content).unwrap();
+        assert!(!encoded.contains(&root.to_string_lossy().replace('\\', "/")));
+        assert!(!encoded.contains("original"));
+        assert!(!encoded.contains("relocated"));
+        for result in [
+            before.resolve("interface/Fixture.gfx").map(|_| ()),
+            before.list_recursive("interface", Some("gfx")).map(|_| ()),
+            before.effective_entries().map(|_| ()),
+        ] {
+            let error = result.expect_err("a missing mounted base root is not an empty namespace");
+            assert_eq!(error, "effective VFS layer root is unavailable");
+        }
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unavailable_override_root_refuses_instead_of_selecting_base_content() {
+        let root = temp("unavailable_override");
+        write(&root.join("game"), "gfx/fx/shared.shader", b"base");
+        write(&root.join("mod"), "gfx/fx/shared.shader", b"override");
+        let vfs = EffectiveVfs::new("a".repeat(64), mounts(&root)).unwrap();
+        assert_eq!(vfs.resolve_required("gfx/fx/shared.shader", "fixture").unwrap().bytes, b"override");
+        fs::rename(root.join("mod"), root.join("moved_mod")).unwrap();
+        assert_eq!(
+            vfs.resolve("gfx/fx/shared.shader").unwrap_err(),
+            "effective VFS layer root is unavailable"
+        );
+        // A file in the old root's place is also unavailable, not an empty mod.
+        fs::write(root.join("mod"), b"not a directory").unwrap();
+        for result in [
+            vfs.resolve("gfx/fx/shared.shader").map(|_| ()),
+            vfs.list_recursive("gfx", Some("shader")).map(|_| ()),
+            vfs.effective_entries().map(|_| ()),
+        ] {
+            assert_eq!(result.unwrap_err(), "effective VFS layer root is not a directory");
+        }
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replaced_root_junction_cannot_certify_absence_or_enumerate_content() {
+        let root = temp("root_junction");
+        write(&root.join("game"), "gfx/fx/shared.shader", b"base");
+        fs::create_dir_all(root.join("mod")).unwrap();
+        let vfs = EffectiveVfs::new("a".repeat(64), mounts(&root)).unwrap();
+        fs::rename(root.join("mod"), root.join("moved_mod")).unwrap();
+        // Junction creation needs no developer mode or administrator rights.
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(root.join("mod"))
+            .arg(root.join("moved_mod"))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "junction fixture: {output:?}");
+        let results = [
+            resolve_literal_layer_path(&root.join("mod"), "absent/file.gfx").map(|_| ()),
+            vfs.resolve("gfx/fx/shared.shader").map(|_| ()),
+            vfs.list_recursive("gfx", Some("shader")).map(|_| ()),
+            vfs.effective_entries().map(|_| ()),
+        ];
+        // Remove the owned junction itself before cleaning up its target.
+        fs::remove_dir(root.join("mod")).unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+        for result in results {
+            assert_eq!(result.unwrap_err(), "effective VFS layer root is a reparse point");
+        }
     }
 
     #[test]
