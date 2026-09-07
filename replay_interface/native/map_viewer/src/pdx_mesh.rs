@@ -891,7 +891,7 @@ fn extract_mesh(
     }
 
     let positions = positions.ok_or_else(|| format!("{path}: missing p (positions)"))?;
-    if positions.is_empty() || positions.len() % 3 != 0 {
+    if positions.len() % 3 != 0 {
         return Err(format!(
             "{path}: p has {} floats, not a multiple of 3",
             positions.len()
@@ -2308,6 +2308,103 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod empty_normal_row_tests {
+    use super::*;
+    use super::test_fixtures::{push_object, push_prop_f, push_prop_i, push_prop_s};
+
+    fn binary_row(p: Option<&[f32]>, tri: Option<&[i32]>, attributes: &[(&str, &[f32])]) -> Vec<u8> {
+        let mut bytes = test_fixtures::collision_before_drawable_bytes();
+        let marker = b"[[[mesh\0";
+        let start = bytes.windows(marker.len()).rposition(|window| window == marker).unwrap();
+        bytes.truncate(start);
+        push_object(&mut bytes, 3, "mesh");
+        if let Some(p) = p { push_prop_f(&mut bytes, "p", p); }
+        if let Some(tri) = tri { push_prop_i(&mut bytes, "tri", tri); }
+        for (name, values) in attributes { push_prop_f(&mut bytes, name, values); }
+        push_prop_f(&mut bytes, "boundingsphere", &[7.0, 8.0, 9.0, 10.0]);
+        push_object(&mut bytes, 4, "aabb");
+        push_prop_f(&mut bytes, "min", &[-7.0, -8.0, -9.0]);
+        push_prop_f(&mut bytes, "max", &[17.0, 18.0, 19.0]);
+        push_object(&mut bytes, 4, "material");
+        push_prop_s(&mut bytes, "shader", "PdxMeshStandard");
+        push_prop_s(&mut bytes, "diff", "authored_empty_diffuse.dds");
+        push_prop_s(&mut bytes, "n", "authored_empty_normal.dds");
+        push_prop_s(&mut bytes, "spec", "authored_empty_specular.dds");
+        bytes
+    }
+
+    #[test]
+    fn present_empty_binary_streams_retain_normal_row_material_bounds_and_original_ordinal() {
+        let bytes = binary_row(Some(&[]), Some(&[]), &[("n", &[]), ("ta", &[]), ("u0", &[]), ("u1", &[])]);
+        let tree = parse_pdx_asset(&bytes).unwrap();
+        let collision = tree.native_collision(1.0).unwrap().unwrap();
+        let original = parse_pdx_asset(&test_fixtures::collision_before_drawable_bytes()).unwrap();
+        assert_eq!(collision, original.native_collision(1.0).unwrap().unwrap());
+        let model = extract_pdx_model(&tree).unwrap();
+        assert_eq!(model.shapes.len(), 1);
+        assert_eq!(model.shapes[0].meshes.len(), 1);
+        let mesh = &model.shapes[0].meshes[0];
+        assert_eq!(mesh.source_mesh_ordinal, 2);
+        assert!(mesh.verts.is_empty() && mesh.indices.is_empty());
+        assert_eq!(mesh.normals.as_deref(), Some(&[][..]));
+        assert_eq!(mesh.tangents.as_deref(), Some(&[][..]));
+        assert_eq!(mesh.uv0.as_deref(), Some(&[][..]));
+        assert_eq!(mesh.uv1.as_deref(), Some(&[][..]));
+        assert_eq!(mesh.aabb_min, [-7.0, -8.0, -9.0]);
+        assert_eq!(mesh.aabb_max, [17.0, 18.0, 19.0]);
+        assert_eq!(mesh.bounding_sphere, Some([7.0, 8.0, 9.0, 10.0]));
+        assert_eq!(mesh.material.shader, "PdxMeshStandard");
+        assert_eq!(mesh.material.diffuse.as_deref(), Some("authored_empty_diffuse.dds"));
+        assert_eq!(mesh.material.normal_map.as_deref(), Some("authored_empty_normal.dds"));
+        assert_eq!(mesh.material.specular.as_deref(), Some("authored_empty_specular.dds"));
+    }
+
+    #[test]
+    fn absent_optional_attributes_remain_absent_on_an_empty_normal_row() {
+        let tree = parse_pdx_asset(&binary_row(Some(&[]), Some(&[]), &[])).unwrap();
+        let model = extract_pdx_model(&tree).unwrap();
+        let mesh = &model.shapes[0].meshes[0];
+        assert!(mesh.normals.is_none() && mesh.tangents.is_none() && mesh.uv0.is_none() && mesh.uv1.is_none());
+        assert_eq!(mesh.source_mesh_ordinal, 2);
+        assert!(mesh.verts.is_empty() && mesh.indices.is_empty());
+    }
+
+    #[test]
+    fn missing_or_misaligned_positions_are_not_empty_streams() {
+        for (p, expected) in [(None, "missing p (positions)"), (Some(&[0.0, 1.0][..]), "p has 2 floats, not a multiple of 3")] {
+            let tree = parse_pdx_asset(&binary_row(p, Some(&[]), &[])).unwrap();
+            assert!(extract_pdx_model(&tree).unwrap_err().to_string().contains(expected));
+            assert!(tree.native_collision(1.0).unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn zero_vertices_preserve_missing_triangle_tuple_and_index_refusals() {
+        for (tri, expected) in [
+            (None, "missing tri (indices)"),
+            (Some(&[0][..]), "tri has 1 indices, not a multiple of 3"),
+            (Some(&[0, 0][..]), "tri has 2 indices, not a multiple of 3"),
+            (Some(&[0, 0, 0][..]), "triangle index 0 out of bounds for 0 vertices"),
+            (Some(&[-1, 0, 0][..]), "triangle index -1 out of bounds for 0 vertices"),
+        ] {
+            let tree = parse_pdx_asset(&binary_row(Some(&[]), tri, &[])).unwrap();
+            assert!(extract_pdx_model(&tree).unwrap_err().to_string().contains(expected));
+        }
+    }
+
+    #[test]
+    fn nonempty_per_vertex_attributes_refuse_on_zero_vertices() {
+        for (name, count) in [("n", 3), ("ta", 4), ("u0", 2), ("u1", 2)] {
+            let values = vec![1.0; count];
+            let tree = parse_pdx_asset(&binary_row(Some(&[]), Some(&[]), &[(name, &values)])).unwrap();
+            let error = extract_pdx_model(&tree).unwrap_err().to_string();
+            assert!(error.contains(&format!("{name} has {count} floats")), "{error}");
+            assert!(error.contains(&format!("wanted {count} per vertex x 0")), "{error}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod native_aabb_tests {
