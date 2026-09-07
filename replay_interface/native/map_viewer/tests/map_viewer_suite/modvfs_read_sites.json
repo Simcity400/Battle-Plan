@@ -1717,6 +1717,14 @@
     "include_str!(\"../artifacts/func_140a523d0.decompile.c\"),"
   ],
   "portable_replay/native/engine_evidence/src/xmap13_model_selection.rs": [
+    "(\"func_141652650.instructions.txt\", include_str!(\"../artifacts/func_141652650.instructions.txt\")),",
+    "(\"func_141652650.decompile.c\", include_str!(\"../artifacts/func_141652650.decompile.c\")),",
+    "(\"func_14127aa90.instructions.txt\", include_str!(\"../artifacts/func_14127aa90.instructions.txt\")),",
+    "(\"func_14127aa90.decompile.c\", include_str!(\"../artifacts/func_14127aa90.decompile.c\")),",
+    "(\"func_14227b0d0.instructions.txt\", include_str!(\"../artifacts/func_14227b0d0.instructions.txt\")),",
+    "(\"func_14227b0d0.decompile.c\", include_str!(\"../artifacts/func_14227b0d0.decompile.c\")),",
+    "(\"func_14227ba20.instructions.txt\", include_str!(\"../artifacts/func_14227ba20.instructions.txt\")),",
+    "(\"func_14227ba20.decompile.c\", include_str!(\"../artifacts/func_14227ba20.decompile.c\")),",
     "(\"func_1424afc10.decompile.c\", include_str!(\"../artifacts/func_1424afc10.decompile.c\")),",
     "(\"xui13_registration_copy_helper.datdump.txt\", include_str!(\"../artifacts/xui13_registration_copy_helper.datdump.txt\")),",
     "(\"func_140b481a0.decompile.c\", include_str!(\"../artifacts/func_140b481a0.decompile.c\")),",
