@@ -1472,5 +1472,5 @@ portable_replay/native/engine_evidence/artifacts/func_1422c25e0.instructions.txt
 portable_replay/native/engine_evidence/artifacts/xui13_pool_field_forwarding.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1424ad100.decompile.c text eol=lf
 extractor/native/runs/view2_replay_targets/XUI13_QUOTED_FIELD_VALIDATION.json text eol=lf
-
 extractor/native/runs/orchestrator_20260905/QUOTED_FIELDS_INTEGRATION_EVIDENCE_048.json text eol=lf
+extractor/native/runs/view2_replay_targets/XUI13_QUOTED_DEFAULT_VALIDATION.json text eol=lf

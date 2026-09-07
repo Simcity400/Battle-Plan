@@ -28,7 +28,7 @@ impl AuthoredIconDatabase {
             for entry in root.as_object().ok_or("XUI13 graphic database is not an object")? {
                 let token = entry.key.as_deref().ok_or("XUI13 graphic database has an unnamed root")?;
                 if token.starts_with('@') { continue; }
-                let key = if token.eq_ignore_ascii_case("default") { RootKey::Default }
+                let key = if !entry.key_is_quoted && token.eq_ignore_ascii_case("default") { RootKey::Default }
                     else if continents.contains(token) { RootKey::Continent(token.into()) }
                     else if token.len() == 3 && countries.contains(&token.to_ascii_uppercase()) { RootKey::Country(token.to_ascii_uppercase()) }
                     else if token.strip_prefix("FACTION_").is_some_and(|tag| tag.len() == 3 && !tag.contains('_')) { RootKey::Faction(token[8..].into()) }
@@ -122,6 +122,57 @@ mod tests {
         assert_eq!(db.roots.keys().cloned().collect::<BTreeSet<_>>(), [RootKey::Continent("GER".into()), RootKey::Country("ITA".into()),
             RootKey::Continent("europe".into()),RootKey::Faction("GER".into()),RootKey::Faction("ger".into())].into_iter().collect());
     }
+    #[test]
+    fn bare_default_and_quoted_continent_default_keep_distinct_ordered_pools() {
+        let source = r#"
+            default = { tank = { pool = { icons = { GFX_BareFirst } } } }
+            "default" = { tank = { pool = { icons = { GFX_Continent } } } }
+            DeFaUlT = { tank = { pool = { icons = { GFX_BareLast } } } }
+            "Default" = { tank = { pool = { icons = { GFX_CaseExact } } } }
+        "#;
+        let db = AuthoredIconDatabase::from_sources(&[("roots.txt".into(), source.into())],
+            &BTreeSet::new(), &["default".into(), "Default".into()].into_iter().collect()).unwrap();
+        assert_eq!(db.roots.len(), 3);
+        for (key, expected) in [
+            (RootKey::Default, vec!["GFX_BareLast", "GFX_BareFirst"]),
+            (RootKey::Continent("default".into()), vec!["GFX_Continent"]),
+            (RootKey::Continent("Default".into()), vec!["GFX_CaseExact"]),
+        ] {
+            let context = || -> Result<String, String> { panic!("unfiltered pool needs no country facts") };
+            let rows = db.roots[&key].as_ref().unwrap().matching_rows("tank",
+                &DesignU32Observation::Measured { raw_u32: 0 }, context, context, context).unwrap();
+            assert_eq!(rows.iter().flat_map(|row| row.icons.iter().cloned()).collect::<Vec<_>>(),
+                expected.into_iter().map(|name| DesignerRowIcon::Sprite(name.into())).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn quoted_country_and_continent_failures_do_not_poison_independent_default() {
+        let source = r#"
+            default = { tank = { pool = { icons = { GFX_Default } } } }
+            "default" = scalar
+            "ita" = { tank = { pool = { icons = { GFX_Italy } } } }
+            "GER" = { tank = { pool = { icons = { GFX_Continent } } } }
+            "FACTION_ger" = { tank = { pool = { icons = { GFX_Faction } } } }
+        "#;
+        let db = AuthoredIconDatabase::from_sources(&[("roots.txt".into(), source.into())],
+            &["GER".into(), "ITA".into()].into_iter().collect(),
+            &["default".into(), "GER".into()].into_iter().collect()).unwrap();
+        assert_eq!(db.roots.len(), 5);
+        assert!(db.roots[&RootKey::Continent("default".into())].as_ref().unwrap_err().contains("not an object"));
+        assert!(!db.roots.contains_key(&RootKey::Country("GER".into())));
+        for (key, expected) in [(RootKey::Default, "GFX_Default"),
+            (RootKey::Country("ITA".into()), "GFX_Italy"),
+            (RootKey::Continent("GER".into()), "GFX_Continent"),
+            (RootKey::Faction("ger".into()), "GFX_Faction")] {
+            let context = || -> Result<String, String> { panic!("unfiltered pool needs no country facts") };
+            let rows = db.roots[&key].as_ref().unwrap().matching_rows("tank",
+                &DesignU32Observation::Measured { raw_u32: 0 }, context, context, context).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].icons, [DesignerRowIcon::Sprite(expected.into())]);
+        }
+    }
+
     #[test]
     fn malformed_reached_root_is_retained_without_erasing_other_roots() {
         let db = roots("default = { tank = { pool = { icons = { GFX_default } } } } ITA = scalar");
