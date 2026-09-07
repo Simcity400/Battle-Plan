@@ -3,6 +3,8 @@ pub(crate) mod controller;
 pub mod item_database;
 #[cfg(test)]
 mod capital_joint;
+#[cfg(test)]
+mod full_panel_joint;
 
 use crate::assets::AssetResolver;
 use crate::compose::{
