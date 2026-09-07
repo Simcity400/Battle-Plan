@@ -354,6 +354,8 @@ mod tests {
         std::fs::write(root.0.join("common/country_tags/tags.txt"), br#"GER="countries/Germany.txt""#).unwrap();
         std::fs::write(root.0.join("map/default.map"), br#"continent="continent.txt" definitions="definition.csv" provinces="provinces.bmp""#).unwrap();
         std::fs::write(root.0.join("map/continent.txt"), b"continents={europe}").unwrap();
+        let flag_path = "gfx/flags/small/GER_neutrality.tga";
+        std::fs::copy(root.0.join("gfx/flags/small/GER.tga"), root.0.join(flag_path)).unwrap();
         let path = "@Literal.TGA";
         let rgba = [40, 180, 90, 255];
         let mut texture = std::fs::read(root.0.join("gfx/interface/xui13_test.tga")).unwrap()[..18].to_vec();
@@ -379,7 +381,7 @@ mod tests {
         ] {
             let source = format!(r#"{definitions} default={{ light_tank_chassis_1={{pool={{icons={{{token}}}}}}} unrelated_type={{pool={{"icons"={{GFX_Refused}}}}}} }}"#);
             std::fs::write(root.0.join("gfx/interface/equipmentdesigner/graphic_db/default.txt"), source).unwrap();
-            let renderer = admitted_production_renderer_with_assets(&root.0, None, &[path]);
+            let renderer = admitted_production_renderer_with_assets(&root.0, None, &[path, flag_path]);
             let decoded = renderer.resolver().decode_texture(path).unwrap().image;
             assert_eq!((decoded.width, decoded.height), (8, 8));
             assert!(decoded.pixels.chunks_exact(4).all(|pixel| pixel == rgba));
