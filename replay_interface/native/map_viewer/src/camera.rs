@@ -855,6 +855,25 @@ impl ViewerMapCameraState {
         Ok((inverse_projection, inverse_view))
     }
 
+    pub fn native_screen_ray(&self, cursor: [i32; 2]) -> Result<([f32; 3], [f32; 3])> {
+        let (projection, view) = self.entity_scene_inverse_matrices()?;
+        if self.viewport_width > i32::MAX as u32 || self.viewport_height > i32::MAX as u32 {
+            return Err("native model screen ray viewport exceeds signed native dimensions".into());
+        }
+        let [x, y] = cursor.map(|value| value as f32);
+        let ndc = [
+            (x + x) / self.viewport_width as f32 - 1.0,
+            1.0 - (y + y) / self.viewport_height as f32,
+            0.0,
+        ];
+        let eye = self.current_eye();
+        let direction = native_entity_ray_direction(projection, view, eye, ndc);
+        if eye.into_iter().chain(direction).any(|value| !value.is_finite()) {
+            return Err("native model screen ray has nonfinite operands".into());
+        }
+        Ok((eye, direction))
+    }
+
     pub fn inverse_view_projection_matrix(&self) -> Result<[[f32; 4]; 4]> {
         invert_float4x4(self.production_camera()?.view_projection_matrix)
     }
@@ -1351,6 +1370,22 @@ fn perspective_divide(value: [f32; 4]) -> Result<[f32; 3]> {
     ])
 }
 
+pub(crate) fn native_entity_ray_direction(
+    inverse_projection: [[f32; 4]; 4],
+    inverse_view: [[f32; 4]; 4],
+    eye: [f32; 3],
+    ndc: [f32; 3],
+) -> [f32; 3] {
+    let transform = |matrix: [[f32; 4]; 4], point: [f32; 3], column: usize| {
+        ((point[1] * matrix[1][column] + point[0] * matrix[0][column])
+            + point[2] * matrix[2][column]) + matrix[3][column]
+    };
+    let reciprocal = 1.0 / transform(inverse_projection, ndc, 3);
+    let projected = std::array::from_fn(|axis| transform(inverse_projection, ndc, axis) * reciprocal);
+    crate::particle_runtime::native_normalize(std::array::from_fn(|axis|
+        transform(inverse_view, projected, axis) - eye[axis]), true)
+}
+
 fn native_entity_inverse_projection(aspect: f32, fma: bool) -> Result<[[f32; 4]; 4]> {
     if !aspect.is_finite() || aspect <= 0.0 {
         return Err("entity manager camera inverse projection has invalid aspect".into());
@@ -1704,6 +1739,47 @@ mod tests {
             50.0,
         )
         .expect("viewer camera")
+    }
+
+    #[test]
+    fn native_screen_ray_uses_integer_cursor_and_the_shared_corner_projection() {
+        let camera = viewer_camera_fixture();
+        let (projection, view) = camera.entity_scene_inverse_matrices().unwrap();
+        for (cursor, ndc) in [
+            ([0, 0], [-1.0, 1.0, 0.0]),
+            ([1408, 0], [1.0, 1.0, 0.0]),
+            ([0, 512], [-1.0, -1.0, 0.0]),
+            ([1408, 512], [1.0, -1.0, 0.0]),
+            ([704, 256], [0.0, 0.0, 0.0]),
+            ([-704, 768], [-2.0, -2.0, 0.0]),
+        ] {
+            let (origin, direction) = camera.native_screen_ray(cursor).unwrap();
+            assert_eq!(origin.map(f32::to_bits), camera.current_eye().map(f32::to_bits));
+            assert_eq!(direction.map(f32::to_bits),
+                native_entity_ray_direction(projection, view, origin, ndc).map(f32::to_bits));
+        }
+    }
+
+    #[test]
+    fn shared_native_ray_preserves_projection_divide_translation_and_normalization() {
+        let mut projection = [[0.0; 4]; 4];
+        let mut view = [[0.0; 4]; 4];
+        for axis in 0..4 { projection[axis][axis] = 1.0; view[axis][axis] = 1.0; }
+        projection[3][3] = 2.0;
+        view[3] = [10.0, 20.0, 30.0, 1.0];
+        let direction = native_entity_ray_direction(projection, view, [10.0, 20.0, 30.0], [6.0, 8.0, 0.0]);
+        assert_eq!(direction.map(f32::to_bits), [0x3f19_999a, 0x3f4c_cccd, 0]);
+    }
+
+    #[test]
+    fn native_screen_ray_rejects_unsealed_camera_and_unsigned_only_viewport() {
+        let mut camera = viewer_camera_fixture();
+        camera.viewport_width = 0;
+        assert!(camera.native_screen_ray([0, 0]).is_err());
+        let mut camera = viewer_camera_fixture();
+        camera.viewport_width = i32::MAX as u32 + 1;
+        camera.reseal().unwrap();
+        assert!(camera.native_screen_ray([0, 0]).unwrap_err().to_string().contains("signed native dimensions"));
     }
 
     #[test]

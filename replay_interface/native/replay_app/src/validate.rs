@@ -40,6 +40,13 @@ pub(crate) fn product_foundation_assigned_stage_plan() -> crate::Result<(
 
 #[cfg(windows)]
 impl ProductMapFoundationSession {
+    pub(crate) fn model_picker_frame(
+        &self,
+        prepared: &map_viewer::PreparedXmap13Frame,
+    ) -> std::result::Result<map_viewer::native_model_selection::policy::ModelPickerFrame, map_viewer::Xmap13ModelObjectRefusal> {
+        self.adapters.model_picker_frame(prepared)
+    }
+
     pub(crate) fn visit_particles_for_draw(
         &self,
         presentation_time: f32,

@@ -1502,6 +1502,13 @@ extractor/native/runs/view2_replay_targets/XUI13_QUOTED_FIELD_VALIDATION.json te
 extractor/native/runs/orchestrator_20260905/QUOTED_FIELDS_INTEGRATION_EVIDENCE_048.json text eol=lf
 extractor/native/runs/view2_replay_targets/XUI13_QUOTED_DEFAULT_VALIDATION.json text eol=lf
 extractor/native/runs/orchestrator_20260905/INTEGRATION_VIEW2_QUOTED_DEFAULT_A5F3.json text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14224dfc0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14224dfc0.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424f2200.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424f22c0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424f2330.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424f2270.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1424f2290.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_140608f60.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_140608be0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1401426e0.decompile.c text eol=lf
@@ -1625,3 +1632,8 @@ portable_replay/native/engine_evidence/artifacts/func_140161c20.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_1413d22a0.decompile.c text eol=lf
 portable_replay/native/engine_evidence/data/xui13_generation_closure.json text eol=lf
 extractor/native/runs/view2_replay_targets/AUTHORED_GENERATION_VALIDATION_3C352482.json text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/func_140b450e0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_140b450e0.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1422c3530.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1422c3530.instructions.txt text eol=lf

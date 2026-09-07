@@ -6,7 +6,7 @@ use crate::xmap09_light_lifecycle::{
 use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Xmap13ModelObjectRefusal {
+pub enum Xmap13ModelObjectRefusal {
     ContentLease,
     PublicationUnavailable,
     PublicationGuard(String),
@@ -94,6 +94,38 @@ struct PublishedLandObjects {
 
 #[derive(Clone)]
 pub(crate) struct Xmap13PublishedLandObjects(Arc<PublishedLandObjects>);
+
+#[derive(Clone)]
+pub struct Xmap13ModelHitPublication {
+    objects: Xmap13PublishedLandObjects,
+    resolver: GameFileResolver,
+    admission: ValidatedContentAdmission,
+}
+
+impl Xmap13ModelHitPublication {
+    pub fn prepared_frame_sha256(&self) -> &str {
+        &self.objects.0.prepared_digest
+    }
+
+    pub fn geometry_hit(
+        &self,
+        prepared: &PreparedXmap13Frame,
+        identity: &Xmap13UnitIdentity,
+        province: u32,
+        category: u32,
+        world_origin: [f32; 3],
+        world_direction: [f32; 3],
+    ) -> std::result::Result<bool, Xmap13ModelObjectRefusal> {
+        prepared.validate().map_err(|_| Xmap13ModelObjectRefusal::PreparedFrame)?;
+        if prepared.deterministic_sha256 != self.prepared_frame_sha256() {
+            return Err(Xmap13ModelObjectRefusal::PreparedFrame);
+        }
+        self.objects.with_primary(
+            &self.resolver, &self.admission, identity, province, category,
+            |primary| primary.geometry_hit(world_origin, world_direction),
+        )
+    }
+}
 
 impl Xmap13PublishedLandObjects {
     fn validate(&self, resolver: &GameFileResolver, admission: &ValidatedContentAdmission)
@@ -550,6 +582,18 @@ impl Xmap13Adapter {
             pending: Some(pending),
             frame,
         })))
+    }
+
+    pub(crate) fn model_hit_publication(
+        &self,
+        context: &FoundationFeatureContext<'_>,
+        prepared: &PreparedXmap13Frame,
+    ) -> std::result::Result<Xmap13ModelHitPublication, Xmap13ModelObjectRefusal> {
+        Ok(Xmap13ModelHitPublication {
+            objects: self.published_land_objects(context, prepared)?,
+            resolver: self.content.resolver.clone(),
+            admission: self.content.admission.clone(),
+        })
     }
 
     pub(crate) fn published_land_objects(&self, context: &FoundationFeatureContext<'_>,

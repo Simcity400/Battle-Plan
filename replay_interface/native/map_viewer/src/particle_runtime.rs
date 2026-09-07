@@ -151,14 +151,7 @@ pub(crate) fn entity_scene_cameras(camera: &crate::ViewerMapCameraState) -> crat
     let mut xs = [0.0; 4];
     for (index, ndc) in [[-1.0, 1.0, 0.0], [1.0, 1.0, 0.0],
         [-1.0, -1.0, 0.0], [1.0, -1.0, 0.0]].into_iter().enumerate() {
-        let transform = |matrix: [[f32; 4]; 4], point: [f32; 3], column: usize| {
-            ((point[1] * matrix[1][column] + point[0] * matrix[0][column])
-                + point[2] * matrix[2][column]) + matrix[3][column]
-        };
-        let reciprocal = 1.0 / transform(projection, ndc, 3);
-        let projected = std::array::from_fn(|axis| transform(projection, ndc, axis) * reciprocal);
-        let direction = native_normalize(std::array::from_fn(|axis|
-            transform(view, projected, axis) - position[axis]), true);
+        let direction = crate::camera::native_entity_ray_direction(projection, view, position, ndc);
         xs[index] = entity_scene_corner(position, direction)?;
     }
     entity_scene_flags(camera.map_width as f32, xs)

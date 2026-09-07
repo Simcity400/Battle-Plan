@@ -622,6 +622,12 @@
     "include_str!(\"../artifacts/func_14220a4f0.decompile.c\"),",
     "include_str!(\"../artifacts/func_142209b20.decompile.c\"),"
   ],
+  "portable_replay/native/engine_evidence/src/native_model_picker.rs": [
+    "(\"func_140b450e0.decompile.c\", include_str!(\"../artifacts/func_140b450e0.decompile.c\")),",
+    "(\"func_140b450e0.instructions.txt\", include_str!(\"../artifacts/func_140b450e0.instructions.txt\")),",
+    "(\"func_1422c3530.decompile.c\", include_str!(\"../artifacts/func_1422c3530.decompile.c\")),",
+    "(\"func_1422c3530.instructions.txt\", include_str!(\"../artifacts/func_1422c3530.instructions.txt\")),"
+  ],
   "portable_replay/native/engine_evidence/src/native_model_ray.rs": [
     "(\"func_1422627e0.decompile.c\", include_str!(\"../artifacts/func_1422627e0.decompile.c\")),",
     "(\"func_1422627e0.instructions.txt\", include_str!(\"../artifacts/func_1422627e0.instructions.txt\")),",

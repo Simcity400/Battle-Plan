@@ -386,6 +386,13 @@ fn refuse_prepared_entity_owners(owners: &mut [Box<dyn PreparedEntityManagerOwne
 pub trait ProductionMapFeatureAdapter {
     fn family(&self) -> MapVisualFamily;
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput>;
+    fn model_hit_publication(
+        &self,
+        _context: &FoundationFeatureContext<'_>,
+        _prepared: &crate::PreparedXmap13Frame,
+    ) -> std::result::Result<crate::Xmap13ModelHitPublication, crate::Xmap13ModelObjectRefusal> {
+        Err(crate::Xmap13ModelObjectRefusal::PublicationUnavailable)
+    }
     fn prepare_entity_manager_population(&self, _context: &FoundationFeatureContext<'_>) -> Result<()> {
         Ok(())
     }
@@ -491,6 +498,7 @@ fn classify_family_preparation<T>(
 #[derive(Default)]
 pub struct ProductionMapFeatureAdapters<'a> {
     xmap13_motion: Option<crate::Xmap13MotionSample>,
+    model_hit_publication: std::cell::RefCell<Option<crate::native_model_selection::policy::ModelPickerFrame>>,
     slots: BTreeMap<MapVisualFamily, Box<dyn ProductionMapFeatureAdapter + 'a>>,
     xmap11: Option<crate::production_features::xmap11::Xmap11TreesAdapter>,
     xmap12: Option<crate::production_features::xmap12::Xmap12CitiesBuildingsMapObjectsAdapter>,
@@ -499,6 +507,19 @@ pub struct ProductionMapFeatureAdapters<'a> {
 }
 
 impl<'a> ProductionMapFeatureAdapters<'a> {
+    pub fn model_picker_frame(
+        &self,
+        prepared: &crate::PreparedXmap13Frame,
+    ) -> std::result::Result<crate::native_model_selection::policy::ModelPickerFrame, crate::Xmap13ModelObjectRefusal> {
+        prepared.validate().map_err(|_| crate::Xmap13ModelObjectRefusal::PreparedFrame)?;
+        let frame = self.model_hit_publication.borrow().as_ref()
+            .ok_or(crate::Xmap13ModelObjectRefusal::PublicationUnavailable)?.clone();
+        if frame.prepared() != prepared {
+            return Err(crate::Xmap13ModelObjectRefusal::PreparedFrame);
+        }
+        Ok(frame)
+    }
+
     fn collect_prepared_entity_owners(&self) -> Result<Vec<Box<dyn PreparedEntityManagerOwner + '_>>> {
         let mut owners = Vec::new();
         let mut failure = None;
@@ -1328,6 +1349,7 @@ fn prepare_foundation_frame_inner(
     xmap15_selection: &crate::production_features::xmap15::Xmap15ViewerSelection,
     snow_mud_phase: Option<&crate::xmap07_snow_mud_phase::Xmap07SnowMudPhaseSample>,
 ) -> Result<PreparedFoundationFrame> {
+    *adapters.model_hit_publication.borrow_mut() = None;
     viewer.validate()?;
     content_receipt.validate()?;
     let manifest_sha256 = manifest
@@ -1643,6 +1665,16 @@ fn prepare_foundation_frame_inner(
                     output.disposition
                 }
                 (None, Some(output)) => {
+                    if family == MapVisualFamily::UnitsCounters && publish {
+                        if let Some(units) = output.prepared_units.as_ref() {
+                            let publication = adapters.get(family)
+                                .ok_or(crate::Xmap13ModelObjectRefusal::PublicationUnavailable)
+                                .and_then(|adapter| adapter.model_hit_publication(&context, units));
+                            *adapters.model_hit_publication.borrow_mut() = Some(
+                                crate::native_model_selection::policy::ModelPickerFrame::from_preparation(
+                                    units.clone(), context.viewer.camera.clone(), publication));
+                        }
+                    }
                     if let Some(terrain) = output.prepared_terrain {
                         if family != MapVisualFamily::Terrain
                             || prepared_terrain.replace(terrain).is_some()
