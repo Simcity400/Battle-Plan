@@ -396,7 +396,7 @@ pub fn encode_payload(header: &DivisionStateHeader, rows: &[DivisionStateRow]) -
         division_routes::write_current_template(&mut payload, index, if row.deleted { None } else { row.current_template });
         division_routes::write_route_head(&mut payload, index, if row.deleted { None } else { row.route_head });
     }
-    division_routes::append_inputs(&mut payload, rows.iter().map(|row| if row.deleted { (None, None) } else { (row.ordinary_route.as_deref(), row.alternate_route.as_deref()) }), rows.iter().map(|row| if row.deleted { None } else { row.template_preference.as_ref() }), rows.iter().map(|row| if row.deleted { None } else { row.acclimatization.as_ref() }), &division_routes::unavailable_roster());
+    division_routes::append_inputs(&mut payload, rows.iter().map(|row| if row.deleted { (None, None) } else { (row.ordinary_route.as_deref(), row.alternate_route.as_deref()) }), rows.iter().map(|row| if row.deleted { None } else { row.template_preference.as_ref() }), rows.iter().map(|row| if row.deleted { None } else { row.acclimatization.as_ref() }), &division_routes::unavailable_roster(), &division_routes::unavailable_railway_roster());
     payload
 }
 

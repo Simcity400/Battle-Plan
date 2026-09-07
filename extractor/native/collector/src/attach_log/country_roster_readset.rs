@@ -82,6 +82,21 @@ impl Budget {
     }
 }
 
+pub(super) fn with_country_class<T, R: FnMut(usize, &mut [u8]) -> bool>(
+    budget: &Budget, pointer: usize, expected: u64, read: &mut R,
+    acquire: impl FnOnce(&mut R) -> Result<T, Cause>,
+) -> Result<T, Cause> {
+    let opening = budget.reserve_read(pointer, 8)?.open(read)?;
+    let result = if opening.bytes() == expected.to_le_bytes() {
+        acquire(read)
+    } else {
+        Err(Cause::CountryClassInvalid)
+    };
+    let closing = opening.close(read);
+    if closing.is_err() { return Err(Cause::CountryClassInvalid); }
+    result
+}
+
 // Neither capability is Clone: opening and closing each consume their reservation.
 pub(super) struct ReservedRead { address: usize, width: usize }
 pub(super) struct OpenedRead { address: usize, width: usize, bytes: [u8; 8] }
@@ -197,5 +212,24 @@ mod tests {
         assert_eq!(budget.verification.load(Ordering::Relaxed), 2_000_000);
         assert_eq!(budget.fleet_slots(250_000), Ok(()));
         assert_eq!(budget.fleet_slots(1), Err(Cause::BoundExceeded));
+    }
+}
+
+#[cfg(test)]
+mod country_class_tests {
+    use super::*;
+    #[test]
+    fn class_capability_closes_original_address_after_every_fallible_acquisition_exit() {
+        for early_error in [false,true] { for changed in [false,true] {
+            let budget=Budget::test_limits(16,0);let mut calls=Vec::new();
+            let mut read=|address,bytes:&mut[u8]| { calls.push((address,bytes.len()));
+                bytes.copy_from_slice(&(if changed && calls.len()==2 {8u64}else{7u64}).to_le_bytes());true };
+            let result=with_country_class(&budget,0x1000,7,&mut read,|_| {
+                assert!(budget.read::<1>(0x2000,&mut |_,_|panic!("exhausted budget read")).is_err());
+                if early_error {Err(Cause::OwnerIdentityChanged)}else{Ok(())}
+            });
+            assert_eq!(calls,[(0x1000,8),(0x1000,8)]);
+            assert_eq!(result,if changed {Err(Cause::CountryClassInvalid)}else if early_error {Err(Cause::OwnerIdentityChanged)}else{Ok(())});
+        }}
     }
 }

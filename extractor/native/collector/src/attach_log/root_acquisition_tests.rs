@@ -176,7 +176,7 @@ fn grouped_real_country_vectors_keep_order_empty_and_shared_exact_read_budget() 
         if reverse { division_vector.swap(0, 1); fleet_vector.swap(0, 1); }
         page_cache_new_frame();
         let budget = country_roster_readset::Budget::default();
-        let divisions = discover_compact_division_roots_from_countries_budgeted(&state, &budget).unwrap();
+        let divisions = discover_compact_division_roots_from_countries_budgeted(&state, &budget, false).unwrap();
         let (fleets, roster) = discover_compact_fleet_roots_budgeted(&state, false, &budget).unwrap();
         let division_roster = divisions.country_roster.as_ref().unwrap();
         assert!(division_roster.countries.iter().all(Country::complete));
@@ -192,7 +192,7 @@ fn grouped_real_country_vectors_keep_order_empty_and_shared_exact_read_budget() 
     u32_at(&mut country, COUNTRY_FLEET_VECTOR_COUNT, 0);
     page_cache_new_frame();
     let budget = country_roster_readset::Budget::default();
-    let divisions = discover_compact_division_roots_from_countries_budgeted(&state, &budget).unwrap();
+    let divisions = discover_compact_division_roots_from_countries_budgeted(&state, &budget, false).unwrap();
     let (_, fleet) = discover_compact_fleet_roots_budgeted(&state, false, &budget).unwrap();
     assert!(divisions.country_roster.unwrap().countries[0].complete());
     assert!(fleet.countries[0].complete());

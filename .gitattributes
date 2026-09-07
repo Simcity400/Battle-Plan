@@ -1637,3 +1637,7 @@ portable_replay/native/engine_evidence/artifacts/func_140b450e0.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_140b450e0.instructions.txt text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1422c3530.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_1422c3530.instructions.txt text eol=lf
+extractor/native/runs/cap3_critical_path/RAILWAY_D2R8_LIVE_VERIFICATION_SCOPE.json text eol=lf
+extractor/native/runs/cap3_critical_path/RAILWAY_D2R8_NAME_QUALIFICATIONS.json text eol=lf
+extractor/native/runs/cap3_critical_path/RAILWAY_D2R8_REVIEW_9F588.json text eol=lf
+extractor/native/runs/cap3_critical_path/RAILWAY_D2R8_VALIDATION_9F588.json text eol=lf

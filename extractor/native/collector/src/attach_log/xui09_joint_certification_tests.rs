@@ -181,7 +181,19 @@ fn xui09_joint_the_committed_fixture_is_exactly_what_the_producer_emits() {
     let rendered = format!("{}\n", serde_json::to_string_pretty(&fixture).unwrap());
     let path = fixture_path();
     if std::env::var_os("JO_WRITE_XUI09_FIXTURE").is_some() {
-        std::fs::write(&path, rendered.as_bytes()).expect("the fixture directory exists");
+        use std::io::Write;
+        let output = std::env::var_os("JO_XUI09_FIXTURE_OUTPUT")
+            .expect("generation requires an exclusive JO_XUI09_FIXTURE_OUTPUT path");
+        let output = std::path::PathBuf::from(output);
+        assert!(output.is_absolute(), "generation output must be absolute");
+        assert!(rendered.len() <= 1024 * 1024, "joint fixture output bound");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output)
+            .expect("generation must create a new output file");
+        file.write_all(rendered.as_bytes()).unwrap();
+        file.sync_all().unwrap();
         return;
     }
     let committed = std::fs::read_to_string(&path).unwrap_or_else(|error| {

@@ -783,7 +783,8 @@ fn d53s_outside_bracket_borrow_is_only_the_snapshot_armer() {
 fn the_frame_local_division_root_cache_acquires_only_inside_its_first_consumer() {
     let source = attach_log_source();
     let body = frame_builder_body(&source);
-    assert!(body.contains("let division_roots_cache = CompactFrameDivisionRootsCache::new("));
+    assert!(body.contains("let mut division_roots_cache = CompactFrameDivisionRootsCache::new("));
+    assert!(body.contains("division_roots_cache.capture_railways = divisions_enabled;"));
     assert!(body.contains("let division_roots = &division_roots_cache;"));
     assert!(!body.contains("trackers.division_roots"));
     let start = source.find("impl<'a> CompactFrameDivisionRootsCache<'a>").expect("frame-local implementation");

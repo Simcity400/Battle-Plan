@@ -8,17 +8,21 @@ pub const MAX_BLOCK_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u16)]
-pub enum Kind { Division = 1, Fleet = 2 }
+pub enum Kind { Division = 1, Fleet = 2, Railway = 3 }
 
 impl Kind {
     fn max_country_slots(self) -> usize {
-        match self { Self::Division => 20_000, Self::Fleet => 10_000 }
+        match self { Self::Division => 20_000, Self::Fleet | Self::Railway => 10_000 }
     }
     fn max_total_slots(self) -> usize {
-        match self { Self::Division => 20_000, Self::Fleet => 250_000 }
+        match self { Self::Division | Self::Railway => 20_000, Self::Fleet => 250_000 }
     }
-    fn accepts(self, native_type: u32) -> bool {
-        match self { Self::Division => matches!(native_type, 4713 | 51), Self::Fleet => native_type == 61 }
+    pub fn accepts_reference(self, reference: MemberRef) -> bool {
+        match self {
+            Self::Division => reference.id != 0 && matches!(reference.native_type, 4713 | 51),
+            Self::Fleet => reference.id != 0 && reference.native_type == 61,
+            Self::Railway => reference.native_type != 0 || reference.id != 0,
+        }
     }
 }
 
@@ -45,10 +49,88 @@ pub enum Cause {
     TickChanged = 18,
     HourMismatch = 19,
     ExternalBridge = 20,
+    RailwayNotRead = 21,
+    RailwayAddressOverflow = 22,
+    RailwayNegativeCapacity = 23,
+    RailwayNegativeCount = 24,
+    RailwayCountExceedsCapacity = 25,
+    RailwayCountryBound = 26,
+    RailwaySlotBound = 27,
+    RailwayReadBound = 28,
+    RailwayRetainedBound = 29,
+    RailwayAllocationFailed = 30,
+    RailwayPrimaryVtable = 31,
+    RailwayClass = 32,
+    RailwayReferenceVtable = 33,
+    RailwayOwnerMismatch = 34,
+    RailwayUninitializedReference = 35,
+    RailwayNullRegistry = 36,
+    RailwayMissingKey = 37,
+    RailwaySentinel = 38,
+    RailwayNullPayload = 39,
+    RailwayDifferentPayload = 40,
+    RailwayProbeBound = 41,
+    RailwayDuplicatePointer = 42,
+    RailwayDuplicateReference = 43,
+    RailwayNullPointerHeaderPointer = 100,
+    RailwayNullPointerHeaderCapacity = 101,
+    RailwayNullPointerHeaderCount = 102,
+    RailwayNullPointerVectorSlot = 103,
+    RailwayNullPointerPrimaryVtable = 104,
+    RailwayNullPointerClass = 105,
+    RailwayNullPointerReferenceVtable = 106,
+    RailwayNullPointerReference = 107,
+    RailwayNullPointerOwner = 108,
+    RailwayNullPointerRegistryRoot = 109,
+    RailwayNullPointerRegistrySlots = 110,
+    RailwayNullPointerRegistryMask = 111,
+    RailwayNullPointerRegistryExtra = 112,
+    RailwayNullPointerProbeDistance = 113,
+    RailwayNullPointerProbeId = 114,
+    RailwayNullPointerProbeType = 115,
+    RailwayNullPointerPayload = 116,
+    RailwayUnreadableHeaderPointer = 200,
+    RailwayUnreadableHeaderCapacity = 201,
+    RailwayUnreadableHeaderCount = 202,
+    RailwayUnreadableVectorSlot = 203,
+    RailwayUnreadablePrimaryVtable = 204,
+    RailwayUnreadableClass = 205,
+    RailwayUnreadableReferenceVtable = 206,
+    RailwayUnreadableReference = 207,
+    RailwayUnreadableOwner = 208,
+    RailwayUnreadableRegistryRoot = 209,
+    RailwayUnreadableRegistrySlots = 210,
+    RailwayUnreadableRegistryMask = 211,
+    RailwayUnreadableRegistryExtra = 212,
+    RailwayUnreadableProbeDistance = 213,
+    RailwayUnreadableProbeId = 214,
+    RailwayUnreadableProbeType = 215,
+    RailwayUnreadablePayload = 216,
+    RailwayChangedHeaderPointer = 300,
+    RailwayChangedHeaderCapacity = 301,
+    RailwayChangedHeaderCount = 302,
+    RailwayChangedVectorSlot = 303,
+    RailwayChangedPrimaryVtable = 304,
+    RailwayChangedClass = 305,
+    RailwayChangedReferenceVtable = 306,
+    RailwayChangedReference = 307,
+    RailwayChangedOwner = 308,
+    RailwayChangedRegistryRoot = 309,
+    RailwayChangedRegistrySlots = 310,
+    RailwayChangedRegistryMask = 311,
+    RailwayChangedRegistryExtra = 312,
+    RailwayChangedProbeDistance = 313,
+    RailwayChangedProbeId = 314,
+    RailwayChangedProbeType = 315,
+    RailwayChangedPayload = 316,
 }
 
 impl Cause {
-    fn from_word(raw: u32) -> Result<Option<Self>, String> {
+    pub fn valid_for(self, kind: Kind) -> bool {
+        self as u32 <= 20 || kind == Kind::Railway
+    }
+
+    pub fn from_word(raw: u32) -> Result<Option<Self>, String> {
         Ok(match raw {
             0 => None,
             1 => Some(Self::CountrySlotUnreadable), 2 => Some(Self::CountryClassInvalid),
@@ -61,6 +143,80 @@ impl Cause {
             15 => Some(Self::AliasedBody), 16 => Some(Self::OwnerIdentityChanged),
             17 => Some(Self::ClockUnavailable), 18 => Some(Self::TickChanged),
             19 => Some(Self::HourMismatch), 20 => Some(Self::ExternalBridge),
+            21 => Some(Self::RailwayNotRead),
+            22 => Some(Self::RailwayAddressOverflow),
+            23 => Some(Self::RailwayNegativeCapacity),
+            24 => Some(Self::RailwayNegativeCount),
+            25 => Some(Self::RailwayCountExceedsCapacity),
+            26 => Some(Self::RailwayCountryBound),
+            27 => Some(Self::RailwaySlotBound),
+            28 => Some(Self::RailwayReadBound),
+            29 => Some(Self::RailwayRetainedBound),
+            30 => Some(Self::RailwayAllocationFailed),
+            31 => Some(Self::RailwayPrimaryVtable),
+            32 => Some(Self::RailwayClass),
+            33 => Some(Self::RailwayReferenceVtable),
+            34 => Some(Self::RailwayOwnerMismatch),
+            35 => Some(Self::RailwayUninitializedReference),
+            36 => Some(Self::RailwayNullRegistry),
+            37 => Some(Self::RailwayMissingKey),
+            38 => Some(Self::RailwaySentinel),
+            39 => Some(Self::RailwayNullPayload),
+            40 => Some(Self::RailwayDifferentPayload),
+            41 => Some(Self::RailwayProbeBound),
+            42 => Some(Self::RailwayDuplicatePointer),
+            43 => Some(Self::RailwayDuplicateReference),
+            100 => Some(Self::RailwayNullPointerHeaderPointer),
+            101 => Some(Self::RailwayNullPointerHeaderCapacity),
+            102 => Some(Self::RailwayNullPointerHeaderCount),
+            103 => Some(Self::RailwayNullPointerVectorSlot),
+            104 => Some(Self::RailwayNullPointerPrimaryVtable),
+            105 => Some(Self::RailwayNullPointerClass),
+            106 => Some(Self::RailwayNullPointerReferenceVtable),
+            107 => Some(Self::RailwayNullPointerReference),
+            108 => Some(Self::RailwayNullPointerOwner),
+            109 => Some(Self::RailwayNullPointerRegistryRoot),
+            110 => Some(Self::RailwayNullPointerRegistrySlots),
+            111 => Some(Self::RailwayNullPointerRegistryMask),
+            112 => Some(Self::RailwayNullPointerRegistryExtra),
+            113 => Some(Self::RailwayNullPointerProbeDistance),
+            114 => Some(Self::RailwayNullPointerProbeId),
+            115 => Some(Self::RailwayNullPointerProbeType),
+            116 => Some(Self::RailwayNullPointerPayload),
+            200 => Some(Self::RailwayUnreadableHeaderPointer),
+            201 => Some(Self::RailwayUnreadableHeaderCapacity),
+            202 => Some(Self::RailwayUnreadableHeaderCount),
+            203 => Some(Self::RailwayUnreadableVectorSlot),
+            204 => Some(Self::RailwayUnreadablePrimaryVtable),
+            205 => Some(Self::RailwayUnreadableClass),
+            206 => Some(Self::RailwayUnreadableReferenceVtable),
+            207 => Some(Self::RailwayUnreadableReference),
+            208 => Some(Self::RailwayUnreadableOwner),
+            209 => Some(Self::RailwayUnreadableRegistryRoot),
+            210 => Some(Self::RailwayUnreadableRegistrySlots),
+            211 => Some(Self::RailwayUnreadableRegistryMask),
+            212 => Some(Self::RailwayUnreadableRegistryExtra),
+            213 => Some(Self::RailwayUnreadableProbeDistance),
+            214 => Some(Self::RailwayUnreadableProbeId),
+            215 => Some(Self::RailwayUnreadableProbeType),
+            216 => Some(Self::RailwayUnreadablePayload),
+            300 => Some(Self::RailwayChangedHeaderPointer),
+            301 => Some(Self::RailwayChangedHeaderCapacity),
+            302 => Some(Self::RailwayChangedHeaderCount),
+            303 => Some(Self::RailwayChangedVectorSlot),
+            304 => Some(Self::RailwayChangedPrimaryVtable),
+            305 => Some(Self::RailwayChangedClass),
+            306 => Some(Self::RailwayChangedReferenceVtable),
+            307 => Some(Self::RailwayChangedReference),
+            308 => Some(Self::RailwayChangedOwner),
+            309 => Some(Self::RailwayChangedRegistryRoot),
+            310 => Some(Self::RailwayChangedRegistrySlots),
+            311 => Some(Self::RailwayChangedRegistryMask),
+            312 => Some(Self::RailwayChangedRegistryExtra),
+            313 => Some(Self::RailwayChangedProbeDistance),
+            314 => Some(Self::RailwayChangedProbeId),
+            315 => Some(Self::RailwayChangedProbeType),
+            316 => Some(Self::RailwayChangedPayload),
             _ => return Err("CRO1 unknown refusal cause".into()),
         })
     }
@@ -116,6 +272,9 @@ impl Observation {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self.failure.is_some_and(|cause| !cause.valid_for(self.kind)) {
+            return Err("CRO1 refusal kind".into());
+        }
         if self.countries.len() > MAX_COUNTRIES
             || self.country_count.is_some_and(|count| count as usize > MAX_COUNTRIES) {
             return Err("CRO1 country bound".into());
@@ -131,6 +290,9 @@ impl Observation {
         let mut identities = BTreeSet::new();
         let mut total = 0usize;
         for (index, country) in self.countries.iter().enumerate() {
+            if country.failure.is_some_and(|cause| !cause.valid_for(self.kind)) {
+                return Err("CRO1 country refusal kind".into());
+            }
             if country.physical_slot as usize != index {
                 return Err("CRO1 physical country order".into());
             }
@@ -160,8 +322,11 @@ impl Observation {
             if total > self.kind.max_total_slots() { return Err("CRO1 total slot bound".into()); }
             for (ordinal, slot) in country.slots.iter().enumerate() {
                 if slot.ordinal as usize != ordinal { return Err("CRO1 slot order".into()); }
+                if slot.reference.is_err_and(|cause| !cause.valid_for(self.kind)) {
+                    return Err("CRO1 slot refusal kind".into());
+                }
                 if let Ok(reference) = slot.reference {
-                    if reference.id == 0 || !self.kind.accepts(reference.native_type)
+                    if !self.kind.accepts_reference(reference)
                         || !identities.insert(reference) {
                         return Err("CRO1 ambiguous member identity".into());
                     }
@@ -203,6 +368,14 @@ impl Observation {
             }
         }
         Ok(out)
+    }
+
+    pub fn parse_prefix(bytes: &[u8], expected: Kind) -> Result<(Self, usize), String> {
+        let header = bytes.get(..HEADER_LEN).ok_or("CRO1 truncated header")?;
+        let len = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
+        if !(HEADER_LEN..=MAX_BLOCK_BYTES).contains(&len) { return Err("CRO1 block bound".into()); }
+        let block = bytes.get(..len).ok_or("CRO1 truncated block")?;
+        Ok((Self::parse(block, expected)?, len))
     }
 
     pub fn parse(bytes: &[u8], expected: Kind) -> Result<Self, String> {
@@ -389,5 +562,50 @@ mod tests {
         });
         assert!(fleets.encode().is_err());
         assert!(Observation::parse(&vec![0; MAX_BLOCK_BYTES + 1], Kind::Fleet).is_err());
+    }
+}
+
+#[cfg(test)]
+mod railway_tests {
+    use super::*;
+    fn country(physical: u32, start: u32, count: u32) -> Country {
+        Country { physical_slot: physical, owner_tag_db_id: Some(physical+1),
+            acquisition: Acquisition::Bracketed, observed_count: Some(count), failure: None,
+            slots: (0..count).map(|ordinal| Slot { ordinal,
+                reference: Ok(MemberRef { native_type: 0, id: start+ordinal }) }).collect() }
+    }
+    fn observed(countries: Vec<Country>) -> Observation {
+        Observation { kind: Kind::Railway, country_count: Some(countries.len() as u32), failure: None, countries }
+    }
+    #[test]
+    fn railway_all_reference_bits_and_local_refusals_roundtrip_without_division_whitelist() {
+        let mut row=country(0,1,4);
+        let refs=[MemberRef { native_type:0,id:u32::MAX },MemberRef { native_type:u32::MAX,id:0 },
+            MemberRef { native_type:51,id:9 },MemberRef { native_type:4713,id:1 }];
+        for (slot,reference) in row.slots.iter_mut().zip(refs) { slot.reference=Ok(reference); }
+        let value=observed(vec![row]);let bytes=value.encode().unwrap();
+        assert_eq!(Observation::parse(&bytes,Kind::Railway).unwrap(),value);
+        assert!(Observation::parse(&bytes,Kind::Division).is_err());
+        let mut bad=value.clone();bad.countries[0].slots[0].reference=Ok(MemberRef {native_type:0,id:0});
+        assert!(bad.encode().is_err());
+        for raw in 1..=400 {
+            if let Ok(Some(cause))=Cause::from_word(raw) {
+                let mut changed=value.clone();changed.countries[0].slots[0].reference=Err(cause);
+                assert_eq!(Observation::parse(&changed.encode().unwrap(),Kind::Railway).unwrap(),changed);
+                if raw>20 { assert!(!cause.valid_for(Kind::Division));assert!(!cause.valid_for(Kind::Fleet)); }
+            }
+        }
+    }
+    #[test]
+    fn railway_actual_per_owner_and_total_slot_bounds_do_not_certify_truncation() {
+        let mut value=observed(vec![country(0,1,10_000),country(1,10_001,10_000)]);
+        let bytes=value.encode().unwrap();assert_eq!(Observation::parse(&bytes,Kind::Railway).unwrap(),value);
+        value.countries.push(country(2,20_001,1));value.country_count=Some(3);
+        assert!(value.encode().unwrap_err().contains("total slot bound"));
+        let value=observed(vec![country(0,1,10_001)]);
+        assert!(value.encode().unwrap_err().contains("per-country slot bound"));
+        for value in [observed(vec![country(0,1,0)]),Observation::unavailable(Kind::Railway,Cause::RailwayNegativeCount)] {
+            assert_eq!(Observation::parse(&value.encode().unwrap(),Kind::Railway).unwrap(),value);
+        }
     }
 }

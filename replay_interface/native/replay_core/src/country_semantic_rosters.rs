@@ -4,13 +4,21 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CountryRosterKind { Divisions, Fleets }
+pub enum CountryRosterKind { Divisions, Fleets, Railways }
 impl CountryRosterKind {
-    fn key(self) -> &'static str { match self { Self::Divisions => "divisions", Self::Fleets => "fleets" } }
-    fn domain(self) -> i64 { match self { Self::Divisions => 20, Self::Fleets => 28 } }
-    fn slot_limit(self) -> usize { match self { Self::Divisions => 20_000, Self::Fleets => 10_000 } }
-    fn total_limit(self) -> usize { match self { Self::Divisions => 20_000, Self::Fleets => 250_000 } }
-    fn accepts(self, value: u32) -> bool { match self { Self::Divisions => matches!(value, 4713 | 51), Self::Fleets => value == 61 } }
+    fn key(self) -> &'static str { match self { Self::Divisions => "divisions", Self::Fleets => "fleets", Self::Railways => "railways" } }
+    fn domain(self) -> i64 { match self { Self::Divisions | Self::Railways => 20, Self::Fleets => 28 } }
+    fn slot_limit(self) -> usize { match self { Self::Divisions => 20_000, Self::Fleets | Self::Railways => 10_000 } }
+    fn total_limit(self) -> usize { match self { Self::Divisions | Self::Railways => 20_000, Self::Fleets => 250_000 } }
+    fn portable(self) -> portable_compact_stream::country_roster::Kind {
+        use portable_compact_stream::country_roster::Kind;
+        match self { Self::Divisions => Kind::Division, Self::Fleets => Kind::Fleet, Self::Railways => Kind::Railway }
+    }
+    fn accepts(self, reference: CountryRosterReference) -> bool {
+        self.portable().accepts_reference(portable_compact_stream::country_roster::MemberRef {
+            native_type: reference.native_type, id: reference.id,
+        })
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CountryRosterRefusal {
@@ -70,7 +78,10 @@ struct Table {
     failure: Option<u32>,
     countries: Vec<CountryRosterObservation>,
 }
-fn valid_cause(value: Option<u32>) -> bool { value.is_none_or(|v| (1..=20).contains(&v)) }
+fn valid_cause(kind: CountryRosterKind, value: Option<u32>) -> bool {
+    value.is_none_or(|raw| matches!(portable_compact_stream::country_roster::Cause::from_word(raw),
+        Ok(Some(cause)) if cause.valid_for(kind.portable())))
+}
 
 impl WorldFrame {
     pub fn country_roster_observation(
@@ -80,13 +91,13 @@ impl WorldFrame {
         let Some(root) = self.raw().get("country_semantic_rosters") else { return Ok(Leaf::Absent) };
         if root.is_null() { return Ok(Leaf::Unobtained) }
         let root = root.as_object().ok_or_else(|| invalid("root"))?;
-        if root.len() != 4 || root.get("schema").and_then(Value::as_u64) != Some(1) {
+        if root.len() != 5 || root.get("schema").and_then(Value::as_u64) != Some(2) {
             return Err(invalid("root schema/fields"));
         }
         if root.get("hour_index").and_then(Value::as_i64) != Some(self.hour_index()) {
             return Err(CountryRosterRefusal::HourMismatch);
         }
-        for key in ["divisions", "fleets"] { if !root.contains_key(key) { return Err(invalid(key)); } }
+        for key in ["divisions", "fleets", "railways"] { if !root.contains_key(key) { return Err(invalid(key)); } }
         let raw = &root[kind.key()];
         if raw.is_null() { return Ok(Leaf::Unobtained) }
         match crate::world::rederive_collector_domain_problems(self.raw()) {
@@ -109,7 +120,7 @@ impl WorldFrame {
             if slots.len() > kind.slot_limit() || total > kind.total_limit() { return Err(invalid("slot bound")); }
         }
         let table = Table::deserialize(raw).map_err(|e| invalid(&e.to_string()))?;
-        if !valid_cause(table.failure) { return Err(invalid("global cause")); }
+        if !valid_cause(kind, table.failure) { return Err(invalid("global cause")); }
         match table.country_count {
             None if table.failure.is_none() || !table.countries.is_empty() => return Err(invalid("unknown census")),
             Some(count) if count as usize != table.countries.len() => return Err(invalid("physical cardinality")),
@@ -118,7 +129,7 @@ impl WorldFrame {
         let mut owners = BTreeSet::new();
         let mut members = BTreeSet::new();
         for (physical, row) in table.countries.iter().enumerate() {
-            if row.physical_slot as usize != physical || !valid_cause(row.failure) || row.acquisition > 2 {
+            if row.physical_slot as usize != physical || !valid_cause(kind, row.failure) || row.acquisition > 2 {
                 return Err(invalid("physical/acquisition/cause"));
             }
             if let Some(id) = row.owner_tag_db_id {
@@ -133,9 +144,9 @@ impl WorldFrame {
                 _ => {}
             }
             for (index, slot) in row.slots.iter().enumerate() {
-                if slot.ordinal as usize != index || !valid_cause(slot.failure) { return Err(invalid("slot ordinal/cause")); }
+                if slot.ordinal as usize != index || !valid_cause(kind, slot.failure) { return Err(invalid("slot ordinal/cause")); }
                 match (slot.reference, slot.failure) {
-                    (Some(reference), None) if reference.id != 0 && kind.accepts(reference.native_type)
+                    (Some(reference), None) if kind.accepts(reference)
                         && members.insert(reference) => {}
                     (None, Some(_)) => {}
                     _ => return Err(invalid("slot reference/cause")),
@@ -166,6 +177,7 @@ impl WorldFrame {
         }
         let mut current = BTreeMap::<CountryRosterReference, usize>::new();
         match kind {
+            CountryRosterKind::Railways => return Ok(Leaf::Measured(ordered)),
             CountryRosterKind::Divisions => {
                 if self.division_units_status() != ViewStatus::Present {
                     return Err(CountryRosterRefusal::CurrentMembershipUnavailable);
@@ -218,7 +230,7 @@ mod tests {
         json!({
             "tag_db_id_index":{"country_composition_version":2},
             "countries":{"GER":{"_r2_tag_db_id":7}},
-            "country_semantic_rosters":{"schema":1,"hour_index":7,"divisions":null,"fleets":{
+            "country_semantic_rosters":{"schema":2,"railways":null,"hour_index":7,"divisions":null,"fleets":{
                 "country_count":1,"failure":null,"countries":[{
                     "physical_slot":0,"owner_tag_db_id":7,"acquisition":1,"observed_count":ids.len(),"failure":null,
                     "slots":ids.iter().enumerate().map(|(i,id)|json!({"ordinal":i,"reference":{"native_type":61,"id":id},"failure":null})).collect::<Vec<_>>(),
@@ -322,4 +334,82 @@ mod tests {
         }
     }
 
+
+    fn railway_raw(pairs: &[(u32,u32)]) -> Value {
+        let mut value=raw(&[]);
+        let mut table=value["country_semantic_rosters"]["fleets"].take();
+        table["countries"][0]["observed_count"]=json!(pairs.len());
+        table["countries"][0]["slots"]=json!(pairs.iter().enumerate().map(|(ordinal,(native_type,id))|
+            json!({"ordinal":ordinal,"reference":{"native_type":native_type,"id":id},"failure":null}))
+            .collect::<Vec<_>>());
+        value["country_semantic_rosters"]["railways"]=table;
+        value
+    }
+    #[test]
+    fn railway_original_order_empty_and_all_reference_bits_require_current_census() {
+        for pairs in [vec![(0,u32::MAX),(51,0),(u32::MAX,u32::MAX)],vec![]] {
+            assert_eq!(frame(railway_raw(&pairs)).ordered_country_references(CountryRosterKind::Railways,"GER"),
+                Ok(Leaf::Measured(pairs.iter().map(|(native_type,id)|CountryRosterReference {native_type:*native_type,id:*id}).collect())));
+        }
+        let mut value=railway_raw(&[(51,9)]);
+        value["countries"]["GER"]["_r2_tag_db_id"]=json!(8);
+        assert_eq!(frame(value).ordered_country_references(CountryRosterKind::Railways,"GER"),Err(CountryRosterRefusal::OwnerUnwitnessed));
+        assert!(frame(railway_raw(&[(0,0)])).ordered_country_references(CountryRosterKind::Railways,"GER").is_err());
+    }
+    #[test]
+    fn railway_missing_unknown_local_failure_and_old_schema_never_become_empty() {
+        let mut absent=railway_raw(&[]);absent.as_object_mut().unwrap().remove("country_semantic_rosters");
+        assert_eq!(frame(absent).ordered_country_references(CountryRosterKind::Railways,"GER"),Ok(Leaf::Absent));
+        let mut value=railway_raw(&[]);value["country_semantic_rosters"]["railways"]=Value::Null;
+        assert_eq!(frame(value).ordered_country_references(CountryRosterKind::Railways,"GER"),Ok(Leaf::Unobtained));
+        let mut value=railway_raw(&[(51,9)]);
+        value["country_semantic_rosters"]["railways"]["countries"][0]["slots"][0]=json!({"ordinal":0,"reference":null,"failure":
+            portable_compact_stream::country_roster::Cause::RailwayMissingKey as u32});
+        assert_eq!(frame(value).ordered_country_references(CountryRosterKind::Railways,"GER"),
+            Err(CountryRosterRefusal::Unavailable(portable_compact_stream::country_roster::Cause::RailwayMissingKey as u32)));
+        for key in ["country_count","failure"] {
+            let mut value=railway_raw(&[]);value["country_semantic_rosters"]["railways"].as_object_mut().unwrap().remove(key);
+            assert!(frame(value).country_roster_observation(CountryRosterKind::Railways,"GER").is_err());
+        }
+        let mut value=railway_raw(&[]);value["country_semantic_rosters"]["schema"]=json!(1);
+        value["country_semantic_rosters"].as_object_mut().unwrap().remove("railways");
+        assert!(frame(value).ordered_country_references(CountryRosterKind::Fleets,"GER").is_err());
+    }
+    #[test]
+    fn railway_historical_domain_failure_refuses_clean_raw_and_next_clean_hour_admits() {
+        let measured=railway_raw(&[(51,9),(51,2)]);
+        for domain in [18,20] {
+            let mut value=measured.clone();
+            value["provenance"]=json!({"collector":{"domain_problems":[{"domain_id":domain,"problem":"torn_read"}]}});
+            assert!(matches!(frame(value).ordered_country_references(CountryRosterKind::Railways,"GER"),Err(CountryRosterRefusal::DomainProblem(_))));
+        }
+        let mut value=measured.clone();value["provenance"]=json!({"collector":{"domain_problems":{}}});
+        assert_eq!(frame(value).ordered_country_references(CountryRosterKind::Railways,"GER"),Err(CountryRosterRefusal::MalformedLedger));
+        let mut value=measured.clone();value["country_semantic_rosters"]["hour_index"]=json!(8);
+        assert_eq!(frame(value.clone()).ordered_country_references(CountryRosterKind::Railways,"GER"),Err(CountryRosterRefusal::HourMismatch));
+        let next=WorldFrame::from_raw_scheduled(crate::source::RawFrame {
+            hour_index:8,date:None,save_version:None,schema_version:None,rest:value.as_object().unwrap().clone().into(),
+        },None,None,None,crate::BuildSchedule::Serial);
+        assert!(matches!(next.ordered_country_references(CountryRosterKind::Railways,"GER"),Ok(Leaf::Measured(_))));
+        let mut unrelated=measured;unrelated["provenance"]=json!({"collector":{"domain_problems":[{"domain_id":28,"problem":"torn_read"}]}});
+        assert!(matches!(frame(unrelated).ordered_country_references(CountryRosterKind::Railways,"GER"),Ok(Leaf::Measured(_))));
+    }
+    #[test]
+    fn railway_physical_holes_duplicate_reference_and_family_cause_confusion_refuse() {
+        for mutation in 0..5 {
+            let mut value=railway_raw(&[(51,9),(51,2)]);
+            let table=&mut value["country_semantic_rosters"]["railways"];
+            match mutation {
+                0=>table["countries"][0]["physical_slot"]=json!(2),
+                1=>table["countries"][0]["slots"][1]["reference"]=json!({"native_type":51,"id":9}),
+                2=>table["countries"][0]["slots"][0]["failure"]=json!(44),
+                3=>table["country_count"]=json!(2),
+                _=>table["countries"][0]["acquisition"]=json!(0),
+            }
+            assert!(frame(value).ordered_country_references(CountryRosterKind::Railways,"GER").is_err(),"mutation {mutation}");
+        }
+        let mut value=raw(&[]);
+        value["country_semantic_rosters"]["fleets"]["countries"][0]["failure"]=json!(portable_compact_stream::country_roster::Cause::RailwayMissingKey as u32);
+        assert!(frame(value).country_roster_observation(CountryRosterKind::Fleets,"GER").is_err());
+    }
 }

@@ -22,6 +22,87 @@ pub(super) enum Refusal {
     OwnerMismatch, UninitializedReference, NullRegistry, MissingKey, Sentinel,
     NullPayload, DifferentPayload, ProbeBound, DuplicatePointer, DuplicateReference,
 }
+impl Refusal {
+    fn wire_cause(self) -> Cause {
+        match self {
+            Self::NotRead => Cause::RailwayNotRead,
+            Self::AddressOverflow => Cause::RailwayAddressOverflow,
+            Self::NegativeCapacity => Cause::RailwayNegativeCapacity,
+            Self::NegativeCount => Cause::RailwayNegativeCount,
+            Self::CountExceedsCapacity => Cause::RailwayCountExceedsCapacity,
+            Self::CountryBound => Cause::RailwayCountryBound,
+            Self::SlotBound => Cause::RailwaySlotBound,
+            Self::ReadBound => Cause::RailwayReadBound,
+            Self::RetainedBound => Cause::RailwayRetainedBound,
+            Self::AllocationFailed => Cause::RailwayAllocationFailed,
+            Self::PrimaryVtable => Cause::RailwayPrimaryVtable,
+            Self::Class => Cause::RailwayClass,
+            Self::ReferenceVtable => Cause::RailwayReferenceVtable,
+            Self::OwnerMismatch => Cause::RailwayOwnerMismatch,
+            Self::UninitializedReference => Cause::RailwayUninitializedReference,
+            Self::NullRegistry => Cause::RailwayNullRegistry,
+            Self::MissingKey => Cause::RailwayMissingKey,
+            Self::Sentinel => Cause::RailwaySentinel,
+            Self::NullPayload => Cause::RailwayNullPayload,
+            Self::DifferentPayload => Cause::RailwayDifferentPayload,
+            Self::ProbeBound => Cause::RailwayProbeBound,
+            Self::DuplicatePointer => Cause::RailwayDuplicatePointer,
+            Self::DuplicateReference => Cause::RailwayDuplicateReference,
+            Self::NullPointer(Field::HeaderPointer) => Cause::RailwayNullPointerHeaderPointer,
+            Self::NullPointer(Field::HeaderCapacity) => Cause::RailwayNullPointerHeaderCapacity,
+            Self::NullPointer(Field::HeaderCount) => Cause::RailwayNullPointerHeaderCount,
+            Self::NullPointer(Field::VectorSlot) => Cause::RailwayNullPointerVectorSlot,
+            Self::NullPointer(Field::PrimaryVtable) => Cause::RailwayNullPointerPrimaryVtable,
+            Self::NullPointer(Field::Class) => Cause::RailwayNullPointerClass,
+            Self::NullPointer(Field::ReferenceVtable) => Cause::RailwayNullPointerReferenceVtable,
+            Self::NullPointer(Field::Reference) => Cause::RailwayNullPointerReference,
+            Self::NullPointer(Field::Owner) => Cause::RailwayNullPointerOwner,
+            Self::NullPointer(Field::RegistryRoot) => Cause::RailwayNullPointerRegistryRoot,
+            Self::NullPointer(Field::RegistrySlots) => Cause::RailwayNullPointerRegistrySlots,
+            Self::NullPointer(Field::RegistryMask) => Cause::RailwayNullPointerRegistryMask,
+            Self::NullPointer(Field::RegistryExtra) => Cause::RailwayNullPointerRegistryExtra,
+            Self::NullPointer(Field::ProbeDistance) => Cause::RailwayNullPointerProbeDistance,
+            Self::NullPointer(Field::ProbeId) => Cause::RailwayNullPointerProbeId,
+            Self::NullPointer(Field::ProbeType) => Cause::RailwayNullPointerProbeType,
+            Self::NullPointer(Field::Payload) => Cause::RailwayNullPointerPayload,
+            Self::Unreadable(Field::HeaderPointer) => Cause::RailwayUnreadableHeaderPointer,
+            Self::Unreadable(Field::HeaderCapacity) => Cause::RailwayUnreadableHeaderCapacity,
+            Self::Unreadable(Field::HeaderCount) => Cause::RailwayUnreadableHeaderCount,
+            Self::Unreadable(Field::VectorSlot) => Cause::RailwayUnreadableVectorSlot,
+            Self::Unreadable(Field::PrimaryVtable) => Cause::RailwayUnreadablePrimaryVtable,
+            Self::Unreadable(Field::Class) => Cause::RailwayUnreadableClass,
+            Self::Unreadable(Field::ReferenceVtable) => Cause::RailwayUnreadableReferenceVtable,
+            Self::Unreadable(Field::Reference) => Cause::RailwayUnreadableReference,
+            Self::Unreadable(Field::Owner) => Cause::RailwayUnreadableOwner,
+            Self::Unreadable(Field::RegistryRoot) => Cause::RailwayUnreadableRegistryRoot,
+            Self::Unreadable(Field::RegistrySlots) => Cause::RailwayUnreadableRegistrySlots,
+            Self::Unreadable(Field::RegistryMask) => Cause::RailwayUnreadableRegistryMask,
+            Self::Unreadable(Field::RegistryExtra) => Cause::RailwayUnreadableRegistryExtra,
+            Self::Unreadable(Field::ProbeDistance) => Cause::RailwayUnreadableProbeDistance,
+            Self::Unreadable(Field::ProbeId) => Cause::RailwayUnreadableProbeId,
+            Self::Unreadable(Field::ProbeType) => Cause::RailwayUnreadableProbeType,
+            Self::Unreadable(Field::Payload) => Cause::RailwayUnreadablePayload,
+            Self::Changed(Field::HeaderPointer) => Cause::RailwayChangedHeaderPointer,
+            Self::Changed(Field::HeaderCapacity) => Cause::RailwayChangedHeaderCapacity,
+            Self::Changed(Field::HeaderCount) => Cause::RailwayChangedHeaderCount,
+            Self::Changed(Field::VectorSlot) => Cause::RailwayChangedVectorSlot,
+            Self::Changed(Field::PrimaryVtable) => Cause::RailwayChangedPrimaryVtable,
+            Self::Changed(Field::Class) => Cause::RailwayChangedClass,
+            Self::Changed(Field::ReferenceVtable) => Cause::RailwayChangedReferenceVtable,
+            Self::Changed(Field::Reference) => Cause::RailwayChangedReference,
+            Self::Changed(Field::Owner) => Cause::RailwayChangedOwner,
+            Self::Changed(Field::RegistryRoot) => Cause::RailwayChangedRegistryRoot,
+            Self::Changed(Field::RegistrySlots) => Cause::RailwayChangedRegistrySlots,
+            Self::Changed(Field::RegistryMask) => Cause::RailwayChangedRegistryMask,
+            Self::Changed(Field::RegistryExtra) => Cause::RailwayChangedRegistryExtra,
+            Self::Changed(Field::ProbeDistance) => Cause::RailwayChangedProbeDistance,
+            Self::Changed(Field::ProbeId) => Cause::RailwayChangedProbeId,
+            Self::Changed(Field::ProbeType) => Cause::RailwayChangedProbeType,
+            Self::Changed(Field::Payload) => Cause::RailwayChangedPayload,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Reference { pub native_type: u32, pub id: u32 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -63,6 +144,37 @@ pub(super) struct CountryObservation {
     pub accounting: Accounting,
 }
 impl CountryObservation {
+    pub(super) fn into_roster_country(
+        self, physical_slot: u32, acquisition: compact_contract::country_roster::Acquisition,
+        budget: &Budget,
+    ) -> compact_contract::country_roster::Country {
+        use compact_contract::country_roster::{Country, MemberRef, Slot};
+        let mut country = Country {
+            physical_slot, owner_tag_db_id: Some(self.owner_tag_db_id), acquisition,
+            observed_count: self.header.count.and_then(|count| u32::try_from(count).ok()),
+            failure: self.read.and(self.seal).err().map(Refusal::wire_cause), slots: Vec::new(),
+        };
+        let retained = self.rows.len().checked_mul(std::mem::size_of::<Slot>())
+            .ok_or(Cause::RailwayRetainedBound).and_then(|bytes| budget.retain(bytes));
+        if retained.is_err() {
+            country.failure = Some(Cause::RailwayRetainedBound);
+            return country;
+        }
+        if country.slots.try_reserve_exact(self.rows.len()).is_err() {
+            country.failure = Some(Cause::RailwayAllocationFailed);
+            return country;
+        }
+        for ordinal in 0..self.rows.len() {
+            country.slots.push(Slot {
+                ordinal: ordinal as u32,
+                reference: self.locally_sealed_reference(ordinal)
+                    .map(|reference| MemberRef { native_type: reference.native_type, id: reference.id })
+                    .map_err(Refusal::wire_cause),
+            });
+        }
+        country
+    }
+
     pub(super) fn locally_sealed_reference(&self, ordinal: usize) -> Result<Reference, Refusal> {
         self.read?;
         self.seal?;
@@ -72,6 +184,56 @@ impl CountryObservation {
         if row.duplicate_reference { return Err(Refusal::DuplicateReference); }
         row.read?;
         row.reference.ok_or(Refusal::NotRead)
+    }
+}
+
+pub(super) fn refuse_cross_country_duplicates(
+    observation: &mut compact_contract::country_roster::Observation, budget: &Budget,
+) {
+    use compact_contract::country_roster::MemberRef;
+    let refuse = |observation: &mut compact_contract::country_roster::Observation, cause| {
+        observation.failure = Some(cause);
+        for country in &mut observation.countries {
+            for slot in &mut country.slots {
+                if slot.reference.is_ok() { slot.reference = Err(cause); }
+            }
+        }
+    };
+    let count = observation.countries.iter().try_fold(0usize, |count, country|
+        count.checked_add(country.slots.len()));
+    let Some(count) = count.filter(|count| *count <= SLOT_LIMIT) else {
+        refuse(observation, Cause::RailwaySlotBound);
+        return;
+    };
+    let Some(bytes) = count.checked_mul(std::mem::size_of::<(MemberRef, usize, usize)>()) else {
+        refuse(observation, Cause::RailwayRetainedBound);
+        return;
+    };
+    if budget.retain(bytes).is_err() {
+        refuse(observation, Cause::RailwayRetainedBound);
+        return;
+    }
+    let mut index = Vec::new();
+    if index.try_reserve_exact(count).is_err() {
+        refuse(observation, Cause::RailwayAllocationFailed);
+        return;
+    }
+    for (country_index, country) in observation.countries.iter().enumerate() {
+        for (slot_index, slot) in country.slots.iter().enumerate() {
+            if let Ok(reference) = slot.reference { index.push((reference, country_index, slot_index)); }
+        }
+    }
+    index.sort_unstable();
+    let mut start = 0;
+    while start < index.len() {
+        let mut end = start + 1;
+        while end < index.len() && index[end].0 == index[start].0 { end += 1; }
+        if end - start > 1 {
+            for &(_, country, slot) in &index[start..end] {
+                observation.countries[country].slots[slot].reference = Err(Cause::RailwayDuplicateReference);
+            }
+        }
+        start = end;
     }
 }
 
@@ -798,4 +960,24 @@ mod tests {
         assert_eq!(out.read, Err(Refusal::AddressOverflow));
         assert!(memory.calls.is_empty());
     }
+    #[test]
+    fn converted_slots_and_cross_country_duplicate_index_are_separately_charged() {
+        use compact_contract::country_roster::{Acquisition, Kind, Observation};
+        let mut memory=Memory::positive(reference());let local=memory.observe();
+        let refused=local.into_roster_country(0,Acquisition::Bracketed,&Budget::test_limits(1000,0));
+        assert_eq!(refused.failure,Some(Cause::RailwayRetainedBound));assert!(refused.slots.is_empty());
+        let mut memory=Memory::positive(reference());let local=memory.observe();
+        let row=local.into_roster_country(0,Acquisition::Bracketed,&Budget::default());assert!(row.complete());
+        let mut second=row.clone();second.physical_slot=1;second.owner_tag_db_id=Some(OWNER+1);
+        let observed=Observation {kind:Kind::Railway,country_count:Some(2),failure:None,countries:vec![row,second]};
+        let mut no_index=observed.clone();refuse_cross_country_duplicates(&mut no_index,&Budget::test_limits(1000,0));
+        assert_eq!(no_index.failure,Some(Cause::RailwayRetainedBound));
+        assert!(no_index.countries.iter().all(|country|country.slots.iter().all(|slot|
+            slot.reference==Err(Cause::RailwayRetainedBound))));
+        assert_eq!(Observation::parse(&no_index.encode().unwrap(),Kind::Railway).unwrap(),no_index);
+        let mut indexed=observed;refuse_cross_country_duplicates(&mut indexed,&Budget::default());
+        for country in &indexed.countries { assert_eq!(country.slots[0].reference,Err(Cause::RailwayDuplicateReference)); }
+        assert_eq!(Observation::parse(&indexed.encode().unwrap(),Kind::Railway).unwrap(),indexed);
+    }
+
 }

@@ -1,4 +1,4 @@
-pub const FORMAT_MARKER: u32 = u32::from_le_bytes(*b"D2R7");
+pub const FORMAT_MARKER: u32 = u32::from_le_bytes(*b"D2R8");
 pub const ROW_LEN: usize = 216;
 pub const MAX_ROUTE_PROVINCES: usize = 65_536;
 pub const MAX_TEMPLATE_EXCLUSIONS: usize = 65_536;
@@ -75,6 +75,7 @@ pub fn append_inputs<'a>(
     preferences: impl ExactSizeIterator<Item = Option<&'a TemplateModelPreference>>,
     acclimatization: impl ExactSizeIterator<Item = Option<&'a Acclimatization>>,
     country_roster: &[u8],
+    railway_roster: &[u8],
 ) {
     let rows = routes.len();
     let preferences = preferences.collect::<Vec<_>>();
@@ -151,6 +152,8 @@ pub fn append_inputs<'a>(
     }
     super::country_roster::Observation::parse(country_roster, super::country_roster::Kind::Division).expect("validated division country roster");
     payload.extend_from_slice(country_roster);
+    super::country_roster::Observation::parse(railway_roster, super::country_roster::Kind::Railway).expect("validated railway country roster");
+    payload.extend_from_slice(railway_roster);
 }
 
 pub fn write_current_template(payload: &mut [u8], index: usize, value: Option<Option<u32>>) {
@@ -189,6 +192,7 @@ pub struct DivisionRoutes<'a> {
     acclimatization_pool: usize,
     exclusions_table: usize,
     roster_start: usize,
+    railway_start: usize,
 }
 
 impl<'a> DivisionRoutes<'a> {
@@ -361,7 +365,9 @@ impl<'a> DivisionRoutes<'a> {
         let roster_start = exclusions_pool.checked_add(exclusions_consumed.checked_mul(4)
             .ok_or("division exclusion bytes overflow")?).ok_or("division roster offset overflow")?;
         let roster = payload.get(roster_start..).ok_or("division roster missing")?;
-        super::country_roster::Observation::parse(roster, super::country_roster::Kind::Division)?;
+        let (_, division_len) = super::country_roster::Observation::parse_prefix(roster, super::country_roster::Kind::Division)?;
+        let railway_start = roster_start.checked_add(division_len).ok_or("railway roster offset overflow")?;
+        super::country_roster::Observation::parse(&payload[railway_start..], super::country_roster::Kind::Railway)?;
         for entry in payload[exclusions_pool..roster_start].chunks_exact(4) {
             if u32::from_le_bytes(entry.try_into().unwrap()) > i32::MAX as u32 {
                 return Err("template exclusion variant identity is invalid".into());
@@ -381,10 +387,13 @@ impl<'a> DivisionRoutes<'a> {
             acclimatization_pool,
             exclusions_table,
             roster_start,
+            railway_start,
         })
     }
 
-    pub fn country_roster_bytes(&self) -> &[u8] { &self.payload[self.roster_start..] }
+    pub fn country_roster_bytes(&self) -> &[u8] { &self.payload[self.roster_start..self.railway_start] }
+
+    pub fn railway_roster_bytes(&self) -> &[u8] { &self.payload[self.railway_start..] }
 
     pub fn current_template(&self, index: usize) -> Option<Option<u32>> {
         assert!(index < self.rows);
@@ -564,7 +573,7 @@ mod tests {
             routes.iter().map(|route| (route.as_deref(), None)),
             std::iter::repeat_n(None, routes.len()),
             std::iter::repeat_n(None, routes.len()),
-         &unavailable_roster());
+         &unavailable_roster(), &unavailable_railway_roster());
         bytes
     }
 
@@ -582,6 +591,8 @@ mod tests {
         legacy[28..32].copy_from_slice(&FORMAT_MARKER.to_le_bytes());
         assert!(DivisionRoutes::parse(&legacy).is_err(), "marker alone does not supply CRO1");
         legacy.extend_from_slice(&unavailable_roster());
+        assert!(DivisionRoutes::parse(&legacy).is_err(), "division tail alone does not supply railway custody");
+        legacy.extend_from_slice(&unavailable_railway_roster());
         assert_eq!(DivisionRoutes::parse(&legacy).unwrap().ordinary_route(0), None);
     }
 
@@ -617,7 +628,7 @@ mod tests {
         let mut payload = vec![0; 32 + 3 * ROW_LEN];
         payload[8..12].copy_from_slice(&3_u32.to_le_bytes());
         for index in 0..3 { write_current_template(&mut payload, index, Some(Some(73))); }
-        append_inputs(&mut payload, [(None, None); 3].into_iter(), preferences.iter().map(Some), [None; 3].into_iter(), &unavailable_roster());
+        append_inputs(&mut payload, [(None, None); 3].into_iter(), preferences.iter().map(Some), [None; 3].into_iter(), &unavailable_roster(), &unavailable_railway_roster());
         let parsed = DivisionRoutes::parse(&payload).unwrap();
         for (index, expected) in preferences.iter().enumerate() {
             assert_eq!(parsed.template_preference(index).as_ref(), Some(expected));
@@ -664,7 +675,7 @@ mod tests {
             routes.iter().map(|r| (r.as_deref(), None)),
             preferences.iter().map(|p| p.as_ref()),
             std::iter::repeat_n(None, routes.len()),
-         &unavailable_roster());
+         &unavailable_roster(), &unavailable_railway_roster());
         let parsed = DivisionRoutes::parse(&bytes).unwrap();
         for index in 0..3 {
             assert_eq!(parsed.template_preference(index), preferences[index]);
@@ -727,7 +738,7 @@ mod tests {
             std::iter::repeat_n((None, None), 3),
             std::iter::repeat_n(None, 3),
             values.iter().map(|v| v.as_ref()),
-         &unavailable_roster());
+         &unavailable_roster(), &unavailable_railway_roster());
         let parsed = DivisionRoutes::parse(&bytes).unwrap();
         for (index, expected) in values.iter().enumerate() {
             assert_eq!(&parsed.acclimatization(index), expected);
@@ -801,7 +812,7 @@ mod tests {
         bytes[32 + 2 * ROW_LEN + 48..32 + 2 * ROW_LEN + 52].copy_from_slice(&2_u32.to_le_bytes());
         for (index, value) in scalars.iter().enumerate() { write_movement_scalars(&mut bytes, index, *value); }
         append_inputs(&mut bytes, ordinary.iter().zip(&alternate).map(|(a,b)| (a.as_deref(), b.as_deref())),
-            [None; 3].into_iter(), [None; 3].into_iter(), &unavailable_roster());
+            [None; 3].into_iter(), [None; 3].into_iter(), &unavailable_roster(), &unavailable_railway_roster());
         let parsed = DivisionRoutes::parse(&bytes).unwrap();
         for index in 0..3 {
             assert_eq!(parsed.ordinary_route(index), ordinary[index]);
@@ -850,4 +861,37 @@ pub fn unavailable_roster() -> Vec<u8> {
     super::country_roster::Observation::unavailable(
         super::country_roster::Kind::Division, super::country_roster::Cause::ExternalBridge,
     ).encode().expect("bounded unavailable roster")
+}
+
+pub fn unavailable_railway_roster() -> Vec<u8> {
+    super::country_roster::Observation::unavailable(
+        super::country_roster::Kind::Railway, super::country_roster::Cause::ExternalBridge,
+    ).encode().expect("unavailable railway roster")
+}
+
+#[cfg(test)]
+mod railway_tail_tests {
+    use super::*;
+    use super::super::country_roster::{Acquisition,Country,Kind,MemberRef,Observation,Slot};
+    fn payload() -> Vec<u8> {
+        let railway=Observation {kind:Kind::Railway,country_count:Some(1),failure:None,countries:vec![Country {
+            physical_slot:0,owner_tag_db_id:Some(7),acquisition:Acquisition::Bracketed,
+            observed_count:Some(1),failure:None,slots:vec![Slot {ordinal:0,reference:Ok(MemberRef {native_type:51,id:0})}],
+        }]}.encode().unwrap();
+        let mut bytes=vec![0;32];append_inputs(&mut bytes,std::iter::empty(),std::iter::empty(),std::iter::empty(),&unavailable_roster(),&railway);bytes
+    }
+    #[test]
+    fn d2r8_owns_exactly_two_ordered_tails_and_rejects_old_missing_extra_or_malformed_bytes() {
+        let bytes=payload();let parsed=DivisionRoutes::parse(&bytes).unwrap();
+        assert_eq!(Observation::parse(parsed.railway_roster_bytes(),Kind::Railway).unwrap().countries[0].slots[0].reference.unwrap().id,0);
+        for end in 32..bytes.len() { assert!(DivisionRoutes::parse(&bytes[..end]).is_err(),"{end}"); }
+        let mut bad=bytes.clone();bad[28..32].copy_from_slice(b"D2R7");assert!(DivisionRoutes::parse(&bad).is_err());
+        let mut bad=bytes.clone();bad.push(0);assert!(DivisionRoutes::parse(&bad).is_err());
+        let mut swapped=bytes[..32].to_vec();swapped.extend_from_slice(parsed.railway_roster_bytes());swapped.extend_from_slice(parsed.country_roster_bytes());
+        assert!(DivisionRoutes::parse(&swapped).is_err());
+        let railway_start=bytes.len()-parsed.railway_roster_bytes().len();
+        for offset in [railway_start+4,railway_start+6,railway_start+8,railway_start+28,railway_start+32+11] {
+            let mut bad=bytes.clone();bad[offset]=255;assert!(DivisionRoutes::parse(&bad).is_err(),"{offset}");
+        }
+    }
 }
