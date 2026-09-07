@@ -1474,3 +1474,4 @@ portable_replay/native/engine_evidence/artifacts/func_1424ad100.decompile.c text
 extractor/native/runs/view2_replay_targets/XUI13_QUOTED_FIELD_VALIDATION.json text eol=lf
 extractor/native/runs/orchestrator_20260905/QUOTED_FIELDS_INTEGRATION_EVIDENCE_048.json text eol=lf
 extractor/native/runs/view2_replay_targets/XUI13_QUOTED_DEFAULT_VALIDATION.json text eol=lf
+extractor/native/runs/orchestrator_20260905/INTEGRATION_VIEW2_QUOTED_DEFAULT_A5F3.json text eol=lf
