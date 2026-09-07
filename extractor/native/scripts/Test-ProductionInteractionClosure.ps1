@@ -875,15 +875,55 @@ Assert-ClosureCase 'evidence client-driving is isolated from canonical package n
 $cases++
 
 # 'zero client mutation' was cited here but appears nowhere in the document, and
+function Test-ProjectPassiveRecordingContract {
+    param([string]$Text)
+    $visible = [regex]::Replace($Text, '(?s)<!--.*?(?:-->|$)', '')
+    $lines = @($visible -split '\r?\n' | ForEach-Object { $_.Trim() })
+    # These are the current independent recording and injection requirements,
+    # not isolated keywords which unrelated prose could accidentally satisfy.
+    return (
+        $lines -ccontains '- Recording never pauses, changes speed or simulation, drives UI/input/focus, or depends on player selection. No freeze snapshots, synchronous in-hook capture, commit stalls, or writer locks. Maximum speed and auto-pause are normal play.' -and
+        $lines -ccontains '- Injection only observes. Hooks require proof that sampling cannot obtain the value, use the single audited primitive, and are registered, justified, bounded, and restored byte-for-byte, including bootstrap hooks. Descheduled domains install no detours.'
+    )
+}
+
 # PROJECT.md owns the durable passive-recording boundary. Pin its independent
 # client-control and teardown clauses so deleting a retired design document
 # cannot weaken this closure test.
 Assert-ClosureCase 'PROJECT binds passive observation and restored hooks' (
-    $project.Contains('never pauses the game') -and
-    $project.Contains('drives the UI') -and
-    $project.Contains('sends input') -and
-    $project.Contains('The collector has no authority over the client') -and
-    $project.Contains('restored byte for byte at teardown')
+    (Test-ProjectPassiveRecordingContract -Text $project)
+)
+$cases++
+
+# Each removal weakens a distinct contract requirement, even if the words are
+# retained elsewhere in the document. Comments must not supply admission.
+$projectMutationFailures = @()
+foreach ($clause in @(
+    'never pauses', 'changes speed or simulation, ', 'drives UI/input/focus, ',
+    'depends on player selection', 'No freeze snapshots, ', 'synchronous in-hook capture, ',
+    'commit stalls, ', 'writer locks', 'Injection only observes. ',
+    'proof that sampling cannot obtain the value, ', 'single audited primitive',
+    'registered, justified, bounded, and ', 'restored byte-for-byte, including bootstrap hooks',
+    'Descheduled domains install no detours.'
+)) {
+    $mutated = $project.Replace($clause, '') + "`n<!-- $clause -->"
+    if ($mutated -ceq $project -or (Test-ProjectPassiveRecordingContract -Text $mutated)) {
+        $projectMutationFailures += $clause
+    }
+}
+$requiredBullets = @($project -split '\r?\n' | Where-Object {
+    $_.StartsWith('- Recording never pauses,') -or $_.StartsWith('- Injection only observes.')
+})
+if ($requiredBullets.Count -ne 2) { $projectMutationFailures += 'missing required bullets' }
+foreach ($bullet in $requiredBullets) {
+    foreach ($replacement in @("<!--`n$bullet`n-->", "<!--`n$bullet")) {
+        if (Test-ProjectPassiveRecordingContract -Text ($project.Replace($bullet, $replacement))) {
+            $projectMutationFailures += 'commented-out required bullet'
+        }
+    }
+}
+Assert-ClosureCase 'PROJECT passive contract rejects each actual clause withdrawal' (
+    $projectMutationFailures.Count -eq 0
 )
 $cases++
 

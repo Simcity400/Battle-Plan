@@ -28,7 +28,7 @@ function Invoke-NativeChecked {
     if ($exitCode -ne 0) {
         throw "$Label failed with exit code $exitCode"
     }
-    return ,$output
+    return $output
 }
 
 function ConvertFrom-GateJson {
@@ -113,6 +113,7 @@ try {
     $packageVerifier = Join-Path $PSScriptRoot 'Test-PortableProductPackageReceipt.ps1'
     $passivePolicy = Join-Path $PSScriptRoot 'Test-PassiveCapturePolicy.ps1'
     $headlessUnits = Join-Path $PSScriptRoot 'Test-HeadlessRawCaptureUnits.ps1'
+    $releaseUnits = Join-Path $PSScriptRoot 'Test-ReleaseManualUnits.ps1'
     $promotionAbsence = Join-Path $PSScriptRoot 'Test-PromotionGateAbsence.ps1'
     $interactionClosure = Join-Path $PSScriptRoot 'Test-ProductionInteractionClosure.ps1'
     $c07Generator = Join-Path $repoRoot 'replay_interface\re_evidence\rendering_laws\C07\build_c07_portable_tree_library.py'
@@ -135,6 +136,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Landing plan failed with exit code $LASTEXITCODE" }
         Write-Host "PLAN> powershell.exe -File $passivePolicy"
         Write-Host "PLAN> powershell.exe -File $headlessUnits"
+        Write-Host "PLAN> powershell.exe -File $releaseUnits"
         Write-Host "PLAN> powershell.exe -File $promotionAbsence"
         Write-Host "PLAN> powershell.exe -File $interactionClosure"
         Write-Host ("PLAN> python {0}" -f ($c07Arguments -join ' '))
@@ -152,21 +154,22 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Landing validation failed with exit code $LASTEXITCODE" }
 
     $gateSpecs = @(
-        [pscustomobject]@{ Path = $passivePolicy; Schema = 'hoi4-passive-capture-policy-test-v1'; Status = 'pass'; MinCases = 0 },
-        [pscustomobject]@{ Path = $headlessUnits; Schema = 'hoi4-headless-raw-capture-unit-test-v1'; Status = 'pass'; MinCases = 200 },
-        [pscustomobject]@{ Path = $promotionAbsence; Schema = 'battle-plan.promotion_gate_absence_test.v1'; Status = 'PASS'; MinCases = 1 },
-        [pscustomobject]@{ Path = $interactionClosure; Schema = 'battle-plan.production_interaction_closure_test.v1'; Status = 'PASS'; MinCases = 1 }
+        [pscustomobject]@{ Path = $releaseUnits; Schema = 'hoi4-release-manual-unit-test-v1'; Status = 'pass'; MinCases = 24; Multiline = $false },
+        [pscustomobject]@{ Path = $passivePolicy; Schema = 'hoi4-passive-capture-policy-test-v1'; Status = 'pass'; MinCases = 0; Multiline = $false },
+        [pscustomobject]@{ Path = $headlessUnits; Schema = 'hoi4-headless-raw-capture-unit-test-v1'; Status = 'pass'; MinCases = 200; Multiline = $false },
+        [pscustomobject]@{ Path = $promotionAbsence; Schema = 'battle-plan.promotion_gate_absence_test.v1'; Status = 'PASS'; MinCases = 1; Multiline = $false },
+        [pscustomobject]@{ Path = $interactionClosure; Schema = 'battle-plan.production_interaction_closure_test.v1'; Status = 'PASS'; MinCases = 1; Multiline = $true }
     )
     foreach ($gate in $gateSpecs) {
         $label = [IO.Path]::GetFileName([string]$gate.Path)
         $gateOutput = @(Invoke-NativeChecked -Program 'powershell.exe' `
             -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', [string]$gate.Path) `
             -Label $label)
-        $gateReceipt = ConvertFrom-GateJson -Output $gateOutput -Label $label
+        $gateReceipt = ConvertFrom-GateJson -Output $gateOutput -Label $label -Multiline:([bool]$gate.Multiline)
         if ([string]$gateReceipt.Schema -cne [string]$gate.Schema -or
             [string]$gateReceipt.Status -cne [string]$gate.Status -or
-            [long]$gate.MinCases -gt 0 -and
-                -not (Test-JsonIntegerAtLeast -Value $gateReceipt.Cases -Minimum ([long]$gate.MinCases))) {
+            ([long]$gate.MinCases -gt 0 -and
+                -not (Test-JsonIntegerAtLeast -Value $gateReceipt.Cases -Minimum ([long]$gate.MinCases)))) {
             throw "$label returned no complete PASS receipt."
         }
     }
