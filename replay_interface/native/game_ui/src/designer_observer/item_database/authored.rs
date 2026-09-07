@@ -26,6 +26,9 @@ impl AuthoredIconPool {
         for field in fields {
             let key = field.key.as_deref().ok_or("XUI13 graphic pool has an unnamed field")?;
             if key.starts_with('@') { continue; }
+            if field.key_is_quoted {
+                return Err(format!("XUI13 graphic pool has quoted field keyword {key:?}"));
+            }
             let keyword = key.to_ascii_lowercase();
             match keyword.as_str() {
                 "weight" | "icons_weight" | "models_weight" => {
@@ -235,6 +238,29 @@ mod tests {
         assert_eq!(rows[0].icons, [DesignerRowIcon::Sprite("GFX_Ship".into())]);
         map.append(&crate::paradox_text::parse_str("tank = { pool = { icons = { GFX_Later } } }").root).unwrap();
         assert!(map.matching_rows("tank", &runtime(), context, context, context).is_err());
+    }
+
+    #[test]
+    fn quoted_field_keywords_refuse_the_reached_type_without_changing_value_identity() {
+        for field in ["weight = 1", "icons_weight = 2", "models_weight = 3",
+            "icons = { GFX_Exact }", "models = { Model_Exact }", "limit = {}",
+            "sub_units = { Armor_Exact }", "ideologies = { Ideology_Exact }", "cultures = { Culture_Exact }"] {
+            let (key, value) = field.split_once(" = ").unwrap();
+            let mut map = AuthoredIconPoolTypeMap::default();
+            let text = format!(r#"tank = {{ pool = {{ icons = {{ GFX_Old }} }} pool = {{ "{key}" = {value} }} }} ship = {{ pool = {{ icons = {{ "GFX_Exact" }} }} }}"#);
+            map.append(&crate::paradox_text::parse_str(&text).root).unwrap();
+            let context = || Ok(String::new());
+            assert!(map.matching_rows("tank", &runtime(), context, context, context)
+                .unwrap_err().contains("quoted field keyword"), "{key}");
+            let rows = map.matching_rows("ship", &runtime(), context, context, context).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].icons, [DesignerRowIcon::Sprite("GFX_Exact".into())]);
+            map.append(&crate::paradox_text::parse_str("tank = { pool = { icons = { GFX_Later } } }").root).unwrap();
+            assert!(map.matching_rows("tank", &runtime(), context, context, context).is_err());
+        }
+        let pool = parse(r#"@weight = 9 "@icons" = { ignored } IcOnS = { "GFX_Exact" }"#);
+        assert_eq!(pool.row.weights_raw, [100_000, 0, 0]);
+        assert_eq!(pool.row.icons, [DesignerRowIcon::Sprite("GFX_Exact".into())]);
     }
 
     #[test]

@@ -356,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_quoted_pool_refuses_only_icon_and_retains_known_row() {
+    fn authenticated_quoted_pool_and_fields_refuse_only_icon_and_retain_known_row() {
         let (root, _) = production_fixture();
         std::fs::create_dir_all(root.0.join("gfx/interface/equipmentdesigner/graphic_db")).unwrap();
         std::fs::create_dir_all(root.0.join("common/country_tags")).unwrap();
@@ -376,20 +376,25 @@ mod tests {
             "token":{"status":"measured","value":".","utf8_hex":"2e"}});
         let frame = world_from_catalog(raw.clone(), rest.clone());
         let mut surfaces = Vec::new();
-        for pool_key in ["PoOl", "\"pool\""] {
-            let source = format!("default = {{ light_tank_chassis_1 = {{ {pool_key} = {{ icons = {{ {green} }} }} }} }}");
+        for (pool_key, icons_key, weight_key) in [
+            ("PoOl", "IcOnS", "WeIgHt"), ("\"pool\"", "icons", "weight"),
+            ("pool", "\"icons\"", "weight"), ("pool", "icons", "\"weight\""),
+        ] {
+            let source = format!("default = {{ light_tank_chassis_1 = {{ {pool_key} = {{ {weight_key} = 1 {icons_key} = {{ {green} }} }} }} }}");
             std::fs::write(root.0.join("gfx/interface/equipmentdesigner/graphic_db/default.txt"), source).unwrap();
             let renderer = admitted_production_renderer_with_assets(&root.0, None, &[green]);
             surfaces.push(renderer.compose_xui13_designer_surface(&frame, frame.named_country("GER").unwrap(), &viewer(), 160, 120).unwrap());
         }
-        let (known, refused) = (&surfaces[0], &surfaces[1]);
+        let known = &surfaces[0];
         assert!(!known.field_refusals.contains_key("7:70/equipment_icon"), "{:?}", known.field_refusals);
-        assert!(refused.field_refusals["7:70/equipment_icon"].contains("quoted pool keyword"));
-        assert!(refused.membership_complete);
-        assert_eq!(refused.ordered_design_ids, ["7:70"]);
-        assert_eq!(refused.visible_design_ids, known.visible_design_ids);
-        assert_eq!(row_element_pixels(refused, "creator_flag"), row_element_pixels(known, "creator_flag"));
-        assert!(!refused.output.debug_rects.iter().any(|rect| rect.name.contains("7:70") && rect.name.ends_with("::equipment")));
+        for (refused, reason) in surfaces[1..].iter().zip(["quoted pool keyword", "quoted field keyword", "quoted field keyword"]) {
+            assert!(refused.field_refusals["7:70/equipment_icon"].contains(reason));
+            assert!(refused.membership_complete);
+            assert_eq!(refused.ordered_design_ids, ["7:70"]);
+            assert_eq!(refused.visible_design_ids, known.visible_design_ids);
+            assert_eq!(row_element_pixels(refused, "creator_flag"), row_element_pixels(known, "creator_flag"));
+            assert!(!refused.output.debug_rects.iter().any(|rect| rect.name.contains("7:70") && rect.name.ends_with("::equipment")));
+        }
         let renderer = admitted_production_renderer_with_assets(&root.0, None, &[green]);
         raw["variants"][0]["definition"]["item_icon_override"] = json!({"status":"measured","active":true,"kind":1,
             "token":{"status":"measured","value":green,"utf8_hex":green.as_bytes().iter().map(|byte|format!("{byte:02x}")).collect::<String>()}});
