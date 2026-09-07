@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Lane law tests: the cross-crate scans every lane runs ONCE after its review
-# converges (AGENTS.md "Lane workflow"). A step that starts zero tests fails.
-# Usage: bash extractor/native/scripts/lane_law_tests.sh [--collector]
-#   --collector  also run the collector-wide laws (use when the collector was touched)
+# Lane law tests: cross-crate scans for code changes.
+# See AGENT_OPERATIONS.md for validation and landing procedures.
+# Usage: bash extractor/native/scripts/lane_law_tests.sh
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 fail=0
