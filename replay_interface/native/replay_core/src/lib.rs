@@ -15,6 +15,7 @@ pub mod d18_roster;
 pub mod decision_evaluation;
 pub mod decisions_live;
 pub mod design_catalog;
+pub mod design_country;
 pub mod designer_icon_context;
 pub mod designer_intel;
 pub mod faction_order;
