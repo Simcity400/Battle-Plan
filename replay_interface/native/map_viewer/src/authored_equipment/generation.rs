@@ -47,10 +47,11 @@ impl AuthoredEquipmentCatalog {
             if entry.value.as_object().is_none() { return Err(malformed(token, "definition")) }
             let mut definition = AuthoredEquipmentDefinition {
                 token: token.into(), source: source.clone(), authored: raw.value.clone(),
-                expanded: entry.value.clone(), container_limit: None, generation: None, generated_type_mask: None, resolved_module_slots: None, resolved_graphics_source: None,
+                expanded: entry.value.clone(), container_limit: None, generation: None, generated_type_mask: None, resolved_module_slots: None, resolved_graphics_source: None, resolved_model_sprite: None,
             };
             if !modules {
                 definition.resolved_graphics_source = Some(self.graphics_source_before_insert(&definition));
+                definition.resolved_model_sprite = Some(self.model_sprite_before_insert(&definition));
                 for field in VERIFIED_STATS {
                     let raw = self.stat_before_clone(&definition, field)?;
                     set_scalar(&mut definition.expanded, field, &format_fixed5(raw));
@@ -83,7 +84,7 @@ impl AuthoredEquipmentCatalog {
             } else {
                 recipes.push(AuthoredEquipmentDefinition {
                     token: token.into(), source: source.clone(), authored: raw.value.clone(),
-                    expanded: entry.value.clone(), container_limit: None, generation: None, generated_type_mask: None, resolved_module_slots: None, resolved_graphics_source: None,
+                    expanded: entry.value.clone(), container_limit: None, generation: None, generated_type_mask: None, resolved_module_slots: None, resolved_graphics_source: None, resolved_model_sprite: None,
                 });
             }
         }
@@ -161,11 +162,15 @@ impl AuthoredEquipmentCatalog {
             if clear_slots {
                 generated.resolved_module_slots = Some(Ok(Vec::new()));
                 remove_field(&mut generated.expanded, "default_modules");
+                // 140c84dd0 resets the copied category selector and restriction with the slots.
+                remove_field(&mut generated.expanded, "type_override");
+                remove_field(&mut generated.expanded, "allowed_types");
                 set_value(&mut generated.expanded, "module_slots", Value::Object(Vec::new()));
             }
             for field in ["sprite", "picture"] {
                 if let Some(value) = recipe.scalar(field)?.filter(|x| !x.is_empty()) {
                     set_scalar(&mut generated.expanded, field, value);
+                    if field == "sprite" { generated.resolved_model_sprite = Some(Ok(value.into())); }
                 }
             }
             for field in ["substitute", "air_map_icon_frame", "interface_overview_category_index"] {
@@ -305,6 +310,42 @@ fn format_fixed5(raw: i64) -> String {
 mod tests {
     use super::*;
     use super::super::tests::catalog;
+
+    #[test]
+    fn generated_slot_clear_resets_category_metadata_while_normal_clones_retain_it() {
+        let c = catalog(r#"
+            @clear = none
+            equipments = {
+                base = { is_archetype = yes type = armor
+                    module_slots = { main = {} secondary = {} }
+                    type_override = secondary type_override = main
+                    allowed_types = armor allowed_types = fighter }
+                base_child = { archetype = base parent = base module_slots = parent
+                    type_override = secondary allowed_types = artillery }
+            }
+            duplicate_archetypes = {
+                copied = { archetype = base type = armor }
+                cleared_literal = { archetype = base type = armor module_slots = none }
+                cleared_variable = { archetype = base type = armor module_slots = @clear }
+            }
+        "#).resolve_generated().unwrap();
+        for (token, selector, allowed) in [
+            ("base", "main", 0x400), ("copied", "main", 0x400),
+            ("base_child", "secondary", 0x10000000),
+            ("copied_child", "secondary", 0x10000000),
+        ] {
+            let definition = c.definition(token).unwrap();
+            assert_eq!(definition.scalar("type_override").unwrap(), Some(selector), "{token}");
+            assert_eq!(definition.allowed_type_mask().unwrap(), allowed, "{token}");
+            assert_eq!(c.designer_module_slots(token).unwrap(), ["main", "secondary"], "{token}");
+        }
+        for token in ["cleared_literal", "cleared_literal_child", "cleared_variable", "cleared_variable_child"] {
+            let definition = c.definition(token).unwrap();
+            assert_eq!(definition.scalar("type_override").unwrap(), None, "{token}");
+            assert_eq!(definition.allowed_type_mask().unwrap(), 0, "{token}");
+            assert!(c.designer_module_slots(token).unwrap().is_empty(), "{token}");
+        }
+    }
 
     #[test]
     fn fresh_generation_keeps_colliding_definition_and_continues_other_candidates() {

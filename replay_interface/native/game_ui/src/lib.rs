@@ -1,4 +1,4 @@
-pub mod ability_visibility;
+pub use map_viewer::ability_visibility;
 pub mod stored_country_selection;
 #[cfg(test)]
 pub(crate) mod test_admission;

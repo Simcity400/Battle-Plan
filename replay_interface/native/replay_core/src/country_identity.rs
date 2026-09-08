@@ -308,10 +308,20 @@ impl std::error::Error for CountryHandleEqualityRefusal {}
 impl crate::WorldFrame {
     /// Native handle equality short-circuits identical handles and distinct null handles before reading link cells.
     pub fn country_handles_equal(&self, left: u32, right: u32) -> Result<bool, CountryHandleEqualityRefusal> {
-        use CountryHandleEqualityRefusal as Refusal;
-        use serde_json::Value;
         if left == right { return Ok(true); }
         if left == 0 || right == 0 { return Ok(false); }
+        self.country_handle_link_pair(left, right).map(|(left, right)| left == right)
+    }
+
+    /// The variant comparator maps a null handle to zero before reading nonnull link cells.
+    pub fn country_handle_link_value(&self, handle: u32) -> Result<u32, CountryHandleEqualityRefusal> {
+        if handle == 0 { return Ok(0); }
+        self.country_handle_link_pair(handle, handle).map(|(value, _)| value)
+    }
+
+    fn country_handle_link_pair(&self, left: u32, right: u32) -> Result<(u32, u32), CountryHandleEqualityRefusal> {
+        use CountryHandleEqualityRefusal as Refusal;
+        use serde_json::Value;
         match crate::world::rederive_collector_domain_problems(self.raw()) {
             Err(()) => return Err(Refusal::CollectorLedgerMalformed),
             Ok(Some(problems)) => {
@@ -356,7 +366,7 @@ impl crate::WorldFrame {
         }
         let left_cell = cells[0].ok_or(Refusal::OutOfRange { handle: left, count: indices.len() })?;
         let right_cell = cells[1].ok_or(Refusal::OutOfRange { handle: right, count: indices.len() })?;
-        Ok(left_cell == right_cell)
+        Ok((left_cell, right_cell))
     }
 }
 
@@ -712,6 +722,26 @@ mod raw_handle_tests {
         for (left,right,equal) in [(0,0,true),(7,7,true),(0,7,false),(7,0,false)] {
             assert_eq!(absent.country_handles_equal(left,right),Ok(equal));
         }
+    }
+
+    #[test]
+    fn raw_link_values_preserve_unsigned_cells_and_require_current_authority_for_nonnull_handles() {
+        let measured = json!({"status":"measured","indices":[99,4294967295u32,2147483648u32,7]});
+        let world = frame(measured.clone(),None,8);
+        assert_eq!(world.country_handle_link_value(0),Ok(0));
+        assert_eq!(world.country_handle_link_value(1),Ok(u32::MAX));
+        assert_eq!(world.country_handle_link_value(2),Ok(0x8000_0000));
+        assert_eq!(world.country_handle_link_value(3),Ok(7));
+        assert_eq!(world.country_handle_link_value(4),Err(Refusal::OutOfRange {handle:4,count:4}));
+        assert_eq!(frame(Value::Null,None,8).country_handle_link_value(0),Ok(0));
+        assert_eq!(frame(Value::Null,None,8).country_handle_link_value(1),Err(Refusal::Unobtained));
+        let blocked = frame(measured,Some(json!([{"domain_id":18,"problem":"partial_data"}])),8);
+        assert_eq!(blocked.country_handles_equal(1,1),Ok(true));
+        assert_eq!(blocked.country_handle_link_value(1),Err(Refusal::DomainUnavailable("partial_data".into())));
+        let malformed_tail = frame(json!({"status":"measured","indices":[0,7,-1]}),None,8);
+        assert_eq!(malformed_tail.country_handle_link_value(1),Err(Refusal::Malformed("link cell")));
+        assert_eq!(frame(json!({"status":"unavailable","reason":"changed"}),None,8).country_handle_link_value(1),
+            Err(Refusal::Unavailable("changed".into())));
     }
 
     #[test]

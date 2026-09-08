@@ -475,7 +475,7 @@ impl Xmap13Adapter {
         let result = (|| -> Result<PendingLandPopulation> {
             let mut population = self
                 .content
-                .derive_population(context.world_frame, context.xmap13_motion)?;
+                .derive_population(context.world_frame, context.xmap13_motion, context.viewer.observer_country_id.as_deref())?;
             let mut counts = BTreeMap::<u32, usize>::new();
             let mut locations_complete = context.world_frame.division_units_status()
                 == ViewStatus::Present

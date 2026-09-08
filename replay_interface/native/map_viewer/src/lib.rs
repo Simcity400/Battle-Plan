@@ -1,7 +1,9 @@
+pub mod ability_visibility;
 pub mod authored_camouflage;
 pub mod authored_icon_context;
 pub mod authored_fixed;
 pub mod authored_equipment;
+pub mod authored_graphic_pool;
 pub mod particle_authored;
 pub mod particle_runtime;
 #[cfg(windows)]

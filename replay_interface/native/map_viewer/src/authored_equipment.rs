@@ -2,6 +2,7 @@ mod generation;
 mod designer;
 mod missions;
 mod graphics;
+mod category;
 pub use missions::EquipmentMissionMasks;
 
 use crate::{ActiveDlcPresentation, ContentAdmissionLease, GameFileResolver};
@@ -15,6 +16,7 @@ pub enum EquipmentDefinitionError {
     MalformedContent { source: String, detail: String },
     MissingDefinition(String),
     UnresolvedGeneration { token: String, sources: Vec<String> },
+    DefinitionOrderUnavailable(String),
     AmbiguousDefinition { token: String, sources: Vec<String> },
     MalformedField { token: String, field: String },
     MissingField { token: String, field: String },
@@ -48,6 +50,7 @@ pub struct AuthoredEquipmentDefinition {
     generated_type_mask: Option<u64>,
     resolved_module_slots: Option<EquipmentResult<Vec<String>>>,
     resolved_graphics_source: Option<EquipmentResult<String>>,
+    resolved_model_sprite: Option<EquipmentResult<String>>,
     container_limit: Option<Value>,
 }
 
@@ -67,6 +70,12 @@ impl AuthoredEquipmentDefinition {
         value.map(|value| value.as_scalar().ok_or_else(|| self.malformed(name))).transpose()
     }
 
+    pub(crate) fn model_sprite(&self) -> EquipmentResult<&str> {
+        self.resolved_model_sprite.as_ref().ok_or_else(|| EquipmentDefinitionError::UnsupportedAuthored {
+            token: self.token.clone(), field: "sprite.ordered_resolution".into(),
+        })?.as_ref().map(String::as_str).map_err(Clone::clone)
+    }
+
     pub fn signed_integer(&self, name: &str) -> EquipmentResult<Option<i32>> {
         self.scalar(name)?.map(|value| value.parse::<i32>().map_err(|_| self.malformed(name)))
             .transpose()
@@ -83,6 +92,14 @@ impl AuthoredEquipmentDefinition {
         let mut mask = 0;
         for entry in self.expanded.fields().iter().filter(|entry| entry.key_matches("type")) {
             mask |= self.category_value(&entry.value, "type", false)?;
+        }
+        Ok(mask)
+    }
+
+    pub(crate) fn allowed_type_mask(&self) -> EquipmentResult<u64> {
+        let mut mask = 0;
+        for entry in self.expanded.fields().iter().filter(|entry| entry.key_matches("allowed_types")) {
+            mask = self.category_value(&entry.value, "allowed_types", true)?;
         }
         Ok(mask)
     }
@@ -286,12 +303,36 @@ impl AuthoredEquipmentCatalog {
         }
     }
 
-    pub fn hierarchy_profile(&self, token: &str) -> EquipmentResult<EquipmentHierarchyProfile> {
+    pub(crate) fn definition_ordinal(&self, token: &str) -> EquipmentResult<i32> {
+        self.require_resolution_profile()?;
+        self.definition(token)?;
+        if !self.generation_resolved {
+            return Err(EquipmentDefinitionError::DefinitionOrderUnavailable(token.into()));
+        }
+        self.definition_order.iter().position(|candidate| candidate == token)
+            .and_then(|ordinal| i32::try_from(ordinal).ok())
+            .ok_or_else(|| EquipmentDefinitionError::DefinitionOrderUnavailable(token.into()))
+    }
+
+    pub(crate) fn archetype_identity(&self, token: &str) -> EquipmentResult<Option<EquipmentDefinitionIdentity>> {
         self.require_resolved_generation(token)?;
-        let definition = self.definition(token)?;
+        self.resolve_archetype(token, &mut Vec::new())
+    }
+
+    pub(crate) fn parent_depth(&self, token: &str) -> EquipmentResult<i32> {
+        let chain = self.parent_chain(token, |_| Ok(()))?;
+        i32::try_from(chain.len() - 1)
+            .map_err(|_| EquipmentDefinitionError::DefinitionOrderUnavailable(token.into()))
+    }
+
+    fn parent_chain(
+        &self,
+        token: &str,
+        mut visit: impl FnMut(&AuthoredEquipmentDefinition) -> EquipmentResult<()>,
+    ) -> EquipmentResult<Vec<EquipmentDefinitionIdentity>> {
+        self.require_resolved_generation(token)?;
         let mut chain = Vec::new();
         let mut next = token.to_owned();
-        let mut priority = 0i32;
         loop {
             if chain.iter().any(|entry: &EquipmentDefinitionIdentity| entry.token == next) {
                 let mut cycle: Vec<_> = chain.iter().map(|entry| entry.token.clone()).collect();
@@ -299,13 +340,33 @@ impl AuthoredEquipmentCatalog {
                 return Err(EquipmentDefinitionError::RelationshipCycle(cycle));
             }
             let current = self.definition(&next)?;
-            // 140c84830 initializes +3cc to one; 140c85280 adds signed 32-bit values.
-            priority = priority.wrapping_add(current.signed_integer("visual_tech_level_addition")?.unwrap_or(1));
+            visit(current)?;
             chain.push(current.identity());
             let parent = current.scalar("parent")?.unwrap_or(&current.token);
             if parent == current.token { break }
             next = parent.to_owned();
         }
+        Ok(chain)
+    }
+
+    fn model_priority_chain(&self, token: &str) -> EquipmentResult<(Vec<EquipmentDefinitionIdentity>, i32)> {
+        let mut priority = 0i32;
+        let chain = self.parent_chain(token, |current| {
+            // 140c84830 initializes +3cc to one; 140c85280 adds signed 32-bit values.
+            priority = priority.wrapping_add(current.signed_integer("visual_tech_level_addition")?.unwrap_or(1));
+            Ok(())
+        })?;
+        Ok((chain, priority.max(1)))
+    }
+
+    pub(crate) fn effective_model_priority(&self, token: &str) -> EquipmentResult<i32> {
+        self.model_priority_chain(token).map(|(_, priority)| priority)
+    }
+
+    pub fn hierarchy_profile(&self, token: &str) -> EquipmentResult<EquipmentHierarchyProfile> {
+        self.require_resolved_generation(token)?;
+        let definition = self.definition(token)?;
+        let (chain, priority) = self.model_priority_chain(token)?;
         Ok(EquipmentHierarchyProfile {
             definition: definition.identity(),
             parent: chain.get(1).unwrap_or(&chain[0]).clone(),
@@ -313,7 +374,7 @@ impl AuthoredEquipmentCatalog {
             parent_chain: chain,
             authored_priority: definition.signed_integer("priority")?,
             authored_visual_tech_level_addition: definition.signed_integer("visual_tech_level_addition")?,
-            effective_model_priority: priority.max(1),
+            effective_model_priority: priority,
             authored_visual_level: definition.signed_integer("visual_level")?,
             effective_visual_level: definition.signed_integer("visual_level")?.unwrap_or(0),
         })
@@ -481,7 +542,7 @@ impl AuthoredEquipmentCatalog {
                 let definitions = if modules { &mut self.modules } else { &mut self.definitions };
                 definitions.entry(token.into()).or_default().push(AuthoredEquipmentDefinition {
                     token: token.into(), source: source.clone(), authored: definition.value.clone(),
-                    generation: None, generated_type_mask: None, resolved_module_slots: None, resolved_graphics_source: None,
+                    generation: None, generated_type_mask: None, resolved_module_slots: None, resolved_graphics_source: None, resolved_model_sprite: None,
                     expanded: expanded_definition.value.clone(), container_limit: limit.clone(),
                 });
             }
@@ -491,7 +552,7 @@ impl AuthoredEquipmentCatalog {
     }
 }
 
-fn equipment_category_mask(token: &str) -> Option<u64> {
+pub(crate) fn equipment_category_mask(token: &str) -> Option<u64> {
     Some(match token {
         "convoy" => 0x1, "infantry" => 0x20, "artillery" => 0x10000000,
         "armor" => 0x4, "amphibious" => 0x4000000, "anti_air" => 0x8000000,
@@ -620,6 +681,45 @@ mod tests {
         assert_eq!(profile.effective_model_priority, 3);
         assert_eq!(profile.authored_visual_level, Some(0));
         assert_eq!(profile.definition.source, source("common/units/equipment/a.txt"));
+    }
+
+    #[test]
+    fn definition_ordinal_retains_first_insertion_across_replacement_and_generated_append() {
+        let unresolved = catalog(r#"equipments = {
+            zeta = { is_archetype = yes type = armor }
+            zeta_1 = { archetype = zeta parent = zeta }
+            alpha = { is_archetype = yes type = infantry }
+        } equipments = { zeta = { is_archetype = yes type = armor } }
+        duplicate_archetypes = { copy = { archetype = zeta type = fighter } }"#);
+        let resolved = unresolved.resolve_generated().unwrap();
+        for (ordinal, token) in ["zeta", "zeta_1", "alpha", "copy", "copy_1"].into_iter().enumerate() {
+            assert_eq!(resolved.definition_ordinal(token).unwrap(), ordinal as i32, "{token}");
+        }
+        let unresolved = catalog("equipments = { root = { is_archetype = yes } }");
+        assert_eq!(unresolved.definition_ordinal("root"),
+            Err(EquipmentDefinitionError::DefinitionOrderUnavailable("root".into())));
+        assert!(matches!(resolved.definition_ordinal("missing"), Err(EquipmentDefinitionError::MissingDefinition(_))));
+    }
+
+    #[test]
+    fn parent_depth_ignores_visual_fields_but_retains_missing_and_cyclic_parent_refusals() {
+        let equipment = catalog("equipments = { root = { is_archetype = yes visual_tech_level_addition = invalid } leaf = { parent = root visual_level = invalid } missing = { parent = absent } a = { parent = b } b = { parent = a } }");
+        assert_eq!(equipment.parent_depth("root").unwrap(), 0);
+        assert_eq!(equipment.parent_depth("leaf").unwrap(), 1);
+        assert!(matches!(equipment.hierarchy_profile("leaf"), Err(EquipmentDefinitionError::MalformedField { .. })));
+        assert_eq!(equipment.parent_depth("missing"), Err(EquipmentDefinitionError::MissingDefinition("absent".into())));
+        assert_eq!(equipment.parent_depth("a"), Err(EquipmentDefinitionError::RelationshipCycle(vec!["a".into(), "b".into(), "a".into()])));
+    }
+
+    #[test]
+    fn archetype_projection_does_not_consume_unrelated_visual_priority_fields() {
+        let equipment = catalog("equipments = { root = { is_archetype = yes } leaf = { archetype = root visual_level = invalid visual_tech_level_addition = invalid } orphan = { visual_level = invalid } }");
+        assert_eq!(equipment.archetype_identity("leaf").unwrap().unwrap().token, "root");
+        assert!(matches!(equipment.hierarchy_profile("leaf"), Err(EquipmentDefinitionError::MalformedField { .. })));
+        assert_eq!(equipment.archetype_identity("orphan").unwrap(), None);
+        assert!(matches!(equipment.archetype_identity("missing"), Err(EquipmentDefinitionError::MissingDefinition(_))));
+        let cyclic = catalog("equipments = { a = { parent = b } b = { parent = a } }");
+        assert!(matches!(cyclic.archetype_identity("a"), Err(EquipmentDefinitionError::RelationshipCycle(_))));
     }
 
     #[test]

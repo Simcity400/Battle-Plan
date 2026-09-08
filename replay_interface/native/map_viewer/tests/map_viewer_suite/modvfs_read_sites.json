@@ -1543,12 +1543,12 @@
     "include_str!(\"../artifacts/func_1422b9100.instructions.txt\");"
   ],
   "portable_replay/native/engine_evidence/src/province_occupant_order.rs": [
-  "include_str!(\"../artifacts/func_140e6b110.decompile.c\"),",
-  "include_str!(\"../artifacts/func_140e65210.decompile.c\"),",
-  "include_str!(\"../artifacts/func_140bf5060.decompile.c\"),",
-  "include_str!(\"../artifacts/func_140c7f290.decompile.c\"),",
-  "include_str!(\"../artifacts/func_140c63040.decompile.c\"),"
-] ,
+    "include_str!(\"../artifacts/func_140e6b110.decompile.c\"),",
+    "include_str!(\"../artifacts/func_140e65210.decompile.c\"),",
+    "include_str!(\"../artifacts/func_140bf5060.decompile.c\"),",
+    "include_str!(\"../artifacts/func_140c7f290.decompile.c\"),",
+    "include_str!(\"../artifacts/func_140c63040.decompile.c\"),"
+  ],
   "portable_replay/native/engine_evidence/src/province_permanent_snow.rs": [
     "(\"140a507d0\", include_str!(\"../artifacts/func_140a507d0.decompile.c\")),",
     "(\"1413f4fd0\", include_str!(\"../artifacts/func_1413f4fd0.decompile.c\")),",
@@ -1796,6 +1796,25 @@
     "include_str!(\"../artifacts/func_140a523d0.decompile.c\"),"
   ],
   "portable_replay/native/engine_evidence/src/xmap13_model_selection.rs": [
+    "(\"func_1401ae640.decompile.c\", include_str!(\"../artifacts/func_1401ae640.decompile.c\")),",
+    "(\"func_1401ae640.instructions.txt\", include_str!(\"../artifacts/func_1401ae640.instructions.txt\")),",
+    "(\"func_141918f90.decompile.c\", include_str!(\"../artifacts/func_141918f90.decompile.c\")),",
+    "(\"func_141918f90.instructions.txt\", include_str!(\"../artifacts/func_141918f90.instructions.txt\")),",
+    "(\"func_141236ed0.decompile.c\", include_str!(\"../artifacts/func_141236ed0.decompile.c\")),",
+    "(\"func_141236ed0.instructions.txt\", include_str!(\"../artifacts/func_141236ed0.instructions.txt\")),",
+    "(\"func_141236950.decompile.c\", include_str!(\"../artifacts/func_141236950.decompile.c\")),",
+    "(\"func_141236950.instructions.txt\", include_str!(\"../artifacts/func_141236950.instructions.txt\")),",
+    "(\"func_141237140.decompile.c\", include_str!(\"../artifacts/func_141237140.decompile.c\")),",
+    "(\"func_141237140.instructions.txt\", include_str!(\"../artifacts/func_141237140.instructions.txt\")),",
+    "(\"func_140c89cc0.decompile.c\", include_str!(\"../artifacts/func_140c89cc0.decompile.c\")),",
+    "(\"func_140c89cc0.instructions.txt\", include_str!(\"../artifacts/func_140c89cc0.instructions.txt\")),",
+    "(\"func_140c84830.decompile.c\", include_str!(\"../artifacts/func_140c84830.decompile.c\")),",
+    "(\"func_140c84830.instructions.txt\", include_str!(\"../artifacts/func_140c84830.instructions.txt\")),",
+    "(\"func_140c86ec0.decompile.c\", include_str!(\"../artifacts/func_140c86ec0.decompile.c\")),",
+    "(\"func_140c86ec0.instructions.txt\", include_str!(\"../artifacts/func_140c86ec0.instructions.txt\")),",
+    "(\"func_1424b6730.decompile.c\", include_str!(\"../artifacts/func_1424b6730.decompile.c\")),",
+    "(\"func_1424b6730.instructions.txt\", include_str!(\"../artifacts/func_1424b6730.instructions.txt\")),",
+    "(\"xmap13_ordinary_entity_suffix.datdump.txt\", include_str!(\"../artifacts/xmap13_ordinary_entity_suffix.datdump.txt\")),",
     "(\"func_141652650.instructions.txt\", include_str!(\"../artifacts/func_141652650.instructions.txt\")),",
     "(\"func_141652650.decompile.c\", include_str!(\"../artifacts/func_141652650.decompile.c\")),",
     "(\"func_14127aa90.instructions.txt\", include_str!(\"../artifacts/func_14127aa90.instructions.txt\")),",
@@ -1917,6 +1936,24 @@
     "(\"func_1422bf160.decompile.c\", include_str!(\"../artifacts/func_1422bf160.decompile.c\")),",
     "(\"func_140b30d80.decompile.c\", include_str!(\"../artifacts/func_140b30d80.decompile.c\")),",
     "(\"xmap13_spline_height_callback.datdump.txt\", include_str!(\"../artifacts/xmap13_spline_height_callback.datdump.txt\")),"
+  ],
+  "portable_replay/native/engine_evidence/src/xmap13_module_category.rs": [
+    "(\"func_140c84dd0.decompile.c\", include_str!(\"../artifacts/func_140c84dd0.decompile.c\")),",
+    "(\"func_140c84dd0.instructions.txt\", include_str!(\"../artifacts/func_140c84dd0.instructions.txt\")),",
+    "(\"func_140c89680.decompile.c\", include_str!(\"../artifacts/func_140c89680.decompile.c\")),",
+    "(\"func_140c89680.instructions.txt\", include_str!(\"../artifacts/func_140c89680.instructions.txt\")),",
+    "(\"func_14151d190.decompile.c\", include_str!(\"../artifacts/func_14151d190.decompile.c\")),",
+    "(\"func_14151d190.instructions.txt\", include_str!(\"../artifacts/func_14151d190.instructions.txt\")),",
+    "(\"func_14151c3e0.decompile.c\", include_str!(\"../artifacts/func_14151c3e0.decompile.c\")),",
+    "(\"func_14151c3e0.instructions.txt\", include_str!(\"../artifacts/func_14151c3e0.instructions.txt\")),",
+    "(\"func_14151c5b0.decompile.c\", include_str!(\"../artifacts/func_14151c5b0.decompile.c\")),",
+    "(\"func_14151c5b0.instructions.txt\", include_str!(\"../artifacts/func_14151c5b0.instructions.txt\")),",
+    "(\"func_140f75bc0.decompile.c\", include_str!(\"../artifacts/func_140f75bc0.decompile.c\")),",
+    "(\"func_140f75bc0.instructions.txt\", include_str!(\"../artifacts/func_140f75bc0.instructions.txt\")),",
+    "(\"func_140bc4530.decompile.c\", include_str!(\"../artifacts/func_140bc4530.decompile.c\")),",
+    "(\"func_140bc4530.instructions.txt\", include_str!(\"../artifacts/func_140bc4530.instructions.txt\")),",
+    "(\"cmb_module_exclusion_registration.instructions.txt\", include_str!(\"../artifacts/cmb_module_exclusion_registration.instructions.txt\")),",
+    "let packet: serde_json::Value = serde_json::from_str(include_str!("
   ],
   "portable_replay/native/engine_evidence/src/xmap14_combat_icon_placement.rs": [
     "include_str!(\"../artifacts/func_140120030.decompile.c\"),",
@@ -2282,6 +2319,14 @@
     "(\"xui13_registration_copy_helper.datdump.txt\", include_str!(\"../artifacts/xui13_registration_copy_helper.datdump.txt\")),",
     "(\"xui13_icons_family_registration.instructions.txt\", include_str!(\"../artifacts/xui13_icons_family_registration.instructions.txt\")),",
     "(\"xui13_pool_field_forwarding.instructions.txt\", include_str!(\"../artifacts/xui13_pool_field_forwarding.instructions.txt\")),"
+  ],
+  "portable_replay/native/engine_evidence/src/xui13_generation_closure.rs": [
+    "(\"1409e2ae0\", include_str!(\"../artifacts/func_1409e2ae0.decompile.c\")),",
+    "(\"1401760a0\", include_str!(\"../artifacts/func_1401760a0.decompile.c\")),",
+    "(\"140161c20\", include_str!(\"../artifacts/func_140161c20.decompile.c\")),",
+    "(\"1413d22a0\", include_str!(\"../artifacts/func_1413d22a0.decompile.c\")),",
+    "const JOINS: &str = include_str!(\"../data/xui13_generation_closure.json\");",
+    "let census = include_str!(\"../../../../extractor/native/runs/view2_state_registry/registry_ids.tsv\");"
   ],
   "portable_replay/native/engine_evidence/src/xui13_icon_collection.rs": [
     "(\"1409f1540\", include_str!(\"../artifacts/func_1409f1540.decompile.c\")),",
@@ -2963,6 +3008,20 @@
     "std::fs::write(root.0.join(\"gfx/interface/xui13_override.tga\"),texture).unwrap();",
     "let mut definitions=std::fs::read_to_string(&gfx).unwrap();",
     "std::fs::write(gfx,definitions).unwrap();"
+  ],
+  "replay_interface/native/game_ui/src/designer_observer/full_panel_joint.rs": [
+    "use std::fs;",
+    "fs::create_dir_all(root.0.join(directory)).unwrap();",
+    "fs::write(root.0.join(path), text).unwrap();",
+    "fs::write(root.0.join(\"map/provinces.bmp\"), bitmap).unwrap();",
+    "let template = fs::read(root.0.join(\"gfx/interface/xui13_test.tga\")).unwrap();",
+    "fs::write(root.0.join(path), texture).unwrap();",
+    "let mut font = fs::read_to_string(&font_path).unwrap();",
+    "fs::write(font_path, font).unwrap();",
+    "const CATALOG: &[u8] = include_bytes!(\"../../../../fixtures/xui13_full_panel_catalog.json\");",
+    "const CID1: &[u8] = include_bytes!(\"../../../../fixtures/xui13_full_panel_cid1.h4cr\");",
+    "const D53: &[u8] = include_bytes!(\"../../../../fixtures/xui13_full_panel_d53.json\");",
+    "const JOINT: &[u8] = include_bytes!(\"../../../../fixtures/xui13_full_panel_snapshots.json\");"
   ],
   "replay_interface/native/game_ui/src/designer_observer/item_database.rs": [
     "std::fs::create_dir_all(root.0.join(\"common/units/equipment\")).unwrap();",
@@ -5620,6 +5679,17 @@
     "viewer.open(",
     "checkpoint.open(panel, 20);"
   ],
+  "replay_interface/native/replay_app/src/ui_runtime/xui08_public_entry_tests.rs": [
+    "use portable_content_manifest::effective_vfs::{EffectiveVfs, EffectiveVfsLayerMount};",
+    "std::fs::create_dir_all(path.parent().unwrap()).unwrap();",
+    "std::fs::write(path, bytes).unwrap();",
+    "write(root, \"gfx/FX/text.shader\", include_bytes!(\"../../tests/fixtures/exact_a729/text.shader\"));",
+    "let vfs = EffectiveVfs::new(&vfs_id, [EffectiveVfsLayerMount {"
+  ],
+  "replay_interface/native/replay_app/src/ui_runtime/xui08_recording_dispatch_tests.rs": [
+    "let mut file = std::fs::File::open(path).expect(\"open explicit recording for byte custody\");",
+    "let count = file.read(&mut buffer).expect(\"read explicit recording for byte custody\");"
+  ],
   "replay_interface/native/replay_app/src/validate.rs": [
     "let text = std::fs::read_to_string(&path)",
     "std::fs::create_dir_all(moved.parent().unwrap()).unwrap();",
@@ -5710,9 +5780,9 @@
     "include_bytes!(\"../../../re_evidence/rendering_laws/XUI08/evidence_manifest.json\");"
   ],
   "replay_interface/native/replay_core/src/province_occupants.rs": [
-  "assert!(std::fs::metadata(&path).unwrap().len() <= 1024 * 1024);",
-  "let bytes = std::fs::read(path).unwrap();"
-] ,
+    "assert!(std::fs::metadata(&path).unwrap().len() <= 1024 * 1024);",
+    "let bytes = std::fs::read(path).unwrap();"
+  ],
   "replay_interface/native/replay_core/src/rollover_package_set.rs": [
     "use std::fs;",
     "let metadata = fs::symlink_metadata(path).map_err(|error| {",
@@ -6214,38 +6284,5 @@
     "let cleanup = fs::remove_dir_all(&root);",
     "for entry in fs::read_dir(dir)? {",
     "out.insert(rel_slash(&path, root), fs::read(path)?);"
-  ],
-  "portable_replay/native/engine_evidence/src/xui13_generation_closure.rs": [
-    "(\"1409e2ae0\", include_str!(\"../artifacts/func_1409e2ae0.decompile.c\")),",
-    "(\"1401760a0\", include_str!(\"../artifacts/func_1401760a0.decompile.c\")),",
-    "(\"140161c20\", include_str!(\"../artifacts/func_140161c20.decompile.c\")),",
-    "(\"1413d22a0\", include_str!(\"../artifacts/func_1413d22a0.decompile.c\")),",
-    "const JOINS: &str = include_str!(\"../data/xui13_generation_closure.json\");",
-    "let census = include_str!(\"../../../../extractor/native/runs/view2_state_registry/registry_ids.tsv\");"
-  ],
-  "replay_interface/native/game_ui/src/designer_observer/full_panel_joint.rs": [
-    "use std::fs;",
-    "fs::create_dir_all(root.0.join(directory)).unwrap();",
-    "fs::write(root.0.join(path), text).unwrap();",
-    "fs::write(root.0.join(\"map/provinces.bmp\"), bitmap).unwrap();",
-    "let template = fs::read(root.0.join(\"gfx/interface/xui13_test.tga\")).unwrap();",
-    "fs::write(root.0.join(path), texture).unwrap();",
-    "let mut font = fs::read_to_string(&font_path).unwrap();",
-    "fs::write(font_path, font).unwrap();",
-    "const CATALOG: &[u8] = include_bytes!(\"../../../../fixtures/xui13_full_panel_catalog.json\");",
-    "const CID1: &[u8] = include_bytes!(\"../../../../fixtures/xui13_full_panel_cid1.h4cr\");",
-    "const D53: &[u8] = include_bytes!(\"../../../../fixtures/xui13_full_panel_d53.json\");",
-    "const JOINT: &[u8] = include_bytes!(\"../../../../fixtures/xui13_full_panel_snapshots.json\");"
-  ],
-  "replay_interface/native/replay_app/src/ui_runtime/xui08_public_entry_tests.rs": [
-    "use portable_content_manifest::effective_vfs::{EffectiveVfs, EffectiveVfsLayerMount};",
-    "std::fs::create_dir_all(path.parent().unwrap()).unwrap();",
-    "std::fs::write(path, bytes).unwrap();",
-    "write(root, \"gfx/FX/text.shader\", include_bytes!(\"../../tests/fixtures/exact_a729/text.shader\"));",
-    "let vfs = EffectiveVfs::new(&vfs_id, [EffectiveVfsLayerMount {"
-  ],
-  "replay_interface/native/replay_app/src/ui_runtime/xui08_recording_dispatch_tests.rs": [
-    "let mut file = std::fs::File::open(path).expect(\"open explicit recording for byte custody\");",
-    "let count = file.read(&mut buffer).expect(\"read explicit recording for byte custody\");"
   ]
 }

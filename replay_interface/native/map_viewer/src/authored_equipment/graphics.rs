@@ -16,6 +16,28 @@ impl AuthoredEquipmentCatalog {
         self.definition(token)
     }
 
+    pub(super) fn model_sprite_before_insert(&self, definition: &AuthoredEquipmentDefinition)
+        -> EquipmentResult<String> {
+        let mut sprite = String::new();
+        for field in definition.expanded.fields() {
+            if field.key_matches("sprite") {
+                sprite = field.value.as_scalar().ok_or_else(|| definition.malformed("sprite"))?.into();
+            } else if field.key_matches("archetype") && sprite.is_empty() {
+                let token = field.value.as_scalar().ok_or_else(|| definition.malformed("archetype"))?;
+                if token == definition.token { continue; }
+                match self.admitted_definition(&self.definitions, token) {
+                    Ok(target) if target.boolean("is_archetype")? == Some(true) => {
+                        sprite = target.model_sprite()?.into();
+                    },
+                    Ok(_) | Err(EquipmentDefinitionError::MissingDefinition(_)
+                        | EquipmentDefinitionError::DisabledByContentCondition(_)) => {},
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Ok(sprite)
+    }
+
     pub(super) fn graphics_source_before_insert(&self, definition: &AuthoredEquipmentDefinition)
         -> EquipmentResult<String> {
         // 140c84830 starts +4e8 at self; 140c89cc0 retains it on an invalid family lookup.
@@ -41,6 +63,37 @@ impl AuthoredEquipmentCatalog {
 mod tests {
     use super::*;
     use super::super::tests::catalog;
+
+    #[test]
+    fn sprite_inheritance_occurs_at_each_archetype_field_only_while_empty() {
+        let catalog = catalog(r#"equipments = {
+            root = { is_archetype = yes sprite = inherited }
+            future = { is_archetype = yes sprite = future_sprite }
+            before = { sprite = own archetype = root }
+            copied = { sprite = "" archetype = root }
+            cleared = { archetype = root sprite = "" }
+            repeated = { archetype = root sprite = "" archetype = future }
+            parent_only = { parent = root }
+            root = { is_archetype = yes sprite = replaced }
+        } duplicate_archetypes = { generated = { archetype = root sprite = generated_sprite } }"#)
+            .resolve_generated().unwrap();
+        for (token, expected) in [("before","own"),("copied","inherited"),
+            ("cleared",""),("repeated","future_sprite"),("parent_only",""),("root","replaced"),
+            ("generated","generated_sprite")] {
+            assert_eq!(catalog.definition(token).unwrap().model_sprite().unwrap(), expected, "{token}");
+        }
+        // The sprite getter retains empty on a missing earlier archetype. Full
+        // catalog admission independently requires the inherited stat inputs.
+        let pending = super::super::tests::catalog("equipments = { late = { archetype = future } }");
+        let prior = super::super::tests::catalog("equipments = {}").resolve_generated().unwrap();
+        assert_eq!(prior.model_sprite_before_insert(&pending.definitions["late"][0]).unwrap(), "");
+        assert!(matches!(pending.resolve_generated(),
+            Err(EquipmentDefinitionError::MissingDefinition(token)) if token == "future"));
+        let malformed = super::super::tests::catalog("equipments = { root = { sprite = {} } }")
+            .resolve_generated().unwrap();
+        assert!(matches!(malformed.definition("root").unwrap().model_sprite(),
+            Err(EquipmentDefinitionError::MalformedField {field,..}) if field == "sprite"));
+    }
 
     #[test]
     fn family_is_ordered_direct_object_selection_and_invalid_lookup_retains_previous() {

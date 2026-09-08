@@ -1,5 +1,8 @@
 use crate::content_parse::{ContentParseError as GameUiError, Result};
 
+mod native_tokens;
+pub use native_tokens::parse_native_token_stream;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Document {
     pub root: Value,
