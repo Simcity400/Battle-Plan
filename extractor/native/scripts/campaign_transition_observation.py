@@ -2,8 +2,8 @@
 
 Only Invoke-CampaignTransitionObservation.ps1 acquires live observations. This
 module never opens the game, synthesizes observations, stitches files, or promotes a
-capture receipt. Product admission owns container/fold validation; ZIP inspection
-below only selects evidence for exact comparisons after that admission.
+capture receipt. ZIP inspection provisionally locates a producer publication;
+product admission owns container/fold validation before semantic acceptance.
 """
 import argparse
 import ctypes
@@ -145,7 +145,15 @@ def contract(value):
         if transition['kind'] in ('reload', 'rollback'):
             require(transition['attachment'] == 'same', 'in-process reload/rollback requires same attachment')
     for recording in recordings:
-        require(Path(recording['path']).is_absolute(), 'recording path must be absolute')
+        stages_for_recording = [s for s in stages if s['recording'] == recording['name']]
+        require(stages_for_recording, 'unused recording expectation')
+        require('path' not in recording, 'recording path is replaced by a witnessed publication reference')
+        reference = recording.get('publication')
+        require(isinstance(reference, dict), 'publication reference must be an object')
+        exact(sorted(reference), ['checkpoint', 'kind'], 'publication reference fields')
+        exact(reference['kind'], 'producer-stitch', 'publication reference kind')
+        exact(reference['checkpoint'], stages_for_recording[-1]['name'],
+              'publication must reference the last checkpoint for this recording')
         require('logical_stream_id' in recording, 'explicit logical_stream_id (null for single file) required')
         if recording['logical_stream_id'] is not None:
             integer(recording['logical_stream_id'], 'logical stream', 0, 2**64-1)
@@ -273,7 +281,70 @@ def admitted_member(root, product, stage, witness, viewer, viewer_hash, timeout)
     exact(manifest['campaign_identity']['stream_header_sha256'], member['cid1_payload_sha256_hex'], 'manifest CID1 epoch')
     exact(manifest['stream_storage']['decoded_sha256'], member['raw_decoded_sha256'], 'manifest decoded stream')
     witness['member'] = member
+    witness['package_set'] = descriptor_pin
     return manifest, manifest_pin
+
+
+def publication_source(root, product, spec, recording, witnesses, manifests):
+    """Resolve only producer-receipted files in the last witnessed attempt.
+
+    Candidate graph inspection is a provisional locator, not admission. The
+    selected, retained bytes still undergo all existing product consumers.
+    """
+    stages = [s for s in spec['checkpoints'] if s['recording'] == recording['name']]
+    anchor = stages[-1]
+    witness = witnesses[anchor['name']]
+    scope, terminal = witness['scope'], witness['terminal']
+    run = startup.member_path(product, 'run_' + scope['attempt_id'])
+    exact(startup.key(terminal), startup.key(scope), 'publication journal attachment')
+    exact(terminal['session_id'], scope['session_id'], 'publication journal session')
+    exact(terminal['attempt_id'], scope['attempt_id'], 'publication journal attempt')
+    require(terminal['state_to'] == 'Complete' and terminal['artifact_status'] == 'verified',
+            'publication attempt is not verified complete')
+    require(startup.same_path(terminal['replay_path'], run/'logical-stream-package-set.json'),
+            'publication journal does not bind this attempt package set')
+    assert_pin(witness['package_set'])
+    exact(startup.identity(run/'logical-stream-package-set.json')['sha256'],
+          witness['package_set']['sha256'], 'publication package set changed')
+    log_pin = retain(run/'worker_stderr.log', root/(recording['name']+'.publication.log'))
+    pattern = re.compile(r'recorder stitch: published=(.+) segments=([1-9][0-9]*) visible_hours=([0-9]+) sha256=([0-9a-f]{64})')
+    receipts = []
+    for line in startup.bounded_bytes(log_pin['path'], LIMIT).decode('utf-8').splitlines():
+        if line.startswith('recorder stitch: published='):
+            match = pattern.fullmatch(line)
+            require(match is not None, 'malformed producer publication receipt')
+            receipts.append(match.groups())
+    require(0 < len(receipts) <= 64, 'missing or excessive producer publication receipts')
+    key = campaign(anchor['campaign']).hex()
+    matches = []
+    for number, (value, segments, hours, sha256) in enumerate(receipts):
+        source = Path(value)
+        require(source.is_absolute() and source.suffix == '.battleplan', 'publication path must be an absolute complete replay')
+        try:
+            relative = source.relative_to(run).as_posix()
+        except ValueError:
+            raise ValueError('publication path escapes witnessed attempt') from None
+        source = startup.member_path(run, relative)
+        pin = retain(source, root/(recording['name']+f'.candidate-{number}.battleplan'))
+        exact(pin['sha256'], sha256, 'producer publication hash')
+        index, graph = graph_evidence(Path(pin['path']))
+        assert_pin(pin)
+        if graph['campaign']['campaign_key'] != key:
+            continue
+        exact(len(graph['segments']), int(segments), 'producer publication segment count')
+        exact(len(index['snapshots']), int(hours), 'producer publication visible hours')
+        for stage in stages:
+            select_segment(stage, witnesses[stage['name']], manifests[stage['name']], graph)
+        matches.append(pin)
+    require(len(matches) == 1, 'expected one publication matching witnessed campaign; found ' + str(len(matches)))
+    pin = matches[0]
+    assert_pin(log_pin)
+    exact(startup.identity(run/'worker_stderr.log')['sha256'], log_pin['sha256'], 'publication log changed')
+    exact(startup.identity(pin['source_path'])['sha256'], pin['sha256'], 'publication changed after binding')
+    write(root/(recording['name']+'.publication.json'), dict(
+        checkpoint=anchor['name'], scope=scope, terminal=terminal, package_set=witness['package_set'],
+        producer_log=log_pin, candidates=len(receipts), selected=pin))
+    return pin
 
 
 def retain_embedded_source(replay, index, segment, destination):
@@ -338,36 +409,39 @@ def assess_playback(stdout, reach, expected, recording_path):
            for h in reach['hours']], expected['playback_gaps'], 'product gaps and warnings at every hour')
 
 
+def select_segment(stage, witness, manifest, graph):
+    scope = witness['scope']
+    assess_epoch(stage, scope, witness['rollover_state'], witness['ticket'])
+    exact(startup.key(witness['game']), startup.key(scope), 'observed attachment ' + stage['name'])
+    require(manifest['pid'] == scope['pid'] and manifest['session_id'] == scope['session_id']
+            and manifest['capture_id'] == scope['attempt_id'], 'manifest attachment/session/attempt differs')
+    key = campaign(manifest['campaign_identity'], producer=True)
+    exact(key.hex(), campaign(stage['campaign']).hex(), 'raw campaign ' + stage['name'])
+    exact(graph['campaign']['campaign_key'], key.hex(), 'packaged raw campaign join')
+    exact(graph['campaign']['campaign_key_digest'], hashlib.sha256(key).hexdigest(), 'packaged campaign digest')
+    segments = [s for s in graph['segments'] if s['segment_id'] == stage['segment_id']]
+    require(len(segments) == 1, 'missing or repeated selected segment')
+    segment = segments[0]
+    pid, creation = startup.key(scope)
+    exact(segment['process_start_identity'], f'pid:{pid}:creation-filetime:{creation}', 'branch attachment')
+    exact(segment['session_nonce'], scope['session_id'], 'branch session')
+    exact(segment['in_session_ordinal'], stage['logical_stream_id'], 'branch logical stream')
+    exact(segment['epoch_token'], witness['ticket']['identity_evidence_sha256'], 'branch checkpoint epoch')
+    exact(segment['play_order'], witness['ticket']['play_order'], 'branch checkpoint play order')
+    if 'member' in witness:
+        exact(segment['source_ref']['stored_digest'], witness['member']['raw_sha256'], 'branch authenticated member source')
+        exact(segment['source_ref']['decoded_digest'], witness['member']['raw_decoded_sha256'], 'branch authenticated decoded source')
+    require(segment.get('empty_recovery') is False, 'empty recovery cannot establish a transition')
+    return segment
+
+
 def assess_transitions(spec, witnesses, graphs, manifests):
-    stages = {s['name']: s for s in spec['checkpoints']}
     selected = {}
-    for name, stage in stages.items():
+    for stage in spec['checkpoints']:
+        name = stage['name']
         witness = witnesses[name]
-        scope = witness['scope']
-        assess_epoch(stage, scope, witness['rollover_state'], witness['ticket'])
-        exact(startup.key(witness['game']), startup.key(scope), 'observed attachment ' + name)
-        manifest = manifests[name]
-        require(manifest['pid'] == scope['pid'] and manifest['session_id'] == scope['session_id']
-                and manifest['capture_id'] == scope['attempt_id'], 'manifest attachment/session/attempt differs')
-        key = campaign(manifest['campaign_identity'], producer=True)
-        exact(key.hex(), campaign(stage['campaign']).hex(), 'raw campaign ' + name)
-        graph = graphs[stage['recording']]
-        exact(graph['campaign']['campaign_key'], key.hex(), 'packaged raw campaign join')
-        exact(graph['campaign']['campaign_key_digest'], hashlib.sha256(key).hexdigest(), 'packaged campaign digest')
-        segments = [s for s in graph['segments'] if s['segment_id'] == stage['segment_id']]
-        require(len(segments) == 1, 'missing or repeated selected segment')
-        segment = segments[0]
-        pid, creation = startup.key(scope)
-        exact(segment['process_start_identity'], f'pid:{pid}:creation-filetime:{creation}', 'branch attachment')
-        exact(segment['session_nonce'], scope['session_id'], 'branch session')
-        exact(segment['in_session_ordinal'], stage['logical_stream_id'], 'branch logical stream')
-        exact(segment['epoch_token'], witness['ticket']['identity_evidence_sha256'], 'branch checkpoint epoch')
-        exact(segment['play_order'], witness['ticket']['play_order'], 'branch checkpoint play order')
-        if 'member' in witness:
-            exact(segment['source_ref']['stored_digest'], witness['member']['raw_sha256'], 'branch authenticated member source')
-            exact(segment['source_ref']['decoded_digest'], witness['member']['raw_decoded_sha256'], 'branch authenticated decoded source')
+        segment = select_segment(stage, witness, manifests[name], graphs[stage['recording']])
         exact(segment['source_ref']['stored_digest'], witness['raw_identity']['sha256'], 'branch raw source')
-        require(segment.get('empty_recovery') is False, 'empty recovery cannot establish a transition')
         selected[name] = segment
     for transition in spec['transitions']:
         a, b = transition['from'], transition['to']
@@ -489,6 +563,7 @@ def finish(root):
                 and seen[-1]['session_id'] == scope['session_id'], 'checkpoint lacks actual Recording journal binding')
         terminal = [r for r in fresh if r.get('attempt_id') == scope['attempt_id']]
         require(terminal and terminal[-1]['state_to'] == 'Complete' and terminal[-1]['artifact_status'] == 'verified', 'producer attempt not verified complete')
+        witness['terminal'] = terminal[-1]
         require(re.fullmatch('[A-Za-z0-9_-]+', scope['attempt_id']), 'unsafe attempt id')
         witnesses[name] = witness
     require({startup.key(r) for r in fresh} == {startup.key(w['game']) for w in witnesses.values()}, 'unscoped or missing attachment in journal')
@@ -514,10 +589,11 @@ def finish(root):
         manifests[name] = manifest
     for recording in spec['recordings']:
         name = recording['name']
-        source = Path(recording['path'])
-        require(recording['logical_stream_id'] is None and source.suffix == '.battleplan',
+        require(recording['logical_stream_id'] is None,
                 'transition claim needs one complete stitched campaign .battleplan; independent rollover members cannot be joined by observer')
-        pin = retain(source, root/(name+'.battleplan'))
+        publication = publication_source(root, product, spec, recording, witnesses, manifests)
+        pin = retain(Path(publication['path']), root/(name+'.battleplan'))
+        assert_pin(publication)
         replay = root/(name+'.battleplan')
         common = ['--non-interactive']
         product_command(viewer, ['--validate-recording', str(replay), *common], root, name+'.admission', plan['product_timeout_seconds'], viewer_hash)

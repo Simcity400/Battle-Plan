@@ -16,7 +16,7 @@ Inputs: -ExpectationsPath is hoi4.campaign_transition_expectations.v1 JSON:
     campaign:{game_unique_id:<canonical UUID>,game_unique_seed:<signed decimal>}}
   transitions: one for EVERY adjacent pair {from,to,
     kind:reload|relaunch|rollback|identity-change, attachment:same|replaced}
-  recordings: {name,path:<absolute complete campaign .battleplan>,
+  recordings: {name,publication:{kind:producer-stitch,checkpoint:<last checkpoint for this recording>},
     logical_stream_id:null,expected:{segments:[...],main_slices:[...],
     main_head:{segment_id,hour_index},coverage:[...],surviving_hours:[...],
     playback_gaps:[{hour_index,gap_inputs,recorder_domain_problems,
@@ -24,7 +24,12 @@ Inputs: -ExpectationsPath is hoi4.campaign_transition_expectations.v1 JSON:
 Each expected segment has exactly: segment_id,parent_segment,cutover_hour,
 head_hour,start_reason,stop_reason,visible_spans,superseded_spans. Values use
 the producer segments.json shape. All coverage/gaps are exact, including empty
-arrays; no tolerance or expected-zero default. Recordings may be future paths.
+arrays; no tolerance or expected-zero default. Publication references need no
+future attempt UUID or path. Once the recorder completes, the helper joins the
+checkpoint's anchored Complete journal, append ticket and admitted member to
+that attempt's worker_stderr.log publication path/hash and complete campaign.
+Ambiguous, escaped, cross-attempt, wrong-campaign and missing publications refuse.
+Publication replaces the old path field; existing files also need this reference.
 Same campaign selects the SAME complete stitched publication, across relaunches.
 Independent logical-stream package members cannot substitute for that campaign.
 
@@ -45,6 +50,8 @@ and --report-recording-reach --report-hours all. Raw source bytes are retained
 from the admitted campaign's declared embedded sources; trimmed local spools are
 not required. Parent should submit the final
 checkpoint only after the requested final ticks were actually recorded.
+The retained <recording>.publication.json records the actual path binding and
+producer log/hash custody. Binding never changes the semantic EXPECTATIONS.json.
 
 Use Plan first, then a different fresh OutDir for Run. Both require explicit
 central candidate attestation, game executable/hash, game/profile/product roots,

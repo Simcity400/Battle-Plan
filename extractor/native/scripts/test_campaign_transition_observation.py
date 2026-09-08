@@ -65,7 +65,7 @@ def fixture():
                 checkpoints=[dict(name=name,scope_file=str(root/(name+'.scope.json')),recording='campaign',
                                   segment_id=i,logical_stream_id=i,campaign=raw) for i,name in enumerate(('before','after'))],
                 transitions=[dict(kind='rollback',attachment='same',**{'from':'before','to':'after'})],
-                recordings=[dict(name='campaign',path=str(root/'campaign.battleplan'),logical_stream_id=None,expected=expected)])
+                recordings=[dict(name='campaign',publication=dict(kind='producer-stitch',checkpoint='after'),logical_stream_id=None,expected=expected)])
     reach = dict(schema='hoi4.replay.recording_reach.v4',recording='fixture.battleplan',hour_count=3,hours=hours)
     stdout = json.dumps(dict(schema='replay.validate_playback.completed.v1',result='PASS',hours_validated=3))
     return spec,witnesses,{'campaign':graph},manifests,index,reach,stdout
@@ -92,6 +92,7 @@ def finish_fixture(root):
     for row in rows:
         row['process_creation_filetime']=1000
         row['exe_path']=str(game)
+        if row['state_to']=='Complete': row['replay_path']=str(run/'logical-stream-package-set.json')
     journal=startup_tests.encode(rows)
     rows=observer.startup.read_journal(journal)
     anchors=b''.join(json.dumps(dict(schema='auto_attach_journal_anchor.v1',event_seq=r['event_seq'],head_hash=r['record_hash'])).encode()+b'\n' for r in rows)
@@ -136,13 +137,13 @@ def finish_fixture(root):
         write(root/('checkpoint_'+name+'.rollover-after.json'),witness['rollover_state'])
         write(root/('checkpoint_'+name+'.ticket.json'),witness['ticket'])
         (root/('checkpoint_'+name+'.journal.jsonl')).write_bytes(startup_tests.encode(rows[:1]))
-    replay=product/'campaign.battleplan'
+    replay=run/'producer-chosen-name.battleplan'
     with zipfile.ZipFile(replay,'w') as archive:
         archive.writestr('payload/fixture/index.json',json.dumps(index))
         archive.writestr('payload/fixture/segments.json',json.dumps(graphs['campaign']))
         for name in ('before','after'):
             archive.write(run/(name+'.h4cr'),'payload/fixture/raw/'+name+'.h4cr')
-    spec['recordings'][0]['path']=str(replay)
+    (run/'worker_stderr.log').write_text(publication_line(replay))
     source_descriptor=run/'logical-streams/logical-stream-set.json'
     write(source_descriptor,dict(schema='cid1-rollover-set-v1',ordered_streams=raw_members,transitions=[]))
     write(run/'logical-stream-package-set.json',dict(schema='cid1-rollover-package-set-v1',ordered_streams=members,transitions=[],
@@ -158,6 +159,10 @@ def finish_fixture(root):
             write(Path(args[args.index('--report-out')+1]),report)
         return log
     return fake_product
+
+
+def publication_line(path):
+    return f'recorder stitch: published={path} segments=2 visible_hours=3 sha256={observer.startup.identity(path)["sha256"]}\n'
 
 
 class FullAssessmentTests(unittest.TestCase):
@@ -239,6 +244,185 @@ class FullAssessmentTests(unittest.TestCase):
             self.assertFalse((root/'TRANSITION_RECEIPT.json').exists())
 
 
+class PublicationBindingTests(unittest.TestCase):
+    def run_finish(self, root, runner):
+        with mock.patch.object(observer, 'product_command', side_effect=runner):
+            return observer.finish(root)
+
+    def rewrite_graph(self, path, change):
+        with zipfile.ZipFile(path) as archive:
+            entries={name:archive.read(name) for name in archive.namelist()}
+        graph=json.loads(entries['payload/fixture/segments.json'])
+        change(graph)
+        entries['payload/fixture/segments.json']=json.dumps(graph).encode()
+        with zipfile.ZipFile(path,'w') as archive:
+            for name,raw in entries.items(): archive.writestr(name,raw)
+
+    def test_reference_plans_without_a_future_attempt_or_recording_path(self):
+        spec,*_=fixture()
+        before=copy.deepcopy(spec)
+        observer.contract(spec)
+        self.assertEqual(spec,before)
+        self.assertNotIn('path',spec['recordings'][0])
+
+    def test_reference_fields_and_checkpoint_scope_are_exact(self):
+        for bad in (None, {}, {'kind':'guess','checkpoint':'after'},
+                    {'kind':'producer-stitch','checkpoint':'before'},
+                    {'kind':'producer-stitch','checkpoint':'foreign'},
+                    {'kind':'producer-stitch','checkpoint':'after','path':'invented'}):
+            with self.subTest(bad=bad):
+                spec,*_=fixture(); spec['recordings'][0]['publication']=bad
+                with self.assertRaises(ValueError): observer.contract(spec)
+
+    def test_late_producer_binding_preserves_frozen_semantic_expectations(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); runner=finish_fixture(root)
+            run=root/'product/run_attempt-10'
+            original=run/'producer-chosen-name.battleplan'
+            body=original.read_bytes(); original.unlink()
+            (run/'worker_stderr.log').unlink()
+            expected=(root/'EXPECTATIONS.json').read_bytes()
+            observer.contract(observer.read(root/'EXPECTATIONS.json'))
+            # Created only after contract validation; no guessed attempt UUID/path.
+            actual=run/'late-arbitrary-publication.battleplan'; actual.write_bytes(body)
+            (run/'worker_stderr.log').write_text(publication_line(actual))
+            self.assertEqual(self.run_finish(root,runner)['status'],'observed')
+            self.assertEqual((root/'EXPECTATIONS.json').read_bytes(),expected)
+            binding=observer.read(root/'campaign.publication.json')
+            self.assertEqual(binding['selected']['source_path'],str(actual))
+            self.assertEqual(binding['terminal']['attempt_id'],'attempt-10')
+            self.assertEqual((root/'campaign.battleplan').read_bytes(),body)
+            self.assertTrue((root/'campaign.publication.log').is_file())
+
+    def test_wrong_campaign_and_same_campaign_wrong_session_or_epoch_refuse(self):
+        for defect,reason in [('campaign','matching witnessed campaign'),('session','branch session'),
+                              ('epoch','checkpoint epoch'),('stored','member source'),('decoded','decoded source')]:
+            with self.subTest(defect=defect),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp); runner=finish_fixture(root); run=root/'product/run_attempt-10'
+                replay=run/'producer-chosen-name.battleplan'
+                def change(graph):
+                    if defect=='campaign': graph['campaign']['campaign_key']='a'*64
+                    elif defect=='session': graph['segments'][1]['session_nonce']='foreign-session'
+                    elif defect=='epoch': graph['segments'][1]['epoch_token']='a'*64
+                    else: graph['segments'][1]['source_ref'][defect+'_digest']='a'*64
+                self.rewrite_graph(replay,change)
+                (run/'worker_stderr.log').write_text(publication_line(replay))
+                with self.assertRaisesRegex(ValueError,reason): self.run_finish(root,runner)
+
+    def test_cross_attempt_and_parent_escape_receipts_never_select_even_identical_bytes(self):
+        for location in ('other-attempt','parent-escape'):
+            with self.subTest(location=location),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp); runner=finish_fixture(root); run=root/'product/run_attempt-10'
+                replay=run/'producer-chosen-name.battleplan'
+                if location=='other-attempt':
+                    other=root/'product/run_foreign'; other.mkdir(); path=other/'same.battleplan'
+                else: path=run/'..'/'escaped.battleplan'
+                path.write_bytes(replay.read_bytes())
+                (run/'worker_stderr.log').write_text(publication_line(path))
+                with self.assertRaisesRegex(ValueError,'escapes|unsafe artifact'):
+                    self.run_finish(root,runner)
+
+    def test_multiple_matching_publications_refuse_without_expected_output_selection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); runner=finish_fixture(root); run=root/'product/run_attempt-10'
+            replay=run/'producer-chosen-name.battleplan'; other=run/'also-valid.battleplan'
+            other.write_bytes(replay.read_bytes())
+            (run/'worker_stderr.log').write_text(publication_line(replay)+publication_line(other))
+            with self.assertRaisesRegex(ValueError,'found 2'): self.run_finish(root,runner)
+            self.assertFalse((root/'campaign.publication.json').exists())
+
+    def test_missing_malformed_unpublished_or_hash_changed_publication_refuses(self):
+        for defect in ('missing-log','empty-log','malformed','missing-file','hash'):
+            with self.subTest(defect=defect),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp); runner=finish_fixture(root); run=root/'product/run_attempt-10'
+                log=run/'worker_stderr.log'; replay=run/'producer-chosen-name.battleplan'
+                if defect=='missing-log': log.unlink()
+                elif defect=='empty-log': log.write_text('recorder stitch: kept separate: incomplete\n')
+                elif defect=='malformed': log.write_text(log.read_text().replace('sha256=','digest='))
+                elif defect=='missing-file': replay.unlink()
+                else:
+                    with replay.open('ab') as file: file.write(b'changed after producer receipt')
+                with self.assertRaises((ValueError,FileNotFoundError)): self.run_finish(root,runner)
+
+    def test_member_path_is_not_a_complete_campaign_fallback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); runner=finish_fixture(root); run=root/'product/run_attempt-10'
+            member=run/'logical-streams/packages/00000000000000000000/native_session.battleplan'
+            (run/'worker_stderr.log').write_text(publication_line(member))
+            with self.assertRaisesRegex(ValueError,'product index'): self.run_finish(root,runner)
+
+    def test_replaced_explicit_paths_refuse_even_if_existing_or_mixed_with_reference(self):
+        with tempfile.TemporaryDirectory() as temp:
+            existing=Path(temp)/'existing.battleplan'; existing.write_bytes(b'inert fixture')
+            for path in (existing,Path(temp)/'future.battleplan'):
+                for mixed in (False,True):
+                    with self.subTest(path=path,mixed=mixed):
+                        spec,*_=fixture(); recording=spec['recordings'][0]
+                        recording['path']=str(path)
+                        if not mixed: del recording['publication']
+                        with self.assertRaisesRegex(ValueError,'replaced'): observer.contract(spec)
+
+    def test_emitted_complete_row_binds_without_unpopulated_optional_run_dir(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); runner=finish_fixture(root)
+            rows=observer.startup.read_journal((root/'product/auto_attach_journal.jsonl').read_bytes())
+            self.assertEqual(rows[-1]['state_to'],'Complete')
+            self.assertNotIn('run_dir',rows[-1])  # coordinator.complete emits replay_path only
+            self.assertEqual(self.run_finish(root,runner)['status'],'observed')
+            binding=observer.read(root/'campaign.publication.json')
+            self.assertEqual(binding['terminal']['replay_path'],str(root/'product/run_attempt-10/logical-stream-package-set.json'))
+
+    def test_terminal_journal_must_bind_the_witnessed_attempt_package_set_and_session(self):
+        for field,value,reason in [('replay_path','foreign-package-set','journal does not bind'),
+                                   ('session_id','foreign-session','journal session')]:
+            with self.subTest(field=field),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp); runner=finish_fixture(root); product=root/'product'
+                journal=product/'auto_attach_journal.jsonl'
+                rows=observer.startup.read_journal(journal.read_bytes())
+                rows[-1][field]=value
+                journal.write_bytes(startup_tests.encode(rows))
+                rows=observer.startup.read_journal(journal.read_bytes())
+                (product/'auto_attach_journal.jsonl.anchor').write_bytes(b''.join(
+                    json.dumps(dict(schema='auto_attach_journal_anchor.v1',event_seq=r['event_seq'],
+                                    head_hash=r['record_hash'])).encode()+b'\n' for r in rows))
+                with self.assertRaisesRegex(ValueError,reason): self.run_finish(root,runner)
+                self.assertFalse((root/'campaign.publication.json').exists())
+
+    def test_other_campaign_publication_does_not_create_false_ambiguity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); runner=finish_fixture(root); run=root/'product/run_attempt-10'
+            actual=run/'producer-chosen-name.battleplan'; other=run/'other-campaign.battleplan'
+            other.write_bytes(actual.read_bytes())
+            self.rewrite_graph(other,lambda graph: graph['campaign'].update(campaign_key='a'*64))
+            (run/'worker_stderr.log').write_text(publication_line(other)+publication_line(actual))
+            self.assertEqual(self.run_finish(root,runner)['status'],'observed')
+            binding=observer.read(root/'campaign.publication.json')
+            self.assertEqual(binding['candidates'],2)
+            self.assertEqual(binding['selected']['source_path'],str(actual))
+
+    def test_binding_never_learns_expected_graph_or_gaps_from_candidate(self):
+        for field,value,reason in [('main_head',dict(segment_id=1,hour_index=99),'main_head'),
+                                   ('playback_gaps',[],'gaps and warnings')]:
+            with self.subTest(field=field),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp); runner=finish_fixture(root); path=root/'EXPECTATIONS.json'
+                spec=observer.read(path); spec['recordings'][0]['expected'][field]=value
+                path.write_text(json.dumps(spec)); frozen=path.read_bytes()
+                with self.assertRaisesRegex(ValueError,reason): self.run_finish(root,runner)
+                self.assertEqual(path.read_bytes(),frozen)
+                self.assertTrue((root/'campaign.publication.json').exists())
+
+    def test_actual_product_admission_remains_mandatory_after_binding(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); runner=finish_fixture(root)
+            def refuse(exe,args,out,label,timeout,exe_hash):
+                if label=='campaign.admission': raise ValueError('real product admission refusal')
+                return runner(exe,args,out,label,timeout,exe_hash)
+            with self.assertRaisesRegex(ValueError,'real product admission refusal'):
+                self.run_finish(root,refuse)
+            self.assertTrue((root/'campaign.publication.json').is_file())
+            self.assertFalse((root/'campaign.playback.stdout.txt').exists())
+
+
 class TransitionTests(unittest.TestCase):
     def setUp(self):
         self.spec,self.witnesses,self.graphs,self.manifests,self.index,self.reach,self.stdout = fixture()
@@ -285,7 +469,8 @@ class TransitionTests(unittest.TestCase):
         stage['campaign'] = dict(stage['campaign'],game_unique_id='b4b17fed-ed12-4361-9064-fb6576638110',game_unique_seed='-2')
         stage['recording'] = 'new'
         self.spec['transitions'][0]['kind'] = 'identity-change'
-        self.spec['recordings'].append(dict(self.spec['recordings'][0],name='new',path=str(Path(tempfile.gettempdir())/'new.battleplan')))
+        self.spec['recordings'].append(dict(self.spec['recordings'][0],name='new'))
+        self.spec['recordings'][0]['publication']=dict(kind='producer-stitch',checkpoint='before')
         key = observer.campaign(stage['campaign'])
         self.manifests['after']['campaign_identity'] = dict(self.manifests['after']['campaign_identity'],**stage['campaign'],campaign_id=key.hex())
         self.witnesses['after']['ticket']['campaign_key_hex']=key.hex()
