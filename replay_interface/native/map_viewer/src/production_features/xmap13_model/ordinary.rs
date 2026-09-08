@@ -1,6 +1,8 @@
 mod pools;
 mod culture;
 mod alternate;
+mod label;
+mod template_queue;
 pub(super) mod frame;
 
 use super::*;
@@ -134,6 +136,38 @@ fn allocated_model_list<T>(
     Ok(models.rows.into_iter().next().map(|row| row.entity))
 }
 
+fn complete_model_list<T>(
+    selected: &AllocatedModel<'_>, context: &SuffixContext<'_>,
+    pools: &[crate::authored_graphic_pool::AuthoredGraphicPool<crate::authored_graphic_pool::ItemPoolLimit>],
+    default_label: String, override_label: String,
+    labeler: &dyn Fn(ModelLabelSource<'_>) -> Result<String>,
+    resolve: &mut impl FnMut(&str) -> Result<Option<T>>,
+) -> Result<Vec<template_queue::ModelRow<T>>> {
+    let mut borrowed = Vec::new();
+    borrowed.try_reserve(pools.len())?;
+    borrowed.extend(pools.iter());
+    let mut models = ModelList { labeler: Some(labeler), selected_label_override: Some(override_label),
+        ..ModelList::default() };
+    if !pools.is_empty() {
+        let archetype = context.equipment.archetype_identity(&selected.variant.equipment_definition_token)?
+            .ok_or("XMAP13 graphic model label has no equipment archetype")?;
+        models.set_label(ModelLabelSource::GraphicArchetype(&archetype.token))?;
+    }
+    for item in crate::authored_graphic_pool::model_items(&borrowed)? { models.graphic(item, resolve)?; }
+    models.suffix_families(selected.subunit_name, selected.subunit, Some(selected.variant), 0, context, resolve)?;
+    let mut rows = Vec::new();
+    rows.try_reserve(models.rows.len().checked_add(1).ok_or("XMAP13 complete model row count overflow")?)?;
+    rows.push(template_queue::ModelRow { label: default_label, token: String::new(), payload_raw: -100_000, entity: None });
+    for row in models.rows {
+        rows.push(template_queue::ModelRow { label: row.label, token: row.token,
+            payload_raw: row.weight_raw, entity: Some(row.entity) });
+    }
+    label::decorate_model_labels(&mut rows, |row| &mut row.label)?;
+    // 141919100 discards 141918420's separate optional entity result. The complete
+    // vector above is its input; feature26 does not replace this vector.
+    Ok(rows)
+}
+
 fn for_each_suffix_family(
     subunit_name: &str,
     subunit: &SubunitModel,
@@ -154,17 +188,29 @@ fn for_each_suffix_family(
 
 #[derive(Clone, Debug, PartialEq)]
 struct WeightedModel<T> {
+    label: String,
     token: String,
     weight_raw: i64,
     entity: T,
 }
 
-struct ModelList<T> {
-    rows: Vec<WeightedModel<T>>,
+enum ModelLabelSource<'a> {
+    GraphicArchetype(&'a str),
+    Variant { row: &'a NativeDesignerVariantInputs, override_label: Option<&'a str> },
+    GenericSubunit(&'a str),
 }
 
-impl<T> Default for ModelList<T> {
-    fn default() -> Self { Self { rows: Vec::new() } }
+struct ModelList<'a, T> {
+    rows: Vec<WeightedModel<T>>,
+    labeler: Option<&'a dyn Fn(ModelLabelSource<'_>) -> Result<String>>,
+    current_label: String,
+    selected_label_override: Option<String>,
+}
+
+impl<T> Default for ModelList<'_, T> {
+    fn default() -> Self {
+        Self { rows: Vec::new(), labeler: None, current_label: String::new(), selected_label_override: None }
+    }
 }
 
 struct SuffixContext<'a> {
@@ -175,14 +221,28 @@ struct SuffixContext<'a> {
     prefixes: [&'a replay_core::country_name_semantics::NamingInput<String>; 3],
 }
 
-impl<T> ModelList<T> {
+impl<T> ModelList<'_, T> {
+    fn set_label(&mut self, source: ModelLabelSource<'_>) -> Result<()> {
+        if let Some(labeler) = self.labeler { self.current_label = labeler(source)?; }
+        Ok(())
+    }
+
+    fn set_variant_label(&mut self, row: &NativeDesignerVariantInputs, selected: bool) -> Result<()> {
+        if let Some(labeler) = self.labeler {
+            self.current_label = labeler(ModelLabelSource::Variant {
+                row, override_label: if selected { self.selected_label_override.as_deref() } else { None },
+            })?;
+        }
+        Ok(())
+    }
+
     fn suffix_families(
         &mut self, subunit_name: &str, subunit: &SubunitModel,
         selected: Option<&NativeDesignerVariantInputs>, priority: i32,
         context: &SuffixContext<'_>, resolve: &mut impl FnMut(&str) -> Result<Option<T>>,
     ) -> Result<()> {
         for_each_suffix_family(subunit_name, subunit, selected, context.equipment, priority,
-            |base, priority| self.variant_suffix_family(base, priority, subunit, selected, context, resolve))
+            |base, priority| self.variant_suffix_family(base, priority, subunit_name, subunit, selected, context, resolve))
     }
 
     fn alternatives(
@@ -200,7 +260,7 @@ impl<T> ModelList<T> {
     }
 
     fn variant_suffix_family(
-        &mut self, base: &str, priority: i32, subunit: &SubunitModel,
+        &mut self, base: &str, priority: i32, subunit_name: &str, subunit: &SubunitModel,
         selected: Option<&NativeDesignerVariantInputs>, context: &SuffixContext<'_>,
         resolve: &mut impl FnMut(&str) -> Result<Option<T>>,
     ) -> Result<()> {
@@ -220,6 +280,7 @@ impl<T> ModelList<T> {
         let is_selected = |variant: &NativeDesignerVariantInputs| selected.is_some_and(|row| row.design_id == variant.design_id);
         let mut preferred_versioned = false;
         for variant in owned {
+            self.set_variant_label(variant, is_selected(variant))?;
             let level = level(variant)?;
             let preferred_row = preferred.is_some_and(|row| row.design_id == variant.design_id);
             let weight = priority.wrapping_add(level)
@@ -233,6 +294,7 @@ impl<T> ModelList<T> {
         }
         if !preferred_versioned {
             if let Some(preferred) = preferred {
+                self.set_variant_label(preferred, is_selected(preferred))?;
                 let weight = priority.wrapping_add(level(preferred)?)
                     .wrapping_add(if is_selected(preferred) { 30 } else { 0 }).wrapping_add(28);
                 self.country_suffix(&format!("{base}{}", MODEL_ENTITY_SUFFIX), weight, context.prefixes, resolve)?;
@@ -240,6 +302,7 @@ impl<T> ModelList<T> {
                 self.alternatives(&format!("{}_{base}", context.country), weight, context, resolve)?;
             }
         }
+        self.set_label(ModelLabelSource::GenericSubunit(subunit_name))?;
         self.country_suffix(&format!("{base}{}", MODEL_ENTITY_SUFFIX), priority, context.prefixes, resolve)?;
         self.alternatives(base, priority, context, resolve)?;
         Ok(())
@@ -256,7 +319,7 @@ impl<T> ModelList<T> {
         // 14191a910 inserts a graphic row after existing equal weights.
         let index = self.rows.partition_point(|row| row.weight_raw >= item.weight_raw);
         self.rows.insert(index, WeightedModel {
-            token: item.token.into(), weight_raw: item.weight_raw, entity,
+            label: self.current_label.clone(), token: item.token.into(), weight_raw: item.weight_raw, entity,
         });
         Ok(())
     }
@@ -275,7 +338,7 @@ impl<T> ModelList<T> {
                 self.rows.try_reserve(1)?;
                 // 140b884f0 inserts a suffix row before existing equal weights.
                 let index = self.rows.partition_point(|row| row.weight_raw > weight_raw);
-                self.rows.insert(index, WeightedModel { token, weight_raw, entity });
+                self.rows.insert(index, WeightedModel { label: self.current_label.clone(), token, weight_raw, entity });
                 inserted = true;
             }
             sequence = sequence.wrapping_add(1);
@@ -495,6 +558,10 @@ mod tests {
         use snapshot::design_catalog::*;
         let unavailable = || DesignFieldRefusal { kind: "unreadable".into(), field: "unconsumed comparator fixture input".into() };
         NativeDesignerVariantInputs {
+            slot_identities: DesignSlotIdentityObservation::Unavailable { reason: unavailable() },
+            append_variant_name: DesignByteObservation::Unavailable { reason: unavailable() },
+            display_name: DesignTextObservation::Unavailable { reason: unavailable() },
+            variant_name: DesignTextObservation::Unavailable { reason: unavailable() },
             design_id: format!("{id}:70"), catalog_scan_ordinal: 0,
             equipment_definition_token: definition.into(), equipment_token_raw: 0,
             source_occurrences: Vec::new(), item_icon_override: DesignItemIconObservation::Unavailable { reason: unavailable() },
@@ -541,6 +608,7 @@ mod tests {
         third.source_occurrences = vec![occurrence("B", 0)];
         third.model.developed = vec![occurrence("developed", 0)];
         let mut native = NativeDesignerInputs {
+            templates: Vec::new(),
             runtime_dlc_mask: DesignU32Observation::Unavailable { reason: DesignFieldRefusal {
                 kind: "unreadable".into(), field: "unconsumed occurrence fixture input".into(),
             } }, source_record_id: "native-order-79".into(), hour: 79,
@@ -652,6 +720,7 @@ mod tests {
         let mut owned = variant(10,"zeta_1","GER",0);
         owned.source_occurrences.push(occurrence("A"));
         let native = NativeDesignerInputs {
+            templates: Vec::new(),
             runtime_dlc_mask:unknown_runtime.clone(), source_record_id:"test-79".into(), hour:79,
             countries:vec![snapshot::design_catalog::NativeDesignerCountryInputs {
                 registry_index:9, tag:"GER".into(), designer_pointer_order_ordinal:None,
@@ -679,13 +748,13 @@ mod tests {
         assert!(!calls.iter().any(|token|token=="GER_base_3_alt_4_entity"));
         assert!(!calls.iter().any(|token|token.starts_with("GER_GER_base_alt_")), "a newly inserted preferred version suppresses the special boost");
         let mut fallback = ModelList::default();
-        fallback.variant_suffix_family("base",0,suffix_subunit,selected,&context,&mut |token|
+        fallback.variant_suffix_family("base",0,"infantry",suffix_subunit,selected,&context,&mut |token|
             Ok(["GER_base_entity","GER_GER_base_alt_1_entity"].contains(&token).then(||token.to_owned()))).unwrap();
         assert_eq!(fallback.rows.iter().map(|row|(row.token.as_str(),row.weight_raw)).collect::<Vec<_>>(),
             [("GER_base_entity",63_900_000),("GER_GER_base_alt_1_entity",62_900_000)]);
         let mut repeated = ModelList::default();
         repeated.graphic(GraphicModelItem {token:"GER_base_3_entity",weight_raw:1},&mut |token|Ok(Some(token.to_owned()))).unwrap();
-        repeated.variant_suffix_family("base",0,suffix_subunit,selected,&context,&mut |token|
+        repeated.variant_suffix_family("base",0,"infantry",suffix_subunit,selected,&context,&mut |token|
             Ok(["GER_base_3_entity","GER_base_entity"].contains(&token).then(||token.to_owned()))).unwrap();
         assert_eq!(repeated.rows[0].token,"GER_base_entity");
         assert_eq!(repeated.rows[0].weight_raw,63_900_000,"an existing preferred entity is not a new suffix insertion");

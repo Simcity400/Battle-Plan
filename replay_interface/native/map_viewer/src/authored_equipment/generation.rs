@@ -47,9 +47,25 @@ impl AuthoredEquipmentCatalog {
             if entry.value.as_object().is_none() { return Err(malformed(token, "definition")) }
             let mut definition = AuthoredEquipmentDefinition {
                 token: token.into(), source: source.clone(), authored: raw.value.clone(),
-                expanded: entry.value.clone(), container_limit: None, generation: None, generated_type_mask: None, resolved_module_slots: None, resolved_graphics_source: None, resolved_model_sprite: None,
+                expanded: entry.value.clone(), container_limit: None, generation: None, generated_type_mask: None, resolved_module_slots: None, resolved_graphics_source: None, resolved_model_sprite: None, resolved_label_sources: [None, None],
             };
             if !modules {
+                // 1409e5170 replaces in the same object. Its140c84830 reset leaves
+                // +440/+468 intact; only an actual new scalar assignment replaces them.
+                for (index, field) in ["variant_name", "derived_variant_name"].into_iter().enumerate() {
+                    if definition.expanded.fields().iter().any(|entry| entry.key_matches(field)) {
+                        definition.resolved_label_sources[index] = Some(source.clone());
+                    } else if let Some(previous) = self.definitions.get(token).and_then(|rows| rows.first()) {
+                        if let Some(value) = previous.expanded.fields().iter().rev().find(|entry| entry.key_matches(field)) {
+                            object_mut(&mut definition.expanded).try_reserve(1).map_err(|_| EquipmentDefinitionError::UnsupportedAuthored {
+                                token: token.into(), field: "retained_label.allocation".into(),
+                            })?;
+                            object_mut(&mut definition.expanded).push(value.clone());
+                            definition.resolved_label_sources[index] = Some(previous.resolved_label_sources[index]
+                                .as_ref().unwrap_or(&previous.source).clone());
+                        }
+                    }
+                }
                 definition.resolved_graphics_source = Some(self.graphics_source_before_insert(&definition));
                 definition.resolved_model_sprite = Some(self.model_sprite_before_insert(&definition));
                 for field in VERIFIED_STATS {
@@ -84,7 +100,7 @@ impl AuthoredEquipmentCatalog {
             } else {
                 recipes.push(AuthoredEquipmentDefinition {
                     token: token.into(), source: source.clone(), authored: raw.value.clone(),
-                    expanded: entry.value.clone(), container_limit: None, generation: None, generated_type_mask: None, resolved_module_slots: None, resolved_graphics_source: None, resolved_model_sprite: None,
+                    expanded: entry.value.clone(), container_limit: None, generation: None, generated_type_mask: None, resolved_module_slots: None, resolved_graphics_source: None, resolved_model_sprite: None, resolved_label_sources: [None, None],
                 });
             }
         }
@@ -141,6 +157,8 @@ impl AuthoredEquipmentCatalog {
             let old_parent = original.scalar("parent")?.unwrap_or(&original_token);
             let parent = remapped.get(old_parent).cloned().unwrap_or_else(|| token.clone());
             let mut generated = original.clone();
+            // Fresh generated objects do not inherit either native label string.
+            generated.resolved_label_sources = [None, None];
             generated.token = token.clone();
             // 140c84dd0 writes +4e8 to the original object, not its own family pointer.
             generated.resolved_graphics_source = Some(Ok(original_token.clone()));
@@ -180,6 +198,9 @@ impl AuthoredEquipmentCatalog {
                 object_mut(&mut generated.expanded).push(Entry { key: Some("forbid_mission_type".into()), key_is_quoted: false, value: value.clone(), line: 0, column: 0 });
             }
             self.apply_for_each(recipe, &original, &mut generated, archetype == token)?;
+            if generated.expanded.fields().iter().any(|entry| entry.key_matches("variant_name")) {
+                generated.resolved_label_sources[0] = Some(recipe.source.clone());
+            }
             self.definition_order.push(token.clone());
             self.definitions.insert(token.clone(), vec![generated]);
             remapped.insert(original_token, token);

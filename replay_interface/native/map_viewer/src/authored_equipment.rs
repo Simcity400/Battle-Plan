@@ -51,6 +51,7 @@ pub struct AuthoredEquipmentDefinition {
     resolved_module_slots: Option<EquipmentResult<Vec<String>>>,
     resolved_graphics_source: Option<EquipmentResult<String>>,
     resolved_model_sprite: Option<EquipmentResult<String>>,
+    resolved_label_sources: [Option<UsedContentKey>; 2],
     container_limit: Option<Value>,
 }
 
@@ -68,6 +69,13 @@ impl AuthoredEquipmentDefinition {
         let value = self.expanded.fields().iter().rev()
             .find(|entry| entry.key_matches(name)).map(|entry| &entry.value);
         value.map(|value| value.as_scalar().ok_or_else(|| self.malformed(name))).transpose()
+    }
+
+    pub(crate) fn model_label_key(&self, derived: bool) -> EquipmentResult<Option<(&str, &UsedContentKey)>> {
+        let index = usize::from(derived);
+        let field = if derived { "derived_variant_name" } else { "variant_name" };
+        Ok(self.scalar(field)?.map(|value| (value,
+            self.resolved_label_sources[index].as_ref().unwrap_or(&self.source))))
     }
 
     pub(crate) fn model_sprite(&self) -> EquipmentResult<&str> {
@@ -542,7 +550,7 @@ impl AuthoredEquipmentCatalog {
                 let definitions = if modules { &mut self.modules } else { &mut self.definitions };
                 definitions.entry(token.into()).or_default().push(AuthoredEquipmentDefinition {
                     token: token.into(), source: source.clone(), authored: definition.value.clone(),
-                    generation: None, generated_type_mask: None, resolved_module_slots: None, resolved_graphics_source: None, resolved_model_sprite: None,
+                    generation: None, generated_type_mask: None, resolved_module_slots: None, resolved_graphics_source: None, resolved_model_sprite: None, resolved_label_sources: [None, None],
                     expanded: expanded_definition.value.clone(), container_limit: limit.clone(),
                 });
             }
@@ -570,6 +578,95 @@ pub(crate) fn equipment_category_mask(token: &str) -> Option<u64> {
         "train" => 0x80000000, "missile_launcher" => 0x2000000000, "missile" => 0x10000,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod model_label_tests {
+    use super::*;
+
+    #[test]
+    fn admitted_replacements_retain_each_label_source_and_generated_objects_start_empty() {
+        use crate::test_support::{admitted_fixture_read_set, temp_test_dir, write_modvfs_fixture};
+        let root = temp_test_dir("ordinary-model-label-replacement");
+        write_modvfs_fixture(&root, "common/units/equipment/a.txt", br#"
+            @key = BaseKey
+            equipments = {
+                base = { is_archetype = yes type = armor variant_name = wrong variant_name = @key
+                    derived_variant_name = OriginalDerived }
+                base_1 = { archetype = base parent = base }
+                base_2 = { archetype = base parent = base variant_name = DoNotCopy derived_variant_name = DoNotCopyEither }
+                clear = { variant_name = Before derived_variant_name = BeforeDerived }
+            }
+        "#);
+        write_modvfs_fixture(&root, "common/units/equipment/b.txt", br#"
+            equipments = {
+                base = { is_archetype = yes type = armor }
+                clear = { variant_name = "" derived_variant_name = "" }
+            }
+        "#);
+        write_modvfs_fixture(&root, "common/units/equipment/c.txt", br#"
+            @key = NotTheOriginalFileVariable
+            equipments = { base = { is_archetype = yes type = armor derived_variant_name = NewDerived } }
+            equipments = { base = { is_archetype = yes type = armor } }
+        "#);
+        write_modvfs_fixture(&root, "common/units/equipment/d.txt", br#"
+            duplicate_archetypes = { copied = {
+                archetype = base type = armor
+                for_each = { variant_name = { find_and_replace = { copied Variant } } }
+                variant_name = { copied_1 = "" copied_1 = MustNotRepairFirstMapping }
+            } }
+        "#);
+        let raw = GameFileResolver::vanilla(&root).unwrap();
+        let scope = portable_content_manifest::ContentNamespaceScope {
+            directory: "common/units/equipment".into(), extension: Some("txt".into()), recursive: true,
+        };
+        let (resolver, admission) = admitted_fixture_read_set(&raw, &Default::default(), &[scope], "ordinary-model-label-replacement");
+        let catalog = AuthoredEquipmentCatalog::load(&resolver).unwrap().resolve_generated().unwrap();
+        let base = catalog.definition("base").unwrap();
+        assert!(base.field("variant_name").is_none());
+        assert_eq!(base.scalar("variant_name").unwrap(), Some("BaseKey"));
+        let (value, source) = base.model_label_key(false).unwrap().unwrap();
+        assert_eq!(value,"BaseKey");
+        assert_eq!(source, &resolver.admitted_used_content_key("common/units/equipment/a.txt").unwrap().unwrap());
+        let (value, source) = base.model_label_key(true).unwrap().unwrap();
+        assert_eq!(value,"NewDerived");
+        assert_eq!(source, &resolver.admitted_used_content_key("common/units/equipment/c.txt").unwrap().unwrap());
+        let first_child = catalog.definition("base_1").unwrap();
+        assert_eq!(first_child.model_label_key(false).unwrap(),None);
+        assert_eq!(first_child.model_label_key(true).unwrap(),None);
+        for derived in [false,true] {
+            let (value, source) = catalog.definition("clear").unwrap().model_label_key(derived).unwrap().unwrap();
+            assert_eq!(value,"");
+            assert_eq!(source.normalized_game_relative_path,"common/units/equipment/b.txt");
+            assert_eq!(catalog.definition("copied").unwrap().model_label_key(derived).unwrap(),None);
+        }
+        let mapped = catalog.definition("copied_1").unwrap();
+        assert_eq!(mapped.model_label_key(false).unwrap().unwrap().0,"");
+        let transformed = catalog.definition("copied_2").unwrap();
+        let (value, source) = transformed.model_label_key(false).unwrap().unwrap();
+        assert_eq!(value,"Variant_2");
+        assert_eq!(source, &resolver.admitted_used_content_key("common/units/equipment/d.txt").unwrap().unwrap());
+        assert_eq!(transformed.model_label_key(true).unwrap(),None);
+        assert_eq!(transformed.generation.as_ref().unwrap().original.source.normalized_game_relative_path,
+            "common/units/equipment/a.txt");
+        drop((catalog,resolver,admission,raw));
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn omitted_replacement_does_not_erase_malformed_label_but_explicit_empty_replaces_it() {
+        let malformed = tests::catalog(r#"
+            equipments = { base = { variant_name = { invalid = value } } }
+            equipments = { base = { type = armor } }
+        "#).resolve_generated().unwrap();
+        assert!(matches!(malformed.definition("base").unwrap().model_label_key(false),
+            Err(EquipmentDefinitionError::MalformedField { field, .. }) if field == "variant_name"));
+        let cleared = tests::catalog(r#"
+            equipments = { base = { variant_name = { invalid = value } } }
+            equipments = { base = { variant_name = "" } }
+        "#).resolve_generated().unwrap();
+        assert_eq!(cleared.definition("base").unwrap().model_label_key(false).unwrap().unwrap().0, "");
+    }
 }
 
 fn decimal_category_mask(token: &str) -> u64 {
