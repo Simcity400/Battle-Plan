@@ -1,5 +1,210 @@
-pub const FORMAT_MARKER: u32 = u32::from_le_bytes(*b"D2R8");
-pub const ROW_LEN: usize = 216;
+pub const FORMAT_MARKER: u32 = u32::from_le_bytes(*b"D2R9");
+pub const ROW_LEN: usize = 312;
+/// Underlying D20 training operands; no authored thresholds or selector results.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum TrainingRefusal {
+    NotObserved = 0,
+    Unreadable = 1,
+    InvalidIdentity = 2,
+    Changed = 3,
+    BoundExceeded = 4,
+}
+impl TrainingRefusal {
+    pub fn from_raw(raw: u32) -> Result<Self, String> {
+        match raw {
+            0 => Ok(Self::NotObserved),
+            1 => Ok(Self::Unreadable),
+            2 => Ok(Self::InvalidIdentity),
+            3 => Ok(Self::Changed),
+            4 => Ok(Self::BoundExceeded),
+            _ => Err("unknown training refusal".into()),
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::NotObserved => "not_observed",
+            Self::Unreadable => "unreadable",
+            Self::InvalidIdentity => "invalid_identity",
+            Self::Changed => "changed",
+            Self::BoundExceeded => "bound_exceeded",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrainingObservation<T> {
+    Measured(T),
+    Unavailable(TrainingRefusal),
+}
+impl<T> Default for TrainingObservation<T> {
+    fn default() -> Self {
+        Self::Unavailable(TrainingRefusal::NotObserved)
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrainingCount {
+    pub entry_count: i32,
+    pub sum_raw: i32,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrainingArmy {
+    pub kind: u32,
+    pub id: u32,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TrainingScalars {
+    pub experience: TrainingObservation<i64>,
+    pub current_hp: TrainingObservation<i64>,
+    pub maximum_hp: TrainingObservation<i64>,
+    pub template_count: TrainingObservation<TrainingCount>,
+    pub army: TrainingObservation<Option<TrainingArmy>>,
+    pub country_operand: TrainingObservation<i32>,
+}
+impl TrainingScalars {
+    pub fn json(&self) -> String {
+        use TrainingObservation::*;
+        fn unavailable(c: TrainingRefusal) -> String {
+            format!("{{\"status\":\"unavailable\",\"reason\":\"{}\"}}", c.name())
+        }
+        fn scalar(v: TrainingObservation<i64>) -> String {
+            match v {
+                Measured(raw) => format!("{{\"status\":\"measured\",\"raw_i64\":{raw}}}"),
+                Unavailable(c) => unavailable(c),
+            }
+        }
+        let count = match self.template_count {
+            Measured(v) => format!(
+                "{{\"status\":\"measured\",\"entry_count\":{},\"sum_raw\":{}}}",
+                v.entry_count, v.sum_raw
+            ),
+            Unavailable(c) => unavailable(c),
+        };
+        let army = match self.army {
+            Measured(None) => "{\"status\":\"null\"}".into(),
+            Measured(Some(v)) => format!(
+                "{{\"status\":\"measured\",\"kind\":{},\"id\":{}}}",
+                v.kind, v.id
+            ),
+            Unavailable(c) => unavailable(c),
+        };
+        let country = match self.country_operand {
+            Measured(raw) => format!("{{\"status\":\"measured\",\"raw_i32\":{raw}}}"),
+            Unavailable(c) => unavailable(c),
+        };
+        format!("{{\"schema\":1,\"experience\":{},\"current_hp\":{},\"maximum_hp\":{},\"template_count\":{},\"army\":{},\"country_operand\":{}}}",scalar(self.experience),scalar(self.current_hp),scalar(self.maximum_hp),count,army,country)
+    }
+    pub fn unavailable(cause: TrainingRefusal) -> Self {
+        Self {
+            experience: TrainingObservation::Unavailable(cause),
+            current_hp: TrainingObservation::Unavailable(cause),
+            maximum_hp: TrainingObservation::Unavailable(cause),
+            template_count: TrainingObservation::Unavailable(cause),
+            army: TrainingObservation::Unavailable(cause),
+            country_operand: TrainingObservation::Unavailable(cause),
+        }
+    }
+}
+pub fn write_training_scalars(payload: &mut [u8], index: usize, v: TrainingScalars) {
+    use TrainingObservation::*;
+    let scalar = |v: TrainingObservation<i64>| match v {
+        Measured(raw) => (1, 0, raw),
+        Unavailable(c) => (0, c as u32, 0),
+    };
+    let count = match v.template_count {
+        Measured(c) => {
+            assert!(c.entry_count > 0 || c.sum_raw == 0);
+            (1, c.entry_count as u32, i64::from(c.sum_raw))
+        }
+        Unavailable(c) => (0, c as u32, 0),
+    };
+    let army = match v.army {
+        Measured(None) => (1, 0, 0),
+        Measured(Some(a)) => {
+            assert!(a.id != 0);
+            (2, a.kind, i64::from(a.id))
+        }
+        Unavailable(c) => (0, c as u32, 0),
+    };
+    let country = match v.country_operand {
+        Measured(raw) => (1, 0, i64::from(raw)),
+        Unavailable(c) => (0, c as u32, 0),
+    };
+    for (n, (status, aux, raw)) in [
+        scalar(v.experience),
+        scalar(v.current_hp),
+        scalar(v.maximum_hp),
+        count,
+        army,
+        country,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let at = 32 + index * ROW_LEN + 216 + n * 16;
+        payload[at..at + 4].copy_from_slice(&u32::to_le_bytes(status));
+        payload[at + 4..at + 8].copy_from_slice(&aux.to_le_bytes());
+        payload[at + 8..at + 16].copy_from_slice(&raw.to_le_bytes());
+    }
+}
+fn read_training_scalars(payload: &[u8], index: usize) -> Result<TrainingScalars, String> {
+    use TrainingObservation::*;
+    let cell = |n: usize| {
+        let at = 32 + index * ROW_LEN + 216 + n * 16;
+        (
+            word(payload, at),
+            word(payload, at + 4),
+            i64::from_le_bytes(payload[at + 8..at + 16].try_into().unwrap()),
+        )
+    };
+    fn absent<T>(aux: u32, raw: i64) -> Result<TrainingObservation<T>, String> {
+        if raw != 0 {
+            return Err("unavailable training operand has filler".into());
+        }
+        Ok(Unavailable(TrainingRefusal::from_raw(aux)?))
+    }
+    let scalar = |n| {
+        let (status, aux, raw) = cell(n);
+        match status {
+            0 => absent(aux, raw),
+            1 if aux == 0 => Ok(Measured(raw)),
+            _ => Err("invalid training scalar".into()),
+        }
+    };
+    let (status, aux, raw) = cell(3);
+    let template_count = match status {
+        0 => absent(aux, raw)?,
+        1 if i32::try_from(raw).is_ok() && ((aux as i32) > 0 || raw == 0) => {
+            Measured(TrainingCount {
+                entry_count: aux as i32,
+                sum_raw: raw as i32,
+            })
+        }
+        _ => return Err("invalid training count".into()),
+    };
+    let (status, aux, raw) = cell(4);
+    let army = match status {
+        0 => absent(aux, raw)?,
+        1 if aux == 0 && raw == 0 => Measured(None),
+        2 if raw > 0 && u32::try_from(raw).is_ok() => Measured(Some(TrainingArmy {
+            kind: aux,
+            id: raw as u32,
+        })),
+        _ => return Err("invalid training army".into()),
+    };
+    let country_operand = match scalar(5)? {
+        Measured(raw) => Measured(i32::try_from(raw).map_err(|_| "training country width")?),
+        Unavailable(c) => Unavailable(c),
+    };
+    Ok(TrainingScalars {
+        experience: scalar(0)?,
+        current_hp: scalar(1)?,
+        maximum_hp: scalar(2)?,
+        template_count,
+        army,
+        country_operand,
+    })
+}
+
 pub const MAX_ROUTE_PROVINCES: usize = 65_536;
 pub const MAX_TEMPLATE_EXCLUSIONS: usize = 65_536;
 pub const MAX_MODEL_ENTITY_BYTES: usize = 4096;
@@ -214,6 +419,10 @@ impl<'a> DivisionRoutes<'a> {
         let mut consumed = 0usize;
         for index in 0..rows {
             let base = 32 + index * ROW_LEN;
+            let training = read_training_scalars(payload, index)?;
+            if word(payload, base + 8) & (1 << 12) != 0 && training != TrainingScalars::default() {
+                return Err("deleted division carries training operands".into());
+            }
             let template_status = word(payload, base + 128);
             let template_id = word(payload, base + 132);
             if !matches!((template_status, template_id), (0 | 1, 0))
@@ -475,6 +684,11 @@ impl<'a> DivisionRoutes<'a> {
         })
     }
 
+    pub fn training_scalars(&self, index: usize) -> TrainingScalars {
+        assert!(index < self.rows);
+        read_training_scalars(self.payload, index).expect("validated training operands")
+    }
+
     pub fn ordinary_route(&self, index: usize) -> Option<Vec<u32>> { self.route_at(index, 120) }
     pub fn alternate_route(&self, index: usize) -> Option<Vec<u32>> { self.route_at(index, 184) }
 
@@ -575,6 +789,246 @@ mod tests {
             std::iter::repeat_n(None, routes.len()),
          &unavailable_roster(), &unavailable_railway_roster());
         bytes
+    }
+
+    #[test]
+    fn training_exact_widths_and_strict_states_survive_codec() {
+        use TrainingObservation::*;
+        for raw in [
+            i64::MIN,
+            i64::MAX,
+            -1,
+            0,
+            1,
+            -(1i64 << 32) - 1,
+            (1i64 << 32) + 1,
+            (1i64 << 53),
+            (1i64 << 53) + 1,
+        ] {
+            let value = TrainingScalars {
+                experience: Measured(raw),
+                current_hp: Measured(raw),
+                maximum_hp: Measured(raw),
+                template_count: Measured(TrainingCount {
+                    entry_count: 3,
+                    sum_raw: i32::MIN,
+                }),
+                army: Measured(Some(TrainingArmy {
+                    kind: u32::MAX,
+                    id: u32::MAX,
+                })),
+                country_operand: Measured(i32::MIN),
+            };
+            let mut bytes = payload(&[None]);
+            write_training_scalars(&mut bytes, 0, value);
+            assert_eq!(
+                DivisionRoutes::parse(&bytes).unwrap().training_scalars(0),
+                value
+            );
+            bytes[28..32].copy_from_slice(b"D2R8");
+            assert!(DivisionRoutes::parse(&bytes).is_err());
+        }
+        for army in [Measured(None), Unavailable(TrainingRefusal::Unreadable)] {
+            let mut v = TrainingScalars::default();
+            v.army = army;
+            let mut bytes = payload(&[None]);
+            write_training_scalars(&mut bytes, 0, v);
+            assert_eq!(
+                DivisionRoutes::parse(&bytes).unwrap().training_scalars(0),
+                v
+            );
+        }
+    }
+    #[test]
+    fn training_rejects_status_filler_width_and_deleted_measurements() {
+        let clean = payload(&[None]);
+        for (at, raw) in [
+            (216, 9u32),
+            (220, 9),
+            (224, 1),
+            (216 + 3 * 16, 2),
+            (216 + 4 * 16, 3),
+        ] {
+            let mut bytes = clean.clone();
+            bytes[32 + at..32 + at + 4].copy_from_slice(&raw.to_le_bytes());
+            assert!(DivisionRoutes::parse(&bytes).is_err(), "{at}");
+        }
+        let mut value = TrainingScalars::default();
+        value.experience = TrainingObservation::Measured(0);
+        let mut bytes = clean;
+        write_training_scalars(&mut bytes, 0, value);
+        bytes[40..44].copy_from_slice(&(1u32 << 12).to_le_bytes());
+        assert!(DivisionRoutes::parse(&bytes).is_err());
+        let mut bytes = payload(&[None]);
+        bytes[32 + 216 + 3 * 16..32 + 220 + 3 * 16].copy_from_slice(&1u32.to_le_bytes());
+        bytes[32 + 224 + 3 * 16..32 + 232 + 3 * 16].copy_from_slice(&1i64.to_le_bytes());
+        assert!(
+            DivisionRoutes::parse(&bytes).is_err(),
+            "nonpositive count cannot manufacture nonzero sum"
+        );
+    }
+
+    fn set_training_cell(bytes: &mut [u8], cell: usize, status: u32, aux: u32, raw: i64) {
+        let at = 32 + 216 + cell * 16;
+        bytes[at..at + 4].copy_from_slice(&status.to_le_bytes());
+        bytes[at + 4..at + 8].copy_from_slice(&aux.to_le_bytes());
+        bytes[at + 8..at + 16].copy_from_slice(&raw.to_le_bytes());
+    }
+
+    #[test]
+    fn training_all_cells_reject_unknown_tags_refusals_and_unavailable_filler() {
+        for cell in 0..6 {
+            for (status, aux, raw) in [
+                (3, 0, 0),
+                (u32::MAX, 0, 0),
+                (0, 5, 0),
+                (0, u32::MAX, 0),
+                (0, 0, 1),
+                (0, 0, -1),
+                (0, 4, 1i64 << 32),
+            ] {
+                let mut bytes = payload(&[None]);
+                set_training_cell(&mut bytes, cell, status, aux, raw);
+                assert!(
+                    DivisionRoutes::parse(&bytes).is_err(),
+                    "cell {cell}: {status}/{aux}/{raw}"
+                );
+            }
+            if cell != 4 {
+                let mut bytes = payload(&[None]);
+                set_training_cell(&mut bytes, cell, 2, 0, 1);
+                assert!(
+                    DivisionRoutes::parse(&bytes).is_err(),
+                    "identity tag on cell {cell}"
+                );
+            }
+        }
+        for cause in [
+            TrainingRefusal::NotObserved,
+            TrainingRefusal::Unreadable,
+            TrainingRefusal::InvalidIdentity,
+            TrainingRefusal::Changed,
+            TrainingRefusal::BoundExceeded,
+        ] {
+            let value = TrainingScalars::unavailable(cause);
+            let mut bytes = payload(&[None]);
+            write_training_scalars(&mut bytes, 0, value);
+            assert_eq!(
+                DivisionRoutes::parse(&bytes).unwrap().training_scalars(0),
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn training_measured_cells_enforce_auxiliary_and_integer_width_laws() {
+        for cell in [0, 1, 2, 5] {
+            let mut bytes = payload(&[None]);
+            set_training_cell(&mut bytes, cell, 1, 1, 0);
+            assert!(
+                DivisionRoutes::parse(&bytes).is_err(),
+                "scalar auxiliary cell {cell}"
+            );
+        }
+        for cell in [3, 5] {
+            for raw in [
+                i64::MIN,
+                i64::MAX,
+                i64::from(i32::MIN) - 1,
+                i64::from(i32::MAX) + 1,
+            ] {
+                let mut bytes = payload(&[None]);
+                set_training_cell(&mut bytes, cell, 1, u32::from(cell == 3), raw);
+                assert!(
+                    DivisionRoutes::parse(&bytes).is_err(),
+                    "i32 width cell {cell}: {raw}"
+                );
+            }
+        }
+        for count in [i32::MIN, -1, 0] {
+            for raw in [i32::MIN, -1, 1, i32::MAX] {
+                let mut bytes = payload(&[None]);
+                set_training_cell(&mut bytes, 3, 1, count as u32, i64::from(raw));
+                assert!(
+                    DivisionRoutes::parse(&bytes).is_err(),
+                    "nonpositive count {count}: {raw}"
+                );
+            }
+        }
+        for (status, aux, raw) in [
+            (1, 1, 0),
+            (1, 0, 1),
+            (1, 0, -1),
+            (2, 0, 0),
+            (2, 0, -1),
+            (2, 0, i64::from(u32::MAX) + 1),
+        ] {
+            let mut bytes = payload(&[None]);
+            set_training_cell(&mut bytes, 4, status, aux, raw);
+            assert!(
+                DivisionRoutes::parse(&bytes).is_err(),
+                "army {status}/{aux}/{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn training_signed_count_country_and_null_army_remain_distinct_from_unavailable() {
+        use TrainingObservation::Measured;
+        for (entry_count, sum_raw) in [
+            (i32::MIN, 0),
+            (-1, 0),
+            (0, 0),
+            (1, i32::MIN),
+            (i32::MAX, i32::MAX),
+            (3, 0),
+        ] {
+            for country in [i32::MIN, -1, 0, i32::MAX] {
+                let value = TrainingScalars {
+                    experience: Measured(0),
+                    current_hp: Measured(0),
+                    maximum_hp: Measured(0),
+                    template_count: Measured(TrainingCount {
+                        entry_count,
+                        sum_raw,
+                    }),
+                    army: Measured(None),
+                    country_operand: Measured(country),
+                };
+                let mut bytes = payload(&[None]);
+                write_training_scalars(&mut bytes, 0, value);
+                assert_eq!(
+                    DivisionRoutes::parse(&bytes).unwrap().training_scalars(0),
+                    value
+                );
+                assert_ne!(value, TrainingScalars::default());
+                assert!(value.json().contains("\"army\":{\"status\":\"null\"}"));
+            }
+        }
+    }
+
+    #[test]
+    fn training_deleted_rows_require_every_cell_to_be_canonical_unobserved() {
+        let mut clean = payload(&[None]);
+        clean[40..44].copy_from_slice(&(1u32 << 12).to_le_bytes());
+        assert_eq!(
+            DivisionRoutes::parse(&clean).unwrap().training_scalars(0),
+            TrainingScalars::default()
+        );
+        for at in 32 + 216..32 + ROW_LEN {
+            let mut invalid = clean.clone();
+            invalid[at] = 1;
+            assert!(
+                DivisionRoutes::parse(&invalid).is_err(),
+                "deleted training byte {at}"
+            );
+        }
+        for end in 32 + 216..32 + ROW_LEN {
+            assert!(
+                DivisionRoutes::parse(&clean[..end]).is_err(),
+                "truncated training byte {end}"
+            );
+        }
     }
 
     #[test]

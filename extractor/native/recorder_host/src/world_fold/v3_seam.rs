@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
-use fold_v3::{decompose_subtree, Path, Seg};
+use fold_v3::{decompose_subtree, Path, RootKind, Seg};
 use serde_json::{Map, Value};
 use snapshot::canon_convert::from_value_shared;
 
@@ -62,6 +62,8 @@ impl V3SeamConfig {
 #[derive(Clone, Debug)]
 pub struct V3SectionHour {
     pub section: &'static str,
+    /// Root shape supplied by the producer; apply after removals, before upserts.
+    pub root_kind: RootKind,
     /// Paths whose grain is gone; applied before the upserts.
     pub removals: Vec<Path>,
     /// Canonical JSON bytes per grain path, produced by serializing a
@@ -214,6 +216,7 @@ struct CountryFlags {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DivisionFlags {
+    unknown: bool,
     equipment_masked: bool,
     equipment_present: bool,
 }
@@ -617,6 +620,7 @@ fn resolve_country_collaboration_park_object(row: &mut Map<String, Value>, plan:
 fn empty_section(section: &'static str) -> V3SectionHour {
     V3SectionHour {
         section,
+        root_kind: if section == V3_SECTION_DIVISIONS { RootKind::Array } else { RootKind::Object },
         removals: Vec::new(),
         upserts: Vec::new(),
         render_ns: 0,
@@ -1335,6 +1339,7 @@ impl WorldFold {
         let equipment_present = self.fold_domain_seen_in_stream(DIVISION_EQUIPMENT_DOMAIN_ID)
             || !self.division_equipment.is_empty();
         let flags = DivisionFlags {
+            unknown: self.divisions_unknown_this_hour,
             equipment_masked,
             equipment_present,
         };
@@ -1365,11 +1370,31 @@ impl WorldFold {
                         .insert(uid.clone());
                 }
             }
+        } else if seam.last_division_flags.is_some_and(|previous| previous.unknown) && !flags.unknown {
+            seam.divisions_all = Some("D20 availability restored");
         } else if census_only {
         } else if seam.last_tag_by_db_id != self.tag_by_db_id {
             seam.divisions_all = Some("tag map changed");
         } else if seam.last_division_flags != Some(flags) {
             seam.divisions_all = Some("equipment gate flipped");
+        }
+        if flags.unknown {
+            // Withhold published grains, not the reducer's retained baseline.
+            for (_, row) in std::mem::take(&mut seam.installed_divisions) {
+                out.removals.extend(row.paths);
+            }
+            out.root_kind = RootKind::Scalar;
+            out.upserts.push((Vec::new(), b"null".to_vec()));
+            out.rendered_bytes = 4;
+            out.widened_all = Some("D20 unavailable");
+            out.diagnostics = format!("flags={flags:?}; retained baseline withheld");
+            seam.last_division_flags = Some(flags);
+            out.render_ns = started.elapsed().as_nanos() as u64;
+            return out;
+        }
+        if seam.last_division_flags.is_some_and(|previous| previous.unknown) {
+            // Remove the null grain before restoring the array, including [].
+            out.removals.push(Vec::new());
         }
         // D26 touched or pruned a key: its bucket's divisions join differently.
         if seam.divisions_all.is_none() && !census_only {

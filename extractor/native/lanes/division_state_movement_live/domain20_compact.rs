@@ -1897,7 +1897,8 @@ mod tests {
 
     #[test]
     fn row_len_literal_is_stable() {
-        assert_eq!(ROW_LEN, 216);
+        assert_eq!(ROW_LEN, 312);
+        assert_eq!(division_routes::FORMAT_MARKER, u32::from_le_bytes(*b"D2R9"));
     }
 
     #[test]

@@ -5793,6 +5793,10 @@
     "let expected = include_str!(\"country_identity.rs\")",
     "let own = include_str!(\"country_identity.rs\");"
   ],
+  "replay_interface/native/replay_core/src/division_training_inputs.rs": [
+    "assert!(std::fs::metadata(&path).unwrap().len() <= 1024 * 1024);",
+    "let bytes = std::fs::read(path).unwrap();"
+  ],
   "replay_interface/native/replay_core/src/lib.rs": [
     "pub use static_focus_defs::{"
   ],

@@ -679,6 +679,149 @@ fn a_refused_first_victory_point_record_leaves_the_tracker_unbaselined() {
     assert!(tracker.previous.is_empty());
 }
 
+// This second borrow stages the consequence of the same DATA record being
+// published. It is not another reader: journal rollback still owns withheld
+// publication. Match syntax, not comments, literals, or an allowance of two.
+fn division_publication_borrow_is_exact(source: &str) -> bool {
+    use quote::ToTokens;
+    // Parse actual items so a commented/literal helper cannot grant credit.
+    let Ok(file) = syn::parse_file(source) else { return false; };
+    let mut frames = file.items.iter().filter_map(|item| match item {
+        syn::Item::Fn(function) if function.sig.ident == "build_compact_extraction_gate_records" => Some(function),
+        _ => None,
+    });
+    let Some(frame) = frames.next() else { return false; };
+    if frames.next().is_some() { return false; }
+    let expected: syn::Stmt = syn::parse_quote! {
+if let Some(read) = division_read {
+        stage_division_publication_baseline(&read, &mut trackers.division_movement);
+        let mut shard_diagnostics = read
+            .shard_panic_index
+            .map(|value| CompactDomainPerfDiagnosticUnit {
+                name: "d20_shard_panic_index",
+                value: u64::from(value),
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        if read.output_storage_unavailable {
+            shard_diagnostics.push(CompactDomainPerfDiagnosticUnit {
+                name: "d20_output_storage_unavailable", value: 1,
+            });
+        }
+        append_compact_domain_perf_record_with_diagnostics(
+            &mut out,
+            sequence,
+            game_hour_raw,
+            CompactDomainPerfRecord {
+                domain_id: COMPACT_DOMAIN_DIVISIONS,
+                read_time_us: read.read_time_us,
+                row_count: read.root_rows,
+                changed_rows: read.changed_rows,
+                unit_count: read.root_rows,
+                changed_unit_count: read.changed_rows,
+                status_flags: read.status_flags,
+            },
+            elapsed_wall_ms,
+            &shard_diagnostics,
+        );
+        sequence = sequence.saturating_add(1);
+        append_compact_divisions_data_record(
+            &mut out,
+            sequence,
+            game_hour_raw,
+            &read.rows,
+            elapsed_wall_ms,
+            read.status_flags,
+            read.changed_rows,
+            read.root_rows,
+            division_roots_cache.observed().country_roster.as_ref(),
+            division_roots_cache.observed().railway_roster.as_ref(),
+        );
+        sequence = sequence.saturating_add(1);
+        emitted_domains = emitted_domains.saturating_add(1);
+    }
+    };
+    let expected_tokens = expected.to_token_stream().to_string();
+    if frame.block.stmts.iter().filter(|stmt| {
+        stmt.to_token_stream().to_string() == expected_tokens
+    }).count() != 1 {
+        return false;
+    }
+    struct Calls(usize);
+    impl<'ast> syn::visit::Visit<'ast> for Calls {
+        fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+            if let syn::Expr::Path(path) = &*node.func {
+                if path.path.segments.last().is_some_and(|s| s.ident == "stage_division_publication_baseline") {
+                    self.0 += 1;
+                }
+            }
+            syn::visit::visit_expr_call(self, node);
+        }
+    }
+    let mut calls = Calls(0);
+    syn::visit::Visit::visit_item_fn(&mut calls, &frame);
+    if calls.0 != 1 { return false; }
+    let mut helpers = file.items.iter().filter_map(|item| match item {
+        syn::Item::Fn(function) if function.sig.ident == "stage_division_publication_baseline" => Some(function),
+        _ => None,
+    });
+    let Some(actual) = helpers.next() else { return false; };
+    if helpers.next().is_some() { return false; }
+    let expected: syn::ItemFn = syn::parse_quote! {
+        fn stage_division_publication_baseline(
+            read: &CompactDivisionRead,
+            tracker: &mut FrameJournalled<BTreeMap<u32, DivisionMovementSample>>,
+        ) {
+            if compact_contract::compact_status_is_failure(read.status_flags) {
+                tracker.advance(BTreeMap::new());
+            }
+        }
+    };
+    actual.sig == expected.sig && actual.block == expected.block
+}
+
+#[test]
+fn division_publication_borrow_requires_exact_failure_and_published_read() {
+    let source = attach_log_source();
+    assert!(division_publication_borrow_is_exact(&source));
+    assert!(division_publication_borrow_is_exact(&source.replace("\n", "\r\n")));
+    let stage = "stage_division_publication_baseline(&read, &mut trackers.division_movement);";
+    for (old, new) in [
+        (stage, "stage_division_publication_baseline(&other_read, &mut trackers.division_movement);"),
+        (stage, "stage_division_publication_baseline(&read, &mut trackers.armies);"),
+        (stage, "/* stage_division_publication_baseline(&read, &mut trackers.division_movement); */"),
+        (stage, "let _ = \"stage_division_publication_baseline(&read, &mut trackers.division_movement);\";"),
+        ("if let Some(read) = division_read {", "if let Some(read) = division_equipment_read {"),
+        ("if compact_contract::compact_status_is_failure(read.status_flags) {", "if true {"),
+        ("tracker.advance(BTreeMap::new());", "let _ = BTreeMap::<u32, DivisionMovementSample>::new();"),
+    ] {
+        assert!(source.contains(old), "mutation must reach actual source: {old}");
+        assert!(!division_publication_borrow_is_exact(&source.replace(old, new)), "credited mutation: {new}");
+    }
+    let helper_start = source.find("fn stage_division_publication_baseline(").unwrap();
+    let helper_text: String = source[helper_start..].lines()
+        .scan(false, |done, line| {
+            if *done { return None; }
+            *done = line == "}";
+            Some(format!("{line}\n"))
+        }).collect();
+    let bad_helper = helper_text.replace(
+        "compact_contract::compact_status_is_failure(read.status_flags)", "true");
+    assert_ne!(bad_helper, helper_text);
+    let decoy = source.replacen(&helper_text,
+        &format!("/*\n{helper_text}*/\n{bad_helper}"), 1);
+    assert!(!division_publication_borrow_is_exact(&decoy), "commented valid helper must not cover the actual bad helper");
+    let duplicate = source.replacen(stage, &format!("{stage} {stage}"), 1);
+    assert!(!division_publication_borrow_is_exact(&duplicate));
+    let moved = source.replacen(stage, "", 1).replacen(
+        "if let Some(read) = division_read {",
+        &format!("{stage} if let Some(read) = division_read {{"), 1);
+    assert!(!division_publication_borrow_is_exact(&moved));
+    let unpublished = source.replacen("append_compact_divisions_data_record(\n", "drop_division_data(\n", 1);
+    assert_ne!(unpublished, source);
+    assert!(!division_publication_borrow_is_exact(&unpublished));
+}
+
 #[test]
 fn domain_scoped_tracker_allowlist_matches_the_borrow_sites() {
     let source = attach_log_source();
@@ -721,6 +864,8 @@ fn domain_scoped_tracker_allowlist_matches_the_borrow_sites() {
         disagreements.join("\n  ")
     );
 
+    assert!(division_publication_borrow_is_exact(&source),
+        "D20's publication borrow must stage only its exact failed DATA under journal custody");
     let mut second_writers = Vec::new();
     for field in table.keys() {
         let needle = format!("trackers.{field}");
@@ -734,10 +879,13 @@ fn domain_scoped_tracker_allowlist_matches_the_borrow_sites() {
             }
             occurrences += 1;
         }
-        if occurrences != 1 {
+        // The syntax guard above proves the one additional D20 borrow; every
+        // other access remains subject to the original single-reader rule.
+        let publication_borrows = usize::from(*field == "division_movement");
+        if occurrences != 1 + publication_borrows {
             second_writers.push(format!(
                 "{field}: `trackers.{field}` appears {occurrences} times in the frame builder; \
-                 exactly one (its `&mut` borrow) is what makes its bracket tag the whole answer"
+                 expected one reader borrow plus {publication_borrows} exact publication borrow"
             ));
         }
     }

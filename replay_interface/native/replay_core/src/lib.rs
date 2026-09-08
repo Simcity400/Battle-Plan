@@ -505,3 +505,5 @@ pub use world::{
 };
 
 pub mod country_name;
+
+pub mod division_training_inputs;
