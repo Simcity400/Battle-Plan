@@ -14,6 +14,7 @@ pub mod character_ui;
 pub mod combat_detail_canvas;
 pub mod compose;
 pub mod content_interpreter;
+pub(crate) mod container_sprite_inputs;
 pub mod dds;
 pub mod decision_chrome;
 pub mod decision_replay;

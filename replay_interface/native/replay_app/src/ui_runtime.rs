@@ -8,6 +8,13 @@ use crate::d3d::Gfx;
 use crate::text::ImageRenderer;
 use crate::Result;
 
+#[cfg(test)]
+#[path = "ui_runtime/xui08_public_entry_tests.rs"]
+mod xui08_public_entry_tests;
+
+#[cfg(test)]
+#[path = "ui_runtime/xui08_recording_dispatch_tests.rs"]
+mod xui08_recording_dispatch_tests;
 
 
 #[derive(Clone, Copy, Default)]
@@ -428,6 +435,7 @@ pub struct ProductObserverUiRuntime {
     xui08_presented: Option<Xui08PresentedFrame>,
     xui08_history_anchor: Option<Xui08HistoryAnchor>,
     xui08_pending: Option<Xui08PresentedFrame>,
+    xui08_frame_clock: game_ui::compose::ContainerFrameClock,
     xui08_pending_staged: bool,
     xui08_pending_viewer_checkpoint:
         Option<game_ui::peace_conference_ui::PeaceConferenceViewerState>,
@@ -702,8 +710,9 @@ impl ObserverViewerPresentTransaction {
         viewer: &game_ui::production_renderer::ObserverViewerUiState,
     ) {
         self.checkpoint.trade.active_scrollbar_drag = viewer.trade.active_scrollbar_drag.clone();
-        self.checkpoint.peace_conference.active_scrollbar_drag =
-            viewer.peace_conference.active_scrollbar_drag.clone();
+        // Rejection cannot resurrect the discarded viewport instance. Reset
+        // only geometry/capture in the checkpoint, preserving prior intent.
+        self.checkpoint.peace_conference.invalidate_viewport_container();
     }
 
     fn commit(self) {}
@@ -1319,6 +1328,80 @@ struct Xui08PresentedFrame {
     input_region: Option<game_ui::peace_conference_ui::PeaceConferenceInputRegion>,
     hit_targets: Vec<game_ui::peace_conference_ui::PeaceConferenceHitTarget>,
     tooltip_targets: Vec<game_ui::peace_conference_ui::PeaceConferenceTooltipHitTarget>,
+}
+
+struct Xui08InstalledSurface {
+    input_region: Option<game_ui::peace_conference_ui::PeaceConferenceInputRegion>,
+    visible: bool,
+    receipt: String,
+}
+
+#[derive(Debug)]
+enum Xui08SurfaceStageError {
+    Renderer(game_ui::production_renderer::ProductionUiRejection),
+    Execution(game_ui::GameUiError),
+}
+
+/// The caller's Present transaction owns both mutable arguments. Rendering and
+/// blending must succeed before either candidate state or hit authority changes.
+fn compose_and_install_xui08_surface(
+    renderer: &game_ui::production_renderer::ProductionUiRenderer,
+    world: &WorldFrame,
+    viewport: [usize; 2],
+    delta: f32,
+    viewer: &mut game_ui::peace_conference_ui::PeaceConferenceViewerState,
+    pending: &mut Xui08PresentedFrame,
+    framebuffer: &mut game_ui::dds::RgbaImage,
+) -> std::result::Result<Xui08InstalledSurface, Xui08SurfaceStageError> {
+    if [framebuffer.width, framebuffer.height] != viewport
+        || framebuffer.width.checked_mul(framebuffer.height)
+            .and_then(|pixels| pixels.checked_mul(4)) != Some(framebuffer.pixels.len())
+    {
+        return Err(Xui08SurfaceStageError::Execution(game_ui::GameUiError::missing(
+            "XUI08 destination dimensions or RGBA storage differ from the current viewport",
+        )));
+    }
+    let (composed, mut candidate) = renderer.compose_xui08_peace_conference_surface(
+        world, viewer, viewport[0], viewport[1], delta, framebuffer,
+    ).map_err(Xui08SurfaceStageError::Renderer)?;
+    let Some(output) = composed else {
+        *viewer = candidate;
+        pending.input_region = None;
+        pending.hit_targets.clear();
+        pending.tooltip_targets.clear();
+        return Ok(Xui08InstalledSurface {
+            input_region: None,
+            visible: false,
+            receipt: "XUI08:local-container-hidden:no-render-or-hit-authority".into(),
+        });
+    };
+    for region in [
+        game_ui::peace_conference_ui::PeaceConferenceScrollRegion::AvailableActions,
+        game_ui::peace_conference_ui::PeaceConferenceScrollRegion::CurrentAndHistory,
+        game_ui::peace_conference_ui::PeaceConferenceScrollRegion::ContestedPopup,
+    ] {
+        candidate.clamp_scroll(region, output.input_region.maximum(region))
+            .map_err(Xui08SurfaceStageError::Execution)?;
+    }
+    // The renderer staged native blending over this framebuffer. Blending the
+    // result as a transparent overlay would apply source alpha a second time.
+    *framebuffer = output.image;
+    let receipt = format!(
+        "XUI08:record={}:participants={}:allocations={}:results={}:manager-overlay-composited",
+        output.record_sha256,
+        output.materialized_participant_ids.len(),
+        output.materialized_allocation_ids.len(),
+        output.materialized_result_ids.len(),
+    );
+    *viewer = candidate;
+    pending.input_region = Some(output.input_region);
+    pending.hit_targets = output.hit_targets;
+    pending.tooltip_targets = output.tooltip_targets;
+    Ok(Xui08InstalledSurface {
+        input_region: pending.input_region.clone(),
+        visible: true,
+        receipt,
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -2231,6 +2314,7 @@ impl ProductObserverUiRuntime {
             xui08_presented: None,
             xui08_history_anchor: None,
             xui08_pending: None,
+            xui08_frame_clock: Default::default(),
             xui08_pending_staged: false,
             xui08_pending_viewer_checkpoint: None,
             xui08_pending_viewer_input: None,
@@ -3303,54 +3387,39 @@ impl ProductObserverUiRuntime {
                 }
             }
         }
-        if viewer.peace_conference.open {
+        let xui08_delta = self.xui08_frame_clock.observe(viewer_clock_micros);
+        if viewer.peace_conference.needs_surface() {
             if self
                 .xui08_pending
                 .as_ref()
                 .is_some_and(|pending| pending.admitted.active())
             {
-                match self.renderer.compose_xui08_peace_conference_surface(
-                    world_frame,
-                    &viewer.peace_conference,
-                    gfx.width as usize,
-                    gfx.height as usize,
-                ) {
-                    Ok(Some(output)) => {
-                        for region in [
-                            game_ui::peace_conference_ui::PeaceConferenceScrollRegion::AvailableActions,
-                            game_ui::peace_conference_ui::PeaceConferenceScrollRegion::CurrentAndHistory,
-                            game_ui::peace_conference_ui::PeaceConferenceScrollRegion::ContestedPopup,
-                        ] {
-                            viewer.peace_conference.clamp_scroll(
-                                region,
-                                output.input_region.maximum(region),
-                            )?;
-                        }
-                        game_ui::designer_observer::blend(&mut framebuffer, &output.image)?;
-                        peace_conference_input_region = Some(output.input_region);
-                        if let Some(pending) = self.xui08_pending.as_mut() {
-                            pending.input_region = peace_conference_input_region.clone();
-                            pending.hit_targets = output.hit_targets;
-                            pending.tooltip_targets = output.tooltip_targets;
-                        }
-                        peace_conference_available = true;
-                        authored_roots.push(game_ui::peace_conference_ui::PEACE_CONFERENCE_ROOT.into());
-                        authored_panel_draw_count = authored_panel_draw_count.saturating_add(1);
-                        semantic_receipts.push(format!(
-                            "XUI08:record={}:participants={}:allocations={}:results={}:manager-overlay-composited",
-                            output.record_sha256,
-                            output.materialized_participant_ids.len(),
-                            output.materialized_allocation_ids.len(),
-                            output.materialized_result_ids.len(),
-                        ));
-                    }
-                    Ok(None) => feature_local_gaps.push(
-                        "XUI08:field=pixel_surface:domain=authenticated_xui08_compositor:unavailable=OPEN_ACTIVE_PANEL_PRODUCED_NO_PIXELS"
-                            .into(),
+                let composed = match xui08_delta {
+                    Ok(delta) => compose_and_install_xui08_surface(
+                        &self.renderer, world_frame,
+                        [gfx.width as usize, gfx.height as usize], delta,
+                        &mut viewer.peace_conference,
+                        self.xui08_pending.as_mut().expect("active candidate checked above"),
+                        &mut framebuffer,
                     ),
-                    Err(error) => feature_local_gaps.push(format!(
+                    Err(error) => Err(Xui08SurfaceStageError::Renderer(
+                        game_ui::production_renderer::ProductionUiRejection::Asset(error.to_string()),
+                    )),
+                };
+                match composed {
+                    Ok(installed) => {
+                        peace_conference_input_region = installed.input_region;
+                        peace_conference_available = true;
+                        if installed.visible {
+                            authored_roots.push(game_ui::peace_conference_ui::PEACE_CONFERENCE_ROOT.into());
+                            authored_panel_draw_count = authored_panel_draw_count.saturating_add(1);
+                        }
+                        semantic_receipts.push(installed.receipt);
+                    }
+                    Err(Xui08SurfaceStageError::Renderer(error)) => feature_local_gaps.push(format!(
                         "XUI08:field=effective_content_or_compositor_capability:domain=passive_global_peace_conference:unavailable={error:?}"
                     )),
+                    Err(Xui08SurfaceStageError::Execution(error)) => return Err(error.into()),
                 }
             } else {
                 feature_local_gaps.push(
@@ -4913,7 +4982,7 @@ impl ProductObserverUiRuntime {
         let mut checkpoint = self.observer_frame_checkpoint.take();
         self.invalidate();
         viewer.politics.reset_frame_bound_state();
-        viewer.peace_conference.release_active_scrollbar();
+        viewer.peace_conference.invalidate_viewport_container();
         viewer.trade.active_scrollbar_drag = None;
         self.present_transaction
             .make_resize_invalidation_durable(viewer)?;

@@ -490,6 +490,8 @@ pub enum RuntimeGraphicsRejection {
     UnsupportedEffectiveShader,
     BuiltinShaderLawHashMismatch,
     BuiltinShaderIncludeMismatch,
+    ContainerInteractionStateUnavailable,
+    ContainerAnimationStateUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -831,13 +833,122 @@ pub(crate) fn admit_authenticated_dynamic_sprite_runtime_graphics(
 fn authenticate_builtin_shader_law(
     sprite: &crate::authored_role_index::AuthoredSpriteRole,
 ) -> Result<AuthenticatedUiShaderLaw, RuntimeGraphicsRejection> {
+    authenticate_builtin_shader_content(
+        &sprite.effective_shader_file,
+        &sprite.effect_content,
+        &sprite.effect_include_content,
+    )
+}
+
+/// The actual container compositor has a staged viewer-created widget, not a
+/// ReplayOwnedWindowManager lease. Authenticate its real content through the
+/// same shader law before admitting the supplied frame/colour/clip operands.
+pub(crate) struct ContainerSpriteRequest {
+    pub source_identity: String,
+    pub frame_count: usize,
+    pub one_based_frame: u32,
+    pub interaction: Option<ButtonVisualState>,
+    pub color: RgbaF32,
+    pub clip: ClipRect,
+    pub opacity: f32,
+}
+
+pub(crate) fn admit_container_sprite_runtime_graphics(
+    resolver: &AssetResolver,
+    sprite: &SpriteDefinition,
+    request: &ContainerSpriteRequest,
+) -> Result<AdmittedRuntimeGraphics, RuntimeGraphicsRejection> {
+    if resolver.admitted_content_key(&sprite.source_file).is_none()
+    {
+        return Err(RuntimeGraphicsRejection::SpriteIdentityMismatch);
+    }
+    if usize::try_from(sprite.no_of_frames).ok() != Some(request.frame_count) {
+        return Err(RuntimeGraphicsRejection::SpriteFrameCountMismatch);
+    }
+    let effect = crate::gfx::a729_effect_shader_path(sprite.effect_file.as_deref())
+        .map_err(|_| RuntimeGraphicsRejection::UnsupportedEffectiveShader)?;
+    let read_key = |path: &str, mismatch: RuntimeGraphicsRejection| {
+        let key = resolver.admitted_content_key(path).ok_or(mismatch)?.clone();
+        let file = resolver.resolve_file(path).map_err(|_| mismatch)?;
+        let bytes = resolver.read_file(&file).map_err(|_| mismatch)?;
+        if !file.rel_path.eq_ignore_ascii_case(&key.normalized_game_relative_path)
+            || bytes.len() as u64 != key.payload_bytes
+            || Sha256::hex(&bytes) != key.payload_sha256
+        {
+            return Err(mismatch);
+        }
+        Ok(key)
+    };
+    let effect_content = read_key(&effect, RuntimeGraphicsRejection::BuiltinShaderLawHashMismatch)?;
+    let includes = crate::gfx::xui07_builtin_shader_includes(&effect)
+        .ok_or(RuntimeGraphicsRejection::UnsupportedEffectiveShader)?;
+    let include_content = includes.iter().map(|path|
+        read_key(path, RuntimeGraphicsRejection::BuiltinShaderIncludeMismatch)
+    ).collect::<Result<Vec<_>, _>>()?;
+    let law = authenticate_builtin_shader_content(&effect, &effect_content, &include_content)?;
+    if sprite.raw.values_ci("animation").next().is_some()
+        || law == AuthenticatedUiShaderLaw::ButtonStateBlendFrames
+    {
+        return Err(RuntimeGraphicsRejection::ContainerAnimationStateUnavailable);
+    }
+    let interaction = match (law, request.interaction) {
+        // StaticButton's authenticated shader has no state or time operand.
+        (AuthenticatedUiShaderLaw::StaticButton, _) => ButtonVisualState::Up,
+        (_, Some(state @ (ButtonVisualState::Up | ButtonVisualState::Disable))) => state,
+        // Over/Down require the owning press/hover transition clock as well.
+        _ => return Err(RuntimeGraphicsRejection::ContainerInteractionStateUnavailable),
+    };
+    // CSprite::SetOpacity assigns +18c. CSprite::Draw copies it to the
+    // sprite type +1a4; 14222d5a0 multiplies that value by ModColor.a
+    // before uploading ModColor. It is not a post-shader alpha factor.
+    let native_request = RuntimeGraphicsRequest {
+        source_record_id: request.source_identity.clone(),
+        sprite_name: sprite.name.clone(),
+        frame_count: request.frame_count,
+        one_based_frame: request.one_based_frame,
+        interaction_effect: interaction,
+        shading_path: law.shading_path(),
+        producer_resolved_rgba: None,
+        color: container_sprite_mod_color(request.color, request.opacity)?,
+        // The admitted static/Up/Disable arms never read these clock fields.
+        time: 0.0,
+        animation_time: 0.0,
+        next_one_based_frame: None,
+        clip: request.clip,
+        opacity: 1.0,
+    };
+    let mut admitted = admit_runtime_graphics(&native_request)?;
+    admitted.shader_law = Some(law);
+    Ok(admitted)
+}
+
+fn container_sprite_mod_color(
+    mut color: RgbaF32,
+    opacity: f32,
+) -> Result<RgbaF32, RuntimeGraphicsRejection> {
+    if !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
+        return Err(RuntimeGraphicsRejection::InvalidOpacity);
+    }
+    // MOVSS XMM2,[type+1a4]; MULSS XMM2,[type+dc]. Preserve this
+    // operand order and the f32 intermediate before shader modulation.
+    color.0[3] = opacity * color.0[3];
+    if !color.finite() {
+        return Err(RuntimeGraphicsRejection::InvalidShaderConstants);
+    }
+    Ok(color)
+}
+
+fn authenticate_builtin_shader_content(
+    effective_shader_file: &str,
+    effect_content: &portable_content_manifest::UsedContentKey,
+    effect_include_content: &[portable_content_manifest::UsedContentKey],
+) -> Result<AuthenticatedUiShaderLaw, RuntimeGraphicsRejection> {
     let (law, shader_sha256, shader_bytes, includes): (
         AuthenticatedUiShaderLaw,
         &str,
         u64,
         &[(&str, &str, u64)],
-    ) = if sprite
-        .effective_shader_file
+    ) = if effective_shader_file
         .eq_ignore_ascii_case("gfx/FX/buttonstate.shader")
     {
         (
@@ -857,8 +968,7 @@ fn authenticate_builtin_shader_law(
                 ),
             ],
         )
-    } else if sprite
-        .effective_shader_file
+    } else if effective_shader_file
         .eq_ignore_ascii_case("gfx/FX/buttonstate_nodowneffect.shader")
     {
         (
@@ -867,8 +977,7 @@ fn authenticate_builtin_shader_law(
             BUTTONSTATE_NO_DOWN_EFFECT_SHADER_BYTES,
             &[],
         )
-    } else if sprite
-        .effective_shader_file
+    } else if effective_shader_file
         .eq_ignore_ascii_case("gfx/FX/buttonstate_nodownordisableeffect.shader")
     {
         (
@@ -877,8 +986,7 @@ fn authenticate_builtin_shader_law(
             BUTTONSTATE_NO_DOWN_OR_DISABLE_EFFECT_SHADER_BYTES,
             &[],
         )
-    } else if sprite
-        .effective_shader_file
+    } else if effective_shader_file
         .eq_ignore_ascii_case("gfx/FX/buttonstate_onlydisable.shader")
     {
         (
@@ -898,8 +1006,7 @@ fn authenticate_builtin_shader_law(
                 ),
             ],
         )
-    } else if sprite
-        .effective_shader_file
+    } else if effective_shader_file
         .eq_ignore_ascii_case("gfx/FX/buttonstate_blendframes.shader")
     {
         (
@@ -912,8 +1019,7 @@ fn authenticate_builtin_shader_law(
                 BUTTONSTATE_INCLUDE_BYTES,
             )],
         )
-    } else if sprite
-        .effective_shader_file
+    } else if effective_shader_file
         .eq_ignore_ascii_case("gfx/FX/static_button.shader")
     {
         (
@@ -926,16 +1032,15 @@ fn authenticate_builtin_shader_law(
         return Err(RuntimeGraphicsRejection::UnsupportedEffectiveShader);
     };
     if !content_matches(
-        &sprite.effect_content,
-        &sprite.effective_shader_file,
+        effect_content,
+        effective_shader_file,
         shader_sha256,
         shader_bytes,
     ) {
         return Err(RuntimeGraphicsRejection::BuiltinShaderLawHashMismatch);
     }
-    if sprite.effect_include_content.len() != includes.len()
-        || sprite
-            .effect_include_content
+    if effect_include_content.len() != includes.len()
+        || effect_include_content
             .iter()
             .zip(includes)
             .any(|(content, (path, sha256, bytes))| !content_matches(content, path, sha256, *bytes))
@@ -1559,11 +1664,11 @@ fn image_pixel(image: &RgbaImage, x: usize, y: usize) -> RgbaF32 {
     )
 }
 
-fn rgba_u8_to_f32(pixel: [u8; 4]) -> RgbaF32 {
+pub(crate) fn rgba_u8_to_f32(pixel: [u8; 4]) -> RgbaF32 {
     RgbaF32(pixel.map(|channel| f32::from(channel) / 255.0))
 }
 
-fn rgba_f32_to_u8(pixel: RgbaF32) -> [u8; 4] {
+pub(crate) fn rgba_f32_to_u8(pixel: RgbaF32) -> [u8; 4] {
     pixel
         .0
         .map(|channel| (saturate(channel) * 255.0).round() as u8)
@@ -1573,6 +1678,33 @@ fn rgba_f32_to_u8(pixel: RgbaF32) -> [u8; 4] {
 mod tests {
     use super::*;
     use portable_content_manifest::{ContentLayerKind, UsedContentKey};
+
+    #[test]
+    fn container_opacity_is_uploaded_in_mod_color_before_shader_evaluation() {
+        let base = RgbaF32([0.2, 0.4, 0.6, f32::from_bits(0x3ee2_e2e3)]);
+        let color = RgbaF32([0.7, 0.8, 0.9, f32::from_bits(0x3ebd_70a4)]);
+        let opacity = f32::from_bits(0x3e6b_851f);
+        let uploaded = container_sprite_mod_color(color, opacity).unwrap();
+        assert_eq!(&uploaded.0[..3], &color.0[..3]);
+        let native = shade_static_button(base, uploaded);
+        assert_eq!(native.0[3].to_bits(), 0x3d1a_76d5);
+        let post_shader = apply_opacity(shade_static_button(base, color), opacity);
+        assert_eq!(post_shader.0[3].to_bits(), 0x3d1a_76d4);
+
+        // The reached blendframes Down shader arm does not consume ModColor.
+        // Multiplying its final alpha would therefore change native behavior.
+        let down = shade_buttonstate_blendframes(
+            base, base, 0.5, uploaded, ButtonVisualState::Down,
+        );
+        assert_eq!(down.0[3].to_bits(), base.0[3].to_bits());
+        assert_ne!(apply_opacity(down, opacity).0[3].to_bits(), down.0[3].to_bits());
+        for invalid in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+            assert_eq!(container_sprite_mod_color(color, invalid),
+                Err(RuntimeGraphicsRejection::InvalidOpacity));
+        }
+        let negative_zero = container_sprite_mod_color(color, -0.0).unwrap();
+        assert_eq!(negative_zero.0[3].to_bits(), (-0.0f32).to_bits());
+    }
 
     fn content(path: &str, sha256: &str, bytes: u64) -> UsedContentKey {
         UsedContentKey {

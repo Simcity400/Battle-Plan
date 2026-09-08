@@ -1957,9 +1957,11 @@ impl ProductionUiRenderer {
         viewer: &crate::peace_conference_ui::PeaceConferenceViewerState,
         viewport_width: usize,
         viewport_height: usize,
-    ) -> std::result::Result<Option<ProductionXui08Output>, ProductionUiRejection> {
-        if !viewer.open {
-            return Ok(None);
+        frame_delta_seconds: f32,
+        destination: &RgbaImage,
+    ) -> std::result::Result<(Option<ProductionXui08Output>, crate::peace_conference_ui::PeaceConferenceViewerState), ProductionUiRejection> {
+        if !viewer.needs_surface() {
+            return Ok((None, viewer.clone()));
         }
         for source in [
             crate::peace_conference_ui::PEACE_CONFERENCE_GUI,
@@ -1995,7 +1997,7 @@ impl ProductionUiRenderer {
                     "XUI08 semantic admission rejected: {error:?}"
                 ))
             })?;
-        let Some(composed) = crate::peace_conference_ui::render_peace_conference(
+        let (composed, candidate) = crate::peace_conference_ui::render_peace_conference(
             &self.resolver,
             &self.registry,
             &self.localisation,
@@ -2004,10 +2006,12 @@ impl ProductionUiRenderer {
             viewer,
             viewport_width,
             viewport_height,
+            frame_delta_seconds,
+            destination,
         )
-        .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?
-        else {
-            return Ok(None);
+        .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?;
+        let Some(composed) = composed else {
+            return Ok((None, candidate));
         };
         self.admit_compose_report(&composed.output.report)
             .map_err(ProductionUiRejection::IncompleteComposition)?;
@@ -2037,7 +2041,7 @@ impl ProductionUiRenderer {
             drawn_elements: composed.output.report.drawn_elements,
             sprite_count: self.registry.len(),
         };
-        Ok(Some(ProductionXui08Output {
+        Ok((Some(ProductionXui08Output {
             image: composed.output.image,
             report,
             record_sha256: exact.record_sha256.clone(),
@@ -2048,7 +2052,7 @@ impl ProductionUiRenderer {
             materialized_participant_ids: composed.materialized_participant_ids,
             materialized_allocation_ids: composed.materialized_allocation_ids,
             materialized_result_ids: composed.materialized_result_ids,
-        }))
+        }), candidate))
     }
 
     pub fn compose_xui11_politics_surface(

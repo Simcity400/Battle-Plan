@@ -1,5 +1,9 @@
 use crate::assets::{normalize_rel_path, AssetResolver};
 use crate::dds::RgbaImage;
+use crate::runtime_graphics::{
+    blend_text_src_alpha_inv_src_alpha_max_alpha, modulate_rgba, rgba_f32_to_u8,
+    rgba_u8_to_f32, RgbaF32,
+};
 use crate::paradox_text::{destructive_event_count, diagnose_text_decode, parse_checked_bytes};
 use crate::{GameUiError, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -398,7 +402,7 @@ impl BitmapFont {
                 });
             };
             let tint = rich.colors.get(quad.char_index).copied().unwrap_or(color);
-            blit_glyph_a729(image, &page.image, quad.x, quad.y, font_char, tint, clip);
+            blit_glyph_a729(image, &page.image, quad.x, quad.y, font_char, tint, 1.0, clip);
         }
         Ok(TextRenderReport {
             missing_glyphs: layout.missing_glyphs,
@@ -442,6 +446,7 @@ impl BitmapFont {
         x: i32,
         y: i32,
         color: [u8; 4],
+        opacity: f32,
         clip: Option<[i32; 4]>,
     ) -> std::result::Result<RuntimeGlyphDraw, TextShaderRejection> {
         if self.glyph_channel.is_some() {
@@ -455,7 +460,7 @@ impl BitmapFont {
                 page: font_char.page,
             });
         };
-        blit_glyph_a729(image, &page.image, x, y, font_char, color, clip);
+        blit_glyph_a729(image, &page.image, x, y, font_char, color, opacity, clip);
         Ok(RuntimeGlyphDraw::Drawn)
     }
 }
@@ -1356,6 +1361,7 @@ fn blit_glyph_a729(
     y: i32,
     font_char: &FontChar,
     color: [u8; 4],
+    opacity: f32,
     clip: Option<[i32; 4]>,
 ) {
     let gx_span = glyph_axis_span(x, font_char.x, font_char.width, page.width, dst.width);
@@ -1381,29 +1387,22 @@ fn blit_glyph_a729(
             let sampled: [u8; 4] = page.pixels[src..src + 4]
                 .try_into()
                 .expect("RGBA font atlas slice");
-            let shaded = std::array::from_fn(|channel| {
-                ((u16::from(sampled[channel]) * u16::from(color[channel]) + 127) / 255) as u8
-            });
+            // text.shader: VS multiplies vertex colour by ModColor before
+            // PS multiplies the sampled texel. CInstantTextObject SetOpacity
+            // writes the float ModColor alpha; no intermediate RGBA8 tint.
+            let vertex = modulate_rgba(rgba_u8_to_f32(color), RgbaF32([1.0, 1.0, 1.0, opacity]));
+            let shaded = modulate_rgba(rgba_u8_to_f32(sampled), vertex);
             blend_text_pixel_a729(dst, dx as usize, dy as usize, shaded);
         }
     }
 }
 
-fn blend_text_pixel_a729(dst: &mut RgbaImage, x: usize, y: usize, src: [u8; 4]) {
+fn blend_text_pixel_a729(dst: &mut RgbaImage, x: usize, y: usize, src: RgbaF32) {
     let offset = (y * dst.width + x) * 4;
-    let dst_px: [u8; 4] = dst.pixels[offset..offset + 4]
-        .try_into()
-        .expect("RGBA destination slice");
-    let sa = u32::from(src[3]);
-    let inv_sa = 255 - sa;
-    let mut out = [0_u8; 4];
-    for channel in 0..3 {
-        out[channel] = ((u32::from(src[channel]) * sa + u32::from(dst_px[channel]) * inv_sa + 127)
-            / 255)
-            .min(255) as u8;
-    }
-    out[3] = src[3].max(dst_px[3]);
-    dst.pixels[offset..offset + 4].copy_from_slice(&out);
+    let dst_px = rgba_u8_to_f32(dst.pixels[offset..offset + 4]
+        .try_into().expect("RGBA destination slice"));
+    let out = blend_text_src_alpha_inv_src_alpha_max_alpha(dst_px, src);
+    dst.pixels[offset..offset + 4].copy_from_slice(&rgba_f32_to_u8(out));
 }
 
 fn glyph_alpha(src: &[u8], tint_alpha: u8, glyph_channel: Option<usize>) -> u8 {
@@ -2684,6 +2683,41 @@ mod tests {
             .load_pages(&resolver)
             .unwrap_err_or_else("glyph on an undeclared page");
         assert!(err.message.contains("glyph 65 -> page 7"), "{err}");
+    }
+
+    #[test]
+    fn native_glyph_keeps_modcolor_float_until_after_text_blend() {
+        let mut font = test_font_for_date();
+        // One unfiltered texel: shader VS tint*ModColor, then PS texel*VS.
+        font.pages[0].image.pixels[..4].copy_from_slice(&[255, 128, 64, 255]);
+        let mut image = blank_image(1, 1);
+        image.pixels.copy_from_slice(&[0, 0, 0, 200]);
+        assert_eq!(font.draw_runtime_glyph_a729(&mut image, '9' as u32, 0, 0,
+            [255, 255, 255, 128], 0.5, None).unwrap(), RuntimeGlyphDraw::Drawn);
+        assert_eq!(image.pixels, [64, 32, 16, 200]);
+        // Half of one alpha byte must not become a whole alpha byte before
+        // blending: 255*(1/255*0.5) is 0.5, while 128*that is below 0.5.
+        let mut image = blank_image(1, 1);
+        font.draw_runtime_glyph_a729(&mut image, '9' as u32, 0, 0,
+            [255, 255, 255, 1], 0.5, None).unwrap();
+        assert_eq!(image.pixels, [1, 0, 0, 1]);
+    }
+
+    #[test]
+    fn native_glyph_opacity_preserves_clip_and_packed_channel_refusal() {
+        let mut font = test_font_for_date();
+        let mut image = blank_image(1, 1);
+        image.pixels.copy_from_slice(&[11, 22, 33, 44]);
+        font.draw_runtime_glyph_a729(&mut image, '9' as u32, 0, 0,
+            [255; 4], 0.125, Some([1, 0, 1, 1])).unwrap();
+        assert_eq!(image.pixels, [11, 22, 33, 44]);
+        font.draw_runtime_glyph_a729(&mut image, '9' as u32, 0, 0,
+            [255; 4], 0.0, None).unwrap();
+        assert_eq!(image.pixels, [11, 22, 33, 44]);
+        font.glyph_channel = Some(3);
+        assert_eq!(font.draw_runtime_glyph_a729(&mut image, '9' as u32, 0, 0,
+            [255; 4], 0.125, None), Err(TextShaderRejection::PackedGlyphChannelUnproved));
+        assert_eq!(image.pixels, [11, 22, 33, 44]);
     }
 
     #[test]

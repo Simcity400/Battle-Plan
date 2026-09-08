@@ -20,7 +20,61 @@ pub fn parse_fixed5(text: &str) -> Option<i64> {
     Some(if whole == 0 && bytes.first() == Some(&b'-') { raw.wrapping_neg() } else { raw })
 }
 
+/// Result of the native `%i` assignment used by 1424b02c0.
+/// Both failures leave the destination unchanged, but the owning `!= 0`
+/// predicate accepts end of input (CRT return -1) and rejects matching failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeI32Assignment {
+    Match,
+    EndOfInput,
+    MatchingFailure,
+}
+
+pub fn assign_native_i32(text: &str, destination: &mut i32) -> NativeI32Assignment {
+    let bytes = text.as_bytes();
+    let bytes = &bytes[..bytes.iter().position(|&byte| byte == 0).unwrap_or(bytes.len())];
+    match scan_signed_auto_outcome(bytes) {
+        SignedScan::Match(value) => {
+            // 142546ccc scans signed64; 1425477d0's width-four arm stores EAX.
+            *destination = value as i32;
+            NativeI32Assignment::Match
+        }
+        SignedScan::EndOfInput => NativeI32Assignment::EndOfInput,
+        SignedScan::MatchingFailure => NativeI32Assignment::MatchingFailure,
+    }
+}
+
+/// 14254af28 calls 14253c770 with radix 10 and signed32. Unlike the `%i`
+/// assignment above, no digits yields zero and overflow saturates before return.
+pub fn parse_native_decimal_i32(text: &str) -> i32 {
+    let bytes = text.as_bytes();
+    let (mut cursor, negative) = scan_space_and_sign(bytes);
+    let mut magnitude = 0_u32;
+    while let Some(&byte) = bytes.get(cursor) {
+        if !byte.is_ascii_digit() { break; }
+        magnitude = magnitude.saturating_mul(10).saturating_add(u32::from(byte - b'0'));
+        cursor += 1;
+    }
+    let bound = i32::MAX as u32 + u32::from(negative);
+    let signed = magnitude.min(bound) as i32;
+    if negative { signed.wrapping_neg() } else { signed }
+}
+
+enum SignedScan {
+    Match(i64),
+    EndOfInput,
+    MatchingFailure,
+}
+
 fn scan_signed_auto(bytes: &[u8]) -> Option<i64> {
+    match scan_signed_auto_outcome(bytes) {
+        SignedScan::Match(value) => Some(value),
+        SignedScan::EndOfInput => Some(0),
+        SignedScan::MatchingFailure => None,
+    }
+}
+
+fn scan_space_and_sign(bytes: &[u8]) -> (usize, bool) {
     let mut cursor = 0;
     while bytes.get(cursor).is_some_and(|byte| matches!(byte, b' ' | b'\t'..=b'\r')) {
         cursor += 1;
@@ -29,6 +83,11 @@ fn scan_signed_auto(bytes: &[u8]) -> Option<i64> {
     if matches!(bytes.get(cursor), Some(b'+' | b'-')) {
         cursor += 1;
     }
+    (cursor, negative)
+}
+
+fn scan_signed_auto_outcome(bytes: &[u8]) -> SignedScan {
+    let (mut cursor, negative) = scan_space_and_sign(bytes);
     let radix = if bytes.get(cursor) == Some(&b'0') {
         if matches!(bytes.get(cursor + 1), Some(b'x' | b'X')) {
             cursor += 2;
@@ -55,16 +114,81 @@ fn scan_signed_auto(bytes: &[u8]) -> Option<i64> {
     if cursor == first_digit {
         // 14254681c returns EOF (-1) at end, matching failure (0) otherwise.
         // 1424b0480 rejects only 0; EOF leaves the initialized destination intact.
-        return (cursor == bytes.len()).then_some(0);
+        return if cursor == bytes.len() {
+            SignedScan::EndOfInput
+        } else {
+            SignedScan::MatchingFailure
+        };
     }
     let bound = i64::MAX as u64 + u64::from(negative);
     let signed = magnitude.min(bound) as i64;
-    Some(if negative { signed.wrapping_neg() } else { signed })
+    SignedScan::Match(if negative { signed.wrapping_neg() } else { signed })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_fixed5;
+    use super::{assign_native_i32, parse_fixed5, parse_native_decimal_i32, NativeI32Assignment};
+
+    #[test]
+    fn decimal_i32_accepts_only_decimal_prefix_and_returns_zero_without_digits() {
+        for (text, expected) in [
+            ("", 0), (" \t\n\r\x0b\x0c", 0), ("+", 0), ("-", 0), ("bad", 0),
+            (".5", 0), ("- 1", 0), ("0x20", 0), ("010", 10), ("08", 8),
+            ("12suffix", 12), ("-12.75", -12), (" +17%", 17), ("1e3", 1),
+            ("12\0more", 12), ("\0 123", 0), ("--12", 0), ("-0", 0),
+        ] {
+            assert_eq!(parse_native_decimal_i32(text), expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn decimal_i32_saturates_at_signed_width_without_changing_percent_i_assignment() {
+        for (text, expected) in [
+            ("2147483647", i32::MAX), ("2147483648", i32::MAX),
+            ("-2147483648", i32::MIN), ("-2147483649", i32::MIN),
+            ("4294967295", i32::MAX), ("4294967296", i32::MAX),
+            ("9223372036854775808", i32::MAX), ("-9223372036854775809", i32::MIN),
+        ] {
+            assert_eq!(parse_native_decimal_i32(text), expected, "{text:?}");
+        }
+        assert_eq!(parse_native_decimal_i32(&"9".repeat(4096)), i32::MAX);
+        assert_eq!(parse_native_decimal_i32(&format!("-{}", "9".repeat(4096))), i32::MIN);
+        let mut destination = 7;
+        assert_eq!(assign_native_i32("2147483648", &mut destination), NativeI32Assignment::Match);
+        assert_eq!(destination, i32::MIN);
+        assert_eq!(assign_native_i32("010", &mut destination), NativeI32Assignment::Match);
+        assert_eq!(destination, 8);
+        assert_eq!(assign_native_i32("", &mut destination), NativeI32Assignment::EndOfInput);
+        assert_eq!(destination, 8);
+    }
+
+    #[test]
+    fn native_i32_assignment_keeps_eof_distinct_and_preserves_destination() {
+        for text in ["", " \t", "+", "-", "0x", "-0X", "\0bad"] {
+            let mut destination = 1000;
+            assert_eq!(assign_native_i32(text, &mut destination), NativeI32Assignment::EndOfInput, "{text:?}");
+            assert_eq!(destination, 1000);
+        }
+        for text in ["bad", ".5", "+ ", "0xg", "--"] {
+            let mut destination = -7;
+            assert_eq!(assign_native_i32(text, &mut destination), NativeI32Assignment::MatchingFailure, "{text:?}");
+            assert_eq!(destination, -7);
+        }
+    }
+
+    #[test]
+    fn native_i32_assignment_stores_low_word_after_shared_signed_saturation() {
+        for (text, expected) in [
+            ("010", 8), ("0x20suffix", 32), ("-12trailing", -12),
+            ("08", 0), ("12\0ignored", 12), ("2147483648", i32::MIN),
+            ("4294967295", -1), ("4294967296", 0),
+            ("9223372036854775808", -1), ("-9223372036854775809", 0),
+        ] {
+            let mut destination = 1000;
+            assert_eq!(assign_native_i32(text, &mut destination), NativeI32Assignment::Match, "{text:?}");
+            assert_eq!(destination, expected, "{text:?}");
+        }
+    }
 
     #[test]
     fn eof_retains_initialized_zero_but_matching_failure_is_refused() {

@@ -6236,5 +6236,16 @@
     "const CID1: &[u8] = include_bytes!(\"../../../../fixtures/xui13_full_panel_cid1.h4cr\");",
     "const D53: &[u8] = include_bytes!(\"../../../../fixtures/xui13_full_panel_d53.json\");",
     "const JOINT: &[u8] = include_bytes!(\"../../../../fixtures/xui13_full_panel_snapshots.json\");"
+  ],
+  "replay_interface/native/replay_app/src/ui_runtime/xui08_public_entry_tests.rs": [
+    "use portable_content_manifest::effective_vfs::{EffectiveVfs, EffectiveVfsLayerMount};",
+    "std::fs::create_dir_all(path.parent().unwrap()).unwrap();",
+    "std::fs::write(path, bytes).unwrap();",
+    "write(root, \"gfx/FX/text.shader\", include_bytes!(\"../../tests/fixtures/exact_a729/text.shader\"));",
+    "let vfs = EffectiveVfs::new(&vfs_id, [EffectiveVfsLayerMount {"
+  ],
+  "replay_interface/native/replay_app/src/ui_runtime/xui08_recording_dispatch_tests.rs": [
+    "let mut file = std::fs::File::open(path).expect(\"open explicit recording for byte custody\");",
+    "let count = file.read(&mut buffer).expect(\"read explicit recording for byte custody\");"
   ]
 }

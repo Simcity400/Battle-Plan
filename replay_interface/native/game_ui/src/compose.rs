@@ -37,6 +37,689 @@ use snapshot::sha256::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+/// Authored operands of the container's movement and fade arms. Values are assigned
+/// in script order: `position` resets both endpoints, and `animation_time`
+/// assigns both durations (1422faf80), rather than independent last-key lookup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ContainerTransitionProfile {
+    pub base: ContainerPosition,
+    pub shown: ContainerPosition,
+    pub hidden: ContainerPosition,
+    pub size: ContainerPosition,
+    pub show_millis: i32,
+    pub hide_millis: i32,
+    pub show_easing: ContainerEasing,
+    pub hide_easing: ContainerEasing,
+    pub fade_millis: i32,
+    pub fade_delay_millis: i32,
+    pub fade_easing: ContainerEasing,
+    pub moveable: bool,
+    pub orientation: Orientation,
+    pub origo: Orientation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContainerEasing {
+    None,
+    Accelerated,
+    Decelerated,
+    Smoothstep,
+    Linear,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ContainerPositionAxis {
+    pub value: i32,
+    pub percent: bool,
+    pub undefined: bool,
+    relative_to_position: bool,
+}
+
+impl ContainerPositionAxis {
+    fn pixels(self, parent: i32) -> i32 {
+        if !self.percent { return self.value; }
+        // 1416b9ad0/1416ba060 multiply in signed 32-bit BEFORE conversion.
+        let value = self.value.wrapping_mul(parent) as f32 * 0.01;
+        container_cvttss2si(if value < 0.0 { value - 0.5 } else { value + 0.5 })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ContainerPosition {
+    pub axes: [ContainerPositionAxis; 2],
+    minimum: [ContainerPositionAxis; 2],
+    maximum: [ContainerPositionAxis; 2],
+    step: [ContainerPositionAxis; 2],
+    preserve_aspect_ratio: bool,
+}
+
+impl Default for ContainerPosition {
+    fn default() -> Self {
+        let undefined = ContainerPositionAxis { undefined: true, ..Default::default() };
+        Self { axes: [ContainerPositionAxis::default(); 2], minimum: [undefined; 2], maximum: [undefined; 2],
+            step: [ContainerPositionAxis { value: 1, ..Default::default() }; 2], preserve_aspect_ratio: false }
+    }
+}
+
+impl ContainerPosition {
+    fn assign(&mut self, value: &Value) -> Result<()> {
+        let invalid = |field: &str| GameUiError::parse(format!(
+            "container native position operand is unavailable: {field}"
+        ));
+        for entry in value.as_object().ok_or_else(|| invalid("position object"))? {
+            let key = entry.key.as_deref().ok_or_else(|| invalid("unnamed member"))?;
+            if key.eq_ignore_ascii_case("min") || key.eq_ignore_ascii_case("max") || key.eq_ignore_ascii_case("step") {
+                // Verified 140082cb0 registrations bind min/max to 2a3/2a4;
+                // 1422eed30 dispatches to the retained +c/+18 coordinate pairs.
+                let target = if key.eq_ignore_ascii_case("min") { &mut self.minimum }
+                    else if key.eq_ignore_ascii_case("max") { &mut self.maximum } else { &mut self.step };
+                for bound in entry.value.as_object().ok_or_else(|| invalid(key))? {
+                    let name = bound.key.as_deref().ok_or_else(|| invalid(key))?;
+                    Self::assign_axis(target, name, &bound.value)?;
+                }
+            } else {
+                Self::assign_axis(&mut self.axes, key, &entry.value)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn assign_size(&mut self, value: &Value) -> Result<()> {
+        let invalid = || GameUiError::parse("container native size operand is unavailable");
+        for entry in value.as_object().ok_or_else(invalid)? {
+            let key = entry.key.as_deref().ok_or_else(invalid)?;
+            if key.eq_ignore_ascii_case("preserve_aspect_ratio") {
+                // Registered token 2ea -> 1422f0760 -> CSize byte +30.
+                self.preserve_aspect_ratio = match entry.value.as_scalar()
+                    .map(|text| text.split('\0').next().unwrap_or("")) {
+                    Some("yes") => true,
+                    Some("no") => false,
+                    _ => return Err(invalid()),
+                };
+            } else if key.eq_ignore_ascii_case("min") || key.eq_ignore_ascii_case("max") || key.eq_ignore_ascii_case("step") {
+                let target = if key.eq_ignore_ascii_case("min") { &mut self.minimum }
+                    else if key.eq_ignore_ascii_case("max") { &mut self.maximum } else { &mut self.step };
+                for bound in entry.value.as_object().ok_or_else(invalid)? {
+                    Self::assign_size_axis(target, bound.key.as_deref().ok_or_else(invalid)?, &bound.value)?;
+                }
+            } else { Self::assign_size_axis(&mut self.axes, key, &entry.value)?; }
+        }
+        Ok(())
+    }
+
+    fn assign_size_axis(axes: &mut [ContainerPositionAxis; 2], key: &str, value: &Value) -> Result<()> {
+        let axis = if key.eq_ignore_ascii_case("width") { 0 }
+            else if key.eq_ignore_ascii_case("height") { 1 }
+            else { return Err(GameUiError::parse(format!("container native size field is unavailable: {key}"))); };
+        Self::assign_axis(axes, if axis == 0 { "x" } else { "y" }, value)?;
+        // 1422f03a0 distinguishes %% and ORs bits 4/8, also retaining them
+        // across absolute assignments. CPosition's coordinate loader does not.
+        if value.as_scalar().is_some_and(|v| v.split('\0').next().unwrap_or("").ends_with("%%")) {
+            axes[axis].relative_to_position = true;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn size_pixels(&self, parent: [i32; 2], position: [i32; 2]) -> [i32; 2] {
+        let extent = |axis: usize, operand: ContainerPositionAxis| {
+            let mut value = operand.pixels(parent[axis]);
+            if value < 0 { value = value.wrapping_sub(position[axis]).wrapping_add(parent[axis]); }
+            if operand.relative_to_position { value = value.wrapping_sub(position[axis]); }
+            value
+        };
+        let original: [i32; 2] = std::array::from_fn(|axis| extent(axis, self.axes[axis]));
+        let minimum: [Option<i32>; 2] = std::array::from_fn(|axis|
+            (!self.minimum[axis].undefined).then(|| extent(axis, self.minimum[axis])));
+        let maximum: [Option<i32>; 2] = std::array::from_fn(|axis|
+            (!self.maximum[axis].undefined).then(|| extent(axis, self.maximum[axis])));
+        let mut size: [i32; 2] = std::array::from_fn(|axis| {
+            let mut value = original[axis];
+            if let Some(minimum) = minimum[axis] { value = value.max(minimum); }
+            if let Some(maximum) = maximum[axis] { value = value.min(maximum); }
+            value
+        });
+        // 1416b9ed2..a024: use the pre-bound dimensions for the ratio, then
+        // adjust one dimension. Only its indicated min/max is re-applied;
+        // conflicting authored bounds do not trigger a second general clamp.
+        if self.preserve_aspect_ratio && original.iter().chain(&size).all(|value| *value > 0) {
+            let ratio = original[0] as f32 / original[1] as f32;
+            let width = size[0] as f32;
+            let height = size[1] as f32;
+            let constrained_ratio = width / height;
+            let round = |value: f32| container_cvttss2si(
+                if value < 0.0 { value - 0.5 } else { value + 0.5 });
+            if constrained_ratio > ratio {
+                if minimum[0] == Some(size[0]) {
+                    size[1] = round(width / ratio);
+                    if let Some(maximum) = maximum[1] { size[1] = size[1].min(maximum); }
+                } else {
+                    size[0] = round(height * ratio);
+                    if let Some(minimum) = minimum[0] { size[0] = size[0].max(minimum); }
+                }
+            } else if constrained_ratio < ratio {
+                if minimum[1] == Some(size[1]) {
+                    size[0] = round(height * ratio);
+                    if let Some(maximum) = maximum[0] { size[0] = size[0].min(maximum); }
+                } else {
+                    size[1] = round(width / ratio);
+                    if let Some(minimum) = minimum[1] { size[1] = size[1].max(minimum); }
+                }
+            }
+        }
+        size
+    }
+
+    fn assign_axis(axes: &mut [ContainerPositionAxis; 2], key: &str, value: &Value) -> Result<()> {
+        let invalid = || GameUiError::parse(format!("container native position operand is unavailable: {key}"));
+        let axis = if key.eq_ignore_ascii_case("x") { 0 }
+            else if key.eq_ignore_ascii_case("y") { 1 } else { return Err(invalid()); };
+        let text = value.as_scalar().ok_or_else(invalid)?.split('\0').next().unwrap_or("");
+        if text.is_empty() || text.starts_with('@') { return Err(invalid()); }
+        // Token 2a2 is the registered C string "auto", not "undefined".
+        if text == "auto" {
+            axes[axis].value = 0;
+            axes[axis].undefined = true;
+            return Ok(());
+        }
+        let percent = text.ends_with('%');
+        let digits = if percent { &text[..text.len() - 1] } else { text };
+        axes[axis].value = map_viewer::authored_fixed::parse_native_decimal_i32(digits);
+        axes[axis].undefined = false;
+        // Absolute writes retain a previously set percentage bit (1422efa70).
+        axes[axis].percent |= percent;
+        Ok(())
+    }
+
+    pub(crate) fn pixels(&self, parent: [i32; 2]) -> [i32; 2] {
+        std::array::from_fn(|axis| {
+            let mut value = self.axes[axis].pixels(parent[axis]);
+            if !self.minimum[axis].undefined { value = value.max(self.minimum[axis].pixels(parent[axis])); }
+            if !self.maximum[axis].undefined { value = value.min(self.maximum[axis].pixels(parent[axis])); }
+            value
+        })
+    }
+
+    /// 14229e770 updates only the coordinates, preserving percentage/bounds.
+    pub(crate) fn set_pixels(&mut self, position: [i32; 2], parent: [i32; 2]) {
+        for axis in 0..2 {
+            self.axes[axis].value = if !self.axes[axis].percent { position[axis] }
+                else if parent[axis] == 0 { 0 }
+                else {
+                    let value = (position[axis] as f32 * 100.0) / parent[axis] as f32;
+                    container_cvttss2si(if value < 0.0 { value - 0.5 } else { value + 0.5 })
+                };
+        }
+    }
+}
+
+/// Stored as bits so a rejected presentation can restore the exact native
+/// scalar state, including signed zero and NaN, through the viewer checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ContainerFadeState {
+    direction: ContainerFadeDirection,
+    elapsed_bits: u32,
+    opacity_bits: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContainerFadeDirection { Idle, In, Out }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ContainerMovementWrite {
+    pub elapsed_bits: u32,
+    pub position: [i32; 2],
+    pub complete: bool,
+}
+
+/// The active arm of 1422b01e0. Input state is borrowed by value; a native math
+/// refusal therefore produces no candidate state for the presenter to commit.
+pub(crate) fn advance_container_movement(
+    elapsed_bits: u32,
+    delta_seconds: f32,
+    duration_bits: u32,
+    easing: ContainerEasing,
+    target: [i32; 2],
+    distance_bits: [u32; 2],
+) -> std::result::Result<ContainerMovementWrite, portable_render_stream::exact_math::NativeMathRefusal> {
+    use portable_render_stream::exact_math::{
+        native_container_accelerated, native_container_decelerated,
+    };
+    // ADDSS delta, elapsed, then COMISS elapsed, duration / JA. Neither an
+    // unordered comparison nor equality completes this arm.
+    let elapsed = delta_seconds + f32::from_bits(elapsed_bits);
+    let duration = f32::from_bits(duration_bits);
+    if elapsed > duration || easing == ContainerEasing::None {
+        return Ok(ContainerMovementWrite {
+            elapsed_bits: elapsed.to_bits(), position: target, complete: true,
+        });
+    }
+    let t = elapsed / duration;
+    let eased = match easing {
+        ContainerEasing::Accelerated => native_container_accelerated(t)?,
+        ContainerEasing::Decelerated => native_container_decelerated(t)?,
+        ContainerEasing::Smoothstep => container_smoothstep(container_smoothstep(t)),
+        ContainerEasing::Linear => t,
+        ContainerEasing::None => unreachable!("kind zero completed before division"),
+    };
+    let remaining = 1.0 - eased;
+    let position = std::array::from_fn(|axis| {
+        let offset = remaining * f32::from_bits(distance_bits[axis]);
+        target[axis].wrapping_sub(container_cvttss2si(offset))
+    });
+    Ok(ContainerMovementWrite { elapsed_bits: elapsed.to_bits(), position, complete: false })
+}
+
+/// Retained fields written by 1422af130 and consumed by 1422b01e0.
+/// A caller stages a clone: an exact-math refusal must discard the whole update.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ContainerMovementState {
+    pub position: [i32; 2],
+    target: [i32; 2],
+    distance_bits: [u32; 2],
+    elapsed_bits: u32,
+    duration_bits: u32,
+    easing: ContainerEasing,
+    complete: bool,
+    mode: ContainerMovementMode,
+    hide_children: bool,
+    hide_root: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContainerMovementMode { Idle, Showing, Hiding }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContainerHideAction { None, Root, RootAndChildren }
+
+impl ContainerMovementState {
+    pub fn constructed(position: [i32; 2]) -> Self {
+        // 14229f050: initial evaluated position becomes +15a4; elapsed,
+        // distances and mode are zero, +16ac is one, hide flags are zero.
+        Self { position, target: position, distance_bits: [0; 2], elapsed_bits: 0,
+            duration_bits: 0, easing: ContainerEasing::None, complete: true,
+            mode: ContainerMovementMode::Idle, hide_children: false, hide_root: false }
+    }
+
+    pub fn retarget(&mut self, target: [i32; 2], duration_millis: i32,
+        easing: ContainerEasing, moveable: bool, root_visible: bool,
+        hide_children: bool, hide_root: bool) -> ContainerHideAction {
+        // Native SUB is signed32 wrapping before CVTDQ2PS. Retargeting a
+        // non-moveable widget snaps to its OLD target before measuring distance.
+        if !moveable { self.position = self.target; }
+        self.target = target;
+        self.elapsed_bits = 0;
+        self.duration_bits = (duration_millis as f32 / 1000.0).to_bits();
+        self.easing = easing;
+        self.hide_children = hide_children;
+        self.hide_root = hide_root;
+        self.complete = self.position == target;
+        if self.complete {
+            self.mode = ContainerMovementMode::Idle;
+            self.hide_action(root_visible)
+        } else {
+            self.mode = if hide_children || hide_root { ContainerMovementMode::Hiding }
+                else { ContainerMovementMode::Showing };
+            self.distance_bits = std::array::from_fn(|axis|
+                (target[axis].wrapping_sub(self.position[axis]) as f32).to_bits());
+            ContainerHideAction::None
+        }
+    }
+
+    fn hide_action(&self, root_visible: bool) -> ContainerHideAction {
+        if !root_visible { ContainerHideAction::None }
+        else if self.hide_children { ContainerHideAction::RootAndChildren }
+        else if self.hide_root { ContainerHideAction::Root }
+        else { ContainerHideAction::None }
+    }
+
+    pub fn advance(&mut self, delta_seconds: f32, root_visible: bool)
+        -> std::result::Result<ContainerHideAction, portable_render_stream::exact_math::NativeMathRefusal>
+    {
+        if self.complete {
+            // Completion's hide/clear arm occurs on the NEXT call, even when
+            // the active interpolation call just snapped to the target.
+            let action = if self.mode == ContainerMovementMode::Hiding {
+                self.hide_action(root_visible)
+            } else { ContainerHideAction::None };
+            self.mode = ContainerMovementMode::Idle;
+            return Ok(action);
+        }
+        let next = advance_container_movement(self.elapsed_bits, delta_seconds,
+            self.duration_bits, self.easing, self.target, self.distance_bits)?;
+        self.elapsed_bits = next.elapsed_bits;
+        self.position = next.position;
+        self.complete = next.complete;
+        Ok(ContainerHideAction::None)
+    }
+}
+
+fn container_smoothstep(t: f32) -> f32 {
+    // 1422af780: JA for negative; otherwise MINSS 1,t selects t on NaN/equal.
+    let c = if 0.0 > t { 0.0 } else if 1.0 < t { 1.0 } else { t };
+    let doubled = c + c;
+    let square = c * c;
+    (3.0 - doubled) * square
+}
+
+fn container_cvttss2si(value: f32) -> i32 {
+    // CVTTSS2SI returns the integer-indefinite bit pattern for invalid input;
+    // Rust's saturating cast alone differs for NaN and positive overflow.
+    if value >= -2_147_483_648.0 && value < 2_147_483_648.0 {
+        value as i32
+    } else {
+        i32::MIN
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ContainerFadeWrite {
+    pub opacity_bits: u32,
+    pub hide_root_and_children: bool,
+}
+
+impl ContainerFadeState {
+    pub(crate) fn constructed(profile: &ContainerTransitionProfile) -> Self {
+        // 14229f050 initializes opacity to one, then invokes SetOpacity(0, 1)
+        // at 1422a0e35 iff the authored fade kind is nonzero.
+        Self {
+            direction: ContainerFadeDirection::Idle,
+            elapsed_bits: 0,
+            opacity_bits: if profile.fade_easing == ContainerEasing::None {
+                1.0_f32.to_bits()
+            } else { 0 },
+        }
+    }
+
+    pub(crate) fn begin_show(
+        &mut self, profile: &ContainerTransitionProfile, root_visible: bool,
+    ) -> Option<ContainerFadeWrite> {
+        // 1422af540 does not reset elapsed and does not repeatedly reset an
+        // already visible fade-in. Descendant traversal belongs to the caller.
+        if profile.fade_easing == ContainerEasing::None
+            || (root_visible && self.direction == ContainerFadeDirection::In)
+        { return None; }
+        self.direction = ContainerFadeDirection::In;
+        self.opacity_bits = 0;
+        Some(ContainerFadeWrite { opacity_bits: 0, hide_root_and_children: false })
+    }
+
+    pub(crate) fn begin_hide(
+        &mut self, profile: &ContainerTransitionProfile, root_visible: bool,
+    ) -> bool {
+        // 1422af4b0: a successful root arm returns before child traversal.
+        if profile.fade_easing != ContainerEasing::None
+            && f32::from_bits(self.opacity_bits) > 0.0 && root_visible
+        {
+            self.direction = ContainerFadeDirection::Out;
+            true
+        } else { false }
+    }
+
+    pub(crate) fn advance(
+        &mut self, profile: &ContainerTransitionProfile, delta: f32,
+    ) -> Option<ContainerFadeWrite> {
+        let duration = profile.fade_millis as f32 / 1000.0;
+        if self.direction == ContainerFadeDirection::Idle
+            || profile.fade_easing == ContainerEasing::None || duration <= 0.0
+        { return None; }
+        let delay = profile.fade_delay_millis as f32 / 1000.0;
+        let old_elapsed = f32::from_bits(self.elapsed_bits);
+        let opacity = f32::from_bits(self.opacity_bits);
+        let minimum = f32::from_bits(0x3a83126f);
+        // MAXSS minimum, delta selects the second operand on unordered/equal.
+        let mut elapsed = if minimum > delta { minimum } else { delta };
+        // COMISS old_elapsed, delay; JBE also takes the unordered arm.
+        if (opacity != 0.0 && opacity != 1.0) || !(old_elapsed > delay) {
+            elapsed += old_elapsed;
+        }
+        self.elapsed_bits = elapsed.to_bits();
+        let after_delay = elapsed - delay;
+        // MAXSS after_delay, +0: unordered and either zero become +0.
+        let progress = (if after_delay > 0.0 { after_delay } else { 0.0 }) / duration;
+        // The fade updater does not call the movement pow/smoothstep helpers.
+        let increment = match profile.fade_easing {
+            ContainerEasing::Accelerated => progress * 5.0,
+            ContainerEasing::Decelerated => progress * 4.0 + 1.0,
+            ContainerEasing::Smoothstep | ContainerEasing::Linear => progress,
+            ContainerEasing::None => unreachable!("kind zero returned above"),
+        };
+        let next = match self.direction {
+            ContainerFadeDirection::In => {
+                let sum = increment + opacity;
+                if 1.0 < sum { 1.0 } else { sum } // MINSS 1, sum
+            }
+            ContainerFadeDirection::Out => {
+                let difference = opacity - increment;
+                if 0.0 > difference { 0.0 } else { difference } // MAXSS 0, difference
+            }
+            ContainerFadeDirection::Idle => unreachable!("idle returned above"),
+        };
+        self.opacity_bits = next.to_bits();
+        let finished = elapsed > delay && (next == 1.0 || next == 0.0);
+        if finished { self.direction = ContainerFadeDirection::Idle; }
+        Some(ContainerFadeWrite {
+            opacity_bits: self.opacity_bits,
+            hide_root_and_children: finished && next == 0.0,
+        })
+    }
+}
+
+/// Viewer-owned projection of CGameIdler's GUI frame clock. The clock keeps
+/// running when a panel is unavailable; only staged widget state is published.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ContainerFrameClock {
+    previous_seconds_bits: u32,
+    last_micros: Option<u64>,
+}
+
+impl ContainerFrameClock {
+    pub fn observe(&mut self, viewer_clock_micros: u64) -> Result<f32> {
+        if self.last_micros.is_some_and(|prior| viewer_clock_micros < prior) {
+            return Err(GameUiError::parse("container viewer clock moved backwards without a clock-owner reset"));
+        }
+        // 14029d3e0 initializes +30 to zero. 1402a0290 subtracts the
+        // previous stored f32 from current f64 seconds, then caps only above.
+        let now = viewer_clock_micros as f64 / 1_000_000.0;
+        let delta = (now - f64::from(f32::from_bits(self.previous_seconds_bits))) as f32;
+        self.previous_seconds_bits = (now as f32).to_bits();
+        self.last_micros = Some(viewer_clock_micros);
+        Ok(if 0.1 <= delta { 0.1 } else { delta })
+    }
+}
+
+/// A viewer-created CContainerWindow's primary Show/Hide operations. This is
+/// local widget visibility, never a peace-manager Exit/Closed permission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ContainerRuntime {
+    profile: ContainerTransitionProfile,
+    parent: [i32; 2],
+    relative_base: ContainerPosition,
+    relative_shown: ContainerPosition,
+    relative_hidden: ContainerPosition,
+    fade: ContainerFadeState,
+    movement: ContainerMovementState,
+    pub visible: bool,
+}
+
+impl ContainerRuntime {
+    pub(crate) fn construct(profile: ContainerTransitionProfile, parent: [i32; 2], size: [i32; 2]) -> Self {
+        let component = |numerator, value: i32| match numerator { 0 => 0, 1 => value / 2, _ => value };
+        let anchor = [
+            component(profile.orientation.x_num(), parent[0]).wrapping_sub(component(profile.origo.x_num(), size[0])),
+            component(profile.orientation.y_num(), parent[1]).wrapping_sub(component(profile.origo.y_num(), size[1])),
+        ];
+        // 14229f050 evaluates each authored pair, adds 14229e0e0's anchor,
+        // writes it back through 14229e770, then re-evaluates the base target.
+        let materialize = |original: &ContainerPosition| {
+            let mut relative = original.clone();
+            let pixels = original.pixels(parent);
+            relative.set_pixels([pixels[0].wrapping_add(anchor[0]), pixels[1].wrapping_add(anchor[1])], parent);
+            relative
+        };
+        let relative_base = materialize(&profile.base);
+        let relative_shown = materialize(&profile.shown);
+        let relative_hidden = materialize(&profile.hidden);
+        let movement = ContainerMovementState::constructed(relative_base.pixels(parent));
+        let fade = ContainerFadeState::constructed(&profile);
+        Self { profile, parent, relative_base, relative_shown, relative_hidden, fade, movement, visible: false }
+    }
+
+    pub(crate) fn set_local_visibility(&mut self, open: bool) {
+        if open {
+            self.fade.begin_show(&self.profile, self.visible);
+            self.visible = true;
+            if self.movement.mode != ContainerMovementMode::Showing && self.profile.show_easing != ContainerEasing::None {
+                self.retarget(true);
+            }
+        } else if self.movement.mode != ContainerMovementMode::Hiding {
+            self.fade.begin_hide(&self.profile, self.visible);
+            if self.profile.hide_easing == ContainerEasing::None {
+                self.visible = false;
+            } else { self.retarget(false); }
+        }
+    }
+
+    fn retarget(&mut self, show: bool) {
+        if !self.profile.moveable {
+            self.relative_base.set_pixels(self.movement.target, self.parent);
+        }
+        let target = if show { self.relative_shown.pixels(self.parent) } else { self.relative_hidden.pixels(self.parent) };
+        let (duration, easing) = if show { (self.profile.show_millis, self.profile.show_easing) }
+            else { (self.profile.hide_millis, self.profile.hide_easing) };
+        let action = self.movement.retarget(target, duration, easing, self.profile.moveable, self.visible, false, !show);
+        if action != ContainerHideAction::None { self.visible = false; }
+    }
+
+    pub(crate) fn advance(&mut self, delta: f32) -> Result<()> {
+        // Secondary +248 calls fade, then movement with the identical operand.
+        // Work on a candidate: a math refusal cannot leave a partially applied fade.
+        let mut next = self.clone();
+        if next.fade.advance(&next.profile, delta).is_some_and(|write| write.hide_root_and_children) {
+            next.visible = false;
+        }
+        let action = next.movement.advance(delta, next.visible)
+            .map_err(|reason| GameUiError::parse(format!("container movement native math unavailable: {reason:?}")))?;
+        if action != ContainerHideAction::None { next.visible = false; }
+        *self = next;
+        Ok(())
+    }
+
+    pub(crate) fn matches(&self, profile: &ContainerTransitionProfile, parent: [i32; 2]) -> bool {
+        self.profile == *profile && self.parent == parent
+    }
+    pub(crate) fn position(&self) -> [i32; 2] { self.movement.position }
+    pub(crate) fn opacity(&self) -> f32 { f32::from_bits(self.fade.opacity_bits) }
+}
+
+impl ContainerTransitionProfile {
+    pub(crate) fn from_root(root: &GuiElement) -> Result<Self> {
+        use map_viewer::authored_fixed::{assign_native_i32, NativeI32Assignment};
+        // 1422f99b0 initializes both durations to 10 and both kinds to zero.
+        let mut result = Self {
+            // 1422ee9c0 initializes current x/y to zero and percentage bits off.
+            base: ContainerPosition::default(),
+            shown: ContainerPosition::default(),
+            hidden: ContainerPosition::default(),
+            size: ContainerPosition::default(),
+            show_millis: 10,
+            hide_millis: 10,
+            show_easing: ContainerEasing::None,
+            hide_easing: ContainerEasing::None,
+            fade_millis: 1000,
+            fade_delay_millis: 0,
+            fade_easing: ContainerEasing::None,
+            // 1422f99b0 writes dword +58c = 1; byte +58e is therefore zero.
+            moveable: false,
+            orientation: Orientation::UpperLeft,
+            origo: Orientation::UpperLeft,
+        };
+        let invalid = |field: &str| GameUiError::parse(format!(
+            "container transition authored operand is unavailable: {field}"
+        ));
+        for entry in root.raw.as_object().ok_or_else(|| invalid("root"))? {
+            let Some(key) = entry.key.as_deref() else { continue; };
+            let key = key.to_ascii_lowercase();
+            match key.as_str() {
+                "orientation" | "origo" => {
+                    let raw = entry.value.as_scalar().ok_or_else(|| invalid(&key))?;
+                    let value = match raw.to_ascii_lowercase().as_str() {
+                        "upper_left" => Orientation::UpperLeft,
+                        "upper_right" => Orientation::UpperRight,
+                        "lower_left" => Orientation::LowerLeft,
+                        "lower_right" => Orientation::LowerRight,
+                        "center" => Orientation::Center,
+                        "center_left" => Orientation::CenterLeft,
+                        "center_right" => Orientation::CenterRight,
+                        "center_up" => Orientation::CenterUp,
+                        "center_down" => Orientation::CenterDown,
+                        _ => return Err(invalid(&key)),
+                    };
+                    if key == "orientation" { result.orientation = value; } else { result.origo = value; }
+                }
+                "size" => result.size.assign_size(&entry.value)?,
+                "moveable" => {
+                    // Token 0x9d -> template+58e -> runtime+16af. The native
+                    // boolean getter compares C strings "yes" and "no".
+                    result.moveable = match entry.value.as_scalar()
+                        .map(|text| text.split('\0').next().unwrap_or(""))
+                    {
+                        Some("yes") => true,
+                        Some("no") => false,
+                        _ => return Err(invalid(&key)),
+                    };
+                }
+                "position" | "show_position" | "hide_position" => {
+                    match key.as_str() {
+                        "position" => {
+                            result.base.assign(&entry.value)?;
+                            result.shown = result.base.clone();
+                            result.hidden = result.base.clone();
+                        }
+                        "show_position" => result.shown.assign(&entry.value)?,
+                        _ => result.hidden.assign(&entry.value)?,
+                    }
+                }
+                "animation_time" | "show_animation_time" | "hide_animation_time" | "fade_time" | "fade_delay" => {
+                    let text = entry.value.as_scalar().ok_or_else(|| invalid(&key))?;
+                    let destination = match key.as_str() {
+                        "hide_animation_time" => &mut result.hide_millis,
+                        "fade_time" => &mut result.fade_millis,
+                        "fade_delay" => &mut result.fade_delay_millis,
+                        _ => &mut result.show_millis,
+                    };
+                    if assign_native_i32(text, destination) == NativeI32Assignment::MatchingFailure {
+                        return Err(invalid(&key));
+                    }
+                    if key == "animation_time" {
+                        result.hide_millis = result.show_millis;
+                    }
+                }
+                "show_animation_type" | "hide_animation_type" | "animation_type" | "fade_type" => {
+                    let easing = match entry.value.as_scalar() {
+                        Some("none") => ContainerEasing::None,
+                        Some("accelerated") => ContainerEasing::Accelerated,
+                        Some("decelerated") => ContainerEasing::Decelerated,
+                        Some("smoothstep") => ContainerEasing::Smoothstep,
+                        Some("linear") => ContainerEasing::Linear,
+                        _ => return Err(invalid(&key)),
+                    };
+                    match key.as_str() {
+                        "show_animation_type" => result.show_easing = easing,
+                        "hide_animation_type" => result.hide_easing = easing,
+                        "animation_type" => {
+                            result.show_easing = easing;
+                            result.hide_easing = easing;
+                        }
+                        _ => result.fade_easing = easing,
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(result)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ComposeOptions {
     pub viewport_width: usize,
@@ -44,6 +727,9 @@ pub struct ComposeOptions {
     pub root_width: usize,
     pub root_height: usize,
     pub text_color: [u8; 4],
+    /// Float SetOpacity writes for reached native CInstantTextBox instances.
+    pub text_opacity_by_element: BTreeMap<String, f32>,
+    pub container_sprite_opacity_by_element: BTreeMap<String, f32>,
     pub text_overrides: BTreeMap<String, String>,
     /// Misses observed while the scene was bound; copied into the report.
     pub localisation_misses: LocalisationMisses,
@@ -86,6 +772,8 @@ impl ComposeOptions {
             root_width: viewport_width,
             root_height: viewport_height,
             text_color: [221, 214, 190, 255],
+            text_opacity_by_element: BTreeMap::new(),
+            container_sprite_opacity_by_element: BTreeMap::new(),
             text_overrides: BTreeMap::new(),
             localisation_misses: LocalisationMisses::default(),
             localisation_language: String::new(),
@@ -1928,6 +2616,7 @@ fn draw_engine_layout(
     align: TextAlign,
     original_text: &str,
     base_color: [u8; 4],
+    opacity: Option<f32>,
 ) -> Result<()> {
     if alignment_width <= 0 {
         return Err(GameUiError::parse("TEXT1 alignment width must be positive"));
@@ -1936,6 +2625,9 @@ fn draw_engine_layout(
         return Err(GameUiError::parse(
             "TEXT1 layout/decoded inline-icon counts differ",
         ));
+    }
+    if opacity.is_some_and(|value| value != 1.0) && !inline_icons.is_empty() {
+        return Err(GameUiError::parse("TEXT1 inline-icon ModColor placement is unavailable"));
     }
     let rich = font.colorize(original_text, base_color);
     for glyph in &layout.glyphs {
@@ -1951,14 +2643,15 @@ fn draw_engine_layout(
             .ok_or_else(|| {
                 GameUiError::parse("TEXT1 colour stream is shorter than its visible glyph stream")
             })?;
-        match font.draw_runtime_glyph(
-            image,
-            glyph.ch as u32,
-            origin_x.saturating_add(glyph.draw_x).saturating_add(shift),
-            origin_y.saturating_add(glyph.draw_y),
-            tint,
-            None,
-        ) {
+        let x = origin_x.saturating_add(glyph.draw_x).saturating_add(shift);
+        let y = origin_y.saturating_add(glyph.draw_y);
+        let drawn = if let Some(opacity) = opacity {
+            font.draw_runtime_glyph_a729(image, glyph.ch as u32, x, y, tint, opacity, None)
+                .map_err(|reason| GameUiError::parse(format!("TEXT1 native glyph shader refused: {reason:?}")))?
+        } else {
+            font.draw_runtime_glyph(image, glyph.ch as u32, x, y, tint, None)
+        };
+        match drawn {
             RuntimeGlyphDraw::Drawn => {}
             RuntimeGlyphDraw::GlyphAbsent => {
                 return Err(GameUiError::missing(format!(
@@ -2121,7 +2814,34 @@ impl<'a> Compositor<'a> {
     }
 
     pub fn compose(&mut self, root: &GuiElement, options: &ComposeOptions) -> ComposeOutput {
-        let mut image = blank_image(options.viewport_width, options.viewport_height);
+        self.compose_on_owned_image(root, options,
+            blank_image(options.viewport_width, options.viewport_height))
+    }
+
+    /// Stage native pixel blending against the actual destination. The caller
+    /// installs this image only after accepting the complete composition report.
+    pub(crate) fn compose_over(
+        &mut self,
+        root: &GuiElement,
+        options: &ComposeOptions,
+        destination: &RgbaImage,
+    ) -> Result<ComposeOutput> {
+        if destination.width != options.viewport_width
+            || destination.height != options.viewport_height
+            || destination.width.checked_mul(destination.height)
+                .and_then(|pixels| pixels.checked_mul(4)) != Some(destination.pixels.len())
+        {
+            return Err(GameUiError::missing("container composition destination dimensions or RGBA storage differ"));
+        }
+        Ok(self.compose_on_owned_image(root, options, destination.clone()))
+    }
+
+    fn compose_on_owned_image(
+        &mut self,
+        root: &GuiElement,
+        options: &ComposeOptions,
+        mut image: RgbaImage,
+    ) -> ComposeOutput {
         let mut report = ComposeReport {
             localisation_misses: options.localisation_misses.clone(),
             ..ComposeReport::default()
@@ -3313,7 +4033,7 @@ impl<'a> Compositor<'a> {
                 .copied()
                 .unwrap_or(base_color);
             let drawn = font
-                .draw_runtime_glyph_a729(image, glyph.ch as u32, x, y, tint, clip_pixels)
+                .draw_runtime_glyph_a729(image, glyph.ch as u32, x, y, tint, 1.0, clip_pixels)
                 .map_err(|reason| authenticated_text_shader_rejection(child_path, reason))?;
             if drawn != RuntimeGlyphDraw::Drawn {
                 return Err(AuthenticatedComposeRejection::TextDraw {
@@ -4700,6 +5420,24 @@ impl<'a> Compositor<'a> {
                     return;
                 }
             };
+        if options.text_opacity_by_element.contains_key(&element.name) {
+            let shader = (|| -> Result<()> {
+                let key = self.resolver.admitted_content_key("gfx/FX/text.shader")
+                    .ok_or_else(|| GameUiError::missing("TEXT1 SetOpacity shader has no admitted content key"))?;
+                let resolved = self.resolver.resolve_file("gfx/FX/text.shader")?;
+                let bytes = self.resolver.read_file(&resolved)?;
+                if !text_effect_row_is_the_authored_shader(key, bytes.len()) {
+                    return Err(GameUiError::parse("TEXT1 SetOpacity shader law is unavailable for this admitted effect"));
+                }
+                Ok(())
+            })();
+            if let Err(error) = shader {
+                report.unresolved_text_inputs.insert(element.name.clone(), vec![TextIssue {
+                    kind: crate::text_law::TextIssueKind::EngineTextLayoutRefused, token: error.message,
+                }]);
+                return;
+            }
+        }
         let align = TextAlign::parse(element.format.as_deref());
         if let Err(error) = draw_engine_layout(
             &font,
@@ -4712,6 +5450,7 @@ impl<'a> Compositor<'a> {
             align,
             &text,
             options.text_color,
+            options.text_opacity_by_element.get(&element.name).copied(),
         ) {
             report.unresolved_text_inputs.insert(
                 element.name.clone(),
@@ -4948,6 +5687,57 @@ impl<'a> Compositor<'a> {
             .get(frame_index)
             .or_else(|| decoded.frames.first())
             .ok_or_else(|| GameUiError::missing(format!("sprite {} has no frames", sprite.name)))?;
+        if let Some(opacity) = options.container_sprite_opacity_by_element.get(&element.name) {
+            let target = target_size(rect, frame.width, frame.height);
+            let scale = scalar_f32_ci(&element.raw, "scale").unwrap_or(1.0);
+            let scaled = [target.0 as f32 * scale, target.1 as f32 * scale];
+            if scaled.iter().any(|v| !v.is_finite() || *v <= 0.0 || *v > i32::MAX as f32) {
+                return Err(GameUiError::parse("container sprite extent is outside range"));
+            }
+            let border = sprite.border_size.as_ref()
+                .map(parse_authenticated_sprite_size).transpose().map_err(GameUiError::parse)?;
+            let color = crate::runtime_graphics::rgba_u8_to_f32(
+                options.color_overrides.get(&element.name).copied().ok_or_else(||
+                    GameUiError::parse(format!(
+                        "container sprite {} initial ModColor singleton is not bound", element.name,
+                    ))
+                )?,
+            );
+            let admitted = crate::runtime_graphics::admit_container_sprite_runtime_graphics(
+                self.resolver, sprite, &crate::runtime_graphics::ContainerSpriteRequest {
+                    source_identity: format!("{}:{}", sprite.source_file, element.name),
+                    frame_count: decoded.frames.len(),
+                    one_based_frame: u32::try_from(frame_index + 1)
+                        .map_err(|_| GameUiError::parse("container sprite frame exceeds u32"))?,
+                    // Current read-only controls explicitly marked disabled have
+                    // a state witness. Absence does not establish an Up state.
+                    interaction: options.disabled_button_elements.contains(&element.name)
+                        .then_some(ButtonVisualState::Disable),
+                    color,
+                    clip: ClipRect {
+                        left: 0, top: 0,
+                        right: i32::try_from(image.width)
+                            .map_err(|_| GameUiError::parse("container surface width exceeds i32"))?,
+                        bottom: i32::try_from(image.height)
+                            .map_err(|_| GameUiError::parse("container surface height exceeds i32"))?,
+                    },
+                    opacity: *opacity,
+                },
+            ).map_err(|reason| GameUiError::parse(format!(
+                "container sprite {} runtime operands rejected: {reason:?}", sprite.name,
+            )))?;
+            draw_authenticated_sprite_pixels(image, AuthenticatedSpriteDraw::new(
+                &decoded.texture.image, decoded.frames.len(), AuthenticatedSpriteGeometry {
+                    x: rect.x, y: rect.y,
+                    width: scaled[0].round().max(1.0) as usize,
+                    height: scaled[1].round().max(1.0) as usize,
+                    border,
+                }, admitted,
+            )).map_err(|reason| GameUiError::parse(format!(
+                "container sprite {} draw rejected: {reason:?}", sprite.name,
+            )))?;
+            return Ok(true);
+        }
         let shaded;
         let tinted;
         let xui23_authorized = options.xui23_buttonstate_elements.contains(&element.name);
@@ -6514,7 +7304,7 @@ fn authenticated_size_measure_to_pixels(
     }
 }
 
-fn is_hidden(element: &GuiElement) -> bool {
+pub(crate) fn is_hidden(element: &GuiElement) -> bool {
     element
         .raw
         .first_scalar_ci("hide")
@@ -7638,6 +8428,422 @@ fn blend_at(dst: &mut RgbaImage, x: usize, y: usize, src: [u8; 4]) {
     ];
     let out = alpha_blend(dst_px, src);
     dst.pixels[dst_offset..dst_offset + 4].copy_from_slice(&out);
+}
+
+#[cfg(test)]
+mod container_transition_tests {
+    use super::*;
+
+    fn profile(fields: &str) -> Result<ContainerTransitionProfile> {
+        let mut layout = crate::gui::LayoutSet::default();
+        layout.parse_content(
+            format!("guiTypes = {{ containerWindowType = {{ name = root {fields} }} }}").as_bytes(),
+            "interface/container-test.gui",
+        )?;
+        assert_eq!(layout.stats.recovery_count, 0);
+        assert_eq!(layout.documents.len(), 1);
+        assert_eq!(layout.documents[0].roots.len(), 1, "fixture must reach the actual GUI root parser");
+        ContainerTransitionProfile::from_root(&layout.documents[0].roots[0])
+    }
+
+    #[test]
+    fn movement_retarget_uses_old_target_only_when_not_moveable() {
+        let mut moving = ContainerMovementState::constructed([0, 0]);
+        moving.retarget([100, 0], 1000, ContainerEasing::Linear, true, true, false, false);
+        moving.advance(0.25, true).unwrap();
+        assert_eq!(moving.position, [25, 0]);
+        let mut snapping = moving.clone();
+        moving.retarget([200, 0], 1000, ContainerEasing::Linear, true, true, false, false);
+        snapping.retarget([200, 0], 1000, ContainerEasing::Linear, false, true, false, false);
+        assert_eq!(snapping.position, [100, 0]);
+        moving.advance(0.5, true).unwrap();
+        snapping.advance(0.5, true).unwrap();
+        assert_eq!(moving.position, [113, 0]);
+        assert_eq!(snapping.position, [150, 0]);
+    }
+
+    #[test]
+    fn movement_completes_then_hides_on_the_next_update() {
+        let mut state = ContainerMovementState::constructed([0, 0]);
+        state.retarget([10, 20], 10, ContainerEasing::Linear, true, true, true, true);
+        assert_eq!(state.advance(0.02, true).unwrap(), ContainerHideAction::None);
+        assert_eq!(state.position, [10, 20]);
+        assert_eq!(state.mode, ContainerMovementMode::Hiding);
+        assert_eq!(state.advance(0.0, true).unwrap(), ContainerHideAction::RootAndChildren);
+        assert_eq!(state.mode, ContainerMovementMode::Idle);
+        assert_eq!(state.advance(0.0, true).unwrap(), ContainerHideAction::None);
+    }
+
+    #[test]
+    fn equal_target_hides_immediately_but_invisible_root_does_not() {
+        let mut state = ContainerMovementState::constructed([10, 20]);
+        assert_eq!(state.retarget([10, 20], 10, ContainerEasing::Linear,
+            true, true, false, true), ContainerHideAction::Root);
+        assert_eq!(state.mode, ContainerMovementMode::Idle);
+        assert_eq!(state.retarget([10, 20], 10, ContainerEasing::Linear,
+            true, false, true, true), ContainerHideAction::None);
+    }
+
+    #[test]
+    fn retarget_distance_wraps_before_float_conversion_and_discarded_stage_does_not_commit() {
+        let presented = ContainerMovementState::constructed([i32::MAX, 7]);
+        let mut staged = presented.clone();
+        staged.retarget([i32::MIN, 7], 1000, ContainerEasing::Linear, true, true, false, false);
+        assert_eq!(staged.distance_bits, [1.0_f32.to_bits(), 0]);
+        staged.advance(0.5, true).unwrap();
+        assert_eq!(staged.position, [i32::MIN, 7]);
+        assert_eq!(presented.position, [i32::MAX, 7]);
+        assert_eq!(presented.mode, ContainerMovementMode::Idle);
+    }
+
+    #[test]
+    fn position_assignment_resets_both_endpoints_at_its_actual_script_position() {
+        let p = profile("show_position = { x = 90 y = 91 } position = { x = 10 y = 11 } hide_position = { x = 30 y = 31 }").unwrap();
+        assert_eq!(p.base, p.shown);
+        assert_eq!(p.shown.axes[0].value, 10);
+        assert_eq!(p.hidden.axes[0].value, 30);
+        let reversed = profile("hide_position = { x = 30 y = 31 } position = { x = 10 y = 11 } show_position = { x = 90 y = 91 }").unwrap();
+        assert_eq!(reversed.base, reversed.hidden);
+        assert_eq!(reversed.shown.axes[0].value, 90);
+    }
+
+    #[test]
+    fn native_position_retains_partial_assignments_and_percent_flags() {
+        let p = profile("position = { x = 010% y = -12suffix } position = { x = 20 } show_position = { y = 7 } hide_position = { x = 0x20 }").unwrap();
+        assert_eq!(p.base.axes, [ContainerPositionAxis { value: 20, percent: true, undefined: false, relative_to_position: false },
+            ContainerPositionAxis { value: -12, percent: false, undefined: false, relative_to_position: false }]);
+        assert_eq!(p.shown.axes[0], p.base.axes[0]);
+        assert_eq!(p.shown.axes[1].value, 7);
+        assert_eq!(p.hidden.axes[0], ContainerPositionAxis { value: 0, percent: true, undefined: false, relative_to_position: false });
+        assert_eq!(p.hidden.axes[1].value, -12);
+        assert_eq!(profile("show_position = { y = 2147483648 }").unwrap().shown.axes[1].value,
+            i32::MAX);
+        let bounded = profile("position = { min = { x = 10 } }").unwrap();
+        assert_eq!(bounded.base.pixels([100, 100]), [10, 0]);
+        assert!(profile("position = { x = @unresolved }").is_err());
+    }
+
+    #[test]
+    fn native_position_bound_order_auto_and_percent_retention() {
+        let p = profile("position = { x = 5 y = -5 min = { x = 20 y = -2 } max = { x = 10 y = 9 } }").unwrap();
+        assert_eq!(p.base.pixels([100, 100]), [10, -2]); // min, then max
+        let p = profile("position = { x = 10% x = auto min = { x = 50% x = auto } }").unwrap();
+        assert_eq!(p.base.pixels([200, 100]), [0, 0]);
+        assert!(p.base.axes[0].undefined && p.base.axes[0].percent);
+        assert!(p.base.minimum[0].undefined && p.base.minimum[0].percent);
+        let p = profile("position = { x = 10% x = auto x = 20 min = { x = 50% x = auto x = 30 } }").unwrap();
+        assert_eq!(p.base.pixels([200, 100]), [60, 0]);
+        // The unrelated literal `undefined` is ordinary decimal-prefix input.
+        assert!(!profile("position = { x = undefined }").unwrap().base.axes[0].undefined);
+    }
+
+    #[test]
+    fn native_position_multiplies_i32_first_and_round_trips_relative_cache() {
+        let p = profile("position = { x = 2147483647% y = -50% }").unwrap();
+        assert_eq!(p.base.pixels([100, 3]), [-1, -2]); // MAX*100 wraps to -100
+        let mut p = profile("position = { x = 33% y = 7% }").unwrap().base;
+        p.set_pixels([1, 7], [3, 0]);
+        assert_eq!(p.axes[0].value, 33);
+        assert_eq!(p.axes[1].value, 0);
+        assert_eq!(p.pixels([3, 0]), [1, 0]);
+        p.set_pixels([i32::MAX, i32::MIN], [1, 1]);
+        assert_eq!(p.axes.map(|v| v.value), [i32::MIN; 2]);
+    }
+
+    #[test]
+    fn native_container_materializes_all_authored_anchor_and_pivot_pairs() {
+        // 1422f9800's nine enum results feed 14229e0e0. These are the
+        // latter's explicit case outputs for parent 101x77 and own size 21x15.
+        let cases = [
+            ("upper_left", [0, 0], [0, 0]),
+            ("upper_right", [101, 0], [21, 0]),
+            ("lower_left", [0, 77], [0, 15]),
+            ("lower_right", [101, 77], [21, 15]),
+            ("center", [50, 38], [10, 7]),
+            ("center_left", [0, 38], [0, 7]),
+            ("center_right", [101, 38], [21, 7]),
+            ("center_up", [50, 0], [10, 0]),
+            ("center_down", [50, 77], [10, 15]),
+        ];
+        for (orientation, anchor, _) in cases {
+            for (origo, _, pivot) in cases {
+                let p = profile(&format!(
+                    "orientation = {orientation} origo = {origo} position = {{ x = 3 y = -4 }} show_position = {{ x = 9 y = 8 }} hide_position = {{ x = -7 y = -6 }}"
+                )).unwrap();
+                let runtime = ContainerRuntime::construct(p, [101, 77], [21, 15]);
+                let offset = [anchor[0] - pivot[0], anchor[1] - pivot[1]];
+                assert_eq!(runtime.position(), [3 + offset[0], -4 + offset[1]], "{orientation}/{origo}");
+                assert_eq!(runtime.relative_shown.pixels([101, 77]), [9 + offset[0], 8 + offset[1]]);
+                assert_eq!(runtime.relative_hidden.pixels([101, 77]), [-7 + offset[0], -6 + offset[1]]);
+            }
+        }
+    }
+
+    #[test]
+    fn native_container_anchor_preserves_signed_half_wrap_and_relative_writeback() {
+        let p = profile("orientation = center origo = center position = { x = 3 y = -4 }").unwrap();
+        let runtime = ContainerRuntime::construct(p, [-101, -77], [-21, -15]);
+        assert_eq!(runtime.position(), [-37, -35]); // truncation toward zero, then NEG/ADD
+        let p = profile("orientation = lower_right position = { x = 1 y = 1 }").unwrap();
+        assert_eq!(ContainerRuntime::construct(p, [i32::MAX; 2], [0; 2]).position(), [i32::MIN; 2]);
+        let p = profile("orientation = center position = { x = 33% y = 50% }").unwrap();
+        let runtime = ContainerRuntime::construct(p, [3, 3], [0; 2]);
+        assert_eq!(runtime.relative_base.axes.map(|axis| axis.value), [67, 100]);
+        assert_eq!(runtime.position(), [2, 3]);
+        // Parent width zero takes 14229e770's explicit zero assignment.
+        let p = profile("origo = upper_right position = { x = 33% }").unwrap();
+        let runtime = ContainerRuntime::construct(p, [0, 3], [21, 0]);
+        assert_eq!(runtime.relative_base.axes[0].value, 0);
+        assert_eq!(runtime.position(), [0, 0]);
+    }
+
+    #[test]
+    fn native_container_clock_retains_f32_sample_and_only_upper_caps_delta() {
+        let mut clock = ContainerFrameClock::default();
+        assert_eq!(clock.observe(1_000_000).unwrap().to_bits(), 0.1_f32.to_bits());
+        assert_eq!(clock.observe(1_000_000).unwrap().to_bits(), 0);
+        // Above 2^24 seconds, the retained float loses the odd second.
+        assert_eq!(clock.observe(16_777_217_000_000).unwrap().to_bits(), 0.1_f32.to_bits());
+        assert_eq!(clock.previous_seconds_bits, 16_777_216.0_f32.to_bits());
+        assert_eq!(clock.observe(16_777_217_000_000).unwrap().to_bits(), 0.1_f32.to_bits());
+        // A stored float rounded upward may produce a negative delta even
+        // though the input clock is unchanged. Native code has no lower cap.
+        let mut clock = ContainerFrameClock::default();
+        clock.observe(16_777_219_000_000).unwrap();
+        assert_eq!(clock.previous_seconds_bits, 16_777_220.0_f32.to_bits());
+        assert_eq!(clock.observe(16_777_219_000_000).unwrap().to_bits(), (-1.0_f32).to_bits());
+        let before = clock.clone();
+        assert!(clock.observe(16_777_218_000_000).is_err());
+        assert_eq!(clock, before);
+    }
+
+    #[test]
+    fn native_size_preserves_aspect_after_bounds_in_all_four_adjustment_arms() {
+        for (bounds, expected) in [
+            ("min = { width = 200 }", [200, 100]),
+            ("min = { width = 200 } max = { height = 75 }", [200, 75]),
+            ("max = { height = 25 }", [50, 25]),
+            ("min = { height = 100 }", [200, 100]),
+            ("min = { height = 100 } max = { width = 150 }", [150, 100]),
+            ("max = { width = 50 }", [50, 25]),
+        ] {
+            let p = profile(&format!("size = {{ width = 100 height = 50 preserve_aspect_ratio = yes {bounds} }}")).unwrap();
+            assert_eq!(p.size.size_pixels([800, 600], [0, 0]), expected, "{bounds}");
+        }
+        let p = profile("size = { width = 100 height = 50 max = { height = 25 } preserve_aspect_ratio = yes preserve_aspect_ratio = no }").unwrap();
+        assert_eq!(p.size.size_pixels([800, 600], [0, 0]), [100, 25]);
+        let p = profile("size = { width = 0 height = 50 min = { width = 100 } preserve_aspect_ratio = yes }").unwrap();
+        assert_eq!(p.size.size_pixels([800, 600], [0, 0]), [100, 50]);
+        assert!(profile("size = { preserve_aspect_ratio = true }").is_err());
+    }
+
+    #[test]
+    fn native_size_uses_shown_position_for_relative_and_negative_operands() {
+        let p = profile("size = { width = 50%% height = -10 } show_position = { x = 7 y = 9 }").unwrap();
+        assert_eq!(p.size.size_pixels([200, 100], p.shown.pixels([200, 100])), [93, 81]);
+        let p = profile("size = { width = 50%% width = 20 max = { width = 10%% } height = 40 step = { width = 100 height = 100 } }").unwrap();
+        assert_eq!(p.size.size_pixels([200, 100], [7, 9]), [13, 40]);
+        let p = profile("size = { width = -10%% height = auto preserve_aspect_ratio = yes }").unwrap();
+        assert_eq!(p.size.size_pixels([200, 100], [7, 9]), [166, 0]);
+    }
+
+    #[test]
+    fn native_container_candidate_retains_exact_fade_and_movement_on_rejection() {
+        let p = profile("position = { x = -100 } show_position = { x = 0 } hide_position = { x = -100 } animation_type = linear animation_time = 1000 fade_type = linear fade_time = 1000").unwrap();
+        let mut presented = ContainerRuntime::construct(p, [800, 600], [100, 100]);
+        presented.set_local_visibility(true);
+        assert_eq!(presented.position(), [-100, 0]);
+        assert_eq!(presented.opacity().to_bits(), 0);
+        let mut candidate = presented.clone();
+        candidate.advance(0.1).unwrap();
+        assert_eq!(candidate.position(), [-90, 0]);
+        assert_eq!(candidate.opacity().to_bits(), 0.1_f32.to_bits());
+        // Discarding the candidate leaves both native scalar histories intact.
+        assert_eq!(presented.movement.elapsed_bits, 0);
+        assert_eq!(presented.fade.elapsed_bits, 0);
+        assert_eq!(presented.position(), [-100, 0]);
+        presented = candidate;
+        let checkpoint = presented.clone();
+        let mut closing = presented.clone();
+        closing.set_local_visibility(false);
+        assert_eq!(closing.position(), [0, 0]); // !moveable snaps to old target
+        closing.advance(0.05).unwrap();
+        assert_eq!(closing.position(), [-5, 0]);
+        // Interrupted fade retains elapsed=.1, so this update subtracts the
+        // accumulated .15 rather than only the new .05 frame delta.
+        assert_eq!(closing.fade.elapsed_bits, (0.1_f32 + 0.05).to_bits());
+        assert_eq!(closing.opacity().to_bits(), 0);
+        assert!(!closing.visible);
+        assert_eq!(presented, checkpoint);
+    }
+
+    #[test]
+    fn shared_duration_assignment_copies_retained_destination_even_on_eof() {
+        let p = profile("show_animation_time = 17 hide_animation_time = 29 animation_time = \"\"").unwrap();
+        assert_eq!((p.show_millis, p.hide_millis), (17, 17));
+        let p = profile("animation_time = 010 hide_animation_time = 0x20").unwrap();
+        assert_eq!((p.show_millis, p.hide_millis), (8, 32));
+        let p = profile("animation_time = 4294967295 show_animation_time = 7").unwrap();
+        assert_eq!((p.show_millis, p.hide_millis), (7, -1));
+        assert!(profile("animation_time = malformed").is_err());
+    }
+
+    #[test]
+    fn constructor_and_measured_easing_operands_remain_distinct() {
+        let p = profile("").unwrap();
+        assert_eq!((p.show_millis, p.hide_millis), (10, 10));
+        assert_eq!(p.show_easing, ContainerEasing::None);
+        let p = profile("show_animation_type = linear hide_animation_type = smoothstep").unwrap();
+        assert_eq!(p.show_easing, ContainerEasing::Linear);
+        assert_eq!(p.hide_easing, ContainerEasing::Smoothstep);
+        assert!(profile("show_animation_type = unbound").is_err());
+    }
+
+    #[test]
+    fn shared_easing_and_explicit_none_follow_script_assignment_order() {
+        let p = profile("show_animation_type = accelerated animation_type = none hide_animation_type = decelerated fade_type = linear").unwrap();
+        assert_eq!(p.show_easing, ContainerEasing::None);
+        assert_eq!(p.hide_easing, ContainerEasing::Decelerated);
+        assert_eq!(p.fade_easing, ContainerEasing::Linear);
+        let p = profile("hide_animation_type = decelerated show_animation_type = accelerated animation_type = smoothstep fade_type = none").unwrap();
+        assert_eq!(p.show_easing, ContainerEasing::Smoothstep);
+        assert_eq!(p.hide_easing, ContainerEasing::Smoothstep);
+        assert_eq!(p.fade_easing, ContainerEasing::None);
+    }
+
+    #[test]
+    fn fade_delay_uses_signed_assignment_and_keeps_eof_destination() {
+        let p = profile("fade_time = 010 fade_delay = -0x20 fade_delay = \"\"").unwrap();
+        assert_eq!(p.fade_millis, 8);
+        assert_eq!(p.fade_delay_millis, -32);
+        assert_eq!(profile("fade_delay = 4294967295").unwrap().fade_delay_millis, -1);
+        assert!(profile("fade_delay = malformed").is_err());
+    }
+
+    #[test]
+    fn moveable_uses_witnessed_constructor_and_exact_boolean_assignment() {
+        assert!(!profile("").unwrap().moveable);
+        assert!(profile("moveable = yes").unwrap().moveable);
+        assert!(!profile("moveable = yes moveable = no").unwrap().moveable);
+        for invalid in ["true", "false", "1", "YES", "\"\""] {
+            assert!(profile(&format!("moveable = {invalid}")).is_err());
+        }
+    }
+
+    #[test]
+    fn fade_endpoint_delay_accumulates_through_equality_then_advances() {
+        let p = profile("fade_type = linear fade_time = 1000 fade_delay = 10").unwrap();
+        let mut fade = ContainerFadeState::constructed(&p);
+        assert_eq!(fade.begin_show(&p, false).unwrap().opacity_bits, 0);
+        assert_eq!(fade.advance(&p, 0.005).unwrap().opacity_bits, 0);
+        assert_eq!(fade.elapsed_bits, 0.005_f32.to_bits());
+        assert_eq!(fade.advance(&p, 0.005).unwrap().opacity_bits, 0);
+        assert_eq!(fade.elapsed_bits, 0.01_f32.to_bits());
+        let written = fade.advance(&p, 0.005).unwrap();
+        assert_eq!(written.opacity_bits, ((0.01_f32 + 0.005) - 0.01).to_bits());
+        assert!(!written.hide_root_and_children);
+    }
+
+    #[test]
+    fn fade_restart_preserves_elapsed_and_resets_only_past_endpoint_delay() {
+        let p = profile("fade_type = linear fade_delay = 10").unwrap();
+        let mut fade = ContainerFadeState::constructed(&p);
+        fade.elapsed_bits = 0.25_f32.to_bits();
+        fade.begin_show(&p, false).unwrap();
+        assert_eq!(fade.elapsed_bits, 0.25_f32.to_bits());
+        fade.advance(&p, 0.002).unwrap();
+        assert_eq!(fade.elapsed_bits, 0.002_f32.to_bits());
+        fade.opacity_bits = 0.5_f32.to_bits();
+        assert!(fade.begin_show(&p, true).is_none());
+        assert_eq!(fade.opacity_bits, 0.5_f32.to_bits());
+        assert!(fade.begin_hide(&p, true));
+        assert_eq!(fade.opacity_bits, 0.5_f32.to_bits());
+    }
+
+    #[test]
+    fn fade_kinds_use_native_increment_instead_of_movement_easing() {
+        for (kind, expected) in [("accelerated", 0.5_f32), ("decelerated", 1.0),
+                                 ("smoothstep", 0.1), ("linear", 0.1)] {
+            let p = profile(&format!("fade_type = {kind} fade_time = 1000")).unwrap();
+            let mut fade = ContainerFadeState::constructed(&p);
+            fade.begin_show(&p, false).unwrap();
+            assert_eq!(fade.advance(&p, 0.1).unwrap().opacity_bits, expected.to_bits());
+        }
+    }
+
+    #[test]
+    fn fade_minimum_nan_and_terminal_hide_preserve_native_branch_order() {
+        let p = profile("fade_type = linear fade_time = 1000").unwrap();
+        let mut fade = ContainerFadeState::constructed(&p);
+        fade.begin_show(&p, false).unwrap();
+        assert_eq!(fade.advance(&p, -0.0).unwrap().opacity_bits, 0x3a83126f);
+        let before_nan = fade.opacity_bits;
+        assert_eq!(fade.advance(&p, f32::NAN).unwrap().opacity_bits, before_nan);
+        assert!(f32::from_bits(fade.elapsed_bits).is_nan());
+        fade.elapsed_bits = 0;
+        fade.opacity_bits = 0.5_f32.to_bits();
+        assert!(!fade.begin_hide(&p, false));
+        assert!(fade.begin_hide(&p, true));
+        let written = fade.advance(&p, 1.0).unwrap();
+        assert_eq!(written.opacity_bits, 0);
+        assert!(written.hide_root_and_children);
+        assert!(fade.advance(&p, 1.0).is_none());
+    }
+
+    #[test]
+    fn movement_completion_is_strict_and_kind_zero_precedes_division() {
+        let equality = advance_container_movement(0, 1.0, 1.0_f32.to_bits(),
+            ContainerEasing::Linear, [17, 29], [10.0_f32.to_bits(); 2]).unwrap();
+        assert_eq!(equality.position, [17, 29]);
+        assert!(!equality.complete);
+        let after = advance_container_movement(0, f32::from_bits(1.0_f32.to_bits() + 1),
+            1.0_f32.to_bits(), ContainerEasing::Decelerated, [17, 29], [0; 2]).unwrap();
+        assert!(after.complete);
+        assert_eq!(after.position, [17, 29]);
+        let disabled = advance_container_movement(0, 0.0, 0,
+            ContainerEasing::None, [17, 29], [f32::NAN.to_bits(); 2]).unwrap();
+        assert!(disabled.complete);
+        assert_eq!(disabled.position, [17, 29]);
+    }
+
+    #[test]
+    fn movement_linear_keeps_negative_and_above_one_division_results() {
+        let negative = advance_container_movement(0, -1.0, 1.0_f32.to_bits(),
+            ContainerEasing::Linear, [10, 20], [10.0_f32.to_bits(), 20.0_f32.to_bits()]).unwrap();
+        assert_eq!(negative.position, [-10, -20]);
+        assert!(!negative.complete);
+        let above_one = advance_container_movement(0, -2.0, (-1.0_f32).to_bits(),
+            ContainerEasing::Linear, [10, 20], [10.0_f32.to_bits(), 20.0_f32.to_bits()]).unwrap();
+        assert_eq!(above_one.position, [20, 40]);
+        assert!(!above_one.complete);
+    }
+
+    #[test]
+    fn movement_smoothstep_uses_two_squared_polynomials_and_propagates_nan() {
+        assert_eq!(container_smoothstep(0.25).to_bits(), 0.15625_f32.to_bits());
+        assert!(container_smoothstep(f32::NAN).is_nan());
+        let twice = advance_container_movement(0, 0.25, 1.0_f32.to_bits(),
+            ContainerEasing::Smoothstep, [16_384; 2], [16_384.0_f32.to_bits(); 2]).unwrap();
+        assert_eq!(twice.position, [1075; 2]);
+        assert!(!twice.complete);
+        let unordered = advance_container_movement(0, 0.0, 0,
+            ContainerEasing::Smoothstep, [0; 2], [1.0_f32.to_bits(); 2]).unwrap();
+        assert_eq!(unordered.position, [i32::MIN; 2]);
+        assert!(!unordered.complete);
+    }
+
+    #[test]
+    fn movement_coordinate_conversion_preserves_integer_indefinite_and_wrapping() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 2_147_483_648.0] {
+            assert_eq!(container_cvttss2si(value), i32::MIN);
+        }
+        assert_eq!(container_cvttss2si(-2_147_483_648.0), i32::MIN);
+        assert_eq!(container_cvttss2si(-1.75), -1);
+        assert_eq!(container_cvttss2si(-0.0), 0);
+        let write = advance_container_movement(0, 0.0, 1.0_f32.to_bits(),
+            ContainerEasing::Linear, [i32::MAX; 2], [(-1.0_f32).to_bits(); 2]).unwrap();
+        assert_eq!(write.position, [i32::MIN; 2]);
+    }
 }
 
 #[cfg(test)]

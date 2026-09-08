@@ -58,6 +58,7 @@ pub struct PeaceConferenceAuthoredTemplate {
 pub struct PeaceConferenceAuthoredLayout {
     pub source_file: String,
     pub root: GuiElement,
+    pub(crate) transition_profile: crate::compose::ContainerTransitionProfile,
     pub templates: Vec<PeaceConferenceAuthoredTemplate>,
     pub available_actions_scrollbar: String,
     pub available_actions_wheel_factor: Option<i32>,
@@ -206,6 +207,7 @@ pub fn load_peace_conference_authored_layout(
         return Err(fail("controller root is not a containerWindowType"));
     }
 
+    let transition_profile = crate::compose::ContainerTransitionProfile::from_root(&root)?;
     let available_list = unique_descendant(&root, "available_actions_list")?;
     let history_list = unique_descendant(&root, "country_biddings_list")?;
     if !available_list
@@ -273,6 +275,7 @@ pub fn load_peace_conference_authored_layout(
 
     Ok(PeaceConferenceAuthoredLayout {
         source_file: resolved.rel_path,
+        transition_profile,
         root,
         templates,
         available_actions_scrollbar,
@@ -310,6 +313,12 @@ pub struct PeaceConferenceScrollbarDrag {
     pub grab_offset_y: i32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PeaceConferenceContainer {
+    content_manifest_sha256: String,
+    runtime: crate::compose::ContainerRuntime,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PeaceConferenceViewerState {
     pub open: bool,
@@ -330,11 +339,50 @@ pub struct PeaceConferenceViewerState {
     contested_target_fixed: i64,
     conference_id: Option<String>,
     snapshot_identity: Option<String>,
+    container: Option<PeaceConferenceContainer>,
 }
 
 impl PeaceConferenceViewerState {
     pub fn set_open(&mut self, open: bool) {
         self.open = open;
+        if let Some(container) = &mut self.container {
+            container.runtime.set_local_visibility(open);
+        }
+    }
+
+    /// Explicit viewer viewport-resource reconstruction. Keep local panel and
+    /// row intent; revoke old geometry and construct from authenticated authored
+    /// operands on the next reached composition. This is not a peace-manager
+    /// Close/Exit operation or an unavailable-frame reset.
+    pub fn invalidate_viewport_container(&mut self) {
+        self.container = None;
+        self.active_scrollbar_drag = None;
+    }
+
+    pub fn needs_surface(&self) -> bool {
+        self.open || self.container.as_ref().is_some_and(|container| container.runtime.visible)
+    }
+
+    fn stage_container(
+        &mut self, layout: &PeaceConferenceAuthoredLayout, manifest: &str,
+        parent: [i32; 2], delta: f32,
+    ) -> Result<([i32; 2], [i32; 2], f32, bool)> {
+        let profile = &layout.transition_profile;
+        let size = profile.size.size_pixels(parent, profile.shown.pixels(parent));
+        if size.iter().any(|value| *value < 0) {
+            return Err(fail("native root size is negative"));
+        }
+        if self.container.is_none() {
+            let mut runtime = crate::compose::ContainerRuntime::construct(profile.clone(), parent, size);
+            if self.open { runtime.set_local_visibility(true); }
+            self.container = Some(PeaceConferenceContainer { content_manifest_sha256: manifest.into(), runtime });
+        }
+        let container = self.container.as_mut().expect("constructed above");
+        if container.content_manifest_sha256 != manifest || !container.runtime.matches(profile, parent) {
+            return Err(fail("native root definition or parent geometry changed without widget recreation"));
+        }
+        container.runtime.advance(delta)?;
+        Ok((container.runtime.position(), size, container.runtime.opacity(), container.runtime.visible))
     }
 
     pub fn conference_id(&self) -> Option<&str> {
@@ -499,6 +547,8 @@ impl PeaceConferenceViewerState {
                 self.sync_scroll_pixels(region)?;
             }
             PeaceConferenceScrollbarAction::BeginThumb(region, grab_offset_y) => {
+                input.scrollbar(region)
+                    .ok_or_else(|| fail("scrollbar thumb has no current visible geometry"))?;
                 self.active_scrollbar_drag = Some(PeaceConferenceScrollbarDrag {
                     region,
                     grab_offset_y,
@@ -753,8 +803,8 @@ pub struct PeaceConferenceInputRegion {
     pub available_smooth_factor_fixed: i64,
     pub history_smooth_factor_fixed: i64,
     pub contested_smooth_factor_fixed: i64,
-    pub available_scrollbar: PeaceConferenceScrollbarInput,
-    pub history_scrollbar: PeaceConferenceScrollbarInput,
+    pub available_scrollbar: Option<PeaceConferenceScrollbarInput>,
+    pub history_scrollbar: Option<PeaceConferenceScrollbarInput>,
     pub contested_scrollbar: Option<PeaceConferenceScrollbarInput>,
 }
 
@@ -815,8 +865,8 @@ impl PeaceConferenceInputRegion {
         region: PeaceConferenceScrollRegion,
     ) -> Option<&PeaceConferenceScrollbarInput> {
         match region {
-            PeaceConferenceScrollRegion::AvailableActions => Some(&self.available_scrollbar),
-            PeaceConferenceScrollRegion::CurrentAndHistory => Some(&self.history_scrollbar),
+            PeaceConferenceScrollRegion::AvailableActions => self.available_scrollbar.as_ref(),
+            PeaceConferenceScrollRegion::CurrentAndHistory => self.history_scrollbar.as_ref(),
             PeaceConferenceScrollRegion::ContestedPopup => self.contested_scrollbar.as_ref(),
         }
     }
@@ -893,7 +943,9 @@ pub fn render_peace_conference(
     viewer: &PeaceConferenceViewerState,
     width: usize,
     height: usize,
-) -> Result<Option<PeaceConferenceComposeOutput>> {
+    frame_delta_seconds: f32,
+    destination: &crate::dds::RgbaImage,
+) -> Result<(Option<PeaceConferenceComposeOutput>, PeaceConferenceViewerState)> {
     use replay_core::PeaceConferencePresentationObservationExact as Observation;
     let Observation::Active {
         current_participant_id,
@@ -910,13 +962,12 @@ pub fn render_peace_conference(
         ..
     } = &exact.observation
     else {
-        return Ok(None);
+        return Ok((None, viewer.clone()));
     };
     let PeaceConferenceSnapshot::Active(active) = admitted.render_model() else {
         return Err(fail("PCS3 active carrier admitted as inactive"));
     };
-    if !viewer.open
-        || viewer.conference_id() != Some(active.conference_id.as_str())
+    if viewer.conference_id() != Some(active.conference_id.as_str())
         || viewer.snapshot_identity() != Some(active.source_record_id.as_str())
     {
         return Err(fail(
@@ -929,7 +980,18 @@ pub fn render_peace_conference(
 
     let layout = load_peace_conference_authored_layout(resolver)?;
     let mut root = layout.root.clone();
+    let mut candidate = viewer.clone();
+    let parent = [i32::try_from(width).map_err(|_| fail("viewport width exceeds i32"))?,
+        i32::try_from(height).map_err(|_| fail("viewport height exceeds i32"))?];
+    let (position, size, opacity, visible) = candidate.stage_container(
+        &layout, &exact.content_manifest_sha256, parent, frame_delta_seconds)?;
+    if !visible { return Ok((None, candidate)); }
+    // The native anchor/pivot and relative-position cache have already been
+    // evaluated. Project their pixel coordinates once, without a second anchor.
+    set_position_upper_left(&mut root, position[0], position[1]);
+    root.size = Some(pair(size[0], size[1]));
     let mut options = ComposeOptions::new(width, height).with_localisation(localisation);
+    options.shown_elements.insert(root.name.clone());
     for hidden in [
         "peaceconference_select_action_window",
         "reset_container",
@@ -1558,11 +1620,13 @@ pub fn render_peace_conference(
         }
     }
 
+    apply_container_opacity(&root, opacity, &mut options)?;
     let mut wrapper = wrapper_root(width, height, root)?;
     if let Some(popup) = popup {
         wrapper.children.push(popup);
     }
-    let mut output = Compositor::new(resolver, registry).compose(&wrapper, &options);
+    let mut output = Compositor::new(resolver, registry)
+        .compose_over(&wrapper, &options, destination)?;
     let mut static_options = options.clone();
     static_options
         .hidden_elements
@@ -1573,7 +1637,8 @@ pub fn render_peace_conference(
     static_options
         .hidden_elements
         .insert("xui08_popup_rows".into());
-    let mut clipped = Compositor::new(resolver, registry).compose(&wrapper, &static_options);
+    let mut clipped = Compositor::new(resolver, registry)
+        .compose_over(&wrapper, &static_options, destination)?;
     copy_rect(&output.image, &mut clipped.image, available_rect);
     copy_rect(&output.image, &mut clipped.image, history_rect);
     if let Some(rect) = contested_popup_rect {
@@ -1581,32 +1646,37 @@ pub fn render_peace_conference(
     }
     output.image = clipped.image;
 
-    crate::trade_compositor::draw_trade_scrollbar(
-        resolver,
-        registry,
-        &mut output,
-        &available_scrollbar_geometry,
-        viewer
-            .displayed_fixed(PeaceConferenceScrollRegion::AvailableActions)
-            .clamp(
-                0,
-                i64::from(available_max_scroll_px) * PEACE_SCROLL_FIXED_SCALE,
-            ),
-        i64::from(available_max_scroll_px) * PEACE_SCROLL_FIXED_SCALE,
-    )?;
-    crate::trade_compositor::draw_trade_scrollbar(
-        resolver,
-        registry,
-        &mut output,
-        &history_scrollbar_geometry,
-        viewer
-            .displayed_fixed(PeaceConferenceScrollRegion::CurrentAndHistory)
-            .clamp(
-                0,
-                i64::from(history_max_scroll_px) * PEACE_SCROLL_FIXED_SCALE,
-            ),
-        i64::from(history_max_scroll_px) * PEACE_SCROLL_FIXED_SCALE,
-    )?;
+    // 1422ae410 shows these scrollbar families only when opacity < 1 is false.
+    // The popup is a separate root and retains its independently composed bar.
+    let root_scrollbars_visible = !(opacity < 1.0);
+    if root_scrollbars_visible {
+        crate::trade_compositor::draw_trade_scrollbar(
+            resolver,
+            registry,
+            &mut output,
+            &available_scrollbar_geometry,
+            viewer
+                .displayed_fixed(PeaceConferenceScrollRegion::AvailableActions)
+                .clamp(
+                    0,
+                    i64::from(available_max_scroll_px) * PEACE_SCROLL_FIXED_SCALE,
+                ),
+            i64::from(available_max_scroll_px) * PEACE_SCROLL_FIXED_SCALE,
+        )?;
+        crate::trade_compositor::draw_trade_scrollbar(
+            resolver,
+            registry,
+            &mut output,
+            &history_scrollbar_geometry,
+            viewer
+                .displayed_fixed(PeaceConferenceScrollRegion::CurrentAndHistory)
+                .clamp(
+                    0,
+                    i64::from(history_max_scroll_px) * PEACE_SCROLL_FIXED_SCALE,
+                ),
+            i64::from(history_max_scroll_px) * PEACE_SCROLL_FIXED_SCALE,
+        )?;
+    }
     if let Some(scrollbar) = contested_scrollbar_geometry.as_ref() {
         crate::trade_compositor::draw_trade_scrollbar(
             resolver,
@@ -1652,7 +1722,7 @@ pub fn render_peace_conference(
         &layout.source_file,
         &crate::tooltip_compositor::authored_tooltip_shell_name(resolver)?,
     )?;
-    Ok(Some(PeaceConferenceComposeOutput {
+    Ok((Some(PeaceConferenceComposeOutput {
         output,
         input_region: PeaceConferenceInputRegion {
             panel: [0, 0, viewport.w(), viewport.h()],
@@ -1671,14 +1741,14 @@ pub fn render_peace_conference(
             available_smooth_factor_fixed: layout.available_actions_smooth_factor_fixed,
             history_smooth_factor_fixed: layout.history_smooth_factor_fixed,
             contested_smooth_factor_fixed: layout.contested_popup_smooth_factor_fixed,
-            available_scrollbar: PeaceConferenceScrollbarInput {
+            available_scrollbar: root_scrollbars_visible.then_some(PeaceConferenceScrollbarInput {
                 geometry: available_scrollbar_geometry,
                 step_pixels: available_scroll_step,
-            },
-            history_scrollbar: PeaceConferenceScrollbarInput {
+            }),
+            history_scrollbar: root_scrollbars_visible.then_some(PeaceConferenceScrollbarInput {
                 geometry: history_scrollbar_geometry,
                 step_pixels: history_scroll_step,
-            },
+            }),
             contested_scrollbar: contested_scrollbar_geometry.map(|geometry| {
                 PeaceConferenceScrollbarInput {
                     geometry,
@@ -1695,7 +1765,32 @@ pub fn render_peace_conference(
             .chain(history_allocation_ids)
             .collect(),
         materialized_result_ids: result_ids,
-    }))
+    }), candidate))
+}
+
+fn apply_container_opacity(root: &GuiElement, opacity: f32, options: &mut ComposeOptions) -> Result<()> {
+    for child in &root.children {
+        if options.hidden_elements.contains(&child.name)
+            || (crate::compose::is_hidden(child) && !options.shown_elements.contains(&child.name))
+        { continue; }
+        let kind = child.element_type.to_ascii_lowercase();
+        match kind.as_str() {
+            "instanttextboxtype" => { options.text_opacity_by_element.insert(child.name.clone(), opacity); }
+            "editboxtype" | "checkboxtype" | "scrollbartype" | "extendedscrollbartype" => {
+                if opacity < 1.0 { options.hidden_elements.insert(child.name.clone()); }
+            }
+            "containerwindowtype" | "gridboxtype" => apply_container_opacity(child, opacity, options)?,
+            "buttontype" | "guibuttontype" | "icontype"
+                if !options.sprite_overrides.contains_key(&child.name) => {
+                options.container_sprite_opacity_by_element.insert(child.name.clone(), opacity);
+            }
+            _ if opacity != 1.0 && (!child.sprite_refs.is_empty() || options.sprite_overrides.contains_key(&child.name)) => {
+                return Err(fail(format!("native container sprite opacity shader binding is unavailable: {}", child.name)));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn bind_flag(
@@ -2310,10 +2405,41 @@ mod tests {
             available_smooth_factor_fixed: 25_000,
             history_smooth_factor_fixed: 25_000,
             contested_smooth_factor_fixed: 25_000,
-            available_scrollbar: scrollbar(),
-            history_scrollbar: scrollbar(),
+            available_scrollbar: Some(scrollbar()),
+            history_scrollbar: Some(scrollbar()),
             contested_scrollbar: None,
         }
+    }
+
+    #[test]
+    fn hidden_root_scrollbars_revoke_hits_and_reject_stale_thumb_actions() {
+        let mut viewer = PeaceConferenceViewerState::default();
+        let presented = input();
+        let action = presented.scrollbar_action_at(&viewer, (104, 6)).unwrap().unwrap();
+        assert!(matches!(action, PeaceConferenceScrollbarAction::Step(_, -1)));
+        let mut fading = presented.clone();
+        fading.available_scrollbar = None;
+        fading.history_scrollbar = None;
+        assert_eq!(fading.scrollbar_action_at(&viewer, (104, 6)).unwrap(), None);
+        let before = viewer.clone();
+        assert!(viewer.apply_scrollbar_action(&fading, action).is_err());
+        assert!(viewer.apply_scrollbar_action(&fading,
+            PeaceConferenceScrollbarAction::BeginThumb(
+                PeaceConferenceScrollRegion::AvailableActions, 2,
+            ),
+        ).is_err());
+        assert_eq!(viewer, before);
+
+        // Restoring a current visible surface restores its actual geometry;
+        // the failed actions did not create retained capture or scroll state.
+        viewer.apply_scrollbar_action(&presented,
+            PeaceConferenceScrollbarAction::BeginThumb(
+                PeaceConferenceScrollRegion::AvailableActions, 2,
+            ),
+        ).unwrap();
+        let drag = viewer.clone();
+        assert!(viewer.drag_active_scrollbar(&fading, 80).is_err());
+        assert_eq!(viewer, drag);
     }
 
     #[test]
