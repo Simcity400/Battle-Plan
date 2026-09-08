@@ -223,7 +223,7 @@ impl Xmap13UnitParticlePublication {
         prepared.validate()?;
         let world = derived_frame_digest(context.world_frame)?;
         if prepared.semantic_input_sha256 !=
-            derived::population_digest_from_world(&world, context.xmap13_motion)? {
+            derived::population_digest_from_world(&world, context.xmap13_motion, prepared.model_viewer_country.as_deref())? {
             return Err("XMAP13 particle publication belongs to another world/motion input".into());
         }
         context.shared_entity_effects.ok_or("entity_manager.effects.publication_unavailable")?
