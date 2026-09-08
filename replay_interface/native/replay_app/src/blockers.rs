@@ -565,6 +565,10 @@ pub const ENV_INPUTS: &[EnvInput] = &[
         role: "fallback the game install directory when --game is absent (main::resolve_game_dir; playback, benchmark, and --validate-playback routes)",
     },
     EnvInput {
+        name: "REPLAY_DESKTOP_DIAGNOSTICS",
+        role: "value 1 enables stderr observations of desktop input and finalized presentation (desktop_diagnostics::DesktopDiagnostics::from_environment)",
+    },
+    EnvInput {
         name: "XDG_CONFIG_HOME",
         role: "non-Windows configuration-root fallback for the playback profile (install_paths::default_config_path)",
     },
@@ -683,7 +687,7 @@ mod tests {
                 b.id
             );
         }
-        assert_eq!(ENV_INPUTS.len(), 4, "sanctioned environment inputs");
+        assert_eq!(ENV_INPUTS.len(), 5, "sanctioned environment inputs");
     }
 
     #[test]
@@ -873,7 +877,7 @@ mod tests {
         );
         assert_eq!(
             lines[REGISTRY.len() + 1],
-            "replay_app sanctioned environment inputs: 4"
+            "replay_app sanctioned environment inputs: 5"
         );
         assert_eq!(
             lines[REGISTRY.len() + 2],
