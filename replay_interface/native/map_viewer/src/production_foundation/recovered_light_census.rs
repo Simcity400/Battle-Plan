@@ -20,6 +20,8 @@ impl snapshot::CertifiedPrefoldSpoolDecoder for PackagedCache {
 #[test]
 #[ignore = "whole-recording recovered-06 light census; requires authenticated installed content"]
 fn recovered_06_whole_recording_viewer_light_census() {
+    let graphics_runtime = crate::ViewerGraphicsRuntime::new();
+    let application = graphics_runtime.new_application();
     let recording = std::path::PathBuf::from(std::env::var("LIGHT_CENSUS_RECORDING").unwrap());
     let game = std::path::PathBuf::from(std::env::var("BATTLE_PLAN_GAME_ROOT").or_else(|_| std::env::var("HOI4_GAME_ROOT")).unwrap());
     let profile = std::path::PathBuf::from(std::env::var("LIGHT_CENSUS_PROFILE").unwrap());
@@ -96,9 +98,10 @@ fn recovered_06_whole_recording_viewer_light_census() {
     let selection = Default::default();
     let mut progress = std::fs::File::create(output.with_extension("jsonl")).unwrap();
     for (index, &hour) in hours.iter().enumerate() {
+        let application_frame = application.enter_frame().unwrap();
         let frame = timeline.frame(hour).unwrap();
         viewer.animation_time_f32_bits = ((index + 1) as f32 / 60.0).to_bits();
-        let mut context = FoundationFeatureContext::new_for_owned_accounting_tests(
+        let mut context = FoundationFeatureContext::new_for_owned_accounting_tests(application_frame.witness(),
             &frame,
             &viewer,
             &[],
@@ -147,6 +150,7 @@ fn recovered_06_whole_recording_viewer_light_census() {
                 Err(format!("XMAP12.placed_entities: {error}"))
             }
         };
+        application_frame.finish(crate::ApplicationFrameExit::Normal).unwrap();
         rows.push(json!({"hour": hour, "census": census}));
         use std::io::Write;
         writeln!(progress, "{}", rows.last().unwrap()).unwrap();

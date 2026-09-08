@@ -2219,3 +2219,10 @@ portable_replay/native/engine_evidence/artifacts/func_142572cb0.decompile.c text
 portable_replay/native/engine_evidence/artifacts/func_142572cb0.instructions.txt text eol=lf
 /extractor/native/scripts/verify_speed_root_evidence_v2.py text eol=lf
 /extractor/native/scripts/speed_root_evidence_v2.schema.json text eol=lf
+
+portable_replay/native/engine_evidence/artifacts/20260908T000845Z-m9-reached-global-stamp-image-initialize-01e660f9.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260908T000845Z-m9-reached-global-stamp-image-initialize-01e660f9.job.json text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1422198a0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1422198a0.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14221c740.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14221c740.instructions.txt text eol=lf

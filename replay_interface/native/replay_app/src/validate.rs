@@ -154,6 +154,7 @@ impl ProductMapFoundationSession {
 
     pub(crate) fn prepare_with_xmap12_inputs(
         &mut self,
+        application_frame: &map_viewer::ApplicationFrameWitness,
         frame: &replay_core::WorldFrame,
         viewer: &map_viewer::ViewerOwnedMapState,
         manifest: &replay_core::ContentManifest,
@@ -169,6 +170,7 @@ impl ProductMapFoundationSession {
         // The map authority is derived inside the preparation, from this frame
         // and manifest: there is no admission to hand it beside them.
         let candidate = self.adapters.prepare_with_xmap12_inputs(
+            application_frame,
             frame,
             viewer,
             manifest,
@@ -193,6 +195,7 @@ impl ProductMapFoundationSession {
 
     pub(crate) fn prepare_with_xmap12_and_xmap15_inputs(
         &mut self,
+        application_frame: &map_viewer::ApplicationFrameWitness,
         frame: &replay_core::WorldFrame,
         viewer: &map_viewer::ViewerOwnedMapState,
         manifest: &replay_core::ContentManifest,
@@ -208,6 +211,7 @@ impl ProductMapFoundationSession {
         self.last_xmap12_payload = None;
         // As above: the preparation derives its own map authority.
         let candidate = self.adapters.prepare_with_xmap12_and_xmap15_inputs(
+            application_frame,
             frame,
             viewer,
             manifest,
@@ -250,6 +254,7 @@ impl ProductMapFoundationSession {
 
 #[cfg(windows)]
 pub(crate) fn prepare_product_map_foundation(
+    application_frame: &map_viewer::ApplicationFrameWitness,
     frame: &replay_core::WorldFrame,
     viewer: &map_viewer::ViewerOwnedMapState,
     resolver: &map_viewer::GameFileResolver,
@@ -267,7 +272,7 @@ pub(crate) fn prepare_product_map_foundation(
         terrain_options,
         None,
     )?
-    .prepare_with_xmap12_inputs(frame, viewer, manifest, None, None, snow_mud_phase)
+    .prepare_with_xmap12_inputs(application_frame, frame, viewer, manifest, None, None, snow_mud_phase)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

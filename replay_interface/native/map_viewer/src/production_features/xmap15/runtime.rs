@@ -344,6 +344,9 @@ mod tests {
 
     #[test]
     fn authenticated_adapter_prepares_nonempty_d54_and_preserves_runtime_transitions() {
+        let graphics_runtime = crate::ViewerGraphicsRuntime::new();
+        let application = graphics_runtime.new_application();
+        let application_frame = application.enter_frame().unwrap();
         for authored_speed in [0.0f32, 1.0] {
         use crate::test_support::{write_modvfs_fixture as write, write_modvfs_provinces};
         let root = crate::test_support::temp_test_dir("arrow-authenticated-runtime");
@@ -410,7 +413,7 @@ mod tests {
         };
         let prepare = |world: &WorldFrame, selection: &Xmap15ViewerSelection| {
             assert!(world.xmap15_orders_fronts_movement_semantic().is_none());
-            let mut context = FoundationFeatureContext::new_for_owned_accounting_tests(world, &viewer, &gaps, &[], selection)
+            let mut context = FoundationFeatureContext::new_for_owned_accounting_tests(application_frame.witness(), world, &viewer, &gaps, &[], selection)
                 .with_test_schedule(&schedule);
             context.xmap15_units = Some(&Units);
             adapter.prepare(&context).unwrap()
@@ -747,6 +750,9 @@ mod tests {
 
     #[test]
     fn recorded_roots_create_retained_paradrop_mesh_and_real_ordered_submission() {
+        let graphics_runtime = crate::ViewerGraphicsRuntime::new();
+        let application = graphics_runtime.new_application();
+        let application_frame = application.enter_frame().unwrap();
         let original_colour = [0.25f32.to_bits(), 0.5f32.to_bits(), 0.75f32.to_bits(), 1.0f32.to_bits()];
         let world = crate::test_support::frame_with_rest(raw(original_colour));
         let anchors = crate::xmap15_orders::tests::anchors();
@@ -757,7 +763,7 @@ mod tests {
         let mut viewer = crate::test_support::bare_viewer();
         viewer.map_mode_id = "political".into(); viewer.observer_country_id = Some("GER".into());
         let selection = Xmap15ViewerSelection::default();
-        let context = FoundationFeatureContext::new_for_owned_accounting_tests(&world, &viewer, &[], &[], &selection);
+        let context = FoundationFeatureContext::new_for_owned_accounting_tests(application_frame.witness(), &world, &viewer, &[], &[], &selection);
         let mut base = crate::arrow_submission_order::tests::prepared_orders(1, true, None);
         let definition = &mut base.plan_definitions[0];
         definition.name = "paradrop".into(); definition.texture_variant_count = Some(2);
@@ -776,7 +782,7 @@ mod tests {
         let mut active_raw = raw(original_colour);
         active_raw["order_of_battle"]["extra"]["army_battleplans_depth_live"]["orders"][0]["active"] = serde_json::json!(true);
         let active_world = crate::test_support::frame_with_rest(active_raw);
-        let active_context = FoundationFeatureContext::new_for_owned_accounting_tests(&active_world, &viewer, &[], &[], &selection);
+        let active_context = FoundationFeatureContext::new_for_owned_accounting_tests(application_frame.witness(), &active_world, &viewer, &[], &[], &selection);
         let Xmap15PlanProvider::Present(active_census) = derive_xmap15_orders(&active_world, Some(&anchors)) else { panic!() };
         for (bits, admitted) in [(0, true), (0x80000000, true), (0x38d1b716, true),
             (0x38d1b717, true), (0xb8d1b717, true), (0x38d1b718, false), (0xb8d1b718, false)] {
@@ -837,7 +843,7 @@ mod tests {
         let changed_world = crate::test_support::frame_with_rest(raw(changed_colour));
         let changed_provider = derive_xmap15_orders(&changed_world, Some(&anchors));
         let Xmap15PlanProvider::Present(changed_census) = &changed_provider else { panic!() };
-        let changed_context = FoundationFeatureContext::new_for_owned_accounting_tests(&changed_world, &viewer, &[], &[], &selection);
+        let changed_context = FoundationFeatureContext::new_for_owned_accounting_tests(application_frame.witness(), &changed_world, &viewer, &[], &[], &selection);
         let changed = frame(runtime.advance(&changed_context, changed_census, &Units, &base.plan_definitions, 16).unwrap(), base.clone());
         let Xmap15PreparedRow::Plan { semantic: changed_row, .. } = &changed.portable.ordered_rows[0] else { panic!() };
         assert_eq!(changed_row.inner_rgba_f32_bits, changed_colour);
@@ -862,7 +868,7 @@ mod tests {
         let schedule = portable_render_stream::AssignedStageSchedule::from_topology(&topology).unwrap();
         let gaps = [crate::MapAuthorityGap { input_id: XMAP15_AUTHORITY_GAP_ID.into(),
             disposition: crate::MapAuthorityRequirementDisposition::Unavailable, reason: "test census gap".into() }];
-        let mut gap_context = FoundationFeatureContext::new_for_owned_accounting_tests(
+        let mut gap_context = FoundationFeatureContext::new_for_owned_accounting_tests(application_frame.witness(),
             &gap_world, &viewer, &gaps, &[], &gap_selection).with_test_schedule(&schedule);
         gap_context.xmap15_units = Some(&Units);
         let output = adapter.prepare(&gap_context).unwrap();
@@ -878,7 +884,7 @@ mod tests {
         portable_test_fs_retry::remove_dir_all(root).unwrap();
 
         let selected = Xmap15ViewerSelection { presentation: None, selected_owner: Some((portable_render_stream::Xmap15OwnerKind::Army, 17)), selected_plan: None };
-        let selected_context = FoundationFeatureContext::new_for_owned_accounting_tests(&world, &viewer, &[], &[], &selected);
+        let selected_context = FoundationFeatureContext::new_for_owned_accounting_tests(application_frame.witness(), &world, &viewer, &[], &[], &selected);
         let input = runtime.advance(&selected_context, census, &Units, &base.plan_definitions, 16).unwrap();
         assert!(input.plans.is_empty());
         assert!(input.viewer_runtime.as_ref().unwrap().refusals.iter().any(|row| row.input == Missing::SelectedPresentation));

@@ -459,6 +459,9 @@ mod authored_admission_tests {
 
     #[test]
     fn authored_lifecycle_defers_without_a_captured_particle_carrier() {
+        let graphics_runtime = crate::ViewerGraphicsRuntime::new();
+        let application = graphics_runtime.new_application();
+        let application_frame = application.enter_frame().unwrap();
         use crate::production_features::xmap15::Xmap15ViewerSelection;
         use replay_core::{RawFrame, ReplaySource, SourceError, WorldTimeline};
         struct Source;
@@ -518,7 +521,7 @@ mod authored_admission_tests {
             selected_owner: None,
             selected_plan: None,
         };
-        let mut context = FoundationFeatureContext::new_for_owned_accounting_tests(
+        let mut context = FoundationFeatureContext::new_for_owned_accounting_tests(application_frame.witness(),
             &frame,
             &viewer,
             &[],

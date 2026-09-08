@@ -152,6 +152,8 @@ impl NativeAnimatedBounds {
             evaluated_pose: None }
     }
     pub(crate) fn set_eligible(&mut self, eligible: bool) { self.eligible = eligible; }
+    #[cfg(test)]
+    pub(super) fn eligible_for_test(&self) -> bool { self.eligible }
     pub(crate) fn current_entry(&self) -> Option<u64> { self.current.as_ref().map(|clock| clock.entry) }
     pub(crate) fn retained_entries(&self) -> [Option<u64>; 4] {
         [self.current_entry(), self.previous.as_ref().map(|clock| clock.entry),

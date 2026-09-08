@@ -91,7 +91,9 @@ fn whole_capture_prepared_land_measurement() {
     let phase_durations = map_viewer::xmap07_snow_mud_phase::Xmap07SnowMudPhaseDurations::load(&resolver).unwrap();
     let phase_clock = std::time::Instant::now();
     let mut rows = Vec::new();
+    let application = map_viewer::ViewerGraphicsRuntime::new().new_application();
     for hour in selected {
+        let application_frame = application.enter_frame().unwrap();
         eprintln!("preparing hour {hour}");
         let world = provider.world_frame_at(hour).unwrap().unwrap();
         let raw = world.xmap14_combat_indicator_carrier();
@@ -117,6 +119,7 @@ fn whole_capture_prepared_land_measurement() {
             discontinuity: true,
         }).unwrap();
         match session.adapters.prepare_with_xmap12_inputs(
+            application_frame.witness(),
             &world,
             &viewer,
             manifest,
@@ -173,6 +176,7 @@ fn whole_capture_prepared_land_measurement() {
                 row["error"] = json!(error.to_string());
             }
         }
+        application_frame.finish(map_viewer::ApplicationFrameExit::Normal).unwrap();
         rows.push(row);
         let report = json!({
             "schema": "hoi4.prepared_land_measurement.v1", "recording": recording,

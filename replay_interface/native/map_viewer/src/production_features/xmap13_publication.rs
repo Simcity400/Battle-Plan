@@ -665,9 +665,14 @@ impl Xmap13Adapter {
                 )?
                 .map(f32::to_bits);
                 let root = root_id(province);
-                if let Some(Ok(receipt)) = slot.animation_admission() {
-                    bounds_roots.push((root.clone(), receipt.clone(), candidate.chain.pdxmesh.scale));
-                }
+                let construction = match slot.animation_admission()
+                    .ok_or("XMAP13 retained model construction unavailable")? {
+                    Ok(receipt) => crate::xmap09_light_lifecycle::RootModelConstruction::Admitted(receipt.clone()),
+                    Err(reason) => crate::xmap09_light_lifecycle::RootModelConstruction::Unavailable {
+                        mesh_source: candidate.chain.mesh_source.clone(), reason: reason.clone(),
+                    },
+                };
+                bounds_roots.push((root.clone(), construction, candidate.chain.pdxmesh.scale));
                 let offset = candidate.state.apply_offset(
                     province_packet_offsets.entry(province).or_insert(0.0),
                 );
@@ -680,8 +685,8 @@ impl Xmap13Adapter {
                     world_matrix_f32_bits: matrix,
                 });
             }
-            runtime.lifecycle.begin_model_bounds_frame();
-            runtime.lifecycle.stage_root_model_bounds(&self.content.resolver, &self.content.admission,
+            runtime.lifecycle.begin_model_bounds_frame(context.application_frame)?;
+            runtime.lifecycle.stage_root_model_bounds(context.application_frame, &self.content.resolver, &self.content.admission,
                 &self.content.library, bounds_roots)?;
             let prepared = runtime.lifecycle.prepare_ordinary_entity_frame(
                 &self.content.resolver,
@@ -906,25 +911,21 @@ impl Xmap13Adapter {
         let mut particle_visibility = BTreeMap::new();
         for candidate in &finished.candidates {
             let root = root_id(candidate.placement.anchor_province_id);
-            let slot = runtime
-                .slots
+            let LandRuntime { slots, lifecycle, .. } = &mut *runtime;
+            let slot = slots
                 .get(&candidate.placement.anchor_province_id)
                 .ok_or("XMAP13 retained model slot missing")?;
-            let mut accepted_cull = false;
             let (selection_object, result) = match self.prepare_finished_land_selection(
-                context, visibility, candidate, slot, &root, &finished.published, &mut accepted_cull) {
-                Ok(Some(object)) => {
+                context, visibility, candidate, slot, &root, &finished.published, lifecycle) {
+                Ok(Some((object, cull_mask))) => {
                     let result = self.materialize_finished_land_model(context, visibility, candidate, slot,
                         &root, &finished.published, u32::try_from(prepared.native_entity_draws.len())?,
-                        &object, &mut accepted_cull);
+                        &object, cull_mask);
                     (Some(object), result)
                 }
                 Ok(None) => (None, Ok(None)),
                 Err(error) => (None, Err(error)),
             };
-            // Native cull acceptance writes the stamp before later draw work.
-            // Preserve that event even when a later recoverable error omits a row.
-            if accepted_cull { runtime.lifecycle.stamp_root_model_bounds(&root)?; }
             if let Some(object) = selection_object {
                 for key in &object.sources {
                     self.content.admit_content(key)?;
@@ -1066,8 +1067,8 @@ impl Xmap13Adapter {
     fn prepare_finished_land_selection(
         &self, context: &FoundationFeatureContext<'_>, visibility: &crate::PreparedXmap05Visibility,
         candidate: &LandModelCandidate, slot: &instance::LandModelSlot,
-        root: &str, published: &DerivedLightRows, accepted_cull: &mut bool,
-    ) -> Result<Option<Xmap13PublishedModelObject>> {
+        root: &str, published: &DerivedLightRows, lifecycle: &mut ViewerLightLifecycle,
+    ) -> Result<Option<(Xmap13PublishedModelObject, u8)>> {
         let active = published.root_animation(&self.content.resolver, &self.content.admission, root)?;
         if active.entity_token != candidate.chain.entity.name {
             return Err("XMAP13 selection root differs from its retained entity".into());
@@ -1125,9 +1126,14 @@ impl Xmap13Adapter {
                 },
             }
         })().unwrap_or_else(PublishedModelBounds::Unavailable);
-        if mesh.camera_partition_mask(camera, placement,
-            candidate.chain.entity.scale * candidate.chain.pdxmesh.scale)? == 0 { return Ok(None); }
-        *accepted_cull = true;
+        // Commit native cull events before fallible publication/materialization.
+        // Rejected partitions still read the retained stamp; reuse this exact
+        // ordered query result when materializing, rather than culling twice.
+        let cameras = crate::particle_runtime::entity_scene_cameras(camera)?;
+        let cull_mask = lifecycle.root_model_cull_mask(context.application_frame, root, cameras,
+            &mut |pass| mesh.camera_partition_test(camera, placement,
+                candidate.chain.entity.scale * candidate.chain.pdxmesh.scale, pass))?;
+        if cull_mask == 0 { return Ok(None); }
         let mut sources = vec![candidate.chain.entity_source.clone(), candidate.chain.entity_pdxmesh_source.clone(),
             candidate.chain.pdxmesh_source.clone(), candidate.chain.mesh_source.clone(), candidate.chain.shader_source.clone()];
         sources.extend(candidate.chain.entity_scale_source.iter().cloned());
@@ -1136,13 +1142,13 @@ impl Xmap13Adapter {
         sources.extend(published.root_model_clip_sources(&self.content.resolver, &self.content.admission, root)?);
         for source in &sources { self.content.admit_content(source)?; }
         published.root_animation(&self.content.resolver, &self.content.admission, root)?;
-        Ok(Some(Xmap13PublishedModelObject {
+        Ok(Some((Xmap13PublishedModelObject {
             identity: candidate.identity.clone(), root: root.to_owned(), normal_mesh,
             mesh_source: candidate.chain.mesh_source.clone(),
             object_matrix: crate::xmap12_pdxmesh::scaled_world_matrix(placement, candidate.chain.entity.scale)?,
             authored_mesh_scale: candidate.chain.pdxmesh.scale, bounds,
             library: self.content.library.clone(), sources,
-        }))
+        }, cull_mask)))
     }
 
     fn materialize_finished_land_model(
@@ -1155,7 +1161,7 @@ impl Xmap13Adapter {
         published: &DerivedLightRows,
         visible_order: u32,
         selection_object: &Xmap13PublishedModelObject,
-        accepted_cull: &mut bool,
+        cull_mask: u8,
     ) -> Result<
         Option<(
             PreparedXmap13ModelPose,
@@ -1185,7 +1191,7 @@ impl Xmap13Adapter {
             &self.content.library,
             camera,
             &request,
-            &mut || { *accepted_cull = true; },
+            crate::xmap12_pdxmesh::Xmap12Cull::Retained(cull_mask),
         )? {
             crate::Xmap12MaterializeOutcome::Visible(draw) => *draw,
             crate::Xmap12MaterializeOutcome::HiddenByCamera => return Ok(None),

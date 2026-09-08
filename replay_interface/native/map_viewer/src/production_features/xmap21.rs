@@ -257,8 +257,11 @@ mod tests {
             gaps: &[crate::map_authority::MapAuthorityGap],
             admitted: &[crate::map_authority::MapAuthorityAdmittedInput],
         ) -> FoundationFeatureOutput {
+            let graphics_runtime = crate::ViewerGraphicsRuntime::new();
+            let application = graphics_runtime.new_application();
+            let application_frame = application.enter_frame().unwrap();
             let frame = self.timeline.frame(hour).expect("frame");
-            let context = crate::production_foundation::FoundationFeatureContext::new_for_owned_accounting_tests(
+            let context = crate::production_foundation::FoundationFeatureContext::new_for_owned_accounting_tests(application_frame.witness(),
                 &frame,
                 &self.viewer,
                 gaps,

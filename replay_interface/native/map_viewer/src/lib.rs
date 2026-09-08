@@ -97,6 +97,8 @@ mod posteffect_region_weights;
 mod production_d3d;
 mod production_features;
 mod production_foundation;
+pub mod application_frame;
+pub use application_frame::{ApplicationFrame, ApplicationFrameError, ApplicationFrameExit, ApplicationFrameScope, OriginalGameFrameQualification, ApplicationFrameWitness, ViewerApplication, ViewerGraphicsRuntime};
 mod production_map_interpreter;
 mod production_map_renderer;
 mod production_map_target;

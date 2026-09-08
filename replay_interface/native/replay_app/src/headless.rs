@@ -953,6 +953,8 @@ fn dump_production_recording_frame(
         &game_resolver.mounted_layer_roots(),
         &content_manifest.localisation_language,
     );
+    let graphics_runtime = map_viewer::ViewerGraphicsRuntime::new();
+    let application = graphics_runtime.new_application();
     let mut composition = crate::app::ProductMapCompositionSession::start_for_headless(
         &game_resolver,
         &content_admission,
@@ -969,7 +971,9 @@ fn dump_production_recording_frame(
         crate::win32::actual_client_input_variant(),
     )?;
     let xmap15_selection = map_viewer::xmap15_viewer_selection(&frame, None, None);
+    let application_frame = application.enter_frame()?;
     let executed = composition.execute(
+        application_frame.witness(),
         &game_resolver,
         &content_admission,
         content_manifest,
@@ -982,6 +986,10 @@ fn dump_production_recording_frame(
         false,
         ui_profile.key().gui_scale(),
     );
+    match &executed {
+        Ok(_) => application_frame.finish(map_viewer::ApplicationFrameExit::Normal)?,
+        Err(_) => application_frame.invalidate(),
+    }
     phases.mark("render_execute");
     for cost in composition.last_family_costs() {
         eprintln!(

@@ -2167,6 +2167,9 @@ mod tests {
 
     #[test]
     fn viewer_phase_reaches_scene_bytes_through_foundation_water_binding() {
+        let graphics_runtime = crate::ViewerGraphicsRuntime::new();
+        let application = graphics_runtime.new_application();
+        let application_frame = application.enter_frame().unwrap();
         use crate::xmap07_snow_mud_phase::{Xmap07SnowMudPhaseDurations, Xmap07SnowMudPhaseState};
         use crate::production_features::xmap07::{Xmap07SceneSnowMudInput, Xmap07WaterTemporalBinding};
         struct Source;
@@ -2195,7 +2198,7 @@ mod tests {
             (&next, 101.0, 0, 0.25), (&next, 101.25, 4, 0.5),
         ] {
             let phase = state.sample(world, now, speed, &durations).unwrap();
-            let mut context = crate::FoundationFeatureContext::new_for_owned_accounting_tests(
+            let mut context = crate::FoundationFeatureContext::new_for_owned_accounting_tests(application_frame.witness(),
                 world, &viewer, &[], &[], &selection,
             );
             context.snow_mud_phase = Some(&phase);

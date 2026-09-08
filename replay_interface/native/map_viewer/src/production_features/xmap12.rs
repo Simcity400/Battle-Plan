@@ -428,6 +428,9 @@ mod tests {
     /// `objects.` census in either direction.
     #[test]
     fn the_family_owns_exactly_the_object_rows_and_two_of_them_can_never_gap() {
+        let graphics_runtime = crate::ViewerGraphicsRuntime::new();
+        let application = graphics_runtime.new_application();
+        let application_frame = application.enter_frame().unwrap();
         use crate::map_authority::{
             map_authority_owner_proven_admission, map_authority_viewer_derived_admission,
             MapAuthorityGap, MapAuthorityRequirementDisposition, MAP_AUTHORITY_REQUIRED_INPUTS,
@@ -486,7 +489,7 @@ mod tests {
             selected_plan: None,
         };
         let frame = crate::test_support::frame_with_rest(serde_json::json!({}));
-        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
+        let context = FoundationFeatureContext::new_for_owned_accounting_tests(application_frame.witness(),
             &frame, &viewer, &gaps, &[], &selection,
         );
         assert_eq!(
@@ -526,6 +529,9 @@ mod tests {
     /// recorded operand, follow the lifecycle's refusal.
     #[test]
     fn the_lifecycle_admission_is_the_rows_own_status_and_carries_its_measured_set() {
+        let graphics_runtime = crate::ViewerGraphicsRuntime::new();
+        let application = graphics_runtime.new_application();
+        let application_frame = application.enter_frame().unwrap();
         use crate::map_authority::map_authority_viewer_derived_input_status;
         use crate::test_support::{bare_viewer, frame_with_rest};
         use crate::xmap12_population::xmap12_canonical_dlc_names;
@@ -579,7 +585,7 @@ mod tests {
                 selected_owner: None,
                 selected_plan: None,
             };
-            let context = FoundationFeatureContext::new_for_owned_accounting_tests(
+            let context = FoundationFeatureContext::new_for_owned_accounting_tests(application_frame.witness(),
                 &frame, &viewer, &[], &[], &selection,
             );
             let row_status = map_authority_viewer_derived_input_status(&frame, LIFECYCLE)

@@ -131,6 +131,8 @@ fn execute(
         crate::win32::actual_client_input_variant(),
     )?;
     let selection = map_viewer::xmap15_viewer_selection(&world, None, None);
+    let graphics_runtime = map_viewer::ViewerGraphicsRuntime::new();
+    let application = graphics_runtime.new_application();
     let mut composition = crate::app::ProductMapCompositionSession::start_for_headless(
         &resolver,
         &admission,
@@ -159,7 +161,9 @@ fn execute(
         let delta = f32::from_bits(viewer.frame_delta_seconds_f32_bits);
         viewer.animation_time_f32_bits =
             (f32::from_bits(viewer.animation_time_f32_bits) + delta).to_bits();
+        let application_frame = application.enter_frame()?;
         let executed = composition.execute(
+            application_frame.witness(),
             &resolver,
             &admission,
             manifest,
@@ -173,8 +177,12 @@ fn execute(
             ui.key().gui_scale(),
         );
         let receipt = match executed {
-            Ok(receipt) => receipt,
+            Ok(receipt) => {
+                application_frame.finish(map_viewer::ApplicationFrameExit::Normal)?;
+                receipt
+            },
             Err(error) => {
+                application_frame.invalidate();
                 writeln!(
                     log,
                     "{}",

@@ -197,6 +197,7 @@ impl FoundationContentExecutionReceipt {
 }
 
 pub struct FoundationFeatureContext<'a> {
+    pub application_frame: &'a crate::ApplicationFrameWitness,
     pub world_frame: &'a WorldFrame,
     pub viewer: &'a ViewerOwnedMapState,
     pub map_authority_gaps: &'a [MapAuthorityGap],
@@ -235,6 +236,7 @@ impl<'a> FoundationFeatureContext<'a> {
     /// field stays `None` and every hash is blank, which is exactly the shape
     /// where only the accounting and selection stages are reachable.
     pub(crate) fn new_for_owned_accounting_tests(
+        application_frame: &'a crate::ApplicationFrameWitness,
         world_frame: &'a WorldFrame,
         viewer: &'a ViewerOwnedMapState,
         map_authority_gaps: &'a [MapAuthorityGap],
@@ -242,6 +244,7 @@ impl<'a> FoundationFeatureContext<'a> {
         xmap15_selection: &'a crate::production_features::xmap15::Xmap15ViewerSelection,
     ) -> Self {
         Self {
+            application_frame,
             world_frame,
             viewer,
             map_authority_gaps,
@@ -792,6 +795,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
 
     pub fn prepare_with_xmap12_inputs(
         &self,
+        application_frame: &crate::ApplicationFrameWitness,
         world_frame: &WorldFrame,
         viewer: &ViewerOwnedMapState,
         manifest: &ContentManifest,
@@ -802,6 +806,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
     ) -> Result<PreparedFoundationFrame> {
         let selection = crate::production_features::xmap15::Xmap15ViewerSelection::default();
         prepare_foundation_frame_inner(
+            application_frame,
             world_frame,
             viewer,
             manifest,
@@ -816,6 +821,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
 
     pub fn prepare_with_xmap12_and_xmap15_inputs(
         &self,
+        application_frame: &crate::ApplicationFrameWitness,
         world_frame: &WorldFrame,
         viewer: &ViewerOwnedMapState,
         manifest: &ContentManifest,
@@ -826,6 +832,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
         snow_mud_phase: Option<&crate::xmap07_snow_mud_phase::Xmap07SnowMudPhaseSample>,
     ) -> Result<PreparedFoundationFrame> {
         prepare_foundation_frame_inner(
+            application_frame,
             world_frame,
             viewer,
             manifest,
@@ -1395,6 +1402,7 @@ fn validate_xmap16_operation_rows(
 }
 
 pub fn prepare_foundation_frame(
+    application_frame: &crate::ApplicationFrameWitness,
     world_frame: &WorldFrame,
     viewer: &ViewerOwnedMapState,
     manifest: &ContentManifest,
@@ -1404,6 +1412,7 @@ pub fn prepare_foundation_frame(
 ) -> Result<PreparedFoundationFrame> {
     let selection = crate::production_features::xmap15::Xmap15ViewerSelection::default();
     prepare_foundation_frame_inner(
+        application_frame,
         world_frame,
         viewer,
         manifest,
@@ -1481,6 +1490,7 @@ fn validate_xmap15_foundation_disposition(
 }
 
 fn prepare_foundation_frame_inner(
+    application_frame: &crate::ApplicationFrameWitness,
     world_frame: &WorldFrame,
     viewer: &ViewerOwnedMapState,
     manifest: &ContentManifest,
@@ -1492,6 +1502,7 @@ fn prepare_foundation_frame_inner(
     snow_mud_phase: Option<&crate::xmap07_snow_mud_phase::Xmap07SnowMudPhaseSample>,
 ) -> Result<PreparedFoundationFrame> {
     *adapters.model_hit_publication.borrow_mut() = None;
+    application_frame.published_stamp()?;
     viewer.validate()?;
     content_receipt.validate()?;
     let manifest_sha256 = manifest
@@ -1562,6 +1573,7 @@ fn prepare_foundation_frame_inner(
         };
         let shared_entity_effects = publish.then(|| adapters.shared_entity_effects.borrow());
         let mut context = FoundationFeatureContext {
+            application_frame,
             world_frame,
             viewer,
             map_authority_gaps: map_admission.gaps(),
@@ -3003,6 +3015,9 @@ mod tests {
 
     #[test]
     fn later_population_failure_drains_both_owners_and_requires_explicit_recovery() {
+        let graphics_runtime = crate::ViewerGraphicsRuntime::new();
+        let application = graphics_runtime.new_application();
+        let application_frame = application.enter_frame().unwrap();
         use crate::particle_runtime::*;
         struct Adapter {
             family: MapVisualFamily,
@@ -3040,7 +3055,7 @@ mod tests {
             map_mode_id: "political".into(), map_mode_selection_epoch: 0, selected_object_ids: vec![],
             input_revision: 0, animation_time_f32_bits: 1.0f32.to_bits(), frame_delta_seconds_f32_bits: 0.5f32.to_bits() };
         let selection = crate::production_features::xmap15::Xmap15ViewerSelection::default();
-        let context = FoundationFeatureContext::new_for_owned_accounting_tests(&world, &viewer, &[], &[], &selection);
+        let context = FoundationFeatureContext::new_for_owned_accounting_tests(application_frame.witness(), &world, &viewer, &[], &[], &selection);
         let fail = std::rc::Rc::new(std::cell::Cell::new(true));
         let mut adapters = ProductionMapFeatureAdapters::default();
         for (family, pending) in [MapVisualFamily::UnitsCounters, MapVisualFamily::LightingShadows]

@@ -20,15 +20,34 @@ pub(crate) mod animated_bounds;
 
 #[derive(Clone)]
 struct RetainedModelBounds {
-    animation: Arc<MeshAnimationAdmission>,
+    // The mesh object exists even when animation construction is unqualified.
+    mesh: Arc<Xmap12SharedMesh>,
+    animation: std::result::Result<Arc<MeshAnimationAdmission>, String>,
     library: Arc<Xmap12MeshLibrary>,
     clip_sources: Vec<portable_content_manifest::UsedContentKey>,
     clips: Vec<(u64, SelectedEntityClip)>,
-    // Equality with the current render-frame stamp; changing frame alone does
-    // not write the animation object's retained evaluation flag.
-    stamped_in_frame: bool,
+    // Mesh+50 survives frame entry and state changes; only root construction
+    // resets it. Eligibility remains a separate retained native field.
+    mesh_stamp: u32,
+    application_owner: crate::application_frame::ApplicationFrameOwner,
     mesh_visible: bool,
-    native: std::result::Result<animated_bounds::NativeAnimatedBounds, String>,
+    native: std::result::Result<Option<animated_bounds::NativeAnimatedBounds>, String>,
+}
+
+pub(crate) enum RootModelConstruction {
+    Admitted(Arc<MeshAnimationAdmission>),
+    Unavailable { mesh_source: portable_content_manifest::UsedContentKey, reason: String },
+}
+
+impl RetainedModelBounds {
+    fn same_binding(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.mesh, &other.mesh) && Arc::ptr_eq(&self.library, &other.library)
+            && match (&self.animation, &other.animation) {
+                (Ok(left), Ok(right)) => Arc::ptr_eq(left, right),
+                (Err(left), Err(right)) => left == right,
+                _ => false,
+            }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1317,16 +1336,18 @@ impl DerivedLightRows {
         self.root_animation(resolver, admission, root)?;
         let retained = self.poses.get(root).and_then(|state| state.model_bounds.as_ref())
             .ok_or("animated bounds: retained root construction unavailable")?;
-        if !Arc::ptr_eq(animation, &retained.animation) {
+        let retained_animation = retained.animation.as_ref().map_err(|reason| reason.clone())?;
+        if !Arc::ptr_eq(animation, retained_animation) {
             return Err("animated bounds: retained construction differs".into());
         }
-        retained.animation.checked(resolver, admission, &retained.library)?;
+        retained_animation.checked(resolver, admission, &retained.library)?;
         for source in &retained.clip_sources {
             if admission.require_used_content(&source.normalized_game_relative_path)? != source {
                 return Err("animated bounds: clip content differs".into());
             }
         }
-        let result = retained.native.as_ref().map_err(|reason| reason.clone())?.read()
+        let result = retained.native.as_ref().map_err(|reason| reason.clone())?
+            .as_ref().ok_or("animated bounds: root has no animation object")?.read()
             .map_err(|reason| -> Box<dyn std::error::Error> { reason.into() });
         self.root_animation(resolver, admission, root)?;
         result
@@ -1340,12 +1361,14 @@ impl DerivedLightRows {
         self.root_animation(resolver, admission, root)?;
         let retained = self.poses.get(root).and_then(|state| state.model_bounds.as_ref())
             .ok_or("animated pose: retained root construction unavailable")?;
-        let view = retained.animation.checked(resolver, admission, library)?;
+        let animation = retained.animation.as_ref().map_err(|reason| reason.clone())?;
+        let view = animation.checked(resolver, admission, library)?;
         if view.mesh_source != mesh_source || view.declaration_source != declaration_source {
             return Err("animated pose: published mesh differs from retained construction".into());
         }
-        self.root_model_bounds(resolver, admission, root, &retained.animation)?;
-        let pose = retained.native.as_ref().map_err(|reason| reason.clone())?.read_pose()?;
+        self.root_model_bounds(resolver, admission, root, animation)?;
+        let pose = retained.native.as_ref().map_err(|reason| reason.clone())?
+            .as_ref().ok_or("animated pose: root has no animation object")?.read_pose()?;
         let resolve = |entry: u64, animation: &Arc<PdxAnimData>| -> Result<SelectedEntityClip> {
             let (_, clip) = retained.clips.iter().find(|(id, clip)| *id == entry
                 && Arc::ptr_eq(&clip.animation, animation))
@@ -1569,7 +1592,7 @@ fn read_asset(resolver: &GameFileResolver, path: &str) -> Result<Vec<u8>> {
 
 impl EntityAnimation {
     fn retain_clip_identity(&self, bounds: &mut RetainedModelBounds) {
-        let Ok(native) = &bounds.native else { return; };
+        let Ok(Some(native)) = &bounds.native else { return; };
         let needed = native.retained_entries();
         bounds.clips.retain(|(entry, _)| needed.contains(&Some(*entry)));
         let Some(entry) = native.current_entry() else { return; };
@@ -1582,20 +1605,20 @@ impl EntityAnimation {
             }
         }
     }
-    fn retain_model_bounds(&mut self, previous: &Self) {
+    fn retain_model_bounds(&mut self, previous: &Self) -> Result<()> {
         self.model_bounds = previous.model_bounds.clone();
         if let Some(bounds) = &mut self.model_bounds {
             if let Some(source) = &self.clip_source {
                 if !bounds.clip_sources.contains(source) { bounds.clip_sources.push(source.clone()); }
             }
-            if let Ok(native) = &mut bounds.native {
+            if let Ok(Some(native)) = &mut bounds.native {
                 // 1422755a0 skips PlayAnimation for event-only states. Definition
                 // +0x208 initializes to +0; an absent authored blend uses that value.
                 if self.clip.is_some() {
                     native.play(self.clip.clone(), self.playhead, self.authored_speed,
                         self.looping, self.blend_time.unwrap_or(0.0));
                     // 1422677f0 refreshes eligibility after PlayAnimation.
-                    native.set_eligible(bounds.mesh_visible && bounds.stamped_in_frame);
+                    native.set_eligible(bounds.mesh_visible && bounds.mesh_stamp == bounds.application_owner.published_stamp()?);
                 }
             }
         }
@@ -1603,6 +1626,7 @@ impl EntityAnimation {
             self.retain_clip_identity(&mut bounds);
             self.model_bounds = Some(bounds);
         }
+        Ok(())
     }
 
     fn load(
@@ -2097,11 +2121,11 @@ impl ViewerLightLifecycle {
         let mut state = EntityAnimation::load(&constructor, assets, resolver, require_pose, self.include_particle_only_events, random)?;
         if let Some(mut bounds) = self.staged_model_bounds.remove(&row.id) {
             if let Some(source) = &state.clip_source { bounds.clip_sources.push(source.clone()); }
-            if let Ok(native) = &mut bounds.native {
+            if let Ok(Some(native)) = &mut bounds.native {
                 if state.clip.is_some() {
                     native.play(state.clip.clone(), state.playhead, state.authored_speed,
                         state.looping, state.blend_time.unwrap_or(0.0));
-                    native.set_eligible(bounds.mesh_visible && bounds.stamped_in_frame);
+                    native.set_eligible(bounds.mesh_visible && bounds.mesh_stamp == bounds.application_owner.published_stamp()?);
                 }
             }
             state.retain_clip_identity(&mut bounds);
@@ -2121,7 +2145,7 @@ impl ViewerLightLifecycle {
                 return Ok(());
             }
             let mut state = self.load_replacement_state(&row.id, row, assets, resolver, require_pose, offset_range, random)?;
-            state.retain_model_bounds(&self.entities[&row.id]);
+            state.retain_model_bounds(&self.entities[&row.id])?;
             self.entities.insert(row.id.clone(), state);
             self.propagate_static_state_with_offset_range(&row.id, assets, resolver, offset_range, random)?;
         }
@@ -2238,7 +2262,7 @@ impl ViewerLightLifecycle {
             let child = &self.entities[&child_id];
             next.speed = child.speed;
             next.visible = child.visible;
-            next.retain_model_bounds(child);
+            next.retain_model_bounds(child)?;
             next.requested_state = child.requested_state.clone();
             next.requested_offset_range = child.requested_offset_range;
             self.entities.insert(child_id.clone(), next);
@@ -2311,7 +2335,7 @@ impl ViewerLightLifecycle {
             next.visible = visible;
             next.requested_state = requested_state;
             next.requested_offset_range = requested_offset_range;
-            next.retain_model_bounds(&self.entities[&row.id]);
+            next.retain_model_bounds(&self.entities[&row.id])?;
             self.entities.insert(row.id.clone(), next);
         }
         self.propagate_static_state_packet(&row.id, assets, resolver, offset_range, true, random)
@@ -2554,7 +2578,7 @@ impl ViewerLightLifecycle {
                 // skip and re-enters even the same state. A selected clip restarts
                 // its clock; bounds remain retained until evaluation. Event-only
                 // entry still skips play.
-                next.retain_model_bounds(&self.entities[id]);
+                next.retain_model_bounds(&self.entities[id])?;
                 next.speed = speed;
                 next.visible = self.entities[id].visible;
                 next.requested_state = requested_state;
@@ -2802,8 +2826,7 @@ impl ViewerLightLifecycle {
                 if existing.token == row.entity_token
                     && (existing.model_bounds.is_some() || binding.is_some())
                     && existing.model_bounds.as_ref().zip(binding).is_none_or(|(retained, binding)|
-                        !Arc::ptr_eq(&retained.animation, &binding.animation)
-                            || !Arc::ptr_eq(&retained.library, &binding.library)) {
+                        !retained.same_binding(binding)) {
                     return Err(missing(format!("animated bounds: retained root receipt changed: {}", row.id)));
                 }
             }
@@ -2842,7 +2865,7 @@ impl ViewerLightLifecycle {
                         let previous = &self.entities[&row.id];
                         state.speed = previous.speed;
                         state.visible = previous.visible;
-                        state.retain_model_bounds(previous);
+                        state.retain_model_bounds(previous)?;
                         self.entities.insert(row.id.clone(), state);
                         self.propagate_static_state_with_offset_range(&row.id, &assets, resolver, offset_range, random)?;
                     } else {
@@ -2995,12 +3018,14 @@ impl ViewerLightLifecycle {
             })
     }
 
-    pub(crate) fn begin_model_bounds_frame(&mut self) {
-        // stage_land_population is a new render preparation even when replay
-        // animation time is paused; the render stamp is a separate clock.
-        for state in self.entities.values_mut() {
-            if let Some(bounds) = &mut state.model_bounds { bounds.stamped_in_frame = false; }
+    pub(crate) fn begin_model_bounds_frame(&mut self, frame: &crate::ApplicationFrameWitness) -> Result<()> {
+        frame.published_stamp()?;
+        for state in self.entities.values() {
+            if let Some(bounds) = &state.model_bounds {
+                bounds.application_owner.check(frame)?;
+            }
         }
+        Ok(())
     }
 
     pub(crate) fn advance_model_bounds_manager(&mut self, prepared: &PreparedLightEntityFrame) {
@@ -3010,37 +3035,79 @@ impl ViewerLightLifecycle {
         // any entity or play an automatic next-state clip.
         for state in self.entities.values_mut() {
             if let Some(bounds) = &mut state.model_bounds {
-                if let Ok(native) = &mut bounds.native { native.advance(delta, state.speed); }
+                if let Ok(Some(native)) = &mut bounds.native { native.advance(delta, state.speed); }
             }
         }
     }
 
-    pub(crate) fn stamp_root_model_bounds(&mut self, root: &str) -> Result<()> {
+    pub(crate) fn stamp_root_model_bounds(&mut self, frame: &crate::ApplicationFrameWitness, root: &str) -> Result<()> {
+        frame.published_stamp()?;
         let state = self.entities.get_mut(root).ok_or("animated bounds: stamped root unavailable")?;
         if let Some(bounds) = &mut state.model_bounds {
-            if !bounds.stamped_in_frame {
-                bounds.stamped_in_frame = true;
-                if let Ok(native) = &mut bounds.native { native.set_eligible(bounds.mesh_visible); }
+            let stamp = bounds.application_owner.check(frame)?;
+            if bounds.mesh_stamp != stamp {
+                bounds.mesh_stamp = stamp;
+                if let Ok(Some(native)) = &mut bounds.native {
+                    native.set_eligible(bounds.mesh_visible && bounds.mesh_stamp == bounds.application_owner.published_stamp()?);
+                }
             }
         }
         Ok(())
     }
 
-    pub(crate) fn stage_root_model_bounds(&mut self, resolver: &GameFileResolver,
+    /// 1422c24d0 queries primary/west/east in order. Rejected camera tests
+    /// still return M==live S, including constructor M=0 at a low32 wrap.
+    pub(crate) fn root_model_cull_mask(&mut self, frame: &crate::ApplicationFrameWitness,
+        root: &str, cameras: [bool; 3], geometric_query: &mut dyn FnMut(usize) -> Result<bool>) -> Result<u8> {
+        frame.published_stamp()?;
+        let state = self.entities.get(root).ok_or("animated bounds: culled root unavailable")?;
+        let bounds = state.model_bounds.as_ref().ok_or("mesh cull: retained construction unavailable")?;
+        bounds.application_owner.check(frame)?;
+        let mut mask = 0;
+        for (pass, active) in cameras.into_iter().enumerate() {
+            if !active { continue; }
+            if geometric_query(pass)? { self.stamp_root_model_bounds(frame, root)?; }
+            let bounds = self.entities[root].model_bounds.as_ref().unwrap();
+            if bounds.mesh_stamp == bounds.application_owner.check(frame)? { mask |= 1 << pass; }
+        }
+        Ok(mask)
+    }
+
+    pub(crate) fn stage_root_model_bounds(&mut self, frame: &crate::ApplicationFrameWitness, resolver: &GameFileResolver,
         admission: &replay_core::ValidatedContentAdmission, library: &Arc<Xmap12MeshLibrary>,
-        roots: Vec<(String, Arc<MeshAnimationAdmission>, f32)>) -> Result<()> {
+        roots: Vec<(String, RootModelConstruction, f32)>) -> Result<()> {
         self.staged_model_bounds.clear();
+        frame.published_stamp()?;
         let mut staged = BTreeMap::new();
-        for (root, animation, scale) in roots {
-            let view = animation.checked(resolver, admission, library)?;
-            let MeshAnimationConstruction::Constructed { object_ordinal, child_ordinal, skeleton_ordinal, .. }
-                = view.construction else { continue; };
-            let child = &view.mesh.raw_asset_tree().root.children[object_ordinal].children[child_ordinal];
-            let skeleton = &child.children[skeleton_ordinal];
-            let native = animated_bounds::NativeBoundsSkeleton::load(child, skeleton, scale)
-                .map(animated_bounds::NativeAnimatedBounds::new);
-            if staged.insert(root, RetainedModelBounds { animation, library: library.clone(),
-                clip_sources: Vec::new(), clips: Vec::new(), native, stamped_in_frame: false, mesh_visible: true }).is_some() {
+        for (root, construction, scale) in roots {
+            let (mesh, animation, native) = match construction {
+                RootModelConstruction::Admitted(animation) => {
+                    let view = animation.checked(resolver, admission, library)?;
+                    let mesh = view.mesh.clone();
+                    let native = match view.construction {
+                        MeshAnimationConstruction::Constructed { object_ordinal, child_ordinal, skeleton_ordinal, .. } => {
+                            let child = &view.mesh.raw_asset_tree().root.children[object_ordinal].children[child_ordinal];
+                            let skeleton = &child.children[skeleton_ordinal];
+                            animated_bounds::NativeBoundsSkeleton::load(child, skeleton, scale)
+                                .map(animated_bounds::NativeAnimatedBounds::new).map(Some)
+                        },
+                        MeshAnimationConstruction::NotInvokedEmptyLookup | MeshAnimationConstruction::LoaderReturnedNull => Ok(None),
+                    };
+                    (mesh, Ok(animation), native)
+                },
+                RootModelConstruction::Unavailable { mesh_source, reason } => {
+                    let lease = resolver.content_admission_lease()
+                        .ok_or("mesh construction has no current content admission")?;
+                    if lease.manifest_digest_sha256() != Some(admission.manifest_digest_sha256()) {
+                        return Err("mesh construction belongs to another content admission".into());
+                    }
+                    library.require_admitted(resolver, admission, &mesh_source)?;
+                    let mesh = library.shared_mesh(resolver, admission, &mesh_source)?;
+                    (mesh, Err(reason.clone()), Err(reason))
+                },
+            };
+            if staged.insert(root, RetainedModelBounds { mesh, animation, library: library.clone(),
+                clip_sources: Vec::new(), clips: Vec::new(), native, mesh_stamp: 0, application_owner: frame.application_owner(), mesh_visible: true }).is_some() {
                 return Err("animated bounds: duplicate staged root".into());
             }
         }
@@ -4173,6 +4240,9 @@ entity={name=child pdxmesh=mesh cull_radius=500 default_state=boot state={name=b
 
     #[test]
     fn actual_lighting_adapter_draws_weather_without_mesh_rows_and_culls_real_bounds() {
+        let graphics_runtime = crate::ViewerGraphicsRuntime::new();
+        let application = graphics_runtime.new_application();
+        let application_frame = application.enter_frame().unwrap();
         use crate::production_foundation::*;
         use crate::production_features::{xmap09::Xmap09LightingAdapter, xmap15::Xmap15ViewerSelection};
         use replay_core::{RawFrame, ReplaySource, SourceError, WorldTimeline};
@@ -4229,7 +4299,7 @@ entity={name=child pdxmesh=mesh cull_radius=500 default_state=boot state={name=b
             weather.deterministic_sha256.clear();
             weather.deterministic_sha256 = snapshot::sha256::Sha256::hex(&serde_json::to_vec(&weather).unwrap());
             weather.validate().unwrap();
-            let mut context = FoundationFeatureContext::new_for_owned_accounting_tests(&world, &viewer, &[], &[], &selection);
+            let mut context = FoundationFeatureContext::new_for_owned_accounting_tests(application_frame.witness(), &world, &viewer, &[], &[], &selection);
             context.prepared_map_objects = Some(&meshes);
             context.prepared_weather = Some(&weather);
             adapter.prepare_entity_manager_population(&context).unwrap();
@@ -4373,7 +4443,9 @@ entity={name=child pdxmesh=mesh cull_radius=500 default_state=boot state={name=b
         for outcome in 0..3 {
             mode.set(outcome);
             calls.borrow_mut().clear();
-            let error = prepare_foundation_frame(&world, &viewer, &manifest, &receipt, &adapters, None)
+            let application = crate::ViewerGraphicsRuntime::new().new_application();
+            let application_frame = application.enter_frame().unwrap();
+            let error = prepare_foundation_frame(application_frame.witness(), &world, &viewer, &manifest, &receipt, &adapters, None)
                 .err().expect("the fixture deliberately omits mandatory terrain").to_string();
             assert!(error.contains("XMAP04 refuses the mandatory Terrain"), "{error}");
             let expected = if outcome == 0 {
@@ -6951,7 +7023,8 @@ entity = { name = entity pdxmesh = mesh default_state = boot
     ) -> crate::particle_authored::test_support::Fixture {
         use crate::particle_authored::test_support::{Fixture, REGISTRATION};
         let graphics = format!("@lookup = idle\n@clip = clip_a\nobjectTypes={{pdxmesh = {{\n name = mesh\n file = \"gfx/model.mesh\"\n{lookups}\n}}}}\n");
-        let registry = "animation={name=clip_a file=\"test.anim\"}\nanimation={name=clip_b file=\"test.anim\"}\nentity={name=entity pdxmesh=mesh default_state=idle state={name=idle animation=idle}}\n";
+        let state_animation = if lookups.is_empty() { "" } else { "animation=idle" };
+        let registry = format!("animation={{name=clip_a file=\"test.anim\"}}\nanimation={{name=clip_b file=\"test.anim\"}}\nentity={{name=entity pdxmesh=mesh default_state=idle state={{name=idle {state_animation}}}}}\n");
         Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[
             ("gfx/model.mesh", mesh), ("gfx/test.anim", clip),
             ("gfx/construction.asset", registry.as_bytes()),
@@ -6962,6 +7035,8 @@ entity = { name = entity pdxmesh = mesh default_state = boot
 
     #[test]
     fn ordinary_and_automatic_entries_retain_authenticated_model_bounds_history() {
+        let graphics_runtime = crate::ViewerGraphicsRuntime::new();
+        let application = graphics_runtime.new_application();
         use crate::particle_authored::test_support::{Fixture, REGISTRATION};
         use crate::pdx_mesh::test_fixtures::{push_object, push_prop_f, push_prop_i};
         let mut mesh = crate::pdx_mesh::test_fixtures::synthetic_mesh_bytes(0.0);
@@ -6997,15 +7072,16 @@ entity={name=entity pdxmesh=mesh default_state=idle
         let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
         let entry = |lifecycle: &ViewerLightLifecycle| {
             let bounds = lifecycle.entities[&root].model_bounds.as_ref().unwrap();
-            assert!(Arc::ptr_eq(&bounds.animation, &receipt));
+            assert!(Arc::ptr_eq(bounds.animation.as_ref().unwrap(), &receipt));
             assert!(Arc::ptr_eq(&bounds.library, &library));
-            bounds.native.as_ref().unwrap().current_entry().unwrap()
+            bounds.native.as_ref().unwrap().as_ref().unwrap().current_entry().unwrap()
         };
         let publish = |lifecycle: &mut ViewerLightLifecycle, placed: &[Xmap09PlacedEntity],
                        viewer: &ViewerOwnedMapState, ranges: &BTreeMap<String, f32>| {
-            lifecycle.begin_model_bounds_frame();
-            lifecycle.stage_root_model_bounds(&content.resolver, &content.admission, &library,
-                vec![(root.clone(), receipt.clone(), 1.0)]).unwrap();
+            let application_frame = application.enter_frame().unwrap();
+            lifecycle.begin_model_bounds_frame(application_frame.witness()).unwrap();
+            lifecycle.stage_root_model_bounds(application_frame.witness(), &content.resolver, &content.admission, &library,
+                vec![(root.clone(), RootModelConstruction::Admitted(receipt.clone()), 1.0)]).unwrap();
             let prepared = lifecycle.prepare_ordinary_entity_frame(
                 &content.resolver, placed, viewer, ranges).unwrap();
             lifecycle.advance_model_bounds_manager(&prepared);
@@ -7024,7 +7100,9 @@ entity={name=entity pdxmesh=mesh default_state=idle
                 &mut [crate::particle_runtime::EntityEffectDispatch { owner, advance: &mut advance }]).unwrap();
             let rows = lifecycle.finish_entity_frame(&content.resolver, prepared).unwrap();
             assert!(lifecycle.staged_model_bounds.is_empty());
-            rows.root_animation(&content.resolver, &content.admission, &root).unwrap().playhead_seconds
+            let playhead = rows.root_animation(&content.resolver, &content.admission, &root).unwrap().playhead_seconds;
+            application_frame.finish(crate::ApplicationFrameExit::Normal).unwrap();
+            playhead
         };
         placed[0].state = Some("idle".into());
         viewer.animation_time_f32_bits = 0.0f32.to_bits();
@@ -7060,7 +7138,161 @@ entity={name=entity pdxmesh=mesh default_state=idle
     }
 
     #[test]
+    fn numeric_mesh_stamp_distinguishes_zero_wrap_and_preserves_callback_noop() {
+        let content = construction_fixture("animation={id=idle type=clip_a}", 2);
+        let library = Arc::new(Xmap12MeshLibrary::new());
+        let receipt = EntityAssets::load(&content.resolver).unwrap().mesh_animation_admission(
+            &content.resolver, &content.admission, "mesh",
+            content.admission.require_used_content("gfx/construction.gfx").unwrap(),
+            content.admission.require_used_content("gfx/model.mesh").unwrap(), &library).unwrap();
+        let (_, placed, viewer) = fixture(1);
+        let root = &placed[0].id;
+        for counter in [1, 1u64 << 32] {
+            let runtime = crate::ViewerGraphicsRuntime::new();
+            let application = runtime.new_application();
+            application.set_counter_for_test(counter);
+            let frame = application.enter_frame().unwrap();
+            let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+            lifecycle.begin_model_bounds_frame(frame.witness()).unwrap();
+            lifecycle.stage_root_model_bounds(frame.witness(), &content.resolver,
+                &content.admission, &library, vec![(root.clone(), RootModelConstruction::Admitted(receipt.clone()), 1.0)]).unwrap();
+            lifecycle.prepare_entity_frame(&content.resolver, &placed, &viewer, None).unwrap();
+            let bounds = lifecycle.entities.get_mut(root).unwrap().model_bounds.as_mut().unwrap();
+            assert_eq!(bounds.mesh_stamp, 0);
+            assert_eq!(bounds.native.as_ref().unwrap().as_ref().unwrap().eligible_for_test(), counter as u32 == 0,
+                "actual constructor Play reads numeric M==S at {counter:#x}");
+            // An equal stamp must leave retained eligibility alone: it does not
+            // invoke the mesh callback, even when that callback would set true.
+            bounds.native.as_mut().unwrap().as_mut().unwrap().set_eligible(false);
+            assert_eq!(lifecycle.root_model_cull_mask(frame.witness(), root, [true, false, true], &mut |pass| { assert_ne!(pass, 1); Ok(false) }).unwrap(),
+                if counter as u32 == 0 { 5 } else { 0 }, "reject reads M==S, but an uninvoked pass has no bit");
+            assert_eq!(lifecycle.root_model_cull_mask(frame.witness(), root, [true; 3], &mut |pass| Ok(pass == 1)).unwrap(),
+                if counter as u32 == 0 { 7 } else { 6 }, "west acceptance cannot change the earlier primary result");
+            let bounds = lifecycle.entities[root].model_bounds.as_ref().unwrap();
+            assert_eq!(bounds.mesh_stamp, counter as u32);
+            assert_eq!(bounds.native.as_ref().unwrap().as_ref().unwrap().eligible_for_test(), counter as u32 != 0);
+            assert_eq!(lifecycle.root_model_cull_mask(frame.witness(), root, [true; 3], &mut |_| Ok(false)).unwrap(), 7,
+                "a later same-frame camera rejection returns retained stamp equality");
+            frame.finish(crate::ApplicationFrameExit::Normal).unwrap();
+            let next = application.enter_frame().unwrap();
+            lifecycle.begin_model_bounds_frame(next.witness()).unwrap();
+            let bounds = lifecycle.entities[root].model_bounds.as_ref().unwrap();
+            assert_eq!(bounds.mesh_stamp, counter as u32, "frame entry retains M");
+            assert_eq!(bounds.native.as_ref().unwrap().as_ref().unwrap().eligible_for_test(), counter as u32 != 0,
+                "frame entry retains E");
+            assert_eq!(lifecycle.root_model_cull_mask(next.witness(), root, [true; 3], &mut |_| Ok(false)).unwrap(), 0);
+            let mut reached = Vec::new();
+            let later_error = lifecycle.root_model_cull_mask(next.witness(), root, [true; 3], &mut |pass| {
+                reached.push(pass);
+                if pass == 0 { Ok(true) } else { Err("later camera query failed".into()) }
+            }).unwrap_err();
+            assert_eq!(later_error.to_string(), "later camera query failed");
+            assert_eq!(reached, vec![0, 1]);
+            assert_eq!(lifecycle.entities[root].model_bounds.as_ref().unwrap().mesh_stamp,
+                next.witness().published_stamp().unwrap(), "later failure discarded an earlier cull acceptance");
+            lifecycle.stamp_root_model_bounds(next.witness(), root).unwrap();
+            assert!(lifecycle.entities[root].model_bounds.as_ref().unwrap().native.as_ref().unwrap().as_ref().unwrap().eligible_for_test());
+            lifecycle.reset_population();
+            lifecycle.stage_root_model_bounds(next.witness(), &content.resolver,
+                &content.admission, &library, vec![(root.clone(), RootModelConstruction::Admitted(receipt.clone()), 1.0)]).unwrap();
+            lifecycle.prepare_entity_frame(&content.resolver, &placed, &viewer, None).unwrap();
+            assert_eq!(lifecycle.entities[root].model_bounds.as_ref().unwrap().mesh_stamp, 0,
+                "root recreation resets M without restarting application C/S");
+            assert_eq!(next.witness().published_stamp().unwrap(), counter.wrapping_add(1) as u32);
+            next.finish(crate::ApplicationFrameExit::Normal).unwrap();
+        }
+    }
+
+    #[test]
+    fn static_mesh_stamp_and_resumed_outer_invocation_keep_application_custody() {
+        for (lookup, joints, unavailable) in [("", 2, false), ("animation={id=idle type=clip_a}", 0, false),
+            ("animation={id=idle type=clip_a}", 2, false),
+            ("animation={id=initial type=unregistered} animation={id=idle type=clip_a}", 2, true)] {
+            let content = construction_fixture(lookup, joints);
+            let library = Arc::new(Xmap12MeshLibrary::new());
+            let receipt = EntityAssets::load(&content.resolver).unwrap().mesh_animation_admission(
+                &content.resolver, &content.admission, "mesh",
+                content.admission.require_used_content("gfx/construction.gfx").unwrap(),
+                content.admission.require_used_content("gfx/model.mesh").unwrap(), &library);
+            let construction = if unavailable {
+                let reason = receipt.err().unwrap().to_string();
+                assert_eq!(reason, "entity animation native-null not established: \"unregistered\"");
+                RootModelConstruction::Unavailable {
+                    mesh_source: content.admission.require_used_content("gfx/model.mesh").unwrap().clone(), reason,
+                }
+            } else { RootModelConstruction::Admitted(receipt.unwrap()) };
+            let (_, placed, viewer) = fixture(1);
+            let root = &placed[0].id;
+            let application = crate::ViewerGraphicsRuntime::new().new_application();
+            let outer = application.enter_frame().unwrap();
+            let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+            if unavailable {
+                // The earlier construction lookup has already warmed this mesh cache.
+                let other = construction_fixture("animation={id=idle type=clip_b}", 2);
+                let foreign = RootModelConstruction::Unavailable {
+                    mesh_source: content.admission.require_used_content("gfx/model.mesh").unwrap().clone(),
+                    reason: "entity animation native-null not established: \"unregistered\"".into(),
+                };
+                assert!(lifecycle.stage_root_model_bounds(outer.witness(), &content.resolver,
+                    &other.admission, &library, vec![(root.clone(), foreign, 1.0)]).is_err());
+                assert!(lifecycle.staged_model_bounds.is_empty());
+            }
+            lifecycle.stage_root_model_bounds(outer.witness(), &content.resolver,
+                &content.admission, &library, vec![(root.clone(), construction, 1.0)]).unwrap();
+            lifecycle.prepare_entity_frame(&content.resolver, &placed, &viewer, None).unwrap();
+            let bounds = lifecycle.entities[root].model_bounds.as_ref().unwrap();
+            assert_eq!(bounds.animation.is_err(), unavailable);
+            if unavailable {
+                assert_eq!(bounds.native.as_ref().err().unwrap(), "entity animation native-null not established: \"unregistered\"");
+            } else {
+                assert_eq!(bounds.native.as_ref().unwrap().is_some(), !lookup.is_empty() && joints != 0);
+            }
+            assert_eq!(lifecycle.root_model_cull_mask(outer.witness(), root, [true; 3], &mut |_| Ok(false)).unwrap(), 0);
+            assert_eq!(lifecycle.root_model_cull_mask(outer.witness(), root, [true; 3], &mut |pass| Ok(pass == 2)).unwrap(), 4);
+            application.enter_frame().unwrap().finish(crate::ApplicationFrameExit::Normal).unwrap();
+            let nested = application.enter_frame().unwrap();
+            lifecycle.begin_model_bounds_frame(nested.witness()).unwrap();
+            assert_eq!(lifecycle.root_model_cull_mask(nested.witness(), root, [true; 3], &mut |_| Ok(false)).unwrap(), 0);
+            lifecycle.stamp_root_model_bounds(nested.witness(), root).unwrap();
+            let expired = nested.witness().clone();
+            nested.finish(crate::ApplicationFrameExit::Normal).unwrap();
+            assert!(lifecycle.stamp_root_model_bounds(&expired, root).is_err());
+            assert_eq!(outer.witness().published_stamp().unwrap(), 2);
+            lifecycle.stamp_root_model_bounds(outer.witness(), root).unwrap();
+            assert_eq!(lifecycle.root_model_cull_mask(outer.witness(), root, [true; 3], &mut |_| Ok(false)).unwrap(), 7,
+                "nested completion must not replace the outer caller's invocation or restore S");
+            outer.finish(crate::ApplicationFrameExit::Normal).unwrap();
+            let owner = &lifecycle.entities[root].model_bounds.as_ref().unwrap().application_owner;
+            assert_eq!(owner.published_stamp(), Err(crate::ApplicationFrameError::ExpiredInvocation));
+            if unavailable {
+                let next = application.enter_frame().unwrap();
+                lifecycle.begin_model_bounds_frame(next.witness()).unwrap();
+                let construction = RootModelConstruction::Unavailable {
+                    mesh_source: content.admission.require_used_content("gfx/model.mesh").unwrap().clone(),
+                    reason: "entity animation native-null not established: \"unregistered\"".into(),
+                };
+                lifecycle.stage_root_model_bounds(next.witness(), &content.resolver,
+                    &content.admission, &library, vec![(root.clone(), construction, 1.0)]).unwrap();
+                lifecycle.prepare_entity_frame(&content.resolver, &placed, &viewer, None).unwrap();
+                assert_eq!(lifecycle.entities[root].model_bounds.as_ref().unwrap().mesh_stamp, 2,
+                    "same root with unavailable animation must retain the previous mesh stamp");
+                assert_eq!(lifecycle.root_model_cull_mask(next.witness(), root, [true; 3], &mut |_| Ok(false)).unwrap(), 0);
+                assert_eq!(lifecycle.root_model_cull_mask(next.witness(), root, [true; 3], &mut |pass| Ok(pass == 0)).unwrap(), 7);
+                assert_eq!(lifecycle.root_model_cull_mask(next.witness(), root, [true; 3], &mut |_| Ok(false)).unwrap(), 7);
+                assert!(lifecycle.entities[root].model_bounds.as_ref().unwrap().native.is_err());
+                next.finish(crate::ApplicationFrameExit::Normal).unwrap();
+            }
+            let foreign = crate::ViewerGraphicsRuntime::new().new_application();
+            let frame = foreign.enter_frame().unwrap();
+            assert!(lifecycle.begin_model_bounds_frame(frame.witness()).is_err());
+            frame.finish(crate::ApplicationFrameExit::Normal).unwrap();
+        }
+    }
+
+    #[test]
     fn staged_bounds_custody_clears_failures_and_requires_explicit_root_recreation() {
+        let application = crate::ViewerGraphicsRuntime::new().new_application();
+        let application_frame = application.enter_frame().unwrap();
         let content = construction_fixture("animation={id=idle type=clip_a}", 2);
         let library = Arc::new(Xmap12MeshLibrary::new());
         let receipt = || EntityAssets::load(&content.resolver).unwrap().mesh_animation_admission(
@@ -7073,12 +7305,19 @@ entity={name=entity pdxmesh=mesh default_state=idle
         let (_, placed, viewer) = fixture(1);
         let root = placed[0].id.clone();
         let stage = |lifecycle: &mut ViewerLightLifecycle, receipt: Arc<MeshAnimationAdmission>| {
-            lifecycle.stage_root_model_bounds(&content.resolver, &content.admission, &library,
-                vec![(root.clone(), receipt, 1.0)]).unwrap();
+            lifecycle.stage_root_model_bounds(application_frame.witness(), &content.resolver, &content.admission, &library,
+                vec![(root.clone(), RootModelConstruction::Admitted(receipt), 1.0)]).unwrap();
         };
         let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
-        assert!(lifecycle.stage_root_model_bounds(&content.resolver, &content.admission,
-            &Arc::new(Xmap12MeshLibrary::new()), vec![(root.clone(), first.clone(), 1.0)]).is_err());
+        assert!(lifecycle.stage_root_model_bounds(application_frame.witness(), &content.resolver, &content.admission,
+            &Arc::new(Xmap12MeshLibrary::new()), vec![(root.clone(), RootModelConstruction::Admitted(first.clone()), 1.0)]).is_err());
+        assert!(lifecycle.staged_model_bounds.is_empty());
+        stage(&mut lifecycle, first.clone());
+        let expired_frame = application.enter_frame().unwrap();
+        let expired_witness = expired_frame.witness().clone();
+        expired_frame.finish(crate::ApplicationFrameExit::Quit).unwrap();
+        assert!(lifecycle.stage_root_model_bounds(&expired_witness, &content.resolver, &content.admission,
+            &library, vec![(root.clone(), RootModelConstruction::Admitted(first.clone()), 1.0)]).is_err());
         assert!(lifecycle.staged_model_bounds.is_empty());
         stage(&mut lifecycle, first.clone());
         let mut invalid = viewer.clone();
@@ -7089,7 +7328,7 @@ entity={name=entity pdxmesh=mesh default_state=idle
         stage(&mut lifecycle, first.clone());
         lifecycle.prepare_entity_frame(&content.resolver, &placed, &viewer, None).unwrap();
         assert!(lifecycle.staged_model_bounds.is_empty());
-        assert!(Arc::ptr_eq(&lifecycle.entities[&root].model_bounds.as_ref().unwrap().animation, &first));
+        assert!(Arc::ptr_eq(lifecycle.entities[&root].model_bounds.as_ref().unwrap().animation.as_ref().unwrap(), &first));
         assert!(lifecycle.prepare_entity_frame(&content.resolver, &placed, &viewer, None).is_err(),
             "an existing animated root requires current incoming binding custody");
         assert!(lifecycle.staged_model_bounds.is_empty());
@@ -7105,8 +7344,8 @@ entity={name=entity pdxmesh=mesh default_state=idle
         stage(&mut lifecycle, second.clone());
         lifecycle.prepare_entity_frame(&content.resolver, &placed, &viewer, None).unwrap();
         let retained = lifecycle.entities[&root].model_bounds.as_ref().unwrap();
-        assert!(Arc::ptr_eq(&retained.animation, &second));
-        assert!(!Arc::ptr_eq(&retained.animation, &first));
+        assert!(Arc::ptr_eq(retained.animation.as_ref().unwrap(), &second));
+        assert!(!Arc::ptr_eq(retained.animation.as_ref().unwrap(), &first));
         stage(&mut lifecycle, second.clone());
         lifecycle.remove_entity(&root).unwrap();
         assert!(lifecycle.staged_model_bounds.is_empty());

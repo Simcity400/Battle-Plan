@@ -269,6 +269,8 @@ pub(crate) fn run(
         &resolver.mounted_layer_roots(),
         &manifest.localisation_language,
     );
+    let graphics_runtime = map_viewer::ViewerGraphicsRuntime::new();
+    let application = graphics_runtime.new_application();
     let mut composition = crate::app::ProductMapCompositionSession::start_for_benchmark(
         &resolver,
         &content_admission,
@@ -287,8 +289,10 @@ pub(crate) fn run(
     let gpu = composition.adapter_identity()?;
     validate_reference_gpu(&gpu)?;
     let mut render_one = |composition: &mut crate::app::ProductMapCompositionSession| {
+        let application_frame = application.enter_frame()?;
         advance_recording_benchmark_viewer_clock(&mut viewer, 1.0 / 60.0)?;
-        composition.execute(
+        let outcome = composition.execute(
+            application_frame.witness(),
             &resolver,
             &content_admission,
             manifest,
@@ -300,7 +304,12 @@ pub(crate) fn run(
             false,
             false,
             ui_profile.key().gui_scale(),
-        )
+        );
+        match &outcome {
+            Ok(_) => application_frame.finish(map_viewer::ApplicationFrameExit::Normal)?,
+            Err(_) => application_frame.invalidate(),
+        }
+        outcome
     };
     let mut last_composition = None;
     for _ in 0..options.warmup_frames {

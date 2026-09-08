@@ -3796,6 +3796,9 @@ mod tests {
     /// wiring — not just of the shared helper — flips them.
     #[test]
     fn prepare_owned_accounting_accepts_admitted_rows_and_rejects_double_booking() {
+        let graphics_runtime = crate::ViewerGraphicsRuntime::new();
+        let application = graphics_runtime.new_application();
+        let application_frame = application.enter_frame().unwrap();
         use crate::map_authority::{
             MapAuthorityAdmittedInput, MapAuthorityGap, MapAuthorityRequirementDisposition,
         };
@@ -3871,7 +3874,7 @@ mod tests {
 
         // Arm 1: an admitted owned row must pass accounting; the first error
         // `prepare()` may report is the (deliberately bogus) selection.
-        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
+        let context = FoundationFeatureContext::new_for_owned_accounting_tests(application_frame.witness(),
             &frame, &viewer, &gaps, &admitted, &selection,
         );
         let error = match adapter.prepare(&context) {
@@ -3892,7 +3895,7 @@ mod tests {
             disposition: MapAuthorityRequirementDisposition::Unavailable,
             reason: "test gap".to_string(),
         });
-        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
+        let context = FoundationFeatureContext::new_for_owned_accounting_tests(application_frame.witness(),
             &frame, &viewer, &double_booked, &admitted, &selection,
         );
         let error = match adapter.prepare(&context) {
