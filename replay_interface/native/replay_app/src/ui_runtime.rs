@@ -8,15 +8,6 @@ use crate::d3d::Gfx;
 use crate::text::ImageRenderer;
 use crate::Result;
 
-#[cfg(test)]
-#[path = "ui_runtime/xui08_public_entry_tests.rs"]
-mod xui08_public_entry_tests;
-
-#[cfg(test)]
-#[path = "ui_runtime/xui08_recording_dispatch_tests.rs"]
-mod xui08_recording_dispatch_tests;
-
-
 #[derive(Clone, Copy, Default)]
 pub struct ArmyBattleplanUiSupplementalInputs<'a> {
     pub selected_owner: Option<replay_core::ArmyBattleplanOwnerKey>,
@@ -7271,6 +7262,14 @@ impl ProductSelectedPresentPerformanceRuntime {
     }
 }
 
+
+#[cfg(test)]
+#[path = "ui_runtime/xui08_public_entry_tests.rs"]
+mod xui08_public_entry_tests;
+
+#[cfg(test)]
+#[path = "ui_runtime/xui08_recording_dispatch_tests.rs"]
+mod xui08_recording_dispatch_tests;
 
 #[cfg(test)]
 mod tests {

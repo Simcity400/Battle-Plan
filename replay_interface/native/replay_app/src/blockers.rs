@@ -585,6 +585,7 @@ pub const TEST_ONLY_ENV_READS: &[&str] = &[
     "XMAP14_MEASUREMENT_COMMAND",
     "BATTLE_PLAN_GAME_DIR",
     "BATTLE_PLAN_USER_DIR",
+    "BATTLE_PLAN_ARROW_XUI08_LOGICAL_STREAM",
 ];
 
 pub fn render_list() -> String {
