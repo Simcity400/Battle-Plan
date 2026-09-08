@@ -4340,6 +4340,7 @@ entity={name=child pdxmesh=mesh cull_radius=500 default_state=boot state={name=b
         let timeline = WorldTimeline::open(Box::new(Source)).unwrap();
         let world = timeline.frame(1).unwrap();
         let mut manifest: replay_core::ContentManifest = serde_json::from_value(serde_json::json!({
+            "native_graphics_query": portable_content_manifest::native_graphics_query::NativeGraphicsQueryWitness::default(),
             "schema": replay_core::PORTABLE_CONTENT_MANIFEST_SCHEMA,
             "product_modset_sha256": "1".repeat(64),
             "source_game": { "version": "1.19.2", "build": "a729",

@@ -2523,12 +2523,12 @@ fn required_static_manifest_hashes(manifest: &Value) -> Result<BTreeMap<String, 
         .ok_or_else(|| {
             "production manifest portable_content_manifest is missing or not an object".to_string()
         })?;
-    if portable_content.get("schema").and_then(Value::as_str)
-        != Some("hoi4.portable-content-manifest.v5")
-    {
-        return Err(
-            "production manifest portable_content_manifest is not v3 product-modset-bound".into(),
-        );
+    let portable_schema = portable_content.get("schema").and_then(Value::as_str);
+    if portable_schema != Some(portable_content_manifest::SCHEMA) {
+        return Err(format!(
+            "production manifest portable_content_manifest schema {portable_schema:?} must be {:?}",
+            portable_content_manifest::SCHEMA,
+        ));
     }
     let portable_product_modset_sha256 = canonical_sha256(
         portable_content.get("product_modset_sha256"),
@@ -2540,6 +2540,10 @@ fn required_static_manifest_hashes(manifest: &Value) -> Result<BTreeMap<String, 
                 .into(),
         );
     }
+    let portable_bytes = serde_json::to_vec(portable_content)
+        .map_err(|error| format!("serialize production portable_content_manifest: {error}"))?;
+    portable_content_manifest::ContentManifest::decode_json(&portable_bytes)
+        .map_err(|error| format!("invalid production portable_content_manifest: {error}"))?;
     if static_bundle.get("artifact_count").and_then(Value::as_u64)
         != u64::try_from(required.len()).ok()
     {
@@ -11087,16 +11091,21 @@ mod tests {
     }
 
     #[test]
-    fn production_manifest_refuses_v1_or_mismatched_product_modset_content() {
-        let error = static_authority_error(
-            "portable_content_v1",
-            |manifest| {
-                manifest["portable_content_manifest"]["schema"] =
-                    json!("hoi4.portable-content-manifest.v1");
-            },
-            |_, _| {},
-        );
-        assert!(error.contains("not v3 product-modset-bound"), "{error}");
+    fn production_manifest_refuses_old_schemas_or_mismatched_product_modset_content() {
+        for schema in [
+            "hoi4.portable-content-manifest.v1",
+            "hoi4.portable-content-manifest.v5",
+        ] {
+            let error = static_authority_error(
+                "portable_content_old_schema",
+                |manifest| {
+                    manifest["portable_content_manifest"]["schema"] = json!(schema);
+                },
+                |_, _| {},
+            );
+            assert!(error.contains("portable_content_manifest schema"), "{error}");
+            assert!(error.contains(portable_content_manifest::SCHEMA), "{error}");
+        }
 
         let error = static_authority_error(
             "portable_content_foreign_product",
@@ -11107,6 +11116,42 @@ mod tests {
             |_, _| {},
         );
         assert!(error.contains("differs from static-bundle"), "{error}");
+    }
+
+    #[test]
+    fn production_manifest_requires_a_well_formed_native_graphics_query_witness() {
+        let missing = static_authority_error(
+            "native_query_missing",
+            |manifest| {
+                manifest["portable_content_manifest"].as_object_mut().unwrap()
+                    .remove("native_graphics_query");
+            },
+            |_, _| {},
+        );
+        assert!(missing.contains("invalid production portable_content_manifest"), "{missing}");
+        assert!(missing.contains("missing field `native_graphics_query`"), "{missing}");
+
+        let malformed = static_authority_error(
+            "native_query_malformed_complete",
+            |manifest| {
+                manifest["portable_content_manifest"]["native_graphics_query"] =
+                    json!({"status": "complete", "query": {}});
+            },
+            |_, _| {},
+        );
+        assert!(malformed.contains("invalid production portable_content_manifest"), "{malformed}");
+        assert!(malformed.contains("missing field `specification`"), "{malformed}");
+
+        let unknown = static_authority_error(
+            "native_query_unknown_cause",
+            |manifest| {
+                manifest["portable_content_manifest"]["native_graphics_query"] =
+                    json!({"status": "unavailable", "cause": "invented_cause"});
+            },
+            |_, _| {},
+        );
+        assert!(unknown.contains("invalid production portable_content_manifest"), "{unknown}");
+        assert!(unknown.contains("unknown variant `invented_cause`"), "{unknown}");
     }
 
     #[test]
@@ -12134,6 +12179,7 @@ mod tests {
         product_modset_sha256: &str,
     ) -> portable_content_manifest::ContentManifest {
         let mut manifest = portable_content_manifest::ContentManifest {
+            native_graphics_query: Default::default(),
             schema: portable_content_manifest::SCHEMA.into(),
             product_modset_sha256: product_modset_sha256.into(),
             source_game: portable_content_manifest::SourceGameIdentity {

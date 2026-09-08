@@ -6094,6 +6094,7 @@ mod tests {
 
     fn portable_content_manifest_fixture() -> portable_content_manifest::ContentManifest {
         let mut manifest = portable_content_manifest::ContentManifest {
+            native_graphics_query: Default::default(),
             schema: portable_content_manifest::SCHEMA.into(),
             product_modset_sha256: "a".repeat(64),
             source_game: portable_content_manifest::SourceGameIdentity {

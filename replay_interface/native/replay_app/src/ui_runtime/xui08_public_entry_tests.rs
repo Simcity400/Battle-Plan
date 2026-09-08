@@ -117,6 +117,7 @@ fn renderer(root: PathBuf) -> ProductionUiRenderer {
         consumers: vec!["xui08-public-entry-fixture".into()], content: key.clone(),
     }).collect();
     let mut manifest = ContentManifest {
+        native_graphics_query: Default::default(),
         schema: replay_core::PORTABLE_CONTENT_MANIFEST_SCHEMA.into(),
         product_modset_sha256: "9".repeat(64),
         source_game: SourceGameIdentity { version: "1.19.2".into(), build: "a729".into(),

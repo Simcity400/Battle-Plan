@@ -771,6 +771,7 @@ mod tests {
                 required_content: rows,
                 witnessed_absent_content: Vec::new(),
                 witnessed_content_namespaces: Vec::new(),
+                native_graphics_query: Default::default(),
                 manifest_digest_sha256: None,
             };
             manifest.bind_observed_namespace(sealed).unwrap();

@@ -860,6 +860,7 @@ fn build_stress_content(
     };
 
     let mut manifest = ContentManifest {
+        native_graphics_query: Default::default(),
         schema: SCHEMA.into(),
         product_modset_sha256: contract.synthetic_product_modset_sha256.clone(),
         source_game: SourceGameIdentity {
@@ -904,6 +905,7 @@ fn build_stress_content(
     manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256()?;
     let manifest = manifest.with_computed_digest()?;
     let inventory = PlaybackContentInventory {
+        native_graphics_content: Vec::new(),
         source_game: manifest.source_game.clone(),
         source_profile: manifest.source_profile.clone(),
         layers: vec![PlaybackContentLayer {

@@ -85,6 +85,7 @@ fn required(
 fn manifest() -> ContentManifest {
     let bytes = payloads();
     let mut value = ContentManifest {
+        native_graphics_query: Default::default(),
         schema: SCHEMA.into(),
         product_modset_sha256: "9".repeat(64),
         source_game: SourceGameIdentity {

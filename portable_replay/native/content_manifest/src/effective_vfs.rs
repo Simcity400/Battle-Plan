@@ -9,6 +9,9 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+#[path = "native_graphics_query_vfs.rs"]
+mod native_graphics_query_vfs;
+
 pub(crate) const MAX_LISTED_FILES: usize = 1 << 18;
 pub(crate) const MAX_LISTED_TOTAL_BYTES: u64 = 2 << 30;
 

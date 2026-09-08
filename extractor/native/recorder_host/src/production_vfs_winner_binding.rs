@@ -786,6 +786,7 @@ mod tests {
         assert_eq!(&encoded[0][4..6], &2u16.to_le_bytes());
         fs::write(root.join("winner.evrw"), &encoded[0]).unwrap();
         let mut manifest = ContentManifest {
+            native_graphics_query: Default::default(),
             witnessed_content_namespaces: Vec::new(),
             witnessed_absent_content: Vec::new(),
             schema: portable_content_manifest::SCHEMA.into(), product_modset_sha256: "9".repeat(64),

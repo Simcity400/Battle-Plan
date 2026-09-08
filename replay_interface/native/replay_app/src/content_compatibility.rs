@@ -545,6 +545,7 @@ mod tests {
 
     fn manifest() -> ContentManifest {
         ContentManifest {
+            native_graphics_query: Default::default(),
             schema: SCHEMA.into(),
             product_modset_sha256: "9".repeat(64),
             source_game: SourceGameIdentity {
@@ -990,6 +991,7 @@ graphics={
         let executable_sha = format!("{:x}", Sha256::digest(b"test executable"));
         let vfs_sha = "4a".repeat(32);
         let mut manifest = ContentManifest {
+            native_graphics_query: Default::default(),
             schema: SCHEMA.into(),
             product_modset_sha256: "9".repeat(64),
             source_game: SourceGameIdentity {
@@ -1113,6 +1115,7 @@ graphics={
         base.source_profile.selection_sha256 = base.computed_selection_sha256().unwrap();
         let manifest = base.with_computed_digest().unwrap();
         let inventory = replay_core::PlaybackContentInventory {
+            native_graphics_content: Vec::new(),
             source_game: manifest.source_game.clone(),
             source_profile: manifest.source_profile.clone(),
             layers: manifest

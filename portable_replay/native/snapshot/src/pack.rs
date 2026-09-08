@@ -2041,6 +2041,7 @@ mod tests {
     fn portable_content_manifest_is_embedded_and_open_validated() {
         let hash = |ch: char| ch.to_string().repeat(64);
         let mut content = ContentManifest {
+            native_graphics_query: Default::default(),
             schema: portable_content_manifest::SCHEMA.into(),
             product_modset_sha256: hash('9'),
             source_game: SourceGameIdentity {

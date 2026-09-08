@@ -1470,6 +1470,7 @@ mod tests {
         use std::collections::BTreeMap;
         fs::create_dir_all(root).unwrap();
         let mut manifest = ContentManifest {
+            native_graphics_query: Default::default(),
             schema: SCHEMA.into(),
             product_modset_sha256: "09".repeat(32),
             source_game: SourceGameIdentity {
@@ -1514,6 +1515,7 @@ mod tests {
         manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
         let manifest = manifest.with_computed_digest().unwrap();
         let inventory = PlaybackContentInventory {
+            native_graphics_content: Vec::new(),
             source_game: manifest.source_game.clone(),
             source_profile: manifest.source_profile.clone(),
             layers: vec![PlaybackContentLayer {

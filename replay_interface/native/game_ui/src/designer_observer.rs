@@ -1581,6 +1581,7 @@ mod tests {
             build_profile: "release".into(),
         };
         let mut manifest = ContentManifest {
+            native_graphics_query: Default::default(),
             schema: replay_core::PORTABLE_CONTENT_MANIFEST_SCHEMA.into(),
             product_modset_sha256: "9".repeat(64),
             source_game: source_game.clone(),

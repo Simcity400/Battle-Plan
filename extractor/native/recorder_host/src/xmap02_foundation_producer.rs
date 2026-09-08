@@ -125,6 +125,7 @@ mod tests {
             .collect();
         required_content.sort_by(|left, right| left.content_key.cmp(&right.content_key));
         let mut manifest = ContentManifest {
+            native_graphics_query: Default::default(),
             witnessed_content_namespaces: Vec::new(),
             witnessed_absent_content: Vec::new(),
             schema: portable_content_manifest::SCHEMA.into(),

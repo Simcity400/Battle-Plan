@@ -239,6 +239,7 @@ fn production_renderer_from_paths(
         selection_sha256: "0".repeat(64),
     };
     let mut manifest = ContentManifest {
+        native_graphics_query: Default::default(),
         schema: replay_core::PORTABLE_CONTENT_MANIFEST_SCHEMA.into(),
         product_modset_sha256: "9".repeat(64),
         source_game: source_game.clone(),
@@ -348,6 +349,7 @@ fn minimal_hud_route_admission(
         build_profile: "release".into(),
     };
     let mut manifest = ContentManifest {
+        native_graphics_query: Default::default(),
         schema: replay_core::PORTABLE_CONTENT_MANIFEST_SCHEMA.into(),
         product_modset_sha256: "9".repeat(64),
         source_game: source_game.clone(),

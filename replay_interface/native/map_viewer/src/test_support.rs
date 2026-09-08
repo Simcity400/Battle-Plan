@@ -2955,6 +2955,7 @@ fn admit_fixture_content(
         build_profile: label.to_string(),
     };
     let mut manifest = ContentManifest {
+        native_graphics_query: Default::default(),
         schema: replay_core::PORTABLE_CONTENT_MANIFEST_SCHEMA.into(),
         product_modset_sha256: "99".repeat(32),
         source_game: source_game.clone(),

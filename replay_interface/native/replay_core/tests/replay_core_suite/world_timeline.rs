@@ -1756,6 +1756,7 @@ fn recorder_portable_timeline() -> Vec<u8> {
 
 fn portable_content_manifest_fixture() -> replay_core::ContentManifest {
     let mut manifest = replay_core::ContentManifest {
+        native_graphics_query: Default::default(),
         schema: replay_core::PORTABLE_CONTENT_MANIFEST_SCHEMA.into(),
         product_modset_sha256: "a".repeat(64),
         source_game: replay_core::SourceGameIdentity {

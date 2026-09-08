@@ -519,6 +519,7 @@ const COMPARISON_FAMILIES: &[(&str, &[&str])] = &[
 
 fn relocation_probe_inventory() -> replay_core::PlaybackContentInventory {
     replay_core::PlaybackContentInventory {
+        native_graphics_content: Vec::new(),
         source_game: replay_core::SourceGameIdentity {
             version: "km-relocation-probe".into(),
             build: "km-relocation-probe".into(),

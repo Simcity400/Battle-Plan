@@ -11,6 +11,10 @@ use portable_content_manifest::{
     SCHEMA as CONTENT_MANIFEST_SCHEMA,
 };
 use portable_render_stream::ProductionRenderFrame;
+use portable_content_manifest::native_graphics_query::{
+    NativeGraphicsQueryUnavailable, NativeGraphicsQueryWitness, ObservedNativeGraphicsQuery,
+    SealedNativeGraphicsQuery,
+};
 use serde::{Deserialize, Serialize};
 use snapshot::sha256::{to_hex, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -2432,6 +2436,7 @@ fn hash_entries(
 
 pub struct AttachCorpusCensus {
     pub sealed_namespace: portable_content_manifest::SealedContentNamespace,
+    pub observed_native_graphics_query: ObservedNativeGraphicsQuery,
     pub required_content: Vec<RequiredContent>,
     pub witnessed_absent_content: Vec<String>,
     pub stats: AttachCorpusCensusStats,
@@ -2473,6 +2478,7 @@ fn reconcile_optional_authored_content(
 
 pub fn census_effective_vfs_corpus(
     vfs: &portable_content_manifest::effective_vfs::EffectiveVfs,
+    executable_sha256: &str,
     cache_dir: Option<&Path>,
 ) -> Result<AttachCorpusCensus, String> {
     use crate::content_census_cache::{self, CacheEntry, CacheLoad};
@@ -2483,6 +2489,7 @@ pub fn census_effective_vfs_corpus(
     let mut progress = |bytes: usize| crate::finalize_progress::tick(bytes as u64);
     let observed_namespace = vfs.observe_namespace_with_progress(
         &portable_content_manifest::ContentNamespaceScope::root(), &mut progress)?;
+    let observed_native_graphics_query = vfs.observe_native_graphics_query(executable_sha256)?;
     let entries = vfs.namespace_entries()?;
     crate::finalize_progress::tick(entries.len() as u64);
     let listing_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
@@ -2680,6 +2687,7 @@ pub fn census_effective_vfs_corpus(
         reconcile_optional_authored_content(&optional_before, &optional_after, &rows)?;
     Ok(AttachCorpusCensus {
         sealed_namespace,
+        observed_native_graphics_query,
         required_content: rows.into_values().collect(),
         witnessed_absent_content,
         stats: AttachCorpusCensusStats {
@@ -2719,6 +2727,7 @@ pub fn build_from_attach_time_corpus(
     required_content: Vec<RequiredContent>,
     witnessed_absent_content: Vec<String>,
     sealed_namespace: portable_content_manifest::SealedContentNamespace,
+    sealed_native_graphics_query: SealedNativeGraphicsQuery,
     launch: &PortableLaunchBinding,
     effective_vfs_manifest_sha256: &str,
     product_modset_sha256: &str,
@@ -2739,9 +2748,11 @@ pub fn build_from_attach_time_corpus(
         return Err("attach-time content manifest has no content layers".into());
     }
 
+    let native_graphics_query = sealed_native_graphics_query.into_witness();
     let required_ordinals: BTreeSet<u32> = required_content
         .iter()
         .map(|row| row.content.winning_layer_ordinal)
+        .chain(native_graphics_query.required_layer_ordinals())
         .collect();
     let mut ordered_layers = ordered_layers;
     for (position, layer) in ordered_layers.iter_mut().enumerate() {
@@ -2790,6 +2801,7 @@ pub fn build_from_attach_time_corpus(
         .collect::<Vec<_>>();
 
     let mut manifest = ContentManifest {
+        native_graphics_query,
         schema: CONTENT_MANIFEST_SCHEMA.to_string(),
         product_modset_sha256: product_modset_sha256.to_string(),
         source_game,
@@ -2939,6 +2951,10 @@ pub fn build(
         })
         .collect();
     let mut manifest = ContentManifest {
+        // This trace carries folded winners only, with no native-query observation.
+        native_graphics_query: NativeGraphicsQueryWitness::unavailable(
+            NativeGraphicsQueryUnavailable::NotObserved,
+        ),
         schema: CONTENT_MANIFEST_SCHEMA.to_string(),
         product_modset_sha256: product_modset_sha256.to_string(),
         source_game: trace.source_game,
@@ -3432,7 +3448,7 @@ mod tests {
         )
         .unwrap();
 
-        let census = census_effective_vfs_corpus(&vfs, None).unwrap();
+        let census = census_effective_vfs_corpus(&vfs, &sha('9'), None).unwrap();
         let rows = census.required_content;
         let stats = census.stats;
         let recorded: Vec<&str> = rows
@@ -3492,11 +3508,12 @@ mod tests {
         launch.enabled_dlc_ids.clear();
         for present in [false, true] {
             if present { fs::write(root.0.join("map/adjacencies.csv"), b"authored adjacency").unwrap(); }
-            let census = census_effective_vfs_corpus(&vfs, None).unwrap();
+            let census = census_effective_vfs_corpus(&vfs, &launch.executable_sha256, None).unwrap();
             let expected = if present { Vec::new() } else { vec!["map/adjacencies.csv".to_string()] };
             assert_eq!(census.witnessed_absent_content, expected);
             let manifest = build_from_attach_time_corpus(vec![trace.ordered_layers[0].clone()],
-                census.required_content, census.witnessed_absent_content, census.sealed_namespace, &launch, &sha('a'),
+                census.required_content, census.witnessed_absent_content, census.sealed_namespace,
+                census.observed_native_graphics_query.seal(&vfs).unwrap(), &launch, &sha('a'),
                 &sha('9'), trace.source_game.clone(), "profile", "playset").unwrap();
             let encoded = manifest.encode_json().unwrap();
             let reopened = ContentManifest::decode_json(&encoded).unwrap();
@@ -3521,7 +3538,7 @@ mod tests {
         let absent = observe_optional_authored_content(&vfs).unwrap();
         fs::write(root.0.join("map/adjacencies.csv"), b"first").unwrap();
         let first = observe_optional_authored_content(&vfs).unwrap();
-        let rows = census_effective_vfs_corpus(&vfs, None).unwrap().required_content.into_iter()
+        let rows = census_effective_vfs_corpus(&vfs, &sha('9'), None).unwrap().required_content.into_iter()
             .map(|row| (row.content.normalized_game_relative_path.clone(), row)).collect::<BTreeMap<_, _>>();
         assert!(reconcile_optional_authored_content(&absent, &first, &rows).is_err());
         assert!(reconcile_optional_authored_content(&first, &first, &BTreeMap::new()).is_err());
@@ -3554,7 +3571,7 @@ mod tests {
             storage_kind: LayerStorageKind::ZipArchive, local_source: archive.clone(),
             source_container_sha256: Some(archive_sha), replace_paths: vec!["map".into()],
         }]).unwrap();
-        let census = census_effective_vfs_corpus(&vfs, None).unwrap();
+        let census = census_effective_vfs_corpus(&vfs, &sha('9'), None).unwrap();
         assert_eq!(census.witnessed_absent_content, vec!["map/adjacencies.csv"]);
         assert!(!census.required_content.iter().any(|r| r.content.normalized_game_relative_path == "map/adjacencies.csv"));
         #[cfg(windows)]
@@ -3566,8 +3583,104 @@ mod tests {
             let _exclusive = fs::OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
             assert!(observe_optional_authored_content(&locked_vfs).unwrap_err()
                 .contains("optional authored content observation map/adjacencies.csv"));
-            assert!(census_effective_vfs_corpus(&locked_vfs, None).is_err());
+            assert!(census_effective_vfs_corpus(&locked_vfs, &sha('9'), None).is_err());
         }
+    }
+
+    fn native_query_census_fixture() -> (
+        TempFixtureCleanup,
+        portable_content_manifest::effective_vfs::EffectiveVfs,
+        Vec<RecordedContentLayer>,
+        PortableLaunchBinding,
+        SourceGameIdentity,
+    ) {
+        use portable_content_manifest::effective_vfs::{EffectiveVfs, EffectiveVfsLayerMount};
+        let (root, _) = optional_census_fixture();
+        fs::create_dir_all(root.0.join("interface")).unwrap();
+        fs::create_dir_all(root.0.join("empty_dlc")).unwrap();
+        let (trace, mut launch) = base_trace();
+        let mut layers = vec![trace.ordered_layers[0].clone(), trace.ordered_layers[2].clone()];
+        layers[1].ordinal = 1;
+        launch.executable_sha256 =
+            portable_content_manifest::native_graphics_query::NATIVE_GRAPHICS_EXECUTABLE_SHA256.into();
+        launch.enabled_dlc_ids = BTreeSet::from(["dlc_unused".into()]);
+        let mut source_game = trace.source_game;
+        source_game.executable_sha256 = launch.executable_sha256.clone();
+        let mounts: Vec<_> = layers.iter().map(|layer| EffectiveVfsLayerMount {
+            ordinal: layer.ordinal,
+            layer_kind: layer.layer_kind,
+            layer_id: layer.layer_id.clone(),
+            storage_kind: layer.storage_kind,
+            local_source: if layer.ordinal == 0 { root.0.clone() } else { root.0.join("empty_dlc") },
+            source_container_sha256: layer.source_container_sha256.clone(),
+            replace_paths: layer.replace_paths.clone(),
+        }).collect();
+        let vfs = EffectiveVfs::new(sha('a'), mounts).unwrap();
+        (root, vfs, layers, launch, source_game)
+    }
+
+    #[test]
+    fn native_query_census_publication_preserves_complete_empty_and_payloads_with_empty_mount() {
+        for present in [false, true] {
+            let (root, vfs, layers, launch, source_game) = native_query_census_fixture();
+            if present {
+                fs::write(root.0.join("interface/a.gfx"), b"authored gfx").unwrap();
+            }
+            let census = census_effective_vfs_corpus(&vfs, &launch.executable_sha256, None).unwrap();
+            assert!(!census.required_content.iter().any(|row| row.content.winning_layer_ordinal == 1));
+            let sealed = census.observed_native_graphics_query.seal(&vfs).unwrap();
+            let manifest = build_from_attach_time_corpus(
+                layers, census.required_content, census.witnessed_absent_content,
+                census.sealed_namespace, sealed, &launch, &sha('a'), &sha('9'),
+                source_game, "profile", "playset",
+            ).unwrap();
+            let reopened = ContentManifest::decode_json(&manifest.encode_json().unwrap()).unwrap();
+            assert_eq!(reopened.native_graphics_query, manifest.native_graphics_query);
+            let query = reopened.native_graphics_query.complete().expect("observed complete query");
+            assert_eq!(query.entries().len(), usize::from(present));
+            assert_eq!(reopened.native_graphics_query.required_content().len(), usize::from(present));
+            if present {
+                let entry = &query.entries()[0];
+                assert_eq!(entry.original_query_spelling(), "interface/a.gfx");
+                assert_eq!(entry.content().payload_sha256, Sha256::hex(b"authored gfx"));
+                assert_eq!(entry.content().payload_bytes, 12);
+                assert!(reopened.required_content.iter().any(|row| &row.content == entry.content()));
+            }
+            assert!(reopened.ordered_layers.iter().all(|layer| layer.required_for_playback));
+            assert!(reopened.dlc_selection.iter().all(|dlc| dlc.required_for_playback));
+        }
+    }
+
+    #[test]
+    fn native_query_census_seals_after_payload_change_and_preserves_unavailable_cause() {
+        let (root, vfs, layers, launch, source_game) = native_query_census_fixture();
+        fs::write(root.0.join("interface/a.gfx"), b"before").unwrap();
+        let census = census_effective_vfs_corpus(&vfs, &launch.executable_sha256, None).unwrap();
+        fs::write(root.0.join("interface/a.gfx"), b"after").unwrap();
+        let sealed = census.observed_native_graphics_query.seal(&vfs).unwrap();
+        let manifest = build_from_attach_time_corpus(
+            layers, census.required_content, census.witnessed_absent_content,
+            census.sealed_namespace, sealed, &launch, &sha('a'), &sha('9'),
+            source_game, "profile", "playset",
+        ).unwrap();
+        let reopened = ContentManifest::decode_json(&manifest.encode_json().unwrap()).unwrap();
+        assert_eq!(reopened.native_graphics_query.unavailable_cause(),
+            Some(&NativeGraphicsQueryUnavailable::ChangedDuringObservation));
+        assert!(reopened.native_graphics_query.complete().is_none());
+
+        let unsupported = census_effective_vfs_corpus(&vfs, &sha('9'), None).unwrap()
+            .observed_native_graphics_query.seal(&vfs).unwrap().into_witness();
+        assert_eq!(unsupported.unavailable_cause(), Some(&NativeGraphicsQueryUnavailable::UnsupportedBuild));
+        assert!(unsupported.complete().is_none());
+    }
+
+    #[test]
+    fn folded_trace_cannot_claim_an_observed_empty_native_query() {
+        let (trace, launch) = base_trace();
+        let manifest = build(trace, &launch, &sha('9')).unwrap();
+        assert_eq!(manifest.native_graphics_query.unavailable_cause(),
+            Some(&NativeGraphicsQueryUnavailable::NotObserved));
+        assert!(manifest.native_graphics_query.complete().is_none());
     }
 
     struct TempFixtureCleanup(PathBuf);

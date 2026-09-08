@@ -2437,6 +2437,7 @@ fn fixture_content_manifest(seed: u64, modset_id: &str) -> Result<ContentManifes
     );
 
     let mut manifest = ContentManifest {
+        native_graphics_query: Default::default(),
         schema: SCHEMA.into(),
         product_modset_sha256,
         source_game: SourceGameIdentity {
@@ -2637,6 +2638,7 @@ mod tests {
         );
 
         let playback = PlaybackContentInventory {
+            native_graphics_content: Vec::new(),
             source_game: manifest.source_game.clone(),
             source_profile: manifest.source_profile.clone(),
             layers: manifest

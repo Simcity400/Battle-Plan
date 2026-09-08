@@ -998,6 +998,7 @@ pub(crate) mod tests {
             });
         }
         replay_core::ContentManifest {
+            native_graphics_query: Default::default(),
             schema: "hoi4-portable-content-manifest-v1".into(),
             product_modset_sha256: "9".repeat(64),
             source_game: SourceGameIdentity {
