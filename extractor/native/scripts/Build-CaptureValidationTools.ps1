@@ -49,7 +49,7 @@ try {
     $builds = @()
     $cargo = (Get-Command cargo -CommandType Application | Select-Object -First 1).Source
     foreach ($plan in $plans) {
-        # These exact three diagnostic outputs belong to this worktree. Never
+        # These exact diagnostic outputs belong to this worktree. Never
         # clear shipping executables, another worktree, or a shared cache.
         if (Test-Path -LiteralPath $plan.Executable) { Remove-Item -LiteralPath $plan.Executable -Force }
         $result = Invoke-IndependentCaptureGate -Name $plan.Role -FilePath $cargo -Arguments $plan.Arguments `

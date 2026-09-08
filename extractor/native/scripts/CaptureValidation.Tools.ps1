@@ -7,7 +7,8 @@ function Get-CaptureValidationToolPlan {
     foreach ($spec in @(
         @('fold_check', 'fold_check', 'fold_check', 'extractor/native/fold_check/src/main.rs'),
         @('compact_replay_gate', 'compact_replay_verification_gates', 'compact_replay_gate', 'extractor/native/lanes/compact_replay_verification_gates/src/main.rs'),
-        @('container_verify', 'snapshot', 'pack_replay', 'portable_replay/native/snapshot/src/bin/pack_replay.rs')
+        @('container_verify', 'snapshot', 'pack_replay', 'portable_replay/native/snapshot/src/bin/pack_replay.rs'),
+        @('domain_roster', 'recorder_host', 'domain_roster', 'extractor/native/recorder_host/src/bin/domain_roster.rs')
     )) {
         [pscustomobject]@{
             Role = $spec[0]; Package = $spec[1]; Target = $spec[2]
@@ -83,7 +84,7 @@ function Open-CaptureValidationTools {
             $receipt.source_before.file_count -lt 1) { throw 'Validation tools do not bind the current unchanged production source.' }
         Test-ProductionBuildEnvironmentRecord -Record $receipt.build_environment
         $plans = @(Get-CaptureValidationToolPlan $RepoRoot)
-        if (@($receipt.builds).Count -ne $plans.Count) { throw 'Validation tools require exactly three owning builds.' }
+        if (@($receipt.builds).Count -ne $plans.Count) { throw "Validation tools require exactly $($plans.Count) owning builds." }
         $evidence = [Collections.Generic.List[string]]::new()
         $evidence.Add($receiptFile.path)
         $tools = [ordered]@{}

@@ -22,7 +22,22 @@ foreach ($plan in $plans) {
     $null = [IO.Directory]::CreateDirectory((Split-Path -Parent $plan.Source))
     $null = [IO.Directory]::CreateDirectory((Split-Path -Parent $plan.Executable))
     [IO.File]::WriteAllText($plan.Source, 'fixture only; not compiler evidence')
-    [IO.File]::WriteAllBytes($plan.Executable, [byte[]]@(4, 5, 6))
+    if ($plan.Role -ceq 'domain_roster') {
+        # Harmless executable fixture for the actual driver's roster call below.
+        # No Cargo, Rust target, recorder, collector or game is built/launched.
+        Add-Type -OutputAssembly $plan.Executable -OutputType ConsoleApplication -TypeDefinition @'
+using System;
+using System.IO;
+public static class RosterFixture {
+    public static int Main(string[] args) {
+        if (args.Length != 3 || args[0] != "--native-root" || args[2] != "--json") return 9;
+        File.WriteAllText(Path.Combine(args[1], "roster-invoked.txt"), "fixture only");
+        Console.WriteLine("[]");
+        return 0;
+    }
+}
+'@
+    } else { [IO.File]::WriteAllBytes($plan.Executable, [byte[]]@(4, 5, 6)) }
     $stdoutPath = Join-Path $logs ($plan.Role + '.stdout.log')
     $stderrPath = Join-Path $logs ($plan.Role + '.stderr.log')
     $artifact = [ordered]@{ reason = 'compiler-artifact'; target = @{ name = $plan.Target; kind = @('bin'); src_path = $plan.Source }
@@ -68,7 +83,8 @@ Assert-ToolCase 'stale source rejected' { param($r) $r.source_before.sha256 = 'b
 Assert-ToolCase 'source changed during build rejected' { param($r) $r.source_after.file_count = 4 } 'current unchanged production source'
 Assert-ToolCase 'empty source rejected' { param($r) $r.source_before.file_count = 0; $r.source_after.file_count = 0 } 'current unchanged production source'
 Assert-ToolCase 'changed build environment rejected' { param($r) $r.build_environment.sha256 = 'b' * 64 } 'build environment record'
-Assert-ToolCase 'missing role rejected' { param($r) $r.builds = @($r.builds[0], $r.builds[1]) } 'exactly three owning builds'
+Assert-ToolCase 'missing role rejected' { param($r) $r.builds = @($r.builds[0], $r.builds[1]) } 'exactly 4 owning builds'
+Assert-ToolCase 'old three-role receipt rejected' { param($r) $r.builds = @($r.builds | Where-Object { $_.role -cne 'domain_roster' }) } 'exactly 4 owning builds'
 Assert-ToolCase 'duplicate role rejected' { param($r) $r.builds[2].role = $r.builds[0].role } 'Missing or duplicate'
 Assert-ToolCase 'nonzero build rejected' { param($r) $r.builds[0].exit_code = 7 } 'build failed'
 Assert-ToolCase 'null exit rejected' { param($r) $r.builds[0].exit_code = $null } 'build failed'
@@ -123,7 +139,7 @@ try {
 } finally { Close-CaptureValidationTools $authority }
 $passed.Add('tool binaries and evidence stay immutable under read leases')
 # Failure must close any already-acquired leases so the next build is possible.
-Assert-ToolCase 'late role failure releases all leases' { param($r) $r.builds[2].artifact.sha256 = 'b' * 64 } 'Changed or malformed'
+Assert-ToolCase 'late roster failure releases all leases' { param($r) $r.builds[-1].artifact.sha256 = 'b' * 64 } 'Changed or malformed'
 foreach ($path in @($plans.Executable) + @($receiptPath, $firstLog)) {
     $file = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     $file.Dispose()
@@ -185,7 +201,7 @@ $passed.Add('all diagnostic builds explicitly bound Cargo jobs to two')
 # Check the owning driver consumes the separate authority before any speed
 # transcript nonce can be consumed. No product process is launched by units.
 $driver = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Start-Hoi4ProductionCaptureSafe.ps1') -Raw
-foreach ($role in @('fold_check', 'compact_replay_gate', 'container_verify')) {
+foreach ($role in @('fold_check', 'compact_replay_gate', 'container_verify', 'domain_roster')) {
     if ($driver.Contains('$prebuiltArtifacts.artifacts.' + $role) -or -not $driver.Contains('$validationTools.Tools.' + $role)) {
         throw 'Driver mixes shipping and diagnostic artifact roles.'
     }
@@ -194,6 +210,99 @@ $toolAdmission = $driver.IndexOf('Open-CaptureValidationTools -RepoRoot')
 $nonceAdmission = $driver.IndexOf('$speedEvidenceAdmission=Invoke-IndependentCaptureGate')
 if ($toolAdmission -lt 0 -or $nonceAdmission -lt 0 -or $toolAdmission -gt $nonceAdmission) { throw 'Tools admitted after speed nonce consumption.' }
 $passed.Add('driver uses separate tool authority before speed gate')
+
+# Execute the driver's actual admission, roster binding and invocation statements
+# in fixture scope. Extracting these AST nodes does not execute the capture driver.
+$tokens = $null; $errors = $null
+$driverAst = [Management.Automation.Language.Parser]::ParseInput($driver, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'Driver syntax failed before boundary extraction.' }
+function Get-DriverAssignment {
+    param([string]$Variable)
+    $nodes = @($driverAst.FindAll({ param($node)
+        $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+        $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+        $node.Left.VariablePath.UserPath -ceq $Variable
+    }, $true))
+    if ($nodes.Count -ne 1) { throw "Expected one driver assignment for $Variable; implicit fallback is forbidden." }
+    return $nodes[0]
+}
+$admissionNode = Get-DriverAssignment 'validationTools'
+$rosterNode = Get-DriverAssignment 'domainRosterTool'
+$invokeNode = Get-DriverAssignment 'domainRosterOutput'
+if ($admissionNode.Extent.StartOffset -ge $rosterNode.Extent.StartOffset -or
+    $rosterNode.Extent.StartOffset -ge $invokeNode.Extent.StartOffset) { throw 'Roster consumer precedes its admission/binding.' }
+if ($rosterNode.Right.Extent.Text -cne '[string]$validationTools.Tools.domain_roster') { throw 'Roster path does not come solely from admitted tools.' }
+$rosterPlan = @($plans | Where-Object { $_.Role -ceq 'domain_roster' })[0]
+if ($plans.Count -ne 4 -or $rosterPlan.Package -cne 'recorder_host' -or $rosterPlan.Target -cne 'domain_roster' -or
+    $rosterPlan.Source -ine (Join-Path $repo 'extractor/native/recorder_host/src/bin/domain_roster.rs')) {
+    throw 'Roster build is not the existing recorder_host diagnostic target.'
+}
+$rosterBytes = [IO.File]::ReadAllBytes($rosterPlan.Executable)
+foreach ($variant in @('admitted', 'missing-role', 'foreign-role', 'foreign-output', 'unavailable', 'tampered')) {
+    $receipt = $good | ConvertFrom-Json
+    switch ($variant) {
+        'missing-role' { $receipt.builds = @($receipt.builds | Where-Object { $_.role -cne 'domain_roster' }) }
+        'foreign-role' { $receipt.builds[-1].role = 'recorder_host' }
+        'foreign-output' { $receipt.builds[-1].artifact.path = $cargoPath }
+        'unavailable' { [IO.File]::Delete($rosterPlan.Executable) }
+        'tampered' { [IO.File]::WriteAllBytes($rosterPlan.Executable, [byte[]]@(4, 5, 6)) }
+    }
+    [IO.File]::WriteAllText($receiptPath, ($receipt | ConvertTo-Json -Depth 12))
+    $repoRoot = $repo; $nativeRoot = $repo; $ValidationToolsReceiptPath = $receiptPath
+    $prebuiltArtifacts = [pscustomobject]@{ source_input_sha256 = $source.sha256 }
+    $marker = Join-Path $nativeRoot 'roster-invoked.txt'
+    if (Test-Path -LiteralPath $marker) { [IO.File]::Delete($marker) }
+    $validationTools = $null; $failure = ''
+    try {
+        . ([scriptblock]::Create($admissionNode.Extent.Text))
+        . ([scriptblock]::Create($rosterNode.Extent.Text))
+        if ($validationTools.Leases.Count -lt $plans.Count) { throw 'No active admitted tool leases.' }
+        . ([scriptblock]::Create($invokeNode.Extent.Text))
+        if ($LASTEXITCODE -ne 0 -or ($domainRosterOutput -join '') -cne '[]') { throw 'Driver did not execute the admitted roster fixture.' }
+    } catch { $failure = $_.Exception.Message }
+    finally { Close-CaptureValidationTools $validationTools }
+    if ($variant -ceq 'admitted') {
+        if ($failure -or -not (Test-Path -LiteralPath $marker)) { throw "Admitted roster did not reach consumer: $failure" }
+    } elseif (-not $failure -or (Test-Path -LiteralPath $marker)) { throw "Rejected roster reached consumer: $variant" }
+    [IO.File]::WriteAllBytes($rosterPlan.Executable, $rosterBytes)
+    $passed.Add("driver roster boundary $variant")
+}
+
+# Run the actual hard-pin check against checkout bytes and mutated scratch copies.
+# Do not normalize at verification time: even newline-only tampering must fail.
+$scriptDir = $PSScriptRoot
+foreach ($variable in @('speedEvidenceVerifier', 'speedEvidenceProbe', 'speedEvidenceSchema',
+    'expectedSpeedEvidenceVerifierSha', 'expectedSpeedEvidenceProbeSha', 'expectedSpeedEvidenceSchemaSha')) {
+    . ([scriptblock]::Create((Get-DriverAssignment $variable).Extent.Text))
+}
+$pinChecks = @($driverAst.FindAll({ param($node)
+    $node -is [Management.Automation.Language.ForEachStatementAst] -and
+    $node.Variable.VariablePath.UserPath -ceq 'toolPin'
+}, $true))
+if ($pinChecks.Count -ne 1) { throw 'Expected the actual driver hard-pin check.' }
+$pinCheck = [scriptblock]::Create($pinChecks[0].Extent.Text)
+. $pinCheck
+$passed.Add('actual driver speed pins match exact checkout bytes including unchanged probe')
+foreach ($variable in @('speedEvidenceVerifier', 'speedEvidenceSchema')) {
+    $originalPath = Get-Variable -Name $variable -ValueOnly
+    $originalBytes = [IO.File]::ReadAllBytes($originalPath)
+    $copy = Join-Path $scratch ([IO.Path]::GetFileName($originalPath))
+    foreach ($variant in @('content', 'crlf', 'missing')) {
+        [IO.File]::WriteAllBytes($copy, $originalBytes)
+        if ($variant -ceq 'content') { [IO.File]::AppendAllText($copy, ' ') }
+        if ($variant -ceq 'crlf') {
+            $lf = [Text.Encoding]::UTF8.GetString($originalBytes).Replace("`r`n", "`n")
+            [IO.File]::WriteAllText($copy, $lf.Replace("`n", "`r`n"), [Text.UTF8Encoding]::new($false))
+        }
+        if ($variant -ceq 'missing') { [IO.File]::Delete($copy) }
+        Set-Variable -Name $variable -Value $copy
+        $failure = ''
+        try { . $pinCheck } catch { $failure = $_.Exception.Message }
+        finally { Set-Variable -Name $variable -Value $originalPath }
+        if (-not $failure.Contains('canonical speed evidence tooling hash mismatch')) { throw "Speed pin $variant did not fail at its owning check: $failure" }
+        $passed.Add("actual speed pin rejects $variable $variant")
+    }
+}
 foreach ($name in @('Start-Hoi4ProductionCaptureSafe.ps1', 'CaptureValidation.Tools.ps1', 'Build-CaptureValidationTools.ps1', 'Test-CaptureValidationTools.ps1')) {
     $tokens = $null; $errors = $null
     $null = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $name), [ref]$tokens, [ref]$errors)

@@ -54,7 +54,6 @@ $env:CARGO_TARGET_DIR = $targetRoot
 $releaseRoot = Join-Path $targetRoot "release"
 $sourceDll = Join-Path $releaseRoot "collector.dll"
 $recorder = Join-Path $releaseRoot "collector_record.exe"
-$domainRosterTool = Join-Path $releaseRoot "domain_roster.exe"
 $registryPath = Join-Path $nativeRoot "domain_registry.json"
 $profilePath = Join-Path $repoRoot "extractor\live_capture\collector_profiles\vanilla_latest_2026_06_30.json"
 $staticBundleScript = Join-Path $repoRoot "extractor\game_defs\static_bundle.py"
@@ -70,6 +69,8 @@ $readOnlyGameStateWitness = Join-Path $scriptDir "Read-Hoi4GameState.ps1"
 $passiveCapturePolicyTest = Join-Path $scriptDir "Test-PassiveCapturePolicy.ps1"
 $passiveCaptureLifecycle = Join-Path $scriptDir "PassiveCapture.Lifecycle.ps1"
 $sinkReconciliationVerifier = Join-Path $scriptDir "verify_sink_reconciliation.py"
+# Verifier/schema are byte-pinned LF inputs; their exact checkout rules belong
+# in .gitattributes. The separately pinned probe retains its existing bytes.
 $expectedSpeedEvidenceVerifierSha = "1a8057e0084e8507b1c8cde6a7d7c0198652db6efca0bbcb891bc7dc99cb8e28"
 $expectedSpeedEvidenceProbeSha = "7302d6981b74b5eba149a58b30e359c9e519e7b7e275273c07ca4214615b406b"
 $expectedSpeedEvidenceSchemaSha = "84ff925213ada78f2302fc2115350067dd4975f3ccc6fc295a7ff86c49d22f59"
@@ -97,6 +98,7 @@ try {
 $foldCheck = [string]$validationTools.Tools.fold_check
 $compactGate = [string]$validationTools.Tools.compact_replay_gate
 $packReplay = [string]$validationTools.Tools.container_verify
+$domainRosterTool = [string]$validationTools.Tools.domain_roster
 $pythonCommand=Get-Command $PythonExe -CommandType Application -ErrorAction Stop
 $PythonExe=$pythonCommand.Source
 $preparedModsetReceipt=$null
@@ -407,9 +409,6 @@ if ($AcceptanceMode -eq 'production') {
 }
 
 $productionDomains = @(Get-RegistryCaptureDomains $registryPath)
-if (-not (Test-Path -LiteralPath $domainRosterTool -PathType Leaf)) {
-    throw "canonical compact domain-roster tool is missing: $domainRosterTool"
-}
 $domainRosterOutput = @(
     & $domainRosterTool --native-root $nativeRoot --json 2>&1 |
         ForEach-Object { [string]$_ }
