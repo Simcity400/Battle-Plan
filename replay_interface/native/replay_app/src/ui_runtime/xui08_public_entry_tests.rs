@@ -247,8 +247,9 @@ fn stage_at(fixture: &mut Fixture, image: &mut game_ui::dds::RgbaImage,
     viewport: [usize; 2], delta: f32)
     -> std::result::Result<Xui08InstalledSurface, Xui08SurfaceStageError>
 {
-    compose_and_install_xui08_surface(&fixture.renderer, &fixture.world, viewport, delta,
-        &mut fixture.viewer.peace_conference, &mut fixture.pending, image)
+    compose_and_install_xui08_surface(&fixture.renderer, &fixture.world, viewport, delta, None,
+        &mut fixture.viewer.peace_conference, &mut fixture.viewer.sprite_resources,
+        &mut fixture.pending, image, None)
 }
 
 #[test]
@@ -320,8 +321,9 @@ fn actual_present_repeat_reject_and_terminal_hide_keep_one_retained_history() {
     begin_xui08_staged_candidate(&mut fixture.viewer.peace_conference,
         &mut pending_input, &mut viewer_checkpoint).unwrap();
     assert!(compose_and_install_xui08_surface(&fixture.renderer, &fixture.world,
-        [64, 64], 0.1, &mut fixture.viewer.peace_conference,
-        pending.as_mut().unwrap(), &mut image).unwrap().visible);
+        [64, 64], 0.1, None, &mut fixture.viewer.peace_conference,
+        &mut fixture.viewer.sprite_resources,
+        pending.as_mut().unwrap(), &mut image, None).unwrap().visible);
     let second = fixture.viewer.peace_conference.clone();
     assert_ne!(second, first, "same recording hour retains and advances viewer animation");
     rollback_xui08_staged_candidate(&mut fixture.viewer.peace_conference,
@@ -336,8 +338,9 @@ fn actual_present_repeat_reject_and_terminal_hide_keep_one_retained_history() {
     pending = Some(fixture.pending.clone());
     pending_staged = true;
     assert!(compose_and_install_xui08_surface(&fixture.renderer, &fixture.world,
-        [64, 64], 0.1, &mut fixture.viewer.peace_conference,
-        pending.as_mut().unwrap(), &mut image).unwrap().visible);
+        [64, 64], 0.1, None, &mut fixture.viewer.peace_conference,
+        &mut fixture.viewer.sprite_resources,
+        pending.as_mut().unwrap(), &mut image, None).unwrap().visible);
     assert_eq!(fixture.viewer.peace_conference, second);
     fixture.pending = commit_xui08_staged_candidate(&mut pending,
         &mut pending_staged, &mut viewer_checkpoint).unwrap().unwrap();

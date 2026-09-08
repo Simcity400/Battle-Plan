@@ -22,6 +22,9 @@ use winapi::um::winuser::{
 
 use crate::Result;
 
+mod native_ui_desktop;
+pub(crate) use native_ui_desktop::native_ui_desktop_mode;
+
 const WINDOW_CLASS_NAME: &str = "replay_app_window";
 const ERROR_CLASS_ALREADY_EXISTS: u32 = 1410;
 

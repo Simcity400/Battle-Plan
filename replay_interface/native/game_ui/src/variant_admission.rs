@@ -155,6 +155,8 @@ impl DisplayVariantKey {
 pub struct PlaybackUiProfile {
     key: DisplayVariantKey,
     settings_file_sha256: String,
+    force_pow2_textures: Option<bool>,
+    raw_borderless: Option<bool>,
 }
 
 impl PlaybackUiProfile {
@@ -172,12 +174,36 @@ impl PlaybackUiProfile {
                 )
             })?
             .clone();
+        let force_pow2_textures = environment
+            .settings
+            .get("force_pow2_textures")
+            .map(|value| match value.as_str() {
+                "yes" => Ok(true),
+                "no" => Ok(false),
+                _ => Err(VariantRejection::InvalidEnvelope(
+                    "local playback profile force_pow2_textures is not canonical yes/no".into(),
+                )),
+            })
+            .transpose()?;
+        let raw_borderless = environment
+            .settings
+            .get("borderless")
+            .map(|value| match value.as_str() {
+                "true" => Ok(true),
+                "false" => Ok(false),
+                _ => Err(VariantRejection::InvalidEnvelope(
+                    "local playback profile borderless is not canonical true/false".into(),
+                )),
+            })
+            .transpose()?;
         Ok(Self {
             key: DisplayVariantKey::from_playback_environment(
                 environment,
                 actual_client_input,
             )?,
             settings_file_sha256,
+            force_pow2_textures,
+            raw_borderless,
         })
     }
 
@@ -199,6 +225,14 @@ impl PlaybackUiProfile {
 
     pub fn settings_file_sha256(&self) -> &str {
         &self.settings_file_sha256
+    }
+
+    pub fn force_pow2_textures(&self) -> Option<bool> {
+        self.force_pow2_textures
+    }
+
+    pub fn raw_borderless(&self) -> Option<bool> {
+        self.raw_borderless
     }
 }
 

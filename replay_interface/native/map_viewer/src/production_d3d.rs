@@ -1675,6 +1675,8 @@ fn runtime_draw_pass(draw: &PreparedRuntimeDraw) -> &'static str {
     }
 }
 
+pub mod ui;
+
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]

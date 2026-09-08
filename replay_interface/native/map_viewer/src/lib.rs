@@ -599,6 +599,7 @@ pub use posteffect_region_weights::{
     POSTEFFECT_REGION_DEFINITION_SOURCE, POSTEFFECT_REGION_PROVINCES_SOURCE,
     POSTEFFECT_REGION_STATES_SOURCE, POSTEFFECT_REGION_WEIGHT_SCHEMA,
 };
+pub use production_d3d::ui as native_ui;
 pub use production_d3d::{
     building_presentation_priority, execute_production_d3d_frame,
     has_authenticated_d80_map_operations, prepare_production_d3d_frame,
@@ -944,7 +945,7 @@ pub use production_features::xmap21::{
 };
 pub use restore_scene_law::{restore_scene_pixel_rgb, RestoreSceneColorCube32, RestoreSceneGrade};
 pub use shader_compile::{
-    build_stage_hlsl, derive_a729_engine_map_shader_constants, effect_file_from_resolver,
+    build_stage_hlsl, build_stage_hlsl_with_defines, derive_a729_engine_map_shader_constants, effect_file_from_resolver,
     effect_translation_unit_files, engine_map_shader_defines, parse_dxbc_reflection,
     parse_effect_file, scan_effect_files_from_resolver, vanilla_engine_shader_defines, DxbcCbuffer,
     DxbcCbufferVar, DxbcReflection, DxbcResource, DxbcSignatureParam, EffectDef, EffectElement,
@@ -955,7 +956,7 @@ pub use shader_compile::{
 #[cfg(windows)]
 pub use shader_compile::{
     compare_effect_stage_to_captured, compare_map_effects_to_capture, d3d_compile_stage,
-    COMPILE_FLAG_MATRIX,
+    COMPILE_FLAG_MATRIX, ENGINE_COMPILE_FLAGS,
 };
 pub use snow_law::{
     captured_snow_mud_stats, compare_floor_to_capture, decode_snow_mud_texel,

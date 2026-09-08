@@ -373,6 +373,8 @@ pub enum ObserverViewerActionDisposition {
 pub struct ProductObserverUiRuntime {
     renderer: game_ui::production_renderer::ProductionUiRenderer,
     image: ImageRenderer,
+    xui08_native_files: map_viewer::GameFileResolver,
+    xui08_native_draw: map_viewer::native_ui::NativeUiD3dExecutor,
     playback: game_ui::production_renderer::ObserverPlaybackUiProfile,
     static_research_catalog: Arc<game_ui::static_research::StaticResearchUiCatalog>,
     static_focus_content: Arc<game_ui::static_focus_defs::AdmittedStaticFocusUiContent>,
@@ -1335,16 +1337,19 @@ enum Xui08SurfaceStageError {
     Execution(game_ui::GameUiError),
 }
 
-/// The caller's Present transaction owns both mutable arguments. Rendering and
-/// blending must succeed before either candidate state or hit authority changes.
+/// The caller's Present transaction owns the mutable candidates. Rendering and
+/// report validation precede installing resource, widget, pixel or hit state.
 fn compose_and_install_xui08_surface(
     renderer: &game_ui::production_renderer::ProductionUiRenderer,
     world: &WorldFrame,
     viewport: [usize; 2],
     delta: f32,
+    native_gui_clock: Option<game_ui::NativeGuiClock>,
     viewer: &mut game_ui::peace_conference_ui::PeaceConferenceViewerState,
+    resources: &mut game_ui::production_renderer::ViewerSpriteResources,
     pending: &mut Xui08PresentedFrame,
     framebuffer: &mut game_ui::dds::RgbaImage,
+    native_paint: Option<&mut game_ui::NativeUiPaintContext<'_>>,
 ) -> std::result::Result<Xui08InstalledSurface, Xui08SurfaceStageError> {
     if [framebuffer.width, framebuffer.height] != viewport
         || framebuffer.width.checked_mul(framebuffer.height)
@@ -1354,11 +1359,13 @@ fn compose_and_install_xui08_surface(
             "XUI08 destination dimensions or RGBA storage differ from the current viewport",
         )));
     }
-    let (composed, mut candidate) = renderer.compose_xui08_peace_conference_surface(
-        world, viewer, viewport[0], viewport[1], delta, framebuffer,
+    let (composed, mut candidate, candidate_resources) = renderer.compose_xui08_peace_conference_surface(
+        world, viewer, resources, viewport[0], viewport[1], delta, native_gui_clock, framebuffer,
+        native_paint,
     ).map_err(Xui08SurfaceStageError::Renderer)?;
     let Some(output) = composed else {
         *viewer = candidate;
+        *resources = candidate_resources;
         pending.input_region = None;
         pending.hit_targets.clear();
         pending.tooltip_targets.clear();
@@ -1387,6 +1394,7 @@ fn compose_and_install_xui08_surface(
         output.materialized_result_ids.len(),
     );
     *viewer = candidate;
+    *resources = candidate_resources;
     pending.input_region = Some(output.input_region);
     pending.hit_targets = output.hit_targets;
     pending.tooltip_targets = output.tooltip_targets;
@@ -2217,6 +2225,8 @@ impl ProductObserverUiRuntime {
             assets,
             content_admission,
             playback_profile,
+            crate::win32::native_ui_desktop_mode(),
+            [gfx.width, gfx.height],
         )?;
         let static_focus_content = Arc::new(
             game_ui::static_focus_defs::AdmittedStaticFocusUiContent::new(
@@ -2226,6 +2236,7 @@ impl ProductObserverUiRuntime {
         );
         Self::new(
             gfx,
+            resolver,
             renderer,
             game_ui::production_renderer::ObserverPlaybackUiProfile {
                 variant_key: playback_profile.key().clone(),
@@ -2243,6 +2254,7 @@ impl ProductObserverUiRuntime {
 
     fn new(
         gfx: &Gfx,
+        resolver: &map_viewer::GameFileResolver,
         renderer: game_ui::production_renderer::ProductionUiRenderer,
         playback: game_ui::production_renderer::ObserverPlaybackUiProfile,
         static_research_catalog: Arc<game_ui::static_research::StaticResearchUiCatalog>,
@@ -2261,6 +2273,14 @@ impl ProductObserverUiRuntime {
         Ok(Self {
             renderer,
             image: ImageRenderer::new(gfx)?,
+            xui08_native_files: resolver.clone(),
+            // Both interfaces belong to this runtime's admitted Gfx. The executor
+            // retains its own references and checks the owning immediate context.
+            xui08_native_draw: unsafe {
+                map_viewer::native_ui::NativeUiD3dExecutor::create_on_device(
+                    gfx.device.as_raw(), gfx.context.as_raw(), resolver,
+                )?
+            },
             playback,
             static_research_catalog,
             static_focus_content,
@@ -2342,6 +2362,7 @@ impl ProductObserverUiRuntime {
         playback_speed_step: usize,
         playback_playing: bool,
         viewer_clock_micros: u64,
+        native_gui_clock: Option<game_ui::NativeGuiClock>,
         production_lines_inputs: ProductionLinesUiSupplementalInputs,
         occupation_outcome: Option<&ObserverOccupationOutcome>,
     ) -> Result<ObserverUiOutcome> {
@@ -3388,13 +3409,31 @@ impl ProductObserverUiRuntime {
                 .is_some_and(|pending| pending.admitted.active())
             {
                 let composed = match xui08_delta {
-                    Ok(delta) => compose_and_install_xui08_surface(
-                        &self.renderer, world_frame,
-                        [gfx.width as usize, gfx.height as usize], delta,
-                        &mut viewer.peace_conference,
-                        self.xui08_pending.as_mut().expect("active candidate checked above"),
-                        &mut framebuffer,
-                    ),
+                    Ok(delta) => {
+                        let mut native_paint = game_ui::NativeUiPaintContext {
+                            resolver: &self.xui08_native_files,
+                            executor: &mut self.xui08_native_draw,
+                            target: map_viewer::native_ui::NativeUiTargetDesc {
+                                width: gfx.width,
+                                height: gfx.height,
+                                dxgi_format_u32: gfx.target_format(),
+                                // Both Gfx swapchain and offscreen constructors use
+                                // this sample description. The surface entry below
+                                // checks the actual framebuffer against this viewport.
+                                sample_count: 1,
+                                sample_quality: 0,
+                            },
+                        };
+                        compose_and_install_xui08_surface(
+                            &self.renderer, world_frame,
+                            [gfx.width as usize, gfx.height as usize], delta, native_gui_clock,
+                            &mut viewer.peace_conference,
+                            &mut viewer.sprite_resources,
+                            self.xui08_pending.as_mut().expect("active candidate checked above"),
+                            &mut framebuffer,
+                            Some(&mut native_paint),
+                        )
+                    },
                     Err(error) => Err(Xui08SurfaceStageError::Renderer(
                         game_ui::production_renderer::ProductionUiRejection::Asset(error.to_string()),
                     )),

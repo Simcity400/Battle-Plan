@@ -2514,6 +2514,8 @@ pub struct Compositor<'a> {
     resolver: &'a AssetResolver,
     registry: &'a SpriteRegistry,
     cache: CacheSlot<'a>,
+    container_pass: Option<&'a mut crate::container_sprite_pass::ContainerSpritePass>,
+    native_paint: Option<crate::NativeUiPaintContext<'a>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2798,6 +2800,8 @@ impl<'a> Compositor<'a> {
             resolver,
             registry,
             cache: CacheSlot::Owned(UiAssetCache::default()),
+            container_pass: None,
+            native_paint: None,
         }
     }
 
@@ -2810,7 +2814,19 @@ impl<'a> Compositor<'a> {
             resolver,
             registry,
             cache: CacheSlot::Borrowed(cache),
+            container_pass: None,
+            native_paint: None,
         }
+    }
+
+    pub(crate) fn with_container_sprite_pass(
+        resolver: &'a AssetResolver,
+        registry: &'a SpriteRegistry,
+        pass: &'a mut crate::container_sprite_pass::ContainerSpritePass,
+        native_paint: Option<crate::NativeUiPaintContext<'a>>,
+    ) -> Self {
+        Self { resolver, registry, cache: CacheSlot::Owned(UiAssetCache::default()),
+            container_pass: Some(pass), native_paint }
     }
 
     pub fn compose(&mut self, root: &GuiElement, options: &ComposeOptions) -> ComposeOutput {
@@ -5164,7 +5180,7 @@ impl<'a> Compositor<'a> {
             .map(String::as_str)
             .or_else(|| primary_sprite_ref(element))
         {
-            self.draw_sprite(element, sprite_name, rect, image, options, report);
+            self.draw_sprite(element, sprite_name, rect, child_path, image, options, report);
         } else if let Some(rgba) = options.color_overrides.get(&element.name).copied() {
             fill_rect(image, rect, rgba);
             report.drawn_elements += 1;
@@ -5645,6 +5661,7 @@ impl<'a> Compositor<'a> {
         element: &GuiElement,
         sprite_name: &str,
         rect: Rect,
+        child_path: &[u32],
         image: &mut RgbaImage,
         options: &ComposeOptions,
         report: &mut ComposeReport,
@@ -5658,7 +5675,7 @@ impl<'a> Compositor<'a> {
         } else if is_progress_bar(sprite) {
             self.draw_progress_bar(element, sprite, rect, image, options)
         } else {
-            self.draw_plain_sprite(element, sprite, rect, image, options)
+            self.draw_plain_sprite(element, sprite, rect, child_path, image, options)
         };
         match draw_result {
             Ok(did_draw) => {
@@ -5677,9 +5694,42 @@ impl<'a> Compositor<'a> {
         element: &GuiElement,
         sprite: &SpriteDefinition,
         rect: Rect,
+        child_path: &[u32],
         image: &mut RgbaImage,
         options: &ComposeOptions,
     ) -> Result<bool> {
+        let reached = if let Some(pass) = self.container_pass.as_deref_mut() {
+            if options.disabled_button_elements.contains(&element.name) {
+                pass.icon_operation(
+                    child_path, &sprite.name,
+                    crate::container_sprite_interaction::IconOperation::Disable,
+                    |_, _, _| Err("container icon observer operations are not bound".into()),
+                )?;
+            }
+            // A rejected native queue gate does not reach either getter or
+            // stamp an effect/animation clock. Missing gate authority refuses.
+            match pass.reached_if_queued(child_path, &sprite.name, None, None)? {
+                Some(receipt) => Some(receipt),
+                None => return Ok(false),
+            }
+        } else {
+            None
+        };
+        if let Some(reached) = reached.as_ref() {
+            let prepared = self.container_pass.as_deref()
+                .expect("reached container pass")
+                .native_draw(child_path)?;
+            let native_paint = self.native_paint.as_mut().ok_or_else(||
+                GameUiError::parse("native sprite GPU execution context unavailable"))?;
+            let opacity = options.container_sprite_opacity_by_element.get(&element.name)
+                .copied().ok_or_else(|| GameUiError::parse("native sprite opacity assignment unavailable"))?;
+            if options.frame_overrides.contains_key(&element.name)
+                || options.color_overrides.contains_key(&element.name)
+            {
+                return Err(GameUiError::parse("native sprite frame/color setter ownership unavailable"));
+            }
+            return prepared.draw_over(self.resolver, sprite, element, reached, opacity, native_paint, image);
+        }
         let decoded = self.decoded_sprite(&sprite.name)?;
         let frame_index = frame_index(element, options, decoded.frames.len());
         let frame = decoded
@@ -5707,21 +5757,31 @@ impl<'a> Compositor<'a> {
                 self.resolver, sprite, &crate::runtime_graphics::ContainerSpriteRequest {
                     source_identity: format!("{}:{}", sprite.source_file, element.name),
                     frame_count: decoded.frames.len(),
-                    one_based_frame: u32::try_from(frame_index + 1)
-                        .map_err(|_| GameUiError::parse("container sprite frame exceeds u32"))?,
+                    frame: crate::runtime_graphics::ContainerSpriteFrame::PreviewOneBased(
+                        u32::try_from(frame_index + 1)
+                            .map_err(|_| GameUiError::parse("container sprite frame exceeds u32"))?),
                     // Current read-only controls explicitly marked disabled have
                     // a state witness. Absence does not establish an Up state.
                     interaction: options.disabled_button_elements.contains(&element.name)
                         .then_some(ButtonVisualState::Disable),
                     color,
-                    clip: ClipRect {
-                        left: 0, top: 0,
-                        right: i32::try_from(image.width)
-                            .map_err(|_| GameUiError::parse("container surface width exceeds i32"))?,
-                        bottom: i32::try_from(image.height)
-                            .map_err(|_| GameUiError::parse("container surface height exceeds i32"))?,
+                    clip: match reached.as_ref() {
+                        Some(receipt) => receipt.clip,
+                        None => ClipRect {
+                            left: 0, top: 0,
+                            right: i32::try_from(image.width)
+                                .map_err(|_| GameUiError::parse("container surface width exceeds i32"))?,
+                            bottom: i32::try_from(image.height)
+                                .map_err(|_| GameUiError::parse("container surface height exceeds i32"))?,
+                        },
                     },
                     opacity: *opacity,
+                    reached: reached.as_ref().map(|receipt| crate::runtime_graphics::ContainerSpriteReachedState {
+                        effect: receipt.effect,
+                        gui_time: receipt.gui_time,
+                        effect_started_at: receipt.draw.draw_clock,
+                        admitted_animation_count: receipt.draw.animations.iter().flatten().count(),
+                    }),
                 },
             ).map_err(|reason| GameUiError::parse(format!(
                 "container sprite {} runtime operands rejected: {reason:?}", sprite.name,
@@ -7311,7 +7371,7 @@ pub(crate) fn is_hidden(element: &GuiElement) -> bool {
         .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "yes" | "true"))
 }
 
-fn primary_sprite_ref(element: &GuiElement) -> Option<&str> {
+pub(crate) fn primary_sprite_ref(element: &GuiElement) -> Option<&str> {
     for key in ["quadTextureSprite", "spriteType", "SpriteType"] {
         if let Some(value) = element.raw.first_scalar_ci(key) {
             return Some(value);

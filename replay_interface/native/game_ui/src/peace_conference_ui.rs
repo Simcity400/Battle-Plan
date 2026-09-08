@@ -14,7 +14,7 @@ use crate::tooltip_compositor::{
     TooltipRow,
 };
 use crate::{GameUiError, Result};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 const PEACE_SCROLL_FIXED_SCALE: i64 = 100_000;
 const PEACE_SCROLLBAR_SOURCE: &str = "interface/core.gui";
@@ -58,6 +58,7 @@ pub struct PeaceConferenceAuthoredTemplate {
 pub struct PeaceConferenceAuthoredLayout {
     pub source_file: String,
     pub root: GuiElement,
+    root_clip_custody: Option<PeaceRootClipCustody>,
     pub(crate) transition_profile: crate::compose::ContainerTransitionProfile,
     pub templates: Vec<PeaceConferenceAuthoredTemplate>,
     pub available_actions_scrollbar: String,
@@ -187,15 +188,7 @@ fn referenced_scrollbar_smooth_factor(resolver: &AssetResolver, style_name: &str
 pub fn load_peace_conference_authored_layout(
     resolver: &AssetResolver,
 ) -> Result<PeaceConferenceAuthoredLayout> {
-    let resolved = resolver.resolve_file(PEACE_CONFERENCE_GUI)?;
-    let mut layouts = LayoutSet::default();
-    layouts.parse_content(&resolver.read_file(&resolved)?, &resolved.rel_path)?;
-    if layouts.stats.parse_failures != 0
-        || layouts.stats.recovery_count != 0
-        || layouts.stats.decode_loss_count != 0
-    {
-        return Err(fail("winning GUI file was not parsed losslessly"));
-    }
+    let (layouts, source_file, root_clip_custody) = PeaceRootClipCustody::read_controller(resolver)?;
 
     let root = last_top_level(&layouts, PEACE_CONFERENCE_ROOT)
         .cloned()
@@ -274,7 +267,8 @@ pub fn load_peace_conference_authored_layout(
     }
 
     Ok(PeaceConferenceAuthoredLayout {
-        source_file: resolved.rel_path,
+        source_file,
+        root_clip_custody,
         transition_profile,
         root,
         templates,
@@ -317,6 +311,7 @@ pub struct PeaceConferenceScrollbarDrag {
 struct PeaceConferenceContainer {
     content_manifest_sha256: String,
     runtime: crate::compose::ContainerRuntime,
+    sprites: crate::container_sprite_lifetime::ContainerSpriteLifetimes,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -375,7 +370,8 @@ impl PeaceConferenceViewerState {
         if self.container.is_none() {
             let mut runtime = crate::compose::ContainerRuntime::construct(profile.clone(), parent, size);
             if self.open { runtime.set_local_visibility(true); }
-            self.container = Some(PeaceConferenceContainer { content_manifest_sha256: manifest.into(), runtime });
+            self.container = Some(PeaceConferenceContainer { content_manifest_sha256: manifest.into(), runtime,
+                sprites: crate::container_sprite_lifetime::ContainerSpriteLifetimes::default() });
         }
         let container = self.container.as_mut().expect("constructed above");
         if container.content_manifest_sha256 != manifest || !container.runtime.matches(profile, parent) {
@@ -926,6 +922,9 @@ impl PeaceConferenceInputRegion {
 #[derive(Clone, Debug)]
 pub struct PeaceConferenceComposeOutput {
     pub output: ComposeOutput,
+    // The static raster replay is validated by the same production report
+    // owner before either candidate state or pixels can reach presentation.
+    pub(crate) raster_report: crate::compose::ComposeReport,
     pub input_region: PeaceConferenceInputRegion,
     pub hit_targets: Vec<PeaceConferenceHitTarget>,
     pub tooltip_targets: Vec<PeaceConferenceTooltipHitTarget>,
@@ -934,18 +933,132 @@ pub struct PeaceConferenceComposeOutput {
     pub materialized_result_ids: Vec<String>,
 }
 
-pub fn render_peace_conference(
+#[derive(Clone, Debug, PartialEq)]
+struct PeaceRootClipCustody {
+    controller_file: replay_core::UsedContentKey,
+    authored_root: GuiElement,
+}
+
+impl PeaceRootClipCustody {
+    // The only constructor reads the admitted controller file itself. A root
+    // name or a generic container definition alone cannot establish custody.
+    fn read_controller(resolver: &AssetResolver) -> Result<(LayoutSet, String, Option<Self>)> {
+        let resolved = resolver.resolve_file(PEACE_CONFERENCE_GUI)?;
+        let mut layouts = LayoutSet::default();
+        layouts.parse_content(&resolver.read_file(&resolved)?, &resolved.rel_path)?;
+        if layouts.stats.parse_failures != 0
+            || layouts.stats.recovery_count != 0
+            || layouts.stats.decode_loss_count != 0
+        {
+            return Err(fail("winning GUI file was not parsed losslessly"));
+        }
+        let custody = if resolver.has_portable_content_admission() {
+            resolver
+                .admitted_content_key(PEACE_CONFERENCE_GUI)
+                .and_then(|source| {
+                    let root = last_top_level(&layouts, PEACE_CONFERENCE_ROOT)?;
+                    root.element_type
+                        .eq_ignore_ascii_case("containerWindowType")
+                        .then(|| Self {
+                            controller_file: source.clone(),
+                            authored_root: root.clone(),
+                        })
+                })
+        } else {
+            None
+        };
+        Ok((layouts, resolved.rel_path, custody))
+    }
+
+    fn matches(&self, resolver: &AssetResolver, root: &GuiElement) -> bool {
+        resolver.has_portable_content_admission()
+            && resolver.admitted_content_key(PEACE_CONFERENCE_GUI) == Some(&self.controller_file)
+            && root.name.eq_ignore_ascii_case(PEACE_CONFERENCE_ROOT)
+            && root
+                .element_type
+                .eq_ignore_ascii_case("containerWindowType")
+            && *root == self.authored_root
+    }
+}
+
+fn bind_native_root_sprite_clips(
+    resolver: &AssetResolver,
+    authored_root: &GuiElement,
+    custody: Option<&PeaceRootClipCustody>,
+    materialization: &crate::container_sprite_session::ContainerSpriteMaterialization,
+    graphics: std::result::Result<&crate::container_sprite_clip::NativeClipGraphics, &str>,
+) -> BTreeMap<Vec<u32>, std::result::Result<Option<crate::runtime_graphics::ClipRect>, String>> {
+    use crate::container_sprite_clip::{
+        ContainerClipProfile, SpriteClipDrawGate, StoredSpriteClip,
+    };
+    use crate::container_sprite_lifetime::ContainerSpriteWidgetFactory;
+    let root_clip = graphics.map_err(str::to_owned).and_then(|graphics| {
+        if !custody.is_some_and(|witness| witness.matches(resolver, authored_root)) {
+            return Err("native peace root admitted controller/root custody is unavailable".into());
+        }
+        let profile = ContainerClipProfile::from_element(authored_root)
+            .map_err(|reason| format!("native root clip definition: {reason:?}"))?;
+        let logical = profile
+            .unclipped_root_content(graphics.logical_size)
+            .ok_or_else(|| {
+                "native clipping root screen-position getter is not yet bound".to_string()
+            })?;
+        // 14184f960 -> actual CGameGui +60 (142246270) -> 1422faf10
+        // passes zero to 14229f050's optional parent argument. The graphical
+        // parent is graphics+1f0; the retained parent SCISSOR +1628 is null.
+        // Own/content nodes retain Inherit through the supported root
+        // show/hide/layout operations, so traversal supplies no inherited clip.
+        let stored = StoredSpriteClip::from_container_write(logical, graphics.logical_to_physical);
+        match stored.draw_gate(graphics.physical_size) {
+            SpriteClipDrawGate::Clipped(rect) => {
+                let [left, top, right, bottom] = rect.0;
+                Ok(Some(crate::runtime_graphics::ClipRect {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                }))
+            }
+            SpriteClipDrawGate::Rejected => Ok(None),
+            SpriteClipDrawGate::Unclipped => {
+                Err("native root explicit clip setter lost enable".into())
+            }
+        }
+    });
+    materialization
+        .elements
+        .iter()
+        .map(|row| {
+            let outcome = if row.display_child_path.len() != 2
+                || row.display_child_path.first() != Some(&0)
+                || row.widget_factory != ContainerSpriteWidgetFactory::OrdinaryIcon2d
+            {
+                Err("native list/custom/background clip owner is not yet bound".into())
+            } else {
+                root_clip.clone()
+            };
+            (row.display_child_path.clone(), outcome)
+        })
+        .collect()
+}
+
+pub(crate) fn render_peace_conference(
     resolver: &AssetResolver,
     registry: &SpriteRegistry,
     localisation: &Localisation,
     exact: &replay_core::PeaceConferencePresentationExact,
     admitted: &AdmittedPeaceConference,
     viewer: &PeaceConferenceViewerState,
+    resources: &crate::container_sprite_resources::ViewerSpriteResources,
     width: usize,
     height: usize,
     frame_delta_seconds: f32,
+    native_gui_clock: Option<crate::NativeGuiClock>,
+    force_pow2_textures: Option<bool>,
+    native_graphics: std::result::Result<&crate::container_sprite_clip::NativeClipGraphics, &str>,
     destination: &crate::dds::RgbaImage,
-) -> Result<(Option<PeaceConferenceComposeOutput>, PeaceConferenceViewerState)> {
+    mut native_paint: Option<&mut crate::NativeUiPaintContext<'_>>,
+) -> Result<(Option<PeaceConferenceComposeOutput>, PeaceConferenceViewerState, crate::container_sprite_resources::ViewerSpriteResources)> {
     use replay_core::PeaceConferencePresentationObservationExact as Observation;
     let Observation::Active {
         current_participant_id,
@@ -962,7 +1075,7 @@ pub fn render_peace_conference(
         ..
     } = &exact.observation
     else {
-        return Ok((None, viewer.clone()));
+        return Ok((None, viewer.clone(), resources.clone()));
     };
     let PeaceConferenceSnapshot::Active(active) = admitted.render_model() else {
         return Err(fail("PCS3 active carrier admitted as inactive"));
@@ -981,16 +1094,27 @@ pub fn render_peace_conference(
     let layout = load_peace_conference_authored_layout(resolver)?;
     let mut root = layout.root.clone();
     let mut candidate = viewer.clone();
-    let parent = [i32::try_from(width).map_err(|_| fail("viewport width exceeds i32"))?,
+    let mut candidate_resources = resources.clone();
+    let physical_parent = [i32::try_from(width).map_err(|_| fail("viewport width exceeds i32"))?,
         i32::try_from(height).map_err(|_| fail("viewport height exceeds i32"))?];
+    let parent = native_graphics.map(|graphics| graphics.logical_size).unwrap_or(physical_parent);
     let (position, size, opacity, visible) = candidate.stage_container(
         &layout, &exact.content_manifest_sha256, parent, frame_delta_seconds)?;
-    if !visible { return Ok((None, candidate)); }
+    if !visible { return Ok((None, candidate, candidate_resources)); }
     // The native anchor/pivot and relative-position cache have already been
     // evaluated. Project their pixel coordinates once, without a second anchor.
     set_position_upper_left(&mut root, position[0], position[1]);
     root.size = Some(pair(size[0], size[1]));
     let mut options = ComposeOptions::new(width, height).with_localisation(localisation);
+    // A materialized template is retained by current semantic owner, not by
+    // the presentation ordinal embedded in its display-only cloned name.
+    let mut sprite_owner_scopes = BTreeMap::<String, Vec<String>>::new();
+    let scoped_sprite_owner = |parts: Vec<String>| {
+        let mut key = vec!["conference".into(), active.conference_id.clone()];
+        key.extend(parts);
+        key
+    };
+
     options.shown_elements.insert(root.name.clone());
     for hidden in [
         "peaceconference_select_action_window",
@@ -1093,6 +1217,9 @@ pub fn render_peace_conference(
             available_height.saturating_sub(viewer.available_actions_scroll_px),
         );
         prefix_element_names(&mut group, &prefix);
+        sprite_owner_scopes.insert(group.name.clone(), scoped_sprite_owner(vec![
+            "available-group".into(), producer_group.stable_group_id.clone(),
+        ]));
         set_text(
             &mut options,
             &format!("{prefix}action_name"),
@@ -1152,6 +1279,10 @@ pub fn render_peace_conference(
                         .ok_or_else(|| fail("available row position overflow"))?,
                 );
                 prefix_element_names(&mut item, &item_prefix);
+                sprite_owner_scopes.insert(item.name.clone(), scoped_sprite_owner(vec![
+                    "available-allocation".into(), producer_group.stable_group_id.clone(),
+                    row.stable_allocation_id.clone(),
+                ]));
                 set_text(
                     &mut options,
                     &format!("{item_prefix}score"),
@@ -1233,6 +1364,9 @@ pub fn render_peace_conference(
             history_height.saturating_sub(viewer.current_and_history_scroll_px),
         );
         prefix_element_names(&mut group, &prefix);
+        sprite_owner_scopes.insert(group.name.clone(), scoped_sprite_owner(vec![
+            "participant".into(), participant.stable_participant_id.clone(), template_name.into(),
+        ]));
         set_text(
             &mut options,
             &format!("{prefix}country_name"),
@@ -1293,6 +1427,10 @@ pub fn render_peace_conference(
                     .ok_or_else(|| fail("conference_bidding_entry disappeared"))?;
                 let item_prefix = format!("{prefix}allocation_{row_ordinal}_");
                 position_prefixed_history_row(&mut item, row_ordinal, row_height, &item_prefix)?;
+                sprite_owner_scopes.insert(item.name.clone(), scoped_sprite_owner(vec![
+                    "history-allocation".into(), participant.stable_participant_id.clone(),
+                    row.stable_allocation_id.clone(),
+                ]));
                 set_text(
                     &mut options,
                     &format!("{item_prefix}cost"),
@@ -1336,6 +1474,10 @@ pub fn render_peace_conference(
                         row_height,
                         &item_prefix,
                     )?;
+                    sprite_owner_scopes.insert(item.name.clone(), scoped_sprite_owner(vec![
+                        "history-result".into(), participant.stable_participant_id.clone(),
+                        result.stable_result_id.clone(),
+                    ]));
                     set_text(
                         &mut options,
                         &format!("{item_prefix}cost"),
@@ -1396,6 +1538,9 @@ pub fn render_peace_conference(
             .template("biddings_popup_window")
             .cloned()
             .ok_or_else(|| fail("biddings_popup_window disappeared"))?;
+        sprite_owner_scopes.insert(window.name.clone(), scoped_sprite_owner(vec![
+            "contested-popup".into(), selected.stable_allocation_id.clone(),
+        ]));
         descendant_mut_exact(&mut window, "close_button")?.name = "xui08_popup_close_button".into();
         for mutation in ["select_all_button", "forfeit_button", "bid_button"] {
             options.hidden_elements.insert(mutation.into());
@@ -1442,6 +1587,10 @@ pub fn render_peace_conference(
                     .saturating_sub(viewer.contested_popup_scroll_px),
             );
             prefix_element_names(&mut item, &prefix);
+            sprite_owner_scopes.insert(item.name.clone(), scoped_sprite_owner(vec![
+                "contested-allocation".into(), selected.stable_allocation_id.clone(),
+                row.stable_allocation_id.clone(),
+            ]));
             set_text(&mut options, &format!("{prefix}cost"), &row.bid.final_text);
             set_text(
                 &mut options,
@@ -1625,7 +1774,45 @@ pub fn render_peace_conference(
     if let Some(popup) = popup {
         wrapper.children.push(popup);
     }
-    let mut output = Compositor::new(resolver, registry)
+    let materialization = crate::container_sprite_session::collect_container_sprite_materialization(
+        // Static children belong to this retained container lifetime. A new
+        // conference rebuilds its semantic rows, not the surviving root object.
+        &wrapper, &["peace-conference-root".into()],
+        &sprite_owner_scopes, &options.sprite_name_overrides, registry, resolver,
+        // Neither source parser locale nor MXCSR lifetime has been proved.
+        None,
+    );
+    let native_clips = bind_native_root_sprite_clips(
+        resolver,
+        &layout.root,
+        layout.root_clip_custody.as_ref(),
+        &materialization,
+        native_graphics,
+    );
+    let mut sprite_pass = crate::container_sprite_pass::ContainerSpritePass::begin(
+        materialization, &candidate.container.as_ref().expect("staged root").sprites,
+        native_gui_clock,
+        crate::container_sprite_pass::ContainerSpritePolicy {
+            texture_normalization: force_pow2_textures.map(
+                crate::container_sprite_geometry::SpriteTextureNormalization::from_native_force_pow2,
+            ),
+            native_mxcsr: None,
+        },
+    )?;
+    sprite_pass.bind_native_clips(native_clips)?;
+    let native_draws = crate::container_sprite_paint::prepare_materialized_native_draws(
+        resolver, registry, &layout.root,
+        &candidate.container.as_ref().expect("staged root").runtime,
+        sprite_pass.materialization(), &sprite_pass.lifetimes, &mut candidate_resources,
+        native_graphics, force_pow2_textures,
+        crate::container_sprite_paint::NativeSpriteSourceOperands {
+            native_mxcsr: None, mod_color: None, engine_defines: None,
+            renderer_creation_aa_request: None, text_policy: None,
+        },
+    );
+    sprite_pass.bind_native_draws(native_draws)?;
+    let mut output = Compositor::with_container_sprite_pass(resolver, registry, &mut sprite_pass,
+        native_paint.as_deref_mut().map(crate::NativeUiPaintContext::reborrow))
         .compose_over(&wrapper, &options, destination)?;
     let mut static_options = options.clone();
     static_options
@@ -1637,8 +1824,12 @@ pub fn render_peace_conference(
     static_options
         .hidden_elements
         .insert("xui08_popup_rows".into());
-    let mut clipped = Compositor::new(resolver, registry)
+    sprite_pass.begin_raster_replay();
+    let mut clipped = Compositor::with_container_sprite_pass(resolver, registry, &mut sprite_pass,
+        native_paint.as_deref_mut().map(crate::NativeUiPaintContext::reborrow))
         .compose_over(&wrapper, &static_options, destination)?;
+    sprite_pass.finish_raster_replay()?;
+    candidate.container.as_mut().expect("staged root").sprites = sprite_pass.lifetimes;
     copy_rect(&output.image, &mut clipped.image, available_rect);
     copy_rect(&output.image, &mut clipped.image, history_rect);
     if let Some(rect) = contested_popup_rect {
@@ -1724,6 +1915,7 @@ pub fn render_peace_conference(
     )?;
     Ok((Some(PeaceConferenceComposeOutput {
         output,
+        raster_report: clipped.report,
         input_region: PeaceConferenceInputRegion {
             panel: [0, 0, viewport.w(), viewport.h()],
             available_actions: rect_array(available_rect),
@@ -1765,7 +1957,7 @@ pub fn render_peace_conference(
             .chain(history_allocation_ids)
             .collect(),
         materialized_result_ids: result_ids,
-    }), candidate))
+    }), candidate, candidate_resources))
 }
 
 fn apply_container_opacity(root: &GuiElement, opacity: f32, options: &mut ComposeOptions) -> Result<()> {
@@ -2361,6 +2553,249 @@ fn nested_prefixed_indices(
 mod tests {
     use super::*;
     use crate::trade_layout::{TradeScrollbarGeometry, TradeScrollbarPartGeometry};
+
+    struct NativeRootClipFixture {
+        root: GuiElement,
+        custody: Option<PeaceRootClipCustody>,
+        assets: AssetResolver,
+        census: crate::container_sprite_session::ContainerSpriteMaterialization,
+        // Dropped after assets releases its admission lease.
+        _directory: NativeRootClipDirectory,
+    }
+
+    struct NativeRootClipDirectory(std::path::PathBuf);
+
+    impl Drop for NativeRootClipDirectory {
+        fn drop(&mut self) {
+            // Only this fixture's uniquely created directory is removed.
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    fn native_root_clip_fixture(root_fields: &str) -> NativeRootClipFixture {
+        let label = format!(
+            "peace-native-root-clip-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let directory = std::env::temp_dir().join(&label);
+        std::fs::create_dir_all(directory.join("interface")).unwrap();
+        let other_children = r#"
+            containerWindowType = { name = nested
+                iconType = { name = nested_icon spriteType = GFX_root_clip }
+            }
+            buttonType = { name = button spriteType = GFX_root_clip }
+            iconType = { name = three_d spriteType = GFX_root_clip position3D = { x = 0 y = 0 z = 0 } }
+        "#;
+        let gui = format!(
+            r#"guiTypes = {{ containerWindowType = {{
+            name = peaceconference_full_window {root_fields}
+            iconType = {{ name = direct spriteType = GFX_root_clip position = {{ x = 9000 y = 9000 }} }}
+            {other_children}
+        }} }}"#
+        );
+        std::fs::write(directory.join(PEACE_CONFERENCE_GUI), gui).unwrap();
+        std::fs::write(
+            directory.join("interface/root_clip.gfx"),
+            "spriteTypes = { spriteType = { name = GFX_root_clip } }",
+        )
+        .unwrap();
+        let (resolver, admission) = crate::test_admission::admit_vanilla(
+            &directory,
+            "l_english",
+            &[PEACE_CONFERENCE_GUI, "interface/root_clip.gfx"],
+            &label,
+        );
+        let rows = admission
+            .required_paths()
+            .map(|path| admission.require_used_content(path).unwrap().clone())
+            .collect::<Vec<_>>();
+        let assets = AssetResolver::from_used_content_rows(&resolver, &admission, rows).unwrap();
+        let read_document = |path: &str| {
+            let file = assets.resolve_file(path).unwrap();
+            let document = crate::paradox_text::parse_bytes(&assets.read_file(&file).unwrap());
+            assert!(document.recoveries.is_empty());
+            document
+        };
+        let (controller, _, custody) = PeaceRootClipCustody::read_controller(&assets).unwrap();
+        let root = last_top_level(&controller, PEACE_CONFERENCE_ROOT)
+            .unwrap()
+            .clone();
+        let witness = custody
+            .as_ref()
+            .expect("actual admitted controller/root read");
+        assert_eq!(
+            &witness.controller_file,
+            assets.admitted_content_key(PEACE_CONFERENCE_GUI).unwrap()
+        );
+        assert_eq!(witness.authored_root, root);
+        let mut registry = SpriteRegistry::new();
+        registry.add_document(
+            "interface/root_clip.gfx",
+            &read_document("interface/root_clip.gfx"),
+        );
+        let mut wrapper = wrapper_root(1920, 1080, root.clone()).unwrap();
+        // A popup is a separate root, never a direct child of the retained main root.
+        wrapper.children.push(root.children[0].clone());
+        let census = crate::container_sprite_session::collect_container_sprite_materialization(
+            &wrapper,
+            &["peace-conference-root".into()],
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &registry,
+            &assets,
+            None,
+        );
+        assert!(census.refusals.is_empty());
+        for row in &census.elements {
+            let identity = row
+                .identity
+                .as_ref()
+                .expect("identity from authenticated source read");
+            assert_eq!(
+                identity.definition_source,
+                *assets
+                    .admitted_content_key("interface/root_clip.gfx")
+                    .unwrap()
+            );
+            assert!(row.definition_payload.is_some());
+            assert!(row.animations.is_ok());
+        }
+        NativeRootClipFixture {
+            root,
+            custody,
+            assets,
+            census,
+            _directory: NativeRootClipDirectory(directory),
+        }
+    }
+
+    fn native_root_clip_graphics(
+        physical: [u32; 2],
+        minimum: [u32; 2],
+        authored_scale: f32,
+    ) -> crate::container_sprite_clip::NativeClipGraphics {
+        use crate::container_sprite_clip::{
+            DisplayZeroDesktopMode, EffectiveGuiScale, NativeClipGraphics,
+        };
+        use crate::variant_admission::{DisplayMode, DisplayVariantKey, InputVariant, PixelExtent};
+        let key = DisplayVariantKey {
+            physical_viewport: PixelExtent {
+                width: physical[0],
+                height: physical[1],
+            },
+            min_gui: PixelExtent {
+                width: minimum[0],
+                height: minimum[1],
+            },
+            gui_scale_f32_bits: authored_scale.to_bits(),
+            display_mode: DisplayMode::Windowed,
+            localisation_language: "l_english".into(),
+            input_variant: InputVariant::MouseKeyboard,
+        };
+        let effective = EffectiveGuiScale::after_graphics_settings_read(
+            &key,
+            physical,
+            false,
+            DisplayZeroDesktopMode::Unavailable,
+        )
+        .unwrap();
+        NativeClipGraphics::from_graphics_construction(effective, physical).unwrap()
+    }
+
+    #[test]
+    fn native_root_clip_direct_icon_outside_geometry_uses_admitted_root_clip() {
+        let fixture = native_root_clip_fixture("clipping = no position = { x = -4000 y = 7000 }");
+        let graphics = native_root_clip_graphics([1920, 1080], [1280, 720], 1.25);
+        let clips = bind_native_root_sprite_clips(
+            &fixture.assets,
+            &fixture.root,
+            fixture.custody.as_ref(),
+            &fixture.census,
+            Ok(&graphics),
+        );
+        assert_eq!(fixture.root.children[0].position, Some(pair(9000, 9000)));
+        assert_eq!(graphics.logical_size, [1536, 864]);
+        assert_eq!(graphics.logical_to_physical, [1.25, 1.25]);
+        assert_eq!(
+            clips[&vec![0, 0]],
+            Ok(Some(crate::runtime_graphics::ClipRect {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080
+            }))
+        );
+        for path in [vec![0, 1, 0], vec![0, 2], vec![0, 3], vec![1]] {
+            assert_eq!(
+                clips[&path],
+                Err("native list/custom/background clip owner is not yet bound".into())
+            );
+        }
+    }
+
+    #[test]
+    fn native_root_clip_wrong_root_type_and_controller_custody_are_refused() {
+        let fixture = native_root_clip_fixture("clipping = no");
+        let other = native_root_clip_fixture("clipping = no size = { width = 64 height = 32 }");
+        let graphics = native_root_clip_graphics([1920, 1080], [1280, 720], 1.0);
+        let expected =
+            Err("native peace root admitted controller/root custody is unavailable".into());
+        let mut wrong_name = fixture.root.clone();
+        wrong_name.name = "biddings_popup_window".into();
+        let mut wrong_type = fixture.root.clone();
+        wrong_type.element_type = "gridBoxType".into();
+        let mut altered_root = fixture.root.clone();
+        altered_root.raw = other.root.raw.clone();
+        for (root, custody, assets) in [
+            (&wrong_name, fixture.custody.as_ref(), &fixture.assets),
+            (&wrong_type, fixture.custody.as_ref(), &fixture.assets),
+            (&altered_root, fixture.custody.as_ref(), &fixture.assets),
+            (&fixture.root, None, &fixture.assets),
+            (&fixture.root, fixture.custody.as_ref(), &other.assets),
+        ] {
+            let clips = bind_native_root_sprite_clips(
+                assets,
+                root,
+                custody,
+                &fixture.census,
+                Ok(&graphics),
+            );
+            assert_eq!(clips[&vec![0, 0]], expected);
+        }
+    }
+
+    #[test]
+    fn native_root_clip_unknown_graphics_and_clipping_root_remain_named_refusals() {
+        let fixture = native_root_clip_fixture("clipping = no");
+        let clips = bind_native_root_sprite_clips(
+            &fixture.assets,
+            &fixture.root,
+            fixture.custody.as_ref(),
+            &fixture.census,
+            Err("desktop observation unavailable"),
+        );
+        assert_eq!(
+            clips[&vec![0, 0]],
+            Err("desktop observation unavailable".into())
+        );
+        let fixture = native_root_clip_fixture("clipping = yes");
+        let graphics = native_root_clip_graphics([1920, 1080], [1280, 720], 1.0);
+        let clips = bind_native_root_sprite_clips(
+            &fixture.assets,
+            &fixture.root,
+            fixture.custody.as_ref(),
+            &fixture.census,
+            Ok(&graphics),
+        );
+        assert_eq!(
+            clips[&vec![0, 0]],
+            Err("native clipping root screen-position getter is not yet bound".into())
+        );
+    }
 
     fn part(rect: Rect) -> TradeScrollbarPartGeometry {
         TradeScrollbarPartGeometry {

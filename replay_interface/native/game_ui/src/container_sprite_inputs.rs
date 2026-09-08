@@ -3,12 +3,16 @@
 //! The caller owns the authenticated widget identity, reached draw, native effect,
 //! and admitted animation definitions. This module does not infer an interaction
 //! from missing input and does not shade or parse animation definitions.
+//! Candidate effect/clock recurrence provenance and missing native corroboration:
+//! extractor/native/runs/arrow_native_ui_20260908/CANDIDATE_EFFECT_CLOCK_LIFECYCLES.json.
 
 use crate::runtime_graphics::ButtonVisualState;
 
 /// CButtonStandard's native effect values, distinct from the wire enum ordinals.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativeButtonEffect {
+    /// Fresh CSprite effect, including animation mask bit zero.
+    Unassigned = 0,
     Up = 1,
     Down = 2,
     Over = 3,
@@ -29,12 +33,22 @@ impl From<ButtonVisualState> for NativeButtonEffect {
 /// The three native CSprite effect setters/getters and the reached draw's
 /// dirty-clock branch. This state belongs to the actual constructed sprite,
 /// separately from widget hover ownership and from animation trigger epochs.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct SpriteEffectInputs {
     effect: i32,
     dirty: bool,
     clock: f32,
 }
+
+// Presentation rollback compares the retained native bits, including signed
+// zero and NaN payloads, rather than floating-point numeric equality.
+impl PartialEq for SpriteEffectInputs {
+    fn eq(&self, other: &Self) -> bool {
+        self.effect == other.effect && self.dirty == other.dirty
+            && self.clock.to_bits() == other.clock.to_bits()
+    }
+}
+impl Eq for SpriteEffectInputs {}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct StagedSpriteEffectInputs {
@@ -70,6 +84,13 @@ impl SpriteEffectInputs {
         self.clock
     }
 
+    /// 142228c20 reads the drawable's +88 getter immediately before passing
+    /// that value as argument five to its +50 draw. For the constructed CSprite
+    /// vtable these are 1422e95a0 and 1422e95c0 respectively.
+    pub(crate) fn stage_generic_draw(&self, now: f32) -> StagedSpriteEffectInputs {
+        self.stage_draw(now, self.clock())
+    }
+
     /// The clean native draw forwards its caller-supplied clock operand. It
     /// does NOT unconditionally reload the retained clock. The caller must bind
     /// both f32 operands from its actual native-equivalent route.
@@ -102,11 +123,19 @@ pub(crate) enum SpriteInputRefusal {
     AnimationCensusChanged,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 struct AnimationTrigger {
     started_at: f32,
     previous_effect: u32,
 }
+
+impl PartialEq for AnimationTrigger {
+    fn eq(&self, other: &Self) -> bool {
+        self.previous_effect == other.previous_effect
+            && self.started_at.to_bits() == other.started_at.to_bits()
+    }
+}
+impl Eq for AnimationTrigger {}
 
 impl AnimationTrigger {
     fn fresh() -> Self {
@@ -157,12 +186,21 @@ pub(crate) struct ReachedAnimation {
     pub elapsed: f32,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct SpriteAnimationInputs {
     enabled_at_previous_draw: bool,
     sprite_started_at: f32,
     triggers: Vec<AnimationTrigger>,
 }
+
+impl PartialEq for SpriteAnimationInputs {
+    fn eq(&self, other: &Self) -> bool {
+        self.enabled_at_previous_draw == other.enabled_at_previous_draw
+            && self.sprite_started_at.to_bits() == other.sprite_started_at.to_bits()
+            && self.triggers == other.triggers
+    }
+}
+impl Eq for SpriteAnimationInputs {}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StagedSpriteAnimationInputs {
@@ -237,6 +275,42 @@ impl SpriteAnimationInputs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generic_draw_reloads_retained_clock_and_rollback_preserves_native_bits() {
+        let mut published = SpriteEffectInputs::fresh();
+        published.write_clock(-0.0);
+        let clean = published.stage_generic_draw(7.0);
+        assert_eq!(clean.draw_clock.to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(clean.next, published);
+        published.set_effect(NativeButtonEffect::Over as i32);
+        let rejected = published.stage_generic_draw(9.0);
+        assert_eq!(rejected.draw_clock, 9.0);
+        assert_eq!(published.clock().to_bits(), (-0.0_f32).to_bits());
+        let committed = published.stage_generic_draw(11.0).next;
+        assert_eq!(committed.stage_generic_draw(17.0).draw_clock, 11.0);
+        let mut nan = committed;
+        nan.write_clock(f32::from_bits(0x7fc0_1234));
+        assert_eq!(nan, nan.clone());
+        assert_eq!(nan.stage_generic_draw(19.0).draw_clock.to_bits(), 0x7fc0_1234);
+    }
+
+    #[test]
+    fn unassigned_effect_uses_bit_zero_without_inventing_an_up_transition() {
+        let rules = [AnimationAdmissionRule {
+            trigger_mask: 1, show_mask: 1, looping: false, duration: 1.0,
+        }];
+        let state = SpriteAnimationInputs::fresh(1).unwrap();
+        // Constructor previous-effect is also zero, so a bit-zero trigger does
+        // not create a transition on the first unassigned draw.
+        let first = state.stage_draw(true, 3.0, NativeButtonEffect::Unassigned, &rules).unwrap();
+        assert!(first.reached.iter().all(Option::is_none));
+        let no_trigger = [AnimationAdmissionRule { trigger_mask: 0, ..rules[0] }];
+        let admitted = state.stage_draw(true, 3.0, NativeButtonEffect::Unassigned, &no_trigger).unwrap();
+        assert_eq!(admitted.reached[0].unwrap().elapsed.to_bits(), 0);
+        assert!(state.stage_draw(true, 3.0, NativeButtonEffect::Up, &no_trigger)
+            .unwrap().reached.iter().all(Option::is_none));
+    }
 
     fn rule(trigger_mask: u32) -> AnimationAdmissionRule {
         AnimationAdmissionRule {

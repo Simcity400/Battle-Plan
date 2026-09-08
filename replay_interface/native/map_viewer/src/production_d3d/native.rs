@@ -1816,7 +1816,7 @@ unsafe fn depth_stencil_view_desc(
     Ok(desc)
 }
 
-unsafe fn create_texture(
+pub(super) unsafe fn create_texture(
     device: &NativeD3d11Device,
     desc: &D3D11_TEXTURE2D_DESC,
     role: &str,
@@ -1829,7 +1829,7 @@ unsafe fn create_texture(
     D3dPtr::from_raw(texture, role)
 }
 
-fn texture_desc(
+pub(super) fn texture_desc(
     width: u32,
     height: u32,
     format: u32,
@@ -1856,7 +1856,7 @@ fn texture_desc(
     }
 }
 
-unsafe fn readback_texture(
+pub(super) unsafe fn readback_texture(
     device: &NativeD3d11Device,
     source: *mut ID3D11Texture2D,
     width: u32,

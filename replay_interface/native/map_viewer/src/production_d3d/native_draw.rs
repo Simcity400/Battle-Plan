@@ -117,6 +117,25 @@ unsafe fn execute_draw(
     resolver.read_admitted_used_content(&shader.source)?;
     bind_output(gfx, output, target, additional_colors)?;
 
+    execute_bound_draw(gfx, resolver, scene_constant_buffers, shader, textures,
+        pipeline, geometry, draw_constant_buffers, particle_records, extra_texture_views,
+        stream_output)
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn execute_bound_draw(
+    gfx: &Gfx,
+    resolver: &GameFileResolver,
+    scene_constant_buffers: &[ConstantBufferBinding],
+    shader: &ShaderProgram,
+    textures: &[TextureBinding],
+    pipeline: &PipelineDesc,
+    geometry: &GeometryBinding,
+    draw_constant_buffers: &[ConstantBufferBinding],
+    particle_records: Option<&[u8]>,
+    extra_texture_views: Vec<TextureViewGpu>,
+    stream_output: &mut StreamOutputBuffers,
+) -> Result<()> {
     let vertex_shader = create_vertex_shader(gfx, &shader.compiled_vertex_shader.bytecode)?;
     let pixel_shader = create_pixel_shader(gfx, &shader.compiled_pixel_shader.bytecode)?;
     let geometry_shader = create_geometry_shader(gfx, shader.geometry_shader.as_ref())?;
@@ -239,6 +258,36 @@ unsafe fn execute_draw(
     (*context).SOSetTargets(0, ptr::null(), ptr::null());
     clear_shader_bindings(context);
     Ok(())
+}
+
+/// Private runtime target binding. Recorded wrappers still go through
+/// bind_output and all their prepared-target identity checks.
+pub(super) unsafe fn execute_ui_draw(
+    gfx: &Gfx,
+    resolver: &GameFileResolver,
+    input: &super::ui::NativeUiDrawInputs<'_>,
+    rtv: *mut ID3D11RenderTargetView,
+) -> Result<()> {
+    if rtv.is_null() { return Err("native UI target view is null".into()); }
+    let context=gfx.context.as_raw();
+    let v=input.viewport;
+    let viewport=D3D11_VIEWPORT {
+        TopLeftX:f32::from_bits(v.top_left_x_f32_bits),
+        TopLeftY:f32::from_bits(v.top_left_y_f32_bits),
+        Width:f32::from_bits(v.width_f32_bits), Height:f32::from_bits(v.height_f32_bits),
+        MinDepth:f32::from_bits(v.min_depth_f32_bits), MaxDepth:f32::from_bits(v.max_depth_f32_bits),
+    };
+    (*context).OMSetRenderTargets(1,&rtv,ptr::null_mut());
+    (*context).RSSetViewports(1,&viewport);
+    if let Some(s)=input.scissor {
+        let rect=RECT {left:s.left_i32,top:s.top_i32,right:s.right_i32,bottom:s.bottom_i32};
+        (*context).RSSetScissorRects(1,&rect);
+    } else { (*context).RSSetScissorRects(0,ptr::null()); }
+    let result=execute_bound_draw(gfx,resolver,input.scene_constants,input.shader,input.textures,
+        input.pipeline,input.geometry,input.draw_constants,None,Vec::new(),&mut StreamOutputBuffers::default());
+    // Also clean bindings on a rejected resource/device operation.
+    clear_shader_bindings(context);
+    result
 }
 
 #[derive(Default)]
@@ -1010,7 +1059,7 @@ unsafe fn create_buffer(
     ComPtr::from_raw(buffer, &format!("portable submitted {role} buffer"))
 }
 
-fn materialize_buffer(
+pub(super) fn materialize_buffer(
     source: &BufferSource,
     resolver: &GameFileResolver,
     particle_records: Option<&[u8]>,

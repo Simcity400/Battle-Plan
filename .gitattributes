@@ -2069,6 +2069,31 @@ portable_replay/native/engine_evidence/artifacts/20260716T054339Z-ui03-animation
 portable_replay/native/engine_evidence/artifacts/20260716T054339Z-ui03-animation-easing-constants-v1-3c949933.job.json text eol=lf
 portable_replay/native/engine_evidence/artifacts/container_pow_cases.json text eol=lf
 
+extractor/native/runs/arrow_native_ui_20260908/CANDIDATE_EFFECT_CLOCK_LIFECYCLES.json text eol=lf
+extractor/native/runs/arrow_native_ui_20260908/CANDIDATE_RESOURCE_LIFECYCLES.json text eol=lf
+# Preserve the hash-pinned original shader whitespace.
+extractor/native/runs/arrow_native_ui_20260908/projection_oracle/buttonstate_vertex.hlsl text eol=lf whitespace=-trailing-space,-blank-at-eof
+extractor/native/runs/arrow_native_ui_20260908/projection_oracle/extract_projection_cases.py text eol=lf
+extractor/native/runs/arrow_native_ui_20260908/projection_oracle/projection_cases.json text eol=lf
+extractor/native/runs/arrow_native_ui_20260908/projection_oracle/shader_oracle.py text eol=lf
+extractor/native/runs/arrow_native_ui_20260908/ROOT_GEOMETRY_CANDIDATES.json text eol=lf
+extractor/native/runs/arrow_native_ui_20260908/ROOT_PROJECTION_EVIDENCE.json text eol=lf
+extractor/native/runs/arrow_native_ui_20260908/verify_root_projection.py text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260908T041418Z-arrow-peace-game-gui-factory-registratio-93f4b0ab.datdump.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/20260908T041418Z-arrow-peace-game-gui-factory-registratio-93f4b0ab.job.json text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14184f960.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14184f960.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1422206c0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1422206c0.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14222d5a0.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14222d5a0.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_142246270.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_142246270.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14229f050.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_14229f050.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1422faf10.decompile.c text eol=lf
+portable_replay/native/engine_evidence/artifacts/func_1422faf10.instructions.txt text eol=lf
+portable_replay/native/engine_evidence/src/ordinary_sprite_root_projection.rs text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_140e6b110.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_140e65210.decompile.c text eol=lf
 portable_replay/native/engine_evidence/artifacts/func_140bf5060.decompile.c text eol=lf

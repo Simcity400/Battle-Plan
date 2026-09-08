@@ -89,20 +89,19 @@ fn luminance(pixel: RgbaF32) -> f32 {
 }
 
 pub fn shade_buttonstate(
-    base_after_animation_and_mask: RgbaF32,
+    mut base: RgbaF32,
     color: RgbaF32,
     state: ButtonVisualState,
     time: f32,
     animation_time: f32,
 ) -> RgbaF32 {
-    let mut out = base_after_animation_and_mask;
     if state == ButtonVisualState::Disable {
-        let grey = luminance(out);
-        out.0[0] = grey;
-        out.0[1] = grey;
-        out.0[2] = grey;
+        let grey = luminance(base);
+        base.0[0] = grey;
+        base.0[1] = grey;
+        base.0[2] = grey;
     }
-    out = modulate_rgba(out, color);
+    let mut out = modulate_rgba(base, color);
     let speed = match state {
         ButtonVisualState::Down => Some((16.0, -1.0)),
         ButtonVisualState::Over => Some((4.0, 1.0)),
@@ -507,9 +506,18 @@ pub struct AdmittedRuntimeGraphics {
     color: RgbaF32,
     time: f32,
     animation_time: f32,
+    container_animation_count: usize,
 }
 
 impl AdmittedRuntimeGraphics {
+    pub(crate) fn shader_law(self) -> Option<AuthenticatedUiShaderLaw> {
+        self.shader_law
+    }
+
+    pub(crate) fn container_animation_count(self) -> usize {
+        self.container_animation_count
+    }
+
     pub fn frame(self) -> FrameSelection {
         self.frame
     }
@@ -559,6 +567,16 @@ pub fn admit_runtime_graphics(
     }
     let frame = select_one_based_frame(request.one_based_frame, request.frame_count)
         .ok_or(RuntimeGraphicsRejection::InvalidFrame)?;
+    admit_runtime_graphics_with_frame(request, frame)
+}
+
+fn admit_runtime_graphics_with_frame(
+    request: &RuntimeGraphicsRequest,
+    frame: FrameSelection,
+) -> Result<AdmittedRuntimeGraphics, RuntimeGraphicsRejection> {
+    if request.source_record_id.trim().is_empty() || request.sprite_name.trim().is_empty() {
+        return Err(RuntimeGraphicsRejection::MissingProvenance);
+    }
     if !request.clip.is_nonempty() {
         return Err(RuntimeGraphicsRejection::InvalidClip);
     }
@@ -592,6 +610,7 @@ pub fn admit_runtime_graphics(
         next_frame,
         shading_path: request.shading_path,
         shader_law: None,
+        container_animation_count: 0,
         clip: request.clip,
         opacity: request.opacity,
         producer_resolved_rgba: request.producer_resolved_rgba,
@@ -846,11 +865,30 @@ fn authenticate_builtin_shader_law(
 pub(crate) struct ContainerSpriteRequest {
     pub source_identity: String,
     pub frame_count: usize,
-    pub one_based_frame: u32,
+    pub frame: ContainerSpriteFrame,
     pub interaction: Option<ButtonVisualState>,
     pub color: RgbaF32,
     pub clip: ClipRect,
     pub opacity: f32,
+    /// Set only by the owning reached CSprite draw transaction. UI input alone
+    /// cannot provide its retained transition clock or admitted record count.
+    pub reached: Option<ContainerSpriteReachedState>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ContainerSpriteFrame {
+    PreviewOneBased(u32),
+    /// Exact raw CIcon frame passed through its reached CSprite draw. This
+    /// branch requires the owning effect receipt; it never clamps to count.
+    NativeIcon(i32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ContainerSpriteReachedState {
+    pub effect: crate::container_sprite_inputs::NativeButtonEffect,
+    pub gui_time: f32,
+    pub effect_started_at: f32,
+    pub admitted_animation_count: usize,
 }
 
 pub(crate) fn admit_container_sprite_runtime_graphics(
@@ -886,39 +924,81 @@ pub(crate) fn admit_container_sprite_runtime_graphics(
         read_key(path, RuntimeGraphicsRejection::BuiltinShaderIncludeMismatch)
     ).collect::<Result<Vec<_>, _>>()?;
     let law = authenticate_builtin_shader_content(&effect, &effect_content, &include_content)?;
-    if sprite.raw.values_ci("animation").next().is_some()
-        || law == AuthenticatedUiShaderLaw::ButtonStateBlendFrames
-    {
+    if law == AuthenticatedUiShaderLaw::ButtonStateBlendFrames {
         return Err(RuntimeGraphicsRejection::ContainerAnimationStateUnavailable);
     }
-    let interaction = match (law, request.interaction) {
+    let (interaction, time, animation_time) = if let Some(reached) = request.reached {
+        if reached.admitted_animation_count > 2
+            || (reached.admitted_animation_count != 0 && law != AuthenticatedUiShaderLaw::ButtonState)
+        {
+            return Err(RuntimeGraphicsRejection::ContainerAnimationStateUnavailable);
+        }
+        use crate::container_sprite_inputs::NativeButtonEffect;
+        // Native effect zero selects the normal shader, but stays zero in the
+        // retained object and in its show/trigger bit. This conversion is only
+        // the already-proved shader-entry dispatch, not an Up-state witness.
+        let interaction = match reached.effect {
+            NativeButtonEffect::Unassigned | NativeButtonEffect::Up => ButtonVisualState::Up,
+            NativeButtonEffect::Down => ButtonVisualState::Down,
+            NativeButtonEffect::Over => ButtonVisualState::Over,
+            NativeButtonEffect::Disable => ButtonVisualState::Disable,
+        };
+        (interaction, reached.gui_time, reached.effect_started_at)
+    } else {
+        if sprite.raw.values_ci("animation").next().is_some() {
+            return Err(RuntimeGraphicsRejection::ContainerAnimationStateUnavailable);
+        }
+        let interaction = match (law, request.interaction) {
         // StaticButton's authenticated shader has no state or time operand.
         (AuthenticatedUiShaderLaw::StaticButton, _) => ButtonVisualState::Up,
         (_, Some(state @ (ButtonVisualState::Up | ButtonVisualState::Disable))) => state,
         // Over/Down require the owning press/hover transition clock as well.
         _ => return Err(RuntimeGraphicsRejection::ContainerInteractionStateUnavailable),
+        };
+        // These admitted legacy static/Up/Disable shader arms do not read time.
+        (interaction, 0.0, 0.0)
     };
     // CSprite::SetOpacity assigns +18c. CSprite::Draw copies it to the
     // sprite type +1a4; 14222d5a0 multiplies that value by ModColor.a
     // before uploading ModColor. It is not a post-shader alpha factor.
+    let frame = match request.frame {
+        ContainerSpriteFrame::PreviewOneBased(frame) =>
+            select_one_based_frame(frame, request.frame_count)
+                .ok_or(RuntimeGraphicsRejection::InvalidFrame)?,
+        ContainerSpriteFrame::NativeIcon(raw) => {
+            let reached = request.reached
+                .ok_or(RuntimeGraphicsRejection::ContainerInteractionStateUnavailable)?;
+            let count = u32::try_from(request.frame_count)
+                .map_err(|_| RuntimeGraphicsRejection::InvalidFrame)?;
+            let index = crate::container_static_icon_geometry::native_static_icon_draw_index(
+                raw, reached.effect as i32, count,
+            );
+            let zero_based_index = usize::try_from(index)
+                .map_err(|_| RuntimeGraphicsRejection::InvalidFrame)?;
+            FrameSelection {
+                one_based_frame: (index as u32).wrapping_add(1),
+                zero_based_index,
+            }
+        }
+    };
     let native_request = RuntimeGraphicsRequest {
         source_record_id: request.source_identity.clone(),
         sprite_name: sprite.name.clone(),
         frame_count: request.frame_count,
-        one_based_frame: request.one_based_frame,
+        one_based_frame: frame.one_based_frame,
         interaction_effect: interaction,
         shading_path: law.shading_path(),
         producer_resolved_rgba: None,
         color: container_sprite_mod_color(request.color, request.opacity)?,
-        // The admitted static/Up/Disable arms never read these clock fields.
-        time: 0.0,
-        animation_time: 0.0,
+        time,
+        animation_time,
         next_one_based_frame: None,
         clip: request.clip,
         opacity: 1.0,
     };
-    let mut admitted = admit_runtime_graphics(&native_request)?;
+    let mut admitted = admit_runtime_graphics_with_frame(&native_request, frame)?;
     admitted.shader_law = Some(law);
+    admitted.container_animation_count = request.reached.map_or(0, |state| state.admitted_animation_count);
     Ok(admitted)
 }
 
@@ -938,7 +1018,7 @@ fn container_sprite_mod_color(
     Ok(color)
 }
 
-fn authenticate_builtin_shader_content(
+pub(crate) fn authenticate_builtin_shader_content(
     effective_shader_file: &str,
     effect_content: &portable_content_manifest::UsedContentKey,
     effect_include_content: &[portable_content_manifest::UsedContentKey],
@@ -1178,6 +1258,11 @@ fn draw_authenticated_sprite_pixels_impl(
     geometry: AuthenticatedSpriteGeometry,
     admitted: AdmittedRuntimeGraphics,
 ) -> Result<usize, RuntimeGraphicsRejection> {
+    if admitted.container_animation_count != 0 {
+        // An admitted animated entry cannot fall through the non-animated
+        // renderer and silently lose its selected constant/texture bindings.
+        return Err(RuntimeGraphicsRejection::ContainerAnimationStateUnavailable);
+    }
     let law = admitted
         .shader_law
         .ok_or(RuntimeGraphicsRejection::BuiltinShaderLawUnbound)?;
@@ -1268,11 +1353,7 @@ fn draw_authenticated_sprite_pixels_impl(
             let shaded = match law {
                 AuthenticatedUiShaderLaw::StaticButton => shade_static_button(base, admitted.color),
                 AuthenticatedUiShaderLaw::ButtonState => shade_buttonstate(
-                    base,
-                    admitted.color,
-                    admitted.interaction_effect,
-                    admitted.time,
-                    admitted.animation_time,
+                    base, admitted.color, admitted.interaction_effect, admitted.time, admitted.animation_time,
                 ),
                 AuthenticatedUiShaderLaw::ButtonStateNoDownEffect => {
                     shade_buttonstate_no_down_effect(
@@ -1614,12 +1695,12 @@ fn sample_linear(image: &RgbaImage, x: f32, y: f32) -> RgbaF32 {
 }
 
 #[derive(Clone, Copy)]
-enum SampleAddressMode {
+pub(crate) enum SampleAddressMode {
     Clamp,
     Wrap,
 }
 
-fn sample_linear_addressed(
+pub(crate) fn sample_linear_addressed(
     image: &RgbaImage,
     x: f32,
     y: f32,
@@ -1889,6 +1970,7 @@ mod tests {
             color: RgbaF32([1.0; 4]),
             time: 1.0,
             animation_time: 0.0,
+            container_animation_count: 0,
         }
     }
 
@@ -1961,6 +2043,20 @@ mod tests {
             Ok(2)
         );
         assert_eq!(second.pixels, [64, 0, 191, 255, 0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn admitted_animation_cannot_fall_through_the_unanimated_pixel_route() {
+        let atlas = RgbaImage { width: 1, height: 1, pixels: vec![255; 4] };
+        let geometry = AuthenticatedSpriteGeometry { x: 0, y: 0, width: 1, height: 1, border: None };
+        let mut state = admitted(ButtonVisualState::Up,
+            ClipRect { left: 0, top: 0, right: 1, bottom: 1 });
+        state.container_animation_count = 1;
+        let mut destination = RgbaImage { width: 1, height: 1, pixels: vec![11, 22, 33, 44] };
+        let before = destination.clone();
+        assert_eq!(draw_authenticated_sprite_pixels_impl(&mut destination, &atlas, 1, geometry, state),
+            Err(RuntimeGraphicsRejection::ContainerAnimationStateUnavailable));
+        assert_eq!(destination.pixels, before.pixels);
     }
 
     #[test]

@@ -1062,6 +1062,8 @@ fn xui11_tooltip_instance_token(
     format!("xui11:{effective_root_identity_sha256}:{country_tag}:{tag_db_id}")
 }
 
+pub use crate::container_sprite_resources::ViewerSpriteResources;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObserverViewerUiState {
     /// The country the observer is holding between frames.
@@ -1071,6 +1073,7 @@ pub struct ObserverViewerUiState {
     /// yields a name. See that module for the alias (lane UB M5) this closes.
     pub selected_country: StoredCountrySelection,
     pub peace_conference: crate::peace_conference_ui::PeaceConferenceViewerState,
+    pub sprite_resources: ViewerSpriteResources,
     pub politics: crate::politics_state::PoliticsViewerState,
     pub power_balance: crate::power_balance_compositor::PowerBalanceViewerState,
     pub intelligence: crate::intelligence_presentation::IntelligenceViewerState,
@@ -1109,6 +1112,7 @@ impl Default for ObserverViewerUiState {
         Self {
             selected_country: StoredCountrySelection::none(),
             peace_conference: crate::peace_conference_ui::PeaceConferenceViewerState::default(),
+            sprite_resources: ViewerSpriteResources::new_viewer_session(),
             politics: crate::politics_state::PoliticsViewerState::default(),
             power_balance: crate::power_balance_compositor::PowerBalanceViewerState::default(),
             intelligence: crate::intelligence_presentation::IntelligenceViewerState::default(),
@@ -1610,6 +1614,8 @@ pub struct ProductionUiRenderer {
     event_layout: std::result::Result<crate::gui::LayoutSet, String>,
     content_admission: ValidatedContentAdmission,
     playback_variant_key: Option<DisplayVariantKey>,
+    playback_force_pow2_textures: Option<bool>,
+    native_sprite_graphics: std::result::Result<crate::container_sprite_clip::NativeClipGraphics, String>,
     asset_cache: Mutex<UiAssetCache>,
     localisation_misses: LocalisationMissSink,
 }
@@ -1704,21 +1710,24 @@ impl ProductionUiRenderer {
         resolver: AssetResolver,
         content_admission: &replay_core::ValidatedContentAdmission,
     ) -> Result<Self> {
-        Self::new_with_playback_profile(resolver, content_admission, None)
+        Self::new_with_playback_profile(resolver, content_admission, None, None)
     }
 
     pub fn new_for_playback(
         resolver: AssetResolver,
         content_admission: &replay_core::ValidatedContentAdmission,
         profile: &crate::variant_admission::PlaybackUiProfile,
+        desktop: crate::DisplayZeroDesktopMode,
+        physical_viewport: [u32; 2],
     ) -> Result<Self> {
-        Self::new_with_playback_profile(resolver, content_admission, Some(profile))
+        Self::new_with_playback_profile(resolver, content_admission, Some(profile), Some((desktop, physical_viewport)))
     }
 
     fn new_with_playback_profile(
         resolver: AssetResolver,
         content_admission: &replay_core::ValidatedContentAdmission,
         profile: Option<&crate::variant_admission::PlaybackUiProfile>,
+        native_surface: Option<(crate::DisplayZeroDesktopMode, [u32; 2])>,
     ) -> Result<Self> {
         if !resolver.is_admitted_for(content_admission) {
             return Err(GameUiError::missing(
@@ -1789,6 +1798,14 @@ impl ProductionUiRenderer {
             event_layout,
             content_admission: content_admission.clone(),
             playback_variant_key: profile.map(|profile| profile.key().clone()),
+            playback_force_pow2_textures: profile.and_then(|profile| profile.force_pow2_textures()),
+            native_sprite_graphics: match (profile, native_surface) {
+                (Some(profile), Some((desktop, viewport))) =>
+                    crate::container_sprite_clip::NativeClipGraphics::from_playback_profile(
+                        profile, desktop, viewport,
+                    ).map_err(|reason| format!("native UI graphics construction: {reason:?}")),
+                _ => Err("native UI graphics construction requires the admitted playback profile and actual surface".into()),
+            },
             asset_cache: Mutex::new(UiAssetCache::default()),
             localisation_misses: LocalisationMissSink::default(),
         })
@@ -1955,13 +1972,16 @@ impl ProductionUiRenderer {
         &self,
         frame: &WorldFrame,
         viewer: &crate::peace_conference_ui::PeaceConferenceViewerState,
+        resources: &ViewerSpriteResources,
         viewport_width: usize,
         viewport_height: usize,
         frame_delta_seconds: f32,
+        native_gui_clock: Option<crate::NativeGuiClock>,
         destination: &RgbaImage,
-    ) -> std::result::Result<(Option<ProductionXui08Output>, crate::peace_conference_ui::PeaceConferenceViewerState), ProductionUiRejection> {
+        native_paint: Option<&mut crate::NativeUiPaintContext<'_>>,
+    ) -> std::result::Result<(Option<ProductionXui08Output>, crate::peace_conference_ui::PeaceConferenceViewerState, ViewerSpriteResources), ProductionUiRejection> {
         if !viewer.needs_surface() {
-            return Ok((None, viewer.clone()));
+            return Ok((None, viewer.clone(), resources.clone()));
         }
         for source in [
             crate::peace_conference_ui::PEACE_CONFERENCE_GUI,
@@ -1997,23 +2017,30 @@ impl ProductionUiRenderer {
                     "XUI08 semantic admission rejected: {error:?}"
                 ))
             })?;
-        let (composed, candidate) = crate::peace_conference_ui::render_peace_conference(
+        let (composed, candidate, candidate_resources) = crate::peace_conference_ui::render_peace_conference(
             &self.resolver,
             &self.registry,
             &self.localisation,
             exact,
             &admitted,
             viewer,
+            resources,
             viewport_width,
             viewport_height,
             frame_delta_seconds,
+            native_gui_clock,
+            self.playback_force_pow2_textures,
+            self.native_sprite_graphics.as_ref().map_err(String::as_str),
             destination,
+            native_paint,
         )
         .map_err(|error| ProductionUiRejection::Asset(error.to_string()))?;
         let Some(composed) = composed else {
-            return Ok((None, candidate));
+            return Ok((None, candidate, candidate_resources));
         };
         self.admit_compose_report(&composed.output.report)
+            .map_err(ProductionUiRejection::IncompleteComposition)?;
+        self.admit_compose_report(&composed.raster_report)
             .map_err(ProductionUiRejection::IncompleteComposition)?;
         let report = ProductionUiReport {
             viewport: [viewport_width, viewport_height],
@@ -2052,7 +2079,7 @@ impl ProductionUiRenderer {
             materialized_participant_ids: composed.materialized_participant_ids,
             materialized_allocation_ids: composed.materialized_allocation_ids,
             materialized_result_ids: composed.materialized_result_ids,
-        }), candidate))
+        }), candidate, candidate_resources))
     }
 
     pub fn compose_xui11_politics_surface(
@@ -7300,6 +7327,8 @@ mod tests {
             event_layout: Ok(crate::gui::LayoutSet::default()),
             content_admission,
             playback_variant_key: None,
+            playback_force_pow2_textures: None,
+            native_sprite_graphics: Err("fixture has no native graphics construction".into()),
             asset_cache: Mutex::new(UiAssetCache::default()),
             localisation_misses: LocalisationMissSink::default(),
         };
@@ -8330,6 +8359,8 @@ mod tests {
             event_layout: Ok(crate::gui::LayoutSet::default()),
             content_admission: content_admission(&[]),
             playback_variant_key: None,
+            playback_force_pow2_textures: None,
+            native_sprite_graphics: Err("fixture has no native graphics construction".into()),
             asset_cache: Mutex::new(UiAssetCache::default()),
             localisation_misses: LocalisationMissSink::default(),
         };
@@ -8547,7 +8578,7 @@ mod tests {
         };
         assert!(
             slice_between("    pub fn new(\n", "    pub fn new_for_playback(\n")
-                .contains("Self::new_with_playback_profile(resolver, content_admission, None)"),
+                .contains("Self::new_with_playback_profile(resolver, content_admission, None, None)"),
             "the non-playback constructor must forward an absent profile verbatim"
         );
         assert!(
@@ -8555,7 +8586,7 @@ mod tests {
                 "    pub fn new_for_playback(\n",
                 "    fn new_with_playback_profile(\n"
             )
-            .contains("Self::new_with_playback_profile(resolver, content_admission, Some(profile))"),
+            .contains("Self::new_with_playback_profile(resolver, content_admission, Some(profile), Some((desktop, physical_viewport)))"),
             "the playback constructor must forward the profile it was handed verbatim"
         );
 
@@ -8598,6 +8629,8 @@ mod tests {
             event_layout: Ok(crate::gui::LayoutSet::default()),
             content_admission: content_admission(&[]),
             playback_variant_key,
+            playback_force_pow2_textures: None,
+            native_sprite_graphics: Err("fixture has no native graphics construction".into()),
             asset_cache: Mutex::new(UiAssetCache::default()),
             localisation_misses: LocalisationMissSink::default(),
         }

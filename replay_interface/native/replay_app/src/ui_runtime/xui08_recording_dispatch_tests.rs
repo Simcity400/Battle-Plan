@@ -96,7 +96,7 @@ fn current_vanilla_recording_occluded_dispatch_preserves_presented_xui08() {
     // Establish the passive conference through execute/Presented before the
     // viewer command can open it. No direct replacement of presented authority.
     runtime.begin_observer_frame_transaction(&viewer).unwrap();
-    let closed = runtime.execute(&gfx, &frame, &mut viewer, 0, false, 100_000,
+    let closed = runtime.execute(&gfx, &frame, &mut viewer, 0, false, 100_000, Some(game_ui::NativeGuiClock::from_application_elapsed_nanoseconds(100_000 * 1000)),
         ProductionLinesUiSupplementalInputs::from_frame(&frame), None)
         .expect("execute actual closed-panel observer frame");
     runtime.finish_observer_frame_disposition(&mut viewer,
@@ -106,7 +106,7 @@ fn current_vanilla_recording_occluded_dispatch_preserves_presented_xui08() {
 
     runtime.begin_observer_frame_transaction(&viewer).unwrap();
     runtime.toggle_xui08(&mut viewer).expect("actual viewer command opens Presented conference");
-    let opened = runtime.execute(&gfx, &frame, &mut viewer, 0, false, 200_000,
+    let opened = runtime.execute(&gfx, &frame, &mut viewer, 0, false, 200_000, Some(game_ui::NativeGuiClock::from_application_elapsed_nanoseconds(200_000 * 1000)),
         ProductionLinesUiSupplementalInputs::from_frame(&frame), None)
         .expect("execute actual open-panel compositor");
     assert!(opened.authored_roots.iter().any(|root|
@@ -126,7 +126,7 @@ fn current_vanilla_recording_occluded_dispatch_preserves_presented_xui08() {
     // the product dispatcher, not by manually invoking a rollback helper.
     runtime.begin_observer_frame_transaction(&viewer).unwrap();
     runtime.close_xui08(&mut viewer);
-    let candidate = runtime.execute(&gfx, &frame, &mut viewer, 0, false, 300_000,
+    let candidate = runtime.execute(&gfx, &frame, &mut viewer, 0, false, 300_000, Some(game_ui::NativeGuiClock::from_application_elapsed_nanoseconds(300_000 * 1000)),
         ProductionLinesUiSupplementalInputs::from_frame(&frame), None)
         .expect("execute staged local close before occlusion");
     assert!(!viewer.peace_conference.open);
@@ -147,7 +147,7 @@ fn current_vanilla_recording_occluded_dispatch_preserves_presented_xui08() {
     assert!(!runtime.present_transaction.has_pending_disposition());
 
     runtime.begin_observer_frame_transaction(&viewer).unwrap();
-    let recovery = runtime.execute(&gfx, &frame, &mut viewer, 0, false, 400_000,
+    let recovery = runtime.execute(&gfx, &frame, &mut viewer, 0, false, 400_000, Some(game_ui::NativeGuiClock::from_application_elapsed_nanoseconds(400_000 * 1000)),
         ProductionLinesUiSupplementalInputs::from_frame(&frame), None)
         .expect("execute the next frame after actual occlusion rollback");
     assert!(recovery.peace_conference_input_region.is_some(),

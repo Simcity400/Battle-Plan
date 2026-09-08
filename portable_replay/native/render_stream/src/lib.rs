@@ -6039,6 +6039,22 @@ fn validate_authenticated_snapshot_texture_resource(
     Ok(())
 }
 
+/// Validate runtime draw resources using the same rules as recorded draws.
+/// This does not assign a recorded target or establish an engine input witness.
+pub fn validate_runtime_draw_bindings(
+    shader: &ShaderProgram,
+    pipeline: &PipelineDesc,
+    geometry: &GeometryBinding,
+    textures: &[TextureBinding],
+    constants: &[ConstantBufferBinding],
+) -> Result<(), String> {
+    shader.validate()?;
+    pipeline.validate()?;
+    geometry.validate(pipeline, false)?;
+    validate_texture_bindings(textures)?;
+    validate_constant_buffers(constants)
+}
+
 impl ShaderProgram {
     fn validate(&self) -> Result<(), String> {
         self.source.validate()?;

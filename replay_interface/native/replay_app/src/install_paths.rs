@@ -366,6 +366,11 @@ pub fn playback_environment_from_paths(
         })?;
         settings.insert(key, value.clone());
     }
+    // This optional viewer-owned choice is read from the same selected bytes.
+    // Keep it in the profile identity even when the recording does not require it.
+    if let Some(value) = full_settings.get("force_pow2_textures") {
+        settings.insert("force_pow2_textures".into(), value.clone());
+    }
 
     let dlc_selection = resolver
         .active_sources()
@@ -679,7 +684,48 @@ fn exact_material_settings(
     if let Ok((_options, values)) = map_rendering_options(settings_text) {
         exact.extend(values);
     }
+    if let Some(force_pow2) = explicit_texture_normalization(settings_text)? {
+        exact.insert(
+            "force_pow2_textures".into(),
+            if force_pow2 { "yes" } else { "no" }.into(),
+        );
+    }
     Ok(exact)
+}
+
+// a729 CSettings token11029 -> 1401fabf0 -> 1424abca0/1424b06e0 ->
+// 1423f0790: a successful explicit assignment replaces the global choice.
+// No constructor/default or earlier profile supplies an absent field.
+fn explicit_texture_normalization(settings: &str) -> Result<Option<bool>> {
+    let (root, _) = game_ui::paradox_text::parse_asset_str(settings).map_err(|error| {
+        format!(
+            "selected profile texture policy parse at {}:{}: {}",
+            error.line, error.column, error.message
+        )
+    })?;
+    let mut value = None;
+    for entry in root.fields() {
+        if entry.key.as_deref() != Some("force_pow2_textures") {
+            if entry.key.is_none()
+                && entry.value.as_scalar() == Some("force_pow2_textures")
+            {
+                return Err("force_pow2_textures lacks an assignment".into());
+            }
+            continue;
+        }
+        value = Some(match entry.value.as_scalar() {
+            Some("yes") => true,
+            Some("no") => false,
+            _ => {
+                return Err(format!(
+                    "force_pow2_textures at {}:{} requires a proven scalar yes/no assignment",
+                    entry.line, entry.column
+                )
+                .into())
+            }
+        });
+    }
+    Ok(value)
 }
 
 /// `mapRenderingOptions`, as both the culling options and the manifest-spelled
@@ -1405,6 +1451,68 @@ mod tests {
             .source_profile
             .profile_id
             .starts_with("runtime-profile:"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn texture_normalization_uses_ordered_top_level_assignments() {
+        for (text, expected) in [
+            ("", None),
+            ("# force_pow2_textures=yes\ngraphics={force_pow2_textures=yes}", None),
+            ("force_pow2_textures=yes", Some(true)),
+            ("force_pow2_textures=no", Some(false)),
+            ("force_pow2_textures=yes force_pow2_textures=no", Some(false)),
+            ("force_pow2_textures=no force_pow2_textures=yes", Some(true)),
+        ] {
+            assert_eq!(explicit_texture_normalization(text).unwrap(), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn texture_normalization_refuses_unproven_or_malformed_assignments() {
+        for text in [
+            "force_pow2_textures=true", "force_pow2_textures=false",
+            "force_pow2_textures=YES", "force_pow2_textures=0",
+            "force_pow2_textures=@choice", "force_pow2_textures={ value=yes }",
+            "force_pow2_textures", "force_pow2_textures=", "force_pow2_textures=\"yes",
+            "force_pow2_textures=yes force_pow2_textures=invalid",
+        ] {
+            assert!(explicit_texture_normalization(text).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn selected_profile_texture_choice_survives_filter_and_reselection() {
+        use game_ui::variant_admission::{InputVariant, PlaybackUiProfile};
+        let root = root("texture-policy-profile");
+        let (game, user) = valid_roots(&root);
+        add_runtime_metadata(&game, &user);
+        let resolver = map_viewer::GameFileResolver::from_dlc_load(&game, user.clone()).unwrap();
+        let paths = ProductPaths { game_install: game, user_data: user };
+        let settings_path = paths.user_data.join("settings.txt");
+        let original = fs::read_to_string(&settings_path).unwrap();
+        let mut identities = std::collections::BTreeSet::new();
+        for (suffix, expected) in [("", None), ("\nforce_pow2_textures=yes\n", Some(true)),
+            ("\nforce_pow2_textures=no\n", Some(false))] {
+            let bytes = format!("{original}{suffix}").into_bytes();
+            fs::write(&settings_path, &bytes).unwrap();
+            let environment = playback_environment_from_paths(
+                &paths, &resolver, PRODUCT_PROFILE_SETTING_KEYS.into_iter().map(str::to_string),
+            ).unwrap();
+            let profile = PlaybackUiProfile::admit(&environment, InputVariant::MouseKeyboard).unwrap();
+            assert_eq!(profile.force_pow2_textures(), expected);
+            assert_eq!(profile.settings_file_sha256(), format!("{:x}", Sha256::digest(&bytes)));
+            assert!(identities.insert(environment.source_profile.selection_sha256.clone()));
+            assert_eq!(environment.settings.contains_key("force_pow2_textures"), expected.is_some());
+            for invalid in ["true", "false", "1", "", "YES"] {
+                let mut invalid_environment = environment.clone();
+                invalid_environment.settings.insert("force_pow2_textures".into(), invalid.into());
+                assert!(PlaybackUiProfile::admit(&invalid_environment, InputVariant::MouseKeyboard).is_err());
+            }
+        }
+        fs::write(&settings_path, original.as_bytes()).unwrap();
+        let restored = playback_ui_profile_from_paths(&paths, &resolver, InputVariant::MouseKeyboard).unwrap();
+        assert_eq!(restored.force_pow2_textures(), None, "absence cannot retain an earlier choice");
         let _ = fs::remove_dir_all(root);
     }
 
