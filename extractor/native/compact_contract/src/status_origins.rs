@@ -81,6 +81,8 @@ crate::cause_tables::numbered_cause_ids! {
     /// exists; the hour publishes a named DOMAIN_GAP instead of a
     /// production-render frame.
     SO_D77_D80_TILED_LIGHT_CENSUS_GAP = 53 => d77_d80_tiled_light_census_gap,
+    /// D20 storage refused; sample is FNV-1a of the exact publication failure.
+    SO_D20_OUTPUT_STORAGE_UNAVAILABLE = 54 => d20_output_storage_unavailable,
 }
 
 #[allow(clippy::declare_interior_mutable_const)]

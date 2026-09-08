@@ -105,7 +105,7 @@ fn payload(memory: &Memory, delta: bool) -> Vec<u8> {
     let roots = discover(memory, &country_roster_readset::Budget::default(), true);
     assert!(roots.railway_roster.as_ref().unwrap().countries[0].complete());
     compact_divisions_data_payload(&[], 0, if delta { COMPACT_STATUS_DELTA_DATA } else { 0 },
-        0, 0, roots.country_roster.as_ref(), roots.railway_roster.as_ref())
+        0, 0, roots.country_roster.as_ref(), roots.railway_roster.as_ref(), &country_roster_readset::Budget::default()).unwrap()
 }
 
 #[test]
@@ -193,7 +193,7 @@ fn actual_first_reader_cache_tick_refusal_replaces_railway_d20_publication() {
     assert_eq!(hours, vec![(26,Some(HOUR),Some(HOUR+1)),(20,Some(HOUR),Some(HOUR))]);
     assert_eq!(cache.acquisition.dependencies(), vec![(20,Some(26)),(26,Some(26))]);
     let roots=cache.observed();
-    let bytes=compact_divisions_data_payload(&[],0,0,0,0,roots.country_roster.as_ref(),roots.railway_roster.as_ref());
+    let bytes=compact_divisions_data_payload(&[],0,0,0,0,roots.country_roster.as_ref(),roots.railway_roster.as_ref(), &country_roster_readset::Budget::default()).unwrap();
     let mut records=Vec::new();append_compact_record(&mut records,1,HOUR,20,COMPACT_RECORD_TYPE_DOMAIN_DATA,0,&bytes);
     let (_,refused)=replace_rejected_domain_records_with_root_dependencies(&mut records,1,HOUR,
         &brackets,&mut BTreeMap::new(),HourLabelMismatchPolicy::Refuse,&cache.acquisition.dependencies()).unwrap();

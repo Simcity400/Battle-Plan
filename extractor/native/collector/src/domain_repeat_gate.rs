@@ -28,6 +28,9 @@
 //!   later d53/d41/d43 lanes) keep them untouched; this gate sits in FRONT of
 //!   them at the framing layer, comparing final wire payloads. A gated domain
 //!   simply rarely repeats; nothing about their baselines changes.
+//!   D20 bypasses this layer: its semantic delta protocol already owns
+//!   unchanged-state records and recovery baselines, so retaining its encoded
+//!   payload here would duplicate that state.
 
 use sha2::{Digest, Sha256};
 
@@ -38,11 +41,14 @@ use compact_contract::{
     COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT,
 };
 
-/// Wire domain ids never carry data records for these ids, and none of them
-/// may be gated: 0 is reserved, 1000 is the frame envelope, 250 is the RC
-/// attribution probe (PERF-only).
+/// D20 owns semantic deltas and must not retain a second encoded baseline.
+/// The remaining exclusions never carry data records: 0 is reserved, 1000 is
+/// the frame envelope, and 250 is the RC attribution probe (PERF-only).
 const fn gateable_domain(domain_id: u16) -> bool {
-    domain_id != 0 && domain_id != 250 && domain_id != compact_contract::COMPACT_DOMAIN_FRAME
+    domain_id != 0
+        && domain_id != 20
+        && domain_id != 250
+        && domain_id != compact_contract::COMPACT_DOMAIN_FRAME
 }
 
 const REPEAT_GATE_DOMAIN_SLOTS: usize = 256;
@@ -403,6 +409,112 @@ mod tests {
         // The digest names the tail the fold will hold.
         let expected = Sha256::digest(&payload_for(7, 100, b"body")[span..]);
         assert_eq!(&repeat_payload[span..], expected.as_slice());
+    }
+
+    #[test]
+    fn division_full_and_repeat_candidates_never_store_a_generic_baseline() {
+        let mut gate = DomainDataRepeatGate::new();
+        for hour in 1..=3 {
+            let mut frame = Vec::new();
+            append_data_record(
+                &mut frame,
+                hour as u64,
+                HOUR + hour,
+                20,
+                &payload_for(7, hour as u64, b"unchanged division membership"),
+            );
+            let original = frame.clone();
+            let stats = gate.rewrite_frame_for_publication(&mut frame).unwrap();
+            assert_eq!(frame, original, "D20 record bytes at hour {hour}");
+            assert_eq!(stats.data_records_considered, 1);
+            assert_eq!(stats.records_rewritten, 0);
+            assert_eq!(stats.payload_bytes_before, 0);
+            assert_eq!(stats.payload_bytes_after, 0);
+            assert!(stats.decided_domains.is_empty());
+            assert!(gate.slots[slot(20)].is_none());
+            assert!(gate.last_full_hour_index[slot(20)].is_none());
+        }
+    }
+
+    #[test]
+    fn division_semantic_delta_and_gap_recovery_records_pass_through() {
+        let mut gate = DomainDataRepeatGate::new();
+        // This framing fixture keeps D20's status at payload +16. Its owned
+        // grammar is opaque to the repeat gate, including a rowless delta.
+        let mut full_payload = vec![0u8; 32];
+        full_payload.extend_from_slice(&[0x5a; 128]);
+        let mut empty_delta_payload = vec![0u8; 32];
+        empty_delta_payload[16..20]
+            .copy_from_slice(&compact_contract::COMPACT_STATUS_DELTA_DATA.to_le_bytes());
+        let mut first = Vec::new();
+        append_data_record(&mut first, 1, HOUR + 1, 20, &full_payload);
+        append_data_record(&mut first, 2, HOUR + 2, 20, &empty_delta_payload);
+        let original = first.clone();
+        let stats = gate.rewrite_frame_for_publication(&mut first).unwrap();
+        assert_eq!(first, original);
+        assert_eq!(stats.records_rewritten, 0);
+        assert!(stats.decided_domains.is_empty());
+        assert!(gate.slots[slot(20)].is_none());
+
+        gate.note_gap_domain(20);
+        assert!(!gate.force_full[slot(20)]);
+        let mut gap = Vec::new();
+        append_gap_record(&mut gap, 3, HOUR + 3, 20);
+        let original_gap = gap.clone();
+        gate.rewrite_frame_for_publication(&mut gap).unwrap();
+        assert_eq!(gap, original_gap);
+        assert!(!gate.force_full[slot(20)]);
+
+        // Whole-frame refusal and cadence expiry must also leave the
+        // producer's recovery full record and subsequent delta intact.
+        gate.force_full_all();
+        let mut recovery = Vec::new();
+        append_data_record(&mut recovery, 4, HOUR + 65, 20, &full_payload);
+        append_data_record(&mut recovery, 5, HOUR + 66, 20, &empty_delta_payload);
+        let original_recovery = recovery.clone();
+        let stats = gate.rewrite_frame_for_publication(&mut recovery).unwrap();
+        assert_eq!(recovery, original_recovery);
+        assert_eq!(stats.records_rewritten, 0);
+        assert!(stats.decided_domains.is_empty());
+        assert!(gate.slots[slot(20)].is_none());
+        assert!(gate.last_full_hour_index[slot(20)].is_none());
+    }
+
+    #[test]
+    fn division_records_survive_other_domain_repeat_compaction() {
+        let mut gate = DomainDataRepeatGate::new();
+        let other_payload = payload_for(3, 1, b"fuel state");
+        let division_payload = payload_for(7, 1, b"division membership");
+        let mut baseline = Vec::new();
+        append_data_record(&mut baseline, 1, HOUR + 1, 10, &other_payload);
+        append_data_record(&mut baseline, 2, HOUR + 1, 20, &division_payload);
+        gate.rewrite_frame_for_publication(&mut baseline).unwrap();
+
+        let mut first_division = Vec::new();
+        append_data_record(&mut first_division, 4, HOUR + 2, 20, &division_payload);
+        let mut second_division = Vec::new();
+        append_data_record(&mut second_division, 6, HOUR + 2, 20, &division_payload);
+        let mut frame = Vec::new();
+        append_data_record(&mut frame, 3, HOUR + 2, 10, &other_payload);
+        frame.extend_from_slice(&first_division);
+        append_data_record(&mut frame, 5, HOUR + 2, 10, &other_payload);
+        frame.extend_from_slice(&second_division);
+
+        let stats = gate.rewrite_frame_for_publication(&mut frame).unwrap();
+        assert_eq!(stats.data_records_considered, 4);
+        assert_eq!(stats.records_rewritten, 2);
+        assert_eq!(stats.decided_domains, vec![10]);
+        let walked = walk(&frame);
+        assert_eq!(walked.len(), 4);
+        assert_eq!(walked[0].0.record_type, COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT);
+        assert_eq!(walked[2].0.record_type, COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT);
+        let first_start = walked[0].0.record_len() as usize;
+        assert_eq!(&frame[first_start..first_start + first_division.len()], first_division);
+        let second_start = first_start + first_division.len() + walked[2].0.record_len() as usize;
+        assert_eq!(&frame[second_start..], second_division);
+        assert!(gate.slots[slot(20)].is_none());
+        assert!(gate.last_full_hour_index[slot(20)].is_none());
+        assert_eq!(gate.slots[slot(10)].as_deref(), Some(other_payload.as_slice()));
     }
 
     /// kills: a changed tail must never be rewritten, and the full record

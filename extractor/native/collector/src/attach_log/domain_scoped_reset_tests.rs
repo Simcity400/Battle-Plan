@@ -679,65 +679,49 @@ fn a_refused_first_victory_point_record_leaves_the_tracker_unbaselined() {
     assert!(tracker.previous.is_empty());
 }
 
-// This second borrow stages the consequence of the same DATA record being
-// published. It is not another reader: journal rollback still owns withheld
-// publication. Match syntax, not comments, literals, or an allowance of two.
-fn division_publication_borrow_is_exact(source: &str) -> bool {
+// D20's second mutable borrow belongs to the publisher of the same read.
+// Parse both actual modules and pin the whole preparation/staging/publication
+// interval, so comments, decoys, and an unpublished read cannot grant credit.
+fn division_publication_borrow_is_exact(source: &str, storage_source: &str) -> bool {
     use quote::ToTokens;
-    // Parse actual items so a commented/literal helper cannot grant credit.
     let Ok(file) = syn::parse_file(source) else { return false; };
-    let mut frames = file.items.iter().filter_map(|item| match item {
-        syn::Item::Fn(function) if function.sig.ident == "build_compact_extraction_gate_records" => Some(function),
+    let Ok(storage) = syn::parse_file(storage_source) else { return false; };
+    if storage.attrs.iter().any(|attr| !attr.path().is_ident("doc")) { return false; }
+    let mut modules = file.items.iter().filter_map(|item| match item {
+        syn::Item::Mod(module) if module.ident == "division_output_storage" => Some(module),
         _ => None,
     });
-    let Some(frame) = frames.next() else { return false; };
-    if frames.next().is_some() { return false; }
+    let Some(module) = modules.next() else { return false; };
+    let expected_module: syn::ItemMod = syn::parse_quote! { mod division_output_storage; };
+    if modules.next().is_some() || module != &expected_module { return false; }
+
+    fn unique_function<'a>(file: &'a syn::File, name: &str) -> Option<&'a syn::ItemFn> {
+        let mut functions = file.items.iter().filter_map(|item| match item {
+            syn::Item::Fn(function) if function.sig.ident == name => Some(function),
+            _ => None,
+        });
+        let function = functions.next()?;
+        if functions.next().is_some() { return None; }
+        Some(function)
+    }
+    fn exact_function(actual: &syn::ItemFn, expected: &syn::ItemFn) -> bool {
+        // Documentation does not select a different compiled implementation.
+        actual.attrs.iter().all(|attr| attr.path().is_ident("doc"))
+            && actual.vis == expected.vis
+            && actual.sig == expected.sig
+            && actual.block == expected.block
+    }
+    let Some(frame) = unique_function(&file, "build_compact_extraction_gate_records") else { return false; };
     let expected: syn::Stmt = syn::parse_quote! {
-if let Some(read) = division_read {
-        stage_division_publication_baseline(&read, &mut trackers.division_movement);
-        let mut shard_diagnostics = read
-            .shard_panic_index
-            .map(|value| CompactDomainPerfDiagnosticUnit {
-                name: "d20_shard_panic_index",
-                value: u64::from(value),
-            })
-            .into_iter()
-            .collect::<Vec<_>>();
-        if read.output_storage_unavailable {
-            shard_diagnostics.push(CompactDomainPerfDiagnosticUnit {
-                name: "d20_output_storage_unavailable", value: 1,
-            });
-        }
-        append_compact_domain_perf_record_with_diagnostics(
-            &mut out,
-            sequence,
-            game_hour_raw,
-            CompactDomainPerfRecord {
-                domain_id: COMPACT_DOMAIN_DIVISIONS,
-                read_time_us: read.read_time_us,
-                row_count: read.root_rows,
-                changed_rows: read.changed_rows,
-                unit_count: read.root_rows,
-                changed_unit_count: read.changed_rows,
-                status_flags: read.status_flags,
-            },
-            elapsed_wall_ms,
-            &shard_diagnostics,
-        );
-        sequence = sequence.saturating_add(1);
-        append_compact_divisions_data_record(
-            &mut out,
-            sequence,
-            game_hour_raw,
-            &read.rows,
-            elapsed_wall_ms,
-            read.status_flags,
-            read.changed_rows,
-            read.root_rows,
-            division_roots_cache.observed().country_roster.as_ref(),
-            division_roots_cache.observed().railway_roster.as_ref(),
-        );
-        sequence = sequence.saturating_add(1);
+    if let Some(read) = division_read {
+        let gap = division_storage_gap_reservation.take()
+            .ok_or_else(|| "D20 control reservation missing".to_string())?;
+        division_copy_reservation = Some(division_output_storage::publish_read(
+            read, &mut out, &mut sequence, elapsed_wall_ms, game_hour_raw,
+            division_roots_cache.observed(), &division_roots_cache.roster_budget,
+            &mut trackers.division_movement, &mut trackers.domain_gap_ordinals,
+            &mut domain_outcomes, gap,
+        ));
         emitted_domains = emitted_domains.saturating_add(1);
     }
     };
@@ -747,79 +731,306 @@ if let Some(read) = division_read {
     }).count() != 1 {
         return false;
     }
-    struct Calls(usize);
+
+    // Quota accounting reads the existing pin through the reader's alias.
+    // Admit only this exact statement immediately after that alias is bound.
+    let binding: syn::Stmt = syn::parse_quote! {
+        let division_tracker = &mut trackers.division_movement;
+    };
+    let retention: syn::Stmt = syn::parse_quote! {
+        if divisions_enabled {
+            let _ = division_output_storage::retain_baseline_membership(
+                division_tracker, &division_roots_cache.roster_budget);
+        }
+    };
+    if frame.block.stmts.windows(2).filter(|pair| {
+        pair[0] == binding && pair[1] == retention
+    }).count() != 1 {
+        return false;
+    }
+
+    #[derive(Default)]
+    struct Calls { publish: usize, stage: usize, retain: usize }
     impl<'ast> syn::visit::Visit<'ast> for Calls {
         fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
             if let syn::Expr::Path(path) = &*node.func {
-                if path.path.segments.last().is_some_and(|s| s.ident == "stage_division_publication_baseline") {
-                    self.0 += 1;
+                if let Some(segment) = path.path.segments.last() {
+                    match segment.ident.to_string().as_str() {
+                        "publish_read" => self.publish += 1,
+                        "stage_division_publication_baseline" => self.stage += 1,
+                        "retain_baseline_membership" => self.retain += 1,
+                        _ => {}
+                    }
                 }
             }
             syn::visit::visit_expr_call(self, node);
         }
     }
-    let mut calls = Calls(0);
-    syn::visit::Visit::visit_item_fn(&mut calls, &frame);
-    if calls.0 != 1 { return false; }
-    let mut helpers = file.items.iter().filter_map(|item| match item {
-        syn::Item::Fn(function) if function.sig.ident == "stage_division_publication_baseline" => Some(function),
-        _ => None,
-    });
-    let Some(actual) = helpers.next() else { return false; };
-    if helpers.next().is_some() { return false; }
+    let mut calls = Calls::default();
+    syn::visit::Visit::visit_item_fn(&mut calls, frame);
+    if (calls.publish, calls.stage, calls.retain) != (1, 0, 1) { return false; }
+
+    let Some(publisher) = unique_function(&storage, "publish_read") else { return false; };
     let expected: syn::ItemFn = syn::parse_quote! {
-        fn stage_division_publication_baseline(
-            read: &CompactDivisionRead,
-            tracker: &mut FrameJournalled<BTreeMap<u32, DivisionMovementSample>>,
-        ) {
-            if compact_contract::compact_status_is_failure(read.status_flags) {
-                tracker.advance(BTreeMap::new());
-            }
+pub(super) fn publish_read(
+    mut read: CompactDivisionRead,
+    out: &mut Vec<u8>,
+    sequence: &mut u64,
+    elapsed_wall_ms: u64,
+    game_hour_raw: i32,
+    roots: &CompactDivisionRootCache,
+    budget: &Arc<country_roster_readset::Budget>,
+    division_tracker: &mut FrameJournalled<BTreeMap<u32, DivisionMovementSample>>,
+    gap_ordinals: &mut BTreeMap<(u16, u16), u64>,
+    domain_outcomes: &mut compact_contract::domain_outcome::DomainOutcomeLedger,
+    gap: StorageGapReservation,
+) -> FrameCopyReservation {
+    let (diagnostic_storage, diagnostic_count) = division_output_storage::diagnostics(&read);
+    let shard_diagnostics = &diagnostic_storage[..diagnostic_count];
+    let prepared = if read.output_storage_unavailable {
+        Err("D20 sampled row output storage unavailable".to_string())
+    } else {
+        compact_divisions_data_payload(
+            &read.rows,
+            elapsed_wall_ms,
+            read.status_flags,
+            read.changed_rows,
+            read.root_rows,
+            roots.country_roster.as_ref(),
+            roots.railway_roster.as_ref(),
+            budget,
+        )
+        .and_then(|payload| {
+            let perf =
+                division_output_storage::encode_perf(&read, elapsed_wall_ms, shard_diagnostics)?;
+            let copies = division_output_storage::reserve_frame_copies(
+                payload.capacity(),
+                &perf,
+                game_hour_raw,
+                budget,
+            )?;
+            division_output_storage::reserve_publication(
+                out,
+                payload.len(),
+                shard_diagnostics,
+                budget,
+            )?;
+            Ok((payload, perf, copies))
+        })
+    };
+    let payload = match prepared {
+        Ok((payload, perf, copies)) => Some((payload, perf, copies)),
+        Err(reason) => {
+            read.status_flags = record_read_failed(
+                domain_outcomes,
+                COMPACT_DOMAIN_DIVISIONS,
+                compact_contract::domain_outcome::READ_PREDICATE_READER_RETURNED_ROWS,
+                compact_contract::domain_outcome::ReadCompletion::DidNotComplete,
+                compact_contract::domain_outcome::AnswerExtent::Unprovable,
+                reason.clone(),
+                read.status_flags,
+            )
+            .bits();
+            read.rows.clear();
+            read.changed_rows = 0;
+            read.output_storage_unavailable = true;
+            compact_contract::status_origins::record_status_origin_sample(
+                compact_contract::status_origins::SO_D20_OUTPUT_STORAGE_UNAVAILABLE,
+                fnv1a_64(reason.as_bytes()),
+            );
+            None
         }
     };
-    actual.sig == expected.sig && actual.block == expected.block
+    super::stage_division_publication_baseline(&read, division_tracker);
+    let copies = if let Some((payload, perf, copies)) = payload {
+        division_output_storage::append_perf(out, *sequence, game_hour_raw, &perf);
+        *sequence = sequence.saturating_add(1);
+        append_compact_divisions_data_record(out, *sequence, game_hour_raw, &payload);
+        copies
+    } else {
+        let part = domain_gap_part(COMPACT_DOMAIN_DIVISIONS);
+        let key = (COMPACT_DOMAIN_DIVISIONS, part.code());
+        let ordinal = *gap_ordinals.get(&key).unwrap_or(&0);
+        let copies = division_output_storage::append_storage_gap(
+            out,
+            *sequence,
+            game_hour_raw,
+            ordinal,
+            gap,
+        );
+        gap_ordinals.insert(key, ordinal.saturating_add(1));
+        copies
+    };
+    *sequence = sequence.saturating_add(1);
+    copies
+}
+    };
+    if !exact_function(publisher, &expected) { return false; }
+    let mut calls = Calls::default();
+    syn::visit::Visit::visit_item_fn(&mut calls, publisher);
+    if (calls.publish, calls.stage, calls.retain) != (0, 1, 0) { return false; }
+
+    let Some(retainer) = unique_function(&storage, "retain_baseline_membership") else { return false; };
+    let expected: syn::ItemFn = syn::parse_quote! {
+pub(super) fn retain_baseline_membership(
+    tracker: &FrameJournalled<BTreeMap<u32, DivisionMovementSample>>,
+    budget: &country_roster_readset::Budget,
+) -> Result<(), Failure> {
+    use compact_contract::division_routes::{
+        CountryWordsObservation, FirstCombatCountriesObservation,
+    };
+    let mut bytes = 0usize;
+    for sample in tracker
+        .current
+        .values()
+        .chain(tracker.frame_entry.iter().flat_map(|entry| entry.values()))
+    {
+        if let FirstCombatCountriesObservation::Present {
+            countries: CountryWordsObservation::Measured(words),
+            ..
+        } = &sample.first_combat_countries
+        {
+            bytes = words
+                .capacity()
+                .checked_mul(std::mem::size_of::<i32>())
+                .and_then(|n| bytes.checked_add(n))
+                .ok_or(Failure::OutputStorageUnavailable)?;
+        }
+    }
+    budget
+        .retain(bytes)
+        .map_err(|_| Failure::OutputStorageUnavailable)
+}
+    };
+    if !exact_function(retainer, &expected) { return false; }
+
+    let Some(actual) = unique_function(&file, "stage_division_publication_baseline") else { return false; };
+    let expected: syn::ItemFn = syn::parse_quote! {
+fn stage_division_publication_baseline(
+    read: &CompactDivisionRead,
+    tracker: &mut FrameJournalled<BTreeMap<u32, DivisionMovementSample>>,
+) {
+    if compact_contract::compact_status_is_failure(read.status_flags) {
+        tracker.advance(BTreeMap::new());
+    }
+}
+    };
+    exact_function(actual, &expected)
 }
 
 #[test]
 fn division_publication_borrow_requires_exact_failure_and_published_read() {
     let source = attach_log_source();
-    assert!(division_publication_borrow_is_exact(&source));
-    assert!(division_publication_borrow_is_exact(&source.replace("\n", "\r\n")));
-    let stage = "stage_division_publication_baseline(&read, &mut trackers.division_movement);";
+    let storage = include_str!("division_output_storage.rs").lines().collect::<Vec<_>>().join("\n");
+    assert!(division_publication_borrow_is_exact(&source, &storage));
+    assert!(division_publication_borrow_is_exact(
+        &source.replace("\n", "\r\n"), &storage.replace("\n", "\r\n")));
+
+    // Keep the external-source census from mistaking this adversarial
+    // fixture for a module directive; the generated mutation stays exact.
+    let redirected_module = concat!("#[pa", "th = \"decoy.rs\"] mod division_output_storage;");
+    assert_eq!(redirected_module,
+        format!("#[{} = {:?}] mod division_output_storage;", "path", "decoy.rs"));
     for (old, new) in [
-        (stage, "stage_division_publication_baseline(&other_read, &mut trackers.division_movement);"),
-        (stage, "stage_division_publication_baseline(&read, &mut trackers.armies);"),
-        (stage, "/* stage_division_publication_baseline(&read, &mut trackers.division_movement); */"),
-        (stage, "let _ = \"stage_division_publication_baseline(&read, &mut trackers.division_movement);\";"),
         ("if let Some(read) = division_read {", "if let Some(read) = division_equipment_read {"),
+        ("division_copy_reservation = Some(division_output_storage::publish_read(",
+            "let _ = Some(division_output_storage::publish_read("),
+        ("read, &mut out, &mut sequence, elapsed_wall_ms, game_hour_raw,",
+            "read, &mut other_out, &mut sequence, elapsed_wall_ms, game_hour_raw,"),
+        ("&mut trackers.division_movement, &mut trackers.domain_gap_ordinals,",
+            "&mut trackers.armies, &mut trackers.domain_gap_ordinals,"),
+        ("mod division_output_storage;", "mod division_output_storage {}"),
+        ("mod division_output_storage;", redirected_module),
+        ("mod division_output_storage;", "#[cfg(test)] mod division_output_storage;"),
         ("if compact_contract::compact_status_is_failure(read.status_flags) {", "if true {"),
         ("tracker.advance(BTreeMap::new());", "let _ = BTreeMap::<u32, DivisionMovementSample>::new();"),
+        ("division_tracker, &division_roots_cache.roster_budget);",
+            "other_tracker, &division_roots_cache.roster_budget);"),
     ] {
-        assert!(source.contains(old), "mutation must reach actual source: {old}");
-        assert!(!division_publication_borrow_is_exact(&source.replace(old, new)), "credited mutation: {new}");
+        assert!(source.contains(old), "mutation must reach actual parent source: {old}");
+        assert!(!division_publication_borrow_is_exact(&source.replace(old, new), &storage),
+            "credited parent mutation: {new}");
     }
-    let helper_start = source.find("fn stage_division_publication_baseline(").unwrap();
-    let helper_text: String = source[helper_start..].lines()
-        .scan(false, |done, line| {
+
+    let stage = "super::stage_division_publication_baseline(&read, division_tracker);";
+    for (old, new) in [
+        (stage, "super::stage_division_publication_baseline(&other_read, division_tracker);"),
+        (stage, "super::stage_division_publication_baseline(&read, other_tracker);"),
+        (stage, "/* super::stage_division_publication_baseline(&read, division_tracker); */"),
+        (stage, "let _ = \"super::stage_division_publication_baseline(&read, division_tracker);\";"),
+        (stage, "stage_division_publication_baseline(&read, division_tracker);"),
+        ("append_compact_divisions_data_record(out,", "drop_division_data(out,"),
+        ("division_output_storage::append_perf(out,", "drop_division_perf(out,"),
+        ("division_output_storage::append_storage_gap(", "drop_division_gap("),
+        ("division_output_storage::reserve_publication(", "skip_division_reservation("),
+        ("pub(super) fn publish_read(", "#[cfg(test)] pub(super) fn publish_read("),
+        ("use super::*;", "#![cfg(test)]\nuse super::*;"),
+        (".retain(bytes)", ".retain(0)"),
+    ] {
+        assert!(storage.contains(old), "mutation must reach actual child source: {old}");
+        assert!(!division_publication_borrow_is_exact(&source, &storage.replace(old, new)),
+            "credited child mutation: {new}");
+    }
+
+    fn item_text(source: &str, marker: &str) -> String {
+        let start = source.find(marker).unwrap();
+        source[start..].lines().scan(false, |done, line| {
             if *done { return None; }
             *done = line == "}";
             Some(format!("{line}\n"))
-        }).collect();
+        }).collect()
+    }
+    let helper_text = item_text(&source, "fn stage_division_publication_baseline(");
     let bad_helper = helper_text.replace(
         "compact_contract::compact_status_is_failure(read.status_flags)", "true");
-    assert_ne!(bad_helper, helper_text);
     let decoy = source.replacen(&helper_text,
         &format!("/*\n{helper_text}*/\n{bad_helper}"), 1);
-    assert!(!division_publication_borrow_is_exact(&decoy), "commented valid helper must not cover the actual bad helper");
-    let duplicate = source.replacen(stage, &format!("{stage} {stage}"), 1);
-    assert!(!division_publication_borrow_is_exact(&duplicate));
-    let moved = source.replacen(stage, "", 1).replacen(
-        "if let Some(read) = division_read {",
-        &format!("{stage} if let Some(read) = division_read {{"), 1);
-    assert!(!division_publication_borrow_is_exact(&moved));
-    let unpublished = source.replacen("append_compact_divisions_data_record(\n", "drop_division_data(\n", 1);
-    assert_ne!(unpublished, source);
-    assert!(!division_publication_borrow_is_exact(&unpublished));
+    assert_ne!(decoy, source);
+    assert!(!division_publication_borrow_is_exact(&decoy, &storage));
+
+    let publisher_text = item_text(&storage, "pub(super) fn publish_read(");
+    let bad_publisher = publisher_text.replace("append_compact_divisions_data_record(out,", "drop_division_data(out,");
+    let decoy = storage.replacen(publisher_text.trim_end(),
+        &format!("/*\n{publisher_text}*/\n{bad_publisher}"), 1);
+    assert_ne!(decoy, storage);
+    assert!(!division_publication_borrow_is_exact(&source, &decoy));
+    let nested = storage.replacen(publisher_text.trim_end(),
+        &format!("mod decoy {{\n{publisher_text}\n}}"), 1);
+    assert_ne!(nested, storage);
+    assert!(!division_publication_borrow_is_exact(&source, &nested));
+
+    let duplicate = storage.replacen(stage, &format!("{stage} {stage}"), 1);
+    assert!(!division_publication_borrow_is_exact(&source, &duplicate));
+    let outside = storage.replacen(stage, "", 1)
+        + &format!("\nfn unpublished_stage() {{ {stage} }}\n");
+    assert!(!division_publication_borrow_is_exact(&source, &outside));
+    let moved = storage.replacen(stage, "", 1).replacen(
+        "let prepared = if read.output_storage_unavailable {",
+        &format!("{stage} let prepared = if read.output_storage_unavailable {{"), 1);
+    assert_ne!(moved, storage);
+    assert!(!division_publication_borrow_is_exact(&source, &moved));
+    let success_only = storage.replacen(stage, "", 1).replacen(
+        "let copies = if let Some((payload, perf, copies)) = payload {",
+        &format!("let copies = if let Some((payload, perf, copies)) = payload {{ {stage}"), 1);
+    assert_ne!(success_only, storage);
+    assert!(!division_publication_borrow_is_exact(&source, &success_only));
+
+    let publication = item_text(&source, "if let Some(read) = division_read {");
+    // This item has an indented closing brace, unlike the top-level helpers.
+    let end = publication.find("\n    }").unwrap() + "\n    }".len();
+    let publication = &publication[..end];
+    let duplicate = source.replacen(publication, &format!("{publication}\n    {publication}"), 1);
+    assert_ne!(duplicate, source);
+    assert!(!division_publication_borrow_is_exact(&duplicate, &storage));
+    let commented = source.replacen(publication, &format!("/* {publication} */"), 1);
+    assert_ne!(commented, source);
+    assert!(!division_publication_borrow_is_exact(&commented, &storage));
+    let literal = source.replacen(publication, &format!("let _ = {publication:?};"), 1);
+    assert_ne!(literal, source);
+    assert!(!division_publication_borrow_is_exact(&literal, &storage));
+    let moved = source.replacen(publication, "", 1)
+        + &format!("\nfn unpublished_decoy() {{ {publication} }}\n");
+    assert!(!division_publication_borrow_is_exact(&moved, &storage));
 }
 
 #[test]
@@ -827,6 +1038,9 @@ fn domain_scoped_tracker_allowlist_matches_the_borrow_sites() {
     let source = attach_log_source();
     let body = frame_builder_body(&source);
     let derived = derive_field_tags_from_source(body);
+    let storage = include_str!("division_output_storage.rs");
+    assert!(division_publication_borrow_is_exact(&source, storage),
+        "D20's quota accounting and publisher must use the exact read and journal under custody");
     let table = table();
 
     assert_eq!(
@@ -841,6 +1055,13 @@ fn domain_scoped_tracker_allowlist_matches_the_borrow_sites() {
     for (field, expected_tag) in &table {
         match derived.get(*field) {
             Some(tags) if tags.as_slice() == [expected_tag.to_string()] => {}
+            // The exact syntax guard above proves this outside-reader use
+            // is immutable quota accounting through the existing alias.
+            Some(tags)
+                if *field == "division_movement"
+                    && tags.len() == 2
+                    && tags.contains(&expected_tag.to_string())
+                    && tags.iter().any(|tag| tag.starts_with("OUTSIDE-EVERY-READER-CALL")) => {}
             Some(tags)
                 if *field == "diplomacy_intel_operatives_live"
                     && tags.len() == 2
@@ -864,8 +1085,6 @@ fn domain_scoped_tracker_allowlist_matches_the_borrow_sites() {
         disagreements.join("\n  ")
     );
 
-    assert!(division_publication_borrow_is_exact(&source),
-        "D20's publication borrow must stage only its exact failed DATA under journal custody");
     let mut second_writers = Vec::new();
     for field in table.keys() {
         let needle = format!("trackers.{field}");

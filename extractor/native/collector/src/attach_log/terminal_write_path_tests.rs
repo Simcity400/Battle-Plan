@@ -37,8 +37,72 @@ fn code_only(source: &str) -> String {
         .join("\n")
 }
 
+fn assert_frame_build_refusal_rollover_is_guarded() {
+    let build_result = COLLECTOR_SOURCE
+        .split_once("let (mut records, mut next_sequence, timing) = match build_result {")
+        .expect("fallible frame build result")
+        .1
+        .split_once("if let Some(frame) = finalized_render_frame {")
+        .expect("successful build continuation")
+        .0;
+    let refusal = code_only(build_result)
+        .split_once("Err(error) => {")
+        .expect("failed build refusal")
+        .1
+        .to_owned();
+    assert!(refusal.contains("FRAME_PREDICATE_OUTPUT_STORAGE_AVAILABLE"));
+    assert_eq!(
+        refusal
+            .matches("match publish_frame_refusal_record(")
+            .count(),
+        1
+    );
+    let rollover = refusal
+        .split_once("Ok(FrameRefusalPublication::NotPublishedAtIdentityBoundary) => {")
+        .expect("build-refusal committed rollover arm")
+        .1
+        .split_once("Err(error) => {")
+        .expect("distinct refusal-publication error arm")
+        .0;
+    assert_eq!(
+        rollover
+            .matches("scheduler_stream_closed_by_write = true;")
+            .count(),
+        1
+    );
+    assert_eq!(
+        rollover
+            .matches("require_successor_install_census_after_rollover(")
+            .count(),
+        1
+    );
+    assert!(
+        rollover
+            .find("scheduler_stream_closed_by_write = true;")
+            .unwrap()
+            < rollover
+                .find("require_successor_install_census_after_rollover(")
+                .unwrap(),
+        "the build-refusal rollover closes old-stream gap custody before successor recovery"
+    );
+    let compact: String = rollover.chars().filter(|ch| !ch.is_whitespace()).collect();
+    assert!(
+        compact.contains(concat!(
+            "require_successor_install_census_after_rollover(",
+            "&muttransport,&mutsession_sequence,freeze_census_payload.as_deref(),",
+            "content_identity_payload.as_deref(),state_topology_payload.as_deref(),)?;"
+        )),
+        "the new H4FR rollover must replay every retained census into the successor"
+    );
+    assert!(rollover.contains("append_terminal_error(&mut terminal_control_error"));
+    assert!(rollover.contains("reached a campaign-identity boundary before publication"));
+    assert!(refusal
+        .contains("capture_loop_aborted = true;\n                            break 'capture;"));
+}
+
 #[test]
 fn every_production_rollover_exit_routes_through_successor_census_recovery() {
+    assert_frame_build_refusal_rollover_is_guarded();
     let production = COLLECTOR_SOURCE
         .split_once("mod freeze_census_publication_tests")
         .expect("freeze census publication test module")
@@ -47,8 +111,9 @@ fn every_production_rollover_exit_routes_through_successor_census_recovery() {
         production
             .matches("require_successor_install_census_after_rollover(")
             .count(),
-        8,
-        "seven terminal/boundary call sites plus the function definition are required"
+        9,
+        "the seven existing terminal/boundary sites, the explicitly checked frame-build \
+         storage-refusal rollover, and the function definition are required"
     );
     assert_eq!(
         production
@@ -298,6 +363,7 @@ fn terminal_publication_spends_the_production_retry_budget() {
 
 #[test]
 fn the_terminal_gap_publication_names_every_range_it_could_not_publish() {
+    assert_frame_build_refusal_rollover_is_guarded();
     let gaps = terminal_gap_region();
     assert!(
         !gaps.contains("_ => {"),
@@ -353,9 +419,10 @@ fn the_terminal_gap_publication_names_every_range_it_could_not_publish() {
         code_only(capture_loop.1)
             .matches("scheduler_stream_closed_by_write = true")
             .count(),
-        6,
+        7,
         "every site that reaches teardown after a write committed a rollover sets it: the \
-         scheduler DATA publication, the frame-refusal publication, the clock-unreadable \
+         scheduler DATA publication, the completeness-refusal publication, the explicitly \
+         checked frame-build storage-refusal publication, the clock-unreadable \
          interval publication, the untrusted clock-recovery publication, the ordinary terminal \
          DATA write, and the D75-owned terminal DATA write"
     );

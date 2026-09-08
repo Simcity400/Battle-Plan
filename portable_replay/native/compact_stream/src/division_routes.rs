@@ -1,4 +1,13 @@
-pub const FORMAT_MARKER: u32 = u32::from_le_bytes(*b"D2R9");
+#[path = "division_routes/combat_membership.rs"]
+mod combat_membership;
+pub use combat_membership::{
+    append_first_combat_countries, first_combat_countries_encoded_len,
+    validate_first_combat_countries, CombatMembershipCause, CombatMembershipField,
+    CombatMembershipRefusal, CombatMembershipStage, CountryWordsObservation,
+    FirstCombatCountriesObservation, COMBAT_MEMBERSHIP_DESCRIPTOR_LEN, COMBAT_MEMBERSHIP_HEADER_LEN,
+};
+
+pub const FORMAT_MARKER: u32 = u32::from_le_bytes(*b"D2RA");
 pub const ROW_LEN: usize = 312;
 /// Underlying D20 training operands; no authored thresholds or selector results.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -274,40 +283,184 @@ pub fn write_movement_scalars(payload: &mut [u8], index: usize, value: MovementS
     }
 }
 
+#[cfg(test)]
+#[path = "division_storage_tests.rs"]
+mod storage_tests;
+
+/// Check structure and size the complete division payload prefix, including its header,
+/// fixed rows, pools, and both country rosters. Combat membership is not included.
+/// Duplicate roster identities and category keys are checked by `append_inputs`.
+/// Iterators and their clones must yield the same items.
+pub fn inputs_encoded_len<'a>(
+    routes: impl ExactSizeIterator<Item = (Option<&'a [u32]>, Option<&'a [u32]>)> + Clone,
+    preferences: impl ExactSizeIterator<Item = Option<&'a TemplateModelPreference>> + Clone,
+    acclimatization: impl ExactSizeIterator<Item = Option<&'a Acclimatization>> + Clone,
+    country_roster: &super::country_roster::Observation,
+    railway_roster: &super::country_roster::Observation,
+) -> Result<usize, String> {
+    input_lengths(routes, preferences, acclimatization, country_roster, railway_roster).map(|lengths| lengths.total)
+}
+
+struct InputLengths {
+    total: usize,
+    country_roster: usize,
+    railway_roster: usize,
+}
+
+fn input_lengths<'a>(
+    routes: impl ExactSizeIterator<Item = (Option<&'a [u32]>, Option<&'a [u32]>)> + Clone,
+    preferences: impl ExactSizeIterator<Item = Option<&'a TemplateModelPreference>> + Clone,
+    acclimatization: impl ExactSizeIterator<Item = Option<&'a Acclimatization>> + Clone,
+    country_roster: &super::country_roster::Observation,
+    railway_roster: &super::country_roster::Observation,
+) -> Result<InputLengths, String> {
+    let rows = routes.len();
+    u32::try_from(rows).map_err(|_| "division input row count overflow")?;
+    if rows != preferences.len() || rows != acclimatization.len() {
+        return Err("division input row cardinality".into());
+    }
+    if country_roster.kind != super::country_roster::Kind::Division
+        || railway_roster.kind != super::country_roster::Kind::Railway {
+        return Err("division input roster kind".into());
+    }
+    let mut route_words = 0_usize;
+    let mut entity_bytes = 0_usize;
+    let mut acclimatization_bytes = 0_usize;
+    let mut exclusion_words = 0_usize;
+    let mut seen = 0;
+    for (ordinary, alternate) in routes {
+        seen += 1;
+        if seen > rows { return Err("division route row cardinality".into()); }
+        for route in [ordinary, alternate].into_iter().flatten() {
+            if route.len() > MAX_ROUTE_PROVINCES
+                || route.iter().any(|id| *id == 0 || *id >= i32::MAX as u32) {
+                return Err("division route length or province identity".into());
+            }
+            route_words = route_words.checked_add(route.len()).ok_or("division route pool overflow")?;
+            u32::try_from(route_words).map_err(|_| "division route pool overflow")?;
+        }
+    }
+    if seen != rows { return Err("division route row cardinality".into()); }
+    let mut seen = 0;
+    for preference in preferences {
+        seen += 1;
+        if seen > rows { return Err("division preference row cardinality".into()); }
+        let Some(preference) = preference else { continue };
+        if preference.template_id == 0 || preference.template_id > i32::MAX as u32
+            || preference.entity.len() > MAX_MODEL_ENTITY_BYTES {
+            return Err("division template preference identity or entity bound".into());
+        }
+        entity_bytes = entity_bytes.checked_add(preference.entity.len()).ok_or("template entity pool overflow")?;
+        u32::try_from(entity_bytes).map_err(|_| "template entity pool overflow")?;
+        if let Some(excluded) = &preference.excluded_variants {
+            if excluded.len() > MAX_TEMPLATE_EXCLUSIONS
+                || excluded.iter().flatten().any(|id| *id == 0 || *id > i32::MAX as u32) {
+                return Err("template exclusion length or variant identity".into());
+            }
+            exclusion_words = exclusion_words.checked_add(excluded.len()).ok_or("template exclusions pool overflow")?;
+            u32::try_from(exclusion_words).map_err(|_| "template exclusions pool overflow")?;
+        }
+    }
+    if seen != rows { return Err("division preference row cardinality".into()); }
+    let mut seen = 0;
+    for value in acclimatization {
+        seen += 1;
+        if seen > rows { return Err("division acclimatization row cardinality".into()); }
+        let Some(value) = value else { continue };
+        if value.categories.len() > MAX_ACCLIMATIZATION_CATEGORIES {
+            return Err("acclimatization category bound".into());
+        }
+        for entry in &value.categories {
+            if entry.category.is_empty() || entry.category.len() > MAX_MODEL_ENTITY_BYTES {
+                return Err("acclimatization category length".into());
+            }
+            acclimatization_bytes = acclimatization_bytes.checked_add(10 + entry.category.len())
+                .ok_or("acclimatization pool overflow")?;
+            u32::try_from(acclimatization_bytes).map_err(|_| "acclimatization pool overflow")?;
+        }
+    }
+    if seen != rows { return Err("division acclimatization row cardinality".into()); }
+    let roster_bytes = country_roster.encoded_len()?;
+    let railway_bytes = railway_roster.encoded_len()?;
+    let total = rows.checked_mul(ROW_LEN + 8).and_then(|n| n.checked_add(32))
+        .and_then(|n| n.checked_add(route_words.checked_mul(4)?))
+        .and_then(|n| n.checked_add(entity_bytes))
+        .and_then(|n| n.checked_add(acclimatization_bytes))
+        .and_then(|n| n.checked_add(exclusion_words.checked_mul(4)?))
+        .and_then(|n| n.checked_add(roster_bytes))
+        .and_then(|n| n.checked_add(railway_bytes))
+        .ok_or("division input byte length overflow")?;
+    Ok(InputLengths { total, country_roster: roster_bytes, railway_roster: railway_bytes })
+}
+
+/// Append into caller-funded capacity, with all input checks before mutation.
+/// Iterators and their clones must yield the same items.
 pub fn append_inputs<'a>(
     payload: &mut Vec<u8>,
-    routes: impl ExactSizeIterator<Item = (Option<&'a [u32]>, Option<&'a [u32]>)>,
-    preferences: impl ExactSizeIterator<Item = Option<&'a TemplateModelPreference>>,
-    acclimatization: impl ExactSizeIterator<Item = Option<&'a Acclimatization>>,
-    country_roster: &[u8],
-    railway_roster: &[u8],
-) {
+    routes: impl ExactSizeIterator<Item = (Option<&'a [u32]>, Option<&'a [u32]>)> + Clone,
+    preferences: impl ExactSizeIterator<Item = Option<&'a TemplateModelPreference>> + Clone,
+    acclimatization: impl ExactSizeIterator<Item = Option<&'a Acclimatization>> + Clone,
+    country_roster: &super::country_roster::Observation,
+    railway_roster: &super::country_roster::Observation,
+) -> Result<(), String> {
+    let lengths = input_lengths(routes.clone(), preferences.clone(), acclimatization.clone(), country_roster, railway_roster)?;
     let rows = routes.len();
-    let preferences = preferences.collect::<Vec<_>>();
-    assert_eq!(rows, preferences.len());
-    assert_eq!(rows, acclimatization.len());
-    assert_eq!(payload.len(), 32 + rows * ROW_LEN);
+    let prefix_len = rows.checked_mul(ROW_LEN).and_then(|n| n.checked_add(32))
+        .ok_or("division input row length overflow")?;
+    if payload.len() != prefix_len || word(payload, 8) as usize != rows {
+        return Err("division input payload row cardinality".into());
+    }
+    if payload.capacity() < lengths.total {
+        return Err("division input output capacity unavailable".into());
+    }
+    for (index, (((ordinary, alternate), preference), value)) in routes.clone()
+        .zip(preferences.clone()).zip(acclimatization.clone()).enumerate() {
+        let base = 32 + index * ROW_LEN;
+        if word(payload, base + 8) & (1 << 12) != 0
+            && (ordinary.is_some() || alternate.is_some() || preference.is_some() || value.is_some()) {
+            return Err("deleted division carries input pools".into());
+        }
+        if let Some(preference) = preference {
+            if word(payload, base + 128) != 2 || word(payload, base + 132) != preference.template_id {
+                return Err("template preference current-template custody mismatch".into());
+            }
+        }
+        if let Some(value) = value {
+            // Every category contributes at least eleven wire bytes, so its
+            // eight-byte source index fits in the already-funded output tail.
+            if !super::country_roster::unique_in_spare(payload, value.categories.len(),
+                (0..value.categories.len()).map(|index| (index as u64).to_le_bytes()),
+                |left, right| value.categories[u64::from_le_bytes(*left) as usize].category
+                    .cmp(&value.categories[u64::from_le_bytes(*right) as usize].category))? {
+                return Err("acclimatization repeats a category".into());
+            }
+        }
+    }
+    country_roster.validate_unique_in_spare(payload, lengths.country_roster)?;
+    railway_roster.validate_unique_in_spare(payload, lengths.railway_roster)?;
     payload[28..32].copy_from_slice(&FORMAT_MARKER.to_le_bytes());
+    for index in 0..rows {
+        let base = 32 + index * ROW_LEN;
+        payload[base + 120..base + 128].fill(0);
+        payload[base + 144..base + 192].fill(0);
+    }
     let mut cursor = 0u32;
     for (index, (ordinary, alternate)) in routes.enumerate() {
         for (offset, route) in [(120, ordinary), (184, alternate)] {
             let Some(route) = route else { continue };
-            assert!(route.len() <= MAX_ROUTE_PROVINCES);
             let descriptor = 32 + index * ROW_LEN + offset;
             payload[descriptor..descriptor + 4].copy_from_slice(&cursor.to_le_bytes());
             payload[descriptor + 4..descriptor + 8].copy_from_slice(&(route.len() as u32 + 1).to_le_bytes());
             for province in route { payload.extend_from_slice(&province.to_le_bytes()); }
-            cursor = cursor.checked_add(route.len() as u32).expect("bounded division route pool");
+            cursor += route.len() as u32;
         }
     }
     let mut cursor = 0u32;
-    for (index, preference) in preferences.iter().copied().enumerate() {
+    for (index, preference) in preferences.clone().enumerate() {
         let Some(preference) = preference else {
             continue;
         };
-        assert!(preference.entity.len() <= MAX_MODEL_ENTITY_BYTES);
         let base = 32 + index * ROW_LEN;
-        assert!(preference.template_id > 0 && preference.template_id <= i32::MAX as u32);
         payload[base + 144..base + 148].copy_from_slice(&preference.template_id.to_le_bytes());
         payload[base + 148..base + 152]
             .copy_from_slice(&u32::from(preference.category.is_some()).to_le_bytes());
@@ -317,48 +470,39 @@ pub fn append_inputs<'a>(
         payload[base + 164..base + 168]
             .copy_from_slice(&(preference.entity.len() as u32 + 1).to_le_bytes());
         payload.extend_from_slice(preference.entity.as_bytes());
-        cursor = cursor
-            .checked_add(preference.entity.len() as u32)
-            .expect("bounded template entity pool");
+        cursor += preference.entity.len() as u32;
     }
     let mut cursor = 0u32;
     for (index, value) in acclimatization.enumerate() {
         let Some(value) = value else { continue };
-        assert!(value.categories.len() <= MAX_ACCLIMATIZATION_CATEGORIES);
         let base = 32 + index * ROW_LEN;
         payload[base + 168..base + 172].copy_from_slice(&cursor.to_le_bytes());
         payload[base + 172..base + 176]
             .copy_from_slice(&(value.categories.len() as u32 + 1).to_le_bytes());
         payload[base + 176..base + 184].copy_from_slice(&value.maximum_raw.to_le_bytes());
         for entry in &value.categories {
-            assert!(!entry.category.is_empty() && entry.category.len() <= MAX_MODEL_ENTITY_BYTES);
             payload.extend_from_slice(&(entry.category.len() as u16).to_le_bytes());
             payload.extend_from_slice(entry.category.as_bytes());
             payload.extend_from_slice(&entry.weight_raw.to_le_bytes());
-            cursor = cursor
-                .checked_add(10 + entry.category.len() as u32)
-                .expect("bounded acclimatization pool");
+            cursor += 10 + entry.category.len() as u32;
         }
     }
     let table = payload.len();
     payload.resize(table + rows * 8, 0);
     let mut consumed = 0_u32;
-    for (index, preference) in preferences.into_iter().enumerate() {
+    for (index, preference) in preferences.enumerate() {
         let Some(excluded) = preference.and_then(|value| value.excluded_variants.as_ref()) else { continue };
-        assert!(excluded.len() <= MAX_TEMPLATE_EXCLUSIONS);
         let at = table + index * 8;
         payload[at..at + 4].copy_from_slice(&consumed.to_le_bytes());
         payload[at + 4..at + 8].copy_from_slice(&(excluded.len() as u32 + 1).to_le_bytes());
         for id in excluded {
-            assert!(id.is_none_or(|id| id > 0 && id <= i32::MAX as u32));
             payload.extend_from_slice(&id.unwrap_or(0).to_le_bytes());
         }
         consumed += excluded.len() as u32;
     }
-    super::country_roster::Observation::parse(country_roster, super::country_roster::Kind::Division).expect("validated division country roster");
-    payload.extend_from_slice(country_roster);
-    super::country_roster::Observation::parse(railway_roster, super::country_roster::Kind::Railway).expect("validated railway country roster");
-    payload.extend_from_slice(railway_roster);
+    country_roster.append_validated(payload, lengths.country_roster);
+    railway_roster.append_validated(payload, lengths.railway_roster);
+    Ok(())
 }
 
 pub fn write_current_template(payload: &mut [u8], index: usize, value: Option<Option<u32>>) {
@@ -398,6 +542,7 @@ pub struct DivisionRoutes<'a> {
     exclusions_table: usize,
     roster_start: usize,
     railway_start: usize,
+    membership_start: usize,
 }
 
 impl<'a> DivisionRoutes<'a> {
@@ -576,7 +721,9 @@ impl<'a> DivisionRoutes<'a> {
         let roster = payload.get(roster_start..).ok_or("division roster missing")?;
         let (_, division_len) = super::country_roster::Observation::parse_prefix(roster, super::country_roster::Kind::Division)?;
         let railway_start = roster_start.checked_add(division_len).ok_or("railway roster offset overflow")?;
-        super::country_roster::Observation::parse(&payload[railway_start..], super::country_roster::Kind::Railway)?;
+        let (_, railway_len) = super::country_roster::Observation::parse_prefix(&payload[railway_start..], super::country_roster::Kind::Railway)?;
+        let membership_start = railway_start.checked_add(railway_len).ok_or("combat membership offset overflow")?;
+        validate_first_combat_countries(&payload[membership_start..], rows, payload)?;
         for entry in payload[exclusions_pool..roster_start].chunks_exact(4) {
             if u32::from_le_bytes(entry.try_into().unwrap()) > i32::MAX as u32 {
                 return Err("template exclusion variant identity is invalid".into());
@@ -597,12 +744,17 @@ impl<'a> DivisionRoutes<'a> {
             exclusions_table,
             roster_start,
             railway_start,
+            membership_start,
         })
     }
 
     pub fn country_roster_bytes(&self) -> &[u8] { &self.payload[self.roster_start..self.railway_start] }
 
-    pub fn railway_roster_bytes(&self) -> &[u8] { &self.payload[self.railway_start..] }
+    pub fn railway_roster_bytes(&self) -> &[u8] { &self.payload[self.railway_start..self.membership_start] }
+
+    pub fn first_combat_countries(&self, index: usize) -> Result<FirstCombatCountriesObservation, String> {
+        combat_membership::read_first_combat_countries(&self.payload[self.membership_start..], self.rows, self.payload, index)
+    }
 
     pub fn current_template(&self, index: usize) -> Option<Option<u32>> {
         assert!(index < self.rows);
@@ -776,13 +928,43 @@ fn word(bytes: &[u8], at: usize) -> u32 {
 }
 
 #[cfg(test)]
+fn append_fixture_inputs<'a>(
+    payload: &mut Vec<u8>,
+    routes: impl ExactSizeIterator<Item = (Option<&'a [u32]>, Option<&'a [u32]>)> + Clone,
+    preferences: impl ExactSizeIterator<Item = Option<&'a TemplateModelPreference>> + Clone,
+    acclimatization: impl ExactSizeIterator<Item = Option<&'a Acclimatization>> + Clone,
+    country_roster: &[u8],
+    railway_roster: &[u8],
+) {
+    // These pre-existing fixtures never sampled countries. Preserve their
+    // declared first identity, with an explicitly unobserved census.
+    let observations: Vec<_> = (0..routes.len()).map(|index| {
+        match combat_membership::row_projection(payload, index).unwrap() {
+            None => FirstCombatCountriesObservation::default(),
+            Some(None) => FirstCombatCountriesObservation::NoFirstCombat,
+            Some(Some(combat)) => FirstCombatCountriesObservation::Present {
+                combat, countries: CountryWordsObservation::Unavailable(Default::default()),
+            },
+        }
+    }).collect();
+    use super::country_roster::{Kind, Observation};
+    let country_roster = Observation::parse(country_roster, Kind::Division).unwrap();
+    let railway_roster = Observation::parse(railway_roster, Kind::Railway).unwrap();
+    let prefix_len = inputs_encoded_len(routes.clone(), preferences.clone(), acclimatization.clone(), &country_roster, &railway_roster).unwrap();
+    payload.try_reserve_exact(prefix_len - payload.len()).unwrap();
+    append_inputs(payload, routes, preferences, acclimatization, &country_roster, &railway_roster).unwrap();
+    payload.try_reserve_exact(first_combat_countries_encoded_len(observations.iter()).unwrap()).unwrap();
+    append_first_combat_countries(payload, observations.iter()).unwrap();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     fn payload(routes: &[Option<Vec<u32>>]) -> Vec<u8> {
         let mut bytes = vec![0; 32 + routes.len() * ROW_LEN];
         bytes[8..12].copy_from_slice(&(routes.len() as u32).to_le_bytes());
-        append_inputs(
+        append_fixture_inputs(
             &mut bytes,
             routes.iter().map(|route| (route.as_deref(), None)),
             std::iter::repeat_n(None, routes.len()),
@@ -1047,6 +1229,10 @@ mod tests {
         legacy.extend_from_slice(&unavailable_roster());
         assert!(DivisionRoutes::parse(&legacy).is_err(), "division tail alone does not supply railway custody");
         legacy.extend_from_slice(&unavailable_railway_roster());
+        assert!(DivisionRoutes::parse(&legacy).is_err(), "both rosters require the membership trailer");
+        let observations = [FirstCombatCountriesObservation::default()];
+        legacy.try_reserve_exact(first_combat_countries_encoded_len(observations.iter()).unwrap()).unwrap();
+        append_first_combat_countries(&mut legacy, observations.iter()).unwrap();
         assert_eq!(DivisionRoutes::parse(&legacy).unwrap().ordinary_route(0), None);
     }
 
@@ -1082,7 +1268,7 @@ mod tests {
         let mut payload = vec![0; 32 + 3 * ROW_LEN];
         payload[8..12].copy_from_slice(&3_u32.to_le_bytes());
         for index in 0..3 { write_current_template(&mut payload, index, Some(Some(73))); }
-        append_inputs(&mut payload, [(None, None); 3].into_iter(), preferences.iter().map(Some), [None; 3].into_iter(), &unavailable_roster(), &unavailable_railway_roster());
+        append_fixture_inputs(&mut payload, [(None, None); 3].into_iter(), preferences.iter().map(Some), [None; 3].into_iter(), &unavailable_roster(), &unavailable_railway_roster());
         let parsed = DivisionRoutes::parse(&payload).unwrap();
         for (index, expected) in preferences.iter().enumerate() {
             assert_eq!(parsed.template_preference(index).as_ref(), Some(expected));
@@ -1124,7 +1310,7 @@ mod tests {
             }
             write_route_head(&mut bytes, index, [None, Some(None), Some(Some(23))][index]);
         }
-        append_inputs(
+        append_fixture_inputs(
             &mut bytes,
             routes.iter().map(|r| (r.as_deref(), None)),
             preferences.iter().map(|p| p.as_ref()),
@@ -1187,7 +1373,7 @@ mod tests {
         ];
         let mut bytes = vec![0; 32 + 3 * ROW_LEN];
         bytes[8..12].copy_from_slice(&3u32.to_le_bytes());
-        append_inputs(
+        append_fixture_inputs(
             &mut bytes,
             std::iter::repeat_n((None, None), 3),
             std::iter::repeat_n(None, 3),
@@ -1265,7 +1451,7 @@ mod tests {
         bytes[8..12].copy_from_slice(&3_u32.to_le_bytes());
         bytes[32 + 2 * ROW_LEN + 48..32 + 2 * ROW_LEN + 52].copy_from_slice(&2_u32.to_le_bytes());
         for (index, value) in scalars.iter().enumerate() { write_movement_scalars(&mut bytes, index, *value); }
-        append_inputs(&mut bytes, ordinary.iter().zip(&alternate).map(|(a,b)| (a.as_deref(), b.as_deref())),
+        append_fixture_inputs(&mut bytes, ordinary.iter().zip(&alternate).map(|(a,b)| (a.as_deref(), b.as_deref())),
             [None; 3].into_iter(), [None; 3].into_iter(), &unavailable_roster(), &unavailable_railway_roster());
         let parsed = DivisionRoutes::parse(&bytes).unwrap();
         for index in 0..3 {
@@ -1304,6 +1490,9 @@ mod tests {
         })), ..Default::default() });
         assert!(DivisionRoutes::parse(&bytes).is_err());
         bytes[32 + 48..32 + 52].copy_from_slice(&1_u32.to_le_bytes());
+        assert!(DivisionRoutes::parse(&bytes).is_err(), "membership projection must also change");
+        let membership = DivisionRoutes::parse(&valid).unwrap().membership_start + 8;
+        bytes[membership..membership + 4].copy_from_slice(&3_u32.to_le_bytes());
         assert!(DivisionRoutes::parse(&bytes).is_ok());
         bytes[32 + 8..32 + 12].copy_from_slice(&(1_u32 << 12).to_le_bytes());
         assert!(DivisionRoutes::parse(&bytes).is_err());
@@ -1332,10 +1521,10 @@ mod railway_tail_tests {
             physical_slot:0,owner_tag_db_id:Some(7),acquisition:Acquisition::Bracketed,
             observed_count:Some(1),failure:None,slots:vec![Slot {ordinal:0,reference:Ok(MemberRef {native_type:51,id:0})}],
         }]}.encode().unwrap();
-        let mut bytes=vec![0;32];append_inputs(&mut bytes,std::iter::empty(),std::iter::empty(),std::iter::empty(),&unavailable_roster(),&railway);bytes
+        let mut bytes=vec![0;32];append_fixture_inputs(&mut bytes,std::iter::empty(),std::iter::empty(),std::iter::empty(),&unavailable_roster(),&railway);bytes
     }
     #[test]
-    fn d2r8_owns_exactly_two_ordered_tails_and_rejects_old_missing_extra_or_malformed_bytes() {
+    fn d2ra_owns_two_ordered_rosters_then_membership_and_rejects_malformed_bytes() {
         let bytes=payload();let parsed=DivisionRoutes::parse(&bytes).unwrap();
         assert_eq!(Observation::parse(parsed.railway_roster_bytes(),Kind::Railway).unwrap().countries[0].slots[0].reference.unwrap().id,0);
         for end in 32..bytes.len() { assert!(DivisionRoutes::parse(&bytes[..end]).is_err(),"{end}"); }
@@ -1343,7 +1532,7 @@ mod railway_tail_tests {
         let mut bad=bytes.clone();bad.push(0);assert!(DivisionRoutes::parse(&bad).is_err());
         let mut swapped=bytes[..32].to_vec();swapped.extend_from_slice(parsed.railway_roster_bytes());swapped.extend_from_slice(parsed.country_roster_bytes());
         assert!(DivisionRoutes::parse(&swapped).is_err());
-        let railway_start=bytes.len()-parsed.railway_roster_bytes().len();
+        let railway_start=parsed.railway_start;
         for offset in [railway_start+4,railway_start+6,railway_start+8,railway_start+28,railway_start+32+11] {
             let mut bad=bytes.clone();bad[offset]=255;assert!(DivisionRoutes::parse(&bad).is_err(),"{offset}");
         }

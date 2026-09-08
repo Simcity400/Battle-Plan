@@ -141,8 +141,17 @@ impl DomainGapRecordV1 {
         &self,
         witness_provenance: DomainGapWitnessProvenance,
     ) -> Result<Vec<u8>, DomainGapError> {
+        Ok(self.encode_array_with_witness_provenance(witness_provenance)?.to_vec())
+    }
+
+    /// Fixed control records can be emitted even when a semantic payload's
+    /// retention quota is exhausted, without allocating a temporary buffer.
+    pub fn encode_array_with_witness_provenance(
+        &self,
+        witness_provenance: DomainGapWitnessProvenance,
+    ) -> Result<[u8; COMPACT_DOMAIN_GAP_PAYLOAD_LEN], DomainGapError> {
         validate_hours(self)?;
-        let mut out = vec![0u8; COMPACT_DOMAIN_GAP_PAYLOAD_LEN];
+        let mut out = [0u8; COMPACT_DOMAIN_GAP_PAYLOAD_LEN];
         out[..4].copy_from_slice(COMPACT_DOMAIN_GAP_MAGIC);
         out[4..6].copy_from_slice(&COMPACT_DOMAIN_GAP_VERSION.to_le_bytes());
         out[6..8].copy_from_slice(&(COMPACT_DOMAIN_GAP_PAYLOAD_LEN as u16).to_le_bytes());

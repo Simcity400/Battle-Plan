@@ -95,7 +95,7 @@ fn admit<T>(
         Err(c) => Obs::Unavailable(c),
     }
 }
-pub(super) fn sample(
+pub(super) fn sample_without_country(
     module: usize,
     body: usize,
     kind: u32,
@@ -103,8 +103,12 @@ pub(super) fn sample(
     budget: &Budget,
     read: &mut impl FnMut(usize, &mut [u8]) -> bool,
 ) -> TrainingScalars {
+    let unavailable = |cause| TrainingScalars {
+        country_operand: Obs::Unavailable(Cause::NotObserved),
+        ..TrainingScalars::unavailable(cause)
+    };
     let Some(primary) = body.checked_sub(DIVISION_WRAPPER_TO_BODY) else {
-        return TrainingScalars::unavailable(Cause::InvalidIdentity);
+        return unavailable(Cause::InvalidIdentity);
     };
     let mut identity = Trace::default();
     let authenticated = (|| {
@@ -126,9 +130,9 @@ pub(super) fn sample(
     })();
     if let Err(c) = authenticated {
         let closing = identity.close(read);
-        return TrainingScalars::unavailable(closing.err().unwrap_or(c));
+        return unavailable(closing.err().unwrap_or(c));
     }
-    let mut traces: [Trace; 6] = std::array::from_fn(|_| Trace::default());
+    let mut traces: [Trace; 5] = std::array::from_fn(|_| Trace::default());
     let experience = (|| {
         Ok(i64::from_le_bytes(traces[0].field::<8>(
             budget,
@@ -207,24 +211,17 @@ pub(super) fn sample(
         }
         Ok(Some(TrainingArmy { kind, id }))
     })();
-    let country_operand = (|| {
-        Ok(i32::from_le_bytes(traces[5].field::<4>(
-            budget,
-            at(primary, 0x1e0)?,
-            read,
-        )?))
-    })();
     let out = TrainingScalars {
         experience: admit(experience, &mut traces[0], read),
         current_hp: admit(current_hp, &mut traces[1], read),
         maximum_hp: admit(maximum_hp, &mut traces[2], read),
         template_count: admit(template_count, &mut traces[3], read),
         army: admit(army, &mut traces[4], read),
-        country_operand: admit(country_operand, &mut traces[5], read),
+        country_operand: Obs::Unavailable(Cause::NotObserved),
     };
     match identity.close(read) {
         Ok(()) => out,
-        Err(c) => TrainingScalars::unavailable(c),
+        Err(c) => unavailable(c),
     }
 }
 
@@ -237,12 +234,17 @@ mod tests {
     const STATS: usize = HEAP_LO + 0x3000000;
     const VALUES: usize = HEAP_LO + 0x4000000;
     const ARMY: usize = HEAP_LO + 0x5000000;
+    const GAME_STATE: usize = HEAP_LO + 0x6000000;
+    const CAMPAIGN_CHARS: usize = HEAP_LO + 0x7000000;
+    const CAMPAIGN_UUID: [u8; 36] = *b"a4b17fed-ed12-4361-9064-fb6576638110";
+    const PUBLICATION_HOUR: i32 = DATE_EPOCH_CONST + 16_959_367;
     #[derive(Default)]
     struct Memory {
         bytes: BTreeMap<usize, u8>,
         calls: Vec<(usize, usize)>,
         visits: BTreeMap<usize, usize>,
         change: Option<(usize, usize, Vec<u8>)>,
+        publication_hour: i32,
     }
     impl Memory {
         fn put(&mut self, p: usize, b: &[u8]) {
@@ -291,13 +293,17 @@ mod tests {
             m.i32(VALUES + i * 8 + 4, v);
         }
         m.u64(PRIMARY + 0xc0, 0);
-        m.i32(PRIMARY + 0x1e0, -7);
         m
     }
     fn capture(m: &mut Memory, b: &Budget) -> TrainingScalars {
-        sample(BASE, PRIMARY + 0x10, DIVISION_TYPE, 7, b, &mut |p, o| {
-            m.read(p, o)
-        })
+        sample_without_country(
+            BASE,
+            PRIMARY + 0x10,
+            DIVISION_TYPE,
+            7,
+            b,
+            &mut |p, o| m.read(p, o),
+        )
     }
     #[test]
     fn exact_signed_operands_and_wrapping_count_survive_real_seals_and_wire() {
@@ -306,7 +312,7 @@ mod tests {
         assert_eq!(value.experience, Obs::Measured(i64::MAX));
         assert_eq!(value.current_hp, Obs::Measured(i64::MIN));
         assert_eq!(value.maximum_hp, Obs::Measured((1i64 << 53) + 1));
-        assert_eq!(value.country_operand, Obs::Measured(-7));
+        assert_eq!(value.country_operand, Obs::Unavailable(Cause::NotObserved));
         assert_eq!(
             value.template_count,
             Obs::Measured(TrainingCount {
@@ -318,7 +324,7 @@ mod tests {
         let mut row = super::super::deleted_division_sample(7, DIVISION_TYPE);
         row.deleted = false;
         row.training_scalars = value;
-        let bytes = super::super::compact_divisions_data_payload(&[row], 0, 0, 1, 1, None, None);
+        let bytes = super::super::compact_divisions_data_payload(&[row], 0, 0, 1, 1, None, None, &super::super::country_roster_readset::Budget::default()).unwrap();
         let decoded = compact_contract::division_routes::DivisionRoutes::parse(&bytes).unwrap();
         assert_eq!(decoded.training_scalars(0), value);
         let before = m.calls.len() / 2;
@@ -326,6 +332,33 @@ mod tests {
             m.calls[..before].iter().map(|(_, n)| n).sum::<usize>(),
             m.calls[before..].iter().map(|(_, n)| n).sum::<usize>()
         );
+    }
+    #[test]
+    fn country_is_not_read_or_reserved_and_exact_budget_preserves_five_inputs() {
+        let mut m = fixture();
+        let budget = Budget::test_limits(192, 16 * 1024 * 1024);
+        let value = capture(&mut m, &budget);
+        assert_eq!(
+            value,
+            TrainingScalars {
+                experience: Obs::Measured(i64::MAX),
+                current_hp: Obs::Measured(i64::MIN),
+                maximum_hp: Obs::Measured((1i64 << 53) + 1),
+                template_count: Obs::Measured(TrainingCount {
+                    entry_count: 3,
+                    sum_raw: i32::MAX,
+                }),
+                army: Obs::Measured(None),
+                country_operand: Obs::Unavailable(Cause::NotObserved),
+            }
+        );
+        assert!(!m.calls.iter().any(|(p, width)| {
+            *p < PRIMARY + 0x1e4 && *p + *width > PRIMARY + 0x1e0
+        }));
+        assert_eq!(m.calls.len(), 28, "fourteen openings and their funded closes");
+        assert!(m.visits.values().all(|visits| *visits == 2));
+        assert_eq!(m.calls.iter().map(|(_, width)| width).sum::<usize>(), 192);
+        assert_eq!(budget.verification_bytes(), 192);
     }
     #[test]
     fn nonpositive_count_does_not_read_data_pointer_and_null_army_is_not_unreadable() {
@@ -393,7 +426,10 @@ mod tests {
         ));
         assert_eq!(
             capture(&mut m, &Budget::default()),
-            TrainingScalars::unavailable(Cause::Changed)
+            TrainingScalars {
+                country_operand: Obs::Unavailable(Cause::NotObserved),
+                ..TrainingScalars::unavailable(Cause::Changed)
+            }
         );
         assert!(m.calls.iter().filter(|(p, _)| *p == PRIMARY + 0x18).count() == 2);
     }
@@ -419,25 +455,113 @@ mod tests {
         );
     }
 
-    fn observed_row(m: &mut Memory) -> DivisionMovementSample {
+    fn publication_fixture() -> Memory {
+        use compact_contract::build_profile as profile;
+        let mut m = fixture();
+        let body = PRIMARY + DIVISION_WRAPPER_TO_BODY;
+        m.publication_hour = PUBLICATION_HOUR;
+        m.u64(BASE + profile::DOMAIN57_CGAMESTATE_SINGLETON_RVA, GAME_STATE as u64);
+        m.i32(GAME_STATE + GS_CURRENT_DATE_OFFSET, m.publication_hour);
+        let mut header = [0; profile::DOMAIN_CAMPAIGN_ID_HEADER_REGION_LEN];
+        header[..4].copy_from_slice(&(-1234i32).to_le_bytes());
+        let string = profile::DOMAIN_CAMPAIGN_ID_GAME_UNIQUE_ID_OFF
+            - profile::DOMAIN_CAMPAIGN_ID_GAME_UNIQUE_SEED_OFF;
+        header[string..string + 8].copy_from_slice(&(CAMPAIGN_CHARS as u64).to_le_bytes());
+        header[string + 16..string + 24].copy_from_slice(&(CAMPAIGN_UUID.len() as u64).to_le_bytes());
+        header[string + 24..string + 32].copy_from_slice(&(CAMPAIGN_UUID.len() as u64).to_le_bytes());
+        m.put(GAME_STATE + profile::DOMAIN_CAMPAIGN_ID_GAME_UNIQUE_SEED_OFF, &header);
+        m.put(CAMPAIGN_CHARS, &CAMPAIGN_UUID);
+        m.put(CAMPAIGN_CHARS + CAMPAIGN_UUID.len(), &[0]);
+        m.i32(body + DIVISION_OFF_LOCATION, 1);
+        m.i32(PRIMARY + 0x1e0, -7);
+        for offset in [0x198, 0x1f0, 0x210] {
+            m.put(body + offset, &[0; 16]);
+        }
+        for offset in [0x1e0, 0x230, 0x2e8, 0x1d8] {
+            m.u64(body + offset, 0);
+        }
+        m.put(body + 0x23c, &[0]);
+        m
+    }
+    fn observed_row(m: &mut Memory, budget: &Budget) -> DivisionMovementSample {
+        use super::super::{division_combat_membership as membership,
+            division_frame_authority as authority, division_presentation_inputs as presentation};
+        let frame = presentation::MotionFrameInput {
+            game_state: GAME_STATE,
+            raw_hour: m.publication_hour,
+        };
+        let campaign = authority::CampaignBinding {
+            logical_stream_id: 7,
+            game_unique_id: CAMPAIGN_UUID,
+            game_unique_seed: -1234,
+            custody: None,
+        };
+        let mut attachment = || Some(authority::AttachmentIdentity { pid: 17, creation_filetime: 29 });
+        let calls_before = m.calls.len();
+        let bytes_before = budget.verification_bytes();
+        let country_visits = m.visits.get(&(PRIMARY + 0x1e0)).copied().unwrap_or(0);
+        let opened = authority::OpenedFrame::open(
+            BASE, frame, Some(&campaign), budget, &mut |at, out| m.read(at, out), &mut attachment,
+        ).unwrap();
+        let body = PRIMARY + DIVISION_WRAPPER_TO_BODY;
+        let mut preflight = membership::Trace::default();
+        let mut allocation = membership::Allocation::default();
+        for (at, width, expected, field) in [
+            (PRIMARY, 8, (BASE + DIVISION_WRAPPER_VTABLE_RVA) as u64, membership::Field::DivisionIdentity),
+            (body, 8, (BASE + DIVISION_VTABLE_RVA) as u64, membership::Field::DivisionIdentity),
+            (body + DIVISION_OFF_ID_TYPE, 8, (7u64 << 32) | u64::from(DIVISION_TYPE), membership::Field::DivisionIdentity),
+            (body + DIVISION_OFF_LOCATION, 4, 1, membership::Field::DivisionIdentity),
+            (body + DIVISION_OFF_COMBAT_REF_COUNT, 4, 0, membership::Field::FirstCombatVector),
+        ] {
+            assert_eq!(preflight.word(at, width, field, budget, &mut allocation,
+                &mut |at, out| m.read(at, out)).unwrap(), expected.to_le_bytes());
+        }
         let mut row = super::super::deleted_division_sample(7, DIVISION_TYPE);
         row.deleted = false;
         row.location = 1;
         row.raw_max_organisation = Some(100_000);
-        row.training_scalars = capture(m, &Budget::default());
+        row.training_scalars = capture(m, budget);
+        let paired = presentation::current_motion_inputs_with_membership(
+            BASE, frame,
+            presentation::MotionDivisionInput {
+                body: PRIMARY + DIVISION_WRAPPER_TO_BODY,
+                kind: DIVISION_TYPE, id: 7, location: 1, combat_count: 0,
+            },
+            budget, &mut |at, out| m.read(at, out),
+            |read| {
+                let preflight_close = preflight.close(read);
+                let frame_close = opened.close(read, &mut attachment);
+                frame_close.and(preflight_close)
+            },
+        );
+        assert_eq!(paired.country_operand, Obs::Measured(-7));
+        assert!(matches!(&paired.first_combat_countries,
+            super::super::division_combat_membership::FirstCombatCountries::NoFirstCombat));
+        row.ordinary_route = paired.motion.ordinary_route;
+        row.alternate_route = paired.motion.alternate_route;
+        row.route_head = paired.motion.route_head;
+        row.movement_scalars = paired.motion.scalars;
+        row.training_scalars.country_operand = paired.country_operand;
+        row.first_combat_countries = super::super::division_membership_portable::observation(
+            paired.first_combat_countries, budget,
+        );
+        assert_eq!(m.visits[&(PRIMARY + 0x1e0)] - country_visits, 2);
+        assert_eq!(m.calls[calls_before..].iter().map(|(_, width)| width).sum::<usize>(),
+            budget.verification_bytes() - bytes_before);
         row
     }
     fn emit(
         m: &mut Memory,
         tracker: &mut FrameJournalled<BTreeMap<u32, DivisionMovementSample>>,
     ) -> Vec<u8> {
+        let budget = Budget::default();
         let (rows, changed, flags) =
-            compact_division_emitted_rows(vec![observed_row(m)], 1, 0, tracker);
-        compact_divisions_data_payload(&rows, 0, flags, changed, 1, None, None)
+            compact_division_emitted_rows(vec![observed_row(m, &budget)], 1, 0, tracker, &budget).unwrap();
+        compact_divisions_data_payload(&rows, 0, flags, changed, 1, None, None, &budget).unwrap()
     }
     #[test]
     fn journal_rollback_reemits_changed_raw_operand_and_unavailable_overwrites() {
-        let mut m = fixture();
+        let mut m = publication_fixture();
         let mut tracker = FrameJournalled::default();
         let first = emit(&mut m, &mut tracker);
         assert_eq!(u32::from_le_bytes(first[8..12].try_into().unwrap()), 1);
@@ -469,12 +593,12 @@ mod tests {
     fn actual_sampler_publisher_fold_training_stages() {
         use super::super::province_occupants::tests::stage;
         use std::io::Write;
-        const HOUR: i32 = DATE_EPOCH_CONST + 16_959_367;
+        const HOUR: i32 = PUBLICATION_HOUR;
         let destination = std::path::PathBuf::from(
-            std::env::var_os("BATTLE_PLAN_D2R9_JOINT_OUTPUT").or_else(|| std::env::var_os("HOI4_D2R9_JOINT_OUTPUT")).expect("exclusive output required"),
+            std::env::var_os("BATTLE_PLAN_D2RA_JOINT_OUTPUT").or_else(|| std::env::var_os("HOI4_D2RA_JOINT_OUTPUT")).expect("exclusive output required"),
         );
         assert!(destination.is_absolute());
-        let mut m = fixture();
+        let mut m = publication_fixture();
         let mut tracker = FrameJournalled::default();
         let mut stream = Vec::new();
         let mut append = |sequence, hour, bytes: &[u8]| {
@@ -500,6 +624,7 @@ mod tests {
             let parsed = compact_contract::division_routes::DivisionRoutes::parse(&payload)
                 .expect("uncorrupted producer payload");
             assert_eq!(parsed.training_scalars(0).experience, expected);
+            assert_eq!(parsed.training_scalars(0).country_operand, Obs::Measured(-7));
             payload
         };
         let measured = append(1, HOUR,
@@ -532,6 +657,9 @@ mod tests {
             0,
             &[0; compact_contract::record_semantics::COMPACT_FRAME_END_PAYLOAD_LEN],
         );
+        m.publication_hour = HOUR + 1;
+        m.i32(GAME_STATE + GS_CURRENT_DATE_OFFSET, m.publication_hour);
+        let fresh_next_hour = emit(&mut m, &mut FrameJournalled::default());
         append_compact_record(
             &mut stream,
             7,
@@ -539,7 +667,7 @@ mod tests {
             20,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
             0,
-            &full,
+            &fresh_next_hour,
         );
         let next_hour = stage(&stream, 8, HOUR + 1);
         assert_eq!(
@@ -589,17 +717,17 @@ mod tests {
         let bytes = roots.len()
             * (size_of::<Option<DivisionMovementSample>>() + size_of::<DivisionMovementSample>())
             + if workers > 1 {
-                workers * size_of::<thread::ScopedJoinHandle<'_, ()>>()
+                workers * size_of::<thread::ScopedJoinHandle<'_, Result<(), DivisionSampleFailure>>>()
             } else {
                 0
             };
         let calls = AtomicUsize::new(0);
         let sample = |_, row: &DivisionBodyBridgeEntry, _: &Budget| {
             calls.fetch_add(1, Ordering::SeqCst);
-            Some(super::super::deleted_division_sample(
+            Ok(Some(super::super::deleted_division_sample(
                 row.div_id,
                 DIVISION_TYPE,
-            ))
+            )))
         };
         let limited = Budget::test_limits(0, bytes - 1);
         assert!(matches!(
@@ -636,18 +764,18 @@ mod tests {
         let results = thread::scope(|scope| {
             let first = scope.spawn(|| {
                 sample_compact_division_roots_with(BASE, &root, &budget, |_, r, _| {
-                    Some(super::super::deleted_division_sample(
+                    Ok(Some(super::super::deleted_division_sample(
                         r.div_id,
                         DIVISION_TYPE,
-                    ))
+                    )))
                 })
             });
             let second = scope.spawn(|| {
                 sample_compact_division_roots_with(BASE, &root, &budget, |_, r, _| {
-                    Some(super::super::deleted_division_sample(
+                    Ok(Some(super::super::deleted_division_sample(
                         r.div_id,
                         DIVISION_TYPE,
-                    ))
+                    )))
                 })
             });
             [first.join().unwrap(), second.join().unwrap()]

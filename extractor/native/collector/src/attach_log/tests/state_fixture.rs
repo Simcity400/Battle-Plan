@@ -432,12 +432,13 @@ pub(super) fn drive_compact_frame_carrying(
         None,
         None,
         None,
+        None,
         &mut trackers,
         None,
         deferred_work,
         &mut OutsideBuildSpans::default(),
         &mut FrameBuffers::default(),
-    );
+    ).expect("test frame build");
 
     let mut records = Vec::new();
     let mut offset = 0usize;

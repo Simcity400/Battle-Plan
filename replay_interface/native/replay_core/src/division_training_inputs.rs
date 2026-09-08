@@ -507,16 +507,16 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires hash-bound verbatim D2R9 sampler/publisher/fold output"]
+    #[ignore = "requires hash-bound verbatim D2RA sampler/publisher/fold output"]
     fn actual_sampler_fold_stages_preserve_fields_and_historical_refusal() {
         use sha2::{Digest, Sha256};
-        let path = std::env::var_os("BATTLE_PLAN_D2R9_JOINT_INPUT").or_else(|| std::env::var_os("HOI4_D2R9_JOINT_INPUT")).expect("native output required");
+        let path = std::env::var_os("BATTLE_PLAN_D2RA_JOINT_INPUT").or_else(|| std::env::var_os("HOI4_D2RA_JOINT_INPUT")).expect("native output required");
         assert!(std::fs::metadata(&path).unwrap().len() <= 1024 * 1024);
         let bytes = std::fs::read(path).unwrap();
         assert!(bytes.len() <= 1024 * 1024);
         assert_eq!(
             format!("{:x}", Sha256::digest(&bytes)),
-            std::env::var("BATTLE_PLAN_D2R9_JOINT_SHA256").or_else(|_| std::env::var("HOI4_D2R9_JOINT_SHA256")).unwrap()
+            std::env::var("BATTLE_PLAN_D2RA_JOINT_SHA256").or_else(|_| std::env::var("HOI4_D2RA_JOINT_SHA256")).unwrap()
         );
         let artifact: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(artifact["schema"], 1);

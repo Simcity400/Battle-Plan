@@ -6,6 +6,10 @@ pub const SLOT_LEN: usize = 16;
 pub const MAX_COUNTRIES: usize = 65_536;
 pub const MAX_BLOCK_BYTES: usize = 16 * 1024 * 1024;
 
+#[cfg(test)]
+#[path = "country_roster_storage_tests.rs"]
+mod storage_tests;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u16)]
 pub enum Kind { Division = 1, Fleet = 2, Railway = 3 }
@@ -266,12 +270,63 @@ pub struct Observation {
     pub countries: Vec<Country>,
 }
 
+// Exact keys or source indices occupy the already-funded output tail only
+// during validation. Sorting uses O(N log N) comparisons and no heap allocation;
+// both success and error restore the original length and preserve its bytes.
+pub(super) fn unique_in_spare(
+    out: &mut Vec<u8>,
+    max_keys: usize,
+    keys: impl Iterator<Item = [u8; 8]>,
+    mut compare: impl FnMut(&[u8; 8], &[u8; 8]) -> std::cmp::Ordering,
+) -> Result<bool, String> {
+    let start = out.len();
+    let max_bytes = max_keys.checked_mul(8).ok_or("input validation scratch size overflow")?;
+    if max_bytes > out.capacity() - start {
+        return Err("input validation scratch capacity unavailable".into());
+    }
+    for key in keys {
+        if out.len() - start == max_bytes {
+            out.truncate(start);
+            return Err("input validation scratch cardinality".into());
+        }
+        out.extend_from_slice(&key);
+    }
+    let (keys, _) = out[start..].as_chunks_mut::<8>();
+    keys.sort_unstable_by(&mut compare);
+    let unique = !keys.windows(2).any(|pair| compare(&pair[0], &pair[1]).is_eq());
+    out.truncate(start);
+    Ok(unique)
+}
+
 impl Observation {
     pub fn unavailable(kind: Kind, cause: Cause) -> Self {
         Self { kind, country_count: None, failure: Some(cause), countries: Vec::new() }
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        self.encoded_len_with_sets().map(|_| ())
+    }
+
+    // Parsers and the allocating convenience encoder retain their existing
+    // tree-based uniqueness checks instead of using capture's bounded storage.
+    fn encoded_len_with_sets(&self) -> Result<usize, String> {
+        let len = self.structural_encoded_len()?;
+        let mut owners = BTreeSet::new();
+        let mut identities = BTreeSet::new();
+        for country in &self.countries {
+            if country.owner_tag_db_id.is_some_and(|owner| !owners.insert(owner)) {
+                return Err("CRO1 ambiguous owner identity".into());
+            }
+            for slot in &country.slots {
+                if slot.reference.is_ok_and(|reference| !identities.insert(reference)) {
+                    return Err("CRO1 ambiguous member identity".into());
+                }
+            }
+        }
+        Ok(len)
+    }
+
+    fn structural_encoded_len(&self) -> Result<usize, String> {
         if self.failure.is_some_and(|cause| !cause.valid_for(self.kind)) {
             return Err("CRO1 refusal kind".into());
         }
@@ -286,8 +341,6 @@ impl Observation {
                 return Err("CRO1 physical country cardinality".into()),
             _ => {}
         }
-        let mut owners = BTreeSet::new();
-        let mut identities = BTreeSet::new();
         let mut total = 0usize;
         for (index, country) in self.countries.iter().enumerate() {
             if country.failure.is_some_and(|cause| !cause.valid_for(self.kind)) {
@@ -297,7 +350,7 @@ impl Observation {
                 return Err("CRO1 physical country order".into());
             }
             if let Some(owner) = country.owner_tag_db_id {
-                if owner == 0 || !owners.insert(owner) {
+                if owner == 0 {
                     return Err("CRO1 ambiguous owner identity".into());
                 }
             }
@@ -326,8 +379,7 @@ impl Observation {
                     return Err("CRO1 slot refusal kind".into());
                 }
                 if let Ok(reference) = slot.reference {
-                    if !self.kind.accepts_reference(reference)
-                        || !identities.insert(reference) {
+                    if !self.kind.accepts_reference(reference) {
                         return Err("CRO1 ambiguous member identity".into());
                     }
                 }
@@ -337,14 +389,58 @@ impl Observation {
             .ok_or("CRO1 size overflow")?).and_then(|n| n.checked_add(total.checked_mul(SLOT_LEN)?))
             .ok_or("CRO1 size overflow")?;
         if bytes > MAX_BLOCK_BYTES { return Err("CRO1 byte bound".into()); }
+        Ok(bytes)
+    }
+
+    /// Check structure, field bounds, and byte length without allocating.
+    /// Duplicate identity validation is deferred to `append_to` or `validate`.
+    pub fn encoded_len(&self) -> Result<usize, String> {
+        self.structural_encoded_len()
+    }
+
+    // Requires successful structural sizing of this unchanged observation.
+    // Each CRO1 country/slot reserves 24/16 bytes, more than its 8-byte key.
+    pub(super) fn validate_unique_in_spare(&self, out: &mut Vec<u8>, len: usize) -> Result<(), String> {
+        if !unique_in_spare(out, self.countries.len(),
+            self.countries.iter().filter_map(|country| country.owner_tag_db_id)
+                .map(|owner| u64::from(owner).to_le_bytes()),
+            |left, right| left.cmp(right))? {
+            return Err("CRO1 ambiguous owner identity".into());
+        }
+        let slots = (len - HEADER_LEN - self.countries.len() * COUNTRY_LEN) / SLOT_LEN;
+        if !unique_in_spare(out, slots,
+            self.countries.iter().flat_map(|country| country.slots.iter())
+                .filter_map(|slot| slot.reference.ok())
+                .map(|reference| ((u64::from(reference.native_type) << 32) | u64::from(reference.id)).to_le_bytes()),
+            |left, right| left.cmp(right))? {
+            return Err("CRO1 ambiguous member identity".into());
+        }
         Ok(())
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, String> {
-        self.validate()?;
-        let total = self.countries.iter().map(|country| country.slots.len()).sum::<usize>();
-        let len = HEADER_LEN + self.countries.len() * COUNTRY_LEN + total * SLOT_LEN;
-        let mut out = Vec::with_capacity(len);
+        let len = self.encoded_len_with_sets()?;
+        let mut out = Vec::new();
+        out.try_reserve_exact(len).map_err(|_| "CRO1 allocation failed")?;
+        self.append_validated(&mut out, len);
+        Ok(out)
+    }
+
+    /// Append into caller-funded spare capacity. Errors leave `out` unchanged.
+    pub fn append_to(&self, out: &mut Vec<u8>) -> Result<(), String> {
+        let len = self.encoded_len()?;
+        if out.capacity() - out.len() < len {
+            return Err("CRO1 output capacity unavailable".into());
+        }
+        self.validate_unique_in_spare(out, len)?;
+        self.append_validated(out, len);
+        Ok(())
+    }
+
+    // The caller must have validated this unchanged observation and funded its
+    // exact encoded length. D20 preflight already establishes both conditions.
+    pub(super) fn append_validated(&self, out: &mut Vec<u8>, len: usize) {
+        let total = (len - HEADER_LEN - self.countries.len() * COUNTRY_LEN) / SLOT_LEN;
         out.extend_from_slice(b"CRO1");
         out.extend_from_slice(&1u16.to_le_bytes());
         out.extend_from_slice(&(self.kind as u16).to_le_bytes());
@@ -367,7 +463,6 @@ impl Observation {
                 for word in [slot.ordinal, kind, id, cause] { out.extend_from_slice(&word.to_le_bytes()); }
             }
         }
-        Ok(out)
     }
 
     pub fn parse_prefix(bytes: &[u8], expected: Kind) -> Result<(Self, usize), String> {

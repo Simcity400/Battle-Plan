@@ -19,6 +19,7 @@ fn staged(
     bytes: Vec<u8>,
 ) -> StagedPublication {
     StagedPublication {
+        division_copy_reservation: None,
         bytes,
         staged_after_frame: 2,
         kind: StagedPublicationKind::Data {
@@ -343,6 +344,7 @@ fn committed_data_survives_later_gap_failure_without_falsely_missing_a_stage() {
     let mut frames = vec![
         staged(request, owner, false, data),
         StagedPublication {
+            division_copy_reservation: None,
             bytes: gap,
             staged_after_frame: 3,
             kind: StagedPublicationKind::ControlGap { group_len: 1 },
@@ -510,6 +512,7 @@ fn staged_close_without_matching_data_keeps_missing_disposal_fault() {
     complete_build_stages();
     hourly_service_capture::set_stage(ServiceStage::Sink);
     let mut frames = vec![StagedPublication {
+        division_copy_reservation: None,
         bytes: vec![1, 2, 3],
         staged_after_frame: 1,
         kind: StagedPublicationKind::ControlGap { group_len: 1 },

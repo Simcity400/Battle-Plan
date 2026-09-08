@@ -578,6 +578,17 @@ impl ReadOnlyScheduler {
         !self.clock_unreadable_intervals.is_empty()
     }
 
+    /// Inspect existing read custody without claiming or advancing a request.
+    /// Same-hour observations change the latest poll ordinal, not this owner.
+    pub fn current_in_flight_request(&self) -> Option<CaptureRequest> {
+        if self.clock_unknown || self.telemetry.terminal.is_some() {
+            return None;
+        }
+        let request = self.domain_requests.first()?.in_flight?;
+        self.domain_requests.iter().all(|slot| slot.in_flight == Some(request))
+            .then_some(request)
+    }
+
     pub fn take_current_request(&mut self) -> Option<CaptureRequest> {
         if self
             .domain_requests
@@ -1133,6 +1144,41 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_read_custody_is_pure_and_survives_only_its_own_request() {
+        let mut s = scheduler(&[20, 21], 1, 64);
+        s.observe_stable(100, 1);
+        assert_eq!(s.current_in_flight_request(), None);
+        let opening = s.take_current_request().unwrap();
+        for ordinal in [2, 3] {
+            s.observe_stable(100, ordinal);
+            assert_eq!(s.current_in_flight_request(), Some(opening));
+            assert_eq!(s.current_in_flight_request(), Some(opening));
+        }
+        s.observe_stable(99, 4);
+        assert_eq!(s.current_in_flight_request(), None);
+        s.observe_stable(100, 5);
+        let successor = s.take_current_request().unwrap();
+        assert_ne!(successor, opening);
+        assert_eq!(s.current_in_flight_request(), Some(successor));
+        s.note_clock_unreadable();
+        assert_eq!(s.current_in_flight_request(), None);
+        s.observe_stable(100, 6);
+        assert_eq!(s.current_in_flight_request(), None);
+    }
+
+    #[test]
+    fn read_custody_inspection_does_not_admit_divergent_or_publishing_slots() {
+        let mut s = scheduler(&[20, 21], 1, 64);
+        s.observe_stable(100, 1);
+        let request = s.take_domain_request(20).unwrap();
+        assert_eq!(s.current_in_flight_request(), None);
+        assert_eq!(s.take_domain_request(21), Some(request));
+        assert_eq!(s.current_in_flight_request(), Some(request));
+        assert_eq!(s.release_read_custody(request), 2);
+        assert_eq!(s.current_in_flight_request(), None);
+    }
 
     fn scheduler(domains: &[u16], request_cap: usize, control_cap: usize) -> ReadOnlyScheduler {
         ReadOnlyScheduler::new(domains.to_vec(), request_cap, control_cap).unwrap()

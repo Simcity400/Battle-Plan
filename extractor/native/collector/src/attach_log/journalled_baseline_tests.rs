@@ -14,6 +14,7 @@ struct JournalProbe {
 fn division_sample(div_id: u32, raw_organisation: u32) -> DivisionMovementSample {
     DivisionMovementSample {
         training_scalars: Default::default(),
+        first_combat_countries: Default::default(),
         native_type: DIVISION_TYPE,
         ordinary_route: None, alternate_route: None,
         current_template: None,
@@ -297,7 +298,7 @@ fn every_journalled_tracker_has_a_probe_and_no_probe_names_anything_else() {
 }
 
 #[test]
-fn the_frames_own_rejection_restores_the_baseline_the_frame_found() {
+fn own_rejection_preserves_undo_and_stages_required_gap_recovery() {
     for probe in PROBES {
         let mut trackers = CompactPerfGateTrackers::default();
         (probe.advance)(&mut trackers, 1);
@@ -307,14 +308,18 @@ fn the_frames_own_rejection_restores_the_baseline_the_frame_found() {
         (probe.advance)(&mut trackers, 3);
         assert!((probe.has_entry)(&trackers), "{}", probe.field);
         reset_trackers_after_rejected_bracket(&mut trackers, &rejected(&[probe_tag(probe.field)]));
+        let division_gap = probe_tag(probe.field) == COMPACT_DOMAIN_DIVISIONS;
         assert_eq!(
             (probe.size)(&trackers),
-            1,
-            "`{}`: the fold received nothing from this frame, so the pin goes back to the \
-             value the frame found, not to the frame's first advance and not to empty",
+            if division_gap { 0 } else { 1 },
+            "`{}`: D20 stages a full baseline after its gap; sparse-only domains restore the old pin",
             probe.field
         );
-        assert!(!(probe.has_entry)(&trackers), "{}", probe.field);
+        assert_eq!((probe.has_entry)(&trackers), division_gap, "{}", probe.field);
+        if division_gap {
+            trackers.division_movement.restore_frame_entry();
+            assert_eq!((probe.size)(&trackers), 1, "an unpublished D20 gap preserves the old pin");
+        }
     }
 }
 
@@ -343,8 +348,8 @@ fn an_unrelated_rejection_keeps_the_advance_and_the_open_transaction() {
         reset_trackers_after_rejected_bracket(&mut trackers, &rejected(&[probe_tag(probe.field)]));
         assert_eq!(
             (probe.size)(&trackers),
-            2,
-            "`{}`: a sealed advance is what the fold holds and no later rejection reaches it",
+            if probe_tag(probe.field) == COMPACT_DOMAIN_DIVISIONS { 0 } else { 2 },
+            "`{}`: a new D20 gap stages recovery while other domains retain the sealed advance",
             probe.field
         );
     }
@@ -373,7 +378,7 @@ fn a_refused_frame_returns_the_restored_baseline_to_the_published_slot() {
 }
 
 #[test]
-fn the_sink_verdict_closes_a_delivered_advance_and_restores_a_withheld_one() {
+fn published_domain_failure_requires_d20_full_recovery_and_restores_sparse_pins() {
     for probe in PROBES {
         let mut trackers = CompactPerfGateTrackers::default();
         (probe.advance)(&mut trackers, 1);
@@ -394,8 +399,8 @@ fn the_sink_verdict_closes_a_delivered_advance_and_restores_a_withheld_one() {
         commit_country_staged_advances(&mut trackers, &rejected(&[probe_tag(probe.field)]));
         assert_eq!(
             (probe.size)(&trackers),
-            2,
-            "`{}`: a withheld domain's advance is one the fold never received",
+            if probe_tag(probe.field) == COMPACT_DOMAIN_DIVISIONS { 0 } else { 2 },
+            "`{}`: a published D20 gap requires a full baseline; other sparse pins restore",
             probe.field
         );
         assert!(!(probe.has_entry)(&trackers), "{}", probe.field);
@@ -403,7 +408,7 @@ fn the_sink_verdict_closes_a_delivered_advance_and_restores_a_withheld_one() {
 }
 
 #[test]
-fn rejecting_everything_still_restores_rather_than_wipes() {
+fn rejecting_everything_keeps_undo_for_d20_full_recovery() {
     let everything: BTreeSet<u16> = (0u16..=1000).collect();
     for probe in PROBES {
         let mut trackers = CompactPerfGateTrackers::default();
@@ -411,7 +416,15 @@ fn rejecting_everything_still_restores_rather_than_wipes() {
         seal(&mut trackers);
         (probe.advance)(&mut trackers, 2);
         reset_trackers_after_rejected_bracket(&mut trackers, &everything);
-        assert_eq!((probe.size)(&trackers), 1, "{}", probe.field);
+        assert_eq!(
+            (probe.size)(&trackers),
+            if probe_tag(probe.field) == COMPACT_DOMAIN_DIVISIONS { 0 } else { 1 },
+            "{}", probe.field,
+        );
+        if probe_tag(probe.field) == COMPACT_DOMAIN_DIVISIONS {
+            trackers.division_movement.restore_frame_entry();
+            assert_eq!((probe.size)(&trackers), 1);
+        }
     }
 }
 
@@ -440,12 +453,11 @@ fn apply_division_record(
 }
 
 #[test]
-fn a_division_patch_stream_across_rejections_folds_to_the_rows_each_hour_observed() {
-    let mut tracker: FrameJournalled<BTreeMap<u32, DivisionMovementSample>> =
-        FrameJournalled::default();
+fn a_division_stream_recovers_full_after_gaps_and_folds_each_observed_hour() {
+    let mut trackers = CompactPerfGateTrackers::default();
     let mut mirror = BTreeMap::new();
     let mut delivered = 0u32;
-    let mut post_rejection_patches = 0u32;
+    let mut post_rejection_baselines = 0u32;
     let mut previous_rejected = false;
     for hour in 0..240u32 {
         let truth: BTreeMap<u32, DivisionMovementSample> = (1..=60u32)
@@ -455,26 +467,27 @@ fn a_division_patch_stream_across_rejections_folds_to_the_rows_each_hour_observe
         let active: Vec<DivisionMovementSample> = truth.values().cloned().collect();
         let root_rows = active.len() as u32;
         let (rows, _changed, status) =
-            compact_division_emitted_rows(active, root_rows, 0, &mut tracker);
+            compact_division_emitted_rows(active, root_rows, 0, &mut trackers.division_movement, &country_roster_readset::Budget::default()).unwrap();
         let delta = status & COMPACT_STATUS_DELTA_DATA != 0;
         if frame_rejected(hour) {
-            tracker.restore_frame_entries();
+            let rejected_domains = rejected(&[COMPACT_DOMAIN_DIVISIONS]);
+            reset_trackers_after_rejected_bracket(&mut trackers, &rejected_domains);
+            commit_country_staged_advances(&mut trackers, &rejected_domains);
+            assert!(trackers.division_movement.is_empty());
             previous_rejected = true;
             continue;
         }
-        if delivered > 0 {
-            assert!(delta, "hour {hour}: every record after the first is a patch");
-        }
+        assert_eq!(delta, delivered > 0 && !previous_rejected, "hour {hour}: gaps require a full baseline");
         if previous_rejected {
-            post_rejection_patches += 1;
+            post_rejection_baselines += 1;
         }
         apply_division_record(&mut mirror, &rows, delta);
-        tracker.close_frame_transactions();
+        commit_country_staged_advances(&mut trackers, &BTreeSet::new());
         assert_eq!(mirror, truth, "hour {hour}");
         delivered += 1;
         previous_rejected = false;
     }
-    assert!(post_rejection_patches > 40, "{post_rejection_patches}");
+    assert!(post_rejection_baselines > 40, "{post_rejection_baselines}");
 }
 
 fn detail_state_row(state_id: u32, amount: i32) -> CompactMapDetailStateRow {

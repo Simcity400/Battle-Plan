@@ -396,7 +396,29 @@ pub fn encode_payload(header: &DivisionStateHeader, rows: &[DivisionStateRow]) -
         division_routes::write_current_template(&mut payload, index, if row.deleted { None } else { row.current_template });
         division_routes::write_route_head(&mut payload, index, if row.deleted { None } else { row.route_head });
     }
-    division_routes::append_inputs(&mut payload, rows.iter().map(|row| if row.deleted { (None, None) } else { (row.ordinary_route.as_deref(), row.alternate_route.as_deref()) }), rows.iter().map(|row| if row.deleted { None } else { row.template_preference.as_ref() }), rows.iter().map(|row| if row.deleted { None } else { row.acclimatization.as_ref() }), &division_routes::unavailable_roster(), &division_routes::unavailable_railway_roster());
+    let routes = rows.iter().map(|row| if row.deleted { (None, None) } else { (row.ordinary_route.as_deref(), row.alternate_route.as_deref()) });
+    let preferences = rows.iter().map(|row| if row.deleted { None } else { row.template_preference.as_ref() });
+    let acclimatization = rows.iter().map(|row| if row.deleted { None } else { row.acclimatization.as_ref() });
+    let country_roster = country_roster::Observation::unavailable(country_roster::Kind::Division, country_roster::Cause::ExternalBridge);
+    let railway_roster = country_roster::Observation::unavailable(country_roster::Kind::Railway, country_roster::Cause::ExternalBridge);
+    let prefix_len = division_routes::inputs_encoded_len(routes.clone(), preferences.clone(), acclimatization.clone(), &country_roster, &railway_roster).expect("diagnostic division prefix size");
+    payload.try_reserve_exact(prefix_len - payload.len()).expect("diagnostic division prefix allocation");
+    division_routes::append_inputs(&mut payload, routes, preferences, acclimatization, &country_roster, &railway_roster).expect("diagnostic division prefix");
+    // This diagnostic sampler has no country census observation. Retain only
+    // the first-combat identity it actually declared, and name the missing list.
+    let observations: Vec<_> = rows.iter().map(|row| {
+        use division_routes::{CountryWordsObservation, FirstCombatCountriesObservation};
+        match if row.deleted { None } else { row.movement_scalars.first_combat } {
+            None => FirstCombatCountriesObservation::default(),
+            Some(None) => FirstCombatCountriesObservation::NoFirstCombat,
+            Some(Some(combat)) => FirstCombatCountriesObservation::Present {
+                combat, countries: CountryWordsObservation::Unavailable(Default::default()),
+            },
+        }
+    }).collect();
+    let membership_len = division_routes::first_combat_countries_encoded_len(observations.iter()).expect("diagnostic membership size");
+    payload.try_reserve_exact(membership_len).expect("diagnostic membership allocation");
+    division_routes::append_first_combat_countries(&mut payload, observations.iter()).expect("diagnostic membership trailer");
     payload
 }
 
@@ -1898,7 +1920,7 @@ mod tests {
     #[test]
     fn row_len_literal_is_stable() {
         assert_eq!(ROW_LEN, 312);
-        assert_eq!(division_routes::FORMAT_MARKER, u32::from_le_bytes(*b"D2R9"));
+        assert_eq!(division_routes::FORMAT_MARKER, u32::from_le_bytes(*b"D2RA"));
     }
 
     #[test]

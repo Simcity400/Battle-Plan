@@ -567,6 +567,7 @@ fn disposal_recycles_a_data_frames_buffer_and_frees_an_h4dg_frames() {
     let _session = hourly_service_capture::start();
     let mut buffers = FrameBuffers::default();
     let data = StagedPublication {
+        division_copy_reservation: None,
         bytes: Vec::with_capacity(4096),
         staged_after_frame: 2,
         kind: StagedPublicationKind::Data {
@@ -583,6 +584,7 @@ fn disposal_recycles_a_data_frames_buffer_and_frees_an_h4dg_frames() {
         },
     };
     let gap = StagedPublication {
+        division_copy_reservation: None,
         bytes: Vec::with_capacity(64),
         staged_after_frame: 3,
         kind: StagedPublicationKind::ControlGap { group_len: 1 },
