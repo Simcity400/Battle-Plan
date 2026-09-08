@@ -66,6 +66,36 @@ function Get-VdpReference {
         sha256 = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
 }
 
+function Open-VdpJsonObservation {
+    param([string]$Path, [long]$MaxBytes = 8MB)
+    $full = [IO.Path]::GetFullPath($Path)
+    $stream = [IO.File]::Open($full, 'Open', 'Read', 'Read')
+    try {
+        if ($MaxBytes -le 0 -or $stream.Length -gt $MaxBytes -or $stream.Length -gt [int]::MaxValue) {
+            Stop-Vdp 'VDP_AUTHORITY_BOUND_EXCEEDED' 'Authority JSON exceeds its bounded byte lease.'
+        }
+        $bytes = [byte[]]::new([int]$stream.Length); $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $read = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+            if ($read -eq 0) { Stop-Vdp 'VDP_AUTHORITY_TRUNCATED' 'Authority ended before its leased length.' }
+            $offset += $read
+        }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $digest = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant() }
+        finally { $sha.Dispose() }
+        # Parse the exact bytes hashed above. Retain the lease through desktop
+        # completion so neither a rewrite nor file replacement can split proof.
+        try {
+            $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+            if ($text.Length -gt 0 -and $text[0] -eq [char]0xfeff) { $text = $text.Substring(1) }
+            $document = $text | ConvertFrom-Json
+            if ($document -isnot [pscustomobject]) { throw 'Authority must be a JSON object.' }
+        } catch { Stop-Vdp 'VDP_AUTHORITY_JSON_INVALID' $_.Exception.Message }
+        [pscustomobject]@{ stream = $stream; document = $document
+            reference = [ordered]@{ path = $full; bytes = $bytes.Length; sha256 = $digest } }
+    } catch { $stream.Dispose(); throw }
+}
+
 function ConvertTo-VdpArgument {
     param([AllowEmptyString()][string]$Value)
     # CommandLineToArgvW quoting, including embedded quotes and trailing slashes.
@@ -450,13 +480,53 @@ function Send-VdpPublicInput {
 }
 
 function Assert-VdpOwnedProcess {
-    param($Child, $Record, [string]$Exe)
-    $Child.Refresh()
-    if ($Child.Id -ne $Record.pid -or $Child.StartTime.ToUniversalTime().ToString('o') -cne $Record.process_started_utc) {
-        Stop-Vdp 'VDP_PROCESS_CUSTODY_LOST' 'PID/creation time no longer matches the launched viewer.'
-    }
-    if (-not $Child.HasExited -and [IO.Path]::GetFullPath($Child.MainModule.FileName) -ine $Exe) {
-        Stop-Vdp 'VDP_PROCESS_IMAGE_MISMATCH' 'Owned process image differs from pinned viewer.'
+    param($Child, $Record, [string]$Exe, [Diagnostics.Stopwatch]$Timer = $null,
+        [double]$Deadline = 0, [switch]$AllowVerifiedExit)
+    while ($true) {
+        try {
+            $Child.Refresh()
+            $actualPid = $Child.Id
+            $actualStart = $Child.StartTime.ToUniversalTime().ToString('o')
+        } catch { Stop-Vdp 'VDP_PROCESS_CUSTODY_LOST' $_.Exception.Message }
+        if ($actualPid -ne $Record.pid -or $actualStart -cne $Record.process_started_utc) {
+            Stop-Vdp 'VDP_PROCESS_CUSTODY_LOST' 'PID/creation time no longer matches the launched viewer.'
+        }
+        if ($Child.HasExited) {
+            if ($AllowVerifiedExit -and $Record['process_image_path'] -ieq $Exe) { return }
+            Stop-Vdp 'VDP_PROCESS_EXITED_BEFORE_CUSTODY' 'Exited process cannot supply current executable custody.'
+        }
+        $Record['image_observation_attempts'] = [long]$Record['image_observation_attempts'] + 1
+        $image = $null; $unavailable = 'MainModule has not supplied an executable path.'
+        try { $image = $Child.MainModule.FileName }
+        catch { $unavailable = $_.Exception.Message }
+        if (-not [string]::IsNullOrWhiteSpace($image)) {
+            # IsPathRooted also accepts C:relative and \root-relative; neither
+            # is an observed executable path independent of ambient cwd/drive.
+            try { $fullImage = if ($image -match '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+[\\/])') { [IO.Path]::GetFullPath($image) } else { $null } }
+            catch { Stop-Vdp 'VDP_PROCESS_IMAGE_MISMATCH' $_.Exception.Message }
+            if ($null -eq $fullImage -or $fullImage -ine $Exe) {
+                Stop-Vdp 'VDP_PROCESS_IMAGE_MISMATCH' 'Observed process image differs from pinned viewer.'
+            }
+            if ($null -ne $Timer -and $Timer.Elapsed.TotalSeconds -ge $Deadline) {
+                Stop-Vdp 'VDP_PROCESS_IMAGE_TIMEOUT' 'Executable observation arrived after the existing process deadline.'
+            }
+            # Reading MainModule may race exit. Never authorize a public input
+            # or cleanup action using an exited process observation.
+            if ($Child.HasExited) {
+                if ($AllowVerifiedExit -and $Record['process_image_path'] -ieq $Exe) { return }
+                Stop-Vdp 'VDP_PROCESS_EXITED_BEFORE_CUSTODY' 'Process exited during executable observation.'
+            }
+            $Record['process_image_path'] = $fullImage
+            return
+        }
+        if ($Child.HasExited) {
+            if ($AllowVerifiedExit -and $Record['process_image_path'] -ieq $Exe) { return }
+            Stop-Vdp 'VDP_PROCESS_EXITED_BEFORE_CUSTODY' 'Process exited before executable observation.'
+        }
+        if ($null -eq $Timer) { Stop-Vdp 'VDP_PROCESS_IMAGE_UNAVAILABLE' $unavailable }
+        $remainingMs = [Math]::Floor(($Deadline - $Timer.Elapsed.TotalSeconds) * 1000)
+        if ($remainingMs -le 0) { Stop-Vdp 'VDP_PROCESS_IMAGE_TIMEOUT' $unavailable }
+        Start-Sleep -Milliseconds ([int][Math]::Min(25, $remainingMs))
     }
 }
 
@@ -516,6 +586,7 @@ function Invoke-VdpProcess {
     $desktop = $Case.name -ceq 'desktop'
     $record = [ordered]@{ name = $Case.name; executable = $Exe; argv = $Case.argv
         pid = $null; process_started_utc = $null; exit_code = $null
+        process_image_path = $null; image_observation_attempts = 0L
         window_observed = $false; window_handle = $null; window_title = $null
         close_requested = $false; forced_exit = $false; error = $null
         stdout = $null; stderr = $null; desktop_evidence = $null; actions = @(); playback_qualified = $false
@@ -556,7 +627,8 @@ function Invoke-VdpProcess {
         $timer = [Diagnostics.Stopwatch]::StartNew()
         $deadline = [double]$Timeout
         while (-not $child.HasExited) {
-            Assert-VdpOwnedProcess $child $record $Exe
+            Assert-VdpOwnedProcess $child $record $Exe $timer $deadline -AllowVerifiedExit
+            if ($child.HasExited) { break }
             if (@(Get-Process -Name the game -ErrorAction SilentlyContinue).Count -gt 0) { Stop-Vdp 'VDP_HOI4_RUNNING' 'the game appeared during viewer validation.' }
             if ($outStream.Length -gt 64MB -or $errStream.Length -gt 64MB) { Stop-Vdp 'VDP_LOG_BOUND_EXCEEDED' $Case.name }
             if ($desktop -and $child.MainWindowHandle -ne [IntPtr]::Zero -and $child.Responding) {
@@ -614,6 +686,7 @@ function Invoke-VdpProcess {
             Start-Sleep -Milliseconds 100
         }
         if (-not $child.HasExited) { Stop-Vdp 'VDP_PROCESS_EXIT_UNOBSERVED' 'No bounded process exit was observed.' }
+        if ($record.process_image_path -ine $Exe) { Stop-Vdp 'VDP_PROCESS_EXITED_BEFORE_CUSTODY' 'No actual executable observation preceded exit.' }
         $record.exit_code = $child.ExitCode
         $drainAttempted = $true
         Wait-VdpPipeDrain @($outTask, $errTask)
@@ -641,7 +714,7 @@ function Invoke-VdpProcess {
             $record.desktop_evidence = [ordered]@{ current = $evidence.current; presented_count = $evidence.presented_count
                 rejected = @($evidence.rejected.ToArray()); input_count = $evidence.inputs.Count }
         }
-        if ($null -ne $child -and $null -ne $record.pid) {
+        try { if ($null -ne $child -and $null -ne $record.pid) {
             if (-not $child.HasExited) {
                 Assert-VdpOwnedProcess $child $record $Exe
                 if ($desktop -and $child.MainWindowHandle -ne [IntPtr]::Zero) {
@@ -655,6 +728,9 @@ function Invoke-VdpProcess {
                 }
             }
             $record.exit_code = $child.ExitCode
+        } } catch {
+            $record.cleanup_errors += $_.Exception.Message; $record.playback_qualified = $false
+            if (-not $record.error) { $record.error = $_.Exception.Message }
         }
         if (-not $drainAttempted) {
             try { Wait-VdpPipeDrain @($outTask, $errTask); $record.pipe_drain_complete = $true }
@@ -666,6 +742,7 @@ function Invoke-VdpProcess {
         if (Test-Path -LiteralPath $stdout) { $record.stdout = Get-VdpReference $stdout }
         if (Test-Path -LiteralPath $stderr) { $record.stderr = Get-VdpReference $stderr }
     }
+    if ($record.cleanup_errors.Count -gt 0) { Stop-Vdp 'VDP_PROCESS_CLEANUP_FAILED' ($record.cleanup_errors -join '; ') }
 }
 
 function Invoke-VdpMain {
@@ -729,8 +806,10 @@ function Invoke-VdpMain {
             foreach ($case in $receipt.plan) {
                 Invoke-VdpProcess $case $exe $root $TimeoutSeconds $authority $ExpectedHour $cases
                 if ($case.name -ceq 'content-authority') {
-                    $authority = Assert-VdpAuthority (Get-Content -LiteralPath $authorityPath -Raw | ConvertFrom-Json) $recording $ExpectedContentAuthoritySha256
-                    $receipt.content_authority = Get-VdpReference $authorityPath
+                    $observedAuthority = Open-VdpJsonObservation $authorityPath
+                    $locks.Add($observedAuthority.stream)
+                    $authority = Assert-VdpAuthority $observedAuthority.document $recording $ExpectedContentAuthoritySha256
+                    $receipt.content_authority = $observedAuthority.reference
                 }
             }
             $desktopCase = @($cases | Where-Object { $_.name -ceq 'desktop' })

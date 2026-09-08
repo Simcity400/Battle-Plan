@@ -318,6 +318,140 @@ Invoke-Test 'argument quoting preserves whitespace quotes and trailing backslash
     Assert-Test ((ConvertTo-VdpArgument 'a"b') -ceq '"a\"b"')
     Assert-Test ((ConvertTo-VdpArgument '') -ceq '""')
 }
+
+function New-CustodyFixture {
+    $child = [pscustomobject]@{ Id = 123; StartTime = [DateTime]::UtcNow; HasExited = $false
+        MainModule = @{ FileName = $null }; Observations = 0; ReadyAt = 3; Image = 'C:\offline-fixture.exe' }
+    $child | Add-Member ScriptMethod Refresh {
+        $this.Observations++
+        if ($this.Observations -ge $this.ReadyAt) { $this.MainModule.FileName = $this.Image }
+    }
+    $record = @{ pid = $child.Id; process_started_utc = $child.StartTime.ToUniversalTime().ToString('o') }
+    [pscustomobject]@{ child = $child; record = $record; exe = $child.Image }
+}
+Invoke-Test 'empty startup image retries actual observations within the same deadline' {
+    $f = New-CustodyFixture; $timer = [Diagnostics.Stopwatch]::StartNew()
+    Assert-VdpOwnedProcess $f.child $f.record $f.exe $timer 2
+    Assert-Test ($f.child.Observations -eq 3 -and $f.record.image_observation_attempts -eq 3)
+    Assert-Test ($f.record.process_image_path -ceq $f.exe)
+    Assert-Test ($timer.Elapsed.TotalSeconds -lt 2)
+    $f = New-CustodyFixture
+    Assert-Refusal 'VDP_PROCESS_IMAGE_UNAVAILABLE' { Assert-VdpOwnedProcess $f.child $f.record $f.exe }
+    Assert-Test (-not $f.record.ContainsKey('process_image_path')) 'An unavailable observation invented image custody.'
+}
+Invoke-Test 'foreign relative and changed executable paths are refused without retry' {
+    foreach ($wrong in @('C:\foreign.exe','offline-fixture.exe','\offline-fixture.exe')) {
+        $f = New-CustodyFixture; $f.child.ReadyAt = 1; $f.child.Image = $wrong
+        Assert-Refusal 'VDP_PROCESS_IMAGE_MISMATCH' { Assert-VdpOwnedProcess $f.child $f.record $f.exe ([Diagnostics.Stopwatch]::StartNew()) 2 }
+        Assert-Test ($f.child.Observations -eq 1)
+    }
+    $f = New-CustodyFixture; $f.child.ReadyAt = 1; $f.child.Image = 'C:offline-fixture.exe'
+    $f.exe = [IO.Path]::GetFullPath($f.child.Image)
+    Assert-Refusal 'VDP_PROCESS_IMAGE_MISMATCH' { Assert-VdpOwnedProcess $f.child $f.record $f.exe }
+    $f = New-CustodyFixture; $f.child.ReadyAt = 1
+    Assert-VdpOwnedProcess $f.child $f.record $f.exe
+    $f.child.Image = 'C:\changed.exe'
+    Assert-Refusal 'VDP_PROCESS_IMAGE_MISMATCH' { Assert-VdpOwnedProcess $f.child $f.record $f.exe }
+}
+Invoke-Test 'PID and creation custody are rechecked during startup retries' {
+    foreach ($change in @('Id','StartTime')) {
+        $f = New-CustodyFixture
+        $f.child | Add-Member NoteProperty Change $change
+        $f.child | Add-Member ScriptMethod Refresh {
+            $this.Observations++
+            if ($this.Observations -eq 2) {
+                if ($this.Change -eq 'Id') { $this.Id = 999 }
+                else { $this.StartTime = $this.StartTime.AddSeconds(1) }
+            }
+        } -Force
+        Assert-Refusal 'VDP_PROCESS_CUSTODY_LOST' { Assert-VdpOwnedProcess $f.child $f.record $f.exe ([Diagnostics.Stopwatch]::StartNew()) 2 }
+        Assert-Test ($f.child.Observations -eq 2 -and -not $f.record.ContainsKey('process_image_path'))
+    }
+}
+Invoke-Test 'exit cannot establish executable custody or authorize public actions' {
+    $f = New-CustodyFixture; $f.child.HasExited = $true
+    Assert-Refusal 'VDP_PROCESS_EXITED_BEFORE_CUSTODY' { Assert-VdpOwnedProcess $f.child $f.record $f.exe -AllowVerifiedExit }
+    $f = New-CustodyFixture
+    $f.child | Add-Member ScriptMethod Refresh { $this.Observations++; if ($this.Observations -eq 2) { $this.HasExited = $true } } -Force
+    Assert-Refusal 'VDP_PROCESS_EXITED_BEFORE_CUSTODY' { Assert-VdpOwnedProcess $f.child $f.record $f.exe ([Diagnostics.Stopwatch]::StartNew()) 2 -AllowVerifiedExit }
+    $f = New-CustodyFixture; $f.child.ReadyAt = 1
+    Assert-VdpOwnedProcess $f.child $f.record $f.exe
+    $f.child.HasExited = $true
+    Assert-Refusal 'VDP_PROCESS_EXITED_BEFORE_CUSTODY' { Assert-VdpOwnedProcess $f.child $f.record $f.exe }
+    Assert-VdpOwnedProcess $f.child $f.record $f.exe -AllowVerifiedExit
+    $f.child.Id = 999
+    Assert-Refusal 'VDP_PROCESS_CUSTODY_LOST' { Assert-VdpOwnedProcess $f.child $f.record $f.exe -AllowVerifiedExit }
+}
+Invoke-Test 'unready and late images cannot extend the existing deadline' {
+    $f = New-CustodyFixture; $f.child.ReadyAt = [int]::MaxValue
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    Assert-Refusal 'VDP_PROCESS_IMAGE_TIMEOUT' { Assert-VdpOwnedProcess $f.child $f.record $f.exe $timer 0.07 }
+    Assert-Test ($timer.Elapsed.TotalSeconds -lt 1 -and -not $f.record.ContainsKey('process_image_path'))
+    $before = $f.child.Observations
+    Assert-Refusal 'VDP_PROCESS_IMAGE_TIMEOUT' { Assert-VdpOwnedProcess $f.child $f.record $f.exe $timer 0.07 }
+    Assert-Test ($f.child.Observations -eq $before + 1) 'Expired deadline restarted a readiness wait.'
+    $f = New-CustodyFixture; $f.child.ReadyAt = 1
+    Assert-Refusal 'VDP_PROCESS_IMAGE_TIMEOUT' { Assert-VdpOwnedProcess $f.child $f.record $f.exe ([Diagnostics.Stopwatch]::StartNew()) 0 }
+    Assert-Test (-not $f.record.ContainsKey('process_image_path'))
+}
+Invoke-Test 'monitor exit during image lookup requires prior custody and preserves mismatches' {
+    foreach ($mode in @('expected','empty','throw','foreign')) {
+        foreach ($prior in @($true,$false)) {
+            foreach ($monitor in @($true,$false)) {
+                $f = New-CustodyFixture; $f.child.ReadyAt = 1
+                if ($prior) { Assert-VdpOwnedProcess $f.child $f.record $f.exe }
+                $f.child | Add-Member ScriptMethod Refresh { $this.Observations++ } -Force
+                $f.child | Add-Member NoteProperty ImageMode $mode
+                $f.child | Add-Member ScriptProperty MainModule {
+                    $this.HasExited = $true
+                    switch ($this.ImageMode) {
+                        'expected' { return @{ FileName = $this.Image } }
+                        'empty' { return @{ FileName = '' } }
+                        'throw' { throw 'fixture exited during MainModule query' }
+                        'foreign' { return @{ FileName = 'C:\foreign.exe' } }
+                    }
+                } -Force
+                $observe = { Assert-VdpOwnedProcess $f.child $f.record $f.exe ([Diagnostics.Stopwatch]::StartNew()) 2 -AllowVerifiedExit:$monitor }
+                if ($mode -eq 'foreign') { Assert-Refusal 'VDP_PROCESS_IMAGE_MISMATCH' $observe }
+                elseif ($prior -and $monitor) { & $observe }
+                else { Assert-Refusal 'VDP_PROCESS_EXITED_BEFORE_CUSTODY' $observe }
+                Assert-Test ($f.record.ContainsKey('process_image_path') -eq $prior) 'Exit minted image custody.'
+            }
+        }
+    }
+}
+Invoke-Test 'authority parse hash and byte length share one retained read lease' {
+    $path = Join-Path $testRoot 'authority-leased.json'
+    $bytes = [Text.UTF8Encoding]::new($true).GetPreamble() + [Text.Encoding]::UTF8.GetBytes("{ `"field`": `"original`" }`r`n")
+    [IO.File]::WriteAllBytes($path,$bytes)
+    $expected = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $observation = Open-VdpJsonObservation $path
+    try {
+        Assert-Test ($observation.document.field -ceq 'original' -and $observation.reference.sha256 -ceq $expected)
+        Assert-Test ($observation.reference.bytes -eq $bytes.Length -and $observation.stream.CanRead)
+        $writeDenied = $false; try { [IO.File]::WriteAllText($path,'{"field":"replaced"}') } catch { $writeDenied = $true }
+        Assert-Test $writeDenied 'Authority could be overwritten while its observation was retained.'
+        $renameDenied = $false; try { [IO.File]::Move($path,$path+'.moved') } catch { $renameDenied = $true }
+        Assert-Test $renameDenied 'Authority could be replaced while its observation was retained.'
+        Assert-Test ($observation.document.field -ceq 'original' -and $observation.reference.sha256 -ceq $expected)
+    } finally { $observation.stream.Dispose() }
+    [IO.File]::WriteAllText($path,'{"field":"replaced"}')
+    $next = Open-VdpJsonObservation $path
+    try { Assert-Test ($next.document.field -ceq 'replaced' -and $next.reference.sha256 -cne $expected) }
+    finally { $next.stream.Dispose() }
+}
+Invoke-Test 'bounded invalid authority observations refuse and release their lease' {
+    $path = Join-Path $testRoot 'authority-invalid.json'
+    foreach ($bytes in @([byte[]](0xff,0xfe,0xff),[Text.Encoding]::UTF8.GetBytes('{'),[Text.Encoding]::UTF8.GetBytes('null'))) {
+        [IO.File]::WriteAllBytes($path,$bytes)
+        Assert-Refusal 'VDP_AUTHORITY_JSON_INVALID' { Open-VdpJsonObservation $path }
+        # This succeeds only if the failed parse disposed its denying-write lease.
+        [IO.File]::WriteAllText($path,'{}')
+    }
+    [IO.File]::WriteAllText($path,'{"long":"value"}')
+    Assert-Refusal 'VDP_AUTHORITY_BOUND_EXCEEDED' { Open-VdpJsonObservation $path 2 }
+    [IO.File]::WriteAllText($path,'{}')
+}
 Invoke-Test 'owned Win32 route fixture checks PID class client DPI modifiers and key allowlist' {
     # This in-memory stand-in has NO P/Invoke. Never initialize the real native
     # helper in offline tests; all calls below hit this explicitly synthetic type.
