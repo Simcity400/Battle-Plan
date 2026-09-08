@@ -6459,5 +6459,11 @@
     "assert_eq!(bits(state.read().unwrap()), before);",
     "assert_eq!(bits(state.read().unwrap()), before);",
     "let after = bits(state.read().unwrap());"
+  ],
+  "replay_interface/native/replay_app/src/gui_definition_admission/tests/desktop_diagnostics_consumers.rs": [
+    "std::fs::remove_dir_all(root).unwrap();",
+    "std::fs::remove_dir_all(root).unwrap();",
+    "std::fs::remove_dir_all(root).unwrap();",
+    "std::fs::remove_dir_all(root).unwrap();"
   ]
 }
