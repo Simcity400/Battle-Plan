@@ -985,6 +985,28 @@ function Invoke-IndependentCaptureGate {
     finally { if ($null -ne $process) { $process.Dispose() } }
 }
 
+function Get-ProductionFoldCheckArguments {
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)][string]$RawPath,
+        [Parameter(Mandatory = $true)][string]$ReportPath
+    )
+    # The recorder publishes the mode bound from authenticated READY before H4RA.
+    # fold_check independently checks the selected grammar/CID1 in the raw bytes;
+    # its legacy CLI default is not authority for a missing manifest field.
+    $property = $Manifest.PSObject.Properties['compact_stream_identity_mode']
+    if ($null -eq $property) { throw 'compact_stream_identity_mode is missing' }
+    # Read directly: a function return would unwrap a one-element JSON array.
+    $declared = $property.Value
+    if ($declared -isnot [string]) { throw 'compact_stream_identity_mode must be an explicit string' }
+    $mode = switch -CaseSensitive ($declared) {
+        'identity_v1' { 'identity-v1' }
+        'legacy' { 'legacy' }
+        default { throw 'compact_stream_identity_mode must be identity_v1 or legacy' }
+    }
+    return @('hash', $RawPath, '--expected-profile', 'production', '--identity-mode', $mode, '--out', $ReportPath)
+}
+
 function Test-ProductionCaptureArtifacts {
     [CmdletBinding()]
     param(
@@ -1544,7 +1566,12 @@ function Test-ProductionCaptureArtifacts {
         $compactGateResult | Add-Member -NotePropertyName report_sha256 -NotePropertyValue $(if (Test-Path -LiteralPath $compactReport -PathType Leaf) { (Get-FileHash -LiteralPath $compactReport -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null })
         $toolResults.Add($compactGateResult)
         $foldReport = Join-Path $toolLogDir "fold_check.report.json"
-        $toolResults.Add((Invoke-IndependentCaptureGate -Name "fold_check" -FilePath $FoldCheckExe -Arguments @("hash",$rawPath,"--expected-profile","production","--out",$foldReport) -LogDir $toolLogDir -TimeoutSeconds $ToolTimeoutSeconds -CancellationGraceSeconds $CancellationGraceSeconds))
+        $foldArguments = @()
+        try { $foldArguments = @(Get-ProductionFoldCheckArguments -Manifest $manifest -RawPath $rawPath -ReportPath $foldReport) }
+        catch { Add-CaptureProblem $problems 'compact_stream_identity_mode_missing_or_invalid' }
+        if ($foldArguments.Count -gt 0) {
+            $toolResults.Add((Invoke-IndependentCaptureGate -Name "fold_check" -FilePath $FoldCheckExe -Arguments $foldArguments -LogDir $toolLogDir -TimeoutSeconds $ToolTimeoutSeconds -CancellationGraceSeconds $CancellationGraceSeconds))
+        }
         $replayPath = if ([string]::IsNullOrWhiteSpace($replayFile)) { Join-Path $RunDir "native_session.battleplan" } else { Join-Path $RunDir $replayFile }
         $toolResults.Add((Invoke-IndependentCaptureGate -Name "container_verify" -FilePath $ContainerVerifyExe -Arguments @("verify",$replayPath) -LogDir $toolLogDir -TimeoutSeconds $ToolTimeoutSeconds -CancellationGraceSeconds $CancellationGraceSeconds))
         $toolResults.Add((Invoke-IndependentCaptureGate -Name "static_bundle_verify" -FilePath $PythonExe -Arguments @($StaticBundleScript,"verify","--bundle",$StaticBundleDir,"--exe",$GameExePath,"--mod-state",$ModStatePath,"--dlc-state",$DlcStatePath,"--load-order",$LoadOrderPath,"--source-inventory",$SourceInventoryPath,"--live-resolution-report",$LiveResolutionReportPath,"--expected-capture-id",$expectedCaptureId,"--expected-session-id",$expectedSessionId,"--expected-stream-sha256",$expectedStreamSha256) -LogDir $toolLogDir -TimeoutSeconds $ToolTimeoutSeconds -CancellationGraceSeconds $CancellationGraceSeconds))
@@ -2121,6 +2148,25 @@ function Invoke-ValidationSelfTest {
         param([bool]$Condition, [string]$Message)
         if (-not $Condition) { $failures.Add($Message) }
     }
+
+    # Explicit producer modes must reach the independent CLI without its default.
+    foreach ($case in @(@('identity_v1','identity-v1'), @('legacy','legacy'))) {
+        $modeManifest = ConvertTo-RoundTrippedManifest @{ compact_stream_identity_mode=$case[0] }
+        $actualArgs = @(Get-ProductionFoldCheckArguments -Manifest $modeManifest -RawPath 'C:\capture with spaces\raw.bin' -ReportPath 'C:\report with spaces\fold.json')
+        $expectedArgs = @('hash','C:\capture with spaces\raw.bin','--expected-profile','production','--identity-mode',$case[1],'--out','C:\report with spaces\fold.json')
+        Assert-True (($actualArgs -join '|') -ceq ($expectedArgs -join '|')) "explicit mode $($case[0]) must select exact independent fold grammar and preserve path arguments"
+    }
+    foreach ($invalidMode in @($null, '', 'Identity_V1', 'identity-v1', 'identity_v1 ', 'unknown', 1, $true, @('identity_v1'), @{mode='identity_v1'})) {
+        $modeManifest = ConvertTo-RoundTrippedManifest @{ compact_stream_identity_mode=$invalidMode }
+        $refused = $false
+        try { [void](Get-ProductionFoldCheckArguments -Manifest $modeManifest -RawPath 'raw.bin' -ReportPath 'fold.json') }
+        catch { $refused = $_.Exception.Message -match 'compact_stream_identity_mode' }
+        Assert-True $refused 'malformed identity mode must refuse rather than select legacy'
+    }
+    $missingModeRefused = $false
+    try { [void](Get-ProductionFoldCheckArguments -Manifest ([pscustomobject]@{}) -RawPath 'raw.bin' -ReportPath 'fold.json') }
+    catch { $missingModeRefused = $_.Exception.Message -match 'compact_stream_identity_mode' }
+    Assert-True $missingModeRefused 'absent identity mode must refuse rather than select legacy'
 
     # 1. Full, healthy manifest passes every gate.
     $good = ConvertTo-RoundTrippedManifest (New-TestManifest)
