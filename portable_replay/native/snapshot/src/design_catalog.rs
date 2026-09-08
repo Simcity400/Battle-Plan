@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const A27_LIVE_CATALOG_SCHEMA: &str = "extractor.a27.native_catalog.a729.v4";
+pub const A27_LIVE_CATALOG_SCHEMA: &str = "extractor.a27.native_catalog.a729.v5";
 pub const A27_LIVE_CATALOG_TIMELINE_SCHEMA: &str =
-    "extractor.a27.live_heap_catalog_timeline.a729.v2";
-pub const PORTABLE_DESIGN_CATALOG_SCHEMA: &str = "hoi4.portable-design-catalog.v4";
+    "extractor.a27.live_heap_catalog_timeline.a729.v3";
+pub const PORTABLE_DESIGN_CATALOG_SCHEMA: &str = "hoi4.portable-design-catalog.v5";
 pub const PORTABLE_ARTIFACT_PATH: &str = "static/design_catalog_live/a27_live_catalog.json";
 const DATE_EPOCH_RAW: u64 = 43_799_999;
 const EXACT_A729_PROGRAM: &str = "hoi4.exe 1.19.2.0.a729";
@@ -45,6 +45,35 @@ pub enum DesignTextObservation {
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DesignItemIconObservation {
     Measured { active: bool, kind: u32, token: DesignTextObservation },
+    Unavailable { reason: DesignFieldRefusal },
+}
+
+pub const MAX_DESIGN_SLOT_IDENTITIES: usize = 256;
+pub const MAX_DESIGN_SLOT_TOKEN_BYTES: usize = 160;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DesignI32Observation {
+    Measured { raw_i32: i32 },
+    Unavailable { reason: DesignFieldRefusal },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DesignSlotIdentity {
+    pub source_ordinal: u32,
+    pub token_handle_raw: u32,
+    pub token: DesignTextObservation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DesignSlotIdentityObservation {
+    Measured {
+        archetype_token_raw: u32,
+        archetype_token: DesignTextObservation,
+        slots: Vec<DesignSlotIdentity>,
+    },
     Unavailable { reason: DesignFieldRefusal },
 }
 
@@ -145,6 +174,11 @@ pub struct NativeDesignerCountryInputs {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativeDesignerVariantInputs {
+    pub slot_identities: DesignSlotIdentityObservation,
+    pub append_variant_name: DesignByteObservation,
+    /// Exact native label operands; independent of the display-only record name.
+    pub display_name: DesignTextObservation,
+    pub variant_name: DesignTextObservation,
     pub design_id: String,
     pub catalog_scan_ordinal: u64,
     pub equipment_definition_token: String,
@@ -158,8 +192,17 @@ pub struct NativeDesignerVariantInputs {
     pub model: VariantModelInputs,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeDesignerTemplateInputs {
+    pub design_id: String,
+    pub template_id: u32,
+    pub country_289a: DesignI32Observation,
+    pub country_3abe: DesignI32Observation,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativeDesignerInputs {
+    pub templates: Vec<NativeDesignerTemplateInputs>,
     pub runtime_dlc_mask: DesignU32Observation,
     pub source_record_id: String,
     pub hour: u64,
@@ -928,6 +971,18 @@ impl PortableDesignCatalog {
                 .ok_or_else(|| format!("A27 native designer row {design_id} has no exact-hour record"))?;
             let model = row.model_inputs();
             Ok(NativeDesignerVariantInputs {
+                slot_identities: row.definition.slot_identities,
+                append_variant_name: row.definition.append_variant_name,
+                // validate_raw_catalog checked both original text/hex pairs.
+                // Native mandatory reads encode only a measured empty as null.
+                display_name: DesignTextObservation::Measured {
+                    value: row.definition.display_name.unwrap_or_default(),
+                    utf8_hex: row.definition.display_name_utf8_hex,
+                },
+                variant_name: DesignTextObservation::Measured {
+                    value: row.definition.variant_name.unwrap_or_default(),
+                    utf8_hex: row.definition.variant_name_utf8_hex,
+                },
                 design_id, catalog_scan_ordinal: row.catalog_scan_ordinal,
                 equipment_definition_token: row.definition.archetype_token,
                 equipment_token_raw: row.definition.equipment_token_raw,
@@ -945,6 +1000,19 @@ impl PortableDesignCatalog {
         Ok(NativeDesignerInputs {
             runtime_dlc_mask: raw.runtime_dlc_mask,
             source_record_id, hour, variants,
+            templates: raw.division_templates.into_iter().map(|row| {
+                let design_id = format!("{}:{}", row.id, row.runtime_type);
+                let record = records.remove(&design_id)
+                    .ok_or_else(|| format!("A27 native template {design_id} has no exact-hour record"))?;
+                if row.runtime_type != 52 || record.kind != DesignKind::DivisionTemplate {
+                    return Err("A27 native template projection has a wrong typed identity".into());
+                }
+                Ok(NativeDesignerTemplateInputs {
+                    design_id, template_id: row.id,
+                    country_289a: row.definition.country_289a,
+                    country_3abe: row.definition.country_3abe,
+                })
+            }).collect::<Result<Vec<_>, String>>()?,
             countries: raw.countries.into_iter().map(|row| NativeDesignerCountryInputs {
                 registry_index: row.registry_index, tag: row.tag,
                 designer_pointer_order_ordinal: row.designer_pointer_order_ordinal,
@@ -1840,6 +1908,61 @@ fn validate_mission_stat_operands(rows: &[DesignMissionStatOperand]) -> Result<(
     Ok(())
 }
 
+fn validate_operand_refusal(reason: &DesignFieldRefusal) -> Result<(), String> {
+    if !matches!(reason.kind.as_str(), "unreadable" | "torn" | "invalid_identity" | "bound_exceeded")
+        || reason.field.is_empty() || reason.field.len() > 160 {
+        return Err("A27 independent operand has an invalid refusal".into());
+    }
+    Ok(())
+}
+
+fn measured_slot_key(text: &DesignTextObservation) -> Result<&str, String> {
+    let DesignTextObservation::Measured { value, utf8_hex } = text else {
+        return Err("A27 measured slot census has unavailable text".into());
+    };
+    if value.is_empty() || value.len() > MAX_DESIGN_SLOT_TOKEN_BYTES
+        || !utf8_hex_matches(Some(value), utf8_hex)
+        || !value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':')) {
+        return Err("A27 slot census has an invalid token identity".into());
+    }
+    Ok(value)
+}
+
+fn validate_slot_identity_observation(observation: &DesignSlotIdentityObservation) -> Result<(), String> {
+    match observation {
+        DesignSlotIdentityObservation::Unavailable { reason } => {
+            if !matches!(reason.kind.as_str(),
+                "unreadable" | "torn" | "invalid_identity" | "missing_typed_archetype" |
+                "invalid_vector" | "row_bound" | "lexer_unavailable" | "invalid_token_id" |
+                "invalid_string" | "text_bound" | "invalid_utf8" | "invalid_token_text" |
+                "duplicate_identity" | "read_budget" | "allocation_budget" | "trace_bound" |
+                "allocation_failed" | "address" | "closed")
+                || reason.field.is_empty() || reason.field.len() > 160 {
+                return Err("A27 slot census has an invalid refusal".into());
+            }
+        }
+        DesignSlotIdentityObservation::Measured { archetype_token_raw, archetype_token, slots } => {
+            if *archetype_token_raw == 0 || *archetype_token_raw > i32::MAX as u32 {
+                return Err("A27 slot census has an invalid archetype key".into());
+            }
+            measured_slot_key(archetype_token)?;
+            if slots.len() > MAX_DESIGN_SLOT_IDENTITIES {
+                return Err("A27 copied slot census exceeds the bound".into());
+            }
+            let mut handles = BTreeSet::new();
+            let mut keys = BTreeSet::new();
+            for (ordinal, row) in slots.iter().enumerate() {
+                if row.source_ordinal as usize != ordinal || row.token_handle_raw == 0
+                    || row.token_handle_raw > i32::MAX as u32 || !handles.insert(row.token_handle_raw)
+                    || !keys.insert(measured_slot_key(&row.token)?.to_ascii_lowercase()) {
+                    return Err("A27 copied slot order/identity is inconsistent".into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_raw_catalog(raw: &RawCatalog) -> Result<(), String> {
     if let DesignU32Observation::Unavailable { reason } = &raw.runtime_dlc_mask {
         if reason.kind != "unreadable" || reason.field.is_empty() {
@@ -1869,6 +1992,11 @@ fn validate_raw_catalog(raw: &RawCatalog) -> Result<(), String> {
     }
     let mut template_slots = BTreeSet::new();
     for row in &raw.division_templates {
+        for input in [&row.definition.country_289a, &row.definition.country_3abe] {
+            if let DesignI32Observation::Unavailable { reason } = input {
+                validate_operand_refusal(reason)?;
+            }
+        }
         {
             let sources = &row.country_source_occurrences;
             for source in sources {
@@ -1927,6 +2055,11 @@ fn validate_raw_catalog(raw: &RawCatalog) -> Result<(), String> {
         );
     }
     for row in &raw.variants {
+        if let DesignByteObservation::Unavailable { reason } = &row.definition.append_variant_name {
+            validate_operand_refusal(reason)?;
+        }
+        validate_slot_identity_observation(&row.definition.slot_identities)?;
+
         if row.creator_tag != row.owner_tag
             || row.selected_country_tag
                 != row
@@ -2137,6 +2270,8 @@ struct TemplateSourceOccurrence {
 
 #[derive(Deserialize)]
 struct RawDivisionDefinition {
+    country_289a: DesignI32Observation,
+    country_3abe: DesignI32Observation,
     name: Option<String>,
     name_utf8_hex: String,
     regiment_grid_columns: u32,
@@ -2200,6 +2335,8 @@ impl RawVariant {
 
 #[derive(Deserialize)]
 struct RawVariantDefinition {
+    slot_identities: DesignSlotIdentityObservation,
+    append_variant_name: DesignByteObservation,
     explicit_entity: DesignTextObservation,
     item_icon_override: DesignItemIconObservation,
     serialized_variant_flag_2b9d: DesignByteObservation,
@@ -2208,6 +2345,7 @@ struct RawVariantDefinition {
     cached_stats: Vec<DesignFixedStat>,
     mission_stat_operands: Vec<DesignMissionStatOperand>,
     cached_stats_complete: bool,
+    #[serde(deserialize_with = "required_nullable_text")]
     display_name: Option<String>,
     display_name_utf8_hex: String,
     equipment_token_raw: u32,
@@ -2215,8 +2353,17 @@ struct RawVariantDefinition {
     modules_complete: bool,
     upgrades: Vec<RawUpgrade>,
     upgrades_complete: bool,
+    #[serde(deserialize_with = "required_nullable_text")]
     variant_name: Option<String>,
     variant_name_utf8_hex: String,
+}
+
+// Explicit null is the producer's measured-empty representation. Requiring
+// the field prevents an omitted Option from silently becoming measured empty.
+fn required_nullable_text<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(deserializer)
 }
 
 #[derive(Deserialize)]
@@ -2224,7 +2371,7 @@ struct RawModule {
     module_definition_handle: u32,
     module_token: String,
     module_token_utf8_hex: String,
-    slot_handle: u64,
+    slot_handle: u32,
     source_ordinal: u32,
 }
 
@@ -2275,6 +2422,8 @@ mod tests {
                 "country_vector_ordinal": 0,
                 "country_source_occurrences": [{"source_country_tag":"GER","source_country_registry_index":0,"country_vector_ordinal":0}],
                 "definition": {
+                    "country_289a": {"status":"measured","raw_i32":-1},
+                    "country_3abe": {"status":"measured","raw_i32":0},
                     "name": "Infantry",
                     "name_utf8_hex": "496e66616e747279",
                     "regiment_grid_columns": 5,
@@ -2305,6 +2454,12 @@ mod tests {
                 "catalog_scan_ordinal": 0,
                 "creator_tag": "GER",
                 "definition": {
+                    "append_variant_name": {"status":"measured","raw_u8":0},
+                    "slot_identities": {"status":"measured","archetype_token_raw":71,
+                        "archetype_token":{"status":"measured","value":"light_tank_chassis_1",
+                            "utf8_hex":"6c696768745f74616e6b5f636861737369735f31"},
+                        "slots":[{"source_ordinal":0,"token_handle_raw":91,
+                            "token":{"status":"measured","value":"engine","utf8_hex":"656e67696e65"}}]},
                     "archetype_token": "light_tank_chassis_1",
                     "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
                     "mission_stat_operands": [
@@ -3387,6 +3542,256 @@ mod tests {
         assert!(portable.native_designer_inputs_at_hour(904).is_err());
         timeline["captures"][1]["same_hour_recheck_sha256"][0]="0".repeat(64).into();
         assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&timeline).unwrap()).is_err());
+    }
+
+
+    #[test]
+    fn v5_independent_operands_are_mandatory_and_exactly_typed() {
+        for (family, field) in [("variants", "slot_identities"), ("variants", "append_variant_name"),
+            ("division_templates", "country_289a"), ("division_templates", "country_3abe")] {
+            let mut raw: Value = serde_json::from_slice(&fixture()).unwrap();
+            raw[family][0]["definition"].as_object_mut().unwrap().remove(field);
+            assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap())
+                .unwrap_err().contains(field));
+        }
+        for signed in [i32::MIN, -1, 0, 1, i32::MAX] {
+            let mut raw: Value = serde_json::from_slice(&fixture()).unwrap();
+            raw["division_templates"][0]["definition"]["country_289a"] =
+                serde_json::json!({"status":"measured","raw_i32":signed});
+            let catalog = PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).unwrap();
+            let inputs = catalog.native_designer_inputs_at_hour(900).unwrap();
+            assert_eq!(inputs.templates[0].country_289a, DesignI32Observation::Measured { raw_i32: signed });
+            assert_eq!(inputs.templates[0].design_id, "8:52");
+            assert_eq!(inputs.templates[0].template_id, 8);
+        }
+        for byte in 0..=u8::MAX {
+            let mut raw: Value = serde_json::from_slice(&fixture()).unwrap();
+            raw["variants"][0]["definition"]["append_variant_name"] =
+                serde_json::json!({"status":"measured","raw_u8":byte});
+            let catalog = PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).unwrap();
+            assert_eq!(catalog.native_designer_inputs_at_hour(900).unwrap().variants[0].append_variant_name,
+                DesignByteObservation::Measured { raw_u8: byte });
+        }
+        for (family, field, value) in [
+            ("division_templates", "country_289a", serde_json::json!({"status":"measured","raw_i32":2147483648u64})),
+            ("division_templates", "country_3abe", serde_json::json!({"status":"measured","raw_i32":-2147483649i64})),
+            ("variants", "append_variant_name", serde_json::json!({"status":"measured","raw_u8":256})),
+            ("variants", "append_variant_name", serde_json::json!({"status":"measured","raw_u8":true})),
+            ("division_templates", "country_289a", serde_json::json!({"status":"measured","raw_i32":0.0})),
+        ] {
+            let mut raw: Value = serde_json::from_slice(&fixture()).unwrap();
+            raw[family][0]["definition"][field] = value;
+            assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).is_err());
+        }
+    }
+
+    #[test]
+    fn v5_complete_slot_order_preserves_unassigned_sentinel_and_measured_empty() {
+        let mut raw: Value = serde_json::from_slice(&fixture()).unwrap();
+        raw["variants"][0]["definition"]["slot_identities"]["slots"] = serde_json::json!([
+            {"source_ordinal":0,"token_handle_raw":500,"token":{"status":"measured","value":"primary","utf8_hex":"7072696d617279"}},
+            {"source_ordinal":1,"token_handle_raw":357,"token":{"status":"measured","value":"none","utf8_hex":"6e6f6e65"}}]);
+        let decode = |raw: &Value| PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(raw).unwrap()).unwrap();
+        let input = decode(&raw).native_designer_inputs_at_hour(900).unwrap();
+        let DesignSlotIdentityObservation::Measured { slots, .. } = &input.variants[0].slot_identities else { panic!() };
+        assert_eq!(slots[1].token_handle_raw, 0x165);
+        // The assignment still has raw 91: it did not choose census membership.
+        assert_eq!(input.variants[0].record.modules[0].slot_id, "handle:91");
+        raw["variants"][0]["definition"]["slot_identities"]["slots"] = serde_json::json!([]);
+        let empty = decode(&raw).native_designer_inputs_at_hour(900).unwrap();
+        assert!(matches!(&empty.variants[0].slot_identities,
+            DesignSlotIdentityObservation::Measured { slots, .. } if slots.is_empty()));
+        raw["variants"][0]["definition"]["slot_identities"] = serde_json::json!({
+            "status":"unavailable","reason":{"kind":"lexer_unavailable","field":"lexer root"}});
+        assert!(matches!(&decode(&raw).native_designer_inputs_at_hour(900).unwrap().variants[0].slot_identities,
+            DesignSlotIdentityObservation::Unavailable { .. }));
+    }
+
+    #[test]
+    fn v5_slot_grammar_rejects_partial_wrong_or_ambiguous_identity() {
+        let baseline: Value = serde_json::from_slice(&fixture()).unwrap();
+        for case in 0..9 {
+            let mut raw = baseline.clone();
+            let receipt = &mut raw["variants"][0]["definition"]["slot_identities"];
+            match case {
+                0 => { receipt.as_object_mut().unwrap().remove("slots"); }
+                1 => { receipt["slots"][0]["source_ordinal"] = 1.into(); }
+                2 => { receipt["slots"][0]["token_handle_raw"] = 0.into(); }
+                3 => { receipt["slots"][0]["token"]["utf8_hex"] = "00".into(); }
+                4 => { receipt["slots"][0]["token"] = serde_json::json!({"status":"unavailable","reason":{"kind":"unreadable","field":"token"}}); }
+                5 => { let row = receipt["slots"][0].clone(); receipt["slots"].as_array_mut().unwrap().push(row); }
+                6 => { receipt["slots"][0]["unexpected_hash"] = 91.into(); }
+                7 => { receipt["slots"][0]["token_handle_raw"] = 0x1_0000_0000u64.into(); }
+                _ => { receipt["slots"][0]["token"]["value"] = "x".repeat(161).into();
+                    receipt["slots"][0]["token"]["utf8_hex"] = "78".repeat(161).into(); }
+            }
+            assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).is_err(), "case {case}");
+        }
+        let mut raw = baseline;
+        raw["schema"] = "extractor.a27.native_catalog.a729.v4".into();
+        assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).is_err());
+    }
+
+    #[test]
+    fn v5_template_projection_requires_the_existing_exact_hour_record() {
+        let mut catalog = PortableDesignCatalog::decode_a27_live_json(&fixture()).unwrap();
+        catalog.records.retain(|row| row.design_id != "8:52");
+        assert!(catalog.native_designer_inputs_at_hour(900).is_err());
+        assert!(catalog.native_designer_inputs_at_hour(899).is_err());
+        assert!(catalog.native_designer_inputs_at_hour(901).is_err());
+        let mut wrong_kind = PortableDesignCatalog::decode_a27_live_json(&fixture()).unwrap();
+        let variant_kind = wrong_kind.records.iter().find(|row| row.design_id == "7:70").unwrap().kind.clone();
+        wrong_kind.records.iter_mut().find(|row| row.design_id == "8:52").unwrap().kind = variant_kind;
+        assert!(wrong_kind.native_designer_inputs_at_hour(900).unwrap_err().contains("wrong typed identity"));
+    }
+
+    #[test]
+    fn v5_each_operand_drives_existing_raw_deltas_gap_and_full_recovery() {
+        let baseline: Value = serde_json::from_slice(&fixture()).unwrap();
+        let mut states = vec![baseline.clone()];
+        for step in 1..5 {
+            let mut raw = states.last().unwrap().clone();
+            match step {
+                1 => raw["division_templates"][0]["definition"]["country_289a"]["raw_i32"] = i32::MIN.into(),
+                2 => raw["division_templates"][0]["definition"]["country_3abe"]["raw_i32"] = i32::MAX.into(),
+                3 => raw["variants"][0]["definition"]["append_variant_name"]["raw_u8"] = 255.into(),
+                _ => raw["variants"][0]["definition"]["slot_identities"]["slots"][0]["token_handle_raw"] = 357.into(),
+            }
+            states.push(raw);
+        }
+        let mut captures = Vec::new();
+        let mut previous = None;
+        for (index, state) in states.iter().chain(states.first()).enumerate() {
+            let hour = 900 + index as u64 + u64::from(index == states.len());
+            if index == states.len() {
+                captures.push(serde_json::json!({"sequence":index,"capture_hour_index":hour-1,
+                    "gap": DesignCatalogGap { first_hour_index:hour-1,last_hour_index:hour-1,
+                        cause:DesignCatalogGapCause::Torn,witness:serde_json::json!({"field":"A27 identity operands"}) }}));
+            }
+            let mut raw = state.clone();
+            raw["authority"]["capture_hour_index"] = hour.into();
+            raw["authority"]["current_date_raw"] = (DATE_EPOCH_RAW + hour).into();
+            let bytes = serde_json::to_vec(&canonical_json_value(&raw)).unwrap();
+            let current = PortableDesignCatalog::decode_a27_live_json(&bytes).unwrap();
+            let mut entry = serde_json::json!({"sequence":captures.len(),"capture_hour_index":hour,
+                "same_hour_rechecks":1,"same_hour_recheck_sha256":[Sha256::hex(&bytes)],"snapshot_sha256":Sha256::hex(&bytes)});
+            if index == 0 || index == states.len() { entry["snapshot"] = raw; }
+            else {
+                let delta = current.native_row_delta_from(previous.as_ref().unwrap()).unwrap();
+                assert_eq!(delta["template_upserts"].as_array().unwrap().len(), usize::from(index < 3));
+                assert_eq!(delta["variant_upserts"].as_array().unwrap().len(), usize::from(index >= 3));
+                entry["delta"] = delta;
+            }
+            captures.push(entry);
+            previous = Some(current);
+        }
+        let timeline = serde_json::json!({"schema":A27_LIVE_CATALOG_TIMELINE_SCHEMA,
+            "authority":{"program":EXACT_A729_PROGRAM,"program_sha256":EXACT_A729_SHA256},
+            "complete_sequence":true,"transport":"first_full_then_native_row_deltas",
+            "capture_count":captures.len(),"same_hour_recheck_count":6,
+            "first_capture_hour_index":900,"last_capture_hour_index":906,"captures":captures});
+        let catalog = PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&timeline).unwrap()).unwrap();
+        let relocated = PortableDesignCatalog::decode_a27_live_json(&catalog.encode_portable_json().unwrap()).unwrap();
+        for hour in 900..=904 {
+            let input = relocated.native_designer_inputs_at_hour(hour).unwrap();
+            assert_eq!(input.hour, hour);
+            assert_eq!(input.templates[0].design_id, "8:52");
+            let records = relocated.records_at_hour(hour).unwrap();
+            assert_eq!(&input.variants[0].record,
+                records.iter().find(|row| row.design_id == "7:70").unwrap());
+            assert_eq!(input.source_record_id, format!("a27-live-catalog:{}",
+                timeline["captures"][(hour - 900) as usize]["snapshot_sha256"].as_str().unwrap()));
+        }
+        assert!(relocated.native_designer_inputs_at_hour(905).unwrap_err().contains("Torn"));
+        assert_eq!(relocated.native_designer_inputs_at_hour(906).unwrap().templates[0].country_289a,
+            DesignI32Observation::Measured { raw_i32: -1 });
+        assert!(relocated.native_designer_inputs_at_hour(907).is_err());
+    }
+
+    #[test]
+    fn v5_label_projection_keeps_both_exact_text_observations() {
+        // Native empty is null+empty hex; an explicit empty string is also
+        // accepted by the existing exact pair validator. Neither is missing.
+        for (display, variant) in [
+            (None, None),
+            (Some(""), Some("")),
+            (Some("  "), Some("\t")),
+            (Some("Display"), Some("Variant")),
+            (Some(""), Some("Variant")),
+            (None, Some("Variant")),
+            (Some(" Véhicule "), Some("車両\t")),
+        ] {
+            let mut raw: Value = serde_json::from_slice(&fixture()).unwrap();
+            for (field, value) in [("display_name", display), ("variant_name", variant)] {
+                raw["variants"][0]["definition"][field] = serde_json::json!(value);
+                raw["variants"][0]["definition"][format!("{field}_utf8_hex")] =
+                    value.unwrap_or("").as_bytes().iter().map(|b| format!("{b:02x}"))
+                        .collect::<String>().into();
+            }
+            let catalog = PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).unwrap();
+            let relocated = PortableDesignCatalog::decode_a27_live_json(&catalog.encode_portable_json().unwrap()).unwrap();
+            let inputs = relocated.native_designer_inputs_at_hour(900).unwrap();
+            let row = &inputs.variants[0];
+            for (observed, value, field) in [(&row.display_name, display, "display_name"),
+                (&row.variant_name, variant, "variant_name")] {
+                assert_eq!(observed, &DesignTextObservation::Measured {
+                    value: value.unwrap_or("").into(),
+                    utf8_hex: raw["variants"][0]["definition"][format!("{field}_utf8_hex")]
+                        .as_str().unwrap().into(),
+                });
+            }
+            let merged = display.filter(|value| !value.trim().is_empty())
+                .or_else(|| variant.filter(|value| !value.trim().is_empty()));
+            assert_eq!(row.record.name.as_deref(), merged);
+            assert!(relocated.native_designer_inputs_at_hour(901).is_err());
+        }
+    }
+
+    #[test]
+    fn v5_label_projection_refuses_missing_or_mismatched_original_pairs() {
+        for field in ["display_name", "variant_name"] {
+            for case in 0..4 {
+                let mut raw: Value = serde_json::from_slice(&fixture()).unwrap();
+                let definition = raw["variants"][0]["definition"].as_object_mut().unwrap();
+                let hex_field = format!("{field}_utf8_hex");
+                match case {
+                    0 => { definition.remove(field); }
+                    1 => { definition.remove(&hex_field); }
+                    2 => { definition.insert(field.into(), Value::Null);
+                        definition.insert(hex_field, "41".into()); }
+                    _ => { definition.insert(field.into(), "A".into());
+                        definition.insert(hex_field, "42".into()); }
+                }
+                assert!(PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(&raw).unwrap()).is_err(),
+                    "{field} case {case}");
+            }
+        }
+    }
+
+    #[test]
+    fn v5_label_text_change_survives_delta_when_record_name_is_unchanged() {
+        let baseline: Value = serde_json::from_slice(&fixture()).unwrap();
+        let mut changed = baseline.clone();
+        changed["authority"]["capture_hour_index"] = 901.into();
+        changed["authority"]["current_date_raw"] = (DATE_EPOCH_RAW + 901).into();
+        changed["variants"][0]["definition"]["variant_name"] = " Mk II ".into();
+        changed["variants"][0]["definition"]["variant_name_utf8_hex"] = "204d6b20494920".into();
+        let decode = |v: &Value| PortableDesignCatalog::decode_a27_live_json(&serde_json::to_vec(v).unwrap()).unwrap();
+        let first = decode(&baseline);
+        let second = decode(&changed);
+        let old = first.native_designer_inputs_at_hour(900).unwrap();
+        let new = second.native_designer_inputs_at_hour(901).unwrap();
+        assert_eq!(old.variants[0].record.name, new.variants[0].record.name);
+        assert_ne!(old.variants[0].variant_name, new.variants[0].variant_name);
+        let delta = second.native_row_delta_from(&first).unwrap();
+        assert_eq!(delta["variant_upserts"].as_array().unwrap().len(), 1);
+        assert!(delta["template_upserts"].as_array().unwrap().is_empty());
+        let reconstructed = decode(&apply_a27_row_delta(&baseline, &delta).unwrap());
+        let inputs = reconstructed.native_designer_inputs_at_hour(901).unwrap();
+        assert_eq!(inputs.variants[0].display_name, old.variants[0].display_name);
+        assert_eq!(inputs.variants[0].variant_name, DesignTextObservation::Measured {
+            value: " Mk II ".into(), utf8_hex: "204d6b20494920".into(),
+        });
     }
 
 }

@@ -345,7 +345,7 @@ mod tests {
 
     fn catalog(hour: u64) -> NativeDesignerInputs {
         use crate::design_catalog::NativeDesignerCountryInputs;
-        NativeDesignerInputs { runtime_dlc_mask: crate::design_catalog::DesignU32Observation::Measured { raw_u32: 0 }, source_record_id: "exact-a27-hour".into(), hour, variants: vec![], countries: vec![
+        NativeDesignerInputs { templates: vec![], runtime_dlc_mask: crate::design_catalog::DesignU32Observation::Measured { raw_u32: 0 }, source_record_id: "exact-a27-hour".into(), hour, variants: vec![], countries: vec![
             NativeDesignerCountryInputs { registry_index: 3, tag: "FRA".into(), designer_pointer_order_ordinal: Some(0) },
             NativeDesignerCountryInputs { registry_index: 0, tag: "GER".into(), designer_pointer_order_ordinal: Some(1) },
         ] }

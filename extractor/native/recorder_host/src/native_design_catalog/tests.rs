@@ -152,7 +152,8 @@ fn fixture() -> Fixture {
     f.string(VARIANT + 0x458, "");
     f.u64(VARIANT + 0xb0, BASE + 0x306d170);
     f.u64(VARIANT + 0x68, BASE + 0x27ab628);
-    f.zero(EQUIPMENT, 64);
+    f.zero(EQUIPMENT, 0x500);
+    f.u64(EQUIPMENT + 0x4d8, EQUIPMENT);
     f.u64(EQUIPMENT, BASE + 0x29218a0);
     f.u32(EQUIPMENT + 8, 17);
     f.string(EQUIPMENT + 0x18, "ship_hull");
@@ -431,19 +432,22 @@ fn native_journal_seals_real_censuses_rebased_to_the_recorded_spine() {
 
 #[test]
 fn full_panel_catalog_comes_from_real_capture_recheck_and_seal() {
-    use snapshot::design_catalog::{DesignItemIconObservation, DesignTextObservation, DesignU32Observation};
+    use snapshot::design_catalog::{DesignByteObservation, DesignI32Observation, DesignItemIconObservation,
+        DesignSlotIdentityObservation, DesignTextObservation, DesignU32Observation};
     use std::io::Write;
 
     const FIRST_HOUR: u32 = 16_959_360;
     const MAX_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
     let (journal_path, output) = journal_test_paths("full-panel");
-    let mut f = fixture();
+    // Match full_panel_joint::authored_fixture's one authored main slot. The
+    // helper materializes the copied census and passive lexer in fixture memory;
+    // module assignment remains empty and does not select the observed slots.
+    let mut f = fixture_with_copied_slots(&[(500, "main")]);
     f.string(HEAP + 0x3000 + 32, "GER");
     f.u32(BASE + RUNTIME_DLC_MASK_RVA, 1 << 4);
     f.string(VARIANT + 0x458, ".");
     f.u32(STATE + DATE_OFFSET, DATE_EPOCH + FIRST_HOUR);
-    let initial = capture(&f, BASE, DATE_EPOCH + FIRST_HOUR).unwrap();
-    let initial_recheck = capture(&f, BASE, DATE_EPOCH + FIRST_HOUR).unwrap();
+    let (initial, initial_recheck) = capture_pair(&f, BASE, DATE_EPOCH + FIRST_HOUR).unwrap();
     use compact_contract::campaign_identity::{Cid1Fields, Cid1Observation, Cid1Witnesses, encode_cid1};
     let observation = |raw: &Value| Cid1Observation {
         game_unique_id: raw["authority"]["campaign"]["game_unique_id"].as_str().unwrap().into(),
@@ -471,10 +475,11 @@ fn full_panel_catalog_comes_from_real_capture_recheck_and_seal() {
         let (first, recheck) = if hour == FIRST_HOUR {
             (initial.clone(), initial_recheck.clone())
         } else {
-            (capture(&f, BASE, date).unwrap(), capture(&f, BASE, date).unwrap())
+            capture_pair(&f, BASE, date).unwrap()
         };
         assert_eq!(first, recheck);
         assert_eq!(first["variants"].as_array().unwrap().len(), 1);
+        assert_eq!(first["variants"][0]["definition"]["modules"], json!([]));
         assert_eq!(first["division_templates"].as_array().unwrap().len(), 1);
         journal.push(first, recheck).unwrap();
     }
@@ -498,6 +503,30 @@ fn full_panel_catalog_comes_from_real_capture_recheck_and_seal() {
         let variant = &inputs.variants[0];
         assert_eq!(variant.equipment_definition_token, "ship_hull");
         assert_eq!(variant.equipment_token_raw, 17);
+        let DesignSlotIdentityObservation::Measured { archetype_token_raw, archetype_token, slots }
+            = &variant.slot_identities else { panic!("complete authored main slot census"); };
+        assert_eq!(*archetype_token_raw, 17);
+        assert_eq!(*archetype_token, DesignTextObservation::Measured {
+            value: "ship_hull".into(), utf8_hex: "736869705f68756c6c".into(),
+        });
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].source_ordinal, 0);
+        assert_eq!(slots[0].token_handle_raw, 500);
+        assert_eq!(slots[0].token, DesignTextObservation::Measured {
+            value: "main".into(), utf8_hex: "6d61696e".into(),
+        });
+        assert_eq!(variant.append_variant_name, DesignByteObservation::Measured { raw_u8: 0 });
+        assert_eq!(variant.display_name, DesignTextObservation::Measured {
+            value: "Vessel".into(), utf8_hex: "56657373656c".into(),
+        });
+        assert_eq!(variant.variant_name, DesignTextObservation::Measured {
+            value: String::new(), utf8_hex: String::new(),
+        });
+        assert_eq!(inputs.templates.len(), 1);
+        assert_eq!(inputs.templates[0].design_id, "1:52");
+        assert_eq!(inputs.templates[0].template_id, 1);
+        assert_eq!(inputs.templates[0].country_289a, DesignI32Observation::Measured { raw_i32: 0 });
+        assert_eq!(inputs.templates[0].country_3abe, DesignI32Observation::Measured { raw_i32: 0 });
         assert_eq!(variant.model.creator_tag, "GER");
         assert_eq!(variant.model.explicit_entity, DesignTextObservation::Measured { value: String::new(), utf8_hex: String::new() });
         assert_eq!(variant.item_icon_override, DesignItemIconObservation::Measured {
@@ -1083,7 +1112,7 @@ fn item_icon_torn_header_or_token_refuses_census_and_budget_is_not_field_unknown
     }
     let f = fixture();
     let mut read = ReadSet::new(&f, BASE);
-    read.bytes = MAX_READ_BYTES;
+    read.accounting.budget.borrow_mut().read_bytes_reserved = readset_accounting::VERIFICATION_LIMIT;
     assert_eq!(
         item_icon_override(&mut read, VARIANT).unwrap_err().kind,
         FailureKind::BoundExceeded
@@ -1132,7 +1161,7 @@ fn serialized_variant_flag_torn_or_over_budget_refuses_the_catalog() {
     assert_eq!(capture(&memory, BASE, DATE).unwrap_err().kind, FailureKind::Torn);
     assert_eq!(count.get(), 2);
     let mut read = ReadSet::new(&f, BASE);
-    read.bytes = MAX_READ_BYTES;
+    read.accounting.budget.borrow_mut().read_bytes_reserved = readset_accounting::VERIFICATION_LIMIT;
     assert_eq!(serialized_variant_flag_2b9d(&mut read, VARIANT).unwrap_err().kind, FailureKind::BoundExceeded);
 }
 
@@ -1182,7 +1211,7 @@ fn runtime_dlc_mask_torn_or_budget_exhaustion_refuses_the_whole_census() {
     assert_eq!(capture(&memory, BASE, DATE).unwrap_err().kind, FailureKind::Torn);
     assert_eq!(count.get(), 2);
     let mut read = ReadSet::new(&f, BASE);
-    read.bytes = MAX_READ_BYTES;
+    read.accounting.budget.borrow_mut().read_bytes_reserved = readset_accounting::VERIFICATION_LIMIT;
     assert_eq!(runtime_dlc_mask(&mut read).unwrap_err().kind, FailureKind::BoundExceeded);
 }
 
@@ -1379,7 +1408,7 @@ fn mission_key_prefix_bounds_refuse_without_truncating_or_inventing_absence() {
     for ordinal in 0..4096_u64 { f.u32(MISSION_STATS + ordinal * 0x10, 0x24); }
     assert_eq!(capture(&f, BASE, DATE).unwrap_err().kind, FailureKind::BoundExceeded);
     let mut read = ReadSet::new(&f, BASE);
-    read.bytes = MAX_READ_BYTES;
+    read.accounting.budget.borrow_mut().read_bytes_reserved = readset_accounting::VERIFICATION_LIMIT;
     assert_eq!(mission_stat_operands(&mut read, VARIANT).unwrap_err().kind, FailureKind::BoundExceeded);
 }
 
@@ -1424,3 +1453,7 @@ fn mission_first_match_at_key_4096_is_measured_without_reading_key_4097() {
     assert_eq!(value["variants"][0]["definition"]["mission_stat_operands"][0]["override_lookup"]["stat_key_prefix"].as_array().unwrap().len(), 4096);
     assert_eq!(mission_inputs(&value)[0].effective_raw_i64(), Ok(i64::MIN));
 }
+
+include!("slot_identity_tests.rs");
+
+include!("template_variant_tests.rs");

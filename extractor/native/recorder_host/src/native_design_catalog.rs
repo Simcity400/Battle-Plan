@@ -1,3 +1,9 @@
+pub mod slot_identity;
+mod readset_accounting;
+mod template_country_inputs;
+mod native_inputs;
+use native_inputs::{template_definition, variant_definition};
+
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -8,7 +14,6 @@ const RUNTIME_DLC_MASK_RVA: u64 = 0x3316e78;
 const REFERENCE_TABLES_RVA: u64 = 0x3438e60;
 const DATE_OFFSET: u64 = 0x468;
 pub const DATE_EPOCH: u32 = 43_799_999;
-const MAX_READ_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ROWS: usize = 100_000;
 const VARIANT_VTABLE: u64 = 0x293afb8;
 const TEMPLATE_VTABLE: u64 = 0x2938f70;
@@ -52,45 +57,17 @@ impl<F: Fn(u64, usize) -> std::result::Result<Vec<u8>, String>> Memory for F {
 struct ReadSet<'a, M: Memory> {
     memory: &'a M,
     base: u64,
-    reads: BTreeMap<(u64, usize), Vec<u8>>,
-    bytes: usize,
+    accounting: readset_accounting::Accounting,
 }
 impl<'a, M: Memory> ReadSet<'a, M> {
     fn new(memory: &'a M, base: u64) -> Self {
-        Self {
-            memory,
-            base,
-            reads: BTreeMap::new(),
-            bytes: 0,
-        }
+        Self::with_budget(memory, base, readset_accounting::budget())
+    }
+    fn with_budget(memory: &'a M, base: u64, budget: readset_accounting::SharedBudget) -> Self {
+        Self { memory, base, accounting: readset_accounting::Accounting::new(budget) }
     }
     fn bytes(&mut self, address: u64, length: usize) -> Result<Vec<u8>> {
-        if length == 0 {
-            return Ok(Vec::new());
-        }
-        if address == 0 || address.checked_add(length as u64).is_none() {
-            return Err(failure(FailureKind::InvalidRoot, "read address"));
-        }
-        let key = (address, length);
-        if !self.reads.contains_key(&key) && self.bytes.saturating_add(length) > MAX_READ_BYTES {
-            return Err(failure(FailureKind::BoundExceeded, "census read set"));
-        }
-        let bytes = self
-            .memory
-            .read(address, length)
-            .map_err(|_| failure(FailureKind::Unreadable, format!("read {length} bytes")))?;
-        if bytes.len() != length {
-            return Err(failure(FailureKind::Unreadable, "short read"));
-        }
-        if let Some(previous) = self.reads.get(&key) {
-            if previous != &bytes {
-                return Err(failure(FailureKind::Torn, "repeated field"));
-            }
-        } else {
-            self.bytes += length;
-            self.reads.insert(key, bytes.clone());
-        }
-        Ok(bytes)
+        self.accounting.read(self.memory, address, length, None)
     }
     fn u8(&mut self, address: u64) -> Result<u8> {
         Ok(self.bytes(address, 1)?[0])
@@ -161,18 +138,7 @@ impl<'a, M: Memory> ReadSet<'a, M> {
                 .ok_or_else(|| failure(FailureKind::BoundExceeded, "vector bytes"))?,
         )
     }
-    fn seal(&self) -> Result<()> {
-        for (&(address, length), expected) in &self.reads {
-            let actual = self
-                .memory
-                .read(address, length)
-                .map_err(|_| failure(FailureKind::Unreadable, "seal read"))?;
-            if &actual != expected {
-                return Err(failure(FailureKind::Torn, "roots/fields/membership seal"));
-            }
-        }
-        Ok(())
-    }
+    fn seal(&mut self) -> Result<()> { self.accounting.seal(self.memory) }
     fn registry(&mut self, kind: u32, vtable_rva: u64) -> Result<Vec<(u32, u64)>> {
         let registry = self.pointer(self.base + REFERENCE_TABLES_RVA + u64::from(kind) * 8)?;
         let header = self.bytes(registry + 8, 24)?;
@@ -397,7 +363,7 @@ fn mission_stat_operands<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> 
     Ok(Value::Array(rows))
 }
 
-fn variant_definition<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Result<Value> {
+fn variant_definition_body<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Result<Value> {
     let equipment_token = read.u32(pointer + 0x18)?;
     let definition = read.pointer(pointer + 0x3f0)?;
     if read.u64(definition)? != read.base + 0x29218a0
@@ -522,7 +488,7 @@ fn subunits<M: Memory>(
     }
     Ok((rows, placeholders, count))
 }
-fn template_definition<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Result<Value> {
+fn template_definition_body<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Result<Value> {
     let name = read.string(pointer + 0x20, 256)?;
     let dimensions = read.u32(pointer + 0x60)?;
     let columns = dimensions & 65535;
@@ -544,8 +510,12 @@ fn template_definition<M: Memory>(read: &mut ReadSet<'_, M>, pointer: u64) -> Re
 
 pub fn observe_date<M: Memory>(memory: &M, base: u64) -> Result<u32> {
     let mut read = ReadSet::new(memory, base);
-    let state = read.pointer(base + GAME_STATE_RVA)?;
-    read.u32(state + DATE_OFFSET)
+    let result = (|| {
+        let state = read.pointer(base + GAME_STATE_RVA)?;
+        read.u32(state + DATE_OFFSET)
+    })();
+    read.seal()?;
+    result
 }
 
 fn campaign_pair<M: Memory>(read: &mut ReadSet<'_, M>, state: u64) -> Result<Value> {
@@ -563,11 +533,14 @@ fn campaign_pair<M: Memory>(read: &mut ReadSet<'_, M>, state: u64) -> Result<Val
 
 pub fn observe_campaign<M: Memory>(memory: &M, base: u64) -> Result<(u32, Value)> {
     let mut read = ReadSet::new(memory, base);
-    let state = read.pointer(base + GAME_STATE_RVA)?;
-    let date = read.u32(state + DATE_OFFSET)?;
-    let pair = campaign_pair(&mut read, state)?;
+    let result = (|| {
+        let state = read.pointer(base + GAME_STATE_RVA)?;
+        let date = read.u32(state + DATE_OFFSET)?;
+        let pair = campaign_pair(&mut read, state)?;
+        Ok((date, pair))
+    })();
     read.seal()?;
-    Ok((date, pair))
+    result
 }
 
 fn runtime_dlc_mask<M: Memory>(read: &mut ReadSet<'_, M>) -> Result<Value> {
@@ -581,10 +554,17 @@ fn runtime_dlc_mask<M: Memory>(read: &mut ReadSet<'_, M>) -> Result<Value> {
 }
 
 pub fn capture<M: Memory>(memory: &M, base: u64, expected_date: u32) -> Result<Value> {
+    capture_with_budget(memory, base, expected_date, readset_accounting::budget())
+}
+
+fn capture_with_budget<M: Memory>(memory: &M, base: u64, expected_date: u32,
+    budget: readset_accounting::SharedBudget) -> Result<Value> {
     let hour = expected_date
         .checked_sub(DATE_EPOCH)
         .ok_or_else(|| failure(FailureKind::HourLabelMismatch, "portable epoch"))?;
-    let mut read = ReadSet::new(memory, base);
+    let mut read = ReadSet::with_budget(memory, base, budget);
+    let result = (|| {
+
     let state = read.pointer(base + GAME_STATE_RVA)?;
     if read.u32(state + DATE_OFFSET)? != expected_date {
         return Err(failure(FailureKind::HourLabelMismatch, "opening date"));
@@ -739,8 +719,8 @@ pub fn capture<M: Memory>(memory: &M, base: u64, expected_date: u32) -> Result<V
         object.insert("definition".into(), definition);
         template_rows.push(row);
     }
-    read.seal()?;
-    if observe_date(memory, base)? != expected_date {
+    let closing_state = read.pointer(base + GAME_STATE_RVA)?;
+    if closing_state != state || read.u32(closing_state + DATE_OFFSET)? != expected_date {
         return Err(failure(FailureKind::HourLabelMismatch, "closing date"));
     }
     let value = json!({"schema":snapshot::design_catalog::A27_LIVE_CATALOG_SCHEMA,"runtime_dlc_mask":runtime_dlc_mask,"authority":{"program":"hoi4.exe 1.19.2.0.a729","program_sha256":PROGRAM_SHA256,"campaign":campaign,"current_date_raw":expected_date,"capture_hour_index":hour,"coherence":"double_read_all_roots_fields_and_membership"},"full_replacement":true,"completeness":{"membership":true,"owner":template_rows.iter().all(|row|row["owner_tag"].is_string()),"definitions":true,"lifecycle":true,"ui_occurrences":true},"catalog_roots":{"variants":"CReferenceObject/type70","division_templates":"CReferenceObject/type52","template_owner_order":"CCountry+0x1B8/+0x1C4","equipment_ui_occurrences":"CCountry+0xF68 manager A(+0xA0/+0xAC) then B(+0xE8/+0xF4)","equipment_developed_occurrences":"CCountry+0xF68 manager developed(+0xB8/+0xC4)"},"country_count":countries.len(),"countries":countries.iter().map(|(index,tag,pointer)|json!({"registry_index":index,"tag":tag,"designer_pointer_order_ordinal":country_pointer_ordinals[pointer]})).collect::<Vec<_>>(),"variants":variant_rows,"division_templates":template_rows,"ui_occurrence_counts":{"unique_variants":first_discovery.len(),"catalog_variants_without_occurrence":variants.len()-first_discovery.len()}});
@@ -755,6 +735,27 @@ pub fn capture<M: Memory>(memory: &M, base: u64, expected_date: u32) -> Result<V
         },
     )?;
     Ok(value)
+    })();
+    // Never early-return before funded closing reads, including failed captures.
+    let closing = read.seal();
+    closing?;
+    result
+}
+
+/// Parent worker uses this seam instead of creating two independent budgets.
+/// The two captures share one monotone budget and retain the existing equality
+/// and current campaign/hour checks; outer StreamCustody is still caller-owned.
+pub fn capture_pair<M: Memory>(memory: &M, base: u64, expected_date: u32) -> Result<(Value, Value)> {
+    capture_pair_with_budget(memory, base, expected_date, readset_accounting::budget())
+}
+
+fn capture_pair_with_budget<M: Memory>(
+    memory: &M, base: u64, expected_date: u32, budget: readset_accounting::SharedBudget,
+) -> Result<(Value, Value)> {
+    let first = capture_with_budget(memory, base, expected_date, budget.clone())?;
+    let second = capture_with_budget(memory, base, expected_date, budget)?;
+    if first != second { return Err(failure(FailureKind::Torn, "paired A27 acquisition")); }
+    Ok((first, second))
 }
 pub mod custody;
 #[cfg(test)]

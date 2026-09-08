@@ -5,6 +5,9 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+// Journal framing retains its 256 MiB bound independently of native read accounting.
+const MAX_JOURNAL_ENTRY_BYTES: usize = 256 * 1024 * 1024;
+
 pub struct TimelineJournal {
     writer: BufWriter<File>,
     previous: Option<PortableDesignCatalog>,
@@ -193,13 +196,13 @@ pub fn seal_journal(
     let mut after_gap = false;
     loop {
         let mut line = Vec::new();
-        std::io::Read::take(&mut reader, (MAX_READ_BYTES * 4 + 1) as u64)
+        std::io::Read::take(&mut reader, (MAX_JOURNAL_ENTRY_BYTES + 1) as u64)
             .read_until(b'\n', &mut line)
             .map_err(|error| format!("read native A27 journal: {error}"))?;
         if line.is_empty() {
             break;
         }
-        if line.len() > MAX_READ_BYTES * 4 {
+        if line.len() > MAX_JOURNAL_ENTRY_BYTES {
             return Err("native A27 journal entry exceeds bound".into());
         }
         let mut entry = snapshot::parse_json_strict(&line)
