@@ -1306,7 +1306,14 @@ mod tests {
     }
 
     pub(super) fn designer_catalog_value() -> serde_json::Value {
+        // Synthetic copied census matches production_fixture's authored main slot.
         let definition = json!({
+        "append_variant_name": {"status":"measured","raw_u8":0},
+        "slot_identities": {"status":"measured","archetype_token_raw":71,
+            "archetype_token":{"status":"measured","value":"light_tank_chassis_1",
+                "utf8_hex":"6c696768745f74616e6b5f636861737369735f31"},
+            "slots":[{"source_ordinal":0,"token_handle_raw":500,
+                "token":{"status":"measured","value":"main","utf8_hex":"6d61696e"}}]},
         "archetype_token": "light_tank_chassis_1",
         "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
         "cached_stats": [],

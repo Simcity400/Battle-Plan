@@ -46,6 +46,8 @@ fn catalog() -> Vec<u8> {
             "catalog_scan_ordinal": 0, "country_vector_ordinal": 0,
                 "country_source_occurrences": [{"source_country_tag":"GER","source_country_registry_index":0,"country_vector_ordinal":0}],
             "definition": {
+                "country_289a": {"status":"unavailable","reason":{"kind":"unreadable","field":"synthetic catalogue country_289a"}},
+                "country_3abe": {"status":"unavailable","reason":{"kind":"unreadable","field":"synthetic catalogue country_3abe"}},
                 "name": "Infantry", "name_utf8_hex": "496e66616e747279",
                 "regiment_grid_columns": 5, "regiment_grid_rows": 5,
                 "regiment_pointer_count": 0, "regiment_placeholder_ordinals": [],
@@ -65,6 +67,8 @@ fn catalog() -> Vec<u8> {
             {
                 "catalog_scan_ordinal": 0, "creator_tag": "GER",
                 "definition": {
+                    "slot_identities": {"status":"unavailable","reason":{"kind":"unreadable","field":"synthetic catalogue copied slots"}},
+                    "append_variant_name": {"status":"unavailable","reason":{"kind":"unreadable","field":"synthetic catalogue append_variant_name"}},
                     "archetype_token": "light_tank_chassis_1",
                     "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
                     "cached_stats": [], "cached_stats_complete": true,
@@ -91,6 +95,8 @@ fn catalog() -> Vec<u8> {
             {
                 "catalog_scan_ordinal": 1, "creator_tag": "GER",
                 "definition": {
+                    "slot_identities": {"status":"unavailable","reason":{"kind":"unreadable","field":"synthetic catalogue copied slots"}},
+                    "append_variant_name": {"status":"unavailable","reason":{"kind":"unreadable","field":"synthetic catalogue append_variant_name"}},
                     "archetype_token": "light_tank_chassis_1",
                     "archetype_token_utf8_hex": "6c696768745f74616e6b5f636861737369735f31",
                     "cached_stats": [], "cached_stats_complete": true,

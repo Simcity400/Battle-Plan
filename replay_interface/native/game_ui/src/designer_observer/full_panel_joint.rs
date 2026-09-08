@@ -7,7 +7,8 @@ use crate::stored_country_selection::StoredCountrySelection;
 use replay_core::designer_icon_context::{CapitalSlotOutcome, DesignerIconContextRefusal};
 use replay_core::{BuildSchedule, RawFrame, WorldFrame};
 use serde_json::Value;
-use snapshot::design_catalog::{DesignItemIconObservation, DesignTextObservation, DesignU32Observation, PortableDesignCatalog};
+use snapshot::design_catalog::{DesignByteObservation, DesignI32Observation, DesignItemIconObservation,
+    DesignSlotIdentityObservation, DesignTextObservation, DesignU32Observation, PortableDesignCatalog};
 use std::sync::Arc;
 
 pub(super) const REGIONAL_RGBA: [u8; 4] = [30, 80, 220, 255];
@@ -132,10 +133,10 @@ fn inside(rect: &crate::compose::DebugRect, x: usize, y: usize) -> bool {
 #[test]
 fn actual_bound_a27_d53_capital_stages_compose_known_rows_and_local_refusals() {
     for (bytes, size, sha) in [
-        (CATALOG, 6_744, "a7e2dff85388d04b771f6bdefe86d5b0a0f9f7e97009209a2264f8ac1512d9bd"),
+        (CATALOG, 7_175, "387d8d0fbc2b6b835b118f920383581196c81426fe9b3395b177e6861caeed1f"),
         (CID1, 189, "6f81df0ba7cae5138ad36a28309a0e9689f37017cc614d3d104599a09a5f1010"),
         (D53, 4_346, "8868ce1d34c94887c74f2dcfed4c77283d9a8fb47df773d474ede2f368dc41c3"),
-        (JOINT, 50_374, "5420ee4f74ea3c98678c7ccdaec8838684648a497b6c62cb8acb69c4c4c8a24d"),
+        (JOINT, 50_374, "c58c483090db436cbc81a937b9c13b3dc336895d9f303d0507c19067ede4d438"),
     ] {
         assert_eq!(bytes.len(), size);
         assert_eq!(digest(bytes), sha);
@@ -201,6 +202,31 @@ fn actual_bound_a27_d53_capital_stages_compose_known_rows_and_local_refusals() {
         assert_eq!(native.variants[0].design_id, "1:70");
         assert_eq!(native.variants[0].equipment_token_raw, 17);
         assert_eq!(native.variants[0].equipment_definition_token, "ship_hull");
+        let DesignSlotIdentityObservation::Measured { archetype_token_raw, archetype_token, slots }
+            = &native.variants[0].slot_identities else { panic!("{label}: copied main slot census"); };
+        assert_eq!(*archetype_token_raw, 17);
+        assert_eq!(*archetype_token, DesignTextObservation::Measured {
+            value: "ship_hull".into(), utf8_hex: "736869705f68756c6c".into(),
+        });
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].source_ordinal, 0);
+        assert_eq!(slots[0].token_handle_raw, 500);
+        assert_eq!(slots[0].token, DesignTextObservation::Measured {
+            value: "main".into(), utf8_hex: "6d61696e".into(),
+        });
+        assert!(native.variants[0].record.modules.is_empty(), "{label}: main is unassigned");
+        assert_eq!(native.variants[0].append_variant_name, DesignByteObservation::Measured { raw_u8: 0 });
+        assert_eq!(native.variants[0].display_name, DesignTextObservation::Measured {
+            value: "Vessel".into(), utf8_hex: "56657373656c".into(),
+        });
+        assert_eq!(native.variants[0].variant_name, DesignTextObservation::Measured {
+            value: String::new(), utf8_hex: String::new(),
+        });
+        assert_eq!(native.templates.len(), 1);
+        assert_eq!(native.templates[0].design_id, "1:52");
+        assert_eq!(native.templates[0].template_id, 1);
+        assert_eq!(native.templates[0].country_289a, DesignI32Observation::Measured { raw_i32: 0 });
+        assert_eq!(native.templates[0].country_3abe, DesignI32Observation::Measured { raw_i32: 0 });
         assert_eq!(native.variants[0].record.name.as_deref(), Some("Vessel"));
         assert_eq!(native.variants[0].record.owner.as_deref(), Some("GER"));
         assert_eq!(native.variants[0].source_occurrences.len(), 2);
