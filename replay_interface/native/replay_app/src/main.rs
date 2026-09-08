@@ -50,6 +50,8 @@ mod counter_gpu;
 #[cfg(windows)]
 mod d3d;
 #[cfg(windows)]
+mod desktop_diagnostics;
+#[cfg(windows)]
 mod furniture_render;
 #[cfg(windows)]
 mod headless;

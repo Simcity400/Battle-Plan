@@ -1,4 +1,6 @@
 
+mod desktop_diagnostics;
+
 use game_ui::assets::AssetResolver;
 use replay_core::NamedCountry;
 use replay_core::{ArmyBattleplanOrderKey, WorldFrame};
