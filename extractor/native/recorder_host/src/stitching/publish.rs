@@ -101,7 +101,11 @@ pub trait RetainedStitchedPayloadSource {
         hour_index: i64,
         writer: &mut dyn Write,
     ) -> Result<VerifiedPayloadReceipt, String>;
+    /// Receipt for the original stored source, including compression. Embedded
+    /// entries retain these bytes; decoded digests and extents remain separate
+    /// reconstruction provenance in the plan.
     fn raw_source_receipt(&self, source_path: &str) -> Result<VerifiedPayloadReceipt, String>;
+    /// Copy the same stored bytes authenticated by `raw_source_receipt`.
     fn copy_raw_source_to_unpublished(
         &self,
         source_path: &str,
@@ -1193,7 +1197,11 @@ fn publish_stitched_container_retained_impl<S: RetainedStitchedPayloadSource>(
             return Err("rebuilt-wire product belongs to a different stitched plan".to_string());
         }
         let (branches, routes, source_first_ticks, unreconstructed_records) =
-            derive_rebuilt_wire_plan_from_sessions(plan, Some(&product.catalog), &product.sessions)?;
+            derive_rebuilt_wire_plan_from_sessions(
+                plan,
+                Some(&product.catalog),
+                &product.sessions,
+            )?;
         if branches != product.branches || routes != product.routes {
             return Err(
                 "rebuilt-wire product branch join differs from the final stitched plan".to_string(),
@@ -1883,7 +1891,7 @@ fn with_cleanup_note(primary: String, temp: &Path, cleanup: std::io::Result<()>)
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
@@ -1909,7 +1917,8 @@ mod tests {
         vec![(play_order as u8).wrapping_add(1); len]
     }
 
-    fn stitched_wire_test_manifest() -> (portable_content_manifest::ContentManifest, Vec<u8>) {
+    pub(in crate::stitching) fn stitched_wire_test_manifest(
+    ) -> (portable_content_manifest::ContentManifest, Vec<u8>) {
         use portable_content_manifest::{
             ContentLayerKind, ContentManifest, LayerStorageKind, RecordedContentLayer,
             RequiredContent, RequiredContentKind, SourceGameIdentity, SourceProfileIdentity,
@@ -2080,7 +2089,7 @@ mod tests {
         append_stitched_d81_hour_fixture(out, sequence, tick, false)
     }
 
-    fn append_stitched_d81_hour_with_country_roster(
+    pub(in crate::stitching) fn append_stitched_d81_hour_with_country_roster(
         out: &mut Vec<u8>,
         sequence: &mut u64,
         tick: i32,
@@ -2942,9 +2951,11 @@ mod tests {
         // not about the retained open's path sharing; the handle keeps it off
         // a race it does not control.
         let published = fs::File::open(&first_path).expect("open the published container");
-        let (container, _, _) =
-            Container::open_strict_with_file_receipt_from_file(published, &ExpectedIdentity::default())
-                .unwrap();
+        let (container, _, _) = Container::open_strict_with_file_receipt_from_file(
+            published,
+            &ExpectedIdentity::default(),
+        )
+        .unwrap();
         container.verify_all_streaming().unwrap();
         assert!(container.index().is_stitched());
         let leftovers = fs::read_dir(&dir.0)
@@ -3093,9 +3104,20 @@ mod tests {
 
     fn compressed_source_plan() -> StitchedPlan {
         let mut seg = snap_seg(0, 0..=2);
-        let decoded = Sha256::hex(b"decoded-plaintext-distinct-from-the-stored-bytes");
-        seg.raw_source.as_mut().unwrap().decoded_digest = decoded.clone();
-        seg.provenance.source_decoded_digest = Some(decoded);
+        let raw = seg.raw_source.as_mut().unwrap();
+        let decoded = raw_payload(0, (raw.byte_bounds.1 - raw.byte_bounds.0) as usize);
+        let mut stored = Vec::new();
+        compact_stream::encode_to_writer(
+            &mut std::io::Cursor::new(decoded),
+            &mut stored,
+            compact_stream::StreamCompression::Zstd,
+            3,
+            None,
+        )
+        .unwrap();
+        raw.stored_digest = Sha256::hex(&stored);
+        seg.provenance.source_stored_digest = Some(raw.stored_digest.clone());
+        assert_ne!(raw.stored_digest, raw.decoded_digest);
         match plan_stitch(GAME, stitch_inputs(), vec![seg]) {
             StitchOutcome::Stitched(plan) => plan,
             StitchOutcome::Separate { reason } => panic!("expected Stitched: {reason}"),
@@ -3105,7 +3127,19 @@ mod tests {
     #[test]
     fn compressed_source_validates_stored_digest_and_reopens() {
         let plan = compressed_source_plan();
-        let source = MemorySource::for_plan(&plan);
+        let mut source = MemorySource::for_plan(&plan);
+        for bytes in source.raw.values_mut() {
+            let mut stored = Vec::new();
+            compact_stream::encode_to_writer(
+                &mut std::io::Cursor::new(&*bytes),
+                &mut stored,
+                compact_stream::StreamCompression::Zstd,
+                3,
+                None,
+            )
+            .unwrap();
+            *bytes = stored;
+        }
         let (_bytes, report) = pack_and_validate(&plan, &source).unwrap();
         assert_eq!(report.visible_snapshot_hours, 3);
     }

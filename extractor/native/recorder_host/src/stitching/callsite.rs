@@ -342,8 +342,7 @@ fn compose_and_publish(
                 built.raw_container_path.clone(),
                 RetainedRawPayload {
                     file: Mutex::new(raw.file),
-                    compression: raw.compression,
-                    receipt: raw.receipt,
+                    stored_receipt: raw.stored_receipt,
                 },
             )
             .is_some()
@@ -790,8 +789,8 @@ fn build_segment(
         session_nonce: ticket.session_nonce.clone(),
         process_start_identity: ticket.process_start_identity.clone(),
         source_path: raw_container_path.clone(),
-        stored_digest: entry.raw_sha256.clone(),
-        decoded_digest: entry.raw_decoded_sha256.clone(),
+        stored_digest: raw.stored_receipt.sha256.clone(),
+        decoded_digest: raw.decoded_receipt.sha256.clone(),
         record_seq_bounds: source_bounds.0,
         byte_bounds: source_bounds.1,
         storage: RawSourceStorage::EmbeddedCampaign {
@@ -850,8 +849,8 @@ fn build_segment(
             schema_version: Some("1".to_string()),
             static_catalog_digest: Some(catalog),
             source_path: Some(raw_container_path.clone()),
-            source_stored_digest: Some(entry.raw_sha256.clone()),
-            source_decoded_digest: Some(entry.raw_decoded_sha256.clone()),
+            source_stored_digest: Some(raw.stored_receipt.sha256.clone()),
+            source_decoded_digest: Some(raw.decoded_receipt.sha256.clone()),
             record_seq_bounds: Some(source_bounds.0),
             byte_bounds: Some(source_bounds.1),
             start_reason: Some(start_reason),
@@ -876,8 +875,8 @@ struct FrameExtent {
 
 struct RawInspection {
     file: File,
-    compression: compact_stream::StreamCompression,
-    receipt: VerifiedPayloadReceipt,
+    stored_receipt: VerifiedPayloadReceipt,
+    decoded_receipt: VerifiedPayloadReceipt,
     first_record: Vec<u8>,
     frames: BTreeMap<i64, FrameExtent>,
     source_bounds: ((u64, u64), (u64, u64)),
@@ -1096,8 +1095,11 @@ fn inspect_registered_raw(path: &Path, entry: &RegistryEntry) -> Result<RawInspe
     validate_raw_identity(&first_record, entry)?;
     Ok(RawInspection {
         file: handle,
-        compression,
-        receipt: VerifiedPayloadReceipt {
+        stored_receipt: VerifiedPayloadReceipt {
+            bytes: stored_len,
+            sha256: stored_sha256,
+        },
+        decoded_receipt: VerifiedPayloadReceipt {
             bytes: file_len,
             sha256,
         },
@@ -1259,8 +1261,7 @@ struct RetainedSnapshotPayload {
 
 struct RetainedRawPayload {
     file: Mutex<File>,
-    compression: compact_stream::StreamCompression,
-    receipt: VerifiedPayloadReceipt,
+    stored_receipt: VerifiedPayloadReceipt,
 }
 
 fn verified_snapshot_receipt(receipt: &SpoolEntryReceipt) -> VerifiedPayloadReceipt {
@@ -1310,7 +1311,7 @@ impl RetainedStitchedPayloadSource for RetainedProductPayloads {
     fn raw_source_receipt(&self, source_path: &str) -> Result<VerifiedPayloadReceipt, String> {
         self.raw
             .get(source_path)
-            .map(|raw| raw.receipt.clone())
+            .map(|raw| raw.stored_receipt.clone())
             .ok_or_else(|| format!("missing registered raw source {source_path}"))
     }
 
@@ -1325,16 +1326,14 @@ impl RetainedStitchedPayloadSource for RetainedProductPayloads {
             .raw
             .get(source_path)
             .ok_or_else(|| format!("missing registered raw source {source_path}"))?;
-        let file = raw
+        let mut file = raw
             .file
             .lock()
             .map_err(|_| "registered raw source lock poisoned".to_string())?;
-        let mut file = compact_stream::decode_open_file(
-            file.try_clone()
-                .map_err(|error| format!("duplicate retained raw handle failed: {error}"))?,
-            raw.compression,
-        )
-        .map_err(|error| format!("decode retained raw source failed: {error}"))?;
+        // The container authenticates the stored source. Decoding here would
+        // change its identity while leaving the source ledger unchanged.
+        file.seek(SeekFrom::Start(0))
+            .map_err(|error| format!("rewind retained raw source failed: {error}"))?;
         let mut hasher = Sha256::new();
         let mut bytes = 0u64;
         let mut buffer = vec![0u8; COPY_CHUNK];
@@ -2360,7 +2359,7 @@ mod tests {
     }
 
     #[test]
-    fn a_compressed_member_inspects_identically_to_the_raw_member() {
+    fn a_compressed_member_inspects_identically_and_publishes_through_retained_product() {
         use compact_contract::campaign_identity::{
             encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses, COMPACT_DOMAIN_STREAM_HEADER,
             COMPACT_RECORD_TYPE_STREAM_HEADER,
@@ -2393,19 +2392,13 @@ mod tests {
             .unwrap();
         let identity = validated.validated_cid1().unwrap().clone();
         let first_record = decoded.clone();
+        let mut sequence = 1;
         for hour_offset in 0..2i32 {
-            for sequence in 0..8u64 {
-                decoded.extend(record(
-                    1 + sequence + 8 * hour_offset as u64,
-                    raw_hour + hour_offset,
-                    if sequence == 7 {
-                        COMPACT_RECORD_TYPE_FRAME_END
-                    } else {
-                        1
-                    },
-                    &[0x5au8; 256],
-                ));
-            }
+            crate::stitching::publish::tests::append_stitched_d81_hour_with_country_roster(
+                &mut decoded,
+                &mut sequence,
+                raw_hour + hour_offset,
+            );
         }
 
         let dir = std::env::temp_dir().join(format!(
@@ -2413,7 +2406,7 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        let _ = fs::remove_dir_all(&dir);
+        assert!(!dir.exists(), "fixture directory must be new");
         fs::create_dir_all(&dir).unwrap();
         let raw_path = dir.join("member-raw.h4cr");
         let zstd_path = dir.join("member-zstd.h4cr");
@@ -2452,7 +2445,7 @@ mod tests {
             manifest_path: "manifest.json".to_string(),
             manifest_sha256: "99".repeat(32),
             start_reason: "session_start".to_string(),
-            stop_reason: "session_stop".to_string(),
+            stop_reason: "session_end".to_string(),
         };
 
         let raw_entry = entry(&raw_path);
@@ -2468,16 +2461,20 @@ mod tests {
 
         let from_raw = inspect_registered_raw(&raw_path, &raw_entry).unwrap();
         let from_zstd = inspect_registered_raw(&zstd_path, &zstd_entry).unwrap();
-        assert_eq!(from_raw.receipt, from_zstd.receipt);
-        assert_eq!(from_raw.receipt.bytes, decoded.len() as u64);
-        assert_eq!(from_raw.receipt.sha256, decoded_sha256);
+        assert_eq!(from_raw.decoded_receipt, from_zstd.decoded_receipt);
+        assert_eq!(from_raw.decoded_receipt.bytes, decoded.len() as u64);
+        assert_eq!(from_raw.decoded_receipt.sha256, decoded_sha256);
+        assert_eq!(from_raw.stored_receipt, from_raw.decoded_receipt);
+        assert_eq!(from_zstd.stored_receipt.bytes, stored_zstd.len() as u64);
+        assert_eq!(from_zstd.stored_receipt.sha256, zstd_entry.raw_sha256);
+        assert_ne!(from_zstd.stored_receipt, from_zstd.decoded_receipt);
         assert_eq!(from_raw.frames, from_zstd.frames);
         assert_eq!(from_raw.first_record, from_zstd.first_record);
         assert_eq!(from_raw.first_record, first_record);
         assert_eq!(from_raw.source_bounds, from_zstd.source_bounds);
         assert_eq!(from_zstd.source_bounds.1, (0, decoded.len() as u64));
         assert_eq!(
-            from_zstd.compression,
+            compact_stream::detect(&zstd_path).unwrap(),
             compact_stream::StreamCompression::Zstd
         );
 
@@ -2485,19 +2482,331 @@ mod tests {
         payloads.raw.insert(
             "raw/member.h4cr".to_string(),
             RetainedRawPayload {
-                file: Mutex::new(from_zstd.file),
-                compression: from_zstd.compression,
-                receipt: from_zstd.receipt.clone(),
+                file: Mutex::new(from_zstd.file.try_clone().unwrap()),
+                stored_receipt: from_zstd.stored_receipt.clone(),
             },
         );
         let mut copied = Vec::new();
         let receipt = payloads
             .copy_raw_source_to_unpublished("raw/member.h4cr", &mut copied)
             .unwrap();
-        assert_eq!(copied, decoded, "stitched raw entry is not canonical H4CR");
-        assert_eq!(receipt, from_zstd.receipt);
+        assert_eq!(
+            copied, stored_zstd,
+            "publication must retain compressed bytes"
+        );
+        assert_eq!(receipt, from_zstd.stored_receipt);
+        drop(payloads);
 
+        #[cfg(windows)]
+        exercise_compressed_retained_publication(&dir, &zstd_path, &zstd_entry, &decoded);
+
+        drop(from_raw);
+        drop(from_zstd);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    fn exercise_compressed_retained_publication(
+        dir: &Path,
+        compressed_path: &Path,
+        registered: &RegistryEntry,
+        decoded: &[u8],
+    ) {
+        use crate::stitching::publish::tests::stitched_wire_test_manifest;
+        use compact_contract::stream_validator::StreamIdentityMode;
+
+        let (content, definition) = stitched_wire_test_manifest();
+        let catalog = wire_product::AuthenticatedProvinceCatalog::from_content_manifest(
+            &content.encode_json().unwrap(),
+            &definition,
+        )
+        .unwrap();
+        let manifest = serde_json::json!({
+            "modset": {"game": {"exe_sha256": content.source_game.executable_sha256}},
+            "static_bundle": {"product_modset_sha256": content.product_modset_sha256},
+            "portable_content_manifest": {"manifest_digest_sha256": content.sha256().unwrap()},
+        });
+        let inspected = inspect_registered_raw(compressed_path, registered).unwrap();
+        let game = "compressed-retained-product";
+        // The second member rolls back only the final hour, leaving a real
+        // parent hour. Reframe that witnessed hour as a new IdentityV1 stream.
+        let last_frame = inspected.frames.values().last().unwrap();
+        let mut second_decoded = inspected.first_record.clone();
+        second_decoded.extend_from_slice(
+            &decoded[last_frame.start_byte as usize..last_frame.end_byte as usize],
+        );
+        let mut offset = inspected.first_record.len();
+        let mut sequence = 1u64;
+        while offset < second_decoded.len() {
+            let header = parse_compact_record_header(&second_decoded[offset..]).unwrap();
+            second_decoded[offset + 8..offset + 16].copy_from_slice(&sequence.to_le_bytes());
+            offset += header.record_len();
+            sequence += 1;
+        }
+        let disk_paths = [
+            compressed_path.to_path_buf(),
+            dir.join("rollback-source.h4cr"),
+        ];
+        let decoded_members = [decoded.to_vec(), second_decoded];
+        let mut second_stored = Vec::new();
+        compact_stream::encode_to_writer(
+            &mut std::io::Cursor::new(&decoded_members[1]),
+            &mut second_stored,
+            compact_stream::StreamCompression::Zstd,
+            3,
+            None,
+        )
+        .unwrap();
+        fs::write(&disk_paths[1], second_stored).unwrap();
+        let mut payloads = RetainedProductPayloads::default();
+        let mut segments = Vec::new();
+        let mut source_paths = Vec::new();
+        for ordinal in 0..2 {
+            let mut entry = registered.clone();
+            entry.ticket.logical_stream_id = ordinal;
+            entry.ticket.play_order = ordinal;
+            entry.ticket.session_nonce = format!("fixture-session-{ordinal}");
+            entry.ticket.process_start_identity = format!("fixture-process-start-{ordinal}");
+            entry.raw_path = disk_paths[ordinal as usize].display().to_string();
+            entry.raw_sha256 = Sha256::hex(&fs::read(&disk_paths[ordinal as usize]).unwrap());
+            entry.raw_decoded_sha256 = Sha256::hex(&decoded_members[ordinal as usize]);
+            entry.raw_decoded_bytes = decoded_members[ordinal as usize].len() as u64;
+            let raw = inspect_registered_raw(&disk_paths[ordinal as usize], &entry).unwrap();
+            let mut entries = Vec::new();
+            let mut snapshots = Vec::new();
+            for hour in raw.frames.keys() {
+                let file = format!("snapshots/{hour}.json");
+                let date = compact_contract::calendar::date_from_raw(
+                    i32::try_from(*hour).unwrap() + compact_contract::calendar::DATE_EPOCH_CONST,
+                )
+                .unwrap();
+                snapshots.push(serde_json::json!({
+                    "file": file, "hour_index": hour, "date": date,
+                }));
+                entries.push(PackEntry {
+                    path: format!("payload/{game}/{file}"),
+                    bytes: serde_json::to_vec(&serde_json::json!({
+                        "schema_version": "1", "game_id": game, "hour_index": hour,
+                        "provenance": {"mod": {"modset_id": content.product_modset_sha256}},
+                        "countries": {}, "states": {},
+                    }))
+                    .unwrap(),
+                    role: "snapshot",
+                    hour_index: Some(*hour),
+                });
+            }
+            entries.push(PackEntry {
+                path: format!("payload/{game}/index.json"),
+                bytes: serde_json::to_vec(&serde_json::json!({
+                    "schema_version": "1", "game_id": game, "snapshots": snapshots,
+                }))
+                .unwrap(),
+                role: "index",
+                hour_index: None,
+            });
+            let package_path = dir.join(format!("snapshots-{ordinal}.battleplan"));
+            fs::write(
+                &package_path,
+                pack_with(
+                    game,
+                    &entries,
+                    &PackIdentity::default(),
+                    false,
+                    &PackOptions::default(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+            let container =
+                Container::open_strict(&package_path, &ExpectedIdentity::default()).unwrap();
+            let built = build_segment(
+                &entry.ticket.campaign_key_hex,
+                &entry,
+                &container,
+                &manifest,
+                &raw,
+                payloads.packages.len(),
+            )
+            .unwrap();
+            source_paths.push(built.raw_container_path.clone());
+            payloads.raw.insert(
+                built.raw_container_path,
+                RetainedRawPayload {
+                    file: Mutex::new(raw.file),
+                    stored_receipt: raw.stored_receipt,
+                },
+            );
+            for (hour, snapshot) in built.snapshots {
+                payloads.snapshots.insert((ordinal as u32, hour), snapshot);
+            }
+            payloads.packages.push(container);
+            segments.push(built.segment);
+        }
+        let required = StitchRequiredInputs {
+            schema_version: "1".into(),
+            fold_version: "world-fold-schema-1".into(),
+            canonical_writer_version: "snapshot-canonical-json-v1".into(),
+            packer_codec_version: "snapshot-zip-store-v2".into(),
+            created_utc: "2026-09-08T00:00:00Z".into(),
+            compression_method: "store".into(),
+            compression_parameters: BTreeMap::from([("level".into(), "none".into())]),
+            entry_order: STITCH_ENTRY_ORDER.into(),
+        };
+        let destination = dir.join("campaign.battleplan");
+        let publish = |payloads: &RetainedProductPayloads| {
+            publish_product_stitch_retained_with_rebuilt_wire(
+                game,
+                required.clone(),
+                segments.clone(),
+                payloads,
+                &destination,
+                |plan| {
+                    let sources = source_paths
+                        .iter()
+                        .zip(&disk_paths)
+                        .map(|(path, disk_path)| {
+                            StitchedRebuiltWireSource::open(
+                                path.clone(),
+                                disk_path.clone(),
+                                StreamIdentityMode::IdentityV1,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    StitchedRebuiltWireProduct::build(
+                        plan,
+                        wire_product::BundleBuildConfig::default(),
+                        content.clone(),
+                        catalog.clone(),
+                        sources,
+                    )
+                },
+            )
+        };
+        let report = match publish(&payloads).unwrap() {
+            ProductStitchOutcome::Published(report) => report,
+            other => panic!("real compressed members must publish: {other:?}"),
+        };
+        assert_eq!(report.segments, 2);
+        assert_eq!(report.visible_snapshot_hours, inspected.frames.len());
+        let prior = portable_test_fs_retry::read(&destination).unwrap();
+        assert_eq!(Sha256::hex(&prior), report.container_sha256);
+        {
+            let reopened =
+                Container::open_strict(&destination, &ExpectedIdentity::default()).unwrap();
+            reopened.verify_all_streaming().unwrap();
+            assert_eq!(reopened.segments().unwrap().unwrap().segments.len(), 2);
+            assert_eq!(reopened.entries_by_role("raw_source").len(), 2);
+            let graph = snapshot::parse_json_strict(
+                &reopened
+                    .read_entry_bytes(&format!("payload/{game}/segments.json"))
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(graph["raw_sources"].as_array().unwrap().len(), 2);
+            for (ordinal, path) in source_paths.iter().enumerate() {
+                let row = graph["raw_sources"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row["session_path"].as_str() == Some(path.as_str()))
+                    .unwrap();
+                let stored_bytes = fs::read(&disk_paths[ordinal]).unwrap();
+                assert_eq!(row["stored_digest"], Sha256::hex(&stored_bytes));
+                assert_eq!(
+                    row["decoded_digest"],
+                    Sha256::hex(&decoded_members[ordinal])
+                );
+                assert_ne!(row["stored_digest"], row["decoded_digest"]);
+                let stored = reopened
+                    .read_entry_bytes(&format!("payload/{game}/{path}"))
+                    .unwrap();
+                assert_eq!(stored, stored_bytes);
+                let extracted = dir.join("reopened-source.h4cr");
+                fs::write(&extracted, stored).unwrap();
+                let mut decoded_reopened = Vec::new();
+                compact_stream::open(&extracted)
+                    .unwrap()
+                    .read_to_end(&mut decoded_reopened)
+                    .unwrap();
+                assert_eq!(decoded_reopened, decoded_members[ordinal]);
+            }
+        }
+        let preserves_prior = || {
+            assert_eq!(portable_test_fs_retry::read(&destination).unwrap(), prior);
+            assert!(
+                !fs::read_dir(dir).unwrap().any(|entry| {
+                    entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .contains("stitch-tmp")
+                }),
+                "failed publication leaked an unpublished container"
+            );
+        };
+
+        // Both registry boundaries still refuse independently, before publication.
+        let mut bad_registry = registered.clone();
+        bad_registry.raw_sha256 = registered.raw_decoded_sha256.clone();
+        assert!(inspect_registered_raw(compressed_path, &bad_registry)
+            .err()
+            .unwrap()
+            .contains("opened raw source differs from its registry receipt"));
+        bad_registry = registered.clone();
+        bad_registry.raw_decoded_sha256 = registered.raw_sha256.clone();
+        assert!(inspect_registered_raw(compressed_path, &bad_registry)
+            .err()
+            .unwrap()
+            .contains("decoded raw source differs from its registry receipt"));
+        preserves_prior();
+
+        // A decoded receipt cannot authorize an embedded stored source.
+        let source_path = &source_paths[0];
+        let good_receipt = payloads.raw[source_path].stored_receipt.clone();
+        payloads.raw.get_mut(source_path).unwrap().stored_receipt =
+            inspected.decoded_receipt.clone();
+        let error = publish(&payloads).unwrap_err();
+        assert!(error.contains("receipt hashes"), "{error}");
+        preserves_prior();
+        payloads.raw.get_mut(source_path).unwrap().stored_receipt = good_receipt;
+
+        // Exercise the actual retained copier with a tampered file and the original
+        // receipt. No custom payload-source implementation can mask this boundary.
+        let mut tampered = fs::read(compressed_path).unwrap();
+        tampered[4] ^= 1;
+        let tampered_path = dir.join("tampered-source.h4cr");
+        fs::write(&tampered_path, tampered).unwrap();
+        let original_handle = std::mem::replace(
+            payloads
+                .raw
+                .get_mut(source_path)
+                .unwrap()
+                .file
+                .get_mut()
+                .unwrap(),
+            open_retained_raw(&tampered_path).unwrap(),
+        );
+        let error = publish(&payloads).unwrap_err();
+        assert!(
+            error.contains("retained source copy receipt changed"),
+            "{error}"
+        );
+        preserves_prior();
+        *payloads
+            .raw
+            .get_mut(source_path)
+            .unwrap()
+            .file
+            .get_mut()
+            .unwrap() = original_handle;
+
+        let retry = match publish(&payloads).unwrap() {
+            ProductStitchOutcome::Published(report) => report,
+            other => panic!("valid retry must publish: {other:?}"),
+        };
+        assert_eq!(retry.container_sha256, report.container_sha256);
+        preserves_prior();
     }
 
     #[test]
