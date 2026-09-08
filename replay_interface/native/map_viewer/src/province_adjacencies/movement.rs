@@ -553,7 +553,7 @@ mod tests {
         ] {
             let input=snow_inputs(source, terrain(&[[1,1,1,1]]));
             assert!(input.distance([0,0],[1,0],[0,0],4,1).is_err());
-            let map=EngineMap { ids:vec![1;4],width:4,height:1,defined:[1].into_iter().collect(),land:vec![false,true] };
+            let map=EngineMap { ids:vec![1;4],width:4,height:1,defined:[1].into_iter().collect(),land:vec![false,true],kind_flags:vec![0,1] };
             assert_eq!(input.snow_coverage(&map)[&1],Ok(PermanentSnowCoverage {pixel_count:4,snow_pixels:4}));
         }
     }
@@ -562,18 +562,18 @@ mod tests {
     fn snow_samples_narrowed_runs_in_engine_rows_and_palette_zero_outside_bitmap() {
         let input=snow_inputs("terrain={a={perm_snow=yes color={1}}}",terrain(&[[0,0,0,0],[1,1,0,0]]));
         let map=EngineMap { ids:vec![1,1,2,2, 2,2,2,2],width:4,height:2,
-            defined:[1,2,3].into_iter().collect(),land:vec![false;4] };
+            defined:[1,2,3].into_iter().collect(),land:vec![false;4],kind_flags:vec![0;4] };
         let values=input.snow_coverage(&map);
         assert_eq!(values[&1],Ok(PermanentSnowCoverage {pixel_count:2,snow_pixels:2}));
         assert_eq!(values[&2],Ok(PermanentSnowCoverage {pixel_count:6,snow_pixels:0}));
         assert_eq!(values[&3],Err(PermanentSnowUnavailable::InactiveProvince));
         // A long run narrows to one pixel, rather than contributing its raster histogram.
-        let long=EngineMap {ids:vec![1;65_537],width:65_537,height:1,defined:[1].into_iter().collect(),land:vec![false,true]};
+        let long=EngineMap {ids:vec![1;65_537],width:65_537,height:1,defined:[1].into_iter().collect(),land:vec![false,true],kind_flags:vec![0,1]};
         assert_eq!(input.snow_coverage(&long)[&1],Ok(PermanentSnowCoverage {pixel_count:1,snow_pixels:0}));
         let zero=EngineMap {ids:vec![1;65_536],width:65_536,..long};
         assert_eq!(input.snow_coverage(&zero)[&1],Err(PermanentSnowUnavailable::NativePixelCountFault));
         let input=snow_inputs("terrain={a={perm_snow=yes color={0}}}",terrain(&[[2,2,2,2]]));
-        let outside=EngineMap {ids:vec![1;8],width:8,height:1,defined:[1].into_iter().collect(),land:vec![false,true]};
+        let outside=EngineMap {ids:vec![1;8],width:8,height:1,defined:[1].into_iter().collect(),land:vec![false,true],kind_flags:vec![0,1]};
         assert_eq!(input.snow_coverage(&outside)[&1],Ok(PermanentSnowCoverage {pixel_count:8,snow_pixels:4}));
     }
 
@@ -581,7 +581,7 @@ mod tests {
     fn unreadable_terrain_pixel_withdraws_only_its_province() {
         let input=Inputs {terrain:Terrain {width:4,height:1,components:1,pitch:4,bytes:vec![1,1]},
             costs:vec![],snow:vec![false,true],movement_error:None};
-        let map=EngineMap {ids:vec![1,1,2,2],width:4,height:1,defined:[1,2].into_iter().collect(),land:vec![false;3]};
+        let map=EngineMap {ids:vec![1,1,2,2],width:4,height:1,defined:[1,2].into_iter().collect(),land:vec![false;3],kind_flags:vec![0;3]};
         let values=input.snow_coverage(&map);
         assert_eq!(values[&1],Ok(PermanentSnowCoverage {pixel_count:2,snow_pixels:2}));
         assert_eq!(values[&2],Err(PermanentSnowUnavailable::Terrain(Missing::TerrainPixelUnwritten)));

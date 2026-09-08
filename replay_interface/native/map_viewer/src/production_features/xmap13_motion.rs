@@ -37,6 +37,7 @@ pub struct Xmap13MotionState {
 pub struct Xmap13MotionSample {
     placements: BTreeMap<String, std::result::Result<super::Xmap13HelperPlacement, String>>,
     geometry_sources: Vec<portable_content_manifest::UsedContentKey>,
+    province_flags: BTreeMap<String, std::result::Result<u8, String>>,
     frame: String,
     content: String,
     pub(crate) history_sha256: String,
@@ -50,6 +51,12 @@ impl Xmap13MotionSample {
     pub(super) fn placement(&self, identity: &crate::Xmap13UnitIdentity) -> Result<&super::Xmap13HelperPlacement> {
         self.placements.get(&identity.canonical_id()).ok_or("XMAP13 helper placement has no current identity")?
             .as_ref().map_err(|reason| reason.clone().into())
+    }
+
+    pub(super) fn province_kind_flags(&self, identity: &crate::Xmap13UnitIdentity) -> Result<u8> {
+        self.province_flags.get(&identity.canonical_id())
+            .ok_or("XMAP13 state province flags have no current division identity")?
+            .as_ref().copied().map_err(|reason| reason.clone().into())
     }
 
     pub(super) fn geometry_sources(&self) -> &[portable_content_manifest::UsedContentKey] { &self.geometry_sources }
@@ -105,6 +112,7 @@ impl Xmap13MotionState {
         let models = DivisionModelFrame::new(world, content)?;
         let mut helpers = BTreeMap::new();
         let mut placements = BTreeMap::new();
+        let mut province_flags = BTreeMap::new();
         let mut retained = if reset { BTreeMap::new() } else { self.helpers.clone() };
         let mut census_complete = models.division_status() == ViewStatus::Present;
         if models.division_status() == ViewStatus::Present {
@@ -123,6 +131,17 @@ impl Xmap13MotionState {
                     },
                     Err(_) => SplineState::SemanticUnavailable,
                 };
+                let flags: Result<u8> = (|| {
+                    let geometry = self.geometry.as_ref().ok_or("XMAP13 helper map content is unbound")?
+                        .as_ref().map_err(|reason| reason.clone())?;
+                    let input = models.inputs(&identity)?;
+                    let province = match input.route_head {
+                        Leaf::Measured(crate::production_features::xmap13_model::RouteHead::Measured { province_id }) => province_id,
+                        _ => return Err("XMAP13 state province pointer is absent or unavailable".into()),
+                    };
+                    geometry.province_kind_flags(content, province)
+                })();
+                province_flags.insert(key.clone(), flags.map_err(|reason| reason.to_string()));
                 let placement: Result<super::Xmap13HelperPlacement> = (|| {
                     if state != SplineState::Empty { return Err("XMAP13 helper placement requires resolved retained geometry".into()); }
                     let geometry = self.geometry.as_ref().ok_or("XMAP13 helper map content is unbound")?
@@ -147,8 +166,8 @@ impl Xmap13MotionState {
             retained.extend(helpers.iter().map(|(identity, state)| (identity.clone(), *state)));
         }
         let history_sha256 = Sha256::hex(&serde_json::to_vec(&(
-            "XMAP13_HELPER_HISTORY_V1", &self.history, &frame, content, reset,
-            clock.seconds.to_bits(), clock.speed_step, &helpers, &retained, &placements,
+            "XMAP13_HELPER_HISTORY_V2", &self.history, &frame, content, reset,
+            clock.seconds.to_bits(), clock.speed_step, &helpers, &retained, &placements, &province_flags,
         ))?);
         let lifetime = if reset { history_sha256.clone() } else { self.lifetime.clone() };
         let geometry_sources = self.geometry.as_ref().and_then(|value| value.as_ref().ok())
@@ -159,6 +178,6 @@ impl Xmap13MotionState {
             previous_frame: frame.clone(), content: content.into(),
             history: history_sha256.clone(), lifetime: lifetime.clone(), failed_update: false, helpers: retained,
         };
-        Ok(Xmap13MotionSample { frame, content: content.into(), history_sha256, lifetime, helpers, placements, geometry_sources })
+        Ok(Xmap13MotionSample { frame, content: content.into(), history_sha256, lifetime, helpers, placements, geometry_sources, province_flags })
     }
 }

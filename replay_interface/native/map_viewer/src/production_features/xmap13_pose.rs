@@ -112,12 +112,13 @@ pub(crate) fn xmap13_pose_phase(seed: u64, clip_length_seconds: f32) -> f32 {
     }
 }
 
-/// The clip's length in seconds.
-pub(crate) fn xmap13_clip_length_seconds(anim: &PdxAnimData) -> f32 {
+/// Native 142399290 stores a double reciprocal FPS and multiplies it by
+/// sample_count - 1; a one-sample clip retains one reciprocal FPS.
+pub(crate) fn xmap13_clip_length_seconds(anim: &PdxAnimData) -> f64 {
     if anim.fps <= 0.0 || !anim.fps.is_finite() || anim.sample_count <= 0 {
         return 0.0;
     }
-    anim.sample_count as f32 / anim.fps
+    f64::from((anim.sample_count - 1).max(1)) * (1.0 / f64::from(anim.fps))
 }
 
 /// The fifty float4x4 skinning matrices for `skeleton` posed at `phase`.
@@ -939,6 +940,24 @@ mod tests {
             samples_t,
             samples_q,
             samples_s,
+        }
+    }
+
+    #[test]
+    fn native_clip_duration_retains_double_sample_intervals() {
+        let mut anim = clip(&[], 2);
+        anim.fps = 3.0;
+        for (samples, expected_bits) in [(1, 0x3fd5555555555555),
+            (2, 0x3fd5555555555555), (4, 0x3ff0000000000000)] {
+            anim.sample_count = samples;
+            assert_eq!(xmap13_clip_length_seconds(&anim).to_bits(), expected_bits);
+        }
+        anim.sample_count = 0;
+        assert_eq!(xmap13_clip_length_seconds(&anim), 0.0);
+        anim.sample_count = 2;
+        for fps in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            anim.fps = fps;
+            assert_eq!(xmap13_clip_length_seconds(&anim), 0.0);
         }
     }
 

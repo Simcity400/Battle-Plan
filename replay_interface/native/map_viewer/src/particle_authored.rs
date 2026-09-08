@@ -1578,11 +1578,22 @@ impl EntityAttachments {
         if offset_range.is_some_and(|range| !range.is_finite()) {
             return Err("entity state requested offset range is nonfinite".into());
         }
+        let index = self.select_state_index(pose, requested, random)?;
+        let start = Self::state_start(pose, index, offset_range, random)?;
+        Ok((index, start))
+    }
+
+    pub(crate) fn select_state_index(
+        &self,
+        pose: &crate::BuildingEntityPose,
+        requested: &str,
+        random: &mut crate::particle_runtime::ViewerParticleSeed,
+    ) -> crate::Result<Option<usize>> {
         let hashes = pose.states.iter().map(|state| entity_token_hash(&state.name))
             .collect::<crate::Result<Vec<_>>>()?;
         let requested_hash = entity_token_hash(requested)?;
         let first = hashes.iter().position(|hash| *hash == requested_hash);
-        let index = if let Some(first) = first {
+        Ok(if let Some(first) = first {
             // The native stable hash sort makes every equal-key declaration contiguous.
             let indices = hashes.iter().enumerate().filter_map(|(index, hash)|
                 (*hash == hashes[first]).then_some(index)).collect::<Vec<_>>();
@@ -1595,9 +1606,20 @@ impl EntityAttachments {
                 indices[native_state_index(&weights, random.draw())?]
             };
             Some(index)
-        } else { None };
-        let Some(selected) = index else { return Ok((None, 0.0)); };
-        let [mut start, authored_range] = pose.states[selected].time_offset
+        } else { None })
+    }
+
+    pub(crate) fn state_start(
+        pose: &crate::BuildingEntityPose,
+        index: Option<usize>,
+        offset_range: Option<f32>,
+        random: &mut crate::particle_runtime::ViewerParticleSeed,
+    ) -> crate::Result<f32> {
+        if offset_range.is_some_and(|range| !range.is_finite()) {
+            return Err("entity state requested offset range is nonfinite".into());
+        }
+        let Some(selected) = index else { return Ok(0.0); };
+        let [mut start, authored_range] = pose.states.get(selected).ok_or("entity state ordinal is outside its admitted pose")?.time_offset
             .unwrap_or([0.0, 0.0]);
         // 1422755a0: bit 4 replaces the range only when the requested range is positive.
         let range = offset_range.filter(|range| *range > 0.0).unwrap_or(authored_range);
@@ -1610,7 +1632,7 @@ impl EntityAttachments {
         if !start.is_finite() {
             return Err("entity state time offset arithmetic overflow".into());
         }
-        Ok((index, start))
+        Ok(start)
     }
 }
 

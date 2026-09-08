@@ -1,4 +1,4 @@
-use crate::particle_authored::{entity_token_hash, EntityAttachmentCatalog, ParticleDefinitions};
+use crate::particle_authored::{entity_token_hash, EntityAttachmentCatalog, EntityAttachments, ParticleDefinitions};
 use crate::particle_runtime::{
     ParticleAction, ParticleHandle, ParticleInstanceUpdate, ParticleLightBinding, ParticleRuntime,
     ViewerEntityManager, ViewerParticleSeed,
@@ -14,6 +14,22 @@ use crate::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+
+#[path = "native_animated_bounds.rs"]
+pub(crate) mod animated_bounds;
+
+#[derive(Clone)]
+struct RetainedModelBounds {
+    animation: Arc<MeshAnimationAdmission>,
+    library: Arc<Xmap12MeshLibrary>,
+    clip_sources: Vec<portable_content_manifest::UsedContentKey>,
+    clips: Vec<(u64, SelectedEntityClip)>,
+    // Equality with the current render-frame stamp; changing frame alone does
+    // not write the animation object's retained evaluation flag.
+    stamped_in_frame: bool,
+    mesh_visible: bool,
+    native: std::result::Result<animated_bounds::NativeAnimatedBounds, String>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -115,6 +131,7 @@ pub(crate) struct ResolvedEntityBinding {
     pub(crate) scale_source: Option<portable_content_manifest::UsedContentKey>,
 }
 
+#[derive(Clone)]
 pub(crate) struct SelectedEntityClip {
     pub(crate) name: String,
     pub(crate) source: portable_content_manifest::UsedContentKey,
@@ -1093,6 +1110,10 @@ fn entity_parser_text<'a>(
 
 #[derive(Clone)]
 struct EntityAnimation {
+    model_bounds: Option<RetainedModelBounds>,
+    blend_time: Option<f32>,
+    clip_source: Option<portable_content_manifest::UsedContentKey>,
+    clip_name: Option<String>,
     active_state: Option<String>,
     state_index: Option<usize>,
     include_particle_only_events: bool,
@@ -1189,6 +1210,7 @@ pub(crate) struct ViewerLightLifecycle {
     content_lease: Option<crate::mod_resolver::ContentAdmissionLease>,
     asset_refusal: Option<Xmap09LightCensusRefusal>,
     entities: BTreeMap<String, EntityAnimation>,
+    staged_model_bounds: BTreeMap<String, RetainedModelBounds>,
     root_registration: Vec<String>,
     children: BTreeMap<String, ChildEntity>,
     instances: Vec<FiredInstance>,
@@ -1287,6 +1309,73 @@ impl DerivedLightRows {
             playhead_seconds: state.playhead, authored_speed: state.authored_speed,
             entity_speed: state.speed,
         })
+    }
+
+    pub(crate) fn root_model_bounds(&self, resolver: &GameFileResolver,
+        admission: &replay_core::ValidatedContentAdmission, root: &str,
+        animation: &Arc<MeshAnimationAdmission>) -> Result<[[f32; 3]; 2]> {
+        self.root_animation(resolver, admission, root)?;
+        let retained = self.poses.get(root).and_then(|state| state.model_bounds.as_ref())
+            .ok_or("animated bounds: retained root construction unavailable")?;
+        if !Arc::ptr_eq(animation, &retained.animation) {
+            return Err("animated bounds: retained construction differs".into());
+        }
+        retained.animation.checked(resolver, admission, &retained.library)?;
+        for source in &retained.clip_sources {
+            if admission.require_used_content(&source.normalized_game_relative_path)? != source {
+                return Err("animated bounds: clip content differs".into());
+            }
+        }
+        let result = retained.native.as_ref().map_err(|reason| reason.clone())?.read()
+            .map_err(|reason| -> Box<dyn std::error::Error> { reason.into() });
+        self.root_animation(resolver, admission, root)?;
+        result
+    }
+
+    pub(crate) fn root_model_pose(&self, resolver: &GameFileResolver,
+        admission: &replay_core::ValidatedContentAdmission, root: &str,
+        library: &Xmap12MeshLibrary, mesh_source: &portable_content_manifest::UsedContentKey,
+        declaration_source: &portable_content_manifest::UsedContentKey,
+    ) -> Result<(animated_bounds::NativeEvaluatedPose, SelectedEntityClip)> {
+        self.root_animation(resolver, admission, root)?;
+        let retained = self.poses.get(root).and_then(|state| state.model_bounds.as_ref())
+            .ok_or("animated pose: retained root construction unavailable")?;
+        let view = retained.animation.checked(resolver, admission, library)?;
+        if view.mesh_source != mesh_source || view.declaration_source != declaration_source {
+            return Err("animated pose: published mesh differs from retained construction".into());
+        }
+        self.root_model_bounds(resolver, admission, root, &retained.animation)?;
+        let pose = retained.native.as_ref().map_err(|reason| reason.clone())?.read_pose()?;
+        let resolve = |entry: u64, animation: &Arc<PdxAnimData>| -> Result<SelectedEntityClip> {
+            let (_, clip) = retained.clips.iter().find(|(id, clip)| *id == entry
+                && Arc::ptr_eq(&clip.animation, animation))
+                .ok_or("animated pose: evaluated clip has no retained authored identity")?;
+            if admission.require_used_content(&clip.source.normalized_game_relative_path)? != &clip.source {
+                return Err("animated pose: evaluated clip content differs".into());
+            }
+            Ok(clip.clone())
+        };
+        let clip = resolve(pose.entry, &pose.clip)?;
+        if let Some((previous, _)) = &pose.previous {
+            resolve(pose.previous_entry.ok_or("animated pose: blend entry identity unavailable")?, previous)?;
+        }
+        self.root_animation(resolver, admission, root)?;
+        Ok((pose, clip))
+    }
+
+    pub(crate) fn root_model_clip_sources(&self, resolver: &GameFileResolver,
+        admission: &replay_core::ValidatedContentAdmission, root: &str)
+        -> Result<Vec<portable_content_manifest::UsedContentKey>> {
+        self.root_animation(resolver, admission, root)?;
+        let sources = self.poses.get(root).and_then(|state| state.model_bounds.as_ref())
+            .map(|bounds| bounds.clip_sources.clone()).unwrap_or_default();
+        for source in &sources {
+            if admission.require_used_content(&source.normalized_game_relative_path)? != source {
+                return Err("animated bounds: retained clip content differs".into());
+            }
+        }
+        self.root_animation(resolver, admission, root)?;
+        Ok(sources)
     }
 
     pub(crate) fn with_rows<T>(&self, consumer: impl FnOnce(Xmap09LightCensusRows<'_>) -> T) -> T {
@@ -1479,6 +1568,43 @@ fn read_asset(resolver: &GameFileResolver, path: &str) -> Result<Vec<u8>> {
 }
 
 impl EntityAnimation {
+    fn retain_clip_identity(&self, bounds: &mut RetainedModelBounds) {
+        let Ok(native) = &bounds.native else { return; };
+        let needed = native.retained_entries();
+        bounds.clips.retain(|(entry, _)| needed.contains(&Some(*entry)));
+        let Some(entry) = native.current_entry() else { return; };
+        if let (Some(animation), Some(source), Some(name)) =
+            (&self.clip, &self.clip_source, &self.clip_name) {
+            if !bounds.clips.iter().any(|(id, _)| *id == entry) {
+                bounds.clips.push((entry, SelectedEntityClip {
+                    animation: animation.clone(), source: source.clone(), name: name.clone(),
+                }));
+            }
+        }
+    }
+    fn retain_model_bounds(&mut self, previous: &Self) {
+        self.model_bounds = previous.model_bounds.clone();
+        if let Some(bounds) = &mut self.model_bounds {
+            if let Some(source) = &self.clip_source {
+                if !bounds.clip_sources.contains(source) { bounds.clip_sources.push(source.clone()); }
+            }
+            if let Ok(native) = &mut bounds.native {
+                // 1422755a0 skips PlayAnimation for event-only states. Definition
+                // +0x208 initializes to +0; an absent authored blend uses that value.
+                if self.clip.is_some() {
+                    native.play(self.clip.clone(), self.playhead, self.authored_speed,
+                        self.looping, self.blend_time.unwrap_or(0.0));
+                    // 1422677f0 refreshes eligibility after PlayAnimation.
+                    native.set_eligible(bounds.mesh_visible && bounds.stamped_in_frame);
+                }
+            }
+        }
+        if let Some(mut bounds) = self.model_bounds.take() {
+            self.retain_clip_identity(&mut bounds);
+            self.model_bounds = Some(bounds);
+        }
+    }
+
     fn load(
         row: &Xmap09PlacedEntity,
         assets: &EntityAssets,
@@ -1509,6 +1635,22 @@ impl EntityAnimation {
             Some(requested) => authored.enter_state_with_offset_range(pose, requested, offset_range, random)?,
             None => (None, 0.0),
         };
+        Self::load_selected(row, assets, resolver, require_pose, include_particle_only_events,
+            offset_range, index, start)
+    }
+
+    fn load_selected(
+        row: &Xmap09PlacedEntity,
+        assets: &EntityAssets,
+        resolver: &GameFileResolver,
+        require_pose: bool,
+        include_particle_only_events: bool,
+        offset_range: Option<f32>,
+        index: Option<usize>,
+        start: f32,
+    ) -> Result<Self> {
+        let pose = assets.poses.get(&row.entity_token)
+            .ok_or_else(|| format!("entity {} is unavailable", row.entity_token))?;
         let state = index.map(|index| &pose.states[index]);
         let events = state.map(|s| s.events.clone()).unwrap_or_default();
         if events.iter().any(|e| {
@@ -1533,6 +1675,10 @@ impl EntityAnimation {
             None => 1.0,
         };
         let mut out = Self {
+            model_bounds: None,
+            blend_time: state.and_then(|s| s.animation_blend_time),
+            clip_source: None,
+            clip_name: None,
             active_state: state.map(|state| state.name.clone()),
             state_index: state.and_then(|state| pose.states.iter().position(|candidate| std::ptr::eq(candidate, state))),
             include_particle_only_events,
@@ -1567,7 +1713,9 @@ impl EntityAnimation {
         }
         if let Some(index) = index {
             if let Some(selected) = assets.clip_for_state(resolver, pose, index)? {
-                out.length = xmap13_clip_length_seconds(&selected.animation) as f64;
+                out.length = xmap13_clip_length_seconds(&selected.animation);
+                out.clip_source = Some(selected.source.clone());
+                out.clip_name = Some(selected.name.clone());
                 out.clip = Some(selected.animation);
             }
         }
@@ -1818,6 +1966,7 @@ impl ViewerLightLifecycle {
     }
 
     fn remove_entity(&mut self, id: &str) -> std::result::Result<(), Xmap09LightCensusRefusal> {
+        self.staged_model_bounds.remove(id);
         if let Some(parent) = self.children.get(id).map(|child| child.parent.clone()) {
             let mut index = 0;
             while index < self.instances.len() {
@@ -1945,7 +2094,19 @@ impl ViewerLightLifecycle {
         // requested-state setter follows that complete constructor on the same cursor.
         let mut constructor = row.clone();
         constructor.state = None;
-        let state = EntityAnimation::load(&constructor, assets, resolver, require_pose, self.include_particle_only_events, random)?;
+        let mut state = EntityAnimation::load(&constructor, assets, resolver, require_pose, self.include_particle_only_events, random)?;
+        if let Some(mut bounds) = self.staged_model_bounds.remove(&row.id) {
+            if let Some(source) = &state.clip_source { bounds.clip_sources.push(source.clone()); }
+            if let Ok(native) = &mut bounds.native {
+                if state.clip.is_some() {
+                    native.play(state.clip.clone(), state.playhead, state.authored_speed,
+                        state.looping, state.blend_time.unwrap_or(0.0));
+                    native.set_eligible(bounds.mesh_visible && bounds.stamped_in_frame);
+                }
+            }
+            state.retain_clip_identity(&mut bounds);
+            state.model_bounds = Some(bounds);
+        }
         self.entities.insert(row.id.clone(), state);
         self.propagate_static_state(&row.id, assets, resolver, random)?;
         if let Some(requested) = row.state.as_deref() {
@@ -1959,8 +2120,8 @@ impl ViewerLightLifecycle {
                 retained.requested_offset_range = offset_range.map(f32::to_bits);
                 return Ok(());
             }
-            let state = EntityAnimation::load_with_offset_range(row, assets, resolver, require_pose, self.include_particle_only_events, offset_range, random)?;
-            self.leave_state(&row.id)?;
+            let mut state = self.load_replacement_state(&row.id, row, assets, resolver, require_pose, offset_range, random)?;
+            state.retain_model_bounds(&self.entities[&row.id]);
             self.entities.insert(row.id.clone(), state);
             self.propagate_static_state_with_offset_range(&row.id, assets, resolver, offset_range, random)?;
         }
@@ -1983,6 +2144,18 @@ impl ViewerLightLifecycle {
         assets: &EntityAssets,
         resolver: &GameFileResolver,
         offset_range: Option<f32>,
+        random: &mut ViewerParticleSeed,
+    ) -> Result<()> {
+        self.propagate_static_state_packet(id, assets, resolver, offset_range, false, random)
+    }
+
+    fn propagate_static_state_packet(
+        &mut self,
+        id: &str,
+        assets: &EntityAssets,
+        resolver: &GameFileResolver,
+        offset_range: Option<f32>,
+        ordinary: bool,
         random: &mut ViewerParticleSeed,
     ) -> Result<()> {
         let mut children = self
@@ -2054,24 +2227,94 @@ impl ViewerLightLifecycle {
                 animate: true,
                 world_matrix_f32_bits: IDENTITY.map(f32::to_bits),
             };
-            let mut next = EntityAnimation::load_with_offset_range(
-                &row,
-                assets,
-                resolver,
-                self.requires_retained_pose(&child_id),
-                self.include_particle_only_events,
-                offset_range,
-                random,
+            if ordinary {
+                self.apply_ordinary_state(&row, assets, resolver, offset_range, false, random)?;
+                continue;
+            }
+            let mut next = self.load_replacement_state(
+                &child_id, &row, assets, resolver, self.requires_retained_pose(&child_id),
+                offset_range, random,
             )?;
+            let child = &self.entities[&child_id];
             next.speed = child.speed;
             next.visible = child.visible;
+            next.retain_model_bounds(child);
             next.requested_state = child.requested_state.clone();
             next.requested_offset_range = child.requested_offset_range;
-            self.leave_state(&child_id)?;
             self.entities.insert(child_id.clone(), next);
             self.propagate_static_state_with_offset_range(&child_id, assets, resolver, offset_range, random)?;
         }
         Ok(())
+    }
+
+    fn load_replacement_state(
+        &mut self,
+        id: &str,
+        row: &Xmap09PlacedEntity,
+        assets: &EntityAssets,
+        resolver: &GameFileResolver,
+        require_pose: bool,
+        offset_range: Option<f32>,
+        random: &mut ViewerParticleSeed,
+    ) -> Result<EntityAnimation> {
+        let pose = assets.poses.get(&row.entity_token)
+            .ok_or("replacement entity state definition is unavailable")?;
+        let requested = row.state.as_deref().or(pose.default_state.as_deref());
+        let authored = assets.static_attachments.resolve(&row.entity_token)?;
+        let selected = match requested {
+            Some(requested) => authored.select_state_index(pose, requested, random)?,
+            None => None,
+        };
+        // Forced/null packets still select before exit, but draw the offset only after exit.
+        self.leave_state(id)?;
+        let start = EntityAttachments::state_start(pose, selected, offset_range, random)?;
+        EntityAnimation::load_selected(row, assets, resolver, require_pose,
+            self.include_particle_only_events, offset_range, selected, start)
+    }
+
+    fn apply_ordinary_state(
+        &mut self,
+        row: &Xmap09PlacedEntity,
+        assets: &EntityAssets,
+        resolver: &GameFileResolver,
+        offset_range: Option<f32>,
+        root_request: bool,
+        random: &mut ViewerParticleSeed,
+    ) -> Result<()> {
+        let pose = assets.poses.get(&row.entity_token)
+            .ok_or("ordinary entity state definition is unavailable")?;
+        let requested = row.state.as_deref().ok_or("ordinary entity state request is absent")?;
+        let attachments = assets.static_attachments.resolve(&row.entity_token)?;
+        let selected = attachments.select_state_index(pose, requested, random)?;
+        if root_request {
+            let previous = self.entities.get_mut(&row.id)
+                .ok_or("ordinary entity state has no retained instance")?;
+            previous.requested_state = row.state.clone();
+            previous.requested_offset_range = offset_range.map(f32::to_bits);
+        }
+        let Some(selected) = selected else { return Ok(()); };
+        let previous = &self.entities[&row.id];
+        let same_hash = previous.active_state.as_deref().map(entity_token_hash).transpose()?
+            == Some(entity_token_hash(&pose.states[selected].name)?);
+        if !same_hash {
+            let speed = previous.speed;
+            let visible = previous.visible;
+            let requested_state = previous.requested_state.clone();
+            let requested_offset_range = previous.requested_offset_range;
+            let require_pose = self.requires_retained_pose(&row.id);
+            // The outer weighted draw precedes the +15 hash gate; cleanup precedes offset draws.
+            self.leave_state(&row.id)?;
+            let start = EntityAttachments::state_start(pose, Some(selected), offset_range, random)?;
+            let mut next = EntityAnimation::load_selected(row, assets, resolver, require_pose,
+                self.include_particle_only_events, offset_range, Some(selected), start)?;
+            next.speed = speed;
+            next.visible = visible;
+            next.requested_state = requested_state;
+            next.requested_offset_range = requested_offset_range;
+            next.retain_model_bounds(&self.entities[&row.id]);
+            self.entities.insert(row.id.clone(), next);
+        }
+        self.propagate_static_state_packet(&row.id, assets, resolver, offset_range, true, random)
     }
 
     fn requires_retained_pose(&self, id: &str) -> bool {
@@ -2305,11 +2548,16 @@ impl ViewerLightLifecycle {
                 };
                 self.next_instance += 1;
                 let require_pose = self.requires_retained_pose(id);
-                let mut next = EntityAnimation::load(&row, assets, resolver, require_pose, self.include_particle_only_events, random)?;
+                let mut next = self.load_replacement_state(id, &row, assets, resolver, require_pose, None, random)?;
+                // Automatic next-state 14227074a/750 passes a null packet through
+                // 14227b5e0. The inner setter bypasses its pointer/hash equality
+                // skip and re-enters even the same state. A selected clip restarts
+                // its clock; bounds remain retained until evaluation. Event-only
+                // entry still skips play.
+                next.retain_model_bounds(&self.entities[id]);
                 next.speed = speed;
-                next.visible = state.visible;
+                next.visible = self.entities[id].visible;
                 next.requested_state = requested_state;
-                self.leave_state(id)?;
                 self.entities.insert(id.into(), next);
                 self.propagate_static_state(id, assets, resolver, random)?;
             }
@@ -2323,6 +2571,7 @@ impl ViewerLightLifecycle {
     }
 
     pub(crate) fn reset_population(&mut self) {
+        self.staged_model_bounds.clear();
         if let Ok(mut manager) = self.entity_manager.lock() {
             manager.remove_owner(self.manager_owner);
             let _ = manager.reset_frame_publication();
@@ -2393,6 +2642,31 @@ impl ViewerLightLifecycle {
         weather: Option<&crate::PreparedXmap19WeatherFrame>,
         requested_offset_ranges: &BTreeMap<String, f32>,
     ) -> std::result::Result<PreparedLightEntityFrame, Xmap09LightCensusRefusal> {
+        self.prepare_entity_frame_with_state_policy(resolver, placed, viewer, weather,
+            requested_offset_ranges, false)
+    }
+
+    pub(crate) fn prepare_ordinary_entity_frame(
+        &mut self,
+        resolver: &GameFileResolver,
+        placed: &[Xmap09PlacedEntity],
+        viewer: &ViewerOwnedMapState,
+        requested_offset_ranges: &BTreeMap<String, f32>,
+    ) -> std::result::Result<PreparedLightEntityFrame, Xmap09LightCensusRefusal> {
+        self.prepare_entity_frame_with_state_policy(resolver, placed, viewer, None,
+            requested_offset_ranges, true)
+    }
+
+    fn prepare_entity_frame_with_state_policy(
+        &mut self,
+        resolver: &GameFileResolver,
+        placed: &[Xmap09PlacedEntity],
+        viewer: &ViewerOwnedMapState,
+        weather: Option<&crate::PreparedXmap19WeatherFrame>,
+        requested_offset_ranges: &BTreeMap<String, f32>,
+        ordinary: bool,
+    ) -> std::result::Result<PreparedLightEntityFrame, Xmap09LightCensusRefusal> {
+        let bounds = std::mem::take(&mut self.staged_model_bounds);
         if let Some(refusal) = &self.publication_refusal { return Err(refusal.clone()); }
         if self.effect_registry.is_none() {
             self.effect_registry = Some(self.entity_manager.lock()
@@ -2400,7 +2674,9 @@ impl ViewerLightLifecycle {
         }
         self.weather_binding = None;
         self.publication_lease = None;
-        self.prepare_entity_population(resolver, placed, viewer, weather, requested_offset_ranges).map_err(|refusal| {
+        let result = self.prepare_entity_population(resolver, placed, viewer, weather, requested_offset_ranges, ordinary, bounds);
+        self.staged_model_bounds.clear();
+        result.map_err(|refusal| {
             self.last_presentation_time = None;
             self.publication_refusal = Some(refusal.clone());
             if let Ok(mut manager) = self.entity_manager.lock() {
@@ -2421,6 +2697,8 @@ impl ViewerLightLifecycle {
         viewer: &ViewerOwnedMapState,
         weather: Option<&crate::PreparedXmap19WeatherFrame>,
         requested_offset_ranges: &BTreeMap<String, f32>,
+        ordinary: bool,
+        mut bounds: BTreeMap<String, RetainedModelBounds>,
     ) -> std::result::Result<PreparedLightEntityFrame, Xmap09LightCensusRefusal> {
         for (id, range) in requested_offset_ranges {
             if !range.is_finite() || !placed.iter().any(|row| row.id == *id && row.state.is_some()) {
@@ -2519,17 +2797,34 @@ impl ViewerLightLifecycle {
         scenes.apply(self.manager_owner, &mut self.root_changes);
         for row in placed {
             let offset_range = requested_offset_ranges.get(&row.id).copied();
-            if self
+            if let Some(existing) = self.entities.get(&row.id) {
+                let binding = bounds.get(&row.id);
+                if existing.token == row.entity_token
+                    && (existing.model_bounds.is_some() || binding.is_some())
+                    && existing.model_bounds.as_ref().zip(binding).is_none_or(|(retained, binding)|
+                        !Arc::ptr_eq(&retained.animation, &binding.animation)
+                            || !Arc::ptr_eq(&retained.library, &binding.library)) {
+                    return Err(missing(format!("animated bounds: retained root receipt changed: {}", row.id)));
+                }
+            }
+            let changed = self
                 .entities
                 .get(&row.id)
                 .is_none_or(|e| e.token != row.entity_token || e.requested_state != row.state
-                    || e.requested_offset_range != offset_range.map(f32::to_bits))
+                    || e.requested_offset_range != offset_range.map(f32::to_bits));
+            if ordinary && !advance && changed {
+                return Err(missing("entity_manager.ordinary_state.changed_same_phase"));
+            }
+            if changed || (ordinary && advance)
             {
                 let same_entity = self
                     .entities
                     .get(&row.id)
                     .is_some_and(|e| e.token == row.entity_token);
                 let mut update = || -> Result<()> {
+                    if same_entity && ordinary {
+                        return self.apply_ordinary_state(row, &assets, resolver, offset_range, true, random);
+                    }
                     if same_entity {
                         if let Some(requested) = row.state.as_deref() {
                             let hash = entity_token_hash(requested)?;
@@ -2542,16 +2837,19 @@ impl ViewerLightLifecycle {
                                 return Ok(());
                             }
                         }
+                        let mut state = self.load_replacement_state(&row.id, row, &assets, resolver,
+                            self.requires_retained_pose(&row.id), offset_range, random)?;
                         let previous = &self.entities[&row.id];
-                        let mut state = EntityAnimation::load_with_offset_range(row, &assets, resolver,
-                            self.requires_retained_pose(&row.id), self.include_particle_only_events, offset_range, random)?;
                         state.speed = previous.speed;
                         state.visible = previous.visible;
-                        self.leave_state(&row.id)?;
+                        state.retain_model_bounds(previous);
                         self.entities.insert(row.id.clone(), state);
                         self.propagate_static_state_with_offset_range(&row.id, &assets, resolver, offset_range, random)?;
                     } else {
                         self.remove_entity(&row.id)?;
+                        if let Some(binding) = bounds.remove(&row.id) {
+                            self.staged_model_bounds.insert(row.id.clone(), binding);
+                        }
                         self.root_registration.push(row.id.clone());
                         self.root_changes.push(crate::particle_runtime::EntityRootChange::Register {
                             id: row.id.clone(), scene_mask: 7, update_mask: 6,
@@ -2695,6 +2993,59 @@ impl ViewerLightLifecycle {
                 self.publication_refusal = Some(refusal.clone());
                 Box::new(refusal) as Box<dyn std::error::Error>
             })
+    }
+
+    pub(crate) fn begin_model_bounds_frame(&mut self) {
+        // stage_land_population is a new render preparation even when replay
+        // animation time is paused; the render stamp is a separate clock.
+        for state in self.entities.values_mut() {
+            if let Some(bounds) = &mut state.model_bounds { bounds.stamped_in_frame = false; }
+        }
+    }
+
+    pub(crate) fn advance_model_bounds_manager(&mut self, prepared: &PreparedLightEntityFrame) {
+        if !prepared.advance { return; }
+        let delta = f64::from(f32::from_bits(prepared.frame.delta_seconds_f32_bits));
+        // 142219c10 updates all animation objects before 14227ce00 can advance
+        // any entity or play an automatic next-state clip.
+        for state in self.entities.values_mut() {
+            if let Some(bounds) = &mut state.model_bounds {
+                if let Ok(native) = &mut bounds.native { native.advance(delta, state.speed); }
+            }
+        }
+    }
+
+    pub(crate) fn stamp_root_model_bounds(&mut self, root: &str) -> Result<()> {
+        let state = self.entities.get_mut(root).ok_or("animated bounds: stamped root unavailable")?;
+        if let Some(bounds) = &mut state.model_bounds {
+            if !bounds.stamped_in_frame {
+                bounds.stamped_in_frame = true;
+                if let Ok(native) = &mut bounds.native { native.set_eligible(bounds.mesh_visible); }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn stage_root_model_bounds(&mut self, resolver: &GameFileResolver,
+        admission: &replay_core::ValidatedContentAdmission, library: &Arc<Xmap12MeshLibrary>,
+        roots: Vec<(String, Arc<MeshAnimationAdmission>, f32)>) -> Result<()> {
+        self.staged_model_bounds.clear();
+        let mut staged = BTreeMap::new();
+        for (root, animation, scale) in roots {
+            let view = animation.checked(resolver, admission, library)?;
+            let MeshAnimationConstruction::Constructed { object_ordinal, child_ordinal, skeleton_ordinal, .. }
+                = view.construction else { continue; };
+            let child = &view.mesh.raw_asset_tree().root.children[object_ordinal].children[child_ordinal];
+            let skeleton = &child.children[skeleton_ordinal];
+            let native = animated_bounds::NativeBoundsSkeleton::load(child, skeleton, scale)
+                .map(animated_bounds::NativeAnimatedBounds::new);
+            if staged.insert(root, RetainedModelBounds { animation, library: library.clone(),
+                clip_sources: Vec::new(), clips: Vec::new(), native, stamped_in_frame: false, mesh_visible: true }).is_some() {
+                return Err("animated bounds: duplicate staged root".into());
+            }
+        }
+        self.staged_model_bounds = staged;
+        Ok(())
     }
 
     pub(crate) fn finish_entity_frame(
@@ -3146,6 +3497,188 @@ objectTypes = {
         assert!(error.contains("conflicting admitted variant declarations"), "{error}");
         assert!(assets.resolved_pdxmesh_declaration(
             &content.resolver, &content.admission, "unrelated").unwrap().is_some());
+    }
+
+
+    fn derive_ordinary_test(
+        lifecycle: &mut ViewerLightLifecycle,
+        resolver: &GameFileResolver,
+        placed: &[Xmap09PlacedEntity],
+        viewer: &ViewerOwnedMapState,
+        ranges: &BTreeMap<String, f32>,
+    ) -> Result<DerivedLightRows> {
+        let prepared = lifecycle.prepare_ordinary_entity_frame(resolver, placed, viewer, ranges)?;
+        let manager = Arc::clone(&lifecycle.entity_manager);
+        let owner = lifecycle.manager_owner;
+        let frame = prepared.frame;
+        let mut update = |id: &str, _scene, random: &mut ViewerParticleSeed|
+            lifecycle.advance_prepared_root(resolver, &prepared, id, random);
+        manager.lock().unwrap().advance_frame(frame, &mut [crate::particle_runtime::EntityManagerDispatch {
+            owner, prepared_for: frame, advance_root: &mut update,
+        }])?;
+        let mut advance = |id: &str, phase| lifecycle.advance_prepared_effect(resolver, &prepared, id, phase);
+        crate::particle_runtime::dispatch_entity_effects(&manager, frame,
+            &mut [crate::particle_runtime::EntityEffectDispatch { owner, advance: &mut advance }])?;
+        Ok(lifecycle.finish_entity_frame(resolver, prepared)?)
+    }
+
+
+    #[test]
+    fn forced_replacement_cleanup_precedes_offset_draw_and_retained_child_retirement() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        for invalidate_particle in [false, true] {
+            let content = Fixture::with_extra_files(REGISTRATION,
+                "particle={name=effect subsystem={name=s max_amount=8 duration=-1 emission=4 life=20}}",
+                &[("gfx/entity.asset", br#"
+entity={name=entity default_state=idle
+ state={name=idle length=10 looping=no
+  event={time=0 particle=paired light=flash keep_particle=yes}
+  event={time=0 entity=child}}
+ state={name=halt chance=1 length=10 looping=no time_offset={2 1}}
+ state={name=halt chance=1 length=10 looping=no time_offset={2 1}}}
+entity={name=child default_state=idle state={name=idle length=10 looping=no}}
+light={name=flash color={r=1 g=1 b=1} intensity=1 radius=8 falloff=1 position={x=1 y=0 z=0}}
+"#)]);
+            let (_, mut placed, mut viewer) = fixture(1);
+            let mut world = IDENTITY;
+            world[12..15].copy_from_slice(&viewer.camera.as_ref().unwrap().current_look_at());
+            placed[0].world_matrix_f32_bits = world.map(f32::to_bits);
+            placed[0].state = Some("idle".into());
+            let root = placed[0].id.clone();
+            let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+            lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).unwrap();
+            let children = lifecycle.child_vector(&root, true);
+            assert_eq!(children.len(), 1);
+            assert_eq!(lifecycle.instances.len(), 1);
+            let registration = lifecycle.root_registration.clone();
+            let previous_clock = (lifecycle.entities[&root].playhead, lifecycle.entities[&root].elapsed);
+            let mut expected = lifecycle.entity_manager.lock().unwrap().random_state();
+            expected.draw();
+            if invalidate_particle {
+                lifecycle.instances[0].particle.as_mut().unwrap().runtime.reset();
+            } else {
+                expected.draw();
+            }
+            placed[0].state = Some("halt".into());
+            viewer.animation_time_f32_bits = 1.0f32.to_bits();
+            viewer.frame_delta_seconds_f32_bits = 0;
+            let result = lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None);
+            assert_eq!(lifecycle.entity_manager.lock().unwrap().random_state(), expected);
+            assert_eq!(lifecycle.root_registration, registration);
+            if invalidate_particle {
+                assert!(matches!(result, Err(Xmap09LightCensusRefusal::ParticleInput { .. })));
+                assert_eq!(lifecycle.entities[&root].active_state.as_deref(), Some("idle"));
+                assert_eq!((lifecycle.entities[&root].playhead, lifecycle.entities[&root].elapsed), previous_clock);
+                assert_eq!(lifecycle.child_vector(&root, true), children);
+                assert!(lifecycle.derive_light_instance_rows(&content.resolver, &placed, &viewer, None).is_err());
+                assert_eq!(lifecycle.entity_manager.lock().unwrap().random_state(), expected);
+            } else {
+                let rows = result.unwrap();
+                assert_eq!(lifecycle.entities[&root].active_state.as_deref(), Some("halt"));
+                assert_eq!(lifecycle.entities[&root].elapsed, 0.0);
+                let clock = rows.root_animation(&content.resolver, &content.admission, &root).unwrap();
+                assert!((2.0..=3.0).contains(&clock.playhead_seconds));
+                assert!(lifecycle.child_vector(&root, true).is_empty());
+                assert!(!lifecycle.entities.contains_key(&children[0]));
+                assert_eq!(lifecycle.instances.len(), 1);
+                let particle = lifecycle.instances[0].particle.as_ref().unwrap();
+                for subsystem in particle.runtime.gpu_view(particle.handle).unwrap().root_subsystems() {
+                    assert_eq!(subsystem.emission_end_bits(), subsystem.local_time_bits());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_same_hash_consumes_parent_and_child_selection_draws_without_restarting_clocks() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[
+            ("gfx/entity.asset", br#"
+entity={name=entity default_state=idle attach={""=child}
+ state={name=idle chance=1 time_offset={10 1}}
+ state={name=idle chance=1 time_offset={20 1}}}
+entity={name=child default_state=idle
+ state={name=idle chance=1 time_offset={30 1}}
+ state={name=idle chance=1 time_offset={40 1}}}
+"#),
+        ]);
+        let (_, mut placed, mut viewer) = fixture(1);
+        placed[0].state = Some("idle".into());
+        let root = placed[0].id.clone();
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+        let manager = Arc::new(Mutex::new(ViewerEntityManager::new(ViewerParticleSeed { seed: 1, counter: 0 })));
+        lifecycle.entity_manager = manager.clone();
+        let mut ranges = BTreeMap::from([(root.clone(), 5.0)]);
+        let first = derive_ordinary_test(&mut lifecycle, &content.resolver, &placed, &viewer, &ranges).unwrap();
+        let children = lifecycle.child_vector(&root, false);
+        assert_eq!(children.len(), 1, "authored attach creates a static child");
+        let child = children[0].clone();
+        let initial_root = first.root_animation(&content.resolver, &content.admission, &root).unwrap();
+        let initial_child = (lifecycle.entities[&child].state_index, lifecycle.entities[&child].playhead);
+        let mut expected = manager.lock().unwrap().random_state();
+        for index in 1..=4 {
+            viewer.animation_time_f32_bits = (0.5 + index as f32 * 0.25).to_bits();
+            viewer.frame_delta_seconds_f32_bits = 0.25f32.to_bits();
+            ranges.insert(root.clone(), if index % 2 == 0 { 0.0 } else { 5.0 });
+            expected.draw();
+            expected.draw();
+            let rows = derive_ordinary_test(&mut lifecycle, &content.resolver, &placed, &viewer, &ranges).unwrap();
+            let observed = rows.root_animation(&content.resolver, &content.admission, &root).unwrap();
+            assert_eq!(manager.lock().unwrap().random_state(), expected);
+            assert_eq!(observed.state_ordinal, initial_root.state_ordinal);
+            assert_eq!(observed.playhead_seconds, initial_root.playhead_seconds + index as f64 * 0.25);
+            assert_eq!(lifecycle.entities[&child].state_index, initial_child.0);
+            assert_eq!(lifecycle.entities[&child].playhead, initial_child.1 + index as f64 * 0.25);
+            let repeated = derive_ordinary_test(&mut lifecycle, &content.resolver, &placed, &viewer, &ranges).unwrap();
+            assert_eq!(repeated.root_animation(&content.resolver, &content.admission, &root).unwrap(), observed);
+            assert_eq!(manager.lock().unwrap().random_state(), expected);
+            assert_eq!(lifecycle.child_vector(&root, false), [child.clone()]);
+        }
+    }
+
+    #[test]
+    fn ordinary_changed_state_stops_retained_particle_before_zero_delta_and_keeps_root_registration() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        let content = Fixture::with_extra_files(REGISTRATION,
+            "particle={name=effect subsystem={name=s max_amount=8 duration=-1 emission=4 life=20}}",
+            &[("gfx/entity.asset", br#"
+entity={name=entity default_state=idle
+ state={name=idle length=10 looping=no event={time=0 particle=paired light=flash keep_particle=yes}}
+ state={name=halt length=10 looping=no time_offset={2 0}}}
+light={name=flash color={r=1 g=1 b=1} intensity=1 radius=8 falloff=1 position={x=1 y=0 z=0}}
+"#)]);
+        let (_, mut placed, mut viewer) = fixture(1);
+        let mut world = IDENTITY;
+        world[12..15].copy_from_slice(&viewer.camera.as_ref().unwrap().current_look_at());
+        placed[0].world_matrix_f32_bits = world.map(f32::to_bits);
+        placed[0].state = Some("idle".into());
+        let root = placed[0].id.clone();
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+        let ranges = BTreeMap::from([(root.clone(), 0.0)]);
+        derive_ordinary_test(&mut lifecycle, &content.resolver, &placed, &viewer, &ranges).unwrap();
+        assert_eq!(lifecycle.instances.len(), 1);
+        let handle = lifecycle.instances[0].particle.as_ref().unwrap().handle;
+        let registration = lifecycle.root_registration.clone();
+        let cursor = lifecycle.entity_manager.lock().unwrap().random_state();
+        placed[0].state = Some("halt".into());
+        viewer.animation_time_f32_bits = 1.0f32.to_bits();
+        viewer.frame_delta_seconds_f32_bits = 0;
+        let rows = derive_ordinary_test(&mut lifecycle, &content.resolver, &placed, &viewer, &ranges).unwrap();
+        let clock = rows.root_animation(&content.resolver, &content.admission, &root).unwrap();
+        assert_eq!(lifecycle.entities[&root].active_state.as_deref(), Some("halt"));
+        assert_eq!(clock.playhead_seconds, 2.0);
+        assert_eq!(lifecycle.entities[&root].elapsed, 0.0);
+        assert_eq!(lifecycle.entity_manager.lock().unwrap().random_state(), cursor);
+        assert_eq!(lifecycle.root_registration, registration);
+        assert_eq!(lifecycle.instances.len(), 1);
+        let particle = lifecycle.instances[0].particle.as_ref().unwrap();
+        assert_eq!(particle.handle, handle);
+        let view = particle.runtime.gpu_view(handle).unwrap();
+        for subsystem in view.root_subsystems() {
+            assert_eq!(subsystem.emission_end_bits(), subsystem.local_time_bits());
+            assert!(!subsystem.records().collect::<crate::particle_authored::ParticleResult<Vec<_>>>().unwrap().is_empty());
+        }
+        assert_eq!(rows.authored_particles.len(), 1);
     }
 
     #[test]
@@ -6427,6 +6960,161 @@ entity = { name = entity pdxmesh = mesh default_state = boot
 
 
     #[test]
+    fn ordinary_and_automatic_entries_retain_authenticated_model_bounds_history() {
+        use crate::particle_authored::test_support::{Fixture, REGISTRATION};
+        use crate::pdx_mesh::test_fixtures::{push_object, push_prop_f, push_prop_i};
+        let mut mesh = crate::pdx_mesh::test_fixtures::synthetic_mesh_bytes(0.0);
+        push_object(&mut mesh, 1, "object");
+        push_object(&mut mesh, 2, "animated");
+        push_object(&mut mesh, 3, "skeleton");
+        for (index, name) in ["root_bone", "still_bone"].into_iter().enumerate() {
+            push_object(&mut mesh, 4, name);
+            push_prop_i(&mut mesh, "ix", &[index as i32]);
+            push_prop_i(&mut mesh, "pa", &[-1]);
+            push_prop_f(&mut mesh, "tx", &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+        }
+        let clip = crate::pdx_mesh::test_fixtures::synthetic_anim_bytes();
+        let content = Fixture::with_extra_files(REGISTRATION, "particle={name=effect}", &[
+            ("gfx/model.mesh", &mesh), ("gfx/test.anim", &clip),
+            ("gfx/construction.gfx", br#"objectTypes={pdxmesh={name=mesh file="gfx/model.mesh"
+                animation={id=idle type=clip_a}}}"#),
+            ("gfx/construction.asset", br#"
+animation={name=clip_a file="test.anim"}
+entity={name=entity pdxmesh=mesh default_state=idle
+ state={name=idle animation=idle looping=yes}
+ state={name=run animation=idle looping=no next_state=run}}
+"#),
+        ]);
+        let library = Arc::new(Xmap12MeshLibrary::new());
+        let receipt = EntityAssets::load(&content.resolver).unwrap().mesh_animation_admission(
+            &content.resolver, &content.admission, "mesh",
+            content.admission.require_used_content("gfx/construction.gfx").unwrap(),
+            content.admission.require_used_content("gfx/model.mesh").unwrap(), &library).unwrap();
+        let (_, mut placed, mut viewer) = fixture(1);
+        let root = placed[0].id.clone();
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+        let entry = |lifecycle: &ViewerLightLifecycle| {
+            let bounds = lifecycle.entities[&root].model_bounds.as_ref().unwrap();
+            assert!(Arc::ptr_eq(&bounds.animation, &receipt));
+            assert!(Arc::ptr_eq(&bounds.library, &library));
+            bounds.native.as_ref().unwrap().current_entry().unwrap()
+        };
+        let publish = |lifecycle: &mut ViewerLightLifecycle, placed: &[Xmap09PlacedEntity],
+                       viewer: &ViewerOwnedMapState, ranges: &BTreeMap<String, f32>| {
+            lifecycle.begin_model_bounds_frame();
+            lifecycle.stage_root_model_bounds(&content.resolver, &content.admission, &library,
+                vec![(root.clone(), receipt.clone(), 1.0)]).unwrap();
+            let prepared = lifecycle.prepare_ordinary_entity_frame(
+                &content.resolver, placed, viewer, ranges).unwrap();
+            lifecycle.advance_model_bounds_manager(&prepared);
+            let manager = Arc::clone(&lifecycle.entity_manager);
+            let owner = lifecycle.manager_owner;
+            let frame = prepared.frame;
+            let mut update = |id: &str, _scene, random: &mut ViewerParticleSeed|
+                lifecycle.advance_prepared_root(&content.resolver, &prepared, id, random);
+            manager.lock().unwrap().advance_frame(frame,
+                &mut [crate::particle_runtime::EntityManagerDispatch {
+                    owner, prepared_for: frame, advance_root: &mut update,
+                }]).unwrap();
+            let mut advance = |id: &str, phase|
+                lifecycle.advance_prepared_effect(&content.resolver, &prepared, id, phase);
+            crate::particle_runtime::dispatch_entity_effects(&manager, frame,
+                &mut [crate::particle_runtime::EntityEffectDispatch { owner, advance: &mut advance }]).unwrap();
+            let rows = lifecycle.finish_entity_frame(&content.resolver, prepared).unwrap();
+            assert!(lifecycle.staged_model_bounds.is_empty());
+            rows.root_animation(&content.resolver, &content.admission, &root).unwrap().playhead_seconds
+        };
+        placed[0].state = Some("idle".into());
+        viewer.animation_time_f32_bits = 0.0f32.to_bits();
+        viewer.frame_delta_seconds_f32_bits = 0;
+        publish(&mut lifecycle, &placed, &viewer, &BTreeMap::new());
+        let initial_entry = entry(&lifecycle);
+        let initial_clip = lifecycle.entities[&root].clip.clone().unwrap();
+        let ranges = BTreeMap::from([(root.clone(), 5.0)]);
+        viewer.animation_time_f32_bits = 0.01f32.to_bits();
+        viewer.frame_delta_seconds_f32_bits = 0.01f32.to_bits();
+        let same = publish(&mut lifecycle, &placed, &viewer, &ranges);
+        assert_eq!(entry(&lifecycle), initial_entry, "ordinary equal hash must not play");
+        assert_eq!(same, f64::from(0.01f32));
+        placed[0].state = Some("run".into());
+        viewer.animation_time_f32_bits = 0.02f32.to_bits();
+        viewer.frame_delta_seconds_f32_bits = 0;
+        let changed = publish(&mut lifecycle, &placed, &viewer, &BTreeMap::new());
+        let changed_entry = entry(&lifecycle);
+        assert_eq!(changed_entry, initial_entry + 1);
+        assert_eq!(changed, 0.0);
+        assert!(Arc::ptr_eq(&initial_clip, lifecycle.entities[&root].clip.as_ref().unwrap()),
+            "a new entry is required even when the authenticated clip Arc is unchanged");
+        viewer.animation_time_f32_bits = 0.12f32.to_bits();
+        viewer.frame_delta_seconds_f32_bits = 0.1f32.to_bits();
+        let automatic = publish(&mut lifecycle, &placed, &viewer, &BTreeMap::new());
+        assert_eq!(lifecycle.entities[&root].active_state.as_deref(), Some("run"));
+        assert_eq!(entry(&lifecycle), changed_entry + 1, "automatic null packet re-enters the same state");
+        assert_eq!(automatic, 0.0);
+        let bounds = lifecycle.entities[&root].model_bounds.as_ref().unwrap();
+        assert!(bounds.clips.iter().any(|(serial, selected)|
+            *serial == changed_entry + 1 && Arc::ptr_eq(&selected.animation, &initial_clip)));
+        // This checks entry/history custody, not first-frame visibility or palette eligibility.
+    }
+
+    #[test]
+    fn staged_bounds_custody_clears_failures_and_requires_explicit_root_recreation() {
+        let content = construction_fixture("animation={id=idle type=clip_a}", 2);
+        let library = Arc::new(Xmap12MeshLibrary::new());
+        let receipt = || EntityAssets::load(&content.resolver).unwrap().mesh_animation_admission(
+            &content.resolver, &content.admission, "mesh",
+            content.admission.require_used_content("gfx/construction.gfx").unwrap(),
+            content.admission.require_used_content("gfx/model.mesh").unwrap(), &library).unwrap();
+        let first = receipt();
+        let second = receipt();
+        assert!(!Arc::ptr_eq(&first, &second));
+        let (_, placed, viewer) = fixture(1);
+        let root = placed[0].id.clone();
+        let stage = |lifecycle: &mut ViewerLightLifecycle, receipt: Arc<MeshAnimationAdmission>| {
+            lifecycle.stage_root_model_bounds(&content.resolver, &content.admission, &library,
+                vec![(root.clone(), receipt, 1.0)]).unwrap();
+        };
+        let mut lifecycle = ViewerLightLifecycle::for_authored_particles();
+        assert!(lifecycle.stage_root_model_bounds(&content.resolver, &content.admission,
+            &Arc::new(Xmap12MeshLibrary::new()), vec![(root.clone(), first.clone(), 1.0)]).is_err());
+        assert!(lifecycle.staged_model_bounds.is_empty());
+        stage(&mut lifecycle, first.clone());
+        let mut invalid = viewer.clone();
+        invalid.animation_time_f32_bits = f32::NAN.to_bits();
+        assert!(lifecycle.prepare_entity_frame(&content.resolver, &placed, &invalid, None).is_err());
+        assert!(lifecycle.staged_model_bounds.is_empty());
+        lifecycle.reset_population();
+        stage(&mut lifecycle, first.clone());
+        lifecycle.prepare_entity_frame(&content.resolver, &placed, &viewer, None).unwrap();
+        assert!(lifecycle.staged_model_bounds.is_empty());
+        assert!(Arc::ptr_eq(&lifecycle.entities[&root].model_bounds.as_ref().unwrap().animation, &first));
+        assert!(lifecycle.prepare_entity_frame(&content.resolver, &placed, &viewer, None).is_err(),
+            "an existing animated root requires current incoming binding custody");
+        assert!(lifecycle.staged_model_bounds.is_empty());
+        lifecycle.reset_population();
+        stage(&mut lifecycle, first.clone());
+        lifecycle.prepare_entity_frame(&content.resolver, &placed, &viewer, None).unwrap();
+        stage(&mut lifecycle, second.clone());
+        let error = lifecycle.prepare_entity_frame(&content.resolver, &placed, &viewer, None).err().unwrap();
+        assert!(error.to_string().contains("retained root receipt changed"));
+        assert!(lifecycle.staged_model_bounds.is_empty());
+        lifecycle.reset_population();
+        assert!(lifecycle.entities.is_empty());
+        stage(&mut lifecycle, second.clone());
+        lifecycle.prepare_entity_frame(&content.resolver, &placed, &viewer, None).unwrap();
+        let retained = lifecycle.entities[&root].model_bounds.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&retained.animation, &second));
+        assert!(!Arc::ptr_eq(&retained.animation, &first));
+        stage(&mut lifecycle, second.clone());
+        lifecycle.remove_entity(&root).unwrap();
+        assert!(lifecycle.staged_model_bounds.is_empty());
+        stage(&mut lifecycle, second);
+        lifecycle.reset_population();
+        assert!(lifecycle.staged_model_bounds.is_empty());
+    }
+
+    #[test]
     fn construction_receipt_requires_actual_graphics_member_before_loading_resources() {
         use crate::particle_authored::test_support::{Fixture, REGISTRATION};
         let declaration = "pdxmesh={name=mesh file=\"gfx/model.mesh\" animation={id=idle type=clip_a}}";
@@ -7218,7 +7906,7 @@ animation={name=clip_b file="test.anim"}"#),
             "entity", source, index("boot")).unwrap().unwrap();
         assert_eq!(selected.name, "shared_clip");
         assert_eq!(&selected.source, content.admission.require_used_content("gfx/test.anim").unwrap());
-        assert_eq!(xmap13_clip_length_seconds(&selected.animation), 2.0);
+        assert_eq!(xmap13_clip_length_seconds(&selected.animation), 1.0);
         let next = assets.selected_state_clip(&content.resolver, &content.admission,
             "entity", source, index("done")).unwrap().unwrap();
         assert!(Arc::ptr_eq(&selected.animation, &next.animation));
@@ -7263,12 +7951,12 @@ animation={name=clip_b file="test.anim"}"#),
             let state = &lifecycle.entities[&placed[0].id];
             assert_eq!(state.active_state.as_deref(), Some(expected_state));
             assert!(state.events.is_empty());
-            assert_eq!(state.length, 2.0);
+            assert_eq!(state.length, 1.0);
             assert_eq!(published.authored_speed, 2.0);
             assert_eq!(published.playhead_seconds, expected_playhead, "{expected_state} at {time}");
             let selected = assets.selected_state_clip(&content.resolver, &content.admission,
                 "entity", source, published.state_ordinal.unwrap()).unwrap().unwrap();
-            assert_eq!(xmap13_clip_length_seconds(&selected.animation) as f64, state.length);
+            assert_eq!(xmap13_clip_length_seconds(&selected.animation), state.length);
             assert!(state.clip.is_some());
             if expected_state != "run" { assert!(state.model.is_none()); }
             assert!(lifecycle.instances.is_empty());
@@ -7316,7 +8004,8 @@ animation={name=clip_b file="test.anim"}"#),
             lifecycle.entities["placed-000"].next_state.as_deref(),
             Some("lit")
         );
-        assert!(lifecycle.entities["placed-000"].length > 0.1);
+        // The fixture has two samples at 15 FPS: native duration is one interval.
+        assert_eq!(lifecycle.entities["placed-000"].length.to_bits(), (1.0f64 / 15.0).to_bits());
         viewer.animation_time_f32_bits = 0.21f32.to_bits();
         viewer.frame_delta_seconds_f32_bits = 0.2f32.to_bits();
         lifecycle
@@ -7395,6 +8084,10 @@ animation={name=clip_b file="test.anim"}"#),
 
     fn animation(looping: bool, once: bool) -> EntityAnimation {
         EntityAnimation {
+            model_bounds: None,
+            blend_time: None,
+            clip_source: None,
+            clip_name: None,
             active_state: Some("idle".into()),
             state_index: Some(0),
             include_particle_only_events: false,
