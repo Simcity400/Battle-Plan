@@ -534,6 +534,7 @@ mod tests {
                 frame_close.and(preflight_close)
             },
         );
+        assert_eq!(paired.enclosing, Ok(()));
         assert_eq!(paired.country_operand, Obs::Measured(-7));
         assert!(matches!(&paired.first_combat_countries,
             super::super::division_combat_membership::FirstCombatCountries::NoFirstCombat));

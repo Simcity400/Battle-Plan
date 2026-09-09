@@ -49,6 +49,8 @@ pub(super) fn refusal(value: native::Refusal) -> wire::CombatMembershipRefusal {
         F::ProducerBinding => WF::ProducerBinding,
         F::Strength => WF::Strength,
         F::Organisation => WF::Organisation,
+        F::RetainedVisualVariant => WF::RetainedVisualVariant,
+        F::DivisionOwner => WF::DivisionOwner,
     };
     let stage = match value.stage {
         S::Admission => WS::Admission,
@@ -81,6 +83,47 @@ pub(super) fn refusal(value: native::Refusal) -> wire::CombatMembershipRefusal {
             ordinal: None,
             original_ordinal: None,
         },
+    }
+}
+
+pub(super) fn retained_visual_refusal(value: native::Refusal) -> wire::RetainedVisualVariantRefusal {
+    if value.cause == native::Cause::NotObserved {
+        return Default::default();
+    }
+    let value = refusal(value);
+    wire::RetainedVisualVariantRefusal {
+        cause: value.cause,
+        field: value.field,
+        stage: value.stage,
+    }
+}
+
+pub(super) fn retained_visual_variant(
+    value: Result<u8, native::Refusal>,
+) -> wire::RetainedVisualVariantObservation {
+    match value {
+        Ok(raw) => wire::RetainedVisualVariantObservation::Measured(raw),
+        Err(reason) => wire::RetainedVisualVariantObservation::Unavailable(retained_visual_refusal(reason)),
+    }
+}
+
+/// The pending signed CArmy owner witness is the sole source of this projection.
+/// A cached bridge owner and the distinct primary+1e0 operand cannot authorize it.
+pub(super) fn division_owner(
+    value: Result<i32, native::Refusal>,
+) -> (Option<u32>, wire::DivisionOwnerAuthority) {
+    match value {
+        Ok(raw) => match u32::try_from(raw).ok().and_then(super::valid_division_owner_tag_db_id) {
+            Some(owner) => (Some(owner), wire::DivisionOwnerAuthority::Witnessed),
+            // This projection cannot represent every native signed handle. A
+            // current unrepresentable value is not an invalid native identity.
+            None => (None, wire::DivisionOwnerAuthority::Unavailable(wire::RetainedVisualVariantRefusal {
+                cause: wire::CombatMembershipCause::OwnerProjectionUnavailable,
+                field: wire::RetainedVisualVariantField::DivisionOwner,
+                stage: wire::CombatMembershipStage::Open,
+            })),
+        },
+        Err(reason) => (None, wire::DivisionOwnerAuthority::Unavailable(retained_visual_refusal(reason))),
     }
 }
 

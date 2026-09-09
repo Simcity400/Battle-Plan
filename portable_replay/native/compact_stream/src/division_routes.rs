@@ -7,8 +7,16 @@ pub use combat_membership::{
     FirstCombatCountriesObservation, COMBAT_MEMBERSHIP_DESCRIPTOR_LEN, COMBAT_MEMBERSHIP_HEADER_LEN,
 };
 
-pub const FORMAT_MARKER: u32 = u32::from_le_bytes(*b"D2RA");
-pub const ROW_LEN: usize = 312;
+#[path = "division_routes/retained_visual_variant.rs"]
+mod retained_visual_variant;
+pub use retained_visual_variant::{
+    write_retained_visual_variant, DivisionOwnerAuthority, RetainedVisualVariantObservation,
+    RetainedVisualVariantRefusal,
+};
+pub use self::CombatMembershipField as RetainedVisualVariantField;
+
+pub const FORMAT_MARKER: u32 = u32::from_le_bytes(*b"D2RB");
+pub const ROW_LEN: usize = 328;
 /// Underlying D20 training operands; no authored thresholds or selector results.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
@@ -564,6 +572,7 @@ impl<'a> DivisionRoutes<'a> {
         let mut consumed = 0usize;
         for index in 0..rows {
             let base = 32 + index * ROW_LEN;
+            retained_visual_variant::read(payload, index)?;
             let training = read_training_scalars(payload, index)?;
             if word(payload, base + 8) & (1 << 12) != 0 && training != TrainingScalars::default() {
                 return Err("deleted division carries training operands".into());
@@ -754,6 +763,11 @@ impl<'a> DivisionRoutes<'a> {
 
     pub fn first_combat_countries(&self, index: usize) -> Result<FirstCombatCountriesObservation, String> {
         combat_membership::read_first_combat_countries(&self.payload[self.membership_start..], self.rows, self.payload, index)
+    }
+
+    pub fn retained_visual_variant(&self, index: usize) -> (RetainedVisualVariantObservation, DivisionOwnerAuthority) {
+        assert!(index < self.rows);
+        retained_visual_variant::read(self.payload, index).expect("validated retained visual input")
     }
 
     pub fn current_template(&self, index: usize) -> Option<Option<u32>> {

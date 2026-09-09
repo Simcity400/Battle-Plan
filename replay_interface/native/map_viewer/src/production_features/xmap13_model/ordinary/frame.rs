@@ -288,7 +288,7 @@ impl<'a> OrdinaryFrame<'a> {
             let unit = self.world.division_units().get(ordinal).ok_or("XMAP13 ordinary division ordinal is unavailable")?;
             let country = unit.owner.measured().ok_or("XMAP13 terminal model fallback owner is unavailable")?.tag();
             self.world.country_identity_for_tag(country)?;
-            return self.subunit_fallback(country, name, primary, cache);
+            return self.subunit_fallback(ordinal, country, name, primary, cache);
         };
         let selected_entity = allocated_entity(&selected,
             &mut |token| crate::xmap12_population::entity_chain(self.resolver,self.admission,cache,token)
@@ -309,12 +309,27 @@ impl<'a> OrdinaryFrame<'a> {
         if selected_entity.is_some() { return Ok(selected_entity); }
         // 141918180 recomputes 14191a770's country before its 141917d00 fallback.
         let country = self.helper_country(ordinal, &selected, &assets.equipment)?;
-        self.subunit_fallback(&country, selected.subunit_name, selected.subunit, cache)
+        self.subunit_fallback(ordinal, &country, selected.subunit_name, selected.subunit, cache)
     }
 
-    fn subunit_fallback(&self, country: &str, subunit_name: &str, subunit: &SubunitModel,
+    fn subunit_fallback(&self, ordinal: usize, country: &str, subunit_name: &str, subunit: &SubunitModel,
         cache: &mut Xmap12EntityCache,
     ) -> Result<Option<Xmap12ResolvedEntityChain>> {
+        use replay_core::division_retained_visual_variant::{
+            DivisionRetainedVisualVariantRefusal as Refusal, RetainedVisualVariantObservation as Observation,
+        };
+        let unit = self.world.division_units().get(ordinal)
+            .ok_or("XMAP13 terminal model fallback division ordinal is unavailable")?;
+        let kind = unit.raw_division_type.measured().copied()
+            .ok_or("XMAP13 terminal model fallback division type is unavailable")?;
+        // The admitted CArmy's primary vtable +0x40 returns the identical primary
+        // address. Its selector owner +0x1d8 is collector body +0x1c8. The accessor
+        // separately checks this acquisition's owner witness and current mapping.
+        let retained = match self.world.division_retained_visual_variant(unit.raw_division_id, kind) {
+            Ok(Observation::Measured(raw)) => Some(raw),
+            Ok(Observation::Unavailable(_)) | Err(Refusal::Missing | Refusal::Unobtained) => None,
+            Err(reason) => return Err(format!("XMAP13 terminal model fallback retained input: {reason:?}").into()),
+        };
         let naming = self.world.country_name_semantics(&country);
         let prefix = |field, value| -> Result<Leaf<String>> {
             use replay_core::country_name_semantics::NamingInput;
@@ -326,11 +341,15 @@ impl<'a> OrdinaryFrame<'a> {
         };
         let prefixes = [prefix("cosmetic_name_base", naming.cosmetic_name_base)?,
             Leaf::Measured(country.to_owned()), prefix("graphical_culture", naming.graphical_culture)?];
-        let token = subunit_entity_without_retained_variant(subunit_name, &subunit.sprite,
-            prefixes.each_ref(), &mut |token| {
-                crate::xmap12_population::entity_chain(self.resolver,self.admission,cache,token)
-                    .map(|chain| chain.is_some())
-            })?;
+        let mut exists = |token: &str| {
+            crate::xmap12_population::entity_chain(self.resolver,self.admission,cache,token)
+                .map(|chain| chain.is_some())
+        };
+        let token = match retained {
+            Some(raw) => subunit_entity(subunit_name, &subunit.sprite, raw, prefixes.each_ref(), &mut exists),
+            None => subunit_entity_without_retained_variant(subunit_name, &subunit.sprite,
+                prefixes.each_ref(), &mut exists),
+        }?;
         let Some(token) = token else { return Ok(None); };
         crate::xmap12_population::entity_chain(self.resolver,self.admission,cache,&token)
             .map(|chain| chain.cloned())

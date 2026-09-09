@@ -15,6 +15,8 @@ fn division_sample(div_id: u32, raw_organisation: u32) -> DivisionMovementSample
     DivisionMovementSample {
         training_scalars: Default::default(),
         first_combat_countries: Default::default(),
+        retained_visual_variant: Default::default(),
+        owner_authority: Default::default(),
         native_type: DIVISION_TYPE,
         ordinary_route: None, alternate_route: None,
         current_template: None,

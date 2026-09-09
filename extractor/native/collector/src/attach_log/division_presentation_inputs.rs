@@ -377,6 +377,12 @@ pub(super) struct MotionDivisionInput {
 #[derive(Debug)]
 pub(super) struct MotionWithMembership {
     pub motion: MotionInputs,
+    /// Combines the adapter's division/context closes with the final original
+    /// frame-authority close. Callback success alone cannot admit the row.
+    pub enclosing: Result<(), membership::Refusal>,
+    pub retained_visual_variant: Result<u8, membership::Refusal>,
+    /// Signed primary+1d8; distinct from the training operand at primary+1e0.
+    pub owner: Result<i32, membership::Refusal>,
     /// Primary+1e0 sampled inside this acquisition. The root sampler publishes
     /// this through TrainingScalars.country_operand after sample_without_country.
     pub country_operand: compact_contract::division_routes::TrainingObservation<i32>,
@@ -555,7 +561,8 @@ fn open_motion_head(
 ///
 /// Fresh first-combat envelope is 240+24N (112 for empty vector); additional
 /// motion witnesses cost 64+8(A+B) for two routes, 16/40 for null/non-null head,
-/// and 50 for numerator/transfer/target/retreat; paired country adds 8.
+/// and 50 for numerator/transfer/target/retreat; paired country adds 8,
+/// retained numbered byte adds 2, and the independent signed owner adds 8.
 /// Each failed funded open also closes.
 /// Caller owns row/encoding allocations and enclosing attachment/campaign/branch
 /// custody beyond these root/hour witnesses. No old closed read receives a discount.
@@ -571,9 +578,18 @@ pub(super) fn current_motion_inputs_with_membership<R: FnMut(usize, &mut [u8]) -
     let mut frame_trace = membership::Trace::default();
     let mut division_trace = membership::Trace::default();
     let mut combat_trace = membership::Trace::default();
+    let mut retained_variant_trace = membership::Trace::default();
+    let mut owner_trace = membership::Trace::default();
     let mut fields: [membership::Trace; 8] = std::array::from_fn(|_| membership::Trace::default());
     let mut allocation = membership::Allocation::default();
     let mut motion = MotionInputs::default();
+    let mut enclosing = Ok(());
+    let mut retained_visual_variant = Err(motion_refusal(
+        Cause::NotObserved, Field::RetainedVisualVariant, Stage::Admission,
+    ));
+    let mut owner = Err(motion_refusal(
+        Cause::NotObserved, Field::DivisionOwner, Stage::Admission,
+    ));
     let mut country_operand = motion_country_observation(Err(motion_refusal(
         Cause::NotObserved,
         Field::DivisionCountryOperand,
@@ -700,6 +716,21 @@ pub(super) fn current_motion_inputs_with_membership<R: FnMut(usize, &mut [u8]) -
         Err(reason) => Err(reason),
         Ok(count) => {
             let primary = division.body - DIVISION_WRAPPER_TO_BODY; // admitted above
+            // These optional leaves keep their own funded original-address
+            // closes. A failed byte never suppresses its owner or motion siblings.
+            retained_visual_variant = (|| {
+                let at = motion_at(division.body, DIVISION_OFF_RETAINED_VISUAL_VARIANT,
+                    1, Field::RetainedVisualVariant)?;
+                retained_variant_trace.word(at, 1, Field::RetainedVisualVariant,
+                    budget, &mut allocation, read).map(|bytes| bytes[0])
+            })();
+            owner = (|| {
+                let at = motion_at(division.body, DIVISION_OFF_OWNER_TAG_DB_ID,
+                    4, Field::DivisionOwner)?;
+                owner_trace.word(at, 4, Field::DivisionOwner,
+                    budget, &mut allocation, read)
+                    .map(|bytes| i32::from_le_bytes(bytes[..4].try_into().unwrap()))
+            })();
             country_operand = motion_country_observation((|| {
                 let bytes = fields[7].word(
                     motion_at(primary, 0x1e0, 4, Field::DivisionCountryOperand)?,
@@ -814,6 +845,12 @@ pub(super) fn current_motion_inputs_with_membership<R: FnMut(usize, &mut [u8]) -
         if let Err(reason) = fields[7].close(read) {
             country_operand = motion_country_observation(Err(reason));
         }
+        if let Err(reason) = retained_variant_trace.close(read) {
+            retained_visual_variant = Err(reason);
+        }
+        if let Err(reason) = owner_trace.close(read) {
+            owner = Err(reason);
+        }
         let division_close = division_trace.close(read);
         let frame_close = frame_trace.close(read).map_err(|mut reason| {
             reason.cause = match (reason.field, reason.cause) {
@@ -824,7 +861,8 @@ pub(super) fn current_motion_inputs_with_membership<R: FnMut(usize, &mut [u8]) -
             };
             reason
         });
-        // Call even after any reader/allocation/shared-budget refusal.
+        // The original campaign/attachment/request envelope closes last, after
+        // every funded inner close. Always call it, even after any refusal.
         let authority_close = close_frame_identity(read);
         let outer = authority_close
             .and(frame_close)
@@ -833,7 +871,10 @@ pub(super) fn current_motion_inputs_with_membership<R: FnMut(usize, &mut [u8]) -
         if let Err(reason) = outer {
             motion = MotionInputs::default();
             country_operand = motion_country_observation(Err(reason));
+            retained_visual_variant = Err(reason);
+            owner = Err(reason);
         }
+        enclosing = outer;
         outer.and(combat_close)
     });
     motion.scalars.first_combat = match &countries {
@@ -843,6 +884,9 @@ pub(super) fn current_motion_inputs_with_membership<R: FnMut(usize, &mut [u8]) -
     };
     MotionWithMembership {
         motion,
+        enclosing,
+        retained_visual_variant,
+        owner,
         country_operand,
         first_combat_countries: countries,
     }
@@ -1469,6 +1513,8 @@ mod tests {
                 let raw_hour = TECH_DATE_EPOCH_HOURS as i32 + 100;
                 mem.put32(game_state + GS_CURRENT_DATE_OFFSET, raw_hour as u32);
                 mem.put32(body - DIVISION_WRAPPER_TO_BODY + 0x1e0, i32::MIN as u32);
+                mem.put32(body + DIVISION_OFF_OWNER_TAG_DB_ID, 47);
+                mem.put(body + DIVISION_OFF_RETAINED_VISUAL_VARIANT, &[128]);
                 mem.put64(body + 0x1e0, 0); // Nullable route head, not primary country+1e0.
                 mem.put64(body + 0x198, vector as u64);
                 mem.put32(body + 0x1a0, 2);
@@ -1580,6 +1626,10 @@ mod tests {
         }
         #[test]
         #[ignore = "exports hash-bound actual adapter/publisher/fold membership stages"]
+        // Synthetic motion-adapter/publisher/fold evidence. The generation
+        // callback below does not establish production campaign, attachment or
+        // request custody; division_retained_visual_variant_tests covers the
+        // actual root sampler with those original-address authority fields.
         fn actual_sampler_publisher_fold_membership_stages() {
             use crate::attach_log::{division_membership_portable, province_occupants::tests::stage};
             use compact_contract::division_routes::{self as wire, TrainingObservation as Obs};
@@ -1626,9 +1676,12 @@ mod tests {
                 reads.all_closed();
                 assert_eq!(result.country_operand, Obs::Measured(i32::MIN));
                 assert_eq!(result.motion.scalars.first_combat, Some(Some(COMBAT)));
+                result.enclosing.expect("complete current division envelope");
                 let expected_scalars = result.motion.scalars;
                 let expected = expected_membership(unavailable);
                 let mut row = deleted_division_sample(f.division.id, f.division.kind);
+                row.retained_visual_variant = division_membership_portable::retained_visual_variant(result.retained_visual_variant);
+                (row.owner_tag_db_id, row.owner_authority) = division_membership_portable::division_owner(result.owner);
                 row.deleted = false;
                 row.location = f.division.location;
                 row.raw_max_organisation = Some(100_000);
@@ -1911,6 +1964,96 @@ mod tests {
         }
 
         #[test]
+        fn retained_numbered_byte_and_signed_owner_use_distinct_exact_width_witnesses() {
+            for raw in 0..=u8::MAX {
+                let f = AdapterFixture::new(CombatClass::Land, &[1]);
+                let owner = [i32::MIN, -1, 0, 47, i32::MAX][raw as usize % 5];
+                let byte_at = f.division.body + DIVISION_OFF_RETAINED_VISUAL_VARIANT;
+                let owner_at = f.division.body + DIVISION_OFF_OWNER_TAG_DB_ID;
+                f.mem.put(byte_at, &[raw]);
+                f.mem.put32(owner_at, owner as u32);
+                let budget = country_roster_readset::Budget::default();
+                let (result, log) = f.run(&budget, |_, _, _| true);
+                assert_eq!(result.enclosing, Ok(()));
+                assert_eq!(result.retained_visual_variant, Ok(raw));
+                assert_eq!(result.owner, Ok(owner));
+                assert_eq!(result.country_operand,
+                    compact_contract::division_routes::TrainingObservation::Measured(i32::MIN));
+                assert_eq!(log.events.iter().filter(|(at, _)| *at == byte_at)
+                    .copied().collect::<Vec<_>>(), [(byte_at, 1), (byte_at, 1)]);
+                assert_eq!(log.events.iter().filter(|(at, _)| *at == owner_at)
+                    .copied().collect::<Vec<_>>(), [(owner_at, 4), (owner_at, 4)]);
+                assert_eq!(log.bytes(), budget.verification_bytes());
+                log.all_closed();
+            }
+        }
+
+        #[test]
+        fn retained_byte_and_owner_failures_preserve_other_admitted_leaves() {
+            for (offset, field) in [
+                (DIVISION_OFF_RETAINED_VISUAL_VARIANT, Field::RetainedVisualVariant),
+                (DIVISION_OFF_OWNER_TAG_DB_ID, Field::DivisionOwner),
+            ] {
+                for (failed_visit, changed) in [(1, false), (2, false), (2, true)] {
+                    let f = AdapterFixture::new(CombatClass::Land, &[1, -1]);
+                    let at = f.division.body + offset;
+                    let budget = country_roster_readset::Budget::default();
+                    let (result, log) = f.run(&budget, |f, current, visit| {
+                        if current == at && visit == failed_visit {
+                            if !changed { return false; }
+                            f.mem.put(at, &[129]);
+                        }
+                        true
+                    });
+                    let reason = motion_refusal(
+                        if changed { Cause::Changed } else { Cause::Unreadable },
+                        field,
+                        if failed_visit == 1 { membership::Stage::Open } else { membership::Stage::Close },
+                    );
+                    assert_eq!(result.enclosing, Ok(()));
+                    if field == Field::RetainedVisualVariant {
+                        assert_eq!(result.retained_visual_variant, Err(reason));
+                        assert_eq!(result.owner, Ok(47));
+                    } else {
+                        assert_eq!(result.owner, Err(reason));
+                        assert_eq!(result.retained_visual_variant, Ok(128));
+                    }
+                    assert_eq!(countries(&result), [1, -1]);
+                    assert_eq!(result.motion.ordinary_route, Some(vec![19, 17, 19]));
+                    assert_eq!(log.bytes(), budget.verification_bytes());
+                    log.all_closed();
+                }
+            }
+        }
+
+        #[test]
+        fn retained_byte_reserves_its_close_before_read_and_drains_after_shared_exhaustion() {
+            // Root/hour plus primary/body identity/location/count cost 88 bytes.
+            // A complete one-byte original open/close costs exactly two more.
+            for limit in [89, 90] {
+                let f = AdapterFixture::new(CombatClass::Land, &[1]);
+                let budget = country_roster_readset::Budget::test_limits(limit, 16 * 1024 * 1024);
+                let byte_at = f.division.body + DIVISION_OFF_RETAINED_VISUAL_VARIANT;
+                let (result, log) = f.run(&budget, |_, _, _| true);
+                assert_eq!(result.enclosing, Ok(()));
+                if limit == 90 {
+                    assert_eq!(result.retained_visual_variant, Ok(128));
+                    assert_eq!(log.visits.get(&byte_at), Some(&2));
+                    assert_eq!(log.bytes(), 90);
+                } else {
+                    assert_eq!(result.retained_visual_variant, Err(motion_refusal(
+                        Cause::VerificationBudgetExceeded, Field::RetainedVisualVariant,
+                        membership::Stage::Admission)));
+                    assert!(!log.visits.contains_key(&byte_at));
+                    assert_eq!(log.bytes(), 88);
+                }
+                assert_eq!(result.owner, Err(motion_refusal(Cause::VerificationBudgetExceeded,
+                    Field::DivisionOwner, membership::Stage::Admission)));
+                log.all_closed();
+            }
+        }
+
+        #[test]
         fn actual_adapter_preserves_motion_semantics_and_reads_every_identity_only_twice() {
             for class in [CombatClass::Land, CombatClass::BorderWar] {
                 for numerator in [i64::MIN, -1, 0, i64::MAX] {
@@ -1939,14 +2082,17 @@ mod tests {
                     let (result, log) = f.run(&budget, |_, _, _| true);
                     assert_eq!(result.motion, expected);
                     assert_eq!(countries(&result), [0, -1, i32::MIN, i32::MAX, 0]);
-                    assert_eq!(log.bytes(), 378 + 8 * 3 + 24 * 5);
+                    assert_eq!(log.bytes(), 388 + 8 * 3 + 24 * 5);
                     assert_eq!(log.bytes(), budget.verification_bytes());
                     assert_eq!(log.visits.get(&(f.division.body - 0x10 + 0x1e0)), Some(&2));
                     assert_eq!(
                         result.country_operand,
                         compact_contract::division_routes::TrainingObservation::Measured(i32::MIN)
                     );
-                    assert!(!log.visits.contains_key(&(f.division.body - 0x10 + 0x1d8)));
+                    assert_eq!(log.visits.get(&(f.division.body + DIVISION_OFF_OWNER_TAG_DB_ID)), Some(&2));
+                    assert_eq!(result.owner, Ok(47));
+                    assert_eq!(result.retained_visual_variant, Ok(128));
+                    assert_eq!(result.enclosing, Ok(()));
                     log.all_closed();
                 }
             }
@@ -1958,7 +2104,7 @@ mod tests {
             f.division.combat_count = 0;
             f.mem
                 .put32(f.division.body + DIVISION_OFF_COMBAT_REF_COUNT, 0);
-            let budget = country_roster_readset::Budget::test_limits(250 + 8 * 3, 16 * 1024 * 1024);
+            let budget = country_roster_readset::Budget::test_limits(260 + 8 * 3, 16 * 1024 * 1024);
             let (result, log) = f.run(&budget, |_, _, _| true);
             assert!(matches!(
                 result.first_combat_countries,
@@ -1966,7 +2112,7 @@ mod tests {
             ));
             assert_eq!(result.motion.scalars.first_combat, Some(None));
             assert!(!log.visits.contains_key(&f.vector));
-            assert_eq!(log.bytes(), 250 + 8 * 3);
+            assert_eq!(log.bytes(), 260 + 8 * 3);
             log.all_closed();
 
             let (result, log) = f.run(
@@ -2208,7 +2354,7 @@ mod tests {
                     }
                 );
                 assert_eq!(result.motion.alternate_route, Some(vec![]));
-                assert_eq!(log.bytes(), 402 + 8 * 3 + 24 * 2);
+                assert_eq!(log.bytes(), 412 + 8 * 3 + 24 * 2);
                 assert_eq!(log.bytes(), budget.verification_bytes());
                 log.all_closed();
             }
@@ -2217,7 +2363,7 @@ mod tests {
         #[test]
         fn exact_budget_and_one_byte_short_close_actual_adapter_without_prefix_or_rediscovery() {
             let f = AdapterFixture::new(CombatClass::Land, &[0, 7, 0]);
-            let full = 378 + 8 * 3 + 24 * 3;
+            let full = 388 + 8 * 3 + 24 * 3;
             for limit in [full, full - 1] {
                 let budget = country_roster_readset::Budget::test_limits(limit, 16 * 1024 * 1024);
                 let (result, log) = f.run(&budget, |_, _, _| true);
@@ -2264,7 +2410,7 @@ mod tests {
             assert_eq!(short.retained_bytes(), exact_retained);
             log.all_closed();
 
-            let exact = 378 + 8 * 3 + 24;
+            let exact = 388 + 8 * 3 + 24;
             let budget = country_roster_readset::Budget::test_limits(exact, 16 * 1024 * 1024);
             let (result, log) = f.run(&budget, |f, at, visit| {
                 if at == f.nodes && visit == 1 {
@@ -2390,7 +2536,7 @@ mod tests {
             });
             assert_eq!(result.motion.ordinary_route, Some(expected.clone()));
             assert_eq!(countries(&result), [1]);
-            assert_eq!(log.bytes(), 378 + 8 * expected.len() + 24);
+            assert_eq!(log.bytes(), 388 + 8 * expected.len() + 24);
             log.all_closed();
 
             let short = country_roster_readset::Budget::test_limits(
@@ -2461,7 +2607,8 @@ mod tests {
                     };
                     assert_eq!(result.country_operand, expected);
                     assert_eq!(countries(&result), [i32::MIN]);
-                    assert!(!log.visits.contains_key(&owner));
+                    assert_eq!(log.visits.get(&owner), Some(&2));
+                    assert_eq!(result.owner, Ok(i32::MIN));
                     log.all_closed();
                 }
             }

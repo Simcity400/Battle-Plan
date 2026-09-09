@@ -1,4 +1,4 @@
-//! D2RA complete first-combat country observations. The fixed row owns the
+//! D2RB complete first-combat country observations. The fixed row owns the
 //! combat identity; the trailer owns only its observation and ordered words.
 use super::{word, CombatClass, CombatIdentity, FORMAT_MARKER, ROW_LEN};
 
@@ -12,6 +12,10 @@ macro_rules! coded_enum {
         impl $name {
             pub fn from_raw(raw: u32) -> Result<Self, String> {
                 match raw { $($code => Ok(Self::$variant),)+
+                    _ => Err(concat!("unknown ", stringify!($name)).into()) }
+            }
+            pub fn from_name(name: &str) -> Result<Self, String> {
+                match name { $($text => Ok(Self::$variant),)+
                     _ => Err(concat!("unknown ", stringify!($name)).into()) }
             }
             pub fn code(self) -> u32 { match self { $(Self::$variant => $code),+ } }
@@ -35,6 +39,7 @@ coded_enum!(CombatMembershipCause {
     RootChanged = 11 => "root_changed",
     HourChanged = 12 => "hour_changed",
     HourUnreadable = 13 => "hour_unreadable",
+    OwnerProjectionUnavailable = 14 => "owner_projection_unavailable",
 });
 coded_enum!(CombatMembershipField {
     FrameRoot = 0 => "frame_root",
@@ -62,6 +67,8 @@ coded_enum!(CombatMembershipField {
     ProducerBinding = 22 => "producer_binding",
     Strength = 23 => "strength",
     Organisation = 24 => "organisation",
+    RetainedVisualVariant = 25 => "retained_visual_variant",
+    DivisionOwner = 26 => "division_owner",
 });
 coded_enum!(CombatMembershipStage {
     Admission = 0 => "admission",
@@ -644,8 +651,8 @@ mod tests {
         let at = DivisionRoutes::parse(&bytes).unwrap().membership_start + 8;
         for (offset, value) in [
             (0, 4),
-            (4, 14),
-            (8, 25),
+            (4, 15),
+            (8, 27),
             (12, 3),
             (16, 2),
             (16, 0),
@@ -743,10 +750,10 @@ mod tests {
 
     #[test]
     fn refusal_code_tables_and_cycle_order_are_explicit() {
-        for raw in 0..14 {
+        for raw in 0..15 {
             assert_eq!(CombatMembershipCause::from_raw(raw).unwrap().code(), raw);
         }
-        for raw in 0..25 {
+        for raw in 0..27 {
             assert_eq!(CombatMembershipField::from_raw(raw).unwrap().code(), raw);
         }
         for raw in 0..3 {

@@ -61,6 +61,8 @@ pub(super) enum Field {
     ProducerBinding,
     Strength,
     Organisation,
+    RetainedVisualVariant,
+    DivisionOwner,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Stage {

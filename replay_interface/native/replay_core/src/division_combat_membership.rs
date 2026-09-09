@@ -91,6 +91,7 @@ impl RefusalJson {
             "root_changed" => C::RootChanged,
             "hour_changed" => C::HourChanged,
             "hour_unreadable" => C::HourUnreadable,
+            "owner_projection_unavailable" => C::OwnerProjectionUnavailable,
             _ => return Err("unknown combat membership cause".into()),
         };
         let field = match self.field.as_str() {
@@ -119,6 +120,8 @@ impl RefusalJson {
             "producer_binding" => F::ProducerBinding,
             "strength" => F::Strength,
             "organisation" => F::Organisation,
+            "retained_visual_variant" => F::RetainedVisualVariant,
+            "division_owner" => F::DivisionOwner,
             _ => return Err("unknown combat membership field".into()),
         };
         let stage = match self.stage.as_str() {
@@ -941,8 +944,8 @@ mod tests {
 
     #[test]
     fn every_portable_refusal_name_survives_strict_json() {
-        for cause in 0..=13 {
-            for field in 0..=24 {
+        for cause in 0..=14 {
+            for field in 0..=26 {
                 for stage in 0..=2 {
                     let observation =
                         FirstCombatCountriesObservation::Unavailable(CombatMembershipRefusal {

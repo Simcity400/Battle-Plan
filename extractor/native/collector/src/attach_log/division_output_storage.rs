@@ -103,6 +103,8 @@ pub(super) fn try_clone_division_movement_sample(
     budget: &country_roster_readset::Budget,
 ) -> Result<DivisionMovementSample, Failure> {
     Ok(DivisionMovementSample {
+        retained_visual_variant: sample.retained_visual_variant,
+        owner_authority: sample.owner_authority,
         first_combat_countries: clone_membership(&sample.first_combat_countries, budget)?,
         training_scalars: sample.training_scalars,
         native_type: sample.native_type,

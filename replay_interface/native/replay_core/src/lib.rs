@@ -508,3 +508,4 @@ pub mod country_name;
 
 pub mod division_training_inputs;
 pub mod division_combat_membership;
+pub mod division_retained_visual_variant;

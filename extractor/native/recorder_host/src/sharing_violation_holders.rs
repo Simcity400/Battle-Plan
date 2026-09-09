@@ -1074,18 +1074,87 @@ mod tests {
     #[test]
     fn the_restart_manager_names_this_process_holding_its_own_file() {
         use std::io::Write;
+        use std::os::windows::process::CommandExt;
 
-        let dir = std::env::temp_dir().join(format!(
-            "wg_holder_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).expect("create probe dir");
+        const CHILD_DIR: &str = "BATTLE_PLAN_TEST_RESTART_MANAGER_DIR";
+        let inherited_dir = std::env::var_os(CHILD_DIR);
+        let owns_dir = inherited_dir.is_none();
+        let dir = inherited_dir.map(PathBuf::from).unwrap_or_else(|| {
+            std::env::temp_dir().join(format!(
+                "wg_holder_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock")
+                    .as_nanos()
+            ))
+        });
+        if owns_dir {
+            std::fs::create_dir(&dir).expect("create owned probe dir");
+        } else {
+            assert_eq!(std::env::current_dir().expect("child working directory"), dir);
+        }
+        struct ProbeDirectory(Option<PathBuf>);
+        impl Drop for ProbeDirectory {
+            fn drop(&mut self) {
+                if let Some(dir) = &self.0 {
+                    let _ = std::fs::remove_file(dir.join("held.battleplan"));
+                    let _ = std::fs::remove_dir(dir);
+                }
+            }
+        }
+        let _probe = ProbeDirectory(owns_dir.then(|| dir.clone()));
         let file_path = dir.join("held.battleplan");
-        let mut held = std::fs::File::create(&file_path).expect("create held file");
+        let cwd = std::env::current_dir().expect("a working directory");
+        if relative_from(&cwd, &file_path).is_none() {
+            assert!(owns_dir, "the child must run on the held file's volume");
+            let (_, module) = module_path!().split_once("::").expect("test module below crate");
+            let name = format!("{module}::the_restart_manager_names_this_process_holding_its_own_file");
+            struct ProbeChild(Option<std::process::Child>);
+            impl Drop for ProbeChild {
+                fn drop(&mut self) {
+                    if let Some(child) = &mut self.0 {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                }
+            }
+            // Reexecute this exact fixture beside its C: temporary file without
+            // changing the parent process's working directory.
+            let mut child = ProbeChild(Some(std::process::Command::new(
+                std::env::current_exe().expect("current test binary"),
+            )
+                .args(["--exact", &name, "--format=pretty", "--color=never", "--test-threads=1"])
+                .env(CHILD_DIR, &dir)
+                .env_remove("RUST_TEST_NOCAPTURE")
+                .current_dir(&dir)
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW; preserve Job inheritance.
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("start relative-path probe")));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                if child.0.as_mut().unwrap().try_wait().expect("poll owned probe").is_some() {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline,
+                    "relative-path probe did not exit within 30 seconds");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let output = child.0.take().unwrap().wait_with_output().expect("join relative-path probe");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "relative-path probe: {}: {stdout} {stderr}", output.status);
+            let passed = format!("test {name} ... ok");
+            assert!(stdout.lines().any(|line| line == passed)
+                && stdout.lines().any(|line| line.starts_with("test result: ok. 1 passed; 0 failed;")),
+                "relative-path probe did not execute exactly this test: {stdout} {stderr}");
+            return;
+        }
+        let mut held = std::fs::OpenOptions::new().write(true).create_new(true)
+            .open(&file_path).expect("create held file");
         held.write_all(b"held").expect("write held file");
         held.flush().expect("flush held file");
 
@@ -1103,7 +1172,6 @@ mod tests {
 
         drop(held);
         let _ = std::fs::remove_file(&file_path);
-        let _ = std::fs::remove_dir(&dir);
 
         let ours = |query: &HolderQuery| {
             query
