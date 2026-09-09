@@ -27,7 +27,7 @@ fn admit_product_compact_stream_bytes(bytes: u64) -> Result<(), SourceError> {
 struct RecorderSessionBinding {
     active_dlcs: Vec<String>,
     localisation_language: String,
-    display_variant: RecorderDisplayVariant,
+    display_variant: Option<RecorderDisplayVariant>,
     campaign_identity: Option<RecordedCampaignIdentity>,
     product_admission: RecorderProductAdmission,
     /// XMAP02 resolved foundation content: the recorded per-family effective
@@ -232,14 +232,61 @@ impl PackagedStaticArtifact {
 
 const PORTABILITY_EXCLUDED_VALUE: &str = "__portability_excluded__";
 
-fn recorder_display_variant_value(settings_binding: &Value) -> Option<Value> {
-    let mut display = settings_binding.get("display_variant")?.as_object()?.clone();
-    let attach = settings_binding.get("attach_settings_sha256")?.as_str()?;
+fn recorder_settings_file_sha256<'a>(
+    settings_binding: &'a Value,
+    reference: &str,
+) -> Result<Option<&'a str>, SourceError> {
+    match settings_binding.get("attach_settings_sha256") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(hash))
+            if hash.len() == 64
+                && hash.bytes().all(|byte| {
+                    byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()
+                }) => Ok(Some(hash)),
+        Some(_) => Err(SourceError::Open(format!(
+            "recorder manifest {reference:?} modset.settings_binding.attach_settings_sha256 must be a lowercase SHA-256 when present"
+        ))),
+    }
+}
+
+fn recorder_display_variant(
+    settings_binding: &Value,
+    reference: &str,
+) -> Result<Option<RecorderDisplayVariant>, SourceError> {
+    // Recorder display is provenance; playback admits its own local profile.
+    // A separately present settings hash still has to be well formed and is
+    // joined to the portable manifest even when display was not obtained.
+    let attach = recorder_settings_file_sha256(settings_binding, reference)?;
+    let mut display = match settings_binding.get("display_variant") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Object(display)) => display.clone(),
+        Some(_) => {
+            return Err(SourceError::Open(format!(
+                "recorder manifest {reference:?} modset.display_variant must be an object when present"
+            )))
+        }
+    };
+    let attach = attach.ok_or_else(|| {
+        SourceError::Open(format!(
+            "recorder manifest {reference:?} modset.display_variant has no settings file SHA-256"
+        ))
+    })?;
+    check_exact_value(
+        display.get("settings_file_sha256"),
+        "modset.display_variant.settings_file_sha256",
+        &Value::String(attach.to_string()),
+    )?;
     display.insert(
         "settings_file_sha256".to_string(),
         Value::String(attach.to_string()),
     );
-    Some(Value::Object(display))
+    let display = serde_json::from_value(Value::Object(display)).map_err(|error| {
+        SourceError::Open(format!(
+            "recorder manifest {reference:?} modset.display_variant has invalid shape: {error}"
+        ))
+    })?;
+    validate_display_variant(&display, reference)?;
+    Ok(Some(display))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -2977,58 +3024,49 @@ fn validate_recorder_content_manifest_join(
                     "recorder modset language disagrees with portable content language".into(),
                 ));
             }
-            let display: RecorderDisplayVariant = serde_json::from_value(
-                recorder_display_variant_value(settings_binding).ok_or_else(|| {
-                    SourceError::Open(
-                        "recorder portable content has no launch-bound display variant".into(),
-                    )
-                })?,
-            )
-            .map_err(|error| {
-                SourceError::Open(format!(
-                    "recorder portable-content display variant is malformed: {error}"
-                ))
-            })?;
-            let expected_settings = BTreeMap::from([
-                ("physical_width".into(), display.physical_width.to_string()),
-                ("physical_height".into(), display.physical_height.to_string()),
-                ("min_gui_width".into(), display.min_gui_width.to_string()),
-                ("min_gui_height".into(), display.min_gui_height.to_string()),
-                (
-                    "gui_scale_f32_bits".into(),
-                    display.gui_scale_f32_bits.to_string(),
-                ),
-                (
-                    "refresh_rate_hz".into(),
-                    display.refresh_rate_hz.to_string(),
-                ),
-                (
-                    "max_refresh_rate_hz".into(),
-                    display
-                        .max_refresh_rate_hz
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "unavailable".into()),
-                ),
-                ("fullscreen".into(), display.fullscreen.to_string()),
-                ("borderless".into(), display.borderless.to_string()),
-                ("display_mode".into(), display.display_mode),
-                (
-                    "settings_file_sha256".into(),
-                    display.settings_file_sha256,
-                ),
-                (
-                    "settings_authority".into(),
-                    settings_binding
-                        .get("authority")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            SourceError::Open(
-                                "recorder portable content states no settings authority".into(),
-                            )
-                        })?
-                        .to_string(),
-                ),
-            ]);
+            let display = recorder_display_variant(settings_binding, "portable content")?;
+            let mut expected_settings = BTreeMap::new();
+            if let Some(display) = display {
+                expected_settings.extend([
+                    ("physical_width".into(), display.physical_width.to_string()),
+                    ("physical_height".into(), display.physical_height.to_string()),
+                    ("min_gui_width".into(), display.min_gui_width.to_string()),
+                    ("min_gui_height".into(), display.min_gui_height.to_string()),
+                    (
+                        "gui_scale_f32_bits".into(),
+                        display.gui_scale_f32_bits.to_string(),
+                    ),
+                    (
+                        "refresh_rate_hz".into(),
+                        display.refresh_rate_hz.to_string(),
+                    ),
+                    (
+                        "max_refresh_rate_hz".into(),
+                        display
+                            .max_refresh_rate_hz
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "unavailable".into()),
+                    ),
+                    ("fullscreen".into(), display.fullscreen.to_string()),
+                    ("borderless".into(), display.borderless.to_string()),
+                    ("display_mode".into(), display.display_mode),
+                ]);
+            }
+            if let Some(hash) = recorder_settings_file_sha256(settings_binding, "portable content")? {
+                expected_settings.insert("settings_file_sha256".into(), hash.to_string());
+            }
+            expected_settings.insert(
+                "settings_authority".into(),
+                settings_binding
+                    .get("authority")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        SourceError::Open(
+                            "recorder portable content states no settings authority".into(),
+                        )
+                    })?
+                    .to_string(),
+            );
             // `recorder_local_settings` is a PARTITION, not a display record.
             // `portable_content_manifest::is_recorder_local_settings` also
             // admits the province-sidecar pin, which states what the CAPTURE
@@ -3963,21 +4001,7 @@ fn recorder_manifest_binding_value(
             ))
         })?
         .to_string();
-    let display_variant: RecorderDisplayVariant =
-        serde_json::from_value(recorder_display_variant_value(settings_binding).ok_or_else(
-            || {
-                SourceError::Open(format!(
-                    "recorder manifest {reference:?} modset.settings_binding.display_variant \
-                     is missing"
-                ))
-            },
-        )?)
-        .map_err(|error| {
-            SourceError::Open(format!(
-                "recorder manifest {reference:?} modset.display_variant has invalid shape: {error}"
-            ))
-        })?;
-    validate_display_variant(&display_variant, reference)?;
+    let display_variant = recorder_display_variant(settings_binding, reference)?;
 
     let foundation_content =
         decode_recorded_foundation_content(root.get(FOUNDATION_CONTENT_FIELD), reference)?;
@@ -6390,7 +6414,23 @@ mod tests {
         label: &str,
         campaign_identity: Option<Value>,
     ) {
-        let content = portable_content_manifest_fixture();
+        write_portable_recorder_fixture_with_metadata(
+            path,
+            game,
+            label,
+            campaign_identity,
+            |_, _, _| {},
+        );
+    }
+
+    fn write_portable_recorder_fixture_with_metadata(
+        path: &Path,
+        game: &str,
+        label: &str,
+        campaign_identity: Option<Value>,
+        mutate: impl FnOnce(&mut portable_content_manifest::ContentManifest, &mut Value, &mut Value),
+    ) {
+        let mut content = portable_content_manifest_fixture();
         let absent_static_artifacts = REQUIRED_PACKAGED_STATIC_ARTIFACTS
             .iter()
             .map(|(name, path)| {
@@ -6441,6 +6481,17 @@ mod tests {
         if let Some(campaign_identity) = campaign_identity {
             recorder_manifest["campaign_identity"] = campaign_identity;
         }
+        let mut snapshot = json!({
+            "game_id": game,
+            "schema_version": "1",
+            "hour_index": 1,
+            "marker": label,
+        });
+        mutate(&mut content, &mut recorder_manifest, &mut snapshot);
+        content.manifest_digest_sha256 = None;
+        content.source_profile.selection_sha256 = content.computed_selection_sha256().unwrap();
+        content = content.with_computed_digest().unwrap();
+        recorder_manifest["portable_content_manifest"] = serde_json::to_value(&content).unwrap();
         let entries = vec![
             snapshot::PackEntry {
                 path: format!("payload/{game}/index.json"),
@@ -6483,13 +6534,7 @@ mod tests {
             },
             snapshot::PackEntry {
                 path: format!("payload/{game}/000000000001.snapshot.json"),
-                bytes: serde_json::to_vec(&json!({
-                    "game_id": game,
-                    "schema_version": "1",
-                    "hour_index": 1,
-                    "marker": label,
-                }))
-                .unwrap(),
+                bytes: serde_json::to_vec(&snapshot).unwrap(),
                 role: "snapshot",
                 hour_index: Some(1),
             },
@@ -7501,6 +7546,197 @@ mod tests {
         let _ = fs::remove_dir_all(parent);
     }
 
+    fn omit_recorder_display(
+        content: &mut portable_content_manifest::ContentManifest,
+        recorder: &mut Value,
+    ) {
+        content.recorder_local_settings.retain(|key, _| {
+            matches!(
+                key.as_str(),
+                "settings_authority"
+                    | portable_content_manifest::MAP_SIDECAR_CAPTURE_KEY
+                    | portable_content_manifest::MAP_SIDECAR_CAPTURE_PROBE_KEY
+            )
+        });
+        // Runtime authority is distinct from launch proof and carries no disk
+        // settings hash. The reader still joins language and content exactly.
+        content
+            .recorder_local_settings
+            .insert("settings_authority".into(), "runtime_observed".into());
+        let settings = &mut recorder["modset"]["settings_binding"];
+        settings["authority"] = json!("runtime_observed");
+        settings["launch_proven"] = json!(false);
+        settings["display_variant"] = Value::Null;
+        settings["attach_settings_sha256"] = Value::Null;
+    }
+
+    #[test]
+    fn recorder_display_unavailable_preserves_authenticated_world_playback() {
+        let parent = temp_root("recorder_display_unavailable");
+        for mode in ["null", "absent", "hash_only", "null_snapshot"] {
+            let recording = parent.join(format!("{mode}.battleplan"));
+            write_portable_recorder_fixture_with_metadata(
+                &recording,
+                "g",
+                "RECORDED",
+                None,
+                |content, recorder, snapshot| {
+                    omit_recorder_display(content, recorder);
+                    let settings = &mut recorder["modset"]["settings_binding"];
+                    match mode {
+                        "absent" => {
+                            settings.as_object_mut().unwrap().remove("display_variant");
+                            settings
+                                .as_object_mut()
+                                .unwrap()
+                                .remove("attach_settings_sha256");
+                        }
+                        "hash_only" => {
+                            settings["attach_settings_sha256"] = json!("e".repeat(64));
+                            content
+                                .recorder_local_settings
+                                .insert("settings_file_sha256".into(), "e".repeat(64));
+                        }
+                        "null_snapshot" => snapshot["session"] = json!({"display_variant": null}),
+                        _ => {}
+                    }
+                    snapshot["countries"] = json!({"FRA": {"stability": 0.5}});
+                },
+            );
+            let source =
+                open_recording(&recording).unwrap_or_else(|error| panic!("{mode}: {error}"));
+            let frame = source.frame(1).unwrap();
+            assert_eq!(frame.rest["marker"], "RECORDED");
+            assert_eq!(frame.rest["countries"]["FRA"]["stability"], 0.5);
+            assert_eq!(frame.rest["session"]["display_variant"], Value::Null);
+            let timeline = crate::WorldTimeline::open(source).unwrap();
+            let frame = timeline.frame(1).unwrap();
+            assert_eq!(
+                frame.session_metadata().display_variant,
+                crate::Leaf::Unobtained
+            );
+            assert_eq!(
+                frame.session_metadata().localisation_language,
+                crate::Leaf::Measured("english".into())
+            );
+            assert_eq!(
+                frame.session_metadata().active_dlcs,
+                crate::Leaf::Measured(Vec::new())
+            );
+            assert!(frame.coverage_warnings().iter().any(|warning| warning
+                .contains("session.display_variant: recorder display settings unavailable")));
+        }
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn optional_recorder_display_still_refuses_contradictory_or_malformed_authority() {
+        let parent = temp_root("recorder_display_refusals");
+        for (case, expected) in [
+            ("display_without_hash", "has no settings file SHA-256"),
+            ("scalar_display", "must be an object"),
+            ("partial_display", "invalid shape"),
+            ("invalid_dimensions", "exact launch-settings contract"),
+            ("uppercase_hash", "lowercase SHA-256"),
+            ("scalar_hash", "lowercase SHA-256"),
+            ("nested_hash_conflict", "metadata conflict"),
+            ("portable_display_claim", "physical_width"),
+            ("portable_hash_conflict", "display variant disagrees"),
+            ("snapshot_display_claim", "session.display_variant"),
+            ("snapshot_null_conflict", "session.display_variant"),
+            ("language_mismatch", "language disagrees"),
+            ("language_missing", "settings_binding.language"),
+            ("executable_mismatch", "executable disagrees"),
+            ("authority_missing", "states no settings authority"),
+            ("authority_mismatch", "display variant disagrees"),
+            ("unknown_local_key", "input_variant"),
+        ] {
+            let recording = parent.join(format!("{case}.battleplan"));
+            write_portable_recorder_fixture_with_metadata(
+                &recording,
+                "g",
+                "RECORDED",
+                None,
+                |content, recorder, snapshot| {
+                    let present_display =
+                        recorder["modset"]["settings_binding"]["display_variant"].clone();
+                    if case != "snapshot_null_conflict" {
+                        omit_recorder_display(content, recorder);
+                    }
+                    let settings = &mut recorder["modset"]["settings_binding"];
+                    match case {
+                        "display_without_hash" => settings["display_variant"] = present_display,
+                        "scalar_display" => settings["display_variant"] = json!(false),
+                        "partial_display" | "invalid_dimensions" | "nested_hash_conflict" => {
+                            settings["display_variant"] = present_display;
+                            settings["attach_settings_sha256"] = json!("e".repeat(64));
+                            match case {
+                                "partial_display" => {
+                                    settings["display_variant"]
+                                        .as_object_mut()
+                                        .unwrap()
+                                        .remove("physical_width");
+                                }
+                                "invalid_dimensions" => {
+                                    settings["display_variant"]["physical_width"] = json!(0)
+                                }
+                                _ => {
+                                    settings["display_variant"]["settings_file_sha256"] =
+                                        json!("f".repeat(64))
+                                }
+                            }
+                        }
+                        "uppercase_hash" => {
+                            settings["attach_settings_sha256"] = json!("E".repeat(64))
+                        }
+                        "scalar_hash" => settings["attach_settings_sha256"] = json!(7),
+                        "portable_display_claim" => {
+                            content
+                                .recorder_local_settings
+                                .insert("physical_width".into(), "1920".into());
+                        }
+                        "portable_hash_conflict" => {
+                            settings["attach_settings_sha256"] = json!("e".repeat(64));
+                            content
+                                .recorder_local_settings
+                                .insert("settings_file_sha256".into(), "f".repeat(64));
+                        }
+                        "snapshot_display_claim" => {
+                            snapshot["session"] = json!({"display_variant": present_display})
+                        }
+                        "snapshot_null_conflict" => {
+                            snapshot["session"] = json!({"display_variant": null})
+                        }
+                        "language_mismatch" => settings["language"] = json!("french"),
+                        "language_missing" => settings["language"] = Value::Null,
+                        "executable_mismatch" => {
+                            recorder["modset"]["game"]["exe_sha256"] = json!("d".repeat(64))
+                        }
+                        "authority_missing" => settings["authority"] = Value::Null,
+                        "authority_mismatch" => {
+                            settings["authority"] = json!("pre_launch_bracketed")
+                        }
+                        "unknown_local_key" => {
+                            content
+                                .recorder_local_settings
+                                .insert("input_variant".into(), "keyboard".into());
+                        }
+                        _ => unreachable!(),
+                    }
+                },
+            );
+            let error = match open_recording(&recording).and_then(|source| source.frame(1)) {
+                Ok(_) => panic!("{case} must refuse"),
+                Err(error) => error,
+            };
+            assert!(
+                error.to_string().contains(expected),
+                "{case}: expected {expected:?}, got {error}"
+            );
+        }
+        let _ = fs::remove_dir_all(parent);
+    }
+
     #[test]
     fn empty_index_evidence_after_root_swap_uses_anchored_timeline() {
         let parent = temp_root("empty_root_swap");
@@ -7567,7 +7803,10 @@ mod tests {
         let binding = route.binding.expect("first buffers must produce a binding");
         assert_eq!(binding.active_dlcs, vec!["DLC A"]);
         assert_eq!(binding.localisation_language, "l_english");
-        assert_eq!(binding.display_variant.physical_width, 2752);
+        assert_eq!(
+            binding.display_variant.as_ref().unwrap().physical_width,
+            2752
+        );
         assert_eq!(
             calls.get("timeline.json").copied(),
             Some(1),
