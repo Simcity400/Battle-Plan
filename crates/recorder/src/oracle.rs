@@ -329,6 +329,10 @@ fn compare(
     }
     let mut report = Report::default();
     report.limitation(
+        "commands after the hourly callback can change state before saving without advancing the hour; matching hours do not prove the same command boundary, and differences still fail",
+        "all captured tables",
+    );
+    report.limitation(
         "save session time includes elapsed wall time; it is not the captured persisted play_time",
         "clock.play_time",
     );

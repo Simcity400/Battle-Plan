@@ -17,6 +17,15 @@ pub fn put_string(out: &mut Vec<u8>, value: &str) -> io::Result<()> {
     put_bytes(out, value.as_bytes())
 }
 
+/// Canonical unsigned LEB128, including the 65 bits needed by native numeric differences.
+pub fn put_varint(out: &mut Vec<u8>, mut value: u128) {
+    while value >= 0x80 {
+        out.push((value as u8 & 0x7f) | 0x80);
+        value >>= 7;
+    }
+    out.push(value as u8);
+}
+
 pub struct Decoder<'a> {
     bytes: &'a [u8],
 }
@@ -59,6 +68,26 @@ impl<'a> Decoder<'a> {
     number!(u64, u64);
     number!(i32, i32);
     number!(i64, i64);
+    /// Decode one canonical unsigned LEB128 value without consuming the next field.
+    pub fn varint(&mut self) -> io::Result<u128> {
+        let mut value = 0_u128;
+        for index in 0..19 {
+            let byte = self.u8()?;
+            let payload = byte & 0x7f;
+            if index == 18 && (payload > 3 || byte & 0x80 != 0) {
+                return Err(invalid("varint exceeds u128"));
+            }
+            value |= u128::from(payload) << (index * 7);
+            if byte & 0x80 == 0 {
+                if index != 0 && payload == 0 {
+                    return Err(invalid("noncanonical overlong varint"));
+                }
+                return Ok(value);
+            }
+        }
+        Err(invalid("varint exceeds u128"))
+    }
+
     pub fn bool(&mut self) -> io::Result<bool> {
         match self.u8()? {
             0 => Ok(false),
@@ -92,5 +121,59 @@ mod tests {
         assert!(Decoder::new(&u32::MAX.to_le_bytes()).count(1).is_err());
         assert!(Decoder::new(&[2]).bool().is_err());
         assert!(Decoder::new(&[0]).finish().is_err());
+    }
+
+    #[test]
+    fn varints_preserve_full_width_values_with_canonical_bytes() {
+        let mut u64_max_bytes = vec![0xff; 9];
+        u64_max_bytes.push(1);
+        let mut difference_max_bytes = vec![0xff; 9];
+        difference_max_bytes.push(3);
+        let mut u128_max_bytes = vec![0xff; 18];
+        u128_max_bytes.push(3);
+        for (value, expected) in [
+            (0, vec![0]),
+            (127, vec![127]),
+            (128, vec![0x80, 1]),
+            (u128::from(u64::MAX), u64_max_bytes),
+            ((1_u128 << 65) - 1, difference_max_bytes),
+            (u128::MAX, u128_max_bytes),
+        ] {
+            let mut encoded = Vec::new();
+            put_varint(&mut encoded, value);
+            assert_eq!(encoded, expected);
+            encoded.push(0xff);
+            let mut decoder = Decoder::new(&encoded);
+            assert_eq!(decoder.varint().unwrap(), value);
+            assert_eq!(decoder.u8().unwrap(), 0xff);
+            decoder.finish().unwrap();
+        }
+    }
+
+    #[test]
+    fn varints_refuse_truncation_overflow_and_redundant_groups() {
+        let mut overflow = vec![0xff; 18];
+        overflow.push(4);
+        let mut continued_final_group = vec![0xff; 18];
+        continued_final_group.push(0x83);
+        let mut overlong_zero = vec![0x80; 18];
+        overlong_zero.push(0);
+        for malformed in [
+            Vec::new(),
+            vec![0x80],
+            vec![0xff; 9],
+            vec![0x80, 0],
+            vec![0x81, 0],
+            overflow,
+            continued_final_group,
+            vec![0x80; 19],
+            overlong_zero,
+        ] {
+            assert_eq!(
+                Decoder::new(&malformed).varint().unwrap_err().kind(),
+                io::ErrorKind::InvalidData,
+                "accepted malformed varint {malformed:02x?}",
+            );
+        }
     }
 }

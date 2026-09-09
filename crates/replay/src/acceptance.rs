@@ -28,7 +28,10 @@ const HOURS: usize = 2_000;
 // Native handles retain the type in the low word and the instance id in the high word.
 const DIVISION_A: u64 = (0x8000_0041_u64 << 32) | 53;
 const DIVISION_B: u64 = (0x8000_0041_u64 << 32) | 54;
-const DIVISION_TEMPORARY: u64 = (u32::MAX as u64) << 32 | 53;
+const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
+const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
+// Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
+const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
 
 #[derive(Default)]
 struct Disk {
@@ -130,10 +133,8 @@ fn random(index: usize, salt: u64) -> u64 {
 
 /// Independent direct reads: no previous rows, field masks, or format reader participate.
 fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFrame {
-    let raw = match index % 31 {
-        0 => i64::MIN,
-        1 => i64::MAX,
-        _ => (1_i64 << 40) - index as i64,
+    let optional_scalar = |offset: usize| {
+        OPTIONAL_SCALAR_CASES[OPTIONAL_SCALAR_ORDER[(index + offset) % OPTIONAL_SCALAR_ORDER.len()]]
     };
     let country = |id, canonical_slot| {
         Row::Country(CountryRow {
@@ -145,11 +146,11 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
                 b"TAG".to_vec()
             },
             name: vec![0xff, id as u8, 0, b'N'],
-            political_power_raw: (index % 11 != 3).then_some(raw),
+            political_power_raw: optional_scalar(0),
             command_power_raw: -((index / 7) as i64) * 100_000,
             stability_raw: 78_901,
             war_support_raw: 54_321,
-            convoys_raw: (index % 19 != 4).then_some(1_i64 << 42),
+            convoys_raw: optional_scalar(5),
         })
     };
     let mut countries = vec![country(7, 1), country(19, 3)];
@@ -232,7 +233,9 @@ fn source(index: usize, branch: BranchId, hour: Hour, signal: i64) -> DecodedFra
     };
     let mut divisions = vec![division(DIVISION_A, 0), division(DIVISION_B, 1)];
     if index % 17 < 5 {
-        divisions.push(division(DIVISION_TEMPORARY, 2));
+        // Codec boundary keys exercise a zero first key and the full unsigned key range.
+        divisions.insert(0, division(DIVISION_EDGE_KEYS[0], 2));
+        divisions.push(division(DIVISION_EDGE_KEYS[1], 3));
     }
     let mut tables = [
         TableView::Complete(vec![Row::Clock(ClockRow {
@@ -322,6 +325,10 @@ struct Coverage {
     division_unavailable_tables: usize,
     division_truncated_tables: usize,
     division_partial_keyframes: usize,
+    division_edge_snapshots: [bool; 2],
+    division_edge_insertions: [bool; 2],
+    division_edge_deletions: [bool; 2],
+    country_optional_transitions: [[bool; 4]; 4],
 }
 
 struct Campaign {
@@ -445,7 +452,9 @@ fn synthesize() -> Campaign {
         for (table, update) in TableId::ALL.into_iter().zip(&frame.tables) {
             match update {
                 TableUpdate::Delta {
-                    changed, deleted, ..
+                    baseline,
+                    changed,
+                    deleted,
                 } => {
                     coverage.delta_tables += 1;
                     coverage.state_delta_tables += usize::from(table == TableId::States);
@@ -464,6 +473,39 @@ fn synthesize() -> Campaign {
                             .iter()
                             .filter(|row| row.mask == table.full_mask())
                             .count();
+                        for (edge, key) in DIVISION_EDGE_KEYS.into_iter().enumerate() {
+                            coverage.division_edge_insertions[edge] |= changed
+                                .iter()
+                                .any(|row| row.key == key && row.mask == table.full_mask());
+                            coverage.division_edge_deletions[edge] |= deleted.contains(&key);
+                        }
+                    }
+                    if table == TableId::Countries {
+                        let previous: &DecodedFrame = &expected[&(observed.branch, *baseline)];
+                        let (TableView::Complete(before), TableView::Complete(after)) = (
+                            &previous.tables[table.index()],
+                            &source.tables[table.index()],
+                        ) else {
+                            panic!("country delta must have complete direct source baselines");
+                        };
+                        let (Row::Country(before), Row::Country(after)) = (&before[0], &after[0])
+                        else {
+                            unreachable!()
+                        };
+                        for (old, new) in [
+                            (before.political_power_raw, after.political_power_raw),
+                            (before.convoys_raw, after.convoys_raw),
+                        ] {
+                            let old = OPTIONAL_SCALAR_CASES
+                                .iter()
+                                .position(|value| *value == old)
+                                .unwrap();
+                            let new = OPTIONAL_SCALAR_CASES
+                                .iter()
+                                .position(|value| *value == new)
+                                .unwrap();
+                            coverage.country_optional_transitions[old][new] = true;
+                        }
                     }
                 }
                 TableUpdate::Unchanged { .. } => coverage.unchanged_tables += 1,
@@ -478,7 +520,14 @@ fn synthesize() -> Campaign {
                     coverage.state_truncated_tables += usize::from(table == TableId::States);
                     coverage.division_truncated_tables += usize::from(table == TableId::Divisions);
                 }
-                TableUpdate::Snapshot(_) => {}
+                TableUpdate::Snapshot(rows) => {
+                    if table == TableId::Divisions {
+                        for (edge, key) in DIVISION_EDGE_KEYS.into_iter().enumerate() {
+                            coverage.division_edge_snapshots[edge] |=
+                                rows.iter().any(|row| row.key() == key);
+                        }
+                    }
+                }
             }
         }
 
@@ -715,6 +764,32 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
     assert!(coverage.division_deletions > 10 && coverage.division_insertions > 10);
     assert!(coverage.division_unavailable_tables > 0 && coverage.division_truncated_tables > 0);
     assert!(coverage.division_partial_keyframes > 0);
+    assert!(
+        coverage
+            .division_edge_snapshots
+            .into_iter()
+            .all(|seen| seen)
+    );
+    assert!(
+        coverage
+            .division_edge_insertions
+            .into_iter()
+            .all(|seen| seen)
+    );
+    assert!(
+        coverage
+            .division_edge_deletions
+            .into_iter()
+            .all(|seen| seen)
+    );
+    for (old, next) in coverage.country_optional_transitions.iter().enumerate() {
+        for (new, seen) in next.iter().enumerate() {
+            assert!(
+                old == new || *seen,
+                "optional scalar transition {old} -> {new} was not exercised"
+            );
+        }
+    }
 
     let first = Replay::from_recovered(CAMPAIGN.to_vec(), &campaign.segments[..2]).unwrap();
     assert_eq!(first.sessions.len(), 1);

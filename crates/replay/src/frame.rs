@@ -156,12 +156,16 @@ impl Frame {
                     out.push(1);
                     out.extend_from_slice(&baseline.to_le_bytes());
                     put_count(out, changed.len())?;
+                    let mut previous_key = 0;
                     for value in changed {
-                        rows::encode_delta(table, value, out)?;
+                        rows::encode_delta(table, value, previous_key, out)?;
+                        previous_key = value.key;
                     }
                     put_count(out, deleted.len())?;
+                    let mut previous_key = 0;
                     for key in deleted {
-                        table.encode_key(*key, out)?;
+                        table.encode_key(*key, previous_key, out)?;
+                        previous_key = *key;
                     }
                 }
                 TableUpdate::Unchanged { baseline } => {
@@ -210,15 +214,21 @@ impl Frame {
                 0 => TableUpdate::Snapshot(decode_rows(table, input)?),
                 1 => {
                     let baseline = input.i32()?;
-                    let count = input.count(table.key_width() + table.mask_width())?;
+                    let count = decode_row_count(table, input, table.minimum_delta_bytes())?;
                     let mut changed = Vec::with_capacity(count);
+                    let mut previous_key = 0;
                     for _ in 0..count {
-                        changed.push(rows::decode_delta(table, input)?);
+                        let row = rows::decode_delta(table, previous_key, input)?;
+                        previous_key = row.key;
+                        changed.push(row);
                     }
-                    let count = input.count(table.key_width())?;
+                    let count = decode_row_count(table, input, 1)?;
                     let mut deleted = Vec::with_capacity(count);
+                    let mut previous_key = 0;
                     for _ in 0..count {
-                        deleted.push(table.decode_key(input)?);
+                        let key = table.decode_key(previous_key, input)?;
+                        previous_key = key;
+                        deleted.push(key);
                     }
                     validate_delta(table, &changed, &deleted)?;
                     TableUpdate::Delta {
@@ -272,20 +282,37 @@ impl Frame {
 fn encode_rows(table: TableId, values: &[Row], out: &mut Vec<u8>) -> io::Result<()> {
     validate_rows(table, values)?;
     put_count(out, values.len())?;
+    let mut previous_key = 0;
     for value in values {
-        rows::encode_row(table, value, out)?;
+        rows::encode_row(table, value, previous_key, out)?;
+        previous_key = value.key();
     }
     Ok(())
 }
 
 fn decode_rows(table: TableId, input: &mut Decoder<'_>) -> io::Result<Vec<Row>> {
-    let count = input.count(table.key_width())?;
+    let count = decode_row_count(table, input, table.minimum_row_bytes())?;
     let mut values = Vec::with_capacity(count);
+    let mut previous_key = 0;
     for _ in 0..count {
-        values.push(rows::decode_row(table, input)?);
+        let row = rows::decode_row(table, previous_key, input)?;
+        previous_key = row.key();
+        values.push(row);
     }
     validate_rows(table, &values)?;
     Ok(values)
+}
+
+fn decode_row_count(
+    table: TableId,
+    input: &mut Decoder<'_>,
+    minimum_bytes: usize,
+) -> io::Result<usize> {
+    let count = input.count(minimum_bytes)?;
+    if count > 1 && matches!(table, TableId::Clock | TableId::Campaign) {
+        return Err(invalid("singleton table cannot contain multiple rows"));
+    }
+    Ok(count)
 }
 
 fn validate_delta(table: TableId, changed: &[DeltaRow], deleted: &[u64]) -> io::Result<()> {
@@ -705,6 +732,66 @@ mod tests {
     }
 
     #[test]
+    fn padded_snapshot_counts_are_rejected_before_allocating_or_reading_rows() {
+        let claimed = 16_384_u32;
+        let padding = 65_536;
+        let mut bytes = claimed.to_le_bytes().to_vec();
+        bytes.resize(bytes.len() + padding, 0);
+        // The old key-only bound accepted this count before reserving all rows.
+        assert_eq!(Decoder::new(&bytes).count(1).unwrap(), claimed as usize);
+        assert_eq!(TableId::Divisions.minimum_row_bytes(), 41);
+        assert_eq!(TableId::Campaign.minimum_row_bytes(), 5);
+        for table in TableId::ALL {
+            let mut input = Decoder::new(&bytes);
+            let error = decode_rows(table, &mut input).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "collection length exceeds remaining payload"
+            );
+            assert_eq!(
+                input.remaining(),
+                padding,
+                "read a row before rejecting {table:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn changed_row_counts_include_a_selected_value_and_singletons_never_reserve_many_rows() {
+        let claimed = 16_384_u32;
+        let padding = claimed as usize * 2;
+        let mut bytes = claimed.to_le_bytes().to_vec();
+        bytes.resize(bytes.len() + padding, 0);
+        assert_eq!(Decoder::new(&bytes).count(2).unwrap(), claimed as usize);
+        assert_eq!(TableId::Divisions.minimum_delta_bytes(), 3);
+        assert_eq!(TableId::Campaign.minimum_delta_bytes(), 6);
+        let mut input = Decoder::new(&bytes);
+        let error = decode_row_count(
+            TableId::Divisions,
+            &mut input,
+            TableId::Divisions.minimum_delta_bytes(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "collection length exceeds remaining payload"
+        );
+        assert_eq!(input.remaining(), padding);
+
+        let mut bytes = 2_u32.to_le_bytes().to_vec();
+        bytes.resize(68, 0);
+        for table in [TableId::Clock, TableId::Campaign] {
+            let mut input = Decoder::new(&bytes);
+            let error = decode_rows(table, &mut input).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "singleton table cannot contain multiple rows"
+            );
+            assert_eq!(input.remaining(), 64);
+        }
+    }
+
+    #[test]
     fn unchanged_advances_each_baseline_and_missing_hours_do_not_clear_it() {
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::new();
@@ -891,9 +978,15 @@ mod tests {
         assert_eq!(deleted, &[first_id]);
         assert_eq!(changed.len(), 2);
         assert_eq!((changed[0].key, changed[0].mask), (second_id, 0b110_0000));
-        assert_eq!(changed[0].values.len(), 16);
-        assert_eq!(&changed[0].values[..8], &i64::MAX.to_le_bytes());
-        assert_eq!(&changed[0].values[8..], &i64::MIN.to_le_bytes());
+        assert_eq!(
+            changed[0]
+                .apply(
+                    TableId::Divisions,
+                    Some(&division(second_id, 300_000, 100_001))
+                )
+                .unwrap(),
+            division(second_id, i64::MAX, i64::MIN)
+        );
         assert_eq!(
             (changed[1].key, changed[1].mask),
             (inserted_id, TableId::Divisions.full_mask())
@@ -926,7 +1019,7 @@ mod tests {
         assert!(deleted.is_empty());
         assert_eq!(changed.len(), 1);
         assert_eq!((changed[0].key, changed[0].mask), (second_id, 0b100_0000));
-        assert_eq!(changed[0].values, (i64::MIN + 1).to_le_bytes());
+        assert_eq!(changed[0].values, [2]); // Zigzag(+1), without rounding the native value.
         assert_eq!(decoder.apply(&wire(&frame)).unwrap(), after_gap);
     }
 
@@ -986,6 +1079,88 @@ mod tests {
         let recovered = source(1, 9);
         let frame = encoder.encode(&recovered, true).unwrap();
         assert_eq!(decoder.apply(&wire(&frame)).unwrap(), recovered);
+    }
+
+    #[test]
+    fn key_difference_contexts_restart_for_changed_deleted_and_each_frame() {
+        let table = TableId::Divisions;
+        let index = table.index();
+        let mut encoder = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        let mut first = source(1, 0);
+        first.tables[index] = TableView::Complete(
+            [0, 1, u64::MAX - 1, u64::MAX]
+                .into_iter()
+                .map(|key| division(key, 300_000, 100_001))
+                .collect(),
+        );
+        let frame = encoder.encode(&first, false).unwrap();
+        assert_eq!(decoder.apply(&wire(&frame)).unwrap(), first);
+
+        let mut next = source(1, 1);
+        next.tables[index] = TableView::Complete(vec![
+            division(0, 300_001, 100_001),
+            division(2, 300_000, 100_001),
+            division(u64::MAX, 300_000, 100_002),
+        ]);
+        let frame = encoder.encode(&next, false).unwrap();
+        let mut bytes = Vec::new();
+        let sizes = frame.encode_with_sizes(&mut bytes).unwrap();
+        let header_size = bytes.len() - sizes.iter().sum::<usize>();
+        let table_start = header_size + sizes[..index].iter().sum::<usize>();
+        let mut input = Decoder::new(&bytes[table_start..table_start + sizes[index]]);
+        assert_eq!(input.u8().unwrap(), 1);
+        assert_eq!(input.i32().unwrap(), 0);
+        assert_eq!(input.count(1 + table.mask_width()).unwrap(), 3);
+        for (previous_key, expected_key) in [(0, 0), (0, 2), (2, u64::MAX)] {
+            assert_eq!(
+                rows::decode_delta(table, previous_key, &mut input)
+                    .unwrap()
+                    .key,
+                expected_key
+            );
+        }
+        assert_eq!(input.count(1).unwrap(), 2);
+        // Deletions start again at zero, after the changed list reached u64::MAX.
+        assert_eq!(input.varint().unwrap(), 1);
+        assert_eq!(input.varint().unwrap(), u128::from(u64::MAX - 2));
+        input.finish().unwrap();
+        assert_eq!(decoder.apply(&wire(&frame)).unwrap(), next);
+
+        let mut empty = source(1, 2);
+        empty.tables[index] = TableView::Complete(vec![]);
+        let frame = encoder.encode(&empty, false).unwrap();
+        assert_eq!(decoder.apply(&wire(&frame)).unwrap(), empty);
+        let mut inserted = source(1, 3);
+        inserted.tables[index] = TableView::Complete(vec![division(0, i64::MIN, i64::MAX)]);
+        let frame = encoder.encode(&inserted, false).unwrap();
+        assert_eq!(decoder.apply(&wire(&frame)).unwrap(), inserted);
+    }
+
+    #[test]
+    fn malformed_key_differences_cannot_wrap_snapshot_or_deleted_keys() {
+        let table = TableId::Divisions;
+        let mut bytes = Vec::new();
+        put_count(&mut bytes, 2).unwrap();
+        rows::encode_row(table, &division(u64::MAX, 1, 2), 0, &mut bytes).unwrap();
+        // This independently encoded +1 follows u64::MAX in the snapshot list.
+        rows::encode_row(table, &division(1, 3, 4), 0, &mut bytes).unwrap();
+        assert!(decode_rows(table, &mut Decoder::new(&bytes)).is_err());
+
+        let mut encoder = FrameEncoder::new();
+        encoder.encode(&source(1, 0), false).unwrap();
+        let frame = encoder.encode(&source(1, 1), false).unwrap();
+        bytes.clear();
+        let sizes = frame.encode_with_sizes(&mut bytes).unwrap();
+        let table_start = bytes.len() - sizes[table.index()];
+        bytes.truncate(table_start);
+        bytes.push(1); // Delta.
+        bytes.extend_from_slice(&0_i32.to_le_bytes());
+        put_count(&mut bytes, 0).unwrap();
+        put_count(&mut bytes, 2).unwrap();
+        crate::codec::put_varint(&mut bytes, u128::from(u64::MAX));
+        crate::codec::put_varint(&mut bytes, 1);
+        assert!(Frame::decode(&mut Decoder::new(&bytes)).is_err());
     }
 
     #[test]
@@ -1212,7 +1387,7 @@ mod tests {
                 vec![DeltaRow {
                     key: 3,
                     mask: 4,
-                    values: 99_u32.to_le_bytes().to_vec(),
+                    values: vec![198, 1], // Zigzag(+99).
                 }],
                 vec![1],
                 "requires every field",
@@ -1332,7 +1507,7 @@ mod tests {
                     changed: vec![DeltaRow {
                         key: 0,
                         mask: 1,
-                        values: 99_i32.to_le_bytes().to_vec(),
+                        values: vec![198, 1], // Zigzag(+99) from the hour-zero baseline.
                     }],
                     deleted: vec![],
                 },

@@ -2,7 +2,7 @@
 
 use std::io;
 
-use crate::codec::{Decoder, invalid, put_bytes};
+use crate::codec::{Decoder, invalid, put_bytes, put_varint};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
@@ -35,19 +35,30 @@ impl TableId {
         self.schema().len()
     }
 
-    pub const fn key_width(self) -> usize {
-        match self {
-            Self::Divisions => 8,
-            _ => 4,
-        }
-    }
-
     pub const fn mask_width(self) -> usize {
         self.field_count().div_ceil(8)
     }
 
     pub const fn full_mask(self) -> u64 {
         (1_u64 << self.field_count()) - 1
+    }
+
+    pub(crate) fn minimum_row_bytes(self) -> usize {
+        1 + self
+            .schema()
+            .iter()
+            .map(|kind| kind.minimum_row_bytes())
+            .sum::<usize>()
+    }
+
+    pub(crate) fn minimum_delta_bytes(self) -> usize {
+        1 + self.mask_width()
+            + self
+                .schema()
+                .iter()
+                .map(|kind| kind.minimum_change_bytes())
+                .min()
+                .unwrap_or(0)
     }
 
     const fn schema(self) -> &'static [Kind] {
@@ -64,7 +75,7 @@ impl TableId {
     }
 
     pub(crate) fn check_key(self, key: u64) -> io::Result<()> {
-        if self.key_width() == 4 && u32::try_from(key).is_err() {
+        if self != Self::Divisions && u32::try_from(key).is_err() {
             return Err(invalid(format!("{self:?} row key exceeds u32")));
         }
         if matches!(self, Self::Clock | Self::Campaign) && key != 0 {
@@ -73,18 +84,26 @@ impl TableId {
         Ok(())
     }
 
-    pub(crate) fn encode_key(self, key: u64, output: &mut Vec<u8>) -> io::Result<()> {
+    pub(crate) fn encode_key(
+        self,
+        key: u64,
+        previous: u64,
+        output: &mut Vec<u8>,
+    ) -> io::Result<()> {
         self.check_key(key)?;
-        output.extend_from_slice(&key.to_le_bytes()[..self.key_width()]);
+        let difference = key
+            .checked_sub(previous)
+            .ok_or_else(|| invalid("row keys decreased"))?;
+        put_varint(output, u128::from(difference));
         Ok(())
     }
 
-    pub(crate) fn decode_key(self, decoder: &mut Decoder<'_>) -> io::Result<u64> {
-        let key = if self.key_width() == 8 {
-            decoder.u64()?
-        } else {
-            u64::from(decoder.u32()?)
-        };
+    pub(crate) fn decode_key(self, previous: u64, decoder: &mut Decoder<'_>) -> io::Result<u64> {
+        let difference = u64::try_from(decoder.varint()?)
+            .map_err(|_| invalid("row key difference exceeds u64"))?;
+        let key = previous
+            .checked_add(difference)
+            .ok_or_else(|| invalid("row key addition overflow"))?;
         self.check_key(key)?;
         Ok(key)
     }
@@ -195,7 +214,8 @@ pub enum Row {
 pub struct DeltaRow {
     pub key: u64,
     pub mask: u64,
-    /// Only the selected fields, in schema order and in native little-endian form.
+    /// Selected fields in schema order: exact numeric differences as zigzag varints,
+    /// with byte fields and optional presence markers retained. Inserts use zero.
     pub values: Vec<u8>,
 }
 
@@ -240,7 +260,9 @@ impl Row {
         for (index, field) in fields[..self.table().field_count()].iter().enumerate() {
             if old_fields.as_ref().is_none_or(|old| old[index] != *field) {
                 delta.mask |= 1_u64 << index;
-                field.encode(&mut delta.values)?;
+                field
+                    .change(old_fields.as_ref().map_or(Field::Empty, |old| old[index]))?
+                    .encode(&mut delta.values)?;
             }
         }
         Ok(Some(delta))
@@ -397,7 +419,9 @@ impl DeltaRow {
         let mut decoder = Decoder::new(&self.values);
         for (index, kind) in table.schema().iter().enumerate() {
             if self.mask & (1_u64 << index) != 0 {
-                fields[index] = kind.decode(&mut decoder)?;
+                fields[index] = kind
+                    .decode_change(&mut decoder)?
+                    .apply(*kind, fields[index])?;
             }
         }
         decoder.finish()?;
@@ -405,19 +429,24 @@ impl DeltaRow {
     }
 }
 
-pub fn encode_row(table: TableId, row: &Row, output: &mut Vec<u8>) -> io::Result<()> {
+pub fn encode_row(
+    table: TableId,
+    row: &Row,
+    previous_key: u64,
+    output: &mut Vec<u8>,
+) -> io::Result<()> {
     if row.table() != table {
         return Err(invalid("row belongs to a different table"));
     }
-    table.encode_key(row.key(), output)?;
+    table.encode_key(row.key(), previous_key, output)?;
     for field in &row.fields()[..table.field_count()] {
         field.encode(output)?;
     }
     Ok(())
 }
 
-pub fn decode_row(table: TableId, decoder: &mut Decoder<'_>) -> io::Result<Row> {
-    let key = table.decode_key(decoder)?;
+pub fn decode_row(table: TableId, previous_key: u64, decoder: &mut Decoder<'_>) -> io::Result<Row> {
+    let key = table.decode_key(previous_key, decoder)?;
     let mut fields = [Field::Empty; MAX_FIELDS];
     for (index, kind) in table.schema().iter().enumerate() {
         fields[index] = kind.decode(decoder)?;
@@ -425,24 +454,33 @@ pub fn decode_row(table: TableId, decoder: &mut Decoder<'_>) -> io::Result<Row> 
     Row::from_fields(table, key, fields)
 }
 
-pub fn encode_delta(table: TableId, delta: &DeltaRow, output: &mut Vec<u8>) -> io::Result<()> {
+pub fn encode_delta(
+    table: TableId,
+    delta: &DeltaRow,
+    previous_key: u64,
+    output: &mut Vec<u8>,
+) -> io::Result<()> {
     table.check_key(delta.key)?;
     table.check_mask(delta.mask)?;
     let mut decoder = Decoder::new(&delta.values);
     for (index, kind) in table.schema().iter().enumerate() {
         if delta.mask & (1_u64 << index) != 0 {
-            kind.decode(&mut decoder)?;
+            kind.decode_change(&mut decoder)?;
         }
     }
     decoder.finish()?;
-    table.encode_key(delta.key, output)?;
+    table.encode_key(delta.key, previous_key, output)?;
     output.extend_from_slice(&delta.mask.to_le_bytes()[..table.mask_width()]);
     output.extend_from_slice(&delta.values);
     Ok(())
 }
 
-pub fn decode_delta(table: TableId, decoder: &mut Decoder<'_>) -> io::Result<DeltaRow> {
-    let key = table.decode_key(decoder)?;
+pub fn decode_delta(
+    table: TableId,
+    previous_key: u64,
+    decoder: &mut Decoder<'_>,
+) -> io::Result<DeltaRow> {
+    let key = table.decode_key(previous_key, decoder)?;
     let mut mask_bytes = [0; 8];
     mask_bytes[..table.mask_width()].copy_from_slice(decoder.take(table.mask_width())?);
     let mask = u64::from_le_bytes(mask_bytes);
@@ -450,7 +488,7 @@ pub fn decode_delta(table: TableId, decoder: &mut Decoder<'_>) -> io::Result<Del
     let mut values = Vec::new();
     for (index, kind) in table.schema().iter().enumerate() {
         if mask & (1_u64 << index) != 0 {
-            kind.decode(decoder)?.encode(&mut values)?;
+            kind.decode_change(decoder)?.encode(&mut values)?;
         }
     }
     Ok(DeltaRow { key, mask, values })
@@ -475,6 +513,64 @@ enum Kind {
 }
 
 impl Kind {
+    fn minimum_row_bytes(self) -> usize {
+        match self {
+            Self::U32 | Self::I32 | Self::Bytes => 4,
+            Self::U64 | Self::I64 => 8,
+            Self::OptionalI64 => 1,
+        }
+    }
+
+    fn minimum_change_bytes(self) -> usize {
+        match self {
+            Self::Bytes => 4,
+            _ => 1,
+        }
+    }
+
+    fn decode_change<'a>(self, decoder: &mut Decoder<'a>) -> io::Result<Change<'a>> {
+        if matches!(self, Self::Bytes) {
+            let Field::Bytes(bytes) = self.decode(decoder)? else {
+                unreachable!()
+            };
+            return Ok(Change::Bytes(bytes));
+        }
+        if matches!(self, Self::OptionalI64) {
+            match decoder.u8()? {
+                0 => return Ok(Change::Optional(None)),
+                1 => {}
+                _ => return Err(invalid("invalid optional integer tag")),
+            }
+        }
+        let encoded = decoder.varint()?;
+        let difference = ((encoded >> 1) as i128) ^ -((encoded & 1) as i128);
+        let maximum = if matches!(self, Self::U32 | Self::I32) {
+            u128::from(u32::MAX)
+        } else {
+            u128::from(u64::MAX)
+        };
+        if difference.unsigned_abs() > maximum {
+            return Err(invalid("numeric difference exceeds native field range"));
+        }
+        Ok(if matches!(self, Self::OptionalI64) {
+            Change::Optional(Some(difference))
+        } else {
+            Change::Number(difference)
+        })
+    }
+
+    fn number(self, value: i128) -> io::Result<Field<'static>> {
+        let range = |_| invalid("numeric delta exceeds native field range");
+        Ok(match self {
+            Self::U32 => Field::U32(u32::try_from(value).map_err(range)?),
+            Self::I32 => Field::I32(i32::try_from(value).map_err(range)?),
+            Self::U64 => Field::U64(u64::try_from(value).map_err(range)?),
+            Self::I64 => Field::I64(i64::try_from(value).map_err(range)?),
+            Self::OptionalI64 => Field::OptionalI64(Some(i64::try_from(value).map_err(range)?)),
+            Self::Bytes => return Err(invalid("numeric change applied to byte field")),
+        })
+    }
+
     fn decode<'a>(self, decoder: &mut Decoder<'a>) -> io::Result<Field<'a>> {
         Ok(match self {
             Self::U32 => Field::U32(decoder.u32()?),
@@ -495,6 +591,46 @@ impl Kind {
     }
 }
 
+enum Change<'a> {
+    Number(i128),
+    Optional(Option<i128>),
+    Bytes(&'a [u8]),
+}
+
+impl<'a> Change<'a> {
+    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        let difference = match self {
+            Self::Number(value) => *value,
+            Self::Optional(Some(value)) => {
+                output.push(1);
+                *value
+            }
+            Self::Optional(None) => {
+                output.push(0);
+                return Ok(());
+            }
+            Self::Bytes(bytes) => return put_bytes(output, bytes),
+        };
+        let zigzag = ((difference as u128) << 1) ^ ((difference >> 127) as u128);
+        put_varint(output, zigzag);
+        Ok(())
+    }
+
+    fn apply(self, kind: Kind, previous: Field<'a>) -> io::Result<Field<'a>> {
+        match self {
+            Self::Bytes(bytes) => Ok(Field::Bytes(bytes)),
+            Self::Optional(None) => Ok(Field::OptionalI64(None)),
+            Self::Number(difference) | Self::Optional(Some(difference)) => {
+                let value = previous
+                    .number()?
+                    .checked_add(difference)
+                    .ok_or_else(|| invalid("numeric delta addition overflow"))?;
+                kind.number(value)
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field<'a> {
     Empty,
@@ -506,7 +642,36 @@ enum Field<'a> {
     OptionalI64(Option<i64>),
 }
 
-impl Field<'_> {
+impl<'a> Field<'a> {
+    fn number(self) -> io::Result<i128> {
+        Ok(match self {
+            Self::Empty | Self::OptionalI64(None) => 0,
+            Self::U32(value) => i128::from(value),
+            Self::I32(value) => i128::from(value),
+            Self::U64(value) => i128::from(value),
+            Self::I64(value) | Self::OptionalI64(Some(value)) => i128::from(value),
+            Self::Bytes(_) => return Err(invalid("byte field used as numeric baseline")),
+        })
+    }
+
+    fn change(self, previous: Self) -> io::Result<Change<'a>> {
+        if let Self::Bytes(bytes) = self {
+            return Ok(Change::Bytes(bytes));
+        }
+        if self == Self::OptionalI64(None) {
+            return Ok(Change::Optional(None));
+        }
+        let difference = self
+            .number()?
+            .checked_sub(previous.number()?)
+            .ok_or_else(|| invalid("numeric delta subtraction overflow"))?;
+        Ok(if matches!(self, Self::OptionalI64(_)) {
+            Change::Optional(Some(difference))
+        } else {
+            Change::Number(difference)
+        })
+    }
+
     fn encode(self, output: &mut Vec<u8>) -> io::Result<()> {
         match self {
             Self::Empty => return Err(invalid("missing row field")),
@@ -600,24 +765,24 @@ mod tests {
         for row in rows {
             let table = row.table();
             let mut bytes = Vec::new();
-            encode_row(table, &row, &mut bytes).unwrap();
+            encode_row(table, &row, 0, &mut bytes).unwrap();
             let mut decoder = Decoder::new(&bytes);
-            assert_eq!(decode_row(table, &mut decoder).unwrap(), row);
+            assert_eq!(decode_row(table, 0, &mut decoder).unwrap(), row);
             decoder.finish().unwrap();
 
             let delta = row.delta(None).unwrap().unwrap();
             assert_eq!(delta.mask, table.full_mask());
             assert_eq!(delta.apply(table, None).unwrap(), row);
             bytes.clear();
-            encode_delta(table, &delta, &mut bytes).unwrap();
+            encode_delta(table, &delta, 0, &mut bytes).unwrap();
             let mut decoder = Decoder::new(&bytes);
-            assert_eq!(decode_delta(table, &mut decoder).unwrap(), delta);
+            assert_eq!(decode_delta(table, 0, &mut decoder).unwrap(), delta);
             decoder.finish().unwrap();
         }
     }
 
     #[test]
-    fn one_native_scalar_change_costs_key_mask_and_eight_bytes() {
+    fn one_native_scalar_tick_costs_three_bytes() {
         let old = country();
         let mut new = old.clone();
         new.stability_raw += 1;
@@ -626,11 +791,10 @@ mod tests {
         assert_eq!(old.delta(Some(&old)).unwrap(), None);
         let delta = new.delta(Some(&old)).unwrap().unwrap();
         assert_eq!(delta.mask, 1 << 5);
-        assert_eq!(delta.values, 100_002_i64.to_le_bytes());
+        assert_eq!(delta.values, [2]);
         let mut bytes = Vec::new();
-        encode_delta(TableId::Countries, &delta, &mut bytes).unwrap();
-        assert_eq!(bytes.len(), 4 + 1 + 8);
-        assert_eq!(&bytes[..5], &[7, 0, 0, 0, 0x20]);
+        encode_delta(TableId::Countries, &delta, 0, &mut bytes).unwrap();
+        assert_eq!(bytes, [7, 0x20, 2]);
         assert_eq!(delta.apply(TableId::Countries, Some(&old)).unwrap(), new);
     }
 
@@ -651,11 +815,14 @@ mod tests {
             let delta = new.delta(Some(&old)).unwrap().unwrap();
             assert_eq!(delta.mask, mask);
             let mut bytes = Vec::new();
-            encode_delta(TableId::States, &delta, &mut bytes).unwrap();
-            assert_eq!(bytes.len(), 4 + 1 + mask.count_ones() as usize * 4);
-            assert_eq!(&bytes[..4], &old.key().to_le_bytes()[..4]);
+            encode_delta(TableId::States, &delta, 0, &mut bytes).unwrap();
+            assert_eq!(
+                bytes.len(),
+                5 + 1 + usize::from(mask & 1 != 0) + 5 * usize::from(mask & 2 != 0)
+            );
+            assert_eq!(&bytes[..5], &[0xf8, 0xac, 0xd1, 0x91, 0x01]);
             let mut input = Decoder::new(&bytes);
-            let decoded = decode_delta(TableId::States, &mut input).unwrap();
+            let decoded = decode_delta(TableId::States, 0, &mut input).unwrap();
             input.finish().unwrap();
             assert_eq!(decoded.apply(TableId::States, Some(&old)).unwrap(), new);
             if mask != TableId::States.full_mask() {
@@ -669,23 +836,34 @@ mod tests {
         for id in [0, 1_u64 << 63, u64::MAX] {
             let row = Row::Division(DivisionRow { id, ..division() });
             let mut bytes = Vec::new();
-            encode_row(TableId::Divisions, &row, &mut bytes).unwrap();
-            assert_eq!(bytes.len(), 48);
-            assert_eq!(&bytes[..8], &id.to_le_bytes());
-            assert_eq!(&bytes[24..32], &division().template.to_le_bytes());
-            assert_eq!(&bytes[32..40], &division().hit_points.to_le_bytes());
-            assert_eq!(&bytes[40..48], &division().organisation.to_le_bytes());
+            encode_row(TableId::Divisions, &row, 0, &mut bytes).unwrap();
+            let key_len = if id == 0 { 1 } else { 10 };
+            assert_eq!(bytes.len(), key_len + 40);
+            assert_eq!(
+                &bytes[key_len + 16..key_len + 24],
+                &division().template.to_le_bytes()
+            );
+            assert_eq!(
+                &bytes[key_len + 24..key_len + 32],
+                &division().hit_points.to_le_bytes()
+            );
+            assert_eq!(
+                &bytes[key_len + 32..key_len + 40],
+                &division().organisation.to_le_bytes()
+            );
             let mut input = Decoder::new(&bytes);
-            assert_eq!(decode_row(TableId::Divisions, &mut input).unwrap(), row);
+            assert_eq!(decode_row(TableId::Divisions, 0, &mut input).unwrap(), row);
             input.finish().unwrap();
             for cut in 0..bytes.len() {
-                assert!(decode_row(TableId::Divisions, &mut Decoder::new(&bytes[..cut])).is_err());
+                assert!(
+                    decode_row(TableId::Divisions, 0, &mut Decoder::new(&bytes[..cut])).is_err()
+                );
             }
             let delta = row.delta(None).unwrap().unwrap();
             bytes.clear();
-            encode_delta(TableId::Divisions, &delta, &mut bytes).unwrap();
-            assert_eq!(bytes.len(), 49);
-            assert_eq!(bytes[8], 0x7f);
+            encode_delta(TableId::Divisions, &delta, 0, &mut bytes).unwrap();
+            assert_eq!(bytes.len(), key_len + 1 + delta.values.len());
+            assert_eq!(bytes[key_len], 0x7f);
             assert_eq!(delta.apply(TableId::Divisions, None).unwrap(), row);
         }
     }
@@ -721,12 +899,10 @@ mod tests {
             let delta = new.delta(Some(&old)).unwrap().unwrap();
             assert_eq!(delta.mask, mask);
             let mut bytes = Vec::new();
-            encode_delta(TableId::Divisions, &delta, &mut bytes).unwrap();
-            let values_size =
-                (mask & 0x0f).count_ones() as usize * 4 + (mask & 0x70).count_ones() as usize * 8;
-            assert_eq!(bytes.len(), 8 + 1 + values_size);
+            encode_delta(TableId::Divisions, &delta, 0, &mut bytes).unwrap();
+            assert_eq!(bytes.len(), 10 + 1 + delta.values.len());
             let mut input = Decoder::new(&bytes);
-            let decoded = decode_delta(TableId::Divisions, &mut input).unwrap();
+            let decoded = decode_delta(TableId::Divisions, 0, &mut input).unwrap();
             input.finish().unwrap();
             assert_eq!(decoded.apply(TableId::Divisions, Some(&old)).unwrap(), new);
             assert_eq!(
@@ -744,7 +920,127 @@ mod tests {
     }
 
     #[test]
-    fn table_key_widths_refuse_overflow_and_keep_existing_rows_at_four_bytes() {
+    fn numeric_differences_preserve_the_full_signed_and_unsigned_spans() {
+        let clock_low = Row::Clock(ClockRow {
+            hour: i32::MIN,
+            play_time: 0,
+            play_session_started_at: i64::MIN,
+            seed: i32::MIN,
+        });
+        let clock_high = Row::Clock(ClockRow {
+            hour: i32::MAX,
+            play_time: u64::MAX,
+            play_session_started_at: i64::MAX,
+            seed: i32::MAX,
+        });
+        let division_low = Row::Division(DivisionRow {
+            template: 0,
+            hit_points: i64::MIN,
+            organisation: i64::MAX,
+            ..division()
+        });
+        let division_high = Row::Division(DivisionRow {
+            template: u64::MAX,
+            hit_points: i64::MAX,
+            organisation: i64::MIN,
+            ..division()
+        });
+        for (low, high) in [(clock_low, clock_high), (division_low, division_high)] {
+            for (old, new) in [(&low, &high), (&high, &low)] {
+                let table = new.table();
+                let delta = new.delta(Some(old)).unwrap().unwrap();
+                let mut bytes = Vec::new();
+                encode_delta(table, &delta, 0, &mut bytes).unwrap();
+                let mut input = Decoder::new(&bytes);
+                let restored = decode_delta(table, 0, &mut input).unwrap();
+                input.finish().unwrap();
+                assert_eq!(restored.apply(table, Some(old)).unwrap(), *new);
+                for cut in 0..bytes.len() {
+                    assert!(decode_delta(table, 0, &mut Decoder::new(&bytes[..cut])).is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn numeric_changes_refuse_out_of_range_differences_and_reconstructed_values() {
+        let cases = [
+            (
+                Row::Clock(ClockRow {
+                    play_time: u64::MAX,
+                    ..ClockRow::default()
+                }),
+                2,
+                vec![2],
+            ),
+            (Row::Clock(ClockRow::default()), 2, vec![1]),
+            (
+                Row::Clock(ClockRow {
+                    seed: i32::MAX,
+                    ..ClockRow::default()
+                }),
+                8,
+                vec![2],
+            ),
+            (
+                Row::Clock(ClockRow {
+                    play_session_started_at: i64::MIN,
+                    ..ClockRow::default()
+                }),
+                4,
+                vec![1],
+            ),
+            (
+                Row::State(StateRow {
+                    owner: u32::MAX,
+                    ..StateRow::default()
+                }),
+                1,
+                vec![2],
+            ),
+            (
+                Row::Country(CountryRow {
+                    political_power_raw: Some(i64::MAX),
+                    ..country()
+                }),
+                8,
+                vec![1, 2],
+            ),
+        ];
+        for (old, mask, values) in cases {
+            let table = old.table();
+            let change = DeltaRow {
+                key: old.key(),
+                mask,
+                values,
+            };
+            let mut bytes = Vec::new();
+            // These differences are legal; their addition to this baseline is not.
+            encode_delta(table, &change, 0, &mut bytes).unwrap();
+            assert!(change.apply(table, Some(&old)).is_err());
+            let decoded = decode_delta(table, 0, &mut Decoder::new(&bytes)).unwrap();
+            assert!(decoded.apply(table, Some(&old)).is_err());
+        }
+        for (table, mask, difference) in [
+            (TableId::States, 1, 1_u128 << 32),
+            (TableId::Clock, 2, 1_u128 << 64),
+        ] {
+            let mut values = Vec::new();
+            put_varint(&mut values, difference * 2);
+            let invalid = DeltaRow {
+                key: 0,
+                mask,
+                values: values.clone(),
+            };
+            assert!(encode_delta(table, &invalid, 0, &mut Vec::new()).is_err());
+            let mut wire = vec![0, mask as u8];
+            wire.extend(values);
+            assert!(decode_delta(table, 0, &mut Decoder::new(&wire)).is_err());
+        }
+    }
+
+    #[test]
+    fn table_keys_keep_native_ranges_and_refuse_overflow() {
         for table in TableId::ALL {
             let key = match table {
                 TableId::Clock | TableId::Campaign => 0,
@@ -752,17 +1048,26 @@ mod tests {
                 _ => u64::from(u32::MAX),
             };
             let mut bytes = Vec::new();
-            table.encode_key(key, &mut bytes).unwrap();
-            assert_eq!(bytes.len(), if table == TableId::Divisions { 8 } else { 4 });
+            table.encode_key(key, 0, &mut bytes).unwrap();
+            assert_eq!(
+                bytes.len(),
+                if key == 0 {
+                    1
+                } else if table == TableId::Divisions {
+                    10
+                } else {
+                    5
+                }
+            );
             let mut input = Decoder::new(&bytes);
-            assert_eq!(table.decode_key(&mut input).unwrap(), key);
+            assert_eq!(table.decode_key(0, &mut input).unwrap(), key);
             input.finish().unwrap();
             if table == TableId::Divisions {
                 continue;
             }
             for oversized in [u64::from(u32::MAX) + 1, u64::MAX] {
                 let before = bytes.clone();
-                assert!(table.encode_key(oversized, &mut bytes).is_err());
+                assert!(table.encode_key(oversized, 0, &mut bytes).is_err());
                 assert_eq!(bytes, before);
                 let invalid = DeltaRow {
                     key: oversized,
@@ -770,7 +1075,7 @@ mod tests {
                     values: Vec::new(),
                 };
                 assert!(invalid.apply(table, None).is_err());
-                assert!(encode_delta(table, &invalid, &mut bytes).is_err());
+                assert!(encode_delta(table, &invalid, 0, &mut bytes).is_err());
                 assert_eq!(bytes, before);
             }
         }
@@ -826,7 +1131,7 @@ mod tests {
         let partial = DeltaRow {
             key: 5,
             mask: 2,
-            values: 7_u32.to_le_bytes().to_vec(),
+            values: vec![12], // Owner changes from 1 to 7: zigzag(6).
         };
         assert!(partial.apply(TableId::Provinces, None).is_err());
         assert!(partial.apply(TableId::Countries, Some(&row)).is_err());
@@ -840,6 +1145,14 @@ mod tests {
                 ..partial.clone()
             },
             DeltaRow {
+                values: vec![0x80],
+                ..partial.clone()
+            },
+            DeltaRow {
+                values: vec![0x80, 0],
+                ..partial.clone()
+            },
+            DeltaRow {
                 values: vec![0; 3],
                 ..partial.clone()
             },
@@ -849,7 +1162,7 @@ mod tests {
             },
         ] {
             assert!(delta.apply(TableId::Provinces, Some(&row)).is_err());
-            assert!(encode_delta(TableId::Provinces, &delta, &mut Vec::new()).is_err());
+            assert!(encode_delta(TableId::Provinces, &delta, 0, &mut Vec::new()).is_err());
         }
         let wrong_key = DeltaRow { key: 6, ..partial };
         assert!(wrong_key.apply(TableId::Provinces, Some(&row)).is_err());
@@ -863,8 +1176,8 @@ mod tests {
                 .apply(TableId::Countries, Some(&Row::Country(country())))
                 .is_err()
         );
-        assert!(decode_delta(TableId::Countries, &mut Decoder::new(&[7, 0, 0, 0, 8, 2])).is_err());
-        assert!(decode_delta(TableId::Provinces, &mut Decoder::new(&[5, 0, 0, 0, 0x80])).is_err());
+        assert!(decode_delta(TableId::Countries, 0, &mut Decoder::new(&[7, 8, 2])).is_err());
+        assert!(decode_delta(TableId::Provinces, 0, &mut Decoder::new(&[5, 0x80])).is_err());
     }
 
     #[test]
@@ -873,13 +1186,13 @@ mod tests {
             id: b"campaign".to_vec(),
         });
         let mut bytes = Vec::new();
-        encode_row(TableId::Campaign, &row, &mut bytes).unwrap();
+        encode_row(TableId::Campaign, &row, 0, &mut bytes).unwrap();
         for end in 0..bytes.len() {
-            assert!(decode_row(TableId::Campaign, &mut Decoder::new(&bytes[..end])).is_err());
+            assert!(decode_row(TableId::Campaign, 0, &mut Decoder::new(&bytes[..end])).is_err());
         }
         bytes[0] = 1;
-        assert!(decode_row(TableId::Campaign, &mut Decoder::new(&bytes)).is_err());
-        assert!(encode_row(TableId::Clock, &row, &mut Vec::new()).is_err());
+        assert!(decode_row(TableId::Campaign, 0, &mut Decoder::new(&bytes)).is_err());
+        assert!(encode_row(TableId::Clock, &row, 0, &mut Vec::new()).is_err());
         assert!(TableId::try_from(255).is_err());
     }
 }

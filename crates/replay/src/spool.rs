@@ -15,7 +15,7 @@ use crate::{
     identity::SessionStart,
 };
 
-pub const RECORD_MAGIC: [u8; 4] = *b"H4S3";
+pub const RECORD_MAGIC: [u8; 4] = *b"H4S4";
 pub const RECORD_HEADER_BYTES: usize = 12;
 pub const MAX_RECORD_BYTES: usize = 128 * 1024 * 1024;
 const SYNC_INTERVAL: Duration = Duration::from_secs(5);
@@ -601,13 +601,13 @@ mod tests {
     #[test]
     fn old_spool_magic_is_refused_before_decoding_any_records() {
         let mut bytes = valid_segment();
-        bytes[..4].copy_from_slice(b"H4S2");
+        bytes[..4].copy_from_slice(b"H4S3");
         let recovered = recover_prefix(&bytes);
         assert_eq!(recovered.valid_bytes, 0);
         assert!(recovered.records.is_empty());
         let reason = recovered.damage.unwrap();
-        assert!(reason.contains("unsupported spool record magic \"H4S2\""));
-        assert!(reason.contains("expected \"H4S3\""));
+        assert!(reason.contains("unsupported spool record magic \"H4S3\""));
+        assert!(reason.contains("expected \"H4S4\""));
     }
 
     #[test]
